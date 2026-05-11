@@ -5,13 +5,13 @@
 # Final image ~150 MB (node 20 slim + standalone server + static assets).
 
 # --- deps -------------------------------------------------------------------
-FROM node:20-slim AS deps
+FROM node:26-slim AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 
 # --- builder ----------------------------------------------------------------
-FROM node:20-slim AS builder
+FROM node:26-slim AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
@@ -26,7 +26,7 @@ ENV MIDDLEWARE_URL=${MIDDLEWARE_URL}
 RUN npm run build
 
 # --- runtime ----------------------------------------------------------------
-FROM node:20-slim AS runtime
+FROM node:26-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
