@@ -54,7 +54,7 @@
     "multer": "^2.1.1",
     "pg": "^8.13.0",
     "sharp": "^0.33.5",
-    "typescript-eslint": "^8.58.2",
+    "typescript-eslint": "^8.59.2",
     "undici": "^7.25.0",
     "yaml": "^2.6.1",
     "yauzl": "^3.3.0",
