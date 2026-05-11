@@ -1,0 +1,20 @@
+{
+  "name": "@omadia/agent-seo-analyst",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "description": "SEO-Analyst-Agent für byte5-eigene Webseiten (On-Page, Technical, Crawl-Audit).",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@omadia/plugin-api": "*",
+    "zod": "^3.23.8"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

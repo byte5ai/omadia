@@ -1,0 +1,147 @@
+@import 'tailwindcss';
+@import './_lib/theme.css';
+
+/* Custom breakpoint above Tailwind's 2xl (1536px) for ultrawide / 4K screens. */
+@theme {
+  --breakpoint-3xl: 120rem; /* 1920px */
+}
+
+/* -------------------------------------------------------------------------- */
+/* Global, token-driven baseline styles. The palette + typography live in     */
+/* _lib/theme.css so the byte5 Claude Design Kit swap is a single-file change.*/
+/* -------------------------------------------------------------------------- */
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-text);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Utility: numeric monospace for versions, IDs, timestamps. */
+.font-mono-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Utility: Days One display face for headlines (byte5 brand). */
+.font-display {
+  font-family: var(--font-display);
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+
+/* byte5 signature colon — magenta heavy, used inline before short phrases. */
+.b5-colon {
+  color: var(--highlight);
+  font-weight: 900;
+  margin-right: 0.35em;
+}
+
+/* Soft cyan-biased hero wash — replaces the earlier editorial grain overlay.
+   Per byte5 brand, hero panels are ALWAYS the light cyan gradient with navy
+   text, regardless of the user's system color-scheme preference. We therefore
+   lock the token values within this scope so nested elements get the correct
+   contrast even when `@media (prefers-color-scheme: dark)` has flipped the
+   :root tokens to white-on-dark values.
+   Scoped via CSS custom-property overrides — no component edits required. */
+.b5-hero-bg {
+  background: var(--surface-gradient-cyan);
+  color: #004B73;
+
+  --bg:            #FFFFFF;
+  --bg-soft:       #F4F7FA;
+  --bg-elevated:   #FFFFFF;
+
+  --fg:            #004B73;
+  --fg-strong:     #004B73;
+  --fg-muted:      #5F6E7B;
+  --fg-subtle:     #8A99A6;
+
+  --border:        #D3DDE5;
+  --border-strong: #B4C2CD;
+  --divider:       rgba(0, 75, 115, 0.12);
+
+  --accent:        #009FE3;
+  --accent-hover:  #0086C0;
+  --highlight:     #EA5172;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Markdown renderer — styles for content produced by react-markdown.       */
+/* Intentionally compact: this is a dev tool, not a blog.                    */
+/* ------------------------------------------------------------------------ */
+.md-view {
+  @apply text-sm leading-relaxed;
+}
+.md-view > :first-child {
+  margin-top: 0;
+}
+.md-view > :last-child {
+  margin-bottom: 0;
+}
+.md-view p {
+  @apply my-2;
+}
+.md-view h1 {
+  @apply my-3 text-lg font-semibold;
+}
+.md-view h2 {
+  @apply my-3 text-base font-semibold;
+}
+.md-view h3 {
+  @apply my-2 text-sm font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400;
+}
+.md-view ul {
+  @apply my-2 ml-5 list-disc space-y-1;
+}
+.md-view ol {
+  @apply my-2 ml-5 list-decimal space-y-1;
+}
+.md-view a {
+  @apply text-blue-600 underline underline-offset-2 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-200;
+}
+.md-view code {
+  @apply rounded bg-neutral-100 px-1 py-0.5 font-mono text-[0.85em] dark:bg-neutral-800;
+}
+.md-view pre {
+  @apply my-3 overflow-x-auto rounded bg-neutral-100 p-3 text-xs dark:bg-neutral-800;
+}
+.md-view pre code {
+  @apply bg-transparent p-0 text-xs;
+}
+.md-view blockquote {
+  @apply my-2 border-l-2 border-neutral-300 pl-3 text-neutral-600 dark:border-neutral-600 dark:text-neutral-400;
+}
+/* Card-mode list (BuilderMarkdown ol-override) drops the ml-5/list-decimal
+   reset so the strong leader prints flush inside the card. */
+.md-view-card > p:first-child {
+  margin-top: 0;
+}
+.md-view-card > p:last-child {
+  margin-bottom: 0;
+}
+.md-view-card strong {
+  @apply font-semibold text-[color:var(--fg-strong)];
+}
+
+.md-view table {
+  @apply my-3 w-full border-collapse text-xs;
+}
+.md-view th,
+.md-view td {
+  @apply border border-neutral-300 px-2 py-1 text-left align-top dark:border-neutral-700;
+}
+.md-view th {
+  @apply bg-neutral-100 font-semibold dark:bg-neutral-800;
+}
+.md-view hr {
+  @apply my-3 border-neutral-200 dark:border-neutral-800;
+}

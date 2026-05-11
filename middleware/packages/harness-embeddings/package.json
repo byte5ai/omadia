@@ -1,0 +1,21 @@
+{
+  "name": "@omadia/embeddings",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "Stateless embedding-compute plugin for the byte5 Harness. Wraps an Ollama-compatible /api/embeddings endpoint, exposes a concurrency-limited EmbeddingClient, and provides the 'embeddingClient' kernel-service so KG ingest, ContextRetriever, FactExtractor, and TopicDetector can resolve it via ctx.services.get instead of a kernel-side bridge.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@omadia/plugin-api": "*",
+    "undici": "^7.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

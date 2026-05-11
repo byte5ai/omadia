@@ -1,0 +1,99 @@
+schema_version: "1"
+
+identity:
+  id: "@omadia/plugin-privacy-detector-ollama"
+  name: "Privacy Detector — Ollama NER"
+  version: "0.1.0"
+  kind: "tool"
+  domain: "privacy.detector"
+  description: "Privacy-Proxy add-on detector. Identifies free-text PII (names, addresses, German phone numbers, ID numbers) and business secrets (contract clauses, financial data) via a local Ollama sidecar — complements the regex detector in `harness-plugin-privacy-guard` (Slice 3.2). Registers itself with the `privacyDetectorRegistry` service published by privacy-guard; emits hits for the same span-overlap-dedup pipeline."
+  authors:
+    - name: "byte5 GmbH"
+      email: "dev@byte5.de"
+      url: "https://byte5.de"
+  license: "MIT"
+  categories:
+    - "privacy"
+    - "compliance"
+    - "guardrails"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+lifecycle:
+  entry: "dist/plugin.js"
+
+# ---------------------------------------------------------------------------
+# Setup fields. Operator-tunable defaults. The infrastructure spec for the
+# Fly Ollama sidecar lives in docs/harness-platform/HANDOFF-2026-05-08-privacy-proxy-slice-3.md.
+# ---------------------------------------------------------------------------
+setup:
+  fields:
+    - key: "ollama_endpoint"
+      type: "string"
+      label: "Ollama-API-Endpoint"
+      help: "Basis-URL des Ollama-Daemon. Dev: http://localhost:11434 (lokales `ollama serve`). Prod: Adresse des Fly-Sidecars (gleicher Daemon, der bereits `/api/embeddings` für `harness-embeddings` bedient)."
+      required: false
+      default: "http://localhost:11434"
+
+    - key: "ollama_model"
+      type: "string"
+      label: "Modell-Tag"
+      help: "Ollama-Modell-Tag. Empfehlung: llama3.2:3b auf 3GB-Machines (passt komfortabel, ok-Recall, ~50-200ms Latenz). Größere Modelle (llama3.1:8b, gemma2:9b, qwen2.5:14b) brauchen Machine-Resize. Modell muss vor Boot via `ollama pull <tag>` gepullt werden."
+      required: false
+      default: "llama3.2:3b"
+
+    - key: "ollama_max_input_chars"
+      type: "number"
+      label: "Max-Input-Char-Limit"
+      help: "Skip-Detector wenn Input länger ist. Verhindert OOM/Timeout bei sehr langen System-Prompts. 32000 Zeichen (~8-10k Tokens für llama-Tokenizer) deckt typische Tenant-Turns mit Memory + Tool-Doku ab; bei knappem RAM auf 8000-16000 senken."
+      required: false
+      default: 32000
+
+    - key: "ollama_timeout_ms"
+      type: "number"
+      label: "Detector-Timeout (ms)"
+      help: "Pro-Call-Timeout. Bei Überschreitung → status=timeout, fail-open (Receipt zeigt das explizit). Default 15000ms gibt 3b-Modellen auf 3GB-Machines Headroom für Cold-Starts; bei 8b+ auf 30000+, bei warmer GPU auf 5000 senken."
+      required: false
+      default: 15000
+
+playbook:
+  when_to_use: |
+    Aktiviere dieses Plugin zusätzlich zu `harness-plugin-privacy-guard`,
+    wenn der Regex-Detector zu wenig Recall hat — typischerweise bei
+    Texten mit Personennamen, Adressen, deutschen Telefonnummern ohne
+    Ländervorwahl, oder Geschäftsgeheimnissen (Vertragsklauseln,
+    Finanzdaten). Das Plugin ruft beim Boot einmal `GET /api/tags`
+    gegen den konfigurierten `ollama_endpoint` ab und loggt das Ergebnis;
+    Detector-Calls fallen bei Sidecar-Ausfall einfach auf 0 hits zurück
+    (fail-open per Detector — der Regex-Detector im privacy-guard läuft
+    weiter).
+
+# ---------------------------------------------------------------------------
+# Permissions. Requires only outbound network to the configured Ollama
+# endpoint. The endpoint is operator-configurable, so the manifest declares
+# the typical hostnames; production deployments using a custom Fly app
+# need to widen this list at install-time (admin-route for setup) or run
+# the plugin on a machine with global outbound (current dev posture —
+# the kernel does not yet enforce ctx.http allow-list at boot).
+# ---------------------------------------------------------------------------
+permissions:
+  memory:
+    reads: []
+    writes: []
+  graph:
+    reads: []
+    writes: []
+  network:
+    outbound:
+      - "localhost"
+      - "*.fly.dev"
+      - "*.flycast"
+      - "*.internal"
+  filesystem:
+    scratch: false
+
+provides: []
+requires:
+  - "privacy.detector@1"

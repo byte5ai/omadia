@@ -1,0 +1,80 @@
+# ─── Secrets & env ────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+!.env.*.example
+!.env.local.example
+*.key
+*.pem
+*.pfx
+*.p12
+
+# ─── Node / package managers ──────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+
+# ─── Build output ─────────────────────────────────────────────────────────
+dist/
+build/
+out/
+.next/
+*.tsbuildinfo
+
+# ─── Local-only dev state ─────────────────────────────────────────────────
+# Data pulled from production Fly volumes (never commit — user-specific + sensitive)
+**/fly-memory-pull/
+# Local memory dir used by the middleware's filesystem memory store
+middleware/.memory/
+# Teams app package artifacts (manifest + icons ARE tracked; the zipped bundle isn't)
+middleware/appPackage/*.zip
+middleware/*.zip
+
+# ─── Editor / OS ──────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.recommended.json
+
+# ─── Logs ─────────────────────────────────────────────────────────────────
+logs/
+*.log
+
+# ─── Claude Code / AI agent scratch state ─────────────────────────────────
+.claude/
+.aider*
+.cursor/
+
+# ─── Coverage / test artifacts ────────────────────────────────────────────
+coverage/
+.nyc_output/
+*.lcov
+
+# ─── Temp / cache ─────────────────────────────────────────────────────────
+.cache/
+tmp/
+.tmp/
+
+# ─── Notion-skill local state ─────────────────────────────────────────────
+.notion-active-task
+.notion-active-task-id
+.notion-sync-cursor
+
+# ─── Marketing site (NEVER commit — separate from product/OSS scope) ──────
+# Omadia public marketing site lives here. Intentionally outside the
+# OSS-Core export scope (OB-30) and must never be checked in alongside the
+# harness platform sources. See marketing-site/docs/00-isolation.md.
+marketing-site/

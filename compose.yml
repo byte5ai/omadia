@@ -1,0 +1,141 @@
+# Local dev stack for the diagram-rendering feature.
+#
+# Brings up:
+#   - kroki-mermaid   (Mermaid companion, localhost not exposed)
+#   - kroki           (gateway on :8000, renders mermaid/plantuml/graphviz/…)
+#   - minio           (S3-compatible object-storage stand-in for Tigris on :9000)
+#   - minio-init      (one-shot: creates the `diagrams` bucket + 90d lifecycle)
+#
+# Usage:
+#   docker compose up -d                 # start everything
+#   docker compose logs -f kroki         # tail a service
+#   docker compose down                  # stop (keeps minio volume)
+#   docker compose down -v               # stop + wipe minio volume
+#
+# The middleware reads its KROKI_BASE_URL and AWS_* env vars from middleware/.env
+# (see .env.example for the local-dev defaults that match this stack).
+
+services:
+  kroki-mermaid:
+    image: yuzutech/kroki-mermaid:0.29.1
+    restart: unless-stopped
+    networks: [diagrams]
+    # No host port — only reachable from the kroki gateway on the shared network.
+
+  kroki:
+    image: yuzutech/kroki:0.29.1
+    # Force amd64 emulation: the vega/vega-lite binary bundled inside the Kroki
+    # gateway image is x86-only (no arm64 build). On Apple Silicon hosts the
+    # default (matching the host) tries to load the x86 ELF natively and fails
+    # with "Dynamic loader not found". Other formats (graphviz/plantuml) are
+    # JVM-based and work either way; this setting is a no-op on amd64 hosts.
+    platform: linux/amd64
+    restart: unless-stopped
+    depends_on:
+      - kroki-mermaid
+    environment:
+      KROKI_MERMAID_HOST: kroki-mermaid
+      KROKI_MERMAID_PORT: '8002'
+      # SECURE blocks !include, remote refs, file access. Keep on for local dev too
+      # so we catch policy-violating diagrams before they hit production.
+      # Note: vega/vegalite run IN the main gateway container (Node-internal,
+      # no separate companion image required — unlike Mermaid).
+      KROKI_SAFE_MODE: SECURE
+      KROKI_LISTEN: 0.0.0.0:8000
+    ports:
+      # Loopback-only. Host port 8765 (8000 is frequently taken by OrbStack,
+      # 8787 by Python dev tooling); container still listens on 8000 internally.
+      - '127.0.0.1:8765:8000'
+    networks: [diagrams]
+    # PlantUML writes temp files under /tmp; tmpfs with exec makes it fast and clean.
+    tmpfs:
+      - /tmp:exec,size=128m
+
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    restart: unless-stopped
+    command: server /data --console-address ':9001'
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - '127.0.0.1:9000:9000'   # S3 API
+      - '127.0.0.1:9001:9001'   # Web console (login: minioadmin / minioadmin)
+    volumes:
+      - minio-data:/data
+    networks: [diagrams]
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot container that waits for MinIO to be ready, then provisions the
+  # bucket and applies the 90-day expiration rule. Re-running is idempotent.
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks: [diagrams]
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -eu
+        mc alias set local http://minio:9000 minioadmin minioadmin
+        mc mb --ignore-existing local/diagrams
+        # Lifecycle: expire all objects after 90 days. Only one rule allowed by Tigris,
+        # so we mirror that constraint here to catch mistakes locally.
+        mc ilm rule add --expire-days 90 local/diagrams || \
+          mc ilm rule import local/diagrams <<'EOF'
+        {"Rules":[{"ID":"expire-90d","Status":"Enabled","Filter":{"Prefix":""},"Expiration":{"Days":90}}]}
+        EOF
+        mc ilm rule list local/diagrams
+        echo '[minio-init] diagrams bucket ready with 90d expiration.'
+    restart: 'no'
+
+  # Ollama sidecar for in-tenant embeddings (topic-detection pipeline).
+  # Serves `nomic-embed-text` (~270 MB) via the standard Ollama HTTP API.
+  # Middleware talks to it over http://localhost:11434 locally, or over the
+  # private `odoo-bot-ollama.internal:11434` on Fly.
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:11434:11434'
+    volumes:
+      - ollama-data:/root/.ollama
+    networks: [diagrams]
+
+  # One-shot: pulls the embedding model into the Ollama volume on first run.
+  # Re-running is cheap — the pull short-circuits if the model is present.
+  ollama-init:
+    image: ollama/ollama:latest
+    depends_on:
+      - ollama
+    networks: [diagrams]
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -eu
+        # Wait until the Ollama server answers.
+        for i in 1 2 3 4 5 6 7 8 9 10; do
+          if wget -q -O- http://ollama:11434/api/tags >/dev/null 2>&1; then
+            break
+          fi
+          echo "[ollama-init] waiting for ollama ($$i)…"
+          sleep 3
+        done
+        OLLAMA_HOST=http://ollama:11434 ollama pull nomic-embed-text
+        echo "[ollama-init] nomic-embed-text ready."
+    restart: 'no'
+
+volumes:
+  minio-data:
+  ollama-data:
+
+networks:
+  diagrams:
+    driver: bridge

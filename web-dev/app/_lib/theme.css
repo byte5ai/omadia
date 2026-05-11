@@ -1,0 +1,167 @@
+/* ==========================================================================
+   Harness Platform — Design Tokens (CSS source of truth)
+   --------------------------------------------------------------------------
+   byte5 Design System applied. Tokens are split into three tiers:
+
+     1. CORE — the five official byte5 brand colours + typography/motion.
+        Source: ~/Downloads/byte5 Design System/colors_and_type.css.
+        Do not add non-brand values here.
+     2. SYSTEM — grayscale, semantic roles, surface gradients. Harmonic
+        with core; not part of the brand palette.
+     3. COMPAT — aliases matching the older "editorial" names used by the
+        first UI slice (`--paper`, `--ink`, `--oxblood`, etc). These remap
+        onto byte5 tokens so every existing `var(--paper)` etc. in
+        component code keeps working. Prefer the CORE / SYSTEM names in
+        new code.
+
+   Brand reference: README.md in the design system export. Key rules:
+   - Magenta `:` is a typographic device, not a state/UI colour.
+   - Pill radius (9999px) for CTAs; small radius (8–14px) for cards.
+   - Shadows are soft and blue-tinted, never neutral gray.
+   ========================================================================== */
+
+:root {
+  color-scheme: light dark;
+
+  /* ============================================================
+     1. CORE — byte5 brand (official, five colours only)
+     ============================================================ */
+  --b5-blau:        #009FE3;   /* byte5-Blau — primary, Pantone Cyan C */
+  --b5-blau-dunkel: #004B73;   /* Blau dunkel — secondary, Pantone 3025 C */
+  --b5-weiss:       #FFFFFF;
+  --b5-schwarz:     #000000;
+  --b5-magenta:     #EA5172;   /* accent — SPARING use, signature ":" mark */
+
+  /* ============================================================
+     2. SYSTEM — extended tokens (grays, semantics, surfaces)
+     ============================================================ */
+  --gray-50:  #F4F7FA;
+  --gray-100: #E8EEF3;
+  --gray-200: #D3DDE5;
+  --gray-300: #B4C2CD;
+  --gray-400: #8A99A6;
+  --gray-500: #5F6E7B;
+  --gray-600: #3F4D59;
+  --gray-700: #283540;
+  --gray-800: #15212B;
+  --gray-900: #0A1420;
+
+  --surface-gradient:      linear-gradient(180deg, #F1F5F9 0%, #E3ECF3 100%);
+  --surface-gradient-cyan: radial-gradient(120% 80% at 0% 0%, #B7E5F8 0%, #E8F2F8 60%, #F4F7FA 100%);
+
+  /* Semantic roles */
+  --bg:            var(--b5-weiss);
+  --bg-soft:       var(--gray-50);
+  --bg-elevated:   var(--b5-weiss);
+  --bg-inverse:    var(--b5-blau-dunkel);
+  --bg-tinted:     var(--surface-gradient);
+
+  --fg:            var(--b5-blau-dunkel);
+  --fg-strong:     var(--b5-blau-dunkel);
+  --fg-muted:      var(--gray-500);
+  --fg-subtle:     var(--gray-400);
+  --fg-on-dark:    var(--b5-weiss);
+  --fg-on-accent:  var(--b5-weiss);
+
+  --accent:        var(--b5-blau);      /* interactive accent / primary CTA */
+  --accent-fg:     var(--b5-weiss);
+  --accent-hover:  #0086C0;
+  --accent-press:  #006C9C;
+
+  --highlight:     var(--b5-magenta);   /* the ":" pop colour */
+  --highlight-fg:  var(--b5-weiss);
+
+  --border:        var(--gray-200);
+  --border-strong: var(--gray-300);
+  --divider:       rgba(0, 75, 115, 0.12);
+
+  --success:       #15A06B;
+  --warning:       #E0A82E;
+  --danger:        #D9354C;
+  --info:          var(--b5-blau);
+
+  /* ============================================================
+     3. COMPAT — aliases for the first-slice editorial names
+        so pre-existing component code reads the byte5 palette
+        without touching every file.
+     ============================================================ */
+  --paper:       var(--bg);
+  --paper-soft:  var(--gray-50);
+  --paper-sink:  var(--gray-100);
+
+  --ink:         var(--fg);
+  --muted-ink:   var(--fg-muted);
+  --faint-ink:   var(--fg-subtle);
+
+  --rule:        var(--border);
+  --rule-strong: var(--border-strong);
+
+  --oxblood:     var(--accent);         /* primary CTA → byte5-Blau */
+  --oxblood-ink: var(--accent-hover);
+  --forest:      var(--success);
+  --amber:       var(--warning);
+  --sky:         var(--b5-blau-dunkel);
+
+  /* ============================================================
+     Typography — families
+     (Next/font loads Days One, Nunito Sans and JetBrains Mono via
+     layout.tsx and assigns the matching --font-* CSS variables at
+     :root. The fallbacks below keep the stack valid even when the
+     next/font variables haven't hydrated yet.)
+     ============================================================ */
+  --font-display:  'Days One', 'Nunito Sans', system-ui, sans-serif;
+  --font-text:     'Nunito Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-serif:    var(--font-display);  /* compat with old name */
+  --font-sans:     var(--font-text);     /* compat with old name */
+  --font-mono:     'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* ============================================================
+     Radii, shadows, motion (from byte5 kit)
+     ============================================================ */
+  --radius-xs:     4px;
+  --radius-sm:     8px;
+  --radius-md:     14px;
+  --radius-lg:     22px;
+  --radius-pill:   9999px;
+  --radius-circle: 50%;
+
+  --shadow-xs:      0 1px 2px   rgba(0, 75, 115, 0.06);
+  --shadow-sm:      0 2px 6px   rgba(0, 75, 115, 0.08);
+  --shadow-md:      0 8px 24px  rgba(0, 75, 115, 0.10);
+  --shadow-lg:      0 18px 40px rgba(0, 75, 115, 0.14);
+  --shadow-cta:     0 12px 28px rgba(0, 159, 227, 0.30);
+  --shadow-magenta: 0 12px 28px rgba(234, 81, 114, 0.28);
+
+  --ease-out:    cubic-bezier(0.22, 0.61, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast:    140ms;
+  --dur-base:    220ms;
+  --dur-slow:    360ms;
+}
+
+/* ============================================================
+   Dark mode — inverse surfaces use Blau dunkel per brand guide.
+   ============================================================ */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:            #0B1A24;             /* deeper than Blau dunkel for admin comfort */
+    --bg-soft:       #102533;
+    --bg-elevated:   #15303F;
+
+    --fg:            #E8F2F8;
+    --fg-strong:     #FFFFFF;
+    --fg-muted:      #A4B4C2;
+    --fg-subtle:     #768796;
+
+    --border:        rgba(255, 255, 255, 0.10);
+    --border-strong: rgba(255, 255, 255, 0.18);
+    --divider:       rgba(255, 255, 255, 0.10);
+
+    --surface-gradient:
+        linear-gradient(180deg, #0E1F2A 0%, #162C3B 100%);
+
+    /* byte5 core colours keep their hex; hover adapts so it stays visible. */
+    --accent-hover:  #33B0E8;
+    --accent-press:  #66C1ED;
+  }
+}

@@ -1,0 +1,64 @@
+# Repo-root Docker build context. Ship only what the runtime needs.
+
+# Git + IDE
+.git
+.gitignore
+.gitattributes
+.DS_Store
+.vscode
+.idea
+.claude
+
+# Docs
+docs
+README.md
+*.md
+# Re-include plugin manifests — bundled into the image via Dockerfile and
+# read at boot to build the plugin catalog.
+!docs/harness-platform
+!docs/harness-platform/examples
+!docs/harness-platform/examples/*.yaml
+# Re-include agent-integration boilerplate — Plugin-Builder (B.1+)
+# kopiert die Files zur Codegen-Zeit; Dockerfile mountet das Verzeichnis
+# unter /app/boilerplate/agent-integration. Nur das eine Subverzeichnis
+# allowen, der Rest von docs/ bleibt excluded.
+!docs/harness-platform/boilerplate
+!docs/harness-platform/boilerplate/agent-integration
+!docs/harness-platform/boilerplate/agent-integration/**
+
+# Dev frontend (separate deploy target)
+web-dev
+
+# Middleware local state / build artefacts
+middleware/node_modules
+middleware/dist
+middleware/.memory
+middleware/.env
+middleware/.env.*
+middleware/fly-memory-pull
+# Workspace-Pakete: Source bleibt drin (Builder-Stage compiliert frisch),
+# aber lokale dist/ + tsbuildinfo werden im Container neu gebaut. Defense
+# gegen stale-build-artefacts shipping.
+middleware/packages/*/dist
+middleware/packages/*/tsconfig.tsbuildinfo
+middleware/packages/*/node_modules
+middleware/scripts
+# Re-include the build-asset copier — it runs as part of `npm run build`
+# inside the Docker builder stage.
+!middleware/scripts/copy-build-assets.mjs
+# Re-include the Node-version guard — preinstall hook from
+# middleware/package.json that runs before `npm ci` in both stages.
+!middleware/scripts/check-node-version.mjs
+middleware/test
+middleware/*.log
+
+# Legacy Managed-Agent zip bundles in skills/ — we only need the SKILL.md trees
+skills/*.zip
+skills/.DS_Store
+skills/**/.DS_Store
+
+# Standalone configs that aren't used by the runtime
+agent-config*.yaml
+
+# OS junk
+**/.DS_Store

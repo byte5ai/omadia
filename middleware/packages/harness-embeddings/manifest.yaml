@@ -1,0 +1,105 @@
+schema_version: "1"
+
+identity:
+  id: "@omadia/embeddings"
+  name: "Embeddings"
+  version: "0.1.0"
+  kind: "extension"
+  domain: "core.embeddings"
+  description: "Stateless embedding-compute plugin (Ollama-compatible /api/embeddings wrapper, concurrency-limited). Provider des Kernel-Service 'embeddingClient' — konsumiert von KG-Ingest, ContextRetriever, FactExtractor, TopicDetector."
+  authors:
+    - name: "byte5 GmbH"
+      email: "dev@byte5.de"
+      url: "https://byte5.de"
+  license: "Proprietary"
+  categories:
+    - "infrastructure"
+    - "ml"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+lifecycle:
+  entry: "dist/plugin.js"
+
+# ---------------------------------------------------------------------------
+# S+9.1 Sub-Commit 1 — additive scaffold only.
+#   - kein `provides:` → das Plugin meldet noch keine Capability;
+#     der Kernel-side `embeddingClient`-Bridge bleibt aktiv.
+#   - kein `requires:`.
+#   - activate() ist no-op (logs only) — kein Service-Construction, keine
+#     Konsumenten-Verkabelung.
+#
+# Sub-Commit 2a moves `services/embeddingClient.ts` (interface + factory +
+# withConcurrencyLimit + cosineSimilarity) ins Plugin. Sub-Commit 2b ergänzt
+# `provides: ["embeddingClient@1"]`, baut den Client in activate() und
+# entfernt den Pre-S+8.5-Bridge in `src/index.ts`. Ab dann müssen
+# Konsumenten-Manifeste (KG, später orchestrator-extras) den Capability-Ref
+# in ihrer `requires:` führen — sonst greift das Capability-Hardening aus
+# S+8.5 und droppt sie aus der eligible-Menge.
+# ---------------------------------------------------------------------------
+
+setup:
+  fields:
+    - key: "ollama_base_url"
+      type: "string"
+      label: "Ollama Base-URL"
+      help: "Base-URL des Ollama-Sidecars (kein trailing slash). Leer lassen → Plugin aktiviert sich, baut aber keinen Client (Konsumenten degraden auf in-memory / no-op)."
+      required: false
+      default: ""
+    - key: "ollama_model"
+      type: "string"
+      label: "Embedding-Modell"
+      help: "Modellname, den der Sidecar pullt. Standard: nomic-embed-text."
+      required: false
+      default: "nomic-embed-text"
+    - key: "ollama_timeout_ms"
+      type: "integer"
+      label: "Embed-Timeout (ms)"
+      help: "Hard-cancel pro embed()-Call. Cold-start nomic-embed-text auf Fly braucht 2-5s; 30000 ist großzügig."
+      required: false
+      default: 30000
+    - key: "max_concurrent"
+      type: "integer"
+      label: "Max. parallele Embeddings"
+      help: "FIFO-Limit gegen Ollama-CPU-Burst (boot replay + backfill + live ingest). Default 4. 0 oder negativ → kein Limit."
+      required: false
+      default: 4
+
+playbook:
+  when_to_use: |
+    Wird vom Knowledge-Graph-Plugin (`requires: embeddingClient@^1`) und
+    späteren Tool-Sets (Orchestrator-Extras: ContextRetriever +
+    TopicDetector + FactExtractor) konsumiert. Operator-Touchpoint:
+    `ollama_base_url` muss im Setup-Feld stehen ODER auf .env-Werte
+    bootstrappen — sonst published das Plugin keinen Client und
+    Konsumenten fallen graceful auf no-embeddings-Pfade zurück.
+
+permissions:
+  memory:
+    reads: []
+    writes: []
+  graph:
+    reads: []
+    writes: []
+  network:
+    outbound:
+      - "ollama-sidecar"
+  filesystem:
+    scratch: false
+
+integrations:
+  - id: "ollama_sidecar"
+    kind: "http"
+    target: "Ollama-Sidecar /api/embeddings (Standard-Modell: nomic-embed-text)"
+    auth_from: ""
+    docs: "https://github.com/ollama/ollama/blob/main/docs/api.md#generate-embeddings"
+
+# S+9.1 Sub-Commit 2b: capability lifetime flipped from kernel-bridge to
+# plugin-owned. Consumers that read `ctx.services.get('embeddingClient')`
+# must declare `requires: ["embeddingClient@^1"]` in their manifest, or
+# the S+8.5 capability-resolver leaves them out of the eligible set.
+provides:
+  - "embeddingClient@1"
+requires: []

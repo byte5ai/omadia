@@ -1,0 +1,121 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.17",
+  "version": "1.0.5",
+  "id": "bc0bd6cf-7037-4c7c-9e29-de86c4b77177",
+  "developer": {
+    "name": "byte5",
+    "websiteUrl": "https://byte5.de",
+    "privacyUrl": "https://byte5.de/privacy",
+    "termsOfUseUrl": "https://byte5.de/terms"
+  },
+  "name": {
+    "short": "virtual-bitch",
+    "full": "virtual-bitch — byte5 Assistent"
+  },
+  "description": {
+    "short": "Assistent für Odoo, HR, Confluence, Firmen-Recherche & Diagramme.",
+    "full": "virtual-bitch verbindet Microsoft Teams mit einem Claude-Agent, der über spezialisierte Fach-Agenten auf eure byte5-Systeme zugreift: Odoo-17 (Accounting + HR), Confluence-Playbook, Handelsregister-Enrichment (OpenRegister/NorthData), Diagramm-Rendering. Stellt Fragen auf Deutsch — der Bot delegiert an den richtigen Agenten, verifiziert die Antwort gegen die Quelle und merkt sich wiederkehrende Konventionen über Sessions hinweg."
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "accentColor": "#714B67",
+  "bots": [
+    {
+      "botId": "737c6ddd-6d4e-4599-8dc3-260281ea906e",
+      "scopes": [
+        "personal",
+        "team",
+        "groupChat"
+      ],
+      "supportsFiles": true,
+      "isNotificationOnly": false,
+      "commandLists": [
+        {
+          "scopes": [
+            "personal",
+            "team",
+            "groupChat"
+          ],
+          "commands": [
+            {
+              "title": "Umsatz",
+              "description": "Wer sind unsere umsatzstärksten Kunden (YTD + Vorjahr)?"
+            },
+            {
+              "title": "Offene Posten",
+              "description": "Zeig mir die offenen Ausgangsrechnungen, sortiert nach Fälligkeit."
+            },
+            {
+              "title": "Urlaub",
+              "description": "Wie viele Urlaubstage hat <Mitarbeiter> dieses Jahr genommen?"
+            },
+            {
+              "title": "Firma prüfen",
+              "description": "Zieh Handelsregister + Bonität für <Firmenname> aus OpenRegister/NorthData."
+            },
+            {
+              "title": "Diagramm",
+              "description": "Visualisiere die letzte Antwort als Chart (Balken, Linie, Pie)."
+            },
+            {
+              "title": "Playbook",
+              "description": "Such im Confluence-Playbook nach <Thema>."
+            },
+            {
+              "title": "Termin",
+              "description": "Finde freie Termine mit <Person> für <Dauer> und buche direkt."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "permissions": [
+    "identity",
+    "messageTeamMembers"
+  ],
+  "validDomains": [
+    "odoo-bot-middleware.fly.dev"
+  ],
+  "webApplicationInfo": {
+    "id": "737c6ddd-6d4e-4599-8dc3-260281ea906e",
+    "resource": "api://odoo-bot-middleware.fly.dev/737c6ddd-6d4e-4599-8dc3-260281ea906e"
+  },
+  "authorization": {
+    "permissions": {
+      "resourceSpecific": [
+        {
+          "type": "Application",
+          "name": "ChannelMessage.Read.Group"
+        },
+        {
+          "type": "Application",
+          "name": "ChatMessage.Read.Chat"
+        },
+        {
+          "type": "Application",
+          "name": "TeamsActivity.Send.Group"
+        },
+        {
+          "type": "Application",
+          "name": "TeamsActivity.Send.Chat"
+        },
+        {
+          "type": "Application",
+          "name": "FileStorageContainer.Selected.Group"
+        },
+        {
+          "type": "Application",
+          "name": "ChatMember.Read.Chat"
+        },
+        {
+          "type": "Application",
+          "name": "ChannelMember.Read.Group"
+        }
+      ]
+    }
+  }
+}

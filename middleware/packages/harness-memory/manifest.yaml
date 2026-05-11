@@ -1,0 +1,81 @@
+schema_version: "1"
+
+identity:
+  id: "@omadia/memory"
+  name: "Memory"
+  version: "0.1.0"
+  kind: "extension"
+  domain: "core.memory"
+  description: "Stellt persistenten /memories-Dateispeicher, den Anthropic-nativen memory-Tool-Handler und einen Dev-Memory-Browser bereit. Provider des Kernel-Service 'memoryStore'."
+  authors:
+    - name: "byte5 GmbH"
+      email: "dev@byte5.de"
+      url: "https://byte5.de"
+  license: "Proprietary"
+  categories:
+    - "infrastructure"
+    - "storage"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+lifecycle:
+  entry: "dist/plugin.js"
+
+setup:
+  fields:
+    - key: "memory_dir"
+      type: "string"
+      label: "Memory-Verzeichnis"
+      help: "Absoluter Pfad, unter dem /memories auf Disk landet. Muss für den Service-User lesbar+schreibbar sein."
+      required: true
+      default: "./memory-data"
+
+    - key: "seed_dir"
+      type: "string"
+      label: "Seed-Verzeichnis"
+      help: "Optionaler Pfad mit Initial-Dateien, die beim Start kopiert werden."
+      required: false
+      default: "memory-seed"
+
+    - key: "seed_mode"
+      type: "string"
+      label: "Seed-Modus"
+      help: "'missing' (nur fehlende Dateien anlegen), 'overwrite' (Repo-Version immer pinnen) oder 'skip' (kein Seeding)."
+      required: false
+      default: "missing"
+
+    - key: "dev_memory_endpoints_enabled"
+      type: "string"
+      label: "Dev-Memory-Endpoints aktivieren"
+      help: "'true' mountet /api/dev/memory (ungeschützt) — NUR für lokale Next-UI. Produktion MUSS leer oder 'false' bleiben."
+      required: false
+      default: "false"
+
+playbook:
+  when_to_use: |
+    Wird vom Kernel und anderen Plugins konsumiert — Agent-Plugins bekommen
+    `ctx.memory` (scoped auf ihren eigenen Agent-Slot); andere Konsumenten
+    lesen/schreiben via `ctx.services.get('memoryStore')` root-level.
+
+permissions:
+  memory:
+    reads: []
+    writes: []
+  graph:
+    reads: []
+    writes: []
+  network:
+    outbound: []
+  filesystem:
+    scratch: false
+
+integrations: []
+
+# Capabilities this plugin contributes to the kernel. The name matches the
+# kernel-service this plugin publishes via ServiceRegistry (`memoryStore`),
+# so consumers that `requires: ["memoryStore@^1"]` both pass the boot-time
+# resolver gate AND reach the service via `ctx.services.get('memoryStore')`.
+provides:
+  - "memoryStore@1"

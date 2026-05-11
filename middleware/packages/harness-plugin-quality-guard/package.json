@@ -1,0 +1,21 @@
+{
+  "name": "@omadia/plugin-quality-guard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "Response-quality core plugin for the byte5 Harness. Publishes the `responseGuard@1` capability with sycophancy-levels (off/low/medium/high) and a boundary-preset library for splicing per-profile guardrails into the system prompt.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@omadia/plugin-api": "*",
+    "zod": "^3.23.8"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

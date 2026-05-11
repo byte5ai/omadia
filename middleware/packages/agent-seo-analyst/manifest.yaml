@@ -1,0 +1,246 @@
+schema_version: "1"
+
+identity:
+  id: "@omadia/agent-seo-analyst"
+  domain: "seo"
+  name: "SEO Analyst"
+  version: "0.1.0"
+  description: "Analysiert byte5-Webseiten aus SEO-Perspektive: On-Page, Technical, Structured Data, Crawl-Audits."
+  authors:
+    - name: "byte5 GmbH"
+      email: "dev@byte5.de"
+      url: "https://byte5.de"
+  license: "Proprietary"
+  icon: "./assets/icon.svg"
+  categories:
+    - "analytics"
+    - "marketing"
+    - "qa"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+# SEO-Analyst reads/writes agent-scoped memory (see permissions.memory below).
+# The `@omadia/memory` extension plugin provides the MemoryStore
+# service — listed here so the kernel's dependency gate and the topological
+# activation order guarantee the store exists before this agent activates.
+depends_on:
+  - "@omadia/memory"
+
+lifecycle:
+  entry: "dist/plugin.js"
+  hooks:
+    onInstall: true
+    onConfigure: true
+    onActivate: true
+    onDeactivate: true
+    onUninstall: true
+
+  uninstall_policy:
+    entities: "delete"
+    memory:   "delete"
+    secrets:  "delete"
+
+setup:
+  fields:
+    - key: "target_base_url"
+      type: "url"
+      label: "Ziel-Domain"
+      help: "Root-URL der zu analysierenden Webseite, z.B. https://byte5.de"
+      required: true
+      default: "https://byte5.de"
+      pattern: "^https?://.+"
+
+    - key: "user_agent"
+      type: "string"
+      label: "User-Agent"
+      help: "Bezeichner für Fetches. Wird in robots.txt geprüft."
+      required: false
+      default: "byte5-seo-bot/0.1 (+https://byte5.de)"
+
+    - key: "crawl_max_pages"
+      type: "integer"
+      label: "Max. Seiten pro Crawl"
+      help: "Obere Schranke fürs audit_site-Tool. Defensive Default."
+      required: false
+      default: 25
+
+    - key: "crawl_max_depth"
+      type: "integer"
+      label: "Max. Crawl-Tiefe"
+      required: false
+      default: 3
+
+    - key: "request_timeout_ms"
+      type: "integer"
+      label: "Request-Timeout (ms)"
+      required: false
+      default: 15000
+
+  self_test: true
+
+llm:
+  prefers:
+    - capabilities: ["tool_use", "long_context"]
+      min_context: 200000
+      class: "frontier"
+      temperature_hint: 0.2
+  fallback_allowed: true
+
+capabilities:
+  - id: "analyze_page"
+    description: "Lädt eine einzelne URL und liefert einen strukturierten On-Page-SEO-Report (Meta, Headings, Links, Bilder, JSON-LD, Score)."
+    input_schema:
+      type: "object"
+      required: ["url"]
+      properties:
+        url:
+          type: "string"
+          format: "uri"
+          description: "Absolute URL, die analysiert werden soll."
+    output_schema:
+      type: "object"
+      properties:
+        url: {type: "string"}
+        status: {type: "integer"}
+        meta: {type: "object"}
+        headings: {type: "object"}
+        links: {type: "object"}
+        images: {type: "object"}
+        structured_data: {type: "array"}
+        issues: {type: "array", items: {type: "object"}}
+        score: {type: "object"}
+    side_effects: "read"
+    idempotent: true
+    timeout_ms: 20000
+    rate_limit:
+      per_minute: 30
+
+  - id: "check_technical_seo"
+    description: "Prüft robots.txt, sitemap.xml, HTTPS-Config und Security-relevante Header für eine Domain."
+    input_schema:
+      type: "object"
+      properties:
+        base_url:
+          type: "string"
+          format: "uri"
+          description: "Optional. Ohne Wert wird target_base_url aus dem Setup verwendet."
+    output_schema:
+      type: "object"
+      properties:
+        robots: {type: "object"}
+        sitemaps: {type: "array"}
+        https: {type: "object"}
+        headers: {type: "object"}
+        issues: {type: "array", items: {type: "object"}}
+        score: {type: "object"}
+    side_effects: "read"
+    idempotent: true
+    timeout_ms: 15000
+
+  - id: "audit_site"
+    description: "Crawlt eine Domain (BFS, depth- und count-begrenzt) und aggregiert On-Page-Issues über alle gefundenen Seiten."
+    input_schema:
+      type: "object"
+      properties:
+        start_url:
+          type: "string"
+          format: "uri"
+          description: "Optional. Ohne Wert wird target_base_url aus dem Setup verwendet."
+        max_pages:
+          type: "integer"
+          minimum: 1
+          maximum: 100
+        max_depth:
+          type: "integer"
+          minimum: 1
+          maximum: 5
+    output_schema:
+      type: "object"
+      properties:
+        start_url: {type: "string"}
+        pages_analyzed: {type: "integer"}
+        aggregate_issues: {type: "array"}
+        per_page: {type: "array"}
+        score: {type: "object"}
+    side_effects: "read"
+    idempotent: false
+    timeout_ms: 60000
+    rate_limit:
+      per_minute: 5
+
+playbook:
+  when_to_use: |
+    Für SEO-Fragen rund um byte5-eigene Webseiten: "Wie steht die About-Seite SEO-technisch da?",
+    "Welche H1-Probleme hat unsere Startseite?", "Haben wir Structured-Data für Organization?".
+    Der Agent arbeitet ausschließlich auf öffentlich erreichbaren Seiten — keine Auth, keine Secrets.
+
+  combines_with:
+    - agent: "de.byte5.agent.confluence"
+      why: "SEO-Befunde gegen interne Content-Guidelines aus Confluence abgleichen."
+
+  not_for:
+    - "Keyword-Research mit externen SEO-Tools (Ahrefs, SEMrush)"
+    - "Lighthouse-Performance-Audits (braucht Headless-Browser, Phase 2)"
+    - "Nicht-öffentliche / auth-gated Seiten"
+    - "Content-Änderungen am CMS (read-only)"
+
+  example_prompts:
+    - "Analysiere https://byte5.de/leistungen und zeig mir die wichtigsten SEO-Issues."
+    - "Check mal die technische SEO-Konfiguration der byte5-Domain."
+    - "Crawl byte5.de bis Tiefe 2 und gib mir die Top-Fehler über alle Seiten."
+    - "Haben wir JSON-LD auf der Startseite?"
+
+entities:
+  produces:
+    - "SeoPageReport"
+    - "SeoSiteReport"
+  consumes:
+    - "Url"
+
+permissions:
+  memory:
+    reads:
+      - "session:*"
+      - "agent:@omadia/agent-seo-analyst:*"
+    writes:
+      - "agent:@omadia/agent-seo-analyst:*"
+
+  graph:
+    reads: []
+    writes: []
+
+  network:
+    outbound:
+      - "byte5.de"
+      - "*.byte5.de"
+
+  filesystem:
+    scratch: false
+
+integrations: []
+
+skills:
+  - id: "seo_expert_system"
+    kind: "prompt_partial"
+    path: "skills/seo-expert.md"
+    description: "Rolle, Tonalität und Analyse-Rahmen für den SEO-Analyst."
+    shareable: false
+
+  - id: "scoring_rubric"
+    kind: "prompt_partial"
+    path: "skills/scoring-rubric.md"
+    description: "Wie ein SEO-Score aus den Tool-Outputs abgeleitet wird."
+    shareable: true
+
+ui:
+  commands:
+    - id: "analyze_current_page"
+      label: "SEO-Analyse dieser Seite"
+      capability: "analyze_page"
+      trigger: null
+    - id: "technical_audit"
+      label: "Technischer SEO-Check"
+      capability: "check_technical_seo"
+      trigger: null

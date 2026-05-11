@@ -1,0 +1,211 @@
+schema_version: "1"
+
+identity:
+  id: "@omadia/knowledge-graph-neon"
+  name: "Knowledge Graph (Neon Postgres)"
+  version: "0.1.0"
+  kind: "extension"
+  domain: "core.knowledge-graph"
+  description: "Neon-Postgres + pgvector KnowledgeGraph provider plugin. Durable storage, vector search, embedding-backfill scheduler, schema-Migrationen. Provider der Capabilities `knowledgeGraph@1`, `entityRefBus@1` und `graphPool@1` (Pool-Bridge für kernel-side Konsumenten wie VerifierStore und devGraph-Router). Operator wählt diesen Provider via RequiresWizard für Produktion. Mutual exclusion mit @omadia/knowledge-graph-inmemory — nur einer der beiden Provider darf gleichzeitig in installed.json stehen."
+  authors:
+    - name: "byte5 GmbH"
+      email: "dev@byte5.de"
+      url: "https://byte5.de"
+  license: "Proprietary"
+  categories:
+    - "infrastructure"
+    - "knowledge"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+lifecycle:
+  entry: "dist/plugin.js"
+
+# ---------------------------------------------------------------------------
+# S+11-2b: capability lifetime flipped from kernel-bridge / old harness-knowledge-graph
+# plugin to plugin-owned. activate() constructs createNeonPool +
+# runGraphMigrations + NeonKnowledgeGraph + EntityRefBus + (optional)
+# EmbeddingBackfill scheduler and publishes knowledgeGraph@1 + entityRefBus@1
+# + graphPool@1 via ctx.services.provide.
+#
+# Required setup-field `database_url` — without it activate() returns a no-op
+# handle, the capabilities are NOT published, downstream consumers degrade
+# (or boot fails when their `requires:` declarations cannot be resolved).
+# Operators on Empty-Middleware-Demos / CI / lokal-dev should use the
+# in-memory sibling plugin instead.
+#
+# Hard requires `embeddingClient@^1` so the resolver activates the embeddings
+# plugin strictly before this one. Runtime degrades gracefully when
+# embeddings is configured without an `ollama_base_url` (KG falls back to
+# FTS-only retrieval, embedding-backfill stays disarmed).
+# ---------------------------------------------------------------------------
+provides:
+  - "knowledgeGraph@1"
+  - "entityRefBus@1"
+  - "graphPool@1"
+  - "graphLifecycle@1"
+  - "agentPriorities@1"
+  - "processMemory@1"
+
+requires:
+  - "embeddingClient@^1"
+
+setup:
+  fields:
+    - id: "database_url"
+      label: "Database URL"
+      type: "secret"
+      required: false
+      description: "Postgres-Connection-String (Neon serverless URL). Ohne Wert publiziert das Plugin KEINE Capabilities — der Capability-Resolver droppt downstream-Konsumenten aus der eligible-Menge oder Boot fail't. Bootstrap migriert DATABASE_URL aus dem legacy .env in den Vault. (S+12.5-3: type: secret — DSN wird im Vault gespeichert, nicht in installed.json config.)"
+    - id: "graph_tenant_id"
+      label: "Graph Tenant ID"
+      type: "text"
+      required: false
+      description: "Tenant-Schlüssel für die Neon-Tabellen (graph_nodes.tenant_id-Spalte). Migriert aus GRAPH_TENANT_ID. Default: 'default'."
+    - id: "graph_embedding_backfill_enabled"
+      label: "Embedding Backfill Enabled"
+      type: "text"
+      required: false
+      description: "'true' aktiviert den in-process Embedding-Backfill-Scheduler (re-embedded Turns deren post-commit `embedAndStoreTurn` failed). Default: 'true'. Migriert aus GRAPH_EMBEDDING_BACKFILL_ENABLED. No-op ohne `embeddingClient`."
+    - id: "graph_embedding_backfill_interval_minutes"
+      label: "Backfill Interval (minutes)"
+      type: "number"
+      required: false
+      description: "Sweep-Intervall des Backfill-Schedulers. Default: 5. Migriert aus GRAPH_EMBEDDING_BACKFILL_INTERVAL_MINUTES."
+    - id: "graph_embedding_backfill_batch_size"
+      label: "Backfill Batch Size"
+      type: "number"
+      required: false
+      description: "Maximale Anzahl Turns pro Sweep. Default: 20. Migriert aus GRAPH_EMBEDDING_BACKFILL_BATCH_SIZE."
+    - id: "graph_embedding_backfill_max_attempts"
+      label: "Backfill Max Attempts"
+      type: "number"
+      required: false
+      description: "Hard cap auf Retries pro Turn. Default: 5. Migriert aus GRAPH_EMBEDDING_BACKFILL_MAX_ATTEMPTS."
+    # OB-73 (Phase 4): Tiering-Lifecycle. Decay-Score-Update + HOT/WARM/COLD-
+    # Rotation + Done-Task-TTL laufen als hourly cron (decay-rotation), GC + Hard-
+    # Limits als daily cron (gc-quotas — Slice C). Dieser Job NUTZT die Spalten
+    # aus Migration 0007 — keine neue Migration. Default-Werte spiegeln
+    # palaia-ADR-004: λ=0.05/d (~14d Halbwertszeit), HOT→WARM bei score<0.5+7d
+    # idle, WARM→COLD bei score<0.1+30d, Done-Tasks nach 24h hard-deleted.
+    - id: "graph_decay_enabled"
+      label: "Decay & Tier-Rotation Enabled"
+      type: "text"
+      required: false
+      description: "'true' aktiviert den hourly Decay+Rotation-Job. Default: 'true'. 'false' lässt das Plugin laufen, ohne den Cron zu registrieren — sinnvoll für CI/Smoke."
+    - id: "graph_decay_interval_minutes"
+      label: "Decay Interval (minutes)"
+      type: "number"
+      required: false
+      description: "Sweep-Intervall des Decay+Rotation-Jobs. Default: 60 (1×/h)."
+    - id: "graph_decay_lambda"
+      label: "Decay Lambda (per day)"
+      type: "number"
+      required: false
+      description: "Daily decay-rate constant in `score = exp(-λ · age_days) · (1 + ln(1 + access_count))`. Default: 0.05 (~14d Halbwertszeit). Höher = schnellerer Decay."
+    - id: "graph_decay_hot_to_warm_score"
+      label: "HOT→WARM Score Threshold"
+      type: "number"
+      required: false
+      description: "decay_score-Schwelle für die HOT→WARM-Rotation (additionally idle ≥ hot_to_warm_idle_days). Default: 0.5."
+    - id: "graph_decay_hot_to_warm_idle_days"
+      label: "HOT→WARM Idle Days"
+      type: "number"
+      required: false
+      description: "Idle-Days-Gate für HOT→WARM (gegen `COALESCE(accessed_at, created_at)`). Default: 7."
+    - id: "graph_decay_warm_to_cold_score"
+      label: "WARM→COLD Score Threshold"
+      type: "number"
+      required: false
+      description: "decay_score-Schwelle für die WARM→COLD-Rotation. Default: 0.1."
+    - id: "graph_decay_warm_to_cold_idle_days"
+      label: "WARM→COLD Idle Days"
+      type: "number"
+      required: false
+      description: "Idle-Days-Gate für WARM→COLD. Default: 30."
+    - id: "graph_decay_done_task_ttl_hours"
+      label: "Done-Task TTL (hours)"
+      type: "number"
+      required: false
+      description: "TTL für `entry_type='task' AND task_status='done'`-Rows. Nach Ablauf hard-DELETE. Default: 24. Markdown-Audit-Transkript bleibt unberührt."
+    # OB-73 (Phase 4 / Slice C): GC + Hard-Limits per scope. Daily cron
+    # (default 04:00 UTC). Eviction-Order: type-weight × decay_score ASC,
+    # ties broken by created_at ASC. Type-weights aus palaia-ADR-004:
+    # process > task > memory. `done-task-TTL` läuft separat im hourly
+    # decay-job, nicht hier.
+    - id: "graph_gc_enabled"
+      label: "GC & Hard-Limits Enabled"
+      type: "text"
+      required: false
+      description: "'true' aktiviert den daily GC-Job (count + char Quota per scope). Default: 'true'."
+    - id: "graph_gc_cron"
+      label: "GC Cron"
+      type: "text"
+      required: false
+      description: "5-stelliger Cron für den GC-Sweep. Default: '0 4 * * *' (täglich 04:00 UTC). Bei intervalMs-Override: graph_gc_interval_minutes (überschreibt cron)."
+    - id: "graph_gc_interval_minutes"
+      label: "GC Interval Override (minutes)"
+      type: "number"
+      required: false
+      description: "Optional: Statt Cron einen festen Intervall fahren (für Tests / hot-Loops). Default: leer (Cron wird verwendet)."
+    - id: "graph_gc_hot_max_entries"
+      label: "Hot-Tier Max Entries (per scope)"
+      type: "number"
+      required: false
+      description: "Per-scope Obergrenze für Turn-Count. Über dem Limit werden die niedrig-priorisierten Excess-Rows pro Sweep evicted. Default: 50."
+    - id: "graph_gc_max_total_chars"
+      label: "Max Total Chars (per scope)"
+      type: "number"
+      required: false
+      description: "Per-scope Obergrenze für SUM(LENGTH(userMessage)+LENGTH(assistantAnswer)). Default: 500000 (~125k Tokens)."
+    - id: "graph_gc_type_weight_memory"
+      label: "GC Type-Weight (memory)"
+      type: "number"
+      required: false
+      description: "Eviction-Priorität-Gewicht für entry_type='memory'. Default: 1.0 (baseline). Höher = wird länger behalten."
+    - id: "graph_gc_type_weight_process"
+      label: "GC Type-Weight (process)"
+      type: "number"
+      required: false
+      description: "Default: 2.0. Process-Knowledge wird länger behalten als generic memory."
+    - id: "graph_gc_type_weight_task"
+      label: "GC Type-Weight (task)"
+      type: "number"
+      required: false
+      description: "Default: 1.5."
+    # OB-76 (Phase 7) Process-Memory: Dedup-First-Write threshold.
+    - id: "process_dedup_threshold"
+      label: "Process Dedup Threshold"
+      type: "number"
+      required: false
+      description: "Cosine-similarity-Schwelle für `write_process`-Dedup. Default: 0.9. Tiefer = aggressiveres Blocken; höher = mehr near-duplicates erlaubt."
+
+playbook:
+  when_to_use: |
+    Produktions-Setup mit Neon Postgres (Empty-Middleware-Roadmap-Phase-S+12-Profil
+    'production'). Nach S+11-2b der Standard-Provider. Operator-Touchpoint:
+      - DATABASE_URL setzen (ODER `database_url` in setup-fields eintragen)
+      - GRAPH_TENANT_ID optional (Multi-Tenant-Setups)
+    Ohne database_url publiziert das Plugin nichts — Konsumenten degraden.
+
+permissions:
+  memory:
+    reads: []
+    writes: []
+  graph:
+    reads: []
+    writes: []
+  network:
+    outbound:
+      - "neon-database"
+  filesystem:
+    scratch: false
+
+integrations:
+  - id: "neon_database"
+    kind: "tcp"
+    target: "Neon Postgres serverless (DATABASE_URL pgwire endpoint, pgvector extension required)"
+    auth_from: "database_url"
+    docs: "https://neon.tech/docs"

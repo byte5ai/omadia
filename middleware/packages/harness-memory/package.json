@@ -1,0 +1,21 @@
+{
+  "name": "@omadia/memory",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "Filesystem-backed memory store (+ memory tool + dev-memory router + startup seeder) for the byte5 Harness. Ships as a kind:extension plugin — provides the 'memoryStore' service + the Anthropic-native 'memory' tool handler.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@omadia/plugin-api": "*",
+    "express": "^5.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
