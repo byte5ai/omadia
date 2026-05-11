@@ -47,7 +47,7 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       - name: Build middleware image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
@@ -73,7 +73,7 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       - name: Build web-dev image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./web-dev
           file: ./web-dev/Dockerfile
