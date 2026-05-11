@@ -42,7 +42,7 @@
     "@types/cookie-parser": "^1.4.10",
     "@types/multer": "^2.1.0",
     "@types/yauzl": "^2.10.3",
-    "argon2": "^0.43.1",
+    "argon2": "^0.44.0",
     "better-sqlite3": "^12.9.0",
     "botbuilder": "^4.23.3",
     "cookie-parser": "^1.4.7",
