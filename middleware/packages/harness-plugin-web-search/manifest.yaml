@@ -1,0 +1,124 @@
+schema_version: "1"
+
+identity:
+  id: "@omadia/plugin-web-search"
+  name: "Web Search"
+  version: "0.1.0"
+  kind: "tool"
+  domain: "web.search"
+  description: "Live web-search core plugin (Tavily / Brave). Publishes the `webSearch@1` capability and a `web_search` native tool with structured citation objects."
+  authors:
+    - name: "byte5 GmbH"
+      email: "dev@byte5.de"
+      url: "https://byte5.de"
+  license: "MIT"
+  categories:
+    - "search"
+    - "research"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+lifecycle:
+  entry: "dist/plugin.js"
+
+# ---------------------------------------------------------------------------
+# Setup fields. The operator picks ONE provider; only that provider's secret
+# needs to be filled. The plugin checks at activate-time and degrades to
+# "no capability published" when the matching key is empty — see
+# src/plugin.ts. Switching providers later means changing `provider`,
+# filling the new key, and re-installing.
+# ---------------------------------------------------------------------------
+setup:
+  fields:
+    - key: "provider"
+      type: "enum"
+      label: "Search-Provider"
+      help: "Welcher Backend-Provider die Suchanfragen ausliefert. Tavily ist standardmäßig vorgesehen — direkt für KI-Use gebaut, liefert strukturierte Snippets und optional extrahierten Volltext. Brave ist ein unabhängiger Crawler ohne Volltext-Inlining."
+      required: true
+      default: "tavily"
+      enum:
+        - value: "tavily"
+          label: "Tavily (default, AI-friendly + Volltext)"
+        - value: "brave"
+          label: "Brave Search"
+
+    - key: "tavily_api_key"
+      type: "secret"
+      label: "Tavily API-Key"
+      help: "Nur ausfüllen, wenn `provider: tavily`. Erstellen unter https://tavily.com → Dashboard → API Keys. Wird im FileVault gespeichert."
+      required: false
+
+    - key: "brave_api_key"
+      type: "secret"
+      label: "Brave Search API-Key"
+      help: "Nur ausfüllen, wenn `provider: brave`. Subscription-Token aus dem Brave-Dashboard (https://api-dashboard.search.brave.com)."
+      required: false
+
+    - key: "default_top_k"
+      type: "integer"
+      label: "Default Anzahl Treffer"
+      help: "Anzahl der Treffer pro Anfrage, wenn der Caller `top_k` weglässt. 1–20."
+      required: false
+      default: 5
+
+    - key: "cache_ttl_search_sec"
+      type: "integer"
+      label: "Cache-TTL (Sekunden)"
+      help: "Wie lange identische Anfragen gecached werden. Schützt das Quota — niedrigere Werte für Echtzeit-Use, höhere Werte für stabile Lookups."
+      required: false
+      default: 600
+
+    - key: "cache_max_entries"
+      type: "integer"
+      label: "Cache max. Einträge"
+      help: "LRU-Bound auf die In-Memory-Map. ~1 KB pro Eintrag im typischen Fall."
+      required: false
+      default: 200
+
+playbook:
+  when_to_use: |
+    Aktiviere dieses Plugin, wenn Agents tagesaktuelle Web-Informationen
+    brauchen — Recherche-Agent, News-Briefing, Marktbeobachtung,
+    Verifier-Citations für externe Fakten. Das Plugin published die
+    `webSearch@1`-Capability; konsumierende Plugins müssen
+    `requires: ["webSearch@^1"]` deklarieren. Außerdem hängt sich das
+    `web_search`-Tool automatisch in die System-Prompt-Tool-Liste des
+    Orchestrators — Agents nutzen es ohne weitere Verkabelung.
+
+# ---------------------------------------------------------------------------
+# Permissions. The HttpAccessor enforces an exact-hostname allow-list, so
+# ONLY the configured provider's API host is reachable. Switching providers
+# (tavily ↔ brave) requires a manifest-bump in the install (admin UI shows
+# the diff in the permissions summary at install time).
+# ---------------------------------------------------------------------------
+permissions:
+  memory:
+    reads: []
+    writes: []
+  graph:
+    reads: []
+    writes: []
+  network:
+    outbound:
+      - "api.tavily.com"
+      - "api.search.brave.com"
+  filesystem:
+    scratch: false
+
+integrations:
+  - id: "tavily"
+    kind: "http"
+    target: "Tavily Search API (https://api.tavily.com/search)"
+    auth_from: "tavily_api_key"
+    docs: "https://docs.tavily.com/docs/rest-api/api-reference"
+  - id: "brave_search"
+    kind: "http"
+    target: "Brave Search API (https://api.search.brave.com/res/v1/web/search)"
+    auth_from: "brave_api_key"
+    docs: "https://api-dashboard.search.brave.com/app/documentation/web-search"
+
+provides:
+  - "webSearch@1"
+requires: []

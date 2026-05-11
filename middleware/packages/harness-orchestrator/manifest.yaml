@@ -1,0 +1,129 @@
+schema_version: "1"
+
+identity:
+  id: "@omadia/orchestrator"
+  name: "Chat Orchestrator"
+  version: "0.1.0"
+  kind: "extension"
+  domain: "core.orchestrator"
+  description: "Core chat orchestrator: the Orchestrator class itself (agentic tool-loop against Anthropic Claude), the seven native tools (memory, query_knowledge_graph, chat_participants, ask_user_choice, suggest_follow_ups, find_free_slots, book_meeting), the chat-API HTTP route and the VerifierService wrapper that binds verifier@1 to the live Orchestrator + toSemanticAnswer converter. Erstmaliger Konsument der TurnHookRegistry: ContextRetriever wandert zu onBeforeTurn, FactExtractor zu onAfterTurn (fire-and-forget). Konsumiert die plugin-owned Capabilities `knowledgeGraph` (hard requires; query_knowledge_graph + KG-Lookups), `memoryStore` (memory tool), `embeddingClient` (semantic search), `entityRefBus` (turn-scoped entity tracking), `contextRetriever` + `factExtractor` + `topicDetector` (orchestrator-extras hooks), `verifier` (Bundle: pipeline + store + mode + maxRetries) sowie optional `microsoft365.graph` (find_free_slots + book_meeting via delegated OBO-exchange). Published `chatAgent@1` als Bundle-Capability `{ agent: ChatAgent, raw: Orchestrator }` — Channel-Plugins (Teams, Telegram, HTTP) konsumieren `agent.chat()` / `agent.chatStream()` für ihre Connector-Loops."
+  authors:
+    - name: "byte5 GmbH"
+      email: "dev@byte5.de"
+      url: "https://byte5.de"
+  license: "Proprietary"
+  categories:
+    - "infrastructure"
+    - "orchestration"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+lifecycle:
+  entry: "dist/plugin.js"
+
+# Hard requires — activate() can't construct the Orchestrator without
+# these (ordering enforces topo-sort: knowledge-graph + memory + extras +
+# verifier activate BEFORE this plugin so their published capabilities
+# are visible at our late-resolve). embeddingClient + contextRetriever
+# + factExtractor + verifier are listed as `requires` for ORDERING, not
+# hard-block — their respective plugins activate-without-publish on
+# missing config (matching the orchestrator-extras → embeddingClient
+# precedent), so our `ctx.services.get(…)` returns undefined gracefully.
+# microsoft365.graph stays optional (channels may run without calendar).
+requires:
+  - "knowledgeGraph@^1"
+  - "memoryStore@^1"
+  - "entityRefBus@^1"
+  - "embeddingClient@^1"
+  - "contextRetriever@^1"
+  - "factExtractor@^1"
+  - "verifier@^1"
+
+# chatAgent@1 — published bundle consumed by channel-plugins (Teams,
+# Telegram), the kernel-side HTTP chat route, and the dynamic-agent runtime
+# (which late-resolves bundle.raw to wire `attachOrchestrator` per uploaded
+# agent). Bundle shape:
+#
+#   {
+#     agent:            ChatAgent             // verifier-wrapped or bare Orchestrator
+#     raw:              Orchestrator          // for attachOrchestrator + native-tool registration
+#     sessionLogger:    SessionLogger         // shared with graphBackfill + dev-route
+#     chatSessionStore: ChatSessionStore      // shared with /api/chat/sessions route
+#   }
+#
+# Without `anthropic_api_key` (or with the catch-all-bootstrap'd empty
+# config + missing env), activate() returns a no-op handle and chatAgent@1
+# is NOT published — kernel + channel-plugins degrade gracefully (bare
+# `serviceRegistry.get` returns undefined, channels skip activation when
+# they declare `requires: ["chatAgent@^1"]` per S+10-4b).
+provides:
+  - "chatAgent@1"
+
+setup:
+  fields:
+    - id: "anthropic_api_key"
+      label: "Anthropic API Key"
+      type: "secret"
+      required: false
+      description: "Anthropic-API-Key für die Haupt-Claude-Loop des Orchestrators. Ohne Key publiziert das Plugin KEIN `chatAgent@1` — Kernel + Channels degradieren auf no-chat. Geteilt mit @omadia/orchestrator-extras + @omadia/verifier (gleicher Anthropic-Account). Bootstrap migriert ANTHROPIC_API_KEY aus dem legacy .env in den Vault. (S+12.6: type: secret — Key wird im Vault gespeichert, nicht in installed.json config.)"
+    - id: "orchestrator_model"
+      label: "Orchestrator Model"
+      type: "text"
+      required: false
+      description: "Anthropic-Model-ID für die Haupt-Loop. Default: claude-sonnet-4-5-20251022. Migriert aus ORCHESTRATOR_MODEL."
+    - id: "orchestrator_max_tokens"
+      label: "Max Output Tokens"
+      type: "number"
+      required: false
+      description: "Maximum response-Tokens pro Turn. Default: 4096. Migriert aus ORCHESTRATOR_MAX_TOKENS."
+    - id: "max_tool_iterations"
+      label: "Max Tool-Loop Iterations"
+      type: "number"
+      required: false
+      description: "Hard cap auf den agentic tool-loop pro Turn. Aborts den Turn wenn überschritten. Default: 12. Migriert aus MAX_TOOL_ITERATIONS."
+
+playbook:
+  when_to_use: |
+    Wird automatisch installiert sobald die Empty-Middleware-Roadmap
+    Phase S+10 abgeschlossen ist. Operator-Touchpoints:
+      - ANTHROPIC_API_KEY setzen (geteilt mit orchestrator-extras + verifier)
+      - Optional: ORCHESTRATOR_MODEL überschreiben (default Claude Sonnet 4.5)
+      - Optional: ORCHESTRATOR_MAX_TOKENS / MAX_TOOL_ITERATIONS feinjustieren
+    Ohne Key läuft der Bot weiter, aber Channel-Plugins die `requires:
+    ["chatAgent@^1"]` deklarieren (Teams, Telegram nach S+10-4b) skippen
+    ihre Aktivierung — der Operator sieht das in der Plugin-Detail-Page
+    als "missing capability".
+
+permissions:
+  memory:
+    reads:
+      - "/memories/*"
+    writes:
+      - "/memories/*"
+  graph:
+    reads:
+      - "Turn"
+      - "Session"
+      - "Fact"
+      - "EntityRef"
+      - "Run"
+      - "ToolCall"
+    writes:
+      - "Turn"
+      - "Session"
+      - "Run"
+      - "ToolCall"
+  network:
+    outbound:
+      - "anthropic-api"
+  filesystem:
+    scratch: false
+
+integrations:
+  - id: "anthropic_api"
+    kind: "http"
+    target: "Anthropic Claude API (Hauptmodel für die agentic-tool-loop)"
+    auth_from: "anthropic_api_key"
+    docs: "https://docs.anthropic.com/en/api/messages"

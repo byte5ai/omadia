@@ -1,0 +1,188 @@
+schema_version: "1"
+
+identity:
+  id: "@omadia/orchestrator-extras"
+  name: "Orchestrator Extras"
+  version: "0.1.0"
+  kind: "extension"
+  domain: "core.orchestrator-extras"
+  description: "Tool-Set: ContextRetriever (pre-turn KG/Embedding-Lookup), FactExtractor (LLM-getriebener KG-Ingest aus Chat-Turns), TopicDetector (per-Message-Embedding-Similarity-Routing) und GraphBackfill-Function (Offline-Graph-Evidence-Catchup; vom Kernel-Boot direkt aus dem Plugin-Barrel aufgerufen — nicht in activate(), da der 88-Turn-Replay routinemäßig das 10s-Activate-Budget sprengt). Konsumiert die Kernel-Capabilities `knowledgeGraph` und `embeddingClient` via `ctx.services.get` und published seinerseits drei Service-Capabilities (`contextRetriever`, `factExtractor`, `topicDetector`) für Orchestrator + Channels."
+  authors:
+    - name: "byte5 GmbH"
+      email: "dev@byte5.de"
+      url: "https://byte5.de"
+  license: "Proprietary"
+  categories:
+    - "infrastructure"
+    - "orchestration"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+lifecycle:
+  entry: "dist/plugin.js"
+
+provides:
+  - "contextRetriever@1"
+  - "factExtractor@1"
+  - "topicDetector@1"
+  - "captureFilter@1"
+  - "sessionBriefing@1"
+
+requires:
+  - "knowledgeGraph@^1"
+  - "embeddingClient@^1"
+
+# ---------------------------------------------------------------------------
+# S+9.2 Sub-Commit 2b: Capability lifetime flipped.
+#
+# manifest-provides ≠ runtime-provides (S+9.1 Lesson #2): das Plugin
+# deklariert hier alle drei Capabilities, damit der Capability-Resolver
+# sie als "verfügbar" sieht. Zur Runtime entscheidet activate() je nach
+# Config welche tatsächlich an das ServiceRegistry geliefert werden:
+#
+#   - `contextRetriever@1`: aktiv sobald knowledgeGraph + embeddingClient
+#     da sind (embeddingClient ist optional intern — degradiert auf
+#     FTS-only). Wird IMMER published wenn die requires erfüllt sind.
+#   - `factExtractor@1` + `topicDetector@1`: nur wenn ANTHROPIC_API_KEY
+#     gesetzt ist (Haiku-Calls). Ohne Key activate ohne provide; die
+#     Konsumenten degradieren graceful (Orchestrator skippt Fact-Ingest;
+#     Teams TopicDetector skippt → continue-default).
+#
+# Always-Register-Bootstrap-Pattern (S+9.1 Rule #8): bootstrap.ts
+# `bootstrapOrchestratorExtrasFromEnv` registriert das Plugin IMMER —
+# auch wenn ANTHROPIC_API_KEY leer — sonst stirbt der Resolver, wenn
+# später ein Konsument `requires: ["topicDetector@^1"]` deklariert.
+# ---------------------------------------------------------------------------
+
+setup:
+  fields:
+    - id: "anthropic_api_key"
+      label: "Anthropic API Key"
+      type: "secret"
+      required: false
+      description: "Erforderlich für FactExtractor + TopicDetector (Haiku-Klassifikator). Ohne Key konstruiert das Plugin nur den ContextRetriever — Orchestrator-Fact-Ingest und Teams-Topic-Routing degradieren auf no-op. (S+12.6: type: secret — Key wird im Vault gespeichert, nicht in installed.json config.)"
+    - id: "fact_extractor_model"
+      label: "Fact Extractor Model"
+      type: "text"
+      required: false
+      description: "Anthropic-Model-ID für die Fact-Extraction-Calls. Default: claude-haiku-4-5-20251001."
+    - id: "topic_classifier_model"
+      label: "Topic Classifier Model"
+      type: "text"
+      required: false
+      description: "Anthropic-Model-ID für die Topic-Detection-Klassifikation. Default: claude-haiku-4-5-20251001."
+    - id: "topic_upper_threshold"
+      label: "Topic Upper Threshold"
+      type: "number"
+      required: false
+      description: "Cosine-Similarity-Schwelle für auto-continue. Default: 0.55."
+    - id: "topic_lower_threshold"
+      label: "Topic Lower Threshold"
+      type: "number"
+      required: false
+      description: "Cosine-Similarity-Schwelle für auto-reset. Default: 0.15."
+    # OB-72 (Phase 3): hybrid-retrieval knobs for `searchTurnsByEmbedding`.
+    # Default values reproduce pre-OB-72 behaviour, so a workspace that never
+    # touches these stays unchanged. Tune via the setup wizard.
+    - id: "recall_min_score"
+      label: "Recall Min-Score"
+      type: "number"
+      required: false
+      description: "Hybrid-Score-Schwelle in [0,1] — Treffer darunter werden verworfen. Default: 0 (kein Threshold)."
+    - id: "recall_recency_boost"
+      label: "Recall Recency Boost"
+      type: "number"
+      required: false
+      description: "Decay-Rate (pro Tag) für Recency-Boost: Treffer werden mit `exp(-rate · age_days)` multipliziert. Default: 0.05 (~14 Tage Halbwertszeit). 0 deaktiviert."
+    - id: "recall_type_weight_memory"
+      label: "Recall Type-Weight (memory)"
+      type: "number"
+      required: false
+      description: "Multiplikator für entry_type='memory'. Default: 1.0 (neutral)."
+    - id: "recall_type_weight_process"
+      label: "Recall Type-Weight (process)"
+      type: "number"
+      required: false
+      description: "Multiplikator für entry_type='process'. Default: 1.0 (neutral). Operatoren können >1 setzen, sobald Phase 2 process-Klassifikationen liefert."
+    - id: "recall_type_weight_task"
+      label: "Recall Type-Weight (task)"
+      type: "number"
+      required: false
+      description: "Multiplikator für entry_type='task'. Default: 1.0 (neutral)."
+    # OB-74 (Phase 5): Token-Budget-Assembler-Konfiguration. Defaults spiegeln
+    # palaia-Standardwerte. Operator kann via Setup-Wizard fine-tunen.
+    - id: "context_default_budget_tokens"
+      label: "Context Default Token-Budget"
+      type: "number"
+      required: false
+      description: "Default-Token-Budget für ContextRetriever.assembleForBudget. Default: 6000 (~24k chars bei chars/token=4). Caller können per Aufruf überschreiben."
+    - id: "context_chars_per_token"
+      label: "Chars-per-Token Heuristik"
+      type: "number"
+      required: false
+      description: "Faustregel für Token-Schätzung in `chars / charsPerToken`. Default: 4. Tunen wenn deutsche Texte (~3.5) oder code-heavy (~5)."
+    - id: "context_manual_boost_factor"
+      label: "Manual-Authored Boost Factor"
+      type: "number"
+      required: false
+      description: "Score-Multiplier für `manually_authored=true`-Rows. Default: 1.3 (palaia-Default). Wirkt zusätzlich zum agent_priorities-Boost."
+    - id: "context_compact_mode_threshold"
+      label: "Compact-Mode Threshold"
+      type: "number"
+      required: false
+      description: "Über dieser Anzahl Recall-Hits aktiviert sich der Compact-Snippet-Mode (~120 char/Hit statt full-body). Default: 100."
+    # OB-71 (Phase 2): capture-pipeline knobs. Default level=minimal runs the
+    # deterministic Privacy-Strip + Hint-Parse without any LLM call (no
+    # persistence-volume change vs. Phase 1). `normal`/`aggressive` activate
+    # the Haiku Significance-Scorer; `off` is the explicit escape-hatch
+    # for backup-replay (NO cleanup, ungestripped text into the index).
+    - id: "capture_level"
+      label: "Capture-Level"
+      type: "text"
+      required: false
+      description: "off | minimal | normal | aggressive. Default: minimal (privacy + hints automatisch, kein LLM, kein Drop). normal: + Significance-Scoring, drop bei score < 0.2. aggressive: drop bei score < 0.5. off: Escape-Hatch — KEIN Cleanup, ungestripped text in den Index."
+    - id: "capture_default_visibility"
+      label: "Capture Default-Visibility"
+      type: "text"
+      required: false
+      description: "private | team | public. Default: team. Wird verwendet, wenn weder palaia-hint noch der Scorer eine Visibility liefert."
+    - id: "capture_significance_threshold"
+      label: "Significance-Threshold (overrides level-default)"
+      type: "number"
+      required: false
+      description: "Grenze in [0,1]. Default = level-spezifisch (normal=0.2, aggressive=0.5). Nur relevant ab capture_level=normal."
+
+playbook:
+  when_to_use: |
+    Wird automatisch installiert sobald die Empty-Middleware-Roadmap
+    Phase S+9.2 abgeschlossen ist. Operator-Touchpoints: setze
+    ANTHROPIC_API_KEY (im Operator-Setup oder via legacy .env) damit
+    Fact-Extraction + Topic-Detection aktiv werden. Ohne Key bleibt
+    nur der ContextRetriever — KG-RAG funktioniert weiter.
+
+permissions:
+  memory:
+    reads:
+      - "/memories/sessions/*"
+    writes: []
+  graph:
+    reads: []
+    writes:
+      - "Turn"
+      - "Fact"
+      - "MENTIONS"
+      - "DERIVED_FROM"
+  network:
+    outbound:
+      - "anthropic-api"
+  filesystem:
+    scratch: false
+
+integrations:
+  - id: "anthropic_api"
+    kind: "http"
+    target: "Anthropic Claude API (Haiku-Klassifikator für FactExtractor + TopicDetector)"
+    auth_from: "anthropic_api_key"
+    docs: "https://docs.anthropic.com/en/api/messages"

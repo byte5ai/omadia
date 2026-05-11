@@ -1,0 +1,21 @@
+{
+  "name": "@omadia/plugin-web-search",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "Live web-search core plugin (Tavily / Brave) for the byte5 Harness. Publishes the `webSearch@1` capability and a `web_search` native tool with structured cite-objects.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@omadia/plugin-api": "*",
+    "zod": "^3.23.8"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

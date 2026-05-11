@@ -1,0 +1,11 @@
+schema_version: 1
+id: production
+name: Recommended Production
+description: Postgres-backed knowledge graph + verifier + full orchestrator stack. Operator sets DATABASE_URL + ANTHROPIC_API_KEY before profile apply, then installs channel plugins via the admin UI.
+plugins:
+  - @omadia/memory
+  - @omadia/knowledge-graph-neon
+  - @omadia/embeddings
+  - @omadia/orchestrator-extras
+  - @omadia/verifier
+  - @omadia/orchestrator

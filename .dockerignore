@@ -1,0 +1,51 @@
+# Repo-root Docker build context. Ship only what the runtime needs.
+
+# Git + IDE
+.git
+.gitignore
+.gitattributes
+.DS_Store
+.vscode
+.idea
+.claude
+
+# Markdown that isn't a runtime asset
+README.md
+CONTRIBUTING.md
+SECURITY.md
+CODE_OF_CONDUCT.md
+THIRD_PARTY_NOTICES.md
+AGENTS.md
+
+# Dev frontend (separate deploy target with its own Dockerfile under web-dev/)
+web-dev
+
+# Middleware local state / build artefacts
+middleware/node_modules
+middleware/dist
+middleware/.memory
+middleware/.env
+middleware/.env.*
+# Workspace-Pakete: Source bleibt drin (Builder-Stage compiliert frisch),
+# aber lokale dist/ + tsbuildinfo werden im Container neu gebaut. Defense
+# gegen stale-build-artefacts shipping.
+middleware/packages/*/dist
+middleware/packages/*/tsconfig.tsbuildinfo
+middleware/packages/*/node_modules
+middleware/scripts
+middleware/test
+middleware/*.log
+# Re-include the build-asset copier — it runs as part of `npm run build`
+# inside the Docker builder stage.
+!middleware/scripts/copy-build-assets.mjs
+# Re-include the Node-version guard — preinstall hook from
+# middleware/package.json that runs before `npm ci` in both stages.
+!middleware/scripts/check-node-version.mjs
+
+# Optional skills directory zips (when present)
+skills/*.zip
+skills/.DS_Store
+skills/**/.DS_Store
+
+# OS junk
+**/.DS_Store

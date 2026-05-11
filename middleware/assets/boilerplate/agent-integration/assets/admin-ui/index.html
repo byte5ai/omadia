@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{AGENT_NAME}} · Admin</title>
+    <!--
+      Harness shared baseline stylesheet: byte5 design tokens (light + dark),
+      element styling, .harness-* helper classes, and CSS-vars for the host
+      iframe constraints (--harness-iframe-{max,min,height}). Same-origin via
+      the web-dev /bot-api rewrite → middleware /api/_harness/admin-ui.css.
+      Source of truth: middleware/src/admin-ui/harness-admin-css.ts.
+    -->
+    <link rel="stylesheet" href="/bot-api/_harness/admin-ui.css" />
+  </head>
+  <body class="harness-admin">
+    <h1>{{AGENT_NAME}} — Admin</h1>
+    <p class="harness-subtitle">Operator-only. {{AGENT_DESCRIPTION_DE}}</p>
+
+    <!-- #region builder:admin-ui-body -->
+    <!--
+      Host iframe constraints (web-dev/app/store/[id]/page.tsx):
+        Width:  ~812px desktop · ~720px tablet · ~327px mobile (min 320px)
+        Height: 1000px fixed — content beyond scrolls inside the iframe.
+      Use var(--harness-iframe-max/min/height) + .harness-* helper classes
+      from /bot-api/_harness/admin-ui.css. Tables with >4 columns: wrap in
+      `<div style="overflow-x:auto">` so they scroll inside instead of
+      overflowing the iframe horizontally.
+    -->
+    <p class="harness-empty">
+      Diese Admin-UI wurde noch nicht angepasst. Der Builder-Agent kann den
+      Slot <code>admin-ui-body</code> füllen, um Tabellen, Formulare oder
+      Status-Anzeigen einzubauen. Inline <code>&lt;style&gt;</code> und
+      <code>&lt;script&gt;</code> sind erlaubt; getrennte JS/CSS-Dateien
+      werden derzeit nicht ausgeliefert.
+    </p>
+    <p class="harness-empty">
+      <strong>Wichtig für <code>fetch()</code>:</strong> immer
+      <em>relative</em> URLs benutzen (<code>fetch('api/devices')</code>,
+      kein führender Slash). Die UI läuft im iframe hinter dem
+      <code>/bot-api</code>-Rewrite — absolute Pfade wie
+      <code>/api/...</code> verlassen das Plugin-Mount und ergeben 404.
+    </p>
+    <!-- #endregion -->
+  </body>
+</html>

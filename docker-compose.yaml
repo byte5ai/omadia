@@ -1,0 +1,307 @@
+# Omadia local development + self-hosting stack.
+#
+# Brings up the full Omadia runtime + sidecars:
+#   - middleware       (Omadia kernel API on http://localhost:8080)
+#   - web-ui           (Admin UI on http://localhost:3333)
+#   - postgres         (Postgres + pgvector — KG / routines / verifier store)
+#   - kroki + companion (Mermaid/PlantUML/Graphviz/Vega/Excalidraw rendering)
+#   - minio + init     (S3-compatible storage for diagram + attachment payloads)
+#   - ollama + init    (in-tenant embeddings + small NER model)
+#   - presidio         (Python NER sidecar for the privacy detector plugin)
+#
+# Usage:
+#   cp middleware/.env.example middleware/.env   # set ANTHROPIC_API_KEY
+#   docker compose up -d                         # start everything (builds first)
+#   docker compose logs -f middleware            # tail middleware boot
+#   docker compose down                          # stop (keeps volumes)
+#   docker compose down -v                       # stop + wipe all data
+#
+# All host ports bind to 127.0.0.1 only — never expose this stack on a
+# public interface without an external reverse-proxy + auth layer.
+
+services:
+  # --- Omadia middleware (TypeScript kernel + plugin runtime) ---------------
+  middleware:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      # Optional: operator copies .env.example → .env and fills in
+      # ANTHROPIC_API_KEY (+ any plugin-specific creds). Compose tolerates a
+      # missing file when `required: false`, so a fresh clone still validates
+      # — the middleware will fail-fast at boot if ANTHROPIC_API_KEY is unset.
+      - path: middleware/.env
+        required: false
+    environment:
+      # In-network service wiring. These overrides exist because the
+      # middleware container cannot reach `localhost:<port>` (that would be
+      # the container itself) — it has to use the service-DNS names that
+      # Docker resolves on the shared `omadia` network. Anything the user's
+      # .env says for these vars is ignored when running through compose.
+      KROKI_BASE_URL: http://kroki:8000
+      AWS_ENDPOINT_URL_S3: http://minio:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      BUCKET_NAME: diagrams
+      OLLAMA_BASE_URL: http://ollama:11434
+      # Postgres + pgvector for the knowledge graph, routines store, and
+      # verifier store. Without DATABASE_URL the middleware falls back to
+      # the in-memory KG (loses state on restart, no routines, no verifier
+      # persistence) — fine for tests but not what an operator who just ran
+      # `docker compose up` wants.
+      DATABASE_URL: postgresql://omadia:omadia@postgres:5432/omadia
+      # Host-side public base URL — the browser opens signed diagram URLs
+      # against the published host port, not the in-network service name.
+      DIAGRAM_PUBLIC_BASE_URL: http://localhost:8080
+      # Deterministic vault master key for local-stack runs (base64 of 32
+      # demo bytes — vault expects base64-encoded 32 bytes). Keeps the
+      # vault.enc.json readable across `docker compose restart` and
+      # rebuilds. ROTATE THIS for any deployment beyond local dev:
+      # `openssl rand -base64 32`
+      VAULT_KEY: b21hZGlhLWxvY2FsLWRldi12YXVsdC1rZXktREVNTyE=
+      # Mount the unauthenticated dev endpoints (/api/dev/graph, /api/dev/memory).
+      # The web-ui Graph + Memory viewers depend on these for local
+      # inspection. **NEVER set this on a public deployment** — these routes
+      # have no auth and expose raw graph/memory state.
+      DEV_ENDPOINTS_ENABLED: 'true'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kroki:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+      ollama-init:
+        condition: service_completed_successfully
+    ports:
+      - '127.0.0.1:8080:8080'
+    volumes:
+      # Vault (encrypted secrets), memory store, builder drafts.db, uploaded
+      # plugin packages — everything the kernel needs to keep across restarts.
+      - middleware-data:/data
+    networks: [omadia]
+    healthcheck:
+      # node-based probe — debian-slim has neither wget nor curl pre-installed,
+      # and node is the one binary we're guaranteed to have.
+      test:
+        - 'CMD'
+        - 'node'
+        - '-e'
+        - "fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      # First-boot includes plugin-catalog load + KG migrations + bootstrap
+      # auto-installs + workspace-package activations — easily 30-60s on a
+      # cold machine. Don't fail the healthcheck during that window.
+      start_period: 90s
+
+  # --- Admin UI (Next.js, talks to middleware over /bot-api) ----------------
+  web-ui:
+    build:
+      context: ./web-ui
+      dockerfile: Dockerfile
+      args:
+        # Build-arg: the rewrite target baked into the Next.js build. Use the
+        # in-network service name so the browser-loaded UI reaches the
+        # middleware through Docker's DNS, not the host's localhost.
+        MIDDLEWARE_URL: http://middleware:8080
+    restart: unless-stopped
+    environment:
+      MIDDLEWARE_URL: http://middleware:8080
+    depends_on:
+      middleware:
+        condition: service_healthy
+    ports:
+      - '127.0.0.1:3333:3000'
+    networks: [omadia]
+
+  # --- Postgres + pgvector (knowledge graph, routines, verifier store) -----
+  # Same image as Neon-style production deployments — pgvector pre-installed.
+  # Migrations run automatically on the middleware's first boot.
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    # Explicit container_name + network alias so the middleware always
+    # resolves the `postgres` DNS name regardless of the compose project
+    # prefix (default name would be `<dir>-postgres-1`).
+    container_name: omadia-postgres
+    hostname: postgres
+    environment:
+      POSTGRES_USER: omadia
+      POSTGRES_PASSWORD: omadia
+      POSTGRES_DB: omadia
+    ports:
+      # Loopback-only. Operator can connect via psql from the host for
+      # inspection; never expose Postgres publicly.
+      - '127.0.0.1:5432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      omadia:
+        aliases: [postgres]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U omadia -d omadia']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      # First-boot initdb runs while pg_isready already says "ready" — give
+      # it a head start so the middleware doesn't race against role + DB
+      # creation finishing.
+      start_period: 15s
+
+  # --- Diagram rendering (Kroki gateway + Mermaid companion) ----------------
+  kroki-mermaid:
+    image: yuzutech/kroki-mermaid:0.29.1
+    restart: unless-stopped
+    networks: [omadia]
+    # No host port — only reachable from the kroki gateway on the shared network.
+
+  kroki:
+    image: yuzutech/kroki:0.29.1
+    # Force amd64 emulation: the vega/vega-lite binary bundled inside the Kroki
+    # gateway image is x86-only (no arm64 build). On Apple Silicon hosts the
+    # default (matching the host) tries to load the x86 ELF natively and fails
+    # with "Dynamic loader not found". Other formats (graphviz/plantuml) are
+    # JVM-based and work either way; this setting is a no-op on amd64 hosts.
+    platform: linux/amd64
+    restart: unless-stopped
+    depends_on:
+      - kroki-mermaid
+    environment:
+      KROKI_MERMAID_HOST: kroki-mermaid
+      KROKI_MERMAID_PORT: '8002'
+      # SECURE blocks !include, remote refs, file access. Keep on for local dev too
+      # so we catch policy-violating diagrams before they hit production.
+      KROKI_SAFE_MODE: SECURE
+      KROKI_LISTEN: 0.0.0.0:8000
+    ports:
+      # Loopback-only. Host port 8765 (8000 is frequently taken by OrbStack,
+      # 8787 by Python dev tooling); container still listens on 8000 internally.
+      - '127.0.0.1:8765:8000'
+    networks: [omadia]
+    # PlantUML writes temp files under /tmp; tmpfs with exec makes it fast and clean.
+    tmpfs:
+      - /tmp:exec,size=128m
+
+  # --- S3-compatible object storage (Tigris stand-in) -----------------------
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    restart: unless-stopped
+    command: server /data --console-address ':9001'
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - '127.0.0.1:9000:9000'   # S3 API
+      - '127.0.0.1:9001:9001'   # Web console (login: minioadmin / minioadmin)
+    volumes:
+      - minio-data:/data
+    networks: [omadia]
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot container that waits for MinIO to be ready, then provisions the
+  # bucket and applies the 90-day expiration rule. Re-running is idempotent.
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks: [omadia]
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -eu
+        mc alias set local http://minio:9000 minioadmin minioadmin
+        mc mb --ignore-existing local/diagrams
+        # Lifecycle: expire all objects after 90 days. Mirror the production
+        # constraint (Tigris allows one rule per bucket) so we catch mistakes
+        # locally too.
+        mc ilm rule add --expire-days 90 local/diagrams || \
+          mc ilm rule import local/diagrams <<'EOF'
+        {"Rules":[{"ID":"expire-90d","Status":"Enabled","Filter":{"Prefix":""},"Expiration":{"Days":90}}]}
+        EOF
+        mc ilm rule list local/diagrams
+        echo '[minio-init] diagrams bucket ready with 90d expiration.'
+    restart: 'no'
+
+  # --- Ollama sidecar for in-tenant embeddings (topic-detection pipeline) ---
+  # Serves `nomic-embed-text` (~270 MB) via the standard Ollama HTTP API.
+  # Middleware reaches it over the in-network DNS name `ollama:11434`.
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:11434:11434'
+    volumes:
+      - ollama-data:/root/.ollama
+    networks: [omadia]
+
+  # One-shot: pulls the embedding model into the Ollama volume on first run.
+  # Re-running is cheap — the pull short-circuits if the model is present.
+  ollama-init:
+    image: ollama/ollama:latest
+    depends_on:
+      - ollama
+    networks: [omadia]
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -eu
+        # Wait until the Ollama server answers.
+        for i in 1 2 3 4 5 6 7 8 9 10; do
+          if wget -q -O- http://ollama:11434/api/tags >/dev/null 2>&1; then
+            break
+          fi
+          echo "[ollama-init] waiting for ollama ($$i)…"
+          sleep 3
+        done
+        OLLAMA_HOST=http://ollama:11434 ollama pull nomic-embed-text
+        # Pull the NER model used by @omadia/plugin-privacy-detector-ollama
+        # so the Privacy-Proxy can run without an external API key.
+        OLLAMA_HOST=http://ollama:11434 ollama pull llama3.2:3b
+        echo "[ollama-init] nomic-embed-text + llama3.2:3b ready."
+    restart: 'no'
+
+  # --- Presidio NER sidecar (Privacy-Proxy detector plugin) -----------------
+  # Built from middleware/sidecars/privacy-detector-presidio. Pulls ~1.5 GB
+  # of spaCy models on first build; subsequent rebuilds are cache-hot.
+  presidio:
+    build:
+      context: ./middleware/sidecars/privacy-detector-presidio
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    container_name: omadia-presidio
+    hostname: presidio
+    ports:
+      - '127.0.0.1:5001:5001'
+    networks:
+      omadia:
+        aliases: [presidio]
+    healthcheck:
+      test:
+        - 'CMD'
+        - 'python'
+        - '-c'
+        - "import urllib.request,sys; urllib.request.urlopen('http://localhost:5001/health',timeout=2); sys.exit(0)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+
+volumes:
+  middleware-data:
+  postgres-data:
+  minio-data:
+  ollama-data:
+
+networks:
+  omadia:
+    driver: bridge

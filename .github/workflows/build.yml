@@ -1,0 +1,95 @@
+# Docker-build smoke. Verifies that the production Dockerfiles still
+# build cleanly from the repo-root + web-ui contexts. No image push —
+# the registry destination depends on naming decisions still pending
+# in OB-30 Block 2 (npm scope, GHCR org). When that's locked, copy
+# the build steps into release.yml and add the push step.
+
+name: Docker build
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Dockerfile'
+      - 'web-ui/Dockerfile'
+      - '.dockerignore'
+      - 'web-ui/.dockerignore'
+      - 'middleware/package*.json'
+      - 'web-ui/package*.json'
+      - 'middleware/src/**'
+      - 'middleware/packages/**'
+      - 'web-ui/app/**'
+      - 'web-ui/public/**'
+      - '.github/workflows/build.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'Dockerfile'
+      - 'web-ui/Dockerfile'
+      - '.dockerignore'
+      - 'web-ui/.dockerignore'
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  middleware-image:
+    name: middleware (build, no push)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build middleware image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          load: true
+          tags: omadia-middleware:ci-${{ github.sha }}
+          cache-from: type=gha,scope=middleware
+          cache-to: type=gha,scope=middleware,mode=max
+
+      - name: Image size + layer summary
+        run: |
+          docker image inspect omadia-middleware:ci-${{ github.sha }} \
+            --format '{{.RepoTags}} size={{.Size}} created={{.Created}}'
+          docker history --no-trunc omadia-middleware:ci-${{ github.sha }} | head -20
+
+  web-ui-image:
+    name: web-ui (build, no push)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build web-ui image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./web-ui
+          file: ./web-ui/Dockerfile
+          push: false
+          load: true
+          tags: omadia-web-ui:ci-${{ github.sha }}
+          # Same MIDDLEWARE_URL placeholder the production fly.toml uses;
+          # only baked into the standalone bundle, not used at runtime
+          # against this image.
+          build-args: |
+            MIDDLEWARE_URL=http://middleware:8080
+          cache-from: type=gha,scope=web-ui
+          cache-to: type=gha,scope=web-ui,mode=max
+
+      - name: Image size + layer summary
+        run: |
+          docker image inspect omadia-web-ui:ci-${{ github.sha }} \
+            --format '{{.RepoTags}} size={{.Size}} created={{.Created}}'
+          docker history --no-trunc omadia-web-ui:ci-${{ github.sha }} | head -10

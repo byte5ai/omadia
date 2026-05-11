@@ -1,0 +1,139 @@
+schema_version: "1"
+
+# ===========================================================================
+# Template Manifest — {{AGENT_NAME}}
+# ---------------------------------------------------------------------------
+# Schema of truth:  docs/harness-platform/manifest-schema.v1.yaml
+# Entity types:     docs/harness-platform/entity-registry.v1.yaml
+# Reference impls:  docs/harness-platform/examples/agent-*.manifest.yaml
+# ===========================================================================
+
+identity:
+  id: "{{AGENT_ID}}"                     # z.B. de.byte5.agent.sharepoint
+  kind: "agent"
+  domain: "{{AGENT_DOMAIN}}"             # z.B. m365.sharepoint, odoo.hr — lowercase, dotted, kebab-case mid-segment OK
+  name: "{{AGENT_NAME}}"
+  version: "{{AGENT_VERSION}}"
+  description: "{{AGENT_DESCRIPTION_DE}}"
+  authors:
+    - name: "byte5 GmbH"
+      email: "dev@byte5.de"
+  license: "Proprietary"
+  icon: "./assets/icon.png"
+  categories:
+    - "{{CATEGORY}}"                     # productivity | crm | documents | …
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+# Integrations, die dieser Agent voraussetzt. Auth/Secrets werden via
+# Resolution-Chain (ctx.secret) aus der Integration gezogen. Codegen
+# overschreibt diesen Block direkt im YAML-AST aus `spec.depends_on` —
+# Self-contained Agents (PAT/OAuth in eigenen setup_fields, kein
+# Parent-Integration-Plugin) bekommen `depends_on: []`, andere die echte
+# Block-Liste.
+depends_on: []
+
+lifecycle:
+  entry: "dist/index.js"
+  hooks:
+    onInstall: false
+    onConfigure: true                    # Pflicht wenn setup.self_test: true
+    onActivate: true
+    onDeactivate: true
+    onUninstall: true
+    onMigrate: true
+  uninstall_policy:
+    entities: "quarantine"               # keep | quarantine | delete
+    memory: "delete"
+    secrets: "delete"
+
+# Eigene Secrets/Config-Felder dieses Agents. Erbt sonst von depends_on.
+setup:
+  fields: []
+  self_test: true                        # wenn true: onConfigure MUSS pingen
+
+llm:
+  prefers:
+    - capabilities: ["tool_use"]
+      min_context: 100000
+      class: "frontier"                  # frontier | mid | fast
+      temperature_hint: 0.1
+  fallback_allowed: true
+
+# ---------------------------------------------------------------------------
+# Capabilities = die Tools, die der Orchestrator callen kann.
+# Pro Capability: input/output als JSON-Schema ODER $ref auf entity-registry.
+# ---------------------------------------------------------------------------
+capabilities:
+  - id: "{{CAPABILITY_ID}}"              # z.B. search_documents
+    description: "{{CAPABILITY_DESCRIPTION_DE}}"
+    input_schema:
+      type: "object"
+      required: ["query"]
+      properties:
+        query:
+          type: "string"
+          minLength: 1
+          maxLength: 500
+    output_schema:
+      type: "array"
+      items:
+        # $ref: "entity://DocumentRef"   # bevorzugt: Entity wiederverwenden
+        type: "object"
+        properties:
+          id:   { type: "string" }
+          title: { type: "string" }
+          url:   { type: "string" }
+    side_effects: "read"                 # read | write | none
+    idempotent: true
+    autonomous: true                     # false wenn OBO-User-Token nötig
+    timeout_ms: 20000
+
+playbook:
+  when_to_use: >
+    {{WHEN_TO_USE_DE}}
+  combines_with: []
+  not_for:
+    - "{{NOT_FOR_CASE_1}}"
+  example_prompts:
+    - "{{EXAMPLE_PROMPT_1}}"
+    - "{{EXAMPLE_PROMPT_2}}"
+
+entities:
+  produces: []
+  consumes: []
+
+# ---------------------------------------------------------------------------
+# System-Prompt = Skills (prompt_partial). Der systemPrompt wird NICHT im Code
+# zurückgegeben — die Runtime lädt alle Partials, stripped das Frontmatter,
+# concatenated und setzt automatisch einen Header aus plugin.name,
+# plugin.description und playbook.when_to_use davor.
+# ---------------------------------------------------------------------------
+skills:
+  - id: "{{AGENT_SLUG}}_expert_system"
+    kind: "prompt_partial"
+    path: "skills/{{AGENT_SLUG}}-expert.md"
+    description: "Rolle, Tonalität und Arbeitsweise für {{AGENT_NAME}}."
+    shareable: false
+
+permissions:
+  memory:
+    reads: ["session:*", "agent:{{AGENT_ID}}:*"]
+    writes: ["agent:{{AGENT_ID}}:*"]
+  graph:
+    reads: []
+    writes: []
+  network:
+    outbound:
+      - "{{OUTBOUND_HOST}}"              # z.B. graph.microsoft.com
+  filesystem:
+    scratch: false
+
+integrations: []
+
+ui:
+  settings_schema: null
+  commands: []
+  dashboard_cards: []

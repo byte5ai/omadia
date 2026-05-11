@@ -1,0 +1,5 @@
+schema_version: 1
+id: blank
+name: Blank Slate
+description: Leeres Profil. Operator baut den Stack manuell zusammen — entweder via Plugin-Store oder per /store/upload für Custom-Plugins.
+plugins: []

@@ -1,0 +1,142 @@
+schema_version: "1"
+
+identity:
+  id: "@omadia/verifier"
+  name: "Answer Verifier"
+  version: "0.1.0"
+  kind: "extension"
+  domain: "core.verifier"
+  description: "Answer-verifier pipeline (TriggerRouter → ClaimExtractor → DeterministicChecker → EvidenceJudge → CorrectionPrompt) plus VerifierStore (Postgres-persistent verdicts + contradictions on graphPool), GraphEvidenceFetcher, FailureReplayDetector, and a generic graphLookupTool factory for sub-agents. Consumes kernel capabilities `knowledgeGraph` (hard requires; lookups + trace cross-check) and optionally `graphPool` (VerifierStore writes, only available with a Postgres KG backend). Publishes `verifier@1` as a bundle capability `{ pipeline, store?, mode, maxRetries }` — kernel-side late-resolved and wrapped around the orchestrator into the `VerifierService` (the wrap-orchestrator bit stays kernel-side because orchestrator construction runs after `activateAllInstalled`)."
+  authors:
+    - name: "byte5 GmbH"
+      email: "dev@byte5.de"
+      url: "https://byte5.de"
+  license: "Proprietary"
+  categories:
+    - "infrastructure"
+    - "verification"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+lifecycle:
+  entry: "dist/plugin.js"
+
+# ---------------------------------------------------------------------------
+# Capability lifetime is plugin-owned. activate() reads the setup-fields
+# below + late-resolves `knowledgeGraph` (hard) plus optional `graphPool`,
+# constructs the five pipeline classes plus optional VerifierStore, and
+# publishes `verifier@1` as a bundle.
+#
+# `verifier@1` shape:
+#   {
+#     pipeline:    VerifierPipeline,        // always present when published
+#     store?:      VerifierStore,           // present only when graphPool resolved
+#     mode:        'shadow' | 'enforce',    // wrapper-config from verifier_mode field
+#     maxRetries:  number,                  // wrapper-config from verifier_max_retries
+#   }
+#
+# The kernel late-resolves the bundle after `activateAllInstalled` and the
+# Orchestrator construction, then wraps with `VerifierService` (lebt
+# weiterhin kernel-side, weil es Orchestrator + toSemanticAnswer aus
+# orchestrator.ts konsumiert — ein eigener Orchestrator-Surface-Type-Lift
+# zu plugin-api ist S+10+ Scope).
+#
+# **Always-Register-Bootstrap-Pattern (S+9.1 Rule #8)**: bootstrap.ts
+# `bootstrapVerifierFromEnv` registriert das Plugin IMMER — auch wenn
+# `verifier_enabled` false ist oder `anthropic_api_key` fehlt. activate()
+# entscheidet dann zur Runtime ob `verifier@1` ans ServiceRegistry geht.
+# Ohne Key/Enable → activate() loggt + returnt no-op-Handle; downstream
+# Konsumenten (Kernel checkt `serviceRegistry.get('verifier')`) degradieren
+# auf orchestrator-only.
+#
+# Weil VerifierService kernel-side bleibt, deklariert KEIN Konsumenten-
+# Manifest `requires: ["verifier@^1"]` heute — der Capability-Resolver
+# muss `verifier@1` nicht in eine Topo-Order zwingen. Die requires-Liste
+# unten enthält daher nur, was activate() selbst hart braucht.
+# ---------------------------------------------------------------------------
+provides:
+  - "verifier@1"
+
+requires:
+  - "knowledgeGraph@^1"
+
+setup:
+  fields:
+    - id: "anthropic_api_key"
+      label: "Anthropic API Key"
+      type: "secret"
+      required: false
+      description: "Erforderlich für ClaimExtractor + EvidenceJudge (Haiku-LLM-Calls). Ohne Key publiziert das Plugin KEIN `verifier@1` — der Kernel fällt auf den Orchestrator ohne Verifier-Wrapper zurück. Geteilt mit @omadia/orchestrator-extras (gleicher Anthropic-Account). Bootstrap migriert ANTHROPIC_API_KEY aus dem legacy .env in den Vault. (S+12.6: type: secret — Key wird im Vault gespeichert, nicht in installed.json config.)"
+    - id: "verifier_enabled"
+      label: "Verifier Enabled"
+      type: "text"
+      required: false
+      description: "'true' aktiviert die Verifier-Pipeline; jeder andere Wert (oder leer) lässt sie aus. Migriert aus VERIFIER_ENABLED. Default: 'false' (per env-default + Plugin-Default)."
+    - id: "verifier_mode"
+      label: "Verifier Mode"
+      type: "text"
+      required: false
+      description: "'shadow' loggt nur (kein Block / kein Retry). 'enforce' triggert bei Contradictions einen einmaligen Retry mit Correction-Prompt. Default: 'shadow'."
+    - id: "verifier_model"
+      label: "Verifier Model"
+      type: "text"
+      required: false
+      description: "Anthropic-Model-ID für ClaimExtractor + EvidenceJudge. Default: claude-haiku-4-5-20251001."
+    - id: "verifier_max_claims"
+      label: "Max Claims per Answer"
+      type: "number"
+      required: false
+      description: "Hard cap auf die Anzahl extrahierter Claims pro Answer. Default: 20."
+    - id: "verifier_amount_tolerance"
+      label: "Amount Tolerance"
+      type: "number"
+      required: false
+      description: "Relative Toleranz für Betragsvergleiche im DeterministicChecker (0.01 = 1%). Default: 0.01."
+    - id: "verifier_max_retries"
+      label: "Max Retries (enforce mode)"
+      type: "number"
+      required: false
+      description: "Maximale Retry-Anzahl im enforce-Mode bei detektierter Contradiction. Default: 1, Max: 2 (vom Kernel-Schema clamped)."
+    - id: "graph_tenant_id"
+      label: "Graph Tenant ID"
+      type: "text"
+      required: false
+      description: "Tenant-Schlüssel für die VerifierStore-Persistenz (verifier_verdicts + verifier_contradictions Tabellen). Migriert aus GRAPH_TENANT_ID. Default: 'default'."
+
+playbook:
+  when_to_use: |
+    Wird automatisch installiert sobald die Empty-Middleware-Roadmap
+    Phase S+9.3 abgeschlossen ist. Operator-Touchpoints:
+      - ANTHROPIC_API_KEY setzen (geteilt mit orchestrator-extras)
+      - VERIFIER_ENABLED=true setzen um den Verifier scharf zu schalten
+      - VERIFIER_MODE=shadow|enforce wählen (default shadow, sicher für
+        Calibration im Live-Betrieb ohne Retry-Risiko)
+    Ohne die Migration läuft der Bot weiterhin verifier-frei
+    (Orchestrator-Antwort geht direkt an die Channels).
+
+permissions:
+  memory:
+    reads: []
+    writes: []
+  graph:
+    reads:
+      - "Turn"
+      - "Fact"
+      - "EntityRef"
+    writes:
+      - "verifier_verdicts"
+      - "verifier_contradictions"
+  network:
+    outbound:
+      - "anthropic-api"
+  filesystem:
+    scratch: false
+
+integrations:
+  - id: "anthropic_api"
+    kind: "http"
+    target: "Anthropic Claude API (Haiku-LLM für ClaimExtractor + EvidenceJudge)"
+    auth_from: "anthropic_api_key"
+    docs: "https://docs.anthropic.com/en/api/messages"

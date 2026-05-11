@@ -1,0 +1,14 @@
+{
+  "name": "{{AGENT_ID}}",
+  "version": "{{AGENT_VERSION}}",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "description": "{{AGENT_DESCRIPTION_DE}}",
+  "peerDependencies": {
+    "zod": "^3.23.8"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

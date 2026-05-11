@@ -1,0 +1,668 @@
+# ===========================================================================
+# Harness Platform — Entity Registry v1
+# ===========================================================================
+# Central, core-owned type registry referenced by every agent manifest.
+# Agents reference these types via the `entity://` URI scheme; they MUST
+# NOT define entity shapes inside their own packages.
+#
+# This file is the canonical source of truth for what entities exist, what
+# they look like, and how they evolve. The core loads this registry at
+# startup, exposes it at `ctx.entities`, and validates every manifest's
+# `capabilities[*].input_schema` / `output_schema` / `entities.produces` /
+# `entities.consumes` against it at install time.
+#
+# Design principles (do not violate without a written ADR):
+#
+#   1. The registry is core-owned. New entities require a core PR, not a
+#      manifest declaration. Rationale: prevents namespace explosion and
+#      duplicate/near-duplicate types across agents.
+#   2. Entities are JSON-Schema-described. Draft 2020-12. No custom DSL.
+#   3. All inter-entity references go through entity://-URIs. Inlining is
+#      forbidden for entities that exist in the registry; allowed for
+#      primitive scalars not worth a named type.
+#   4. Breaking changes bump the major version and get a new URI. Old and
+#      new resolve in parallel during the deprecation grace period.
+#   5. "Produced-by" / "consumed-by" relationships are DERIVED from
+#      installed agent manifests at install time, NOT statically declared
+#      here. The registry is the schema; the graph is runtime state.
+# ===========================================================================
+
+schema_version: "1"
+
+
+# ===========================================================================
+# PART A — META-SPEC
+# ===========================================================================
+# How the registry itself works. Applies to every entity below.
+# ===========================================================================
+
+registry:
+  # -------------------------------------------------------------------------
+  # URI scheme
+  # -------------------------------------------------------------------------
+  # Every entity has a canonical `$id` of the form:
+  #     entity://<Name>@<Major>
+  # Manifests may reference either:
+  #     entity://<Name>          → resolves to the current latest major
+  #                                that satisfies the agent's compat range
+  #     entity://<Name>@<Major>  → pins a specific major; survives future
+  #                                breaking changes
+  # Recommendation: production agents pin major; only tooling uses unpinned.
+  uri_scheme:
+    unpinned: "entity://<Name>"
+    pinned:   "entity://<Name>@<Major>"
+
+  # -------------------------------------------------------------------------
+  # Versioning rules
+  # -------------------------------------------------------------------------
+  # Entities follow strict semver. The URI encodes only the major.
+  # - Patch (1.0.0 → 1.0.1): docs/help text changes only.
+  # - Minor (1.0.x → 1.1.0): additive schema change (new optional field).
+  #                          MUST NOT break readers of the previous minor.
+  # - Major (1.x   → 2.0.0): breaking. New URI. Old URI stays resolvable
+  #                          for one major cycle (deprecation window).
+  versioning:
+    patch: "docs only — no schema change"
+    minor: "additive — new optional fields; readers unaffected"
+    major: "breaking — new URI; old URI deprecated, grace = one major"
+    # Decision R4 (2026-04-22):
+    # Extending a closed enum is MAJOR, not minor. Technically additive,
+    # but exhaustive-switch consumers break silently otherwise, and future
+    # third-party agents have unknown consumer-side code.
+    enum_extension: "MAJOR — closed-enum extension triggers a new major URI"
+
+  # -------------------------------------------------------------------------
+  # Entity definition shape (meta-schema)
+  # -------------------------------------------------------------------------
+  # Every entry under `entities:` below conforms to this shape.
+  entity_definition_shape:
+    $id:          "string, required — canonical entity:// URI"
+    version:      "string, required — full semver"
+    kind:         "enum: identifier | record | query | reference | enum"
+    description:  "string, required — one paragraph, human-readable"
+    schema:       "object, required — JSON Schema Draft 2020-12"
+    stability:    "enum: experimental | stable | deprecated — default stable"
+    deprecated_in: "string, optional — version in which this entity was deprecated"
+    supersedes:   "string, optional — entity URI this one replaces"
+    notes:        "string, optional — design rationale, caveats, examples"
+
+  # -------------------------------------------------------------------------
+  # Resolution at runtime
+  # -------------------------------------------------------------------------
+  # `ctx.entities.get("EmployeeId")`        → current latest major
+  # `ctx.entities.get("EmployeeId", 1)`     → pinned major 1
+  # `ctx.entities.validate(value, URI)`     → returns {ok, errors?}
+  resolution:
+    lookup:   "by name (→ latest major) or URI (→ exact)"
+    validate: "JSON Schema Draft 2020-12 validator, core-provided"
+
+  # -------------------------------------------------------------------------
+  # Composition graph derivation
+  # -------------------------------------------------------------------------
+  # The planner needs to know, for any entity E:
+  #   produced_by[E] = { agent.capability pairs that output E }
+  #   consumed_by[E] = { agent.capability pairs that accept E as input }
+  # This graph is built at install/activation time by scanning manifests.
+  # Therefore the registry itself carries NO producer/consumer lists — they
+  # would be stale the moment an agent is added or removed.
+  composition_graph:
+    source:  "derived from installed agent manifests"
+    update:  "rebuilt on every install / activate / deactivate / uninstall"
+    exposed: "ctx.graph.producersOf(entity) / consumersOf(entity)"
+
+  # -------------------------------------------------------------------------
+  # Persistence mapping (decision R1 — 2026-04-22)
+  # -------------------------------------------------------------------------
+  # Structured entity data and vector embeddings use DIFFERENT persistence
+  # strategies on purpose. Cross-source similarity over embeddings is a
+  # first-class platform requirement; forcing it to happen via UNIONs over
+  # per-entity tables would defeat that requirement.
+  persistence_mapping:
+    structured_data:
+      storage:     "one PostgreSQL table per entity major version"
+      migrations:  "manual, version-pinned; new major = new table + grace window"
+      ownership:   "core-provided migrations, one file per entity major"
+      reason:      "JSON Schema does not describe indexes, FKs, triggers, partitions"
+    embeddings:
+      storage:     "single shared `embeddings` table (pgvector) — cross-entity"
+      columns:
+        - entity_uri       # e.g. "entity://ConfluencePage@1"
+        - entity_id        # opaque string FK into the structured table
+        - chunk_idx        # integer, 0 for single-chunk records
+        - chunk_text       # the text that produced this embedding
+        - vector           # pgvector column; fixed dim per model
+        - model            # e.g. "text-embedding-3-large"
+        - dim              # denormalised, helps the index planner
+        - source_agent     # agent identity.id that produced this row
+        - fetched_at       # ISO-8601 timestamp
+      rationale:
+        - "One index scan for cross-source similarity, not N UNIONs."
+        - "Model upgrade = one migration, not one per entity."
+        - "Hybrid search (vector + metadata filter) is trivial."
+
+  # -------------------------------------------------------------------------
+  # Provenance envelope (decision R2 — 2026-04-22)
+  # -------------------------------------------------------------------------
+  # Entity shapes themselves do NOT carry provenance fields — that would
+  # couple every schema to the persistence layer. Instead, every write
+  # through ctx.graph.write, ctx.memory.write, or the embedding writer is
+  # wrapped automatically by the core in a `_source` envelope.
+  provenance:
+    envelope:
+      _source:
+        agent_id:       "identity.id of the writing agent"
+        fetched_at:     "ISO-8601 timestamp, set by core"
+        entity_version: "full semver, e.g. 1.0.0"
+    read_path:       "callers may request provenance alongside values; default off"
+    cross_source_ui: "UI renders `_source.agent_id` as the origin badge"
+
+  # -------------------------------------------------------------------------
+  # Reference policy extension (decision R3 — 2026-04-22)
+  # -------------------------------------------------------------------------
+  # JSON Schema has no native way to say "this $ref must resolve at write
+  # time". We extend with a custom keyword the registry validator honours.
+  reference_policy_extension:
+    keyword:    "x-ref-policy"
+    values:     ["strict", "lazy"]
+    default:    "lazy"
+    applies_to: "any property using $ref: entity://..."
+    semantics:
+      strict: "validator rejects writes whose ref target does not yet exist"
+      lazy:   "validator accepts any syntactically-valid ref; resolution deferred"
+    example: |
+      properties:
+        employee_id:
+          $ref: "entity://EmployeeId@1"
+          x-ref-policy: "strict"
+
+  # -------------------------------------------------------------------------
+  # Non-goals (decision R5 — 2026-04-22)
+  # -------------------------------------------------------------------------
+  non_goals:
+    localisation: >
+      Entities do not carry locale-keyed string variants. byte5 is a single-
+      language (German) organisation; multi-region deployments are solved
+      per-deployment (separate install, separate registry instance). Revisit
+      only if third-party agents or non-DE customers enter scope.
+
+
+# ===========================================================================
+# PART B — CORE ENTITIES
+# ===========================================================================
+# The initial registry. Grouped by domain. Alphabetical within each domain.
+# Every new entity added here requires an ADR referenced in `notes:`.
+# ===========================================================================
+
+entities:
+
+  # =========================================================================
+  # B.1  Common primitives and cross-domain types
+  # =========================================================================
+
+  DateRange:
+    $id: "entity://DateRange@1"
+    version: "1.0.0"
+    kind: "query"
+    description: >
+      Inclusive start / exclusive end date range used by time-bounded queries
+      across agents (sick leave intervals, calendar searches, invoice filters).
+    schema:
+      type: "object"
+      required: ["start"]
+      properties:
+        start:
+          type: "string"
+          format: "date"
+        end:
+          type: "string"
+          format: "date"
+        timezone:
+          type: "string"
+          description: "IANA timezone name; defaults to platform configured TZ"
+      additionalProperties: false
+
+  Email:
+    $id: "entity://Email@1"
+    version: "1.0.0"
+    kind: "identifier"
+    description: "RFC-5322 email address. Normalised to lowercase."
+    schema:
+      type: "string"
+      format: "email"
+      maxLength: 254
+
+  ISO8601Timestamp:
+    $id: "entity://ISO8601Timestamp@1"
+    version: "1.0.0"
+    kind: "identifier"
+    description: "ISO-8601 / RFC-3339 timestamp, always with timezone offset."
+    schema:
+      type: "string"
+      format: "date-time"
+
+  PersonRef:
+    $id: "entity://PersonRef@1"
+    version: "1.0.0"
+    kind: "reference"
+    description: >
+      Discriminated reference to a person — either an internal Employee
+      (resolvable in Odoo HR) or an external contact (email + optional name).
+      Use when a capability output may include internal or external people.
+    schema:
+      oneOf:
+        - type: "object"
+          required: ["kind", "employee_id"]
+          properties:
+            kind:
+              const: "internal"
+            employee_id:
+              $ref: "entity://EmployeeId@1"
+          additionalProperties: false
+        - type: "object"
+          required: ["kind", "email"]
+          properties:
+            kind:
+              const: "external"
+            email:
+              $ref: "entity://Email@1"
+            display_name:
+              type: "string"
+          additionalProperties: false
+
+  TextQuery:
+    $id: "entity://TextQuery@1"
+    version: "1.0.0"
+    kind: "query"
+    description: >
+      Free-text search query. Agents may interpret this as full-text, semantic,
+      or fuzzy matching — the registry does not prescribe retrieval semantics.
+    schema:
+      type: "string"
+      minLength: 1
+      maxLength: 2000
+
+
+  # =========================================================================
+  # B.2  HR domain (Odoo HR agent)
+  # =========================================================================
+
+  EmployeeId:
+    $id: "entity://EmployeeId@1"
+    version: "1.0.0"
+    kind: "identifier"
+    description: "Stable integer identifier for an Employee in byte5's Odoo HR module."
+    schema:
+      type: "integer"
+      minimum: 1
+
+  Employee:
+    $id: "entity://Employee@1"
+    version: "1.0.0"
+    kind: "record"
+    description: >
+      A byte5 employee as represented in Odoo HR. Includes identity,
+      organisational placement, and active status. Does NOT include
+      compensation, sick-leave history, or performance data — those live
+      in dedicated entities to keep the shared shape minimal.
+    schema:
+      type: "object"
+      required: ["id", "email", "display_name", "active"]
+      properties:
+        id:
+          $ref: "entity://EmployeeId@1"
+        email:
+          $ref: "entity://Email@1"
+        display_name:
+          type: "string"
+          minLength: 1
+        department:
+          type: "string"
+        job_title:
+          type: "string"
+        manager_id:
+          $ref: "entity://EmployeeId@1"
+        active:
+          type: "boolean"
+      additionalProperties: false
+
+  SickLeave:
+    $id: "entity://SickLeave@1"
+    version: "1.0.0"
+    kind: "record"
+    description: "A sick-leave entry for a byte5 employee, sourced from Odoo HR."
+    schema:
+      type: "object"
+      required: ["employee_id", "start", "end", "status"]
+      properties:
+        employee_id:
+          $ref: "entity://EmployeeId@1"
+          x-ref-policy: "strict"   # sick leave without a valid employee is nonsense
+        start:
+          type: "string"
+          format: "date"
+        end:
+          type: "string"
+          format: "date"
+        status:
+          type: "string"
+          enum: ["requested", "approved", "rejected", "cancelled"]
+        certificate_on_file:
+          type: "boolean"
+      additionalProperties: false
+
+  VacationBalance:
+    $id: "entity://VacationBalance@1"
+    version: "1.0.0"
+    kind: "record"
+    description: "Remaining / used vacation days for an employee in a given year."
+    schema:
+      type: "object"
+      required: ["employee_id", "year", "remaining_days", "used_days"]
+      properties:
+        employee_id:
+          $ref: "entity://EmployeeId@1"
+        year:
+          type: "integer"
+          minimum: 2000
+          maximum: 2100
+        remaining_days:
+          type: "number"
+          minimum: 0
+        used_days:
+          type: "number"
+          minimum: 0
+        carry_over_days:
+          type: "number"
+          minimum: 0
+      additionalProperties: false
+
+
+  # =========================================================================
+  # B.3  Accounting domain (Odoo Accounting agent)
+  # =========================================================================
+
+  InvoiceId:
+    $id: "entity://InvoiceId@1"
+    version: "1.0.0"
+    kind: "identifier"
+    description: "Odoo invoice ID (account.move primary key)."
+    schema:
+      type: "integer"
+      minimum: 1
+
+  Invoice:
+    $id: "entity://Invoice@1"
+    version: "1.0.0"
+    kind: "record"
+    description: "A vendor or customer invoice from Odoo Accounting."
+    schema:
+      type: "object"
+      required: ["id", "move_type", "amount_total", "currency", "state"]
+      properties:
+        id:
+          $ref: "entity://InvoiceId@1"
+        move_type:
+          type: "string"
+          enum: ["in_invoice", "out_invoice", "in_refund", "out_refund"]
+        partner_id:
+          $ref: "entity://VendorId@1"
+        invoice_date:
+          type: "string"
+          format: "date"
+        date_due:
+          type: "string"
+          format: "date"
+        amount_total:
+          type: "number"
+        currency:
+          type: "string"
+          pattern: "^[A-Z]{3}$"
+        state:
+          type: "string"
+          enum: ["draft", "posted", "cancel"]
+        reference:
+          type: "string"
+      additionalProperties: false
+
+  VendorId:
+    $id: "entity://VendorId@1"
+    version: "1.0.0"
+    kind: "identifier"
+    description: "Odoo res.partner ID used for vendors and customers alike."
+    schema:
+      type: "integer"
+      minimum: 1
+
+  Vendor:
+    $id: "entity://Vendor@1"
+    version: "1.0.0"
+    kind: "record"
+    description: "A vendor or business partner from Odoo's res.partner table."
+    schema:
+      type: "object"
+      required: ["id", "name"]
+      properties:
+        id:
+          $ref: "entity://VendorId@1"
+        name:
+          type: "string"
+        vat:
+          type: "string"
+          description: "VAT number, format-checked by Odoo"
+        email:
+          $ref: "entity://Email@1"
+        is_company:
+          type: "boolean"
+      additionalProperties: false
+
+
+  # =========================================================================
+  # B.4  Confluence domain (Confluence Playbook agent)
+  # =========================================================================
+
+  ConfluencePageId:
+    $id: "entity://ConfluencePageId@1"
+    version: "1.0.0"
+    kind: "identifier"
+    description: "Atlassian Confluence page ID (numeric, transmitted as string)."
+    schema:
+      type: "string"
+      pattern: "^[0-9]+$"
+
+  ConfluenceSpaceKey:
+    $id: "entity://ConfluenceSpaceKey@1"
+    version: "1.0.0"
+    kind: "identifier"
+    description: "Short alphanumeric key identifying a Confluence space (e.g. 'ENG', 'HR')."
+    schema:
+      type: "string"
+      pattern: "^[A-Z0-9]{1,64}$"
+
+  ConfluencePage:
+    $id: "entity://ConfluencePage@1"
+    version: "1.0.0"
+    kind: "record"
+    description: >
+      A Confluence page with metadata and a plain-text rendering of its body.
+      Body is plain text — rich formatting is intentionally dropped at the
+      registry boundary to keep shapes agent-agnostic.
+    schema:
+      type: "object"
+      required: ["id", "title", "space_key", "url", "last_modified"]
+      properties:
+        id:
+          $ref: "entity://ConfluencePageId@1"
+        title:
+          type: "string"
+        space_key:
+          $ref: "entity://ConfluenceSpaceKey@1"
+        url:
+          type: "string"
+          format: "uri"
+        last_modified:
+          $ref: "entity://ISO8601Timestamp@1"
+        body_plain:
+          type: "string"
+          description: "Plain-text rendering of the page body. May be truncated."
+        parent_page_id:
+          $ref: "entity://ConfluencePageId@1"
+      additionalProperties: false
+
+  ConfluenceSpace:
+    $id: "entity://ConfluenceSpace@1"
+    version: "1.0.0"
+    kind: "record"
+    description: "A Confluence space — container for pages."
+    schema:
+      type: "object"
+      required: ["key", "name"]
+      properties:
+        key:
+          $ref: "entity://ConfluenceSpaceKey@1"
+        name:
+          type: "string"
+        description:
+          type: "string"
+        homepage_id:
+          $ref: "entity://ConfluencePageId@1"
+      additionalProperties: false
+
+  ConfluencePageTree:
+    $id: "entity://ConfluencePageTree@1"
+    version: "1.0.0"
+    kind: "record"
+    description: "Hierarchical page tree for a space. Recursive structure."
+    schema:
+      type: "object"
+      required: ["space_key", "root"]
+      properties:
+        space_key:
+          $ref: "entity://ConfluenceSpaceKey@1"
+        root:
+          $ref: "#/$defs/PageTreeNode"
+      $defs:
+        PageTreeNode:
+          type: "object"
+          required: ["page_id", "title"]
+          properties:
+            page_id:
+              $ref: "entity://ConfluencePageId@1"
+            title:
+              type: "string"
+            children:
+              type: "array"
+              items:
+                $ref: "#/$defs/PageTreeNode"
+
+
+  # =========================================================================
+  # B.5  Calendar / M365 domain (Teams/Calendar agent)
+  # =========================================================================
+
+  CalendarEventId:
+    $id: "entity://CalendarEventId@1"
+    version: "1.0.0"
+    kind: "identifier"
+    description: "Microsoft Graph event ID. Opaque string."
+    schema:
+      type: "string"
+      minLength: 1
+
+  CalendarEvent:
+    $id: "entity://CalendarEvent@1"
+    version: "1.0.0"
+    kind: "record"
+    description: "A calendar event from Microsoft Graph, normalised to UTC."
+    schema:
+      type: "object"
+      required: ["id", "title", "start", "end", "organizer"]
+      properties:
+        id:
+          $ref: "entity://CalendarEventId@1"
+        title:
+          type: "string"
+        start:
+          $ref: "entity://ISO8601Timestamp@1"
+        end:
+          $ref: "entity://ISO8601Timestamp@1"
+        organizer:
+          $ref: "entity://PersonRef@1"
+        attendees:
+          type: "array"
+          items:
+            $ref: "entity://AttendeeRef@1"
+        location:
+          type: "string"
+        online_meeting_url:
+          type: "string"
+          format: "uri"
+      additionalProperties: false
+
+  AttendeeRef:
+    $id: "entity://AttendeeRef@1"
+    version: "1.0.0"
+    kind: "reference"
+    description: "A meeting attendee with response status."
+    schema:
+      type: "object"
+      required: ["person", "response"]
+      properties:
+        person:
+          $ref: "entity://PersonRef@1"
+        response:
+          type: "string"
+          enum: ["none", "accepted", "tentative", "declined"]
+        required:
+          type: "boolean"
+      additionalProperties: false
+
+  MeetingSlot:
+    $id: "entity://MeetingSlot@1"
+    version: "1.0.0"
+    kind: "record"
+    description: >
+      A proposed time window for a meeting, typically produced by a
+      free/busy search and consumed by a booking capability. Slots are
+      ephemeral — the registry carries no TTL, but slot caches in agents do.
+    schema:
+      type: "object"
+      required: ["slot_id", "start", "end", "attendees"]
+      properties:
+        slot_id:
+          type: "string"
+          description: "Opaque, cache-scoped ID used when booking this slot."
+        start:
+          $ref: "entity://ISO8601Timestamp@1"
+        end:
+          $ref: "entity://ISO8601Timestamp@1"
+        attendees:
+          type: "array"
+          items:
+            $ref: "entity://AttendeeRef@1"
+      additionalProperties: false
+
+
+# ===========================================================================
+# DECISIONS LOG — Registry v1 (locked 2026-04-22)
+# ===========================================================================
+# R1 → LOCKED: hybrid persistence. Per-entity tables for structured data
+#      (manual migrations, version-pinned). Single shared `embeddings`
+#      table for all vectors (cross-entity similarity is first-class).
+#      See `registry.persistence_mapping`.
+#
+# R2 → LOCKED: provenance lives in the persistence envelope (`_source`),
+#      not inside entity shapes. Envelope is added by core on every write.
+#      See `registry.provenance`.
+#
+# R3 → LOCKED: per-property `x-ref-policy` keyword. Default `lazy`. Mark
+#      strict on fields where a dangling reference is semantically wrong.
+#      See `registry.reference_policy_extension`.
+#      Live example: SickLeave.employee_id is strict.
+#
+# R4 → LOCKED: closed-enum extension = MAJOR bump. New URI, grace window
+#      applies as for any major. See `registry.versioning.enum_extension`.
+#
+# R5 → LOCKED: no localisation at entity level. byte5 is a single-language
+#      (German) organisation; multi-region solved per-deployment.
+#      See `registry.non_goals.localisation`.
+# ===========================================================================

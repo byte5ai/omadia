@@ -1,0 +1,151 @@
+# Release workflow — PLACEHOLDER, NOT YET ACTIVE.
+#
+# Activates once OB-30 Block 2 (Branding & License) lands the
+# decisions below. The skeleton is here so the diff to "fully wired
+# release" stays small + reviewable.
+#
+# Decisions still pending (TODO before enabling):
+#   1. npm scope          — `@omadia/*` vs. fresh scope
+#   2. GHCR target        — `ghcr.io/<org>/harness-middleware` and
+#                           `ghcr.io/<org>/harness-web-ui`
+#   3. Repo public name   — affects badge URLs in README
+#   4. Release-trigger    — semver tags `v*.*.*` vs. release-PR pattern
+#                           via release-please
+#   5. Which workspace
+#      packages publish   — only @omadia/channel-sdk +
+#                           plugin-api as SDK, or every workspace?
+#
+# Every step below is intentionally commented-out so a `git push --tags`
+# today does NOT trigger a half-broken publish.
+
+name: Release (placeholder)
+
+on:
+  # Active trigger — uncomment and pick ONE pattern when wiring:
+  # push:
+  #   tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry-run only (skip npm publish + GHCR push)'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write   # OIDC for npm provenance once wired
+
+jobs:
+  guard:
+    name: not-yet-wired guard
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "::error::release.yml is a placeholder. Decisions in OB-30 Block 2 (npm scope, GHCR target, release trigger pattern) must land before this workflow is enabled."
+          exit 1
+
+  # ──────────────────────────────────────────────────────────────────
+  # The blocks below show the SHAPE of what will activate post-Block-2.
+  # All are gated behind `if: false` so they never run today.
+  # ──────────────────────────────────────────────────────────────────
+
+  npm-publish:
+    name: npm publish (gated off)
+    runs-on: ubuntu-latest
+    if: false
+    needs: [guard]
+    defaults:
+      run:
+        working-directory: middleware
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'npm'
+          cache-dependency-path: middleware/package-lock.json
+      - name: npm ci + build
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: npm publish (--provenance, --access public)
+        # TODO: pick exact workspaces once Block 2 names them. Today
+        # every workspace ships with `"private": true` — flip that
+        # for the publish-target subset before the first publish.
+        run: |
+          # Example pattern:
+          # npm publish -w @omadia/plugin-api --provenance --access public
+          # npm publish -w @omadia/channel-sdk --provenance --access public
+          echo "TODO: wire workspace publish list"
+          exit 1
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  ghcr-middleware:
+    name: middleware → GHCR (gated off)
+    runs-on: ubuntu-latest
+    if: false
+    needs: [guard]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          # TODO Block-2: lock org/repo name once decided.
+          images: ghcr.io/byte5ai/omadia-middleware
+          tags: |
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
+          sbom: true
+
+  ghcr-web-ui:
+    name: web-ui → GHCR (gated off)
+    runs-on: ubuntu-latest
+    if: false
+    needs: [guard]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          # TODO Block-2: lock org/repo name once decided.
+          images: ghcr.io/byte5ai/omadia-web-ui
+          tags: |
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./web-ui
+          file: ./web-ui/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            MIDDLEWARE_URL=http://middleware:8080
+          provenance: true
+          sbom: true

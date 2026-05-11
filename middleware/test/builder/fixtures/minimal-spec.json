@@ -1,0 +1,40 @@
+{
+  "id": "de.byte5.agent.weather",
+  "name": "Weather Forecast Agent",
+  "version": "0.1.0",
+  "description": "Agent für Wetter-Forecasts via OpenWeather API",
+  "category": "analysis",
+  "depends_on": ["de.byte5.integration.openweather"],
+  "tools": [
+    {
+      "id": "get_forecast",
+      "description": "Hole Wetter-Forecast für eine Stadt",
+      "input": {
+        "type": "object",
+        "required": ["city"],
+        "properties": {
+          "city": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  ],
+  "skill": {
+    "role": "ein präziser Wetter-Recherche-Assistent"
+  },
+  "playbook": {
+    "when_to_use": "User fragt nach aktuellem oder geplantem Wetter",
+    "not_for": ["historische Klimadaten älter als 30 Tage"],
+    "example_prompts": [
+      "Wie wird das Wetter morgen in Hamburg?",
+      "Forecast für Berlin nächste Woche?"
+    ]
+  },
+  "network": {
+    "outbound": ["api.openweather.org"]
+  },
+  "slots": {
+    "client-impl": "  // weather client impl placeholder\n  return { async ping() {}, async search() { return []; }, async dispose() {} };",
+    "toolkit-impl": "// weather toolkit impl placeholder\nexport function createToolkit(opts: ToolkitOptions): Toolkit {\n  return { tools: [], async close() { await opts.client.dispose(); } };\n}",
+    "skill-prompt": "# Rolle: Wetter-Recherche-Assistent\n\nDu lieferst präzise Wetter-Forecasts."
+  }
+}

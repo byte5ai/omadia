@@ -1,0 +1,359 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import dotenv from 'dotenv';
+import { z } from 'zod';
+
+// Resolve .env relative to this file so the server works from any CWD.
+const here = path.dirname(fileURLToPath(import.meta.url));
+// From src/ or dist/ the project root is always one directory up.
+// `override: true` so .env wins over any pre-set (possibly empty) shell vars.
+dotenv.config({ path: path.resolve(here, '..', '.env'), override: true });
+
+const ConfigSchema = z.object({
+  PORT: z.coerce.number().int().positive().default(3979),
+
+  // Anthropic SDK
+  ANTHROPIC_API_KEY: z.string().min(1, 'ANTHROPIC_API_KEY is required'),
+  ORCHESTRATOR_MODEL: z.string().min(1).default('claude-opus-4-7'),
+  ORCHESTRATOR_MAX_TOKENS: z.coerce.number().int().positive().default(4096),
+
+  // Sub-agent runtime (Odoo Accounting, Odoo HR, Confluence Playbook). These
+  // sub-agents run locally inside the middleware; skill markdown lives under
+  // SKILLS_DIR. Model default matches the orchestrator; override to run
+  // sub-agents cheaper (Sonnet/Haiku) while keeping the orchestrator on Opus.
+  SUB_AGENT_MODEL: z.string().min(1).default('claude-opus-4-7'),
+  SUB_AGENT_MAX_TOKENS: z.coerce.number().int().positive().default(4096),
+  SUB_AGENT_MAX_ITERATIONS: z.coerce.number().int().positive().default(16),
+
+  // BuilderAgent runtime — separate from SUB_AGENT_MAX_TOKENS because
+  // fill_slot generates whole TS slot bodies (5–15k output tokens for a
+  // realistic plugin slot is normal). With 4096 the model would emit
+  // `{"slotKey":"…","source":"<truncated>` and the SDK aggregator would
+  // drop the partial source field, producing zod errors that look like
+  // "Required: source" — see OB-31. 16384 covers the common cases;
+  // operators can bump to the model's max (32k for opus-4-7) via env.
+  BUILDER_AGENT_MAX_TOKENS: z.coerce.number().int().positive().default(16384),
+  SKILLS_DIR: z.string().min(1).default('../skills'),
+
+  // Memory persistence (filesystem backend for now)
+  MEMORY_DIR: z.string().min(1).default('./.memory'),
+  MEMORY_SEED_DIR: z.string().min(1).default('./seed/memory'),
+  MEMORY_SEED_MODE: z.enum(['missing', 'overwrite', 'skip']).default('missing'),
+
+  // Admin endpoint auth. Empty/unset disables the admin endpoint entirely.
+  ADMIN_TOKEN: z.string().optional(),
+
+  // Harness admin OAuth (A.1). ADMIN_ALLOWED_EMAILS holds a comma-separated
+  // whitelist of byte5 emails that may mint a session. When the list is
+  // empty the /api/v1/auth/* routes still run but every sign-in gets 403 —
+  // use an ADMIN_TOKEN-authenticated break-glass path to recover.
+  ADMIN_ALLOWED_EMAILS: z.string().optional(),
+
+  // OB-49 — provider-aware auth. Comma-separated list of active provider
+  // ids ('local', 'entra', or future plugin ids). Default 'local,entra'
+  // so any operator who already has MICROSOFT_APP_* wired sees Entra on
+  // the login picker out of the box; entra is silently skipped (with a
+  // log warning) when those secrets are missing, so a fresh OSS-Demo
+  // still lands on a working local-only login page. Override to 'entra'
+  // alone to disable local-password sign-in entirely.
+  AUTH_PROVIDERS: z.string().default('local,entra'),
+
+  // OB-49 first-boot seed. When the users table is empty AND both vars
+  // are set, the bootstrap creates a single admin user with these creds.
+  // Otherwise the unauthenticated /api/v1/auth/setup wizard is mounted
+  // and the operator completes setup via the browser. Either path is a
+  // one-shot: once any user exists, both paths refuse.
+  ADMIN_BOOTSTRAP_EMAIL: z.string().optional(),
+  ADMIN_BOOTSTRAP_PASSWORD: z.string().optional(),
+  ADMIN_BOOTSTRAP_DISPLAY_NAME: z.string().optional(),
+  // Public base URL the `return` redirect lands on after a successful
+  // login. In prod this is the middleware host itself (admin UI eventually
+  // moves to its own Fly app → point this at that host). In dev it's the
+  // Next.js origin (localhost:3333) so the Set-Cookie from the callback
+  // lands on the SAME domain the browser is on — cookies don't cross hosts.
+  PUBLIC_BASE_URL: z
+    .string()
+    .url()
+    .default('http://localhost:3979'),
+  // Absolute URL Azure AD redirects to after login. MUST be registered
+  // verbatim in the MS365 App Registration. In prod: middleware's own
+  // /api/v1/auth/callback. In dev: http://localhost:3333/bot-api/v1/auth/callback
+  // so Next's rewrite forwards the callback back into the middleware while
+  // keeping the browser on localhost:3333 for the cookie.
+  AUTH_REDIRECT_URI: z.string().url().optional(),
+  // Path we bounce users to after a successful login when no ?return param
+  // was supplied. Defaults to `/` because the admin UI's root is the chat
+  // landing page.
+  AUTH_DEFAULT_RETURN_PATH: z.string().default('/'),
+
+  // Local-dev endpoints (unauthenticated memory browser, …). Keep this OFF in
+  // any deployed environment — the router mounts under /api/dev and exposes
+  // raw memory contents without auth. Only enable when iterating on the
+  // Next.js dev UI against a local middleware.
+  DEV_ENDPOINTS_ENABLED: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default('false'),
+
+  // Postgres connection string for the Neon-backed knowledge graph.
+  // When set, `bootstrapKnowledgeGraphFromEnv` installs the
+  // harness-knowledge-graph-neon sibling; when unset, the inmemory
+  // sibling is installed. Empty-string is treated as unset (operator
+  // typically exports `""` to mean „kein Backend"). The neon plugin
+  // reads its effective DSN from installed.json config (set by
+  // bootstrap) — this Config field is the input boundary at process
+  // start, not the persistent storage. (S+12.5-3 additionally
+  // migrates the persistent storage from installed.json → Vault.)
+  DATABASE_URL: z
+    .string()
+    .optional()
+    .transform((v) => (v && v.length > 0 ? v : undefined)),
+
+  // Knowledge-graph tenant scope. Same value the NeonKnowledgeGraph reads
+  // directly from process.env; declared here too so the diagram service can
+  // use it as the cache-key prefix without a parallel env read.
+  GRAPH_TENANT_ID: z.string().min(1).default('default'),
+
+  // Microsoft Bot Framework / Teams. When MICROSOFT_APP_ID is empty/unset,
+  // the /api/messages endpoint is not mounted — useful for local dev.
+  MICROSOFT_APP_ID: z.string().optional(),
+  MICROSOFT_APP_PASSWORD: z.string().optional(),
+  MICROSOFT_APP_TYPE: z
+    .enum(['MultiTenant', 'SingleTenant', 'UserAssignedMSI'])
+    .default('MultiTenant'),
+  MICROSOFT_APP_TENANT_ID: z.string().optional(),
+  /**
+   * Bot Framework OAuth Connection Name (configured in Azure Bot Service).
+   * When set, the Teams bot attempts to retrieve a Teams SSO assertion for
+   * each message and threads it into the orchestrator as `ssoAssertion`,
+   * enabling the calendar tools. Unset → calendar tools stay dormant (no
+   * OAuth flow, no consent prompts).
+   */
+  TEAMS_SSO_CONNECTION_NAME: z.string().optional(),
+
+  // Telegram channel. When TELEGRAM_BOT_TOKEN is set, the channel package is
+  // auto-installed at boot. TELEGRAM_WEBHOOK_SECRET is required alongside it
+  // (HMAC-style header validation on the webhook). TELEGRAM_PUBLIC_BASE_URL
+  // is optional — when missing, the channel falls back to long-polling.
+  TELEGRAM_BOT_TOKEN: z.string().optional(),
+  TELEGRAM_WEBHOOK_SECRET: z.string().optional(),
+  TELEGRAM_PUBLIC_BASE_URL: z.string().url().optional(),
+
+  // Orchestrator safety rails
+  MAX_TOOL_ITERATIONS: z.coerce.number().int().positive().default(12),
+
+  // Diagram rendering (Kroki + S3-compatible storage). When all required fields are
+  // present, the orchestrator exposes `render_diagram` and the middleware
+  // mounts the HMAC-signed image-proxy at /diagrams/<key>. Missing values
+  // disable the feature cleanly — the rest of the middleware is unaffected.
+  KROKI_BASE_URL: z.string().url().optional(),
+  // Tolerate an empty `DIAGRAM_URL_SECRET=` line in .env (z.optional() only
+  // skips the rule when the key is missing entirely; an empty string would
+  // still trip the .min(32) check). preprocess flips '' to undefined first.
+  DIAGRAM_URL_SECRET: z
+    .preprocess((v) => (v === '' ? undefined : v), z.string().min(32).optional()),
+  DIAGRAM_PUBLIC_BASE_URL: z.string().url().optional(),
+  DIAGRAM_SIGNED_URL_TTL_SEC: z.coerce.number().int().positive().default(900),
+  // Source-spec cap. Must accommodate base64-inlined brand assets (a 150 kB
+  // PNG becomes ~200 kB base64), plus the normal Vega-Lite / Graphviz body.
+  // Kroki's own POST-body limit is ~10 MB, so 1 MB is defensively low.
+  DIAGRAM_MAX_SOURCE_BYTES: z.coerce.number().int().positive().default(1_000_000),
+  // Teams rejects card images > 1 MB; be strict and cap below that.
+  DIAGRAM_MAX_PNG_BYTES: z.coerce.number().int().positive().default(900_000),
+
+  // Object-storage (S3-compatible). Locally: MinIO from compose.yml. On Fly:
+  // auto-populated by `fly storage create` (Tigris).
+  BUCKET_NAME: z.string().optional(),
+  AWS_ENDPOINT_URL_S3: z.string().url().optional(),
+  AWS_ACCESS_KEY_ID: z.string().optional(),
+  AWS_SECRET_ACCESS_KEY: z.string().optional(),
+
+  // Off-site backup of the encrypted vault to the same Tigris bucket. The
+  // backup only holds ciphertext — the master key (VAULT_KEY) is never
+  // uploaded, so a bucket compromise alone cannot decrypt anything. Disabled
+  // when BUCKET_NAME/AWS_* are missing regardless of this flag.
+  VAULT_BACKUP_ENABLED: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default('false'),
+  VAULT_BACKUP_PREFIX: z.string().min(1).default('backups/vault/'),
+  VAULT_BACKUP_RETENTION: z.coerce.number().int().min(1).max(365).default(30),
+  VAULT_BACKUP_INTERVAL_HOURS: z.coerce.number().min(1).max(168).default(24),
+
+  // Ollama sidecar for in-tenant embeddings (topic detection). When unset,
+  // the Teams bot falls back to always-continue (current fire-and-use-full-
+  // history behaviour); no hallucinated topic-asks on config drift.
+  OLLAMA_BASE_URL: z.string().url().optional(),
+  OLLAMA_EMBEDDING_MODEL: z.string().min(1).default('nomic-embed-text'),
+  TOPIC_CLASSIFIER_MODEL: z.string().min(1).default('claude-haiku-4-5-20251001'),
+  TOPIC_UPPER_THRESHOLD: z.coerce.number().min(0).max(1).default(0.55),
+  TOPIC_LOWER_THRESHOLD: z.coerce.number().min(0).max(1).default(0.15),
+
+  // Graph-RAG embedding backfill. When a Turn's post-commit embed() call
+  // fails (Ollama sidecar timeout / 500), the row stays in `graph_nodes`
+  // with `embedding = NULL`, invisible to `searchTurnsByEmbedding`. This
+  // scheduler re-tries those turns on a loop. Enabled by default whenever
+  // OLLAMA_BASE_URL is set — the scheduler itself no-ops otherwise.
+  GRAPH_EMBEDDING_BACKFILL_ENABLED: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default('true'),
+  GRAPH_EMBEDDING_BACKFILL_INTERVAL_MINUTES: z.coerce.number().min(1).max(360).default(5),
+  GRAPH_EMBEDDING_BACKFILL_BATCH_SIZE: z.coerce.number().int().positive().max(200).default(20),
+  GRAPH_EMBEDDING_BACKFILL_MAX_ATTEMPTS: z.coerce.number().int().positive().max(50).default(5),
+  // Cap parallel Ollama embedding requests. `nomic-embed-text` serialises
+  // inference per request, so bursts (boot replay + backfill + live turns)
+  // just produce timeouts if we let them all fly at once. 2 matches the
+  // Ollama sidecar's 2 shared CPUs — bump if we upgrade the machine.
+  GRAPH_EMBEDDING_MAX_CONCURRENT: z.coerce.number().int().min(0).max(32).default(2),
+
+  // NorthData Premium API. When NORTHDATA_ENABLED=true and an API key is set,
+  // the middleware exposes `enrich_company` (orchestrator) and the
+  // `query_northdata` sub-agent. Read-only ingest into the knowledge graph —
+  // never writes back to Odoo. Rate-limit defaults conservatively (2 RPS) to
+  // protect the Premium quota; bump after measuring.
+  NORTHDATA_ENABLED: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default('false'),
+  NORTHDATA_API_KEY: z.string().optional(),
+  NORTHDATA_BASE_URL: z.string().url().default('https://www.northdata.com/_api'),
+  NORTHDATA_RATE_LIMIT_RPS: z.coerce.number().positive().default(2),
+  NORTHDATA_CACHE_TTL_DAYS: z.coerce.number().int().positive().default(30),
+  NORTHDATA_MAX_BYTES: z.coerce.number().int().positive().default(500_000),
+  // Phase 5: change-monitoring watchlist. Off until the Watcher service lands.
+  NORTHDATA_WATCHLIST_ENABLED: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default('false'),
+  NORTHDATA_WATCHLIST_INTERVAL_HOURS: z.coerce.number().min(1).max(168).default(24),
+
+  // OpenRegister (https://openregister.de) — active enrichment provider. When
+  // enabled and an API key is set, the `enrich_company` tool talks to
+  // api.openregister.de. Takes precedence over NorthData if both are enabled.
+  // Free tier is 50 requests/month; each enrichment in `standard` fetch level
+  // costs 3 requests (base + owners + financials).
+  OPENREGISTER_ENABLED: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default('false'),
+  OPENREGISTER_API_KEY: z.string().optional(),
+  OPENREGISTER_BASE_URL: z.string().url().default('https://api.openregister.de'),
+  OPENREGISTER_RATE_LIMIT_RPS: z.coerce.number().positive().default(2),
+  OPENREGISTER_CACHE_TTL_DAYS: z.coerce.number().int().positive().default(30),
+  OPENREGISTER_MAX_BYTES: z.coerce.number().int().positive().default(500_000),
+  /** How much we fetch per enrichment.
+   *   minimal  = base only (1 credit, no GF/Finanzen)
+   *   standard = base + owners + financials (3 credits, recommended)
+   *   full     = base + owners + financials + ubo + historical-owners (5 credits)
+   */
+  OPENREGISTER_FETCH_LEVEL: z
+    .enum(['minimal', 'standard', 'full'])
+    .default('standard'),
+
+  // Teams attachment persistence. When enabled, incoming Teams message
+  // attachments (files + inline images) are downloaded, stored in Tigris
+  // under the `TEAMS_ATTACHMENT_KEY_PREFIX` prefix, and indexed in Neon
+  // (`teams_attachments` — migration 0008). Pure storage; no text extraction
+  // or graph ingest. Fires-and-forget on the Teams inbound path — never
+  // blocks the bot reply.
+  TEAMS_ATTACHMENT_STORAGE_ENABLED: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default('false'),
+  TEAMS_ATTACHMENT_KEY_PREFIX: z.string().min(1).default('teams-attachments'),
+  /** Per-file cap. Larger uploads are logged + skipped. */
+  TEAMS_ATTACHMENT_MAX_BYTES: z.coerce.number().int().positive().default(25_000_000),
+  /**
+   * HMAC secret for signed attachment URLs (`/attachments/<key>?sig=…`). Used
+   * when the bot embeds a persisted logo/image URL into a Vega-Lite /
+   * Graphviz / PlantUML diagram spec. Unset → the attachment proxy route
+   * is NOT mounted (attachments still persist to Tigris, but can't be
+   * served via signed URL).
+   */
+  ATTACHMENT_URL_SECRET: z.string().optional(),
+  /** Public URL base for signed attachment URLs — typically the same as the
+   *  diagram base URL (the Fly app's public origin). */
+  ATTACHMENT_PUBLIC_BASE_URL: z.string().url().optional(),
+  ATTACHMENT_SIGNED_URL_TTL_SEC: z
+    .coerce.number()
+    .int()
+    .positive()
+    .default(60 * 60 * 24 * 7), // 7 days — covers memory-based branding reuse across sessions
+
+  // Answer verifier. When VERIFIER_ENABLED=true, every orchestrator reply is
+  // classified by the trigger router and — if it carries numeric/ID/date
+  // claims — re-checked against Odoo + knowledge-graph. VERIFIER_MODE picks
+  // the blast radius:
+  //   - shadow  : verifier runs + logs verdicts, never blocks or retries.
+  //   - enforce : contradictions block the reply, trigger one retry with
+  //               a correction prompt; final failure shows an honest error.
+  // Leave OFF in production until the shadow-mode metrics are clean.
+  VERIFIER_ENABLED: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default('false'),
+  VERIFIER_MODE: z.enum(['shadow', 'enforce']).default('shadow'),
+  VERIFIER_MODEL: z.string().min(1).default('claude-haiku-4-5-20251001'),
+  VERIFIER_MAX_CLAIMS: z.coerce.number().int().positive().default(20),
+  VERIFIER_AMOUNT_TOLERANCE: z.coerce.number().nonnegative().default(0.01),
+  VERIFIER_MAX_RETRIES: z.coerce.number().int().min(0).max(2).default(1),
+
+  // Package upload (Phase 1–5 der Zip-Upload-Roadmap). Default OFF — wird
+  // erst scharf geschaltet, wenn Admin-UI + Security-Review durch sind.
+  // Upload landet als entpackter Ordner unter UPLOADED_PACKAGES_DIR und der
+  // Manifest wird in den Catalog gemerged. Secrets nach wie vor im Vault.
+  PACKAGE_UPLOAD_ENABLED: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default('true'),
+  UPLOADED_PACKAGES_DIR: z.string().min(1).default('./.uploaded-packages'),
+  PACKAGE_UPLOAD_MAX_BYTES: z.coerce.number().int().positive().default(15 * 1024 * 1024),
+  PACKAGE_UPLOAD_MAX_EXTRACTED_BYTES: z.coerce.number().int().positive().default(80 * 1024 * 1024),
+  PACKAGE_UPLOAD_MAX_ENTRIES: z.coerce.number().int().positive().default(2000),
+  /** Root of the built-in package tree (scanned for manifest.yaml files at
+   *  boot). In dev this resolves to `<repo>/middleware/packages`; in the
+   *  Docker image it's `/app/packages`. Each subdirectory with a valid
+   *  schema-v1 manifest becomes an auto-installable plugin. */
+  BUILT_IN_PACKAGES_DIR: z.string().min(1).default('./packages'),
+  /** Optional dev-loop source for plugin authors iterating outside the
+   *  workspace. When set to a directory, every sub-directory with a valid
+   *  schema-v1 `manifest.yaml` is exposed as a plugin — same activation
+   *  pathway as Built-In/Uploaded. Local-Dev wins on ID collision so an
+   *  author can shadow a built-in or uploaded plugin without packing/
+   *  zipping/uploading every iteration. Default is unset (disabled). */
+  PLUGIN_DEV_DIR: z.string().optional(),
+});
+
+export type Config = z.infer<typeof ConfigSchema>;
+
+// Relative path-like settings are resolved against the middleware root so the server
+// works regardless of the CWD (local dev, Docker, Fly machine, tests).
+const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const middlewareRoot = path.resolve(moduleDir, '..');
+
+function resolvePath(value: string): string {
+  return path.isAbsolute(value) ? value : path.resolve(middlewareRoot, value);
+}
+
+function loadConfig(): Config {
+  const parsed = ConfigSchema.safeParse(process.env);
+  if (!parsed.success) {
+    const issues = parsed.error.issues
+      .map((issue) => `  - ${issue.path.join('.')}: ${issue.message}`)
+      .join('\n');
+    throw new Error(`Invalid configuration:\n${issues}`);
+  }
+  return {
+    ...parsed.data,
+    MEMORY_DIR: resolvePath(parsed.data.MEMORY_DIR),
+    MEMORY_SEED_DIR: resolvePath(parsed.data.MEMORY_SEED_DIR),
+    SKILLS_DIR: resolvePath(parsed.data.SKILLS_DIR),
+    UPLOADED_PACKAGES_DIR: resolvePath(parsed.data.UPLOADED_PACKAGES_DIR),
+    PLUGIN_DEV_DIR: parsed.data.PLUGIN_DEV_DIR
+      ? resolvePath(parsed.data.PLUGIN_DEV_DIR)
+      : undefined,
+  };
+}
+
+export const config: Config = loadConfig();

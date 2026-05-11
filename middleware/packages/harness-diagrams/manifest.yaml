@@ -1,0 +1,117 @@
+schema_version: "1"
+
+identity:
+  id: "@omadia/diagrams"
+  name: "Diagrams"
+  version: "0.1.0"
+  kind: "tool"
+  domain: "visualization.diagrams"
+  description: "Rendert Mermaid/Graphviz/PlantUML/Vega-Lite-Diagramme über Kroki und liefert signierte PNG-URLs aus Tigris."
+  authors:
+    - name: "byte5 GmbH"
+      email: "dev@byte5.de"
+      url: "https://byte5.de"
+  license: "Proprietary"
+  categories:
+    - "visualization"
+    - "infrastructure"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+# Diagrams opt-in uses the MemoryStore service to auto-lookup
+# `/memories/_brand/logo.md` when a spec references `brand://logo` but the
+# LLM forgot to pass `brand_logo_storage_key`. The feature degrades cleanly
+# when the service is absent (logs a warning, LLM must pass the key itself),
+# so this is a soft dependency — listed here to guarantee activation order
+# within ToolPluginRuntime.
+depends_on:
+  - "@omadia/memory"
+
+lifecycle:
+  entry: "dist/plugin.js"
+
+setup:
+  fields:
+    - key: "kroki_base_url"
+      type: "url"
+      label: "Kroki Base URL"
+      help: "Endpoint der Kroki-Installation, z.B. https://kroki.io"
+      required: true
+
+    - key: "public_base_url"
+      type: "url"
+      label: "Öffentliche Middleware-Base-URL"
+      help: "Wird in signierten Bild-URLs verwendet, z.B. https://bot.byte5.de"
+      required: true
+
+    - key: "tigris_endpoint"
+      type: "url"
+      label: "Tigris/S3 Endpoint"
+      required: true
+
+    - key: "tigris_bucket"
+      type: "string"
+      label: "Tigris/S3 Bucket-Name"
+      required: true
+
+    - key: "tenant_id"
+      type: "string"
+      label: "Tenant-Prefix für Keys"
+      required: false
+      default: "dev"
+
+    - key: "signed_url_ttl_sec"
+      type: "integer"
+      label: "Signed-URL-TTL (Sekunden)"
+      required: false
+      default: 3600
+
+    - key: "max_source_bytes"
+      type: "integer"
+      label: "Max. Diagram-Source-Größe (Bytes)"
+      required: false
+      default: 1048576
+
+    - key: "max_png_bytes"
+      type: "integer"
+      label: "Max. PNG-Größe (Bytes)"
+      required: false
+      default: 10485760
+
+    - key: "diagram_url_secret"
+      type: "secret"
+      label: "HMAC-Secret für signierte URLs"
+      required: true
+
+    - key: "aws_access_key_id"
+      type: "secret"
+      label: "Tigris Access Key ID"
+      required: true
+
+    - key: "aws_secret_access_key"
+      type: "secret"
+      label: "Tigris Secret Access Key"
+      required: true
+
+playbook:
+  when_to_use: |
+    Diagramm-Rendering on-demand: Flow/Sequenz/State/Gantt (Mermaid), dichte
+    gerichtete Graphen (Graphviz), klassische UML (PlantUML), quantitative
+    Charts aus Fach-Agent-Daten (Vega-Lite). Die Antwort enthält eine
+    signierte PNG-URL, die Teams-/Web-UI inline als Card rendert.
+
+permissions:
+  memory:
+    reads: []
+    writes: []
+  graph:
+    reads: []
+    writes: []
+  network:
+    outbound: []
+  filesystem:
+    scratch: false
+
+integrations: []
