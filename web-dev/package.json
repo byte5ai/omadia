@@ -24,7 +24,7 @@
     "cytoscape": "^3.30.4",
     "cytoscape-fcose": "^2.2.0",
     "framer-motion": "^12.38.0",
-    "lucide-react": "^1.8.0",
+    "lucide-react": "^1.14.0",
     "monaco-editor": "^0.55.1",
     "next": "^15.1.6",
     "next-intl": "^3.26.5",
