@@ -1,0 +1,179 @@
+schema_version: "1"
+
+identity:
+  id: "@omadia/agent-reference-maximum"
+  kind: "agent"
+  domain: "reference"
+  name: "Reference (Builder Pattern Source)"
+  version: "0.1.0"
+  description: "Builder-Reference-Plugin: lauffähige, credential-lose Codebase, die alle heute verfügbaren Plugin-API-Patterns in einer Stelle demonstriert. Pattern-Quelle für den BuilderAgent. Sekundärnutzen: Personal-Knowledge-Companion."
+  authors:
+    - name: "byte5 GmbH"
+      email: "dev@byte5.de"
+      url: "https://byte5.de"
+  license: "Proprietary"
+  categories:
+    - "reference"
+
+# OB-29-0 Marker: signal an den Plugin-Catalog-Endpoint, dass dieses Plugin
+# nicht im Operator-Store sichtbar sein soll. Der BuilderAgent darf es trotzdem
+# als Pattern-Quelle einlesen (lebt in BUILDER_REFERENCE_ESSENTIALS).
+is_reference_only: true
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+depends_on:
+  - "@omadia/memory"
+
+lifecycle:
+  entry: "dist/plugin.js"
+  hooks:
+    onActivate: true
+    onDeactivate: true
+  uninstall_policy:
+    entities: keep
+    memory: delete
+    secrets: delete
+
+setup:
+  fields:
+    - key: "digest_cron"
+      type: "string"
+      label: "Wöchentlicher Digest-Cron"
+      help: "Cron-Expression (croner-Syntax) für den Wochen-Digest."
+      required: false
+      default: "0 8 * * MON"
+
+models:
+  fallback_allowed: true
+
+capabilities:
+  - id: "add_note"
+    description: "Schreibt eine Notiz in den Plugin-Memory-Scope und gibt ein note-card Smart-Card-Attachment zurück."
+    input_schema:
+      type: "object"
+      required: ["body"]
+      properties:
+        title: { type: "string" }
+        body: { type: "string" }
+    output_schema:
+      type: "object"
+      properties:
+        noteId: { type: "string" }
+        createdAt: { type: "string" }
+    side_effects: "write"
+    idempotent: false
+    timeout_ms: 5000
+
+  - id: "analyze_url"
+    description: "OB-29-1 Sub-Agent-Delegations-Demo: delegiert eine SEO-Analyse einer URL an @omadia/agent-seo-analyst und persistiert die Antwort als Notiz im Plugin-Memory-Scope. Demonstriert das ctx.subAgent.ask-Pattern."
+    input_schema:
+      type: "object"
+      required: ["url"]
+      properties:
+        url: { type: "string", format: "uri" }
+    output_schema:
+      type: "object"
+      properties:
+        noteId: { type: "string" }
+        delegateAgent: { type: "string" }
+    side_effects: "write"
+    idempotent: false
+    timeout_ms: 60000
+
+  - id: "smart_extract_entities"
+    description: "OB-29-3 LLM-Service-Demo: extrahiert Personen/Topics aus einer ambigen Notiz via Haiku (ctx.llm.complete) und liefert die Treffer als JSON. Komplementär zur deterministischen Regex-Extraction in add_note: löst Mehrdeutigkeit, die Regex nicht erkennen kann."
+    input_schema:
+      type: "object"
+      required: ["body"]
+      properties:
+        body: { type: "string" }
+    output_schema:
+      type: "object"
+      properties:
+        ok: { type: "boolean" }
+        entities: { type: "array" }
+    side_effects: "read"
+    idempotent: false
+    timeout_ms: 30000
+
+  - id: "query_notes_by_person"
+    description: "OB-29-4 Tool-emittiertes-pendingUserChoice-Demo: sucht Notizen die einen Personen-Namen erwähnen. Bei Mehrdeutigkeit (mehrere matches) emittiert das Tool _pendingUserChoice statt zu raten — der Orchestrator short-circuitet die Turn und rendert eine Smart-Card."
+    input_schema:
+      type: "object"
+      required: ["personName"]
+      properties:
+        personName: { type: "string" }
+    output_schema:
+      type: "object"
+      properties:
+        ok: { type: "boolean" }
+    side_effects: "read"
+    idempotent: true
+    timeout_ms: 5000
+
+playbook:
+  when_to_use: |
+    Reference-only Plugin: gedacht als Pattern-Quelle für den BuilderAgent.
+    Sekundärnutzen: User können es als Personal-Knowledge-Companion nutzen,
+    sobald `is_reference_only` im Catalog-Filter abgeschaltet wird.
+  not_for:
+    - "Produktions-Use ohne explizite Aktivierung"
+    - "Sensible Daten — Notes liegen unverschlüsselt im Memory-Scope"
+
+permissions:
+  memory:
+    reads: ["agent:@omadia/agent-reference-maximum:*"]
+    writes: ["agent:@omadia/agent-reference-maximum:*"]
+  graph:
+    reads: ["Turn", "Person", "Company", "Fact"]
+    writes: []
+    # OB-29-2 — Plugin-eigene Entity-Namespace. ctx.knowledgeGraph.ingestEntities
+    # akzeptiert nur diese system-Strings; alles andere wirft
+    # KgEntityNamespaceError. 'odoo' und 'confluence' sind reserviert (host-only)
+    # und werden vom manifestLoader hier rausgestrippt, falls jemand sie listet.
+    entity_systems:
+      - "personal-notes"
+  network:
+    outbound: []
+  filesystem:
+    scratch: true
+  # OB-29-1 — Sub-Agent-Delegation-Pattern: this plugin may call only the
+  # seo-analyst. Every other target (or absence of subAgents permissions
+  # entirely) makes ctx.subAgent.ask throw SubAgentPermissionDeniedError.
+  subAgents:
+    calls:
+      - "@omadia/agent-seo-analyst"
+    calls_per_invocation: 3
+  # OB-29-3 — LLM-Service-Pattern: ctx.llm.complete() darf nur Haiku-Calls
+  # absetzen (cost-controlled), max 2 Calls pro Tool-Handler-Lifetime,
+  # max 1024 Output-Tokens pro Call. Models außerhalb der Liste werfen
+  # LlmModelNotAllowedError.
+  llm:
+    models_allowed:
+      - "claude-haiku-4-5*"
+    calls_per_invocation: 2
+    max_tokens_per_call: 1024
+
+integrations: []
+
+skills:
+  - id: "reference_expert_system"
+    kind: "prompt_partial"
+    path: "skills/reference-expert.md"
+    description: "Rolle und Verhalten des Reference-Plugins gegenüber dem Modell."
+    shareable: false
+  - id: "disambiguate_policy"
+    kind: "prompt_partial"
+    path: "skills/disambiguate-policy.md"
+    description: "Wann das Modell ask_user_choice anstoßen soll, wenn dieses Plugin Mehrdeutigkeit zurückmeldet."
+    shareable: true
+
+jobs:
+  - name: "weekly-digest"
+    schedule:
+      cron: "0 8 * * MON"
+    timeoutMs: 30000
+    overlap: skip

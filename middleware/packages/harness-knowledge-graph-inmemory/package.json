@@ -1,0 +1,20 @@
+{
+  "name": "@omadia/knowledge-graph-inmemory",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "In-memory KnowledgeGraph provider plugin for the byte5 Harness — provides 'knowledgeGraph@1' + 'entityRefBus@1'. Dev-only / test fallback (no persistence, no embeddings, no Postgres). Operator picks this OR the Neon-backed sibling plugin in the RequiresWizard. S+11-2a: InMemoryKnowledgeGraph implementation moved here from @omadia/knowledge-graph; the old package now imports it transitively. Capability ownership flips in S+11-2b once the manifest declares provides:.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@omadia/plugin-api": "*"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

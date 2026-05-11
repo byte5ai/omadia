@@ -1,0 +1,70 @@
+schema_version: "1"
+
+identity:
+  id: "@omadia/knowledge-graph-inmemory"
+  name: "Knowledge Graph (in-memory)"
+  version: "0.1.0"
+  kind: "extension"
+  domain: "core.knowledge-graph"
+  description: "In-memory KnowledgeGraph provider plugin. No persistence, no embeddings, no Postgres — every node/edge lives in process RAM and disappears on restart. Provider der Capabilities `knowledgeGraph@1` und `entityRefBus@1`. Operator wählt diesen Provider via RequiresWizard wenn keine Neon-Datenbank verfügbar ist (Empty-Middleware-Demo, lokales Dev, CI). Mutual exclusion mit @omadia/knowledge-graph-neon — nur einer der beiden Provider darf gleichzeitig in installed.json stehen, der Capability-Resolver duldet keine zwei aktiven Provider für `knowledgeGraph@1`."
+  authors:
+    - name: "byte5 GmbH"
+      email: "dev@byte5.de"
+      url: "https://byte5.de"
+  license: "Proprietary"
+  categories:
+    - "infrastructure"
+    - "knowledge"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+lifecycle:
+  entry: "dist/plugin.js"
+
+# ---------------------------------------------------------------------------
+# S+11-2b: capability lifetime flipped from kernel-bridge / old harness-knowledge-graph
+# plugin to plugin-owned. activate() constructs InMemoryKnowledgeGraph + EntityRefBus
+# and publishes both via ctx.services.provide. No graphPool — there is no Pool
+# to publish.
+#
+# Mutual exclusion: the sibling @omadia/knowledge-graph-neon plugin
+# declares the same `provides:` set. Both are eligible providers for
+# `knowledgeGraph@1`. The S+8.5 capability-resolver lets one provider win
+# at activate-time; ServicesAccessor.provide() throws on a second registration.
+# Operator picks one provider in the RequiresWizard / install UI.
+# ---------------------------------------------------------------------------
+provides:
+  - "knowledgeGraph@1"
+  - "entityRefBus@1"
+
+requires: []
+
+setup:
+  fields:
+    - id: "graph_tenant_id"
+      label: "Graph Tenant ID"
+      type: "text"
+      required: false
+      description: "Tenant-Schlüssel für die in-memory-Graph-Instanz (kosmetisch — bei in-memory gibt es nur einen Tenant pro Prozess). Default: 'default'."
+
+playbook:
+  when_to_use: |
+    Empty-Middleware-Setup ohne Postgres (Demos, CI, lokales Dev). Kein
+    Persistence-Layer — auf Restart sind alle Sessions/Turns/Entities weg.
+    Für Produktion stattdessen @omadia/knowledge-graph-neon installieren.
+
+permissions:
+  memory:
+    reads: []
+    writes: []
+  graph:
+    reads: []
+    writes: []
+  network:
+    outbound: []
+  filesystem:
+    scratch: false
+
+integrations: []

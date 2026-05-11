@@ -1,0 +1,93 @@
+# Auto-bump dep versions weekly. Each ecosystem gets its own PR-cluster
+# so a single failing CVE-fix doesn't block the others. Limits to 5 open
+# PRs per ecosystem to keep review-load manageable; major-version bumps
+# stay on auto-merge OFF so a human eyeballs every breaking change.
+
+version: 2
+updates:
+  # Middleware (root npm + 17 workspace packages share one lockfile)
+  - package-ecosystem: 'npm'
+    directory: '/middleware'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '06:00'
+      timezone: 'Europe/Berlin'
+    open-pull-requests-limit: 5
+    labels: ['deps', 'middleware']
+    commit-message:
+      prefix: 'chore(deps,middleware)'
+      include: 'scope'
+    groups:
+      # Patch+minor bumps in dev-tooling get bundled — review fatigue
+      # is not worth one PR per minor jest/eslint version.
+      dev-tooling:
+        applies-to: 'version-updates'
+        dependency-type: 'development'
+        update-types: ['patch', 'minor']
+      # Production deps in middleware get individual PRs so the
+      # blast-radius per merge is bounded.
+      runtime-patches:
+        applies-to: 'version-updates'
+        dependency-type: 'production'
+        update-types: ['patch']
+
+  # Web-dev (Next.js admin UI)
+  - package-ecosystem: 'npm'
+    directory: '/web-ui'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '06:00'
+      timezone: 'Europe/Berlin'
+    open-pull-requests-limit: 5
+    labels: ['deps', 'web-ui']
+    commit-message:
+      prefix: 'chore(deps,web-ui)'
+      include: 'scope'
+    groups:
+      dev-tooling:
+        applies-to: 'version-updates'
+        dependency-type: 'development'
+        update-types: ['patch', 'minor']
+      runtime-patches:
+        applies-to: 'version-updates'
+        dependency-type: 'production'
+        update-types: ['patch']
+
+  # GitHub Actions versions in workflow files
+  - package-ecosystem: 'github-actions'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '06:00'
+      timezone: 'Europe/Berlin'
+    open-pull-requests-limit: 3
+    labels: ['deps', 'ci']
+    commit-message:
+      prefix: 'chore(deps,ci)'
+
+  # Docker base images (Dockerfile + web-ui/Dockerfile)
+  - package-ecosystem: 'docker'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '06:00'
+      timezone: 'Europe/Berlin'
+    open-pull-requests-limit: 3
+    labels: ['deps', 'docker']
+    commit-message:
+      prefix: 'chore(deps,docker)'
+  - package-ecosystem: 'docker'
+    directory: '/web-ui'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '06:00'
+      timezone: 'Europe/Berlin'
+    open-pull-requests-limit: 3
+    labels: ['deps', 'docker', 'web-ui']
+    commit-message:
+      prefix: 'chore(deps,docker,web-ui)'

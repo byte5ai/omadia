@@ -1,0 +1,97 @@
+# Builder Template-Manifest
+#
+# Beschreibt, wie die CodegenEngine ein AgentSpec auf das Boilerplate-Layout
+# unter diesem Verzeichnis abbildet:
+#
+#   - slots[]:        markierte Code-Regionen, die LLM-generierte Inhalte
+#                     aufnehmen (Marker: `// #region builder:<key>` ...
+#                     `// #endregion`)
+#   - placeholders:   `{{TOKEN}}` -> Source-Pfad ins AgentSpec (dotted-path,
+#                     `[i]`-Indizierung erlaubt; `__derived__/<name>` für
+#                     berechnete Werte)
+#   - skip_files:     im Output ausgelassene Files (top-level oder als
+#                     Path-Segment)
+#
+# Templates müssen `id` matchend zum Verzeichnisnamen tragen — der Resolver
+# verifiziert das beim Laden, damit registry und filesystem nicht
+# auseinanderdriften.
+
+id: agent-integration
+description: |
+  Integration-konsumierender Agent. Pattern: ein client.ts wraps einen
+  externen API-Endpoint (HTTP/SDK), und toolkit.ts exposed Tools, die
+  diesen Client rufen. Setzt `depends_on` auf ein Integration-Plugin
+  (z.B. de.byte5.integration.openweather) für Vault-Scope und
+  Capability-Resolution. Vorbild: middleware/packages/agent-seo-analyst/.
+
+slots:
+  - key: client-impl
+    target_file: client.ts
+    required: true
+    description: API-Client-Klasse oder SDK-Wrapper
+  - key: toolkit-impl
+    target_file: toolkit.ts
+    required: true
+    description: Tool-Array mit Anthropic-tool-spec + Handler-Bodies
+  - key: activate-body
+    target_file: plugin.ts
+    required: false
+    description: Custom-activate-Code (optional; default belasst Boilerplate-Body)
+  - key: skill-prompt
+    target_file: skills/{{AGENT_SLUG}}-expert.md
+    required: true
+    description: System-Prompt-Body (Frontmatter wird automatisch erzeugt)
+  - key: admin-ui-body
+    target_file: assets/admin-ui/index.html
+    required: false
+    description: |
+      Optional Operator-Admin-UI body content (HTML, inline <style>+<script>
+      erlaubt). Wird gemounted via ctx.routes.register() im activate-body
+      und in manifest.yaml als top-level admin_ui_path deklariert. Wenn
+      nicht gesetzt: der Default-Placeholder erklärt dem Operator, dass
+      keine Admin-UI konfiguriert ist.
+  - key: external-reads-imports
+    target_file: plugin.ts
+    required: false
+    description: |
+      Auto-managed by codegen — DO NOT fill via fill_slot. Codegen splices
+      the `import { z } from 'zod'` line plus `import type { … }` lines
+      for each unique service in spec.external_reads here.
+  - key: external-reads-init
+    target_file: plugin.ts
+    required: false
+    description: |
+      Auto-managed by codegen — DO NOT fill via fill_slot. Codegen
+      synthesises the body of this region from spec.external_reads[]:
+      typed `ctx.services.get(...)` lookups + tool descriptors that get
+      pushed onto the toolkit. Empty when spec.external_reads is empty.
+      To wire cross-integration data, add entries to spec.external_reads
+      via patch_spec, NOT by hand-coding the activate-body slot.
+
+placeholders:
+  AGENT_ID: id
+  AGENT_NAME: name
+  AGENT_SLUG: __derived__/agentSlug
+  AGENT_DESCRIPTION_DE: description
+  AGENT_VERSION: version
+  AGENT_DOMAIN: domain
+  CATEGORY: category
+  # Removed INTEGRATION_ID (depends_on[0]). Codegen now writes spec.depends_on
+  # directly into the manifest YAML AST so self-contained agents (PAT/OAuth
+  # in their own setup_fields, no parent integration plugin) work without a
+  # placeholder residue error. See `reproduceManifestCapabilities` in
+  # codegen.ts for the AST-level depends_on overwrite.
+  ROLE_DESCRIPTION_DE: skill.role
+  WHEN_TO_USE_DE: playbook.when_to_use
+  NOT_FOR_CASE_1: playbook.not_for[0]
+  EXAMPLE_PROMPT_1: playbook.example_prompts[0]
+  EXAMPLE_PROMPT_2: playbook.example_prompts[1]
+  OUTBOUND_HOST: network.outbound[0]
+
+skip_files:
+  - CLAUDE.md
+  - template.yaml
+  # README.md is a doc-only file with literal {{PLACEHOLDER}} examples in
+  # code-block bodies (illustrating the placeholder mechanism). Skipping it
+  # avoids the post-codegen no-residue check tripping over those examples.
+  - README.md

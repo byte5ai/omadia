@@ -1,0 +1,22 @@
+{
+  "name": "@omadia/plugin-privacy-detector-ollama",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "Ollama-based NER detector plugin for the Privacy-Proxy. Registers a `privacy.detector@1` provider that finds names, addresses, German phone numbers and free-text business secrets via a local LLM sidecar — complements the regex detector shipped with `@omadia/plugin-privacy-guard` (Slice 3.2).",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@omadia/plugin-api": "*",
+    "undici": "^7.25.0",
+    "zod": "^3.23.8"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

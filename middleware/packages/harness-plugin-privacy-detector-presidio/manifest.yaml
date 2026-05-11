@@ -1,0 +1,107 @@
+schema_version: "1"
+
+identity:
+  id: "@omadia/plugin-privacy-detector-presidio"
+  name: "Privacy Detector — Presidio"
+  version: "0.1.0"
+  kind: "tool"
+  domain: "privacy.detector"
+  description: "Privacy-Proxy add-on detector. Identifies a broad PII set — names (spaCy PERSON), addresses (LOCATION/GPE), organizations (ORG), structured PII (Email, IBAN, Phone, Credit-Card with Luhn, country-specific IDs like DE-Steuer-ID/Personalausweis) — via Microsoft Presidio served from a Python sidecar (FastAPI + Presidio-Analyzer + spaCy DE+EN). Deterministic, ms-fast complement to the LLM-NER (Ollama) detector. Registers itself with the `privacyDetectorRegistry` published by privacy-guard; emits hits for the same span-overlap-dedup pipeline."
+  authors:
+    - name: "byte5 GmbH"
+      email: "dev@byte5.de"
+      url: "https://byte5.de"
+  license: "MIT"
+  categories:
+    - "privacy"
+    - "compliance"
+    - "guardrails"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+lifecycle:
+  entry: "dist/plugin.js"
+
+# ---------------------------------------------------------------------------
+# Setup fields. Operator-tunable defaults. The infrastructure spec for the
+# Python sidecar lives in middleware/sidecars/privacy-detector-presidio/README.md.
+# ---------------------------------------------------------------------------
+setup:
+  fields:
+    - key: "presidio_endpoint"
+      type: "string"
+      label: "Presidio sidecar endpoint"
+      help: "Base URL of the Python sidecar (FastAPI with /analyze + /health). docker-compose default: http://presidio:5001 (in-network service). Local dev outside compose: http://localhost:5001."
+      required: false
+      default: "http://presidio:5001"
+
+    - key: "presidio_language"
+      type: "string"
+      label: "Sprache"
+      help: "ISO-639-1 Sprachcode für die Analyse. Default `de` (deutsche Tenants). Muss vom Sidecar geladen sein (siehe `PRESIDIO_LANGUAGES` env, default `de,en`). Bei mehrsprachigen Tenants kann das Plugin pro Tenant überschrieben werden."
+      required: false
+      default: "de"
+
+    - key: "presidio_score_threshold"
+      type: "number"
+      label: "Confidence-Threshold"
+      help: "Hits mit Score unter diesem Wert werden verworfen. Presidio-Default ist 0.4 — wir setzen 0.6 weil das spaCy-NER-Modell auf Long-Form-Inputs viele False-Positives produziert (gewöhnliche Substantive werden als Names erkannt). Höher = weniger False-Positives + niedrigerer Recall. Niedriger = mehr Recall + mehr noise. Bei 0.85 sind nur sehr starke Hits enthalten."
+      required: false
+      default: 0.6
+
+    - key: "presidio_timeout_ms"
+      type: "number"
+      label: "Detector-Timeout (ms)"
+      help: "Pro-Call-Timeout. Bei Überschreitung → status=timeout, fail-open. Default 3000ms reicht für Presidio (ms-schnell pro Call); bei sehr langen Inputs ggf. höher."
+      required: false
+      default: 3000
+
+    - key: "presidio_max_input_chars"
+      type: "number"
+      label: "Max-Input-Char-Limit"
+      help: "Skip-Detector wenn Input länger ist. Presidio ist deutlich schneller als LLM-NER, daher höheres Limit als bei Ollama. 100000 chars (~25k Tokens) deckt auch lange Memory-Recalls + System-Prompts ab."
+      required: false
+      default: 100000
+
+playbook:
+  when_to_use: |
+    Aktiviere dieses Plugin zusätzlich zu `harness-plugin-privacy-guard`,
+    wenn deterministische, schnelle PII-Detection für strukturierte
+    Entities und Names gebraucht wird. Presidio glänzt bei: Vornamen-
+    only-Erkennung (wo das LLM-NER 3b-Modell schwächelt), DE-spezifische
+    Patterns (Steuer-ID, Personalausweis), Adressen (LOCATION/GPE) und
+    Organisationen (ORG). LLM-NER (Ollama) bleibt für Freitext-
+    Geschäftsgeheimnisse (Vertragsklauseln) zuständig — mit Presidio
+    als Mid-Tier wird der LLM-Detector seltener gebraucht und kann
+    aggressiver getuned werden.
+
+    Voraussetzung: der Python-Sidecar muss laufen
+    (`middleware/sidecars/privacy-detector-presidio/`). Das Plugin
+    ruft beim Boot einmal `GET /health` ab und loggt das Ergebnis;
+    Detector-Calls fallen bei Sidecar-Ausfall einfach auf 0 hits
+    zurück (fail-open per Detector — Regex + Ollama laufen weiter).
+
+# ---------------------------------------------------------------------------
+# Permissions. Nur outbound network zum konfigurierten Presidio-Endpoint.
+# ---------------------------------------------------------------------------
+permissions:
+  memory:
+    reads: []
+    writes: []
+  graph:
+    reads: []
+    writes: []
+  network:
+    outbound:
+      - "localhost"
+      - "*.fly.dev"
+      - "*.flycast"
+      - "*.internal"
+  filesystem:
+    scratch: false
+
+provides: []
+requires:
+  - "privacy.detector@1"

@@ -1,0 +1,22 @@
+{
+  "name": "@omadia/orchestrator-extras",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "Orchestrator-extras tool-set for the byte5 Harness. Bundles ContextRetriever (pre-turn KG/embedding lookup), FactExtractor (LLM-driven KG ingest from chat turns), TopicDetector (per-message embedding-similarity routing), and GraphBackfill (offline graph-evidence catch-up). Consumes the kernel capabilities knowledgeGraph + entityRefBus + embeddingClient + memoryStore via ctx.services.get instead of direct construction.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@anthropic-ai/sdk": "*",
+    "@omadia/embeddings": "*",
+    "@omadia/plugin-api": "*"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

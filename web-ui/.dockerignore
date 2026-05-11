@@ -1,0 +1,28 @@
+# Harness Admin build context — ship only what Next needs at build time.
+
+.git
+.gitignore
+.DS_Store
+.vscode
+.idea
+
+# Dependencies + build artefacts (the Dockerfile re-runs `npm ci` and
+# `npm run build` in the builder stage, so shipping these saves nothing
+# and frequently causes platform mismatches).
+node_modules
+.next
+out
+
+# Env files — Fly injects env via fly.toml + `fly secrets`; baking them into
+# the image would ship local tokens to production.
+.env
+.env.local
+.env.*.local
+
+# Logs and OS junk
+*.log
+**/.DS_Store
+
+# Dockerfile itself — tiny, but keeps the context hash stable.
+Dockerfile
+.dockerignore

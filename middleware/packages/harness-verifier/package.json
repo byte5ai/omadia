@@ -1,0 +1,23 @@
+{
+  "name": "@omadia/verifier",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "Answer-Verifier tool-set for the byte5 Harness. Bundles VerifierService + VerifierPipeline + ClaimExtractor + DeterministicChecker + EvidenceJudge + GraphEvidenceFetcher + VerifierStore + TriggerRouter + FailureReplayDetector + CorrectionPrompt plus the GraphLookupTool factory used by accounting/hr sub-agents. Consumes the kernel capability knowledgeGraph (and graphPool for VerifierStore writes) via ctx.services.get instead of direct construction.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@anthropic-ai/sdk": "*",
+    "@omadia/plugin-api": "*",
+    "zod": "*",
+    "pg": "^8.13.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

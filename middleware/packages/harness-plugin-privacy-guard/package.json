@@ -1,0 +1,20 @@
+{
+  "name": "@omadia/plugin-privacy-guard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "Privacy-Proxy core plugin for the byte5 Harness. Publishes the `privacy.redact@1` capability with a regex-based PII detector (email, IBAN, phone, credit-card, API-key), a per-turn tokenise-map for reversible redaction, and a PII-free PrivacyReceipt for inline disclosure in Teams + Web channels.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@omadia/plugin-api": "*"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "@omadia/plugin-privacy-detector-presidio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "Presidio-backed PII detector plugin for the Privacy-Proxy. Registers a `privacy.detector@1` provider that uses Microsoft Presidio (spaCy NER + pattern recognizers) via a Python sidecar — deterministic, ms-fast Names/Addresses/Org detection plus structured PII (Email/IBAN/Phone/Credit-Card/IDs) with country-specific validation. Complements the regex detector in `harness-plugin-privacy-guard` and the Ollama NER detector in `harness-plugin-privacy-detector-ollama` (Slice 3.4).",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@omadia/plugin-api": "*",
+    "undici": "^7.25.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

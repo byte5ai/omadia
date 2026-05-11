@@ -1,0 +1,23 @@
+{
+  "name": "@omadia/knowledge-graph-neon",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "Neon-Postgres + pgvector KnowledgeGraph provider plugin for the byte5 Harness — provides 'knowledgeGraph@1' + 'entityRefBus@1' + 'graphPool@1'. Production backend (durable storage, vector search, embedding-backfill scheduler, schema migrations). Operator picks this OR the in-memory sibling plugin in the RequiresWizard. S+11-2a: implementations (NeonKnowledgeGraph + Pool + Migrator + Schema + EmbeddingBackfill + migrations/) moved here from @omadia/knowledge-graph; the old package now imports them transitively. Capability ownership flips in S+11-2b once the manifest declares provides:.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc && node scripts/copy-sql-assets.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@omadia/embeddings": "*",
+    "@omadia/plugin-api": "*",
+    "zod": "^3.23.8",
+    "pg": "^8.13.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

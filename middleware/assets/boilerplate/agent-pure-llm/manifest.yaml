@@ -1,0 +1,115 @@
+schema_version: "1"
+
+# ===========================================================================
+# Pure-LLM Agent Template — {{AGENT_NAME}}
+# ---------------------------------------------------------------------------
+# Schema of truth:  docs/harness-platform/manifest-schema.v1.yaml
+# Entity types:     docs/harness-platform/entity-registry.v1.yaml
+# Reference impl:   docs/harness-platform/boilerplate/agent-integration/
+#
+# This template targets agents whose value is in the system prompt + the
+# orchestrator's reasoning, not in calling an external API. No depends_on,
+# no secrets, no outbound network. The moment you need a real client →
+# switch to the `agent-integration` template.
+# ===========================================================================
+
+identity:
+  id: "{{AGENT_ID}}"                     # z.B. de.byte5.agent.brainstorm-coach
+  kind: "agent"
+  domain: "{{AGENT_DOMAIN}}"             # z.B. coaching, m365.sharepoint — lowercase, dotted, kebab-case mid-segment OK
+  name: "{{AGENT_NAME}}"
+  version: "{{AGENT_VERSION}}"
+  description: "{{AGENT_DESCRIPTION_DE}}"
+  authors:
+    - name: "byte5 GmbH"
+      email: "dev@byte5.de"
+  license: "Proprietary"
+  icon: "./assets/icon.png"
+  categories:
+    - "{{CATEGORY}}"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+# Pure-LLM agents have no integration dependency. The runtime still
+# resolves `ctx.secrets` along the (empty) chain — `require` would just
+# always reject, which is fine because we don't call it.
+depends_on: []
+
+lifecycle:
+  entry: "dist/index.js"
+  hooks:
+    onInstall: false
+    onConfigure: false                   # no setup.fields → no configure step
+    onActivate: true
+    onDeactivate: true
+    onUninstall: true
+    onMigrate: true
+  uninstall_policy:
+    entities: "quarantine"
+    memory: "delete"
+    secrets: "delete"
+
+# No setup needed — no API to authenticate against.
+setup:
+  fields: []
+  self_test: false                       # nothing to ping
+
+llm:
+  prefers:
+    - capabilities: ["tool_use"]
+      min_context: 100000
+      class: "frontier"
+      temperature_hint: 0.3              # leans toward generative work
+  fallback_allowed: true
+
+# No tools — the agent is pure prompting. The runtime accepts an empty
+# `capabilities` list and skips tool-loop construction at activation.
+capabilities: []
+
+playbook:
+  when_to_use: >
+    {{WHEN_TO_USE_DE}}
+  combines_with: []
+  not_for:
+    - "{{NOT_FOR_CASE_1}}"
+  example_prompts:
+    - "{{EXAMPLE_PROMPT_1}}"
+    - "{{EXAMPLE_PROMPT_2}}"
+
+entities:
+  produces: []
+  consumes: []
+
+# ---------------------------------------------------------------------------
+# System-Prompt = Skills (prompt_partial). Same contract as agent-
+# integration: runtime loads, strips frontmatter, concatenates with an
+# auto-generated header from plugin.name + plugin.description +
+# playbook.when_to_use.
+# ---------------------------------------------------------------------------
+skills:
+  - id: "{{AGENT_SLUG}}_expert_system"
+    kind: "prompt_partial"
+    path: "skills/{{AGENT_SLUG}}-expert.md"
+    description: "Rolle, Tonalität und Arbeitsweise für {{AGENT_NAME}}."
+    shareable: false
+
+permissions:
+  memory:
+    reads: ["session:*", "agent:{{AGENT_ID}}:*"]
+    writes: ["agent:{{AGENT_ID}}:*"]
+  graph:
+    reads: []
+    writes: []
+  network:
+    outbound: []                         # pure-LLM → keine externen Hosts
+  filesystem:
+    scratch: false
+
+integrations: []
+
+ui:
+  settings_schema: null
+  commands: []
+  dashboard_cards: []

@@ -1,0 +1,27 @@
+{
+  "name": "@omadia/orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "Core chat orchestrator for the byte5 Harness. Bundles the Orchestrator class (agentic tool-loop against Anthropic Claude), the seven native tools (memory, query_knowledge_graph, chat_participants, ask_user_choice, suggest_follow_ups, find_free_slots, book_meeting), the chat-API HTTP route, the VerifierService wrapper that couples the verifier@1 pipeline with the live Orchestrator + toSemanticAnswer converter, and TurnHookRegistry consumers (ContextRetriever onBeforeTurn, FactExtractor onAfterTurn). Consumes the kernel capabilities knowledgeGraph, memoryStore, embeddingClient, entityRefBus, contextRetriever, factExtractor, topicDetector, verifier (all soft) plus microsoft365.graph (optional, for calendar tools) via ctx.services.get and publishes chatAgent@1 as a bundle { agent: ChatAgent, raw: Orchestrator } for channel adapters.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@anthropic-ai/sdk": "*",
+    "@omadia/channel-sdk": "*",
+    "@omadia/embeddings": "*",
+    "@omadia/memory": "*",
+    "@omadia/orchestrator-extras": "*",
+    "@omadia/plugin-api": "*",
+    "@omadia/verifier": "*",
+    "zod": "*"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

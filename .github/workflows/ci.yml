@@ -1,0 +1,193 @@
+# PR + main-branch quality gate.
+#
+# Runs lint + typecheck + test on both workspaces, plus a schema smoke
+# that applies all 9 migrations against a real pgvector container. Audit
+# enforces a high-severity ceiling so a CVE-bumping dep can't slip in
+# unnoticed.
+#
+# Naming-independent — no secrets, no GHCR/npm push. Release-flow lives
+# in release.yml (currently placeholder; activates once OB-30 Block 2
+# locks the npm-scope + repo name).
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Cancel in-flight runs on the same ref when a newer push lands.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ------------------------------------------------------------------
+  # Middleware: lint + typecheck + node:test against tsx
+  # ------------------------------------------------------------------
+  middleware:
+    name: middleware (lint + typecheck + test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: middleware
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: middleware/package-lock.json
+
+      - name: npm ci (middleware + workspaces)
+        run: npm ci --no-audit --no-fund
+
+      - name: Build workspace packages (compiled dist/ for cross-package imports)
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test (node --test via tsx)
+        run: npm run test
+
+  # ------------------------------------------------------------------
+  # Web-dev: Next.js admin UI — vitest + lint + typecheck
+  # ------------------------------------------------------------------
+  web-ui:
+    name: web-ui (lint + typecheck + vitest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    defaults:
+      run:
+        working-directory: web-ui
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web-ui/package-lock.json
+
+      - name: npm ci
+        run: npm ci --no-audit --no-fund
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test (vitest)
+        run: npm run test
+
+  # ------------------------------------------------------------------
+  # Schema smoke: apply all 9 migrations against pgvector. Catches
+  # SQL-only regressions before they hit prod-or-OSS-demo deploys.
+  # ------------------------------------------------------------------
+  schema:
+    name: schema (migrations on pgvector)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: omadia
+          POSTGRES_USER: omadia
+          POSTGRES_PASSWORD: omadia-ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U omadia -d omadia"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable pgvector extension
+        run: |
+          PGPASSWORD=omadia-ci psql -h localhost -U omadia -d omadia \
+            -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+      - name: Apply 9 migrations in order
+        run: |
+          set -euo pipefail
+          declare -a MIGRATIONS=(
+            "middleware/packages/harness-knowledge-graph-neon/src/migrations/0001_graph_init.sql"
+            "middleware/src/services/graph/migrations/0002_user_scoping.sql"
+            "middleware/packages/harness-knowledge-graph-neon/src/migrations/0003_agentic_graph.sql"
+            "middleware/src/services/graph/migrations/0004_turn_fts.sql"
+            "middleware/packages/harness-knowledge-graph-neon/src/migrations/0005_turn_embeddings_768.sql"
+            "middleware/packages/harness-knowledge-graph-neon/src/migrations/0006_embedding_backfill_state.sql"
+            "middleware/src/services/graph/migrations/0007_verifier_tables.sql"
+            "middleware/src/services/graph/migrations/0008_teams_attachments.sql"
+            "middleware/src/plugins/routines/migrations/0001_routines.sql"
+          )
+          for m in "${MIGRATIONS[@]}"; do
+            echo "--- applying $(basename "$m")"
+            PGPASSWORD=omadia-ci psql -h localhost -U omadia -d omadia \
+              -v ON_ERROR_STOP=1 -f "$m"
+          done
+
+      - name: Re-apply migrations (idempotency check)
+        run: |
+          set -euo pipefail
+          declare -a MIGRATIONS=(
+            "middleware/packages/harness-knowledge-graph-neon/src/migrations/0001_graph_init.sql"
+            "middleware/src/services/graph/migrations/0002_user_scoping.sql"
+            "middleware/packages/harness-knowledge-graph-neon/src/migrations/0003_agentic_graph.sql"
+            "middleware/src/services/graph/migrations/0004_turn_fts.sql"
+            "middleware/packages/harness-knowledge-graph-neon/src/migrations/0005_turn_embeddings_768.sql"
+            "middleware/packages/harness-knowledge-graph-neon/src/migrations/0006_embedding_backfill_state.sql"
+            "middleware/src/services/graph/migrations/0007_verifier_tables.sql"
+            "middleware/src/services/graph/migrations/0008_teams_attachments.sql"
+            "middleware/src/plugins/routines/migrations/0001_routines.sql"
+          )
+          for m in "${MIGRATIONS[@]}"; do
+            PGPASSWORD=omadia-ci psql -h localhost -U omadia -d omadia \
+              -v ON_ERROR_STOP=1 -f "$m" > /dev/null
+            echo "✓ idempotent: $(basename "$m")"
+          done
+
+  # ------------------------------------------------------------------
+  # Dependency audit. Enforces a "no high or critical" floor — moderate
+  # findings remain warnings (some of ours are dev-tools that need a
+  # Next.js major to clear). Acts as the canary for new CVE bumps in
+  # transitive deps.
+  # ------------------------------------------------------------------
+  audit:
+    name: audit (high+critical block)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        workspace: [middleware, web-ui]
+    defaults:
+      run:
+        working-directory: ${{ matrix.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: ${{ matrix.workspace }}/package-lock.json
+
+      - name: npm ci
+        run: npm ci --no-audit --no-fund
+
+      - name: npm audit (--audit-level=high)
+        run: npm audit --audit-level=high

@@ -1,0 +1,100 @@
+schema_version: "1"
+
+identity:
+  id: "@omadia/plugin-quality-guard"
+  name: "Quality Guard"
+  version: "0.1.0"
+  kind: "tool"
+  domain: "quality.response-guard"
+  description: "Response-quality core plugin. Publishes the `responseGuard@1` capability with sycophancy-levels (off/low/medium/high) and a boundary-preset library that splices guardrails into the system prompt ahead of body prose."
+  authors:
+    - name: "byte5 GmbH"
+      email: "dev@byte5.de"
+      url: "https://byte5.de"
+  license: "MIT"
+  categories:
+    - "quality"
+    - "guardrails"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+lifecycle:
+  entry: "dist/plugin.js"
+
+# ---------------------------------------------------------------------------
+# Setup fields. The operator can configure GLOBAL defaults — these apply when
+# the orchestrator calls `responseGuard.getRules` without a profile-quality
+# override. Per-profile overrides land via AGENT.md frontmatter (Phase 2.1)
+# or via the legacy `agent_overrides` map below.
+# ---------------------------------------------------------------------------
+setup:
+  fields:
+    - key: "default_sycophancy"
+      type: "enum"
+      label: "Default Sycophancy-Level"
+      help: "Wirkt für alle Profile, die selbst keinen `quality.sycophancy`-Wert deklarieren. `off` deaktiviert die Anti-Schmeichel-Regeln; `medium` ist eine balancierte Standardvorgabe für Beratungs-Use-Cases; `high` ist devil's-advocate."
+      required: false
+      default: "medium"
+      enum:
+        - value: "off"
+          label: "Off — keine Anti-Schmeichel-Regeln"
+        - value: "low"
+          label: "Low — leichte Korrektur bei expliziter Falsch-Bestätigung"
+        - value: "medium"
+          label: "Medium — balanciert (Default für Beratungs-Use-Cases)"
+        - value: "high"
+          label: "High — devil's advocate, hinterfragt Prämissen"
+
+    - key: "default_boundary_presets"
+      type: "string"
+      label: "Default Boundary-Presets (komma-separiert)"
+      help: "IDs aus der Preset-Library, die für ALLE Profile gelten. Verfügbare IDs: no-financial-advice, no-legal-advice, no-medical-advice, internal-only, no-pii-collection, no-external-quotes, privacy-first, factual-only, no-speculation, no-reasoning-disclosure. Unbekannte IDs werden ignoriert."
+      required: false
+      default: ""
+
+    - key: "default_boundary_custom"
+      type: "string"
+      label: "Default Custom-Boundaries (newline-separiert)"
+      help: "Freitext-Boundaries, eine pro Zeile. Werden 1:1 als Bullet-Points in den System-Prompt gehängt."
+      required: false
+      default: ""
+
+    - key: "agent_overrides"
+      type: "string"
+      label: "Per-Agent-Overrides (JSON)"
+      help: "Optionale Map agentId → SycophancyLevel als JSON. Beispiel: {\"agent-seo-analyst\":\"medium\",\"agent-reference-maximum\":\"low\"}. Wird genutzt, solange AGENT.md-Frontmatter (Phase 2.1) noch nicht geparst wird. Frontmatter überschreibt diese Map sobald verfügbar."
+      required: false
+      default: ""
+
+playbook:
+  when_to_use: |
+    Aktiviere dieses Plugin, wenn der Orchestrator zuverlässig konkrete,
+    nicht-schmeichelnde Antworten liefern soll — Beratungs-Agents, SEO-
+    Analyst, alle Profile mit Risiko für False-Positive-Bestätigungen.
+    Das Plugin published die `responseGuard@1`-Capability; der Orchestrator
+    splice't den `prependRules`-Block VOR die Body-Prose des System-Prompts
+    als eigenes Cache-Element. Profile ohne Quality-Frontmatter erben die
+    globalen Defaults.
+
+# ---------------------------------------------------------------------------
+# Permissions. The plugin only manipulates strings — no network, no graph,
+# no memory writes. Allow-lists are explicit-empty so the operator sees the
+# zero-attack-surface in the install dialog.
+# ---------------------------------------------------------------------------
+permissions:
+  memory:
+    reads: []
+    writes: []
+  graph:
+    reads: []
+    writes: []
+  network:
+    outbound: []
+  filesystem:
+    scratch: false
+
+provides:
+  - "responseGuard@1"
+requires: []

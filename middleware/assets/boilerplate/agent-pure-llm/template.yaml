@@ -1,0 +1,51 @@
+# Builder Template-Manifest — agent-pure-llm
+#
+# Pure-LLM agents: a system prompt plus the orchestrator's reasoning, no
+# external API call. This template is the smaller sibling of `agent-
+# integration`:
+#
+#   - no `client.ts` / `toolkit.ts` slots — the activate() body returns
+#     an empty toolkit so the runtime skips the tool-loop entirely.
+#   - no `INTEGRATION_ID` / `OUTBOUND_HOST` placeholders — `depends_on`
+#     stays `[]` and `permissions.network.outbound` is empty.
+#
+# Switch to `agent-integration` the moment the agent needs a real HTTP
+# client; bolting one onto this template by hand loses the boilerplate
+# integrity guarantees.
+
+id: agent-pure-llm
+description: |
+  Reiner LLM-Agent ohne externe API. Pattern: System-Prompt-getrieben,
+  null Tools, null Secrets, null `depends_on`. Beispiele: Brainstorming-
+  Coach, Recherche-Methodologe, Stilistik-Reviewer. Vorbild: keine
+  bestehende Implementierung — die Boilerplate IST der Reference.
+
+slots:
+  - key: skill-prompt
+    target_file: skills/{{AGENT_SLUG}}-expert.md
+    required: true
+    description: System-Prompt-Body (Frontmatter wird automatisch erzeugt)
+
+placeholders:
+  AGENT_ID: id
+  AGENT_NAME: name
+  AGENT_SLUG: __derived__/agentSlug
+  AGENT_DESCRIPTION_DE: description
+  AGENT_VERSION: version
+  AGENT_DOMAIN: domain
+  CATEGORY: category
+  ROLE_DESCRIPTION_DE: skill.role
+  WHEN_TO_USE_DE: playbook.when_to_use
+  NOT_FOR_CASE_1: playbook.not_for[0]
+  EXAMPLE_PROMPT_1: playbook.example_prompts[0]
+  EXAMPLE_PROMPT_2: playbook.example_prompts[1]
+
+skip_files:
+  - CLAUDE.md
+  - template.yaml
+  # README.md is a doc-only file with literal {{PLACEHOLDER}} examples in
+  # code-block bodies (illustrating the placeholder mechanism, including
+  # `{{INTEGRATION_ID}}` / `{{CAPABILITY_ID}}` from the integration sibling
+  # template). Skipping it avoids the post-codegen no-residue check
+  # tripping over those examples — matches the agent-integration skip-set.
+  - README.md
