@@ -36,7 +36,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.88.0",
     "@aws-sdk/client-s3": "^3.1032.0",
-    "@azure/msal-node": "^2.16.2",
+    "@azure/msal-node": "^5.2.0",
     "@microsoft/microsoft-graph-client": "^3.0.7",
     "@types/better-sqlite3": "^7.6.13",
     "@types/cookie-parser": "^1.4.10",
