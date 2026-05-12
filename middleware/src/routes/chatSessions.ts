@@ -17,8 +17,8 @@ import {
  *   PUT    /api/chat/sessions/:id        upsert — body must match id
  *   DELETE /api/chat/sessions/:id        drop the file
  *
- * No auth surface beyond what `/api/chat` already exposes; if that ever
- * gets locked down, these routes move behind the same gate.
+ * Gated by `requireAuth` at mount time (see middleware/src/index.ts) —
+ * Sessions können PII / Tool-Outputs / Code-Snippets enthalten.
  */
 
 const IdParam = z.string().regex(/^[A-Za-z0-9_-]{1,80}$/);

@@ -857,8 +857,10 @@ async function main(): Promise<void> {
   const agentResolver = createAgentResolver({ dynamicRuntime: dynamicAgentRuntime });
   app.use('/api', createChatRouter(chatAgent, { agentResolver }));
 
-  app.use('/api/chat', createChatSessionsRouter({ store: chatSessionStore }));
-  console.log('[middleware] chat-sessions endpoint ready at /api/chat/sessions');
+  // Chat-Sessions-CRUD hinter `requireAuth` — Sessions enthalten potenziell
+  // PII / Tool-Outputs / Code-Snippets und dürfen nicht anonym lesbar sein.
+  app.use('/api/chat', requireAuth, createChatSessionsRouter({ store: chatSessionStore }));
+  console.log('[middleware] chat-sessions endpoint ready at /api/chat/sessions (auth-gated)');
 
   // ── OB-49 — provider-aware auth bootstrap ────────────────────────────────
   // graphPool is resolved above (line ~595). Auth schema + UserStore +
