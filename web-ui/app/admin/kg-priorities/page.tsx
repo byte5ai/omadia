@@ -5,18 +5,18 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 /**
  * Admin → Knowledge-Graph Priorities (palaia Phase 5 / OB-74 Slice 5).
  *
- * Operator-Tabelle für die per-Agent Block/Boost-Liste, die der
- * `ContextRetriever.assembleForBudget`-Assembler konsumiert. Jede Row:
- *   - Agent-ID (z.B. de.byte5.agent.calendar)
- *   - entry_external_id (Turn-ID oder Session-ID)
+ * Operator table for the per-agent block/boost list consumed by the
+ * `ContextRetriever.assembleForBudget` assembler. Each row:
+ *   - agent ID (e.g. de.byte5.agent.calendar)
+ *   - entry_external_id (turn ID or session ID)
  *   - action (block | boost)
- *   - weight (für boost; default 1.3)
+ *   - weight (for boost; default 1.3)
  *   - reason (optional)
  *   - updated_at
  *
  * Backed by `/bot-api/dev/graph/priorities/{agentId}` (GET → list,
- * POST → upsert, DELETE → remove). Mounted nur wenn DEV_ENDPOINTS_ENABLED
- * + agentPriorities@1 published; sonst zeigt die Seite ein leeres State.
+ * POST → upsert, DELETE → remove). Mounted only when DEV_ENDPOINTS_ENABLED
+ * + agentPriorities@1 is published; otherwise the page shows an empty state.
  */
 
 type AgentPriorityRecord = {

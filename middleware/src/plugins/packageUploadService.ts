@@ -20,18 +20,19 @@ import {
 import { extractZipToDir, ZipExtractionError } from './zipExtractor.js';
 
 /**
- * Nimmt ein uploaded Zip entgegen, validiert es und registriert den
- * enthaltenen Agent im UploadedPackageStore + Catalog.
+ * Accepts an uploaded zip, validates it and registers the contained agent
+ * in the UploadedPackageStore + catalog.
  *
- * Nicht im MVP: AST-Import-Scan, Sandbox-Activation, Remote-Signature-Check.
- * Doku: docs/harness-platform/plans/agent-zip-upload.md
+ * Out of scope for MVP: AST import scan, sandboxed activation, remote
+ * signature check.
+ * Docs: docs/harness-platform/plans/agent-zip-upload.md
  */
 
 export interface IngestInput {
   fileBuffer: Buffer;
   originalFilename: string;
   uploadedBy: string;
-  /** SHA-256 des übergebenen Buffers; wird berechnet, wenn nicht angegeben. */
+  /** SHA-256 of the supplied buffer; computed when not provided. */
   sha256?: string;
 }
 
@@ -54,22 +55,22 @@ export type IngestResult = IngestSuccess | IngestFailure;
 export interface PackageUploadServiceDeps {
   store: UploadedPackageStore;
   catalog: PluginCatalog;
-  /** Absolute Pfade: Root für Uploads + Staging-Root + Index-Pfad (nur Logging). */
+  /** Absolute paths: root for uploads + staging-root + index-path (logging only). */
   packagesDir: string;
-  /** Harte Caps aus der Config. */
+  /** Hard caps from config. */
   limits: {
     maxBytes: number;
     maxExtractedBytes: number;
     maxEntries: number;
   };
-  /** Host-Dependencies für den peer-check (ReadonlyRecord<name, semver>). */
+  /** Host dependencies for the peer-check (ReadonlyRecord<name, semver>). */
   hostDependencies: Record<string, string>;
   /**
-   * Optionaler Hook. Wird nach erfolgreichem Ingest aufgerufen, wenn der
-   * Registry-Eintrag für diesen Agenten bereits existiert und `active` ist
-   * (typischer Re-Upload-Case: Package wurde gelöscht, Install-Status blieb).
-   * Ermöglicht der Runtime, den Agenten direkt zu (re-)aktivieren, ohne dass
-   * der User den Install-Flow noch einmal anstoßen muss.
+   * Optional hook. Called after a successful ingest when the registry entry
+   * for this agent already exists and is `active` (typical re-upload case:
+   * package was deleted, install status stayed). Lets the runtime
+   * (re-)activate the agent directly, without the user having to trigger
+   * the install flow again.
    */
   onPackageReady?: (agentId: string) => Promise<void>;
   /**
@@ -110,7 +111,7 @@ export class PackageUploadService {
     const tmpZip = path.join(tmpRoot, 'package.zip');
     await fs.writeFile(tmpZip, input.fileBuffer);
 
-    // --- 2. Staging-Verzeichnis ---------------------------------------------
+    // --- 2. Staging directory ---------------------------------------------
     const stagingRoot = path.join(
       this.deps.packagesDir,
       '.staging',
@@ -119,7 +120,7 @@ export class PackageUploadService {
     await fs.mkdir(stagingRoot, { recursive: true });
 
     try {
-      // --- 3. Entpacken mit Guardrails --------------------------------------
+      // --- 3. Extract with guardrails ---------------------------------------
       let extractResult;
       try {
         extractResult = await extractZipToDir(tmpZip, stagingRoot, {
@@ -136,10 +137,10 @@ export class PackageUploadService {
       const fileCount = extractResult.files.length;
       const extractedBytes = extractResult.totalBytes;
 
-      // --- 4. Package-Root finden -------------------------------------------
-      // Wenn das Zip unter einem Top-Level-Ordner gepackt wurde (z.B. `zip -r foo.zip folder`),
-      // liegt manifest.yaml unter `<stagingRoot>/<wrapperDir>/manifest.yaml` statt direkt
-      // im staging-root. Wir akzeptieren beide Varianten.
+      // --- 4. Find package root ---------------------------------------------
+      // If the zip was packed under a top-level folder (e.g. `zip -r foo.zip folder`),
+      // manifest.yaml lives at `<stagingRoot>/<wrapperDir>/manifest.yaml` instead of
+      // directly in the staging root. We accept both variants.
       const packageRoot = await resolvePackageRoot(stagingRoot);
       if (!packageRoot) {
         return fail(
@@ -148,7 +149,7 @@ export class PackageUploadService {
         );
       }
 
-      // --- 5. Manifest parsen + validieren ----------------------------------
+      // --- 5. Parse + validate manifest -------------------------------------
       const manifestPath = path.join(packageRoot, 'manifest.yaml');
       const entry = await loadManifestFromPath(manifestPath);
       if (!entry) {
@@ -159,7 +160,7 @@ export class PackageUploadService {
       }
       const { plugin } = entry;
 
-      // --- 6. package.json-Konsistenz ---------------------------------------
+      // --- 6. package.json consistency --------------------------------------
       const pkgJsonPath = path.join(packageRoot, 'package.json');
       let pkgJson: Record<string, unknown> | null = null;
       try {
@@ -193,10 +194,10 @@ export class PackageUploadService {
         }
       }
 
-      // --- 7. Peer-Dependency-Resolve ---------------------------------------
+      // --- 7. Peer dependency resolution ------------------------------------
       const peersMissing = this.resolvePeers(pkgJson);
 
-      // --- 8. Entry-Point muss im Zip sein ----------------------------------
+      // --- 8. Entry point must exist in the zip -----------------------------
       const entryRel =
         (asRecord(asRecord(entry.manifest)?.['lifecycle'])?.['entry'] as
           | string
@@ -226,11 +227,11 @@ export class PackageUploadService {
       }
 
       // --- 9b. Migration-Hook (onMigrate) ----------------------------------
-      // Läuft nur bei echtem Version-Upgrade eines bereits im Registry
-      // installierten Agents. Frische Uploads (kein Registry-Eintrag) oder
-      // Re-Uploads derselben Version (oben abgefangen) triggern keine
-      // Migration. Der Hook läuft BEVOR die Pakete getauscht werden — wirft
-      // er, bleibt v1 unverändert und der Upload wird rejectet.
+      // Only runs on a genuine version upgrade of an agent already installed
+      // in the registry. Fresh uploads (no registry entry) or re-uploads of
+      // the same version (caught above) do not trigger migration. The hook
+      // runs BEFORE the packages are swapped — if it throws, v1 stays
+      // unchanged and the upload is rejected.
       const installedBefore = this.deps.registry?.get(plugin.id);
       const shouldMigrate =
         !!existingUploaded && !!installedBefore && existingUploaded.version !== plugin.version;
@@ -260,24 +261,24 @@ export class PackageUploadService {
           );
         }
       } else if (shouldMigrate) {
-        // Kein Runner injiziert (z.B. Bare-Bones-Setup) → wie Opt-in ohne Hook
-        // handhaben: alte Config unverändert übernehmen, Version bumpen.
+        // No runner injected (e.g. bare-bones setup) → handle like opt-in
+        // without hook: carry old config over unchanged, bump version.
         migratedConfig = installedBefore.config;
       }
 
-      // --- 10. Atomic rename in das finale Verzeichnis ----------------------
+      // --- 10. Atomic rename into the final directory ----------------------
       const finalDir = path.join(
         this.deps.packagesDir,
         plugin.id,
         plugin.version,
       );
       await fs.mkdir(path.dirname(finalDir), { recursive: true });
-      // Falls ein Restbestand einer abgebrochenen Installation liegt → weg.
+      // If leftovers from an aborted installation are lying around → remove.
       await fs.rm(finalDir, { recursive: true, force: true });
       await fs.rename(packageRoot, finalDir);
 
-      // Falls das Zip einen Wrapper-Ordner hatte, ist stagingRoot jetzt leer
-      // (packageRoot war ein Child). Räumen.
+      // If the zip had a wrapper folder, stagingRoot is now empty
+      // (packageRoot was a child). Clean up.
       await fs.rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
 
       // --- 11. Store-Eintrag + Catalog-Reload -------------------------------
@@ -294,8 +295,9 @@ export class PackageUploadService {
         file_count: fileCount,
       };
 
-      // Wenn es einen früheren Upload mit anderer Version gab, alten Ordner
-      // wegräumen. Ein side-by-side Layout erlauben wir erst mit Version-Switching-UI.
+      // If there was a previous upload with a different version, remove the
+      // old folder. A side-by-side layout is only permitted once a
+      // version-switching UI exists.
       if (existingUploaded && existingUploaded.path !== finalDir) {
         await fs
           .rm(existingUploaded.path, { recursive: true, force: true })
@@ -325,11 +327,11 @@ export class PackageUploadService {
         `[upload] ingest OK id=${plugin.id} version=${plugin.version} sha256=${sha256.slice(0, 12)} peers_missing=${peersMissing.length}${migratedConfig !== null ? ' [migrated]' : ''}`,
       );
 
-      // Re-Upload auf einen bereits installierten Agent (typisch: Package-
-      // File wurde gelöscht, Registry-Eintrag ist noch `active`). Ohne Hook
-      // bleibt der Agent „installed but inactive" — Tool wäre weder in
-      // Harness noch in Teams sichtbar. Hook ist best-effort; Fehler werden
-      // geloggt, brechen aber den Upload-Response nicht.
+      // Re-upload onto an already installed agent (typical: package file
+      // was deleted, registry entry still `active`). Without the hook the
+      // agent stays "installed but inactive" — the tool would be visible
+      // neither in Harness nor in Teams. The hook is best-effort; errors
+      // are logged but do not break the upload response.
       if (this.deps.onPackageReady) {
         try {
           await this.deps.onPackageReady(plugin.id);

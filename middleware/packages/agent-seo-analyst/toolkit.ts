@@ -106,8 +106,8 @@ export function createToolkit(opts: ToolkitOptions): Toolkit {
       return byId.get(id) as ToolDescriptor<I, O> | undefined;
     },
     async close() {
-      // Fetcher ist stateless — nichts zu schließen. Hook bleibt für zukünftige
-      // Client-Pools (persistent HTTP-Agent, Cache) bestehen.
+      // Fetcher is stateless — nothing to close. Hook remains for future
+      // client pools (persistent HTTP-Agent, cache).
     },
   };
 }

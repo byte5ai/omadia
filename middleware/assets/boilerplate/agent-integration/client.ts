@@ -64,7 +64,7 @@ export function createClient(opts: ClientOptions): Client {
     },
 
     async dispose() {
-      // Keep-alive sockets schließen, Metriken flushen, etc.
+      // Close keep-alive sockets, flush metrics, etc.
     },
   };
   // #endregion

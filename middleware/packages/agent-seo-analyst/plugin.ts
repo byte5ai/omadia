@@ -30,8 +30,8 @@ export async function activate(ctx: PluginContext): Promise<AgentHandle> {
     log: ctx.log,
   });
 
-  // Self-Test: Ziel-URL erreichbar? HEAD würde reichen, aber viele Webseiten
-  // antworten auf HEAD mit 405. Also GET mit kurzem Timeout.
+  // Self-Test: is the target URL reachable? HEAD would suffice, but many
+  // websites answer HEAD with 405. So GET with a short timeout.
   const ping = await fetcher.get(targetBaseUrl, true);
   if (ping.status === 0) {
     ctx.log('self-test failed', { targetBaseUrl });

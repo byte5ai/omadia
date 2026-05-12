@@ -15,40 +15,40 @@ import {
 /**
  * @omadia/orchestrator-extras — SessionBriefingService (palaia / OB-75).
  *
- * `sessionBriefing@1`-Provider. Lazy-on-demand Briefings für
- * Session-Continuity:
+ * `sessionBriefing@1` provider. Lazy-on-demand briefings for
+ * session continuity:
  *
  *   - **Resume-Mode** (newest non-marker turn < `resumeWindowMinutes`):
- *     letzten N Turns als Tail-Stream rendern. Kein LLM-Call.
- *   - **Briefing-Mode** (älter): bestehende oder frisch-generierte
- *     Bullet-Summary + offene Tasks. LLM-Call NUR wenn Summary fehlt
- *     oder älter als der jüngste non-marker Turn der Session.
- *   - **Empty**: keine non-marker Turns vorhanden → leerer String.
+ *     render the last N turns as a tail-stream. No LLM call.
+ *   - **Briefing-Mode** (older): existing or freshly generated
+ *     bullet-summary + open tasks. LLM call ONLY when the summary is missing
+ *     or older than the newest non-marker turn of the session.
+ *   - **Empty**: no non-marker turns present → empty string.
  *
- * Storage: regenerierte Summaries werden über `kg.ingestTurn` als
- * Turn mit `userMessage = '<session-summary>'`, `assistantAnswer =
- * <bullets>`, `entryType = 'process'` persistiert. Beim nächsten Load
- * wird die freshness gegen den jüngsten non-marker Turn geprüft.
+ * Storage: regenerated summaries are persisted via `kg.ingestTurn` as a
+ * turn with `userMessage = '<session-summary>'`, `assistantAnswer =
+ * <bullets>`, `entryType = 'process'`. On the next load freshness is
+ * checked against the newest non-marker turn.
  *
- * Open-Tasks-Lookup: optional via `pool` (graphPool@1). Ohne Pool
- * wird der Tasks-Block weggelassen (graceful degrade).
+ * Open-tasks lookup: optional via `pool` (graphPool@1). Without a pool
+ * the tasks block is omitted (graceful degrade).
  */
 
 export interface SessionBriefingServiceOptions {
   kg: KnowledgeGraph;
   summaryGenerator: SessionSummaryGenerator;
-  /** Optional. Wenn nicht gesetzt, werden offene Tasks nicht
-   *  gerendert. Pool kommt aus `graphPool@1` (KG-Neon-Plugin). */
+  /** Optional. When not set, open tasks are not rendered. Pool comes from
+   *  `graphPool@1` (KG-Neon plugin). */
   pool?: Pool;
-  /** Tenant für SQL-Filter. Erforderlich wenn `pool` gesetzt. */
+  /** Tenant for SQL filter. Required when `pool` is set. */
   tenantId?: string;
-  /** Sliding-Window für den Resume-Mode in Minuten. Default 60. */
+  /** Sliding window for Resume-Mode in minutes. Default 60. */
   resumeWindowMinutes?: number;
-  /** Token-Budget Default falls Caller keins angibt. Default 1500. */
+  /** Token-budget default when the caller does not pass one. Default 1500. */
   defaultBudgetTokens?: number;
-  /** Faustregel chars / token. Default 4 (Anthropic-üblich). */
+  /** Rule of thumb chars / token. Default 4 (Anthropic-common). */
   charsPerToken?: number;
-  /** Tail-Tiefe für Resume + Summary-Generation. Default 10. */
+  /** Tail depth for resume + summary generation. Default 10. */
   tailSize?: number;
   /** Optional log sink. Defaults to `console.error`. */
   log?: (msg: string) => void;
@@ -124,8 +124,8 @@ export function createSessionBriefingService(
         ? (Date.now() - newestRealAt) / 60_000
         : Number.POSITIVE_INFINITY;
 
-      // 3. Resume-Mode — newest non-marker turn ist frisch genug,
-      //    Tail-Stream als Recap.
+      // 3. Resume-Mode — newest non-marker turn is fresh enough;
+      //    use the tail-stream as a recap.
       if (ageMinutes < cfg.resumeWindowMinutes) {
         const tail = realTurns.slice(-cfg.tailSize);
         const text = renderResumeTail(tail, budgetChars);
@@ -142,7 +142,7 @@ export function createSessionBriefingService(
         };
       }
 
-      // 4. Briefing-Mode — Summary refresh wenn nötig.
+      // 4. Briefing-Mode — refresh summary if needed.
       const latestSummary =
         summaryTurns.length > 0
           ? summaryTurns[summaryTurns.length - 1]

@@ -20,29 +20,29 @@ const MAX_SUGGESTIONS = 8;
 
 const FindFreeSlotsInputSchema = z.object({
   /**
-   * Wessen Kalender als Slot-Quelle dient (Host/Meeting-Organizer).
+   * Whose calendar serves as the slot source (host / meeting organizer).
    *
-   * - **Unset / leer** → Caller selbst (default; "ich biete X Vorschläge an").
-   * - **Fremde Email** → dessen Kalender ("Teresita, such Termin bei John"
-   *   → hostEmail=john@byte5.de). Caller braucht `Calendars.Read.Shared`-
-   *   Sichtbarkeit auf den Host; sonst kommt 403 zurück.
+   * - **Unset / empty** → caller themself (default; "I offer X suggestions").
+   * - **Other email** → that person's calendar ("Teresita, find a meeting
+   *   with John" → hostEmail=john@byte5.de). Caller needs
+   *   `Calendars.Read.Shared` visibility on the host; otherwise 403 is returned.
    */
   hostEmail: z.string().email().optional(),
   /**
-   * Optional Teilnehmer-Emails. Die Slot-Suche läuft *nicht* gegen deren
-   * Kalender — sie werden erst beim `book_meeting` als Meeting-Invitees
-   * eingeladen. Host kommt automatisch dazu.
+   * Optional attendee emails. The slot search does *not* run against their
+   * calendars — they are only invited as meeting-invitees on `book_meeting`.
+   * The host is added automatically.
    */
   attendees: z.array(z.string().email()).max(ATTENDEE_MAX).default([]),
   durationMinutes: z.number().int().min(DURATION_MIN).max(DURATION_MAX),
-  /** ISO-8601. Wenn leer: ab jetzt. */
+  /** ISO-8601. If empty: from now. */
   windowStart: z.string().datetime({ offset: true }).optional(),
-  /** Tage nach windowStart. Default 5. */
+  /** Days after windowStart. Default 5. */
   windowDays: z.number().int().min(1).max(WINDOW_DAYS_MAX).default(5),
-  /** Default true — nutzt die Arbeitszeiten aus mailboxSettings. */
+  /** Default true — uses the working hours from mailboxSettings. */
   preferWorkingHours: z.boolean().default(true),
   maxSuggestions: z.number().int().min(1).max(MAX_SUGGESTIONS).default(5),
-  /** 0–100. Default 100 (nur Slots, in denen *alle* Required frei sind). */
+  /** 0–100. Default 100 (only slots in which *all* required attendees are free). */
   minimumAttendeePercentage: z.number().int().min(0).max(100).default(100),
 });
 

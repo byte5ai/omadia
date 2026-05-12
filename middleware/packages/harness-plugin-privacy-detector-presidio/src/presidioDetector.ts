@@ -68,12 +68,12 @@ export function createPresidioDetector(
     //
     // The 3.4 boot-smoke produced 272 maskings on a single user turn
     // because Presidio scanned the orchestrator's system prompt — which
-    // for any non-trivial tenant carries the memory recall (echte
-    // Mitarbeiterdaten, frühere Conversations, CRM-Heap) and shreds it
+    // for any non-trivial tenant carries the memory recall (real
+    // employee data, prior conversations, CRM heap) and shreds it
     // into 100+ name + 100+ address tokens. Effect on the LLM:
     //   - hundreds of identical-looking `tok_<hex>` placeholders in
     //     the system prompt destroy contextual grounding,
-    //   - the assistant defensively halluzinates a plausible-sounding
+    //   - the assistant defensively hallucinates a plausible-sounding
     //     name for the question's token, and
     //   - it stops mid-turn rather than calling tools, because no tool
     //     argument it could form would resolve back through the

@@ -21,15 +21,15 @@ import {
  * @omadia/knowledge-graph-neon — NeonProcessMemoryStore (Palaia
  * Phase 7 / OB-76 Slice 2).
  *
- * Tenant-scoped Pool-backed Implementation der `processMemory@1`-Capability.
- * Eine Row pro (tenant, id) — siehe Migration 0009.
+ * Tenant-scoped pool-backed implementation of the `processMemory@1` capability.
+ * One row per (tenant, id) — see Migration 0009.
  *
- * Hot-Paths:
- *  - `write` — embedding-pflicht; cosine-similarity-Pre-Check gegen ALLE
- *    Tenant-Processes (scope-übergreifend für Dedup) BEFORE INSERT.
- *  - `query` — Hybrid (BM25 + cosine), reused-Pattern aus OB-72 (single-SQL).
- *  - `edit` — Two-Step: process_history snapshot + processes UPDATE in
- *    derselben Connection (best-effort transactional via BEGIN/COMMIT).
+ * Hot paths:
+ *  - `write` — embedding required; cosine-similarity pre-check against ALL
+ *    tenant-processes (scope-agnostic for dedup) BEFORE INSERT.
+ *  - `query` — hybrid (BM25 + cosine), reused pattern from OB-72 (single-SQL).
+ *  - `edit` — two-step: process_history snapshot + processes UPDATE on the
+ *    same connection (best-effort transactional via BEGIN/COMMIT).
  */
 
 interface ProcessRow {
@@ -56,10 +56,10 @@ interface ProcessHistoryRow {
 export interface NeonProcessMemoryStoreOptions {
   pool: Pool;
   tenantId: string;
-  /** Required for `write` (Dedup-First-Write garantie). Optional macht den Store
-   *  read-only-ish: write+edit lehnen mit `embedding-unavailable` ab. */
+  /** Required for `write` (Dedup-First-Write guarantee). Optional makes the
+   *  store read-only-ish: write+edit reject with `embedding-unavailable`. */
   embeddingClient?: EmbeddingClient;
-  /** Default 0.9 — tunable per Setup-Field `process_dedup_threshold`. */
+  /** Default 0.9 — tunable via setup-field `process_dedup_threshold`. */
   dedupThreshold?: number;
 }
 
@@ -90,8 +90,8 @@ function vectorLiteral(v: readonly number[]): string {
   return `[${parts.join(',')}]`;
 }
 
-/** Body-Text für Embedding + FTS — title + flatten steps mit \n. Stable
- *  Output-Shape damit Tests deterministisch sind. */
+/** Body text for embedding + FTS — title + flattened steps joined by \n.
+ *  Stable output shape so tests are deterministic. */
 function buildEmbeddingBody(title: string, steps: readonly string[]): string {
   return [title, ...steps].join('\n');
 }
@@ -140,9 +140,9 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
     }
     const queryLit = vectorLiteral(embedding);
 
-    // Dedup-First-Write: cosine-similarity > threshold gegen alle Tenant-
-    // Processes (scope-übergreifend — ein Process mit anderem Scope ist
-    // immer noch ein Duplicate auf der Workflow-Ebene).
+    // Dedup-First-Write: cosine-similarity > threshold against all
+    // tenant-processes (scope-agnostic — a process with a different scope
+    // is still a duplicate at the workflow level).
     const dedup = await this.pool.query<{
       id: string;
       title: string;
@@ -242,9 +242,9 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
         return { ok: false, reason: 'not-found' };
       }
 
-      // Snapshot ALWAYS — Audit-Trail bleibt auch wenn nur visibility
-      // geändert wird, damit history die volle Wahrheit zur damaligen
-      // Version reflektiert.
+      // Snapshot ALWAYS — audit-trail stays even when only visibility
+      // changes, so history reflects the full truth of the version at
+      // that time.
       await client.query(
         `
         INSERT INTO process_history
@@ -348,9 +348,9 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
     const trimmedQuery = input.query.trim();
     if (trimmedQuery.length === 0) return [];
 
-    // Embedding optional — wenn der Sidecar weg ist, fällt query auf reine
-    // BM25-Pfad zurück (degraded, aber lebensfähig). Im write-Pfad ist
-    // Embedding pflicht; query darf weicher sein.
+    // Embedding optional — if the sidecar is gone, query falls back to the
+    // pure BM25 path (degraded but viable). On the write path embedding is
+    // mandatory; query is allowed to be softer.
     let queryEmbedding: number[] | null = null;
     if (this.embeddingClient) {
       try {
@@ -470,7 +470,7 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
       steps: asStringArray(row.steps),
       visibility: row.visibility,
       version: Number(row.version),
-      // history rows: createdAt nicht persistiert; updatedAt = supersedet_at.
+      // history rows: createdAt not persisted; updatedAt = superseded_at.
       createdAt: toIso(row.superseded_at),
       updatedAt: toIso(row.superseded_at),
     }));

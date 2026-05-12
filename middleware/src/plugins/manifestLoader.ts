@@ -47,9 +47,9 @@ const DEFAULT_MANIFEST_DIR =
 
 export interface PluginCatalogOptions {
   manifestDir?: string;
-  /** Zusätzliche Manifest-Quellen (z.B. entpackte Zip-Uploads). Jeder Eintrag
-   *  zeigt auf ein Package-Root-Verzeichnis, das eine `manifest.yaml` enthält.
-   *  Bei ID-Kollision mit dem Built-in-Katalog gewinnt die Uploaded-Version. */
+  /** Additional manifest sources (e.g. extracted zip uploads). Each entry
+   *  points at a package-root directory that contains a `manifest.yaml`.
+   *  On ID collision with the built-in catalog the uploaded version wins. */
   extraSources?: () => Array<{ packageRoot: string }>;
 }
 
@@ -101,10 +101,9 @@ export class PluginCatalog {
 }
 
 /**
- * Lädt ein einzelnes `manifest.yaml` (z.B. aus einem hochgeladenen Package).
- * Gibt `null` zurück, wenn das Manifest nicht dem Schema entspricht — Caller
- * entscheiden, ob das ein harter Fehler ist (Upload) oder nur geloggt wird
- * (Catalog-Scan).
+ * Loads a single `manifest.yaml` (e.g. from an uploaded package).
+ * Returns `null` if the manifest does not match the schema — callers decide
+ * whether that is a hard error (upload) or only gets logged (catalog scan).
  */
 export async function loadManifestFromPath(
   absPath: string,

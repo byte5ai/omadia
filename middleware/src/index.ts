@@ -246,17 +246,17 @@ async function main(): Promise<void> {
   // service. Lives before any sub-agent construction so every sub-agent can
   // read its credentials from the vault via ctx instead of from .env.
   // ────────────────────────────────────────────────────────────────────────
-  // Uploaded-Package-Store — muss vor dem Catalog-Load existieren, weil der
-  // Catalog die entpackten Manifeste aus diesem Store mergt.
+  // Uploaded package store — must exist before the catalog load, because the
+  // catalog merges the extracted manifests from this store.
   const uploadedPackagesDir = config.UPLOADED_PACKAGES_DIR;
   const uploadedPackageStore = new UploadedPackageStore(
     path.join(uploadedPackagesDir, 'index.json'),
     uploadedPackagesDir,
   );
   await uploadedPackageStore.load();
-  // Damit dynamische Imports aus hochgeladenen Packages ihre peerDependencies
-  // finden (Node-Resolver läuft die Dir-Hierarchie hoch, bis er `node_modules/`
-  // trifft), legen wir am Packages-Root einen Symlink auf die Host-node_modules.
+  // So that dynamic imports from uploaded packages can find their peerDependencies
+  // (Node-Resolver walks up the dir hierarchy until it hits `node_modules/`),
+  // we place a symlink at the packages-root pointing to the host node_modules.
   try {
     const linkPath = await ensureHostNodeModulesLink(uploadedPackagesDir);
     console.log(
@@ -271,9 +271,9 @@ async function main(): Promise<void> {
     `[middleware] uploaded package store loaded (${uploadedPackageStore.list().length} packages at ${uploadedPackagesDir})`,
   );
 
-  // Built-in-Packages (im Middleware-Image ausgeliefert, unter
-  // middleware/packages/*/manifest.yaml). Gleiche Aktivierungs-Pipeline wie
-  // uploaded packages — nur die Package-Quelle unterscheidet sich.
+  // Built-in packages (shipped in the middleware image under
+  // middleware/packages/*/manifest.yaml). Same activation pipeline as
+  // uploaded packages — only the package source differs.
   const builtInPackageStore = new BuiltInPackageStore(
     config.BUILT_IN_PACKAGES_DIR,
   );
@@ -354,10 +354,9 @@ async function main(): Promise<void> {
     log: (msg) => console.log(msg),
   });
 
-  // Dynamic-Runtime für hochgeladene Packages — wird weiter unten mit dem
-  // Orchestrator verbunden, sobald dieser existiert. Der Install/Uninstall-
-  // Service hängt sich als Hook ein, damit Tools hot registriert + abgebaut
-  // werden (ohne Middleware-Restart).
+  // Dynamic runtime for uploaded packages — wired up with the orchestrator
+  // further below, once it exists. The install/uninstall service hooks in
+  // so tools are hot-registered and torn down (without middleware restart).
   const dynamicAgentRuntime = new DynamicAgentRuntime({
     catalog: pluginCatalog,
     registry: installedRegistry,
@@ -749,11 +748,11 @@ async function main(): Promise<void> {
       err instanceof Error ? err.message : err,
     );
   }
-  // Dynamic-Agent-Aktivierung: Uploaded-Packages, die im Registry bereits als
-  // `active` markiert sind, werden jetzt echt gestartet. `activate()` importiert
-  // `dist/plugin.js`, ruft `activate(ctx)` und baut den LocalSubAgent-Wrapper.
-  // Fehler pro Agent werden geloggt, brechen Boot aber nicht ab — ein defektes
-  // Package soll nicht die ganze Middleware blockieren.
+  // Dynamic agent activation: uploaded packages already marked `active` in
+  // the registry are now actually started. `activate()` imports
+  // `dist/plugin.js`, calls `activate(ctx)` and builds the LocalSubAgent
+  // wrapper. Per-agent errors are logged but do not abort boot — a broken
+  // package must not block the whole middleware.
   const dynamicDomainTools = await dynamicAgentRuntime.activateAllInstalled();
   for (const t of dynamicDomainTools) domainTools.push(t);
   console.log(
@@ -858,8 +857,8 @@ async function main(): Promise<void> {
   const agentResolver = createAgentResolver({ dynamicRuntime: dynamicAgentRuntime });
   app.use('/api', createChatRouter(chatAgent, { agentResolver }));
 
-  // Chat-Sessions-CRUD hinter `requireAuth` — Sessions enthalten potenziell
-  // PII / Tool-Outputs / Code-Snippets und dürfen nicht anonym lesbar sein.
+  // Chat-sessions CRUD behind `requireAuth` — sessions may contain
+  // PII / tool outputs / code snippets and must not be readable anonymously.
   app.use('/api/chat', requireAuth, createChatSessionsRouter({ store: chatSessionStore }));
   console.log('[middleware] chat-sessions endpoint ready at /api/chat/sessions (auth-gated)');
 
@@ -1095,16 +1094,16 @@ async function main(): Promise<void> {
       hostDependencies,
       registry: installedRegistry,
       migrationRunner,
-      // Nach einem Re-Upload auf einen bereits installierten Agent (Registry-
-      // Eintrag lebt noch, Package wurde gelöscht + neu hochgeladen) aktivieren
-      // wir die Runtime direkt — sonst bleibt der Tool unbekannt, bis der User
-      // einmal de-/neu-installiert. Bei einem Version-Upgrade mit onMigrate
-      // läuft diese Re-Aktivierung mit der bereits migrierten Config.
+      // After a re-upload onto an already installed agent (registry entry
+      // still alive, package was deleted + re-uploaded) we activate the
+      // runtime directly — otherwise the tool stays unknown until the user
+      // un-/re-installs once. For a version upgrade with onMigrate this
+      // re-activation runs with the already migrated config.
       //
-      // Dispatch nach `manifest.identity.kind` — symmetrisch zu
-      // InstallService.onInstalled. Ohne den Dispatch wurde ein Channel-/
-      // Integration-Re-Upload durch dynamicAgentRuntime gejagt; dort fehlt
-      // dem PluginContext z.B. `core`, und der Plugin-Activate crashte mit
+      // Dispatch by `manifest.identity.kind` — symmetric to
+      // InstallService.onInstalled. Without the dispatch, a channel/
+      // integration re-upload was routed through dynamicAgentRuntime; there
+      // the PluginContext lacks e.g. `core`, and plugin-activate crashed with
       // "Cannot read properties of undefined (reading 'log')".
       onPackageReady: async (agentId) => {
         if (installedRegistry.get(agentId)?.status !== 'active') return;
@@ -1135,8 +1134,8 @@ async function main(): Promise<void> {
           }
           case 'agent':
           default: {
-            // Falls v1 noch aktiv ist, erst sauber deaktivieren — v2 hat ein
-            // frisches DomainTool mit potenziell geänderten Subtools.
+            // If v1 is still active, deactivate cleanly first — v2 has a
+            // fresh DomainTool with potentially changed sub-tools.
             if (dynamicAgentRuntime.isActive(agentId)) {
               await dynamicAgentRuntime.deactivate(agentId);
             }

@@ -76,7 +76,7 @@ interface DraftAutoFixState {
    * block. While non-null, `tryTrigger` short-circuits — without this
    * the rebuild a turn just kicked off can fire `build_status:failed`
    * for the next buildN BEFORE the original turn finished, leading to
-   * overlapping turns ("nervös"). With it, every auto-turn runs to
+   * overlapping turns ("jittery"). With it, every auto-turn runs to
    * completion (success OR error) before the next can fire.
    */
   inFlightTurnId: string | null;
@@ -242,7 +242,7 @@ export class AutoFixOrchestrator {
     // re-arm AFTER the lock clears in fireTurn's finally. Without this
     // gate the rebuild a turn just kicked off can fire failures for
     // the next buildN before the original turn finished, causing
-    // overlapping turns and the "nervös" loop.
+    // overlapping turns and the "jittery" loop.
     if (state.inFlightTurnId !== null) {
       this.log('autoFix: skip trigger — auto-turn inflight', {
         draftId,

@@ -34,20 +34,20 @@ import type {
 } from './tools/index.js';
 
 /**
- * BuilderAgent — Builder-Chat-Surface, die mit dem Admin-User über die
- * `AgentSpec` und deren Slots verhandelt.
+ * BuilderAgent — builder chat surface that negotiates the `AgentSpec` and
+ * its slots with the admin user.
  *
- * Pattern-Klon von `PreviewChatService.runTurn` (B.3-3): observer→AsyncIterable-
- * Bridge mit queue + resolver, `buildSubAgent`-Override-Hook für Tests,
- * `useId→toolId`-Map. Pro Turn wird ein frischer `LocalSubAgent` mit dem
- * draft-aktuellen Modell konstruiert (Hot-Switch zwischen Haiku/Sonnet/Opus).
+ * Pattern clone of `PreviewChatService.runTurn` (B.3-3): observer→AsyncIterable
+ * bridge with queue + resolver, `buildSubAgent` override hook for tests,
+ * `useId→toolId` map. Each turn constructs a fresh `LocalSubAgent` with the
+ * draft's current model (hot-switch between Haiku/Sonnet/Opus).
  *
- * Im Unterschied zu PreviewChatService:
- *   - persistiert in `draft.transcript[]` (nicht `previewTranscript[]`)
- *   - die ausgeführten Tools sind die Builder-Tools (B.4-2), nicht die
- *     Preview-Toolkit-Tools eines aktivierten Agents
- *   - Tool-Calls emittieren strukturierte Events (`spec_patch`,
- *     `slot_patch`, `lint_result`) zusätzlich zu den generischen
+ * Differences from PreviewChatService:
+ *   - persists into `draft.transcript[]` (not `previewTranscript[]`)
+ *   - the executed tools are the builder tools (B.4-2), not the
+ *     preview-toolkit tools of an activated agent
+ *   - tool calls emit structured events (`spec_patch`,
+ *     `slot_patch`, `lint_result`) in addition to the generic
  *     `tool_use`/`tool_result`
  */
 
@@ -130,7 +130,7 @@ export type BuilderEvent =
        * OB-31: per-iteration stop diagnostics. Emitted by the LocalSubAgent
        * observer hook `onIterationEnd` after the model response is in, before
        * the loop dispatches tools or returns. `stopReason: 'end_turn' &&
-       * toolUseCount === 0` after a Build-Ankündigung is the smoking gun for
+       * toolUseCount === 0` after a build announcement is the smoking gun for
        * the "promise without delivery" pathology. The Frontend can use this
        * to surface a banner; the persistence layer can log it for postmortem.
        */

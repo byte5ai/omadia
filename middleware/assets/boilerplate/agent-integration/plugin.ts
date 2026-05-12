@@ -13,11 +13,11 @@ export const AGENT_ID = '{{AGENT_ID}}' as const;
 
 /**
  * Runtime contract (harness platform v1):
- *   - activate(ctx) hat 10s-Budget (Self-Test: 1 GET, kein Vollcrawl).
- *   - close()       hat 5s-Budget — Timer/Connections/Watches WIRKLICH freigeben.
- *   - Return shape ist fix: { toolkit, close() }. LocalSubAgent, Tool-Bridge,
- *     DomainTool-Wrap, Tool-Name-Derivation, systemPrompt-Concat übernimmt
- *     die Runtime. Kein eigener LLM-Client hier.
+ *   - activate(ctx) has a 10s budget (self-test: 1 GET, no full crawl).
+ *   - close()       has a 5s budget — REALLY release timers/connections/watches.
+ *   - Return shape is fixed: { toolkit, close() }. LocalSubAgent, tool bridge,
+ *     DomainTool wrap, tool-name derivation, systemPrompt concat are handled
+ *     by the runtime. No own LLM client here.
  */
 export interface AgentHandle {
   readonly toolkit: Toolkit;
@@ -28,10 +28,10 @@ export async function activate(ctx: PluginContext): Promise<AgentHandle> {
   ctx.log('activating');
 
   // #region builder:activate-body
-  // Secrets: resolven entlang depends_on-Chain. `require` wirft bei fehlendem Wert.
+  // Secrets: resolved along the depends_on chain. `require` throws when missing.
   const apiToken = await ctx.secrets.require('API_TOKEN');
 
-  // Config: non-secret setup.fields. `get<T>` für optional + Default, `require<T>` für Pflicht.
+  // Config: non-secret setup.fields. `get<T>` for optional + default, `require<T>` for mandatory.
   const baseUrl = ctx.config.require<string>('base_url');
   const timeoutMs = ctx.config.get<number>('request_timeout_ms') ?? 15_000;
 

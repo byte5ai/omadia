@@ -99,7 +99,7 @@ const ConfigSchema = z.object({
   // When set, `bootstrapKnowledgeGraphFromEnv` installs the
   // harness-knowledge-graph-neon sibling; when unset, the inmemory
   // sibling is installed. Empty-string is treated as unset (operator
-  // typically exports `""` to mean „kein Backend"). The neon plugin
+  // typically exports `""` to mean "no backend"). The neon plugin
   // reads its effective DSN from installed.json config (set by
   // bootstrap) — this Config field is the input boundary at process
   // start, not the persistent storage. (S+12.5-3 additionally
@@ -299,10 +299,10 @@ const ConfigSchema = z.object({
   VERIFIER_AMOUNT_TOLERANCE: z.coerce.number().nonnegative().default(0.01),
   VERIFIER_MAX_RETRIES: z.coerce.number().int().min(0).max(2).default(1),
 
-  // Package upload (Phase 1–5 der Zip-Upload-Roadmap). Default OFF — wird
-  // erst scharf geschaltet, wenn Admin-UI + Security-Review durch sind.
-  // Upload landet als entpackter Ordner unter UPLOADED_PACKAGES_DIR und der
-  // Manifest wird in den Catalog gemerged. Secrets nach wie vor im Vault.
+  // Package upload (phases 1–5 of the zip-upload roadmap). Default OFF —
+  // only flipped on once admin UI + security review are through.
+  // Uploads land as an extracted folder under UPLOADED_PACKAGES_DIR and the
+  // manifest is merged into the catalog. Secrets still go to the vault.
   PACKAGE_UPLOAD_ENABLED: z
     .enum(['true', 'false'])
     .transform((v) => v === 'true')

@@ -60,12 +60,12 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 COPY middleware/package.json middleware/package-lock.json ./
-# S+11+ Workspace-Pakete: vom builder-Stage holen (mit compiled dist/ pro
-# package). Müssen VOR `npm ci --omit=dev` da sein, damit npm die
-# @omadia/* Plugin-Symlinks in node_modules anlegen kann (zur
-# Runtime resolven die compiled imports `@omadia/orchestrator` usw.
-# direkt durch diese Symlinks). Pro-Package source/.ts-Files sind harmlos
-# mitkopiert (Image-Größe ~MB-Bereich, kein Sicherheitsthema da intern).
+# S+11+ workspace packages: pull from the builder stage (with compiled dist/ per
+# package). Must be in place BEFORE `npm ci --omit=dev` so npm can
+# create the @omadia/* plugin symlinks in node_modules (at runtime,
+# the compiled imports `@omadia/orchestrator` etc. resolve directly
+# through those symlinks). Per-package source/.ts files are harmlessly
+# copied along (image size ~MB-range, no security concern since internal).
 COPY --from=builder /app/packages ./packages
 # preinstall hook from package.json requires this file (Node-version guard).
 COPY middleware/scripts/check-node-version.mjs ./scripts/check-node-version.mjs

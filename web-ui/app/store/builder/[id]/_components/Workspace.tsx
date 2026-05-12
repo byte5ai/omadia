@@ -1011,10 +1011,10 @@ function WorkspaceHeader({
   onCodegenModelChange: (next: BuilderModelId) => void | Promise<void>;
   onPreviewModelChange: (next: BuilderModelId) => void | Promise<void>;
 }): React.ReactElement {
-  // John-Feedback 2026-05-06: Model-Switch ist eine reine Metadaten-
-  // Änderung für den nächsten Codegen-Run und unabhängig von der
-  // Edit-from-Store-Reopen-Schleife (B.6-3) — daher auch für installed
-  // Drafts erlaubt. Nur archived bleibt read-only (eingefrorener Stand).
+  // John feedback 2026-05-06: model switch is a pure metadata change
+  // for the next codegen run and independent of the
+  // Edit-from-Store-Reopen loop (B.6-3) — therefore allowed for installed
+  // drafts as well. Only `archived` stays read-only (frozen state).
   const modelEditingEnabled = draft.status !== 'archived';
   return (
     <header className="flex flex-col gap-4 rounded-[14px] border border-[color:var(--divider)] bg-[color:var(--bg-elevated)] px-5 py-4 lg:flex-row lg:items-center">

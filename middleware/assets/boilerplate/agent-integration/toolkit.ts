@@ -2,22 +2,22 @@ import { z } from 'zod';
 import type { Client, SearchResult } from './client.js';
 
 /**
- * Toolkit = Capability → ausführbarer Handler mit Zod-Input-Schema.
- * Jeder Tool-Eintrag spiegelt 1:1 eine Capability aus manifest.yaml.
+ * Toolkit = capability → executable handler with a Zod input schema.
+ * Each tool entry mirrors 1:1 a capability from manifest.yaml.
  *
- * Tool-Name-Derivation (Runtime, NICHT hier):
- *   de.byte5.agent.<slug>  →  query_<slug_mit_underscores>
- * Die DomainTool-Description wird zur Laufzeit aus plugin.description +
- * playbook.when_to_use + playbook.not_for zusammengesetzt. Deshalb gehört
- * die "wann-nutze-mich"-Semantik ins Manifest, NICHT in den Tool-Code.
+ * Tool-name derivation (runtime, NOT here):
+ *   de.byte5.agent.<slug>  →  query_<slug_with_underscores>
+ * The DomainTool description is composed at runtime from plugin.description +
+ * playbook.when_to_use + playbook.not_for. Therefore the
+ * "when-to-use-me" semantics belong in the manifest, NOT in the tool code.
  *
- * Zod-Support der Bridge (Claude-Tool-Schema-Generator):
+ * Zod support of the bridge (Claude tool-schema generator):
  *   OK:        Object, String (.url/.email/.uuid/.min/.max/.regex),
  *              Number (.int/.min/.max), Boolean, Enum, Array,
  *              Optional, Nullable, Default, Literal, Effects
  *   FALLBACK:  Union, DiscriminatedUnion, Intersection, Record, Tuple → {}
- *              (Claude bekommt kein strukturiertes Schema → schwache UX).
- *   Regel:     Bei den unterstützten Typen bleiben.
+ *              (Claude gets no structured schema → weak UX).
+ *   Rule:      Stay within the supported types.
  */
 
 export interface ToolkitOptions {

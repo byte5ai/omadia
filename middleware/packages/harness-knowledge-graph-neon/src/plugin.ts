@@ -299,9 +299,9 @@ export async function activate(
     lifecycleService,
   );
 
-  // OB-74 (Phase 5) — per-Agent Block/Boost-Liste für den Token-Budget-
-  // Assembler. Tenant-scoped Pool-backed Store; Migration 0008 hat die
-  // Tabelle bereits angelegt (siehe runGraphMigrations oben).
+  // OB-74 (Phase 5) — per-Agent block/boost list for the Token-Budget
+  // Assembler. Tenant-scoped pool-backed store; Migration 0008 already
+  // created the table (see runGraphMigrations above).
   const agentPrioritiesStore = new NeonAgentPrioritiesStore({
     pool: graphPool,
     tenantId,
@@ -312,10 +312,10 @@ export async function activate(
   );
   console.log('[graph] agentPriorities ready');
 
-  // OB-76 (Phase 7) — Process-Memory mit Dedup-First-Write + Versioning.
-  // Embedding-Sidecar ist required für `write` (Dedup-Garantie); ohne
-  // Sidecar lehnt der Store mit `embedding-unavailable` ab — kein silent-
-  // bypass. Migration 0009 hat processes + process_history bereits angelegt.
+  // OB-76 (Phase 7) — Process-Memory with Dedup-First-Write + versioning.
+  // Embedding-Sidecar is required for `write` (Dedup guarantee); without
+  // a sidecar the store rejects with `embedding-unavailable` — no silent
+  // bypass. Migration 0009 already created processes + process_history.
   const dedupThresholdRaw = ctx.config.get<string | number>(
     'process_dedup_threshold',
   );

@@ -3,34 +3,34 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 
 /**
- * File-backed Index hochgeladener Agent-Packages.
+ * File-backed index of uploaded agent packages.
  *
- * Layout auf der Platte:
+ * On-disk layout:
  *   <UPLOADED_PACKAGES_DIR>/
  *     index.json                       { version: 1, packages: Record<id, UploadedPackage> }
- *     <plugin-id>/<version>/           entpackter Package-Inhalt (manifest.yaml, dist/, …)
- *     .staging/<uuid>/                 Staging während der Validierung — nach Erfolg per rename weg
+ *     <plugin-id>/<version>/           extracted package contents (manifest.yaml, dist/, …)
+ *     .staging/<uuid>/                 staging during validation — renamed away on success
  *
- * Der Store ist `register()`-write-only aus dem Upload-Flow; gelesen wird
- * beim Manifest-Catalog-Merge und beim UI-List-Call. Atomic writes via
- * tmpfile + rename — spiegelt das Muster aus fileInstalledRegistry.
+ * The store is `register()`-write-only from the upload flow; reads happen
+ * during the manifest-catalog merge and the UI list call. Atomic writes via
+ * tmpfile + rename — mirrors the pattern in fileInstalledRegistry.
  */
 
 export interface UploadedPackage {
   id: string;
   version: string;
-  /** Absoluter Pfad zum Package-Root, das `manifest.yaml` enthält. */
+  /** Absolute path to the package root that contains `manifest.yaml`. */
   path: string;
   uploaded_at: string;
   uploaded_by: string;
   sha256: string;
-  /** Pflicht-Peer-Deps aus package.json vs. Host-Deps — Warnungen sichtbar. */
+  /** Required peer deps from package.json vs. host deps — warnings visible. */
   peers_missing: string[];
-  /** Größe des hochgeladenen Zips in Bytes (vor Entpacken). */
+  /** Size of the uploaded zip in bytes (before extraction). */
   zip_bytes: number;
-  /** Entpackte Gesamtgröße in Bytes. */
+  /** Extracted total size in bytes. */
   extracted_bytes: number;
-  /** Anzahl Einträge im Zip nach Filter (ohne Verzeichnisse). */
+  /** Number of entries in the zip after filtering (excluding directories). */
   file_count: number;
 }
 
@@ -97,8 +97,8 @@ export class UploadedPackageStore {
     if (!pkg) return false;
     this.packages.delete(id);
     await this.persist();
-    // Best-effort: Package-Dir löschen. Fehler werden geloggt, aber nicht geworfen —
-    // der Registry-Eintrag ist schon weg.
+    // Best-effort: remove the package dir. Errors are logged, but not thrown —
+    // the registry entry is already gone.
     await fs.rm(pkg.path, { recursive: true, force: true }).catch(() => {});
     return true;
   }
@@ -123,25 +123,25 @@ export class UploadedPackageStore {
 }
 
 /**
- * Legt im Packages-Root einen Symlink `node_modules → <host>/node_modules` an.
+ * Creates a symlink `node_modules → <host>/node_modules` at the packages root.
  *
- * Grund: hochgeladene Packages deklarieren `peerDependencies` (z.B. `zod`).
- * Beim dynamischen `import(<pkg>/dist/plugin.js)` läuft Nodes Resolver die
- * Dir-Hierarchie nach oben und sucht `node_modules/`. Liegt das Paket unter
- * `/data/uploaded-packages/...`, ist `/app/node_modules` strukturell nicht
- * erreichbar → `Cannot find package 'zod'`. Ein Symlink an der Packages-Root
- * schlägt die Brücke für ALLE Unter-Packages auf einmal.
+ * Reason: uploaded packages declare `peerDependencies` (e.g. `zod`). On
+ * dynamic `import(<pkg>/dist/plugin.js)`, Node's resolver walks up the dir
+ * hierarchy looking for `node_modules/`. If the package lives under
+ * `/data/uploaded-packages/...`, `/app/node_modules` is not structurally
+ * reachable → `Cannot find package 'zod'`. A symlink at the packages root
+ * bridges this for ALL sub-packages at once.
  *
- * Idempotent: bestehender korrekter Symlink wird gelassen; falscher Symlink
- * oder echtes Verzeichnis wird NICHT zerstört (hartes Error — das deutet auf
- * Fehlkonfiguration hin, nicht auf einen harmlosen Altzustand).
+ * Idempotent: an existing correct symlink is left alone; an incorrect symlink
+ * or a real directory is NOT destroyed (hard error — that points at a
+ * misconfiguration, not at a harmless stale state).
  */
 export async function ensureHostNodeModulesLink(
   packagesDir: string,
 ): Promise<string> {
   const require = createRequire(import.meta.url);
-  // `zod/package.json` ist eine stabile Peer-Dep der Middleware; über ihren
-  // Pfad lernen wir, wo der Host seine node_modules liegen hat.
+  // `zod/package.json` is a stable peer-dep of the middleware; via its
+  // path we learn where the host has its node_modules.
   let hostModulesRoot: string;
   try {
     const zodPkgPath = require.resolve('zod/package.json');

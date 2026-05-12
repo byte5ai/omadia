@@ -16,14 +16,14 @@ export interface InstallServiceDeps {
   catalog: PluginCatalog;
   registry: InstalledRegistry;
   vault: SecretVault;
-  /** Wird nach erfolgreichem `configure()` aufgerufen — z.B. um einen
-   *  Uploaded-Agent via DynamicAgentRuntime zu aktivieren. Fehler im Hook
-   *  führen nicht dazu, dass die Installation als `failed` markiert wird:
-   *  die Registry-Einträge sind bereits persistiert, der Agent gilt als
-   *  installed. Der Caller muss Hook-Fehler separat behandeln. */
+  /** Called after a successful `configure()` — e.g. to activate an uploaded
+   *  agent via DynamicAgentRuntime. Errors in the hook do not cause the
+   *  installation to be marked `failed`: registry entries are already
+   *  persisted and the agent counts as installed. The caller must handle
+   *  hook errors separately. */
   onInstalled?: (agentId: string) => Promise<void>;
-  /** Gegenstück zu `onInstalled`: wird im Uninstall-Pfad VOR dem Entfernen
-   *  aus Registry/Vault gerufen, damit die Runtime sauber deaktivieren kann. */
+  /** Counterpart to `onInstalled`: called in the uninstall path BEFORE the
+   *  removal from registry/vault, so the runtime can deactivate cleanly. */
   onUninstall?: (agentId: string) => Promise<void>;
 }
 
@@ -222,12 +222,12 @@ export class InstallService {
   // -------------------------------------------------------------------------
   // Uninstall — reverses `configure()`:
   //   1) onUninstall hook (runtime: close handle, unregister domain tool)
-  //   2) vault.purge (namespace gelöscht)
+  //   2) vault.purge (namespace deleted)
   //   3) registry.remove (installed → available)
   //
-  // Dependents-Check: wenn ein anderer installed Agent via `depends_on` auf
-  // diesen zeigt, wird mit 409 abgelehnt. Der Caller (UI) muss den Dependent
-  // zuerst deinstallieren.
+  // Dependents check: if another installed agent points at this one via
+  // `depends_on`, the call is rejected with 409. The caller (UI) must
+  // uninstall the dependent first.
   // -------------------------------------------------------------------------
 
   /**
@@ -288,7 +288,7 @@ export class InstallService {
       );
     }
 
-    // Entferne aus allen offenen Jobs, damit der Re-Install-Pfad sauber ist.
+    // Remove from all open jobs so the re-install path is clean.
     for (const [jobId, job] of this.jobs) {
       if (job.plugin_id === agentId && job.state !== 'active') {
         this.jobs.delete(jobId);

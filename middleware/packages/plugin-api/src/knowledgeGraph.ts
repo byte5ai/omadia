@@ -655,12 +655,12 @@ export interface TurnSearchHit {
   assistantAnswer: string;
   /** Normalised relevance score in [0, 1]; higher is better. */
   rank: number;
-  // Palaia-Phase-5 (OB-74) — additive Felder für den Token-Budget-Assembler.
-  // Optional + backwards-kompat: backends ohne Palaia-Schema lassen sie weg.
-  /** Memory-Klassifikation des Turns. Optional — undefined = unbekannt. */
+  // Palaia-Phase-5 (OB-74) — additive fields for the Token-Budget Assembler.
+  // Optional + backwards-compatible: backends without the palaia schema omit them.
+  /** Memory classification of the turn. Optional — undefined = unknown. */
   entryType?: EntryType;
-  /** True wenn der Turn manuell autorisiert wurde (Operator/Admin-Capture).
-   *  Der Assembler wendet einen Score-Boost auf TRUE-Hits an. */
+  /** True when the turn was manually authored (operator/admin capture).
+   *  The assembler applies a score boost to TRUE hits. */
   manuallyAuthored?: boolean;
 }
 

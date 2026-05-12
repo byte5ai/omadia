@@ -11,9 +11,9 @@ export const AGENT_ID = '{{AGENT_ID}}' as const;
  * returns the LLM response. `toolkit.tools` is empty; the runtime sees
  * that and skips the tool-loop entirely.
  *
- *   - activate(ctx) hat 10s-Budget; im pure-LLM-Fall trivial
- *                   (kein Self-Test eines API-Endpoints nötig).
- *   - close()       hat 5s-Budget; ohne Connections / Watches no-op.
+ *   - activate(ctx) has a 10s budget; trivial in the pure-LLM case
+ *                   (no self-test of an API endpoint required).
+ *   - close()       has a 5s budget; without connections / watches a no-op.
  *
  * Move to the `agent-integration` template instead the moment you need
  * an external API call — adding a client.ts + toolkit.ts piecemeal here

@@ -113,9 +113,9 @@ export function createInstallRouter(deps: InstallDeps): Router {
     });
   });
 
-  // Uninstall: entfernt einen installierten Agent wieder aus Registry + Vault
-  // und löst (via onUninstall-Hook) das Domain-Tool aus dem Orchestrator.
-  // Idempotent genug: zweiter Call → 404.
+  // Uninstall: removes an installed agent from registry + vault and (via
+  // the onUninstall hook) detaches the domain tool from the orchestrator.
+  // Idempotent enough: second call → 404.
   router.delete(
     '/installed/:id',
     async (req: Request, res: Response) => {

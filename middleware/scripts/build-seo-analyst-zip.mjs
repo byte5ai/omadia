@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 /**
- * Baut ein uploadbares Agent-Zip aus middleware/packages/agent-seo-analyst/.
+ * Builds an uploadable agent zip from middleware/packages/agent-seo-analyst/.
  *
  * Flow:
- *   1. tsc mit package-lokalem tsconfig.json → dist/
- *   2. Staging-Verzeichnis unter out/seo-analyst-package/ befüllen
+ *   1. tsc with package-local tsconfig.json → dist/
+ *   2. Populate staging directory under out/seo-analyst-package/
  *      (manifest.yaml, package.json, README.md, dist/, skills/)
- *   3. Als out/seo-analyst-<version>.zip packen
+ *   3. Pack as out/seo-analyst-<version>.zip
  *
- * Invariant: Das Zip darf keine TS-Quellen, keine node_modules und keine
- * Quer-Imports ins middleware-Tree enthalten. `npm run typecheck` im
- * Package-Root ist der Gatekeeper.
+ * Invariant: The zip must not contain TS sources, node_modules or
+ * cross-imports into the middleware tree. `npm run typecheck` in the
+ * package root is the gatekeeper.
  */
 
 import { execSync } from 'node:child_process';

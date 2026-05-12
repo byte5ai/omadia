@@ -1,65 +1,64 @@
 /**
- * `sessionBriefing@1` — capability contract für Session-Continuity
+ * `sessionBriefing@1` — capability contract for session continuity
  * (Palaia Phase 6 / OB-75).
  *
- * Konsumenten (BuilderAgent, opt-in Plugin-Agents) rufen
- * `loadSessionBriefing({ scope, ... })` und kriegen einen
- * Markdown-Block, der als ERSTER System-Prompt-Block injiziert wird.
- * Zwei Modi:
- *   - **Resume** (newest non-summary turn < `resumeWindowMinutes` alt):
- *     Tail-Stream der letzten N Turns als Recap.
- *   - **Briefing** (älter): kurze Bullet-Summary + offene Tasks.
+ * Consumers (BuilderAgent, opt-in plugin agents) call
+ * `loadSessionBriefing({ scope, ... })` and get a Markdown block
+ * that is injected as the FIRST system-prompt block. Two modes:
+ *   - **Resume** (newest non-summary turn < `resumeWindowMinutes` old):
+ *     tail-stream of the last N turns as a recap.
+ *   - **Briefing** (older): short bullet summary + open tasks.
  *
- * Lazy-on-demand: wenn keine frische Summary für die Session
- * vorliegt, wird HEUTE erst der Haiku-Call ausgelöst und das
- * Ergebnis als Turn mit `userMessage = '<session-summary>'`
- * persistiert. Side-Effect: ein Briefing-Load auf einer aktiven
- * Session kann ~1s dauern. Acceptable für Builder-Bootstrap.
+ * Lazy-on-demand: if no fresh summary is present for the session,
+ * the Haiku call is triggered TODAY and the result is persisted
+ * as a turn with `userMessage = '<session-summary>'`. Side effect:
+ * a briefing load on an active session can take ~1s. Acceptable
+ * for Builder bootstrap.
  *
- * Token-Budget: das Briefing respektiert das übergebene
- * `budgetTokens` über die Phase-5 `assembleForBudget`-Pipeline.
+ * Token budget: the briefing respects the passed `budgetTokens`
+ * via the Phase-5 `assembleForBudget` pipeline.
  */
 
 export const SESSION_BRIEFING_SERVICE_NAME = 'sessionBriefing';
 export const SESSION_BRIEFING_CAPABILITY = 'sessionBriefing@1';
 
 export interface LoadSessionBriefingInput {
-  /** Session-Scope, für die das Briefing gebaut wird. */
+  /** Session scope for which the briefing is built. */
   scope: string;
-  /** Optional — liefert open-task-Filter scope-übergreifend für den User. */
+  /** Optional — drives the open-task filter scope-agnostically for the user. */
   userId?: string;
-  /** Wer fragt — für agent_priorities-Lookup im Token-Budget-Assembler. */
+  /** Who is asking — for the agent_priorities lookup in the Token-Budget-Assembler. */
   agentId: string;
-  /** Token-Budget für das gerenderte Briefing. Default: ContextRetriever-Default. */
+  /** Token budget for the rendered briefing. Default: ContextRetriever-Default. */
   budgetTokens?: number;
 }
 
 export type BriefingMode = 'resume' | 'briefing' | 'empty';
 
 export interface SessionBriefingResult {
-  /** Final-rendered Markdown-Block. Leerer String wenn nichts zu sagen ist. */
+  /** Final-rendered Markdown block. Empty string when there is nothing to say. */
   text: string;
   mode: BriefingMode;
-  /** Strukturierter Audit-Trail. */
+  /** Structured audit trail. */
   stats: {
-    /** Anzahl der Turns die in den Resume-Tail eingegangen sind. */
+    /** Number of turns that went into the Resume-Tail. */
     resumeTurns: number;
-    /** Vorhanden eine frische Summary? */
+    /** Is a fresh summary present? */
     summaryFound: boolean;
-    /** Wurde HEUTE eine neue Summary generiert (LLM-Call)? */
+    /** Was a new summary generated TODAY (LLM call)? */
     summaryRegenerated: boolean;
-    /** Anzahl offener Tasks die ins Briefing eingeflossen sind. */
+    /** Number of open tasks that flowed into the briefing. */
     openTasks: number;
-    /** Geschätzt verbrauchte Tokens (chars / charsPerToken). */
+    /** Estimated consumed tokens (chars / charsPerToken). */
     tokensUsed: number;
   };
 }
 
 /**
- * Service-Surface, die ein `sessionBriefing@1`-Provider published.
- * Der Provider lebt in `harness-orchestrator-extras` (braucht
+ * Service surface that a `sessionBriefing@1` provider publishes.
+ * The provider lives in `harness-orchestrator-extras` (needs
  * KnowledgeGraph + ContextRetriever + SessionSummaryGenerator);
- * Konsumenten ziehen ihn via `ctx.services.get<SessionBriefingService>('sessionBriefing')`.
+ * consumers pull it via `ctx.services.get<SessionBriefingService>('sessionBriefing')`.
  */
 export interface SessionBriefingService {
   loadSessionBriefing(

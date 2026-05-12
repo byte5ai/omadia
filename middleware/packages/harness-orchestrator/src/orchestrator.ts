@@ -649,11 +649,11 @@ export class Orchestrator {
   private readonly maxTokens: number;
   private readonly maxIterations: number;
   private readonly domainToolsByName: Map<string, DomainTool>;
-  // systemPrompt wird pro Turn live neu aus `buildSystemPrompt()` gebaut —
-  // so tauchen hot-registrierte DomainTools im Preamble auf. Prompt-Caching
-  // greift innerhalb stabiler Phasen (zwischen zwei register/unregister-
-  // Events) weiterhin; direkt nach einem Install/Uninstall fällt genau ein
-  // Cache-Miss an, dann ist der neue Prompt gecached.
+  // systemPrompt is rebuilt live per turn from `buildSystemPrompt()` —
+  // so hot-registered DomainTools show up in the preamble. Prompt caching
+  // still applies within stable phases (between two register/unregister
+  // events); right after an install/uninstall exactly one cache miss
+  // occurs, then the new prompt is cached.
   private readonly sessionLogger: SessionLogger | undefined;
   private readonly entityRefBus: EntityRefBus | undefined;
   private readonly knowledgeGraphTool: KnowledgeGraphTool | undefined;
@@ -2098,9 +2098,9 @@ export class Orchestrator {
   }
 
   /**
-   * Baut den System-Prompt aus der aktuellen DomainTool-Map. Wird pro Turn
-   * aufgerufen; stabile Feature-Flags kommen aus den readonly-Feldern, die
-   * DomainTool-Liste ist live.
+   * Builds the system prompt from the current DomainTool map. Called per
+   * turn; stable feature flags come from the readonly fields, the
+   * DomainTool list is live.
    */
   private getSystemPrompt(): string {
     // Plugin-contributed prompt docs, collected from the registry. The
@@ -2175,14 +2175,14 @@ export class Orchestrator {
   }
 
   /**
-   * Hot-Register eines DomainTools (z.B. nach Install eines Uploaded-Agents).
-   * Der Tool-Name MUSS eindeutig sein — existiert er schon, überschreibt der
-   * neue Eintrag still den alten.
+   * Hot-Register a DomainTool (e.g. after install of an uploaded agent).
+   * The tool name MUST be unique — if it already exists the new entry
+   * silently overrides the old one.
    *
-   * Der System-Prompt wird dabei NICHT neu gebaut — er enthält die
-   * Tool-Beschreibungen nur als Hilfe fürs Modell. Neue Tools sind trotzdem
-   * ab der nächsten Iteration callable, weil `buildToolsList()` die Map live
-   * iteriert. Der Orchestrator erwähnt sie nur nicht mehr im Preamble.
+   * The system prompt is NOT rebuilt — it contains the tool descriptions
+   * only as a hint for the model. New tools are still callable from the
+   * next iteration onwards because `buildToolsList()` iterates the map
+   * live. The Orchestrator simply does not mention them in the preamble.
    */
   registerDomainTool(tool: DomainTool): void {
     // Hard collision check. Silent last-wins was the previous behavior and
@@ -2209,8 +2209,8 @@ export class Orchestrator {
   }
 
   /**
-   * Hot-Unregister. Idempotent: ruft man es für einen unbekannten Namen auf,
-   * passiert nichts. Gibt zurück, ob tatsächlich ein Eintrag entfernt wurde.
+   * Hot-Unregister. Idempotent: calling it with an unknown name does
+   * nothing. Returns whether an entry was actually removed.
    */
   unregisterDomainTool(name: string): boolean {
     return this.domainToolsByName.delete(name);
@@ -2233,8 +2233,8 @@ export class Orchestrator {
     for (const entry of this.nativeTools.listWithHandler()) {
       if (entry.spec) tools.push(entry.spec);
     }
-    // DomainTools dynamisch aus der Map — so werden hot-registrierte
-    // Uploaded-Agents ab der nächsten Iteration sichtbar, ohne neu zu booten.
+    // DomainTools dynamically from the map — so hot-registered uploaded
+    // agents become visible from the next iteration without reboot.
     for (const tool of this.domainToolsByName.values()) {
       tools.push(tool.spec);
     }

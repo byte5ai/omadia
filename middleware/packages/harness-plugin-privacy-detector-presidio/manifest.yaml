@@ -84,7 +84,7 @@ playbook:
     zurück (fail-open per Detector — Regex + Ollama laufen weiter).
 
 # ---------------------------------------------------------------------------
-# Permissions. Nur outbound network zum konfigurierten Presidio-Endpoint.
+# Permissions. Only outbound network to the configured Presidio endpoint.
 # ---------------------------------------------------------------------------
 permissions:
   memory:

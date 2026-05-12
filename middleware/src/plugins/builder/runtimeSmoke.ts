@@ -67,8 +67,8 @@ export type RuntimeSmokeReason =
  *                  drift, but `result.ok` stays true.
  * `schema_violation` — response body is missing the required `ok` field
  *                  (or `ok` is not a boolean). The most common Builder
- *                  bug — Frontend prüft `data.ok`, Backend hat
- *                  `res.json({ devices: [] })` ohne wrapper geschrieben.
+ *                  bug — frontend checks `data.ok`, backend wrote
+ *                  `res.json({ devices: [] })` without the wrapper.
  * `http_error`   — response status was 4xx/5xx OR 'ok: false' wrapper.
  * `timeout`      — fetch exceeded the per-route budget.
  * `introspection_failed` — could not extract GET routes from the

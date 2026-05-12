@@ -491,7 +491,7 @@ export function PreviewChatPane({
 
       {error ? (
         // Theme A: external_reads-driven `is not registered` errors are
-        // EXPECTED in Preview — Lösung A leaves the ServicesAccessor as a
+        // EXPECTED in Preview — Solution A leaves the ServicesAccessor as a
         // no-op stub and lets the agent's null-guard fire. We render those
         // as warnings (yellow) with a hint that Install is required for
         // real lookups; everything else stays a hard error (red).

@@ -29,34 +29,34 @@ import type { UploadedPackageStore } from './uploadedPackageStore.js';
 import { zodToJsonSchema } from './zodToJsonSchema.js';
 
 /**
- * Runtime für hochgeladene Agent-Packages.
+ * Runtime for uploaded agent packages.
  *
- * Für jeden installed-and-uploaded Agent:
- *   1. Dynamic-Import von `<pkg>/dist/<manifest.lifecycle.entry>`
- *   2. `activate(ctx)` mit einem agent-scoped PluginContext aufrufen
- *   3. Rückgegebene `Toolkit.tools` (Zod) → LocalSubAgent-Tools (JSON-Schema)
- *      wrappen
- *   4. LocalSubAgent mit System-Prompt aus `manifest.skills[*].path` bauen
- *   5. Über `createDomainTool` als Askable in den Orchestrator einhängen
+ * For each installed-and-uploaded agent:
+ *   1. Dynamic import of `<pkg>/dist/<manifest.lifecycle.entry>`
+ *   2. Call `activate(ctx)` with an agent-scoped PluginContext
+ *   3. Wrap returned `Toolkit.tools` (Zod) into LocalSubAgent tools
+ *      (JSON-Schema)
+ *   4. Build a LocalSubAgent with a system prompt from `manifest.skills[*].path`
+ *   5. Attach as an askable to the orchestrator via `createDomainTool`
  *
- * Beim Uninstall / Hot-Unload:
- *   1. DomainTool aus dem Orchestrator entfernen (hot — keine Restart nötig)
- *   2. `handle.close()` ausführen (connections, timer, …)
- *   3. Eintrag aus der internen Map löschen
+ * On uninstall / hot-unload:
+ *   1. Remove DomainTool from the orchestrator (hot — no restart needed)
+ *   2. Run `handle.close()` (connections, timers, …)
+ *   3. Delete the entry from the internal map
  *
- * Die Runtime kennt ausschließlich Uploaded-Packages. Built-in Sub-Agents
- * (Odoo, Confluence, Calendar) werden weiterhin statisch in index.ts
- * verdrahtet — das ist bewusst nicht mit gemerged, um die beiden Pfade
- * getrennt beobachtbar zu halten.
+ * The runtime only knows uploaded packages. Built-in sub-agents
+ * (Odoo, Confluence, Calendar) are still wired statically in index.ts —
+ * this is intentionally not merged so the two paths stay separately
+ * observable.
  */
 
-// Strukturell-kompatibel zum Package-Contract (siehe middleware/packages/agent-seo-analyst/plugin.ts).
-// Tools können in zwei Shapes ankommen:
-//   1. Zod-style `{ id, description, input: ZodType, run }` — der Builder-
-//      Default für selbst-generierte Tools.
-//   2. Already-bridged `LocalSubAgentTool` (`{ spec, handle }`) — wenn ein
-//      sub-agent Plugin (z.B. agent-odoo-accounting) einen scope-locked
-//      Tool aus einer Integration konsumiert und weiterreicht.
+// Structurally compatible with the package contract (see middleware/packages/agent-seo-analyst/plugin.ts).
+// Tools can arrive in two shapes:
+//   1. Zod-style `{ id, description, input: ZodType, run }` — the builder
+//      default for self-generated tools.
+//   2. Already-bridged `LocalSubAgentTool` (`{ spec, handle }`) — when a
+//      sub-agent plugin (e.g. agent-odoo-accounting) consumes a scope-locked
+//      tool from an integration and forwards it.
 interface UploadedToolkit {
   readonly tools: ReadonlyArray<
     | {
@@ -125,15 +125,15 @@ export class DynamicAgentRuntime {
 
   constructor(private readonly deps: DynamicAgentRuntimeDeps) {}
 
-  /** Muss genau einmal nach Konstruktion des Orchestrators gesetzt werden.
-   *  Erst danach wird hot-register wirksam.
+  /** Must be set exactly once after orchestrator construction.
+   *  Hot-register only takes effect after this.
    *
-   *  Tools die der Orchestrator bereits durch seinen `options.domainTools`-
-   *  Konstruktor-Parameter kennt, werden hier übersprungen — sonst wirft
-   *  `registerDomainTool` sofort duplicate-Errors. Das ist der übliche Boot-
-   *  Flow: `activateAllInstalled()` baut die DomainTool-Liste, index.ts gibt
-   *  sie dem Orchestrator, und `attachOrchestrator()` hält nur die Referenz
-   *  vor für spätere Hot-Installs. */
+   *  Tools the orchestrator already knows through its `options.domainTools`
+   *  constructor parameter are skipped here — otherwise `registerDomainTool`
+   *  would throw duplicate errors immediately. This is the usual boot flow:
+   *  `activateAllInstalled()` builds the DomainTool list, index.ts hands it
+   *  to the orchestrator, and `attachOrchestrator()` only keeps the reference
+   *  around for later hot-installs. */
   attachOrchestrator(orchestrator: Orchestrator): void {
     this.orchestrator = orchestrator;
     for (const entry of this.active.values()) {
@@ -155,9 +155,9 @@ export class DynamicAgentRuntime {
     return undefined;
   }
 
-  /** Aktiviert alle Uploaded- und BuiltIn-Packages, die bereits im Registry
-   *  als `active` eingetragen sind. Rückgabe: die DomainTools, damit der
-   *  Caller sie beim initialen Orchestrator-Construct mitgeben kann. */
+  /** Activates all uploaded and built-in packages that are already marked
+   *  `active` in the registry. Returns the DomainTools so the caller can
+   *  pass them in on the initial orchestrator construction. */
   async activateAllInstalled(): Promise<DomainTool[]> {
     const log = this.deps.log ?? ((...a: unknown[]) => console.log(...a));
     const out: DomainTool[] = [];
@@ -183,12 +183,12 @@ export class DynamicAgentRuntime {
       const catalogEntry = this.deps.catalog.get(id);
       if (catalogEntry && catalogEntry.plugin.kind !== 'agent') continue;
 
-      // OB-29-5: Builder-Reference-Plugins (`is_reference_only: true`) sind
-      // ausschließlich Pattern-Quelle für den BuilderAgent (read_reference)
-      // und haben weder im Operator-Plugin-Catalog noch in der Active-
-      // Runtime etwas zu suchen. Ohne diesen Skip würde der Reference-
-      // Plugin (das absichtlich keine sub-agent-tools[] exposiert) hier
-      // mit "Cannot read properties of undefined (reading 'map')" crashen.
+      // OB-29-5: builder-reference plugins (`is_reference_only: true`) are
+      // exclusively a pattern source for the BuilderAgent (read_reference)
+      // and have no business in either the operator plugin catalog or the
+      // active runtime. Without this skip the reference plugin (which
+      // intentionally exposes no sub-agent-tools[]) would crash here with
+      // "Cannot read properties of undefined (reading 'map')".
       if (catalogEntry?.plugin.is_reference_only === true) continue;
 
       const reg = this.deps.registry.get(id);
@@ -230,15 +230,15 @@ export class DynamicAgentRuntime {
     return this.deps.builtInStore?.get(agentId)?.path;
   }
 
-  /** Aktiviert einen einzelnen Uploaded-Agent. Idempotent: bereits-aktive
-   *  Agents werden ohne Doppel-Import zurückgegeben. */
+  /** Activates a single uploaded agent. Idempotent: already-active
+   *  agents are returned without a second import. */
   async activate(agentId: string): Promise<DomainTool | null> {
     const log = this.deps.log ?? ((...a: unknown[]) => console.log(...a));
     const existing = this.active.get(agentId);
     if (existing) return existing.domainTool;
 
     const packagePath = this.resolvePackagePath(agentId);
-    if (!packagePath) return null; // Agent ist in keinem Store bekannt.
+    if (!packagePath) return null; // Agent is not known in any store.
 
     const catalogEntry = this.deps.catalog.get(agentId);
     if (!catalogEntry) {

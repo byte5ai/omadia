@@ -28,15 +28,15 @@ export interface ContextRetrieverOptions {
   /** Per-entry-type score multipliers. Default 1.0 each (neutral). */
   recallTypeWeights?: Partial<Record<EntryType, number>>;
 
-  // OB-74 (Palaia Phase 5) — Token-Budget-Assembler-Knöpfe.
-  /** Default-Budget für `assembleForBudget`, falls Caller keins angibt.
-   *  Default 6000 (~24k chars bei charsPerToken=4). */
+  // OB-74 (Palaia Phase 5) — Token-Budget-Assembler knobs.
+  /** Default budget for `assembleForBudget` when the caller does not pass one.
+   *  Default 6000 (~24k chars at charsPerToken=4). */
   defaultBudgetTokens?: number;
-  /** Faustregel für Token-Schätzung in `chars / charsPerToken`. Default 4. */
+  /** Rule-of-thumb for token estimation in `chars / charsPerToken`. Default 4. */
   charsPerToken?: number;
-  /** Score-Multiplier für `manuallyAuthored=true`-Hits. Default 1.3 (palaia). */
+  /** Score multiplier for `manuallyAuthored=true` hits. Default 1.3 (palaia). */
   manualBoostFactor?: number;
-  /** Über dieser Anzahl Hits aktiviert sich der Compact-Snippet-Mode.
+  /** Above this hit count, Compact-Snippet-Mode activates.
    *  Default 100. */
   compactModeThreshold?: number;
 }
@@ -70,18 +70,18 @@ export interface ContextBuildResult {
 // ---------------------------------------------------------------------------
 // OB-74 (Palaia Phase 5) — Token-Budget-Assembler.
 //
-// `assembleForBudget` ergänzt `build` um eine token-aware Greedy-Fill-Pipeline:
-//   1. Tail-Turns (chronologisch, score=1.0 synthetic) gehen ZUERST in den
-//      Fill — Recency wins, auch gegen höher-gescorte Hybrid-Hits.
-//   2. Verbleibende Hits (Entity-Hits + Hybrid-FTS) werden nach Score
-//      DESC sortiert (ties broken by turnId ASC für Determinismus).
-//   3. Score-Multiplier: `manuallyAuthored=true` → ×manualBoostFactor (1.3),
+// `assembleForBudget` augments `build` with a token-aware greedy-fill pipeline:
+//   1. Tail turns (chronological, score=1.0 synthetic) go into the fill
+//      FIRST — recency wins, even against higher-scored hybrid hits.
+//   2. Remaining hits (entity-hits + hybrid-FTS) are sorted by score
+//      DESC (ties broken by turnId ASC for determinism).
+//   3. Score multipliers: `manuallyAuthored=true` → ×manualBoostFactor (1.3),
 //      `agent_priorities[entry].action='boost'` → ×weight.
 //   4. Filter: `agent_priorities[entry].action='block'` → drop.
-//   5. Compact-Mode bei >compactModeThreshold (100) Kandidaten — pro Hit nur
-//      ein ~120-char-Snippet statt full-body, sonst frisst der Pool das
-//      Budget.
-//   6. Greedy Fill bis tokensUsed + hitTokens > budget → break.
+//   5. Compact-Mode at >compactModeThreshold (100) candidates — only a
+//      ~120-char snippet per hit instead of the full body, otherwise the
+//      pool eats the budget.
+//   6. Greedy fill until tokensUsed + hitTokens > budget → break.
 // ---------------------------------------------------------------------------
 
 export interface AssembleForBudgetInput {
@@ -90,9 +90,9 @@ export interface AssembleForBudgetInput {
   userId?: string;
   /** External id of the turn currently being answered — excluded from hits. */
   currentTurnId?: string;
-  /** Wer fragt — driver für agent_priorities-Lookup. */
+  /** Who is asking — driver for agent_priorities lookup. */
   agentId: string;
-  /** Optional override; sonst `defaultBudgetTokens` aus den ContextRetriever-Opts. */
+  /** Optional override; otherwise `defaultBudgetTokens` from ContextRetriever-Opts. */
   budget?: { tokens: number };
 }
 
@@ -105,13 +105,13 @@ export type AssembledHitReason =
 
 export interface AssembledHit {
   turnId: string;
-  /** Final score nach allen Multiplier (raw × manual × agent). */
+  /** Final score after all multipliers (raw × manual × agent). */
   score: number;
-  /** Charcount des gerenderten Chunks (tail-block ODER full ODER snippet). */
+  /** Char count of the rendered chunk (tail-block OR full OR snippet). */
   chars: number;
-  /** Welcher Recall-Pfad hat diesen Hit geliefert / ggf. welcher Multiplier
-   *  hat ihn aufgewertet. `manual-boost` / `agent-boost` overriden bloß
-   *  `entity`/`fts` wenn relevant — Audit-Karte zeigt den dominanten Grund. */
+  /** Which recall path delivered this hit / which multiplier boosted it,
+   *  if any. `manual-boost` / `agent-boost` only override `entity`/`fts`
+   *  when relevant — the audit card shows the dominant reason. */
   reason: AssembledHitReason;
 }
 
@@ -121,17 +121,17 @@ export interface AssembledExclusion {
 }
 
 export interface AssembledContext {
-  /** Final-rendered prose, ≤ budget tokens (best-effort, basierend auf
-   *  `chars/charsPerToken`). Leerer String wenn nichts gepasst hat. */
+  /** Final-rendered prose, ≤ budget tokens (best-effort, based on
+   *  `chars/charsPerToken`). Empty string when nothing fit. */
   text: string;
   included: AssembledHit[];
   excluded: AssembledExclusion[];
   stats: {
-    /** Größe des candidate pools VOR dem Greedy-Fill. */
+    /** Size of the candidate pool BEFORE the greedy-fill. */
     candidatePool: number;
-    /** True wenn der Pool > compactModeThreshold war. */
+    /** True when the pool was > compactModeThreshold. */
     compactMode: boolean;
-    /** Tatsächlich konsumierte Token (Schätzung via charsPerToken). */
+    /** Actually consumed tokens (estimate via charsPerToken). */
     tokensUsed: number;
   };
 }
@@ -142,12 +142,12 @@ interface CandidateHit {
   time: string;
   userMessage: string;
   assistantAnswer: string;
-  /** Score VOR Multiplier (raw hybrid score oder synthetic 1.0 für tail). */
+  /** Score BEFORE multipliers (raw hybrid score or synthetic 1.0 for tail). */
   rawScore: number;
-  /** Quelle des Hits — verschmolzen mit Multiplier-Reason im Output. */
+  /** Origin of the hit — merged with multiplier reason in the output. */
   origin: 'tail' | 'entity' | 'fts';
   manuallyAuthored: boolean;
-  /** Inkrementeller Boost durch `agent_priorities.action='boost'`. */
+  /** Incremental boost via `agent_priorities.action='boost'`. */
   agentBoosted: boolean;
 }
 
@@ -236,9 +236,9 @@ export class ContextRetriever {
     private readonly graph: KnowledgeGraph,
     opts: ContextRetrieverOptions = {},
     private readonly embeddingClient?: EmbeddingClient,
-    /** OB-74 (Palaia Phase 5) — optional. Wenn der KG-Provider die
-     *  `agentPriorities@1`-Capability nicht published, läuft der
-     *  Assembler ohne Block/Boost (manual_authored × 1.3 bleibt aktiv). */
+    /** OB-74 (Palaia Phase 5) — optional. When the KG provider does not
+     *  publish the `agentPriorities@1` capability, the assembler runs
+     *  without Block/Boost (manual_authored × 1.3 stays active). */
     private readonly agentPriorities?: AgentPrioritiesStore,
   ) {
     this.opts = { ...DEFAULTS, ...opts };
@@ -304,14 +304,14 @@ export class ContextRetriever {
   /**
    * OB-74 (Palaia Phase 5) — Token-Budget Greedy-Fill Assembler.
    *
-   * Sammelt dieselben Recall-Legs wie `build()`, aber sortiert/filtert die
-   * Hit-Liste agent-spezifisch (Block/Boost via `agent_priorities`),
-   * applied `manuallyAuthored × manualBoostFactor`, und füllt einen
-   * Token-Budget greedy nach Score. Tail-Turns gehen zuerst in den Fill —
-   * Recency wins gegen höher-gescortes Hybrid.
+   * Collects the same recall legs as `build()`, but sorts/filters the
+   * hit list agent-specific (Block/Boost via `agent_priorities`),
+   * applies `manuallyAuthored × manualBoostFactor`, and greedy-fills a
+   * token budget by score. Tail turns go into the fill first —
+   * recency wins against higher-scored hybrid.
    *
-   * Side-effect-frei zu `build()`: ruft die gleichen Graph-Methoden auf,
-   * mutiert keinen geteilten State.
+   * Side-effect-free relative to `build()`: calls the same graph methods,
+   * does not mutate shared state.
    */
   async assembleForBudget(
     input: AssembleForBudgetInput,
@@ -373,9 +373,9 @@ export class ContextRetriever {
           time: t.time,
           userMessage: t.userMessage,
           assistantAnswer: t.assistantAnswer,
-          // Entity-Hits haben keinen score → synthetic 0.7 (zwischen tail
-          // und ungeranktem FTS, Operator-Erfahrung aus OB-72 zeigt sie sind
-          // hochrelevant wenn die Entity getroffen wurde).
+          // Entity hits have no score → synthetic 0.7 (between tail
+          // and unranked FTS; operator experience from OB-72 shows they
+          // are highly relevant whenever the entity was hit).
           rawScore: 0.7,
           origin: 'entity',
           manuallyAuthored: false,
@@ -689,7 +689,7 @@ function truncate(s: string, max: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// OB-74 (Palaia Phase 5) — Assembler-Render-Helper.
+// OB-74 (Palaia Phase 5) — Assembler render helpers.
 // ---------------------------------------------------------------------------
 
 const COMPACT_USER_CHARS = 80;
@@ -697,8 +697,8 @@ const COMPACT_ASSISTANT_CHARS = 40;
 
 /**
  * Render a single hit as a context chunk. Compact-Mode-Snippet (~120 chars)
- * wenn der candidate pool > compactModeThreshold ist; sonst das übliche
- * Tail-Format mit einer truncate-Cap auf 600/1200 chars (analog `renderContext`).
+ * when the candidate pool > compactModeThreshold; otherwise the usual
+ * tail format with a truncate cap at 600/1200 chars (analogous to `renderContext`).
  */
 function renderHitChunk(hit: CandidateHit, compactMode: boolean): string {
   const time = hit.time;

@@ -445,7 +445,7 @@ describe('AutoFixOrchestrator integration', () => {
     // Models the real bug: an in-flight auto-turn kicks off a rebuild
     // whose `build_status:failed` arrives BEFORE the original turn
     // finished. Without the lock the orchestrator would fire a second
-    // overlapping turn ("nervös"). With the lock, the second event is
+    // overlapping turn ("jittery"). With the lock, the second event is
     // dropped silently — but the lock clears in fireTurn's finally so
     // a LATER failure (after the turn is done) can still trigger.
     const bus = new SpecEventBus();

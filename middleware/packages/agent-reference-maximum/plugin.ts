@@ -53,7 +53,7 @@ export async function activate(ctx: PluginContext): Promise<AgentHandle> {
     },
   );
 
-  // OB-29-1 — Sub-Agent-Delegation-Demo: analyze_url delegiert an seo-analyst.
+  // OB-29-1 — Sub-Agent-Delegation-Demo: analyze_url delegates to seo-analyst.
   const disposeAnalyzeUrl = ctx.tools.register(
     toolkit.specs.analyzeUrl,
     toolkit.handlers.analyzeUrl,
@@ -66,9 +66,9 @@ export async function activate(ctx: PluginContext): Promise<AgentHandle> {
     },
   );
 
-  // OB-29-3 — LLM-Service-Demo: smart_extract_entities ruft Haiku via
+  // OB-29-3 — LLM-Service-Demo: smart_extract_entities calls Haiku via
   // ctx.llm.complete. Manifest's permissions.llm.models_allowed governs
-  // presence — ohne Whitelist liefert das Tool einen permission-error result.
+  // presence — without a whitelist the tool returns a permission-error result.
   const disposeSmartExtract = ctx.tools.register(
     toolkit.specs.smartExtractEntities,
     toolkit.handlers.smartExtractEntities,
@@ -80,9 +80,9 @@ export async function activate(ctx: PluginContext): Promise<AgentHandle> {
     },
   );
 
-  // OB-29-4 — Tool-emittiertes pendingUserChoice. query_notes_by_person
-  // emittiert bei Mehrdeutigkeit `_pendingUserChoice` im Tool-Result; der
-  // Orchestrator short-circuitet die Turn und rendert die Smart-Card.
+  // OB-29-4 — Tool-emitted pendingUserChoice. query_notes_by_person
+  // emits `_pendingUserChoice` in the tool-result on ambiguity; the
+  // Orchestrator short-circuits the turn and renders the Smart-Card.
   const disposeQueryNotes = ctx.tools.register(
     toolkit.specs.queryNotesByPerson,
     toolkit.handlers.queryNotesByPerson,

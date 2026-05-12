@@ -1,55 +1,54 @@
-# Builder Template-Manifest
+# Builder template manifest
 #
-# Beschreibt, wie die CodegenEngine ein AgentSpec auf das Boilerplate-Layout
-# unter diesem Verzeichnis abbildet:
+# Describes how the CodegenEngine maps an AgentSpec onto the boilerplate layout
+# in this directory:
 #
-#   - slots[]:        markierte Code-Regionen, die LLM-generierte Inhalte
-#                     aufnehmen (Marker: `// #region builder:<key>` ...
+#   - slots[]:        marked code regions that receive LLM-generated content
+#                     (markers: `// #region builder:<key>` ...
 #                     `// #endregion`)
-#   - placeholders:   `{{TOKEN}}` -> Source-Pfad ins AgentSpec (dotted-path,
-#                     `[i]`-Indizierung erlaubt; `__derived__/<name>` für
-#                     berechnete Werte)
-#   - skip_files:     im Output ausgelassene Files (top-level oder als
-#                     Path-Segment)
+#   - placeholders:   `{{TOKEN}}` -> source path into the AgentSpec (dotted
+#                     path, `[i]` indexing allowed; `__derived__/<name>` for
+#                     computed values)
+#   - skip_files:     files omitted in the output (top-level or as a
+#                     path segment)
 #
-# Templates müssen `id` matchend zum Verzeichnisnamen tragen — der Resolver
-# verifiziert das beim Laden, damit registry und filesystem nicht
-# auseinanderdriften.
+# Templates must carry an `id` matching the directory name — the resolver
+# verifies this on load so that registry and filesystem do not drift apart.
 
 id: agent-integration
 description: |
-  Integration-konsumierender Agent. Pattern: ein client.ts wraps einen
-  externen API-Endpoint (HTTP/SDK), und toolkit.ts exposed Tools, die
-  diesen Client rufen. Setzt `depends_on` auf ein Integration-Plugin
-  (z.B. de.byte5.integration.openweather) für Vault-Scope und
-  Capability-Resolution. Vorbild: middleware/packages/agent-seo-analyst/.
+  Integration-consuming agent. Pattern: a client.ts wraps an
+  external API endpoint (HTTP/SDK), and toolkit.ts exposes tools that
+  call this client. Sets `depends_on` to an integration plugin
+  (e.g. de.byte5.integration.openweather) for vault scope and
+  capability resolution. Reference: middleware/packages/agent-seo-analyst/.
 
 slots:
   - key: client-impl
     target_file: client.ts
     required: true
-    description: API-Client-Klasse oder SDK-Wrapper
+    description: API client class or SDK wrapper
   - key: toolkit-impl
     target_file: toolkit.ts
     required: true
-    description: Tool-Array mit Anthropic-tool-spec + Handler-Bodies
+    description: Tool array with Anthropic tool spec + handler bodies
   - key: activate-body
     target_file: plugin.ts
     required: false
-    description: Custom-activate-Code (optional; default belasst Boilerplate-Body)
+    description: Custom activate code (optional; default leaves the boilerplate body)
   - key: skill-prompt
     target_file: skills/{{AGENT_SLUG}}-expert.md
     required: true
-    description: System-Prompt-Body (Frontmatter wird automatisch erzeugt)
+    description: System prompt body (frontmatter is generated automatically)
   - key: admin-ui-body
     target_file: assets/admin-ui/index.html
     required: false
     description: |
-      Optional Operator-Admin-UI body content (HTML, inline <style>+<script>
-      erlaubt). Wird gemounted via ctx.routes.register() im activate-body
-      und in manifest.yaml als top-level admin_ui_path deklariert. Wenn
-      nicht gesetzt: der Default-Placeholder erklärt dem Operator, dass
-      keine Admin-UI konfiguriert ist.
+      Optional operator admin UI body content (HTML, inline <style>+<script>
+      allowed). Mounted via ctx.routes.register() in the activate-body
+      and declared in manifest.yaml as the top-level admin_ui_path. When
+      not set: the default placeholder explains to the operator that
+      no admin UI is configured.
   - key: external-reads-imports
     target_file: plugin.ts
     required: false

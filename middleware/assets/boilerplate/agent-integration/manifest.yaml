@@ -27,12 +27,12 @@ compat:
   core: ">=1.0 <2.0"
   node: ">=20"
 
-# Integrations, die dieser Agent voraussetzt. Auth/Secrets werden via
-# Resolution-Chain (ctx.secret) aus der Integration gezogen. Codegen
-# overschreibt diesen Block direkt im YAML-AST aus `spec.depends_on` —
-# Self-contained Agents (PAT/OAuth in eigenen setup_fields, kein
-# Parent-Integration-Plugin) bekommen `depends_on: []`, andere die echte
-# Block-Liste.
+# Integrations this agent depends on. Auth/secrets are pulled via the
+# resolution chain (ctx.secret) from the integration. Codegen overwrites
+# this block directly in the YAML AST from `spec.depends_on` —
+# self-contained agents (PAT/OAuth in their own setup_fields, no parent
+# integration plugin) get `depends_on: []`, others get the real block
+# list.
 depends_on: []
 
 lifecycle:
@@ -88,7 +88,7 @@ capabilities:
           url:   { type: "string" }
     side_effects: "read"                 # read | write | none
     idempotent: true
-    autonomous: true                     # false wenn OBO-User-Token nötig
+    autonomous: true                     # false when OBO user token is required
     timeout_ms: 20000
 
 playbook:
@@ -106,10 +106,10 @@ entities:
   consumes: []
 
 # ---------------------------------------------------------------------------
-# System-Prompt = Skills (prompt_partial). Der systemPrompt wird NICHT im Code
-# zurückgegeben — die Runtime lädt alle Partials, stripped das Frontmatter,
-# concatenated und setzt automatisch einen Header aus plugin.name,
-# plugin.description und playbook.when_to_use davor.
+# System prompt = skills (prompt_partial). The systemPrompt is NOT returned in
+# code — the runtime loads all partials, strips the frontmatter,
+# concatenates them and automatically prepends a header built from plugin.name,
+# plugin.description and playbook.when_to_use.
 # ---------------------------------------------------------------------------
 skills:
   - id: "{{AGENT_SLUG}}_expert_system"

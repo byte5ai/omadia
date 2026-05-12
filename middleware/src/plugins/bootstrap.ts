@@ -19,18 +19,18 @@ const ORCHESTRATOR_TOOL_ID = '@omadia/orchestrator';
 const ORCHESTRATOR_EXTRAS_TOOL_ID = '@omadia/orchestrator-extras';
 const VERIFIER_TOOL_ID = '@omadia/verifier';
 
-// S+11-2b: KG-Provider sind Operator-managed (RequiresWizard / install UI).
-// Beide Sibling-Plugins deklarieren `provides: knowledgeGraph@1` —
-// Mutual exclusion, nur einer darf gleichzeitig in installed.json stehen.
-// `bootstrapKnowledgeGraphFromEnv` wählt einen basierend auf DATABASE_URL;
-// der catch-all `bootstrapBuiltInPackages` skipt beide Sibling-IDs explizit
-// damit er nicht den anderen Provider mit `config={}` neben den ausgewählten
-// installiert (das würde am ersten Activate-Schritt mit
-// "duplicate-provider"-Throw aus `ctx.services.provide` knallen).
+// S+11-2b: KG providers are operator-managed (RequiresWizard / install UI).
+// Both sibling plugins declare `provides: knowledgeGraph@1` —
+// mutual exclusion, only one may live in installed.json at a time.
+// `bootstrapKnowledgeGraphFromEnv` picks one based on DATABASE_URL;
+// the catch-all `bootstrapBuiltInPackages` explicitly skips both sibling IDs
+// so it does not register the other provider with `config={}` alongside the
+// chosen one (which would blow up on the first activate step with a
+// "duplicate-provider" throw from `ctx.services.provide`).
 //
-// Die legacy-Plugin-ID `de.byte5.tool.knowledge-graph` (jetzt deprecated
-// shell, S+11-2b) skipt der catch-all auch — `bootstrapKnowledgeGraphFromEnv`
-// migriert eine pre-S+11-2b-Installation einmalig per `registry.remove`.
+// The legacy plugin ID `de.byte5.tool.knowledge-graph` (now a deprecated
+// shell, S+11-2b) is skipped by the catch-all too — `bootstrapKnowledgeGraphFromEnv`
+// migrates any pre-S+11-2b installation once via `registry.remove`.
 const KNOWLEDGE_GRAPH_LEGACY_ID = 'de.byte5.tool.knowledge-graph';
 const KNOWLEDGE_GRAPH_INMEMORY_ID = '@omadia/knowledge-graph-inmemory';
 const KNOWLEDGE_GRAPH_NEON_ID = '@omadia/knowledge-graph-neon';
@@ -77,7 +77,7 @@ export interface BootstrapDeps {
 // `toolPluginRuntime.activateAllInstalled`, and lifts errored entries that
 // are clearly fixable.
 //
-// John-Architektur (Briefing-Fork-#5): file-mtime ODER cap-resolution.
+// John's architecture (Briefing-Fork-#5): file-mtime OR cap-resolution.
 //
 //   - File-mtime path: if the package's `manifest.yaml` was modified more
 //     recently than `last_activation_error_at`, the operator has clearly
@@ -393,7 +393,7 @@ async function bootstrapEmbeddingsFromEnv(deps: BootstrapDeps): Promise<void> {
  *
  *   - `@omadia/knowledge-graph-neon`     when DATABASE_URL is set
  *   - `@omadia/knowledge-graph-inmemory` otherwise (Empty-Middleware-
- *                                              Demo / lokales Dev / CI)
+ *                                              Demo / local dev / CI)
  *
  * Mutual exclusion: both new plugins declare `provides: knowledgeGraph@1`
  * — the resolver / `ctx.services.provide` only allows one active provider
@@ -550,7 +550,7 @@ async function bootstrapOrchestratorExtrasFromEnv(
     return;
   }
 
-  // S+12.6: anthropic_api_key wandert in den Vault (matches database_url-pattern).
+  // S+12.6: anthropic_api_key moves to the vault (matches database_url pattern).
   if (deps.config.ANTHROPIC_API_KEY) {
     await deps.vault.setMany(ORCHESTRATOR_EXTRAS_TOOL_ID, {
       anthropic_api_key: deps.config.ANTHROPIC_API_KEY,
@@ -629,7 +629,7 @@ async function bootstrapVerifierFromEnv(
     return;
   }
 
-  // S+12.6: anthropic_api_key wandert in den Vault.
+  // S+12.6: anthropic_api_key moves to the vault.
   if (deps.config.ANTHROPIC_API_KEY) {
     await deps.vault.setMany(VERIFIER_TOOL_ID, {
       anthropic_api_key: deps.config.ANTHROPIC_API_KEY,
@@ -699,7 +699,7 @@ async function bootstrapOrchestratorFromEnv(
     return;
   }
 
-  // S+12.6: anthropic_api_key wandert in den Vault.
+  // S+12.6: anthropic_api_key moves to the vault.
   if (deps.config.ANTHROPIC_API_KEY) {
     await deps.vault.setMany(ORCHESTRATOR_TOOL_ID, {
       anthropic_api_key: deps.config.ANTHROPIC_API_KEY,
@@ -824,10 +824,10 @@ async function bootstrapBuiltInPackages(deps: BootstrapDeps): Promise<void> {
 
   for (const pkg of store.list()) {
     if (deps.registry.has(pkg.id)) continue;
-    // S+11-2b: KG-Provider sind operator-managed (Mutual exclusion + Wizard);
-    // `bootstrapKnowledgeGraphFromEnv` hat bereits den passenden Provider
-    // installiert. Catch-all darf den ANDEREN nicht parallel registrieren —
-    // sonst duplicate-provider-Throw beim Activate.
+    // S+11-2b: KG providers are operator-managed (mutual exclusion + Wizard);
+    // `bootstrapKnowledgeGraphFromEnv` has already installed the matching
+    // provider. The catch-all must not register the OTHER one alongside —
+    // otherwise duplicate-provider throw at activate time.
     if (KNOWLEDGE_GRAPH_PROVIDER_IDS_SKIP_AUTO_INSTALL.has(pkg.id)) {
       log(
         `[bootstrap] built-in ${pkg.id} skipped — KG-Provider sind operator-managed (siehe bootstrapKnowledgeGraphFromEnv + RequiresWizard)`,

@@ -15,9 +15,9 @@ identity:
   categories:
     - "reference"
 
-# OB-29-0 Marker: signal an den Plugin-Catalog-Endpoint, dass dieses Plugin
-# nicht im Operator-Store sichtbar sein soll. Der BuilderAgent darf es trotzdem
-# als Pattern-Quelle einlesen (lebt in BUILDER_REFERENCE_ESSENTIALS).
+# OB-29-0 marker: signal to the Plugin-Catalog endpoint that this plugin
+# must not be visible in the Operator-Store. The BuilderAgent may still
+# read it as a pattern source (lives in BUILDER_REFERENCE_ESSENTIALS).
 is_reference_only: true
 
 compat:
@@ -130,10 +130,10 @@ permissions:
   graph:
     reads: ["Turn", "Person", "Company", "Fact"]
     writes: []
-    # OB-29-2 — Plugin-eigene Entity-Namespace. ctx.knowledgeGraph.ingestEntities
-    # akzeptiert nur diese system-Strings; alles andere wirft
-    # KgEntityNamespaceError. 'odoo' und 'confluence' sind reserviert (host-only)
-    # und werden vom manifestLoader hier rausgestrippt, falls jemand sie listet.
+    # OB-29-2 — Plugin-owned entity namespace. ctx.knowledgeGraph.ingestEntities
+    # accepts only these system-strings; anything else throws
+    # KgEntityNamespaceError. 'odoo' and 'confluence' are reserved (host-only)
+    # and are stripped here by the manifestLoader if anyone lists them.
     entity_systems:
       - "personal-notes"
   network:
@@ -147,9 +147,9 @@ permissions:
     calls:
       - "@omadia/agent-seo-analyst"
     calls_per_invocation: 3
-  # OB-29-3 — LLM-Service-Pattern: ctx.llm.complete() darf nur Haiku-Calls
-  # absetzen (cost-controlled), max 2 Calls pro Tool-Handler-Lifetime,
-  # max 1024 Output-Tokens pro Call. Models außerhalb der Liste werfen
+  # OB-29-3 — LLM-Service-Pattern: ctx.llm.complete() may only issue Haiku
+  # calls (cost-controlled), max 2 calls per tool-handler lifetime,
+  # max 1024 output tokens per call. Models outside the list throw
   # LlmModelNotAllowedError.
   llm:
     models_allowed:

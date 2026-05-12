@@ -1,20 +1,20 @@
 #!/usr/bin/env node
 /**
- * build-zip.mjs — baut ein uploadbares Agent-Package.
+ * build-zip.mjs — builds an uploadable agent package.
  *
  * Steps:
  *   1) npx tsc --project ./tsconfig.json      (→ dist/)
- *   2) Runtime-Artefakte nach out/<id>-<version>-package/ kopieren
- *   3) dist/<entry> verifizieren (sonst Abbruch)
- *   4) zippen zu out/<id>-<version>.zip
+ *   2) Copy runtime artefacts into out/<id>-<version>-package/
+ *   3) Verify dist/<entry> exists (abort otherwise)
+ *   4) Zip into out/<id>-<version>.zip
  *
- * Zip-Inhalt (strikt): manifest.yaml, package.json, dist/, skills/,
- *                      assets/ (optional), README.md, LICENSE (optional)
- * NICHT drin: TS-Quellen (*.ts außerhalb dist/), node_modules, .env, out/
+ * Zip contents (strict): manifest.yaml, package.json, dist/, skills/,
+ *                        assets/ (optional), README.md, LICENSE (optional)
+ * NOT included: TS sources (*.ts outside dist/), node_modules, .env, out/
  *
- * Extension-Allowlist im Host-Extractor:
+ * Extension allowlist in the host extractor:
  *   .yaml .md .json .js .mjs .cjs .map .png .svg .jpg .txt
- *   + LICENSE / README / NOTICE (ohne Extension)
+ *   + LICENSE / README / NOTICE (without extension)
  */
 
 import { spawnSync } from 'node:child_process';

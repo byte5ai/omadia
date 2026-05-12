@@ -232,7 +232,7 @@ const PersonaAxisValueSchema = z.number().int().min(0).max(100);
 
 export const PersonaAxesSchema = z
   .object({
-    // Core (8) — primärer Slider-Block in der UI
+    // Core (8) — primary slider block in the UI
     formality: PersonaAxisValueSchema.optional(),
     directness: PersonaAxisValueSchema.optional(),
     warmth: PersonaAxisValueSchema.optional(),
@@ -241,7 +241,7 @@ export const PersonaAxesSchema = z
     conciseness: PersonaAxisValueSchema.optional(),
     proactivity: PersonaAxisValueSchema.optional(),
     autonomy: PersonaAxisValueSchema.optional(),
-    // Extended (4) — sekundärer Slider-Block
+    // Extended (4) — secondary slider block
     risk_tolerance: PersonaAxisValueSchema.optional(),
     creativity: PersonaAxisValueSchema.optional(),
     drama: PersonaAxisValueSchema.optional(),

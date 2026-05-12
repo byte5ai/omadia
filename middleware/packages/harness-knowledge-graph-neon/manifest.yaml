@@ -33,7 +33,7 @@ lifecycle:
 # Required setup-field `database_url` — without it activate() returns a no-op
 # handle, the capabilities are NOT published, downstream consumers degrade
 # (or boot fails when their `requires:` declarations cannot be resolved).
-# Operators on Empty-Middleware-Demos / CI / lokal-dev should use the
+# Operators on Empty-Middleware-Demos / CI / local-dev should use the
 # in-memory sibling plugin instead.
 #
 # Hard requires `embeddingClient@^1` so the resolver activates the embeddings
@@ -84,12 +84,12 @@ setup:
       type: "number"
       required: false
       description: "Hard cap auf Retries pro Turn. Default: 5. Migriert aus GRAPH_EMBEDDING_BACKFILL_MAX_ATTEMPTS."
-    # OB-73 (Phase 4): Tiering-Lifecycle. Decay-Score-Update + HOT/WARM/COLD-
-    # Rotation + Done-Task-TTL laufen als hourly cron (decay-rotation), GC + Hard-
-    # Limits als daily cron (gc-quotas — Slice C). Dieser Job NUTZT die Spalten
-    # aus Migration 0007 — keine neue Migration. Default-Werte spiegeln
-    # palaia-ADR-004: λ=0.05/d (~14d Halbwertszeit), HOT→WARM bei score<0.5+7d
-    # idle, WARM→COLD bei score<0.1+30d, Done-Tasks nach 24h hard-deleted.
+    # OB-73 (Phase 4): Tiering-Lifecycle. Decay-Score-Update + HOT/WARM/COLD
+    # rotation + Done-Task-TTL run as an hourly cron (decay-rotation), GC + hard
+    # limits as a daily cron (gc-quotas — Slice C). This job USES the columns
+    # from Migration 0007 — no new migration. Default values mirror
+    # palaia-ADR-004: λ=0.05/d (~14d half-life), HOT→WARM at score<0.5+7d
+    # idle, WARM→COLD at score<0.1+30d, Done-Tasks hard-deleted after 24h.
     - id: "graph_decay_enabled"
       label: "Decay & Tier-Rotation Enabled"
       type: "text"
@@ -130,11 +130,11 @@ setup:
       type: "number"
       required: false
       description: "TTL für `entry_type='task' AND task_status='done'`-Rows. Nach Ablauf hard-DELETE. Default: 24. Markdown-Audit-Transkript bleibt unberührt."
-    # OB-73 (Phase 4 / Slice C): GC + Hard-Limits per scope. Daily cron
+    # OB-73 (Phase 4 / Slice C): GC + hard-limits per scope. Daily cron
     # (default 04:00 UTC). Eviction-Order: type-weight × decay_score ASC,
-    # ties broken by created_at ASC. Type-weights aus palaia-ADR-004:
-    # process > task > memory. `done-task-TTL` läuft separat im hourly
-    # decay-job, nicht hier.
+    # ties broken by created_at ASC. Type-weights from palaia-ADR-004:
+    # process > task > memory. `done-task-TTL` runs separately in the hourly
+    # decay-job, not here.
     - id: "graph_gc_enabled"
       label: "GC & Hard-Limits Enabled"
       type: "text"

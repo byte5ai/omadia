@@ -40,4 +40,8 @@ EXPOSE 5001
 
 # Single worker — analyzer is CPU-bound and a single instance handles
 # concurrency safely. Scale horizontally via container replicas.
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "5001", "--workers", "1"]
+# Bind to `::` so the service answers on both IPv6 and IPv4. Fly's
+# 6PN-internal DNS (`<app>.internal`) resolves to IPv6 addresses; an
+# `0.0.0.0`-only listener has no socket on the v6 side and reach-from-
+# sibling-app calls fail with "fetch failed" while DNS resolves cleanly.
+CMD ["uvicorn", "app:app", "--host", "::", "--port", "5001", "--workers", "1"]

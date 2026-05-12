@@ -1,15 +1,15 @@
 /**
- * OB-29-2 — deterministische Entity-Extraction für den Reference-Plugin.
- * Bewusst KEIN LLM (Etappe 0 ist credential-los); Heuristik:
+ * OB-29-2 — deterministic Entity-Extraction for the Reference-Plugin.
+ * Deliberately NO LLM (stage 0 is credential-less); heuristic:
  *   - "Person:John" / "Person:Anna Müller" → Person-Entity
  *   - "Topic:ThemeF" / "#ThemeG" / "#topic-name" → Topic-Entity
  *
- * Pre-OB-29-3-Caveat: bei Ambiguität (z.B. nur "John" ohne Prefix)
- * macht der Extractor NICHTS. LLM-basierte Extraction kommt in Etappe 3,
- * dort kann der Reference-Tool ctx.llm nutzen, um echtes NER zu machen.
+ * Pre-OB-29-3-Caveat: on ambiguity (e.g. only "John" without prefix)
+ * the extractor does NOTHING. LLM-based extraction arrives in stage 3,
+ * where the Reference-Tool can use ctx.llm to do real NER.
  *
- * Output: deterministisch, idempotent, side-effect-free. Tests sind
- * pure-function-Snapshots.
+ * Output: deterministic, idempotent, side-effect-free. Tests are
+ * pure-function snapshots.
  */
 export interface ExtractedEntity {
   readonly system: 'personal-notes';
@@ -31,9 +31,9 @@ export interface ExtractionResult {
 }
 
 // Latin-extended-A/B + Latin-supplement so umlauts (ä/ö/ü/ß/à/é/…) match
-// inside identifiers. Bewusst keine Unicode-Property-Escapes (`\p{L}`),
-// da node:test/tsx fragmentary die TypeScript-Regex-Strict-Mode aktiviert
-// und das in einigen ABI-Versionen wackelt.
+// inside identifiers. Deliberately no Unicode-Property-Escapes (`\p{L}`),
+// because node:test/tsx fragmentarily enables TypeScript-Regex-Strict-Mode
+// and that wobbles on some ABI versions.
 const NAME_CHAR = '[A-Za-z\\u00C0-\\u017F\\w-]';
 const NAME_START = '[A-Z\\u00C0-\\u017F]';
 const PERSON_RE = new RegExp(
@@ -99,7 +99,7 @@ function ent(
 
 function slugify(s: string): string {
   // Lowercase + transliterate umlauts (ä→ae, ö→oe, ü→ue, ß→ss) before stripping
-  // non-ascii. Ergibt stable, URL-friendly IDs.
+  // non-ascii. Yields stable, URL-friendly IDs.
   return s
     .toLowerCase()
     .replace(/ä/g, 'ae')
@@ -111,13 +111,13 @@ function slugify(s: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// OB-29-3 — LLM-backed extraction (komplementär zur Regex-Extraction oben).
+// OB-29-3 — LLM-backed extraction (complementary to the regex extraction above).
 // ---------------------------------------------------------------------------
 
 /**
- * Schema-friendly shape that the LLM is asked to emit. Loose, weil
- * Anthropic-JSON-Mode v1 keine Schema-Enforcement hat — Plugin-Code
- * validiert defensiv.
+ * Schema-friendly shape that the LLM is asked to emit. Loose because
+ * Anthropic-JSON-Mode v1 has no schema enforcement — plugin code
+ * validates defensively.
  */
 interface LlmExtractionPayload {
   entities?: Array<{
@@ -127,9 +127,9 @@ interface LlmExtractionPayload {
 }
 
 /**
- * LLM-Prompt für Entity-Extraction. Bewusst minimal + JSON-only-Output —
- * wenn der Model trotzdem Prosa drumherum schreibt, parst der Plugin-Code
- * das robust raus (siehe parseLlmExtractionPayload).
+ * LLM prompt for entity extraction. Deliberately minimal + JSON-only output —
+ * if the model still writes prose around it, the plugin code parses it
+ * out robustly (see parseLlmExtractionPayload).
  */
 const LLM_EXTRACTION_SYSTEM = `Du bist ein NER-Extractor für persönliche Notizen. Liefere AUSSCHLIESSLICH gültiges JSON in diesem Format:
 
@@ -177,9 +177,9 @@ export async function extractWithLlm(deps: {
 }
 
 /**
- * Robustes JSON-Parsing für LLM-Outputs, die manchmal Markdown drumherum
- * werfen (```json … ```). Findet das erste { … } mit balanced braces und
- * versucht es zu parsen.
+ * Robust JSON parsing for LLM outputs that sometimes wrap Markdown
+ * around the payload (```json … ```). Finds the first { … } with
+ * balanced braces and attempts to parse it.
  */
 function parseLlmExtractionPayload(raw: string): LlmExtractionPayload {
   const trimmed = raw.trim();

@@ -39,9 +39,9 @@ export function createStoreRouter(deps: StoreDeps): Router {
       const items: Plugin[] = deps.catalog
         .list()
         .map((entry) => applyInstallState(entry.plugin, deps.registry))
-        // OB-29-0: Builder-Reference-Plugins (`is_reference_only: true`)
-        // sind nicht für Operator-Install gedacht — Pattern-Quelle für den
-        // BuilderAgent via BUILDER_REFERENCE_ESSENTIALS.
+        // OB-29-0: builder-reference plugins (`is_reference_only: true`)
+        // are not intended for operator install — they are a pattern source
+        // for the BuilderAgent via BUILDER_REFERENCE_ESSENTIALS.
         .filter((plugin) => plugin.is_reference_only !== true)
         .filter((plugin) => matchesSearch(plugin, search))
         .filter((plugin) => matchesCategory(plugin, category));

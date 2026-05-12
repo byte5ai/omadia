@@ -38,23 +38,23 @@ lifecycle:
 #   }
 #
 # The kernel late-resolves the bundle after `activateAllInstalled` and the
-# Orchestrator construction, then wraps with `VerifierService` (lebt
-# weiterhin kernel-side, weil es Orchestrator + toSemanticAnswer aus
-# orchestrator.ts konsumiert — ein eigener Orchestrator-Surface-Type-Lift
-# zu plugin-api ist S+10+ Scope).
+# Orchestrator construction, then wraps with `VerifierService` (still
+# lives kernel-side because it consumes Orchestrator + toSemanticAnswer
+# from orchestrator.ts — lifting the Orchestrator-Surface-Type into
+# plugin-api is S+10+ scope).
 #
 # **Always-Register-Bootstrap-Pattern (S+9.1 Rule #8)**: bootstrap.ts
-# `bootstrapVerifierFromEnv` registriert das Plugin IMMER — auch wenn
-# `verifier_enabled` false ist oder `anthropic_api_key` fehlt. activate()
-# entscheidet dann zur Runtime ob `verifier@1` ans ServiceRegistry geht.
-# Ohne Key/Enable → activate() loggt + returnt no-op-Handle; downstream
-# Konsumenten (Kernel checkt `serviceRegistry.get('verifier')`) degradieren
-# auf orchestrator-only.
+# `bootstrapVerifierFromEnv` ALWAYS registers the plugin — even when
+# `verifier_enabled` is false or `anthropic_api_key` is missing. activate()
+# then decides at runtime whether `verifier@1` goes to the ServiceRegistry.
+# Without key/enable → activate() logs + returns a no-op handle; downstream
+# consumers (kernel checks `serviceRegistry.get('verifier')`) degrade to
+# orchestrator-only.
 #
-# Weil VerifierService kernel-side bleibt, deklariert KEIN Konsumenten-
-# Manifest `requires: ["verifier@^1"]` heute — der Capability-Resolver
-# muss `verifier@1` nicht in eine Topo-Order zwingen. Die requires-Liste
-# unten enthält daher nur, was activate() selbst hart braucht.
+# Because VerifierService stays kernel-side, NO consumer manifest
+# declares `requires: ["verifier@^1"]` today — the capability-resolver
+# does not have to force `verifier@1` into a topo order. The requires
+# list below therefore only contains what activate() itself hard-needs.
 # ---------------------------------------------------------------------------
 provides:
   - "verifier@1"

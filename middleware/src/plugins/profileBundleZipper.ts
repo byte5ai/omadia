@@ -18,28 +18,29 @@ import type { UploadedPackageStore } from './uploadedPackageStore.js';
  *
  * Spec: docs/harness-platform/specs/profile-bundle-v1.md
  *
- * Erzeugt das portable ZIP-Format. Vendoring (Plugin-ZIPs ins Bundle kopieren)
- * ist opt-in über `vendorPlugins: true`; Default sind ausschließlich Pins.
+ * Produces the portable ZIP format. Vendoring (copying plugin ZIPs into the
+ * bundle) is opt-in via `vendorPlugins: true`; by default only pins are
+ * included.
  *
- * Plugin-Pin-Resolution geht gegen den lokalen `UploadedPackageStore` —
- * Built-in-Plugins (im Manifest-Catalog, aber nicht im Upload-Store) werden
- * mit `sha256` aus dem Aufruf-Input belegt, weil der Catalog selbst keine
- * Hashes führt. Wenn der Caller weder `sha256` mitgibt noch das Plugin im
- * Upload-Store steht, ist das ein harter Fehler.
+ * Plugin pin resolution runs against the local `UploadedPackageStore` —
+ * built-in plugins (in the manifest catalog but not in the upload store)
+ * receive `sha256` from the caller's input, because the catalog itself does
+ * not carry hashes. If the caller neither supplies `sha256` nor has the
+ * plugin in the upload store, this is a hard error.
  */
 
 export interface PluginPinInput {
   id: string;
   version: string;
   /**
-   * Optional. Wenn nicht angegeben, wird das Plugin im UploadedPackageStore
-   * gesucht und dessen sha256 verwendet.
+   * Optional. When omitted, the plugin is looked up in the
+   * UploadedPackageStore and its sha256 is used.
    */
   sha256?: string;
 }
 
 export interface KnowledgeFileInput {
-  /** Filename (ohne `knowledge/`-Prefix). */
+  /** Filename (without `knowledge/` prefix). */
   filename: string;
   content: Buffer;
 }
@@ -49,11 +50,11 @@ export interface ZipProfileBundleInput {
   profileName: string;
   profileVersion: string;
   createdBy: string;
-  /** Inhalt der `agent.md` als String oder Buffer. */
+  /** Contents of `agent.md` as a string or Buffer. */
   agentMd: string | Buffer;
   pluginPins: PluginPinInput[];
   knowledge?: KnowledgeFileInput[];
-  /** Wenn true, werden Plugin-ZIPs aus dem UploadedPackageStore mitgepackt. */
+  /** When true, plugin ZIPs from the UploadedPackageStore are packed in. */
   vendorPlugins?: boolean;
   /**
    * OB-83 — inline vendored plugin ZIP buffers, keyed by `<id>@<version>`.
@@ -65,8 +66,8 @@ export interface ZipProfileBundleInput {
    */
   inlineVendoredPlugins?: Map<string, Buffer>;
   /**
-   * Optionaler Override für `created_at`. Hauptsächlich für Tests, damit
-   * Bundles deterministisch reproduzierbar sind.
+   * Optional override for `created_at`. Mainly for tests, so bundles are
+   * deterministically reproducible.
    */
   createdAt?: string;
 }
@@ -74,7 +75,7 @@ export interface ZipProfileBundleInput {
 export interface ZipProfileBundleResult {
   buffer: Buffer;
   manifest: ProfileBundleManifest;
-  /** sha256 des fertigen Bundle-ZIPs (für Audit/Logging). */
+  /** sha256 of the finished bundle ZIP (for audit/logging). */
   zipSha256: string;
 }
 
@@ -92,7 +93,7 @@ export class ProfileBundleZipperError extends Error {
   }
 }
 
-/** 50 MB Default-Cap. Knowledge-Files sind der größte Treiber. */
+/** 50 MB default cap. Knowledge files are the biggest driver. */
 const DEFAULT_MAX_BUNDLE_BYTES = 50 * 1024 * 1024;
 
 /** Reserved knowledge filename pattern — same allowlist as zipExtractor. */
@@ -100,7 +101,7 @@ const KNOWLEDGE_EXT_ALLOWLIST = new Set(['.md', '.txt', '.pdf', '.json']);
 
 export interface ZipperDeps {
   store: UploadedPackageStore;
-  /** Override für maxBytes (Tests). */
+  /** Override for maxBytes (tests). */
   maxBundleBytes?: number;
 }
 
@@ -110,13 +111,13 @@ export async function zipProfileBundle(
 ): Promise<ZipProfileBundleResult> {
   const maxBytes = deps.maxBundleBytes ?? DEFAULT_MAX_BUNDLE_BYTES;
 
-  // --- 1. agent.md normalisieren + hashen ---------------------------------
+  // --- 1. Normalize + hash agent.md ---------------------------------------
   const agentBuffer = Buffer.isBuffer(input.agentMd)
     ? input.agentMd
     : Buffer.from(input.agentMd, 'utf8');
   const agentSha256 = sha256Hex(agentBuffer);
 
-  // --- 2. Plugin-Pins auflösen --------------------------------------------
+  // --- 2. Resolve plugin pins ---------------------------------------------
   const resolvedPlugins: Array<
     ProfileBundlePluginPin & { zipPath?: string; inlineBuffer?: Buffer }
   > = [];
@@ -142,7 +143,7 @@ export async function zipProfileBundle(
       }
       sha256 = inlineSha;
     } else if (stored && stored.version === pin.version) {
-      // Plugin liegt im Upload-Store: dessen sha256 ist die Wahrheit
+      // Plugin lives in the upload store: its sha256 is the source of truth
       if (sha256 && sha256 !== stored.sha256) {
         throw new ProfileBundleZipperError(
           'bundle.unknown_plugin',
@@ -150,9 +151,9 @@ export async function zipProfileBundle(
         );
       }
       sha256 = stored.sha256;
-      // Vendoring: für gestockte Pakete erwarten wir ein begleitendes ZIP
-      // unter `<store.path>.zip`. Falls nicht vorhanden, müssen wir das
-      // entpackte Verzeichnis selbst zippen.
+      // Vendoring: for stored packages we expect an accompanying ZIP at
+      // `<store.path>.zip`. If absent we have to zip the extracted
+      // directory ourselves.
       zipPath = stored.path;
     }
 
@@ -341,9 +342,9 @@ export async function zipProfileBundle(
 }
 
 /**
- * Liest ein bereits gepacktes Plugin-ZIP von Disk. Wenn `zipPath` ein
- * Verzeichnis ist (UploadedPackageStore liefert das Package-Root, nicht das
- * ZIP), packen wir das Verzeichnis spontan zu einem ZIP-Buffer.
+ * Reads an already-packed plugin ZIP from disk. If `zipPath` is a directory
+ * (UploadedPackageStore returns the package root, not the ZIP), we pack the
+ * directory on the fly into a ZIP buffer.
  */
 async function readVendoredPluginZip(zipPath: string): Promise<Buffer> {
   const stat = await fs.stat(zipPath);

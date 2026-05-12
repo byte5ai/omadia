@@ -268,10 +268,10 @@ export function InstallButton({
 }
 
 // ---------------------------------------------------------------------------
-// InstalledPanel — shown when a plugin is already installed. Exposes a
-// "Deinstallieren"-Flow mit Confirm-Dialog. Ruft DELETE /install/installed/:id,
-// der Server triggert den onUninstall-Hook und unbinded den Agent hot aus dem
-// Orchestrator (kein Restart nötig).
+// InstalledPanel — shown when a plugin is already installed. Exposes an
+// uninstall flow with a confirm dialog. Calls DELETE /install/installed/:id;
+// the server triggers the onUninstall hook and hot-unbinds the agent from the
+// orchestrator (no restart needed).
 // ---------------------------------------------------------------------------
 
 function InstalledPanel({
@@ -302,17 +302,17 @@ function InstalledPanel({
           await deleteUploadedPackage(pluginId);
           packageDeleted = true;
         } catch (err) {
-          // 404 = nicht als Uploaded-Package bekannt (Built-in / schon weg).
-          // Alles andere ist ein echter Fehler, der den Uninstall aber nicht
-          // reverted — zeigen als Warnung und trotzdem refresh.
+          // 404 = not known as an uploaded package (built-in / already gone).
+          // Anything else is a real error, but does not revert the uninstall
+          // — show as a warning and refresh anyway.
           if (!(err instanceof ApiError) || err.status !== 404) {
             console.warn('package delete failed after uninstall', err);
           }
         }
       }
-      // Wenn das Uploaded-Package gelöscht wurde, gibt es die Detail-Page
-      // (/store/[id]) nicht mehr — `router.refresh()` würde 404 zeigen.
-      // Stattdessen zurück zur Store-Übersicht navigieren.
+      // When the uploaded package has been deleted, the detail page
+      // (/store/[id]) no longer exists — `router.refresh()` would 404.
+      // Instead, navigate back to the store overview.
       if (packageDeleted) {
         router.push('/store');
       } else {

@@ -16,15 +16,15 @@ import type { AddNoteResult } from './types.js';
 const SEO_ANALYST_AGENT_ID = '@omadia/agent-seo-analyst';
 
 /**
- * Sub-agent-tool shape, mirror des seo-analyst-Toolkit-Vertrags den
- * `dynamicAgentRuntime.activate()` für `kind: agent` Plugins erwartet.
- * Das Reference-Plugin läuft als kind:agent + is_reference_only:true:
- * `tools` ist v1 absichtlich LEER, weil das Reference seine Tools als
- * Top-Level-Orchestrator-Tools via `ctx.tools.register` exposed (siehe
- * plugin.ts), nicht als sub-agent-internal-tools. Shape-compliance ist
- * defensiv — wenn jemand den is_reference_only-Guard umgeht (custom
- * Runtime, künftiger Refactor), kommt ein cleanes "0 sub-agent-tools"
- * heraus statt ein "undefined.map"-Crash.
+ * Sub-agent-tool shape, mirror of the seo-analyst-Toolkit contract that
+ * `dynamicAgentRuntime.activate()` expects for `kind: agent` plugins.
+ * The Reference-Plugin runs as kind:agent + is_reference_only:true:
+ * `tools` is intentionally EMPTY in v1 because Reference exposes its tools
+ * as top-level Orchestrator-tools via `ctx.tools.register` (see plugin.ts),
+ * not as sub-agent-internal-tools. Shape-compliance is defensive — if
+ * someone bypasses the is_reference_only guard (custom runtime, future
+ * refactor), a clean "0 sub-agent-tools" result comes out instead of an
+ * "undefined.map" crash.
  */
 export interface ToolDescriptor<I, O> {
   readonly id: string;
@@ -46,16 +46,16 @@ export interface Toolkit {
     readonly smartExtractEntities: (input: unknown) => Promise<string>;
     readonly queryNotesByPerson: (input: unknown) => Promise<string>;
   };
-  /** Sub-agent-tool array (seo-analyst-Pattern). Empty für Reference-
-   *  Plugins — siehe Comment-Block oben. */
+  /** Sub-agent-tool array (seo-analyst-Pattern). Empty for Reference
+   *  plugins — see the comment block above. */
   readonly tools: readonly ToolDescriptor<unknown, unknown>[];
-  /** Sub-agent-tool lookup; gibt für das Reference-Plugin immer undefined
-   *  zurück (`tools` ist leer). */
+  /** Sub-agent-tool lookup; always returns undefined for the Reference
+   *  plugin (`tools` is empty). */
   getTool<I = unknown, O = unknown>(
     id: string,
   ): ToolDescriptor<I, O> | undefined;
-  /** Toolkit-close-hook. No-op für das Reference; eigentliches Cleanup
-   *  passiert in plugin.ts's outer AgentHandle.close(). */
+  /** Toolkit-close-hook. No-op for Reference; actual cleanup
+   *  happens in plugin.ts's outer AgentHandle.close(). */
   close(): Promise<void>;
   takeAddNoteAttachments(): NativeToolAttachment[] | undefined;
   takeAnalyzeUrlAttachments(): NativeToolAttachment[] | undefined;
@@ -191,12 +191,12 @@ export function createToolkit(opts: ToolkitOptions): Toolkit {
   let pendingAnalyzeAttachments: NativeToolAttachment[] = [];
 
   return {
-    // OB-29-5 Toolkit-Shape-Compliance: empty `tools` Array genügt dem
-    // dynamicAgentRuntime-Vertrag. close() + getTool() sind defensive
-    // No-ops — das Reference-Plugin wird durch is_reference_only-Skip
-    // ohnehin nie als Sub-Agent aktiviert; falls jemand den Skip umgeht,
-    // bleibt das Plugin shape-konform statt mit "undefined.map" zu
-    // crashen.
+    // OB-29-5 Toolkit-Shape-Compliance: empty `tools` array satisfies the
+    // dynamicAgentRuntime contract. close() + getTool() are defensive
+    // no-ops — the Reference-Plugin is never activated as a sub-agent
+    // anyway thanks to the is_reference_only skip; if someone bypasses
+    // the skip, the plugin stays shape-compliant instead of crashing
+    // with "undefined.map".
     tools: [] as const,
     getTool<I = unknown, O = unknown>(
       _id: string,
@@ -218,10 +218,10 @@ export function createToolkit(opts: ToolkitOptions): Toolkit {
         const record = await notes.add(parsed);
         pendingAddNoteAttachments.push(buildNoteCardAttachment(record));
 
-        // OB-29-2 — extract Person/Topic-Entities aus dem Note-Body und
-        // persistiere sie als PluginEntity-Nodes via ctx.knowledgeGraph.
-        // Best-effort: KG-Errors brechen den add_note-Flow NICHT — die
-        // Notiz selbst ist schon in Memory geschrieben.
+        // OB-29-2 — extract Person/Topic-Entities from the note body and
+        // persist them as PluginEntity-Nodes via ctx.knowledgeGraph.
+        // Best-effort: KG errors do NOT break the add_note flow — the
+        // note itself is already written to memory.
         let kgInsertedEntities = 0;
         if (knowledgeGraph) {
           try {
@@ -316,9 +316,9 @@ export function createToolkit(opts: ToolkitOptions): Toolkit {
             ],
           });
         }
-        // Mehrdeutigkeit → emit _pendingUserChoice. Der Orchestrator
-        // short-circuitet die Turn und rendert eine Smart-Card. Klick
-        // fired einen neuen Turn mit dem gewählten value als userMessage.
+        // Ambiguity → emit _pendingUserChoice. The Orchestrator
+        // short-circuits the turn and renders a Smart-Card. Clicking
+        // fires a new turn with the chosen value as userMessage.
         log('query_notes_by_person ambiguous → _pendingUserChoice', {
           count: matches.length,
         });

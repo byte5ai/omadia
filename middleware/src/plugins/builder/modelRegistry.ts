@@ -34,24 +34,24 @@ const MODELS: Record<BuilderModelId, BuilderModel> = {
   },
 };
 
-// John-Pre-Deploy-Wunsch 2026-05-06: Builder-Code-Gen-Default auf Opus 4.7
-// (vorher Sonnet 4.6). Begründung: Builder-Generation ist der Mehr-Komplex-
-// Pfad (Multi-Tool-Specs, Sub-Agent-Delegation, KG-Ingest); Opus liefert
-// dort robustere First-Pass-Outputs als Sonnet, der TTFT-Overhead ist im
-// interaktiven Builder-Workflow akzeptabel.
+// John pre-deploy request 2026-05-06: builder code-gen default switched to
+// Opus 4.7 (previously Sonnet 4.6). Rationale: builder generation is the
+// higher-complexity path (multi-tool specs, sub-agent delegation, KG ingest);
+// Opus delivers more robust first-pass outputs than Sonnet, and the TTFT
+// overhead is acceptable in the interactive builder workflow.
 //
-// Codegen vs. Preview bewusst entkoppelt: Preview-Runtime ist der
-// Fast-Iterations-Pfad (User-Klick → Smoke-Run); Sonnet bleibt dort
-// kosteneffizient. Bestehende Drafts behalten ihren persistierten Wert;
-// nur neue Drafts starten mit den neuen Defaults.
+// Codegen vs. preview deliberately decoupled: preview-runtime is the
+// fast-iteration path (user click → smoke run); Sonnet stays cost-efficient
+// there. Existing drafts keep their persisted value; only new drafts start
+// with the new defaults.
 export const DEFAULT_BUILDER_CODEGEN_MODEL: BuilderModelId = 'opus';
 export const DEFAULT_BUILDER_PREVIEW_MODEL: BuilderModelId = 'sonnet';
 
 /** @deprecated — use `DEFAULT_BUILDER_CODEGEN_MODEL` or
- *  `DEFAULT_BUILDER_PREVIEW_MODEL` explizit. Beibehalten, weil
- *  `normalizeModel()` in draftStore.ts die Konstante als generischen
- *  Unknown-Value-Fallback nutzt; ein zusammenfassender Default ist dort
- *  bewusst grob (codegen-Default ist der „erwartete moderne" Wert). */
+ *  `DEFAULT_BUILDER_PREVIEW_MODEL` explicitly. Kept around because
+ *  `normalizeModel()` in draftStore.ts uses this constant as a generic
+ *  unknown-value fallback; a single summary default is intentionally coarse
+ *  there (codegen default is the "expected modern" value). */
 export const DEFAULT_BUILDER_MODEL: BuilderModelId =
   DEFAULT_BUILDER_CODEGEN_MODEL;
 
@@ -72,13 +72,13 @@ export const BuilderModelRegistry = {
   default(): BuilderModelId {
     return DEFAULT_BUILDER_CODEGEN_MODEL;
   },
-  /** Default model for new drafts' code-generation pass (Opus 4.7 ab
+  /** Default model for new drafts' code-generation pass (Opus 4.7 since
    *  2026-05-06). */
   defaultCodegen(): BuilderModelId {
     return DEFAULT_BUILDER_CODEGEN_MODEL;
   },
   /** Default model for new drafts' preview-runtime smoke (Sonnet 4.6 —
-   *  cost-efficient für schnelle Iterationen). */
+   *  cost-efficient for fast iterations). */
   defaultPreview(): BuilderModelId {
     return DEFAULT_BUILDER_PREVIEW_MODEL;
   },

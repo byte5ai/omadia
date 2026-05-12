@@ -25,19 +25,19 @@ lifecycle:
 
 # ---------------------------------------------------------------------------
 # S+9.1 Sub-Commit 1 — additive scaffold only.
-#   - kein `provides:` → das Plugin meldet noch keine Capability;
-#     der Kernel-side `embeddingClient`-Bridge bleibt aktiv.
-#   - kein `requires:`.
-#   - activate() ist no-op (logs only) — kein Service-Construction, keine
-#     Konsumenten-Verkabelung.
+#   - no `provides:` → the plugin does not yet announce a capability;
+#     the kernel-side `embeddingClient` bridge stays active.
+#   - no `requires:`.
+#   - activate() is a no-op (logs only) — no service-construction, no
+#     consumer wiring.
 #
 # Sub-Commit 2a moves `services/embeddingClient.ts` (interface + factory +
-# withConcurrencyLimit + cosineSimilarity) ins Plugin. Sub-Commit 2b ergänzt
-# `provides: ["embeddingClient@1"]`, baut den Client in activate() und
-# entfernt den Pre-S+8.5-Bridge in `src/index.ts`. Ab dann müssen
-# Konsumenten-Manifeste (KG, später orchestrator-extras) den Capability-Ref
-# in ihrer `requires:` führen — sonst greift das Capability-Hardening aus
-# S+8.5 und droppt sie aus der eligible-Menge.
+# withConcurrencyLimit + cosineSimilarity) into the plugin. Sub-Commit 2b
+# adds `provides: ["embeddingClient@1"]`, builds the client in activate()
+# and removes the pre-S+8.5 bridge in `src/index.ts`. From then on
+# consumer manifests (KG, later orchestrator-extras) must carry the
+# capability-ref in their `requires:` — otherwise the S+8.5 capability
+# hardening fires and drops them from the eligible set.
 # ---------------------------------------------------------------------------
 
 setup:

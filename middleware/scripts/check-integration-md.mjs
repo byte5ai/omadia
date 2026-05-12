@@ -1,20 +1,19 @@
 #!/usr/bin/env node
 /**
- * CI-Bitrot-Check für die Pattern-Tabelle in
+ * CI bitrot check for the pattern table in
  * `middleware/packages/agent-reference-maximum/INTEGRATION.md` (OB-29-0..5).
  *
- * Validiert: jede `**Datei**: \`<path>:<line>?\``-Zeile zeigt auf eine
- * existierende Datei. Ist eine Zeilennummer angegeben, prüft das Skript,
- * dass sie nicht außerhalb der Datei liegt (Tracking gegen Drift bei
- * Refactors).
+ * Validates: each `**Datei**: \`<path>:<line>?\`` line points to an
+ * existing file. If a line number is given, the script verifies that it
+ * is not outside the file (tracking against drift during refactors).
  *
- * Bewusst NICHT geprüft (zu sprödes Sub-Pattern):
- *   - Inhalt der referenzierten Zeile
- *   - HTML-Kommentar-Marker `<!-- ETAPPE-N: ... -->` (Platzhalter für
- *     Folge-Etappen — sollen den Check nicht failen)
+ * Intentionally NOT checked (too brittle a sub-pattern):
+ *   - Content of the referenced line
+ *   - HTML comment marker `<!-- ETAPPE-N: ... -->` (placeholders for
+ *     follow-up stages — should not fail the check)
  *
- * Aufruf: `node middleware/scripts/check-integration-md.mjs`
- * Exit 0 = ok, Exit 1 = drift erkannt.
+ * Invocation: `node middleware/scripts/check-integration-md.mjs`
+ * Exit 0 = ok, Exit 1 = drift detected.
  */
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';

@@ -23,7 +23,7 @@ export const GRAPH_NODE_TYPES = [
   // generic OdooEntity payload.
   'Company',
   'Person',
-  // Bonitäts-relevant: one structured snapshot per (Company, fiscalYear).
+  // Creditworthiness-relevant: one structured snapshot per (Company, fiscalYear).
   // Mirrors NorthData's `Financials{date, consolidated, items[]}` shape —
   // `items` stays open-ended because indicator ids are a moving target (see
   // northdata.com/_financials).

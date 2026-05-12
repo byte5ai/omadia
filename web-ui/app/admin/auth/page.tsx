@@ -16,16 +16,16 @@ type State =
   | { kind: 'error'; message: string };
 
 /**
- * Admin-UI zum Toggle der Auth-Provider (OB-50).
+ * Admin UI for toggling auth providers (OB-50).
  *
- * Backend-Vertrag (D1=C "Hybrid"):
- *   - `configured` = im AUTH_PROVIDERS env-var enthalten (statisch)
- *   - `active`     = aktuell registriert (Toggle-State)
- *   - Provider, die nicht in der Whitelist sind, kommen erst gar nicht
- *     im GET zurück → kein UI-Pfad sie einzuschalten.
+ * Backend contract (D1=C "Hybrid"):
+ *   - `configured` = contained in the AUTH_PROVIDERS env var (static)
+ *   - `active`     = currently registered (toggle state)
+ *   - Providers not in the whitelist are never returned in the GET response
+ *     → no UI path to enable them.
  *
- * Server-Validierung greift bei Edge-Cases (last-active, self-lockout):
- *   wir surfen die Server-Codes durch, statt sie im Client zu duplizieren.
+ * Server validation handles edge cases (last-active, self-lockout):
+ *   we surface the server codes through instead of duplicating them client-side.
  */
 export default function AdminAuthPage(): React.ReactElement {
   const [state, setState] = useState<State>({ kind: 'loading' });

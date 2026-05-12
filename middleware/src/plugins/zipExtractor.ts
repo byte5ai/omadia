@@ -6,15 +6,15 @@ import type { Readable } from 'node:stream';
 import yauzl from 'yauzl';
 
 /**
- * Sicherer Zip-Extractor mit Guardrails.
+ * Safe zip extractor with guardrails.
  *
- * Schutz gegen:
- *   - Zip-Slip (Pfade außerhalb der Staging-Root)
- *   - Zip-Bombs (cumulative-uncompressed-bytes Cap + per-entry Cap)
- *   - Symlinks (rejected — yauzl liefert externalFileAttributes)
- *   - Zuviele Einträge (DoS-Schutz)
+ * Protects against:
+ *   - Zip-Slip (paths outside the staging root)
+ *   - Zip bombs (cumulative-uncompressed-bytes cap + per-entry cap)
+ *   - Symlinks (rejected — yauzl exposes externalFileAttributes)
+ *   - Too many entries (DoS protection)
  *
- * Liefert eine Liste der entpackten Files (relative Pfade) zurück.
+ * Returns the list of extracted files (relative paths).
  */
 
 const EXTENSION_ALLOWLIST: ReadonlySet<string> = new Set([
@@ -44,7 +44,7 @@ const DECL_EXTENSIONS: ReadonlySet<string> = new Set(['.ts', '.mts', '.cts']);
 export interface ExtractLimits {
   maxEntries: number;
   maxExtractedBytes: number;
-  /** Per-File-Obergrenze, defensiv. Defaults sind vom Gesamtcap abgeleitet. */
+  /** Per-file upper bound, defensive. Defaults are derived from the overall cap. */
   maxFileBytes?: number;
   /**
    * Optional override for the extension allowlist. When provided, the default

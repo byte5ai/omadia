@@ -37,23 +37,23 @@ requires:
 # ---------------------------------------------------------------------------
 # S+9.2 Sub-Commit 2b: Capability lifetime flipped.
 #
-# manifest-provides ≠ runtime-provides (S+9.1 Lesson #2): das Plugin
-# deklariert hier alle drei Capabilities, damit der Capability-Resolver
-# sie als "verfügbar" sieht. Zur Runtime entscheidet activate() je nach
-# Config welche tatsächlich an das ServiceRegistry geliefert werden:
+# manifest-provides ≠ runtime-provides (S+9.1 Lesson #2): the plugin
+# declares all three capabilities here so the capability resolver
+# sees them as "available". At runtime activate() decides — depending on
+# config — which ones are actually delivered to the ServiceRegistry:
 #
-#   - `contextRetriever@1`: aktiv sobald knowledgeGraph + embeddingClient
-#     da sind (embeddingClient ist optional intern — degradiert auf
-#     FTS-only). Wird IMMER published wenn die requires erfüllt sind.
-#   - `factExtractor@1` + `topicDetector@1`: nur wenn ANTHROPIC_API_KEY
-#     gesetzt ist (Haiku-Calls). Ohne Key activate ohne provide; die
-#     Konsumenten degradieren graceful (Orchestrator skippt Fact-Ingest;
-#     Teams TopicDetector skippt → continue-default).
+#   - `contextRetriever@1`: active as soon as knowledgeGraph + embeddingClient
+#     are present (embeddingClient is internally optional — degrades to
+#     FTS-only). Is ALWAYS published when the requires are satisfied.
+#   - `factExtractor@1` + `topicDetector@1`: only when ANTHROPIC_API_KEY
+#     is set (Haiku calls). Without the key activate runs without provide;
+#     consumers degrade gracefully (Orchestrator skips fact-ingest;
+#     Teams TopicDetector skips → continue-default).
 #
 # Always-Register-Bootstrap-Pattern (S+9.1 Rule #8): bootstrap.ts
-# `bootstrapOrchestratorExtrasFromEnv` registriert das Plugin IMMER —
-# auch wenn ANTHROPIC_API_KEY leer — sonst stirbt der Resolver, wenn
-# später ein Konsument `requires: ["topicDetector@^1"]` deklariert.
+# `bootstrapOrchestratorExtrasFromEnv` ALWAYS registers the plugin —
+# even when ANTHROPIC_API_KEY is empty — otherwise the resolver dies
+# when a later consumer declares `requires: ["topicDetector@^1"]`.
 # ---------------------------------------------------------------------------
 
 setup:

@@ -1,33 +1,32 @@
 /**
  * @omadia/orchestrator-extras — SessionSummaryGenerator (palaia / OB-75).
  *
- * Haiku-backed Bullet-List-Summary für eine Session. Wird vom
- * `BriefingService` lazy-on-demand aufgerufen, wenn beim
- * `loadSessionBriefing`-Call keine frische Summary für eine Session
- * vorliegt (oder die letzte Summary älter ist als der jüngste
- * non-summary Turn der Session).
+ * Haiku-backed bullet-list summary for a session. Called lazy-on-demand
+ * by the `BriefingService` when, during a `loadSessionBriefing` call,
+ * no fresh summary is present for a session (or the latest summary
+ * is older than the newest non-summary turn of the session).
  *
- * Storage-Konvention (siehe `SESSION_SUMMARY_MARKER`): das Ergebnis
- * wird vom Caller via `kg.ingestTurn` als Turn mit
- *   - `userMessage = '<session-summary>'` (Marker für Lookup-Filter)
+ * Storage convention (see `SESSION_SUMMARY_MARKER`): the result is
+ * persisted by the caller via `kg.ingestTurn` as a turn with
+ *   - `userMessage = '<session-summary>'` (marker for lookup filter)
  *   - `assistantAnswer = <summary text>`
  *   - `entryType = 'process'`
- * persistiert. Kein Schema-Change nötig.
+ * No schema change required.
  *
- * Failure-Semantik: alle Errors werden gefangen, ein Log auf stderr
- * geschrieben (Fly droppt stdout INFO), und ein leerer String
- * zurückgegeben. Der Caller persistiert dann KEINE Summary — beim
- * nächsten Briefing-Load wird ein Retry versucht.
+ * Failure semantics: all errors are caught, a log line written to stderr
+ * (Fly drops stdout INFO), and an empty string is returned. The caller
+ * then persists NO summary — on the next Briefing-Load a retry is
+ * attempted.
  */
 
 import type Anthropic from '@anthropic-ai/sdk';
 
 export interface SessionSummaryInput {
-  /** Session-Scope (z.B. 'chat-1', 'teams-…'). Reines Diagnose-Feld
-   *  für den Prompt; nicht zum Filtern. */
+  /** Session scope (e.g. 'chat-1', 'teams-…'). Pure diagnostic field
+   *  for the prompt; not used for filtering. */
   scope: string;
-  /** Letzte ~10 Turns chronologisch. Caller hat sie bereits gefiltert
-   *  (keine `<session-summary>`-Marker-Turns). */
+  /** Last ~10 turns in chronological order. Caller has already filtered
+   *  them (no `<session-summary>` marker turns). */
   turns: ReadonlyArray<{
     time: string;
     userMessage: string;
@@ -36,9 +35,9 @@ export interface SessionSummaryInput {
 }
 
 export interface SessionSummaryGenerator {
-  /** Liefert eine kurze Markdown-Bullet-Liste der wichtigsten
-   *  Decisions / Outputs / offenen Tasks. Leerer String bei Failure
-   *  oder zu wenig Material. */
+  /** Returns a short Markdown bullet list of the most important
+   *  decisions / outputs / open tasks. Empty string on failure
+   *  or insufficient material. */
   generate(input: SessionSummaryInput): Promise<string>;
 }
 
@@ -46,8 +45,8 @@ export interface HaikuSessionSummaryGeneratorOptions {
   anthropic: Anthropic;
   /** Anthropic model id. Default: `claude-haiku-4-5-20251001`. */
   model?: string;
-  /** Max Tokens für die Summary. Bewusst klein gehalten — eine
-   *  Briefing-Summary soll prägnant sein. Default 400 Tokens. */
+  /** Max tokens for the summary. Deliberately small — a briefing
+   *  summary should be terse. Default 400 tokens. */
   maxTokens?: number;
   /** Optional log sink. Defaults to `console.error`. */
   log?: (msg: string) => void;
@@ -56,9 +55,9 @@ export interface HaikuSessionSummaryGeneratorOptions {
 const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
 const DEFAULT_MAX_TOKENS = 400;
 
-/** Marker im `userMessage`-Property eines Summary-Turns. Wird vom
- *  BriefingService beim Lookup matched und beim Tail-Load gefiltert
- *  (keine Recursion: Briefing soll nicht sich selbst sehen). */
+/** Marker in the `userMessage` property of a summary turn. Matched by
+ *  the BriefingService on lookup and filtered out on tail-load
+ *  (no recursion: a Briefing must not see itself). */
 export const SESSION_SUMMARY_MARKER = '<session-summary>';
 
 const SYSTEM_PROMPT = `You are a session-continuity summarizer for an AI assistant.

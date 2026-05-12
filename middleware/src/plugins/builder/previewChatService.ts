@@ -16,22 +16,22 @@ import type { PreviewHandle, PreviewToolDescriptor } from './previewRuntime.js';
 import type { AgentSpecSkeleton, TranscriptEntry } from './types.js';
 
 /**
- * PreviewChatService — Builder-Chat-Surface gegen einen aktiven Preview-Agent.
+ * PreviewChatService — builder chat surface against an active preview agent.
  *
- * Liefert zwei Eintrittspunkte:
- *   - `runTurn(...)`: chat-style Turn — bridged die Preview-Tools (Zod) auf
- *      `LocalSubAgentTool`s, baut einen ephemeren `LocalSubAgent` mit
- *      System-Prompt aus `<previewDir>/skills/*.md`, fährt eine Tool-Loop und
- *      streamt `PreviewChatEvent`s als AsyncIterable für SSE.
- *   - `runDirectTool(...)`: bypass — ruft eine Tool aus dem Preview-Toolkit
- *      direkt mit Zod-validiertem Input auf, ohne Anthropic.
+ * Exposes two entry points:
+ *   - `runTurn(...)`: chat-style turn — bridges the preview tools (Zod) onto
+ *      `LocalSubAgentTool`s, builds an ephemeral `LocalSubAgent` with a
+ *      system prompt from `<previewDir>/skills/*.md`, drives a tool loop and
+ *      streams `PreviewChatEvent`s as an AsyncIterable for SSE.
+ *   - `runDirectTool(...)`: bypass — invokes a tool from the preview toolkit
+ *      directly with Zod-validated input, without Anthropic.
  *
- * Statelessness-Caveat: `LocalSubAgent.ask(question, observer?)` ist heute eine
- * single-turn-API (matcht das alte ManagedAgent-Profil). Der Service persistiert
- * jeden Turn in `draft.preview_transcript_json` für UI-Replay; mehr Turn-zu-
- * Turn-Memory braucht der Preview-Agent zum Validieren der Tool-Implementierung
- * vorerst nicht. Multi-Turn-LLM-Memory-Injection (Replay vorheriger Turns als
- * Context) ist in B.5 vorgesehen.
+ * Statelessness caveat: `LocalSubAgent.ask(question, observer?)` is currently
+ * a single-turn API (matching the old ManagedAgent profile). The service
+ * persists each turn into `draft.preview_transcript_json` for UI replay; the
+ * preview agent does not need more turn-to-turn memory to validate the tool
+ * implementation for now. Multi-turn LLM-memory injection (replay of earlier
+ * turns as context) is planned for B.5.
  */
 
 export type PreviewChatEvent =

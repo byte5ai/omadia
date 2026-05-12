@@ -223,10 +223,10 @@ export async function activate(
   }
 
   // OB-76 (Palaia Phase 7) — Process-Memory. Optional capability:
-  // wenn der KG-Provider keine processes-Tabelle hat (in-memory, no
-  // database_url), fehlt das service und die 4 Tools werden NICHT
-  // registriert (kein Spec im LLM-tool-list, kein Doc im System-Prompt).
-  // Lebendig im Standard-Prod-Setup (Neon-KG + Embedding-Sidecar).
+  // when the KG provider has no processes table (in-memory, no
+  // database_url), the service is absent and the 4 tools are NOT
+  // registered (no spec in the LLM tool list, no doc in the system prompt).
+  // Live in the standard prod setup (Neon-KG + embedding sidecar).
   const processMemory = ctx.services.get<ProcessMemoryService>(
     PROCESS_MEMORY_SERVICE_NAME,
   );
@@ -364,11 +364,11 @@ export async function activate(
     ...(processMemory ? { nudgeProcessMemory: processMemory } : {}),
   });
 
-  // OB-76: 4 ProcessMemory native-tools über die nativeToolRegistry
-  // anhängen. Voll-registrierung (handler + spec + promptDoc) — der
-  // Orchestrator-Dispatcher routed automatisch via
-  // `this.nativeTools.get(name).handler` und der getTools()-Aufruf nimmt
-  // den Spec live in den LLM-tool-list. Kein Orchestrator-Code-Touch.
+  // OB-76: attach 4 ProcessMemory native tools via the nativeToolRegistry.
+  // Full registration (handler + spec + promptDoc) — the
+  // Orchestrator dispatcher routes automatically via
+  // `this.nativeTools.get(name).handler` and the getTools() call picks
+  // the spec live into the LLM-tool list. No orchestrator code touch.
   const disposeProcessMemoryTools: Array<() => void> = [];
   if (processMemory) {
     disposeProcessMemoryTools.push(

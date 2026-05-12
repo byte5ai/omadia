@@ -15,7 +15,7 @@ import type { SecretVault } from '../../secrets/vault.js';
  *     in-memory cache, so they survive a middleware restart. Each
  *     (user, draft) gets its own vault namespace
  *     `<vaultPrefix>:<userEmail>:<draftId>` and is purged together when
- *     the user calls "Alle löschen" in the workspace drawer or the draft
+ *     the user calls "Clear all" in the workspace drawer or the draft
  *     is deleted. The drawer makes it explicit that values stay across
  *     restarts but are still test-only — production plugins read their
  *     credentials from their own per-agent vault namespace via the

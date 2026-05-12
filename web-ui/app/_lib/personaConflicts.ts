@@ -61,7 +61,7 @@ export function detectPersonaConflicts(
     });
   }
 
-  // ── Soft: Verstärkung (Devil's-Advocate + sehr direkt) ───────────────
+  // ── Soft: amplification (Devil's-Advocate + very direct) ─────────────
   if (sycophancy === 'high' && directness >= 70) {
     out.push({
       severity: 'soft',
@@ -73,7 +73,7 @@ export function detectPersonaConflicts(
     });
   }
 
-  // ── Soft hint: directness allein hebt sycophancy=off nicht auf ───────
+  // ── Soft hint: directness alone does not lift sycophancy=off ────────
   if (sycophancy === 'off' && directness >= 90) {
     out.push({
       severity: 'soft',
@@ -86,7 +86,7 @@ export function detectPersonaConflicts(
     });
   }
 
-  // ── Soft: stilistischer Cluster (formell + humorvoll) ────────────────
+  // ── Soft: stylistic cluster (formal + humorous) ─────────────────────
   if (formality >= 80 && humor >= 70) {
     out.push({
       severity: 'soft',
@@ -97,7 +97,7 @@ export function detectPersonaConflicts(
     });
   }
 
-  // ── Soft: Sarkasmus + Wärme widersprechen sich ──────────────────────
+  // ── Soft: sarcasm + warmth contradict each other ────────────────────
   if (sarcasm >= 70 && warmth >= 70) {
     out.push({
       severity: 'soft',

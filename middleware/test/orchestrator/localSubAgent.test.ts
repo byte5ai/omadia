@@ -322,7 +322,7 @@ const fillSlotSpec = {
 
 describe('LocalSubAgent.ask — OB-31 expectedTurnToolUse escalation', () => {
   it('escalates with tool_choice when the model exits without ever calling the obligation tool', async () => {
-    // Iter 0: model emits a Build-Ankündigung text + 0 tool_use blocks
+    // Iter 0: model emits a build-announcement text + 0 tool_use blocks
     //         and stop_reason=end_turn. Without the OB-31 guard the loop
     //         would return that text immediately. With the guard the
     //         loop pushes a synthetic user reminder and re-iterates with
@@ -355,7 +355,7 @@ describe('LocalSubAgent.ask — OB-31 expectedTurnToolUse escalation', () => {
       expectedTurnToolUse: 'fill_slot',
     });
     // The loop concatenates text from every iteration. The final answer
-    // therefore contains both the (now-superseded) Build-Ankündigung from
+    // therefore contains both the (now-superseded) build-announcement from
     // iter 0 AND the closing text from iter 2 — what matters for OB-31 is
     // that fill_slot got called at all, which the call-count + tool_choice
     // assertions below verify.

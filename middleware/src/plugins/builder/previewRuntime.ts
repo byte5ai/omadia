@@ -383,7 +383,7 @@ function createStubContext(opts: {
     // calls return undefined, the codegen-emitted null-guard throws
     // a descriptive `service '<name>' is not registered` error, and the
     // operator sees a real failure message instead of a TypeError. See
-    // `HANDOFF-2026-05-04-preview-services-undefined.md` (Lösung A).
+    // `HANDOFF-2026-05-04-preview-services-undefined.md` (solution A).
     services: {
       get: <T,>(_name: string): T | undefined => undefined,
       has: (_name: string): boolean => false,

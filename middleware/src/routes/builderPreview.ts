@@ -332,8 +332,8 @@ export function registerBuilderPreviewRoutes(
   // Lightweight read-only probe: returns the current preview-cache state
   // without triggering a build. Used by the Workspace on mount to
   // re-hydrate its `buildStatus` after a page reload — without this the
-  // install-button stays disabled with "letzter Build muss erfolgreich
-  // sein" even if the cache is warm from earlier work.
+  // install button stays disabled with the "last build must succeed"
+  // message even if the cache is warm from earlier work.
   router.get(
     '/drafts/:id/preview/status',
     (req: Request, res: Response) => {

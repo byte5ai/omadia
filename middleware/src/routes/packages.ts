@@ -8,11 +8,11 @@ import type { UploadedPackageStore } from '../plugins/uploadedPackageStore.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 
 /**
- * Zip-Upload-Endpoints für Agent-Packages.
+ * Zip-upload endpoints for agent packages.
  *
- * Mounted at /api/v1/install/packages, hinter requireAuth. Feature-Gate
- * `PACKAGE_UPLOAD_ENABLED` — wenn false, liefert die Middleware keinen Router
- * (Endpoint nicht vorhanden → 404 statt 503, damit Scraper nichts lernen).
+ * Mounted at /api/v1/install/packages, behind requireAuth. Feature-gated by
+ * `PACKAGE_UPLOAD_ENABLED` — when false, the middleware does not return a
+ * router (endpoint absent → 404 instead of 503, so scrapers learn nothing).
  *
  * Endpoints:
  *   POST   /packages/upload      multipart file=<zip>
@@ -138,12 +138,12 @@ export function createPackagesRouter(deps: PackagesRouterDeps): Router {
       });
       return;
     }
-    // Catalog spiegelt uploaded packages beim Boot + nach Upload wider.
-    // Ohne reload würde der Plugin-Eintrag nach dem DELETE im Store zwar
-    // weg sein, aber der In-Memory-Catalog ihn noch kennen — eine erneute
-    // Install-Create-Call würde dann einen "Geister-Job" anlegen, dessen
-    // onInstalled-Hook im DynamicAgentRuntime leise kein Tool registriert.
-    // Reload hier = genauer Zustand für alle nachfolgenden Store/Install-Calls.
+    // Catalog mirrors uploaded packages at boot + after upload. Without a
+    // reload the plugin entry would be gone from the store after DELETE,
+    // but the in-memory catalog would still know it — a subsequent
+    // install-create call would then create a "ghost job" whose
+    // onInstalled hook in DynamicAgentRuntime silently registers no tool.
+    // Reload here = accurate state for all following store/install calls.
     await deps.catalog.load();
     res.status(204).end();
   });

@@ -119,7 +119,7 @@ export type SpecBusEvent =
        *
        *   `triggered`    — orchestrator is firing a synthetic
        *                    Builder turn now. The frontend renders
-       *                    a compact "Auto-Fix #N läuft" indicator.
+       *                    a compact "Auto-Fix #N running" indicator.
        *   `stopped_loop` — the same error fingerprint repeated for
        *                    the Nth consecutive auto-attempt
        *                    (default cap: 3). The orchestrator

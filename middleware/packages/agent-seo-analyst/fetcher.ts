@@ -67,12 +67,12 @@ export function createFetcher(opts: FetcherOptions) {
 }
 
 // ---------------------------------------------------------------------------
-// Minimaler HTML-Extractor (regex-basiert).
+// Minimal HTML-Extractor (regex-based).
 //
-// Bewusst ohne cheerio / linkedom, weil das Package eine peerDependency-freie
-// Referenz für das Upload-Format sein soll. Für SEO-Auswertungen (Meta-Tags,
-// Heading-Counts, Links, Bilder, JSON-LD-Blöcke) reicht das; für DOM-
-// Traversierung/CSS-Selektoren wäre ein echter Parser Pflicht.
+// Deliberately without cheerio / linkedom because the package is meant to be
+// a peerDependency-free reference for the upload format. For SEO evaluations
+// (meta tags, heading counts, links, images, JSON-LD blocks) this suffices;
+// for DOM traversal / CSS-selectors a real parser would be mandatory.
 // ---------------------------------------------------------------------------
 
 export interface MetaTag {
