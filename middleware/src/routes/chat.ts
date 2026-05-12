@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
+import { isNoReply, logNoReplyDrop } from '@omadia/channel-sdk';
 import type { AskObserver, ChatAgent } from '@omadia/orchestrator';
 
 import type { AgentResolver } from '../agents/resolveAgentForTool.js';
@@ -85,11 +86,17 @@ export function createChatRouter(
 
     try {
       const userId = resolveUserId(req);
+      const sessionScope = resolveScope(parsed.data);
       const result = await orchestrator.chat({
         userMessage: parsed.data.message,
-        sessionScope: resolveScope(parsed.data),
+        sessionScope,
         ...(userId ? { userId } : {}),
       });
+      if (isNoReply(result)) {
+        logNoReplyDrop('http', { sessionScope, userId });
+        res.json({ answer: '' });
+        return;
+      }
       // `answer` preserved for legacy dev-UI compat; telemetry counts moved
       // to the run-trace side-channel (ChatAgent.chat returns the channel-
       // agnostic SemanticAnswer shape now, no toolCalls/iterations exposed).

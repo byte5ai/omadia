@@ -77,3 +77,7 @@ export {
   type InMemoryConversationHistoryStoreOptions,
   type PendingTopicDecision,
 } from './inMemoryConversationHistory.js';
+
+// NO_REPLY sentinel: agent emits this literal when it has nothing to say,
+// channel adapters drop the message before forwarding to the provider.
+export { NO_REPLY_SENTINEL, isNoReply, logNoReplyDrop } from './noReply.js';
