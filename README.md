@@ -16,6 +16,21 @@ model. You bring your own LLM API key, run the stack on a single machine
 > is supported but the upgrade path is hand-rolled today; an automated
 > migration runner is on the v1.0 roadmap.
 
+> **Heads-up — `main` was force-pushed on 2026-05-12** to purge a documentation
+> file that contained internal identifiers. The `v0.1.0` tag is unchanged, but
+> if you cloned this repository before that date your next `git pull` will fail
+> with `non-fast-forward` / `Updates were rejected`. To recover, discard the
+> stale local history and reset to the rewritten remote:
+>
+> ```bash
+> git fetch origin
+> git reset --hard origin/main
+> ```
+>
+> If you have local commits on top of the old `main`, cherry-pick them onto the
+> new base instead (`git log` on the old SHA is still reachable locally for ~90
+> days via the reflog).
+
 ## Quickstart
 
 ```bash
