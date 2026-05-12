@@ -1100,14 +1100,48 @@ async function main(): Promise<void> {
       // wir die Runtime direkt — sonst bleibt der Tool unbekannt, bis der User
       // einmal de-/neu-installiert. Bei einem Version-Upgrade mit onMigrate
       // läuft diese Re-Aktivierung mit der bereits migrierten Config.
+      //
+      // Dispatch nach `manifest.identity.kind` — symmetrisch zu
+      // InstallService.onInstalled. Ohne den Dispatch wurde ein Channel-/
+      // Integration-Re-Upload durch dynamicAgentRuntime gejagt; dort fehlt
+      // dem PluginContext z.B. `core`, und der Plugin-Activate crashte mit
+      // "Cannot read properties of undefined (reading 'log')".
       onPackageReady: async (agentId) => {
-        if (installedRegistry.get(agentId)?.status === 'active') {
-          // Falls v1 noch aktiv ist, erst sauber deaktivieren — v2 hat ein
-          // frisches DomainTool mit potenziell geänderten Subtools.
-          if (dynamicAgentRuntime.isActive(agentId)) {
-            await dynamicAgentRuntime.deactivate(agentId);
+        if (installedRegistry.get(agentId)?.status !== 'active') return;
+
+        const kind = pluginCatalog.get(agentId)?.plugin.kind ?? 'agent';
+        switch (kind) {
+          case 'channel': {
+            if (!channelRegistryRef) {
+              console.warn(
+                `[upload] channel '${agentId}' re-uploaded before channelRegistry was wired — hot-swap skipped, will pick up at next boot`,
+              );
+              return;
+            }
+            if (channelRegistryRef.isActive(agentId)) {
+              await channelRegistryRef.deactivate(agentId);
+            }
+            await channelRegistryRef.activate(agentId);
+            return;
           }
-          await dynamicAgentRuntime.activate(agentId);
+          case 'tool':
+          case 'extension':
+          case 'integration': {
+            if (toolPluginRuntime.isActive(agentId)) {
+              await toolPluginRuntime.deactivate(agentId);
+            }
+            await toolPluginRuntime.activate(agentId);
+            return;
+          }
+          case 'agent':
+          default: {
+            // Falls v1 noch aktiv ist, erst sauber deaktivieren — v2 hat ein
+            // frisches DomainTool mit potenziell geänderten Subtools.
+            if (dynamicAgentRuntime.isActive(agentId)) {
+              await dynamicAgentRuntime.deactivate(agentId);
+            }
+            await dynamicAgentRuntime.activate(agentId);
+          }
         }
       },
       log: (msg) => console.log(msg),
