@@ -60,11 +60,15 @@ services:
       # rebuilds. ROTATE THIS for any deployment beyond local dev:
       # `openssl rand -base64 32`
       VAULT_KEY: b21hZGlhLWxvY2FsLWRldi12YXVsdC1rZXktREVNTyE=
-      # Mount the unauthenticated dev endpoints (/api/dev/graph, /api/dev/memory).
-      # The web-ui Graph + Memory viewers depend on these for local
-      # inspection. **NEVER set this on a public deployment** — these routes
-      # have no auth and expose raw graph/memory state.
-      DEV_ENDPOINTS_ENABLED: 'true'
+      # NB: `DEV_ENDPOINTS_ENABLED` (the unauthenticated /api/dev/graph +
+      # /api/dev/memory mount) is intentionally NOT hard-coded here. The
+      # admin UI's Graph + Memory viewers depend on it, but it exposes raw
+      # KG + memory state without auth — anyone who reuses this compose file
+      # as a template for a non-local deploy (and accidentally removes the
+      # 127.0.0.1 port-binding above) would otherwise expose internal state.
+      # To enable for local inspection, uncomment `DEV_ENDPOINTS_ENABLED=true`
+      # in `middleware/.env` (already picked up via `env_file` below).
+      # **NEVER set this on a public deployment.**
       # Redirect kernel persistent state (vault, installed.json, memory
       # store, builder drafts.db, uploaded plugin packages) to the volume
       # mount below. Without this, the kernel writes under /app/data which
