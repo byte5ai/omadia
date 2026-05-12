@@ -1,5 +1,5 @@
 {
-  "name": "odoo-bot-middleware",
+  "name": "omadia-middleware",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -31,7 +31,7 @@
   "engines": {
     "node": ">=22 <23"
   },
-  "description": "Orchestrator middleware with persistent memory that delegates Odoo accounting questions to a Claude Managed Agent.",
+  "description": "Omadia kernel: Anthropic Messages API orchestrator with plugin runtime, persistent memory, multi-channel ingress, and vault-backed credentials.",
   "license": "MIT",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.88.0",
