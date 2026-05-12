@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
@@ -1022,7 +1022,9 @@ async function bootstrapTelegramFromEnv(deps: BootstrapDeps): Promise<void> {
     );
     if (backfilledAdmin) {
       log(
-        `[bootstrap] ⚑ telegram_admin_token (KEEP THIS — needed for UI login at /api/telegram/admin/ui): ${backfilledAdmin}`,
+        `[bootstrap] ⚑ telegram_admin_token backfilled (fp ${tokenFingerprint(backfilledAdmin)}). ` +
+          `Recover via vault decryption (VAULT_KEY required); ` +
+          `or rotate by deleting the telegram_admin_token vault key and rebooting.`,
       );
     }
     return;
@@ -1071,13 +1073,25 @@ async function bootstrapTelegramFromEnv(deps: BootstrapDeps): Promise<void> {
     `[bootstrap] ⚐ migrated ${TELEGRAM_CHANNEL_ID} from .env — ` +
       `bot_token + webhook_secret → vault, public_base_url → registry (${TELEGRAM_PUBLIC_BASE_URL ? 'webhook mode' : 'long-poll mode'}).`,
   );
-  // Loud: operator NEEDS this token to log into the admin UI. Show
-  // exactly once on first install. Echoed in plain text — anyone with
-  // shell access to the host can read it from the vault file anyway, so
-  // there's no extra leak from logging it here.
+  // Operator NEEDS this token to log into the admin UI, but logs leak
+  // (aggregators, screenshots, CI). Print a fingerprint only; the value
+  // lives encrypted in the vault. Recover via offline vault decryption
+  // with VAULT_KEY, or rotate by deleting the telegram_admin_token vault
+  // key and rebooting (the backfill branch above regenerates).
   log(
-    `[bootstrap] ⚑ telegram_admin_token (KEEP THIS — needed for UI login at /api/telegram/admin/ui): ${telegramAdminToken}`,
+    `[bootstrap] ⚑ telegram_admin_token issued (fp ${tokenFingerprint(telegramAdminToken)}). ` +
+      `Recover via vault decryption (VAULT_KEY required); ` +
+      `or rotate by deleting the telegram_admin_token vault key and rebooting.`,
   );
+}
+
+/**
+ * Short identity fingerprint for a secret. Lets the operator confirm "I
+ * have the right token" without ever putting the secret itself in logs.
+ * First 16 hex chars of SHA-256 = 64 bits of identity — not reversible.
+ */
+function tokenFingerprint(token: string): string {
+  return createHash('sha256').update(token).digest('hex').slice(0, 16);
 }
 
 /**
