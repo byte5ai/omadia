@@ -175,12 +175,18 @@ export class FileSecretVault implements SecretVault {
  *   2. Existing dev key file under DATA_DIR/.dev-vault.key.
  *   3. Freshly generated 32-byte key written to the dev key file (LOUD warning).
  *
+ * When `productionMode` is true, only step 1 is permitted — falling back to
+ * a host-local dev key in production silently turns an encrypted vault into
+ * plaintext-at-rest equivalence (anyone with read access to the data volume
+ * can decrypt). Fail-hard instead of warn-and-continue.
+ *
  * The caller is responsible for logging the source so operators notice when
  * they're unintentionally on dev-path.
  */
 export async function resolveMasterKey(
   envValue: string | undefined,
   devKeyPath: string,
+  productionMode = false,
 ): Promise<MasterKeyResult> {
   if (envValue && envValue.length > 0) {
     const buf = Buffer.from(envValue, 'base64');
@@ -188,6 +194,14 @@ export async function resolveMasterKey(
       throw new Error('VAULT_KEY must decode to 32 bytes (base64)');
     }
     return { key: buf, source: 'env' };
+  }
+  if (productionMode) {
+    throw new Error(
+      `VAULT_KEY is required when NODE_ENV=production. Refusing to fall back ` +
+        `to dev key file at ${devKeyPath}. Generate one with ` +
+        `\`openssl rand -base64 32\` and set it as a secret (e.g. ` +
+        `\`fly secrets set VAULT_KEY=...\`).`,
+    );
   }
   try {
     const existing = await fs.readFile(devKeyPath, 'utf8');

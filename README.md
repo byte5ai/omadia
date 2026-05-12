@@ -162,6 +162,17 @@ the differentiating logic, and verifying with the smoke runner before install.
   Postgres is optional — without `DATABASE_URL` the kernel uses the
   in-memory knowledge graph.
 
+> **Required production secret.** The shipped image runs with
+> `NODE_ENV=production`, which makes `VAULT_KEY` mandatory at boot — without
+> it the middleware refuses to start (this is intentional; the dev fallback
+> writes the master key into the data volume, which is not safe at rest).
+> Generate one with `openssl rand -base64 32` and wire it as a platform
+> secret before the first deploy. The bundled `docker-compose.yaml` pins
+> `NODE_ENV=development` so the dev fallback stays available for local
+> `docker compose up` without configuration; drop that override (and set
+> `VAULT_KEY` in `.env`) when you re-use the compose file as a starting
+> point for a non-local deploy.
+
 ## Status & Roadmap
 
 This is the public preview release. Stability promises are **scoped to the

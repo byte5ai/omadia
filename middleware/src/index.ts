@@ -325,6 +325,7 @@ async function main(): Promise<void> {
   const masterKey = await resolveMasterKey(
     process.env['VAULT_KEY'],
     DEV_VAULT_KEY_PATH,
+    process.env['NODE_ENV'] === 'production',
   );
   if (masterKey.source === 'env') {
     console.log('[middleware] vault master key loaded from VAULT_KEY env');

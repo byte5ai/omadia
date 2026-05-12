@@ -54,12 +54,22 @@ services:
       # Host-side public base URL — the browser opens signed diagram URLs
       # against the published host port, not the in-network service name.
       DIAGRAM_PUBLIC_BASE_URL: http://localhost:8080
-      # Deterministic vault master key for local-stack runs (base64 of 32
-      # demo bytes — vault expects base64-encoded 32 bytes). Keeps the
-      # vault.enc.json readable across `docker compose restart` and
-      # rebuilds. ROTATE THIS for any deployment beyond local dev:
-      # `openssl rand -base64 32`
-      VAULT_KEY: b21hZGlhLWxvY2FsLWRldi12YXVsdC1rZXktREVNTyE=
+      # Vault master key. The shipped image bakes `NODE_ENV=production`
+      # (see Dockerfile), which would normally make the middleware refuse
+      # to boot without VAULT_KEY set — by design, because the dev
+      # fallback writes the master key into the data volume (encrypted
+      # vault → plaintext-at-rest equivalence). For the local compose
+      # stack we override to `development` so the dev fallback stays
+      # available: on first boot the middleware writes a random key into
+      # /data/.dev-vault.key on the persistent volume, and it's re-read
+      # across `docker compose restart` and rebuilds.
+      #
+      # For any deployment beyond local dev: drop the NODE_ENV override
+      # below AND supply your own key via `.env` (`VAULT_KEY=$(openssl
+      # rand -base64 32)`). Keep that key stable — losing it makes vault
+      # entries unrecoverable.
+      VAULT_KEY: ${VAULT_KEY:-}
+      NODE_ENV: ${NODE_ENV:-development}
       # NB: `DEV_ENDPOINTS_ENABLED` (the unauthenticated /api/dev/graph +
       # /api/dev/memory mount) is intentionally NOT hard-coded here. The
       # admin UI's Graph + Memory viewers depend on it, but it exposes raw
