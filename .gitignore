@@ -55,6 +55,7 @@ logs/
 
 # ─── Claude Code / AI agent scratch state ─────────────────────────────────
 .claude/
+CLAUDE.local.md
 .aider*
 .cursor/
 
