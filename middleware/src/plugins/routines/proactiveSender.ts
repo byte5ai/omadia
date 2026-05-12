@@ -56,8 +56,16 @@ export class InMemoryProactiveSenderRegistry implements ProactiveSenderRegistry 
 
   register(sender: ProactiveSender): () => void {
     if (this.senders.has(sender.channel)) {
-      throw new Error(
-        `ProactiveSenderRegistry: duplicate channel '${sender.channel}'`,
+      // Hot-swap: a channel plugin re-registers after a re-upload. The
+      // previous sender came from the now-deactivated plugin instance;
+      // its close() released the channel-native resources (adapter,
+      // turn context). Replace the entry rather than throwing — the
+      // throw was originally meant for "two plugins claim the same
+      // channel id" conflicts, but a legit hot-swap shares the channel
+      // id by design and is the common path now that plugin re-uploads
+      // hot-swap instead of requiring a process restart.
+      console.warn(
+        `[proactive-sender] replacing existing sender for channel '${sender.channel}' (plugin hot-swap)`,
       );
     }
     this.senders.set(sender.channel, sender);
