@@ -5,7 +5,7 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "description": "Diagram rendering library (Kroki + Tigris + signed URLs) for the byte5 Harness. Library-phase — tool + route live in the kernel until plugin-izing lands.",
+  "description": "Diagram rendering library (Kroki + Tigris + signed URLs) for the Omadia middleware. Library-phase — tool + route live in the kernel until plugin-izing lands.",
   "license": "MIT",
   "scripts": {
     "build": "tsc",

@@ -9,8 +9,8 @@ identity:
   description: "Rendert Mermaid/Graphviz/PlantUML/Vega-Lite-Diagramme über Kroki und liefert signierte PNG-URLs aus Tigris."
   authors:
     - name: "byte5 GmbH"
-      email: "dev@byte5.de"
-      url: "https://byte5.de"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
   license: "Proprietary"
   categories:
     - "visualization"
@@ -43,7 +43,7 @@ setup:
     - key: "public_base_url"
       type: "url"
       label: "Öffentliche Middleware-Base-URL"
-      help: "Wird in signierten Bild-URLs verwendet, z.B. https://bot.byte5.de"
+      help: "Wird in signierten Bild-URLs verwendet, z.B. https://bot.omadia.ai"
       required: true
 
     - key: "tigris_endpoint"

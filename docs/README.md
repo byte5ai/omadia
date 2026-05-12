@@ -8,7 +8,7 @@ Dieser Ordner ist das kollektive Gedächtnis des Omadia-Projekts. Mehrere Agents
 2. **dieses README** — Landkarte
 3. [`middleware-agent-handoff.md`](middleware-agent-handoff.md) — Vollständige Tech-Übersicht
 4. [`CHANGELOG.md`](CHANGELOG.md) — Was ist zuletzt passiert
-5. [`security-migration-plan.md`](security-migration-plan.md) — Credentials- und Proxy-Architektur
+5. [`security-architecture.md`](security-architecture.md) — Security-Design-Patterns
 
 ## Dokument-Verzeichnis
 
@@ -17,7 +17,7 @@ Dieser Ordner ist das kollektive Gedächtnis des Omadia-Projekts. Mehrere Agents
 | [`/AGENTS.md`](../AGENTS.md) | **Policy** für Multi-Agent-Arbeit | Nur bei Regelwechsel | Jeder, der die Regeln ändert — MIT CHANGELOG-Eintrag |
 | [`middleware-agent-handoff.md`](middleware-agent-handoff.md) | Architektur, Layout, Commands, Config, Roadmap — der **primäre** Tech-Einstieg | Bei jeder strukturellen Änderung | Feature-Agents |
 | [`CHANGELOG.md`](CHANGELOG.md) | Rolling chronologische Chronik aller signifikanten Änderungen | Nach jeder Aufgabe | Der Agent, der die Änderung macht |
-| [`security-migration-plan.md`](security-migration-plan.md) | Credentials → Middleware-Proxy-Migration (Phase 1 Confluence ✅, Phase 2 Odoo ✅, Phase 3 Local-Sub-Agents ✅) | Bei Security-Architektur-Änderungen | Security-Thread |
+| [`security-architecture.md`](security-architecture.md) | Security-Design-Patterns (Vault-Credentials, Proxy-Routes, Scope-Locked Sub-Agents, signed URLs) | Bei Security-Architektur-Änderungen | Security-Thread |
 
 ## Lebende Docs (öffentliche Untermenge)
 
@@ -26,7 +26,7 @@ Werden aktiv gepflegt, müssen stimmen:
 - `docs/README.md`
 - `docs/middleware-agent-handoff.md`
 - `docs/CHANGELOG.md`
-- `docs/security-migration-plan.md`
+- `docs/security-architecture.md`
 
 > Hinweis: weitere interne Doku (Frontend-Handoff, Graph-Deployment, Day-One-Learnings, Plans) liegt im internen byte5-Repo. Was öffentlich ist, steht hier.
 

@@ -16,7 +16,7 @@ Ohne Doku-Update ist eine Änderung **nicht fertig**, selbst wenn der Build grü
 |---|---|---|
 | Neue Feature / Architektur-Entscheidung | `docs/middleware-agent-handoff.md` aktualisieren | Abschnitts-Level |
 | Bugfix / Ops-Vorfall / Build-Problem | `docs/CHANGELOG.md` Eintrag anhängen | Datum + ein Absatz |
-| Security-Entscheidung / Credential-Verschiebung | `docs/security-migration-plan.md` Status-Update | Phase / Abschnitt |
+| Security-Entscheidung / Credential-Verschiebung | `docs/security-architecture.md` aktualisieren | Abschnitt |
 | Neue ENV-Variable / Secret | `middleware/.env.example` + `docs/middleware-agent-handoff.md` §10 | Zeile + Erklärung |
 | Neue Route / Tool / Sub-Agent | `docs/middleware-agent-handoff.md` §3 und §8 | Abschnitt |
 | Neue SQL-Migration | Datei in `middleware/src/services/graph/migrations/` — **plus** CHANGELOG-Eintrag mit ID und Zweck | Migration-ID |
@@ -44,7 +44,7 @@ Ohne mindestens Punkte 1–3 darf kein Code geändert werden.
 ## Anti-Pattern, die wir schon bezahlt haben
 
 - **Doc-less Schema-Änderung**: v20-Build hat `CLAUDE_AGENT_ID` aus dem Zod-Schema entfernt, das Deployment enthielt aber noch das alte Config-Verhalten — Crashloop. Fix: Schema-Änderungen ab jetzt immer zusammen mit CHANGELOG-Eintrag + `.env.example`-Update.
-- **Token in Agent-Config-YAML**: `agent-config-confluence.yaml` enthielt den Atlassian-Token direkt im System-Prompt. Policy: Credentials gehören **ausschließlich** in Fly Secrets — siehe `docs/security-migration-plan.md` §3.
+- **Token in Agent-Config-YAML**: Bearer-Tokens dürfen nie im System-Prompt einer Agent-Config landen. Policy: Credentials gehören **ausschließlich** in den Deployment-Vault — siehe `docs/security-architecture.md` §1.
 - **Build-Artefakt vergessen**: `tsc` kopiert keine `.sql`-Files. Fix via `middleware/scripts/copy-build-assets.mjs`. Generell: Non-TS-Assets brauchen immer einen expliziten Build-Schritt.
 
 ## Meta
