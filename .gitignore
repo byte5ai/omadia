@@ -94,24 +94,31 @@ ollama/
 middleware/DEPLOY.md
 middleware/data/
 middleware/.uploaded-packages/
+middleware/appPackage/
+middleware/sidecars/*/fly.*.toml
+middleware/seed/memory/_rules/hr-conventions.md
+middleware/seed/memory/_rules/accounting-conventions.md
 
-# ─── Internal-only docs (session handoffs, plans, customer evaluations) ───
-# Session-context that served its purpose during development and would
-# pollute the public docs tree. The harness-platform/ architecture docs
-# themselves ARE public — only HANDOFF-* session snapshots are excluded.
+# ─── Internal-only docs (whole harness-platform tree + session handoffs) ──
+# Session-context, planning, deployment hints, customer evaluations etc.
+# served their purpose during development and would pollute the public
+# docs tree. Whole `docs/harness-platform/` excluded by policy; only the
+# README + CHANGELOG + security-architecture in `docs/` stay public.
 docs/plans/
 docs/day-one-learnings-*.md
 docs/dev-frontend-handoff.md
-docs/middleware-agent-handoff.md
 docs/northdata-agent-plan.md
 docs/softgarden-agent-evaluation.md
-docs/harness-platform/HANDOFF-*.md
+docs/diagrams.md
+docs/graph-deployment.md
+docs/harness-platform/
 
 # ─── Smoke scripts (internal validation harness, not part of public API) ──
 # Boot-test scripts that hit live byte5 Fly endpoints / Neon project. The
 # OSS audience doesn't have access to those targets; equivalent guidance
 # lives in the public test/ directories per package.
 middleware/scripts/smoke-*.ts
+middleware/scripts/smoke-*.mjs
 
 # ─── Private byte5 plugins (channels + integrations) ──────────────────────
 # byte5-specific channel adapters (Teams, Telegram) and SaaS integrations
