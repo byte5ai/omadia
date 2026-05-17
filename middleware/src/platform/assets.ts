@@ -25,7 +25,6 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MIDDLEWARE_ROOT = path.resolve(HERE, '..', '..'); // <repo>/middleware
-const REPO_ROOT = path.resolve(MIDDLEWARE_ROOT, '..'); // <repo>
 
 export interface AssetBundle {
   /** Logical id, e.g. 'boilerplate'. Surfaced in error messages. */
@@ -97,26 +96,25 @@ export function resolveAssetBundle(opts: ResolveOpts): AssetBundle {
  * boilerplateSource.ts).
  */
 export const ASSETS = {
-  /** docs/harness-platform/boilerplate/ — codegen template tree. */
+  /** middleware/assets/boilerplate/ — codegen template tree. */
   boilerplate: resolveAssetBundle({
     id: 'boilerplate',
     envVar: 'BUILDER_BOILERPLATE_DIR',
-    devFallback: path.join(REPO_ROOT, 'docs', 'harness-platform', 'boilerplate'),
-    prodHint: 'COPY docs/harness-platform/boilerplate ./boilerplate (Dockerfile)',
+    devFallback: path.join(MIDDLEWARE_ROOT, 'assets', 'boilerplate'),
+    prodHint: 'COPY middleware/assets/boilerplate ./boilerplate (Dockerfile)',
     kind: 'directory',
   }),
-  /** docs/harness-platform/entity-registry.v1.yaml — vocabulary autocomplete. */
+  /** middleware/assets/entity-registry.v1.yaml — vocabulary autocomplete. */
   entityRegistry: resolveAssetBundle({
     id: 'entityRegistry',
     envVar: 'BUILDER_ENTITY_REGISTRY_PATH',
     devFallback: path.join(
-      REPO_ROOT,
-      'docs',
-      'harness-platform',
+      MIDDLEWARE_ROOT,
+      'assets',
       'entity-registry.v1.yaml',
     ),
     prodHint:
-      'COPY docs/harness-platform/entity-registry.v1.yaml ./entity-registry.v1.yaml (Dockerfile)',
+      'COPY middleware/assets/entity-registry.v1.yaml ./entity-registry.v1.yaml (Dockerfile)',
     kind: 'file',
   }),
   /** middleware/packages/agent-reference-maximum — Builder pattern source. */
@@ -163,21 +161,20 @@ export function _rebuildAssetsForTests(): void {
     boilerplate: resolveAssetBundle({
       id: 'boilerplate',
       envVar: 'BUILDER_BOILERPLATE_DIR',
-      devFallback: path.join(REPO_ROOT, 'docs', 'harness-platform', 'boilerplate'),
-      prodHint: 'COPY docs/harness-platform/boilerplate ./boilerplate (Dockerfile)',
+      devFallback: path.join(MIDDLEWARE_ROOT, 'assets', 'boilerplate'),
+      prodHint: 'COPY middleware/assets/boilerplate ./boilerplate (Dockerfile)',
       kind: 'directory',
     }),
     entityRegistry: resolveAssetBundle({
       id: 'entityRegistry',
       envVar: 'BUILDER_ENTITY_REGISTRY_PATH',
       devFallback: path.join(
-        REPO_ROOT,
-        'docs',
-        'harness-platform',
+        MIDDLEWARE_ROOT,
+        'assets',
         'entity-registry.v1.yaml',
       ),
       prodHint:
-        'COPY docs/harness-platform/entity-registry.v1.yaml ./entity-registry.v1.yaml (Dockerfile)',
+        'COPY middleware/assets/entity-registry.v1.yaml ./entity-registry.v1.yaml (Dockerfile)',
       kind: 'file',
     }),
     referencePackage: resolveAssetBundle({

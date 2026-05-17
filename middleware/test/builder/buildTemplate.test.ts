@@ -63,7 +63,7 @@ describe('buildTemplate', () => {
       assert.equal(result.reused, false);
       assert.ok(existsSync(path.join(templateRoot, 'package.json')));
       assert.ok(existsSync(path.join(templateRoot, '.harness-build-template.hash')));
-      const linkPath = path.join(templateRoot, 'node_modules', '@byte5', 'harness-plugin-api');
+      const linkPath = path.join(templateRoot, 'node_modules', '@omadia', 'plugin-api');
       assert.ok(lstatSync(linkPath).isSymbolicLink());
     });
 
@@ -168,15 +168,14 @@ describe('buildTemplate', () => {
       const linkPath = path.join(
         templateRoot,
         'node_modules',
-        '@byte5',
-        'harness-plugin-api',
+        '@omadia',
+        'plugin-api',
       );
       const pkgJson = JSON.parse(
         readFileSync(path.join(linkPath, 'package.json'), 'utf-8'),
       ) as { name: string };
-      assert.equal(pkgJson.name, '@omadia/plugin-api');
       // Same name, but resolves through wsNew (not wsOld).
-      assert.match(pkgJson.name, /@byte5\/harness-plugin-api/);
+      assert.equal(pkgJson.name, '@omadia/plugin-api');
     });
 
     it('reports ready=false with reason when no node_modules exists', async () => {
