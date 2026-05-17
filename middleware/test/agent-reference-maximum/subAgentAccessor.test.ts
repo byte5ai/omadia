@@ -344,9 +344,10 @@ describe('agent-reference / SubAgentAccessor', () => {
       jobScheduler: stubJobScheduler,
     });
     const list = ctx.subAgent!.list();
+    // Lexicographic sort: '@' (0x40) < 'd' (0x64).
     assert.deepEqual(
       [...list].sort(),
-      ['de.byte5.agent.confluence', '@omadia/agent-seo-analyst'],
+      ['@omadia/agent-seo-analyst', 'de.byte5.agent.confluence'],
     );
   });
 });

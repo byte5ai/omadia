@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
 
 import { createAgentResolver } from '../../src/agents/resolveAgentForTool.js';
 import type { DynamicAgentRuntime } from '../../src/plugins/dynamicAgentRuntime.js';
@@ -17,13 +18,13 @@ describe('createAgentResolver', () => {
       dynamicRuntime: stubRuntime({}),
     });
 
-    expect(resolve('query_confluence_playbook')).toEqual({
+    assert.deepEqual(resolve('query_confluence_playbook'), {
       id: 'de.byte5.agent.confluence',
       label: 'Confluence',
       tone: 'cyan',
     });
-    expect(resolve('query_odoo_hr')?.label).toBe('Odoo HR');
-    expect(resolve('book_meeting')?.id).toBe('de.byte5.agent.calendar');
+    assert.equal(resolve('query_odoo_hr')?.label, 'Odoo HR');
+    assert.equal(resolve('book_meeting')?.id, 'de.byte5.agent.calendar');
   });
 
   it('resolves Builder-uploaded agents via the dynamic runtime', () => {
@@ -35,13 +36,13 @@ describe('createAgentResolver', () => {
     });
 
     const wanderlust = resolve('query_wanderlust_concierge');
-    expect(wanderlust?.id).toBe('de.byte5.agent.wanderlust-concierge');
-    expect(wanderlust?.label).toBe('Wanderlust Concierge');
-    expect(['cyan', 'navy', 'magenta', 'warning']).toContain(wanderlust?.tone);
+    assert.equal(wanderlust?.id, 'de.byte5.agent.wanderlust-concierge');
+    assert.equal(wanderlust?.label, 'Wanderlust Concierge');
+    assert.ok(['cyan', 'navy', 'magenta', 'warning'].includes(wanderlust?.tone ?? ''));
 
     const flight = resolve('query_flight_scout');
-    expect(flight?.id).toBe('de.byte5.agent.flight-scout');
-    expect(flight?.label).toBe('Flight Scout');
+    assert.equal(flight?.id, 'de.byte5.agent.flight-scout');
+    assert.equal(flight?.label, 'Flight Scout');
   });
 
   it('produces the same tone for the same agent id (deterministic)', () => {
@@ -52,7 +53,7 @@ describe('createAgentResolver', () => {
       }),
     });
 
-    expect(resolve('query_a')?.tone).toBe(resolve('query_b')?.tone);
+    assert.equal(resolve('query_a')?.tone, resolve('query_b')?.tone);
   });
 
   it('returns undefined for helper / unknown tools', () => {
@@ -60,10 +61,10 @@ describe('createAgentResolver', () => {
       dynamicRuntime: stubRuntime({}),
     });
 
-    expect(resolve('memory')).toBeUndefined();
-    expect(resolve('ask_user_choice')).toBeUndefined();
-    expect(resolve('render_diagram')).toBeUndefined();
-    expect(resolve('definitely_not_a_real_tool')).toBeUndefined();
+    assert.equal(resolve('memory'), undefined);
+    assert.equal(resolve('ask_user_choice'), undefined);
+    assert.equal(resolve('render_diagram'), undefined);
+    assert.equal(resolve('definitely_not_a_real_tool'), undefined);
   });
 
   it('built-in mapping wins over a dynamic collision', () => {
@@ -73,6 +74,6 @@ describe('createAgentResolver', () => {
       }),
     });
 
-    expect(resolve('query_odoo_hr')?.id).toBe('de.byte5.agent.odoo-hr');
+    assert.equal(resolve('query_odoo_hr')?.id, 'de.byte5.agent.odoo-hr');
   });
 });
