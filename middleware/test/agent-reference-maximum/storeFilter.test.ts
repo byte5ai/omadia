@@ -124,11 +124,10 @@ describe('agent-reference / Store filter for is_reference_only', () => {
     const registry = new InMemoryInstalledRegistry();
     const router = createStoreRouter({ catalog, registry });
 
-    // npm-scoped plugin IDs contain `/`, which Express won't match in a
-    // `/:id` segment unless URL-encoded. The production UI URL-encodes
-    // before fetching; mirror that here.
-    const encodedId = encodeURIComponent('@omadia/agent-reference-maximum');
-    const { status, body } = await callRouter(router, `/${encodedId}`);
+    const { status, body } = await callRouter(
+      router,
+      '/@omadia/agent-reference-maximum',
+    );
     assert.equal(status, 404);
     const payload = body as { code: string };
     assert.equal(payload.code, 'store.plugin_not_found');
