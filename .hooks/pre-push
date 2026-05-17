@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Pre-push hook: block direct pushes to main/master.
+# Override: ALLOW_PUSH_TO_MAIN=1 git push origin main
+
+if [ "$ALLOW_PUSH_TO_MAIN" = "1" ]; then
+  exit 0
+fi
+
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  remote_branch="${remote_ref##refs/heads/}"
+  if [[ "$remote_branch" =~ ^(main|master)$ ]]; then
+    echo ""
+    echo "  BLOCKED: Direct push to '$remote_branch' is not allowed."
+    echo "  Create a feature branch and open a pull request instead."
+    echo ""
+    echo "  Override (emergencies only):"
+    echo "    ALLOW_PUSH_TO_MAIN=1 git push origin $remote_branch"
+    echo ""
+    exit 1
+  fi
+done
+
+exit 0
