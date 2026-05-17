@@ -1,9 +1,9 @@
 # PR + main-branch quality gate.
 #
 # Runs lint + typecheck + test on both workspaces, plus a schema smoke
-# that applies all 9 migrations against a real pgvector container. Audit
-# enforces a high-severity ceiling so a CVE-bumping dep can't slip in
-# unnoticed.
+# that applies every migration in the repo against a real pgvector
+# container. Audit enforces a high-severity ceiling so a CVE-bumping
+# dep can't slip in unnoticed.
 #
 # Naming-independent — no secrets, no GHCR/npm push. Release-flow lives
 # in release.yml (currently placeholder; activates once OB-30 Block 2
@@ -104,8 +104,11 @@ jobs:
         run: npm run test
 
   # ------------------------------------------------------------------
-  # Schema smoke: apply all 9 migrations against pgvector. Catches
-  # SQL-only regressions before they hit prod-or-OSS-demo deploys.
+  # Schema smoke: apply every migration in the repo against pgvector.
+  # Catches SQL-only regressions before they hit prod-or-OSS-demo
+  # deploys. Domains are listed explicitly in dependency order; files
+  # inside a domain are applied in lexical (numbered) order, so newly
+  # added migrations are picked up automatically.
   # ------------------------------------------------------------------
   schema:
     name: schema (migrations on pgvector)
@@ -124,6 +127,17 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 20
+    env:
+      # Schema domains in apply order. Within each domain, files apply
+      # in lexical (file-name) order — which matches the numbered
+      # migration convention. Newline-separated so the shell loop can
+      # iterate cleanly.
+      MIGRATION_DOMAINS: |
+        middleware/packages/harness-knowledge-graph-neon/src/migrations
+        middleware/src/auth/migrations
+        middleware/src/plugins/routines/migrations
+        middleware/src/profileSnapshots/migrations
+        middleware/src/profileStorage/migrations
     steps:
       - uses: actions/checkout@v4
 
@@ -132,45 +146,30 @@ jobs:
           PGPASSWORD=omadia-ci psql -h localhost -U omadia -d omadia \
             -c "CREATE EXTENSION IF NOT EXISTS vector;"
 
-      - name: Apply 9 migrations in order
+      - name: Apply all migrations
         run: |
           set -euo pipefail
-          declare -a MIGRATIONS=(
-            "middleware/packages/harness-knowledge-graph-neon/src/migrations/0001_graph_init.sql"
-            "middleware/src/services/graph/migrations/0002_user_scoping.sql"
-            "middleware/packages/harness-knowledge-graph-neon/src/migrations/0003_agentic_graph.sql"
-            "middleware/src/services/graph/migrations/0004_turn_fts.sql"
-            "middleware/packages/harness-knowledge-graph-neon/src/migrations/0005_turn_embeddings_768.sql"
-            "middleware/packages/harness-knowledge-graph-neon/src/migrations/0006_embedding_backfill_state.sql"
-            "middleware/src/services/graph/migrations/0007_verifier_tables.sql"
-            "middleware/src/services/graph/migrations/0008_teams_attachments.sql"
-            "middleware/src/plugins/routines/migrations/0001_routines.sql"
-          )
-          for m in "${MIGRATIONS[@]}"; do
-            echo "--- applying $(basename "$m")"
-            PGPASSWORD=omadia-ci psql -h localhost -U omadia -d omadia \
-              -v ON_ERROR_STOP=1 -f "$m"
-          done
+          while IFS= read -r dir; do
+            [ -z "$dir" ] && continue
+            echo "==> domain: $dir"
+            for f in "$dir"/*.sql; do
+              echo "  applying $(basename "$f")"
+              PGPASSWORD=omadia-ci psql -h localhost -U omadia -d omadia \
+                -v ON_ERROR_STOP=1 -f "$f"
+            done
+          done <<< "$MIGRATION_DOMAINS"
 
       - name: Re-apply migrations (idempotency check)
         run: |
           set -euo pipefail
-          declare -a MIGRATIONS=(
-            "middleware/packages/harness-knowledge-graph-neon/src/migrations/0001_graph_init.sql"
-            "middleware/src/services/graph/migrations/0002_user_scoping.sql"
-            "middleware/packages/harness-knowledge-graph-neon/src/migrations/0003_agentic_graph.sql"
-            "middleware/src/services/graph/migrations/0004_turn_fts.sql"
-            "middleware/packages/harness-knowledge-graph-neon/src/migrations/0005_turn_embeddings_768.sql"
-            "middleware/packages/harness-knowledge-graph-neon/src/migrations/0006_embedding_backfill_state.sql"
-            "middleware/src/services/graph/migrations/0007_verifier_tables.sql"
-            "middleware/src/services/graph/migrations/0008_teams_attachments.sql"
-            "middleware/src/plugins/routines/migrations/0001_routines.sql"
-          )
-          for m in "${MIGRATIONS[@]}"; do
-            PGPASSWORD=omadia-ci psql -h localhost -U omadia -d omadia \
-              -v ON_ERROR_STOP=1 -f "$m" > /dev/null
-            echo "✓ idempotent: $(basename "$m")"
-          done
+          while IFS= read -r dir; do
+            [ -z "$dir" ] && continue
+            for f in "$dir"/*.sql; do
+              PGPASSWORD=omadia-ci psql -h localhost -U omadia -d omadia \
+                -v ON_ERROR_STOP=1 -f "$f" > /dev/null
+              echo "✓ idempotent: $(basename "$f")"
+            done
+          done <<< "$MIGRATION_DOMAINS"
 
   # ------------------------------------------------------------------
   # Dependency audit. Enforces a "no high or critical" floor — moderate
