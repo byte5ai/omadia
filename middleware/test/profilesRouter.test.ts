@@ -102,8 +102,8 @@ describe('/api/v1/profiles router', () => {
         'name: Production',
         'description: Full stack',
         'plugins:',
-        '  - @omadia/memory',
-        '  - @omadia/embeddings',
+        '  - "@omadia/memory"',
+        '  - "@omadia/embeddings"',
         '',
       ].join('\n'),
     );
@@ -116,7 +116,7 @@ describe('/api/v1/profiles router', () => {
         'name: Minimal',
         'description: Minimal stack',
         'plugins:',
-        '  - @omadia/memory',
+        '  - "@omadia/memory"',
         '',
       ].join('\n'),
     );
@@ -129,7 +129,7 @@ describe('/api/v1/profiles router', () => {
         'name: With Config',
         'description: Object-form entries',
         'plugins:',
-        '  - id: @omadia/memory',
+        '  - id: "@omadia/memory"',
         '    config:',
         '      retention_days: 30',
         '',
