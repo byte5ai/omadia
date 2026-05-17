@@ -20,14 +20,16 @@ import {
 } from '@omadia/plugin-privacy-guard/dist/index.js';
 
 // ---------------------------------------------------------------------------
-// Slice 2.1: harness-plugin-privacy-guard end-to-end coverage with the
-// session-scoped map + processInbound + finalizeTurn surface.
+// Privacy-Shield v2: harness-plugin-privacy-guard end-to-end coverage
+// with the turn-scoped map + processInbound + finalizeTurn surface.
 // ---------------------------------------------------------------------------
 
 const SAMPLE_EMAIL = 'max.mustermann@firma.de';
 const SAMPLE_IBAN = 'DE89370400440532013000';
 const SAMPLE_CC = '4111111111111111';
 const SAMPLE_API_KEY = 'sk-abcdefghijklmnopqrstuvwx';
+const TOKEN_PATTERN = /«[A-Z][A-Z_]*_\d+»/;
+const TOKEN_PATTERN_GLOBAL = /«[A-Z][A-Z_]*_\d+»/g;
 
 describe('plugin-api · privacy.redact@1 capability constants visible to plugin', () => {
   it('exports the canonical service name and capability id', () => {
@@ -104,7 +106,7 @@ describe('tokenizeMap', () => {
     const m = createTokenizeMap();
     const tok = m.tokenFor('secret');
     assert.equal(m.resolve(tok), 'secret');
-    assert.equal(m.resolve('tok_unknown'), undefined);
+    assert.equal(m.resolve('«UNKNOWN_99»'), undefined);
   });
 
   it('clear() drops all bindings', () => {
@@ -207,7 +209,7 @@ describe('receiptAssembler', () => {
 
 // ---------------------------------------------------------------------------
 // Slice 2.1 service surface — outbound transform + inbound restore +
-// turn-aggregated receipt + cross-call session map.
+// turn-aggregated receipt + intra-turn shared map (Privacy-Shield v2).
 // ---------------------------------------------------------------------------
 
 describe('PrivacyGuardService · processOutbound (Slice 2.1)', () => {
@@ -226,7 +228,7 @@ describe('PrivacyGuardService · processOutbound (Slice 2.1)', () => {
     if (!userMsg) throw new Error('expected one transformed message');
     assert.ok(!userMsg.content.includes(SAMPLE_EMAIL), 'email must be tokenised');
     assert.ok(!userMsg.content.includes(SAMPLE_IBAN), 'IBAN must be tokenised');
-    assert.ok(/\btok_[0-9a-f]{8}_[a-z0-9_]+\b/.test(userMsg.content), 'tokens must be inserted');
+    assert.ok(/«[A-Z][A-Z_]*_\d+»/.test(userMsg.content), 'tokens must be inserted');
     assert.equal(result.routing, 'public-llm');
   });
 
@@ -241,7 +243,7 @@ describe('PrivacyGuardService · processOutbound (Slice 2.1)', () => {
     const text = result.messages[0]?.content ?? '';
     assert.ok(!text.includes(SAMPLE_API_KEY));
     assert.ok(text.includes('[REDACTED:API_KEY]'));
-    assert.ok(!/\btok_/.test(text), 'redacted api-keys must not be tokenised');
+    assert.ok(!/«[A-Z][A-Z_]*_\d+»/.test(text), 'redacted api-keys must not be tokenised');
   });
 
   it('returns byte-identical message payload when no PII is present (Slice 2.2: system prompt now carries the privacy-proxy directive)', async () => {
@@ -267,15 +269,15 @@ describe('PrivacyGuardService · processOutbound (Slice 2.1)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Slice 2.2 — system-prompt directive injection.
+// Privacy-Shield v2 — system-prompt directive injection.
 //
-// The directive is what tells the LLM that tok_<hex> placeholders are
-// transparent identifiers, so it stops asking "wer ist tok_a3f9?" and
-// passes them as tool arguments unchanged. The proxy then restores them
+// The directive tells the LLM that `«TYPE_N»` placeholders are
+// transparent identifiers, so it stops asking "wer ist «PERSON_1»?" and
+// passes them as tool arguments unchanged. The shield then restores them
 // before tool execution and re-tokenises any new PII in the result.
 // ---------------------------------------------------------------------------
 
-describe('PrivacyGuardService · system-prompt directive (Slice 2.2)', () => {
+describe('PrivacyGuardService · system-prompt directive (Privacy-Shield v2)', () => {
   it('prepends the privacy-proxy directive to a non-empty system prompt', async () => {
     const service = createPrivacyGuardService({ defaultPolicyMode: 'pii-shield' });
     const result = await service.processOutbound({
@@ -285,10 +287,10 @@ describe('PrivacyGuardService · system-prompt directive (Slice 2.2)', () => {
       messages: [{ role: 'user', content: 'Hello.' }],
     });
     assert.ok(result.systemPrompt.startsWith('<privacy-proxy-directive>'));
-    // Slice 2.2 Option B directive talks about `tok_<8 hex>_<type>` and
-    // surfaces the recognised type suffixes (`_name`, `_email`, …).
-    assert.ok(result.systemPrompt.includes('tok_<8 hex>_<type>'));
-    assert.ok(result.systemPrompt.includes('_name'));
+    // v2 directive describes the readable `«TYPE_N»` format and surfaces
+    // the canonical display types (PERSON, EMAIL, IBAN, …).
+    assert.ok(result.systemPrompt.includes('«TYPE_N»'));
+    assert.ok(result.systemPrompt.includes('«PERSON_N»'));
     assert.ok(result.systemPrompt.endsWith('You are a helpful assistant.'));
   });
 
@@ -343,6 +345,106 @@ describe('PrivacyGuardService · system-prompt directive (Slice 2.2)', () => {
       'directive text must not trip any regex detector hit',
     );
   });
+
+  it('directive teaches Markdown-table verbatim-token output (Slice S-4)', async () => {
+    const service = createPrivacyGuardService({ defaultPolicyMode: 'pii-shield' });
+    const result = await service.processOutbound({
+      sessionId: 'sd5',
+      turnId: 'td5',
+      systemPrompt: 'You are a helpful assistant.',
+      messages: [{ role: 'user', content: 'Hello.' }],
+    });
+    assert.ok(
+      result.systemPrompt.includes('tabular tool result'),
+      'directive must reference the tabular example',
+    );
+    assert.ok(
+      result.systemPrompt.includes('| «PERSON_1»'),
+      'directive must show tokens verbatim in table cells',
+    );
+    assert.ok(
+      result.systemPrompt.includes('INVENTED'),
+      'directive must call out the inventing-names anti-pattern',
+    );
+  });
+
+  it('directive teaches bulleted-list verbatim-token output (Slice S-4)', async () => {
+    const service = createPrivacyGuardService({ defaultPolicyMode: 'pii-shield' });
+    const result = await service.processOutbound({
+      sessionId: 'sd6',
+      turnId: 'td6',
+      systemPrompt: 'You are a helpful assistant.',
+      messages: [{ role: 'user', content: 'Hello.' }],
+    });
+    assert.ok(
+      result.systemPrompt.includes('bulleted list'),
+      'directive must reference the bulleted-list example',
+    );
+    assert.ok(
+      result.systemPrompt.includes('- «EMAIL_1»'),
+      'directive must show tokens verbatim in list items',
+    );
+  });
+
+  it('directive contains CRITICAL paraphrase-corruption warning (Slice S-4)', async () => {
+    const service = createPrivacyGuardService({ defaultPolicyMode: 'pii-shield' });
+    const result = await service.processOutbound({
+      sessionId: 'sd7',
+      turnId: 'td7',
+      systemPrompt: 'You are a helpful assistant.',
+      messages: [{ role: 'user', content: 'Hello.' }],
+    });
+    assert.ok(
+      result.systemPrompt.includes('token-paraphrase produces data corruption'),
+      'directive must include the CRITICAL paraphrase warning',
+    );
+    assert.ok(
+      result.systemPrompt.includes('FABRICATED data'),
+      'directive must spell out the consequence of paraphrasing',
+    );
+  });
+
+  it('directive contains the Token-Storm degenerate-case rule (Slice S-4)', async () => {
+    const service = createPrivacyGuardService({ defaultPolicyMode: 'pii-shield' });
+    const result = await service.processOutbound({
+      sessionId: 'sd8',
+      turnId: 'td8',
+      systemPrompt: 'You are a helpful assistant.',
+      messages: [{ role: 'user', content: 'Hello.' }],
+    });
+    assert.ok(
+      result.systemPrompt.includes('Token-Storm'),
+      'directive must mention the Token-Storm case',
+    );
+    assert.ok(
+      result.systemPrompt.includes('MORE THAN HALF'),
+      'directive must spell out the >50% threshold',
+    );
+    assert.ok(
+      result.systemPrompt.includes('clarifying question'),
+      'directive must instruct the LLM to ask for clarification',
+    );
+  });
+
+  it('directive stays within system-prompt budget (< 8 kB)', async () => {
+    const service = createPrivacyGuardService({ defaultPolicyMode: 'pii-shield' });
+    const result = await service.processOutbound({
+      sessionId: 'sd9',
+      turnId: 'td9',
+      systemPrompt: 'You are a helpful assistant.',
+      messages: [{ role: 'user', content: 'Hello.' }],
+    });
+    const directiveEnd = result.systemPrompt.indexOf('</privacy-proxy-directive>');
+    assert.ok(directiveEnd > 0, 'directive close-tag must be present');
+    const directiveBytes = Buffer.byteLength(
+      result.systemPrompt.slice(0, directiveEnd + '</privacy-proxy-directive>'.length),
+      'utf8',
+    );
+    assert.ok(
+      directiveBytes < 8 * 1024,
+      `directive size ${String(directiveBytes)} bytes must stay below 8 kB`,
+    );
+  });
 });
 
 describe('PrivacyGuardService · processInbound (Slice 2.1)', () => {
@@ -355,7 +457,7 @@ describe('PrivacyGuardService · processInbound (Slice 2.1)', () => {
       messages: [{ role: 'user', content: `Email: ${SAMPLE_EMAIL}` }],
     });
     const tokenised = out.messages[0]?.content ?? '';
-    const tok = tokenised.match(/tok_[0-9a-f]{8}_[a-z0-9_]+/)?.[0];
+    const tok = tokenised.match(TOKEN_PATTERN)?.[0];
     if (!tok) throw new Error('expected a token in the outbound message');
 
     const restored = await service.processInbound({
@@ -377,9 +479,9 @@ describe('PrivacyGuardService · processInbound (Slice 2.1)', () => {
     const r = await service.processInbound({
       sessionId: 's11',
       turnId: 't11',
-      text: 'maybe tok_deadbeef is fake',
+      text: 'maybe «PERSON_42» is fake',
     });
-    assert.equal(r.text, 'maybe tok_deadbeef is fake');
+    assert.equal(r.text, 'maybe «PERSON_42» is fake');
   });
 
   it('passes through cleanly when no outbound was ever processed for the session', async () => {
@@ -387,9 +489,9 @@ describe('PrivacyGuardService · processInbound (Slice 2.1)', () => {
     const r = await service.processInbound({
       sessionId: 'unknown-session',
       turnId: 'unknown-turn',
-      text: 'tok_a3f9c2d1 plain text',
+      text: '«PERSON_7» plain text',
     });
-    assert.equal(r.text, 'tok_a3f9c2d1 plain text');
+    assert.equal(r.text, '«PERSON_7» plain text');
   });
 
   it('handles streaming-style chunked text with multiple tokens', async () => {
@@ -403,7 +505,7 @@ describe('PrivacyGuardService · processInbound (Slice 2.1)', () => {
       ],
     });
     const tokenised = out.messages[0]?.content ?? '';
-    const tokens = tokenised.match(/tok_[0-9a-f]{8}_[a-z0-9_]+/g) ?? [];
+    const tokens = tokenised.match(TOKEN_PATTERN_GLOBAL) ?? [];
     assert.equal(tokens.length, 2);
 
     const r = await service.processInbound({
@@ -413,12 +515,33 @@ describe('PrivacyGuardService · processInbound (Slice 2.1)', () => {
     });
     assert.ok(r.text.includes(SAMPLE_EMAIL));
     assert.ok(r.text.includes(SAMPLE_IBAN));
-    assert.ok(!r.text.includes('tok_'));
+    assert.ok(!r.text.includes('«'));
   });
 });
 
-describe('PrivacyGuardService · session-scoped token persistence (Slice 2.1)', () => {
-  it('reuses the same token for the same value across turns within a session', async () => {
+describe('PrivacyGuardService · turn-scoped token isolation (Privacy-Shield v2 / Slice S-2)', () => {
+  it('reuses the same token for the same value WITHIN one turn (intra-turn reconciliation)', async () => {
+    const service = createPrivacyGuardService({ defaultPolicyMode: 'pii-shield' });
+    const out = await service.processOutbound({
+      sessionId: 's-intra',
+      turnId: 'turn-1',
+      systemPrompt: '',
+      messages: [
+        { role: 'user', content: `mail ${SAMPLE_EMAIL}` },
+        { role: 'user', content: `same address ${SAMPLE_EMAIL} again` },
+      ],
+    });
+    const tokens = out.messages
+      .flatMap((m) => m.content.match(TOKEN_PATTERN_GLOBAL) ?? [])
+      .filter((t) => t.includes('EMAIL'));
+    assert.equal(
+      new Set(tokens).size,
+      1,
+      'identical value across messages in one turn must share a token',
+    );
+  });
+
+  it('mints DIFFERENT tokens for the same value across separate turns (no cross-turn map)', async () => {
     const service = createPrivacyGuardService({ defaultPolicyMode: 'pii-shield' });
     const out1 = await service.processOutbound({
       sessionId: 's-multi',
@@ -426,7 +549,7 @@ describe('PrivacyGuardService · session-scoped token persistence (Slice 2.1)', 
       systemPrompt: '',
       messages: [{ role: 'user', content: `mail ${SAMPLE_EMAIL}` }],
     });
-    const tok1 = out1.messages[0]?.content.match(/tok_[0-9a-f]{8}_[a-z0-9_]+/)?.[0];
+    const tok1 = out1.messages[0]?.content.match(TOKEN_PATTERN)?.[0];
 
     const out2 = await service.processOutbound({
       sessionId: 's-multi',
@@ -434,28 +557,52 @@ describe('PrivacyGuardService · session-scoped token persistence (Slice 2.1)', 
       systemPrompt: '',
       messages: [{ role: 'user', content: `again ${SAMPLE_EMAIL}` }],
     });
-    const tok2 = out2.messages[0]?.content.match(/tok_[0-9a-f]{8}_[a-z0-9_]+/)?.[0];
+    const tok2 = out2.messages[0]?.content.match(TOKEN_PATTERN)?.[0];
 
-    assert.ok(tok1 && tok2 && tok1 === tok2, 'cross-turn token persistence within session');
+    assert.ok(tok1 && tok2, 'both turns must mint a token');
+    // Same value, two turns, two independent maps → tokens may collide
+    // by display type (both «EMAIL_1») but the maps are distinct. The
+    // contract is that the second turn does NOT consult the first
+    // turn's map — verified below via finalizeTurn-then-restore-fails.
+    const restoredAfterFinalize = await service.finalizeTurn('turn-1');
+    assert.ok(restoredAfterFinalize, 'turn-1 receipt builds');
+    const inboundCross = await service.processInbound({
+      sessionId: 's-multi',
+      turnId: 'turn-1',
+      text: tok1 ?? '',
+    });
+    assert.equal(
+      inboundCross.text,
+      tok1,
+      'turn-1 map is gone after finalize — token passes through unrestored',
+    );
   });
 
-  it('mints distinct tokens for different sessions', async () => {
+  it('mints distinct tokens for different turns regardless of session', async () => {
     const service = createPrivacyGuardService({ defaultPolicyMode: 'pii-shield' });
     const a = await service.processOutbound({
       sessionId: 'session-a',
-      turnId: 't',
+      turnId: 'turn-x',
       systemPrompt: '',
       messages: [{ role: 'user', content: SAMPLE_EMAIL }],
     });
     const b = await service.processOutbound({
       sessionId: 'session-b',
-      turnId: 't',
+      turnId: 'turn-y',
       systemPrompt: '',
       messages: [{ role: 'user', content: SAMPLE_EMAIL }],
     });
-    const ta = a.messages[0]?.content.match(/tok_[0-9a-f]{8}_[a-z0-9_]+/)?.[0];
-    const tb = b.messages[0]?.content.match(/tok_[0-9a-f]{8}_[a-z0-9_]+/)?.[0];
-    assert.notEqual(ta, tb);
+    const ta = a.messages[0]?.content.match(TOKEN_PATTERN)?.[0];
+    const tb = b.messages[0]?.content.match(TOKEN_PATTERN)?.[0];
+    // Different turns → different maps. Restoring tb against turn-x
+    // must fail (map mismatch), proving the maps are isolated.
+    if (!ta || !tb) throw new Error('expected both tokens');
+    const restoreTbInA = await service.processInbound({
+      sessionId: 'session-a',
+      turnId: 'turn-x',
+      text: tb,
+    });
+    assert.equal(restoreTbInA.text, tb, 'tokens from other turn must not resolve');
   });
 });
 
@@ -505,9 +652,12 @@ describe('PrivacyGuardService · finalizeTurn (Slice 2.1)', () => {
     assert.equal(second, undefined);
   });
 
-  it('does NOT clear the session-scoped tokenise-map on finalize', async () => {
-    // Receipt finalisation closes the turn but the session map lives on
-    // — Slice 2.4 will add explicit session lifecycle.
+  it('discards the turn-scoped tokenise-map on finalize (Privacy-Shield v2 / Slice S-2)', async () => {
+    // The turn map lives only for the lifetime of the turn. Finalize
+    // drops it together with the accumulator so PII bindings become
+    // eligible for garbage collection. A subsequent processInbound for
+    // the finalised turn (host bug — should not happen in practice)
+    // pass-throughs because the map is gone.
     const service = createPrivacyGuardService({ defaultPolicyMode: 'pii-shield' });
     const out1 = await service.processOutbound({
       sessionId: 'persistent',
@@ -515,20 +665,19 @@ describe('PrivacyGuardService · finalizeTurn (Slice 2.1)', () => {
       systemPrompt: '',
       messages: [{ role: 'user', content: `Mail ${SAMPLE_EMAIL}` }],
     });
-    const tok1 = out1.messages[0]?.content.match(/tok_[0-9a-f]{8}_[a-z0-9_]+/)?.[0];
+    const tok1 = out1.messages[0]?.content.match(TOKEN_PATTERN)?.[0];
+    if (!tok1) throw new Error('expected a token in outbound');
 
     await service.finalizeTurn('t1');
 
-    // New turn, same session
-    const out2 = await service.processOutbound({
+    // The map for t1 is gone — restoring tok1 against t1 is now a
+    // pass-through, NOT a resolved real email.
+    const restored = await service.processInbound({
       sessionId: 'persistent',
-      turnId: 't2',
-      systemPrompt: '',
-      messages: [{ role: 'user', content: `Mail again ${SAMPLE_EMAIL}` }],
+      turnId: 't1',
+      text: tok1,
     });
-    const tok2 = out2.messages[0]?.content.match(/tok_[0-9a-f]{8}_[a-z0-9_]+/)?.[0];
-
-    assert.equal(tok1, tok2, 'token must persist across finalize within same session');
+    assert.equal(restored.text, tok1, 'turn map must be discarded by finalize');
   });
 
   it('emits a PII-free receipt aggregated from multiple PII-laden inputs', async () => {

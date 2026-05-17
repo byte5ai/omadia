@@ -44,20 +44,21 @@ export function middleware(req: NextRequest) {
 }
 
 function isPublicPath(pathname: string): boolean {
-  // Auth-flow pages.
   if (pathname === '/login') return true;
   if (pathname === '/setup') return true;
-  // Login / logout / OIDC callback endpoints proxied to the middleware.
   if (pathname.startsWith('/bot-api/v1/auth/')) return true;
-  // First-install detection — the setup page must be able to ask the
-  // backend "do we still need to create the first admin?" without auth.
-  if (pathname === '/bot-api/v1/admin/auth') return true;
-  // Next.js internal asset paths (must always pass through).
   if (pathname.startsWith('/_next/')) return true;
-  // Health-probe endpoint (Docker / k8s / load-balancer probes).
+  // Fly.io health-check target — must be un-gated so a cold machine can
+  // answer 200 before the first user has logged in.
   if (pathname === '/health') return true;
-  // Static-public prefixes. Extend if we add more top-level public URLs.
   if (pathname === '/favicon.ico') return true;
+  // Plugin-served UI surfaces (Teams Tabs iframe these from the bot-app
+  // shell; there is no omadia_session cookie in that context, only a
+  // Teams SSO token in the iframe runtime). The next.config rewrite
+  // forwards `/p/:path*` to middleware where the plugin handler runs
+  // its own auth strategy. Bouncing to /login here would render the
+  // operator login form inside the Tab iframe.
+  if (pathname.startsWith('/p/')) return true;
   return false;
 }
 

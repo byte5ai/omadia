@@ -237,7 +237,7 @@ describe('createOllamaNerDetector · adapter contract (Slice 3.2)', () => {
     assert.equal(hits.length, 2);
     assert.notDeepEqual(hits[0]?.span, hits[1]?.span);
     assert.equal(hits[0]?.span[0], 0);
-    assert.equal(hits[1]?.span[0], 11);
+    assert.equal(hits[1]?.span[0], 9);
   });
 
   it('surfaces empty input as zero hits without calling the chat client', async () => {

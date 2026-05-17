@@ -9,7 +9,10 @@
  */
 
 export { activate } from './plugin.js';
-export type { PrivacyGuardPluginHandle } from './plugin.js';
+export type {
+  EgressFilterPluginConfig,
+  PrivacyGuardPluginHandle,
+} from './plugin.js';
 
 export { createPrivacyGuardService } from './service.js';
 export type {
@@ -30,10 +33,21 @@ export { decide, deriveRouting, type PolicyDecision } from './policyEngine.js';
 
 export {
   createTokenizeMap,
+  displayTypeFor,
   isToken,
-  sanitizeTypeHint,
   TOKEN_REGEX,
   type TokenizeMap,
 } from './tokenizeMap.js';
 
 export { assembleReceipt, type AssembledHit, type AssembleInput } from './receiptAssembler.js';
+
+export { runEgressFilter, type EgressFilterDeps } from './egressFilter.js';
+
+export {
+  createAllowlist,
+  filterHitsByAllowlist,
+  type Allowlist,
+  type AllowlistConfig,
+  type AllowlistMatch,
+  type AllowlistSource,
+} from './allowlist.js';

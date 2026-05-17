@@ -3,8 +3,18 @@ import type {
   ChatTurnResult,
 } from '@omadia/channel-sdk';
 import { toSemanticAnswer } from '@omadia/channel-sdk';
+import { turnContext, today } from '@omadia/orchestrator';
 import type { JobHandler, JobSpec } from '@omadia/plugin-api';
 import { Cron } from 'croner';
+
+import {
+  buildSlotDirective,
+  collectRequiredSlotIds,
+  parseSlotResponse,
+} from './narrativeSlotContract.js';
+import type { RoutineOutputTemplate } from './routineOutputTemplate.js';
+import { renderRoutineTemplate } from './routineTemplateRenderer.js';
+import { routineTurnContext } from './routineTurnContext.js';
 
 /**
  * Structural subset of `JobScheduler` the runner depends on. Typed as a
@@ -241,6 +251,17 @@ export class RoutineRunner {
   }
 
   /**
+   * Lightweight existence check for the fire-and-forget trigger endpoint.
+   * Returns the routine row if it exists, `null` otherwise. Caller uses
+   * the result to decide between 404 and 202 BEFORE kicking off the
+   * background run via `triggerRoutineNow`.
+   */
+  async peekRoutine(id: string): Promise<Routine | null> {
+    const row = await this.store.get(id);
+    return row ?? null;
+  }
+
+  /**
    * Dispose every registered routine. Called on graceful shutdown.
    * In-flight runs receive their AbortSignal via `stopForPlugin`.
    */
@@ -346,6 +367,7 @@ export class RoutineRunner {
     let status: RoutineRunStatus = 'ok';
     let errorMessage: string | null = null;
     let result: ChatTurnResult | null = null;
+    let cardBody: readonly unknown[] | undefined;
     let prompt = routine.prompt;
     let tenant = routine.tenant;
     let userId = routine.userId;
@@ -377,11 +399,15 @@ export class RoutineRunner {
       // turn `runTrace` for the call-stack viewer. `toSemanticAnswer`
       // converts the kernel-shaped result into the channel-agnostic
       // outgoing-message contract the proactive sender expects.
-      result = await this.orchestrator.runTurn({
-        userMessage: fresh.prompt,
-        userId: fresh.userId,
-        sessionScope: `routine:${fresh.id}`,
-      });
+      //
+      // Phase C.2 — for routines with an output_template, install a raw
+      // tool-result capture so the template renderer (C.4/C.5) can pull
+      // data sections directly from the tool handler's output instead
+      // of letting the LLM author markdown rows. Non-templated routines
+      // skip the wrap entirely — byte-identical to pre-C.2 behaviour.
+      const turn = await this.runTurnWithOptionalCapture(fresh);
+      result = turn.result;
+      cardBody = turn.cardBody;
 
       if (signal.aborted) {
         // Agent finished after the timer fired but before send. Skip
@@ -401,6 +427,7 @@ export class RoutineRunner {
           name: fresh.name,
           cron: fresh.cron,
         },
+        ...(cardBody ? { cardBody } : {}),
       });
     } catch (err) {
       status = signal.aborted ? 'timeout' : 'error';
@@ -439,6 +466,195 @@ export class RoutineRunner {
       });
     }
   }
+
+  /**
+   * Phase C.2 / C.5 — Run a routine turn, branching on whether the row
+   * carries an `output_template`.
+   *
+   * **Non-templated** (`outputTemplate === null`): plain `orchestrator.runTurn`
+   * with the routine prompt verbatim. Byte-identical pre-C.2 behaviour.
+   *
+   * **Templated** (`outputTemplate !== null`): server-side template
+   * pipeline.
+   *
+   *   1. Augment the routine prompt with `buildSlotDirective(template)` so
+   *      the LLM is contracted to emit a JSON `{slots:{…}}` response
+   *      instead of free-form markdown (C.3).
+   *   2. Install a `Map<toolName, unknown>` raw-tool-result capture in
+   *      both `routineTurnContext` and the orchestrator's `turnContext`,
+   *      so every tool dispatched during the turn stashes its
+   *      pre-tokenisation result into the map (C.2).
+   *   3. After `runTurn` resolves, parse the LLM's textual answer as a
+   *      slot response (C.3) and render the final markdown by composing
+   *      the template's data sections from the captured raw results +
+   *      the LLM's narrative slots (C.4).
+   *   4. Replace `result.answer` with the rendered markdown. The
+   *      orchestrator's privacy pipeline already operated on the slot
+   *      JSON — restored tokens land in slot values for narrative
+   *      sections, while data sections come from the raw, never-
+   *      tokenised tool output. Privacy property: real PII for data
+   *      sections never reached the public LLM.
+   *
+   * Slot-parse failure mode: fall back to empty slots and render the
+   * template anyway. Data sections + static-markdown still ship; the
+   * narrative chrome is lost for the day. Diagnosed in stdout for the
+   * operator until S-7.5 (receipt persistence) lands. We prefer this
+   * over swapping in an error placeholder because routines fire on a
+   * cron and the user cannot easily retry — a partial output is more
+   * useful than a "today's run failed" placeholder.
+   *
+   * Last-write-wins on the map: if the same tool fires multiple times
+   * in a turn (rare for routines; possible if a sub-agent recalls the
+   * same tool), only the latest raw result is stashed. Matches the
+   * design's `Map<toolName, unknown>` shape and template contract
+   * (`sourceTool: string`).
+   */
+  private async runTurnWithOptionalCapture(
+    routine: Routine,
+  ): Promise<{
+    readonly result: ChatTurnResult;
+    readonly cardBody?: readonly unknown[];
+  }> {
+    if (routine.outputTemplate === null) {
+      const result = await this.orchestrator.runTurn({
+        userMessage: routine.prompt,
+        userId: routine.userId,
+        sessionScope: `routine:${routine.id}`,
+      });
+      return { result };
+    }
+
+    const template = routine.outputTemplate;
+    const directive = buildSlotDirective(template);
+    const augmentedPrompt =
+      directive.length > 0 ? `${routine.prompt}\n${directive}` : routine.prompt;
+
+    const rawToolResults = new Map<string, unknown>();
+    const captureRawToolResult = (
+      toolName: string,
+      rawResult: string,
+    ): void => {
+      rawToolResults.set(toolName, rawResult);
+    };
+
+    const llmResult = await routineTurnContext.withRawToolResults(
+      rawToolResults,
+      () =>
+        turnContext.run(
+          {
+            // Placeholder turnId/turnDate — `orchestrator.runTurn`
+            // builds its own child scope; it inherits our
+            // `captureRawToolResult` callback (parent ALS forwarding,
+            // analogous to `chatParticipants` + `privacyHandle`).
+            turnId: '',
+            turnDate: today(),
+            captureRawToolResult,
+          },
+          () =>
+            this.orchestrator.runTurn({
+              userMessage: augmentedPrompt,
+              userId: routine.userId,
+              sessionScope: `routine:${routine.id}`,
+            }),
+        ),
+    );
+
+    return this.composeTemplatedAnswer(
+      routine,
+      template,
+      rawToolResults,
+      llmResult,
+    );
+  }
+
+  /**
+   * Phase C.5 / C.6 — Combine the LLM's narrative-slot response with
+   * the captured raw tool data and the template to produce the final
+   * user-facing answer.
+   *
+   * `llmResult` is what `runTurn` returned (privacy pipeline already
+   * applied). On parse failure we ship the template with empty slots —
+   * see `runTurnWithOptionalCapture` for the rationale.
+   *
+   * For `format: 'markdown'` templates (C.5), the rendered text becomes
+   * the new `result.answer` and `cardBody` stays undefined.
+   *
+   * For `format: 'adaptive-card'` templates (C.6), the renderer also
+   * runs a second pass with `format: 'markdown'` so non-card channels
+   * (plain text fallback) still receive a useful text body; the
+   * Adaptive Card body items are returned separately via `cardBody`
+   * for channels that can render them.
+   *
+   * Renderer failure (defence-in-depth — schema already rejects
+   * unsupported formats upfront) leaves `llmResult` untouched and
+   * cardBody undefined.
+   */
+  private composeTemplatedAnswer(
+    routine: Routine,
+    template: RoutineOutputTemplate,
+    rawToolResults: ReadonlyMap<string, unknown>,
+    llmResult: ChatTurnResult,
+  ): {
+    readonly result: ChatTurnResult;
+    readonly cardBody?: readonly unknown[];
+  } {
+    const parsed = parseSlotResponse(llmResult.answer, template);
+    let slots: Readonly<Record<string, string>>;
+    if (parsed.ok) {
+      slots = parsed.value.slots;
+    } else {
+      this.log(
+        `[routines/runner] routine ${routine.id} ('${routine.name}') slot-parse failed: ${parsed.reason} — falling back to empty slots`,
+      );
+      slots = emptySlotsFor(template);
+    }
+    const rendered = renderRoutineTemplate({
+      template,
+      rawToolResults,
+      slots,
+    });
+    if (!rendered.ok) {
+      this.log(
+        `[routines/runner] routine ${routine.id} ('${routine.name}') template render failed: ${rendered.reason} — sending LLM answer verbatim`,
+      );
+      return { result: llmResult };
+    }
+    if (rendered.format === 'markdown') {
+      return { result: { ...llmResult, answer: rendered.text } };
+    }
+    // adaptive-card: produce a markdown fallback so non-card channels
+    // still receive a readable `text` body, and side-channel the items
+    // via cardBody for channels that can render Adaptive Cards.
+    const markdownFallback = renderRoutineTemplate({
+      template: { ...template, format: 'markdown' },
+      rawToolResults,
+      slots,
+    });
+    const fallbackText =
+      markdownFallback.ok && markdownFallback.format === 'markdown'
+        ? markdownFallback.text
+        : llmResult.answer;
+    return {
+      result: { ...llmResult, answer: fallbackText },
+      cardBody: rendered.items,
+    };
+  }
+}
+
+/**
+ * Build a `slots` map keyed by every required slot id in the template,
+ * with empty-string values. Used as the parse-failure fallback so the
+ * renderer can still emit data sections + static-markdown even when the
+ * LLM did not produce a usable JSON response.
+ */
+function emptySlotsFor(
+  template: RoutineOutputTemplate,
+): Readonly<Record<string, string>> {
+  const slots: Record<string, string> = {};
+  for (const id of collectRequiredSlotIds(template)) {
+    slots[id] = '';
+  }
+  return slots;
 }
 
 function errMsg(err: unknown): string {

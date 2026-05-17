@@ -32,8 +32,21 @@ export interface RoutineCardActionPayload {
 
 export interface BuildRoutineSmartCardInput {
   routine: { id: string; name: string; cron: string };
-  /** The agent's prose answer for this trigger. */
+  /**
+   * The agent's prose answer for this trigger as markdown. Used when
+   * `bodyItems` is undefined — wrapped in a single `TextBlock`. Also
+   * the fallback for older callers that pre-date Phase C.6.
+   */
   body: string;
+  /**
+   * Phase C.6 — pre-built Adaptive Card body items (TextBlock, Table,
+   * …) produced by `renderRoutineTemplate` for templated routines with
+   * `format: 'adaptive-card'`. When present, embedded directly in the
+   * card body in lieu of the TextBlock-wrapped `body`. The card frame
+   * (header pill + facts + actions) stays unchanged so the routine
+   * still feels like a routine to the user.
+   */
+  bodyItems?: readonly unknown[];
 }
 
 export const ADAPTIVE_CARD_CONTENT_TYPE =
@@ -48,7 +61,18 @@ export const ADAPTIVE_CARD_CONTENT_TYPE =
 export function buildRoutineSmartCard(
   input: BuildRoutineSmartCardInput,
 ): unknown {
-  const { routine, body } = input;
+  const { routine, body, bodyItems } = input;
+  const bodyContent =
+    bodyItems !== undefined && bodyItems.length > 0
+      ? bodyItems
+      : [
+          {
+            type: 'TextBlock',
+            text: body,
+            wrap: true,
+            spacing: 'Medium',
+          },
+        ];
   return {
     $schema: 'http://adaptivecards.io/schemas/adaptive-card.json',
     type: 'AdaptiveCard',
@@ -100,12 +124,7 @@ export function buildRoutineSmartCard(
           },
         ],
       },
-      {
-        type: 'TextBlock',
-        text: body,
-        wrap: true,
-        spacing: 'Medium',
-      },
+      ...bodyContent,
       {
         type: 'FactSet',
         facts: [

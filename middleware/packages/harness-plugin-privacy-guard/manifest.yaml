@@ -9,8 +9,8 @@ identity:
   description: "Privacy-Proxy core plugin. Publishes the `privacy.redact@1` capability with a regex-based PII detector and a per-turn tokenise-map for reversible redaction. Emits a PII-free PrivacyReceipt the channel renderers (Teams Adaptive-Card, Web inline disclosure) consume to surface what was protected on each turn."
   authors:
     - name: "byte5 GmbH"
-      email: "dev@byte5.de"
-      url: "https://byte5.de"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
   license: "MIT"
   categories:
     - "privacy"

@@ -9,8 +9,8 @@ identity:
   description: "In-memory KnowledgeGraph provider plugin. No persistence, no embeddings, no Postgres — every node/edge lives in process RAM and disappears on restart. Provider der Capabilities `knowledgeGraph@1` und `entityRefBus@1`. Operator wählt diesen Provider via RequiresWizard wenn keine Neon-Datenbank verfügbar ist (Empty-Middleware-Demo, lokales Dev, CI). Mutual exclusion mit @omadia/knowledge-graph-neon — nur einer der beiden Provider darf gleichzeitig in installed.json stehen, der Capability-Resolver duldet keine zwei aktiven Provider für `knowledgeGraph@1`."
   authors:
     - name: "byte5 GmbH"
-      email: "dev@byte5.de"
-      url: "https://byte5.de"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
   license: "Proprietary"
   categories:
     - "infrastructure"

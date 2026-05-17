@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 
 import { ApiError, getDraftLibs, patchBuilderSlot } from '../../../../_lib/api';
+import { configureMonacoForBuilder } from './monacoBuilderConfig';
 import type {
   BuilderLib,
   BuildErrorRow,
@@ -248,42 +249,16 @@ export function SlotEditor({
   }, [libs, applyLibs]);
 
   const onMonacoMount = useCallback((editor: unknown, monaco: unknown) => {
-    interface MonacoNS {
-      languages: {
-        typescript: {
-          typescriptDefaults: {
-            setCompilerOptions: (opts: Record<string, unknown>) => void;
-            setDiagnosticsOptions: (opts: Record<string, unknown>) => void;
-          };
-          ScriptTarget: { ES2022: number };
-          ModuleKind: { ESNext: number };
-          ModuleResolutionKind: { NodeJs: number };
-          JsxEmit: { Preserve: number };
-        };
-      };
+    interface MonacoKeysNS {
       KeyMod: { CtrlCmd: number };
       KeyCode: { KeyS: number };
     }
     interface MonacoEditorNS {
       addCommand: (key: number, handler: () => void) => void;
     }
-    const m = monaco as MonacoNS;
+    configureMonacoForBuilder(monaco);
+    const m = monaco as MonacoKeysNS;
     const ed = editor as MonacoEditorNS;
-    m.languages.typescript.typescriptDefaults.setCompilerOptions({
-      target: m.languages.typescript.ScriptTarget.ES2022,
-      module: m.languages.typescript.ModuleKind.ESNext,
-      moduleResolution: m.languages.typescript.ModuleResolutionKind.NodeJs,
-      jsx: m.languages.typescript.JsxEmit.Preserve,
-      strict: false,
-      noImplicitAny: false,
-      esModuleInterop: true,
-      allowJs: true,
-      skipLibCheck: true,
-    });
-    m.languages.typescript.typescriptDefaults.setDiagnosticsOptions({
-      noSemanticValidation: false,
-      noSyntaxValidation: false,
-    });
     ed.addCommand(m.KeyMod.CtrlCmd | m.KeyCode.KeyS, () => {
       void flush();
     });

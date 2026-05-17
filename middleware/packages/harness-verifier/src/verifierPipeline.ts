@@ -89,14 +89,10 @@ export class VerifierPipeline {
 
     const { hard, soft } = classify(claims);
 
-    // Pre-check: any hard claim that needs a domain-source re-query but
-    // whose turn never called a matching tool is a **replay / hallucination**.
+    // Pre-check: any hard claim that needs Odoo re-query but whose turn
+    // never called a `query_odoo_*` tool is a **replay / hallucination**.
     // We fail it directly as `contradicted` — no need to even ask the
     // deterministic checker; the missing tool call IS the proof.
-    //
-    // The core verifier only catches the `'graph'` source here (kernel
-    // capability). Plugins that provide their own SourceChecker should
-    // mirror this trace-cross-check pattern for their domain.
     const traceVerdicts: ClaimVerdict[] = [];
     const hardToActuallyCheck: HardClaim[] = [];
     for (const claim of hard) {
@@ -131,19 +127,43 @@ export class VerifierPipeline {
 // --- helpers --------------------------------------------------------------
 
 /**
- * Trace-cross-check is currently a no-op in the core verifier. Plugins
- * that register a SourceChecker for a non-`graph` source can layer their
- * own "claim X needs tool Y to have run this turn" rule on top by
- * filtering claims before they reach this pipeline.
+ * Which tool names count as "I actually looked at Odoo this turn".
+ * Keep the list tight: `query_graph` alone is not enough — the graph is
+ * a 6-hourly snapshot, not the source of truth for numbers.
+ */
+const ODOO_TOOL_PREFIXES: readonly string[] = [
+  'query_odoo_',       // fach-agents: query_odoo_accounting, query_odoo_hr
+  'odoo_execute',      // raw Odoo RPC (sub-agents + dev)
+];
+
+/**
+ * If the claim needs Odoo and the turn made NO Odoo tool call, return a
+ * contradicted verdict. Otherwise return undefined and let the regular
+ * deterministic checker do its thing.
  *
- * Kept as a hook so the pipeline shape stays stable when a SourceChecker
- * registry lands.
+ * `domainToolsCalled === undefined` means "no trace evidence available"
+ * (e.g. dev CLI turn without sessionScope). In that case we skip the
+ * cross-check — better a false negative than a false positive when we
+ * genuinely don't know.
  */
 function traceMissingCallVerdict(
-  _claim: HardClaim,
-  _domainToolsCalled: readonly string[] | undefined,
+  claim: HardClaim,
+  domainToolsCalled: readonly string[] | undefined,
 ): ClaimVerdict | undefined {
-  return undefined;
+  if (claim.expectedSource !== 'odoo') return undefined;
+  if (!domainToolsCalled) return undefined;
+  const hasOdooCall = domainToolsCalled.some((name) =>
+    ODOO_TOOL_PREFIXES.some((p) => name.startsWith(p)),
+  );
+  if (hasOdooCall) return undefined;
+  return {
+    status: 'contradicted',
+    claim,
+    truth: null,
+    source: 'odoo',
+    detail:
+      'Claim ohne Fach-Agent-Call im Turn — Antwort hat keine Live-Daten aus Odoo abgerufen (Kontext-Replay).',
+  };
 }
 
 function classify(claims: readonly Claim[]): {

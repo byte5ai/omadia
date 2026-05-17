@@ -6,9 +6,10 @@ import express from 'express';
 import cookieParser from 'cookie-parser';
 import { config } from './config.js';
 import { createTigrisStore } from '@omadia/diagrams';
-import type { MemoryStore } from '@omadia/plugin-api';
+import type { MemoryStore, PrivacyGuardService } from '@omadia/plugin-api';
 import { createAdminRouter } from './routes/admin.js';
 import { createChatRouter } from './routes/chat.js';
+import { createOperatorPrivacyRouter } from './routes/operatorPrivacy.js';
 import { createAgentResolver } from './agents/resolveAgentForTool.js';
 // `/attachments/<signed-key>` is now mounted by the de.byte5.channel.teams
 // plugin via ctx.routes.register (see packages/harness-channel-teams/src/plugin.ts,
@@ -109,6 +110,8 @@ import { ChatAgentWrapRegistry } from './platform/chatAgentWrapRegistry.js';
 import { PromptContributionRegistry } from './platform/promptContributionRegistry.js';
 import { installProcessGuards } from './platform/processGuards.js';
 import { PluginRouteRegistry } from './platform/pluginRouteRegistry.js';
+import { NotificationRouter } from './platform/notificationRouter.js';
+import { UiRouteCatalog } from './platform/uiRouteCatalog.js';
 import { ServiceRegistry } from './platform/serviceRegistry.js';
 import { TurnHookRegistry } from './platform/turnHookRegistry.js';
 import { NativeToolRegistry } from '@omadia/orchestrator';
@@ -148,9 +151,13 @@ import type {
   DomainTool,
 } from '@omadia/orchestrator';
 
-// Structural shim for kernel-side reads of plugin-published services. The
-// kernel only ever reads the narrow subset of fields below; full plugin
-// types stay inside the plugin that publishes the service.
+// Phase 5B: structural shims for kernel-side reads of plugin-published
+// services. These replace direct type-imports from the 5 byte5-internal
+// plugins (`@omadia/integration-confluence`, `@omadia/integration-odoo`,
+// `@omadia/integration-microsoft365`, `@omadia/channel-teams`,
+// `@omadia/channel-telegram`) which are removed in this commit. The
+// kernel only ever reads the small subset of fields below; full plugin
+// types stay inside the plugins.
 interface Microsoft365AccessorShim {
   readonly app: unknown;
 }
@@ -186,6 +193,13 @@ async function main(): Promise<void> {
   const nativeToolRegistry = new NativeToolRegistry();
   serviceRegistry.provide('nativeToolRegistry', nativeToolRegistry);
   const pluginRouteRegistry = new PluginRouteRegistry();
+  const notificationRouter = new NotificationRouter();
+  const uiRouteCatalog = new UiRouteCatalog();
+  // Publish the catalogue so plugin code (notably channel-teams' Hub +
+  // Tab-Config) can read it via `ctx.services.get<UiRouteCatalog>(
+  // 'uiRouteCatalog')`. Published BEFORE any plugin activates so the
+  // service is available the moment a consumer asks for it.
+  serviceRegistry.provide('uiRouteCatalog', uiRouteCatalog);
 
   // Shared Anthropic client used by sub-agents (LocalSubAgent inner Claude
   // calls) and the Teams channel (anthropicClient dep). The orchestrator-
@@ -370,6 +384,8 @@ async function main(): Promise<void> {
     serviceRegistry,
     nativeToolRegistry,
     pluginRouteRegistry,
+    notificationRouter,
+    uiRouteCatalog,
     jobScheduler,
     log: (...a) => console.log(...a),
   });
@@ -387,6 +403,8 @@ async function main(): Promise<void> {
     serviceRegistry,
     nativeToolRegistry,
     pluginRouteRegistry,
+    notificationRouter,
+    uiRouteCatalog,
     jobScheduler,
     log: (msg) => console.log(msg),
   });
@@ -395,6 +413,13 @@ async function main(): Promise<void> {
   // (after the channel-SDK adapters are wired up). The install hooks below
   // close over this variable so post-install activations dispatched to a
   // channel-kind plugin reach the right runtime once it exists.
+  // `prefer-const` cannot see the late assignment at the
+  // `channelRegistryRef = channelRegistry` line ~1400 LOC down — the rule
+  // treats the unconditional initialiser-less declaration as "single
+  // assignment". The forward-reference pattern is intentional: the
+  // closures capture the binding so post-install activations dispatched
+  // before the registry exists still hit the right runtime once it's wired.
+  // eslint-disable-next-line prefer-const
   let channelRegistryRef: ChannelRegistry | undefined;
 
   const installService = new InstallService({
@@ -562,6 +587,34 @@ async function main(): Promise<void> {
   const requireAuth = createRequireAuth({
     signingKey: sessionSigningKey,
     whitelist: emailWhitelist,
+    // OB-106 mounted requireAuth at /api which collaterally gated the
+    // public auth endpoints (login providers, login, setup) AND every
+    // channel-plugin webhook mounted under /api/* (Teams Bot Framework
+    // POSTs /api/messages with its own JWT — the middleware session
+    // cookie is meaningless there). The public-paths list short-circuits
+    // those so the channel plugins can run their own auth downstream —
+    // same protection as before for `/api/chat`, `/api/v1/operator/*`,
+    // `/api/v1/admin/*`, etc. since none of them match these regexes.
+    publicPaths: [
+      /^\/api\/v1\/auth(?:\/|$|\?)/,
+      /^\/api\/v1\/setup(?:\/|$|\?)/,
+      /^\/api\/auth(?:\/|$|\?)/,
+      // Bot Framework webhook for channel-teams. The Teams adapter
+      // validates the Bot-issued JWT inside the handler; the session
+      // cookie check would silently drop every inbound activity because
+      // Teams never sends one.
+      /^\/api\/messages(?:\/|$|\?)/,
+      // Plugin-served UI surfaces (`/p/<pluginId>/...`). Teams iframes
+      // these from inside the bot-app shell where there is no
+      // middleware session cookie — only a Teams SSO token. Routing
+      // them through the cookie gate redirects to /login inside the
+      // iframe, which shows the operator login form instead of the
+      // Tab content. Plugins that expose sensitive data are
+      // responsible for validating the Teams SSO token themselves;
+      // pages like /p/channel-teams/{hub,tab-config} are public-by-
+      // design and the reference dashboard is read-only demo state.
+      /^\/p\/[^/]+(?:\/|$|\?)/,
+    ],
   });
 
   // ContextRetriever + FactExtractor construction moved to AFTER
@@ -604,8 +657,8 @@ async function main(): Promise<void> {
     );
   }
 
-  // Integration-contributed tools are registered by the owning plugin's
-  // activate() via ctx.tools.register — kernel does no longer build them.
+  // enrich_company tool is now contributed by the Odoo integration plugin's
+  // activate() via ctx.tools.register — construction moved in phase-2.2-iii.
   // The Orchestrator consumes the tool through NativeToolRegistry's generic
   // dispatch + promptDoc aggregation (same path as render_diagram).
 
@@ -855,12 +908,37 @@ async function main(): Promise<void> {
   console.log('[middleware] harness admin-ui assets ready at /api/_harness/admin-ui.css');
 
   const agentResolver = createAgentResolver({ dynamicRuntime: dynamicAgentRuntime });
-  app.use('/api', createChatRouter(chatAgent, { agentResolver }));
+  // OB-106: gate the chat-inference endpoints (`POST /api/chat`,
+  // `POST /api/chat/stream`) behind `requireAuth`. Without this, anonymous
+  // callers could trigger LLM inference (cost) and reach the tool surface
+  // (KG-lookups, RAG, Memory-Reads). createChatRouter does not register
+  // any public-by-design routes — every route is inference-tied.
+  app.use('/api', requireAuth, createChatRouter(chatAgent, { agentResolver }));
 
   // Chat-sessions CRUD behind `requireAuth` — sessions may contain
   // PII / tool outputs / code snippets and must not be readable anonymously.
+  // The `/api` mount above already gates this, but the explicit middleware
+  // here is defence-in-depth: if a future refactor splits mounts or moves
+  // the sessions router to a different base path, the auth guarantee
+  // travels with it.
   app.use('/api/chat', requireAuth, createChatSessionsRouter({ store: chatSessionStore }));
   console.log('[middleware] chat-sessions endpoint ready at /api/chat/sessions (auth-gated)');
+
+  // Privacy-Shield v2 (Slice S-7) — Operator-UI backend. Mounted under
+  // /api/v1/operator/privacy/* (same convention as the rest of v1
+  // admin routes). Auth-gated by `requireAuth`. Routes 503 when no
+  // `privacy.redact@1` provider is installed.
+  app.use(
+    '/api/v1/operator/privacy',
+    requireAuth,
+    createOperatorPrivacyRouter({
+      getPrivacyGuard: () =>
+        serviceRegistry.get<PrivacyGuardService>('privacyRedact'),
+    }),
+  );
+  console.log(
+    '[middleware] operator-privacy endpoints ready at /api/v1/operator/privacy/* (auth-gated)',
+  );
 
   // ── OB-49 — provider-aware auth bootstrap ────────────────────────────────
   // graphPool is resolved above (line ~595). Auth schema + UserStore +
@@ -1079,6 +1157,8 @@ async function main(): Promise<void> {
       serviceRegistry,
       nativeToolRegistry,
       pluginRouteRegistry,
+      notificationRouter,
+      uiRouteCatalog,
       jobScheduler,
       log: (msg) => console.log(msg),
     });
@@ -1775,6 +1855,8 @@ async function main(): Promise<void> {
     serviceRegistry,
     nativeToolRegistry,
     pluginRouteRegistry,
+    notificationRouter,
+    uiRouteCatalog,
     jobScheduler,
     resolver: channelPluginResolver,
     coreApi: channelCoreApi,
@@ -1817,6 +1899,14 @@ async function main(): Promise<void> {
   await backgroundJobRegistry.start();
   console.log(
     `[middleware] background jobs: ${backgroundJobRegistry.names().length} registered (turn hooks: before=${turnHookRegistry.counts().onBeforeTurn} afterTool=${turnHookRegistry.counts().onAfterToolCall} afterTurn=${turnHookRegistry.counts().onAfterTurn}, prompt contributors: ${promptContributionRegistry.count()}, agent wrappers: ${chatAgentWrapRegistry.count()})`,
+  );
+  const notificationChannels = notificationRouter.list();
+  console.log(
+    `[middleware] notification router: ${notificationChannels.length} channel(s) registered${notificationChannels.length > 0 ? ` (${notificationChannels.join(', ')})` : ''}`,
+  );
+  const uiRouteCount = uiRouteCatalog.size();
+  console.log(
+    `[middleware] ui-route catalog: ${uiRouteCount} descriptor(s) registered${uiRouteCount > 0 ? ` (${uiRouteCatalog.list().map((r) => `${r.pluginId}${r.path}`).join(', ')})` : ''}`,
   );
 
   // Bind dual-stack on :: so both IPv6 (Fly-Edge default + flycast) and

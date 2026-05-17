@@ -51,6 +51,14 @@ export interface DynamicChannelPluginResolverDeps {
 
 export class DynamicChannelPluginResolver implements ChannelPluginResolver {
   private readonly cache = new Map<string, ChannelPlugin>();
+  /**
+   * Per-agent cache-bust token. ESM `import()` is keyed by the resolved
+   * URL — without a unique suffix, Node's module cache hands back the
+   * previously-loaded module even after we drop our own cache. Append the
+   * token (set by invalidate()) as a query string so the upgraded module
+   * gets a distinct URL and loads fresh.
+   */
+  private readonly bustTokens = new Map<string, string>();
 
   constructor(private readonly deps: DynamicChannelPluginResolverDeps) {}
 
@@ -88,7 +96,10 @@ export class DynamicChannelPluginResolver implements ChannelPluginResolver {
       return undefined;
     }
 
-    const mod = (await import(pathToFileURL(entryAbs).href)) as ChannelModuleShape;
+    const baseUrl = pathToFileURL(entryAbs).href;
+    const bust = this.bustTokens.get(agentId);
+    const importUrl = bust ? `${baseUrl}?v=${bust}` : baseUrl;
+    const mod = (await import(importUrl)) as ChannelModuleShape;
     const impl = pickChannelPlugin(mod);
     if (!impl) {
       this.log(
@@ -102,9 +113,12 @@ export class DynamicChannelPluginResolver implements ChannelPluginResolver {
   }
 
   /** Eject a cached plugin entry — used when a channel is uninstalled or
-   *  re-uploaded so a future activate() picks up the fresh module. */
+   *  re-uploaded so a future activate() picks up the fresh module. Also
+   *  rotates the per-agent ESM cache-bust token so the next dynamic
+   *  import() resolves to a URL Node has not seen before. */
   invalidate(agentId: string): void {
     this.cache.delete(agentId);
+    this.bustTokens.set(agentId, Date.now().toString(36));
   }
 
   private resolvePackagePath(agentId: string): string | undefined {

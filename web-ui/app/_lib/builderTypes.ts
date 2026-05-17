@@ -72,6 +72,40 @@ export interface ToolSpec {
   output?: Record<string, unknown>;
 }
 
+// -----------------------------------------------------------------------------
+// B.12 — UiRoute (Dashboard-Tabs). Mirror of middleware uiRouteSchema.ts.
+// -----------------------------------------------------------------------------
+
+export type UiRouteRenderMode = 'library' | 'react-ssr' | 'free-form-html';
+export type UiRouteUiTemplate = 'list-card' | 'kpi-tiles';
+
+export interface UiRouteItemTemplate {
+  title: string;
+  subtitle?: string;
+  meta?: string;
+  url?: string;
+}
+
+export interface UiRouteDataBinding {
+  source: 'tool';
+  tool_id: string;
+  args?: Record<string, unknown>;
+}
+
+export interface UiRoute {
+  id: string;
+  path: string;
+  tab_label: string;
+  page_title: string;
+  refresh_seconds: number;
+  render_mode: UiRouteRenderMode;
+  ui_template?: UiRouteUiTemplate;
+  interactive?: boolean;
+  data_binding?: UiRouteDataBinding;
+  item_template?: UiRouteItemTemplate;
+  output_transform_slot?: string;
+}
+
 /** B.11-6: Mirror of middleware TestCaseSchema. Nominal until B.10's
  *  behavior-eval-runner consumes them. Created via
  *  ToolTestModal → "Save as test case". */
@@ -111,6 +145,13 @@ export interface AgentSpecSkeleton {
     example_prompts: string[];
   };
   network: { outbound: string[] };
+  /** S+7.7 — optional Operator-Admin-UI path (single iframe in store-detail
+   *  after install). Absolute path, recommended shape
+   *  `/api/<slug>/admin/index.html`. Empty/undefined disables the
+   *  iframe section in the store-detail-page. */
+  admin_ui_path?: string;
+  /** B.12 — UI-Routes (Dashboard-Tabs). Optional, defaults to [] in spec. */
+  ui_routes?: UiRoute[];
   slots: Record<string, string | undefined>;
   /** Option-C, C-3: per-draft operator preferences. Optional in the
    *  type because legacy drafts predate the field; readers default the

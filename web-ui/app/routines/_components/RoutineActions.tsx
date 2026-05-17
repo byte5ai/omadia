@@ -24,11 +24,13 @@ export function RoutineActions({ routine }: Props): React.ReactElement {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const isPaused = routine.status === 'paused';
 
   const handleToggle = (): void => {
     setError(null);
+    setNotice(null);
     const next = isPaused ? 'active' : 'paused';
     startTransition(async () => {
       try {
@@ -42,9 +44,21 @@ export function RoutineActions({ routine }: Props): React.ReactElement {
 
   const handleTriggerNow = (): void => {
     setError(null);
+    setNotice(null);
     startTransition(async () => {
       try {
+        // The backend returns 202 Accepted and runs the agent in the
+        // background — the manual trigger takes ~30 s on a routine
+        // with the HR-agent + retry. Surface a notice so the operator
+        // knows the click was received; the actual result arrives via
+        // the proactive sender (Teams card / web channel).
         await triggerRoutineNow(routine.id);
+        setNotice('Gestartet — Ergebnis erscheint in ~30 Sekunden im Channel.');
+        // Auto-clear after the typical run window so the row doesn't
+        // stay decorated for ever.
+        setTimeout(() => {
+          setNotice(null);
+        }, 45000);
         router.refresh();
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -103,6 +117,11 @@ export function RoutineActions({ routine }: Props): React.ReactElement {
       {error ? (
         <div className="font-mono text-[10px] text-[color:var(--danger)]">
           {error}
+        </div>
+      ) : null}
+      {notice ? (
+        <div className="font-mono text-[10px] text-[color:var(--accent)]">
+          {notice}
         </div>
       ) : null}
     </div>

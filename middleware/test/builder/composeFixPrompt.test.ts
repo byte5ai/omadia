@@ -7,6 +7,7 @@ import type { ManifestViolation } from '../../src/plugins/builder/manifestLinter
 import type {
   AdminRouteSmokeResult,
   ToolSmokeResult,
+  UiRouteSmokeResult,
 } from '../../src/plugins/builder/runtimeSmoke.js';
 
 const SAMPLE_ERROR: BuildError = {
@@ -258,5 +259,104 @@ describe('composeFixPrompt — admin_route_schema_violation', () => {
     });
     assert.match(out, /no per-route entries were attached/);
     assert.match(out, /kein silent removal/);
+  });
+});
+
+describe('composeFixPrompt — ui_route_render_failed', () => {
+  const missingCsp: UiRouteSmokeResult = {
+    endpoint: '/p/test.agent/dashboard',
+    status: 'missing_csp',
+    httpStatus: 200,
+    durationMs: 14,
+    reason: 'Content-Security-Policy header missing — Teams cannot embed',
+  };
+  const wrongType: UiRouteSmokeResult = {
+    endpoint: '/p/test.agent/inbox',
+    status: 'wrong_content_type',
+    httpStatus: 200,
+    durationMs: 9,
+    reason: "Content-Type 'application/json' is not text/html",
+  };
+  const okRoute: UiRouteSmokeResult = {
+    endpoint: '/p/test.agent/healthy',
+    status: 'ok',
+    httpStatus: 200,
+    durationMs: 11,
+  };
+
+  it('lists only failing routes with status + reason + http', () => {
+    const out = composeFixPrompt({
+      kind: 'ui_route_render_failed',
+      uiRouteResults: [okRoute, missingCsp, wrongType],
+      buildN: 7,
+    });
+    assert.match(out, /Build #7 failed/);
+    assert.match(out, /2 render failure/);
+    assert.match(out, /\/p\/test\.agent\/dashboard/);
+    assert.match(out, /missing_csp/);
+    assert.match(out, /\/p\/test\.agent\/inbox/);
+    assert.match(out, /wrong_content_type/);
+    assert.ok(!out.includes('/p/test.agent/healthy'));
+  });
+
+  it('includes contract explainer (CSP frame-ancestors, text/html, non-empty)', () => {
+    const out = composeFixPrompt({
+      kind: 'ui_route_render_failed',
+      uiRouteResults: [missingCsp],
+    });
+    assert.match(out, /frame-ancestors/);
+    assert.match(out, /Content-Type/);
+    assert.match(out, /Teams-Iframe-Embedding/);
+  });
+
+  it('mentions the most common failure-modes inline', () => {
+    const out = composeFixPrompt({
+      kind: 'ui_route_render_failed',
+      uiRouteResults: [missingCsp],
+    });
+    assert.match(out, /missing_csp/);
+    assert.match(out, /wrong_content_type/);
+    assert.match(out, /empty_render/);
+  });
+
+  it('caps failing routes at 5', () => {
+    const many: UiRouteSmokeResult[] = Array.from({ length: 8 }, (_, i) => ({
+      endpoint: `/p/test.agent/r${String(i)}`,
+      status: 'http_error' as const,
+      durationMs: 5,
+      reason: `boom_${String(i)}`,
+    }));
+    const out = composeFixPrompt({
+      kind: 'ui_route_render_failed',
+      uiRouteResults: many,
+    });
+    assert.match(out, /\/p\/test\.agent\/r0/);
+    assert.match(out, /\/p\/test\.agent\/r4/);
+    assert.ok(!out.includes('/p/test.agent/r5'));
+    assert.match(out, /and 3 more/);
+  });
+
+  it('handles missing results gracefully', () => {
+    const out = composeFixPrompt({
+      kind: 'ui_route_render_failed',
+      uiRouteResults: [],
+    });
+    assert.match(out, /no per-route entries were attached/);
+    assert.match(out, /kein silent removal/);
+  });
+
+  it('treats introspection_failed as soft pass (not in failing list)', () => {
+    const introspectFail: UiRouteSmokeResult = {
+      endpoint: '/p/test.agent/x',
+      status: 'introspection_failed',
+      durationMs: 0,
+      reason: 'unable to mount captured router',
+    };
+    const out = composeFixPrompt({
+      kind: 'ui_route_render_failed',
+      uiRouteResults: [introspectFail],
+    });
+    // Soft pass → not listed as failure
+    assert.match(out, /0 render failure/);
   });
 });

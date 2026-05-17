@@ -159,7 +159,7 @@ export const RECEIPT_FIXTURE_DEBUG_VALUES: PrivacyReceipt = {
       action: 'tokenized',
       detector: 'regex:0.1.0',
       confidenceMin: 0.98,
-      values: ['john.doe@byte5.de', 'support@byte5.de'],
+      values: ['info@omadia.ai', 'info@omadia.ai'],
     },
   ],
   latencyMs: 4123,

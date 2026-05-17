@@ -86,7 +86,7 @@ export async function* streamMessageEvents(args: {
   let lastTokensPerSec = 0;
   let phase: 'thinking' | 'streaming' | 'tool_running' = 'thinking';
   // Streaming-buffered Restore: hold trailing chars that could complete a
-  // `tok_<8hex>` pattern in the next chunk. Flushed on stream end.
+  // `«TYPE_N»` token in the next chunk. Flushed on stream end.
   let pendingHold = '';
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -9,8 +9,8 @@ identity:
   description: "Tool-Set: ContextRetriever (pre-turn KG/Embedding-Lookup), FactExtractor (LLM-getriebener KG-Ingest aus Chat-Turns), TopicDetector (per-Message-Embedding-Similarity-Routing) und GraphBackfill-Function (Offline-Graph-Evidence-Catchup; vom Kernel-Boot direkt aus dem Plugin-Barrel aufgerufen — nicht in activate(), da der 88-Turn-Replay routinemäßig das 10s-Activate-Budget sprengt). Konsumiert die Kernel-Capabilities `knowledgeGraph` und `embeddingClient` via `ctx.services.get` und published seinerseits drei Service-Capabilities (`contextRetriever`, `factExtractor`, `topicDetector`) für Orchestrator + Channels."
   authors:
     - name: "byte5 GmbH"
-      email: "dev@byte5.de"
-      url: "https://byte5.de"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
   license: "Proprietary"
   categories:
     - "infrastructure"

@@ -2,23 +2,39 @@ import { z } from 'zod';
 import type { KnowledgeGraph } from '@omadia/plugin-api';
 import type { LocalSubAgentTool } from '@omadia/plugin-api';
 
+// Phase 5B: `OdooScope` mirror — kept verbatim from
+// `@omadia/integration-odoo` (now removed from this repo). The
+// graphLookupTool is generic over scope so a future first-party Odoo
+// integration shipped from a different repo can pass either literal.
+type OdooScope = 'accounting' | 'hr';
+
 /**
  * Sub-agent tool that reads stable master-data straight from the graph,
- * scope-locked at construction time. Pass `scope` (a free-form label for
- * the tool description / error messages) and `allowedModels` (a whitelist
- * of model names the tool will accept). Domain plugins build their own
- * scope+model bundle and hand it in; the tool itself stays domain-agnostic.
+ * without round-tripping to Odoo. Scope-locked at construction time so an
+ * HR sub-agent can never query res.partner through it, even if the LLM
+ * tries.
  *
  * Why this is NOT the same as `query_knowledge_graph` (the orchestrator
  * tool): the orchestrator's variant has no scope — it can see the whole
  * graph including other users' sessions. The sub-agent version is locked
- * to its domain-relevant models only, to preserve the existing
- * domain-scope boundaries.
+ * to its domain-relevant models only, to preserve the existing HR red-line
+ * / accounting-scope boundaries.
  *
  * Freshness rule (baked into the tool description): slow-changing master
- * data only. Transactional state belongs in the source-of-truth integration's
- * own tool surface.
+ * data only. Anything transactional (account.move, account.move.line, hr.leave,
+ * hr.contract-data) must still come from Odoo via `odoo_execute`.
  */
+
+const GRAPH_LOOKUP_MODELS: Record<OdooScope, ReadonlySet<string>> = {
+  accounting: new Set([
+    'res.partner',
+    'account.journal',
+    'account.account',
+    'res.currency',
+    'hr.department',
+  ]),
+  hr: new Set(['hr.employee', 'hr.department']),
+};
 
 const GraphLookupInputSchema = z.object({
   model: z.string().min(1).max(120),
@@ -26,46 +42,32 @@ const GraphLookupInputSchema = z.object({
   limit: z.number().int().min(1).max(200).default(25),
 });
 
-export interface GraphLookupToolOptions {
-  /** Free-form scope label, used in tool description + error messages. */
-  scope: string;
-  /** Whitelist of model names the tool will accept. */
-  allowedModels: readonly string[];
-  /** Live KnowledgeGraph handle. */
-  graph: KnowledgeGraph;
-  /**
-   * Optional sub-agent-specific note appended to the tool description —
-   * e.g. red-line caveats for an HR-scoped lookup.
-   */
-  scopeNote?: string;
-}
-
 export function createGraphLookupTool(
-  opts: GraphLookupToolOptions,
+  scope: OdooScope,
+  deps: { graph: KnowledgeGraph },
 ): LocalSubAgentTool {
-  const allowed = [...opts.allowedModels].sort();
-  const allowedSet = new Set(allowed);
-  const description = [
-    'Read-only lookup of pre-synced business master-data from the local knowledge graph.',
-    `Allowed models in the ${opts.scope} scope: ${allowed.join(', ')}.`,
-    'Use this for questions about stable master data — names, departments, partners, accounts — because the graph answers in <10 ms instead of a live source round-trip.',
-    'Data is synced from the source-of-truth integration on a schedule. Transactional state (open records, in-flight transactions) is NOT in the graph and MUST come from the integration\'s own live tools.',
-    'Input: `model` (required) + optional `name_contains` for case-insensitive substring match on displayName/id + optional `limit` (default 25, max 200).',
-    opts.scopeNote ?? '',
-  ]
-    .filter((s) => s.length > 0)
-    .join(' ');
-
+  const allowed = [...GRAPH_LOOKUP_MODELS[scope]].sort();
   return {
     spec: {
       name: 'query_graph',
-      description,
+      description: [
+        'Read-only lookup of pre-synced business master-data from the local knowledge graph.',
+        `Allowed models in the ${scope} scope: ${allowed.join(', ')}.`,
+        'Use this BEFORE `odoo_execute` whenever the question is about stable master data — names of journals, departments, partners, accounts — because the graph answers in <10 ms instead of an Odoo round-trip.',
+        'Data is synced from Odoo every 6h. Transactional state (open invoices, payments, leaves, contract amounts) is NOT in the graph and MUST come from `odoo_execute`.',
+        'Input: `model` (required) + optional `name_contains` for case-insensitive substring on displayName/id + optional `limit` (default 25, max 200).',
+        scope === 'hr'
+          ? 'HR entities in the graph are already red-line-scrubbed (no wage, no private contact, no bank).'
+          : '',
+      ]
+        .filter((s) => s.length > 0)
+        .join(' '),
       input_schema: {
         type: 'object',
         properties: {
           model: {
             type: 'string',
-            description: `Exact model name. One of: ${allowed.join(', ')}.`,
+            description: `Exact Odoo model name. One of: ${allowed.join(', ')}.`,
           },
           name_contains: {
             type: 'string',
@@ -84,11 +86,11 @@ export function createGraphLookupTool(
           .join('; ')}`;
       }
       const { model, name_contains, limit } = parsed.data;
-      if (!allowedSet.has(model)) {
-        return `Error: model_not_allowed — ${model} is not in the ${opts.scope}-scope graph whitelist (${allowed.join(', ')}). Use the integration's live tool for other models.`;
+      if (!GRAPH_LOOKUP_MODELS[scope].has(model)) {
+        return `Error: model_not_allowed — ${model} is not in the ${scope}-scope graph whitelist (${allowed.join(', ')}). Use \`odoo_execute\` for other models.`;
       }
       try {
-        const entities = await opts.graph.findEntities({
+        const entities = await deps.graph.findEntities({
           model,
           ...(name_contains ? { nameContains: name_contains } : {}),
           limit,

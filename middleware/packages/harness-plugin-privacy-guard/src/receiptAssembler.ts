@@ -24,6 +24,8 @@ import type {
   PolicyMode,
   PrivacyDetection,
   PrivacyDetectorRun,
+  PrivacyEgressMode,
+  PrivacyEgressRouting,
   PrivacyReceipt,
   Routing,
 } from '@omadia/plugin-api';
@@ -77,6 +79,53 @@ export interface AssembleInput {
     readonly resultsTokenized: number;
     readonly callCount: number;
   };
+  /** Privacy-Shield v2 (Slice S-3) — per-source allowlist hit counts.
+   *  Pass-through to `receipt.allowlist` when at least one source
+   *  fired; omit when nothing matched so the receipt shape stays
+   *  identical to v1.x for plain turns. PII-free: counts only. */
+  readonly allowlist?: {
+    readonly hitCount: number;
+    readonly bySource: {
+      readonly tenantSelf: number;
+      readonly repoDefault: number;
+      readonly operatorOverride: number;
+    };
+  };
+  /** Privacy-Shield v2 (Slice S-5) — pass-through for the Output
+   *  Validator summary. Pre-aggregated by the service: the assembler
+   *  copies it onto the receipt as-is. PII-free (counts only). */
+  readonly output?: {
+    readonly tokenLossRatio: number;
+    readonly spontaneousPiiHits: number;
+    readonly recommendation: 'pass' | 'retry' | 'block';
+    readonly recommendationReason?: string;
+  };
+  /** Privacy-Shield v2 (Slice S-6) — pass-through for the Egress
+   *  Filter summary. Pre-aggregated by the service; assembler copies
+   *  onto the receipt as-is. PII-free. */
+  readonly egress?: {
+    readonly mode: PrivacyEgressMode;
+    readonly routing: PrivacyEgressRouting;
+    readonly detectorRuns: readonly PrivacyDetectorRun[];
+    readonly spontaneousHits: number;
+    readonly maskedCount: number;
+  };
+  /** Privacy-Shield v2 (Phase A, post-deploy 2026-05-14) —
+   *  pass-through for the self-anonymization restoration summary. */
+  readonly selfAnonymization?: {
+    readonly detected: number;
+    readonly restored: number;
+    readonly ambiguous: number;
+    readonly patternsHit: readonly string[];
+    readonly maxIndexSeen: number;
+    readonly tokenOrderLength: number;
+  };
+  /** Privacy-Shield v2 (Phase A.2) — pass-through for the
+   *  post-egress final-scrub summary. */
+  readonly postEgressScrub?: {
+    readonly restoredPositional: number;
+    readonly scrubbedToPlaceholder: number;
+  };
 }
 
 export function assembleReceipt(input: AssembleInput): PrivacyReceipt {
@@ -94,6 +143,17 @@ export function assembleReceipt(input: AssembleInput): PrivacyReceipt {
     ...(input.debugShowValues === true ? { debug: true } : {}),
     ...(input.toolRoundtrip !== undefined && input.toolRoundtrip.callCount > 0
       ? { toolRoundtrip: input.toolRoundtrip }
+      : {}),
+    ...(input.allowlist !== undefined && input.allowlist.hitCount > 0
+      ? { allowlist: input.allowlist }
+      : {}),
+    ...(input.output !== undefined ? { output: input.output } : {}),
+    ...(input.egress !== undefined ? { egress: input.egress } : {}),
+    ...(input.selfAnonymization !== undefined
+      ? { selfAnonymization: input.selfAnonymization }
+      : {}),
+    ...(input.postEgressScrub !== undefined
+      ? { postEgressScrub: input.postEgressScrub }
       : {}),
   };
 }

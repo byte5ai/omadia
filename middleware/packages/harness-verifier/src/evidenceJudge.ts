@@ -18,7 +18,7 @@ import type { ClaimVerdict, SoftClaim } from './claimTypes.js';
 
 export interface EvidenceSnippet {
   nodeId: string;               // stable id the judge references on contradict
-  source: string;
+  source: 'graph' | 'confluence' | 'odoo';
   content: string;              // <= ~2 kB per snippet
   title?: string;
 }
@@ -253,8 +253,8 @@ function unverified(claim: SoftClaim, reason: string): ClaimVerdict {
 
 function sourceKind(
   source: EvidenceSnippet['source'] | SoftClaim['expectedSource'],
-): string {
-  return source ?? 'graph';
+): 'odoo' | 'graph' {
+  return source === 'odoo' ? 'odoo' : 'graph';
 }
 
 function truncate(value: string, max: number): string {

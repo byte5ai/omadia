@@ -1,6 +1,6 @@
 {
   "name": "@omadia/agent-reference-maximum",
-  "version": "0.1.0",
+  "version": "0.3.2",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -12,6 +12,7 @@
   },
   "peerDependencies": {
     "@omadia/plugin-api": "*",
+    "@omadia/plugin-ui-helpers": "*",
     "express": "^5.1.0",
     "zod": "^3.23.8"
   },

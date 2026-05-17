@@ -4,7 +4,7 @@ import type { KnowledgeGraph } from '@omadia/plugin-api';
 import type { PluginContext } from '@omadia/plugin-api';
 
 import { ClaimExtractor } from './claimExtractor.js';
-import { DeterministicChecker } from './deterministicChecker.js';
+import { DeterministicChecker, type OdooReader } from './deterministicChecker.js';
 import { EvidenceJudge } from './evidenceJudge.js';
 import { GraphEvidenceFetcher } from './graphEvidenceFetcher.js';
 import { VerifierPipeline } from './verifierPipeline.js';
@@ -13,8 +13,9 @@ import { VerifierStore } from './verifierStore.js';
 /**
  * @omadia/verifier — plugin entry point.
  *
- * activate() reads its setup-fields, late-resolves
- * `knowledgeGraph` (hard) plus optional `graphPool`,
+ * **S+9.3 Sub-Commit 2b: capability lifetime flipped from kernel-bridge
+ * to plugin-owned.** activate() reads its setup-fields, late-resolves
+ * `knowledgeGraph` (hard) plus optional `graphPool` and `odoo.client`,
  * constructs the five-stage pipeline (ClaimExtractor → DeterministicChecker
  * → EvidenceJudge with GraphEvidenceFetcher → VerifierPipeline) plus an
  * optional VerifierStore (only when graphPool is available — the
@@ -120,6 +121,10 @@ export async function activate(
   }
 
   const graphPool = ctx.services.get<Pool>('graphPool');
+  // Phase 5B: type-import for `OdooClient` lifted to a local `OdooReader`
+  // shim (narrow execute({...}) surface — same shape DeterministicChecker
+  // already used for stub-injection).
+  const odooClient = ctx.services.get<OdooReader>('odoo.client');
 
   const model =
     (ctx.config.get<string>('verifier_model') ?? '').trim() || DEFAULT_MODEL;
@@ -156,6 +161,7 @@ export async function activate(
   });
   const deterministic = new DeterministicChecker({
     amountTolerance,
+    ...(odooClient ? { odoo: odooClient } : {}),
     graph: knowledgeGraph,
   });
   const fetcher = new GraphEvidenceFetcher({ graph: knowledgeGraph });
@@ -182,7 +188,7 @@ export async function activate(
 
   ctx.services.provide(VERIFIER_SERVICE, bundle);
   ctx.log(
-    `[harness-verifier] verifier@1 published (mode=${mode}, model=${model}, store=${store ? 'on' : 'off'}, maxRetries=${String(maxRetries)})`,
+    `[harness-verifier] verifier@1 published (mode=${mode}, model=${model}, store=${store ? 'on' : 'off'}, odoo=${odooClient ? 'on' : 'off'}, maxRetries=${String(maxRetries)})`,
   );
 
   return {

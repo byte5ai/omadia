@@ -11,8 +11,8 @@ import type {
  * evidence snippets for the judge.
  *
  * Coverage today is intentionally narrow: we look up by the entity refs
- * already attached to the claim (format "<source>:<model>:<id>" or
- * "<model>:<id>"). Broader recall (full-text search over turns / facts)
+ * already attached to the claim (format "odoo:hr.employee:7" or
+ * "hr.employee:7"). Broader recall (full-text search over turns / facts)
  * is a follow-up — start small so the judge isn't drowned in irrelevant
  * context.
  */

@@ -69,4 +69,15 @@ export interface ChannelPluginResolver {
   resolve(
     agentId: string,
   ): Promise<ChannelPlugin | undefined> | ChannelPlugin | undefined;
+
+  /**
+   * Drop any cached ChannelPlugin implementation for this agentId so the
+   * next `resolve()` re-imports from disk. Required between deactivate and
+   * re-activate during a plugin upgrade — otherwise the old module wins
+   * because dynamic `import()` is keyed by URL and the agentId-keyed
+   * resolver cache returns the stale value.
+   *
+   * Optional: synchronous fixed-imports resolvers have nothing to drop.
+   */
+  invalidate?(agentId: string): void;
 }

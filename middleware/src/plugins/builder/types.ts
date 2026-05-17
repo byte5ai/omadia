@@ -61,6 +61,10 @@ export interface AgentSpecSkeleton {
    *  skeleton because legacy drafts predate the field; Zod parse fills
    *  the default `[]`. */
   external_reads?: unknown[];
+  /** B.12: declarative UI-Routes (Dashboard-Tabs). Optional in the
+   *  skeleton because legacy drafts predate the field; Zod parse fills
+   *  the default `[]`. Shape is `UiRoute` from uiRouteSchema.ts. */
+  ui_routes?: unknown[];
   slots: Record<string, string | undefined>;
   /** Option-C, C-3: per-draft operator preferences not emitted to
    *  manifest.yaml. Optional in the skeleton because legacy drafts

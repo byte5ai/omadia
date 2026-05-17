@@ -47,6 +47,16 @@ export type {
 // adapters can call it without crossing into kernel internals.
 export { toSemanticAnswer } from './toSemanticAnswer.js';
 
+// Privacy-Shield v2 (Slice S-6) — egress filter glue. Serialises a
+// `ChatTurnResult` into the privacy-guard's flat `{ id, text }` slot
+// shape and re-merges the filter's replacements back onto the result.
+export {
+  collectEgressSlots,
+  applyEgressReplacements,
+  buildBlockedResult,
+  type EgressSlot,
+} from './egressWalker.js';
+
 // Semantic outgoing-message contracts (connectors render native)
 export type {
   SemanticAnswer,

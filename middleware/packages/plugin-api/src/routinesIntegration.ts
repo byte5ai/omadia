@@ -58,12 +58,21 @@ export interface RoutinesIntegration {
    * Register a channel-specific proactive sender so the routines runner
    * can deliver scheduled answers. Called once at activation; the
    * registered closure outlives every individual turn.
+   *
+   * Phase C.6: `message.cardBody` is an optional array of Adaptive Card
+   * 1.5 body items, populated when a templated routine declared
+   * `format: 'adaptive-card'`. Channel adapters that can render rich
+   * cards (Teams) SHOULD embed these items into the card frame; other
+   * channels MUST ignore the field and fall back to `message.text`
+   * (which already carries a markdown rendering of the same template
+   * as a graceful degradation). The shape is the portable Adaptive
+   * Card JSON schema, NOT a Teams-private contract.
    */
   publishProactiveSend(
     channel: string,
     send: (
       conversationRef: unknown,
-      message: { text: string },
+      message: { text: string; cardBody?: readonly unknown[] },
       routine?: { id: string; name: string; cron: string },
     ) => Promise<void>,
   ): void;
@@ -81,10 +90,16 @@ export interface RoutinesIntegration {
   /**
    * Build a single-routine Adaptive Card attachment used as the proactive
    * delivery wrapper around the agent's prose answer.
+   *
+   * Phase C.6: when `bodyItems` is supplied (templated routine with
+   * `format: 'adaptive-card'`), the items are embedded into the card
+   * body directly. Otherwise the legacy path wraps `body` markdown in a
+   * single `TextBlock`.
    */
   buildRoutineSmartCardAttachment(input: {
     routine: { id: string; name: string; cron: string };
     body: string;
+    bodyItems?: readonly unknown[];
   }): RoutineCardAttachment;
 
   /**

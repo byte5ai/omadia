@@ -4,7 +4,7 @@ import type {
   Claim,
   ClaimSource,
   ClaimType,
-  RecordRef,
+  OdooRecordRef,
 } from './claimTypes.js';
 
 /**
@@ -58,14 +58,12 @@ const CLAIM_TYPES: readonly ClaimType[] = [
   'qualitative',
 ];
 
-/**
- * Source labels offered to the extractor. `'graph'` and `'unknown'` are
- * the core values; plugins that register a SourceChecker may extend this
- * list by configuring an extended extractor. Kept open as a free string
- * type in `ClaimSource` so the tool schema can grow without recompiling
- * the verifier.
- */
-const CLAIM_SOURCES: readonly string[] = ['graph', 'unknown'];
+const CLAIM_SOURCES: readonly ClaimSource[] = [
+  'odoo',
+  'graph',
+  'confluence',
+  'unknown',
+];
 
 const AGGREGATIONS: readonly Aggregation[] = ['sum', 'count', 'avg', 'max', 'min'];
 
@@ -90,13 +88,13 @@ const toolSpec = {
               type: 'string',
               enum: [...CLAIM_TYPES],
               description:
-                'amount=money/number+unit; id=record reference; date=calendar date; name=person/customer with context; aggregate=sum/count/avg over a set; qualitative=non-numeric claim about an entity.',
+                'amount=money/number+unit; id=record reference; date=calendar date; name=person/customer with context; aggregate=sum/count/avg over a set (especially HR leave totals); qualitative=non-numeric claim about an entity.',
             },
             expected_source: {
               type: 'string',
               enum: [...CLAIM_SOURCES],
               description:
-                'Where the ground truth lives. "graph" for facts in the local knowledge graph, "unknown" when no deterministic source applies.',
+                'Where the ground truth lives. "odoo" for ERP facts, "graph" for knowledge-graph facts, "confluence" for wiki content, "unknown" otherwise.',
             },
             value: {
               type: ['number', 'string'],
@@ -107,7 +105,7 @@ const toolSpec = {
               type: 'string',
               description: 'e.g. "€", "h", "d", "%". Omit when not applicable.',
             },
-            source_record: {
+            odoo_record: {
               type: 'object',
               properties: {
                 model: { type: 'string' },
@@ -116,13 +114,13 @@ const toolSpec = {
               },
               required: ['model'],
               description:
-                'If the claim references a specific source record, set model (and id/ref when available).',
+                'If the claim references a specific Odoo record, set model (and id/ref when available).',
             },
             related_entities: {
               type: 'array',
               items: { type: 'string' },
               description:
-                'Entity handles in "<source>:<model>:<id>" form.',
+                'Entity handles in "system:model:id" form, e.g. "odoo:res.partner:42".',
             },
             aggregation: {
               type: 'string',
@@ -144,7 +142,7 @@ interface RawClaim {
   expected_source?: unknown;
   value?: unknown;
   unit?: unknown;
-  source_record?: unknown;
+  odoo_record?: unknown;
   related_entities?: unknown;
   aggregation?: unknown;
 }
@@ -303,8 +301,8 @@ function normaliseClaim(raw: unknown, idx: number, answer: string): Claim | null
   const agg = asEnum<Aggregation>(r.aggregation, AGGREGATIONS);
   if (agg) claim.aggregation = agg;
 
-  const sourceRecord = asSourceRecord(r.source_record);
-  if (sourceRecord) claim.sourceRecord = sourceRecord;
+  const odoo = asOdooRecord(r.odoo_record);
+  if (odoo) claim.odooRecord = odoo;
 
   return claim;
 }
@@ -341,12 +339,12 @@ function asValue(v: unknown): number | string | undefined {
   return undefined;
 }
 
-function asSourceRecord(v: unknown): RecordRef | undefined {
+function asOdooRecord(v: unknown): OdooRecordRef | undefined {
   if (!v || typeof v !== 'object') return undefined;
   const r = v as { model?: unknown; id?: unknown; ref?: unknown };
   const model = asShortString(r.model, 128);
   if (!model) return undefined;
-  const out: RecordRef = { model };
+  const out: OdooRecordRef = { model };
   if (typeof r.id === 'number' && Number.isInteger(r.id) && r.id > 0) {
     out.id = r.id;
   }

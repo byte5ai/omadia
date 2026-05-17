@@ -71,7 +71,7 @@ export function createPresidioDetector(
     // for any non-trivial tenant carries the memory recall (real
     // employee data, prior conversations, CRM heap) and shreds it
     // into 100+ name + 100+ address tokens. Effect on the LLM:
-    //   - hundreds of identical-looking `tok_<hex>` placeholders in
+    //   - hundreds of identical-looking `«TYPE_N»` placeholders in
     //     the system prompt destroy contextual grounding,
     //   - the assistant defensively hallucinates a plausible-sounding
     //     name for the question's token, and

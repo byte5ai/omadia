@@ -29,8 +29,8 @@ import {
   type GraphNodeType,
   type GraphStats,
   type KnowledgeGraph,
-  type LinkCompanyToEntityOptions,
-  type LinkCompanyToEntityResult,
+  type LinkCompanyToOdooOptions,
+  type LinkCompanyToOdooResult,
   type PersonIngest,
   type PersonIngestResult,
   type RunAgentInvocationView,
@@ -825,11 +825,11 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     return result;
   }
 
-  async linkCompanyToEntity(
-    opts: LinkCompanyToEntityOptions,
-  ): Promise<LinkCompanyToEntityResult> {
+  async linkCompanyToOdoo(
+    opts: LinkCompanyToOdooOptions,
+  ): Promise<LinkCompanyToOdooResult> {
     const from = companyNodeId(opts.companyExternalId);
-    const to = opts.entityExternalId;
+    const to = opts.odooEntityExternalId;
     if (!this.nodes.has(from) || !this.nodes.has(to)) {
       return { linked: false };
     }

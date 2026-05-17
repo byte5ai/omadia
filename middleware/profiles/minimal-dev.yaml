@@ -1,10 +1,11 @@
 schema_version: 1
 id: minimal-dev
 name: Minimal Dev
-description: In-memory knowledge graph, no verifier. Embeddings are included because orchestrator-extras requires embeddingClient@^1. Add channel plugins via the admin UI after the profile applies.
+description: In-Memory-KG, ohne Verifier, nur Teams-Channel. Embeddings sind eingebunden weil orchestrator-extras embeddingClient@^1 zwingend benötigt.
 plugins:
   - @omadia/memory
   - @omadia/knowledge-graph-inmemory
   - @omadia/embeddings
   - @omadia/orchestrator-extras
   - @omadia/orchestrator
+  - de.byte5.channel.teams

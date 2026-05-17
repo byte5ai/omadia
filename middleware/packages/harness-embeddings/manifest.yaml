@@ -9,8 +9,8 @@ identity:
   description: "Stateless embedding-compute plugin (Ollama-compatible /api/embeddings wrapper, concurrency-limited). Provider des Kernel-Service 'embeddingClient' — konsumiert von KG-Ingest, ContextRetriever, FactExtractor, TopicDetector."
   authors:
     - name: "byte5 GmbH"
-      email: "dev@byte5.de"
-      url: "https://byte5.de"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
   license: "Proprietary"
   categories:
     - "infrastructure"

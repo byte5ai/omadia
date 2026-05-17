@@ -4,6 +4,7 @@ import { PLUGIN_DOMAIN_REGEX } from '@omadia/plugin-api';
 
 import type { JsonSchema } from '../zodToJsonSchema.js';
 import { isReservedToolId } from '../reservedNames.js';
+import { UiRouteSchema } from './uiRouteSchema.js';
 
 /**
  * AgentSpec — structured description of an uploaded/builder-generated agent.
@@ -40,6 +41,24 @@ const ToolIdSchema = z
 const AgentIdSchema = z
   .string()
   .regex(/^[a-z][a-z0-9.-]*$/, 'Agent ID must be a DNS-label-compatible reverse-FQDN');
+
+// `depends_on` and (transitively) downstream cross-plugin references must
+// also accept npm-scoped IDs (`@omadia/agent-seo-analyst`, `@omadia/memory`)
+// because the legacy hand-coded plugins ship with scoped package names, NOT
+// reverse-FQDN. Without this Builder-emitted plugins can't reference any
+// existing platform plugin at all — Zod rejects the `@`/`/` characters at
+// parse time, long before the manifestLinter's catalog check runs.
+//
+// `spec.id` itself stays restricted to reverse-FQDN (Builder-convention) —
+// only depends_on (and capability/service refs that ride on the same naming
+// space) is widened.
+const DependsOnIdSchema = z
+  .string()
+  .regex(
+    /^(?:@[a-z][a-z0-9-]*\/[a-z][a-z0-9-]*|[a-z][a-z0-9.-]*)$/,
+    'depends_on entry must be a reverse-FQDN (`de.byte5.agent.foo`) ' +
+      'OR an npm-scoped name (`@omadia/agent-foo`)',
+  );
 
 const SemverSchema = z
   .string()
@@ -100,6 +119,110 @@ const SetupFieldSchema = z
   .strict();
 
 export type SetupField = z.infer<typeof SetupFieldSchema>;
+
+// --- Scheduled job --------------------------------------------------------
+// Cron- or interval-driven background work. Codegen writes the entries
+// verbatim into `manifest.yaml:jobs[]`; the kernel auto-registers them
+// before `activate()` returns. Programmatic registrations via
+// `ctx.jobs.register(...)` in activate-body are additive.
+//
+// `name` must be unique within the plugin (singleton-lock key). croner
+// 5- or 6-field cron syntax — `*/5 * * * *`, `0 8 * * MON`, etc. Interval
+// triggers are simple `intervalMs`. Tests + manifest-linter share the
+// validator so a typo in spec.jobs[i].schedule.cron fails at lint-time,
+// not at first tick.
+
+const JobScheduleSchema = z.union([
+  z.object({ cron: z.string().min(1, 'cron expression is required') }).strict(),
+  z.object({ intervalMs: z.number().int().positive() }).strict(),
+]);
+
+const JobSpecSchema = z
+  .object({
+    name: z
+      .string()
+      .regex(
+        /^[a-z][a-z0-9-]*$/,
+        'job name must be kebab-case (e.g. `weekly-digest`, `poll-inbox`)',
+      ),
+    schedule: JobScheduleSchema,
+    /** Per-run timeout in ms. Default 30_000. */
+    timeoutMs: z.number().int().positive().max(15 * 60_000).optional(),
+    overlap: z.enum(['skip', 'queue']).optional(),
+  })
+  .strict();
+
+export type JobSpec = z.infer<typeof JobSpecSchema>;
+
+// --- Permissions (Phase B) ------------------------------------------------
+// Manifest-mirrored permission block. Each sub-key gates a corresponding
+// `ctx.*` accessor at runtime:
+//   permissions.graph.entity_systems   → ctx.knowledgeGraph
+//   permissions.subAgents.calls        → ctx.subAgent
+//   permissions.llm.models_allowed     → ctx.llm
+// `permissions.memory.{reads,writes}` lives in the boilerplate manifest
+// template directly (auto-populated with `agent:<id>:*`) so memory is
+// available without any spec-side declaration. `network.outbound` stays
+// on the top-level `spec.network` field for backwards-compat (codegen
+// already maps it to manifest.permissions.network.outbound).
+//
+// Each block is OPTIONAL. Omitted → no permission written → corresponding
+// ctx accessor stays `undefined` at runtime. This keeps the principle of
+// least authority: plugins explicitly opt into each capability.
+
+const GraphPermissionSchema = z
+  .object({
+    /** Entity-system namespaces this plugin owns (e.g. 'audit-reports',
+     *  'personal-notes'). The kernel rejects `ingestEntities` calls whose
+     *  `system` field is outside this list. Reserved names ('odoo',
+     *  'confluence', etc.) are stripped at manifest-load time. */
+    entity_systems: z.array(z.string().min(1)).default([]),
+    reads: z.array(z.string()).default([]),
+    writes: z.array(z.string()).default([]),
+  })
+  .strict();
+
+const SubAgentsPermissionSchema = z
+  .object({
+    /** Full agent-ids this plugin may delegate to via `ctx.subAgent.ask`.
+     *  Format mirrors `depends_on`: reverse-FQDN OR npm-scoped. */
+    calls: z
+      .array(
+        z
+          .string()
+          .regex(
+            /^(?:@[a-z][a-z0-9-]*\/[a-z][a-z0-9-]*|[a-z][a-z0-9.-]*)$/,
+            'subAgents.calls entry must be reverse-FQDN or @scope/name',
+          ),
+      )
+      .default([]),
+    /** Per-tool-handler invocation cap. Default 5 in kernel. */
+    calls_per_invocation: z.number().int().positive().max(50).optional(),
+  })
+  .strict();
+
+const LlmPermissionSchema = z
+  .object({
+    /** Anthropic model whitelist. Supports `*`-suffix wildcards
+     *  (`'claude-haiku-4-5*'`). Empty list = no LLM access at runtime
+     *  (ctx.llm stays undefined). */
+    models_allowed: z.array(z.string().min(1)).default([]),
+    /** Per-tool-handler invocation cap. Default 5 in kernel. */
+    calls_per_invocation: z.number().int().positive().max(50).optional(),
+    /** Output-tokens hard cap. Silently clamped per call. Default 4096. */
+    max_tokens_per_call: z.number().int().positive().max(64_000).optional(),
+  })
+  .strict();
+
+export const PermissionsSchema = z
+  .object({
+    graph: GraphPermissionSchema.optional(),
+    subAgents: SubAgentsPermissionSchema.optional(),
+    llm: LlmPermissionSchema.optional(),
+  })
+  .strict();
+
+export type Permissions = z.infer<typeof PermissionsSchema>;
 
 // --- ExternalRead ---------------------------------------------------------
 // Theme A — declarative cross-integration data-pull. Each entry produces:
@@ -315,7 +438,7 @@ export const AgentSpecSchema = z
       ),
 
     // Inheritance — drives Vault-Scope and primary integration parent.
-    depends_on: z.array(AgentIdSchema).default([]),
+    depends_on: z.array(DependsOnIdSchema).default([]),
 
     // Capabilities
     tools: z.array(ToolSpecSchema).default([]),
@@ -328,6 +451,19 @@ export const AgentSpecSchema = z
 
     // Runtime config
     setup_fields: z.array(SetupFieldSchema).default([]),
+
+    // Scheduled background jobs. Codegen writes these into manifest.yaml's
+    // `jobs:` block; kernel auto-registers before activate(). Plugin
+    // discovers ctx.jobs.register(...) as an additive surface for runtime
+    // job creation in activate-body.
+    jobs: z.array(JobSpecSchema).default([]),
+
+    // Phase B platform-parity — gate-block for the higher-privilege ctx
+    // accessors (ctx.knowledgeGraph, ctx.subAgent, ctx.llm). Codegen maps
+    // each sub-block into manifest.permissions.<key>; the kernel only
+    // hands out the corresponding accessor when the permission is present
+    // and non-empty. Omit to keep the principle of least authority.
+    permissions: PermissionsSchema.optional(),
     playbook: z
       .object({
         when_to_use: z.string().min(1),
@@ -362,6 +498,14 @@ export const AgentSpecSchema = z
     // lookup and the resulting tool descriptor from these entries; the
     // LLM no longer hand-writes either side.
     external_reads: z.array(ExternalReadSchema).default([]),
+
+    // B.12 — Dashboard-capable Builder. Optional list of UI-Routes
+    // (Browser-/Teams-Tab-fähige Dashboard-Pfade), die Codegen zu
+    // dedizierten Express-UiRouters + `ctx.uiRoutes.register(...)`-
+    // Eintragungen im activate-body-Slot expandiert. Drei Render-Modes
+    // (library / react-ssr / free-form-html) — siehe uiRouteSchema.ts.
+    // Default `[]` — legacy drafts ohne UI bleiben kompatibel.
+    ui_routes: z.array(UiRouteSchema).default([]),
 
     // LLM-generated code chunks. Slot key set is template-defined.
     slots: z.record(z.string(), z.string()).default({}),
@@ -438,8 +582,16 @@ export type SpecValidationIssue = {
     | 'reserved_tool_id'
     | 'duplicate_tool_id'
     | 'self_dependency'
-    | 'external_read_id_collides_with_tool';
+    | 'external_read_id_collides_with_tool'
+    | 'ui_route_data_binding_unknown_tool'
+    | 'ui_route_library_missing_template'
+    | 'ui_route_library_missing_item_template'
+    | 'ui_route_react_ssr_missing_component_slot'
+    | 'ui_route_free_form_missing_render_slot'
+    | 'ui_route_interactive_not_supported';
   toolId?: string;
+  /** Route id when the issue refers to a ui_routes entry. */
+  routeId?: string;
   reason: string;
 };
 
@@ -448,7 +600,18 @@ export type SpecValidationIssue = {
  * reserved-prefix collision, duplicate tool ids, self-dependency.
  * Returns issues; caller decides whether to throw or surface in the UI.
  */
-export function validateSpecForCodegen(spec: AgentSpec): SpecValidationIssue[] {
+export function validateSpecForCodegen(
+  spec: AgentSpec,
+  /**
+   * Additional slots that exist outside `spec.slots` — used by the codegen
+   * pipeline to surface slots that were merged in from `opts.slots`
+   * (fillSlot writes to `draft.slots`, which is a separate column from
+   * `draft.spec.slots`). Without this the validator would report
+   * `ui_route_react_ssr_missing_component_slot` for a slot that the very
+   * same caller is about to merge into `allSlots` — Catch-22.
+   */
+  additionalSlots: Readonly<Record<string, string>> = {},
+): SpecValidationIssue[] {
   const issues: SpecValidationIssue[] = [];
 
   for (const tool of spec.tools) {
@@ -518,6 +681,104 @@ export function validateSpecForCodegen(spec: AgentSpec): SpecValidationIssue[] {
       });
     }
     erSeen.add(er.id);
+  }
+
+  // B.12 — ui_routes cross-field checks. Zod handled syntax + enum
+  // membership; this pass handles binding-existence and mode-vs-slot
+  // contracts that span fields. tab_label + path uniqueness lives in
+  // manifestLinter.ts so it shares the violations-pipeline with other
+  // path-collision checks.
+  const knownToolIds = new Set(spec.tools.map((t) => t.id));
+  // Merge spec.slots with any caller-supplied additionalSlots (typically
+  // `opts.slots` from the codegen pipeline — see fillSlot Catch-22 above)
+  // before checking ui_route slot-existence. Only non-empty values count
+  // as filled, mirroring the codegen's own check.
+  const mergedSlots: Record<string, string> = { ...spec.slots };
+  for (const [k, v] of Object.entries(additionalSlots)) {
+    if (typeof v === 'string' && v.length > 0) mergedSlots[k] = v;
+  }
+  const slotKeys = new Set(Object.keys(mergedSlots));
+
+  for (const route of spec.ui_routes) {
+    // 1. data_binding references a known tool
+    if (route.data_binding && !knownToolIds.has(route.data_binding.tool_id)) {
+      issues.push({
+        code: 'ui_route_data_binding_unknown_tool',
+        routeId: route.id,
+        reason:
+          `ui_routes['${route.id}'].data_binding.tool_id '${route.data_binding.tool_id}' ` +
+          'is not in spec.tools[]. Add the tool first, or correct the reference.',
+      });
+    }
+
+    // 2. library-mode needs a template + item-template (for list-card)
+    if (route.render_mode === 'library') {
+      if (!route.ui_template) {
+        issues.push({
+          code: 'ui_route_library_missing_template',
+          routeId: route.id,
+          reason:
+            `ui_routes['${route.id}'].render_mode='library' requires ui_template ` +
+            "(one of 'list-card', 'kpi-tiles').",
+        });
+      }
+      if (route.ui_template === 'list-card' && !route.item_template) {
+        issues.push({
+          code: 'ui_route_library_missing_item_template',
+          routeId: route.id,
+          reason:
+            `ui_routes['${route.id}'].ui_template='list-card' requires ` +
+            'item_template { title, [subtitle], [meta], [url] }.',
+        });
+      }
+    }
+
+    // 3. react-ssr needs the component-slot filled (`ui-<id>-component`)
+    if (route.render_mode === 'react-ssr') {
+      const slotKey = `ui-${route.id}-component`;
+      if (!slotKeys.has(slotKey) || !mergedSlots[slotKey]) {
+        issues.push({
+          code: 'ui_route_react_ssr_missing_component_slot',
+          routeId: route.id,
+          reason:
+            `ui_routes['${route.id}'].render_mode='react-ssr' requires the ` +
+            `slot '${slotKey}' to be filled with a TSX component (default-exported). ` +
+            'Run fill_slot for that key.',
+        });
+      }
+    }
+
+    // 4. free-form-html needs the render-slot filled (`ui-<id>-render`)
+    if (route.render_mode === 'free-form-html') {
+      const slotKey = `ui-${route.id}-render`;
+      if (!slotKeys.has(slotKey) || !mergedSlots[slotKey]) {
+        issues.push({
+          code: 'ui_route_free_form_missing_render_slot',
+          routeId: route.id,
+          reason:
+            `ui_routes['${route.id}'].render_mode='free-form-html' requires the ` +
+            `slot '${slotKey}' to be filled with an html-template-literal body. ` +
+            'Run fill_slot for that key.',
+        });
+      }
+    }
+
+    // 5. B.13 — interactive=true ist NUR für react-ssr-mode unterstützt.
+    //    Library + free-form-html sind SSR-only (interpolierte html-Strings
+    //    bzw. operator-frei-gewählter renderRoute-Body; in beiden Fällen
+    //    gibt's keine React-Komponente zum Hydraten). Wer interactive=true
+    //    für die anderen Modes setzt: schalt auf 'react-ssr' um.
+    if (route.interactive && route.render_mode !== 'react-ssr') {
+      issues.push({
+        code: 'ui_route_interactive_not_supported',
+        routeId: route.id,
+        reason:
+          `ui_routes['${route.id}'].interactive=true wird nur für ` +
+          "render_mode='react-ssr' unterstützt. Library- und free-form-html-Modes " +
+          'haben keine hydratable React-Komponente. Setze render_mode auf "react-ssr" oder ' +
+          'interactive auf false.',
+      });
+    }
   }
 
   return issues;

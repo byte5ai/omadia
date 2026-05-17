@@ -52,8 +52,8 @@ import type {
   PersonIngestResult,
   CompanyRelationsIngest,
   CompanyRelationsResult,
-  LinkCompanyToEntityOptions,
-  LinkCompanyToEntityResult,
+  LinkCompanyToOdooOptions,
+  LinkCompanyToOdooResult,
   FinancialSnapshotIngest,
   FinancialSnapshotIngestResult,
 } from '@omadia/plugin-api';
@@ -193,10 +193,10 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
     return this.inner.ingestCompanyRelations(relations);
   }
 
-  linkCompanyToEntity(
-    opts: LinkCompanyToEntityOptions,
-  ): Promise<LinkCompanyToEntityResult> {
-    return this.inner.linkCompanyToEntity(opts);
+  linkCompanyToOdoo(
+    opts: LinkCompanyToOdooOptions,
+  ): Promise<LinkCompanyToOdooResult> {
+    return this.inner.linkCompanyToOdoo(opts);
   }
 
   ingestFinancialSnapshots(

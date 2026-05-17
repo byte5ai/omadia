@@ -1,6 +1,7 @@
 import { weeklyDigestJob } from './jobs/weeklyDigest.js';
 import { createNotesStore } from './notesStore.js';
 import { createHealthRouter } from './routes/healthRouter.js';
+import { createUiRouter } from './routes/uiRouter.js';
 import { createToolkit, type Toolkit } from './toolkit.js';
 import type { PluginContext } from './types.js';
 
@@ -41,14 +42,47 @@ export async function activate(ctx: PluginContext): Promise<AgentHandle> {
     llm: ctx.llm,
   });
 
+  // Wrap the addNote handler so a successful note-add also fires a
+  // cross-channel notification through ctx.notifications. Fire-and-forget:
+  // notification delivery must never block (or fail) the tool result.
+  // The wrapped handler still returns the original toolkit string so the
+  // orchestrator sees no change in shape or content.
+  const addNoteHandler = async (raw: unknown): Promise<string> => {
+    const result = await toolkit.handlers.addNote(raw);
+    const bodyPreview =
+      typeof raw === 'object' &&
+      raw !== null &&
+      'body' in raw &&
+      typeof (raw as { body: unknown }).body === 'string'
+        ? ((raw as { body: string }).body.length > 140
+            ? `${(raw as { body: string }).body.slice(0, 140)}…`
+            : (raw as { body: string }).body)
+        : 'note';
+    ctx.notifications
+      .send({
+        title: 'Note added',
+        body: bodyPreview,
+        deepLink: '/p/agent-reference-maximum/dashboard',
+      })
+      .catch((err) => {
+        ctx.log(
+          'notify failed:',
+          err instanceof Error ? err.message : String(err),
+        );
+      });
+    return result;
+  };
+
   const disposeAddNote = ctx.tools.register(
     toolkit.specs.addNote,
-    toolkit.handlers.addNote,
+    addNoteHandler,
     {
       promptDoc:
         'Schreibt eine kurze Notiz in den Plugin-Memory-Scope. Nutzt die ' +
         'Smart-Card-Attachment-Pattern, um die gespeicherte Notiz inline ' +
-        'als note-card im Channel zu rendern.',
+        'als note-card im Channel zu rendern. Sendet zusätzlich eine ' +
+        'Notification über ctx.notifications.send — demonstriert das ' +
+        'Cross-Channel-Notification-Pattern.',
       attachmentSink: () => toolkit.takeAddNoteAttachments(),
     },
   );
@@ -98,6 +132,17 @@ export async function activate(ctx: PluginContext): Promise<AgentHandle> {
   const healthRouter = createHealthRouter({ notes });
   const disposeRoute = ctx.routes.register('/agents/reference', healthRouter);
 
+  const uiRouter = createUiRouter({ notes });
+  const disposeUi = ctx.routes.register('/p/agent-reference-maximum', uiRouter);
+  const disposeUiDescriptor = ctx.uiRoutes.register({
+    routeId: 'dashboard',
+    path: '/dashboard',
+    title: 'Reference Agent — Dashboard',
+    description:
+      'Pattern-Source-Plugin: live notes counter + recent-notes list. Self-refreshes every 30 s.',
+    order: 50,
+  });
+
   const disposeJob = ctx.jobs.register(
     {
       name: 'weekly-digest-programmatic',
@@ -125,6 +170,8 @@ export async function activate(ctx: PluginContext): Promise<AgentHandle> {
       disposeSmartExtract();
       disposeQueryNotes();
       disposeRoute();
+      disposeUi();
+      disposeUiDescriptor();
       disposeJob();
       disposeService();
     },

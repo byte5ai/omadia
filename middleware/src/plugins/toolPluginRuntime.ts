@@ -4,6 +4,8 @@ import { promises as fs } from 'node:fs';
 
 import { createPluginContext } from '../platform/pluginContext.js';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
+import type { NotificationRouter } from '../platform/notificationRouter.js';
+import type { UiRouteCatalog } from '../platform/uiRouteCatalog.js';
 import type { ServiceRegistry } from '../platform/serviceRegistry.js';
 import type { SecretVault } from '../secrets/vault.js';
 import type { NativeToolRegistry } from '@omadia/orchestrator';
@@ -57,6 +59,8 @@ export interface ToolPluginRuntimeDeps {
   serviceRegistry: ServiceRegistry;
   nativeToolRegistry: NativeToolRegistry;
   pluginRouteRegistry: PluginRouteRegistry;
+  notificationRouter: NotificationRouter;
+  uiRouteCatalog: UiRouteCatalog;
   jobScheduler: JobScheduler;
   log?: (msg: string) => void;
 }
@@ -193,6 +197,8 @@ export class ToolPluginRuntime {
       serviceRegistry: this.deps.serviceRegistry,
       nativeToolRegistry: this.deps.nativeToolRegistry,
       routeRegistry: this.deps.pluginRouteRegistry,
+      notificationRouter: this.deps.notificationRouter,
+      uiRouteCatalog: this.deps.uiRouteCatalog,
       jobScheduler: this.deps.jobScheduler,
       logger: (...args) => console.log(`[${agentId}]`, ...args),
     });
@@ -237,6 +243,7 @@ export class ToolPluginRuntime {
     // close() should already invoke — a leaked dispose still won't outlive
     // its plugin's lifecycle.
     this.deps.jobScheduler.stopForPlugin(agentId);
+    this.deps.uiRouteCatalog.disposeBySource(agentId);
     this.active.delete(agentId);
     log(`[tool-runtime] DEACTIVATED ${agentId}`);
     return true;

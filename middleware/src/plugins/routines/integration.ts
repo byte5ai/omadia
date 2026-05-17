@@ -38,7 +38,14 @@ export function createRoutinesIntegration(
     publishProactiveSend(channel, send) {
       handle.senderRegistry.register(
         createProactiveSender(channel, async (ref, msg, routine) => {
-          await send(ref, { text: msg.text }, routine);
+          await send(
+            ref,
+            {
+              text: msg.text,
+              ...(msg.cardBody !== undefined ? { cardBody: msg.cardBody } : {}),
+            },
+            routine,
+          );
         }),
       );
     },
@@ -68,7 +75,13 @@ export function createRoutinesIntegration(
     buildRoutineSmartCardAttachment(input) {
       return {
         contentType: ADAPTIVE_CARD_CONTENT_TYPE,
-        content: buildRoutineSmartCard(input),
+        content: buildRoutineSmartCard({
+          routine: input.routine,
+          body: input.body,
+          ...(input.bodyItems !== undefined
+            ? { bodyItems: input.bodyItems }
+            : {}),
+        }),
       };
     },
 

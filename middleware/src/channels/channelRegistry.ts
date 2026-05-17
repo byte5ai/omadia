@@ -1,5 +1,7 @@
 import { createPluginContext } from '../platform/pluginContext.js';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
+import type { NotificationRouter } from '../platform/notificationRouter.js';
+import type { UiRouteCatalog } from '../platform/uiRouteCatalog.js';
 import type { ServiceRegistry } from '../platform/serviceRegistry.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { JobScheduler } from '../plugins/jobScheduler.js';
@@ -33,6 +35,8 @@ export interface ChannelRegistryDeps {
   serviceRegistry: ServiceRegistry;
   nativeToolRegistry: NativeToolRegistry;
   pluginRouteRegistry: PluginRouteRegistry;
+  notificationRouter: NotificationRouter;
+  uiRouteCatalog: UiRouteCatalog;
   jobScheduler: JobScheduler;
   resolver: ChannelPluginResolver;
   coreApi: CoreApi;
@@ -91,6 +95,8 @@ export class DefaultChannelRegistry implements ChannelRegistry {
       serviceRegistry: this.deps.serviceRegistry,
       nativeToolRegistry: this.deps.nativeToolRegistry,
       routeRegistry: this.deps.pluginRouteRegistry,
+      notificationRouter: this.deps.notificationRouter,
+      uiRouteCatalog: this.deps.uiRouteCatalog,
       jobScheduler: this.deps.jobScheduler,
     });
 
@@ -103,6 +109,17 @@ export class DefaultChannelRegistry implements ChannelRegistry {
   async deactivate(agentId: string): Promise<void> {
     const handle = this.handles.get(agentId);
     this.deps.routes.deactivateChannel(agentId);
+    // Drop the cached ChannelPlugin implementation BEFORE the rest of
+    // teardown so an immediately-following re-activate (upgrade flow)
+    // can never observe the stale module. Without this, the resolver's
+    // agentId-keyed cache hands back the old dist/plugin.js even though
+    // a newer version was just unpacked at /data/uploaded-packages/.
+    this.deps.resolver.invalidate?.(agentId);
+    // Fail-safe: drop any uiRoute descriptors this plugin published.
+    // Plugin close() should dispose its own handles, but a leaked one
+    // would otherwise outlive its plugin in the catalogue and surface
+    // a stale entry in channel-teams' Hub + Tab-Config dropdown.
+    this.deps.uiRouteCatalog.disposeBySource(agentId);
     if (!handle) return;
     this.handles.delete(agentId);
     try {

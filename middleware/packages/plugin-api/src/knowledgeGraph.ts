@@ -13,8 +13,8 @@ export interface KnowledgeGraph {
   ingestTurn(turn: TurnIngest): Promise<TurnIngestResult>;
   /**
    * Upsert a batch of standalone business entities (no Turn relationship).
-   * Used by integration plugins to populate built-in or generic entity
-   * nodes proactively so `findEntityCapturedTurns` (name
+   * Used by the Odoo / Confluence sync to populate `OdooEntity` and
+   * `ConfluencePage` nodes proactively so `findEntityCapturedTurns` (name
    * match) works even before a user mentions the entity in a chat.
    *
    * Returns the external ids of the rows that were inserted or updated in
@@ -24,7 +24,7 @@ export interface KnowledgeGraph {
   /**
    * Persist a batch of atomic facts extracted from a Turn. Each fact becomes
    * a `Fact` node with a `DERIVED_FROM` edge to its source turn and optional
-   * `MENTIONS` edges to referenced entity nodes. Idempotent
+   * `MENTIONS` edges to any referenced OdooEntity / ConfluencePage. Idempotent
    * by (tenant, factId): re-running the extractor on the same turn doesn't
    * duplicate.
    */
@@ -86,7 +86,7 @@ export interface KnowledgeGraph {
   /**
    * Lookup of business entities by model + optional name substring. Used by
    * the sub-agents' `query_graph` tool to resolve stable master data
-   * (journals, departments, partners, etc.) without a live source round-trip.
+   * (journals, departments, partners, etc.) without round-tripping to Odoo.
    * Scope-filtering is up to the caller — the graph returns every match.
    */
   findEntities(opts: FindEntitiesOptions): Promise<GraphNode[]>;
@@ -112,14 +112,13 @@ export interface KnowledgeGraph {
     relations: CompanyRelationsIngest,
   ): Promise<CompanyRelationsResult>;
   /**
-   * Cross-link a NorthData `Company` to a known entity in the integration
-   * graph (typically a customer/partner record) via VAT or trade-register
-   * match. Writes a single `REFERS_TO` edge — never mutates the integration.
-   * Tolerates a missing entity node (returns `{linked:false}`).
+   * Cross-link a NorthData `Company` to an Odoo `OdooEntity(res.partner)` via
+   * VAT or Handelsregister match. Writes a single `REFERS_TO` edge — no Odoo
+   * mutation. Tolerates a missing Odoo node (returns `{linked:false}`).
    */
-  linkCompanyToEntity(
-    opts: LinkCompanyToEntityOptions,
-  ): Promise<LinkCompanyToEntityResult>;
+  linkCompanyToOdoo(
+    opts: LinkCompanyToOdooOptions,
+  ): Promise<LinkCompanyToOdooResult>;
   /**
    * Upsert one or more `FinancialSnapshot` nodes. Each snapshot is keyed by
    * `(companyExternalId, fiscalYear)` and linked to its Company via a
@@ -234,19 +233,18 @@ export interface GraphEdge {
  * but carries enough metadata to stand on its own — display label + optional
  * extra properties for the UI (e.g. partner email, employee department).
  *
- * `system` is a free-form string namespace identifying the source the entity
- * was ingested from (e.g. an integration plugin's id). Two `system` values
- * are reserved as built-ins that map to first-class GraphNodeTypes used by
- * the kernel's type schema (`'OdooEntity'`, `'ConfluencePage'`); every other
- * `system` value maps to GraphNodeType `'PluginEntity'`. Plugins MUST declare
- * their custom system strings in `permissions.graph.entity_systems` and
- * ingest through `ctx.knowledgeGraph` so the accessor can enforce the
- * namespace.
+ * `system` is a free-form string namespace (OB-29-2). Built-in values:
+ *   - `'odoo'` → maps to GraphNodeType `'OdooEntity'`
+ *   - `'confluence'` → maps to GraphNodeType `'ConfluencePage'`
+ *   - any other string → maps to GraphNodeType `'PluginEntity'` (generic
+ *     plugin-namespaced entity). Plugins MUST declare their custom system
+ *     strings in `permissions.graph.entity_systems` and ingest through
+ *     `ctx.knowledgeGraph` so the accessor can enforce the namespace.
  */
 export interface EntityIngest {
   system: string;
   model: string;
-  /** External id in the source system. */
+  /** External id in the source system (Odoo numeric id, Confluence page id). */
   id: string | number;
   displayName?: string;
   /** Free-form extras stored on the node properties. Keep small — this is
@@ -255,7 +253,7 @@ export interface EntityIngest {
 }
 
 export interface EntityIngestResult {
-  /** External ids ("<system>:<model>:<id>") in the order they were inserted. */
+  /** External ids ("odoo:res.partner:42") in the order they were inserted. */
   entityIds: string[];
   inserted: number;
   updated: number;
@@ -367,15 +365,15 @@ export interface CompanyRelationsResult {
   skipped: number;
 }
 
-export interface LinkCompanyToEntityOptions {
+export interface LinkCompanyToOdooOptions {
   companyExternalId: string;
-  /** External id in the shape `<system>:<model>:<id>`. Must already exist
-   *  — caller looks this up via `findEntities({model, nameContains:…})` or
-   *  another identifier match. */
-  entityExternalId: string;
+  /** External id in the shape `<system>:<model>:<id>`, e.g.
+   *  `odoo:res.partner:42`. Must already exist — caller looks this up via
+   *  `findEntities({model:'res.partner', nameContains:…})` or VAT match. */
+  odooEntityExternalId: string;
 }
 
-export interface LinkCompanyToEntityResult {
+export interface LinkCompanyToOdooResult {
   linked: boolean;
 }
 
@@ -553,9 +551,8 @@ export interface RunToolCall {
   isError: boolean;
   /** Orchestrator-level tool: 'orchestrator'. Sub-agent tool: the agent name. */
   agentContext: string;
-  /** External ids of entities produced by this call (one per integration,
-   *  in the shape `<system>://…`). Wired by the entity-ref bus, same source
-   *  as TurnIngest.entityRefs. */
+  /** External ids of entities produced by this call (odoo://…, confluence://…).
+   * Wired by the entity-ref bus, same source as TurnIngest.entityRefs. */
   producedEntityIds?: string[];
 }
 
@@ -743,7 +740,7 @@ export interface EntityCapturedTurnsOptions {
 }
 
 export interface FindEntitiesOptions {
-  /** Source-system model name, e.g. `res.partner`, `hr.department`. */
+  /** Odoo/Confluence model name, e.g. `res.partner`, `hr.department`. */
   model: string;
   /** Optional case-insensitive substring match against `displayName` or `id`. */
   nameContains?: string;

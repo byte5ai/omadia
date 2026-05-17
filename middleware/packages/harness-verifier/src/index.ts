@@ -51,7 +51,7 @@ export type {
   ClaimType,
   ClaimVerdict,
   HardClaim,
-  RecordRef,
+  OdooRecordRef,
   SoftClaim,
   VerifierBadge,
   VerifierInput,
@@ -66,6 +66,7 @@ export { DeterministicChecker } from './deterministicChecker.js';
 export type {
   DeterministicCheckerOptions,
   GraphReader,
+  OdooReader,
 } from './deterministicChecker.js';
 
 // EvidenceJudge

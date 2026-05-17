@@ -1560,6 +1560,48 @@ export async function patchInstalledSecrets(
 // Routines (operator dashboard)
 // -----------------------------------------------------------------------------
 
+/**
+ * Phase C — server-side output template (mirrors `RoutineOutputTemplate`
+ * in the middleware). Operator UI surfaces and edits this blob; rendering
+ * happens server-side at routine-trigger time.
+ *
+ * Kept as the structural shape rather than `unknown` so the editor /
+ * preview UI can offer mild type help (autocompletion, validation
+ * hints) — the canonical validation is the backend's
+ * `parseRoutineOutputTemplate`.
+ */
+export interface RoutineOutputTemplateDto {
+  format: 'markdown' | 'adaptive-card' | 'html';
+  sections: ReadonlyArray<RoutineTemplateSectionDto>;
+}
+
+export type RoutineTemplateSectionDto =
+  | { kind: 'narrative-slot'; id: string; hint?: string }
+  | {
+      kind: 'data-table';
+      sourceTool: string;
+      sourcePath?: string;
+      title?: string;
+      titleSlot?: string;
+      groupBy?: string;
+      columns: ReadonlyArray<{
+        label: string;
+        field: string;
+        format?: 'date' | 'currency' | 'plain';
+      }>;
+      emptyText?: string;
+    }
+  | {
+      kind: 'data-list';
+      sourceTool: string;
+      sourcePath?: string;
+      title?: string;
+      titleSlot?: string;
+      itemTemplate: string;
+      emptyText?: string;
+    }
+  | { kind: 'static-markdown'; text: string };
+
 export interface RoutineDto {
   id: string;
   tenant: string;
@@ -1575,6 +1617,7 @@ export interface RoutineDto {
   lastRunAt: string | null;
   lastRunStatus: 'ok' | 'error' | 'timeout' | null;
   lastRunError: string | null;
+  outputTemplate: RoutineOutputTemplateDto | null;
 }
 
 export interface ListRoutinesResponse {
@@ -1642,6 +1685,85 @@ export async function triggerRoutineNow(
     );
   }
   return (await res.json()) as RoutineResponse;
+}
+
+/**
+ * Phase C.7 — Set or clear a routine's `output_template`. Passing `null`
+ * reverts the routine to the legacy LLM-renders path. The backend
+ * validates the shape via `parseRoutineOutputTemplate` and returns 400
+ * with a `routines.template_invalid` reason on malformed input.
+ */
+export async function setRoutineTemplate(
+  id: string,
+  template: RoutineOutputTemplateDto | null,
+): Promise<RoutineResponse> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(
+    botApi(`/v1/routines/${encodeURIComponent(id)}/template`),
+    {
+      method: 'PUT',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+        ...forwarded,
+      },
+      body: JSON.stringify({ template }),
+      credentials: 'include',
+      cache: 'no-store',
+    },
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new ApiError(
+      res.status,
+      `PUT routines/${id}/template failed: ${res.status}`,
+      text,
+    );
+  }
+  return (await res.json()) as RoutineResponse;
+}
+
+export type PreviewRoutineTemplateResponse =
+  | { ok: true; format: 'markdown'; text: string }
+  | { ok: true; format: 'adaptive-card'; items: readonly unknown[] }
+  | { ok: false; reason: string };
+
+/**
+ * Phase C.7 — Preview-render a template against operator-supplied
+ * synthetic raw tool results + slot values. Stateless: the backend
+ * never reads or writes the routine row, so this works for templates
+ * the operator hasn't saved yet. Returns the renderer's discriminated
+ * union verbatim so the UI can render either markdown text or the
+ * Adaptive Card item JSON.
+ */
+export async function previewRoutineTemplate(input: {
+  template: RoutineOutputTemplateDto;
+  rawToolResults?: Record<string, unknown>;
+  slots?: Record<string, string>;
+  locale?: string;
+  currency?: string;
+}): Promise<PreviewRoutineTemplateResponse> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(botApi('/v1/routines/preview-template'), {
+    method: 'POST',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      ...forwarded,
+    },
+    body: JSON.stringify(input),
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new ApiError(
+      res.status,
+      `POST routines/preview-template failed: ${res.status}`,
+      text,
+    );
+  }
+  return (await res.json()) as PreviewRoutineTemplateResponse;
 }
 
 export async function deleteRoutine(id: string): Promise<void> {
@@ -1720,4 +1842,90 @@ export async function getRoutineRun(
   return getJson<RoutineRunResponse>(
     `/v1/routines/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}`,
   );
+}
+
+// -----------------------------------------------------------------------------
+// Privacy-Shield v2 — Operator-UI (Slice S-7)
+// -----------------------------------------------------------------------------
+
+export type PrivacyEgressMode = 'mark' | 'mask' | 'block';
+
+export interface OperatorPrivacyEgressConfig {
+  enabled: boolean;
+  mode: PrivacyEgressMode;
+  blockPlaceholderText: string;
+}
+
+export interface OperatorPrivacyAllowlist {
+  tenantSelf: string[];
+  repoDefault: string[];
+  operatorOverride: string[];
+}
+
+export interface OperatorPrivacyState {
+  egress: OperatorPrivacyEgressConfig;
+  allowlist: OperatorPrivacyAllowlist;
+  detectors: string[];
+  overridePersistsAcrossRestart: boolean;
+}
+
+export interface PrivacyLiveTestDetectorHit {
+  type: string;
+  value: string;
+  span: [number, number];
+  confidence: number;
+  detector: string;
+  action: 'redacted' | 'tokenized' | 'blocked' | 'passed';
+}
+
+export interface PrivacyLiveTestAllowlistMatch {
+  span: [number, number];
+  source: 'tenantSelf' | 'repoDefault' | 'operatorOverride';
+  term: string;
+}
+
+export interface PrivacyLiveTestResponse {
+  original: string;
+  tokenized: string;
+  detectorHits: PrivacyLiveTestDetectorHit[];
+  allowlistMatches: PrivacyLiveTestAllowlistMatch[];
+}
+
+export async function getOperatorPrivacyState(): Promise<OperatorPrivacyState> {
+  return getJson<OperatorPrivacyState>('/v1/operator/privacy/state');
+}
+
+export async function setOperatorPrivacyOverrides(
+  terms: string[],
+): Promise<{ allowlist: OperatorPrivacyAllowlist }> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(botApi('/v1/operator/privacy/overrides'), {
+    method: 'PUT',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      ...forwarded,
+    },
+    body: JSON.stringify({ terms }),
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    maybeNavigateToLogin(res.status);
+    throw new ApiError(
+      res.status,
+      `PUT /v1/operator/privacy/overrides failed: ${res.status}`,
+      text,
+    );
+  }
+  return JSON.parse(text) as { allowlist: OperatorPrivacyAllowlist };
+}
+
+export async function runOperatorPrivacyLiveTest(
+  text: string,
+): Promise<PrivacyLiveTestResponse> {
+  return postJson<PrivacyLiveTestResponse>('/v1/operator/privacy/live-test', {
+    text,
+  });
 }

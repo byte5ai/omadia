@@ -29,16 +29,35 @@ declare module 'express-serve-static-core' {
  *
  * Strict: missing/invalid/expired cookie → 401. Whitelist-rejected
  * (Entra path only) → 403. Admin UI redirects to /login on 401.
+ *
+ * Public-path bypass (post-deploy 2026-05-14 hotfix): OB-106 mounted
+ * `requireAuth` at the broad `/api` prefix to cover the chat-inference
+ * endpoints. That side-effect-blocked `/api/v1/auth/*` (login-providers,
+ * login, setup) which MUST be reachable without a session cookie —
+ * otherwise an expired cookie traps the user in a 401 loop and the
+ * login page can't even load its provider list. The publicPaths regex
+ * list short-circuits to `next()` so other gates downstream (per-route
+ * requireAuth, defence-in-depth) still apply.
  */
 export function createRequireAuth(deps: {
   signingKey: Uint8Array;
   whitelist: EmailWhitelist;
+  /** Optional regex list matched against `req.originalUrl`. Requests
+   *  whose URL matches ANY pattern bypass the cookie check and proceed
+   *  to the next handler. Use sparingly — every entry is a potential
+   *  unauthenticated surface. */
+  publicPaths?: readonly RegExp[];
 }) {
+  const publicPaths = deps.publicPaths ?? [];
   return async function requireAuth(
     req: Request,
     res: Response,
     next: NextFunction,
   ): Promise<void> {
+    if (publicPaths.length > 0 && publicPaths.some((p) => p.test(req.originalUrl))) {
+      next();
+      return;
+    }
     const cookies = (req as Request & { cookies?: Record<string, string> }).cookies;
     const token = cookies ? cookies[SESSION_COOKIE] : undefined;
     if (!token) {

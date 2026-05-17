@@ -7,6 +7,8 @@ import type { z } from 'zod';
 
 import { createPluginContext } from '../platform/pluginContext.js';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
+import type { NotificationRouter } from '../platform/notificationRouter.js';
+import type { UiRouteCatalog } from '../platform/uiRouteCatalog.js';
 import type { ServiceRegistry } from '../platform/serviceRegistry.js';
 import type { SecretVault } from '../secrets/vault.js';
 import type { NativeToolRegistry } from '@omadia/orchestrator';
@@ -113,6 +115,8 @@ export interface DynamicAgentRuntimeDeps {
   /** Shared registry for plugin-contributed Express routers. Activated
    *  plugins register mounts here via `ctx.routes.register(prefix, router)`. */
   pluginRouteRegistry: PluginRouteRegistry;
+  notificationRouter: NotificationRouter;
+  uiRouteCatalog: UiRouteCatalog;
   /** Kernel-wide background-job scheduler. Plugin-contributed jobs register
    *  here via `ctx.jobs.register(spec, handler)`. */
   jobScheduler: JobScheduler;
@@ -279,6 +283,8 @@ export class DynamicAgentRuntime {
       serviceRegistry: this.deps.serviceRegistry,
       nativeToolRegistry: this.deps.nativeToolRegistry,
       routeRegistry: this.deps.pluginRouteRegistry,
+      notificationRouter: this.deps.notificationRouter,
+      uiRouteCatalog: this.deps.uiRouteCatalog,
       jobScheduler: this.deps.jobScheduler,
       logger: (...args) => console.log(`[${agentId}]`, ...args),
     });
@@ -446,6 +452,7 @@ export class DynamicAgentRuntime {
     // ToolPluginRuntime — see toolPluginRuntime.ts for the same belt-and-braces
     // teardown comment.
     this.deps.jobScheduler.stopForPlugin(agentId);
+    this.deps.uiRouteCatalog.disposeBySource(agentId);
     this.active.delete(agentId);
     log(`[dynamic-runtime] DEACTIVATED ${agentId}`);
     return true;

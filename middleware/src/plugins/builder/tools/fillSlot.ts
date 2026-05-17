@@ -1,9 +1,49 @@
 import { z } from 'zod';
 
+import { loadBoilerplate } from '../boilerplateSource.js';
 import type { BuildError } from '../buildErrorParser.js';
 import type { SlotTypecheckReason } from '../slotTypecheckPipeline.js';
 import { annotateAll } from '../tscErrorHints.js';
 import type { BuilderTool } from './types.js';
+
+/**
+ * Validate a slot key against the template's slot declarations when it
+ * looks like a partial of a declared slot (`<base>-<n>`). Direct hits on
+ * declared slot keys, and keys that don't match the partial shape, pass
+ * through unchanged — preserving today's lenient behaviour for ad-hoc
+ * slot keys. Only out-of-range partial indices are rejected, since the
+ * partial-slot contract (`max_partials`) is what codegen relies on to
+ * know which files to synthesise.
+ */
+async function validatePartialKeyShape(
+  slotKey: string,
+  templateId: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  let bundle;
+  try {
+    bundle = await loadBoilerplate(templateId);
+  } catch {
+    return { ok: true };
+  }
+  if (bundle.manifest.slots.some((s) => s.key === slotKey)) return { ok: true };
+  const m = /^(.+)-(\d+)$/.exec(slotKey);
+  if (!m) return { ok: true };
+  const base = m[1] ?? '';
+  const n = Number(m[2]);
+  const baseSlot = bundle.manifest.slots.find((s) => s.key === base);
+  if (!baseSlot) return { ok: true };
+  if (n < 1 || baseSlot.max_partials < n) {
+    return {
+      ok: false,
+      error:
+        `Slot '${slotKey}' looks like a partial of '${base}' but template ` +
+        `'${templateId}' declares max_partials=${String(baseSlot.max_partials)} ` +
+        `for that slot. Use indices in [1, ${String(baseSlot.max_partials)}], ` +
+        `or fill the base slot '${base}' instead.`,
+    };
+  }
+  return { ok: true };
+}
 
 const InputSchema = z
   .object({
@@ -69,6 +109,13 @@ export const fillSlotTool: BuilderTool<Input, Result> = {
     const draft = await ctx.draftStore.load(ctx.userEmail, ctx.draftId);
     if (!draft) {
       return { ok: false, error: `draft ${ctx.draftId} not found for user` };
+    }
+
+    if (draft.spec.template) {
+      const partialCheck = await validatePartialKeyShape(slotKey, draft.spec.template);
+      if (!partialCheck.ok) {
+        return { ok: false, error: partialCheck.error };
+      }
     }
 
     const nextSlots: Record<string, string> = { ...draft.slots, [slotKey]: source };

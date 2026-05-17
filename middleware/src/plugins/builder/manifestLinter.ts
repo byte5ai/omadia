@@ -40,7 +40,10 @@ export type ViolationKind =
   | 'setup_field_key_duplicate'
   | 'reserved_id'
   | 'external_read_unknown_service'
-  | 'external_read_integration_missing';
+  | 'external_read_integration_missing'
+  | 'ui_route_id_duplicate'
+  | 'ui_route_path_duplicate'
+  | 'ui_route_tab_label_duplicate';
 
 export interface ManifestViolation {
   kind: ViolationKind;
@@ -217,6 +220,76 @@ export function validateSpec(
       });
     }
   });
+
+  // 10. ui_routes[] — id, path, and tab_label must each be unique.
+  //     A duplicate path silently shadows a route in Express (last-mount-
+  //     wins); a duplicate tab_label produces twin Hub-Cards that the
+  //     operator can't tell apart; a duplicate id collides on the slot-key
+  //     namespace (`ui-<id>-component` / `ui-<id>-render`) and on the
+  //     generated UiRouter-Filename.
+  const uiRoutes = Array.isArray((s as { ui_routes?: unknown }).ui_routes)
+    ? ((s as { ui_routes: unknown[] }).ui_routes)
+    : [];
+  const uiIdIndices = new Map<string, number[]>();
+  const uiPathIndices = new Map<string, number[]>();
+  const uiTabLabelIndices = new Map<string, number[]>();
+  uiRoutes.forEach((r, i) => {
+    if (!r || typeof r !== 'object') return;
+    const id = (r as { id?: unknown }).id;
+    const path = (r as { path?: unknown }).path;
+    const tabLabel = (r as { tab_label?: unknown }).tab_label;
+    if (typeof id === 'string') {
+      const list = uiIdIndices.get(id) ?? [];
+      list.push(i);
+      uiIdIndices.set(id, list);
+    }
+    if (typeof path === 'string') {
+      const list = uiPathIndices.get(path) ?? [];
+      list.push(i);
+      uiPathIndices.set(path, list);
+    }
+    if (typeof tabLabel === 'string') {
+      const list = uiTabLabelIndices.get(tabLabel) ?? [];
+      list.push(i);
+      uiTabLabelIndices.set(tabLabel, list);
+    }
+  });
+  for (const [id, indices] of uiIdIndices) {
+    if (indices.length > 1) {
+      const first = indices[0] ?? 0;
+      violations.push({
+        kind: 'ui_route_id_duplicate',
+        path: `/ui_routes/${String(first)}/id`,
+        message:
+          `ui_routes id '${id}' is duplicated at indices ${indices.join(', ')}. ` +
+          'Each ui_route must have a unique id (drives slot-key + filename).',
+      });
+    }
+  }
+  for (const [p, indices] of uiPathIndices) {
+    if (indices.length > 1) {
+      const first = indices[0] ?? 0;
+      violations.push({
+        kind: 'ui_route_path_duplicate',
+        path: `/ui_routes/${String(first)}/path`,
+        message:
+          `ui_routes path '${p}' is duplicated at indices ${indices.join(', ')}. ` +
+          'Each path must be unique (Express last-mount-wins would otherwise silently shadow earlier routes).',
+      });
+    }
+  }
+  for (const [label, indices] of uiTabLabelIndices) {
+    if (indices.length > 1) {
+      const first = indices[0] ?? 0;
+      violations.push({
+        kind: 'ui_route_tab_label_duplicate',
+        path: `/ui_routes/${String(first)}/tab_label`,
+        message:
+          `ui_routes tab_label '${label}' is duplicated at indices ${indices.join(', ')}. ` +
+          'The Hub renders one card per tab_label; duplicates produce indistinguishable entries.',
+      });
+    }
+  }
 
   // 6. setup_fields[].key unique
   const setupFields = Array.isArray(s.setup_fields) ? (s.setup_fields as unknown[]) : [];

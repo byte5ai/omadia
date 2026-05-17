@@ -16,80 +16,43 @@ model. You bring your own LLM API key, run the stack on a single machine
 > is supported but the upgrade path is hand-rolled today; an automated
 > migration runner is on the v1.0 roadmap.
 
-> **Heads-up — `main` was force-pushed on 2026-05-12** to purge a documentation
-> file that contained internal identifiers. The `v0.1.0` tag is unchanged, but
-> if you cloned this repository before that date your next `git pull` will fail
-> with `non-fast-forward` / `Updates were rejected`. To recover, discard the
-> stale local history and reset to the rewritten remote:
->
-> ```bash
-> git fetch origin
-> git reset --hard origin/main
-> ```
->
-> If you have local commits on top of the old `main`, cherry-pick them onto the
-> new base instead (`git log` on the old SHA is still reachable locally for ~90
-> days via the reflog).
-
-## Quickstart
+## Quickstart (~60 seconds after the first image pull)
 
 ```bash
 git clone https://github.com/byte5ai/omadia.git
 cd omadia
 
-# 1. Provide an Anthropic API key. The middleware will not boot without one.
-#    Every other env var has a working default for the docker-compose stack.
-cp middleware/.env.example middleware/.env
-$EDITOR middleware/.env                              # set ANTHROPIC_API_KEY=sk-ant-...
+# 1. Provide an Anthropic API key. Other env vars have sane local defaults.
+cp infra/.env.example infra/.env
+$EDITOR infra/.env                                   # set ANTHROPIC_API_KEY=...
 
-# 2. Bring up the full stack. First build pulls ~3 GB of images
-#    (postgres+pgvector, kroki, minio, ollama, presidio sidecar build).
-docker compose up -d --build
+# 2. Bring up the stack (postgres + middleware + admin UI).
+docker compose -f infra/docker-compose.yml --env-file infra/.env up -d
 
-# 3. Watch it come up — middleware needs ~60-90s on first boot for KG
-#    migrations + plugin activations + ollama model pulls.
-docker compose logs -f middleware
-
-# 4. Open the management UI and complete the first-admin wizard.
-open http://localhost:3333                           # /setup walks you through
+# 3. Open the management UI and complete the first-admin wizard.
+open http://localhost:3300                           # /setup walks you through
 ```
 
 The first user-creation flow lands on `/setup`. Once an administrator exists,
 `/setup` self-locks (returns `410 Gone`) and the regular `/login` page takes
 over.
 
-### Re-running
-
-`docker compose up -d` brings the stack back up; volumes (postgres data,
-vault, memory, uploaded plugins) survive. To start completely fresh:
+### Optional Compose profiles
 
 ```bash
-docker compose down -v && docker compose up -d --build
+# Mermaid / PlantUML / Vega rendering for the diagrams plugin
+docker compose -f infra/docker-compose.yml --profile diagrams up -d
+
+# In-tenant embeddings via Ollama (no external API required)
+docker compose -f infra/docker-compose.yml --profile embeddings up -d
+
+# Presidio NER sidecar for the privacy-proxy detector plugin
+docker compose -f infra/docker-compose.yml --profile privacy-presidio up -d
+
+# All optional profiles in one command
+docker compose -f infra/docker-compose.yml \
+  --profile diagrams --profile embeddings --profile privacy-presidio up -d
 ```
-
-> **Heads up — browser localStorage**: chats are cached in the browser
-> (offline-friendly). If you've ever used another Omadia instance on the
-> same `http://localhost:3333` (e.g. a previous deployment), those cached
-> chats will surface in this fresh install too. Browser DevTools →
-> Application → Local Storage → `http://localhost:3333` → "Clear All" gives
-> you a clean slate. (A first-install detection that does this
-> automatically is on the v0.2 roadmap.)
-
-### Service map
-
-| Service | Host port | Purpose |
-|---|---|---|
-| `web-ui` | `3000` | Admin UI (Next.js) |
-| `middleware` | `8080` | Kernel API + plugin runtime |
-| `postgres` | `5432` | Postgres + pgvector — knowledge graph / routines / verifier persistence (default user/password/db: `omadia`) |
-| `kroki` | `8765` | Diagram rendering (Mermaid, PlantUML, Vega, …) |
-| `minio` | `9000` / `9001` | S3-compatible object storage (console: `minioadmin` / `minioadmin`) |
-| `ollama` | `11434` | In-tenant embeddings + small NER model (`nomic-embed-text` + `llama3.2:3b`) |
-| `presidio` | `5001` | Python NER sidecar for the privacy detector plugin (FastAPI, `~1.5 GB` first build) |
-
-Stop the stack with `docker compose down`; add `-v` to also wipe the
-persistent volumes (`middleware-data`, `postgres-data`, `minio-data`,
-`ollama-data`).
 
 ## What's in the box
 
@@ -133,9 +96,9 @@ persistent volumes (`middleware-data`, `postgres-data`, `minio-data`,
   (Postgres + pgvector) (Ollama / API)              (AES-256-GCM file)
 ```
 
-More detailed walk-throughs of the plugin loading sequence, capability
-registry, and the multi-provider authentication layer will be published
-alongside the v0.2 release.
+A more detailed walk-through of the plugin loading sequence, capability
+registry, and the multi-provider authentication layer lives under
+[`docs/`](docs/).
 
 ## Plugin development
 
@@ -156,11 +119,19 @@ the differentiating logic, and verifying with the smoke runner before install.
 ## Deployment
 
 - **Local / single-tenant** — `docker compose up`, see Quickstart above
-- **Bring-your-own** — the runtime is a stock Node service plus the
-  sidecars in `docker-compose.yaml` (Kroki, MinIO, Ollama). Any host
-  capable of running Docker works (Kubernetes, ECS, Fly.io, plain VM).
-  Postgres is optional — without `DATABASE_URL` the kernel uses the
-  in-memory knowledge graph.
+- **Fly.io** — single-app deployment, multi-region supported. The compose
+  stack and the Fly image are baked from the same `Dockerfile`.
+- **Bring-your-own** — the runtime is a stock Node + Postgres app; any host
+  capable of running both works (Kubernetes, ECS, plain VM).
+
+> **Required production secret.** The shipped image runs with
+> `NODE_ENV=production`, which makes `VAULT_KEY` mandatory at boot — without
+> it the middleware refuses to start (this is intentional; the dev fallback
+> writes the master key into the data volume, which is not safe at rest).
+> Generate one with `openssl rand -base64 32` and wire it as a platform
+> secret (Fly: `fly secrets set VAULT_KEY=…`) before the first deploy. The
+> local Compose stack pins `NODE_ENV=development` so the dev fallback stays
+> available for `docker compose up` without configuration.
 
 > **Required production secret.** The shipped image runs with
 > `NODE_ENV=production`, which makes `VAULT_KEY` mandatory at boot — without
@@ -188,7 +159,7 @@ Active development tracks:
 
 ## License
 
-[MIT](LICENSE) — Copyright (c) 2026 byte5.ai
+[MIT](LICENSE) — Copyright (c) 2026 byte5 GmbH
 
 Third-party dependency licenses and notices are documented in
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). The dependency tree is

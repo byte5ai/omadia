@@ -6,11 +6,11 @@ identity:
   version: "0.1.0"
   kind: "extension"
   domain: "core.verifier"
-  description: "Answer-verifier pipeline (TriggerRouter → ClaimExtractor → DeterministicChecker → EvidenceJudge → CorrectionPrompt) plus VerifierStore (Postgres-persistent verdicts + contradictions on graphPool), GraphEvidenceFetcher, FailureReplayDetector, and a generic graphLookupTool factory for sub-agents. Consumes kernel capabilities `knowledgeGraph` (hard requires; lookups + trace cross-check) and optionally `graphPool` (VerifierStore writes, only available with a Postgres KG backend). Publishes `verifier@1` as a bundle capability `{ pipeline, store?, mode, maxRetries }` — kernel-side late-resolved and wrapped around the orchestrator into the `VerifierService` (the wrap-orchestrator bit stays kernel-side because orchestrator construction runs after `activateAllInstalled`)."
+  description: "Tool-Set: Answer-Verifier-Pipeline (TriggerRouter → ClaimExtractor → DeterministicChecker → EvidenceJudge → CorrectionPrompt) plus VerifierStore (Postgres-Persistenz für Verdicts + Contradictions auf graphPool), GraphEvidenceFetcher, FailureReplayDetector und die GraphLookupTool-Factory für die accounting/hr Sub-Agents. Konsumiert die Kernel-Capabilities `knowledgeGraph` (hard requires; Lookups + Trace-Cross-Check) und optional `graphPool` (VerifierStore-Schreibpfad, nur mit Neon-KG verfügbar) sowie `odoo.client` (DeterministicChecker-Re-Query). Published `verifier@1` als Bundle-Capability `{ pipeline, store?, mode, maxRetries }` — kernel-side late-resolved und mit dem konkreten Orchestrator zur `VerifierService` zusammengewickelt (das wraps-Orchestrator-bit bleibt kernel-side, weil Orchestrator-Konstruktion nach `activateAllInstalled` läuft)."
   authors:
     - name: "byte5 GmbH"
-      email: "dev@byte5.de"
-      url: "https://byte5.de"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
   license: "Proprietary"
   categories:
     - "infrastructure"
@@ -24,8 +24,9 @@ lifecycle:
   entry: "dist/plugin.js"
 
 # ---------------------------------------------------------------------------
-# Capability lifetime is plugin-owned. activate() reads the setup-fields
-# below + late-resolves `knowledgeGraph` (hard) plus optional `graphPool`,
+# S+9.3 Sub-Commit 2b: Capability lifetime flipped from kernel-bridge to
+# plugin-owned. activate() reads the setup-fields below + late-resolves
+# `knowledgeGraph` (hard) plus optional `graphPool` and `odoo.client`,
 # constructs the five pipeline classes plus optional VerifierStore, and
 # publishes `verifier@1` as a bundle.
 #

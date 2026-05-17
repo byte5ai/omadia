@@ -37,12 +37,18 @@ export interface PresidioDetectorPluginHandle {
 
 const DEFAULT_ENDPOINT = 'http://localhost:5001';
 const DEFAULT_LANGUAGE = 'de';
-// Slice 3.4.2: bump from 0.4 (Presidio's process-wide default) to 0.6.
-// spaCy's PERSON / LOCATION recognizers fire on common nouns at 0.4-0.5
-// in long-form inputs (Tool-Doc, memory recalls, …). 0.6 keeps the
-// real-name and real-address recall while filtering out the FP noise
-// that the 3.4 boot-smoke surfaced (272 maskings on one user turn).
-const DEFAULT_SCORE_THRESHOLD = 0.6;
+// Slice 3.4.2: bumped from 0.4 (Presidio's process-wide default) to 0.6.
+// Post-deploy 2026-05-14: further bump 0.6 → 0.8. The HR-routine FP
+// cascade ("Krankheit" → ADDRESS, "Abwesenheitstyp" → PERSON, etc.)
+// showed Presidio's German spaCy NER fires confident-looking hits in
+// the 0.6-0.8 band on common compound nouns. The allowlist catches
+// the known cases, but never exhaustively — a higher threshold is
+// the second line of defence. Trade-off: real names with low NER
+// confidence (uncommon spellings, foreign first names) may now slip
+// through. Acceptable because (a) the allowlist also tunes the
+// other way, (b) Egress Filter re-detects spontaneous PII, and
+// (c) operators can lower it via `presidio_score_threshold`.
+const DEFAULT_SCORE_THRESHOLD = 0.8;
 const DEFAULT_TIMEOUT_MS = 3000;
 const DEFAULT_MAX_INPUT_CHARS = 100_000;
 

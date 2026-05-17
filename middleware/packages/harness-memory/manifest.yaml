@@ -9,8 +9,8 @@ identity:
   description: "Stellt persistenten /memories-Dateispeicher, den Anthropic-nativen memory-Tool-Handler und einen Dev-Memory-Browser bereit. Provider des Kernel-Service 'memoryStore'."
   authors:
     - name: "byte5 GmbH"
-      email: "dev@byte5.de"
-      url: "https://byte5.de"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
   license: "Proprietary"
   categories:
     - "infrastructure"

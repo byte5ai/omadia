@@ -45,6 +45,39 @@ export const DEFAULT_WORKSPACE_PACKAGES_ROOT = path.join(
  */
 export const BUILD_TIME_ONLY_DEPS: Readonly<Record<string, string>> = {
   typescript: '^5.4.0',
+  // B.12 — React-SSR pipeline. Shared across all plugin builds via the
+  // build-template node_modules; plugins WITHOUT react-ssr ui_routes
+  // simply don't import these. The peerDep is added to the plugin
+  // package.json by codegen only when ≥1 ui_route uses
+  // render_mode='react-ssr'.
+  react: '^18.3.1',
+  'react-dom': '^18.3.1',
+  '@types/react': '^18.3.12',
+  '@types/react-dom': '^18.3.1',
+  // B.12 production-fix — @types/express is needed at tsc-time for the
+  // codegen-emitted UiRouter (`import { Router } from 'express'`) and
+  // for any operator-authored admin-ui ctx.routes.register() body. The
+  // express runtime itself is now declared as a peerDep on the
+  // boilerplate (so it lands in the plugin's npmDeps automatically),
+  // but @types/express needs a host-managed pin because the agent's
+  // codegen never touches dev-dep type packages.
+  '@types/express': '^5.0.0',
+};
+
+/**
+ * Drift map for workspace packages whose published `name` field doesn't
+ * match the on-disk folder. Lookup is name → folder; only used when the
+ * folder-segment-after-slash doesn't directly resolve. Add an entry here
+ * INSTEAD of renaming the folder when you need to ship a fix urgently
+ * (folder-rename touches many files; alias is a 1-line localised fix).
+ *
+ * Long-term: clear these by moving the folder to match the package name.
+ */
+const PACKAGE_FOLDER_ALIASES: Readonly<Record<string, string>> = {
+  // Package was renamed `@byte5/harness-ui-helpers` → `@omadia/plugin-ui-helpers`
+  // but the workspace folder kept its harness-prefixed name. Folder-rename
+  // tracked as separate cleanup ticket.
+  '@omadia/plugin-ui-helpers': 'harness-ui-helpers',
 };
 
 export interface BuildTemplateConfig {
@@ -116,7 +149,13 @@ export async function loadBuildTemplateConfig(
     // post-rename the workspace ships `@omadia/*` packages and the
     // build template's boilerplate references them under that scope.
     if (name.startsWith('@omadia/') || name.startsWith('@byte5/')) {
-      const folder = name.slice(name.indexOf('/') + 1);
+      // B.12 production-fix — some packages were renamed (package.json
+      // `name` field changed) without renaming the on-disk folder. The
+      // PACKAGE_FOLDER_ALIASES below maps published-name → folder for
+      // those drift cases. Future rename: drop the alias by moving the
+      // folder to match. Until then this keeps the build-template's
+      // workspace-symlink path correct.
+      const folder = PACKAGE_FOLDER_ALIASES[name] ?? name.slice(name.indexOf('/') + 1);
       const abs = path.join(workspaceRoot, folder);
       try {
         await fs.access(abs);

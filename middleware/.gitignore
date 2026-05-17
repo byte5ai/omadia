@@ -5,6 +5,11 @@ dist/
 .env.*.local
 .memory/
 data/
+# Privacy-Shield v2 (Slice S-3): the per-package data/ folders ship
+# bundled JSON the plugin reads at activate time — those MUST be
+# committed.
+!packages/*/data/
+!packages/*/data/**
 .uploaded-packages/
 *.log
 .DS_Store

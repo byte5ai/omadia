@@ -5,12 +5,12 @@ identity:
   domain: "seo"
   name: "SEO Analyst"
   version: "0.1.0"
-  description: "Analyses public websites from an SEO perspective: on-page, technical, structured data, crawl audits."
+  description: "Analysiert byte5-Webseiten aus SEO-Perspektive: On-Page, Technical, Structured Data, Crawl-Audits."
   authors:
     - name: "byte5 GmbH"
-      email: "dev@byte5.de"
-      url: "https://byte5.de"
-  license: "MIT"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
+  license: "Proprietary"
   icon: "./assets/icon.svg"
   categories:
     - "analytics"
@@ -46,18 +46,18 @@ setup:
   fields:
     - key: "target_base_url"
       type: "url"
-      label: "Target domain"
-      help: "Root URL of the website to analyse, e.g. https://example.com"
+      label: "Ziel-Domain"
+      help: "Root-URL der zu analysierenden Webseite, z.B. https://omadia.ai"
       required: true
-      default: "https://example.com"
+      default: "https://omadia.ai"
       pattern: "^https?://.+"
 
     - key: "user_agent"
       type: "string"
       label: "User-Agent"
-      help: "Bot identifier sent on each fetch. Checked against robots.txt."
+      help: "Bezeichner für Fetches. Wird in robots.txt geprüft."
       required: false
-      default: "omadia-seo-bot/0.1"
+      default: "byte5-seo-bot/0.1 (+https://omadia.ai)"
 
     - key: "crawl_max_pages"
       type: "integer"
@@ -172,23 +172,25 @@ capabilities:
 
 playbook:
   when_to_use: |
-    For SEO questions about the website configured under `target_base_url`:
-    "How does the About page hold up SEO-wise?", "Which H1 issues does the
-    landing page have?", "Do we have structured data for the Organization
-    schema?". The agent only operates on publicly reachable pages — no auth,
-    no secrets.
+    Für SEO-Fragen rund um byte5-eigene Webseiten: "Wie steht die About-Seite SEO-technisch da?",
+    "Welche H1-Probleme hat unsere Startseite?", "Haben wir Structured-Data für Organization?".
+    Der Agent arbeitet ausschließlich auf öffentlich erreichbaren Seiten — keine Auth, keine Secrets.
+
+  combines_with:
+    - agent: "de.byte5.agent.confluence"
+      why: "SEO-Befunde gegen interne Content-Guidelines aus Confluence abgleichen."
 
   not_for:
-    - "Keyword research via external SEO tools (Ahrefs, SEMrush)"
-    - "Lighthouse performance audits (would need a headless browser)"
-    - "Non-public / auth-gated pages"
-    - "Content changes on the CMS (this agent is read-only)"
+    - "Keyword-Research mit externen SEO-Tools (Ahrefs, SEMrush)"
+    - "Lighthouse-Performance-Audits (braucht Headless-Browser, Phase 2)"
+    - "Nicht-öffentliche / auth-gated Seiten"
+    - "Content-Änderungen am CMS (read-only)"
 
   example_prompts:
-    - "Analyse https://example.com/about and show me the most important SEO issues."
-    - "Check the technical SEO configuration of the configured domain."
-    - "Crawl the configured domain at depth 2 and list the top issues across pages."
-    - "Do we have JSON-LD on the home page?"
+    - "Analysiere https://omadia.ai/leistungen und zeig mir die wichtigsten SEO-Issues."
+    - "Check mal die technische SEO-Konfiguration der byte5-Domain."
+    - "Crawl omadia.ai bis Tiefe 2 und gib mir die Top-Fehler über alle Seiten."
+    - "Haben wir JSON-LD auf der Startseite?"
 
 entities:
   produces:
@@ -211,9 +213,8 @@ permissions:
 
   network:
     outbound:
-      # The host derived from `target_base_url` at install time is allowed
-      # automatically by the runtime — no need to enumerate it here.
-      - "*"
+      - "omadia.ai"
+      - "*.omadia.ai"
 
   filesystem:
     scratch: false

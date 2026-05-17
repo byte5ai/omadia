@@ -29,6 +29,7 @@ import {
   type MemoryAccessor,
   type MemoryStore,
   type MigrationContext,
+  type NotificationsAccessor,
   type PluginContext,
   type RoutesAccessor,
   type ScratchDirAccessor,
@@ -36,6 +37,7 @@ import {
   type SecretsReadWriteAccessor,
   type ServicesAccessor,
   type SubAgentAccessor,
+  type UiRoutesAccessor,
   type ToolsAccessor,
 } from '@omadia/plugin-api';
 import type { DomainTool } from '@omadia/orchestrator';
@@ -46,6 +48,8 @@ import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import type { SecretVault } from '../secrets/vault.js';
 import type { NativeToolRegistry } from '@omadia/orchestrator';
 import type { PluginRouteRegistry } from './pluginRouteRegistry.js';
+import type { NotificationRouter } from './notificationRouter.js';
+import type { UiRouteCatalog } from './uiRouteCatalog.js';
 import { createHttpAccessor } from './httpAccessor.js';
 import { createMemoryAccessor } from './memoryAccessor.js';
 import { SCRATCH_DIR } from './paths.js';
@@ -67,6 +71,7 @@ export {
   type JobsAccessor,
   type MemoryAccessor,
   type MigrationContext,
+  type NotificationsAccessor,
   type PluginContext,
   type RoutesAccessor,
   type ScratchDirAccessor,
@@ -74,6 +79,7 @@ export {
   type SecretsReadWriteAccessor,
   type ServicesAccessor,
   type ToolsAccessor,
+  type UiRoutesAccessor,
 } from '@omadia/plugin-api';
 
 export interface CreatePluginContextOptions {
@@ -101,6 +107,13 @@ export interface CreatePluginContextOptions {
    *  on deactivate so a misbehaving plugin's jobs cannot outlive its
    *  lifecycle. */
   jobScheduler: JobScheduler;
+  /** Kernel-wide notification fan-out. `ctx.notifications.send(...)` and
+   *  `ctx.notifications.registerChannel(...)` both delegate here. */
+  notificationRouter: NotificationRouter;
+  /** Kernel-wide uiRoute descriptor catalogue. `ctx.uiRoutes.register(...)`
+   *  delegates here; consumers (channel-teams Hub + Tab-Config) query
+   *  it at request time via the `uiRouteCatalog` service. */
+  uiRouteCatalog: UiRouteCatalog;
   logger?: (...args: unknown[]) => void;
 }
 
@@ -312,6 +325,29 @@ export function createPluginContext(
     },
   };
 
+  // Notifications accessor: outbound notifications fan out through the
+  // kernel router; channel plugins register inbound handlers via the same
+  // accessor. The pluginId carried into each handler is auto-injected
+  // from this context's agentId so plugins cannot spoof other plugins.
+  const notifications: NotificationsAccessor = {
+    send(payload) {
+      return opts.notificationRouter.dispatch(agentId, payload);
+    },
+    registerChannel(channelId, handler) {
+      return opts.notificationRouter.registerChannel(channelId, handler);
+    },
+  };
+
+  // UiRoutes accessor: plugins publish discoverable uiRoute descriptors
+  // for the channel-teams Hub + Tab-Config (and any future surface that
+  // wants a live "what plugin UIs exist?" view). pluginId is injected
+  // from this context's agentId so plugins can't spoof each other.
+  const uiRoutes: UiRoutesAccessor = {
+    register(input) {
+      return opts.uiRouteCatalog.register(agentId, input);
+    },
+  };
+
   // OB-29-1 — SubAgentAccessor: present iff the manifest declares
   // permissions.subAgents.calls with at least one entry. Whitelist + budget
   // check on every ask().
@@ -347,6 +383,8 @@ export function createPluginContext(
     tools,
     routes,
     jobs,
+    notifications,
+    uiRoutes,
     smokeMode: false,
     ...(scratch ? { scratch } : {}),
     ...(http ? { http } : {}),

@@ -44,8 +44,8 @@ describe('agent-reference / Toolkit query_notes_by_person (OB-29-4)', () => {
       },
       {
         id: 'n2',
-        title: 'Kaffee mit Jane Doe',
-        body: 'Jane Doe hatte Feedback zur Roadmap.',
+        title: 'Kaffee mit John Müller',
+        body: 'John Müller hatte Feedback zur Roadmap.',
         createdAt: '2026-05-02T09:30:00.000Z',
       },
       {

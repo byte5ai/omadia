@@ -9,8 +9,8 @@ identity:
   description: "Privacy-Proxy add-on detector. Identifies a broad PII set — names (spaCy PERSON), addresses (LOCATION/GPE), organizations (ORG), structured PII (Email, IBAN, Phone, Credit-Card with Luhn, country-specific IDs like DE-Steuer-ID/Personalausweis) — via Microsoft Presidio served from a Python sidecar (FastAPI + Presidio-Analyzer + spaCy DE+EN). Deterministic, ms-fast complement to the LLM-NER (Ollama) detector. Registers itself with the `privacyDetectorRegistry` published by privacy-guard; emits hits for the same span-overlap-dedup pipeline."
   authors:
     - name: "byte5 GmbH"
-      email: "dev@byte5.de"
-      url: "https://byte5.de"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
   license: "MIT"
   categories:
     - "privacy"
@@ -32,10 +32,10 @@ setup:
   fields:
     - key: "presidio_endpoint"
       type: "string"
-      label: "Presidio sidecar endpoint"
-      help: "Base URL of the Python sidecar (FastAPI with /analyze + /health). docker-compose default: http://presidio:5001 (in-network service). Local dev outside compose: http://localhost:5001."
+      label: "Presidio-Sidecar-Endpoint"
+      help: "Basis-URL des Python-Sidecars (FastAPI mit /analyze + /health). Wert je nach Deploy-Pfad: (a) lokaler dev `python uvicorn` oder `docker run` → `http://localhost:5001`. (b) OSS docker-compose mit `--profile privacy-presidio` → `http://privacy-detector-presidio:5001`. (c) Fly-Deploy via `fly.presidio.toml` → `http://odoo-bot-presidio.flycast:5001`."
       required: false
-      default: "http://presidio:5001"
+      default: "http://localhost:5001"
 
     - key: "presidio_language"
       type: "string"
@@ -47,9 +47,9 @@ setup:
     - key: "presidio_score_threshold"
       type: "number"
       label: "Confidence-Threshold"
-      help: "Hits mit Score unter diesem Wert werden verworfen. Presidio-Default ist 0.4 — wir setzen 0.6 weil das spaCy-NER-Modell auf Long-Form-Inputs viele False-Positives produziert (gewöhnliche Substantive werden als Names erkannt). Höher = weniger False-Positives + niedrigerer Recall. Niedriger = mehr Recall + mehr noise. Bei 0.85 sind nur sehr starke Hits enthalten."
+      help: "Hits mit Score unter diesem Wert werden verworfen. Presidio-Default ist 0.4 — wir setzen 0.8 weil das deutsche spaCy-NER-Modell auf Compound-Nouns (Krankheit, Abwesenheitstyp, …) konfident-aussehende False-Positives im 0.6-0.8 Band produziert. Höher = weniger False-Positives + niedrigerer Recall. Niedriger = mehr Recall + mehr noise. Bei 0.85 sind nur sehr starke Hits enthalten."
       required: false
-      default: 0.6
+      default: 0.8
 
     - key: "presidio_timeout_ms"
       type: "number"

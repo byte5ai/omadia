@@ -69,7 +69,7 @@ const ConfigSchema = z.object({
   // Public base URL the `return` redirect lands on after a successful
   // login. In prod this is the middleware host itself (admin UI eventually
   // moves to its own Fly app → point this at that host). In dev it's the
-  // Next.js origin (localhost:3333) so the Set-Cookie from the callback
+  // Next.js origin (localhost:3000) so the Set-Cookie from the callback
   // lands on the SAME domain the browser is on — cookies don't cross hosts.
   PUBLIC_BASE_URL: z
     .string()
@@ -77,9 +77,9 @@ const ConfigSchema = z.object({
     .default('http://localhost:3979'),
   // Absolute URL Azure AD redirects to after login. MUST be registered
   // verbatim in the MS365 App Registration. In prod: middleware's own
-  // /api/v1/auth/callback. In dev: http://localhost:3333/bot-api/v1/auth/callback
+  // /api/v1/auth/callback. In dev: http://localhost:3000/bot-api/v1/auth/callback
   // so Next's rewrite forwards the callback back into the middleware while
-  // keeping the browser on localhost:3333 for the cookie.
+  // keeping the browser on localhost:3000 for the cookie.
   AUTH_REDIRECT_URI: z.string().url().optional(),
   // Path we bounce users to after a successful login when no ?return param
   // was supplied. Defaults to `/` because the admin UI's root is the chat
@@ -142,16 +142,35 @@ const ConfigSchema = z.object({
   // Orchestrator safety rails
   MAX_TOOL_ITERATIONS: z.coerce.number().int().positive().default(12),
 
-  // Diagram rendering (Kroki + S3-compatible storage). When all required fields are
+  // Confluence credentials. When set, the Confluence sub-agent is enabled.
+  // Atlassian creds stay in-process — never echoed to any model prompt.
+  CONFLUENCE_EMAIL: z.string().email().optional(),
+  CONFLUENCE_API_TOKEN: z.string().optional(),
+  CONFLUENCE_BASE_URL: z.string().url().optional(),
+  CONFLUENCE_SPACE_KEY: z.string().default('HOME'),
+  CONFLUENCE_PROXY_MAX_BYTES: z.coerce.number().int().positive().default(200_000),
+
+  // Odoo credentials. When set, the Odoo Accounting + HR sub-agents are enabled.
+  ODOO_URL: z.string().url().optional(),
+  ODOO_DB: z.string().optional(),
+  ODOO_LOGIN: z.string().optional(),
+  ODOO_API_KEY: z.string().optional(),
+  ODOO_PROXY_MAX_BYTES: z.coerce.number().int().positive().default(500_000),
+  // Opt-out of TLS verification for the Odoo connection only. Needed on
+  // machines whose cert store doesn't include the ODOO_URL's CA (typical for
+  // internal / private-CA-signed instances). Scoped to the Odoo client; does
+  // NOT affect Anthropic or any other outgoing call.
+  ODOO_INSECURE_TLS: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default('false'),
+
+  // Diagram rendering (Kroki + Tigris/MinIO). When all required fields are
   // present, the orchestrator exposes `render_diagram` and the middleware
   // mounts the HMAC-signed image-proxy at /diagrams/<key>. Missing values
   // disable the feature cleanly — the rest of the middleware is unaffected.
   KROKI_BASE_URL: z.string().url().optional(),
-  // Tolerate an empty `DIAGRAM_URL_SECRET=` line in .env (z.optional() only
-  // skips the rule when the key is missing entirely; an empty string would
-  // still trip the .min(32) check). preprocess flips '' to undefined first.
-  DIAGRAM_URL_SECRET: z
-    .preprocess((v) => (v === '' ? undefined : v), z.string().min(32).optional()),
+  DIAGRAM_URL_SECRET: z.string().min(32).optional(),
   DIAGRAM_PUBLIC_BASE_URL: z.string().url().optional(),
   DIAGRAM_SIGNED_URL_TTL_SEC: z.coerce.number().int().positive().default(900),
   // Source-spec cap. Must accommodate base64-inlined brand assets (a 150 kB
@@ -188,6 +207,28 @@ const ConfigSchema = z.object({
   TOPIC_CLASSIFIER_MODEL: z.string().min(1).default('claude-haiku-4-5-20251001'),
   TOPIC_UPPER_THRESHOLD: z.coerce.number().min(0).max(1).default(0.55),
   TOPIC_LOWER_THRESHOLD: z.coerce.number().min(0).max(1).default(0.15),
+
+  // Odoo entity sync (proactive graph population). When enabled, the
+  // middleware pulls res.partner, hr.employee, hr.department, account.journal
+  // into the knowledge graph on startup and every INTERVAL hours thereafter.
+  // Off by default — turn on once Odoo creds are stable to avoid a startup
+  // spike that nobody signed up for.
+  ODOO_ENTITY_SYNC_ENABLED: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default('false'),
+  ODOO_ENTITY_SYNC_INTERVAL_HOURS: z.coerce.number().min(1).max(168).default(6),
+  ODOO_ENTITY_SYNC_PAGE_SIZE: z.coerce.number().int().positive().default(100),
+  ODOO_ENTITY_SYNC_MAX_PER_MODEL: z.coerce.number().int().positive().default(5000),
+
+  // Confluence entity sync (proactive graph population for pages).
+  CONFLUENCE_ENTITY_SYNC_ENABLED: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default('false'),
+  CONFLUENCE_ENTITY_SYNC_INTERVAL_HOURS: z.coerce.number().min(1).max(168).default(12),
+  CONFLUENCE_ENTITY_SYNC_PAGE_SIZE: z.coerce.number().int().positive().default(50),
+  CONFLUENCE_ENTITY_SYNC_MAX_PAGES: z.coerce.number().int().positive().default(2000),
 
   // Graph-RAG embedding backfill. When a Turn's post-commit embed() call
   // fails (Ollama sidecar timeout / 500), the row stays in `graph_nodes`

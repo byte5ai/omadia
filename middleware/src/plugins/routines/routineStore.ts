@@ -1,5 +1,10 @@
 import type { Pool } from 'pg';
 
+import {
+  parseRoutineOutputTemplate,
+  type RoutineOutputTemplate,
+} from './routineOutputTemplate.js';
+
 export type RoutineStatus = 'active' | 'paused';
 export type RoutineRunStatus = 'ok' | 'error' | 'timeout';
 
@@ -19,6 +24,14 @@ export interface Routine {
   lastRunAt: Date | null;
   lastRunStatus: RoutineRunStatus | null;
   lastRunError: string | null;
+  /**
+   * Phase C — optional output template. Null/absent means the legacy
+   * LLM-authors-everything path runs (current behaviour). When set,
+   * the orchestrator routes the run through the template-rendering
+   * pipeline so data sections come from the raw tool result, not
+   * from the LLM. Loaded as JSONB from the `output_template` column.
+   */
+  outputTemplate: RoutineOutputTemplate | null;
 }
 
 export interface CreateRoutineInput {
@@ -30,6 +43,8 @@ export interface CreateRoutineInput {
   channel: string;
   conversationRef: unknown;
   timeoutMs?: number;
+  /** Phase C — optional output template (see Routine.outputTemplate). */
+  outputTemplate?: RoutineOutputTemplate | null;
 }
 
 export interface RecordRunInput {
@@ -71,15 +86,33 @@ interface RoutineRow {
   last_run_at: Date | null;
   last_run_status: RoutineRunStatus | null;
   last_run_error: string | null;
+  /** Phase C — JSONB column added in migration 0004. NULL for legacy
+   *  routines; structured `RoutineOutputTemplate` shape when set. */
+  output_template: unknown;
 }
 
 const SELECT_COLUMNS = `
   id, tenant, user_id, name, cron, prompt, channel, conversation_ref,
   status, timeout_ms, created_at, updated_at,
-  last_run_at, last_run_status, last_run_error
+  last_run_at, last_run_status, last_run_error,
+  output_template
 `;
 
 function rowToRoutine(row: RoutineRow): Routine {
+  // Phase C — parse + validate the JSONB blob. Invalid templates are
+  // logged at the caller and treated as NULL so a broken template
+  // does not break the routine entirely.
+  let outputTemplate: RoutineOutputTemplate | null = null;
+  if (row.output_template !== null && row.output_template !== undefined) {
+    const parsed = parseRoutineOutputTemplate(row.output_template);
+    if (parsed.ok) {
+      outputTemplate = parsed.value;
+    } else {
+      console.warn(
+        `[routineStore] routine id=${row.id} has invalid output_template, falling back to legacy path: ${parsed.reason}`,
+      );
+    }
+  }
   return {
     id: row.id,
     tenant: row.tenant,
@@ -96,6 +129,7 @@ function rowToRoutine(row: RoutineRow): Routine {
     lastRunAt: row.last_run_at,
     lastRunStatus: row.last_run_status,
     lastRunError: row.last_run_error,
+    outputTemplate,
   };
 }
 
@@ -137,8 +171,8 @@ export class RoutineStore {
       const result = await this.pool.query<RoutineRow>(
         `INSERT INTO routines
            (tenant, user_id, name, cron, prompt, channel,
-            conversation_ref, timeout_ms)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
+            conversation_ref, timeout_ms, output_template)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb)
          RETURNING ${SELECT_COLUMNS}`,
         [
           input.tenant,
@@ -149,6 +183,9 @@ export class RoutineStore {
           input.channel,
           JSON.stringify(input.conversationRef ?? {}),
           input.timeoutMs ?? 600_000,
+          input.outputTemplate !== undefined && input.outputTemplate !== null
+            ? JSON.stringify(input.outputTemplate)
+            : null,
         ],
       );
       const row = result.rows[0];
@@ -235,6 +272,32 @@ export class RoutineStore {
     );
     const raw = result.rows[0]?.count;
     return raw ? Number.parseInt(raw, 10) : 0;
+  }
+
+  /**
+   * Phase C.7 — Set or clear the output_template column on a routine.
+   * Passing `null` reverts the routine to the legacy LLM-authors-
+   * everything path; passing an object opts into the server-side
+   * template pipeline (C.5/C.6).
+   *
+   * Does not touch the JobScheduler — template state has no bearing on
+   * cron firing. Returns the updated routine, or null if `id` was not
+   * found.
+   */
+  async setOutputTemplate(
+    id: string,
+    template: RoutineOutputTemplate | null,
+  ): Promise<Routine | null> {
+    const result = await this.pool.query<RoutineRow>(
+      `UPDATE routines
+          SET output_template = $2::jsonb,
+              updated_at      = now()
+        WHERE id = $1
+        RETURNING ${SELECT_COLUMNS}`,
+      [id, template !== null ? JSON.stringify(template) : null],
+    );
+    const row = result.rows[0];
+    return row ? rowToRoutine(row) : null;
   }
 
   /**

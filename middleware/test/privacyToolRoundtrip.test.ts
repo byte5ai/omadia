@@ -4,15 +4,15 @@ import { describe, it } from 'node:test';
 import { createPrivacyGuardService } from '@omadia/plugin-privacy-guard/dist/index.js';
 
 // ---------------------------------------------------------------------------
-// Slice 2.2 — tool-roundtrip surface coverage.
+// Privacy-Shield v2 — tool-roundtrip surface coverage.
 //
-// Background: the privacy proxy tokenises PII in user inputs before they
+// Background: the privacy shield tokenises PII in user inputs before they
 // reach the public LLM. Without a roundtrip, when the LLM emits a tool_use
-// block referencing a token (e.g. `query_odoo_hr({ name: "tok_a3f9" })`)
+// block referencing a token (e.g. `query_odoo_hr({ name: "«PERSON_1»" })`)
 // the downstream domain tool would receive the placeholder and fail.
 //
 // `processToolInput` walks the LLM's tool-use input recursively, restores
-// every `tok_<hex>` substring against the session's tokenize-map, and
+// every `«TYPE_N»` substring against the turn's tokenize-map, and
 // counts how many string fields had a restoration (telemetry surfaced on
 // the receipt as `toolRoundtrip.argsRestored`).
 //
@@ -22,6 +22,9 @@ import { createPrivacyGuardService } from '@omadia/plugin-privacy-guard/dist/ind
 // content block. Hits land in the SAME turn-accumulator as
 // `processOutbound`, so the user sees one unified receipt.
 // ---------------------------------------------------------------------------
+
+const TOKEN_PATTERN = /«[A-Z][A-Z_]*_\d+»/;
+const TOKEN_PATTERN_GLOBAL = /«[A-Z][A-Z_]*_\d+»/g;
 
 const SAMPLE_EMAIL = 'max.mustermann@firma.de';
 const SAMPLE_IBAN = 'DE89370400440532013000';
@@ -36,7 +39,7 @@ describe('PrivacyGuardService · processToolInput (Slice 2.2)', () => {
       messages: [{ role: 'user', content: `Send mail to ${SAMPLE_EMAIL}.` }],
     });
     const tokenised = out.messages[0]?.content ?? '';
-    const tok = tokenised.match(/tok_[0-9a-f]{8}_[a-z0-9_]+/)?.[0];
+    const tok = tokenised.match(TOKEN_PATTERN)?.[0];
     if (!tok) throw new Error('expected a token in the outbound message');
 
     const r = await service.processToolInput({
@@ -76,7 +79,7 @@ describe('PrivacyGuardService · processToolInput (Slice 2.2)', () => {
           },
         ],
       })
-    ).messages[0]?.content.match(/tok_[0-9a-f]{8}_[a-z0-9_]+/g);
+    ).messages[0]?.content.match(TOKEN_PATTERN_GLOBAL);
     if (!tokens || tokens.length < 2) throw new Error('expected two tokens');
     const [emailTok, ibanTok] = tokens;
     const r = await service.processToolInput({
@@ -118,10 +121,10 @@ describe('PrivacyGuardService · processToolInput (Slice 2.2)', () => {
       sessionId: 'tr4',
       turnId: 'tt4',
       toolName: 'noop',
-      input: { token: 'tok_deadbeef' },
+      input: { token: '«PERSON_99»' },
     });
-    // No session map was minted ⇒ the unknown token is left in place.
-    assert.deepEqual(r.input, { token: 'tok_deadbeef' });
+    // No turn map was minted ⇒ the unknown token is left in place.
+    assert.deepEqual(r.input, { token: '«PERSON_99»' });
     assert.equal(r.tokensRestored, 0);
   });
 });
@@ -129,7 +132,7 @@ describe('PrivacyGuardService · processToolInput (Slice 2.2)', () => {
 describe('PrivacyGuardService · processToolResult (Slice 2.2)', () => {
   it('tokenises PII in the result text', async () => {
     const service = createPrivacyGuardService({ defaultPolicyMode: 'pii-shield' });
-    // Touch the session map so the tokenize-map exists.
+    // Touch the turn so the tokenize-map exists.
     await service.processOutbound({
       sessionId: 'tr5',
       turnId: 'tt5',
@@ -144,7 +147,7 @@ describe('PrivacyGuardService · processToolResult (Slice 2.2)', () => {
     });
     assert.ok(!r.text.includes(SAMPLE_EMAIL));
     assert.ok(!r.text.includes(SAMPLE_IBAN));
-    assert.ok(/tok_[0-9a-f]{8}_[a-z0-9_]+/.test(r.text));
+    assert.ok(TOKEN_PATTERN.test(r.text));
     assert.equal(r.transformed, true);
   });
 
@@ -216,7 +219,7 @@ describe('PrivacyGuardService · receipt.toolRoundtrip telemetry (Slice 2.2)', (
       systemPrompt: '',
       messages: [{ role: 'user', content: `Mail to ${SAMPLE_EMAIL}.` }],
     });
-    const tok = out.messages[0]?.content.match(/tok_[0-9a-f]{8}_[a-z0-9_]+/)?.[0];
+    const tok = out.messages[0]?.content.match(TOKEN_PATTERN)?.[0];
     if (!tok) throw new Error('expected a token');
     await service.processToolInput({
       sessionId: 'tr9',

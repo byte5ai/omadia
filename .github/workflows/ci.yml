@@ -60,6 +60,16 @@ jobs:
       - name: Test (node --test via tsx)
         run: npm run test
 
+      # Privacy-Shield v2 regression smoke (Slice S-8). The 6 scenarios
+      # reproduce the failure modes that drove the v2 architecture and
+      # assert they are fixed end-to-end. A stub NER detector covers
+      # the name-detection slot so the smoke is self-sufficient (no
+      # Ollama / Presidio sidecar needed for CI). Depends on the
+      # `npm run build` step above — the smoke imports from each
+      # workspace's compiled `dist/`.
+      - name: Smoke (privacy-shield v2)
+        run: npm run smoke:privacy-v2
+
   # ------------------------------------------------------------------
   # Web-dev: Next.js admin UI — vitest + lint + typecheck
   # ------------------------------------------------------------------

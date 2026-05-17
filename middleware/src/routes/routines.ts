@@ -2,6 +2,10 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 
 import {
+  parseRoutineOutputTemplate,
+  type RoutineOutputTemplate,
+} from '../plugins/routines/routineOutputTemplate.js';
+import {
   RoutineNotFoundError,
   type RoutineRunner,
 } from '../plugins/routines/routineRunner.js';
@@ -10,6 +14,7 @@ import type {
   RoutineRunsStore,
 } from '../plugins/routines/routineRunsStore.js';
 import type { Routine, RoutineStore } from '../plugins/routines/routineStore.js';
+import { renderRoutineTemplate } from '../plugins/routines/routineTemplateRenderer.js';
 
 export interface RoutinesRouterDeps {
   store: RoutineStore;
@@ -33,7 +38,35 @@ export interface RoutineDto {
   lastRunAt: string | null;
   lastRunStatus: string | null;
   lastRunError: string | null;
+  /** Phase C.7 — server-side output template, null = legacy LLM-renders path. */
+  outputTemplate: RoutineOutputTemplate | null;
 }
+
+export interface PreviewRoutineTemplateRequest {
+  template: unknown;
+  /** Synthetic raw tool results keyed by tool name. Values are
+   *  forwarded to the renderer as-is; strings get JSON-parsed on demand. */
+  rawToolResults?: Record<string, unknown>;
+  /** Synthetic narrative-slot values keyed by slot id. */
+  slots?: Record<string, string>;
+  /** Optional Intl locale override. */
+  locale?: string;
+  /** Optional ISO currency code override. */
+  currency?: string;
+}
+
+export type PreviewRoutineTemplateResponse =
+  | {
+      ok: true;
+      format: 'markdown';
+      text: string;
+    }
+  | {
+      ok: true;
+      format: 'adaptive-card';
+      items: readonly unknown[];
+    }
+  | { ok: false; reason: string };
 
 export interface ListRoutinesResponse {
   routines: RoutineDto[];
@@ -119,6 +152,7 @@ function toDto(r: Routine): RoutineDto {
     lastRunAt: r.lastRunAt ? r.lastRunAt.toISOString() : null,
     lastRunStatus: r.lastRunStatus,
     lastRunError: r.lastRunError,
+    outputTemplate: r.outputTemplate,
   };
 }
 
@@ -200,23 +234,41 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
     async (req: Request, res: Response): Promise<void> => {
       const idRaw = req.params['id'];
       const id = typeof idRaw === 'string' ? idRaw : '';
+      // Validate that the routine exists BEFORE returning — otherwise
+      // a bad id silently fire-and-forgets. The store.get is a fast
+      // index lookup so a 404 still resolves under the proxy budget.
+      let routine;
       try {
-        const updated = await deps.runner.triggerRoutineNow(id);
-        const body: RoutineResponse = { routine: toDto(updated) };
-        res.json(body);
+        routine = await deps.runner.peekRoutine(id);
       } catch (err) {
-        if (err instanceof RoutineNotFoundError) {
-          res
-            .status(404)
-            .json({ code: 'routines.not_found', message: err.message });
-          return;
-        }
-        log(`[routines/route] POST /:id/trigger failed: ${errMsg(err)}`);
+        log(`[routines/route] POST /:id/trigger peek failed: ${errMsg(err)}`);
         res.status(500).json({
           code: 'routines.trigger_failed',
           message: errMsg(err),
         });
+        return;
       }
+      if (!routine) {
+        res
+          .status(404)
+          .json({ code: 'routines.not_found', message: `routine '${id}' not found` });
+        return;
+      }
+      // Fire-and-forget: the trigger run takes seconds (LLM call +
+      // tool roundtrip + validator retry + Teams send). Holding the
+      // HTTP connection open the whole way means web-ui proxies time
+      // out with 500 even though the run succeeds and the Teams card
+      // arrives via the proactive sender. Return 202 immediately;
+      // the run's outcome is observable via `GET /:id/runs`.
+      void deps.runner
+        .triggerRoutineNow(id)
+        .catch((err: unknown) => {
+          log(
+            `[routines/route] background trigger run for ${id} failed: ${errMsg(err)}`,
+          );
+        });
+      const body: RoutineResponse = { routine: toDto(routine) };
+      res.status(202).json(body);
     },
   );
 
@@ -282,6 +334,109 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
           message: errMsg(err),
         });
       }
+    },
+  );
+
+  /**
+   * Phase C.7 — Set or clear a routine's output_template. Body shape:
+   *   `{ template: RoutineOutputTemplate | null }`
+   * `null` reverts to the legacy LLM-renders path. Non-null payloads
+   * are validated via `parseRoutineOutputTemplate`; invalid shapes
+   * return 400 with the reason. Backward-compatible: routines that
+   * predate this endpoint keep working without a template.
+   */
+  router.put(
+    '/:id/template',
+    async (req: Request, res: Response): Promise<void> => {
+      const idRaw = req.params['id'];
+      const id = typeof idRaw === 'string' ? idRaw : '';
+      const body = req.body as { template?: unknown } | undefined;
+      if (body === undefined || !('template' in body)) {
+        res.status(400).json({
+          code: 'routines.template_missing',
+          message: "body must include a 'template' field (object or null)",
+        });
+        return;
+      }
+      let template: RoutineOutputTemplate | null;
+      if (body.template === null) {
+        template = null;
+      } else {
+        const parsed = parseRoutineOutputTemplate(body.template);
+        if (!parsed.ok) {
+          res.status(400).json({
+            code: 'routines.template_invalid',
+            message: parsed.reason,
+          });
+          return;
+        }
+        template = parsed.value;
+      }
+      try {
+        const updated = await deps.store.setOutputTemplate(id, template);
+        if (!updated) {
+          res.status(404).json({
+            code: 'routines.not_found',
+            message: `routine '${id}' not found`,
+          });
+          return;
+        }
+        const out: RoutineResponse = { routine: toDto(updated) };
+        res.json(out);
+      } catch (err) {
+        log(`[routines/route] PUT /:id/template failed: ${errMsg(err)}`);
+        res.status(500).json({
+          code: 'routines.template_update_failed',
+          message: errMsg(err),
+        });
+      }
+    },
+  );
+
+  /**
+   * Phase C.7 — Preview-render a template against operator-supplied
+   * synthetic raw tool results + slot values. Stateless: never reads
+   * or writes the routine row, so it works for new templates the
+   * operator hasn't saved yet. Body shape: `PreviewRoutineTemplateRequest`.
+   * Returns the renderer's union result verbatim so the UI can show
+   * either the rendered markdown or the Adaptive Card body items.
+   */
+  router.post(
+    '/preview-template',
+    async (req: Request, res: Response): Promise<void> => {
+      const body = req.body as PreviewRoutineTemplateRequest | undefined;
+      if (body === undefined || body.template === undefined) {
+        res.status(400).json({
+          code: 'routines.template_missing',
+          message: "body must include a 'template' field",
+        });
+        return;
+      }
+      const parsed = parseRoutineOutputTemplate(body.template);
+      if (!parsed.ok) {
+        res.status(400).json({
+          code: 'routines.template_invalid',
+          message: parsed.reason,
+        });
+        return;
+      }
+      const rawToolResults = new Map<string, unknown>(
+        Object.entries(body.rawToolResults ?? {}),
+      );
+      const slots = body.slots ?? {};
+      const result = renderRoutineTemplate({
+        template: parsed.value,
+        rawToolResults,
+        slots,
+        ...(typeof body.locale === 'string' ? { locale: body.locale } : {}),
+        ...(typeof body.currency === 'string' ? { currency: body.currency } : {}),
+      });
+      const response: PreviewRoutineTemplateResponse = result.ok
+        ? result.format === 'markdown'
+          ? { ok: true, format: 'markdown', text: result.text }
+          : { ok: true, format: 'adaptive-card', items: result.items }
+        : { ok: false, reason: result.reason };
+      res.json(response);
     },
   );
 

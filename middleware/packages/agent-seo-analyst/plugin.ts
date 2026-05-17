@@ -4,8 +4,8 @@ import type { PluginContext } from './types.js';
 
 export const AGENT_ID = '@omadia/agent-seo-analyst' as const;
 
-const DEFAULT_BASE_URL = 'https://example.com';
-const DEFAULT_USER_AGENT = 'omadia-seo-bot/0.1';
+const DEFAULT_BASE_URL = 'https://omadia.ai';
+const DEFAULT_USER_AGENT = 'byte5-seo-bot/0.1 (+https://omadia.ai)';
 const DEFAULT_MAX_PAGES = 25;
 const DEFAULT_MAX_DEPTH = 3;
 const DEFAULT_TIMEOUT_MS = 15_000;

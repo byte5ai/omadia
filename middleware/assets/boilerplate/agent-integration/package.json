@@ -6,7 +6,9 @@
   "main": "dist/index.js",
   "description": "{{AGENT_DESCRIPTION_DE}}",
   "peerDependencies": {
-    "zod": "^3.23.8"
+    "zod": "^3.23.8",
+    "express": "^5.1.0",
+    "@omadia/plugin-ui-helpers": "*"
   },
   "engines": {
     "node": ">=20"
