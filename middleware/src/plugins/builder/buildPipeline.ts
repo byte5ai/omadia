@@ -63,6 +63,19 @@ export interface BuildPipelineDeps {
 export interface PipelineRunOptions {
   userEmail: string;
   draftId: string;
+  /**
+   * What this build is for. Controls the BuildQueue coalesce key:
+   *   - `'preview'` (default): coalesces by `draftId` so the latest debounced
+   *     rebuild wins — successive PATCH-driven rebuilds drop stale work.
+   *   - `'install'`: coalesces by `${draftId}:install` so an explicit
+   *     install-commit is NOT aborted by a debounced preview rebuild
+   *     that happens to fire while tsc is still running. Without this
+   *     separation an install kicked off right after a spec patch
+   *     (e.g. the version-bump retry path in InstallDiffModal) raced
+   *     the 2s-debounced rebuild and surfaced as
+   *     `builder.build_failed.abort` (reason=abort, exit=null).
+   */
+  kind?: 'preview' | 'install';
 }
 
 export interface PipelineRunResult {
@@ -187,6 +200,10 @@ export class BuildPipeline {
       );
     }
 
+    const kind = opts.kind ?? 'preview';
+    const coalesceKey =
+      kind === 'install' ? `${opts.draftId}:install` : opts.draftId;
+
     try {
       const buildResult = await this.buildQueue.enqueue(
         opts.draftId,
@@ -198,6 +215,7 @@ export class BuildPipeline {
               ? { timeoutMs: this.buildTimeoutMs }
               : {}),
           }),
+        { coalesceKey },
       );
       this.log(
         `[build-pipeline] draft=${opts.draftId} buildN=${String(buildN)} ok=${String(buildResult.ok)} reason=${buildResult.ok ? 'ok' : buildResult.reason} duration_ms=${String(buildResult.durationMs)}`,

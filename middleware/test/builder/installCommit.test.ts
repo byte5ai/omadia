@@ -45,10 +45,18 @@ function makeFakePipeline(opts: {
   /** Custom zip buffer to return on success. */
   zipBytes?: Buffer;
 }): FakePipelineHandle {
-  const calls: Array<{ userEmail: string; draftId: string }> = [];
+  const calls: Array<{
+    userEmail: string;
+    draftId: string;
+    kind?: 'install' | 'preview';
+  }> = [];
   let buildN = 0;
   const fake = {
-    run: async (input: { userEmail: string; draftId: string }) => {
+    run: async (input: {
+      userEmail: string;
+      draftId: string;
+      kind?: 'install' | 'preview';
+    }) => {
       calls.push(input);
       buildN += 1;
       if (opts.pipelineDraftMissing) {
@@ -259,6 +267,10 @@ describe('installDraft (B.6-1 orchestrator)', () => {
 
     // Pipeline + ingest each saw exactly one call.
     assert.equal(pipeline.buildCalls().length, 1);
+    // Regression: install must pass `kind: 'install'` so BuildQueue uses
+    // a distinct coalesce key and a debounced preview rebuild cannot
+    // abort the install (builder.build_failed.abort).
+    assert.equal(pipeline.buildCalls()[0]?.kind, 'install');
     const ingestCall = ingest.ingestCalls()[0];
     assert.ok(ingestCall);
     assert.equal(ingestCall.uploadedBy, h.userEmail);

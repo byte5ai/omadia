@@ -332,6 +332,83 @@ describe('BuildPipeline', () => {
     assert.equal(observedSignal?.aborted, false);
   });
 
+  it('runs install + preview rebuild for the same draft in parallel (kind separates coalesce keys)', async () => {
+    // Regression for `builder.build_failed.abort` after a version bump:
+    // before the fix, an install in flight got aborted by a debounced
+    // preview rebuild that happened to fire while tsc was still running,
+    // because BuildQueue coalesced by draftId alone. Now `kind: 'install'`
+    // uses coalesceKey `${draftId}:install`, so the two coexist.
+    const { spec, slots } = loadFixtureSpec();
+    const draft = await store.create('alice@example.com', 'Weather');
+    await store.update('alice@example.com', draft.id, { spec, slots });
+
+    const queue = new BuildQueue({ concurrency: 3 });
+
+    // Gate both sandbox calls so they're "running" concurrently — that's
+    // the exact race condition that used to abort the install.
+    let releaseInstall!: () => void;
+    let releasePreview!: () => void;
+    const installRunning = new Promise<void>((r) => (releaseInstall = r));
+    const previewRunning = new Promise<void>((r) => (releasePreview = r));
+    let installSandboxCalls = 0;
+    let previewSandboxCalls = 0;
+    let installAborted = false;
+    let previewAborted = false;
+    let installEntered = false;
+    let previewEntered = false;
+
+    const pipeline = new BuildPipeline({
+      draftStore: store,
+      buildQueue: queue,
+      templateRoot,
+      stagingBaseDir,
+      buildSandbox: async (opts) => {
+        // First call = install (started first below); second = preview.
+        const isInstall = !installEntered;
+        if (isInstall) {
+          installEntered = true;
+          installSandboxCalls += 1;
+          await installRunning;
+          installAborted = opts.signal?.aborted ?? false;
+        } else {
+          previewEntered = true;
+          previewSandboxCalls += 1;
+          await previewRunning;
+          previewAborted = opts.signal?.aborted ?? false;
+        }
+        return makeBuildSuccess();
+      },
+      logger: () => {},
+    });
+
+    const pInstall = pipeline.run({
+      userEmail: 'alice@example.com',
+      draftId: draft.id,
+      kind: 'install',
+    });
+    // Wait until the install is actually inside buildSandbox, then race
+    // a preview rebuild against it. Without the kind/coalesceKey fix the
+    // preview enqueue would abort the install at this exact point.
+    while (!installEntered) await new Promise((r) => setImmediate(r));
+    const pPreview = pipeline.run({
+      userEmail: 'alice@example.com',
+      draftId: draft.id,
+      // kind defaults to 'preview'
+    });
+    while (!previewEntered) await new Promise((r) => setImmediate(r));
+
+    releaseInstall();
+    releasePreview();
+
+    const [rInstall, rPreview] = await Promise.all([pInstall, pPreview]);
+    assert.equal(installSandboxCalls, 1);
+    assert.equal(previewSandboxCalls, 1);
+    assert.equal(installAborted, false, 'install must not be aborted by preview');
+    assert.equal(previewAborted, false, 'preview must not be aborted by install');
+    assert.equal(rInstall.buildResult.ok, true);
+    assert.equal(rPreview.buildResult.ok, true);
+  });
+
   it('does not leak staging dirs when many runs happen in parallel', async () => {
     const { spec, slots } = loadFixtureSpec();
     const draft = await store.create('alice@example.com', 'Weather');
