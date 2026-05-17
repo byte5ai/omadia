@@ -48,6 +48,13 @@ jobs:
       - name: npm ci (middleware + workspaces)
         run: npm ci --include=optional --no-audit --no-fund
 
+      # sharp's native binary is platform-specific. package-lock.json was
+      # generated on macOS (darwin-arm64) and has no `node_modules/@img/
+      # sharp-linux-x64` entry, so `npm ci` even with --include=optional
+      # skips it. Force-install the linux-x64 variant for the CI runner.
+      - name: Install sharp linux-x64 native binary
+        run: npm install --no-save --no-audit --no-fund --os=linux --cpu=x64 sharp
+
       - name: Build workspace packages (compiled dist/ for cross-package imports)
         run: npm run build
 
