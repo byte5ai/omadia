@@ -46,7 +46,7 @@ jobs:
           cache-dependency-path: middleware/package-lock.json
 
       - name: npm ci (middleware + workspaces)
-        run: npm ci --no-audit --no-fund
+        run: npm ci --include=optional --no-audit --no-fund
 
       - name: Build workspace packages (compiled dist/ for cross-package imports)
         run: npm run build
@@ -90,7 +90,7 @@ jobs:
           cache-dependency-path: web-ui/package-lock.json
 
       - name: npm ci
-        run: npm ci --no-audit --no-fund
+        run: npm ci --include=optional --no-audit --no-fund
 
       - name: Lint
         run: npm run lint
@@ -197,7 +197,7 @@ jobs:
           cache-dependency-path: ${{ matrix.workspace }}/package-lock.json
 
       - name: npm ci
-        run: npm ci --no-audit --no-fund
+        run: npm ci --include=optional --no-audit --no-fund
 
       - name: npm audit (--audit-level=high)
         run: npm audit --audit-level=high
