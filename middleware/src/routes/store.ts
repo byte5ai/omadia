@@ -58,13 +58,15 @@ export function createStoreRouter(deps: StoreDeps): Router {
     }
   });
 
-  // Use wildcard so scoped plugin IDs like `@omadia/agent-foo` (which
-  // contain a literal `/`) are captured as a single parameter rather than
-  // being split into two path segments by Express.
-  router.get('/*', async (req: Request, res: Response) => {
+  // Regex route so scoped plugin IDs like `@omadia/agent-foo` (which
+  // contain a literal `/`) are captured as one parameter rather than
+  // being split into two path segments by Express. Uses `+` so the
+  // empty-path case (`GET /`) is not captured here and is handled by
+  // the `GET /` list route above.
+  router.get(/^\/(.+)$/, async (req: Request, res: Response) => {
     try {
-      const rawId = req.path.slice(1); // strip leading '/'
-      const id = rawId.length > 0 ? rawId : undefined;
+      const rawId = req.params[0] as string | undefined;
+      const id = typeof rawId === 'string' && rawId.length > 0 ? rawId : undefined;
       if (!id) {
         res.status(400).json({ code: 'store.invalid_id', message: 'missing id' });
         return;
