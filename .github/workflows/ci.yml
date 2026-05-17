@@ -12,8 +12,12 @@
 name: CI
 
 on:
+  # Pull-request trigger accepts any base branch so that cluster-fix
+  # PRs stacked on the test-suite resurrection branch (#35 / #37)
+  # still run CI. Once #35 merges and the cluster work is done, this
+  # can return to `branches: [main]`.
   pull_request:
-    branches: [main]
+    branches: ['**']
   push:
     branches: [main]
 
