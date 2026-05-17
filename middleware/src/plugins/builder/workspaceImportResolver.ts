@@ -82,9 +82,37 @@ function isNodeBuiltinSpecifier(specifier: string): boolean {
  * double-quoted strings; backticks (template strings) are rare for
  * import paths and skipping them avoids false-positives from inline
  * code samples in JSDoc-adjacent strings.
+ *
+ * Comments are stripped from the input before this regex runs (see
+ * `stripCommentsForImportScan` below). The `[\w*${}\s,]+` class would
+ * otherwise span newlines and JSDoc asterisks, and JSDoc bodies
+ * frequently embed example imports as a hint for the reader — e.g. the
+ * boilerplate `types.ts` documents an `import type` sample from
+ * `@omadia/plugin-api` inside a JSDoc block. Without the strip step
+ * that example would trip IMPORT_FORBIDDEN against the standalone-compile
+ * contract on every fill_slot turn that processes the boilerplate.
  */
 const IMPORT_RE =
   /(?<=^|[^.\w])(?:import\s*(?:[\w*${}\s,]+\s*from\s*)?|import\s*\(\s*|require\s*\(\s*)["']([^"']+)["']/gm;
+
+/**
+ * Replaces JS/TS comment bodies with spaces so the import regex cannot
+ * match code samples embedded in JSDoc or trailing `//` notes. Newlines
+ * are preserved so the line-offset table built from the original text
+ * still maps match indices to the correct source line.
+ *
+ * Approximate by design — it does not track string or template-literal
+ * state, so a comment sentinel inside a string (e.g. `"/* not a comment *\/"`)
+ * is treated as a real comment. That is acceptable: the import regex
+ * would not match a genuine bare-specifier import nested inside a string
+ * either, and the gate's only mandate is to catch real imports.
+ */
+export function stripCommentsForImportScan(text: string): string {
+  const blocksStripped = text.replace(/\/\*[\s\S]*?\*\//g, (m) =>
+    m.replace(/[^\n]/g, ' '),
+  );
+  return blocksStripped.replace(/\/\/[^\n]*/g, (m) => ' '.repeat(m.length));
+}
 
 interface ImportFinding {
   specifier: string;
@@ -99,9 +127,10 @@ export function extractImports(text: string): ImportFinding[] {
   for (let i = 0; i < text.length; i++) {
     if (text.charCodeAt(i) === 10 /* \n */) lineOffsets.push(i + 1);
   }
+  const scanText = stripCommentsForImportScan(text);
   IMPORT_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
-  while ((m = IMPORT_RE.exec(text)) !== null) {
+  while ((m = IMPORT_RE.exec(scanText)) !== null) {
     const specifier = m[1];
     if (typeof specifier !== 'string' || specifier.length === 0) continue;
     // Skip relative imports — they're resolved by tsc via rootDir,
