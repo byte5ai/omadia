@@ -54,6 +54,12 @@ describe('agent-reference / Toolkit query_notes_by_person (OB-29-4)', () => {
         body: 'Anna war heute auch dabei.',
         createdAt: '2026-05-03T11:00:00.000Z',
       },
+      {
+        id: 'n4',
+        title: 'Sprint-Review mit John Mueller',
+        body: 'John Mueller hatte Bedenken zum Zeitplan.',
+        createdAt: '2026-05-04T14:00:00.000Z',
+      },
     ];
     store = makePopulatedStore(records);
     toolkit = createToolkit({ notes: store, log: () => {} });
