@@ -24,8 +24,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     including the `audit` matrix) wired up as required status checks.
 
   GitHub Actions were disabled on the repo since 2026-05-11 and were
-  reactivated as part of this rollout. The follow-up CHANGELOG PR doubles
-  as the first end-to-end CI verification after reactivation.
+  reactivated as part of this rollout. The first post-reactivation CI run
+  surfaced three pre-existing pipeline bugs that had been masked while
+  Actions were off — they're fixed in the same wave, see *Fixed* below.
+
+### Fixed
+
+- 2026-05-17 — Three pre-existing bugs in the CI pipeline, surfaced once
+  Actions were reactivated:
+  - `.github/workflows/ci.yml` pinned `setup-node@v4` to `node-version: '20'`
+    in three places, but `middleware/package.json` declares
+    `engines.node ">=22 <23"`. `npm ci` failed with `EBADENGINE` in the
+    `middleware` and `audit (middleware)` jobs. Bumped to `'22'`.
+  - The `schema (migrations on pgvector)` job applied a hardcoded list of
+    nine migrations, four of which had moved or been renumbered as the
+    knowledge-graph schema grew (`harness-knowledge-graph-neon` now ships
+    13 migrations, two more domains were added — `auth/`,
+    `profileSnapshots/`, `profileStorage/`). Replaced the array with a
+    glob over five migration domains, applied in lexical order. Coverage
+    grew from 9 to 20 migrations.
+  - `middleware/src/index.ts:398` triggered `prefer-const` because
+    eslint's reassignment analysis doesn't trace the forward-reference
+    assignment ~1300 lines later in `main()`. Documented the intent and
+    suppressed the rule on that one line.
 
 ### Changed
 
