@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# One-command dev bootstrap for byte5ai/omadia.
+# Mirrors the manual steps in CONTRIBUTING.md and activates the
+# repo-local pre-push hook (which blocks direct pushes to main).
+
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+echo "==> Configuring git hooks (.hooks/pre-push blocks direct pushes to main)..."
+git config core.hooksPath .hooks
+
+echo "==> Installing middleware deps..."
+( cd middleware && npm install )
+
+echo "==> Installing web-ui deps..."
+( cd web-ui && npm install )
+
+cat <<'NEXT'
+
+Setup complete. Next steps:
+  cp middleware/.env.example middleware/.env   # set ANTHROPIC_API_KEY
+  docker compose up -d minio kroki ollama     # local sidecars
+  ( cd middleware && npm run dev )            # API on :8080
+  ( cd web-ui && npm run dev )                # admin UI on :3000
+
+NEXT
