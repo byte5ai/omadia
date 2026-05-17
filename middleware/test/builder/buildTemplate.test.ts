@@ -174,6 +174,7 @@ describe('buildTemplate', () => {
       const pkgJson = JSON.parse(
         readFileSync(path.join(linkPath, 'package.json'), 'utf-8'),
       ) as { name: string };
+      // Same name, but resolves through wsNew (not wsOld).
       assert.equal(pkgJson.name, '@omadia/plugin-api');
     });
 
