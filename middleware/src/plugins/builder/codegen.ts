@@ -85,6 +85,37 @@ function deriveAgentSlug(spec: AgentSpec): string {
   return spec.id.split(/[./]/).pop() ?? spec.id;
 }
 
+// Insert a numeric suffix before the last extension of a target file path.
+//   skills/foo-expert.md, 1 → skills/foo-expert-1.md
+//   skills/foo-expert,    2 → skills/foo-expert-2  (no extension)
+//   skills/{{SLUG}}-expert.md, 1 → skills/{{SLUG}}-expert-1.md
+// Used by the partial-slot pipeline to derive output paths for synthesised
+// partial files from a base slot's target_file.
+export function partialTargetFile(baseTarget: string, n: number): string {
+  const lastSlash = baseTarget.lastIndexOf('/');
+  const dir = lastSlash >= 0 ? baseTarget.slice(0, lastSlash + 1) : '';
+  const filename = lastSlash >= 0 ? baseTarget.slice(lastSlash + 1) : baseTarget;
+  const lastDot = filename.lastIndexOf('.');
+  if (lastDot < 0) return `${dir}${filename}-${String(n)}`;
+  return `${dir}${filename.slice(0, lastDot)}-${String(n)}${filename.slice(lastDot)}`;
+}
+
+// Collect the indices of non-empty partial slots for a given base slot.
+// Returns numerically-ascending indices in [1, slot.max_partials] whose
+// `<slot.key>-<n>` entry is non-empty in allSlots.
+function filledPartialIndices(
+  slot: SlotDef,
+  allSlots: Readonly<Record<string, string>>,
+): number[] {
+  if (slot.max_partials <= 0) return [];
+  const out: number[] = [];
+  for (let n = 1; n <= slot.max_partials; n++) {
+    const v = allSlots[`${slot.key}-${String(n)}`];
+    if (v !== undefined && v.length > 0) out.push(n);
+  }
+  return out;
+}
+
 function resolveSource(spec: AgentSpec, source: string): string | undefined {
   if (source.startsWith('__derived__/')) {
     const key = source.slice('__derived__/'.length);
@@ -288,8 +319,50 @@ function injectSlots(
 function reproduceManifestCapabilities(
   manifestText: string,
   spec: AgentSpec,
+  manifestSlots: readonly SlotDef[],
+  allSlots: Readonly<Record<string, string>>,
 ): string {
   const doc = yaml.parseDocument(manifestText);
+
+  // Skills-array expansion (multi-partial slots). For each declared slot
+  // with `max_partials > 0`, clone the matching skill entry (matched by
+  // its `path` against `slot.target_file`) once per non-empty partial.
+  // Clones land immediately after the base entry, in ascending numeric
+  // order. Done before string substitution so the cloned paths still
+  // carry `{{AGENT_SLUG}}` etc. — the later placeholder pass resolves them.
+  const skillsNode = doc.get('skills', true);
+  if (yaml.isSeq(skillsNode) && skillsNode.items.length > 0) {
+    for (const slot of manifestSlots) {
+      const indices = filledPartialIndices(slot, allSlots);
+      if (indices.length === 0) continue;
+      const baseIdx = skillsNode.items.findIndex((item) => {
+        if (!yaml.isMap(item)) return false;
+        const pathNode = item.get('path');
+        return typeof pathNode === 'string' && pathNode === slot.target_file;
+      });
+      if (baseIdx < 0) continue;
+      const baseJson = (skillsNode.items[baseIdx] as yaml.Node).toJSON() as Record<
+        string,
+        unknown
+      >;
+      const clones: unknown[] = [];
+      for (const n of indices) {
+        const cloneJson = JSON.parse(JSON.stringify(baseJson)) as Record<string, unknown>;
+        cloneJson['path'] = partialTargetFile(slot.target_file, n);
+        const idVal = cloneJson['id'];
+        if (typeof idVal === 'string') {
+          cloneJson['id'] = `${idVal}_${String(n)}`;
+        }
+        clones.push(cloneJson);
+      }
+      const cloneNodes = clones.map((c) => doc.createNode(c));
+      skillsNode.items.splice(
+        baseIdx + 1,
+        0,
+        ...(cloneNodes as typeof skillsNode.items),
+      );
+    }
+  }
 
   // depends_on overwrite (B.6-9.1) — the boilerplate ships
   // `depends_on: []` as a static placeholder; we replace it with
@@ -694,7 +767,7 @@ export async function generate(
 
     // 5a. manifest.yaml — capability reproduction before string mangling
     if (origPath === 'manifest.yaml') {
-      text = reproduceManifestCapabilities(text, spec);
+      text = reproduceManifestCapabilities(text, spec, manifest.slots, allSlots);
     }
 
     // 5a.2. package.json — peerDependencies merge for Theme A. Done before
@@ -727,6 +800,54 @@ export async function generate(
     }
 
     out.set(outPath, Buffer.from(text, 'utf-8'));
+  }
+
+  // 6. Partial-slot file synthesis. For every declared slot with
+  //    `max_partials > 0`, materialise one output file per filled partial
+  //    (`<slot.key>-1`, …, `<slot.key>-N`). The output path is derived from
+  //    the base slot's target_file via `partialTargetFile()`. The file's
+  //    frontmatter is cloned from the base bundle file (so `kind`,
+  //    `description`, etc. stay aligned) with the `id` suffixed by `_<n>`.
+  //    The slot body is wrapped in matching marker comments so a future
+  //    re-edit cycle can re-locate the slot region.
+  for (const slot of manifest.slots) {
+    const indices = filledPartialIndices(slot, allSlots);
+    if (indices.length === 0) continue;
+    const baseBuf = bundle.files.get(slot.target_file);
+    let baseFrontmatter = '';
+    if (baseBuf) {
+      const baseText = baseBuf.toString('utf-8');
+      const fmMatch = /^---\n([\s\S]*?)\n---/.exec(baseText);
+      if (fmMatch) baseFrontmatter = fmMatch[1] ?? '';
+    }
+    for (const n of indices) {
+      const partialKey = `${slot.key}-${String(n)}`;
+      const body = allSlots[partialKey] ?? '';
+      const fmLines = (baseFrontmatter || 'kind: prompt_partial')
+        .split('\n')
+        .map((line) => {
+          const m = /^id:\s*(.+)$/.exec(line);
+          if (m) return `id: ${m[1]}_${String(n)}`;
+          return line;
+        });
+      const trimmedBody = body.endsWith('\n') ? body.slice(0, -1) : body;
+      const partialPath = partialTargetFile(slot.target_file, n);
+      const outPath = substitutePlaceholders(partialPath, placeholderMap);
+      let text =
+        `---\n${fmLines.join('\n')}\n---\n\n` +
+        `<!-- #region builder:${partialKey} -->\n` +
+        `${trimmedBody}\n` +
+        `<!-- #endregion -->\n`;
+      text = substitutePlaceholders(text, placeholderMap);
+      const residue = collectResidue(text);
+      if (residue.length > 0) {
+        issues.push({
+          code: 'placeholder_residue',
+          detail: `Unresolved placeholders in partial '${outPath}': ${residue.join(', ')}`,
+        });
+      }
+      out.set(outPath, Buffer.from(text, 'utf-8'));
+    }
   }
 
   if (issues.length > 0) throw new CodegenError(issues);

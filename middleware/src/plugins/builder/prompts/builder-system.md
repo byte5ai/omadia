@@ -129,6 +129,25 @@ Pflicht (per `patch_spec`):
   Module-Top-Level-Imports (die kommen aus dem Boilerplate-Template).
   Wenn du ein `import { z } from 'zod'` schreibst und tsc meldet
   `Duplicate identifier 'z'`, hast du den Slot-Bereich überschritten.
+- **Partial-Slots für große Markdowns.** Manche Slots erlauben das
+  Aufsplitten auf bis zu N+1 `fill_slot`-Calls — der Boilerplate-Slot
+  deklariert dann `max_partials: N`. Aktuell betroffen: `skill-prompt`
+  (max_partials 4) im `agent-integration`-Template. Wenn der Skill-
+  Markdown >~25 KB wird, splitte ihn an Section-/Heading-Boundaries
+  (nicht mid-paragraph):
+
+    1. `fill_slot({ slotKey: "skill-prompt",   source: "<chunk-1>" })`
+    2. `fill_slot({ slotKey: "skill-prompt-1", source: "<chunk-2>" })`
+    3. `fill_slot({ slotKey: "skill-prompt-2", source: "<chunk-3>" })`
+    4. … bis zu `skill-prompt-4`.
+
+  Codegen synthesiert pro gefülltem Partial eine eigene Datei
+  (`skills/<slug>-expert-1.md`, …) und listet sie in `manifest.skills[]`.
+  Der Runtime concatenated die Partials beim Load mit `\n\n---\n\n`-
+  Trenner — Reihenfolge ist `<key>` zuerst, dann numerisch aufsteigend.
+  Halte jeden einzelnen `fill_slot`-Call unter ~25 KB (Anthropic-Tool-
+  Call-Argument-Limit), sonst kommt `source` als `undefined` auf der
+  Bridge an und der Slot bleibt leer.
 
 ## Cross-Integration-Pflicht-Workflow
 

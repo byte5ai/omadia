@@ -40,6 +40,11 @@ slots:
     target_file: skills/{{AGENT_SLUG}}-expert.md
     required: true
     description: System prompt body (frontmatter is generated automatically)
+    # Allow splitting large skill markdowns across up to 4 additional
+    # partials (skill-prompt-1 … skill-prompt-4). Each fill_slot call stays
+    # under the Anthropic tool-call argument-size limit (~30 KB); the
+    # runtime concatenates all partials with `\n\n---\n\n` separators.
+    max_partials: 4
   - key: admin-ui-body
     target_file: assets/admin-ui/index.html
     required: false

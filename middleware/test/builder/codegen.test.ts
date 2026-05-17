@@ -611,4 +611,84 @@ describe('codegen.generate', () => {
     assert.match(pluginText, /__mapped\["count"\] = __src\?\.\["length"\];/);
     assert.match(pluginText, /return __mapped;/);
   });
+
+  describe('partial slots (large skill markdowns)', () => {
+    it('synthesises one output file per filled partial of skill-prompt', async () => {
+      const { spec, slots } = loadFixture();
+      const augmented: Record<string, string> = {
+        ...slots,
+        'skill-prompt-1': '## Chunk 2\n\nSecond section body.',
+        'skill-prompt-2': '## Chunk 3\n\nThird section body.',
+      };
+      const out = await generate({ spec, slots: augmented });
+
+      assert.ok(out.has('skills/weather-expert.md'), 'base skill file');
+      assert.ok(out.has('skills/weather-expert-1.md'), 'partial 1 file');
+      assert.ok(out.has('skills/weather-expert-2.md'), 'partial 2 file');
+      assert.equal(
+        out.has('skills/weather-expert-3.md'),
+        false,
+        'unfilled partial must not produce a file',
+      );
+
+      const p1 = out.get('skills/weather-expert-1.md')!.toString('utf-8');
+      assert.match(p1, /^---\n/, 'partial has frontmatter');
+      assert.match(p1, /id:\s*weather_expert_system_1/);
+      assert.match(p1, /kind:\s*prompt_partial/);
+      assert.match(p1, /<!-- #region builder:skill-prompt-1 -->/);
+      assert.match(p1, /## Chunk 2/);
+
+      const p2 = out.get('skills/weather-expert-2.md')!.toString('utf-8');
+      assert.match(p2, /id:\s*weather_expert_system_2/);
+      assert.match(p2, /## Chunk 3/);
+      // No residual placeholders allowed in synthesised files.
+      assert.equal(p1.includes('{{'), false);
+      assert.equal(p2.includes('{{'), false);
+    });
+
+    it('lists partials in manifest.skills[] in ascending order', async () => {
+      const { spec, slots } = loadFixture();
+      const augmented: Record<string, string> = {
+        ...slots,
+        'skill-prompt-1': '## Chunk 2',
+        'skill-prompt-2': '## Chunk 3',
+      };
+      const out = await generate({ spec, slots: augmented });
+      const manifest = yaml.parse(
+        out.get('manifest.yaml')!.toString('utf-8'),
+      ) as { skills: Array<{ id: string; path: string; kind: string }> };
+
+      const ids = manifest.skills.map((s) => s.id);
+      const paths = manifest.skills.map((s) => s.path);
+      assert.deepEqual(ids, [
+        'weather_expert_system',
+        'weather_expert_system_1',
+        'weather_expert_system_2',
+      ]);
+      assert.deepEqual(paths, [
+        'skills/weather-expert.md',
+        'skills/weather-expert-1.md',
+        'skills/weather-expert-2.md',
+      ]);
+      for (const s of manifest.skills) {
+        assert.equal(s.kind, 'prompt_partial');
+      }
+    });
+
+    it('leaves manifest and file layout unchanged when no partials are filled', async () => {
+      const { spec, slots } = loadFixture();
+      const out = await generate({ spec, slots });
+
+      assert.ok(out.has('skills/weather-expert.md'));
+      assert.equal(out.has('skills/weather-expert-1.md'), false);
+      assert.equal(out.has('skills/weather-expert-2.md'), false);
+
+      const manifest = yaml.parse(
+        out.get('manifest.yaml')!.toString('utf-8'),
+      ) as { skills: Array<{ id: string; path: string }> };
+      assert.equal(manifest.skills.length, 1);
+      assert.equal(manifest.skills[0]!.id, 'weather_expert_system');
+      assert.equal(manifest.skills[0]!.path, 'skills/weather-expert.md');
+    });
+  });
 });
