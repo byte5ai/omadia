@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "main": "dist/index.js",
-  "description": "SEO analyst agent for public websites (on-page, technical, crawl audit). Reference plugin package.",
+  "description": "SEO-Analyst-Agent für byte5-eigene Webseiten (On-Page, Technical, Crawl-Audit).",
   "license": "MIT",
   "scripts": {
     "build": "tsc",

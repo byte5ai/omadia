@@ -8,7 +8,7 @@ weaponise the disclosure before a fix lands.
 
 Instead, report privately via either channel:
 
-- **Email** — `security@byte5.de` (preferred). PGP key on request.
+- **Email** — `info@omadia.ai` (preferred). PGP key on request.
 - **GitHub Security Advisory** — open a [private
   advisory](https://github.com/byte5ai/omadia/security/advisories/new)
   on this repository.
@@ -53,12 +53,12 @@ Out of scope:
 Operator secrets — `ANTHROPIC_API_KEY`, `MICROSOFT_APP_*`, OAuth client
 secrets, `VAULT_KEY`, plugin-specific API keys — must **never** be checked
 into the repository. The development workflow exclusively uses
-`middleware/.env.example` as a template; the populated `middleware/.env` is
+`infra/.env.example` as a template; the populated `infra/.env` is
 `.gitignore`d.
 
 If you discover a secret in the git history, please:
 
-1. Notify `security@byte5.de` immediately so the secret can be rotated.
+1. Notify `info@omadia.ai` immediately so the secret can be rotated.
 2. Open a private advisory if the secret has been pushed to the public
    remote.
 

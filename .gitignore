@@ -79,3 +79,49 @@ tmp/
 # OSS-Core export scope (OB-30) and must never be checked in alongside the
 # harness platform sources. See marketing-site/docs/00-isolation.md.
 marketing-site/
+
+# ─── byte5-specific agent + deployment configs (private) ──────────────────
+# These describe a specific byte5 deployment (Fly app, Neon project, kroki
+# sidecars, customer-specific agent configs) and must never land in public
+# Omadia. Generic equivalents ship with the OSS docs (see docs/).
+agent-config.yaml
+agent-config-*.yaml
+fly.toml
+compose.yml
+infra/
+kroki/
+ollama/
+middleware/DEPLOY.md
+middleware/data/
+middleware/.uploaded-packages/
+
+# ─── Internal-only docs (session handoffs, plans, customer evaluations) ───
+# Session-context that served its purpose during development and would
+# pollute the public docs tree. The harness-platform/ architecture docs
+# themselves ARE public — only HANDOFF-* session snapshots are excluded.
+docs/plans/
+docs/day-one-learnings-*.md
+docs/dev-frontend-handoff.md
+docs/middleware-agent-handoff.md
+docs/northdata-agent-plan.md
+docs/softgarden-agent-evaluation.md
+docs/harness-platform/HANDOFF-*.md
+
+# ─── Smoke scripts (internal validation harness, not part of public API) ──
+# Boot-test scripts that hit live byte5 Fly endpoints / Neon project. The
+# OSS audience doesn't have access to those targets; equivalent guidance
+# lives in the public test/ directories per package.
+middleware/scripts/smoke-*.ts
+
+# ─── Private byte5 plugins (channels + integrations) ──────────────────────
+# byte5-specific channel adapters (Teams, Telegram) and SaaS integrations
+# (Confluence, MS365, Odoo). Canonical source lives in the separate private
+# repo ~/sources/omadia-byte5-plugins (workspace: packages/channel-*,
+# packages/integration-*). The copies here are working-dev mirrors and
+# must never reach the public Omadia repo. Reconciliation between the two
+# locations is a separate cleanup (see HANDOFF when scheduled).
+middleware/packages/harness-channel-teams/
+middleware/packages/harness-channel-telegram/
+middleware/packages/harness-integration-confluence/
+middleware/packages/harness-integration-microsoft365/
+middleware/packages/harness-integration-odoo/

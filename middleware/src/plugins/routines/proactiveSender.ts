@@ -39,6 +39,21 @@ export interface ProactiveSender {
       name: string;
       cron: string;
     };
+    /**
+     * Phase C.6 — Adaptive Card body items produced by
+     * `renderRoutineTemplate` for templated routines with
+     * `format: 'adaptive-card'`. Channels that can render rich cards
+     * (Teams) embed these directly into the card frame; channels that
+     * cannot ignore the field and fall back to `message.text` (which
+     * already carries a markdown rendering of the same template as a
+     * graceful degradation).
+     *
+     * Items conform to Adaptive Card 1.5 body element shapes
+     * (`TextBlock`, `Table`, …). Renderer-owned schema — channel
+     * adapters MUST NOT introspect element types beyond what the spec
+     * defines, so a future renderer change doesn't break consumers.
+     */
+    cardBody?: readonly unknown[];
   }): Promise<void>;
 }
 

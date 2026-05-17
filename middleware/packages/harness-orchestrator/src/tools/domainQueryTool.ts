@@ -62,13 +62,14 @@ export interface Askable {
 
 /**
  * A domain-specific delegation tool. Each DomainTool wraps one sub-agent
- * for a single domain. The orchestrator exposes all configured DomainTools
- * to Claude simultaneously and lets the LLM pick by tool name + description.
+ * (e.g. Odoo Accounting, Odoo HR, Confluence Playbook). The orchestrator
+ * exposes all configured DomainTools to Claude simultaneously and lets the
+ * LLM pick by tool name + description.
  *
- * Every DomainTool declares its `domain` (lowercase dotted identifier, e.g.
- * `seo`, `confluence`, `m365.calendar`). The orchestrator threads it onto
- * every emitted `ReadonlyToolTraceEntry` so the Nudge-Pipeline's
- * multi-domain trigger can count distinct domains.
+ * OB-77 (Palaia Phase 8): every DomainTool declares its `domain` (lowercase
+ * dotted identifier — `confluence`, `odoo.hr`, `m365.calendar`). The
+ * orchestrator threads it onto every emitted `ReadonlyToolTraceEntry` so
+ * the Nudge-Pipeline's multi-domain trigger can count distinct domains.
  */
 export interface DomainTool {
   name: string;
@@ -89,7 +90,7 @@ export interface DomainToolSpec {
 }
 
 interface DomainToolOptions {
-  /** Unique tool name, e.g. `query_seo_analyst`. Must match tool_use.name. */
+  /** Unique tool name, e.g. `query_odoo_accounting`. Must match tool_use.name. */
   name: string;
   /** Description Claude sees to decide when to pick this tool. */
   description: string;
@@ -135,16 +136,16 @@ export function createDomainTool(options: DomainToolOptions): DomainTool {
       }
       const started = Date.now();
       const preview = question.replace(/\s+/g, ' ').slice(0, 140);
-      console.log(`[domain-tool] ${options.name} → START: ${preview}`);
+      console.log(`[odoo] ${options.name} → START: ${preview}`);
       try {
         const answer = await options.agent.ask(question, observer);
         const elapsed = ((Date.now() - started) / 1000).toFixed(1);
-        console.log(`[domain-tool] ${options.name} → ok (${elapsed}s, ${answer.length} chars)`);
+        console.log(`[odoo] ${options.name} → ok (${elapsed}s, ${answer.length} chars)`);
         return answer;
       } catch (err) {
         const elapsed = ((Date.now() - started) / 1000).toFixed(1);
         const message = err instanceof Error ? err.message : String(err);
-        console.error(`[domain-tool] ${options.name} → ERROR (${elapsed}s): ${message}`);
+        console.error(`[odoo] ${options.name} → ERROR (${elapsed}s): ${message}`);
         return `Error while querying ${options.name}: ${message}`;
       }
     },

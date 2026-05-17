@@ -306,6 +306,103 @@ describe('codegen.generate', () => {
     assert.match(text, /^admin_ui_path: ['"]?\/api\/unifi\/admin\/index\.html['"]?$/m);
   });
 
+  it('emits spec.jobs[] into manifest.yaml:jobs (Phase-A platform exposure)', async () => {
+    // jobs[] schreibt der Codegen via YAML-AST in manifest.yaml — der
+    // Kernel auto-registriert vor activate(). Ohne diesen Block kann ein
+    // Builder-Plugin nicht deklarativ schedulen und müsste einen eigenen
+    // Cron-Parser schreiben (anti-Pattern).
+    const { slots } = loadFixture();
+    const spec = parseAgentSpec({
+      id: 'de.byte5.agent.scheduled',
+      name: 'Scheduled',
+      description: 'cron-driven agent',
+      category: 'other',
+      depends_on: [],
+      tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
+      skill: { role: 'x' },
+      playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
+      network: { outbound: ['api.example.com'] },
+      jobs: [
+        {
+          name: 'weekly-digest',
+          schedule: { cron: '0 8 * * MON' },
+          timeoutMs: 60_000,
+          overlap: 'skip',
+        },
+      ],
+    });
+    const files = await generate({ spec, slots });
+    const text = files.get('manifest.yaml')!.toString('utf-8');
+    assert.match(text, /^jobs:/m);
+    assert.match(text, /name: weekly-digest/);
+    assert.match(text, /cron: 0 8 \* \* MON/);
+  });
+
+  it('leaves manifest.yaml:jobs as the boilerplate placeholder when spec.jobs is empty', async () => {
+    const { spec, slots } = loadFixture();
+    // fixture has no jobs[]
+    const files = await generate({ spec, slots });
+    const text = files.get('manifest.yaml')!.toString('utf-8');
+    // Placeholder stays — `jobs: []` (no cron entries added)
+    assert.match(text, /^jobs: \[\]/m);
+  });
+
+  it('emits permissions.{subAgents,llm,graph.entity_systems} from spec.permissions (Phase B)', async () => {
+    const { slots } = loadFixture();
+    const spec = parseAgentSpec({
+      id: 'de.byte5.agent.crosswire',
+      name: 'CrossWire',
+      description: 'cross-agent + llm + graph user',
+      category: 'other',
+      depends_on: [],
+      tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
+      skill: { role: 'x' },
+      playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
+      network: { outbound: ['api.example.com'] },
+      permissions: {
+        graph: {
+          entity_systems: ['audit-reports'],
+          reads: ['Turn', 'Person'],
+          writes: [],
+        },
+        subAgents: {
+          calls: ['@omadia/agent-seo-analyst'],
+          calls_per_invocation: 3,
+        },
+        llm: {
+          models_allowed: ['claude-haiku-4-5*'],
+          calls_per_invocation: 2,
+          max_tokens_per_call: 1024,
+        },
+      },
+    });
+    const text = (await generate({ spec, slots })).get('manifest.yaml')!.toString('utf-8');
+    assert.match(text, /subAgents:/);
+    assert.match(text, /- "@omadia\/agent-seo-analyst"|- '@omadia\/agent-seo-analyst'|- @omadia\/agent-seo-analyst/);
+    assert.match(text, /calls_per_invocation: 3/);
+    assert.match(text, /llm:/);
+    assert.match(text, /models_allowed:/);
+    assert.match(text, /max_tokens_per_call: 1024/);
+    assert.match(text, /entity_systems:/);
+    assert.match(text, /- audit-reports/);
+  });
+
+  it('omits Phase-B permission blocks when spec.permissions is undefined', async () => {
+    const { spec, slots } = loadFixture();
+    // fixture has no permissions field
+    const text = (await generate({ spec, slots })).get('manifest.yaml')!.toString('utf-8');
+    // Template-defaults still there (memory/graph.{reads,writes}/network)
+    // but no permissions.subAgents / permissions.llm sub-keys appear.
+    // Note: the template has a TOP-LEVEL `llm:` block (orchestrator
+    // model-prefs) that is unrelated to permissions.llm — slice the
+    // permissions block out before checking.
+    const permsMatch = text.match(/\npermissions:\n([\s\S]*?)(?=\n\S)/);
+    assert.ok(permsMatch, 'permissions block must exist');
+    const permsBody = permsMatch[1] ?? '';
+    assert.ok(!/^\s*subAgents:/m.test(permsBody), 'permissions.subAgents must not appear');
+    assert.ok(!/^\s*llm:/m.test(permsBody), 'permissions.llm must not appear');
+  });
+
   it('omits admin_ui_path from manifest.yaml when spec does not set it', async () => {
     const { slots } = loadFixture();
     const spec = parseAgentSpec({
@@ -447,7 +544,15 @@ describe('codegen.generate', () => {
     const pkgJson = JSON.parse(out.get('package.json')!.toString('utf-8')) as {
       peerDependencies?: Record<string, string>;
     };
-    assert.deepEqual(pkgJson.peerDependencies, { zod: '^3.23.8' });
+    // B.12 production-fix — boilerplate now declares express + plugin-ui-
+    // helpers alongside zod so build-template-symlinks resolve those at
+    // tsc time (codegen-emitted UiRouter imports them). Plugins WITHOUT
+    // ui_routes carry them in peerDeps but never import them at runtime.
+    assert.deepEqual(pkgJson.peerDependencies, {
+      zod: '^3.23.8',
+      express: '^5.1.0',
+      '@omadia/plugin-ui-helpers': '*',
+    });
   });
 
   it('synthesises imports + body + peerDependencies for one external_read', async () => {
@@ -610,5 +715,85 @@ describe('codegen.generate', () => {
     assert.match(pluginText, /__mapped\["employees"\] = __src\?\.\["data"\];/);
     assert.match(pluginText, /__mapped\["count"\] = __src\?\.\["length"\];/);
     assert.match(pluginText, /return __mapped;/);
+  });
+
+  describe('partial slots (large skill markdowns)', () => {
+    it('synthesises one output file per filled partial of skill-prompt', async () => {
+      const { spec, slots } = loadFixture();
+      const augmented: Record<string, string> = {
+        ...slots,
+        'skill-prompt-1': '## Chunk 2\n\nSecond section body.',
+        'skill-prompt-2': '## Chunk 3\n\nThird section body.',
+      };
+      const out = await generate({ spec, slots: augmented });
+
+      assert.ok(out.has('skills/weather-expert.md'), 'base skill file');
+      assert.ok(out.has('skills/weather-expert-1.md'), 'partial 1 file');
+      assert.ok(out.has('skills/weather-expert-2.md'), 'partial 2 file');
+      assert.equal(
+        out.has('skills/weather-expert-3.md'),
+        false,
+        'unfilled partial must not produce a file',
+      );
+
+      const p1 = out.get('skills/weather-expert-1.md')!.toString('utf-8');
+      assert.match(p1, /^---\n/, 'partial has frontmatter');
+      assert.match(p1, /id:\s*weather_expert_system_1/);
+      assert.match(p1, /kind:\s*prompt_partial/);
+      assert.match(p1, /<!-- #region builder:skill-prompt-1 -->/);
+      assert.match(p1, /## Chunk 2/);
+
+      const p2 = out.get('skills/weather-expert-2.md')!.toString('utf-8');
+      assert.match(p2, /id:\s*weather_expert_system_2/);
+      assert.match(p2, /## Chunk 3/);
+      // No residual placeholders allowed in synthesised files.
+      assert.equal(p1.includes('{{'), false);
+      assert.equal(p2.includes('{{'), false);
+    });
+
+    it('lists partials in manifest.skills[] in ascending order', async () => {
+      const { spec, slots } = loadFixture();
+      const augmented: Record<string, string> = {
+        ...slots,
+        'skill-prompt-1': '## Chunk 2',
+        'skill-prompt-2': '## Chunk 3',
+      };
+      const out = await generate({ spec, slots: augmented });
+      const manifest = yaml.parse(
+        out.get('manifest.yaml')!.toString('utf-8'),
+      ) as { skills: Array<{ id: string; path: string; kind: string }> };
+
+      const ids = manifest.skills.map((s) => s.id);
+      const paths = manifest.skills.map((s) => s.path);
+      assert.deepEqual(ids, [
+        'weather_expert_system',
+        'weather_expert_system_1',
+        'weather_expert_system_2',
+      ]);
+      assert.deepEqual(paths, [
+        'skills/weather-expert.md',
+        'skills/weather-expert-1.md',
+        'skills/weather-expert-2.md',
+      ]);
+      for (const s of manifest.skills) {
+        assert.equal(s.kind, 'prompt_partial');
+      }
+    });
+
+    it('leaves manifest and file layout unchanged when no partials are filled', async () => {
+      const { spec, slots } = loadFixture();
+      const out = await generate({ spec, slots });
+
+      assert.ok(out.has('skills/weather-expert.md'));
+      assert.equal(out.has('skills/weather-expert-1.md'), false);
+      assert.equal(out.has('skills/weather-expert-2.md'), false);
+
+      const manifest = yaml.parse(
+        out.get('manifest.yaml')!.toString('utf-8'),
+      ) as { skills: Array<{ id: string; path: string }> };
+      assert.equal(manifest.skills.length, 1);
+      assert.equal(manifest.skills[0]!.id, 'weather_expert_system');
+      assert.equal(manifest.skills[0]!.path, 'skills/weather-expert.md');
+    });
   });
 });

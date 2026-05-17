@@ -13,7 +13,7 @@ describe('parseToolEmittedChoice (OB-29-4)', () => {
           rationale: 'mehrere Treffer',
           options: [
             { label: 'John Doe', value: 'note:n1' },
-            { label: 'Jane Doe', value: 'note:n2' },
+            { label: 'John Müller', value: 'note:n2' },
           ],
         },
       }),

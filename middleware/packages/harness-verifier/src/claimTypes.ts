@@ -5,41 +5,26 @@
  * factual claims, and produces a Verdict that decides whether the answer
  * is released, blocked for retry, or released with a disclaimer.
  *
- * Source-specific deterministic checks (e.g. against an ERP or CRM) live
- * in domain plugins that consume the SourceChecker contract; the core
- * verifier knows only the generic `'graph'` source.
+ * See docs/plans/answer-verifier-agent.md for the full design.
  */
 
 /** Kind of factual assertion we can recognise inside an answer. */
 export type ClaimType =
   | 'amount'      // monetary or numeric value with unit (e.g. "1.234,56 €")
-  | 'id'          // record identifier or reference
+  | 'id'          // record identifier or reference (invoice no., employee id)
   | 'date'        // concrete calendar date or period boundary
   | 'name'        // person / customer / vendor name with contextual assertion
-  | 'aggregate'   // sum / count / avg over a set
-  | 'qualitative';// non-numeric statement about an entity
+  | 'aggregate'   // sum / count / avg over a set (especially HR leave)
+  | 'qualitative';// non-numeric statement about an entity ("X ist Kunde seit …")
 
-/**
- * Which subsystem is authoritative for this claim.
- *
- * `'graph'` and `'unknown'` are first-class core values. Plugins may add
- * their own opaque source labels (e.g. `'erp.accounting'`); the
- * SourceChecker registry routes claims to the matching plugin.
- */
-export type ClaimSource = 'graph' | 'unknown' | string;
+/** Which subsystem is authoritative for this claim. */
+export type ClaimSource = 'odoo' | 'graph' | 'confluence' | 'unknown';
 
-/**
- * Reference to a specific source record the claim implicitly depends on.
- * Source-specific (the source-aware extension reads only the fields it
- * understands; the core ignores it).
- */
-export interface RecordRef {
-  /** Source-defined model / collection / table identifier. */
-  model: string;
-  /** Primary key inside the source, when known. */
+/** Reference to a specific Odoo record the claim implicitly depends on. */
+export interface OdooRecordRef {
+  model: string;           // e.g. "account.move", "hr.leave", "res.partner"
   id?: number;
-  /** Human-readable reference label, when known. */
-  ref?: string;
+  ref?: string;            // human reference (e.g. "INV/2026/0042")
 }
 
 /** Aggregation flavour — relevant only when `type === 'aggregate'`. */
@@ -59,16 +44,15 @@ export interface Claim {
   expectedSource: ClaimSource;
   value?: number | string;              // parsed numeric or normalised literal
   unit?: string;                        // "€", "h", "d" (days), "%", …
-  /** Opaque reference handed to the matching SourceChecker plugin. */
-  sourceRecord?: RecordRef;
-  /** Free-form entity hints used by the LLM judge for context. */
-  relatedEntities: string[];
+  odooRecord?: OdooRecordRef;
+  relatedEntities: string[];            // ["res.partner:42", "hr.employee:7"]
   aggregation?: Aggregation;
 }
 
 /** A claim that can be checked deterministically against a source of truth. */
 export interface HardClaim extends Claim {
   type: 'amount' | 'id' | 'date' | 'aggregate';
+  expectedSource: 'odoo' | 'graph';
 }
 
 /** A claim that needs an LLM judge because no deterministic check exists. */
@@ -110,16 +94,18 @@ export interface VerifierInput {
   userMessage: string;
   answer: string;
   /**
-   * Which sub-agent domain produced the answer. Used only for metrics /
-   * contradiction storage; the pipeline itself is domain-agnostic.
+   * Which Managed-Agent domain produced the answer (accounting | hr | …).
+   * Used only for metrics / contradiction storage; the pipeline itself is
+   * domain-agnostic.
    */
   agent?: string;
   /**
    * Names of every tool / sub-agent actually invoked in THIS turn.
-   * Used by the trace-cross-check rule: when an answer claims a fresh
-   * domain value without a matching tool call in the same turn, the claim
-   * is treated as a context-block replay (or hallucination) and flagged
-   * as contradicted rather than merely unverified.
+   * Example: ["query_odoo_accounting", "memory"]. Used by the trace-cross-
+   * check rule: if the orchestrator makes an Odoo-numeric claim without
+   * having called any `query_odoo_*` tool in the same turn, the claim is
+   * a context-block replay (or hallucination) and we flag it as
+   * contradicted — not merely unverified.
    *
    * Empty / missing means "we have no trace evidence either way"; the
    * pipeline then falls back to deterministic re-query (the existing path).
@@ -127,9 +113,9 @@ export interface VerifierInput {
   domainToolsCalled?: readonly string[];
 }
 
-/** Badge used by the channel adapter to communicate verifier status. */
+/** Badge used by the Teams card to communicate verifier status. */
 export type VerifierBadge =
-  | 'verified'            // ✓ checked
+  | 'verified'            // ✓ verified
   | 'partial'             // ⚠ partially confirmed
   | 'corrected'           // ↻ corrected (after a successful retry)
   | 'failed';             // blocked + retry still failed
@@ -139,6 +125,9 @@ export type VerifierBadge =
  * deterministic checker. Pure predicate; no I/O.
  */
 export function isHardClaim(claim: Claim): claim is HardClaim {
+  if (claim.expectedSource !== 'odoo' && claim.expectedSource !== 'graph') {
+    return false;
+  }
   return (
     claim.type === 'amount' ||
     claim.type === 'id' ||

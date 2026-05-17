@@ -190,7 +190,7 @@ function renderHeader(scope: string, day: string): string {
     'Chronologisches Protokoll der Q&A-Turns in diesem Scope. Wird von der',
     'Middleware geschrieben, nicht von Claude. Bei wiederkehrenden Themen oder',
     'Rückbezügen auf frühere Gespräche gezielt hier nachschlagen, statt den',
-    'gesamten Sub-Agent-Roundtrip zu wiederholen.',
+    'gesamten Odoo-Roundtrip zu wiederholen.',
     '',
     '---',
     '',
@@ -212,7 +212,7 @@ function renderTurn(args: {
       : '';
   // Entity anchors ride as an HTML comment so humans reading the .md see a
   // clean transcript while a graph-ingest parser picks them up deterministically.
-  // Shape: <!-- entities: [{"s":"<source>","m":"<model>","id":42,"n":"<name>"}, …] -->
+  // Shape: <!-- entities: [{"s":"odoo","m":"hr.employee","id":42,"n":"Müller"}, …] -->
   const entitiesComment =
     args.entityRefs.length > 0
       ? `\n<!-- entities: ${JSON.stringify(args.entityRefs.map(serialiseRef))} -->\n`

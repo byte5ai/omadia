@@ -1,0 +1,41 @@
+{
+  "format": "markdown",
+  "sections": [
+    {
+      "kind": "narrative-slot",
+      "id": "intro",
+      "hint": "Einen Satz Einleitung mit dem heutigen Datum (z.B. \"Heute, 15. Mai 2026 – Stand 09:00\")."
+    },
+    {
+      "kind": "data-table",
+      "sourceTool": "query_odoo_hr",
+      "sourcePath": "absences",
+      "title": "Abwesenheiten heute & geplant",
+      "groupBy": "type",
+      "columns": [
+        { "label": "Mitarbeiter", "field": "name" },
+        { "label": "Abteilung", "field": "department" },
+        { "label": "Position", "field": "position" },
+        { "label": "Abwesend bis", "field": "absent_until", "format": "date" }
+      ],
+      "emptyText": "Heute keine Abwesenheiten gemeldet."
+    },
+    {
+      "kind": "data-list",
+      "sourceTool": "query_odoo_hr",
+      "sourcePath": "birthdays",
+      "title": "Geburtstage diese Woche",
+      "itemTemplate": "**{{ name }}** ({{ department }}) — {{ date }}",
+      "emptyText": "Diese Woche keine Geburtstage."
+    },
+    {
+      "kind": "narrative-slot",
+      "id": "summary",
+      "hint": "2-3 Bulletpoints zur Zusammenfassung: Anzahl Abwesenheiten, betroffene Abteilungen, Auffälligkeiten (z.B. ungewöhnliche Konzentration in einer Abteilung)."
+    },
+    {
+      "kind": "static-markdown",
+      "text": "_Quelle: Odoo HR · Server-side gerendert (Phase C)_"
+    }
+  ]
+}

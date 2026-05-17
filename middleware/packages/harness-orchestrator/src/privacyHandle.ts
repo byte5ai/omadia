@@ -15,9 +15,15 @@
  */
 
 import type {
+  PrivacyEgressMode,
+  PrivacyEgressResult,
+  PrivacyEgressTextInput,
   PrivacyGuardService,
   PrivacyOutboundMessage,
+  PrivacyOutputValidationResult,
+  PrivacyPostEgressScrubResult,
   PrivacyReceipt,
+  PrivacySelfAnonymizationResult,
   Routing,
 } from '@omadia/plugin-api';
 
@@ -70,6 +76,48 @@ export interface PrivacyTurnHandle {
     readonly text: string;
     readonly transformed: boolean;
   }>;
+  /**
+   * Privacy-Shield v2 (Slice S-6) — run the Egress Filter against the
+   * final channel-bound text slots before the answer is handed to the
+   * channel plugin. The host walks the result-shape (text + interactive
+   * card labels + attachment alt-text) and hands each slot in as a
+   * `{ id, text }` pair; the filter returns a transformed array plus
+   * the routing decision the host MUST honour (`blocked` → swap with
+   * placeholder).
+   */
+  egressFilter(input: {
+    readonly mode?: PrivacyEgressMode;
+    readonly texts: readonly PrivacyEgressTextInput[];
+  }): Promise<PrivacyEgressResult>;
+  /**
+   * Privacy-Shield v2 (D-2) — Output Validator hook. Runs the
+   * token-loss + spontaneous-PII checks on the final assistant text
+   * BEFORE the egress filter so the orchestrator can act on the
+   * `retry` / `block` recommendation. Result is folded into the
+   * receipt's `output` block at `finalize()` time.
+   */
+  validateOutput(input: {
+    readonly assistantText: string;
+  }): Promise<PrivacyOutputValidationResult>;
+  /**
+   * Privacy-Shield v2 (Phase A, post-deploy 2026-05-14) — mechanical
+   * restoration of LLM self-anonymization patterns ("Mitarbeiter 1/2/3",
+   * "Employee N", "Person N", …). Runs after `processInbound` has
+   * restored the verbatim tokens, before the egress filter. The
+   * positional source comes from the last `processToolResult` capture
+   * (tracked on the service's turn accumulator).
+   */
+  restoreSelfAnonymizationLabels(input: {
+    readonly text: string;
+  }): Promise<PrivacySelfAnonymizationResult>;
+  /**
+   * Privacy-Shield v2 (Phase A.2) — final-scrub pass post-egress.
+   * Guarantees the returned text contains no `«TYPE_N»` token shapes
+   * via positional restoration + generic placeholder fallback.
+   */
+  restoreOrScrubRemainingTokens(input: {
+    readonly text: string;
+  }): Promise<PrivacyPostEgressScrubResult>;
 }
 
 export function createPrivacyTurnHandle(deps: {
@@ -126,32 +174,57 @@ export function createPrivacyTurnHandle(deps: {
       });
       return { text: r.text, transformed: r.transformed };
     },
+
+    async egressFilter(input) {
+      return deps.service.egressFilter({
+        sessionId: deps.sessionId,
+        turnId: deps.turnId,
+        ...(input.mode !== undefined ? { mode: input.mode } : {}),
+        texts: input.texts,
+      });
+    },
+
+    async validateOutput(input) {
+      return deps.service.validateOutput({
+        sessionId: deps.sessionId,
+        turnId: deps.turnId,
+        assistantText: input.assistantText,
+      });
+    },
+
+    async restoreSelfAnonymizationLabels(input) {
+      return deps.service.restoreSelfAnonymizationLabels({
+        sessionId: deps.sessionId,
+        turnId: deps.turnId,
+        text: input.text,
+      });
+    },
+
+    async restoreOrScrubRemainingTokens(input) {
+      return deps.service.restoreOrScrubRemainingTokens({
+        sessionId: deps.sessionId,
+        turnId: deps.turnId,
+        text: input.text,
+      });
+    },
   };
 }
 
 // ---------------------------------------------------------------------------
 // Streaming-buffered restore: holds back trailing characters that could be
-// the start of a `tok_<8hex>_<type>` pattern crossing chunk boundaries.
+// the start of a `«TYPE_N»` token pattern crossing chunk boundaries.
 //
-// Token format (Slice 2.2, see harness-plugin-privacy-guard/src/tokenizeMap.ts):
-//   `tok_` + 8 lowercase hex chars + `_` + 1..30 chars of [a-z0-9_]
+// Token format (Privacy-Shield v2, see harness-plugin-privacy-guard/src/tokenizeMap.ts):
+//   `«` + uppercase TYPE + `_` + counter + `»`
 //
-// Strategy:
-//   - Find the LAST `tok_` substring in `text`.
-//   - Decide stage-by-stage whether the chars after it could still grow
-//     into a complete token in a future chunk:
-//       1. <8 chars and all hex            → could grow, HOLD
-//       2. exactly 8 hex, no `_` yet       → could grow (`_` may follow), HOLD
-//       3. 8 hex + `_`, then 0+ suffix chars and NO terminating word
-//          boundary in this text yet      → could grow, HOLD
-//       4. 8 hex + `_` + 1+ suffix chars + a non-[a-z0-9_] terminator
-//          char already in `text`         → token complete (regex
-//          will catch it on emit), no HOLD
-//       5. broken pattern (non-hex in the first 8 chars, or the 9th
-//          char is not `_`)               → never a token, no HOLD
+// The closing guillemet `»` is the unambiguous terminator. We hold from
+// the last `«` until either:
+//   - a `»` arrives in this chunk → token is complete, emit all
+//   - or the chunk ends → keep holding for the next chunk
 //
-// Trailing partial holds across chunks until either complete or definitively
-// non-token. On stream end the caller flushes whatever is left as plain text.
+// False holds (a stray `«` that never closes, e.g. legitimate use of
+// guillemets in prose) flush when the chunk ends or another `«` appears.
+// On stream end the caller flushes whatever is left as plain text.
 // ---------------------------------------------------------------------------
 
 export interface BoundarySplit {
@@ -160,51 +233,18 @@ export interface BoundarySplit {
 }
 
 export function streamingTokenBoundary(text: string): BoundarySplit {
-  const lastIdx = text.lastIndexOf('tok_');
-  if (lastIdx === -1) return { safe: text, hold: '' };
+  const lastOpen = text.lastIndexOf('«');
+  if (lastOpen === -1) return { safe: text, hold: '' };
 
-  const after = text.slice(lastIdx + 4);
+  // If the last `«` is followed by a closing `»` somewhere later in
+  // this chunk, the token (or false-positive) is fully captured here.
+  // Emit everything and let the restore regex decide.
+  const after = text.slice(lastOpen);
+  if (after.includes('»')) return { safe: text, hold: '' };
 
-  // Stage 1: not enough hex chars yet.
-  if (after.length < 8) {
-    if (/^[0-9a-f]*$/.test(after)) {
-      // Could still grow into 8-hex prefix — hold.
-      return { safe: text.slice(0, lastIdx), hold: text.slice(lastIdx) };
-    }
-    // Non-hex char already broke the pattern.
-    return { safe: text, hold: '' };
-  }
-
-  // We have ≥8 chars after `tok_`. Check the first 8 are hex.
-  const hexPart = after.slice(0, 8);
-  if (!/^[0-9a-f]{8}$/.test(hexPart)) {
-    // The first 8 chars contain a non-hex byte — definitely not a token.
-    return { safe: text, hold: '' };
-  }
-
-  const sepAndSuffix = after.slice(8);
-
-  // Stage 2: nothing after the hex yet — `_<suffix>` may still arrive.
-  if (sepAndSuffix.length === 0) {
-    return { safe: text.slice(0, lastIdx), hold: text.slice(lastIdx) };
-  }
-
-  // Stage 5: ninth char is not `_` — token format broken; this is plain text.
-  if (sepAndSuffix[0] !== '_') {
-    return { safe: text, hold: '' };
-  }
-
-  // Stage 3 / 4: have `_` separator. Look for the terminating word boundary.
-  const suffix = sepAndSuffix.slice(1);
-  // Search for first non-[a-z0-9_] char inside the suffix portion.
-  const boundaryIdx = suffix.search(/[^a-z0-9_]/);
-  if (boundaryIdx === -1) {
-    // No boundary yet — suffix could still extend in the next chunk.
-    return { safe: text.slice(0, lastIdx), hold: text.slice(lastIdx) };
-  }
-  // Boundary present in this chunk → token is fully captured; emit all and
-  // let the regex restore catch it.
-  return { safe: text, hold: '' };
+  // No closing guillemet yet — the token may complete in the next
+  // chunk. Hold from the opening guillemet.
+  return { safe: text.slice(0, lastOpen), hold: text.slice(lastOpen) };
 }
 
 // ---------------------------------------------------------------------------

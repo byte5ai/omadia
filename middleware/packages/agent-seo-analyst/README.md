@@ -1,85 +1,75 @@
 # SEO Analyst Agent
 
-Public-website SEO analyser. Reference implementation for the plugin
-package format and the ZIP-upload flow.
+Analysiert byte5-eigene Webseiten aus SEO-Sicht. Erster "echter" Agent im neuen Package-Format — dient gleichzeitig als **Referenz-Implementation für den Zip-Upload-Flow**.
 
-## Why this agent as a reference
+## Warum dieser Agent zuerst?
 
-- **No secrets.** Works on publicly reachable URLs — no OAuth, no API tokens.
-- **Zero peer-deps.** Uses only `zod` (already in the host) + native `fetch`
-  + a regex-based HTML extractor. No `cheerio`, no headless browser.
-- **Deterministic.** Same HTML input → same report + score.
-- **Small but realistic.** Three real tools, structured outputs, an issue
-  list with severity, score with rubric.
+- **Keine Secrets.** Arbeitet auf öffentlich erreichbaren Seiten, kein OAuth, kein API-Token.
+- **Zero peer-deps.** Nutzt nur `zod` (schon im Host) + native `fetch` + Regex-HTML-Extraktor. Kein `cheerio`, kein Headless-Browser.
+- **Deterministisch.** Gleicher HTML-Input → gleicher Report + Score.
+- **Klein, aber realistisch.** Drei echte Tools, strukturierte Outputs, Issue-Liste mit Severity, Score mit Rubrik.
 
 ## Tools
 
-| Tool | Purpose |
+| Tool | Zweck |
 |---|---|
-| `analyze_page(url)` | On-page report for a single URL: meta, headings, links, images, JSON-LD, issues, score. |
-| `check_technical_seo(base_url?)` | robots.txt, sitemaps, HTTPS, security headers. |
-| `audit_site(start_url?, max_pages?, max_depth?)` | BFS crawl within the same host, aggregates on-page issues across pages. |
+| `analyze_page(url)` | On-Page-Report für eine einzelne URL: Meta, Headings, Links, Bilder, JSON-LD, Issues, Score. |
+| `check_technical_seo(base_url?)` | robots.txt, Sitemaps, HTTPS, Security-Header. |
+| `audit_site(start_url?, max_pages?, max_depth?)` | BFS-Crawl innerhalb derselben Host, aggregiert On-Page-Issues über alle Seiten. |
 
-Unset `base_url` / `start_url` → falls back to `target_base_url` from the
-install setup.
+Unset `base_url` / `start_url` → Fallback auf `target_base_url` aus dem Install-Setup (Default `https://omadia.ai`).
 
-## Setup fields
+## Setup-Felder
 
-All declared in the manifest under `setup.fields` — no secrets:
+Alle im Manifest unter `setup.fields` — keine Secrets:
 
-- `target_base_url` (required) — root URL the agent analyses
-- `user_agent` (optional) — bot identifier sent on each fetch
+- `target_base_url` (required, default `https://omadia.ai`)
+- `user_agent` (optional, default `byte5-seo-bot/0.1 …`)
 - `crawl_max_pages` (optional, default 25, hard cap 100)
 - `crawl_max_depth` (optional, default 3, hard cap 5)
 - `request_timeout_ms` (optional, default 15000)
 
-## Directory layout
+## Verzeichnis-Layout
 
 ```
 middleware/packages/agent-seo-analyst/
-├── manifest.yaml
+├── manifest.yaml ─────────────► docs/harness-platform/examples/agent-seo-analyst.manifest.yaml
 ├── package.json
 ├── plugin.ts              # activate(ctx) → AgentHandle
 ├── toolkit.ts             # ToolDescriptor[] + createToolkit()
-├── fetcher.ts             # native fetch + regex HTML extractor
-├── types.ts               # report types
-├── index.ts               # public exports
+├── fetcher.ts             # native fetch + regex HTML-Extractor
+├── types.ts               # Report-Typen
+├── index.ts               # öffentliche Exports
 ├── analyzers/
-│   ├── onPage.ts          # meta/headings/links/images/JSON-LD → issues
-│   ├── technical.ts       # robots.txt + sitemap.xml + headers
-│   ├── crawler.ts         # BFS site audit
-│   └── scoring.ts         # score rubric (page + technical + site)
+│   ├── onPage.ts          # Meta/Headings/Links/Images/JSON-LD → Issues
+│   ├── technical.ts       # robots.txt + sitemap.xml + Header
+│   ├── crawler.ts         # BFS site-audit
+│   └── scoring.ts         # Score-Rubrik (Page + Technical + Site)
 └── skills/
-    ├── seo-expert.md      # role + analysis framing for the LLM
-    └── scoring-rubric.md  # how the score is derived (explainability)
+    ├── seo-expert.md      # Rolle + Analyse-Rahmen für den LLM
+    └── scoring-rubric.md  # Score-Herleitung zum Erklären
 ```
 
-## Gotchas
+## Stolperfallen
 
-- **The regex HTML extractor is intentionally minimal.** Selector / DOM
-  traversal would need `cheerio` or `linkedom` — explicitly omitted so the
-  package introduces no new peer-dep. SEO-relevant tags (`<meta>`,
-  `<title>`, headings, anchors, images, JSON-LD scripts) work fine.
-- **No JavaScript rendering.** SPAs that render content client-side are
-  invisible to this agent. For those, a Playwright variant is required.
-- **The self-test is a GET on `target_base_url` with a short timeout.**
-  If it fails, the agent does not activate.
-- **The crawl budget is hard-capped** (100 pages / depth 5). No accidental
-  full-domain crawl is possible.
+- **Regex-HTML-Extractor** ist bewusst minimal. Für Selektoren / DOM-Traversierung wäre `cheerio` oder `linkedom` nötig → bewusst weggelassen, damit das Package keine neue peerDep einschleppt. Für SEO-relevante Tags (`<meta>`, `<title>`, Headings, Anchors, Images, JSON-LD-Scripts) reicht es.
+- **Kein JavaScript-Rendering.** SPAs, die erst client-side Content rendern, zeigen für diesen Agent kein Inhalt. Für solche Seiten braucht es eine Playwright-Variante (Phase 2).
+- **Self-Test** ist ein GET auf `target_base_url` mit kurzem Timeout. Schlägt fehl → Agent aktiviert nicht.
+- **Crawl-Budget** ist hart begrenzt (100 Seiten / Tiefe 5). Kein versehentlicher Vollcrawl der Domain möglich.
 
-## ZIP build
+## Zip-Build
 
 ```bash
 node middleware/scripts/build-seo-analyst-zip.mjs
 # → out/seo-analyst-0.1.0.zip
-# → out/seo-analyst-package/  (staging, for inspection)
+# → out/seo-analyst-package/  (Staging, zur Inspektion)
 ```
 
-What's inside:
+Was drin ist:
 
 ```
 seo-analyst-0.1.0.zip
-├── manifest.yaml
+├── manifest.yaml          # aus dem Package-Root (nicht mehr docs/examples/)
 ├── package.json
 ├── README.md
 ├── dist/
@@ -94,7 +84,7 @@ seo-analyst-0.1.0.zip
     └── scoring-rubric.md
 ```
 
-The build script uses the package-local `tsconfig.json` (no cross-references
-into the middleware tree — the ZIP is standalone). `PluginContext` is
-duplicated structurally in `types.ts` so the agent doesn't need to import
-from `middleware/src/platform`.
+Das Build-Script nutzt die package-lokale `tsconfig.json` (keine Querverweise ins
+middleware-Tree — das Zip ist standalone). `PluginContext` ist in `types.ts`
+strukturell dupliziert, damit der Agent ohne Import aus `middleware/src/platform`
+auskommt.

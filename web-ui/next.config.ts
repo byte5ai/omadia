@@ -34,6 +34,14 @@ const nextConfig: NextConfig = {
         source: '/bot-api/:path*',
         destination: `${middlewareUrl}/api/:path*`,
       },
+      // Plugin-served UI surfaces. Plugins register Express routers under
+      // /p/<pluginId>/... via ctx.routes.register; iframes embedded in
+      // Teams Tabs hit this rewrite so the browser only ever sees the
+      // web-ui origin.
+      {
+        source: '/p/:path*',
+        destination: `${middlewareUrl}/p/:path*`,
+      },
     ];
   },
 };

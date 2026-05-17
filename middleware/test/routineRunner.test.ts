@@ -26,6 +26,9 @@ import {
   type JobSchedulerLike,
   type OrchestratorLike,
 } from '../src/plugins/routines/routineRunner.js';
+import { routineTurnContext } from '../src/plugins/routines/routineTurnContext.js';
+import { turnContext } from '@omadia/orchestrator';
+import type { RoutineOutputTemplate } from '../src/plugins/routines/routineOutputTemplate.js';
 import type {
   CreateRoutineInput,
   RecordRunInput,
@@ -111,6 +114,7 @@ class InMemoryRoutineStore implements RoutineStore {
       lastRunAt: null,
       lastRunStatus: null,
       lastRunError: null,
+      outputTemplate: input.outputTemplate ?? null,
     };
     this.rows.set(id, routine);
     return routine;
@@ -234,6 +238,7 @@ class StubSender implements ProactiveSender {
   public readonly calls: Array<{
     conversationRef: unknown;
     message: SemanticAnswer;
+    cardBody?: readonly unknown[];
   }> = [];
   public throwError: Error | undefined;
 
@@ -244,6 +249,7 @@ class StubSender implements ProactiveSender {
   async send(opts: {
     conversationRef: unknown;
     message: SemanticAnswer;
+    cardBody?: readonly unknown[];
   }): Promise<void> {
     this.calls.push(opts);
     if (this.throwError) throw this.throwError;
@@ -579,5 +585,493 @@ describe('RoutineRunner — run-once delivery path', () => {
     assert.equal(h.runsStore.inserts.length, 1);
     assert.equal(h.runsStore.inserts[0]!.trigger, 'manual');
     assert.equal(h.runsStore.inserts[0]!.status, 'ok');
+  });
+});
+
+/**
+ * Phase C.2 — Raw tool-result capture bridge.
+ *
+ * The runner is responsible for opting templated routines into the capture
+ * path: instantiate a fresh `Map<toolName, unknown>`, expose it via
+ * `routineTurnContext.withRawToolResults`, and inject a
+ * `captureRawToolResult` callback into the orchestrator's outer
+ * `turnContext` so the inner `runTurn` inherits it.
+ *
+ * These tests use a custom stub orchestrator that simulates a tool
+ * dispatch — reading `turnContext.current()?.captureRawToolResult` and
+ * invoking it with a synthetic raw result. That verifies the parent →
+ * child ALS forwarding works without spinning up the real orchestrator.
+ */
+describe('RoutineRunner — Phase C.2 raw tool-result capture', () => {
+  const TEMPLATE: RoutineOutputTemplate = {
+    format: 'markdown',
+    sections: [
+      {
+        kind: 'data-table',
+        sourceTool: 'query_odoo_hr',
+        columns: [{ label: 'Mitarbeiter', field: 'name' }],
+      },
+    ],
+  };
+
+  function makeCapturingOrchestrator(synthetic: {
+    toolName: string;
+    rawResult: string;
+  }): {
+    orchestrator: OrchestratorLike;
+    seenCapture: { called: boolean; toolName?: string; rawResult?: string };
+    seenRoutineMap: { map?: Map<string, unknown> };
+  } {
+    const seenCapture: {
+      called: boolean;
+      toolName?: string;
+      rawResult?: string;
+    } = { called: false };
+    const seenRoutineMap: { map?: Map<string, unknown> } = {};
+    const orchestrator: OrchestratorLike = {
+      async runTurn(): Promise<ChatTurnResult> {
+        // Snapshot what the inner code sees — the runner's bridge must
+        // have established both ALS scopes by the time `runTurn` runs.
+        const capture = turnContext.current()?.captureRawToolResult;
+        seenRoutineMap.map = routineTurnContext.currentRawToolResults();
+        if (capture) {
+          seenCapture.called = true;
+          seenCapture.toolName = synthetic.toolName;
+          seenCapture.rawResult = synthetic.rawResult;
+          capture(synthetic.toolName, synthetic.rawResult);
+        }
+        return { answer: 'ok', toolCalls: 1, iterations: 1 };
+      },
+    };
+    return { orchestrator, seenCapture, seenRoutineMap };
+  }
+
+  it('non-templated routine: no capture callback, no raw map in ALS', async () => {
+    const cap = makeCapturingOrchestrator({
+      toolName: 'query_odoo_hr',
+      rawResult: '{"absences":[]}',
+    });
+    const h = makeHarness({ orchestrator: cap.orchestrator });
+    const routine = await h.runner.createRoutine(baseInput);
+
+    await h.scheduler.fire(routine.id);
+
+    assert.equal(cap.seenCapture.called, false);
+    assert.equal(cap.seenRoutineMap.map, undefined);
+  });
+
+  it('templated routine: capture callback fires and writes into the routine map', async () => {
+    const cap = makeCapturingOrchestrator({
+      toolName: 'query_odoo_hr',
+      rawResult: '{"absences":[{"name":"Anna Müller"}]}',
+    });
+    const h = makeHarness({ orchestrator: cap.orchestrator });
+    const routine = await h.runner.createRoutine({
+      ...baseInput,
+      outputTemplate: TEMPLATE,
+    });
+
+    await h.scheduler.fire(routine.id);
+
+    assert.equal(cap.seenCapture.called, true);
+    assert.ok(cap.seenRoutineMap.map !== undefined);
+    assert.equal(
+      cap.seenRoutineMap.map!.get('query_odoo_hr'),
+      '{"absences":[{"name":"Anna Müller"}]}',
+    );
+  });
+
+  it('templated routine: raw-result map is fresh per turn (no cross-run bleed)', async () => {
+    const observed: Array<Map<string, unknown> | undefined> = [];
+    const orchestrator: OrchestratorLike = {
+      async runTurn(): Promise<ChatTurnResult> {
+        const map = routineTurnContext.currentRawToolResults();
+        observed.push(map);
+        // Mutate so the next turn would see leftover state if the ALS
+        // failed to isolate.
+        const capture = turnContext.current()?.captureRawToolResult;
+        capture?.('query_odoo_hr', `turn-${observed.length}`);
+        return { answer: 'ok', toolCalls: 1, iterations: 1 };
+      },
+    };
+    const h = makeHarness({ orchestrator });
+    const routine = await h.runner.createRoutine({
+      ...baseInput,
+      outputTemplate: TEMPLATE,
+    });
+
+    await h.scheduler.fire(routine.id);
+    await h.scheduler.fire(routine.id);
+
+    assert.equal(observed.length, 2);
+    assert.notEqual(observed[0], observed[1]);
+    assert.equal(observed[0]!.get('query_odoo_hr'), 'turn-1');
+    assert.equal(observed[1]!.get('query_odoo_hr'), 'turn-2');
+  });
+
+  it('templated routine: ALS scope clears after runTurn — caller-side map retains the captures', async () => {
+    const cap = makeCapturingOrchestrator({
+      toolName: 'query_knowledge_graph',
+      rawResult: '[{"id":"node-1"}]',
+    });
+    const h = makeHarness({ orchestrator: cap.orchestrator });
+    const routine = await h.runner.createRoutine({
+      ...baseInput,
+      outputTemplate: TEMPLATE,
+    });
+
+    await h.scheduler.fire(routine.id);
+
+    // After scheduler.fire resolves, the outer ALS scope has exited, so a
+    // top-level read sees nothing — but the runner's caller-side map (the
+    // one we passed into `withRawToolResults`) still holds the captures.
+    assert.equal(routineTurnContext.currentRawToolResults(), undefined);
+    assert.ok(cap.seenRoutineMap.map !== undefined);
+    assert.equal(
+      cap.seenRoutineMap.map!.get('query_knowledge_graph'),
+      '[{"id":"node-1"}]',
+    );
+  });
+});
+
+/**
+ * Phase C.5 — End-to-end templated-routine pipeline.
+ *
+ * The runner is responsible for the full template path:
+ *
+ *   1. Append `buildSlotDirective` to the routine prompt.
+ *   2. Run `runTurn` with raw-tool-result capture active.
+ *   3. Parse the LLM's JSON response via `parseSlotResponse`.
+ *   4. Render the final markdown via `renderRoutineTemplate`.
+ *   5. Replace `result.answer` with the rendered markdown.
+ *
+ * These tests use a stub orchestrator that simulates the LLM's tool
+ * use + JSON response so we can verify the runner's wiring without
+ * spinning up the real Claude client.
+ */
+describe('RoutineRunner — Phase C.5 templated end-to-end pipeline', () => {
+  const HR_TEMPLATE: RoutineOutputTemplate = {
+    format: 'markdown',
+    sections: [
+      { kind: 'narrative-slot', id: 'intro', hint: 'Ein Satz Einleitung.' },
+      {
+        kind: 'data-table',
+        sourceTool: 'query_odoo_hr',
+        sourcePath: 'absences',
+        title: 'Abwesenheiten',
+        columns: [
+          { label: 'Mitarbeiter', field: 'name' },
+          { label: 'Abteilung', field: 'department' },
+        ],
+      },
+      { kind: 'narrative-slot', id: 'summary', hint: '2-3 Bullets.' },
+    ],
+  };
+
+  it('augments prompt with slot directive, captures tool, and renders final markdown', async () => {
+    let receivedPrompt = '';
+    const orchestrator: OrchestratorLike = {
+      async runTurn(input: ChatTurnInput): Promise<ChatTurnResult> {
+        receivedPrompt = input.userMessage;
+        // Simulate the LLM having called query_odoo_hr (capture fires).
+        const capture = turnContext.current()?.captureRawToolResult;
+        capture?.(
+          'query_odoo_hr',
+          '{"absences":[{"name":"Anna Müller","department":"PHP"},{"name":"Ben Lee","department":"Ops"}]}',
+        );
+        // LLM produces a slot JSON response.
+        return {
+          answer: JSON.stringify({
+            slots: {
+              intro: 'Heute, 15. Mai 2026, sind 2 Mitarbeiter abwesend.',
+              summary: '- Beide aus dem ExtSvc-Team\n- Anna kehrt am 18.05. zurück',
+            },
+          }),
+          toolCalls: 1,
+          iterations: 2,
+        };
+      },
+    };
+    const sender = new StubSender();
+    const h = makeHarness({ orchestrator, sender });
+    const routine = await h.runner.createRoutine({
+      ...baseInput,
+      prompt: 'Erzeuge den HR-Tagesbericht.',
+      outputTemplate: HR_TEMPLATE,
+    });
+
+    await h.scheduler.fire(routine.id);
+
+    // Prompt augmentation: directive appended after the routine prompt.
+    assert.match(receivedPrompt, /^Erzeuge den HR-Tagesbericht\./);
+    assert.match(receivedPrompt, /Antworte ausschließlich mit einem einzigen JSON-Objekt/);
+    assert.match(receivedPrompt, /"intro": "\.\.\."/);
+    assert.match(receivedPrompt, /"summary": "\.\.\."/);
+
+    // The delivered message is the rendered template, not the LLM's JSON.
+    assert.equal(sender.calls.length, 1);
+    const text = sender.calls[0]!.message.text!;
+    assert.match(text, /Heute, 15\. Mai 2026, sind 2 Mitarbeiter abwesend\./);
+    assert.match(text, /## Abwesenheiten/);
+    assert.match(text, /\| Mitarbeiter \| Abteilung \|/);
+    assert.match(text, /\| Anna Müller \| PHP \|/);
+    assert.match(text, /\| Ben Lee \| Ops \|/);
+    assert.match(text, /Beide aus dem ExtSvc-Team/);
+    // No JSON leakage in the user-facing output.
+    assert.doesNotMatch(text, /"slots"/);
+  });
+
+  it('falls back to empty slots when LLM response is not parseable JSON', async () => {
+    const logLines: string[] = [];
+    const orchestrator: OrchestratorLike = {
+      async runTurn(): Promise<ChatTurnResult> {
+        const capture = turnContext.current()?.captureRawToolResult;
+        capture?.(
+          'query_odoo_hr',
+          '{"absences":[{"name":"Anna Müller","department":"PHP"}]}',
+        );
+        return {
+          answer: 'Sorry, kann ich nicht.',
+          toolCalls: 1,
+          iterations: 1,
+        };
+      },
+    };
+    const sender = new StubSender();
+    const store = new InMemoryRoutineStore();
+    const runsStore = new InMemoryRoutineRunsStore();
+    const scheduler = new StubScheduler();
+    const senderRegistry = new InMemoryProactiveSenderRegistry();
+    senderRegistry.register(sender);
+    const runner = new RoutineRunner({
+      store: store as unknown as RoutineStore,
+      runsStore: runsStore as unknown as RoutineRunsStore,
+      scheduler,
+      orchestrator,
+      senderRegistry,
+      log: (msg) => {
+        logLines.push(msg);
+      },
+    });
+    const routine = await runner.createRoutine({
+      ...baseInput,
+      outputTemplate: HR_TEMPLATE,
+    });
+
+    await scheduler.fire(routine.id);
+
+    // Data section + table still ship (raw capture is independent of LLM
+    // narrative success).
+    assert.equal(sender.calls.length, 1);
+    const text = sender.calls[0]!.message.text!;
+    assert.match(text, /## Abwesenheiten/);
+    assert.match(text, /\| Anna Müller \| PHP \|/);
+    // Narrative slots collapsed to nothing (empty-string slots are
+    // silently skipped by the renderer).
+    assert.doesNotMatch(text, /Heute, 15\. Mai/);
+    // Operator-visible diagnostic.
+    assert.ok(
+      logLines.some((l) => /slot-parse failed/.test(l)),
+      'expected a slot-parse-failed log line',
+    );
+  });
+
+  it('persists the rendered markdown as the run answer (not the LLM JSON)', async () => {
+    const orchestrator: OrchestratorLike = {
+      async runTurn(): Promise<ChatTurnResult> {
+        const capture = turnContext.current()?.captureRawToolResult;
+        capture?.(
+          'query_odoo_hr',
+          '{"absences":[{"name":"Carla","department":"QA"}]}',
+        );
+        return {
+          answer: JSON.stringify({
+            slots: { intro: 'Heute eine Person abwesend.', summary: '- Carla bis 20.05.' },
+          }),
+          toolCalls: 1,
+          iterations: 1,
+        };
+      },
+    };
+    const h = makeHarness({ orchestrator });
+    const routine = await h.runner.createRoutine({
+      ...baseInput,
+      outputTemplate: HR_TEMPLATE,
+    });
+
+    await h.scheduler.fire(routine.id);
+
+    // The per-run history blob carries the rendered markdown, not the JSON.
+    assert.equal(h.runsStore.inserts.length, 1);
+    const persisted = h.runsStore.inserts[0]!.answer!;
+    assert.match(persisted, /## Abwesenheiten/);
+    assert.match(persisted, /\| Carla \| QA \|/);
+    assert.doesNotMatch(persisted, /"slots"/);
+  });
+
+  it('skips slot directive when template has no required slots (data-only)', async () => {
+    const DATA_ONLY: RoutineOutputTemplate = {
+      format: 'markdown',
+      sections: [
+        {
+          kind: 'data-table',
+          sourceTool: 'query_odoo_hr',
+          sourcePath: 'absences',
+          title: 'Stand heute',
+          columns: [{ label: 'Name', field: 'name' }],
+        },
+        { kind: 'static-markdown', text: '_Stand: Odoo_' },
+      ],
+    };
+    let receivedPrompt = '';
+    const orchestrator: OrchestratorLike = {
+      async runTurn(input: ChatTurnInput): Promise<ChatTurnResult> {
+        receivedPrompt = input.userMessage;
+        const capture = turnContext.current()?.captureRawToolResult;
+        capture?.('query_odoo_hr', '{"absences":[{"name":"Dora"}]}');
+        return {
+          answer: 'whatever the LLM said',
+          toolCalls: 1,
+          iterations: 1,
+        };
+      },
+    };
+    const h = makeHarness({ orchestrator });
+    const routine = await h.runner.createRoutine({
+      ...baseInput,
+      prompt: 'Status heute.',
+      outputTemplate: DATA_ONLY,
+    });
+
+    await h.scheduler.fire(routine.id);
+
+    // No directive appended — prompt is verbatim.
+    assert.equal(receivedPrompt, 'Status heute.');
+    const text = h.sender.calls[0]!.message.text!;
+    assert.match(text, /## Stand heute/);
+    assert.match(text, /\| Dora \|/);
+    assert.match(text, /_Stand: Odoo_/);
+    // LLM's free-text answer is discarded.
+    assert.doesNotMatch(text, /whatever the LLM said/);
+  });
+});
+
+/**
+ * Phase C.6 — Adaptive-card dispatch path.
+ *
+ * When a templated routine declares `format: 'adaptive-card'`, the
+ * runner produces Adaptive Card body items AND a markdown fallback.
+ * The sender receives BOTH: `message.text` (markdown rendering of
+ * the same template, for non-card channels) and `cardBody` (the items,
+ * for channels that can render rich cards).
+ */
+describe('RoutineRunner — Phase C.6 adaptive-card path', () => {
+  const HR_CARD_TEMPLATE: RoutineOutputTemplate = {
+    format: 'adaptive-card',
+    sections: [
+      { kind: 'narrative-slot', id: 'intro' },
+      {
+        kind: 'data-table',
+        sourceTool: 'query_odoo_hr',
+        sourcePath: 'absences',
+        title: 'Abwesenheiten',
+        columns: [
+          { label: 'Mitarbeiter', field: 'name' },
+          { label: 'Abteilung', field: 'department' },
+        ],
+      },
+    ],
+  };
+
+  it('attaches cardBody to sender.send and ships a markdown text fallback', async () => {
+    const orchestrator: OrchestratorLike = {
+      async runTurn(): Promise<ChatTurnResult> {
+        const capture = turnContext.current()?.captureRawToolResult;
+        capture?.(
+          'query_odoo_hr',
+          '{"absences":[{"name":"Anna Müller","department":"PHP"}]}',
+        );
+        return {
+          answer: JSON.stringify({
+            slots: { intro: 'Heute eine Person abwesend.' },
+          }),
+          toolCalls: 1,
+          iterations: 1,
+        };
+      },
+    };
+    const h = makeHarness({ orchestrator });
+    const routine = await h.runner.createRoutine({
+      ...baseInput,
+      outputTemplate: HR_CARD_TEMPLATE,
+    });
+
+    await h.scheduler.fire(routine.id);
+
+    assert.equal(h.sender.calls.length, 1);
+    const call = h.sender.calls[0]!;
+
+    // Markdown fallback is present in message.text so non-card channels
+    // still see something useful.
+    const text = call.message.text;
+    assert.match(text, /Heute eine Person abwesend\./);
+    assert.match(text, /## Abwesenheiten/);
+    assert.match(text, /\| Anna Müller \| PHP \|/);
+
+    // Card body items shipped separately. The renderer produced 3 items:
+    // intro TextBlock + title TextBlock + Table.
+    assert.ok(call.cardBody !== undefined, 'cardBody should be set');
+    assert.equal(call.cardBody!.length, 3);
+    assert.equal(
+      (call.cardBody![0] as Record<string, unknown>)['text'],
+      'Heute eine Person abwesend.',
+    );
+    assert.equal(
+      (call.cardBody![1] as Record<string, unknown>)['text'],
+      'Abwesenheiten',
+    );
+    assert.equal((call.cardBody![2] as Record<string, unknown>)['type'], 'Table');
+  });
+
+  it('non-templated routines do not set cardBody', async () => {
+    const orchestrator: OrchestratorLike = {
+      async runTurn(): Promise<ChatTurnResult> {
+        return { answer: 'plain answer', toolCalls: 0, iterations: 1 };
+      },
+    };
+    const h = makeHarness({ orchestrator });
+    const routine = await h.runner.createRoutine(baseInput);
+
+    await h.scheduler.fire(routine.id);
+
+    assert.equal(h.sender.calls.length, 1);
+    assert.equal(h.sender.calls[0]!.cardBody, undefined);
+  });
+
+  it('markdown-format templates do not set cardBody (only text)', async () => {
+    const MARKDOWN_TEMPLATE: RoutineOutputTemplate = {
+      format: 'markdown',
+      sections: [{ kind: 'narrative-slot', id: 'intro' }],
+    };
+    const orchestrator: OrchestratorLike = {
+      async runTurn(): Promise<ChatTurnResult> {
+        return {
+          answer: JSON.stringify({ slots: { intro: 'Hi.' } }),
+          toolCalls: 0,
+          iterations: 1,
+        };
+      },
+    };
+    const h = makeHarness({ orchestrator });
+    const routine = await h.runner.createRoutine({
+      ...baseInput,
+      outputTemplate: MARKDOWN_TEMPLATE,
+    });
+
+    await h.scheduler.fire(routine.id);
+
+    assert.equal(h.sender.calls.length, 1);
+    assert.equal(h.sender.calls[0]!.cardBody, undefined);
+    assert.equal(h.sender.calls[0]!.message.text, 'Hi.');
   });
 });

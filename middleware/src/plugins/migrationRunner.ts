@@ -12,6 +12,8 @@ import {
 import type { PluginCatalog, PluginCatalogEntry } from './manifestLoader.js';
 import { createMigrationContext } from '../platform/pluginContext.js';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
+import type { NotificationRouter } from '../platform/notificationRouter.js';
+import type { UiRouteCatalog } from '../platform/uiRouteCatalog.js';
 import type { ServiceRegistry } from '../platform/serviceRegistry.js';
 import type { SecretVault } from '../secrets/vault.js';
 import type { NativeToolRegistry } from '@omadia/orchestrator';
@@ -60,6 +62,8 @@ export interface MigrationRunnerDeps {
   serviceRegistry: ServiceRegistry;
   nativeToolRegistry: NativeToolRegistry;
   pluginRouteRegistry: PluginRouteRegistry;
+  notificationRouter: NotificationRouter;
+  uiRouteCatalog: UiRouteCatalog;
   jobScheduler: JobScheduler;
   log?: (msg: string) => void;
 }
@@ -110,6 +114,8 @@ export class MigrationRunner {
       serviceRegistry: this.deps.serviceRegistry,
       nativeToolRegistry: this.deps.nativeToolRegistry,
       routeRegistry: this.deps.pluginRouteRegistry,
+      notificationRouter: this.deps.notificationRouter,
+      uiRouteCatalog: this.deps.uiRouteCatalog,
       jobScheduler: this.deps.jobScheduler,
       fromVersion: params.fromVersion,
       toVersion: params.toVersion,

@@ -318,6 +318,7 @@ export function SpecEditor({ draftId, spec, agentStuck }: SpecEditorProps): Reac
             )}
           />
         </FieldGroup>
+
       </div>
 
       <SaveBadge status={status} />

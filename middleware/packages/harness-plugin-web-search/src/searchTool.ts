@@ -78,7 +78,7 @@ export const searchToolSpec: NativeToolSpec = {
       site: {
         type: 'string',
         description:
-          'Restrict results to a single domain, e.g. `byte5.de`. Translates to a `site:` filter when the provider lacks a native flag.',
+          'Restrict results to a single domain, e.g. `omadia.ai`. Translates to a `site:` filter when the provider lacks a native flag.',
       },
       include_content: {
         type: 'boolean',

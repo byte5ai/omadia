@@ -9,8 +9,8 @@ identity:
   description: "Neon-Postgres + pgvector KnowledgeGraph provider plugin. Durable storage, vector search, embedding-backfill scheduler, schema-Migrationen. Provider der Capabilities `knowledgeGraph@1`, `entityRefBus@1` und `graphPool@1` (Pool-Bridge für kernel-side Konsumenten wie VerifierStore und devGraph-Router). Operator wählt diesen Provider via RequiresWizard für Produktion. Mutual exclusion mit @omadia/knowledge-graph-inmemory — nur einer der beiden Provider darf gleichzeitig in installed.json stehen."
   authors:
     - name: "byte5 GmbH"
-      email: "dev@byte5.de"
-      url: "https://byte5.de"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
   license: "Proprietary"
   categories:
     - "infrastructure"

@@ -152,6 +152,17 @@ export class RuntimeSmokeOrchestrator {
             })),
           }
         : {}),
+      ...(result.uiRouteResults && result.uiRouteResults.length > 0
+        ? {
+            uiRouteResults: result.uiRouteResults.map((r) => ({
+              endpoint: r.endpoint,
+              status: r.status,
+              durationMs: r.durationMs,
+              ...(r.httpStatus !== undefined ? { httpStatus: r.httpStatus } : {}),
+              ...(r.reason !== undefined ? { reason: r.reason } : {}),
+            })),
+          }
+        : {}),
     });
   }
 }

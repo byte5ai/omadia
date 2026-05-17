@@ -9,8 +9,8 @@ identity:
   description: "Live web-search core plugin (Tavily / Brave). Publishes the `webSearch@1` capability and a `web_search` native tool with structured citation objects."
   authors:
     - name: "byte5 GmbH"
-      email: "dev@byte5.de"
-      url: "https://byte5.de"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
   license: "MIT"
   categories:
     - "search"

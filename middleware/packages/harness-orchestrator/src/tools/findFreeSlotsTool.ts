@@ -24,7 +24,7 @@ const FindFreeSlotsInputSchema = z.object({
    *
    * - **Unset / empty** → caller themself (default; "I offer X suggestions").
    * - **Other email** → that person's calendar ("Teresita, find a meeting
-   *   with John" → hostEmail=john@byte5.de). Caller needs
+   *   with John" → hostEmail=info@omadia.ai). Caller needs
    *   `Calendars.Read.Shared` visibility on the host; otherwise 403 is returned.
    */
   hostEmail: z.string().email().optional(),
@@ -93,7 +93,7 @@ export const findFreeSlotsToolSpec = {
       hostEmail: {
         type: 'string',
         description:
-          'Email/UPN des Meeting-Hosts (wessen Kalender die Slots liefert). Leer lassen wenn der Caller selbst der Host ist ("ich biete an"); setzen wenn der Caller im Auftrag einer anderen Person Slots sucht ("such bei John Termin" → hostEmail=john@byte5.de).',
+          'Email/UPN des Meeting-Hosts (wessen Kalender die Slots liefert). Leer lassen wenn der Caller selbst der Host ist ("ich biete an"); setzen wenn der Caller im Auftrag einer anderen Person Slots sucht ("such bei John Termin" → hostEmail=info@omadia.ai).',
       },
       attendees: {
         type: 'array',

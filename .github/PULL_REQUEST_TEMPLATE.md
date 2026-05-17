@@ -9,7 +9,7 @@
 ## Test plan
 <!-- Checklist of what you actually ran. Be specific:
      - [ ] `npm run lint && npm run typecheck && npm run test` in middleware
-     - [ ] `docker compose up -d` + middleware boot ok
+     - [ ] `docker compose -f infra/docker-compose.yml up postgres` + 9 migrations
      - [ ] manual: ___                                                            -->
 
 ## Risk / blast radius

@@ -54,6 +54,7 @@ import {
 import { SlotEditor } from './SlotEditor';
 import { SpecEditor } from './SpecEditor';
 import { SpecOverview } from './SpecOverview';
+import { UiSurfacesTabPane } from './UiSurfacesTabPane';
 import { VersionsTab } from './VersionsTab';
 import { useSpecEvents } from './useSpecEvents';
 
@@ -62,7 +63,7 @@ interface WorkspaceProps {
 }
 
 type EditorTab = 'overview' | 'spec' | 'slots' | 'persona' | 'versions';
-type MobilePane = 'chat' | 'editor' | 'preview';
+type MobilePane = 'chat' | 'editor' | 'preview' | 'ui-surfaces';
 
 const TAB_LABEL: Record<EditorTab, string> = {
   overview: 'Übersicht',
@@ -160,6 +161,11 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
   const [chatCollapsed, setChatCollapsed] = useState(false);
   const [editorCollapsed, setEditorCollapsed] = useState(true);
   const [previewCollapsed, setPreviewCollapsed] = useState(true);
+  // B.12-followup: UI-Surfaces is a peer pane to chat/editor/preview.
+  // Default-collapsed so the historical 3-pane layout doesn't shift on
+  // first-time-after-upgrade — operator expands the rail to author
+  // Admin-UI or Dashboard-Pages.
+  const [uiSurfacesCollapsed, setUiSurfacesCollapsed] = useState(true);
   // Mobile-Layout (B.6-5). Below 1280px the 3-pane grid becomes
   // unusable (each pane < ~400px); we collapse to a single visible pane
   // with a tab strip on top. Active tab persists in component state for
@@ -177,6 +183,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
   const chatPanelRef = useRef<ImperativePanelHandle | null>(null);
   const editorPanelRef = useRef<ImperativePanelHandle | null>(null);
   const previewPanelRef = useRef<ImperativePanelHandle | null>(null);
+  const uiSurfacesPanelRef = useRef<ImperativePanelHandle | null>(null);
   const panelGroupRef = useRef<ImperativePanelGroupHandle | null>(null);
 
   // Maximize-helper: sets the whole 3-pane layout in a single atomic
@@ -186,25 +193,35 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
   // in turn drives the per-pane sync useEffect harmlessly (already-correct
   // state means no-op collapse/expand).
   const maximizePane = useCallback(
-    (which: 'chat' | 'editor' | 'preview', restore: boolean): void => {
+    (
+      which: 'chat' | 'editor' | 'preview' | 'ui-surfaces',
+      restore: boolean,
+    ): void => {
       const group = panelGroupRef.current;
+      // 4-pane layout: chat | editor | preview | ui-surfaces.
+      // Restore default keeps ui-surfaces collapsed at 3% — matches
+      // the initial-mount default. Maximize one = collapse the other three.
       if (restore) {
-        group?.setLayout([34, 33, 33]);
+        group?.setLayout([30, 32, 32, 6]);
         setChatCollapsed(false);
         setEditorCollapsed(false);
         setPreviewCollapsed(false);
+        setUiSurfacesCollapsed(true);
         return;
       }
       const layout =
         which === 'chat'
-          ? [94, 3, 3]
+          ? [91, 3, 3, 3]
           : which === 'editor'
-            ? [3, 94, 3]
-            : [3, 3, 94];
+            ? [3, 91, 3, 3]
+            : which === 'preview'
+              ? [3, 3, 91, 3]
+              : [3, 3, 3, 91];
       group?.setLayout(layout);
       setChatCollapsed(which !== 'chat');
       setEditorCollapsed(which !== 'editor');
       setPreviewCollapsed(which !== 'preview');
+      setUiSurfacesCollapsed(which !== 'ui-surfaces');
     },
     [],
   );
@@ -484,6 +501,12 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
     if (previewCollapsed) r.collapse();
     else r.expand();
   }, [previewCollapsed]);
+  useEffect(() => {
+    const r = uiSurfacesPanelRef.current;
+    if (!r) return;
+    if (uiSurfacesCollapsed) r.collapse();
+    else r.expand();
+  }, [uiSurfacesCollapsed]);
   const installEnabled =
     editorWarningTotal === 0 &&
     missingRequiredCredentials === 0 &&
@@ -670,7 +693,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
               <PanelGroup
                 ref={panelGroupRef}
                 direction="horizontal"
-                autoSaveId="builder-workspace-panes-v1"
+                autoSaveId="builder-workspace-panes-v2"
                 className="flex min-h-[640px] gap-0"
                 style={{ height: 'calc(100vh - 240px)' }}
               >
@@ -680,8 +703,8 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
                   ref={chatPanelRef}
                   collapsible
                   collapsedSize={3}
-                  minSize={20}
-                  defaultSize={34}
+                  minSize={18}
+                  defaultSize={30}
                   onCollapse={() => setChatCollapsed(true)}
                   onExpand={() => setChatCollapsed(false)}
                   className="flex"
@@ -695,11 +718,17 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
                     onToggleCollapsed={() => setChatCollapsed((c) => !c)}
                     onMaximize={() => {
                       const isMax =
-                        !chatCollapsed && editorCollapsed && previewCollapsed;
+                        !chatCollapsed &&
+                        editorCollapsed &&
+                        previewCollapsed &&
+                        uiSurfacesCollapsed;
                       maximizePane('chat', isMax);
                     }}
                     isMaximized={
-                      !chatCollapsed && editorCollapsed && previewCollapsed
+                      !chatCollapsed &&
+                      editorCollapsed &&
+                      previewCollapsed &&
+                      uiSurfacesCollapsed
                     }
                   >
                     {chatPaneBody}
@@ -714,8 +743,8 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
                   ref={editorPanelRef}
                   collapsible
                   collapsedSize={3}
-                  minSize={20}
-                  defaultSize={33}
+                  minSize={18}
+                  defaultSize={32}
                   onCollapse={() => setEditorCollapsed(true)}
                   onExpand={() => setEditorCollapsed(false)}
                   className="flex"
@@ -736,11 +765,17 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
                     onToggleCollapsed={() => setEditorCollapsed((c) => !c)}
                     onMaximize={() => {
                       const isMax =
-                        !editorCollapsed && chatCollapsed && previewCollapsed;
+                        !editorCollapsed &&
+                        chatCollapsed &&
+                        previewCollapsed &&
+                        uiSurfacesCollapsed;
                       maximizePane('editor', isMax);
                     }}
                     isMaximized={
-                      !editorCollapsed && chatCollapsed && previewCollapsed
+                      !editorCollapsed &&
+                      chatCollapsed &&
+                      previewCollapsed &&
+                      uiSurfacesCollapsed
                     }
                   >
                     {editorPaneBody}
@@ -755,8 +790,8 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
                   ref={previewPanelRef}
                   collapsible
                   collapsedSize={3}
-                  minSize={20}
-                  defaultSize={33}
+                  minSize={18}
+                  defaultSize={32}
                   onCollapse={() => setPreviewCollapsed(true)}
                   onExpand={() => setPreviewCollapsed(false)}
                   className="flex"
@@ -771,14 +806,65 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
                     onToggleCollapsed={() => setPreviewCollapsed((c) => !c)}
                     onMaximize={() => {
                       const isMax =
-                        !previewCollapsed && chatCollapsed && editorCollapsed;
+                        !previewCollapsed &&
+                        chatCollapsed &&
+                        editorCollapsed &&
+                        uiSurfacesCollapsed;
                       maximizePane('preview', isMax);
                     }}
                     isMaximized={
-                      !previewCollapsed && chatCollapsed && editorCollapsed
+                      !previewCollapsed &&
+                      chatCollapsed &&
+                      editorCollapsed &&
+                      uiSurfacesCollapsed
                     }
                   >
                     {previewPaneBody}
+                  </PaneCard>
+                </Panel>
+
+                <ResizeHandle />
+
+                <Panel
+                  id="ui-surfaces"
+                  order={4}
+                  ref={uiSurfacesPanelRef}
+                  collapsible
+                  collapsedSize={3}
+                  minSize={18}
+                  defaultSize={6}
+                  onCollapse={() => setUiSurfacesCollapsed(true)}
+                  onExpand={() => setUiSurfacesCollapsed(false)}
+                  className="flex"
+                >
+                  <PaneCard
+                    index="04"
+                    title="UI-Surfaces"
+                    fill
+                    collapsed={uiSurfacesCollapsed}
+                    onToggleCollapsed={() =>
+                      setUiSurfacesCollapsed((c) => !c)
+                    }
+                    onMaximize={() => {
+                      const isMax =
+                        !uiSurfacesCollapsed &&
+                        chatCollapsed &&
+                        editorCollapsed &&
+                        previewCollapsed;
+                      maximizePane('ui-surfaces', isMax);
+                    }}
+                    isMaximized={
+                      !uiSurfacesCollapsed &&
+                      chatCollapsed &&
+                      editorCollapsed &&
+                      previewCollapsed
+                    }
+                  >
+                    <UiSurfacesTabPane
+                      draftId={draft.id}
+                      spec={draft.spec}
+                      draftSlots={draft.slots ?? {}}
+                    />
                   </PaneCard>
                 </Panel>
               </PanelGroup>
@@ -800,6 +886,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
                 chat: 0,
                 editor: editorWarningTotal,
                 preview: missingRequiredCredentials,
+                'ui-surfaces': 0,
               }}
             />
             <div className="flex min-h-0 flex-1 flex-col">
@@ -862,6 +949,26 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
                   {previewPaneBody}
                 </PaneCard>
               </div>
+              <div
+                className={cn(
+                  'flex min-h-0 flex-1 flex-col',
+                  mobilePane === 'ui-surfaces' ? '' : 'hidden',
+                )}
+              >
+                <PaneCard
+                  index="04"
+                  title="UI-Surfaces"
+                  fill
+                  collapsed={false}
+                  onToggleCollapsed={() => setMobilePane('ui-surfaces')}
+                >
+                  <UiSurfacesTabPane
+                    draftId={draft.id}
+                    spec={draft.spec}
+                    draftSlots={draft.slots ?? {}}
+                  />
+                </PaneCard>
+              </div>
             </div>
           </div>
         );
@@ -911,6 +1018,7 @@ function MobilePaneTabs({
     { id: 'chat', label: 'Chat', index: '01' },
     { id: 'editor', label: 'Editor', index: '02' },
     { id: 'preview', label: 'Preview', index: '03' },
+    { id: 'ui-surfaces', label: 'UI', index: '04' },
   ];
   return (
     <nav

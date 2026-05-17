@@ -16,7 +16,7 @@ import { buildDateHeader, turnContext } from './turnContext.js';
 export type { LocalSubAgentTool, LocalSubAgentToolSpec };
 
 interface LocalSubAgentOptions {
-  /** Label used in logs — typically the domain, e.g. `accounting`. */
+  /** Label used in logs — typically the domain, e.g. `odoo-hr`. */
   name: string;
   client: Anthropic;
   model: string;
@@ -58,10 +58,14 @@ type ContentBlock = any;
 type Message = any;
 
 /**
- * A tool-loop agent that runs entirely inside this middleware process. The
- * skill markdown becomes the system prompt; tools call straight into the
- * domain's published service handles; the whole thing is observable in
- * the local logs and on the EntityRef bus.
+ * A tool-loop agent that runs entirely inside this middleware process. Replaces
+ * the former Anthropic-hosted Managed Agent per domain — skill stays as the
+ * system prompt, tools call straight into our Odoo/Confluence code paths, and
+ * the whole thing is observable in the local logs + EntityRef bus.
+ *
+ * Matches the old `OdooAgentClient.ask(question)` signature so the orchestrator
+ * and `domainQueryTool` don't need to know whether they're talking to a
+ * Managed Agent or a local sub-agent.
  */
 export class LocalSubAgent {
   private readonly name: string;
@@ -157,7 +161,7 @@ export class LocalSubAgent {
 
         // On the final allowed iteration, forbid further tool use. The model
         // is forced to emit a text answer from whatever it has already
-        // gathered — no more tool probes. Without this, long
+        // gathered — no more Odoo/Confluence probes. Without this, long
         // multi-step queries hit the iteration cap and we threw away every
         // partial insight the agent had accumulated. See the `tool_choice`
         // docs on https://docs.anthropic.com/en/docs/agents-and-tools.
@@ -434,8 +438,8 @@ export class LocalSubAgent {
     // Slice 2.2 — privacy-proxy tool roundtrip for sub-agent inner calls.
     //
     // Same contract as orchestrator.dispatchTool: restore tokens in the
-    // input BEFORE the tool handler runs (so domain tools
-    // see the actual user data rather than `tok_<hex>_name`), and
+    // input BEFORE the tool handler runs (so query_graph / odoo_execute
+    // see the actual employee name rather than `tok_<hex>_name`), and
     // re-tokenise PII in the textual result AFTER the handler returns
     // (so the next sub-agent LLM call doesn't see fresh plaintext PII
     // it would otherwise have to be defensively cautious about).
@@ -461,6 +465,21 @@ export class LocalSubAgent {
       }
     }
     const result = await tool.handle(dispatchInput);
+    // Phase C.2 — Raw tool-result capture (parallel to orchestrator.dispatchTool).
+    // Sub-agent tool calls also feed routine templates, so the capture
+    // hook must fire here too. Same last-write-wins semantics; absent
+    // callback ⇒ no capture.
+    const capture = turnContext.current()?.captureRawToolResult;
+    if (capture !== undefined && typeof result === 'string') {
+      try {
+        capture(toolName, result);
+      } catch (err) {
+        console.warn(
+          `[sub-agent ${this.name}] captureRawToolResult threw on '${toolName}' — continuing without capture:`,
+          err,
+        );
+      }
+    }
     if (privacy !== undefined && typeof result === 'string' && result.length > 0) {
       try {
         const tokenised = await privacy.processToolResult({

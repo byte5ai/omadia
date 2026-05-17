@@ -30,8 +30,8 @@ import {
   type GraphNodeType,
   type GraphStats,
   type KnowledgeGraph,
-  type LinkCompanyToEntityOptions,
-  type LinkCompanyToEntityResult,
+  type LinkCompanyToOdooOptions,
+  type LinkCompanyToOdooResult,
   type PersonIngest,
   type PersonIngestResult,
   type RunAgentInvocationView,
@@ -647,9 +647,9 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     return { snapshotIds, inserted, updated, skipped };
   }
 
-  async linkCompanyToEntity(
-    opts: LinkCompanyToEntityOptions,
-  ): Promise<LinkCompanyToEntityResult> {
+  async linkCompanyToOdoo(
+    opts: LinkCompanyToOdooOptions,
+  ): Promise<LinkCompanyToOdooResult> {
     const client = await this.pool.connect();
     try {
       const fromUuid = await this.findUuidByExternalId(
@@ -658,7 +658,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       );
       const toUuid = await this.findUuidByExternalId(
         client,
-        opts.entityExternalId,
+        opts.odooEntityExternalId,
       );
       if (!fromUuid || !toUuid) return { linked: false };
       await this.upsertEdge(client, {

@@ -87,7 +87,7 @@ Regeln:
 export const NER_FEW_SHOT: ReadonlyArray<{ user: string; assistant: string }> = [
   {
     user: 'Wann hat John Doe Urlaub beantragt?',
-    assistant: '{"hits":[{"type":"pii.name","value":"John Doe","start":10,"end":21,"confidence":0.96}]}',
+    assistant: '{"hits":[{"type":"pii.name","value":"John Doe","start":9,"end":17,"confidence":0.96}]}',
   },
   {
     user:

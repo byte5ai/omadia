@@ -72,8 +72,17 @@ export const lintSpecTool: BuilderTool<Input, Result> = {
 
     const spec: AgentSpec = parsed.data;
 
-    // 2. Cross-field checks already implemented in agentSpec.ts
-    const codegenIssues: SpecValidationIssue[] = validateSpecForCodegen(spec);
+    // 2. Cross-field checks already implemented in agentSpec.ts. Pass
+    //    `draft.slots` as additionalSlots so the validator sees fillSlot-
+    //    written entries that live on `draft.slots` but not on
+    //    `draft.spec.slots` — same Catch-22 fix as in codegen.ts:646.
+    //    Without this, lint_spec keeps firing react-ssr/free-form-html
+    //    missing-slot errors even after fill_slot succeeded (the slot is
+    //    persisted, just not visible via spec.slots).
+    const codegenIssues: SpecValidationIssue[] = validateSpecForCodegen(
+      spec,
+      draft.slots,
+    );
     for (const ci of codegenIssues) {
       issues.push({
         severity: 'error',

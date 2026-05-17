@@ -171,4 +171,57 @@ describe('lintSpecTool', () => {
     const result = await lintSpecTool.run({}, harness.context());
     assert.ok(result.issues.some((i) => i.code === 'empty_slot'));
   });
+
+  it('sees fillSlot-written react-ssr component slot (Catch-22 fix)', async () => {
+    // Regression: lintSpec used to call `validateSpecForCodegen(spec)` without
+    // forwarding `draft.slots`. The validator therefore only saw `spec.slots`
+    // (= `draft.spec.slots`) — empty until a `patch_spec` migrates the slot
+    // in. fillSlot writes to `draft.slots`, a separate column. So even
+    // immediately after a successful fillSlot, lintSpec would fire
+    // `ui_route_react_ssr_missing_component_slot` and block the turn.
+    await patchSpecTool.run(
+      {
+        patches: [
+          ...validBaseline,
+          {
+            op: 'add',
+            path: '/tools/-',
+            value: { id: 'get_items', description: 'x', input: { type: 'object' } },
+          },
+          {
+            op: 'replace',
+            path: '/ui_routes',
+            value: [
+              {
+                id: 'inbox',
+                path: '/dashboard/inbox',
+                tab_label: 'Inbox',
+                page_title: 'Inbox',
+                render_mode: 'react-ssr',
+                interactive: true,
+                data_binding: { source: 'tool', tool_id: 'get_items' },
+              },
+            ],
+          },
+        ],
+      },
+      harness.context(),
+    );
+
+    // Seed the slot the same way fillSlot does — directly on draft.slots,
+    // NOT on draft.spec.slots. This is the exact state after a successful
+    // fillSlot call.
+    await harness.draftStore.update(harness.userEmail, harness.draftId, {
+      slots: {
+        'ui-inbox-component':
+          'export default function Page() { return <main data-omadia-page="inbox" />; }',
+      },
+    });
+
+    const result = await lintSpecTool.run({}, harness.context());
+    assert.ok(
+      !result.issues.some((i) => i.code === 'ui_route_react_ssr_missing_component_slot'),
+      'lintSpec must read draft.slots — the slot is persisted there by fillSlot, not on spec.slots',
+    );
+  });
 });

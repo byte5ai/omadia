@@ -242,7 +242,7 @@ return JSON.stringify({
     rationale: 'Mehrere Treffer; bitte exakte Notiz auswählen.',
     options: [
       { label: 'John Doe',   value: 'note:n1' },
-      { label: 'Jane Doe', value: 'note:n2' },
+      { label: 'John Müller', value: 'note:n2' },
     ],
   },
 });

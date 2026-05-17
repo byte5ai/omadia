@@ -54,7 +54,8 @@ export type RuntimeSmokeReason =
   | 'activate_failed'
   | 'tool_failures'
   | 'no_tools'
-  | 'admin_route_schema_violation';
+  | 'admin_route_schema_violation'
+  | 'ui_route_render_failed';
 
 /**
  * Outcome of probing one admin-route GET endpoint (Theme D).
@@ -91,6 +92,40 @@ export interface AdminRouteSmokeResult {
   reason?: string;
 }
 
+/**
+ * B.12-6 — UI-Route probe outcome. Mirrors AdminRouteSmokeResult shape
+ * but checks HTML-page contract instead of JSON-API contract.
+ *
+ * `ok`              — 2xx response, Content-Type: text/html, CSP includes
+ *                     frame-ancestors, body length > 200 chars.
+ * `http_error`      — non-2xx OR fetch failure.
+ * `wrong_content_type` — 2xx but Content-Type doesn't start with text/html.
+ * `missing_csp`     — 2xx + HTML but Content-Security-Policy header missing
+ *                     or doesn't contain `frame-ancestors`. Teams-Tab would
+ *                     refuse to embed it.
+ * `empty_render`    — 2xx + HTML but body < 200 chars (likely an error
+ *                     page or unrendered template).
+ * `timeout`         — fetch exceeded the per-route budget.
+ * `introspection_failed` — could not extract GET routes from the captured
+ *                     Express router.
+ */
+export type UiRouteSmokeStatus =
+  | 'ok'
+  | 'http_error'
+  | 'wrong_content_type'
+  | 'missing_csp'
+  | 'empty_render'
+  | 'timeout'
+  | 'introspection_failed';
+
+export interface UiRouteSmokeResult {
+  endpoint: string;
+  status: UiRouteSmokeStatus;
+  httpStatus?: number;
+  durationMs: number;
+  reason?: string;
+}
+
 export interface RuntimeSmokeResult {
   ok: boolean;
   reason: RuntimeSmokeReason;
@@ -98,6 +133,10 @@ export interface RuntimeSmokeResult {
   /** Populated when admin-route smoke ran (after tools_smoke). Empty
    *  for plugins that contribute no routes. Theme D. */
   adminRouteResults?: AdminRouteSmokeResult[];
+  /** B.12-6 — UI-route (Dashboard-Tab) smoke results. Empty for plugins
+   *  with no ui_routes. Captured by filtering routeCaptures on `/p/*`-
+   *  prefix (the codegen-emitted plugin-mount). */
+  uiRouteResults?: UiRouteSmokeResult[];
   durationMs: number;
   /** Populated only when reason === 'activate_failed'. */
   activateError?: string;
@@ -151,26 +190,46 @@ export async function invokeToolsOnHandle(opts: {
   const start = Date.now();
   const toolTimeoutMs = opts.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS;
   const tools = opts.handle.toolkit.tools;
+  const routeTimeoutMs = opts.adminRouteTimeoutMs ?? DEFAULT_ADMIN_ROUTE_TIMEOUT_MS;
   const adminRouteResults = await smokeAdminRoutes({
     captures: opts.handle.routeCaptures,
     spec: opts.spec,
-    timeoutMs: opts.adminRouteTimeoutMs ?? DEFAULT_ADMIN_ROUTE_TIMEOUT_MS,
+    timeoutMs: routeTimeoutMs,
   });
   const adminOk = adminRouteResults.every((r) => isAdminRouteOk(r));
   const adminViolation = !adminOk;
 
+  // B.12-6 — ui_route probe (only ‘/p/*’ captures). Independent of admin
+  // routes; both can run on the same handle since smokeAdminRoutes now
+  // skips ui-prefixed captures.
+  const uiRouteResults = await smokeUiRoutes({
+    captures: opts.handle.routeCaptures,
+    timeoutMs: routeTimeoutMs,
+  });
+  const uiOk = uiRouteResults.every((r) => isUiRouteOk(r));
+  const uiViolation = !uiOk;
+
+  const buildResult = (
+    toolsOk: boolean,
+    results: ToolSmokeResult[],
+    baseReason: RuntimeSmokeReason,
+  ): RuntimeSmokeResult => ({
+    ok: toolsOk && adminOk && uiOk,
+    reason: !toolsOk
+      ? 'tool_failures'
+      : adminViolation
+        ? 'admin_route_schema_violation'
+        : uiViolation
+          ? 'ui_route_render_failed'
+          : baseReason,
+    results,
+    ...(adminRouteResults.length > 0 ? { adminRouteResults } : {}),
+    ...(uiRouteResults.length > 0 ? { uiRouteResults } : {}),
+    durationMs: Date.now() - start,
+  });
+
   if (tools.length === 0) {
-    const baseReason: RuntimeSmokeReason = adminViolation
-      ? 'admin_route_schema_violation'
-      : 'no_tools';
-    const ok = !adminViolation;
-    return {
-      ok,
-      reason: baseReason,
-      results: [],
-      ...(adminRouteResults.length > 0 ? { adminRouteResults } : {}),
-      durationMs: Date.now() - start,
-    };
+    return buildResult(true, [], 'no_tools');
   }
   const results: ToolSmokeResult[] = [];
   for (const tool of tools) {
@@ -179,18 +238,7 @@ export async function invokeToolsOnHandle(opts: {
   const toolsOk = results.every(
     (r) => r.status === 'ok' || r.status === 'validation_failed',
   );
-  const reason: RuntimeSmokeReason = !toolsOk
-    ? 'tool_failures'
-    : adminViolation
-      ? 'admin_route_schema_violation'
-      : 'ok';
-  return {
-    ok: toolsOk && adminOk,
-    reason,
-    results,
-    ...(adminRouteResults.length > 0 ? { adminRouteResults } : {}),
-    durationMs: Date.now() - start,
-  };
+  return buildResult(toolsOk, results, 'ok');
 }
 
 export async function runRuntimeSmoke(
@@ -227,25 +275,43 @@ export async function runRuntimeSmoke(
 
   try {
     const tools = handle.toolkit.tools;
+    const routeTimeoutMs =
+      opts.adminRouteTimeoutMs ?? DEFAULT_ADMIN_ROUTE_TIMEOUT_MS;
     const adminRouteResults = await smokeAdminRoutes({
       captures: handle.routeCaptures,
       spec: opts.spec,
-      timeoutMs: opts.adminRouteTimeoutMs ?? DEFAULT_ADMIN_ROUTE_TIMEOUT_MS,
+      timeoutMs: routeTimeoutMs,
     });
     const adminOk = adminRouteResults.every((r) => isAdminRouteOk(r));
     const adminViolation = !adminOk;
+    const uiRouteResults = await smokeUiRoutes({
+      captures: handle.routeCaptures,
+      timeoutMs: routeTimeoutMs,
+    });
+    const uiOk = uiRouteResults.every((r) => isUiRouteOk(r));
+    const uiViolation = !uiOk;
+
+    const finish = (
+      toolsOk: boolean,
+      results: ToolSmokeResult[],
+      baseReason: RuntimeSmokeReason,
+    ): RuntimeSmokeResult => ({
+      ok: toolsOk && adminOk && uiOk,
+      reason: !toolsOk
+        ? 'tool_failures'
+        : adminViolation
+          ? 'admin_route_schema_violation'
+          : uiViolation
+            ? 'ui_route_render_failed'
+            : baseReason,
+      results,
+      ...(adminRouteResults.length > 0 ? { adminRouteResults } : {}),
+      ...(uiRouteResults.length > 0 ? { uiRouteResults } : {}),
+      durationMs: Date.now() - start,
+    });
 
     if (tools.length === 0) {
-      const reason: RuntimeSmokeReason = adminViolation
-        ? 'admin_route_schema_violation'
-        : 'no_tools';
-      return {
-        ok: !adminViolation,
-        reason,
-        results: [],
-        ...(adminRouteResults.length > 0 ? { adminRouteResults } : {}),
-        durationMs: Date.now() - start,
-      };
+      return finish(true, [], 'no_tools');
     }
 
     const results: ToolSmokeResult[] = [];
@@ -256,18 +322,7 @@ export async function runRuntimeSmoke(
     const toolsOk = results.every(
       (r) => r.status === 'ok' || r.status === 'validation_failed',
     );
-    const reason: RuntimeSmokeReason = !toolsOk
-      ? 'tool_failures'
-      : adminViolation
-        ? 'admin_route_schema_violation'
-        : 'ok';
-    return {
-      ok: toolsOk && adminOk,
-      reason,
-      results,
-      ...(adminRouteResults.length > 0 ? { adminRouteResults } : {}),
-      durationMs: Date.now() - start,
-    };
+    return finish(toolsOk, results, 'ok');
   } finally {
     await handle.close().catch(() => undefined);
   }
@@ -378,12 +433,21 @@ function isAdminRouteOk(r: AdminRouteSmokeResult): boolean {
  * not failures — the boilerplate guidance allows legitimate "0 rows"
  * responses (e.g. fresh Odoo install with no employees).
  */
+const UI_ROUTE_PREFIX_RE = /^\/p\//;
+const MIN_RENDERED_HTML_LENGTH = 200;
+
+function isUiRouteCapture(capture: PreviewRouteCapture): boolean {
+  return UI_ROUTE_PREFIX_RE.test(capture.prefix);
+}
+
 async function smokeAdminRoutes(opts: {
   captures: ReadonlyArray<PreviewRouteCapture>;
   spec: AgentSpecSkeleton;
   timeoutMs: number;
 }): Promise<AdminRouteSmokeResult[]> {
-  const active = opts.captures.filter((c) => !c.disposed);
+  // B.12-6 — exclude `/p/*` captures (those are ui_routes; HTML output,
+  // probed separately by smokeUiRoutes). Admin-routes carry JSON contract.
+  const active = opts.captures.filter((c) => !c.disposed && !isUiRouteCapture(c));
   if (active.length === 0) return [];
 
   const probe = await startProbeServer(active);
@@ -666,4 +730,143 @@ function containsEmptyArrayPayload(body: unknown): boolean {
   if (payloadEntries.length !== 1) return false;
   const [, value] = payloadEntries[0]!;
   return Array.isArray(value) && value.length === 0;
+}
+
+/**
+ * B.12-6 — UI-Route probe (HTML pages). Filters the captured route
+ * registrations to the `/p/*`-prefixed ones (plugin-mount-convention
+ * emitted by codegenUiRoute), mounts them on a temporary localhost
+ * server, and probes each GET handler. Checks:
+ *
+ *   - 2xx status
+ *   - Content-Type starts with `text/html`
+ *   - Content-Security-Policy header present + contains `frame-ancestors`
+ *     (Teams-Tab embedding requires it; without it the iframe stays blank)
+ *   - body length > 200 chars (catches empty / unrendered templates)
+ *
+ * Cost: same probe server as smokeAdminRoutes (separate instance to
+ * keep mount-isolation simple — Express prefix-collisions if we
+ * combined). At <50ms per probe for typical pages this is negligible.
+ */
+async function smokeUiRoutes(opts: {
+  captures: ReadonlyArray<PreviewRouteCapture>;
+  timeoutMs: number;
+}): Promise<UiRouteSmokeResult[]> {
+  const active = opts.captures.filter(
+    (c) => !c.disposed && isUiRouteCapture(c),
+  );
+  if (active.length === 0) return [];
+
+  const probe = await startProbeServer(active);
+  if (!probe) {
+    return active.map((c) => ({
+      endpoint: c.prefix,
+      status: 'introspection_failed' as const,
+      durationMs: 0,
+      reason: 'unable to mount captured ui-route router on probe server',
+    }));
+  }
+  try {
+    const results: UiRouteSmokeResult[] = [];
+    for (const target of probe.targets) {
+      results.push(
+        await probeOneUiRoute({
+          baseUrl: probe.baseUrl,
+          endpoint: target.endpoint,
+          timeoutMs: opts.timeoutMs,
+        }),
+      );
+    }
+    return results;
+  } finally {
+    await probe.close().catch(() => undefined);
+  }
+}
+
+async function probeOneUiRoute(opts: {
+  baseUrl: string;
+  endpoint: string;
+  timeoutMs: number;
+}): Promise<UiRouteSmokeResult> {
+  const start = Date.now();
+  const url = `${opts.baseUrl}${opts.endpoint}`;
+  let res: Response;
+  try {
+    res = await fetch(url, { signal: AbortSignal.timeout(opts.timeoutMs) });
+  } catch (err) {
+    const aborted =
+      err instanceof Error &&
+      (err.name === 'TimeoutError' || err.name === 'AbortError');
+    return {
+      endpoint: opts.endpoint,
+      status: aborted ? 'timeout' : 'http_error',
+      durationMs: Date.now() - start,
+      reason: aborted
+        ? `fetch exceeded ${String(opts.timeoutMs)}ms`
+        : err instanceof Error
+          ? err.message
+          : String(err),
+    };
+  }
+
+  if (res.status >= 400) {
+    return {
+      endpoint: opts.endpoint,
+      status: 'http_error',
+      httpStatus: res.status,
+      durationMs: Date.now() - start,
+      reason: `HTTP ${String(res.status)}`,
+    };
+  }
+
+  const contentType = res.headers.get('content-type') ?? '';
+  if (!contentType.toLowerCase().startsWith('text/html')) {
+    return {
+      endpoint: opts.endpoint,
+      status: 'wrong_content_type',
+      httpStatus: res.status,
+      durationMs: Date.now() - start,
+      reason: `Content-Type '${contentType}' is not text/html`,
+    };
+  }
+
+  const csp = res.headers.get('content-security-policy') ?? '';
+  if (!csp.includes('frame-ancestors')) {
+    return {
+      endpoint: opts.endpoint,
+      status: 'missing_csp',
+      httpStatus: res.status,
+      durationMs: Date.now() - start,
+      reason:
+        csp.length === 0
+          ? 'Content-Security-Policy header missing — Teams cannot embed the page'
+          : "CSP missing 'frame-ancestors' directive",
+    };
+  }
+
+  const body = await res.text();
+  if (body.length < MIN_RENDERED_HTML_LENGTH) {
+    return {
+      endpoint: opts.endpoint,
+      status: 'empty_render',
+      httpStatus: res.status,
+      durationMs: Date.now() - start,
+      reason: `body length ${String(body.length)} below ${String(MIN_RENDERED_HTML_LENGTH)} threshold (likely empty or error page)`,
+    };
+  }
+
+  return {
+    endpoint: opts.endpoint,
+    status: 'ok',
+    httpStatus: res.status,
+    durationMs: Date.now() - start,
+  };
+}
+
+/** A ui-route probe is considered passing on `ok` only. Hard-fail on
+ *  any other status — there are no soft warnings in the ui-route
+ *  contract (empty body is a real failure, unlike admin-routes' empty
+ *  array which can be legitimate). */
+function isUiRouteOk(r: UiRouteSmokeResult): boolean {
+  return r.status === 'ok' || r.status === 'introspection_failed';
 }

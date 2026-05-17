@@ -1,4 +1,4 @@
-import type { Router, Request, Response } from 'express';
+import type { Router, Request, RequestHandler, Response } from 'express';
 
 import type { BuildPipeline } from '../plugins/builder/buildPipeline.js';
 import { BuildPipelineError } from '../plugins/builder/buildPipeline.js';
@@ -453,6 +453,250 @@ export function registerBuilderPreviewRoutes(
       res.status(204).end();
     },
   );
+
+  // ── GET /drafts/:id/preview/ui-route/:routeId ─────────────────────────────
+  // B.12-Followup B: Live-Preview-iframe für eine ui_route. Mountet die
+  // gecapturete plugin-mount-router auf einem temp localhost-server,
+  // proxied die GET-Request für den ui_routes[<routeId>].path, und
+  // streamt die HTML-Antwort 1:1 zurück (inkl. Content-Type + CSP +
+  // X-Content-Type-Options-Headers). Iframe-source dieses Endpoints
+  // rendert das Dashboard-Tab im Workspace-Form ohne Install-Cycle.
+  //
+  // Behavior:
+  //   - 401 ohne Session.
+  //   - 404 wenn Draft nicht existiert ODER ui_routes[routeId] nicht.
+  //   - 503 wenn kein warmer PreviewHandle (operator: Build first).
+  //   - 502 wenn der temp-probe-server nicht aufgesetzt werden kann.
+  //   - 200 sonst — pipes durchschlägt status + body von der captureten
+  //     Route, mit ergänzten Surrogate-CSP-Headers für iframe-Embedding.
+  router.get(
+    '/drafts/:id/preview/ui-route/:routeId',
+    async (req: Request, res: Response) => {
+      const email = readEmail(req);
+      if (!email) {
+        sendJson(res, 401, { code: 'auth.missing', message: 'no session' });
+        return;
+      }
+      const draftId = readId(req);
+      if (!draftId) {
+        sendJson(res, 400, {
+          code: 'builder.invalid_id',
+          message: 'missing :id',
+        });
+        return;
+      }
+      const routeId = String(req.params['routeId'] ?? '');
+      if (!routeId) {
+        sendJson(res, 400, {
+          code: 'builder.invalid_route_id',
+          message: 'missing :routeId',
+        });
+        return;
+      }
+
+      const draft = await deps.draftStore.load(email, draftId);
+      if (!draft) {
+        sendJson(res, 404, { code: 'builder.draft_not_found' });
+        return;
+      }
+      const route = (Array.isArray(draft.spec.ui_routes)
+        ? (draft.spec.ui_routes as Array<{ id?: unknown; path?: unknown }>)
+        : []
+      ).find((r) => r && typeof r === 'object' && r.id === routeId);
+      if (!route || typeof route.path !== 'string') {
+        sendJson(res, 404, {
+          code: 'builder.ui_route_not_found',
+          message: `ui_routes['${routeId}'] not in draft.spec`,
+        });
+        return;
+      }
+
+      const handle = deps.previewCache.get(email, draftId);
+      if (!handle) {
+        sendJson(res, 503, {
+          code: 'builder.preview_cold',
+          message:
+            'No warm preview for this draft. Trigger a build first ' +
+            "(click 'Build' in the Workspace), then reload the preview.",
+        });
+        return;
+      }
+
+      const mountPrefix = `/p/${handle.agentId}`;
+      // Each ui_route emits its OWN Express router mounted at the same
+      // `/p/<agentId>` prefix (codegenUiRoute.ts:141). In production the
+      // kernel chains them so Express tries each router until one handles
+      // the path; the preview proxy must do the same — mounting only the
+      // first capture means the 2nd/3rd ui_routes return 404 from the
+      // probe server's default handler (HTML body, no JSON), which the
+      // iframe surfaces as "http_404 (no detail)".
+      const captures = handle.routeCaptures.filter(
+        (c) => !c.disposed && c.prefix === mountPrefix,
+      );
+      if (captures.length === 0) {
+        sendJson(res, 502, {
+          code: 'builder.preview_capture_missing',
+          message:
+            `Preview is warm but no '${mountPrefix}' route capture exists. ` +
+            'Was the most recent build emitted from a spec WITH ui_routes?',
+        });
+        return;
+      }
+
+      const probeStartTs = Date.now();
+      console.log(
+        `[builder/preview/ui-route] BEGIN draftId=${draftId} routeId=${routeId} ` +
+          `path=${route.path} captures=${String(captures.length)} prefix=${mountPrefix}`,
+      );
+      try {
+        const proxied = await proxyCapturedHtmlRoute({
+          captures,
+          targetPath: route.path,
+          // 30s: SSR routes can do a tool-call (e.g. GitHub PR fetch over
+          // an org with many repos) AND a first-time React/ReactDOM
+          // dynamic-import on cold start; 5s was too aggressive and timed
+          // out happy-path renders. Production install-mounted routes hit
+          // the same handlers via the kernel and don't have this artificial
+          // cap — only the preview-iframe proxy does.
+          timeoutMs: 30_000,
+        });
+        // Pipe through status + headers verbatim so the iframe sees
+        // exactly what the plugin would serve in production. Surrogate
+        // CSP wins only if the captured response didn't set one (defensive).
+        res.status(proxied.status);
+        for (const [name, value] of Object.entries(proxied.headers)) {
+          if (name.toLowerCase() === 'transfer-encoding') continue;
+          res.setHeader(name, value);
+        }
+        if (!proxied.headers['content-type']) {
+          res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        }
+        if (!proxied.headers['content-security-policy']) {
+          // The captured plugin SHOULD set frame-ancestors via renderRoute.
+          // If it didn't, surface a same-origin fallback so the iframe at
+          // least loads inside the workspace; smoke would already have
+          // flagged this as missing_csp.
+          res.setHeader(
+            'Content-Security-Policy',
+            "frame-ancestors 'self' https://*.fly.dev",
+          );
+        }
+        console.log(
+          `[builder/preview/ui-route] OK draftId=${draftId} routeId=${routeId} ` +
+            `status=${String(proxied.status)} bytes=${String(proxied.body.length)} ` +
+            `duration_ms=${String(Date.now() - probeStartTs)}`,
+        );
+        res.send(proxied.body);
+      } catch (err) {
+        console.log(
+          `[builder/preview/ui-route] FAIL draftId=${draftId} routeId=${routeId} ` +
+            `duration_ms=${String(Date.now() - probeStartTs)} ` +
+            `error=${err instanceof Error ? err.message : String(err)}`,
+        );
+        sendJson(res, 502, {
+          code: 'builder.preview_proxy_failed',
+          message:
+            err instanceof Error
+              ? err.message
+              : 'unknown error while proxying ui-route',
+        });
+      }
+    },
+  );
+}
+
+interface ProxyResult {
+  status: number;
+  headers: Record<string, string>;
+  body: string;
+}
+
+/**
+ * Mounts the given captures on a fresh localhost server, fetches the
+ * target path, returns the response. Listening on an ephemeral port
+ * (0) keeps repeated calls safe even under concurrent operator clicks.
+ * All captures share the same prefix (see caller filter) — mounting
+ * them sequentially mirrors the production kernel, where Express tries
+ * each registered router in order until one responds.
+ */
+async function proxyCapturedHtmlRoute(opts: {
+  captures: ReadonlyArray<{ prefix: string; router: unknown }>;
+  targetPath: string;
+  timeoutMs: number;
+}): Promise<ProxyResult> {
+  const { createServer } = await import('node:http');
+  const { default: express } = await import('express');
+  const app = express();
+  // The captured routers are typed `unknown` at the previewRuntime layer
+  // to keep the boundary loose; here we know each is an Express-mountable
+  // Router. Order matches `routeCaptures` (FIFO from activate()), same
+  // as the kernel.
+  const prefix = opts.captures[0]!.prefix;
+  for (const capture of opts.captures) {
+    app.use(capture.prefix, capture.router as RequestHandler);
+  }
+  // Error-trap middleware: surfaces SSR / route-handler crashes that would
+  // otherwise vanish into Express's silent default error handler (returns
+  // generic 'Internal Server Error' HTML with no detail — useless for
+  // diagnosing why an operator's react-ssr component throws). We log the
+  // full stack server-side AND return a JSON body the frontend can parse
+  // into a meaningful banner. The frontend's `(no detail)` fallback was
+  // exactly because the captured router 500'd with HTML and the iframe
+  // couldn't JSON-parse it.
+  app.use(
+    (err: unknown, req: Request, res: Response, _next: (err?: unknown) => void) => {
+      const stack = err instanceof Error ? (err.stack ?? err.message) : String(err);
+      console.error(
+        `[builder/preview/ui-route] captured route '${req.method} ${req.originalUrl}' threw:\n${stack}`,
+      );
+      if (!res.headersSent) {
+        res.status(500).json({
+          code: 'builder.preview_render_failed',
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+  );
+
+  const server = createServer(app);
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => resolve());
+  });
+  try {
+    const addr = server.address();
+    if (!addr || typeof addr === 'string') {
+      throw new Error('temp probe server has no address');
+    }
+    const url = `http://127.0.0.1:${String(addr.port)}${prefix}${opts.targetPath}`;
+    const fetchStart = Date.now();
+    console.log(`[builder/preview/ui-route]   probe-server up, fetching ${url}`);
+    let fetched: Awaited<ReturnType<typeof fetch>>;
+    try {
+      fetched = await fetch(url, {
+        signal: AbortSignal.timeout(opts.timeoutMs),
+      });
+    } catch (err) {
+      console.log(
+        `[builder/preview/ui-route]   upstream fetch FAILED after ` +
+          `${String(Date.now() - fetchStart)}ms: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+      throw err;
+    }
+    console.log(
+      `[builder/preview/ui-route]   upstream responded status=${String(fetched.status)} ` +
+        `after ${String(Date.now() - fetchStart)}ms`,
+    );
+    const headers: Record<string, string> = {};
+    fetched.headers.forEach((v, k) => {
+      headers[k.toLowerCase()] = v;
+    });
+    const body = await fetched.text();
+    return { status: fetched.status, headers, body };
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 }
 
 // ---------------------------------------------------------------------------

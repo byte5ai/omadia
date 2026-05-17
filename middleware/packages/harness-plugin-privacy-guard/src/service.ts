@@ -6,12 +6,14 @@
  * as a free function (not a class) so tests can construct without a
  * `PluginContext`.
  *
- * State held by the returned service:
- *   - `Map<sessionId, TokenizeMap>` — session-scoped token bindings. Same
- *     value yields the same token across all turns of one conversation,
- *     so the LLM can keep referencing it coherently ("the same email as
- *     before"). The map is currently in-memory only; Slice 2.4 adds AES
- *     encryption + a 15-min idle TTL + explicit destroy on session end.
+ * State held by the returned service (Privacy-Shield v2 / Slice S-2):
+ *   - `Map<turnId, TokenizeMap>` — turn-scoped token bindings. Same
+ *     value within ONE turn always yields the same token (outbound,
+ *     tool-input, tool-result and inbound calls of the turn all share
+ *     the same map → intra-turn reconciliation). The map is dropped
+ *     by `finalizeTurn` so the PII bindings are eligible for garbage
+ *     collection. Cross-turn token identity is NOT preserved; the LLM
+ *     keeps coherence via the assistant-tail of real (restored) values.
  *   - `Map<turnId, TurnAccumulator>` — per-turn detection bucket. Each
  *     `processOutbound` call appends to it; `finalizeTurn` drains and
  *     emits a single PII-free receipt aggregating every LLM call in the
@@ -38,13 +40,23 @@ import type {
   PrivacyDetectorOutcome,
   PrivacyDetectorRun,
   PrivacyDetectorStatus,
+  PrivacyEgressConfig,
+  PrivacyEgressMode,
+  PrivacyEgressRequest,
+  PrivacyEgressResult,
+  PrivacyLiveTestResult,
   PrivacyGuardService,
   PrivacyInboundRequest,
   PrivacyInboundResult,
   PrivacyOutboundMessage,
   PrivacyOutboundRequest,
   PrivacyOutboundResult,
+  PrivacyOutputValidationRequest,
+  PrivacyOutputValidationResult,
+  PrivacyPostEgressScrubResult,
   PrivacyReceipt,
+  PrivacySelfAnonymizationRequest,
+  PrivacySelfAnonymizationResult,
   PrivacyToolInputRequest,
   PrivacyToolInputResult,
   PrivacyToolResultRequest,
@@ -54,14 +66,29 @@ import type {
 
 import { assembleReceipt, type AssembledHit } from './receiptAssembler.js';
 import { decide, deriveRouting, type PolicyDecision } from './policyEngine.js';
+import { runEgressFilter } from './egressFilter.js';
+import {
+  extractPersonTokenOrder,
+  restoreOrScrubRemainingTokens,
+  restoreSelfAnonymization,
+  restoreUnresolvedPersonTokens,
+} from './selfAnonymization.js';
+import { extendHitsToWordBoundary } from './spanHelpers.js';
 import { createRegexDetector } from './regexDetector.js';
 import { TOKEN_REGEX, createTokenizeMap, type TokenizeMap } from './tokenizeMap.js';
+import {
+  createAllowlist,
+  filterHitsByAllowlist,
+  type Allowlist,
+  type AllowlistConfig,
+  type AllowlistMatch,
+} from './allowlist.js';
 
 export interface PrivacyGuardServiceDeps {
   /** Default policy mode applied when the request does not pin one. */
   readonly defaultPolicyMode: PolicyMode;
   /** Override for tests; production should let the service mint its own
-   *  per-session map via `createTokenizeMap()`. */
+   *  per-turn map via `createTokenizeMap()`. */
   readonly tokenizeMapFactory?: () => TokenizeMap;
   /**
    * Slice 3.1: seed list of detectors. The service runs them in parallel
@@ -83,6 +110,51 @@ export interface PrivacyGuardServiceDeps {
    * is either a debug receipt or it isn't.
    */
   readonly debugShowValues?: boolean;
+  /**
+   * Privacy-Shield v2 (Slice S-3) — pre-detector allowlist. Spans
+   * matching any configured term are exempted from the detector pool
+   * before policy decisions. Omit / pass empty arrays for a no-op
+   * allowlist (this is the default; existing tests stay unaffected).
+   *
+   * The host assembles the three source lists at plugin-activate time
+   * from (a) the operator profile (tenant-self), (b) the bundled
+   * repo-default JSON, (c) the plugin config field
+   * `extra_allowlist_terms`. Re-activating the plugin re-builds the
+   * allowlist; the service does not hot-reload mid-turn.
+   */
+  readonly allowlist?: AllowlistConfig;
+  /**
+   * Privacy-Shield v2 (Slice S-5) — Output Validator threshold for
+   * the token-loss ratio. When the LLM emitted less than
+   * `(1 - threshold) × tokensMinted` distinct minted tokens in its
+   * response, the recommendation escalates to `retry`. Default `0.3`
+   * (30 %).
+   */
+  readonly tokenLossThreshold?: number;
+  /**
+   * Privacy-Shield v2 (Slice S-6) — default egress-filter reaction
+   * mode applied when a `egressFilter` request omits `mode`. The
+   * plugin reads `egress_filter_mode` from the operator config at
+   * activate time; falls back to `'mask'` when unset (production
+   * default — masks the spontaneous PII inline without dropping the
+   * answer).
+   */
+  readonly egressFilterMode?: PrivacyEgressMode;
+  /**
+   * Privacy-Shield v2 (Slice S-6) — master switch surfaced through
+   * `getEgressConfig()` so hosts (orchestrator, routine runner) can
+   * skip the call cheaply when the operator disabled the filter.
+   * Defaults to `true` when omitted.
+   */
+  readonly egressFilterEnabled?: boolean;
+  /**
+   * Privacy-Shield v2 (Slice S-6) — placeholder string the host
+   * substitutes for the final answer when the filter returns
+   * `routing: 'blocked'`. Surfaced via `getEgressConfig()`. The
+   * service does not perform the swap itself; that lives at the
+   * integration boundary.
+   */
+  readonly egressBlockPlaceholderText?: string;
 }
 
 /**
@@ -139,6 +211,80 @@ interface TurnAccumulator {
   toolRoundtripArgsRestored: number;
   toolRoundtripResultsTokenized: number;
   toolRoundtripCallCount: number;
+  /** Privacy-Shield v2 (Slice S-3) — per-source allowlist hit counts
+   *  aggregated across every `transformOne` call within the turn.
+   *  Surfaced as `receipt.allowlist.bySource` at `finalizeTurn` when
+   *  any source fired. PII-free: counts only, never the matched term. */
+  allowlistHits: { tenantSelf: number; repoDefault: number; operatorOverride: number };
+  /** Privacy-Shield v2 (Slice S-5) — distinct minted tokens the LLM
+   *  referenced in its responses, counted in `processInbound` before
+   *  restore. Used as the numerator of the token-loss ratio. Stored
+   *  as a Set so repeated references don't inflate the count
+   *  artificially. */
+  readonly tokensSeenInInbound: Set<string>;
+  /** Privacy-Shield v2 (Slice S-5) — Output Validator result for the
+   *  turn. Populated by `validateOutput`; absent when the host never
+   *  called the validator. Surfaced as `receipt.output` at finalize. */
+  outputValidation: PrivacyOutputValidationResult | undefined;
+  /** Privacy-Shield v2 (Slice S-6) — Egress Filter summary for the
+   *  turn. Set by `egressFilter`; absent when the host never called
+   *  it. Surfaced as `receipt.egress` at finalize. PII-free: the
+   *  detector-runs / counts / routing only. */
+  egressSummary:
+    | {
+        readonly mode: PrivacyEgressMode;
+        readonly routing: PrivacyEgressResult['routing'];
+        readonly detectorRuns: readonly PrivacyDetectorRun[];
+        readonly spontaneousHits: number;
+        readonly maskedCount: number;
+      }
+    | undefined;
+  /**
+   * Privacy-Shield v2 (Phase A, post-deploy 2026-05-14) — captured
+   * after the most recent `processToolResult`. De-duplicated, in-order
+   * `«PERSON_N»` sequence from the transformed tool-result text.
+   *
+   * The positional source for `restoreSelfAnonymizationLabels`: when
+   * the LLM emits "Mitarbeiter 1 / 2 / 3" referring to the rows of a
+   * tool result, index N corresponds to the N-th `«PERSON_N»` that
+   * appeared in that tool result — NOT the N-th token minted across
+   * the whole turn, because earlier user-mentioned names occupy lower
+   * mint counters but do not belong to the table-positional view.
+   *
+   * Overwritten on every tool-result invocation: the LATEST result is
+   * the most likely positional referent. A future slice may extend
+   * this to a per-tool-name map when multi-tool synthesis surfaces
+   * cross-result label ambiguity.
+   */
+  lastToolResultPersonTokenOrder: readonly string[];
+  /**
+   * Privacy-Shield v2 (Phase A) — per-turn restoration summary,
+   * surfaced as `receipt.selfAnonymization` so operators see how
+   * many label patterns the LLM emitted and how many we restored.
+   * Absent when `restoreSelfAnonymizationLabels` was never invoked
+   * for this turn. PII-free: counts + lowercase keyword stems only.
+   */
+  selfAnonymizationSummary:
+    | {
+        readonly detected: number;
+        readonly restored: number;
+        readonly ambiguous: number;
+        readonly patternsHit: readonly string[];
+        readonly maxIndexSeen: number;
+        readonly tokenOrderLength: number;
+      }
+    | undefined;
+  /**
+   * Privacy-Shield v2 (Phase A.2) — final-scrub telemetry. Populated
+   * by `restoreOrScrubRemainingTokens`. Aggregated into
+   * `receipt.postEgressScrub` at finalize.
+   */
+  postEgressScrubSummary:
+    | {
+        readonly restoredPositional: number;
+        readonly scrubbedToPlaceholder: number;
+      }
+    | undefined;
 }
 
 /** Mutable per-detector accumulator. Aggregated into `PrivacyDetectorRun`
@@ -183,6 +329,16 @@ function detectorScansTarget(d: PrivacyDetector, target: TextTarget): boolean {
   return targets.systemPrompt !== false;
 }
 
+/**
+ * Privacy-Shield v2 (Slice S-6) — fallback placeholder string surfaced
+ * via `getEgressConfig()` when neither plugin config nor the service
+ * deps supplied one. Kept in English so unconfigured tenants get a
+ * universally-understandable refusal rather than a German default
+ * that would surprise an EN-only operator.
+ */
+const DEFAULT_EGRESS_PLACEHOLDER_TEXT =
+  'The response was withheld because it contained data the privacy filter could not verify. Please rephrase your request.';
+
 /** Severity rank for `PrivacyDetectorStatus`. Used to fold per-call
  *  outcomes into a turn-wide worst status. `error > timeout > skipped > ok`. */
 function statusRank(s: PrivacyDetectorStatus): number {
@@ -202,8 +358,23 @@ export function createPrivacyGuardService(
   deps: PrivacyGuardServiceDeps,
 ): PrivacyGuardServiceInternal {
   const factory = deps.tokenizeMapFactory ?? createTokenizeMap;
-  const sessionMaps = new Map<string, TokenizeMap>();
+  // Privacy-Shield v2 (Slice S-2): the tokenise-map is scoped per TURN,
+  // not per session. The map is minted lazily on the first
+  // `processOutbound` / `processToolResult` of a turn and discarded
+  // together with the accumulator in `finalizeTurn`. Cross-turn token
+  // identity is therefore NOT preserved — the LLM's coherence across
+  // turns comes from the assistant-tail (which references real values
+  // after restore), not from stable token names.
+  const turnMaps = new Map<string, TokenizeMap>();
   const turnAccumulators = new Map<string, TurnAccumulator>();
+  // Privacy-Shield v2 (Slice S-3): build the allowlist at service
+  // construction. Re-activating the plugin re-runs the factory.
+  // Privacy-Shield v2 (Slice S-7): the operator-override list is
+  // mutable at runtime via `setOperatorOverrideTerms` from the
+  // Operator-UI; we hold the resolved config + the live Allowlist
+  // separately so rebuilds are local.
+  let allowlistConfig: AllowlistConfig = deps.allowlist ?? {};
+  let allowlist: Allowlist = createAllowlist(allowlistConfig);
   // Slice 3.1: detector list. Empty seed → bundle the regex detector as
   // default so existing single-detector behaviour holds without config.
   // Detectors registered after the service is built (Slice 3.2 Ollama
@@ -213,11 +384,11 @@ export function createPrivacyGuardService(
       ? [...deps.detectors]
       : [createRegexDetector()];
 
-  function mapFor(sessionId: string): TokenizeMap {
-    let m = sessionMaps.get(sessionId);
+  function mapFor(turnId: string): TokenizeMap {
+    let m = turnMaps.get(turnId);
     if (m === undefined) {
       m = factory();
-      sessionMaps.set(sessionId, m);
+      turnMaps.set(turnId, m);
     }
     return m;
   }
@@ -239,6 +410,13 @@ export function createPrivacyGuardService(
         toolRoundtripArgsRestored: 0,
         toolRoundtripResultsTokenized: 0,
         toolRoundtripCallCount: 0,
+        allowlistHits: { tenantSelf: 0, repoDefault: 0, operatorOverride: 0 },
+        tokensSeenInInbound: new Set<string>(),
+        outputValidation: undefined,
+        egressSummary: undefined,
+        lastToolResultPersonTokenOrder: [],
+        selfAnonymizationSummary: undefined,
+        postEgressScrubSummary: undefined,
       };
       turnAccumulators.set(turnId, acc);
     }
@@ -278,11 +456,23 @@ export function createPrivacyGuardService(
     bucket.latencyMs += latencyMs;
   }
 
+  /** Privacy-Shield v2 (Slice S-3) — increment per-source allowlist
+   *  counters on the turn accumulator. PII-free: counts only. */
+  function recordAllowlistMatches(
+    acc: TurnAccumulator,
+    matches: readonly AllowlistMatch[],
+  ): void {
+    if (matches.length === 0) return;
+    for (const m of matches) {
+      acc.allowlistHits[m.source] += 1;
+    }
+  }
+
   return {
     async processOutbound(
       request: PrivacyOutboundRequest,
     ): Promise<PrivacyOutboundResult> {
-      const map = mapFor(request.sessionId);
+      const map = mapFor(request.turnId);
       const acc = accumulatorFor(request);
 
       const augmentedSystemPrompt = augmentSystemPromptForPrivacyProxy(
@@ -332,6 +522,8 @@ export function createPrivacyGuardService(
             detectors: detectorSnapshot,
             inflightCache: acc.inflightCache,
             recordOutcome: (id, outcome, latencyMs) => recordOutcome(acc, id, outcome, latencyMs),
+            allowlist,
+            recordAllowlistMatches: (matches) => recordAllowlistMatches(acc, matches),
           }),
         ),
       );
@@ -365,11 +557,27 @@ export function createPrivacyGuardService(
     async processInbound(
       request: PrivacyInboundRequest,
     ): Promise<PrivacyInboundResult> {
-      const map = sessionMaps.get(request.sessionId);
+      const map = turnMaps.get(request.turnId);
       if (map === undefined) {
-        // No outbound was ever processed for this session — nothing to
+        // No outbound was ever processed for this turn — nothing to
         // restore. Pass-through.
         return { text: request.text };
+      }
+      // Privacy-Shield v2 (Slice S-5): before restoring, fold every
+      // recognised token into the turn's "seen" set so the Output
+      // Validator can compute the token-loss ratio at end-of-turn.
+      // Unknown tokens (no map entry) are ignored here — the validator
+      // treats them as a separate "unrestored token" signal.
+      const acc = turnAccumulators.get(request.turnId);
+      if (acc !== undefined && request.text.includes('«')) {
+        const matches = request.text.match(TOKEN_REGEX);
+        if (matches !== null) {
+          for (const tok of matches) {
+            if (map.resolve(tok) !== undefined) {
+              acc.tokensSeenInInbound.add(tok);
+            }
+          }
+        }
       }
       return { text: restoreTokens(request.text, map) };
     },
@@ -378,6 +586,12 @@ export function createPrivacyGuardService(
       const acc = turnAccumulators.get(turnId);
       if (acc === undefined) return undefined;
       turnAccumulators.delete(turnId);
+      // Privacy-Shield v2 (Slice S-2): drop the per-turn tokenise-map so
+      // its PII bindings are eligible for garbage collection. A
+      // subsequent processInbound for this turn — should one fire after
+      // finalize, which would be a host bug — pass-throughs because the
+      // map is gone.
+      turnMaps.delete(turnId);
 
       if (deps.debugShowValues === true) {
         // Slice 2.2 dev-instrumentation: when the operator has explicitly
@@ -405,6 +619,11 @@ export function createPrivacyGuardService(
         ...(b.reason !== undefined ? { reason: b.reason } : {}),
       }));
 
+      const allowlistTotal =
+        acc.allowlistHits.tenantSelf +
+        acc.allowlistHits.repoDefault +
+        acc.allowlistHits.operatorOverride;
+
       const receipt = assembleReceipt({
         hits: acc.hits,
         policyMode: acc.policyMode,
@@ -423,6 +642,61 @@ export function createPrivacyGuardService(
               },
             }
           : {}),
+        ...(allowlistTotal > 0
+          ? {
+              allowlist: {
+                hitCount: allowlistTotal,
+                bySource: {
+                  tenantSelf: acc.allowlistHits.tenantSelf,
+                  repoDefault: acc.allowlistHits.repoDefault,
+                  operatorOverride: acc.allowlistHits.operatorOverride,
+                },
+              },
+            }
+          : {}),
+        ...(acc.outputValidation !== undefined
+          ? {
+              output: {
+                tokenLossRatio: acc.outputValidation.tokenLossRatio,
+                spontaneousPiiHits: acc.outputValidation.spontaneousPiiHits.length,
+                recommendation: acc.outputValidation.recommendation,
+                ...(acc.outputValidation.recommendationReason !== undefined
+                  ? { recommendationReason: acc.outputValidation.recommendationReason }
+                  : {}),
+              },
+            }
+          : {}),
+        ...(acc.egressSummary !== undefined
+          ? {
+              egress: {
+                mode: acc.egressSummary.mode,
+                routing: acc.egressSummary.routing,
+                detectorRuns: acc.egressSummary.detectorRuns,
+                spontaneousHits: acc.egressSummary.spontaneousHits,
+                maskedCount: acc.egressSummary.maskedCount,
+              },
+            }
+          : {}),
+        ...(acc.selfAnonymizationSummary !== undefined
+          ? {
+              selfAnonymization: {
+                detected: acc.selfAnonymizationSummary.detected,
+                restored: acc.selfAnonymizationSummary.restored,
+                ambiguous: acc.selfAnonymizationSummary.ambiguous,
+                patternsHit: acc.selfAnonymizationSummary.patternsHit,
+                maxIndexSeen: acc.selfAnonymizationSummary.maxIndexSeen,
+                tokenOrderLength: acc.selfAnonymizationSummary.tokenOrderLength,
+              },
+            }
+          : {}),
+        ...(acc.postEgressScrubSummary !== undefined
+          ? {
+              postEgressScrub: {
+                restoredPositional: acc.postEgressScrubSummary.restoredPositional,
+                scrubbedToPlaceholder: acc.postEgressScrubSummary.scrubbedToPlaceholder,
+              },
+            }
+          : {}),
       });
       return receipt;
     },
@@ -432,16 +706,16 @@ export function createPrivacyGuardService(
     ): Promise<PrivacyToolInputResult> {
       const acc = accumulatorForIds(request.sessionId, request.turnId);
       acc.toolRoundtripCallCount += 1;
-      const map = sessionMaps.get(request.sessionId);
+      const map = turnMaps.get(request.turnId);
       if (map === undefined) {
-        // No outbound was ever processed for this session — there are no
+        // No outbound was ever processed for this turn — there are no
         // tokens to restore. Pass-through.
         return { input: request.input, tokensRestored: 0 };
       }
       let restoredCount = 0;
       const walk = (v: unknown): unknown => {
         if (typeof v === 'string') {
-          if (!v.includes('tok_')) return v;
+          if (!v.includes('«')) return v;
           const restored = restoreTokens(v, map);
           if (restored !== v) restoredCount += 1;
           return restored;
@@ -502,19 +776,30 @@ export function createPrivacyGuardService(
       };
       const transformed = await transformOne(target, {
         policyMode: acc.policyMode,
-        map: mapFor(request.sessionId),
+        map: mapFor(request.turnId),
         collect: acc.hits,
         collectDecisions: localDecisions,
         detectors: detectorSnapshot,
         inflightCache: acc.inflightCache,
         recordOutcome: (id, outcome, latencyMs) =>
           recordOutcome(acc, id, outcome, latencyMs),
+        allowlist,
+        recordAllowlistMatches: (matches) => recordAllowlistMatches(acc, matches),
       });
 
       const wasTransformed = transformed.text !== request.text;
       if (wasTransformed) {
         acc.toolRoundtripResultsTokenized += 1;
       }
+
+      // Privacy-Shield v2 (Phase A) — capture the de-duplicated
+      // in-order person-token sequence from this tool result so the
+      // mechanical self-anonymization restorer can map LLM-emitted
+      // "Mitarbeiter N" labels to the right real names by position.
+      // Overwrites the previous capture: the LATEST tool result is
+      // the most likely positional referent for the answer the LLM
+      // is about to compose.
+      acc.lastToolResultPersonTokenOrder = extractPersonTokenOrder(transformed.text);
 
       // Tool result is part of the turn's outbound surface back to the
       // LLM — feed it into the audit-hash chunks like processOutbound
@@ -523,6 +808,352 @@ export function createPrivacyGuardService(
       acc.originalChunks.push(`TOOL_RESULT(${request.toolName}):${request.text}`);
 
       return { text: transformed.text, transformed: wasTransformed };
+    },
+
+    // Privacy-Shield v2 (Slice S-5) — Output Validator. Re-runs the
+    // detector pool on the final assistant text (post-restore) and
+    // compares each detector hit against the turn-map. Hits whose
+    // value WAS in the map are restored tokens (legitimate);
+    // hits whose value WAS NOT in the map are "spontaneous PII" —
+    // the LLM produced a plausible-looking value rather than passing
+    // a token through verbatim. Combined with the token-loss ratio
+    // (minted vs. seen-in-inbound), the validator emits a
+    // `pass | retry | block` recommendation the host can act on.
+    async validateOutput(
+      request: PrivacyOutputValidationRequest,
+    ): Promise<PrivacyOutputValidationResult> {
+      const map = turnMaps.get(request.turnId);
+      const acc = turnAccumulators.get(request.turnId);
+      const tokensMinted = map?.size ?? 0;
+      const tokensRestored = acc?.tokensSeenInInbound.size ?? 0;
+      const tokenLossRatio =
+        tokensMinted === 0 ? 0 : Math.max(0, 1 - tokensRestored / tokensMinted);
+
+      // Re-run detectors on the final assistant text. Use the same
+      // detector pool + dedup pipeline as transformOne so we get
+      // consistent classifications. Wrap in a noop allowlist for the
+      // re-scan because the allowlist's job is to suppress FPs on the
+      // INBOUND scan; we want the FULL detector signal on the output.
+      const detectorSnapshot: readonly PrivacyDetector[] = [...detectors];
+      const inflightCache = new Map<string, Promise<PrivacyDetectorOutcome>>();
+      const allHits = await runDetectors(
+        request.assistantText,
+        detectorSnapshot,
+        inflightCache,
+        () => {
+          // Detector-run telemetry for the output validator is folded
+          // into the same per-detector buckets as the main pass if an
+          // accumulator exists; otherwise discarded. This is a
+          // best-effort signal (the validator may run without a prior
+          // outbound — e.g. the host calls it on a routine's
+          // pre-formatted answer).
+        },
+      );
+      const deduped = dedupOverlappingHits(allHits);
+      const spontaneousPiiHits: Array<{ type: string; detectorId: string }> = [];
+      for (const hit of deduped) {
+        if (map === undefined || !map.hasOriginalValue(hit.value)) {
+          spontaneousPiiHits.push({ type: hit.type, detectorId: hit.detector });
+        }
+      }
+
+      const threshold =
+        typeof deps.tokenLossThreshold === 'number' &&
+        deps.tokenLossThreshold >= 0 &&
+        deps.tokenLossThreshold <= 1
+          ? deps.tokenLossThreshold
+          : 0.3;
+
+      let recommendation: 'pass' | 'retry' | 'block' = 'pass';
+      let recommendationReason: string | undefined;
+      if (spontaneousPiiHits.length > 0) {
+        recommendation = 'block';
+        recommendationReason = `spontaneous PII in output (${String(spontaneousPiiHits.length)} hit${spontaneousPiiHits.length === 1 ? '' : 's'})`;
+      } else if (tokenLossRatio > threshold) {
+        recommendation = 'retry';
+        recommendationReason = `token-loss ratio ${tokenLossRatio.toFixed(2)} exceeds threshold ${threshold.toFixed(2)}`;
+      }
+
+      const result: PrivacyOutputValidationResult = {
+        tokensMinted,
+        tokensRestored,
+        tokenLossRatio,
+        spontaneousPiiHits,
+        recommendation,
+        ...(recommendationReason !== undefined ? { recommendationReason } : {}),
+      };
+      if (acc !== undefined) {
+        acc.outputValidation = result;
+      }
+      return result;
+    },
+
+    // Privacy-Shield v2 (Slice S-6) — Egress Filter. Re-runs the full
+    // detector pool on the final channel-bound text slots, classifies
+    // each hit against the turn-map (known → restored PII, unknown →
+    // spontaneous), and applies the operator-configured mode. Folds
+    // detectorRuns + counters onto the turn accumulator for the
+    // `egress` receipt block.
+    getEgressConfig(): PrivacyEgressConfig {
+      return {
+        enabled: deps.egressFilterEnabled !== false,
+        mode: deps.egressFilterMode ?? 'mask',
+        blockPlaceholderText:
+          deps.egressBlockPlaceholderText !== undefined &&
+          deps.egressBlockPlaceholderText.trim().length > 0
+            ? deps.egressBlockPlaceholderText
+            : DEFAULT_EGRESS_PLACEHOLDER_TEXT,
+      };
+    },
+
+    async egressFilter(
+      request: PrivacyEgressRequest,
+    ): Promise<PrivacyEgressResult> {
+      // Use the turn map if it exists; otherwise mint one (the host
+      // may call egressFilter without ever calling processOutbound —
+      // e.g. a routine that produced answer purely from a tool result
+      // we tokenised via processToolResult, or a unit test). The
+      // map's `hasOriginalValue` returns false for everything in the
+      // bare-mint case, which means every detection becomes
+      // spontaneous — exactly the desired fail-safe.
+      const map = mapFor(request.turnId);
+      const acc = accumulatorForIds(request.sessionId, request.turnId);
+      const defaultMode: PrivacyEgressMode = deps.egressFilterMode ?? 'mask';
+      const result = await runEgressFilter(request, {
+        detectors: [...detectors],
+        map,
+        defaultMode,
+        allowlist,
+      });
+      acc.egressSummary = {
+        mode: result.mode,
+        routing: result.routing,
+        detectorRuns: result.detectorRuns,
+        spontaneousHits: result.spontaneousHits,
+        maskedCount: result.maskedCount,
+      };
+      return result;
+    },
+
+    // Privacy-Shield v2 (Phase A, post-deploy 2026-05-14) — mechanical
+    // restoration of LLM self-anonymization labels. Phase A.1 layers
+    // unresolved-token gap-fill on top. See module-level comment in
+    // selfAnonymization.ts for the design rationale.
+    async restoreSelfAnonymizationLabels(
+      request: PrivacySelfAnonymizationRequest,
+    ): Promise<PrivacySelfAnonymizationResult> {
+      const acc = accumulatorForIds(request.sessionId, request.turnId);
+      const map = mapFor(request.turnId);
+      const tokenOrder = acc.lastToolResultPersonTokenOrder;
+
+      // Pass 1: label-pattern restoration (Mitarbeiter N / Employee N
+      // / Person N / …). Indexed by the parsed numeric ordinal.
+      const labelOutcome = restoreSelfAnonymization(request.text, tokenOrder, map);
+
+      // Pass 2: unresolved-token gap-fill on the text produced by pass
+      // 1. Indexed by left-to-right occurrence of `«TYPE_N»` tokens
+      // that have no binding in the turn-map; matched against the set
+      // of missing real names (tool-result names not present in the
+      // text yet).
+      const gapOutcome = restoreUnresolvedPersonTokens(
+        labelOutcome.text,
+        tokenOrder,
+        map,
+      );
+
+      const detected = labelOutcome.detected + gapOutcome.detected;
+      const restored = labelOutcome.restored + gapOutcome.restored;
+      const ambiguous = labelOutcome.ambiguous + gapOutcome.ambiguous;
+      const patternsHit = [
+        ...new Set([...labelOutcome.patternsHit, ...gapOutcome.patternsHit]),
+      ].sort();
+      const maxIndexSeen = Math.max(
+        labelOutcome.maxIndexSeen,
+        gapOutcome.maxIndexSeen,
+      );
+
+      // Always update the accumulator — even on a zero-match run — so
+      // operators see "detector ran, found nothing" rather than the
+      // ambiguous absence in the receipt.
+      acc.selfAnonymizationSummary = {
+        detected,
+        restored,
+        ambiguous,
+        patternsHit,
+        maxIndexSeen,
+        tokenOrderLength: tokenOrder.length,
+      };
+
+      // Phase A.1 telemetry — operator receipts are not yet persisted
+      // (S-7.5 deferred), so the only durable diagnostic surface is
+      // stdout. Emit a single per-turn line that lets the operator
+      // distinguish "restoration ran clean", "conservative skip
+      // fired", and "no labels at all" without a receipt query.
+      if (detected > 0 || tokenOrder.length > 0) {
+        // Phase A.1+ verbose diagnostic: surface the captured token
+        // sequence (just the «PERSON_N» strings, not the underlying
+        // PII values) and pre/post text fragments so we can tell why
+        // the gap-fill did or didn't fire on the live HR-routine
+        // shape. Token strings carry no PII by construction; the
+        // surrounding text is the assistant answer which is about
+        // to ship to the user anyway. Truncated to keep the log line
+        // bounded.
+        const previewBefore = request.text.slice(0, 160).replace(/\n/g, '⏎');
+        const previewAfter = gapOutcome.text.slice(0, 160).replace(/\n/g, '⏎');
+        const unchangedByGap = gapOutcome.text === labelOutcome.text;
+        const unchangedByLabel = labelOutcome.text === request.text;
+        console.log(
+          `[privacy-guard] selfAnon turn=${request.turnId} detected=${String(detected)} ` +
+            `restored=${String(restored)} ambiguous=${String(ambiguous)} ` +
+            `tokenOrder=${String(tokenOrder.length)} maxIdx=${String(maxIndexSeen)} ` +
+            `patterns=[${patternsHit.join(',')}] ` +
+            `label-d=${String(labelOutcome.detected)}/r=${String(labelOutcome.restored)} ` +
+            `gap-d=${String(gapOutcome.detected)}/r=${String(gapOutcome.restored)} ` +
+            `label-changed=${String(!unchangedByLabel)} gap-changed=${String(!unchangedByGap)} ` +
+            `tokenOrder-content=[${tokenOrder.join(',')}] ` +
+            `before="${previewBefore}" after="${previewAfter}"`,
+        );
+      }
+
+      return {
+        text: gapOutcome.text,
+        detected,
+        restored,
+        ambiguous,
+        patternsHit,
+        maxIndexSeen,
+        tokenOrderLength: tokenOrder.length,
+      };
+    },
+
+    // Privacy-Shield v2 (Phase A.2, post-deploy 2026-05-14 third
+    // iteration) — final-scrub pass that runs AFTER the egress filter.
+    // See selfAnonymization.ts::restoreOrScrubRemainingTokens for the
+    // design rationale.
+    async restoreOrScrubRemainingTokens(
+      request: PrivacySelfAnonymizationRequest,
+    ): Promise<PrivacyPostEgressScrubResult> {
+      const acc = accumulatorForIds(request.sessionId, request.turnId);
+      const map = mapFor(request.turnId);
+      const tokenOrder = acc.lastToolResultPersonTokenOrder;
+      const outcome = restoreOrScrubRemainingTokens(request.text, tokenOrder, map);
+      acc.postEgressScrubSummary = {
+        restoredPositional: outcome.restoredPositional,
+        scrubbedToPlaceholder: outcome.scrubbedToPlaceholder,
+      };
+      if (outcome.restoredPositional > 0 || outcome.scrubbedToPlaceholder > 0) {
+        console.log(
+          `[privacy-guard] postEgressScrub turn=${request.turnId} ` +
+            `restored=${String(outcome.restoredPositional)} ` +
+            `scrubbed=${String(outcome.scrubbedToPlaceholder)} ` +
+            `tokenOrder=${String(tokenOrder.length)}`,
+        );
+      }
+      return outcome;
+    },
+
+    // Privacy-Shield v2 (Slice S-7) — Operator-UI read surface.
+    getAllowlistSnapshot(): {
+      readonly tenantSelf: readonly string[];
+      readonly repoDefault: readonly string[];
+      readonly operatorOverride: readonly string[];
+    } {
+      return {
+        tenantSelf: [...(allowlistConfig.tenantSelfTerms ?? [])],
+        repoDefault: [...(allowlistConfig.repoDefaultTerms ?? [])],
+        operatorOverride: [...(allowlistConfig.operatorOverrideTerms ?? [])],
+      };
+    },
+
+    // Privacy-Shield v2 (Slice S-7) — Operator-UI write surface.
+    // Rebuilds the allowlist with the new override list, leaving the
+    // tenantSelf + repoDefault sources untouched. In-process only;
+    // durable persistence is a v0.2.x follow-up.
+    setOperatorOverrideTerms(terms: readonly string[]): void {
+      const cleaned = terms
+        .map((t) => (typeof t === 'string' ? t.trim() : ''))
+        .filter((t) => t.length > 0);
+      allowlistConfig = {
+        ...allowlistConfig,
+        operatorOverrideTerms: cleaned,
+      };
+      allowlist = createAllowlist(allowlistConfig);
+    },
+
+    // Privacy-Shield v2 (Slice S-7) — Operator-UI Live-Test.
+    // Runs the full detector + allowlist + tokenise pipeline on the
+    // input without touching any per-turn accumulator state. Pure
+    // pipeline: detectors → allowlist filter → dedup → mint tokens
+    // in an ephemeral map. The ephemeral map is discarded at end so
+    // nothing leaks into real turns.
+    async liveTest(input: {
+      readonly text: string;
+    }): Promise<PrivacyLiveTestResult> {
+      const target = input.text;
+      if (target.length === 0) {
+        return {
+          original: target,
+          tokenized: target,
+          detectorHits: [],
+          allowlistMatches: [],
+        };
+      }
+      const detectorSnapshot: readonly PrivacyDetector[] = [...detectors];
+      const inflightCache = new Map<string, Promise<PrivacyDetectorOutcome>>();
+      const ranHits = await runDetectors(
+        target,
+        detectorSnapshot,
+        inflightCache,
+        () => {
+          // No turn-accumulator side-effects for live-test.
+        },
+      );
+      const allowMatches = allowlist.scan(target);
+      const allowlistMatches = allowMatches.map((m) => ({
+        span: m.span,
+        source: m.source,
+        term: target.slice(m.span[0], m.span[1]),
+      }));
+      const filteredHits =
+        allowMatches.length > 0 ? filterHitsByAllowlist(ranHits, allowMatches) : ranHits;
+      const dedupedHits = dedupOverlappingHits(filteredHits);
+
+      // Mint tokens in an ephemeral, throwaway map.
+      const ephemeralMap = factory();
+      const sorted = [...dedupedHits].sort((a, b) => b.span[0] - a.span[0]);
+      let tokenised = target;
+      const annotated: Array<{
+        type: string;
+        value: string;
+        span: readonly [number, number];
+        confidence: number;
+        detector: string;
+        action: ReturnType<typeof decide>['action'];
+      }> = [];
+      for (const hit of sorted) {
+        const decision = decide({
+          type: hit.type,
+          policyMode: deps.defaultPolicyMode,
+        });
+        const replacement = renderReplacement(hit, decision.action, ephemeralMap);
+        tokenised =
+          tokenised.slice(0, hit.span[0]) + replacement + tokenised.slice(hit.span[1]);
+        annotated.unshift({
+          type: hit.type,
+          value: hit.value,
+          span: hit.span,
+          confidence: hit.confidence,
+          detector: hit.detector,
+          action: decision.action,
+        });
+      }
+
+      return {
+        original: target,
+        tokenized: tokenised,
+        detectorHits: annotated,
+        allowlistMatches,
+      };
     },
 
     // Slice 3.1 registry surface — exposed via `PrivacyDetectorRegistry`
@@ -545,16 +1176,15 @@ export function createPrivacyGuardService(
 }
 
 // ---------------------------------------------------------------------------
-// Token restore — used by `processInbound`. Replaces every `tok_<hex>`
+// Token restore — used by `processInbound`. Replaces every `«TYPE_N»`
 // substring with the bound original. Unknown tokens are left as-is so the
-// caller can decide what to do (Slice 2.3 hallucination flagging will
-// re-scan from here).
+// Output Validator (Slice S-5) can flag them as possible hallucinations.
 // ---------------------------------------------------------------------------
 
 function restoreTokens(text: string, map: TokenizeMap): string {
   if (text.length === 0) return text;
-  // Quick reject: no `tok_` substring at all means nothing to do.
-  if (!text.includes('tok_')) return text;
+  // Quick reject: no opening guillemet means no tokens to restore.
+  if (!text.includes('«')) return text;
   return text.replace(TOKEN_REGEX, (match) => {
     const original = map.resolve(match);
     return original ?? match;
@@ -587,6 +1217,15 @@ interface TransformContext {
     outcome: PrivacyDetectorOutcome,
     latencyMs: number,
   ) => void;
+  /** Privacy-Shield v2 (Slice S-3) — allowlist used to pre-filter the
+   *  detector pool's hits before policy applies. May be a no-op
+   *  allowlist when nothing is configured. */
+  readonly allowlist: Allowlist;
+  /** Callback to fold per-source allowlist hit counts into the turn
+   *  accumulator. Called once per `transformOne` with the scan
+   *  results; aggregating happens in the service so the assembler
+   *  receives one number per source per turn. */
+  readonly recordAllowlistMatches: (matches: readonly AllowlistMatch[]) => void;
 }
 
 async function transformOne(
@@ -612,9 +1251,21 @@ async function transformOne(
     ctx.inflightCache,
     ctx.recordOutcome,
   );
-  if (allHits.length === 0) return { text: target.source };
 
-  const deduped = dedupOverlappingHits(allHits);
+  // Privacy-Shield v2 (Slice S-3) — scan the allowlist on the same
+  // text the detectors saw and drop any detector hit that overlaps an
+  // allowlist span. The allowlist scan runs unconditionally so the
+  // receipt can report "0 detector hits, N allowlist matches" for the
+  // operator (telemetry over silent absence). When the allowlist is
+  // empty the scan returns [] cheaply.
+  const allowlistMatches = ctx.allowlist.scan(target.source);
+  ctx.recordAllowlistMatches(allowlistMatches);
+  const filteredHits =
+    allowlistMatches.length > 0 ? filterHitsByAllowlist(allHits, allowlistMatches) : allHits;
+
+  if (filteredHits.length === 0) return { text: target.source };
+
+  const deduped = dedupOverlappingHits(filteredHits);
   // Replace right-to-left so earlier indices stay valid.
   const sorted = [...deduped].sort((a, b) => b.span[0] - a.span[0]);
   let out = target.source;
@@ -695,7 +1346,13 @@ async function runDetectors(
       return [...outcome.hits];
     }),
   );
-  return results.flat();
+  // Post-process: extend each hit's span forward through any adjacent
+  // word characters so the trailing letter that detectors like Presidio
+  // systematically clip off German compound names (e.g. "Schmidt" →
+  // "Schmid"+"t") gets absorbed into the masked region. Without this,
+  // the leaked suffix exposes name length + last character beside the
+  // `«PERSON_N»` token.
+  return extendHitsToWordBoundary(text, results.flat()) as PrivacyDetectorHit[];
 }
 
 /**
@@ -745,10 +1402,11 @@ function renderReplacement(
 ): string {
   switch (action) {
     case 'tokenized':
-      // Slice 2.2: pass the detector hit type as a typeHint so the
-      // minted token carries a `_<type>` suffix (`tok_a1b2c3d4_name`,
-      // `tok_e5f6g7h8_email`, …). The LLM can infer the placeholder
-      // kind from the suffix without seeing the value.
+      // Privacy-Shield v2: minted token carries an uppercase display
+      // type (`«PERSON_1»`, `«EMAIL_2»`, `«IBAN_3»`). The LLM can
+      // infer the placeholder kind from the type label without seeing
+      // the value, and the readable shape resists paraphrase pressure
+      // in Markdown-table / bulleted-list output.
       return map.tokenFor(hit.value, hit.type);
     case 'redacted':
       return `[REDACTED:${labelForType(hit.type)}]`;
@@ -766,97 +1424,208 @@ function labelForType(t: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Slice 2.2 — System-prompt directive injection.
+// Privacy-Shield v2 — System-prompt directive injection.
 //
-// The privacy proxy tokenises PII in user inputs to `tok_<hex>` placeholders
-// before the payload reaches the public LLM. Without context, the LLM treats
-// these tokens as unknown identifiers and refuses to call tools (defensive
-// "I don't know who tok_a3f9 is, please clarify"). This helper splices a
-// short directive into the system prompt so the LLM understands tokens are
-// transparent and SHOULD be passed verbatim as tool arguments — the proxy
-// restores them deterministically before tool execution and re-tokenises any
-// new PII in tool results (Slice 2.2 Part B).
+// The privacy shield tokenises PII to readable `«TYPE_N»` placeholders
+// before the payload reaches the public LLM. Without context, the LLM
+// treats them as unknown identifiers and refuses to call tools
+// (defensive "I don't know who «PERSON_1» is, please clarify"). This
+// helper splices a short directive into the system prompt so the LLM
+// understands tokens are transparent and SHOULD be passed verbatim as
+// tool arguments — the shield restores them deterministically before
+// tool execution and re-tokenises any new PII in tool results.
 //
-// Idempotent via marker check: if the directive is already present (e.g. the
-// caller invokes `processOutbound` twice on the same systemPrompt within a
-// turn), it is not prepended again. Empty system prompts are left untouched
-// so trivial test fixtures stay byte-identical.
+// Slice S-1 landed the new readable token format. Slice S-4 extends
+// this directive with:
+//   - explicit Markdown-table and bulleted-list examples (Example 4 + 5)
+//     so the LLM keeps tokens verbatim under format pressure;
+//   - a CRITICAL warning against paraphrasing tokens in user-facing
+//     output — the 2026-05-14 HR-routine failure mode where the LLM
+//     invented plausible employee names instead of emitting tokens;
+//   - a degenerate-case rule: if the user message is mostly tokens
+//     (Token-Storm, e.g. after a tenant-self FP cascade), do not
+//     anchor on prior conversation tail — ask for clarification.
+// Post-deploy 2026-05-14 adds a second failure mode caught live: the
+// LLM was self-anonymizing tokens to invented labels like
+// "Mitarbeiter 1/2/3" AND appending a DSGVO disclaimer about why
+// names were "withheld". Example 6 + a new CRITICAL block close that.
+//
+// Idempotent via marker check: if the directive is already present
+// (e.g. the caller invokes `processOutbound` twice on the same
+// systemPrompt within a turn), it is not prepended again. Empty system
+// prompts are left untouched so trivial test fixtures stay byte-identical.
 // ---------------------------------------------------------------------------
 
 const PRIVACY_PROXY_DIRECTIVE_MARKER = '<privacy-proxy-directive>';
 const PRIVACY_PROXY_DIRECTIVE = `${PRIVACY_PROXY_DIRECTIVE_MARKER}
-A privacy proxy sits between this conversation and the public LLM. It
+A privacy shield sits between this conversation and the public LLM. It
 replaces real user PII (names, e-mails, phone numbers, IBANs, addresses,
-IDs, …) with stable opaque placeholders before the message reaches you,
+IDs, …) with stable readable placeholders before the message reaches you,
 and restores them on the way back. You will see placeholders of the form
-\`tok_<8 hex>_<type>\` — for example \`tok_a1b2c3d4_name\`,
-\`tok_e5f6a7b8_email\`, \`tok_12345678_iban\`. The type suffix names
-what kind of value is hidden:
+\`«TYPE_N»\` — for example \`«PERSON_1»\`, \`«EMAIL_2»\`, \`«IBAN_3»\`,
+\`«ADDRESS_1»\`, \`«CARD_1»\`. The TYPE part names the kind of value
+masked and N is a fortlaufende counter unique within the current turn:
 
-  - \`_name\`         → a real person's name (employee, contact, …)
-  - \`_email\`        → a real e-mail address
-  - \`_phone\`        → a real phone number
-  - \`_iban\`         → a real bank account number
-  - \`_credit_card\`  → a real credit-card number
-  - \`_address\`      → a real postal address
-  - \`_location\`     → a real geographic location
-  - \`_organization\` → a real organisation / company name
-  - any other \`_<type>\` follows the same pattern
+  - \`«PERSON_N»\`  → a real person's name (employee, contact, …)
+  - \`«EMAIL_N»\`   → a real e-mail address
+  - \`«PHONE_N»\`   → a real phone number
+  - \`«IBAN_N»\`    → a real bank account number
+  - \`«CARD_N»\`    → a real credit-card number
+  - \`«ADDRESS_N»\` → a real postal address or geographic location
+  - \`«ORG_N»\`     → a real organisation / company name
+  - \`«APIKEY_N»\`  → a real API key / secret token
+  - any other \`«<TYPE>_N»\` follows the same pattern
 
 CRITICAL behavioural rules — these override any default reluctance to
 act on opaque identifiers:
 
-  1. A \`tok_…_<type>\` placeholder IS real user data — just masked on
-     the wire. It is NOT a hallucination, NOT a test fixture, NOT a
-     stand-in to clarify. The user typed the actual value; the proxy
+  1. A \`«TYPE_N»\` placeholder IS real user data — just masked on the
+     wire. It is NOT a hallucination, NOT a test fixture, NOT a
+     stand-in to clarify. The user typed the actual value; the shield
      replaced it.
 
   2. When the user's request requires the data the placeholder hides,
-     pass the placeholder verbatim as a tool argument. The proxy
+     pass the placeholder verbatim as a tool argument. The shield
      restores it to the original value before the tool handler runs;
-     the handler always sees plaintext. The proxy then re-tokenises
+     the handler always sees plaintext. The shield then re-tokenises
      any fresh PII in the tool result before sending it back to you.
 
-  3. Never ask the user to "clarify" a \`tok_…\` value, never refuse a
-     tool call because the input contains a placeholder, and never
+  3. Never ask the user to "clarify" a \`«TYPE_N»\` value, never refuse
+     a tool call because the input contains a placeholder, and never
      invent an identity for a placeholder. Doing so blocks legitimate
      requests for which the user has already provided everything
      needed.
 
   4. If the conversation history (memory recalls, prior turns,
-     bootstrap messages) refers to the user as \`tok_<hex>_name\`,
-     that IS the active user. Treat statements like "the user is
-     tok_a1b2c3d4_name" as binding identity facts.
+     bootstrap messages) refers to the user as \`«PERSON_N»\`, that
+     IS the active user. Treat statements like "the user is
+     «PERSON_1»" as binding identity facts.
 
 EXAMPLE INTERACTIONS (synthetic tokens, no real data; \`<…_tool>\` is a
 placeholder for whatever appropriately-named tool is actually
 registered in this session):
 
   Example 1 — name lookup:
-    user: "Wie viele Urlaubstage hat tok_a1b2c3d4_name 2025 genommen?"
+    user: "Wie viele Urlaubstage hat «PERSON_1» 2025 genommen?"
     assistant (correct): calls <hr_lookup_tool> with input
-        { "name": "tok_a1b2c3d4_name", "year": 2025 }
-        — proxy restores "tok_a1b2c3d4_name" to the actual employee
+        { "name": "«PERSON_1»", "year": 2025 }
+        — shield restores "«PERSON_1»" to the actual employee
         name before the handler executes.
-    assistant (WRONG): replies "ich rate nicht, wer ist tok_a1b2c3d4_name?"
+    assistant (WRONG): replies "ich rate nicht, wer ist «PERSON_1»?"
         — never do this.
 
   Example 2 — outbound message:
-    user: "Schick die Zusammenfassung an tok_e5f6a7b8_email"
+    user: "Schick die Zusammenfassung an «EMAIL_1»"
     assistant (correct): calls <send_mail_tool> with input
-        { "to": "tok_e5f6a7b8_email", "subject": "...", "body": "..." }
+        { "to": "«EMAIL_1»", "subject": "...", "body": "..." }
     assistant (WRONG): asks "an welche Adresse genau?" — never do this.
 
   Example 3 — bank transfer reference:
-    user: "Wie hoch war die letzte Buchung auf tok_12345678_iban?"
+    user: "Wie hoch war die letzte Buchung auf «IBAN_1»?"
     assistant (correct): calls <accounting_lookup_tool> with input
-        { "iban": "tok_12345678_iban" }
+        { "iban": "«IBAN_1»" }
     assistant (WRONG): "Bitte nenne mir die echte IBAN." — never do this.
 
-In all three examples the assistant proceeds with the tool call. That
-is the required behaviour: tokens always flow through to tools verbatim;
-the proxy handles restoration and re-tokenisation deterministically, so
-the user sees a coherent answer with their original data restored.
+  Example 4 — tabular tool result (CRITICAL — read this carefully):
+    tool result from <hr_absences_tool>:
+        [
+          { "name": "«PERSON_1»", "department": "Backend",
+            "absent_since": "2026-05-06" },
+          { "name": "«PERSON_2»", "department": "Backend",
+            "absent_since": "2026-05-14" },
+          { "name": "«PERSON_3»", "department": "Backend",
+            "absent_since": "2026-05-11" }
+        ]
+    assistant (correct) — emits tokens VERBATIM in each table cell:
+        | Name        | Department | Absent since |
+        |-------------|------------|--------------|
+        | «PERSON_1»  | Backend    | 2026-05-06   |
+        | «PERSON_2»  | Backend    | 2026-05-14   |
+        | «PERSON_3»  | Backend    | 2026-05-11   |
+        — the shield restores «PERSON_1»/«PERSON_2»/«PERSON_3» to the
+        real employee names AFTER you finish; the user sees a clean
+        table with their actual data.
+    assistant (WRONG) — invents plausible names for the cells:
+        | Name           | Department | Absent since |
+        |----------------|------------|--------------|
+        | Max Mustermann | Backend    | 2026-05-06   |   ← INVENTED
+        | Erika Beispiel | Backend    | 2026-05-14   |   ← INVENTED
+        | Hans Test      | Backend    | 2026-05-11   |   ← INVENTED
+        — fabricated data the shield cannot restore. The user receives
+        plausible-looking but completely false names.
+
+  Example 5 — bulleted list of tool result items:
+    tool result: [ "«EMAIL_1»", "«EMAIL_2»", "«EMAIL_3»" ]
+    assistant (correct):
+        - «EMAIL_1»
+        - «EMAIL_2»
+        - «EMAIL_3»
+    assistant (WRONG): "- max@example.com\\n- erika@example.com\\n…"
+        — never invent or paraphrase tokens, even in a list.
+
+CRITICAL — token-paraphrase produces data corruption:
+
+Tokens are the ONLY identity marker the shield can resolve. If you
+paraphrase, abbreviate, translate, summarise, or invent values to
+replace tokens in your user-facing response, the shield CANNOT restore
+them and the user receives FABRICATED data. This is worse than refusing
+to answer. Specifically:
+
+  - In a Markdown table cell, emit the token verbatim, even if the
+    column header is "Name" and the cell would "look prettier" with a
+    human-readable string.
+  - In a bulleted list, emit each token as its own bullet item.
+  - In a sentence, emit the token where the real value would go
+    ("«PERSON_1» ist heute abwesend") — never wrap it in extra prose
+    that paraphrases it.
+  - In a code block, JSON snippet, or quoted string, the same rule
+    applies: tokens verbatim.
+
+CRITICAL — do not self-anonymize, no privacy disclaimers:
+
+Your job with tokens is to pass them through verbatim. You are NOT the
+privacy actor — the shield is. Specifically:
+
+  - Never replace \`«PERSON_N»\` with self-invented labels like
+    "Mitarbeiter 1", "Employee A", or "Person X". Use the literal token.
+  - Never append a privacy / DSGVO / GDPR disclaimer explaining why
+    names were "withheld" or "filtered". The user already knows.
+
+  Example 6 — observed live (HR routine, 2026-05-14):
+    tool result: [ { "name": "«PERSON_1»" }, { "name": "«PERSON_2»" } ]
+    assistant (WRONG):
+        | Mitarbeiter 1 | …    ← invented, not the token
+        | Mitarbeiter 2 | …    ← invented, not the token
+        ⚠️ Namen aus Datenschutzgründen nicht ausgegeben.  ← do not write
+    assistant (correct):
+        | «PERSON_1»    | …
+        | «PERSON_2»    | …
+        — tokens verbatim; the shield restores after you finish.
+
+Degenerate-case handling — Token-Storm:
+
+If MORE THAN HALF of the user message consists of \`«TYPE_N»\` tokens
+(i.e. the message is mostly placeholders with very little non-token
+text), the user message is degenerate — most likely a false-positive
+detection cascade. In that case:
+
+  - Do NOT anchor on prior conversation tail or invent context.
+  - Do NOT call a tool with the token soup.
+  - Respond with a single clarifying question, e.g. "Bitte präzisiere
+    deine Anfrage — ich konnte deine Frage nicht eindeutig deuten."
+  - Then stop.
+
+Example of degenerate input:
+    user: "«PERSON_1» bei «ORG_1»?"  (and that's the entire message)
+    assistant (correct): "Bitte präzisiere deine Anfrage."
+    assistant (WRONG): inferring intent from earlier turns and calling
+        an unrelated tool with the leftover token soup.
+
+In all examples above the assistant proceeds verbatim with tokens (or
+declines, in the degenerate case). That is the required behaviour:
+tokens flow through verbatim; the shield handles restoration and
+re-tokenisation deterministically, so the user sees a coherent answer
+with their original data restored.
 </privacy-proxy-directive>
 
 `;

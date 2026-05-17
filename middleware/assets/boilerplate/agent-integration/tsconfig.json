@@ -25,7 +25,10 @@
     "./toolkit.ts",
     "./client.ts",
     "./types.ts",
-    "./index.ts"
+    "./index.ts",
+    "./routes/**/*.ts",
+    "./routes/**/*.tsx",
+    "./components/**/*.tsx"
   ],
   "exclude": ["node_modules", "dist", "skills", "assets", "scripts", "out"]
 }

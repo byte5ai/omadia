@@ -129,6 +129,25 @@ Pflicht (per `patch_spec`):
   Module-Top-Level-Imports (die kommen aus dem Boilerplate-Template).
   Wenn du ein `import { z } from 'zod'` schreibst und tsc meldet
   `Duplicate identifier 'z'`, hast du den Slot-Bereich überschritten.
+- **Partial-Slots für große Markdowns.** Manche Slots erlauben das
+  Aufsplitten auf bis zu N+1 `fill_slot`-Calls — der Boilerplate-Slot
+  deklariert dann `max_partials: N`. Aktuell betroffen: `skill-prompt`
+  (max_partials 4) im `agent-integration`-Template. Wenn der Skill-
+  Markdown >~25 KB wird, splitte ihn an Section-/Heading-Boundaries
+  (nicht mid-paragraph):
+
+    1. `fill_slot({ slotKey: "skill-prompt",   source: "<chunk-1>" })`
+    2. `fill_slot({ slotKey: "skill-prompt-1", source: "<chunk-2>" })`
+    3. `fill_slot({ slotKey: "skill-prompt-2", source: "<chunk-3>" })`
+    4. … bis zu `skill-prompt-4`.
+
+  Codegen synthesiert pro gefülltem Partial eine eigene Datei
+  (`skills/<slug>-expert-1.md`, …) und listet sie in `manifest.skills[]`.
+  Der Runtime concatenated die Partials beim Load mit `\n\n---\n\n`-
+  Trenner — Reihenfolge ist `<key>` zuerst, dann numerisch aufsteigend.
+  Halte jeden einzelnen `fill_slot`-Call unter ~25 KB (Anthropic-Tool-
+  Call-Argument-Limit), sonst kommt `source` als `undefined` auf der
+  Bridge an und der Slot bleibt leer.
 
 ## Cross-Integration-Pflicht-Workflow
 
@@ -264,6 +283,383 @@ Tailwind-grün `#22c55e` ist genau dieser Fall).
 Falls der Spec **kein** `admin_ui_path` setzt, ist dieser Workflow
 übersprungen — der Slot bleibt mit der Default-„noch nicht angepasst"-
 Message befüllt und der Plugin liefert keine UI aus.
+
+## UI-Routes / Dashboard-Tabs (B.12 / B.13)
+
+Plugins können **Dashboard-Pages** ausliefern — Browser-/Teams-Tab-fähige
+Routen, die nach Install in der Web-UI + im Teams-Frontend erscheinen.
+Konfiguration via `spec.ui_routes[]`, **kein Custom-Boilerplate** — die
+Plattform wired Express-Router, Hub-Eintrag und (optional) Hydration für
+dich. Drei Render-Modes ab Tag 1:
+
+### `render_mode: 'library'` (default — empfohlen für Standard-Listen)
+
+Tailwind-Helper-Templates (`list-card`, `kpi-tiles`). Kein Slot nötig —
+nur Spec-Felder. Operator setzt `data_binding.tool_id` (Quelle aus
+`spec.tools[]`), `ui_template`, und `item_template { title, [subtitle],
+[meta], [url] }`. Codegen baut den Router, ruft das Tool, rendert mit
+`renderListCard` / `renderKpiTiles`.
+
+```
+patch_spec({
+  patches: [{ op: 'add', path: '/ui_routes/-', value: {
+    id: 'org-prs',
+    path: '/dashboard/org-prs',
+    tab_label: 'Org PRs',
+    page_title: 'Open PRs (byte5)',
+    refresh_seconds: 60,
+    render_mode: 'library',
+    ui_template: 'list-card',
+    data_binding: { source: 'tool', tool_id: 'list_all_open_prs' },
+    item_template: { title: '${item.title}', subtitle: '${item.repo}#${item.number}', meta: '${item.user.login}', url: '${item.html_url}' },
+  }}],
+})
+```
+
+Vorteile: schnellster Pfad, keine TSX, keine Hydration-Issues.
+Beschränkung: Layout fix (title/subtitle/meta/url), kein Avatar, kein
+Collapse, kein Custom-Filter.
+
+### `render_mode: 'react-ssr'` (für Custom-Layouts mit React)
+
+Volle TSX-Component, SSR via `renderToString`. Operator schreibt einen
+default-exportierten React-Component in einen **dynamischen Slot**
+`ui-<id>-component`. Tailwind via CDN (kein Bundler).
+
+**Props-Contract (PFLICHT):** Der Codegen-Router ruft
+`<Page data={...} fetchError={...} />`. Deine Component MUSS exakt
+diese Props-Shape akzeptieren:
+
+```tsx
+interface PageProps {
+  data: unknown;          // tool-output OR [] wenn kein data_binding
+  fetchError: string | null;  // error-message OR null
+}
+
+export default function OrgPrsPage({ data, fetchError }: PageProps) {
+  if (fetchError) return <main data-omadia-page="org-prs">Fehler: {fetchError}</main>;
+  const prs = Array.isArray(data) ? data : [];
+  return (
+    <main data-omadia-page="org-prs" className="max-w-3xl mx-auto p-6">
+      {/* eigenes Layout — Avatar, Datum, Collapse, was du willst */}
+    </main>
+  );
+}
+```
+
+**KEIN `import React from 'react'`** — `jsx: 'react-jsx'` (vom codegen
+gesetzt) handelt JSX implizit. Ein expliziter React-Import würde TS6133
+(unused) oder TS2300 (duplicate) auslösen. Brauchst du `React.SomeType`?
+Dann `import type React from 'react'` (type-only, wird elidiert).
+
+**Root-Element-Marker:** Das outer-most JSX-Element MUSS
+`data-omadia-page="<routeId>"` carrien — die Hydration-Script-Logik
+nutzt das Attribut zum Mount.
+
+```
+patch_spec({
+  patches: [{ op: 'add', path: '/ui_routes/-', value: {
+    id: 'org-prs',
+    path: '/dashboard/org-prs',
+    tab_label: 'Org PRs',
+    page_title: 'Open PRs (byte5)',
+    refresh_seconds: 60,
+    render_mode: 'react-ssr',
+    interactive: true,   // optional — schaltet Client-Hydration scharf
+    data_binding: { source: 'tool', tool_id: 'list_all_open_prs' },
+  }}],
+})
+
+fill_slot({
+  slotKey: 'ui-org-prs-component',
+  source: '<TSX-Component oben>',
+})
+```
+
+`interactive: true` schaltet Hydration scharf — die Component wird im
+Browser hydriert (importmap mit esm.sh-React + module-script). Wähl es
+NUR, wenn die Component echten Client-State braucht (`useState`,
+`onClick`-Handler die State mutieren). Ohne `interactive` ist die Seite
+static-SSR (clicks landen via normalem `<a href>`, refresh via
+meta-refresh aus `refresh_seconds`).
+
+### `render_mode: 'free-form-html'` (Escape-Hatch für vanilla HTML)
+
+Operator schreibt einen `html\`...\``-Slot (`ui-<id>-render`) mit
+vollständiger HTML-Kontrolle (`html` + `safe` Helpers aus
+`@omadia/plugin-ui-helpers`). Kein React, kein Build-Step, aber auch
+keine Hydration. Nimm das, wenn `library` zu rigide UND `react-ssr` zu
+viel Overhead ist (kleine statische Pages).
+
+### Welcher Mode wann?
+
+| Use-Case | Mode |
+|---|---|
+| Liste mit Title + 2 Meta-Feldern, kein Custom-Layout | `library` |
+| Liste mit Avatars / Collapse / Custom-Cards / interaktiven Filtern | `react-ssr` |
+| KPI-Kacheln mit Zahl + Label | `library` + `kpi-tiles` |
+| Form / Wizard mit Client-State | `react-ssr` + `interactive: true` |
+| Static one-off HTML-Page (Status, About, Help) | `free-form-html` |
+
+### Pflicht-Lint
+
+`lint_spec` prüft pro `ui_routes[i]`:
+- `render_mode='react-ssr'` → slot `ui-<id>-component` MUSS gefüllt sein
+- `render_mode='free-form-html'` → slot `ui-<id>-render` MUSS gefüllt sein
+- `render_mode='library'` + `ui_template='list-card'` → `item_template`
+  PFLICHT mit mindestens `title`
+- `data_binding.tool_id` muss in `spec.tools[]` existieren
+
+Beachte: Die **Template-Slots-Checkliste** im Spec-Header zeigt dir die
+erwarteten dynamischen ui-route-Slots als separate Sektion „Dynamic
+ui_routes Slots" — solange dort ✗ missing steht, wirft codegen einen
+`spec_validation`-Error.
+
+## Plattform-Accessoren auf `ctx`
+
+Über die Standard-Surface (`secrets`, `config`, `services`, `routes`, `uiRoutes`)
+hinaus exposed die Plattform zwei weitere Accessoren, die du im
+`activate-body` direkt nutzen kannst — KEIN `(ctx as any)`-Hack nötig,
+beide sind in der Boilerplate-`types.ts` ausgewiesen.
+
+### `ctx.memory` — Persistenter Plugin-Storage
+
+Per-Plugin Filesystem unter `/memories/agents/<agentId>/`. Pfade RELATIV
+übergeben, der Kernel mappt in den isolierten Namespace. Plugins können
+keine fremden Memory-Bereiche lesen oder schreiben.
+
+```typescript
+// im activate-body-Slot:
+if (ctx.memory) {
+  // Read-or-init pattern
+  const exists = await ctx.memory.exists('reports/latest.json');
+  if (!exists) {
+    await ctx.memory.writeFile('reports/latest.json', JSON.stringify({ runs: [] }));
+  }
+  const raw = await ctx.memory.readFile('reports/latest.json');
+  const state = JSON.parse(raw);
+  // ... in toolkit handlers: state.runs.push(...) + writeFile
+}
+```
+
+**Wann nutzen:** wo immer in-process-Arrays vorhin reichten (Reports,
+History, Cache, Audit-Logs) — Persistenz übersteht Plugin-Restart und
+Re-Deploys. Boilerplate-Manifest deklariert `permissions.memory.reads:
+['session:*', 'agent:<id>:*']` + `writes: ['agent:<id>:*']` automatisch,
+also ist `ctx.memory` zur Laufzeit für jeden Builder-Plugin **da**.
+
+**Wann NICHT nutzen:** für strukturierte Cross-Plugin-Daten →
+Knowledge-Graph (Phase 2, noch nicht exposed). Für rohe Cross-Plugin-
+Konfiguration → `ctx.services.provide(...)`.
+
+### `ctx.jobs` — Cron- + Interval-Scheduling
+
+```typescript
+// in activate-body, ODER deklarativ via spec.jobs[] (s.u.)
+ctx.jobs.register(
+  { name: 'weekly-digest', schedule: { cron: '0 8 * * MON' }, timeoutMs: 60_000 },
+  async (signal) => {
+    // signal abortet bei deactivate ODER nach timeoutMs
+    const items = await scanAndPersist();
+    if (signal.aborted) return;
+    await ctx.memory?.writeFile('reports/latest.json', JSON.stringify(items));
+  },
+);
+```
+
+Cron-Syntax: voller croner 5-Field (`*`, `,`, `-`, `/`, `MON`-`SUN`,
+Listen). Interval: `{ intervalMs: 60_000 }`. Default-Timeout 30s,
+`overlap: 'skip' | 'queue'` (default `skip`).
+
+**Bevorzugter Weg — deklarativ in der Spec:**
+
+```
+patch_spec({ patches: [
+  { op: 'add', path: '/jobs/-', value: {
+    name: 'weekly-digest',
+    schedule: { cron: '0 8 * * MON' },
+    timeoutMs: 60000,
+    overlap: 'skip',
+  }},
+]})
+```
+
+Codegen schreibt die Einträge in `manifest.yaml:jobs[]`, Kernel
+auto-registriert vor `activate()`. Der Handler-Body kommt aus dem
+`activate-body`-Slot (separat als `ctx.jobs.register(...)` mit demselben
+`name` — Kernel mergt nicht, du registrierst beide unabhängig).
+**KEIN** eigener Cron-Parser nötig — wer einen schreibt hat die
+Plattform übersehen.
+
+**Wann nutzen:** wiederkehrende Hintergrundarbeit (poll, sync, digest,
+cleanup). NICHT für one-shot UI-Triggered Actions — dafür POST-Routes
+(siehe nächster Abschnitt).
+
+### `ctx.http` — Outbound-allowlisted Fetch
+
+Bevorzugter Pfad für jeden Plugin-externen HTTP-Call. Manifest-deklarierte
+Hosts in `spec.network.outbound` werden zur Laufzeit gegen die fetch-URL
+gechecked; unknown hosts werfen `HttpForbiddenError`. Per-Plugin
+Rate-Limit (60 req/min) eingebaut.
+
+```typescript
+if (ctx.http) {
+  const res = await ctx.http.fetch('https://api.github.com/orgs/byte5/repos', {
+    headers: { Authorization: `Bearer ${await ctx.secrets.require('github_token')}` },
+  });
+  if (!res.ok) throw new Error(`GitHub ${res.status}`);
+  const repos = await res.json();
+}
+```
+
+**Wann nutzen:** statt globalem `fetch`. Globales fetch wird in einer
+zukünftigen Härtung blockiert; `ctx.http` ist der zukunftssichere Pfad.
+**Voraussetzung:** mindestens ein Host in `spec.network.outbound`.
+
+### `ctx.subAgent` — Delegation an andere Agents
+
+Wenn der Plugin eine NL-Frage hat die ein bereits installierter Agent
+besser beantwortet (Beispiel: Compliance-Plugin will SEO-Score → fragt
+seo-analyst), statt eigenen LLM-Code zu schreiben:
+
+```typescript
+if (ctx.subAgent) {
+  const answer = await ctx.subAgent.ask(
+    '@omadia/agent-seo-analyst',
+    'Analyse: https://example.com/blog/post-42',
+  );
+  // answer ist der finale Text-Output des Sub-Agents
+}
+```
+
+**Spec-Pflicht:**
+```
+patch_spec({ patches: [
+  { op: 'add', path: '/permissions/subAgents', value: {
+    calls: ['@omadia/agent-seo-analyst'],
+    calls_per_invocation: 3,
+  }}
+]})
+```
+
+Targets MÜSSEN in `calls`-Whitelist sein, sonst
+`SubAgentPermissionDeniedError`. Self-Recursion (Agent ruft sich selbst)
+wirft `SubAgentRecursionError`. `calls_per_invocation` Default 5 — höher
+nur wenn du Multi-Hop-Reasoning brauchst.
+
+### `ctx.llm` — Host-LLM für NL-Tasks
+
+Kostenneutral für den Plugin (Host zahlt). Für strukturierte Extraktion,
+Summarisation, Rephrasing — NICHT als zweiter Orchestrator. Vertrauliche
+Modell-Whitelist + Per-Call Token-Cap zwingend.
+
+```typescript
+if (ctx.llm) {
+  const out = await ctx.llm.complete({
+    model: 'claude-haiku-4-5',
+    system: 'Du extrahierst nur strukturiert genannte Personen-Namen.',
+    messages: [{ role: 'user', content: turnText }],
+    maxTokens: 512,
+  });
+  const names = out.text.split('\n').filter(Boolean);
+}
+```
+
+**Spec-Pflicht:**
+```
+patch_spec({ patches: [
+  { op: 'add', path: '/permissions/llm', value: {
+    models_allowed: ['claude-haiku-4-5*'],
+    calls_per_invocation: 2,
+    max_tokens_per_call: 1024,
+  }}
+]})
+```
+
+`models_allowed` supports `*`-Suffix-Wildcards. Defaults bei Auslassung:
+5 calls / 4096 tokens. **Strategie:** Haiku für extract/classify (billig),
+Sonnet nur wenn echte Reasoning-Tiefe gebraucht ist.
+
+### `ctx.knowledgeGraph` — Namespaced Graph-Ingest + Lookup
+
+Für strukturierte Cross-Turn-Persistenz (Personen, Firmen, Beziehungen,
+Facts). Anders als `ctx.memory` (Plugin-isolated Filesystem) ist der
+KG **shared**: andere Agents können auf deine Entities query-en via
+denselben Accessor.
+
+```typescript
+if (ctx.knowledgeGraph) {
+  await ctx.knowledgeGraph.ingestEntities([
+    {
+      system: 'audit-reports',   // MUSS in entity_systems-Whitelist sein
+      model: 'AuditRun',
+      id: `${runId}`,
+      displayName: `Audit ${runId}`,
+      extras: { score: 87, completedAt: new Date().toISOString() },
+    },
+  ]);
+  await ctx.knowledgeGraph.ingestFacts([
+    { subject: `audit:${runId}`, predicate: 'identified', object: `issue:${issueId}` },
+  ]);
+}
+```
+
+**Spec-Pflicht — entity_systems Whitelist:**
+```
+patch_spec({ patches: [
+  { op: 'add', path: '/permissions/graph', value: {
+    entity_systems: ['audit-reports'],  // eigene Namespace(s)
+    reads: ['Turn', 'Person', 'Fact'],
+    writes: [],
+  }}
+]})
+```
+
+Reservierte `system`-Strings ('odoo', 'confluence', etc.) sind
+**host-only** und werden im Manifest-Loader gestrippt — versuch nicht
+sie in die Whitelist zu schreiben. Wenn dein Plugin Personen-Entities
+braucht: schau erst `read_reference name=odoo-hr` ob es nicht schon
+einen Provider gibt; falls ja → `ctx.knowledgeGraph.searchTurns(...)`
+statt eigenen Ingest.
+
+**Wann KG vs. memory:**
+- `ctx.memory` — Plugin-internal State (Reports, History, Config) — isoliert
+- `ctx.knowledgeGraph` — Cross-Agent-Wissen (Entitäten, Facts, Relations) — shared
+
+## Trigger-Buttons in der Admin-UI
+
+Wenn der Operator im Admin-UI einen Button braucht der eine Action
+synchron triggert (Re-Audit, Manual-Sync, Test-Connection), führt der
+Weg NICHT über `window.location.reload()`. Pattern: POST-Endpoint
+unter `ctx.routes.register(...)`, Frontend ruft via `fetch('api/...', { method: 'POST' })`.
+
+Backend (im `activate-body` mit admin-ui registriert):
+```typescript
+router.post('/api/<slug>/admin/api/refresh', express.json(), async (req, res) => {
+  try {
+    const result = await runAuditNow();
+    res.json({ ok: true, result });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: (err as Error).message });
+  }
+});
+```
+
+Frontend (im `admin-ui-body`-Slot):
+```html
+<button onclick="triggerRefresh()">Neu auditieren</button>
+<script>
+  async function triggerRefresh() {
+    const data = await fetch('api/refresh', { method: 'POST' }).then(r => r.json());
+    if (!data.ok) { alert('Fehler: ' + data.error); return; }
+    location.reload();  // jetzt sicher — Action ist durch
+  }
+</script>
+```
+
+**Response-Schema PFLICHT** — `{ ok: true, ...payload }` bei Success,
+`{ ok: false, error: '...' }` bei Failure. Sonst zerlegt sich der
+Frontend-Roundtrip silent (Lessons-learned aus UniFi-Tracker v0.4.0).
 
 ## Self-Correction-Loop (B.7)
 

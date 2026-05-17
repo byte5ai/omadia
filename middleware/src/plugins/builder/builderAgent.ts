@@ -374,7 +374,7 @@ export class BuilderAgent {
     };
 
     const subAgentTools = this.tools.map((tool) => bridgeBuilderTool(tool, toolCtx));
-    const systemPrompt = await this.composedSystemPrompt(draft.spec);
+    const systemPrompt = await this.composedSystemPrompt(draft.spec, draft.slots ?? {});
 
     const subAgent = this.buildSubAgent({
       name: `builder-${opts.draftId}`,
@@ -613,7 +613,16 @@ export class BuilderAgent {
     }
   }
 
-  private async composedSystemPrompt(spec: AgentSpecSkeleton): Promise<string> {
+  private async composedSystemPrompt(
+    spec: AgentSpecSkeleton,
+    /**
+     * fillSlot-written slot values from `draft.slots` (separate column from
+     * `draft.spec.slots`). The slot-checklist merges these so a slot
+     * filled via fillSlot shows as ✓ filled instead of ✗ missing on the
+     * next turn — without this the agent sees its own writes vanish.
+     */
+    draftSlots: Readonly<Record<string, string>>,
+  ): Promise<string> {
     if (this.cachedSystemPromptSeed === null) {
       this.cachedSystemPromptSeed = await this.systemPromptSeed();
     }
@@ -635,7 +644,7 @@ export class BuilderAgent {
         slotManifest = null;
       }
     }
-    const header = buildSpecHeader(spec, slotManifest);
+    const header = buildSpecHeader(spec, slotManifest, draftSlots);
     return `${header}\n\n---\n\n${this.cachedSystemPromptSeed}`;
   }
 }
@@ -730,6 +739,13 @@ function defaultBuildSubAgent(opts: BuilderSubAgentBuildOptions): Askable {
 export function buildSpecHeader(
   spec: AgentSpecSkeleton,
   slotManifest: ReadonlyArray<SlotDef> | null = null,
+  /**
+   * fillSlot-written entries from `draft.slots` (separate column from
+   * `draft.spec.slots`). Merged into the slot-checklist's "filled" set
+   * so a slot filled via fillSlot doesn't keep showing as ✗ missing.
+   * Empty default keeps tests + other callers source-compatible.
+   */
+  draftSlots: Readonly<Record<string, string>> = {},
 ): string {
   const out: string[] = ['# Aktueller Draft-Stand'];
   out.push('```json');
@@ -742,7 +758,7 @@ export function buildSpecHeader(
 
   if (slotManifest && slotManifest.length > 0) {
     out.push('');
-    out.push(renderSlotManifest(spec, slotManifest));
+    out.push(renderSlotManifest(spec, slotManifest, draftSlots));
   }
 
   return out.join('\n');
@@ -764,9 +780,19 @@ export function buildSpecHeader(
 function renderSlotManifest(
   spec: AgentSpecSkeleton,
   slotManifest: ReadonlyArray<SlotDef>,
+  /**
+   * fillSlot-written entries from `draft.slots`. Merged on top of
+   * `spec.slots` (= `draft.spec.slots`) so freshly-written slots show
+   * as ✓ filled on the next turn instead of ✗ missing.
+   */
+  draftSlots: Readonly<Record<string, string>> = {},
 ): string {
+  const mergedSlots: Record<string, string | undefined> = { ...(spec.slots ?? {}) };
+  for (const [k, v] of Object.entries(draftSlots)) {
+    if (typeof v === 'string' && v.length > 0) mergedSlots[k] = v;
+  }
   const filled = new Set(
-    Object.entries(spec.slots ?? {})
+    Object.entries(mergedSlots)
       .filter(([, v]) => typeof v === 'string' && v.trim().length > 0)
       .map(([k]) => k),
   );
@@ -790,17 +816,91 @@ function renderSlotManifest(
     );
   }
 
+  // B.12/B.13 — Dynamic ui_routes slots. The boilerplate template only
+  // declares static slot keys (`client-impl`, `activate-body`, …); each
+  // ui_route with render_mode=react-ssr / free-form-html requires an
+  // ADDITIONAL slot whose key is derived from the route id at codegen
+  // time (`ui-<id>-component` / `ui-<id>-render`). Without this section
+  // the agent sees the static slots in the checklist but has no signal
+  // that the ui_routes need their own filled slots — and codegen later
+  // throws `ui_route_react_ssr_missing_component_slot` mid-build.
+  const dynamicSlots = expandUiRouteSlots(spec.ui_routes);
+  const missingDynamic: string[] = [];
+  if (dynamicSlots.length > 0) {
+    lines.push('');
+    lines.push('### Dynamic ui_routes Slots (B.12 / B.13)');
+    lines.push(
+      'Each `ui_routes[]` entry with `render_mode=react-ssr` or ' +
+        '`render_mode=free-form-html` needs its own slot whose key is ' +
+        'derived from the route id at codegen-time. Library-mode routes ' +
+        'do NOT need a slot — the codegen uses `item_template` instead.',
+    );
+    lines.push('');
+    for (const ds of dynamicSlots) {
+      const isFilled = filled.has(ds.key);
+      const state = isFilled ? '✓ filled' : '✗ missing';
+      lines.push(
+        `- \`${ds.key}\` → \`${ds.target_file}\` (**required**) — **${state}** — ${ds.description}`,
+      );
+      if (!isFilled) missingDynamic.push(`\`${ds.key}\``);
+    }
+  }
+
   const missingRequired = slotManifest
     .filter((s) => s.required && !filled.has(s.key))
     .map((s) => `\`${s.key}\``);
+  const allMissing = [...missingRequired, ...missingDynamic];
   lines.push('');
   lines.push(
-    missingRequired.length > 0
-      ? `**Missing required:** ${missingRequired.join(', ')}.`
+    allMissing.length > 0
+      ? `**Missing required:** ${allMissing.join(', ')}.`
       : '**Missing required:** none. ✓',
   );
 
   return lines.join('\n');
+}
+
+/**
+ * B.12/B.13 — derives the additional slot keys required by ui_routes
+ * based on their render_mode. Mirrors the codegen's slot-key convention
+ * (`ui-<id>-component` for react-ssr, `ui-<id>-render` for free-form-html);
+ * library-mode routes contribute no slot (the codegen renders from
+ * `item_template` + `data_binding` directly).
+ *
+ * Defensive about input shape — `ui_routes` is typed `unknown[]` on the
+ * skeleton, so each entry is validated before its render_mode + id are
+ * read. Unknown render_modes are skipped silently (they fail lint earlier).
+ */
+function expandUiRouteSlots(
+  uiRoutes: unknown[] | undefined,
+): ReadonlyArray<{ key: string; target_file: string; description: string }> {
+  if (!Array.isArray(uiRoutes) || uiRoutes.length === 0) return [];
+  const out: Array<{ key: string; target_file: string; description: string }> = [];
+  for (const raw of uiRoutes) {
+    if (!raw || typeof raw !== 'object') continue;
+    const r = raw as { id?: unknown; render_mode?: unknown };
+    if (typeof r.id !== 'string' || r.id.length === 0) continue;
+    const mode = typeof r.render_mode === 'string' ? r.render_mode : 'library';
+    if (mode === 'react-ssr') {
+      out.push({
+        key: `ui-${r.id}-component`,
+        target_file: `components/${r.id}Page.tsx`,
+        description:
+          "default-exported React Component, props are `{ data: unknown; fetchError: string | null }`. " +
+          "DON'T `import React` — jsx-runtime handles it (TS6133/TS2300 otherwise).",
+      });
+    } else if (mode === 'free-form-html') {
+      out.push({
+        key: `ui-${r.id}-render`,
+        target_file: `routes/${r.id}UiRouter.ts`,
+        description:
+          'html-template-literal body returning an `HtmlFragment` from ' +
+          '`@omadia/plugin-ui-helpers` (use `html` + `safe` helpers).',
+      });
+    }
+    // library-mode: no slot needed.
+  }
+  return out;
 }
 
 const PROMPT_FILE = 'builder-system.md';

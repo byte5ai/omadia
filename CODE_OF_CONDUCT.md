@@ -17,7 +17,7 @@ discussions, code reviews, public events held under the project name).
 
 Instances of unacceptable behaviour can be reported privately to:
 
-> `conduct@byte5.de`
+> `info@omadia.ai`
 
 Reports are reviewed by the project maintainers and handled with
 discretion. We follow the **enforcement guidelines** chapter of the

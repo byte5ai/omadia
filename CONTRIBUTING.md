@@ -31,19 +31,19 @@ Bootstrap:
 ```bash
 git clone https://github.com/byte5ai/omadia.git
 cd omadia
-cp middleware/.env.example middleware/.env   # set ANTHROPIC_API_KEY
-docker compose up -d minio kroki ollama      # sidecars (skip middleware/web-ui — those run via npm)
+cp infra/.env.example infra/.env             # set ANTHROPIC_API_KEY
+docker compose -f infra/docker-compose.yml --env-file infra/.env up -d postgres
 
 # Middleware (Express + plugin runtime + builder)
 cd middleware
 nvm use
 npm install
-npm run dev                                  # starts on :8080
+npm run dev                                  # starts on :3979
 
 # Admin UI (Next.js 15)
 cd ../web-ui
 npm install
-npm run dev                                  # starts on :3000
+npm run dev                                  # starts on :3300
 ```
 
 The middleware re-builds and re-types every workspace package on `npm run

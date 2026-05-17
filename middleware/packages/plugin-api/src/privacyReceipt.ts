@@ -158,6 +158,92 @@ export interface PrivacyReceipt {
     /** Total tool roundtrip calls made (input+result counted separately). */
     readonly callCount: number;
   };
+  /**
+   * Privacy-Shield v2 (Slice S-3) — allowlist activity. Aggregated
+   * across the turn. The allowlist sits between input text and the
+   * detector pool: terms in the tenant-self set (operator profile),
+   * the repo-default topic-noun set, or the operator-override list
+   * are filtered out of detector hits before policy applies. Surfacing
+   * the counts lets the operator see "X terms passed through thanks
+   * to the allowlist" alongside "Y terms tokenised".
+   *
+   * Per-source counts are PII-free: only the count is exposed, never
+   * the matched term itself. Absent when no allowlist match fired in
+   * the turn.
+   */
+  readonly allowlist?: {
+    /** Total allowlist matches in the turn. */
+    readonly hitCount: number;
+    /** Per-source breakdown so the operator can verify which list
+     *  contributed which matches. */
+    readonly bySource: {
+      readonly tenantSelf: number;
+      readonly repoDefault: number;
+      readonly operatorOverride: number;
+    };
+  };
+  /**
+   * Privacy-Shield v2 (Slice S-5) — Output Validator summary. Present
+   * only when the host called `validateOutput` at least once for this
+   * turn. Surfaces the token-loss metric and the recommendation the
+   * host should have acted on. Spontaneous-PII counts are
+   * type-aggregated (no values) to keep the receipt PII-free.
+   */
+  readonly output?: {
+    readonly tokenLossRatio: number;
+    readonly spontaneousPiiHits: number;
+    readonly recommendation: 'pass' | 'retry' | 'block';
+    readonly recommendationReason?: string;
+  };
+  /**
+   * Privacy-Shield v2 (Slice S-6) — Egress Filter summary. Present only
+   * when the host called `egressFilter` at least once this turn. The
+   * filter walks the final channel-bound payload (text + interactive
+   * cards + attachment alt-text) with the same detector pool as
+   * `processOutbound`, then compares every hit against the turn-map:
+   * known originals pass through; unknown values are spontaneous PII
+   * and are masked, marked-only, or trigger a block, depending on the
+   * operator-configured mode. Counts are PII-free.
+   */
+  readonly egress?: {
+    readonly mode: PrivacyEgressMode;
+    readonly routing: PrivacyEgressRouting;
+    readonly detectorRuns: readonly PrivacyDetectorRun[];
+    readonly spontaneousHits: number;
+    readonly maskedCount: number;
+  };
+  /**
+   * Privacy-Shield v2 (Phase A, post-deploy 2026-05-14) — self-anonymization
+   * restoration summary. Present when the host invoked
+   * `restoreSelfAnonymizationLabels` at least once this turn. Counts +
+   * pattern stems only — PII-free.
+   *
+   * Interpretation cheat-sheet:
+   *   - `detected > 0 && restored == detected` → clean run, every label
+   *     mapped to a real name.
+   *   - `detected > 0 && restored == 0 && ambiguous == detected` → the
+   *     conservative skip fired (count mismatch or empty token order);
+   *     the user sees labels, not real names.
+   *   - `ambiguous > 0 && restored > 0` → partial — should not happen
+   *     in current logic; signals a future-edge-case to investigate.
+   */
+  readonly selfAnonymization?: {
+    readonly detected: number;
+    readonly restored: number;
+    readonly ambiguous: number;
+    readonly patternsHit: readonly string[];
+    readonly maxIndexSeen: number;
+    readonly tokenOrderLength: number;
+  };
+  /**
+   * Privacy-Shield v2 (Phase A.2) — final-scrub summary. Present when
+   * the host invoked `restoreOrScrubRemainingTokens` at least once
+   * this turn. Counts only — PII-free.
+   */
+  readonly postEgressScrub?: {
+    readonly restoredPositional: number;
+    readonly scrubbedToPlaceholder: number;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -269,15 +355,17 @@ export interface PrivacyOutboundMessage {
 }
 
 export interface PrivacyOutboundRequest {
-  /** Stable id for the chat session — used to scope the tokenise-map so
-   *  the same value yields the same token across multiple turns of one
-   *  conversation. Required from Slice 2.1; Slice 1b's per-turn map is
-   *  superseded. */
+  /** Stable id for the chat session — surfaced for telemetry / audit;
+   *  the privacy provider does NOT use it to scope the tokenise-map
+   *  anymore. Privacy-Shield v2 (Slice S-2) scopes the map per turn,
+   *  so token identity does not persist across turns of a session. */
   readonly sessionId: string;
-  /** Stable id for the in-flight orchestrator turn — used to scope the
-   *  receipt accumulator. Multiple `processOutbound` calls with the same
-   *  `turnId` (main agent + N sub-agents) aggregate into ONE receipt at
-   *  `finalizeTurn`. */
+  /** Stable id for the in-flight orchestrator turn — used to scope BOTH
+   *  the receipt accumulator AND the tokenise-map. Multiple
+   *  `processOutbound` calls with the same `turnId` (main agent + N
+   *  sub-agents) aggregate into ONE receipt at `finalizeTurn` and share
+   *  ONE tokenise-map so a value mentioned in the user prompt and the
+   *  same value coming back via a tool result get the same token. */
   readonly turnId: string;
   /** Optional active agent id, mirrors the responseGuard hook so the
    *  policy engine can apply per-agent overrides without a separate
@@ -309,15 +397,17 @@ export interface PrivacyOutboundResult {
 }
 
 export interface PrivacyInboundRequest {
-  /** Same scoping pair as the outbound — needed so the provider can find
-   *  the per-session tokenise-map for the restore. */
+  /** Same scoping pair as the outbound. The provider keys the
+   *  tokenise-map by `turnId` (Slice S-2). `sessionId` is carried for
+   *  telemetry. */
   readonly sessionId: string;
   readonly turnId: string;
   /** A fragment of assistant-generated text. May be a full response (non-
    *  streaming) or a single `text_delta` chunk (streaming). The provider
-   *  treats it as opaque and replaces every token-shaped substring it
-   *  recognises with the original value. Tokens that aren't in the map
-   *  are left as-is (Slice 2.3 will flag these as hallucinations). */
+   *  treats it as opaque and replaces every `«TYPE_N»` token with its
+   *  bound original. Tokens unknown to the turn map are left as-is —
+   *  the Output Validator (Slice S-5) flags those as possible
+   *  hallucinations. */
   readonly text: string;
 }
 
@@ -361,17 +451,18 @@ export interface PrivacyToolInputRequest {
   /** Tool name as emitted in the `tool_use` block. Surfaced for telemetry. */
   readonly toolName: string;
   /** The unparsed tool-use input as received from the LLM. Walked
-   *  recursively; every string field is scanned for `tok_<hex>`
-   *  substrings and restored against the session's tokenise-map.
-   *  Non-string fields (numbers, booleans, nested objects, arrays)
-   *  pass through unchanged. */
+   *  recursively; every string field is scanned for `«TYPE_N»` tokens
+   *  and restored against the turn's tokenise-map (Slice S-2). Non-
+   *  string fields (numbers, booleans, nested objects, arrays) pass
+   *  through unchanged. */
   readonly input: unknown;
 }
 
 export interface PrivacyToolInputResult {
-  /** Same shape as input, with `tok_<hex>` substrings replaced by the
-   *  bound original values. Tokens unknown to the session map are left
-   *  in place (Slice 2.3 will surface those as hallucinations). */
+  /** Same shape as input, with `«TYPE_N»` tokens replaced by the bound
+   *  original values. Tokens unknown to the turn map are left in
+   *  place — the Output Validator (Slice S-5) flags them as possible
+   *  hallucinations. */
   readonly input: unknown;
   /** How many string fields had at least one token restored. Surfaced
    *  on the receipt as a `toolRoundtrip.argsRestored` counter so the
@@ -399,6 +490,219 @@ export interface PrivacyToolResultResult {
   /** Whether anything in the result was transformed. `false` means
    *  byte-identical pass-through (no detector hits). */
   readonly transformed: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Privacy-Shield v2 (Slice S-5) — Output Validator.
+//
+// Defense-in-depth between processInbound and channel.send. The host
+// calls `validateOutput` with the final assistant text just before
+// it would ship to the user. The validator measures whether the LLM
+// kept the tokens verbatim (token-loss check) and whether it emitted
+// PII that wasn't in the turn-map (spontaneous-PII re-scan), and
+// returns a recommendation the host can act on (`pass | retry | block`).
+//
+// Token-loss metric: `1 - tokensRestored / tokensMinted`. High loss
+// signals the LLM paraphrased instead of using tokens verbatim — the
+// 2026-05-14 HR-routine failure mode. Spontaneous PII signals the LLM
+// produced plausible-but-fabricated values (e.g. a name that wasn't
+// in any tool result yet appears in the response).
+// ---------------------------------------------------------------------------
+
+export interface PrivacyOutputValidationRequest {
+  readonly sessionId: string;
+  readonly turnId: string;
+  /** The final assistant text the channel is about to ship — AFTER
+   *  `processInbound` has restored every recognised token. */
+  readonly assistantText: string;
+}
+
+export interface PrivacyOutputValidationResult {
+  /** Distinct token values minted across the turn (outbound + tool
+   *  result tokenisations). Denominator of the loss ratio. */
+  readonly tokensMinted: number;
+  /** Distinct minted tokens the LLM referenced in its responses
+   *  (counted in `processInbound` before restore). Numerator of the
+   *  retention ratio. */
+  readonly tokensRestored: number;
+  /** `1 - tokensRestored / tokensMinted`. 0 when no tokens were ever
+   *  minted (degenerate case — nothing to lose). */
+  readonly tokenLossRatio: number;
+  /** PII detected in the assistant text that does NOT match any
+   *  value tokenised this turn. Strong signal that the LLM produced
+   *  a fabricated value rather than restoring through the shield.
+   *  Types are surfaced but never values (PII-free). */
+  readonly spontaneousPiiHits: ReadonlyArray<{
+    readonly type: string;
+    readonly detectorId: string;
+  }>;
+  /** Host action recommendation. `pass`: ship the text. `retry`:
+   *  re-run the LLM call with a stricter directive (host
+   *  responsibility — the validator does not retry itself). `block`:
+   *  do not ship the text; surface a placeholder. */
+  readonly recommendation: 'pass' | 'retry' | 'block';
+  /** Short human-readable reason, surfaced in the receipt. */
+  readonly recommendationReason?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Privacy-Shield v2 (Slice S-6) — Egress Filter.
+//
+// Last line of defence between the orchestrator's final answer and the
+// channel plugin. Runs the same detector pool one more time on every
+// user-facing text slot (channel-agnostic — message text, interactive
+// card labels, follow-up prompts, attachment alt-text). Each hit is
+// compared against the turn-map:
+//   - The original value was tokenised earlier this turn → restored
+//     PII the user already typed → pass through.
+//   - The value was never tokenised → spontaneous PII the LLM produced
+//     (hallucination, memory-leak via verbose tool result). Acted on
+//     per the configured mode.
+//
+// Modes:
+//   - `mark`: leave the user-facing text unchanged, but record the
+//     spontaneous-PII counts on the receipt. Operator visibility
+//     without altering the answer.
+//   - `mask`: mint fresh tokens for the spontaneous hits via the
+//     same turn-map and replace inline. The user sees `«TYPE_N»`
+//     placeholders rather than fabricated values.
+//   - `block`: do not deliver the answer at all. The host swaps the
+//     payload for a configured placeholder text.
+//
+// Routing:
+//   - `allow`:   nothing spontaneous detected (or `mark` mode with the
+//                operator-aware caveat that text is unchanged).
+//   - `masked`:  at least one span was tokenised inline.
+//   - `blocked`: the host must drop the entire answer.
+// ---------------------------------------------------------------------------
+
+/** Operator-configured egress-filter reaction mode. */
+export type PrivacyEgressMode = 'mark' | 'mask' | 'block';
+
+/** Outcome routing for one egress-filter pass. */
+export type PrivacyEgressRouting = 'allow' | 'masked' | 'blocked';
+
+/**
+ * Snapshot of the privacy-guard plugin's egress-filter configuration.
+ * Consumed by hosts (orchestrator, routine runner) so they can decide
+ * whether to invoke the egress filter for a given turn and what
+ * placeholder text to swap into a `blocked` response.
+ */
+export interface PrivacyEgressConfig {
+  readonly enabled: boolean;
+  readonly mode: PrivacyEgressMode;
+  readonly blockPlaceholderText: string;
+}
+
+/**
+ * One text slot the host hands to the egress filter for inspection.
+ * `id` is opaque to the filter — used by the host to map the
+ * transformed text back into the structural payload (message body,
+ * choice-card option label, attachment alt-text, …). The shape is
+ * deliberately flat: the filter is channel-agnostic and never walks
+ * `SemanticAnswer` itself; that walk lives in the channel-SDK helper
+ * which composes this API.
+ */
+export interface PrivacyEgressTextInput {
+  readonly id: string;
+  readonly text: string;
+}
+
+export interface PrivacyEgressRequest {
+  readonly sessionId: string;
+  readonly turnId: string;
+  /** Optional override for the per-call mode. Falls back to the
+   *  plugin-config default when omitted. */
+  readonly mode?: PrivacyEgressMode;
+  readonly texts: ReadonlyArray<PrivacyEgressTextInput>;
+}
+
+export interface PrivacyEgressTextResult {
+  readonly id: string;
+  /** The text as it should ship to the channel — original (mark /
+   *  unchanged) or with spontaneous-PII spans replaced by fresh
+   *  `«TYPE_N»` tokens (mask). For `block` routing this is identical
+   *  to the input; the host swaps the entire payload for its
+   *  placeholder. */
+  readonly text: string;
+  /** How many spontaneous-PII spans the filter found in THIS text
+   *  slot. PII-free: count only. */
+  readonly spontaneousHits: number;
+  /** How many of those were masked inline (only > 0 in `mask` mode). */
+  readonly maskedCount: number;
+}
+
+export interface PrivacyEgressResult {
+  /** Effective mode the filter used (request override or default). */
+  readonly mode: PrivacyEgressMode;
+  /** Routing the host MUST honour. `blocked` means: do not deliver
+   *  the answer; show the placeholder instead. */
+  readonly routing: PrivacyEgressRouting;
+  readonly texts: ReadonlyArray<PrivacyEgressTextResult>;
+  /** Per-detector run summary for this pass; folded into the receipt. */
+  readonly detectorRuns: readonly PrivacyDetectorRun[];
+  /** Sum of spontaneous-PII hits across every text slot. */
+  readonly spontaneousHits: number;
+  /** Sum of masked spans across every text slot. */
+  readonly maskedCount: number;
+}
+
+/**
+ * Privacy-Shield v2 (Phase A, post-deploy 2026-05-14) —
+ * `restoreSelfAnonymizationLabels` input.
+ */
+export interface PrivacySelfAnonymizationRequest {
+  readonly sessionId: string;
+  readonly turnId: string;
+  /** Final assistant text after `processInbound` restored verbatim
+   *  tokens. The restorer scans for "Mitarbeiter N" / "Employee N" /
+   *  "Person N" / … patterns and rewrites them by position. */
+  readonly text: string;
+}
+
+/**
+ * Privacy-Shield v2 (Phase A) — `restoreSelfAnonymizationLabels`
+ * output. Pure post-processing — no map mutation, no receipt side
+ * effect beyond the audit summary stored on the turn accumulator.
+ */
+export interface PrivacySelfAnonymizationResult {
+  /** Transformed text. Identical to the input when no patterns
+   *  matched or the conservative-skip rule fired. */
+  readonly text: string;
+  /** Distinct `(pattern, index)` pairs the scanner found. */
+  readonly detected: number;
+  /** Distinct labels actually mapped to a real name. */
+  readonly restored: number;
+  /** Distinct labels left untouched — either because the index
+   *  exceeded the captured positional list (conservative skip),
+   *  the positional token did not resolve in the map, or the entire
+   *  pass skipped on a count mismatch. */
+  readonly ambiguous: number;
+  /** Lower-case pattern stems that fired this turn (e.g.
+   *  `["mitarbeiter", "person"]`). PII-free. */
+  readonly patternsHit: readonly string[];
+  /** Highest 1-based label index observed. Useful for the operator
+   *  receipt: "max index 5, 3 tokens available → conservative skip". */
+  readonly maxIndexSeen: number;
+  /** Length of the positional token list at the time the restorer
+   *  ran (typically the most recent `processToolResult`'s output). */
+  readonly tokenOrderLength: number;
+}
+
+/**
+ * Privacy-Shield v2 (Phase A.2) — `restoreOrScrubRemainingTokens`
+ * outcome. Pure post-processing — no map mutation.
+ */
+export interface PrivacyPostEgressScrubResult {
+  /** Transformed text. Guaranteed to contain no `«TYPE_N»` token shapes. */
+  readonly text: string;
+  /** Tokens substituted via positional alignment against missing
+   *  tool-result names (best-case restoration). */
+  readonly restoredPositional: number;
+  /** Tokens replaced with the per-type German placeholder
+   *  (`[Name]`, `[E-Mail]`, …) because positional alignment was
+   *  ambiguous or unavailable. */
+  readonly scrubbedToPlaceholder: number;
 }
 
 /**
@@ -449,6 +753,129 @@ export interface PrivacyGuardService {
    * tool roundtrips don't fragment the user-facing summary.
    */
   processToolResult(request: PrivacyToolResultRequest): Promise<PrivacyToolResultResult>;
+  /**
+   * Privacy-Shield v2 (Slice S-5) — Output Validator. Optional host
+   * hook called between `processInbound` and channel send. Computes
+   * token-loss + spontaneous-PII metrics for the turn and returns a
+   * recommendation. Results land in `receipt.output` when present at
+   * `finalizeTurn` time; absent if the host never called this method.
+   */
+  validateOutput(
+    request: PrivacyOutputValidationRequest,
+  ): Promise<PrivacyOutputValidationResult>;
+  /**
+   * Privacy-Shield v2 (Slice S-6) — Egress Filter. Re-scans the final
+   * channel-bound text slots with the full detector pool, compares
+   * each hit against the turn-map, and reacts to spontaneous PII per
+   * the operator-configured mode (`mark` / `mask` / `block`). Idempotent
+   * within a turn — calling twice with the same texts after a `mask`
+   * routing reuses the freshly minted tokens. Folds detector-runs +
+   * counts into the same per-turn accumulator as `processOutbound`
+   * so the receipt's `egress` block surfaces with `finalizeTurn`.
+   */
+  egressFilter(request: PrivacyEgressRequest): Promise<PrivacyEgressResult>;
+  /**
+   * Privacy-Shield v2 (Phase A, post-deploy 2026-05-14) — mechanical
+   * restoration of LLM self-anonymization patterns ("Mitarbeiter
+   * 1 / 2 / 3", "Employee 1", "Person 2", …). Runs AFTER `processInbound`
+   * has restored verbatim tokens and BEFORE the egress filter so the
+   * final spontaneous-PII scan sees a clean, restored text. The
+   * positional source is the de-duplicated `«PERSON_N»` sequence
+   * captured during the most recent `processToolResult` invocation —
+   * NOT the global mint order — because the LLM's "Mitarbeiter N"
+   * indexes refer to the N-th row of the tool result, not the N-th
+   * person ever tokenised in the turn.
+   *
+   * Conservative on count mismatch: when the highest observed label
+   * index exceeds the captured token list, NO substitution happens
+   * and the receipt's `selfAnonymization` block surfaces the gap.
+   * Surfacing > guessing — a partial restore would misalign the row
+   * names.
+   */
+  restoreSelfAnonymizationLabels(
+    request: PrivacySelfAnonymizationRequest,
+  ): Promise<PrivacySelfAnonymizationResult>;
+  /**
+   * Privacy-Shield v2 (Phase A.2, post-deploy 2026-05-14 third
+   * iteration) — final-scrub pass that runs AFTER the egress filter.
+   * Egress in `mask` mode mints fresh `«TYPE_N»` tokens for spontaneous
+   * PII; without a follow-up step those tokens flow through to the
+   * channel-bound text and surface as cruft (HR-routine Zusammenfassung).
+   *
+   * The implementation tries positional restoration against
+   * unaccounted-for tool-result names first, then replaces any
+   * remaining token with a per-type German placeholder (`[Name]`,
+   * `[E-Mail]`, …). Post-condition: the returned text contains no
+   * privacy-shield token shapes.
+   */
+  restoreOrScrubRemainingTokens(
+    request: PrivacySelfAnonymizationRequest,
+  ): Promise<PrivacyPostEgressScrubResult>;
+  /**
+   * Privacy-Shield v2 (Slice S-6) — operator-configured defaults for
+   * the egress filter. Hosts call this once per turn to decide
+   * whether to invoke `egressFilter` and what placeholder to swap
+   * into a `blocked` response. Read-only snapshot — does not change
+   * mid-session; re-activating the plugin re-builds the snapshot.
+   */
+  getEgressConfig(): PrivacyEgressConfig;
+  /**
+   * Privacy-Shield v2 (Slice S-7) — Operator UI read surface.
+   * Returns the current state of every allowlist source so the UI
+   * can render the three lists side-by-side. PII-free by definition
+   * (allowlist terms are public-by-config: they have been authorised
+   * to flow to the LLM unmasked). The arrays are snapshots — mutating
+   * them does NOT affect the in-process allowlist; use
+   * `setOperatorOverrideTerms` to persist updates.
+   */
+  getAllowlistSnapshot(): {
+    readonly tenantSelf: readonly string[];
+    readonly repoDefault: readonly string[];
+    readonly operatorOverride: readonly string[];
+  };
+  /**
+   * Privacy-Shield v2 (Slice S-7) — Operator UI write surface.
+   * Replace the operator-override term list and rebuild the
+   * allowlist. The change is in-process and reverts on plugin
+   * deactivation / restart — durable persistence lands in a future
+   * slice (depends on a plugin-config-update API). Empty / whitespace
+   * terms are silently dropped to match the original config-reader.
+   */
+  setOperatorOverrideTerms(terms: readonly string[]): void;
+  /**
+   * Privacy-Shield v2 (Slice S-7) — Operator-UI Live-Test.
+   * Runs the full detector + allowlist + tokeniser pipeline against
+   * arbitrary text without mutating any per-turn state. Returns the
+   * trace the UI displays in the Live-Test section: original text,
+   * tokenised text, detector hits (PII-bearing — only surface to
+   * authenticated operators), allowlist matches by source. NOT for
+   * production use — debug instrumentation only.
+   */
+  liveTest(input: { readonly text: string }): Promise<PrivacyLiveTestResult>;
+}
+
+/**
+ * Privacy-Shield v2 (Slice S-7) — Live-Test result. Carries plaintext
+ * detector hits (with raw values + spans) so the operator can see
+ * exactly what would be matched in the input. Authenticated-only by
+ * design; never persisted, never returned outside the operator UI.
+ */
+export interface PrivacyLiveTestResult {
+  readonly original: string;
+  readonly tokenized: string;
+  readonly detectorHits: ReadonlyArray<{
+    readonly type: string;
+    readonly value: string;
+    readonly span: readonly [number, number];
+    readonly confidence: number;
+    readonly detector: string;
+    readonly action: DetectionAction;
+  }>;
+  readonly allowlistMatches: ReadonlyArray<{
+    readonly span: readonly [number, number];
+    readonly source: 'tenantSelf' | 'repoDefault' | 'operatorOverride';
+    readonly term: string;
+  }>;
 }
 
 // ---------------------------------------------------------------------------

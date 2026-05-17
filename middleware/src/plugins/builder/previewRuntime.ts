@@ -67,6 +67,18 @@ export interface PreviewModuleShape {
  * `false`. Plugins MAY branch on it to return mock data instead of
  * hitting non-idempotent production APIs during the probe.
  */
+/** B.12 — mirror of `UiRouteDescriptorInput` from plugin-api. Inline-
+ *  copied to keep previewRuntime self-contained (no plugin-api import).
+ *  Kernel-side validator runs the real check at install-time; the preview
+ *  stub accepts anything and discards. */
+export interface PreviewUiRouteDescriptorInput {
+  readonly routeId: string;
+  readonly path: string;
+  readonly title: string;
+  readonly description?: string;
+  readonly order?: number;
+}
+
 export interface PreviewPluginContext {
   readonly agentId: string;
   readonly secrets: {
@@ -80,6 +92,12 @@ export interface PreviewPluginContext {
   };
   readonly routes: {
     register(prefix: string, router: unknown): () => void;
+  };
+  /** B.12 — UI-Route catalogue. Preview accepts descriptors and discards
+   *  (no Hub-render in preview). Real catalogue lives in middleware
+   *  kernel after install. */
+  readonly uiRoutes: {
+    register(descriptor: PreviewUiRouteDescriptorInput): () => void;
   };
   /** Theme A: stub-only ServicesAccessor. Preview wires no real
    *  ServiceRegistry, so every lookup returns `undefined`. Agents using
@@ -377,6 +395,15 @@ function createStubContext(opts: {
           entry.disposed = true;
         };
       },
+    },
+    // B.12 — no-op uiRoutes stub. Codegen-emitted plugin.ts calls
+    // `ctx.uiRoutes.register({routeId, path, title})` to publish
+    // Dashboard-Tab descriptors to channel-teams' Hub. Preview doesn't
+    // serve the Hub, so we accept the call and return a disposer that
+    // does nothing — same shape as the routes accessor. The kernel-side
+    // catalogue gets populated only after a real Install.
+    uiRoutes: {
+      register: (_descriptor) => () => {},
     },
     // Theme A: no-op ServicesAccessor stub. Preview never wires a real
     // ServiceRegistry, so external_reads-driven `ctx.services.get(...)`

@@ -9,8 +9,8 @@ identity:
   description: "Response-quality core plugin. Publishes the `responseGuard@1` capability with sycophancy-levels (off/low/medium/high) and a boundary-preset library that splices guardrails into the system prompt ahead of body prose."
   authors:
     - name: "byte5 GmbH"
-      email: "dev@byte5.de"
-      url: "https://byte5.de"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
   license: "MIT"
   categories:
     - "quality"

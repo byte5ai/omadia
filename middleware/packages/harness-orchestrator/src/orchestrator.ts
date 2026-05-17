@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type Anthropic from '@anthropic-ai/sdk';
 import {
+  applyEgressReplacements,
+  buildBlockedResult,
+  collectEgressSlots,
   toSemanticAnswer,
   type ChatStreamEvent,
   type ChatTurnInput,
@@ -57,6 +60,7 @@ import type {
   NudgeRegistry,
   NudgeStateStore,
   PrivacyGuardService,
+  PrivacyOutputValidationResult,
   ProcessMemoryService,
   ResponseGuardService,
   SessionBriefingService,
@@ -75,6 +79,14 @@ import { RunTraceCollector, type InvocationHandle } from './runTraceCollector.js
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import type { SessionLogger } from './sessionLogger.js';
 import { streamMessageEvents } from './streaming.js';
+import {
+  appendOrphanPlaceholderFooter,
+  detectOrphanPlaceholders,
+} from './orphanPlaceholderCheck.js';
+import {
+  analyzeTokenSaturation,
+  bypassCannedAnswer,
+} from './tokenSaturationBypass.js';
 import { buildDateHeader, today, turnContext } from './turnContext.js';
 
 // S+10-2 back-compat re-exports: kernel-side callers that still
@@ -323,10 +335,10 @@ function buildSystemBlocks(
     // Trust tiers (important — get this wrong and the bot re-fetches data
     // it just delivered, or hallucinates facts from unrelated chats):
     //   - "Letzte Turns in diesem Chat" = your own recent replies. Trust.
-    //     Follow-ups like "das gleiche als Line-Chart" / "ohne X" refer
-    //     *directly* to these turns. Don't re-query the source for the
-    //     base numbers, don't speculate about different time ranges —
-    //     build on what's already here.
+    //     Follow-ups like "das gleiche als Line-Chart" / "ohne Gutschriften"
+    //     refer *directly* to these turns. Don't re-query Odoo for the base
+    //     numbers, don't speculate about different time ranges — build on
+    //     what's already here.
     //   - "Früher besprochene Entitäten" + "Inhaltlich ähnliche Turns" come
     //     from OTHER chats of the same user. Treat as working hypothesis;
     //     if the current question hinges on a concrete number from there,
@@ -383,7 +395,7 @@ Für diesen EINEN Turn: Ignoriere die Memory-Lese-Konvention aus dem stabilen Sy
 
 Stattdessen:
 - Beantworte die aktuelle User-Frage ausschließlich mit dem, was in ihrer Nachricht steht (inkl. eventuellem \`[attachments-info]\`-Block) + frischen Fach-Agent-Calls.
-- Wenn du Daten brauchst, die du sonst aus \`/memories/\` zögen würdest, MACH jetzt direkt den passenden Tool-Call (z. B. einen domain-spezifischen Sub-Agenten).
+- Wenn du Daten brauchst, die du sonst aus \`/memories/\` zögen würdest, MACH jetzt direkt den passenden Tool-Call (z.B. \`query_odoo_accounting\`, \`query_odoo_hr\`).
 - Keine Referenz auf frühere Gespräche. Keine "wie eben erwähnt". Behandle den Turn als isoliert.
 
 Der Grund für diesen Modus: der User vermutet, dass dich ein früherer Memory-Eintrag oder ein FTS-Treffer auf eine falsche Antwort gelockt hat. Jetzt ist die Chance, unabhängig von diesem Altlast-Pfad zu antworten.`,
@@ -413,23 +425,23 @@ function buildSystemPrompt(
     ? '\n- `ask_user_choice`: Stellt dem User eine Rückfrage mit 2–4 vordefinierten Button-Optionen als Smart Card. Nur aufrufen, wenn die User-Eingabe **genuin mehrdeutig** ist UND es eine **endliche, kleine Menge plausibler Interpretationen** gibt (z.B. zwei Module tracken Umsatz, zwei Kunden haben ähnlichen Namen). **NICHT** nutzen für: offene "was meinst du?"-Fragen, Trivial-Bestätigungen, oder wenn der Kontext die Intention bereits eindeutig macht. Max 1× pro Turn — der Turn endet direkt nach dem Call; die Auswahl kommt im nächsten Turn als normale User-Nachricht.\n'
     : '';
   const calendarBlock = hasCalendar
-    ? '\n- `find_free_slots` + `book_meeting`: **Calendar integration.** When the user asks for an appointment / meeting / time-with-<person> in any phrasing ("send X three options", "when does Y have time?", "book meeting with Z", "find slot tomorrow") — **call `find_free_slots`**. Do NOT interpret as email, do NOT just look up the contact and write prose. The tool output ships clickable slot buttons; the user picks one, then `book_meeting` follows automatically.\n  **Host logic:**\n  - Slots come from the **host\'s** (meeting organiser\'s) calendar. Default = caller themselves.\n  - When the caller offers their own time ("send Tita 3 options", "offer Max times") → **do NOT set hostEmail** (caller is host).\n  - When the caller searches on behalf of someone else ("find a slot in John\'s calendar") → set `hostEmail` to the target.\n  **Required steps for every appointment intent:**\n  1. Resolve attendee emails (e.g. via a directory sub-agent if available).\n  2. Call `find_free_slots({durationMinutes, attendees, hostEmail?, windowDays?})` — default 5 days, default 30 min if the user doesn\'t specify.\n  3. Summarise the found slots in **one sentence** ("Here are 3 free slots for …"). The buttons render automatically as a card.\n  4. On `consent_required` / `sso_unavailable` errors: briefly explain that one-time consent is needed — the OAuth card is attached automatically.\n  **Do NOT use** for queries about already-booked appointments (not implemented).\n'
+    ? '\n- `find_free_slots` + `book_meeting`: **M365-Kalender-Integration.** Wenn der User Termin/Meeting/Sprechstunde/Slot/Zeit-mit-<Person> anfragt — egal wie die Formulierung lautet ("schicke X drei Vorschläge", "wann hat Y Zeit?", "buche Termin mit Z", "finde Slot morgen") — **RUFE `find_free_slots`**. NICHT als Email interpretieren, NICHT nur HR-Kontakt nachschlagen und Prose zurückschreiben. Der Tool-Output liefert klickbare Slot-Buttons; der User wählt, dann folgt automatisch `book_meeting`.\n  **Host-Logik (wichtig):**\n  - Die Slots kommen aus dem Kalender des **Hosts** (Meeting-Organizers). Default = Caller selbst.\n  - Wenn der Caller eigene Zeit anbietet ("schicke Tita 3 Vorschläge", "biete Max Termine", "finde Slot morgen") → **hostEmail NICHT setzen** (Caller ist Host).\n  - Wenn der Caller im Auftrag einer anderen Person sucht ("such bei John Termin", "wann hat die GF Zeit?") → `hostEmail` auf die Ziel-Email setzen.\n  **Pflicht-Schritte bei jedem Termin-Intent:**\n  1. Teilnehmer-Emails resolven (ggf. via `query_odoo_hr` nach Vorname/Nachname → email).\n  2. `find_free_slots({durationMinutes, attendees, hostEmail?, windowDays?})` aufrufen — Default 5 Tage, Default 30 min wenn User keine Dauer nennt.\n  3. Die gefundenen Slots im Antwort-Text in **1 Satz** zusammenfassen ("Hier 3 freie Slots für …"). Die Buttons erscheinen automatisch als Card darunter.\n  4. Bei `consent_required` / `sso_unavailable` Fehler: kurz erklären dass einmalig Zustimmung nötig ist — die OAuthCard wird automatisch vom System angehängt.\n  **NICHT nutzen:** wenn der User nach bereits gebuchten Terminen fragt (nicht implementiert).\n'
     : '';
 
   const suggestFollowUpsBlock = hasSuggestFollowUps
     ? '\n- `suggest_follow_ups`: Hängt 2–4 1-Klick-Refinement-Buttons unter deine Antwort. **Nicht-blockierend** — Du antwortest ganz normal zu Ende; die Buttons erscheinen zusätzlich. Nutze das bei **Top-N / Ranking / Trend / Aggregat**-Fragen, wo der User plausibel eine Variante will (anderer Zeitraum, andere Basis Brutto/Netto/DB, offene Posten statt Umsatz). Jedes `prompt` muss eine **vollständige, eigenständige Frage** sein — bei Klick wird es als neue User-Nachricht gesendet. **NICHT** nutzen für: Trivial-Antworten, Ja/Nein-Lookups, oder zusammen mit `ask_user_choice`. Max 1× pro Turn.\n'
     : '';
   const chatParticipantsBlock = hasChatParticipants
-    ? '\n- `get_chat_participants`: Returns the participants of the current chat. Call this only when you want to address someone in the answer text **via @-mention** — handoff, follow-up question, ownership tag. Max 1× per turn. Do not use in 1:1 chats.\n' +
-      '\n  **REQUIRED after the tool call — otherwise the call was wasted:**\n' +
-      '  1. Write the name in the answer text as `<at>EXACT_DISPLAY_NAME</at>`.\n' +
-      '  2. `EXACT_DISPLAY_NAME` must match the `displayName` field from the tool response byte-for-byte — including any suffix, hyphens, capitalisation.\n' +
-      '  3. Without these `<at>…</at>` tags NO mention is rendered and the person is NOT notified — writing the name alone is NOT enough.\n' +
-      '  4. Example: if the roster returns `displayName: "Alex Example"` and you want to address them, write `Hey <at>Alex Example</at>, can you take this?` — not `Hey Alex Example` and not `Hey @Alex`.\n'
+    ? '\n- `get_chat_participants`: Liefert die Teilnehmer des aktuellen Teams-Chats. Nur aufrufen, wenn du jemanden im Antworttext **per @-Mention ansprechen** willst — Handoff, Rückfrage, Zuständigkeits-Tag. Max 1× pro Turn. In 1:1-Chats nicht nutzen.\n' +
+      '\n  **PFLICHT nach dem Tool-Call — sonst war der Call umsonst:**\n' +
+      '  1. Den Namen im Antworttext in der Form `<at>EXAKTER_DISPLAY_NAME</at>` schreiben.\n' +
+      '  2. `EXAKTER_DISPLAY_NAME` muss byte-für-byte dem `displayName`-Feld aus der Tool-Response entsprechen — inklusive Firmensuffix, Bindestriche, Großschreibung.\n' +
+      '  3. Ohne diese `<at>…</at>`-Tags wird KEINE Mention gerendert und die Person NICHT benachrichtigt — das Schreiben des Namens allein reicht NICHT.\n' +
+      '  4. Beispiel: wenn der Roster `displayName: "Jane Doe - ACME"` zurückgibt und du sie ansprechen willst, schreibst du `Hey <at>Jane Doe - ACME</at>, kannst du das übernehmen?` — nicht `Hey Jane Doe` und auch nicht `Hey @Jane`.\n'
     : '';
 
   const graphBlock = hasGraph
-    ? `\n- \`query_knowledge_graph\`: Local knowledge graph over past sessions/turns + domain entities (whatever the active integration plugins have ingested). **For questions about the chat history** ("did we already discuss X?", "was there a debate about Y?", "which topics did we cover recently?") **use \`search_turns\` (FTS, keyword) or \`search_turns_semantic\` (embedding, for paraphrases)**. \`find_entity\` matches ONLY entity names/IDs, NOT turn text — use it for "who is customer Z?". For back-references to specific people/things ("like with X recently") try \`find_entity\` or \`session_summary\` first. **Important:** if you answer a content question about earlier chats with \`find_entity\` and get an empty result, also try \`search_turns\` — that searches the actual turn text.\n`
+    ? `\n- \`query_knowledge_graph\`: Lokaler Wissens-Graph über vergangene Sessions/Turns + Odoo-/Confluence-Entitäten. **Bei Fragen nach dem Chat-Verlauf** ("haben wir schon mal über X gesprochen?", "gab es eine Diskussion zu Y?", "welche Themen hatten wir zuletzt?") **nutze \`search_turns\` (FTS, Keyword) oder \`search_turns_semantic\` (Embedding, für Paraphrasen)**. \`find_entity\` matcht NUR Entity-Namen/IDs (res.partner, hr.employee, …), NICHT Turn-Text — verwende es für "wer ist Kunde Z?". Bei Rückbezügen auf spezifische Personen/Dinge ("wie bei Müller letztens") zuerst \`find_entity\` oder \`session_summary\`. **Wichtig:** Wenn du eine inhaltliche Frage zu früheren Chats mit \`find_entity\` beantwortest und leer rauskommst, probiere unbedingt zusätzlich \`search_turns\` — dort durchsuchst du tatsächlich die Turn-Texte.\n`
     : '';
 
   // Diagrams moved out of the kernel in Phase 1.2b-iii. The diagram plugin
@@ -438,65 +450,65 @@ function buildSystemPrompt(
   // caller signature stays stable during the transition.
   void hasDiagramTool;
 
-  return `You are the Omadia orchestrator. You answer the user's questions by delegating to specialised sub-agents and persisting durable learnings to memory.
+  return `Du bist der byte5 Assistent. Du beantwortest Fragen zu unserer Odoo-17-Produktion, indem du an die spezialisierten Sub-Agenten delegierst und Lernpunkte persistent merkst.
 
-Language: match the user's language. The default is the language of the most recent user message.
+Sprache: Antworte immer auf Deutsch, außer der Nutzer wechselt explizit die Sprache.
 
-Tools:
-- \`memory\` (virtual /memories directory): persist domain learnings, user preferences, business conventions, and recurring patterns. Memory is shared across sessions and global for this agent. At the start of each new task read the directory listing once before answering, so you can draw on relevant learnings. Place new learnings in topical files (e.g. /memories/customers/<name>.md, /memories/observations/<period>.md).
+Werkzeuge:
+- \`memory\` (virtuelles /memories-Verzeichnis): Persistiere Domänen-Learnings, Nutzer-Präferenzen, Geschäfts-Konventionen und häufige Anfragen. Der Memory wird über Sessions hinweg geteilt und ist global für diesen Agent. Lies zu Beginn jeder neuen Aufgabe einmal den Verzeichnisinhalt, bevor du antwortest, damit du auf relevante Learnings zurückgreifen kannst. Lege neue Learnings in themenbezogenen Dateien ab (z.B. /memories/customers/kundenname.md, /memories/observations/2026-q2.md).
 ${graphBlock}${chatParticipantsBlock}${askUserChoiceBlock}${suggestFollowUpsBlock}${calendarBlock}${extraToolDocs.length > 0 ? '\n' + extraToolDocs.map((doc) => `- ${doc.trim()}`).join('\n') + '\n' : ''}
-Sub-agents (routing rule: pick by question domain; for mixed questions call several and merge results):
+Fach-Agenten (Routing-Regel: wähle anhand der Fragedomäne; bei Mischfragen beide/mehrere aufrufen und Ergebnisse zusammenführen):
 ${domainList}
 
-Memory namespaces (convention):
-- /memories/_rules/… → **curated rules from the repo**. Don't overwrite or delete on your own. Only extend if the user explicitly confirms.
-- /memories/customers/… → stable facts about individual customers.
-- /memories/observations/… → time-stamped observations for back-comparisons.
-- /memories/sessions/<scope>/YYYY-MM-DD.md → **chronological Q&A transcripts**, written by the middleware (not by you). These contain real prior conversations. When the user references an earlier conversation ("like we discussed last time", "the way we did it before"), **first look up the matching entry in /memories/sessions/** before re-querying a sub-agent — that typically saves a full roundtrip. But: don't read all sessions by default, that's token waste. Look up only when there's an actual back-reference.
+Memory-Namensräume (Konvention):
+- /memories/_rules/… → **gepflegte Regeln aus dem Repo**. Nicht eigenständig überschreiben oder löschen. Nur ergänzen, wenn der Nutzer es ausdrücklich bestätigt.
+- /memories/customers/… → stabile Fakten zu einzelnen Kunden.
+- /memories/observations/… → Zeitstempelbezogene Beobachtungen für Rück-Vergleiche.
+- /memories/sessions/<scope>/YYYY-MM-DD.md → **chronologische Q&A-Transkripte**, von der Middleware geschrieben (nicht von dir). Diese enthalten echte vorangegangene Konversationen. Wenn der Nutzer auf ein früheres Gespräch verweist ("wie wir das letztens diskutiert haben", "so wie bei den Kostenstellen", "mach das wie beim letzten Mal"), **zuerst den passenden Eintrag in /memories/sessions/ suchen**, bevor du einen Fach-Agenten neu befragst — du sparst dir damit typischerweise einen ganzen Roundtrip. Aber: lies nicht standardmäßig alle Sessions, das wäre Token-Verschwendung. Nur auf Rückbezug gezielt nachschlagen.
 
-**Rule for reading /memories/_rules/:**
-- For a **new domain question** (first question on a domain in this session, or domain switch) read the relevant rule files under /memories/_rules/ first and follow the conventions strictly.
-- For a **follow-up** in the same chat (variant, refinement, clarification, "and the same without X", "and for Q4?", "show as a line chart") **do NOT re-read** the rules — the verbatim tail in the conversation context already has the relevant state. Answer directly (with \`render_diagram\` for chart variants). Re-read rules only when the follow-up introduces a substantively new dimension.
-- Heuristic: if the context block contains a \`## Letzte Turns in diesem Chat\` section and the current question relates to one of those turns → skip the memory read.
+**Regel für /memories/_rules/ lesen:**
+- Bei einer **neuen fachlichen Frage** (Erstfrage zu einer Domäne in dieser Session, oder Wechsel der Domäne) zuerst die relevanten Regel-Dateien unter /memories/_rules/ lesen und die Konventionen strikt befolgen.
+- Bei einem **Follow-up** im selben Chat (Variante, Bereinigung, Klarifikation, Nachfrage zum letzten Turn wie "und das Ganze nochmal ohne X", "und für Q4?", "zeig das als Line-Chart") **NICHT erneut** die Regeln lesen — der Verbatim-Tail im Gesprächskontext hat bereits den relevanten Stand. Direkt antworten (ggf. mit \`render_diagram\` für Chart-Varianten). Regel erneut lesen nur, wenn die Follow-up eine fachlich neue Dimension einführt (z. B. "jetzt das Gleiche auf HR-Ebene").
+- Heuristik: enthält der Kontext-Block einen \`## Letzte Turns in diesem Chat\`-Abschnitt und bezieht sich die aktuelle Frage auf einen dieser Turns → Memory-Read überspringen.
 
-**Silence permission (NO_REPLY):**
+**Antwort-Verzicht (NO_REPLY):**
 
-When you have nothing to contribute, answer with the **sole, exact** token \`NO_REPLY\` (no explanation, no prefix, no suffix). The system intercepts the token and sends **no message** to the user. Use cases:
-- The user explicitly asked you not to reply ("don't reply", "stay silent", "no answer needed", "just be quiet").
-- A **routine** (scheduled trigger without an active user question) has **no reportable result** — e.g. "no birthdays today", "no open tickets", "all green". For routines, **silence is the default**: speak only when there's actually something to report. Do NOT write "Nothing to report today" or "Per instruction, sending no message" — both still get delivered. Write only \`NO_REPLY\`.
-- Pure FYI messages in chat without a question or call-to-action that expects a response.
+Wenn du nichts beizutragen hast, antworte mit dem **alleinigen, exakten** Token \`NO_REPLY\` (keine Erklärung, kein Präfix, kein Suffix). Das System fängt das Token ab und sendet **keine Nachricht** an den User. Anwendungsfälle:
+- Der User hat explizit gebeten, nicht zu antworten ("antworte nicht", "still bleiben", "keine Antwort nötig", "halt einfach den Mund").
+- Eine **Routine** (zeitgesteuerter Trigger ohne aktive User-Frage) hat **kein berichtenswertes Ergebnis** — z.B. "heute hat niemand Geburtstag", "keine offenen Tickets", "alles im grünen Bereich". Bei Routinen ist **Schweigen der Default**: sprich nur, wenn es wirklich etwas Berichtenswertes gibt. Schreibe NICHT "Heute nichts zu berichten" oder "Gemäß Anweisung sende ich keine Nachricht" — beides wird trotzdem als Nachricht zugestellt. Schreibe nur \`NO_REPLY\`.
+- Reine FYI-Nachricht im Chat ohne Frage oder Aufforderung, auf die keine Reaktion erwartet wird.
 
-**Required form**: \`NO_REPLY\` must be the **entire** answer — nothing before, nothing after, no quotes, no explanation. "NO_REPLY because…" or "— NO_REPLY" does NOT qualify and causes the whole answer (including the explanation) to be delivered to the user.
+**Pflicht-Form**: \`NO_REPLY\` muss die **vollständige** Antwort sein — nichts davor, nichts danach, keine Anführungszeichen, keine Begründung. "NO_REPLY weil…" oder "— NO_REPLY" reicht NICHT und führt dazu, dass die ganze Antwort inkl. Begründung an den User rausgeht.
 
-Rules:
-1. Don't invent data. When you need a number, a date, a customer name, or an employee, fetch it through the responsible sub-agent.
-2. Only write to memory when the learning is relevant beyond the current session — no session-specific notes.
-3. **Persist learnings early, not at the end.** As soon as you've gained a durable insight from a sub-agent answer or user instruction (mapping, convention, stable fact), write it to memory **on the very next tool call** — before further delegations or the final answer. This way the learning survives a connection drop or container restart mid-turn.
-4. Cite sources briefly in memory (e.g. "observed 2026-04-17 in record X-2026-0042").
-5. Avoid memory spam: before creating a new file, check whether a fitting one exists and extend it via \`str_replace\` / \`insert\`.
-6. Personal data (contact names etc.) only when needed for the actual work. Domain-specific privacy rules (e.g. HR red lines) are enforced server-side by the responsible sub-agent — respect them in your summary too.
-7. At the end of an answer: do NOT write a status update to memory if nothing new emerged.
+Regeln:
+1. Erfinde keine Daten. Wenn du eine Zahl, ein Datum, einen Kundennamen oder einen Mitarbeiter brauchst, hole sie über den zuständigen Fach-Agenten.
+2. Schreib nur dann in den Memory, wenn der Lernwert über die aktuelle Session hinaus relevant ist — keine Session-spezifischen Notizen.
+3. **Persistiere Learnings früh, nicht erst am Ende.** Sobald du aus einer Fach-Agent-Antwort oder Nutzer-Anweisung eine dauerhaft gültige Erkenntnis gewonnen hast (Mapping, Konvention, stabiler Fakt), schreibe sie **direkt im nächsten Tool-Call** in den Memory — noch bevor du weitere Delegationen machst oder die finale Antwort formulierst. So überleben Learnings auch einen Verbindungsabbruch oder Container-Restart mitten im Turn.
+4. Zitiere im Memory Quellen knapp (z.B. "beobachtet am 2026-04-17 bei Rechnung RE-2026-0042").
+5. Vermeide Memory-Spam: Bevor du eine neue Datei anlegst, prüfe ob es schon eine passende Datei gibt, und erweitere diese per \`str_replace\`/\`insert\`.
+6. Persönliche Daten (Ansprechpartner-Namen etc.) nur speichern, wenn sie für die fachliche Arbeit notwendig sind. Der HR-Agent hat zusätzlich eigene PII-Guardrails — respektiere diese auch in deiner Zusammenfassung der Antwort.
+7. Am Ende jeder Antwort: Schreibe KEIN Zwischenstand-Update in den Memory, wenn sich nichts Neues ergeben hat.
 
-**Critical integrity rules (verifier-hardening):**
+**Kritische Integritäts-Regeln (Verifier-Härtung):**
 
-8. **No self-verification in the answer text.** Never write words like "verified", "checked", "confirmed", "live", "looked up" to mark data as fresh. The verifier badge after turn-end decides that based on the tool trace. If you use those words without an actual sub-agent call, the verifier will hard-contradict.
+8. **Keine Selbst-Verifizierung im Antworttext.** Schreibe NIEMALS Wörter wie "verifiziert", "geprüft", "bestätigt", "live", "live-verifiziert", "nachgeschlagen", "aus Odoo geholt" in deine Antwort, um Daten als frisch zu kennzeichnen. Das entscheidet ausschließlich das Verifier-Badge nach Turn-Ende — und es prüft anhand deines Tool-Traces, ob du wirklich einen Fach-Agenten gefragt hast. Wenn du diese Wörter trotzdem nutzt und in Wirklichkeit keinen Fach-Agent-Call gemacht hast, widerspricht der Verifier hart.
 
-9. **Numbers from the context block are NOT live.** Numbers under \`## Früher besprochene Entitäten\`, \`## Inhaltlich ähnliche Turns\`, \`## Letzte Turns in diesem Chat\` are from the past. Don't present them as current. When the user asks for current figures, you must make at least one sub-agent call in the same turn — otherwise the verifier will auto-contradict and force a retry.
+9. **Zahlen aus dem Kontext-Block sind NICHT live.** Konkret: Zahlen unter \`## Früher besprochene Entitäten\`, \`## Inhaltlich ähnliche Turns\`, \`## Letzte Turns in diesem Chat\` stammen aus der Vergangenheit. Präsentiere sie NICHT als aktuellen Stand. Wenn der User nach aktuellen Zahlen fragt (Umsatz, offene Rechnungen, Urlaubstage, Teamleistung), musst du im selben Turn mindestens EINEN Fach-Agent-Call (\`query_odoo_accounting\` / \`query_odoo_hr\`) machen — sonst widerspricht der Verifier automatisch und erzwingt einen Retry.
 
-10. **Valid back-reference:** when the user explicitly refers to an earlier turn ("as just reported", "yesterday's number"), you may quote the context number — but phrase it clearly as a back-reference ("as of <date>, no fresh query this turn"), never as "verified/checked". For aggregates spanning multiple dimensions (team × customer × period) always do a plausibility check against known patterns from \`/memories/\`: if a number deviates >50 % from the expected band, mark it explicitly as an anomaly and ask back rather than confirm.
+10. **Gültiger Rückbezug:** Wenn der User explizit auf einen früheren Turn verweist ("wie eben berichtet", "die Zahl von gestern"), darfst du die Kontext-Zahl zitieren — aber formuliere dann klar als Rückbezug ("laut Stand vom <Datum>, keine Neu-Abfrage in diesem Turn"), niemals als "verifiziert/geprüft". Für Aggregate über mehrere Dimensionen (Team × Kunde × Zeitraum) immer einen Plausibilitäts-Check gegen bekannte Muster aus \`/memories/\`: wenn die Zahl >50 % vom Erwartungsband abweicht, EXPLIZIT als Auffälligkeit markieren und nachfragen statt bestätigen.
 
-**File attachments (channel uploads):**
+**Dateianhänge (Teams-Uploads):**
 
-11. **Recognise the attachment hint.** When a user message ends with an \`[attachments-info] …\` block, the user has uploaded files — they're already persisted (storage_key + signed_url in the block). Treat the metadata as additional context, not as text of the request.
+11. **Anhang-Hinweis erkennen.** Wenn am Ende einer User-Nachricht ein Block \`[attachments-info] …\` auftaucht, hat der User Dateien hochgeladen — sie sind bereits persistiert (storage_key + signed_url im Block). Behandle die Metadaten wie Zusatzkontext, nicht wie Text der Anfrage.
 
-12. **Recognise brand-asset intent.** Phrasings like "this is our logo", "use that as a banner", "this is our team icon" → **right now** write/update the memory file \`/memories/_brand/<asset-name>.md\` (e.g. \`logo.md\`, \`banner.md\`) with YAML frontmatter from the attachments-info block (storage_key, signed_url, file_name, content_type, uploaded_at, asset_role). Then briefly confirm. When the user does NOT mark the file as an asset ("look at this", "here's a screenshot"), do NOT write to \`/memories/_brand/\`.
+12. **Brand-Asset-Intent erkennen.** Formulierungen wie "das ist unser Logo", "unser Firmenlogo", "nimm das als Banner", "das ist unser Team-Icon" → **jetzt sofort** die Memory-Datei \`/memories/_brand/<asset-name>.md\` (z.B. \`logo.md\`, \`banner.md\`) schreiben/aktualisieren mit YAML-Frontmatter aus dem attachments-info-Block (storage_key, signed_url, file_name, content_type, uploaded_at, asset_role). Danach kurz bestätigen. Wenn der User die Datei **nicht** als Asset markiert ("schau dir das an", "hier ein Screenshot"), **nicht** in \`/memories/_brand/\` schreiben.
 
-13. **Use brand asset in diagrams.** On \`render_diagram\` calls, if the user requests "with branding", "with our logo", "with corporate design", read \`/memories/_brand/logo.md\`. Don't write the signed_url directly into the spec (Kroki has no public egress) — use the placeholder URL \`brand://logo\` AND pass the \`storage_key\` as the tool parameter \`brand_logo_storage_key\`. The middleware base64-inlines the image automatically before it reaches Kroki — works reliably even with expired signed_urls. Examples:
-    - **Vega-Lite**: layer \`{"mark":"image","encoding":{"url":{"value":"brand://logo"},"x":{...},"y":{...},"width":{"value":80},"height":{"value":80}}}\`
+13. **Brand-Asset in Diagrammen einsetzen.** Beim \`render_diagram\`-Aufruf: wenn der User "mit Branding", "mit unserem Logo", "mit Corporate Design" anfragt, lies \`/memories/_brand/logo.md\`. Schreibe im Spec **nicht** die signed_url direkt (Kroki hat keinen Public-Egress), sondern den Platzhalter-URL \`brand://logo\` UND übergib den \`storage_key\` als Tool-Parameter \`brand_logo_storage_key\`. Die Middleware base64-inlined das Bild automatisch bevor es zu Kroki geht — funktioniert zuverlässig, auch bei ausgelaufenen signed_urls. Beispiele:
+    - **Vega-Lite**: Layer \`{"mark":"image","encoding":{"url":{"value":"brand://logo"},"x":{...},"y":{...},"width":{"value":80},"height":{"value":80}}}\`
     - **Graphviz**: \`node [image="brand://logo", label=""]\`
-    - **PlantUML**: \`<img src="brand://logo" width="120">\` in note/header
-    - **Mermaid**: limited; render without logo if in doubt.
-    Tool call shape: \`render_diagram({kind: "vegalite", source: "<spec with brand://logo>", brand_logo_storage_key: "<from memory>"})\`. Without the parameter the \`brand://logo\` placeholder stays unchanged — Kroki renders an empty image cell.`;
+    - **PlantUML**: \`<img src="brand://logo" width="120">\` in Note/Header
+    - **Mermaid**: eingeschränkt, im Zweifel ohne Logo rendern.
+    Tool-Call-Shape: \`render_diagram({kind: "vegalite", source: "<spec mit brand://logo>", brand_logo_storage_key: "<aus memory>"})\`. Ohne den Parameter bleibt \`brand://logo\` ungeändert — Kroki rendert das Bild-Feld dann leer.`;
 }
 
 /**
@@ -1147,9 +1159,90 @@ export class Orchestrator {
           ? { chatParticipants: parent.chatParticipants }
           : {}),
         ...(privacyHandle ? { privacyHandle } : {}),
+        ...(parent?.captureRawToolResult
+          ? { captureRawToolResult: parent.captureRawToolResult }
+          : {}),
       },
       async () => {
-        const result = await this.chatInContext(input, turnId);
+        let result = await this.chatInContext(input, turnId);
+        // Privacy-Shield v2 (D-2) — Output Validator + Retry-Loop.
+        // The validator decides whether the LLM's answer kept the
+        // privacy tokens verbatim AND whether it produced any
+        // spontaneous PII; on `retry` we re-run `chatInContext`
+        // ONCE with a stricter directive correction; on `block`
+        // we swap the entire payload for the placeholder. Runs
+        // BEFORE the egress filter so a retry generates a fresh
+        // answer that the egress filter then double-checks as
+        // defence-in-depth. Same `turnId` → same privacyHandle +
+        // receipt accumulator across both attempts.
+        if (privacyService && privacyHandle) {
+          result = await this.applyOutputValidator(
+            input,
+            result,
+            turnId,
+            privacyService,
+            privacyHandle,
+          );
+        }
+        // Privacy-Shield v2 (Phase A, post-deploy 2026-05-14) —
+        // mechanical restoration of LLM self-anonymization patterns
+        // ("Mitarbeiter 1/2/3", "Employee N", "Person N", …) that
+        // the directive cannot reliably suppress. Runs AFTER the
+        // validator's retry decision (so the second-attempt answer is
+        // what gets repaired) and BEFORE the egress filter (so the
+        // spontaneous-PII scan sees a clean restored text). The
+        // operation is conservative — when count of labels doesn't
+        // fit the captured positional token list, the text is left
+        // unchanged and the gap surfaces via the receipt.
+        if (privacyHandle) {
+          result = await this.applyAntiSelfAnonymization(result, privacyHandle);
+        }
+        // Privacy-Shield v2 (Slice S-6) — Egress Filter. Last gate
+        // before the receipt drains; re-scans every user-facing text
+        // slot with the full detector pool and reacts to spontaneous
+        // PII per the operator-configured mode. `mask` rewrites the
+        // span inline (default); `block` swaps the entire payload
+        // for the configured placeholder. The egress receipt block
+        // lands in the same `finalize()` aggregation below.
+        if (privacyService && privacyHandle) {
+          result = await this.applyEgressFilter(result, privacyService, privacyHandle);
+        }
+        // Privacy-Shield v2 (Phase A.2, post-deploy 2026-05-14 third
+        // iteration) — final-scrub pass. The egress filter's `mask`
+        // mode replaces spontaneous PII with FRESH `«TYPE_N»` tokens.
+        // Those tokens otherwise flow through to the user as
+        // token-shape cruft (HR-routine Zusammenfassung v152). This
+        // pass scrubs every remaining token via positional
+        // restoration + per-type German placeholder fallback,
+        // guaranteeing the channel-bound text contains no token
+        // shapes.
+        if (privacyHandle) {
+          result = await this.applyPostEgressScrub(result, privacyHandle);
+        }
+        // Privacy-Engine Hardening Slice #4 — Orphan-Placeholder
+        // explainer footer. Phase A.2's scrub may leave the answer
+        // with `[Name]` / `[Adresse]` / … strings when positional
+        // restoration was uncertain. Without a hint the user has no
+        // way to interpret them. Append a brief diagnostic so they
+        // know what happened and how to rephrase. No retry — that's
+        // expensive and rarely helpful since the LLM would likely
+        // produce the same names; revisit when receipt-persistence
+        // (S-7.5) lets us measure prevalence.
+        if (privacyHandle) {
+          const orphanAnalysis = detectOrphanPlaceholders(result.answer);
+          if (orphanAnalysis.count > 0) {
+            console.warn(
+              `[orchestrator.orphanPlaceholders] turn=${turnId} count=${String(orphanAnalysis.count)} types=${orphanAnalysis.types.join(',')}`,
+            );
+            result = {
+              ...result,
+              answer: appendOrphanPlaceholderFooter(
+                result.answer,
+                orphanAnalysis,
+              ),
+            };
+          }
+        }
         if (privacyHandle) {
           try {
             const receipt = await privacyHandle.finalize();
@@ -1166,6 +1259,220 @@ export class Orchestrator {
         return result;
       },
     );
+  }
+
+  /**
+   * Privacy-Shield v2 (D-2) — apply the Output Validator and act on
+   * its recommendation:
+   *
+   *   - `pass`:  ship the result unchanged.
+   *   - `retry`: re-run `chatInContext` with an `extraSystemHint` that
+   *              calls out the failure mode (token-loss → emit tokens
+   *              verbatim; spontaneous PII → ask for clarification).
+   *              Caps at ONE retry; a third attempt is not started even
+   *              if the validator still says `retry`.
+   *   - `block`: replace the payload with the operator-configured
+   *              egress block placeholder (same helper as S-6).
+   *
+   * The retry path re-enters `chatInContext` under the SAME `turnId`,
+   * so the privacy handle's accumulator and tokenise-map are reused —
+   * the receipt at finalize covers both attempts in one row.
+   */
+  private async applyOutputValidator(
+    input: ChatTurnInput,
+    result: ChatTurnResult,
+    turnId: string,
+    privacyService: PrivacyGuardService,
+    privacyHandle: ReturnType<typeof createPrivacyTurnHandle>,
+  ): Promise<ChatTurnResult> {
+    if (result.pendingUserChoice) {
+      // Clarification turns have no fact content — same short-circuit
+      // the verifier uses. The validator's spontaneous-PII detector
+      // would only see the question text, never the user's data.
+      return result;
+    }
+    let verdict;
+    try {
+      verdict = await privacyHandle.validateOutput({ assistantText: result.answer });
+    } catch (err) {
+      console.warn(
+        '[orchestrator] privacyGuard.validateOutput threw — shipping un-validated:',
+        err,
+      );
+      return result;
+    }
+    if (verdict.recommendation === 'pass') return result;
+    // D-2.1 hotfix: both `retry` and `block` recommendations get one
+    // retry attempt with the appropriate anti-paraphrase / anti-
+    // hallucination directive. Originally `block` short-circuited
+    // straight to the placeholder, but in practice that turns a
+    // paraphrased HR-routine answer into a "filter withheld this"
+    // notice instead of giving the LLM a chance to re-emit the
+    // restored values verbatim. Now: try ONCE more for both; only
+    // the second-pass `block` actually ships the placeholder.
+    // recommendation === 'retry' OR 'block'
+    const correction = buildValidatorCorrectionPrompt(verdict);
+    const retryInput: ChatTurnInput = {
+      ...input,
+      extraSystemHint: composeRetryHint(input.extraSystemHint, correction),
+    };
+    let retried: ChatTurnResult;
+    try {
+      retried = await this.chatInContext(retryInput, turnId);
+    } catch (err) {
+      console.warn('[orchestrator] privacyGuard.validateOutput retry FAIL — keeping first answer:', err);
+      return result;
+    }
+    // D-2.2: after the retry, ALWAYS ship the retried answer. The
+    // downstream egress filter (S-6) is the safety net for any
+    // remaining spontaneous PII — with `egress_filter_mode=mask`
+    // (default) those spans are replaced inline with `«PERSON_N»`
+    // tokens, so the user sees a usable answer with masked
+    // hallucinations rather than a "filter withheld this" placeholder.
+    // The placeholder path only fires when the operator has set
+    // `egress_filter_mode=block` AND the egress filter detects
+    // spontaneous PII — i.e. when the operator explicitly opted into
+    // hard-block-on-residual-PII semantics. Re-validating the
+    // retried text here would only re-discover what the egress
+    // filter is about to act on.
+    return retried;
+  }
+
+  /**
+   * Privacy-Shield v2 (Slice S-6) — apply the egress filter to a
+   * `ChatTurnResult` before the receipt is finalised. The filter
+   * walks every user-facing text slot via `collectEgressSlots`,
+   * calls the privacy-guard service for spontaneous-PII detection
+   * + replacement, and merges the transformed texts back via
+   * `applyEgressReplacements`. On `routing: 'blocked'` the entire
+   * payload is replaced with the configured placeholder via
+   * `buildBlockedResult` so the channel never sees the original
+   * potentially-PII-bearing content.
+   *
+   * Safe to call when egress is disabled in operator config (`enabled
+   * === false`) or no text slots exist (the result has empty
+   * `answer` and no interactive payload). Errors are caught and
+   * surfaced as warnings — egress is best-effort defence-in-depth,
+   * not a hard gate.
+   */
+  private async applyEgressFilter(
+    result: ChatTurnResult,
+    privacyService: PrivacyGuardService,
+    privacyHandle: ReturnType<typeof createPrivacyTurnHandle>,
+  ): Promise<ChatTurnResult> {
+    let config;
+    try {
+      config = privacyService.getEgressConfig();
+    } catch (err) {
+      console.warn('[orchestrator] privacyGuard.getEgressConfig threw — skipping egress:', err);
+      return result;
+    }
+    if (!config.enabled) return result;
+    const slots = collectEgressSlots(result);
+    if (slots.length === 0) return result;
+    let egress;
+    try {
+      egress = await privacyHandle.egressFilter({ texts: slots });
+    } catch (err) {
+      console.warn('[orchestrator] privacyGuard.egressFilter threw — shipping un-filtered:', err);
+      return result;
+    }
+    if (egress.routing === 'blocked') {
+      return buildBlockedResult(result, config.blockPlaceholderText);
+    }
+    if (egress.routing === 'allow') return result;
+    const replacements = new Map<string, string>();
+    for (const slot of egress.texts) {
+      replacements.set(slot.id, slot.text);
+    }
+    return applyEgressReplacements(result, replacements);
+  }
+
+  /**
+   * Privacy-Shield v2 (Phase A, post-deploy 2026-05-14) — apply the
+   * self-anonymization label restorer to every channel-bound text
+   * slot before the egress filter runs.
+   *
+   * The restorer is **strictly additive**: it rewrites recognised
+   * label patterns to real names from the turn-map's most recent
+   * tool-result capture, and conservatively skips when the positional
+   * mapping is ambiguous. It cannot widen the set of values reaching
+   * the channel — every substitution comes from a real value the
+   * shield already chose to tokenise on inbound, so the user receives
+   * data the system already had authorisation to surface. Errors are
+   * caught and surfaced as warnings; on failure the un-restored text
+   * is shipped (egress filter is the second line of defence).
+   */
+  private async applyAntiSelfAnonymization(
+    result: ChatTurnResult,
+    privacyHandle: ReturnType<typeof createPrivacyTurnHandle>,
+  ): Promise<ChatTurnResult> {
+    const slots = collectEgressSlots(result);
+    if (slots.length === 0) return result;
+    const replacements = new Map<string, string>();
+    let changed = false;
+    for (const slot of slots) {
+      let outcome;
+      try {
+        outcome = await privacyHandle.restoreSelfAnonymizationLabels({
+          text: slot.text,
+        });
+      } catch (err) {
+        console.warn(
+          '[orchestrator] privacyGuard.restoreSelfAnonymizationLabels threw — keeping original slot:',
+          err,
+        );
+        continue;
+      }
+      if (outcome.text !== slot.text) {
+        replacements.set(slot.id, outcome.text);
+        changed = true;
+      }
+    }
+    if (!changed) return result;
+    return applyEgressReplacements(result, replacements);
+  }
+
+  /**
+   * Privacy-Shield v2 (Phase A.2, post-deploy 2026-05-14 third
+   * iteration) — final-scrub pass that runs AFTER the egress filter.
+   * Guarantees the channel-bound text contains no `«TYPE_N»` token
+   * shapes by attempting positional restoration against unaccounted
+   * tool-result names first, then falling back to per-type German
+   * placeholders for the remainder.
+   *
+   * Strictly additive: errors are caught and surfaced as warnings;
+   * on failure the slot ships with whatever tokens egress left in
+   * place. The post-condition is a guarantee on the happy path.
+   */
+  private async applyPostEgressScrub(
+    result: ChatTurnResult,
+    privacyHandle: ReturnType<typeof createPrivacyTurnHandle>,
+  ): Promise<ChatTurnResult> {
+    const slots = collectEgressSlots(result);
+    if (slots.length === 0) return result;
+    const replacements = new Map<string, string>();
+    let changed = false;
+    for (const slot of slots) {
+      let outcome;
+      try {
+        outcome = await privacyHandle.restoreOrScrubRemainingTokens({
+          text: slot.text,
+        });
+      } catch (err) {
+        console.warn(
+          '[orchestrator] privacyGuard.restoreOrScrubRemainingTokens threw — keeping original slot:',
+          err,
+        );
+        continue;
+      }
+      if (outcome.text !== slot.text) {
+        replacements.set(slot.id, outcome.text);
+        changed = true;
+      }
+    }
+    if (!changed) return result;
+    return applyEgressReplacements(result, replacements);
   }
 
   private async chatInContext(
@@ -1246,6 +1553,35 @@ export class Orchestrator {
     // Phase-1 Kemia hook — resolved ONCE at turn start. Empty when no
     // `responseGuard@1` provider is installed; identical cache shape then.
     const prependRules = await this.resolvePrependRules(messages);
+
+    // Privacy-Engine Hardening — Single-Token-Bypass.
+    // When the user's input message tokenises to mostly PII tokens
+    // (≥70% non-whitespace chars replaced), the LLM has no semantic
+    // content to reason about and tends to rationalise the leftover
+    // tokens as "unfilled template variables" — producing polite
+    // hallucinations like "you forgot to fill in [Name]". Short-circuit
+    // here and ship a clear refusal answer so the user can re-phrase.
+    // The bypass detection itself goes through `privacy.processOutbound`,
+    // so the receipt accumulator records the detections — operators
+    // see what fired in the per-turn receipt.
+    const privacyForBypass = turnContext.current()?.privacyHandle;
+    if (privacyForBypass && input.userMessage.trim().length > 0) {
+      const saturation = await analyzeTokenSaturation(
+        input.userMessage,
+        privacyForBypass,
+      );
+      if (saturation.triggered) {
+        console.warn(
+          `[orchestrator.privacyBypass] turn=${turnId} ratio=${saturation.coverageRatio.toFixed(2)} tokens=${String(saturation.tokenCount)} originalChars=${String(saturation.originalChars)} survived=${String(saturation.survivedChars)} — skipping LLM call`,
+        );
+        entityCollection?.drain();
+        return {
+          answer: bypassCannedAnswer(saturation),
+          toolCalls: 0,
+          iterations: 0,
+        };
+      }
+    }
 
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
@@ -1525,6 +1861,9 @@ export class Orchestrator {
         ? { chatParticipants: parent.chatParticipants }
         : {}),
       ...(privacyHandle ? { privacyHandle } : {}),
+      ...(parent?.captureRawToolResult
+        ? { captureRawToolResult: parent.captureRawToolResult }
+        : {}),
     });
 
     this.applyTurnAuthContext(input);
@@ -2017,10 +2356,10 @@ export class Orchestrator {
     // Slice 2.2 — privacy-proxy tool roundtrip.
     //
     // Restore tokens in the input BEFORE the handler runs so domain tools
-    // (domain integrations, Calendar, KG) see real user data instead of `tok_<hex>`
+    // (Odoo, Calendar, KG) see real user data instead of `tok_<hex>`
     // placeholders that the downstream system would not be able to
     // resolve. Re-scan the result text AFTER the handler returns so any
-    // fresh PII the tool surfaced (e.g. "Jane Example" from a directory-sub-agent)
+    // fresh PII the tool surfaced (e.g. "John Doe" from query_odoo_hr)
     // is tokenised before it flows back to the LLM as a `tool_result`
     // block — the public LLM never sees the plaintext.
     //
@@ -2044,6 +2383,22 @@ export class Orchestrator {
       }
     }
     const result = await this.dispatchToolInner(name, dispatchInput, observer);
+    // Phase C.2 — Raw tool-result capture. Outer scope (routine runner)
+    // may install a callback that stashes the pre-tokenisation result
+    // keyed by tool name; later template rendering uses it as the source
+    // of truth for data sections so the LLM never authors data rows.
+    // Absent callback ⇒ no capture (chat + non-templated routines).
+    const capture = turnContext.current()?.captureRawToolResult;
+    if (capture !== undefined && typeof result === 'string') {
+      try {
+        capture(name, result);
+      } catch (err) {
+        console.warn(
+          `[orchestrator.dispatchTool:${name}] captureRawToolResult threw — continuing without capture:`,
+          err,
+        );
+      }
+    }
     if (privacy !== undefined && typeof result === 'string' && result.length > 0) {
       try {
         const tokenised = await privacy.processToolResult({
@@ -2295,3 +2650,52 @@ function collectTextBlocks(content: ContentBlock[]): string[] {
 // It's imported at the top of this file and re-exported via the back-compat
 // barrel so `import { toSemanticAnswer } from '../orchestrator.js'` callers
 // (verifier wrapper today, channel adapters until S+11) keep working.
+
+// ---------------------------------------------------------------------------
+// Privacy-Shield v2 (D-2) — Output Validator retry-prompt helpers.
+// ---------------------------------------------------------------------------
+
+/**
+ * Pick a correction prompt based on what the validator flagged. The
+ * directive is appended to the system prompt for the retry attempt;
+ * it does NOT carry PII (no values, no spans) so it is safe to log.
+ */
+export function buildValidatorCorrectionPrompt(verdict: PrivacyOutputValidationResult): string {
+  const reason = verdict.recommendationReason ?? '';
+  // Spontaneous PII signal: the validator already routes spontaneous
+  // hits to recommendation=`block`, but `retry` can also be issued by
+  // a future validator extension. Branch on the reason prefix instead
+  // of recomputing from `verdict.spontaneousPiiHits`.
+  if (reason.startsWith('spontaneous PII') || verdict.spontaneousPiiHits.length > 0) {
+    return [
+      '<privacy-validator-retry>',
+      'Your previous answer contained PII values that were never supplied',
+      'via a tool result or user message. Do not invent identifiers (names,',
+      'emails, IBANs, phone numbers, addresses). If a required value is',
+      'missing, ask a single clarifying question instead of guessing.',
+      '</privacy-validator-retry>',
+    ].join('\n');
+  }
+  // Token-loss is the default failure mode (HR-routine regression).
+  return [
+    '<privacy-validator-retry>',
+    'Your previous answer dropped privacy tokens. Tokens look like',
+    '`«PERSON_1»`, `«EMAIL_2»`, etc. Re-emit the answer; every token from',
+    'tool results MUST appear verbatim where its value would go — in table',
+    'cells, list items, sentences, JSON. Do not paraphrase, summarise,',
+    'invent, or translate token values. The privacy shield restores them',
+    'to the real values after you finish.',
+    '</privacy-validator-retry>',
+  ].join('\n');
+}
+
+/**
+ * Append the validator correction to an existing `extraSystemHint` so
+ * a caller-supplied hint (e.g. the answer-verifier's contradiction
+ * note) is preserved alongside the privacy directive. Both fire in
+ * the same retry, double-budget for both signals.
+ */
+export function composeRetryHint(existing: string | undefined, correction: string): string {
+  if (existing === undefined || existing.trim().length === 0) return correction;
+  return `${existing}\n\n${correction}`;
+}

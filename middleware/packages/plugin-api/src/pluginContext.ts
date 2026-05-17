@@ -95,6 +95,19 @@ export interface PluginContext {
    *  unmounts via the returned dispose handle. */
   readonly routes: RoutesAccessor;
 
+  /** Cross-channel notification fan-out. Plugins emit outbound events
+   *  via `notifications.send(...)`; channel plugins register handlers
+   *  via `notifications.registerChannel(...)`. v1 broadcasts to every
+   *  registered channel; per-user channel preference comes later. */
+  readonly notifications: NotificationsAccessor;
+
+  /** Plugin-served UI surface catalogue. Plugins register clickable
+   *  surfaces (Teams Tabs, Hub cards) via `uiRoutes.register(...)`.
+   *  channel-teams' Hub + Tab-Config consume the catalogue at request
+   *  time, so new uploads surface automatically without code changes
+   *  elsewhere. */
+  readonly uiRoutes: UiRoutesAccessor;
+
   /** Register cron- or interval-scheduled background jobs. The kernel runs
    *  each job in isolation (per-job AbortController + timeout) and stops
    *  every job belonging to a plugin when the plugin deactivates. Jobs
@@ -456,6 +469,127 @@ export interface ToolRegistrationOptions {
  */
 export interface RoutesAccessor {
   register(prefix: string, router: unknown): () => void;
+}
+
+/**
+ * Plugin-served UI surface registry. Plugins call
+ * `uiRoutes.register({routeId, path, title})` from their `activate()`
+ * to publish a clickable surface (Teams Tab, Hub card, web link).
+ * The kernel auto-fills `pluginId` from the calling plugin's agentId
+ * so plugins can't spoof other plugins' surfaces.
+ *
+ * The descriptor catalogue is the source of truth for downstream
+ * surfaces — channel-teams' Hub iterates it for cards, and Tab-Config
+ * queries it for the target-route dropdown. The HTTP route itself is
+ * registered separately via `ctx.routes.register('/p/...', router)`;
+ * the descriptor just makes the surface discoverable.
+ */
+export interface UiRoutesAccessor {
+  /**
+   * Publish a uiRoute descriptor. Returns a dispose handle the plugin
+   * MUST call from its `close()` so a hot-swap doesn't leak entries
+   * into the catalogue.
+   */
+  register(descriptor: UiRouteDescriptorInput): () => void;
+}
+
+export interface UiRouteDescriptorInput {
+  /** Stable id within the plugin (e.g. `'dashboard'`, `'absences'`).
+   *  Combined with pluginId to form the catalogue key. */
+  readonly routeId: string;
+  /** Path relative to the plugin's `/p/<pluginId>` mount (must start
+   *  with `/`, e.g. `/dashboard`). */
+  readonly path: string;
+  /** Human-readable label shown in Hubs, dropdowns, and Tab titles. */
+  readonly title: string;
+  /** Optional one-line summary surfaced as a tooltip / card subtitle. */
+  readonly description?: string;
+  /** Optional ordering hint — lower comes first. Defaults to 100. */
+  readonly order?: number;
+}
+
+/**
+ * Catalogue-resolved descriptor — pluginId injected by the kernel from
+ * the registering plugin's agentId.
+ */
+export interface UiRouteDescriptor extends UiRouteDescriptorInput {
+  readonly pluginId: string;
+}
+
+/**
+ * Cross-channel notifications. Plugins emit outbound events through
+ * `send()`; channel plugins register inbound handlers via
+ * `registerChannel()`. The router fans every emitted event out to every
+ * registered channel — v1 broadcast model. Per-user channel preference
+ * routing lands in a later slice.
+ */
+export interface NotificationsAccessor {
+  /**
+   * Dispatch a notification to all registered channel handlers. The
+   * pluginId is auto-injected from the caller's PluginContext; plugins
+   * MUST NOT set it themselves.
+   *
+   * Returns a per-channel dispatch result so callers can surface partial
+   * failures. The accessor itself never throws on handler errors — a
+   * crashing channel handler must not break the calling plugin's flow.
+   */
+  send(payload: NotificationPayload): Promise<NotificationDispatchResult>;
+
+  /**
+   * Channel plugins register an inbound handler keyed by channelId
+   * (e.g. `'teams'`, `'telegram'`). Returns a dispose handle the channel
+   * MUST call from its `close()` so a hot-swap doesn't leak handlers.
+   * Re-registering the same channelId without disposing first throws.
+   */
+  registerChannel(
+    channelId: string,
+    handler: ChannelNotificationHandler,
+  ): () => void;
+}
+
+export interface NotificationPayload {
+  readonly title: string;
+  readonly body: string;
+  /**
+   * Optional relative path users land on when they activate the
+   * notification. Channel handlers resolve it against the operator-facing
+   * web-ui origin (Teams deep-link, Telegram start-param, etc.).
+   */
+  readonly deepLink?: string;
+  /**
+   * v1 supports `'broadcast'` only — each channel handler decides what
+   * 'broadcast' means in its world (Teams: activity feed for tenant
+   * members; Telegram: pinned chat post; etc.). v2 will accept a
+   * concrete list of user IDs for targeted delivery.
+   */
+  readonly recipients?: 'broadcast' | readonly string[];
+}
+
+export interface NotificationDispatchResult {
+  /** channelIds whose handler completed without throwing. */
+  readonly delivered: readonly string[];
+  /** channelIds whose handler threw, with the error message. */
+  readonly failed: readonly { readonly channelId: string; readonly error: string }[];
+  /** Whether the router has any registered handlers. False here means
+   *  the notification went nowhere — plugins MAY surface this to the
+   *  operator. */
+  readonly anyHandlerPresent: boolean;
+}
+
+export type ChannelNotificationHandler = (
+  payload: ResolvedNotificationPayload,
+) => Promise<void>;
+
+/**
+ * Payload as it lands inside a channel handler — the kernel has filled
+ * in `pluginId` from the emitting plugin and normalised `recipients`.
+ */
+export interface ResolvedNotificationPayload {
+  readonly pluginId: string;
+  readonly title: string;
+  readonly body: string;
+  readonly deepLink?: string;
+  readonly recipients: 'broadcast' | readonly string[];
 }
 
 /**

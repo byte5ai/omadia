@@ -12,6 +12,7 @@ const TABS: Array<{ href: string; key: string }> = [
   { href: '/graph', key: 'graph' },
   { href: '/routines', key: 'routines' },
   { href: '/admin', key: 'admin' },
+  { href: '/operator/privacy', key: 'privacy' },
   { href: '/system', key: 'system' },
 ];
 

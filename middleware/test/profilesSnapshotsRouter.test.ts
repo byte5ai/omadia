@@ -403,7 +403,7 @@ describe('/api/v1/profiles/:id/snapshot[s] routes', () => {
       assets: [
         { path: 'agent.md', sha256: 'a'.repeat(64), sizeBytes: 100 },
         {
-          path: 'plugins/de.byte5.demo-1.0.0.zip',
+          path: 'plugins/de.omadia.aimo-1.0.0.zip',
           sha256: 'p'.repeat(64),
           sizeBytes: 4096,
         },
@@ -452,7 +452,7 @@ describe('/api/v1/profiles/:id/snapshot[s] routes', () => {
       assets: [
         { path: 'agent.md', sha256: 'a'.repeat(64), sizeBytes: 100 },
         {
-          path: 'plugins/de.byte5.demo-1.0.0.zip',
+          path: 'plugins/de.omadia.aimo-1.0.0.zip',
           sha256: 'p'.repeat(64),
           sizeBytes: 4096,
         },

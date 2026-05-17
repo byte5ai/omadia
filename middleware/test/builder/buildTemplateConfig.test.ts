@@ -67,9 +67,18 @@ describe('loadBuildTemplateConfig', () => {
         workspacePackagesRoot: s.workspacePackagesRoot,
         includeServiceTypeRegistryDeps: false,
       });
+      // B.12-4 — BUILD_TIME_ONLY_DEPS now includes React peers for the
+      // shared build-template. Plugins without react-ssr ui_routes don't
+      // import them; library/free-form-html only declare them transitively
+      // via the optional peerDependenciesMeta on @omadia/plugin-ui-helpers.
       assert.deepEqual(cfg.npmDeps, {
         zod: '^3.23.8',
         typescript: '5.x',
+        react: '^18.3.1',
+        'react-dom': '^18.3.1',
+        '@types/react': '^18.3.12',
+        '@types/react-dom': '^18.3.1',
+        '@types/express': '^5.0.0',
       });
       assert.equal(Object.keys(cfg.workspaceDeps).length, 1);
       assert.equal(
@@ -91,11 +100,17 @@ describe('loadBuildTemplateConfig', () => {
         workspacePackagesRoot: s.workspacePackagesRoot,
         includeServiceTypeRegistryDeps: false,
       });
-      // BUILD_TIME_ONLY_DEPS (B.6-12.3) injects typescript on top of the
-      // boilerplate's runtime deps so the staging dir's `npx tsc` works.
+      // BUILD_TIME_ONLY_DEPS (B.6-12.3) injects typescript + (B.12-4)
+      // React peers on top of the boilerplate's runtime deps so the
+      // staging dir's `npx tsc` works for tools-only AND react-ssr plugins.
       assert.deepEqual(cfg.npmDeps, {
         zod: '^3.23.8',
         typescript: '^5.4.0',
+        react: '^18.3.1',
+        'react-dom': '^18.3.1',
+        '@types/react': '^18.3.12',
+        '@types/react-dom': '^18.3.1',
+        '@types/express': '^5.0.0',
       });
       assert.deepEqual(cfg.workspaceDeps, {});
     } finally {
@@ -111,9 +126,16 @@ describe('loadBuildTemplateConfig', () => {
         workspacePackagesRoot: s.workspacePackagesRoot,
         includeServiceTypeRegistryDeps: false,
       });
-      // typescript still merged in from BUILD_TIME_ONLY_DEPS even when the
-      // boilerplate declares zero runtime deps.
-      assert.deepEqual(cfg.npmDeps, { typescript: '^5.4.0' });
+      // typescript + React peers merged in from BUILD_TIME_ONLY_DEPS even
+      // when the boilerplate declares zero runtime deps.
+      assert.deepEqual(cfg.npmDeps, {
+        typescript: '^5.4.0',
+        react: '^18.3.1',
+        'react-dom': '^18.3.1',
+        '@types/react': '^18.3.12',
+        '@types/react-dom': '^18.3.1',
+        '@types/express': '^5.0.0',
+      });
       assert.deepEqual(cfg.workspaceDeps, {});
     } finally {
       s.cleanup();

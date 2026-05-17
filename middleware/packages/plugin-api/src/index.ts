@@ -2,11 +2,12 @@ export * from './pluginContext.js';
 export * from './conversation.js';
 export * from './localSubAgentTool.js';
 
-// Knowledge-graph capability contract (interface + DTOs + node-id helpers)
-// lives on the plugin-api surface. Both the in-memory and the Postgres
-// `knowledgeGraph@1` provider plugins import the contract from here, as do
-// downstream consumers (orchestrator, verifier, extras, and any integration
-// plugin that ingests entities).
+// S+11-1: Knowledge-graph capability contract (interface + DTOs + node-id
+// helpers) lives on the plugin-api surface. Both the in-memory and the Neon
+// `knowledgeGraph@1` provider plugins (S+11-2 split of @omadia/knowledge-graph)
+// import the contract from here; consumers (orchestrator, verifier, extras,
+// confluence, odoo) do the same. The `@omadia/knowledge-graph` package
+// re-exports these symbols for backwards-compatibility until S+11-close.
 export * from './entityRef.js';
 export * from './entityRefBus.js';
 export * from './knowledgeGraph.js';

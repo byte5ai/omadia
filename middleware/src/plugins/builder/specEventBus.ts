@@ -83,7 +83,8 @@ export type SpecBusEvent =
         | 'activate_failed'
         | 'tool_failures'
         | 'no_tools'
-        | 'admin_route_schema_violation';
+        | 'admin_route_schema_violation'
+        | 'ui_route_render_failed';
       activateError?: string;
       results?: ReadonlyArray<{
         toolId: string;
@@ -103,6 +104,25 @@ export type SpecBusEvent =
           | 'empty_warning'
           | 'schema_violation'
           | 'http_error'
+          | 'timeout'
+          | 'introspection_failed';
+        httpStatus?: number;
+        durationMs: number;
+        reason?: string;
+      }>;
+      /**
+       * B.12-6 — ui-route smoke results, surfaced after admin-route smoke
+       * for plugins with `/p/<id>/*`-mount registrations. Empty for
+       * plugins with no ui_routes.
+       */
+      uiRouteResults?: ReadonlyArray<{
+        endpoint: string;
+        status:
+          | 'ok'
+          | 'http_error'
+          | 'wrong_content_type'
+          | 'missing_csp'
+          | 'empty_render'
           | 'timeout'
           | 'introspection_failed';
         httpStatus?: number;

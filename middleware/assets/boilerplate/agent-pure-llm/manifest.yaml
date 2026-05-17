@@ -22,7 +22,7 @@ identity:
   description: "{{AGENT_DESCRIPTION_DE}}"
   authors:
     - name: "byte5 GmbH"
-      email: "dev@byte5.de"
+      email: "info@omadia.ai"
   license: "Proprietary"
   icon: "./assets/icon.png"
   categories:

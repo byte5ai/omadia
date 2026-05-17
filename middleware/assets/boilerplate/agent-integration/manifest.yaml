@@ -17,7 +17,7 @@ identity:
   description: "{{AGENT_DESCRIPTION_DE}}"
   authors:
     - name: "byte5 GmbH"
-      email: "dev@byte5.de"
+      email: "info@omadia.ai"
   license: "Proprietary"
   icon: "./assets/icon.png"
   categories:
@@ -132,6 +132,12 @@ permissions:
     scratch: false
 
 integrations: []
+
+# Scheduled background jobs. Codegen rewrites this block from spec.jobs[];
+# leave it as `[]` for plugins with no scheduled work. The kernel auto-
+# registers each entry before activate() returns; ctx.jobs.register(...) in
+# activate-body adds programmatic jobs on top.
+jobs: []
 
 ui:
   settings_schema: null

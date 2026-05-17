@@ -40,6 +40,11 @@ slots:
     target_file: skills/{{AGENT_SLUG}}-expert.md
     required: true
     description: System prompt body (frontmatter is generated automatically)
+    # Allow splitting large skill markdowns across up to 4 additional
+    # partials (skill-prompt-1 … skill-prompt-4). Each fill_slot call stays
+    # under the Anthropic tool-call argument-size limit (~30 KB); the
+    # runtime concatenates all partials with `\n\n---\n\n` separators.
+    max_partials: 4
   - key: admin-ui-body
     target_file: assets/admin-ui/index.html
     required: false
@@ -66,6 +71,24 @@ slots:
       pushed onto the toolkit. Empty when spec.external_reads is empty.
       To wire cross-integration data, add entries to spec.external_reads
       via patch_spec, NOT by hand-coding the activate-body slot.
+  - key: ui-routes-imports
+    target_file: plugin.ts
+    required: false
+    description: |
+      Auto-managed by codegen (B.12) — DO NOT fill via fill_slot. Codegen
+      splices Express Router + per-route UiRouter factory imports here
+      from spec.ui_routes[]. Empty by default. To add a Dashboard-Tab,
+      append a UiRoute to spec.ui_routes via patch_spec.
+  - key: ui-routes-init
+    target_file: plugin.ts
+    required: false
+    description: |
+      Auto-managed by codegen (B.12) — DO NOT fill via fill_slot. Codegen
+      synthesises per-route Express router instantiation,
+      `ctx.routes.register(...)` mounts, and `ctx.uiRoutes.register(...)`
+      descriptor wiring from spec.ui_routes[]. Each register-return-value
+      is pushed onto the `__uiRouteDisposers` array so close() tears
+      everything down. Empty by default.
 
 placeholders:
   AGENT_ID: id

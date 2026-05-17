@@ -41,12 +41,19 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: middleware/package-lock.json
 
       - name: npm ci (middleware + workspaces)
-        run: npm ci --no-audit --no-fund
+        run: npm ci --include=optional --no-audit --no-fund
+
+      # sharp's native binary is platform-specific. package-lock.json was
+      # generated on macOS (darwin-arm64) and has no `node_modules/@img/
+      # sharp-linux-x64` entry, so `npm ci` even with --include=optional
+      # skips it. Force-install the linux-x64 variant for the CI runner.
+      - name: Install sharp linux-x64 native binary
+        run: npm install --no-save --no-audit --no-fund --os=linux --cpu=x64 sharp
 
       - name: Build workspace packages (compiled dist/ for cross-package imports)
         run: npm run build
@@ -59,6 +66,11 @@ jobs:
 
       - name: Test (node --test via tsx)
         run: npm run test
+
+      # Smoke scripts (middleware/scripts/smoke-*.ts) live outside this
+      # public repo by design — they hit byte5-internal endpoints. The
+      # privacy-shield v2 smoke that previously ran here has the same
+      # coverage as the in-suite privacyOutputValidator tests.
 
   # ------------------------------------------------------------------
   # Web-dev: Next.js admin UI — vitest + lint + typecheck
@@ -75,12 +87,12 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: web-ui/package-lock.json
 
       - name: npm ci
-        run: npm ci --no-audit --no-fund
+        run: npm ci --include=optional --no-audit --no-fund
 
       - name: Lint
         run: npm run lint
@@ -182,12 +194,12 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: ${{ matrix.workspace }}/package-lock.json
 
       - name: npm ci
-        run: npm ci --no-audit --no-fund
+        run: npm ci --include=optional --no-audit --no-fund
 
       - name: npm audit (--audit-level=high)
         run: npm audit --audit-level=high

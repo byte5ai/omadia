@@ -15,7 +15,7 @@ import type { PrivacyTurnHandle } from './privacyHandle.js';
  *                  turn that rolls past midnight keeps a single, consistent
  *                  date throughout. Without this the Claude models guess
  *                  from training-data era (usually 2025) and silently
- *                  corrupt time-relative ("last 3 months") queries.
+ *                  corrupt "letzte 3 Monate"-style Odoo queries.
  *   - `chatParticipants` (optional) — lazy accessor for the active chat's
  *                  roster. Set by the Teams adapter (via TeamsRosterProvider)
  *                  in an outer ALS scope; the orchestrator re-threads it into
@@ -45,6 +45,21 @@ export interface TurnContextValue {
    * payloads through unmodified — byte-identical pre-plugin behaviour).
    */
   privacyHandle?: PrivacyTurnHandle;
+  /**
+   * Phase C.2 — Raw tool-result capture hook. When set by an outer scope
+   * (currently: the routine runner), every tool dispatch site (main agent
+   * + sub-agents) invokes this callback with the RAW handler-returned
+   * result BEFORE `privacy.processToolResult` tokenises it. The callback
+   * is responsible for stashing the value somewhere it can be consumed
+   * later (typically `routineTurnContext.currentRawToolResults()` from
+   * the routines plugin). Repeat calls for the same tool name overwrite
+   * the previous entry — last-write-wins.
+   *
+   * Undefined for chat turns and non-templated routine turns; tool
+   * dispatch then skips the capture and behaves byte-identically to
+   * pre-C.2.
+   */
+  captureRawToolResult?: (toolName: string, rawResult: string) => void;
 }
 
 const storage = new AsyncLocalStorage<TurnContextValue>();
@@ -81,6 +96,9 @@ export const turnContext = {
         turnDate: prev?.turnDate ?? today(),
         chatParticipants,
         ...(prev?.privacyHandle ? { privacyHandle: prev.privacyHandle } : {}),
+        ...(prev?.captureRawToolResult
+          ? { captureRawToolResult: prev.captureRawToolResult }
+          : {}),
       },
       fn,
     );

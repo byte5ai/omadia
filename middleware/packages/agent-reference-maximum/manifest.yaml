@@ -5,12 +5,12 @@ identity:
   kind: "agent"
   domain: "reference"
   name: "Reference (Builder Pattern Source)"
-  version: "0.1.0"
+  version: "0.3.2"
   description: "Builder-Reference-Plugin: lauffähige, credential-lose Codebase, die alle heute verfügbaren Plugin-API-Patterns in einer Stelle demonstriert. Pattern-Quelle für den BuilderAgent. Sekundärnutzen: Personal-Knowledge-Companion."
   authors:
     - name: "byte5 GmbH"
-      email: "dev@byte5.de"
-      url: "https://byte5.de"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
   license: "Proprietary"
   categories:
     - "reference"

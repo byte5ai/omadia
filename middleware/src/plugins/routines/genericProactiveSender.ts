@@ -36,14 +36,23 @@ export function createProactiveSender(
   channel: string,
   send: (
     conversationRef: unknown,
-    message: SemanticAnswer,
+    message: SemanticAnswer & { cardBody?: readonly unknown[] },
     routine?: { id: string; name: string; cron: string },
   ) => Promise<void>,
 ): ProactiveSender {
   return {
     channel,
     async send(opts) {
-      await send(opts.conversationRef, opts.message, opts.routine);
+      // Phase C.6 — fold the optional Adaptive Card body items into the
+      // message envelope so channel adapters can read both `text`
+      // (markdown fallback) and `cardBody` (rich-card primitives) from
+      // a single object, without us teaching the integration shim to
+      // forward a third positional argument.
+      const message =
+        opts.cardBody !== undefined
+          ? { ...opts.message, cardBody: opts.cardBody }
+          : opts.message;
+      await send(opts.conversationRef, message, opts.routine);
     },
   };
 }

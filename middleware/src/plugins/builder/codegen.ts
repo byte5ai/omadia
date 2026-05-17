@@ -7,6 +7,7 @@ import {
   type SlotDef,
   type TemplateManifest,
 } from './boilerplateSource.js';
+import { buildUiRouteArtifacts } from './codegenUiRoute.js';
 import { lookupServiceType } from './serviceTypeRegistry.js';
 
 /**
@@ -83,6 +84,37 @@ function deriveAgentSlug(spec: AgentSpec): string {
   // Split on `.` (legacy `de.byte5.agent.X`) or `/` (post-Welle-1 `@omadia/X`)
   // so the npm-scope namespace doesn't end up in generated filenames.
   return spec.id.split(/[./]/).pop() ?? spec.id;
+}
+
+// Insert a numeric suffix before the last extension of a target file path.
+//   skills/foo-expert.md, 1 → skills/foo-expert-1.md
+//   skills/foo-expert,    2 → skills/foo-expert-2  (no extension)
+//   skills/{{SLUG}}-expert.md, 1 → skills/{{SLUG}}-expert-1.md
+// Used by the partial-slot pipeline to derive output paths for synthesised
+// partial files from a base slot's target_file.
+export function partialTargetFile(baseTarget: string, n: number): string {
+  const lastSlash = baseTarget.lastIndexOf('/');
+  const dir = lastSlash >= 0 ? baseTarget.slice(0, lastSlash + 1) : '';
+  const filename = lastSlash >= 0 ? baseTarget.slice(lastSlash + 1) : baseTarget;
+  const lastDot = filename.lastIndexOf('.');
+  if (lastDot < 0) return `${dir}${filename}-${String(n)}`;
+  return `${dir}${filename.slice(0, lastDot)}-${String(n)}${filename.slice(lastDot)}`;
+}
+
+// Collect the indices of non-empty partial slots for a given base slot.
+// Returns numerically-ascending indices in [1, slot.max_partials] whose
+// `<slot.key>-<n>` entry is non-empty in allSlots.
+function filledPartialIndices(
+  slot: SlotDef,
+  allSlots: Readonly<Record<string, string>>,
+): number[] {
+  if (slot.max_partials <= 0) return [];
+  const out: number[] = [];
+  for (let n = 1; n <= slot.max_partials; n++) {
+    const v = allSlots[`${slot.key}-${String(n)}`];
+    if (v !== undefined && v.length > 0) out.push(n);
+  }
+  return out;
 }
 
 function resolveSource(spec: AgentSpec, source: string): string | undefined {
@@ -288,8 +320,50 @@ function injectSlots(
 function reproduceManifestCapabilities(
   manifestText: string,
   spec: AgentSpec,
+  manifestSlots: readonly SlotDef[],
+  allSlots: Readonly<Record<string, string>>,
 ): string {
   const doc = yaml.parseDocument(manifestText);
+
+  // Skills-array expansion (multi-partial slots). For each declared slot
+  // with `max_partials > 0`, clone the matching skill entry (matched by
+  // its `path` against `slot.target_file`) once per non-empty partial.
+  // Clones land immediately after the base entry, in ascending numeric
+  // order. Done before string substitution so the cloned paths still
+  // carry `{{AGENT_SLUG}}` etc. — the later placeholder pass resolves them.
+  const skillsNode = doc.get('skills', true);
+  if (yaml.isSeq(skillsNode) && skillsNode.items.length > 0) {
+    for (const slot of manifestSlots) {
+      const indices = filledPartialIndices(slot, allSlots);
+      if (indices.length === 0) continue;
+      const baseIdx = skillsNode.items.findIndex((item) => {
+        if (!yaml.isMap(item)) return false;
+        const pathNode = item.get('path');
+        return typeof pathNode === 'string' && pathNode === slot.target_file;
+      });
+      if (baseIdx < 0) continue;
+      const baseJson = (skillsNode.items[baseIdx] as yaml.Node).toJSON() as Record<
+        string,
+        unknown
+      >;
+      const clones: unknown[] = [];
+      for (const n of indices) {
+        const cloneJson = JSON.parse(JSON.stringify(baseJson)) as Record<string, unknown>;
+        cloneJson['path'] = partialTargetFile(slot.target_file, n);
+        const idVal = cloneJson['id'];
+        if (typeof idVal === 'string') {
+          cloneJson['id'] = `${idVal}_${String(n)}`;
+        }
+        clones.push(cloneJson);
+      }
+      const cloneNodes = clones.map((c) => doc.createNode(c));
+      skillsNode.items.splice(
+        baseIdx + 1,
+        0,
+        ...(cloneNodes as typeof skillsNode.items),
+      );
+    }
+  }
 
   // depends_on overwrite (B.6-9.1) — the boilerplate ships
   // `depends_on: []` as a static placeholder; we replace it with
@@ -337,6 +411,68 @@ function reproduceManifestCapabilities(
         self_test: false,
       }),
     );
+  }
+
+  // jobs[] overwrite — boilerplate ships `jobs: []` as placeholder. Map
+  // spec.jobs[] verbatim (the shape matches the manifest 1:1: name,
+  // schedule.{cron|intervalMs}, timeoutMs?, overlap?). Kernel auto-
+  // registers each entry before activate() returns, so a plugin with a
+  // weekly-digest job declared here doesn't need any ctx.jobs.register
+  // call in activate-body. Programmatic registrations are still allowed
+  // and additive — useful when the schedule depends on operator config.
+  if (spec.jobs.length > 0) {
+    doc.set('jobs', doc.createNode(spec.jobs));
+  }
+
+  // Phase B — permissions.{graph,subAgents,llm} from spec.permissions.
+  // Each sub-block is optional; only non-empty entries land in the manifest
+  // so the principle-of-least-authority default holds (kernel sees no
+  // permission → withholds the corresponding ctx accessor). Boilerplate
+  // template already ships `permissions.memory.*` + `permissions.network.*`
+  // + `permissions.graph.{reads,writes}`-placeholders; we add the new
+  // sub-keys via AST so the existing block's other entries stay intact.
+  if (spec.permissions) {
+    const permsNode = doc.get('permissions', true);
+    if (yaml.isMap(permsNode)) {
+      const perms = spec.permissions;
+      if (perms.graph && (perms.graph.entity_systems.length > 0 ||
+          perms.graph.reads.length > 0 || perms.graph.writes.length > 0)) {
+        // Merge into existing `graph:` map (keeps {reads, writes} the
+        // template already has + adds entity_systems on top).
+        const graphNode = permsNode.get('graph', true);
+        const incoming = {
+          reads: perms.graph.reads,
+          writes: perms.graph.writes,
+          entity_systems: perms.graph.entity_systems,
+        };
+        if (yaml.isMap(graphNode)) {
+          for (const [k, v] of Object.entries(incoming)) {
+            graphNode.set(k, doc.createNode(v));
+          }
+        } else {
+          permsNode.set('graph', doc.createNode(incoming));
+        }
+      }
+      if (perms.subAgents && perms.subAgents.calls.length > 0) {
+        const sub: Record<string, unknown> = { calls: perms.subAgents.calls };
+        if (perms.subAgents.calls_per_invocation !== undefined) {
+          sub['calls_per_invocation'] = perms.subAgents.calls_per_invocation;
+        }
+        permsNode.set('subAgents', doc.createNode(sub));
+      }
+      if (perms.llm && perms.llm.models_allowed.length > 0) {
+        const llm: Record<string, unknown> = {
+          models_allowed: perms.llm.models_allowed,
+        };
+        if (perms.llm.calls_per_invocation !== undefined) {
+          llm['calls_per_invocation'] = perms.llm.calls_per_invocation;
+        }
+        if (perms.llm.max_tokens_per_call !== undefined) {
+          llm['max_tokens_per_call'] = perms.llm.max_tokens_per_call;
+        }
+        permsNode.set('llm', doc.createNode(llm));
+      }
+    }
   }
 
   const capsNode = doc.get('capabilities', true);
@@ -596,6 +732,24 @@ function buildExternalReadsArtifacts(spec: AgentSpec): ExternalReadsArtifacts {
 }
 
 /**
+ * Patches the plugin's tsconfig.json to enable JSX (react-jsx runtime)
+ * when the spec carries ≥1 react-ssr ui_route. No-op when the flag is
+ * off — the boilerplate tsconfig stays unchanged for tools-only and
+ * library-/free-form-html-only plugins. Idempotent.
+ */
+function mergeTsconfigForReactSsr(tsconfigText: string, enableJsx: boolean): string {
+  if (!enableJsx) return tsconfigText;
+  const obj = JSON.parse(tsconfigText) as Record<string, unknown>;
+  const compilerOptions = (obj['compilerOptions'] as Record<string, unknown> | undefined) ?? {};
+  if (compilerOptions['jsx'] === undefined) compilerOptions['jsx'] = 'react-jsx';
+  if (compilerOptions['jsxImportSource'] === undefined) {
+    compilerOptions['jsxImportSource'] = 'react';
+  }
+  obj['compilerOptions'] = compilerOptions;
+  return JSON.stringify(obj, null, 2) + '\n';
+}
+
+/**
  * Merges codegen-managed peerDependencies into the agent's package.json
  * before placeholder substitution. Idempotent — existing entries with
  * non-`*` versions are left untouched (operator override wins).
@@ -623,8 +777,13 @@ export async function generate(
   const { spec, slots = {} } = opts;
   const issues: CodegenIssue[] = [];
 
-  // 1. Cross-field spec validation
-  for (const issue of validateSpecForCodegen(spec)) {
+  // 1. Cross-field spec validation — pass `slots` so the validator sees
+  //    fillSlot-written entries that live on `draft.slots` (= opts.slots)
+  //    but not on `draft.spec.slots`. Without this the react-ssr / free-
+  //    form-html slot-existence checks would always fail on the first
+  //    fill_slot call (Catch-22: slot can't be validated until persisted,
+  //    persistence triggers the validation that says it isn't present).
+  for (const issue of validateSpecForCodegen(spec, slots)) {
     issues.push({ code: 'spec_validation', detail: issue.reason });
   }
   if (issues.length > 0) throw new CodegenError(issues);
@@ -658,6 +817,20 @@ export async function generate(
   }
   if (externalReadsArtifacts.body.length > 0) {
     allSlots['external-reads-init'] = externalReadsArtifacts.body;
+  }
+
+  // 3c. B.12 — codegen-managed slots from spec.ui_routes. Mirrors the
+  //     external-reads pattern: empty ui_routes means the slot keys
+  //     stay unset and the boilerplate's empty region survives. With
+  //     ui_routes present, codegen emits factory imports + register-
+  //     wiring + per-route Express UiRouter files, plus the helper
+  //     peerDep `@omadia/plugin-ui-helpers`.
+  const uiRouteArtifacts = buildUiRouteArtifacts(spec, allSlots);
+  if (uiRouteArtifacts.imports.length > 0) {
+    allSlots['ui-routes-imports'] = uiRouteArtifacts.imports;
+  }
+  if (uiRouteArtifacts.init.length > 0) {
+    allSlots['ui-routes-init'] = uiRouteArtifacts.init;
   }
 
   // 4. Build placeholder map. Unresolved sources fail-fast here with one
@@ -694,15 +867,23 @@ export async function generate(
 
     // 5a. manifest.yaml — capability reproduction before string mangling
     if (origPath === 'manifest.yaml') {
-      text = reproduceManifestCapabilities(text, spec);
+      text = reproduceManifestCapabilities(text, spec, manifest.slots, allSlots);
     }
 
-    // 5a.2. package.json — peerDependencies merge for Theme A. Done before
-    //       slot/placeholder passes so the JSON parse sees a literal
-    //       `{{AGENT_ID}}` string (still valid JSON) and the substitution
-    //       runs over the re-stringified output.
+    // 5a.2. package.json — peerDependencies merge for Theme A + B.12.
+    //       Done before slot/placeholder passes so the JSON parse sees a
+    //       literal `{{AGENT_ID}}` string (still valid JSON) and the
+    //       substitution runs over the re-stringified output.
     if (origPath === 'package.json') {
       text = mergePeerDependencies(text, externalReadsArtifacts.peerDependencies);
+      text = mergePeerDependencies(text, uiRouteArtifacts.peerDependencies);
+    }
+
+    // 5a.3. tsconfig.json — patch jsx: 'react-jsx' when the spec carries
+    //       ≥1 react-ssr ui_route. The boilerplate ships without a jsx
+    //       setting so tools-only / library-only plugins compile unchanged.
+    if (origPath === 'tsconfig.json') {
+      text = mergeTsconfigForReactSsr(text, uiRouteArtifacts.hasReactSsr);
     }
 
     // 5b. Slot injection (uses original-path target_file matching too)
@@ -727,6 +908,71 @@ export async function generate(
     }
 
     out.set(outPath, Buffer.from(text, 'utf-8'));
+  }
+
+  // 6. B.12 — splice generated ui_route files into the output bundle.
+  //    These files carry no {{TOKEN}} placeholders and no slot markers
+  //    (codegenUiRoute already produced final content), so they bypass
+  //    the per-file processing loop above.
+  for (const [relPath, buf] of uiRouteArtifacts.files) {
+    if (out.has(relPath)) {
+      issues.push({
+        code: 'spec_validation',
+        detail:
+          `ui_route generated file '${relPath}' collides with a boilerplate file. ` +
+          'Pick a different ui_route id.',
+      });
+      continue;
+    }
+    out.set(relPath, buf);
+  }
+
+  // 7. Partial-slot file synthesis. For every declared slot with
+  //    `max_partials > 0`, materialise one output file per filled partial
+  //    (`<slot.key>-1`, …, `<slot.key>-N`). The output path is derived from
+  //    the base slot's target_file via `partialTargetFile()`. The file's
+  //    frontmatter is cloned from the base bundle file (so `kind`,
+  //    `description`, etc. stay aligned) with the `id` suffixed by `_<n>`.
+  //    The slot body is wrapped in matching marker comments so a future
+  //    re-edit cycle can re-locate the slot region.
+  for (const slot of manifest.slots) {
+    const indices = filledPartialIndices(slot, allSlots);
+    if (indices.length === 0) continue;
+    const baseBuf = bundle.files.get(slot.target_file);
+    let baseFrontmatter = '';
+    if (baseBuf) {
+      const baseText = baseBuf.toString('utf-8');
+      const fmMatch = /^---\n([\s\S]*?)\n---/.exec(baseText);
+      if (fmMatch) baseFrontmatter = fmMatch[1] ?? '';
+    }
+    for (const n of indices) {
+      const partialKey = `${slot.key}-${String(n)}`;
+      const body = allSlots[partialKey] ?? '';
+      const fmLines = (baseFrontmatter || 'kind: prompt_partial')
+        .split('\n')
+        .map((line) => {
+          const m = /^id:\s*(.+)$/.exec(line);
+          if (m) return `id: ${m[1]}_${String(n)}`;
+          return line;
+        });
+      const trimmedBody = body.endsWith('\n') ? body.slice(0, -1) : body;
+      const partialPath = partialTargetFile(slot.target_file, n);
+      const outPath = substitutePlaceholders(partialPath, placeholderMap);
+      let text =
+        `---\n${fmLines.join('\n')}\n---\n\n` +
+        `<!-- #region builder:${partialKey} -->\n` +
+        `${trimmedBody}\n` +
+        `<!-- #endregion -->\n`;
+      text = substitutePlaceholders(text, placeholderMap);
+      const residue = collectResidue(text);
+      if (residue.length > 0) {
+        issues.push({
+          code: 'placeholder_residue',
+          detail: `Unresolved placeholders in partial '${outPath}': ${residue.join(', ')}`,
+        });
+      }
+      out.set(outPath, Buffer.from(text, 'utf-8'));
+    }
   }
 
   if (issues.length > 0) throw new CodegenError(issues);

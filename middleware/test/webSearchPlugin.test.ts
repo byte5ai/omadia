@@ -166,9 +166,9 @@ describe('createTavilyProvider', () => {
       body: { results: [] },
     }));
     const provider = createTavilyProvider({ apiKey: 'k', fetch });
-    await provider.search('odoo invoice', { site: 'byte5.de' });
+    await provider.search('odoo invoice', { site: 'omadia.ai' });
     const body = JSON.parse(calls[0]!.body ?? '{}') as Record<string, unknown>;
-    assert.equal(body['query'], 'site:byte5.de odoo invoice');
+    assert.equal(body['query'], 'site:omadia.ai odoo invoice');
   });
 
   it('clamps topK to [1, 20]', async () => {

@@ -32,6 +32,13 @@ const SlotDefSchema = z
     target_file: z.string().min(1),
     required: z.boolean().default(false),
     description: z.string().optional(),
+    // Additional partial slots permitted under `<key>-1`, …, `<key>-N`.
+    // Codegen synthesises one output file per non-empty partial (target_file
+    // with the index inserted before the last extension) and lists all
+    // partials in manifest.skills[]. Lets large markdowns be split across
+    // multiple fill_slot calls (each call stays under the Anthropic tool-
+    // call argument-size limit). Default 0 = classic single-slot behaviour.
+    max_partials: z.number().int().min(0).max(20).default(0),
   })
   .strict();
 

@@ -9,6 +9,7 @@ import {
   type RoutineRunSummaryDto,
 } from '../../_lib/api';
 import { RoutineActions } from './RoutineActions';
+import { RoutineTemplateEditor } from './RoutineTemplateEditor';
 
 interface Props {
   routine: RoutineDto;
@@ -245,6 +246,9 @@ function DetailsPanel({ routine }: { routine: RoutineDto }): React.ReactElement 
           </pre>
         </div>
       ) : null}
+      <div className="rounded-md border border-[color:var(--border)] bg-[color:var(--surface)] p-3">
+        <RoutineTemplateEditor routine={routine} />
+      </div>
     </div>
   );
 }

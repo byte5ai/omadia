@@ -23,7 +23,11 @@
 
 import type { BuildError } from './buildErrorParser.js';
 import type { ManifestViolation } from './manifestLinter.js';
-import type { AdminRouteSmokeResult, ToolSmokeResult } from './runtimeSmoke.js';
+import type {
+  AdminRouteSmokeResult,
+  ToolSmokeResult,
+  UiRouteSmokeResult,
+} from './runtimeSmoke.js';
 
 const MAX_ITEMS = 5;
 const CLOSER =
@@ -51,6 +55,11 @@ export type ComposeFixPromptInput =
       kind: 'admin_route_schema_violation';
       adminRouteResults?: ReadonlyArray<AdminRouteSmokeResult>;
       buildN?: number;
+    }
+  | {
+      kind: 'ui_route_render_failed';
+      uiRouteResults?: ReadonlyArray<UiRouteSmokeResult>;
+      buildN?: number;
     };
 
 export function composeFixPrompt(input: ComposeFixPromptInput): string {
@@ -63,6 +72,8 @@ export function composeFixPrompt(input: ComposeFixPromptInput): string {
       return formatManifestViolations(input);
     case 'admin_route_schema_violation':
       return formatAdminRouteSchemaViolation(input);
+    case 'ui_route_render_failed':
+      return formatUiRouteRenderFailed(input);
   }
 }
 
@@ -156,6 +167,57 @@ function formatAdminRouteSchemaViolation(
     'Admin-routes must respond `{ ok: boolean, ... }` (success → `{ ok: true, items: [...] }`, failure → `{ ok: false, error: "<msg>" }`). The Frontend prüft `data.ok` — fehlt das Feld, sieht es jeden Erfolg als Fehler.',
     '',
     'Failing endpoints:',
+  ];
+  for (const result of shown) {
+    const reason = result.reason?.trim() ?? '(no reason)';
+    const httpPart =
+      result.httpStatus !== undefined ? ` HTTP ${String(result.httpStatus)}` : '';
+    lines.push(
+      `- \`GET ${result.endpoint}\` (\`${result.status}\`${httpPart}, ${String(result.durationMs)}ms) — ${reason}`,
+    );
+  }
+  if (more > 0) {
+    lines.push(`- _…and ${String(more)} more (capped at ${String(MAX_ITEMS)})._`);
+  }
+  lines.push('', CLOSER);
+  return lines.join('\n');
+}
+
+function formatUiRouteRenderFailed(
+  input: Extract<ComposeFixPromptInput, { kind: 'ui_route_render_failed' }>,
+): string {
+  const all = input.uiRouteResults ?? [];
+  const failed = all.filter((r) => r.status !== 'ok' && r.status !== 'introspection_failed');
+  const header = buildHeader(
+    input.buildN,
+    `ui-route smoke caught ${String(failed.length)} render failure(s)`,
+  );
+
+  if (failed.length === 0) {
+    return [
+      header,
+      '',
+      'UI-route smoke reported failure but no per-route entries were attached.',
+      '',
+      CLOSER,
+    ].join('\n');
+  }
+
+  const shown = failed.slice(0, MAX_ITEMS);
+  const more = failed.length - shown.length;
+  const lines = [
+    header,
+    '',
+    'UI-routes (Dashboard-Tabs) müssen rendern: 2xx-Status, `Content-Type: text/html`, ' +
+      "`Content-Security-Policy` mit `frame-ancestors` (Teams-Iframe-Embedding), und einen " +
+      'nicht-leeren Body. Wer das nicht erfüllt, wird vom Hub als kaputt geflagged.',
+    '',
+    'Häufigste Failure-Modes:',
+    '- `missing_csp`: setze CSP via `renderRoute()` aus `@omadia/plugin-ui-helpers` — der Helper macht das automatisch.',
+    '- `wrong_content_type`: `res.json(...)` statt `res.send(html)` aufgerufen. Library-/free-form-Modus muss HTML zurückgeben.',
+    '- `empty_render`: Component wirft beim SSR, oder die Daten-Fetch-Logik throws + es gibt keinen errorBanner-Fallback.',
+    '',
+    'Failing ui-routes:',
   ];
   for (const result of shown) {
     const reason = result.reason?.trim() ?? '(no reason)';

@@ -357,6 +357,17 @@ export class AutoFixOrchestrator {
         buildN,
         adminRouteResults: ev.adminRouteResults,
       });
+    } else if (
+      ev.type === 'runtime_smoke_status' &&
+      ev.reason === 'ui_route_render_failed'
+    ) {
+      // B.12-6 followup: ui-route render failure — point the agent at the
+      // Tab-render contract (HTML + CSP frame-ancestors + non-empty body).
+      userMessage = composeFixPrompt({
+        kind: 'ui_route_render_failed',
+        buildN,
+        uiRouteResults: ev.uiRouteResults,
+      });
     } else {
       userMessage = composeFixPrompt({
         kind: 'smoke_failed',

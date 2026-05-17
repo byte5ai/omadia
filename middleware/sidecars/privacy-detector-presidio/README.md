@@ -12,22 +12,20 @@ that complements the Slice-3.2 Ollama NER detector.
 
 ## Run via OSS docker-compose (recommended for the demo stack)
 
-The Privacy-Proxy is opt-in. The sidecar is not part of the default
-`docker compose up` set — build and run it separately when the
-`privacy-detector-presidio` plugin is activated:
+The Privacy-Proxy is opt-in in the OSS demo stack. Activate the
+profile alongside whatever else you're running:
 
 ```bash
-docker build -t omadia-presidio middleware/sidecars/privacy-detector-presidio/
-docker run -d --name omadia-presidio --network omadia_omadia \
-  -p 127.0.0.1:5001:5001 omadia-presidio
+docker compose -f infra/docker-compose.yml --profile privacy-presidio up -d
+# or stack with embeddings:
+docker compose -f infra/docker-compose.yml --profile embeddings --profile privacy-presidio up -d
 ```
 
-The first build is ~1.5 GB (spaCy models bundled into the image);
-subsequent runs are cache-hot. Joining the `omadia_omadia` network
-created by the main `docker compose up` lets the middleware container
-reach the sidecar at `http://omadia-presidio:5001` — set that as the
-`presidio_endpoint` in the plugin's setup form after activating it
-in the admin UI.
+After the first `up` the image is built locally (~1.5 GB pull of
+spaCy models — subsequent boots are cache-hot). The middleware
+container reaches the sidecar via the harness network at
+`http://privacy-detector-presidio:5001`. Set this in the plugin's
+`presidio_endpoint` setup-field after activating the plugin in the UI.
 
 For a quick standalone smoke (without the rest of the stack):
 
