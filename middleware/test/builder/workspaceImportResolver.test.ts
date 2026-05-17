@@ -11,6 +11,8 @@ import {
   packageRootOf,
   validateBundleImports,
 } from '../../src/plugins/builder/workspaceImportResolver.js';
+import { generate } from '../../src/plugins/builder/codegen.js';
+import { parseAgentSpec } from '../../src/plugins/builder/agentSpec.js';
 
 describe('workspaceImportResolver', () => {
   beforeEach(() => {
@@ -63,6 +65,36 @@ describe('workspaceImportResolver', () => {
     it('does not match the word import inside identifiers', () => {
       const src = "const importer = 'not-an-import';";
       assert.deepEqual(extractImports(src), []);
+    });
+
+    it('does not match import-like example code embedded in JSDoc blocks', () => {
+      // Reproduces the regression where the boilerplate `types.ts` tripped
+      // IMPORT_FORBIDDEN at line 307 because the regex spanned the JSDoc's
+      // `*  ` continuation prefix and matched a code-sample sentence. The
+      // strip pass must zero out the comment body before the regex runs.
+      const src = [
+        '/**',
+        ' * Read-only: full-text Turn search. Returns implementation-specific',
+        ' * hits — the boilerplate keeps the row type opaque (`unknown`) to',
+        ' * avoid pulling in the whole KG type surface from `@omadia/plugin-api`.',
+        " * Plugins that need the structured shape: `import type { TurnSearchHit }",
+        " * from '@omadia/plugin-api'` and add the package as a peerDep.",
+        ' */',
+        "import { z } from 'zod';",
+      ].join('\n');
+      assert.deepEqual(extractImports(src), [
+        { specifier: 'zod', line: 8 },
+      ]);
+    });
+
+    it('does not match imports referenced in line comments', () => {
+      const src = [
+        "// see also: import { foo } from '@omadia/plugin-api'",
+        "import { real } from 'lodash';",
+      ].join('\n');
+      assert.deepEqual(extractImports(src), [
+        { specifier: 'lodash', line: 2 },
+      ]);
     });
   });
 
@@ -119,6 +151,90 @@ describe('workspaceImportResolver', () => {
       const issue = issues[0]!;
       assert.equal(issue.code, 'IMPORT_UNRESOLVED');
       assert.match(issue.message, /peerDependencies/);
+    });
+
+    it('end-to-end: three react-ssr ui_routes produce a bundle that passes the gate', async () => {
+      // Original user-reported failure: `patch_spec` with three react-ssr
+      // ui_routes followed by `fill_slot` reproduces IMPORT_FORBIDDEN
+      // types.ts(307,1). The false-positive lives in the boilerplate
+      // types.ts JSDoc and trips regardless of route count; route count
+      // only changed which other pipeline step ran first. This test drives
+      // the same path: build a 3-route spec → generate() → run the gate
+      // on the full output and assert zero IMPORT_FORBIDDEN issues. The
+      // 2-route counterpart below confirms parity.
+      const makeRoute = (id: string) => ({
+        id,
+        path: `/${id}`,
+        tab_label: id,
+        page_title: `${id} Page`,
+        refresh_seconds: 30,
+        render_mode: 'react-ssr' as const,
+        interactive: false,
+        data_binding: { source: 'tool' as const, tool_id: 'list_items' },
+      });
+      const baseSpec = {
+        id: 'de.byte5.agent.test',
+        name: 'Test Agent',
+        description: 'Test agent description',
+        category: 'productivity',
+        domain: 'dev.test',
+        skill: { role: 'tester' },
+        playbook: {
+          when_to_use: 'when testing',
+          not_for: ['not used for unit tests'],
+          example_prompts: ['test prompt 1', 'test prompt 2'],
+        },
+        network: { outbound: ['api.example.com'] },
+        tools: [{ id: 'list_items', description: 'List things', input: {} }],
+      };
+      const buildAndCheck = async (routeCount: number) => {
+        const routes = ['alpha', 'beta', 'gamma'].slice(0, routeCount).map(makeRoute);
+        const spec = parseAgentSpec({ ...baseSpec, ui_routes: routes });
+        const slots: Record<string, string> = {
+          'client-impl':
+            '// client stub\nreturn { async ping() {}, async dispose() {} } as unknown as Client;',
+          'toolkit-impl':
+            '// toolkit stub\nconst tools: ToolDescriptor<unknown, unknown>[] = [];\nreturn { tools, async close() {} };',
+          'skill-prompt': '# Test Skill\nTest prompt body.',
+        };
+        for (const r of routes) {
+          slots[`ui-${r.id}-component`] =
+            'export default function P() { return <div>Hi</div>; }';
+        }
+        const files = await generate({ spec, slots });
+        const issues = validateBundleImports(files, allowAll);
+        return issues.filter((i) => i.code === 'IMPORT_FORBIDDEN');
+      };
+      const threeRouteForbidden = await buildAndCheck(3);
+      assert.deepEqual(
+        threeRouteForbidden,
+        [],
+        'three-route bundle must produce zero IMPORT_FORBIDDEN issues',
+      );
+      const twoRouteForbidden = await buildAndCheck(2);
+      assert.deepEqual(
+        twoRouteForbidden,
+        [],
+        'two-route bundle must also produce zero IMPORT_FORBIDDEN issues (parity check)',
+      );
+    });
+
+    it('does not flag the boilerplate types.ts JSDoc that documents @omadia/plugin-api as a peer', async () => {
+      // End-to-end reproducer for the IMPORT_FORBIDDEN types.ts(307,1)
+      // false-positive: scan the on-disk boilerplate file via the bundle
+      // gate and assert no issues — proves the strip pass shields legit
+      // JSDoc examples without weakening the gate against real imports.
+      const { readFile } = await import('node:fs/promises');
+      const url = await import('node:url');
+      const here = path.dirname(url.fileURLToPath(import.meta.url));
+      const boilerplate = path.resolve(
+        here,
+        '../../assets/boilerplate/agent-integration/types.ts',
+      );
+      const buf = await readFile(boilerplate);
+      const files = new Map<string, Buffer>([['types.ts', buf]]);
+      const issues = validateBundleImports(files, allowAll);
+      assert.deepEqual(issues, []);
     });
 
     it('passes installed packages through silently', () => {
