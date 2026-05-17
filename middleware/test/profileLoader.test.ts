@@ -103,8 +103,8 @@ describe('profileLoader / object-form entries with config', () => {
           'name: With Config',
           'description: Mixed string and object plugin entries',
           'plugins:',
-          '  - @omadia/memory',
-          '  - id: @omadia/knowledge-graph-neon',
+          '  - "@omadia/memory"',
+          '  - id: "@omadia/knowledge-graph-neon"',
           '    config:',
           '      graph_tenant_id: my-tenant',
           '',
@@ -193,8 +193,8 @@ describe('profileLoader / invalid inputs', () => {
           'name: x',
           'description: x',
           'plugins:',
-          '  - @omadia/memory',
-          '  - @omadia/memory',
+          '  - "@omadia/memory"',
+          '  - "@omadia/memory"',
         ].join('\n'),
       );
       await assert.rejects(loadProfile(file), /duplicate plugin id/);
