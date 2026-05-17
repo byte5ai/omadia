@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 #
-# Harness Admin — Next.js standalone build for Fly.io (app: odoo-bot-harness).
+# Omadia Admin UI — Next.js standalone build for Docker / Fly.io.
 # Multi-stage: install deps → build standalone → copy thin runtime image.
 # Final image ~150 MB (node 20 slim + standalone server + static assets).
 
@@ -21,7 +21,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 # at build time, so MIDDLEWARE_URL has to be known here — not at runtime.
 # Override from fly.toml [build.args] or `fly deploy --build-arg` when moving
 # the middleware onto a different internal hostname.
-ARG MIDDLEWARE_URL=http://odoo-bot-middleware.internal:8080
+ARG MIDDLEWARE_URL=http://middleware:8080
 ENV MIDDLEWARE_URL=${MIDDLEWARE_URL}
 RUN npm run build
 
