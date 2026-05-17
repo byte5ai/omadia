@@ -4,35 +4,15 @@ import {
   DeterministicChecker,
   type GraphReader,
   type HardClaim,
-  type OdooReader,
 } from '@omadia/verifier';
 
 // --- Stubs ---------------------------------------------------------------
 
-interface OdooCall {
-  model: string;
-  method: string;
-  positionalArgs: unknown[];
-  kwargs: Record<string, unknown>;
-}
-
-function stubOdoo(
-  handler: (call: OdooCall) => unknown,
-  calls?: OdooCall[],
-): OdooReader {
-  return {
-    execute(req) {
-      calls?.push(req);
-      return Promise.resolve(handler(req));
-    },
-  };
-}
-
 function stubGraph(
-  hits: Array<{ id: string; displayName?: string | null }>,
+  hits: Array<{ id: string; props?: Readonly<Record<string, unknown>> }>,
 ): GraphReader {
   return {
-    findEntities(): Promise<Array<{ id: string; displayName?: string | null }>> {
+    findEntities(): Promise<Array<{ id: string; props?: Readonly<Record<string, unknown>> }>> {
       return Promise.resolve(hits);
     },
   };
@@ -46,7 +26,7 @@ function makeAmountClaim(overrides: Partial<HardClaim> = {}): HardClaim {
     expectedSource: 'odoo',
     value: 1234.56,
     unit: '€',
-    odooRecord: { model: 'account.move', id: 42 },
+    sourceRecord: { model: 'account.move', id: 42 },
     relatedEntities: [],
     ...overrides,
   } as HardClaim;
@@ -54,29 +34,23 @@ function makeAmountClaim(overrides: Partial<HardClaim> = {}): HardClaim {
 
 // --- Tests ---------------------------------------------------------------
 
+// The core DeterministicChecker handles only `expectedSource === 'graph'`.
+// All other sources (e.g. 'odoo') return `unverified` with a message
+// directing operators to install a SourceChecker plugin for that domain.
+// The Odoo-specific amount/aggregate/date/id checks were intentionally
+// extracted to a plugin to keep the core verifier source-neutral.
+
 describe('verifier/deterministicChecker - amount', () => {
-  it('verifies a matching Odoo amount (within tolerance)', async () => {
-    const odoo = stubOdoo(() => [{ amount_total: 1234.56 }]);
-    const checker = new DeterministicChecker({ odoo });
+  it('returns unverified for odoo-source amount (no SourceChecker installed)', async () => {
+    const checker = new DeterministicChecker({});
     const verdict = await checker.check(makeAmountClaim());
-    assert.equal(verdict.status, 'verified');
+    assert.equal(verdict.status, 'unverified');
   });
 
-  it('contradicts when the amount diverges beyond tolerance', async () => {
-    const odoo = stubOdoo(() => [{ amount_total: 1200 }]);
-    const checker = new DeterministicChecker({ odoo });
-    const verdict = await checker.check(makeAmountClaim());
-    assert.equal(verdict.status, 'contradicted');
-    if (verdict.status === 'contradicted') {
-      assert.equal(verdict.truth, 1200);
-    }
-  });
-
-  it('contradicts when record is missing', async () => {
-    const odoo = stubOdoo(() => []);
-    const checker = new DeterministicChecker({ odoo });
-    const verdict = await checker.check(makeAmountClaim());
-    assert.equal(verdict.status, 'contradicted');
+  it('returns unverified regardless of amount value when source is odoo', async () => {
+    const checker = new DeterministicChecker({});
+    const verdict = await checker.check(makeAmountClaim({ value: 9999.99 }));
+    assert.equal(verdict.status, 'unverified');
   });
 
   it('unverifies when no odoo reader configured', async () => {
@@ -86,36 +60,25 @@ describe('verifier/deterministicChecker - amount', () => {
   });
 
   it('unverifies when the model has no known amount field', async () => {
-    const odoo = stubOdoo(() => [{ foo: 1 }]);
-    const checker = new DeterministicChecker({ odoo });
+    const checker = new DeterministicChecker({});
     const verdict = await checker.check(
-      makeAmountClaim({ odooRecord: { model: 'unknown.model', id: 1 } }),
+      makeAmountClaim({ sourceRecord: { model: 'unknown.model', id: 1 } }),
     );
     assert.equal(verdict.status, 'unverified');
   });
 
-  it('handles German number formatting in value', async () => {
-    const odoo = stubOdoo(() => [{ amount_total: 1234.56 }]);
-    const checker = new DeterministicChecker({ odoo });
+  it('handles German number formatting in value — returns unverified (no Odoo checker)', async () => {
+    const checker = new DeterministicChecker({});
     const verdict = await checker.check(
       makeAmountClaim({ value: '1.234,56 €' }),
     );
-    assert.equal(verdict.status, 'verified');
+    assert.equal(verdict.status, 'unverified');
   });
 });
 
 describe('verifier/deterministicChecker - aggregate (HR re-compute)', () => {
-  it('re-computes sum in JS and verifies when it matches', async () => {
-    const calls: OdooCall[] = [];
-    const odoo = stubOdoo(
-      () => [
-        { number_of_days: 5 },
-        { number_of_days: 3 },
-        { number_of_days: 4 },
-      ],
-      calls,
-    );
-    const checker = new DeterministicChecker({ odoo });
+  it('returns unverified for odoo-source aggregate (no SourceChecker installed)', async () => {
+    const checker = new DeterministicChecker({});
     const claim: HardClaim = {
       id: 'c_001',
       text: '12 Urlaubstage',
@@ -123,167 +86,149 @@ describe('verifier/deterministicChecker - aggregate (HR re-compute)', () => {
       expectedSource: 'odoo',
       value: 12,
       unit: 'd',
-      odooRecord: { model: 'hr.leave' },
+      sourceRecord: { model: 'hr.leave' },
       relatedEntities: ['hr.employee:7'],
       aggregation: 'sum',
     };
     const verdict = await checker.check(claim);
-    assert.equal(verdict.status, 'verified');
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0]!.method, 'search_read');
-    assert.deepEqual(calls[0]!.positionalArgs[0], [['employee_id', '=', 7]]);
+    assert.equal(verdict.status, 'unverified');
   });
 
-  it('contradicts when the claimed total is wrong', async () => {
-    const odoo = stubOdoo(() => [
-      { number_of_days: 5 },
-      { number_of_days: 3 },
-    ]);
-    const checker = new DeterministicChecker({ odoo });
+  it('returns unverified when claimed total would be wrong (no Odoo checker)', async () => {
+    const checker = new DeterministicChecker({});
     const claim: HardClaim = {
       id: 'c_001',
       text: '12 Urlaubstage',
       type: 'aggregate',
       expectedSource: 'odoo',
       value: 12,
-      odooRecord: { model: 'hr.leave' },
+      sourceRecord: { model: 'hr.leave' },
       relatedEntities: ['hr.employee:7'],
       aggregation: 'sum',
     };
     const verdict = await checker.check(claim);
-    assert.equal(verdict.status, 'contradicted');
-    if (verdict.status === 'contradicted') {
-      assert.equal(verdict.truth, 8);
-    }
+    assert.equal(verdict.status, 'unverified');
   });
 
-  it('supports count aggregation', async () => {
-    const odoo = stubOdoo(() => [{}, {}, {}]);
-    const checker = new DeterministicChecker({ odoo });
+  it('supports count aggregation — returns unverified (no Odoo checker)', async () => {
+    const checker = new DeterministicChecker({});
     const claim: HardClaim = {
       id: 'c_001',
       text: '3 offene Rechnungen',
       type: 'aggregate',
       expectedSource: 'odoo',
       value: 3,
-      odooRecord: { model: 'account.move' },
+      sourceRecord: { model: 'account.move' },
       relatedEntities: [],
       aggregation: 'count',
     };
     const verdict = await checker.check(claim);
-    assert.equal(verdict.status, 'verified');
+    assert.equal(verdict.status, 'unverified');
   });
 });
 
 describe('verifier/deterministicChecker - date', () => {
-  it('verifies matching ISO date', async () => {
-    const odoo = stubOdoo(() => [{ invoice_date: '2026-04-19' }]);
-    const checker = new DeterministicChecker({ odoo });
+  it('returns unverified for odoo-source date (no SourceChecker installed)', async () => {
+    const checker = new DeterministicChecker({});
     const claim: HardClaim = {
       id: 'c_001',
       text: '2026-04-19',
       type: 'date',
       expectedSource: 'odoo',
       value: '2026-04-19',
-      odooRecord: { model: 'account.move', id: 42 },
+      sourceRecord: { model: 'account.move', id: 42 },
       relatedEntities: [],
     };
     const verdict = await checker.check(claim);
-    assert.equal(verdict.status, 'verified');
+    assert.equal(verdict.status, 'unverified');
   });
 
-  it('normalises German date and verifies', async () => {
-    const odoo = stubOdoo(() => [{ invoice_date: '2026-04-19' }]);
-    const checker = new DeterministicChecker({ odoo });
+  it('returns unverified for German-formatted date (no Odoo checker)', async () => {
+    const checker = new DeterministicChecker({});
     const claim: HardClaim = {
       id: 'c_001',
       text: 'Fällig am 19.04.2026',
       type: 'date',
       expectedSource: 'odoo',
       value: '19.04.2026',
-      odooRecord: { model: 'account.move', id: 42 },
+      sourceRecord: { model: 'account.move', id: 42 },
       relatedEntities: [],
     };
     const verdict = await checker.check(claim);
-    assert.equal(verdict.status, 'verified');
+    assert.equal(verdict.status, 'unverified');
   });
 
-  it('contradicts when the date differs', async () => {
-    const odoo = stubOdoo(() => [{ invoice_date: '2026-04-20' }]);
-    const checker = new DeterministicChecker({ odoo });
+  it('returns unverified regardless of date divergence (no Odoo checker)', async () => {
+    const checker = new DeterministicChecker({});
     const claim: HardClaim = {
       id: 'c_001',
       text: '2026-04-19',
       type: 'date',
       expectedSource: 'odoo',
       value: '2026-04-19',
-      odooRecord: { model: 'account.move', id: 42 },
+      sourceRecord: { model: 'account.move', id: 42 },
       relatedEntities: [],
     };
     const verdict = await checker.check(claim);
-    assert.equal(verdict.status, 'contradicted');
+    assert.equal(verdict.status, 'unverified');
   });
 });
 
 describe('verifier/deterministicChecker - id', () => {
-  it('verifies id via read', async () => {
-    const odoo = stubOdoo(() => [{ id: 42 }]);
-    const checker = new DeterministicChecker({ odoo });
+  it('returns unverified for odoo-source id (no SourceChecker installed)', async () => {
+    const checker = new DeterministicChecker({});
     const claim: HardClaim = {
       id: 'c_001',
       text: 'Rechnung',
       type: 'id',
       expectedSource: 'odoo',
-      odooRecord: { model: 'account.move', id: 42 },
+      sourceRecord: { model: 'account.move', id: 42 },
       relatedEntities: [],
     };
     const verdict = await checker.check(claim);
-    assert.equal(verdict.status, 'verified');
+    assert.equal(verdict.status, 'unverified');
   });
 
-  it('verifies id via ref using search', async () => {
-    const calls: OdooCall[] = [];
-    const odoo = stubOdoo(() => [42], calls);
-    const checker = new DeterministicChecker({ odoo });
+  it('returns unverified for odoo ref-based id (no SourceChecker)', async () => {
+    const checker = new DeterministicChecker({});
     const claim: HardClaim = {
       id: 'c_001',
       text: 'INV/2026/0042',
       type: 'id',
       expectedSource: 'odoo',
-      odooRecord: { model: 'account.move', ref: 'INV/2026/0042' },
+      sourceRecord: { model: 'account.move', ref: 'INV/2026/0042' },
       relatedEntities: [],
     };
     const verdict = await checker.check(claim);
-    assert.equal(verdict.status, 'verified');
-    assert.equal(calls[0]!.method, 'search');
+    assert.equal(verdict.status, 'unverified');
   });
 
-  it('contradicts when ref does not exist', async () => {
-    const odoo = stubOdoo(() => []);
-    const checker = new DeterministicChecker({ odoo });
+  it('returns unverified even when ref does not exist (no Odoo checker)', async () => {
+    const checker = new DeterministicChecker({});
     const claim: HardClaim = {
       id: 'c_001',
       text: 'INV/2026/9999',
       type: 'id',
       expectedSource: 'odoo',
-      odooRecord: { model: 'account.move', ref: 'INV/2026/9999' },
+      sourceRecord: { model: 'account.move', ref: 'INV/2026/9999' },
       relatedEntities: [],
     };
     const verdict = await checker.check(claim);
-    assert.equal(verdict.status, 'contradicted');
+    assert.equal(verdict.status, 'unverified');
   });
 });
 
 describe('verifier/deterministicChecker - graph', () => {
   it('verifies id claim when graph has a matching entity', async () => {
-    const graph = stubGraph([{ id: 'res.partner:42', displayName: 'Lilium' }]);
+    const graph = stubGraph([{ id: 'res.partner:42', props: { displayName: 'Lilium' } }]);
     const checker = new DeterministicChecker({ graph });
     const claim: HardClaim = {
       id: 'c_001',
       text: 'Lilium',
       type: 'id',
       expectedSource: 'graph',
-      odooRecord: { model: 'res.partner', ref: 'Lilium' },
+      value: 'Lilium',
+      sourceRecord: { model: 'res.partner', ref: 'Lilium' },
       relatedEntities: [],
     };
     const verdict = await checker.check(claim);
@@ -298,7 +243,8 @@ describe('verifier/deterministicChecker - graph', () => {
       text: 'Mystery Corp',
       type: 'id',
       expectedSource: 'graph',
-      odooRecord: { model: 'res.partner', ref: 'Mystery Corp' },
+      value: 'Mystery Corp',
+      sourceRecord: { model: 'res.partner', ref: 'Mystery Corp' },
       relatedEntities: [],
     };
     const verdict = await checker.check(claim);
@@ -307,14 +253,8 @@ describe('verifier/deterministicChecker - graph', () => {
 });
 
 describe('verifier/deterministicChecker - error handling', () => {
-  it('returns unverified (not thrown) on reader exception', async () => {
-    const odoo: OdooReader = {
-      execute(): Promise<unknown> {
-        return Promise.reject(new Error('timeout'));
-      },
-    };
+  it('returns unverified (not thrown) on non-graph source — no SourceChecker registered', async () => {
     const checker = new DeterministicChecker({
-      odoo,
       log: (): void => {
         /* silent */
       },
@@ -322,7 +262,7 @@ describe('verifier/deterministicChecker - error handling', () => {
     const verdict = await checker.check(makeAmountClaim());
     assert.equal(verdict.status, 'unverified');
     if (verdict.status === 'unverified') {
-      assert.match(verdict.reason, /timeout/);
+      assert.match(verdict.reason, /no deterministic checker registered for source/);
     }
   });
 });

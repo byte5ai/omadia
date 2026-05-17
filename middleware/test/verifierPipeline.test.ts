@@ -54,7 +54,7 @@ function hardClaim(overrides: Partial<HardClaim> = {}): HardClaim {
     type: 'amount',
     expectedSource: 'odoo',
     value: 1234.56,
-    odooRecord: { model: 'account.move', id: 42 },
+    sourceRecord: { model: 'account.move', id: 42 },
     relatedEntities: [],
     ...overrides,
   } as HardClaim;
@@ -208,7 +208,13 @@ describe('verifier/pipeline', () => {
     assert.equal(verdict.status, 'approved');
   });
 
-  it('blocks odoo-amount claim when the turn never called an odoo tool (context-replay)', async () => {
+  it('approves odoo-amount claim when domainToolsCalled is restricted (trace-cross-check is no-op in core)', async () => {
+    // traceMissingCallVerdict is intentionally a no-op in the core pipeline
+    // (see comment in verifierPipeline.ts: "kept as hook so the pipeline shape
+    // stays stable when a SourceChecker registry lands"). Domain-specific
+    // replay detection (e.g. "odoo tool not called") belongs in a SourceChecker
+    // plugin for that domain. The core pipeline passes all claims to the
+    // deterministic checker regardless of domainToolsCalled.
     let checkerCalled = false;
     const pipeline = new VerifierPipeline({
       extractor: stubExtractor([hardClaim()]),
@@ -237,23 +243,13 @@ describe('verifier/pipeline', () => {
       runId: 'r-replay',
       userMessage: 'was?',
       answer: 'Die Rechnung beträgt 1.234,56 €.',
-      // Note: only memory tool — no query_odoo_* / odoo_execute
       domainToolsCalled: ['memory'],
     });
-    assert.equal(verdict.status, 'blocked');
-    if (verdict.status === 'blocked') {
-      assert.equal(verdict.contradictions.length, 1);
-      assert.match(
-        verdict.contradictions[0]!.status === 'contradicted'
-          ? (verdict.contradictions[0]!.detail ?? '')
-          : '',
-        /Fach-Agent-Call/,
-      );
-    }
+    assert.equal(verdict.status, 'approved');
     assert.equal(
       checkerCalled,
-      false,
-      'deterministic checker must be skipped when the replay rule fires',
+      true,
+      'deterministic checker is always called (trace-cross-check is a no-op in core)',
     );
   });
 
