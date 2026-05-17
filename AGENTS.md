@@ -39,7 +39,7 @@ Ohne mindestens Punkte 1–3 darf kein Code geändert werden.
 
 - **Fly-Deploys sind nicht atomar.** Wenn ein anderer Agent gerade deployt, abwarten (30-60s), sonst trittst du ihm auf den Zeh.
 - **Secrets-Rotation synchronisieren.** Nicht unangekündigt Secrets überschreiben — ein Agent deployt einen Proxy-Token-Rename, ein anderer Agent hält noch den alten im Skill. Kommuniziere solche Änderungen im CHANGELOG, bevor du die `fly secrets set`-Kommandos tippst.
-- **Git gibt es aktuell nicht** — das Repo ist **nicht git-tracked** (Stand 2026-04-19). Dein einziger Rollback-Schutz ist saubere Dokumentation und kleine, verifizierbare Schritte. Niemals zwei große Änderungen mischen.
+- **Git-Workflow ernst nehmen.** Das Repo liegt seit `2026-05` öffentlich auf `github.com/byte5ai/omadia`. Keine direkten Pushes auf `main` (lokal vom `.hooks/pre-push`-Guard blockiert, serverseitig von Branch Protection). Alle Änderungen über Feature-Branch + PR. Conventional-Commits-Konvention gilt (siehe unten). Niemals zwei große Änderungen in einem Commit mischen — kleine, verifizierbare Schritte sind weiterhin Pflicht.
 
 ## Anti-Pattern, die wir schon bezahlt haben
 
@@ -47,8 +47,41 @@ Ohne mindestens Punkte 1–3 darf kein Code geändert werden.
 - **Token in Agent-Config-YAML**: `agent-config-confluence.yaml` enthielt den Atlassian-Token direkt im System-Prompt. Policy: Credentials gehören **ausschließlich** in Fly Secrets — siehe `docs/security-migration-plan.md` §3.
 - **Build-Artefakt vergessen**: `tsc` kopiert keine `.sql`-Files. Fix via `middleware/scripts/copy-build-assets.mjs`. Generell: Non-TS-Assets brauchen immer einen expliziten Build-Schritt.
 
+## Git Workflow & Engineering Standards
+
+Diese Regeln gelten für alle AI-Agenten (Claude, Codex, Copilot, …) und für menschliche Contributors gleichermaßen. Source of truth: `byte5ai/engineering-standards`. Status dieses Repos: `.github/engineering-standards.yml` (`status: applied`).
+
+- **Niemals direkt auf `main` pushen.** Feature-Branch + PR. Lokal blockt `.hooks/pre-push`, serverseitig Branch Protection.
+- **Branch-Naming:** `feat/<desc>`, `fix/<desc>`, `refactor/<desc>`, `docs/<desc>`, `chore/<desc>`, `test/<desc>`, `ci/<desc>`, `perf/<desc>`, `release/vX.Y`, `dev/vX.Y.devN`.
+- **Conventional Commits:** `feat:`, `fix:`, `refactor:`, `docs:`, `chore:`, `test:`, `ci:`, `perf:`, `release:`, `dev:`. Subject < 70 Zeichen, Body erklärt das **Warum** (das *Was* steht im Diff).
+- **Keine `Co-Authored-By:`-Trailer für Claude, Codex, Copilot oder andere KI-Agenten.** Commits werden unter der konfigurierten Git-Identität erstellt, ohne Model-Attribution-Footer. Auch nicht als empfohlenes Format in Templates oder Hilfetexten auftauchen lassen.
+- **Niemals force-push** auf geteilte Branches (besonders `main`).
+- **Niemals Secrets committen** (`.env`, API-Keys, Tokens). Bei Treffer: rotiert das betroffene Secret sofort.
+- **Niemals `--no-verify`.** Wenn ein Hook fehlschlägt, erst die Ursache fixen.
+
+### Pre-push-Hook aktivieren
+
+Der Hook ist in `.hooks/pre-push` versioniert. Aktivierung pro Working-Tree:
+
+```bash
+git config core.hooksPath .hooks   # erledigt auch script/setup
+```
+
+Override für Notfälle (sehr selten gerechtfertigt):
+
+```bash
+ALLOW_PUSH_TO_MAIN=1 git push origin main
+```
+
+### PR-Regeln
+
+- PR-Titel < 70 Zeichen, Conventional-Prefix.
+- Eine logische Änderung pro PR — kein "While I'm at it…"-Stacking.
+- CI muss grün sein vor Merge. Status-Checks (`middleware`, `web-ui`, `schema`, `audit`) sind Required.
+- Squash-Merge ist Default; der PR-Titel wird zur Commit-Subject-Zeile.
+
 ## Meta
 
 Dieses Dokument wird selbst im CHANGELOG geführt, wenn sich die Regeln ändern. Kein stilles Ändern der Regeln ohne Doku.
 
-— Stand 2026-04-19, byte5
+— Stand 2026-05-17, byte5

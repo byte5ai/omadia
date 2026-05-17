@@ -52,6 +52,11 @@ incremental.
 
 ## Verification before pushing
 
+> The repo ships a `.hooks/pre-push` guard that blocks direct pushes to
+> `main`/`master`. `script/setup` activates it automatically (`git config
+> core.hooksPath .hooks`); if you skipped the setup script, run that
+> single command manually.
+
 ```bash
 # In middleware/
 npm run typecheck    # TypeScript --noEmit, runs across all workspaces
@@ -79,6 +84,9 @@ for everyone.
    - `test(scope): subject`, `perf(scope): subject`
    - Body explains the **why**, not the **what** — the diff already
      explains the what.
+   - **No `Co-Authored-By:` trailers for AI agents** (Claude, Codex,
+     Copilot, etc.). Commits are made under the contributor's configured
+     git identity, with no model-attribution footer.
 3. **Pull request** — describe the change, link the issue if applicable,
    include manual-test notes for anything that touches a UI or a runtime
    path. Mark draft PRs early to invite feedback before the change is

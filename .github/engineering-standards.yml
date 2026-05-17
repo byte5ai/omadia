@@ -1,0 +1,9 @@
+# Engineering-Standards-Status dieses Repos.
+# Single source of truth, gilt host- und agent-übergreifend.
+# Schema: siehe byte5ai/engineering-standards.
+
+status: applied
+source: byte5ai/engineering-standards
+decided_on: 2026-05-17
+reviewed_on: 2026-05-17
+reason: ""
