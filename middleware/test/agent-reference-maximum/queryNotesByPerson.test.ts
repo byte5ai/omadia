@@ -108,9 +108,9 @@ describe('agent-reference / Toolkit query_notes_by_person (OB-29-4)', () => {
     assert.ok(parsed._pendingUserChoice);
     assert.match(
       parsed._pendingUserChoice!.question,
-      /2 Notizen erw.hnen "John"/,
+      /3 Notizen erw.hnen "John"/,
     );
-    assert.equal(parsed._pendingUserChoice!.options.length, 2);
+    assert.equal(parsed._pendingUserChoice!.options.length, 3);
     for (const o of parsed._pendingUserChoice!.options) {
       assert.match(o.value, /^note:n\d+$/);
       assert.ok(o.label.length > 0);
