@@ -286,6 +286,7 @@ describe('plugin activate · registers detector with privacyDetectorRegistry (Sl
       secrets: { get: async () => undefined, require: async () => '', keys: async () => [] },
       config: {
         get: (key: string) => {
+          if (key === 'enabled') return true;
           if (key === 'ollama_endpoint') return 'http://127.0.0.1:1';
           if (key === 'ollama_model') return 'llama3.2:3b';
           return undefined;

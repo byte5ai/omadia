@@ -212,7 +212,7 @@ describe('createPresidioDetector · adapter contract (Slice 3.4)', () => {
           rawHit('PERSON', -1, 5, 0.85),  // negative start
           rawHit('PERSON', 5, 100, 0.85),  // end beyond text length
           rawHit('PERSON', 5, 3, 0.85),    // inverted
-          rawHit('PERSON', 3, 7, 0.85),    // valid: "John"
+          rawHit('PERSON', 3, 7, 0.85),    // valid: "John" (indices 3–6 inclusive, end=7)
         ],
       })),
       language: 'de',
