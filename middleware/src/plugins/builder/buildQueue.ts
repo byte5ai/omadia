@@ -1,21 +1,32 @@
 import type { BuildResult, BuildFailure } from './buildSandbox.js';
 
 /**
- * BuildQueue — global FIFO queue with concurrency cap and per-draft
+ * BuildQueue — global FIFO queue with concurrency cap and per-coalesce-key
  * coalescing for the builder pipeline.
  *
  * Semantics:
  *   - **Concurrency cap** (default 3): never more than `concurrency` builds
  *     running at once; the rest wait FIFO.
- *   - **Coalescing**: a fresh `enqueue(draftId, …)` for a draft id that is
- *     already queued or running aborts the prior entry (`AbortController.abort`)
- *     and takes its slot. The displaced entry's promise resolves with a
- *     BuildFailure of reason `'abort'`. Build functions are expected to
- *     observe the signal — buildSandbox does (its `executeBuild` is
- *     abort-aware).
+ *   - **Coalescing**: a fresh `enqueue(draftId, …, { coalesceKey })` whose
+ *     `coalesceKey` matches an already-queued-or-running entry aborts the
+ *     prior entry (`AbortController.abort`) and takes its slot. The
+ *     displaced entry's promise resolves with a BuildFailure of reason
+ *     `'abort'`. Build functions are expected to observe the signal —
+ *     buildSandbox does (its `executeBuild` is abort-aware).
+ *
+ *     `coalesceKey` defaults to `draftId`, which is the right semantic for
+ *     debounced preview rebuilds: the latest spec wins, stale rebuilds drop.
+ *     Callers that must NOT be aborted by parallel operations on the same
+ *     draft (install commit; manual rebuild kicked off while a debounced
+ *     rebuild is in flight) pass a distinct key like `${draftId}:install`,
+ *     so the queue treats the two operations as independent entries that
+ *     can run side-by-side under the concurrency cap.
  *   - **State callbacks**: optional `onStateChange(draftId, phase, queuePos?)`
  *     fires for `'queued' | 'building' | 'ok' | 'failed' | 'aborted'`. Used
  *     by the SSE bridge in B.3/B.5 to surface progress to the workspace UI.
+ *     Notifications always carry the bare `draftId`, regardless of which
+ *     coalesce key the entry was enqueued under, so the SSE consumer keeps
+ *     a single per-draft event stream.
  *   - **Graceful drain**: `drain(timeoutMs)` rejects all waiters, lets
  *     running builds finish up to the timeout, then force-aborts. Hook into
  *     `SIGTERM` / Fly machine stop.
@@ -37,9 +48,21 @@ export interface DrainResult {
 
 interface BaseEntry {
   draftId: string;
+  coalesceKey: string;
   buildFn: QueueBuildFn;
   resolve: (r: BuildResult) => void;
   abortCtrl: AbortController;
+}
+
+export interface EnqueueOptions {
+  /**
+   * Identifier used for queue coalescing. A fresh enqueue whose
+   * `coalesceKey` matches an existing entry aborts that entry. Defaults
+   * to `draftId`. Pass `${draftId}:install` (etc.) when the operation
+   * must coexist with a debounced preview rebuild for the same draft
+   * instead of being killed by it.
+   */
+  coalesceKey?: string;
 }
 
 interface QueuedEntry extends BaseEntry {
@@ -71,8 +94,8 @@ function abortFailure(): BuildFailure {
 export class BuildQueue {
   private readonly waiting: QueuedEntry[] = [];
   private readonly running = new Map<string, RunningEntry>();
-  /** Either-or index: a draftId points to its waiting OR running entry. */
-  private readonly byDraft = new Map<string, Entry>();
+  /** Either-or index: a coalesce key points to its waiting OR running entry. */
+  private readonly byKey = new Map<string, Entry>();
   private readonly concurrency: number;
   private readonly onStateChange?: BuildQueueOptions['onStateChange'];
   private draining = false;
@@ -82,16 +105,24 @@ export class BuildQueue {
     this.onStateChange = opts.onStateChange;
   }
 
-  enqueue(draftId: string, buildFn: QueueBuildFn): Promise<BuildResult> {
+  enqueue(
+    draftId: string,
+    buildFn: QueueBuildFn,
+    opts: EnqueueOptions = {},
+  ): Promise<BuildResult> {
     if (this.draining) {
       return Promise.resolve(abortFailure());
     }
 
+    const coalesceKey = opts.coalesceKey ?? draftId;
+
     return new Promise<BuildResult>((resolve) => {
       const abortCtrl = new AbortController();
 
-      // Coalesce against any existing entry for this draftId.
-      const existing = this.byDraft.get(draftId);
+      // Coalesce against any existing entry that shares this coalesceKey.
+      // Entries on the same draft but different keys (e.g. install vs
+      // preview rebuild) are independent and do not abort each other.
+      const existing = this.byKey.get(coalesceKey);
       if (existing) {
         existing.abortCtrl.abort();
         if (existing.state === 'queued') {
@@ -108,12 +139,13 @@ export class BuildQueue {
 
       const queued: QueuedEntry = {
         draftId,
+        coalesceKey,
         buildFn,
         resolve,
         abortCtrl,
         state: 'queued',
       };
-      this.byDraft.set(draftId, queued);
+      this.byKey.set(coalesceKey, queued);
       this.waiting.push(queued);
 
       this.notifyState(draftId, 'queued', this.computeQueuePos(queued));
@@ -130,20 +162,21 @@ export class BuildQueue {
       const next = this.waiting.shift()!;
       const running: RunningEntry = {
         draftId: next.draftId,
+        coalesceKey: next.coalesceKey,
         buildFn: next.buildFn,
         resolve: next.resolve,
         abortCtrl: next.abortCtrl,
         state: 'running',
         startedAt: Date.now(),
       };
-      this.running.set(next.draftId, running);
-      // byDraft was pointing at the queued entry — overwrite with running.
-      // (If a coalesce happened in the meantime, byDraft already points at
+      this.running.set(next.coalesceKey, running);
+      // byKey was pointing at the queued entry — overwrite with running.
+      // (If a coalesce happened in the meantime, byKey already points at
       // the newer queued entry; in that case `next` is the displaced one
       // whose promise was already settled, but we still drained it from
       // `waiting` above, so this is just defensive.)
-      if (this.byDraft.get(next.draftId) === next) {
-        this.byDraft.set(next.draftId, running);
+      if (this.byKey.get(next.coalesceKey) === next) {
+        this.byKey.set(next.coalesceKey, running);
       }
       this.notifyState(next.draftId, 'building');
       void this.runEntry(running);
@@ -175,9 +208,9 @@ export class BuildQueue {
       result = { ...result, reason: 'abort' };
     }
 
-    this.running.delete(entry.draftId);
-    if (this.byDraft.get(entry.draftId) === entry) {
-      this.byDraft.delete(entry.draftId);
+    this.running.delete(entry.coalesceKey);
+    if (this.byKey.get(entry.coalesceKey) === entry) {
+      this.byKey.delete(entry.coalesceKey);
     }
 
     entry.resolve(result);
@@ -211,8 +244,8 @@ export class BuildQueue {
     // Settle all waiters as aborted.
     for (const w of this.waiting) {
       w.resolve(abortFailure());
-      if (this.byDraft.get(w.draftId) === w) {
-        this.byDraft.delete(w.draftId);
+      if (this.byKey.get(w.coalesceKey) === w) {
+        this.byKey.delete(w.coalesceKey);
       }
     }
     this.waiting.length = 0;

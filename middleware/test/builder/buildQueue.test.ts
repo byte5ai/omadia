@@ -161,6 +161,100 @@ describe('BuildQueue', () => {
       await pNew;
     });
 
+    it('does NOT abort across distinct coalesceKeys on the same draftId', async () => {
+      // Regression: an install (kind='install', coalesceKey='d1:install')
+      // running alongside a debounced preview rebuild (kind='preview',
+      // coalesceKey='d1') used to abort one another because both shared
+      // the per-draft slot. Now they coexist under the concurrency cap
+      // and only coalesce against entries with the same coalesceKey.
+      const q = new BuildQueue({ concurrency: 3 });
+      const install = controlledBuild();
+      const preview = controlledBuild();
+
+      const pInstall = q.enqueue('d1', install.fn, { coalesceKey: 'd1:install' });
+      const pPreview = q.enqueue('d1', preview.fn);
+      await tick();
+
+      assert.equal(install.started(), true);
+      assert.equal(preview.started(), true);
+      assert.equal(install.signal()?.aborted, false);
+      assert.equal(preview.signal()?.aborted, false);
+      assert.equal(q.runningSize, 2);
+
+      install.finishOk();
+      preview.finishOk();
+      const [ri, rp] = await Promise.all([pInstall, pPreview]);
+      assert.equal(ri.ok, true);
+      assert.equal(rp.ok, true);
+    });
+
+    it('still coalesces preview rebuilds with each other (default key)', async () => {
+      // Two debounced preview rebuilds for the same draft should still
+      // coalesce — the latest spec wins, the older one drops as 'abort'.
+      const q = new BuildQueue({ concurrency: 2 });
+      const oldRebuild = controlledBuild();
+      const newRebuild = controlledBuild();
+
+      const pOld = q.enqueue('d1', oldRebuild.fn);
+      await tick();
+      assert.equal(oldRebuild.started(), true);
+
+      const pNew = q.enqueue('d1', newRebuild.fn);
+      await tick();
+      assert.equal(oldRebuild.signal()?.aborted, true);
+
+      oldRebuild.finish({
+        ok: false,
+        errors: [],
+        exitCode: null,
+        stdoutTail: '',
+        stderrTail: '',
+        durationMs: 1,
+        reason: 'abort',
+      });
+      const ro = await pOld;
+      assert.equal(ro.ok, false);
+      if (!ro.ok) assert.equal(ro.reason, 'abort');
+
+      newRebuild.finishOk();
+      const rn = await pNew;
+      assert.equal(rn.ok, true);
+    });
+
+    it('coalesces two installs against each other (same install key)', async () => {
+      // Defensive: if the operator clicks "Install" twice in rapid
+      // succession, the newer install replaces the older one.
+      const q = new BuildQueue({ concurrency: 2 });
+      const first = controlledBuild();
+      const second = controlledBuild();
+      const opts = { coalesceKey: 'd1:install' };
+
+      const pFirst = q.enqueue('d1', first.fn, opts);
+      await tick();
+      assert.equal(first.started(), true);
+
+      const pSecond = q.enqueue('d1', second.fn, opts);
+      await tick();
+      assert.equal(first.signal()?.aborted, true);
+
+      first.finish({
+        ok: false,
+        errors: [],
+        exitCode: null,
+        stdoutTail: '',
+        stderrTail: '',
+        durationMs: 1,
+        reason: 'abort',
+      });
+      const rf = await pFirst;
+      assert.equal(rf.ok, false);
+      if (!rf.ok) assert.equal(rf.reason, 'abort');
+
+      second.finishOk();
+      const rs = await pSecond;
+      assert.equal(rs.ok, true);
+    });
+
     it('re-tags non-abort failures as abort when the signal was aborted', async () => {
       const q = new BuildQueue({ concurrency: 1 });
       const old = controlledBuild();

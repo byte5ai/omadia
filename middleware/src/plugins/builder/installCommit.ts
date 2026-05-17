@@ -93,7 +93,11 @@ export async function installDraft(
   // Step 1: build pipeline (load draft → codegen → sandbox).
   let pipelineResult;
   try {
-    pipelineResult = await deps.buildPipeline.run({ userEmail, draftId });
+    pipelineResult = await deps.buildPipeline.run({
+      userEmail,
+      draftId,
+      kind: 'install',
+    });
   } catch (err) {
     if (err instanceof BuildPipelineError) {
       return mapPipelineError(err);
