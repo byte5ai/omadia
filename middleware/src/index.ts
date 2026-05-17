@@ -394,7 +394,10 @@ async function main(): Promise<void> {
   // Forward reference for the channel registry — constructed later in boot
   // (after the channel-SDK adapters are wired up). The install hooks below
   // close over this variable so post-install activations dispatched to a
-  // channel-kind plugin reach the right runtime once it exists.
+  // channel-kind plugin reach the right runtime once it exists. The
+  // assignment happens further down in main() once the channel runtime
+  // is wired; eslint's prefer-const doesn't trace through that depth.
+  // eslint-disable-next-line prefer-const
   let channelRegistryRef: ChannelRegistry | undefined;
 
   const installService = new InstallService({
