@@ -1,7 +1,7 @@
 schema_version: 1
 id: production
 name: Recommended Production
-description: Neon-KG + Verifier + Orchestrator-Stack + Teams + Telegram. Operator setzt DATABASE_URL + ANTHROPIC_API_KEY + Channel-Secrets nach Profile-Apply.
+description: Postgres-backed knowledge graph + verifier + full orchestrator stack. Operator sets DATABASE_URL + ANTHROPIC_API_KEY before profile apply, then installs channel plugins via the admin UI.
 plugins:
   - "@omadia/memory"
   - "@omadia/knowledge-graph-neon"
