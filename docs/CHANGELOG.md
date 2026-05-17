@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- 2026-05-17 — byte5ai engineering-standards bootstrap (PR #31). Repo is now
+  on `status: applied` against `byte5ai/engineering-standards`:
+  - `.github/engineering-standards.yml` as the explicit marker.
+  - `.hooks/pre-push` blocks direct pushes to `main`/`master` locally.
+  - `script/setup` enables the hook and runs the npm bootstrap in one step.
+  - AGENTS.md gained a "Git Workflow & Engineering Standards" section.
+  - CONTRIBUTING.md documents the pre-push guard and forbids
+    `Co-Authored-By:` trailers for AI agents.
+  - Branch protection on `main` is enforced server-side: PR required,
+    force-push and deletion blocked, all four CI workflows (five contexts
+    including the `audit` matrix) wired up as required status checks.
+
+  GitHub Actions were disabled on the repo since 2026-05-11 and were
+  reactivated as part of this rollout. The follow-up CHANGELOG PR doubles
+  as the first end-to-end CI verification after reactivation.
+
 ### Changed
 
 - `docs/CHANGELOG.md` reformatted to follow the Keep-a-Changelog convention.
