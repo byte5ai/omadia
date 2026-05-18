@@ -41,7 +41,10 @@ import { BuilderAgent } from './plugins/builder/builderAgent.js';
 import { BuilderTriageLog } from './plugins/builder/builderTriageLog.js';
 import { GithubIssueCache } from './plugins/builder/githubIssueCache.js';
 import { UserChoiceCoordinator } from './plugins/builder/userChoiceCoordinator.js';
-import { loadUpstreamIssueConfig } from './plugins/builder/upstreamIssueConfig.js';
+import {
+  isUpstreamAllowlisted,
+  loadUpstreamIssueConfig,
+} from './plugins/builder/upstreamIssueConfig.js';
 import { WorkaroundStateStore } from './plugins/builder/workaroundStateStore.js';
 import { SpecEventBus } from './plugins/builder/specEventBus.js';
 import { BuilderTurnRingBuffer } from './plugins/builder/turnRingBuffer.js';
@@ -1633,6 +1636,18 @@ async function main(): Promise<void> {
   });
   await builderWorkaroundStateStore.open();
   const upstreamIssueConfig = loadUpstreamIssueConfig();
+  if (!isUpstreamAllowlisted(upstreamIssueConfig)) {
+    console.warn(
+      `[builder/issue-reporting] WARNING: configured upstream ${upstreamIssueConfig.owner}/${upstreamIssueConfig.repo} is NOT in the platform allowlist. ` +
+        `Issues will land outside the canonical omadia repo — verify this is intentional (Fork operator). ` +
+        `To suppress this warning, point GITHUB_UPSTREAM_OWNER/REPO at a registered allowlist entry.`,
+    );
+  } else {
+    console.log(
+      `[builder/issue-reporting] upstream ${upstreamIssueConfig.owner}/${upstreamIssueConfig.repo} ` +
+        `(labels: ${upstreamIssueConfig.labels.join(', ')})`,
+    );
+  }
 
   const builderAgent = new BuilderAgent({
     anthropic: client,

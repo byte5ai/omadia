@@ -11,6 +11,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Native issue-reporting + workaround-tracking for the agent builder.
+  When the builder hits a platform-side failure (forbidden-import
+  gate on valid code, codegen-internal error, core-stack-frame
+  crash, admin-route schema violation), it now offers the operator
+  a smart card with three options: report + workaround, report +
+  pause, or skip. Reports go through a browser-submit flow against
+  `byte5ai/omadia` so the operator owns the GitHub attribution; the
+  middleware never sees a PAT in v1. A 64 KB sanitizer strips
+  AWS keys / GitHub PATs / Slack tokens / IBANs / emails / internal
+  URLs before the operator confirms. Per-operator rate limit of 3
+  platform reports per 24 h, deduplication via a stable
+  fingerprint hash + GitHub search, ETag-aware status cache with
+  rate-limit backoff, pause-on-issue with operator-triggered
+  resume. Workaround lifecycle state survives re-installs in the
+  new `agent_workaround_state` table; identity (issue ref +
+  fingerprint + summary) lives on the spec so the manifest carries
+  it through to installed agents.
 - byte5ai engineering-standards applied to the repo
   (`status: applied` in `.github/engineering-standards.yml`):
   - `.hooks/pre-push` blocks direct pushes to `main`/`master` locally.
