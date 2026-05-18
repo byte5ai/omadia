@@ -42,6 +42,7 @@ import { BuilderTriageLog } from './plugins/builder/builderTriageLog.js';
 import { GithubIssueCache } from './plugins/builder/githubIssueCache.js';
 import { UserChoiceCoordinator } from './plugins/builder/userChoiceCoordinator.js';
 import { loadUpstreamIssueConfig } from './plugins/builder/upstreamIssueConfig.js';
+import { WorkaroundStateStore } from './plugins/builder/workaroundStateStore.js';
 import { SpecEventBus } from './plugins/builder/specEventBus.js';
 import { BuilderTurnRingBuffer } from './plugins/builder/turnRingBuffer.js';
 import { ensureBuildTemplate } from './plugins/builder/buildTemplate.js';
@@ -1627,6 +1628,10 @@ async function main(): Promise<void> {
   await builderTriageLog.open();
   const builderGithubIssueCache = new GithubIssueCache({ dbPath: DRAFTS_DB_PATH });
   await builderGithubIssueCache.open();
+  const builderWorkaroundStateStore = new WorkaroundStateStore({
+    dbPath: DRAFTS_DB_PATH,
+  });
+  await builderWorkaroundStateStore.open();
   const upstreamIssueConfig = loadUpstreamIssueConfig();
 
   const builderAgent = new BuilderAgent({
@@ -1692,6 +1697,7 @@ async function main(): Promise<void> {
       builderUserChoice.cancelAll();
       await builderGithubIssueCache.close();
       await builderTriageLog.close();
+      await builderWorkaroundStateStore.close();
       await draftStore.close();
       // Stop every active routine (drops scheduler entries; in-flight runs
       // see their AbortSignal). Idempotent if undefined.
@@ -1747,6 +1753,7 @@ async function main(): Promise<void> {
               buildPipeline: builderBuildPipeline,
               packageUploadService,
               quota: draftQuota,
+              workaroundStateStore: builderWorkaroundStateStore,
             },
           }
         : {}),
