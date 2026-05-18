@@ -87,12 +87,18 @@ export function QualityPanel({ draftId, refetchKey }: QualityPanelProps): React.
         </button>
         <div className="flex items-center gap-2 text-xs">
           {data && (
-            <span data-testid="quality-sweetspot" className="rounded bg-slate-100 px-2 py-0.5">
+            <span
+              data-testid="quality-sweetspot"
+              className="rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-0.5 text-[color:var(--fg)]"
+            >
               {sweetspotLabelDe(data.sweetspot)}
             </span>
           )}
           {data && (
-            <span data-testid="quality-token-health" className="rounded bg-slate-100 px-2 py-0.5">
+            <span
+              data-testid="quality-token-health"
+              className="rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-0.5 text-[color:var(--fg)]"
+            >
               Tokens: {tokenHealthLabelDe(data.tokenHealth)}
             </span>
           )}
@@ -128,7 +134,7 @@ export function QualityPanel({ draftId, refetchKey }: QualityPanelProps): React.
                       <span>{DIMENSION_LABEL_DE[key]}</span>
                       <span>{v}/100</span>
                     </div>
-                    <div className="h-1.5 w-full rounded bg-slate-100">
+                    <div className="h-1.5 w-full rounded bg-[color:var(--border)]">
                       <div
                         data-testid={`quality-bar-${key}`}
                         className={`h-full rounded ${scoreColor(v)}`}

@@ -17,13 +17,16 @@ import {
  * total token count with health indicator, and a Copy button.
  */
 
+// Pastel section backgrounds carry their own explicit dark text color
+// so they stay readable on a dark theme (without it, the page's light
+// foreground inherits and the text disappears against the light pastel).
 const KIND_BG: Record<PreviewPromptSection['kind'], string> = {
-  header: 'bg-slate-50',
-  persona: 'bg-amber-50',
-  custom_notes: 'bg-amber-50/50',
-  boundaries: 'bg-rose-50',
-  sycophancy: 'bg-violet-50',
-  skill: 'bg-emerald-50',
+  header: 'bg-slate-50 text-slate-900',
+  persona: 'bg-amber-50 text-amber-950',
+  custom_notes: 'bg-amber-50/70 text-amber-950',
+  boundaries: 'bg-rose-50 text-rose-950',
+  sycophancy: 'bg-violet-50 text-violet-950',
+  skill: 'bg-emerald-50 text-emerald-950',
 };
 
 const KIND_LABEL: Record<PreviewPromptSection['kind'], string> = {
@@ -159,7 +162,7 @@ export function PreviewPromptPanel({
             data-testid={`preview-prompt-section-${s.kind}`}
             className={`overflow-x-auto whitespace-pre-wrap rounded p-2 ${KIND_BG[s.kind]}`}
           >
-            <span className="block text-[10px] font-semibold uppercase text-[color:var(--fg-muted)]">
+            <span className="block text-[10px] font-semibold uppercase opacity-70">
               {KIND_LABEL[s.kind]}
             </span>
             {s.content}
