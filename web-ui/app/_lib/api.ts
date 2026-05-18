@@ -1929,3 +1929,75 @@ export async function runOperatorPrivacyLiveTest(
     text,
   });
 }
+
+// ─── Native issue-reporting (concept plan) ─────────────────────────────────
+
+export type WorkaroundConfirmIssueResponse = {
+  ok: true;
+  workaround: {
+    id: string;
+    fingerprint: string;
+    summary: string;
+    createdAt: number;
+    issueRef: {
+      owner: string;
+      repo: string;
+      number: number;
+      url: string;
+    };
+  };
+  issueState: 'open' | 'closed';
+  closedAt: number | null;
+};
+
+export async function confirmBuilderIssue(input: {
+  draftId: string;
+  issueNumber: number;
+  fingerprint: string;
+  summary: string;
+}): Promise<WorkaroundConfirmIssueResponse> {
+  return postJson<WorkaroundConfirmIssueResponse>(
+    `/v1/builder/drafts/${encodeURIComponent(input.draftId)}/workarounds/confirm-issue`,
+    {
+      issueNumber: input.issueNumber,
+      fingerprint: input.fingerprint,
+      summary: input.summary,
+    },
+  );
+}
+
+export async function resolveBuilderUserChoice(input: {
+  draftId: string;
+  choiceId: string;
+  value: string;
+}): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>(
+    `/v1/builder/drafts/${encodeURIComponent(input.draftId)}/user-choice/${encodeURIComponent(input.choiceId)}`,
+    { value: input.value },
+  );
+}
+
+export async function cancelBuilderUserChoice(input: {
+  draftId: string;
+  choiceId: string;
+}): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>(
+    `/v1/builder/drafts/${encodeURIComponent(input.draftId)}/user-choice/${encodeURIComponent(input.choiceId)}`,
+    { cancel: true },
+  );
+}
+
+export async function resumeBuilderFromIssue(input: {
+  draftId: string;
+  force?: boolean;
+}): Promise<{
+  ok: true;
+  resumedAt: number;
+  issueState: string;
+  forced: boolean;
+}> {
+  return postJson(
+    `/v1/builder/drafts/${encodeURIComponent(input.draftId)}/resume-from-issue`,
+    { force: input.force === true },
+  );
+}
