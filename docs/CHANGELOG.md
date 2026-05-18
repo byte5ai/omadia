@@ -11,6 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- RFC `docs/cross-channel-memory.md` proposing two new core capabilities,
+  `platformIdentity@1` and `crossChannelConversationMemory@1`, plus four
+  provider plugins (Neon + in-memory siblings per capability). Driven by
+  the omadia-ui Tier-2 orchestrator's hard dependency on
+  `crossChannelConversationMemory@1` and the "Telegram → desktop"
+  continuity scenario. Additive against `harness-channel-sdk`: the
+  existing `ConversationHistoryStore` contract stays unchanged; a new
+  `DurableConversationHistoryStore` adapter bridges to the capability
+  and falls back to in-memory behavior when the capability is not
+  installed. PR sequence and consumer mechanics are spelled out in the
+  RFC. `docs/middleware-agent-handoff.md` §13 gains a Phase 13 roadmap
+  entry pointing at the RFC.
 - byte5ai engineering-standards applied to the repo
   (`status: applied` in `.github/engineering-standards.yml`):
   - `.hooks/pre-push` blocks direct pushes to `main`/`master` locally.

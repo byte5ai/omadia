@@ -642,6 +642,42 @@ Sobald wir mehrere Teams-Tenants bedienen, muss `tenantId` aus der Teams-Activit
 in `TurnContextValue` fließen — analog `turnId`. `DiagramService` liest dann
 `turnContext.currentTenantId()` statt `config.GRAPH_TENANT_ID`.
 
+### Phase 13 — Cross-Channel Conversation Memory
+
+Durable, user-scoped Conversation-Memory über Channel-Grenzen hinweg.
+Treiber: omadia-ui-Orchestrator deklariert `requires:
+crossChannelConversationMemory@1`. Use-Case ist die "S-Bahn → Büro"-
+Continuity (Telegram unterwegs → Desktop-App im Büro nahtlos weiter).
+
+Spec liegt als RFC unter [docs/cross-channel-memory.md](cross-channel-memory.md).
+Kurzfassung:
+
+- Zwei neue Capabilities: `platformIdentity@1` (ChannelUserRef → stabile
+  userId) und `crossChannelConversationMemory@1` (append-only durable
+  Conversation-Log pro userId, channel-agnostisch).
+- Vier Plugins als Provider, je Neon + Inmemory-Sibling pro Capability;
+  Mutual-Exclusion pro Capability — Operator wählt Neon für Prod,
+  Inmemory für CI / Smoke / Local-Dev. Pattern analog
+  `harness-knowledge-graph-neon` / `-inmemory`.
+- Backward-compat: `ConversationHistoryStore` aus `harness-channel-sdk`
+  bleibt unverändert. Neuer `DurableConversationHistoryStore`-Adapter
+  fungiert als Bridge zur Capability; Channel-Plugins opten pro PR ein.
+  Fehlt die Capability (CI / Dev), fällt der Adapter auf das bisherige
+  `InMemoryConversationHistoryStore`-Verhalten zurück.
+- Persistenz raw, Egress-Redaction unverändert; optionaler
+  Pre-Persist-Redaction-Hook pro Tenant. GDPR-Forget über
+  `platformIdentity@1.forgetUser` + `ccm.forgetByUser` in einer
+  Transaktion.
+- Capacity: TTL 90 Tage (konfigurierbar), Per-User-Cap 10000 Turns,
+  ein `ccm-gc`-Cron-Job (default `0 4 * * *`). Kein Score-Decay /
+  Tier-Rotation — Conversation-Log ist chronologisch, Wert verfällt
+  natürlich mit Zeit. Score-Decay bleibt v2-Pfad.
+
+PR-Sequenz (additiv gegen `main`, jede PR independent mergeable):
+docs-RFC (diese PR) → `platformIdentity@1`-Provider → `ccm@1`-Provider
+→ Adapter im SDK → vier Per-Channel-Opt-in-PRs → omadia-ui-Orchestrator-
+Consumer. Details in §14 des RFC.
+
 ---
 
 ## 14. Commands (vom `middleware/`-Dir aus)
