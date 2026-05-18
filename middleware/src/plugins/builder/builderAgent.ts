@@ -19,6 +19,9 @@ import { loadBoilerplate, type SlotDef } from './boilerplateSource.js';
 import type { DraftStore } from './draftStore.js';
 import type { SlotTypecheckService } from './slotTypecheckPipeline.js';
 import type { SpecEventBus } from './specEventBus.js';
+import type { UserChoiceCoordinator } from './userChoiceCoordinator.js';
+import type { BuilderTriageLog } from './builderTriageLog.js';
+import type { GithubIssueCache } from './githubIssueCache.js';
 import type { JsonPatch } from './specPatcher.js';
 import type {
   AgentSpecSkeleton,
@@ -241,6 +244,22 @@ export interface BuilderAgentDeps {
    */
   templateRoot: string;
   /**
+   * Native issue-reporting (concept plan): coordinator for the
+   * ask_user_choice smart-card flow. Optional — when unset, the
+   * agent loses access to ask_user_choice + report_platform_issue
+   * (the tools return `unavailable`) but everything else stays
+   * functional. Wired by `index.ts` once the coordinator + cache +
+   * triage-log + upstream config are constructed.
+   */
+  userChoice?: UserChoiceCoordinator;
+  triageLog?: BuilderTriageLog;
+  githubIssueCache?: GithubIssueCache;
+  upstreamIssueConfig?: {
+    owner: string;
+    repo: string;
+    labels: readonly string[];
+  };
+  /**
    * Issue #56 — optional audit logger override. When omitted, the
    * default `createAuditLogger(draftStore)` is wired so every mutating
    * tool call lands in `builder_audit`. Tests can pass a spy to
@@ -284,6 +303,14 @@ export class BuilderAgent {
   private readonly maxIterations: number;
   private readonly maxConsecutiveBuildFailures: number;
   private readonly templateRoot: string;
+  private readonly userChoice?: UserChoiceCoordinator;
+  private readonly triageLog?: BuilderTriageLog;
+  private readonly githubIssueCache?: GithubIssueCache;
+  private readonly upstreamIssueConfig?: {
+    owner: string;
+    repo: string;
+    labels: readonly string[];
+  };
   private readonly log: (...args: unknown[]) => void;
 
   private cachedSystemPromptSeed: string | null = null;
@@ -306,6 +333,10 @@ export class BuilderAgent {
     this.maxConsecutiveBuildFailures =
       deps.maxConsecutiveBuildFailures ?? DEFAULT_MAX_CONSECUTIVE_BUILD_FAILURES;
     this.templateRoot = deps.templateRoot;
+    this.userChoice = deps.userChoice;
+    this.triageLog = deps.triageLog;
+    this.githubIssueCache = deps.githubIssueCache;
+    this.upstreamIssueConfig = deps.upstreamIssueConfig;
     this.log = deps.logger ?? (() => {});
   }
 
@@ -319,6 +350,26 @@ export class BuilderAgent {
         type: 'error',
         code: 'builder.draft_not_found',
         message: `draft '${opts.draftId}' not found for user '${opts.userEmail}'`,
+      };
+      return;
+    }
+
+    // Native issue-reporting: refuse new turns when the draft is paused
+    // on an open issue. The Resume route clears `paused_on_issue` before
+    // the next turn can run. Emit the event so the UI surfaces the
+    // pause + the "Issue closed?" check-now button.
+    const pause = draft.spec.builder_settings?.paused_on_issue;
+    if (pause) {
+      this.bus.emit(opts.draftId, {
+        type: 'paused_on_issue',
+        issueRef: pause.issueRef,
+        fingerprint: pause.fingerprint,
+        pausedAt: pause.pausedAt,
+      });
+      yield {
+        type: 'error',
+        code: 'builder.paused_on_issue',
+        message: `Draft is paused waiting for upstream issue #${String(pause.issueRef.number)} to close. Resume from the workspace once the fix lands.`,
       };
       return;
     }
@@ -382,6 +433,12 @@ export class BuilderAgent {
       buildFailureBudget,
       templateRoot: this.templateRoot,
       userMessage: opts.userMessage,
+      ...(this.userChoice ? { userChoice: this.userChoice } : {}),
+      ...(this.triageLog ? { triageLog: this.triageLog } : {}),
+      ...(this.githubIssueCache ? { githubIssueCache: this.githubIssueCache } : {}),
+      ...(this.upstreamIssueConfig
+        ? { upstreamIssueConfig: this.upstreamIssueConfig }
+        : {}),
       audit: this.audit,
     };
 

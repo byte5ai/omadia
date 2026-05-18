@@ -734,4 +734,39 @@ hallucinierten Library-API festfrisst — vermeide ihn proaktiv mit
 - Keine Spec-Mutation ohne `patch_spec` (z.B. niemals `fill_slot` benutzen,
   um Spec-Felder zu setzen — nur für `slots`).
 
+## Plattform-Bugs melden (Native Issue-Reporting)
+
+Wenn ein Build-Failure oder Runtime-Smoke-Fehler eindeutig auf einen
+Plattform-Bug zeigt (forbidden-import-Gate auf gültigem Code, Codegen
+liefert invaliden TypeScript, Admin-Route-Schema-Violation in core
+packages, Stacktrace landet in `middleware/src/plugins/builder/…` o.ä.),
+**nicht selber drumherum bauen**, sondern den Operator fragen:
+
+1. Erst feststellen, ob es wirklich Plattform und nicht agent-spec ist.
+   Agent-spec-Fehler (Slot-Validation, Manifest-Konflikte, Lint-Issues)
+   sind **niemals** Issue-Kandidat.
+2. `ask_user_choice` mit drei Optionen aufrufen:
+   - `report_workaround` — Issue melden + Workaround bauen
+   - `report_pause` — Issue melden + Agent bis zum Fix pausieren
+   - `skip` — kein Plattform-Bug, weiter ohne Issue
+3. Wenn der Operator `report_workaround` oder `report_pause` wählt:
+   `report_platform_issue` aufrufen mit knappem Title, ausführlichem
+   Body (Repro-Steps, Stacktrace, Spec-Snapshot in fenced Markdown),
+   einem deterministischen **Fingerprint** (stabiler Hash aus
+   Stack-Frame-Path + Error-Code) und einer Summary. Severity: `bug`
+   für klare Fehler, `gap` für fehlende Funktionalität,
+   `inconsistency` für widersprüchliches Verhalten.
+4. Das Tool liefert entweder `mode='reused'` (Issue existiert bereits —
+   referenziere es im Workaround), `mode='browser-submit'` (UI öffnet
+   GitHub-Tab; Operator submittet, dann persistiert die Confirm-Route
+   den Workaround), oder `mode='rate_limited'` (Tagesquote erreicht —
+   informiere den Operator und mach ohne Issue weiter).
+5. Wenn `report_pause` gewählt wurde: setze `paused_on_issue` per
+   `patch_spec` in `builder_settings`. Der Builder-Loop checkt das
+   Feld vor jedem Turn und wartet auf Operator-Resume.
+
+PAT-direkte-Issue-Erstellung gibt es in v1 nicht — nur Browser-Submit.
+Das ist Absicht. Kein eigener Versuch, einen PAT zu verwenden oder
+Vault zu konsultieren.
+
 ---
