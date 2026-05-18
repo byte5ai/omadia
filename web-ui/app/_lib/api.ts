@@ -1951,6 +1951,36 @@ export async function runOperatorPrivacyLiveTest(
   });
 }
 
+// ── Builder quality score (issue #52) ───────────────────────────────────────
+
+export interface QualitySuggestion {
+  code: string;
+  message: string;
+  dimension: 'completeness' | 'tokenEfficiency' | 'ruleQuality' | 'specificity';
+}
+
+export interface BuilderQualityResult {
+  draftId: string;
+  score: number;
+  dimensions: {
+    completeness: number;
+    tokenEfficiency: number;
+    ruleQuality: number;
+    specificity: number;
+  };
+  sweetspot: 'under' | 'sweet' | 'over';
+  tokenHealth: 'ok' | 'warning' | 'critical';
+  suggestions: QualitySuggestion[];
+}
+
+export async function fetchBuilderQuality(
+  draftId: string,
+): Promise<BuilderQualityResult> {
+  return getJson<BuilderQualityResult>(
+    `/v1/builder/drafts/${encodeURIComponent(draftId)}/quality`,
+  );
+}
+
 // ── Builder preview prompt (issue #55) ──────────────────────────────────────
 
 export interface PreviewPromptSection {

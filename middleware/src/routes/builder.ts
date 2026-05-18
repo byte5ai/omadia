@@ -40,6 +40,10 @@ import {
   type BuilderPreviewPromptDeps,
 } from './builderPreviewPrompt.js';
 import {
+  registerBuilderQualityRoute,
+  type BuilderQualityDeps,
+} from './builderQuality.js';
+import {
   registerBuilderEventsRoutes,
   type BuilderEventsDeps,
 } from './builderEvents.js';
@@ -85,6 +89,9 @@ export interface BuilderRouterDeps {
   /** Preview-prompt POST surface (issue #55). When omitted, the
    *  POST /drafts/:id/preview-prompt endpoint stays absent. */
   previewPrompt?: BuilderPreviewPromptDeps;
+  /** Quality-score GET surface (issue #52). When omitted, the
+   *  GET /drafts/:id/quality endpoint stays absent. */
+  quality?: BuilderQualityDeps;
   /** SSE event-bus stream (B.5-4). When omitted, the
    *  GET /drafts/:id/events endpoint stays absent. Wired by `index.ts`
    *  alongside the chat + edit surfaces — a single SpecEventBus instance
@@ -465,6 +472,11 @@ export function createBuilderRouter(deps: BuilderRouterDeps): Router {
   // ── Builder preview-prompt POST (issue #55) ────────────────────────────
   if (deps.previewPrompt) {
     registerBuilderPreviewPromptRoute(router, deps.previewPrompt);
+  }
+
+  // ── Builder quality-score GET (issue #52) ──────────────────────────────
+  if (deps.quality) {
+    registerBuilderQualityRoute(router, deps.quality);
   }
 
   // ── Builder SSE event stream (B.5-4) ──────────────────────────────────

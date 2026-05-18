@@ -25,6 +25,7 @@ import { CulturePresetDropdown } from './CulturePresetDropdown';
 import { DimensionSlider } from './DimensionSlider';
 import { PersonaRadar, personaAxisToSliderTestId } from './PersonaRadar';
 import { PersonaTemplateGallery } from './PersonaTemplateGallery';
+import { QualityPanel } from './QualityPanel';
 
 /**
  * Phase 3 / OB-67 Slice 4 — top-level persona pillar.
@@ -184,6 +185,9 @@ export function PersonaPillar({
       </p>
 
       <ConflictBanner warnings={warnings} />
+
+      {/* Issue #52 — quality score panel (collapsed by default). */}
+      <QualityPanel draftId={draftId} />
 
       {/* Issue #53 — Apply persona-template button + gallery modal.
        *  Selecting an archetype calls setPersonaConfig server-side; the

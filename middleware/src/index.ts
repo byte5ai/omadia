@@ -1715,6 +1715,8 @@ async function main(): Promise<void> {
       audit: { draftStore },
       // Issue #55 — live compiled-prompt preview
       previewPrompt: { draftStore },
+      // Issue #52 — multidimensional quality score
+      quality: { draftStore },
       // Install endpoint is only wired when the package-upload subsystem is
       // enabled — otherwise the underlying ingest service does not exist.
       // BuilderRouterDeps.install is optional so the route stays absent.
