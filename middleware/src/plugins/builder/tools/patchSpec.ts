@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { safeParseAgentSpec } from '../agentSpec.js';
+import { BuilderAuditAction } from '../auditActions.js';
 import {
   checkSpecDelta,
   formatViolations as formatContentGuardViolations,
@@ -134,15 +135,23 @@ export const patchSpecTool: BuilderTool<Input, Result> = {
     });
     ctx.rebuildScheduler.schedule(ctx.userEmail, ctx.draftId);
 
+    // Issue #56 — fire-and-forget audit log
+    void ctx.audit.log(ctx.draftId, ctx.userEmail, BuilderAuditAction.SPEC_PATCHED, {
+      ops: patches.map((p) => ({ op: p.op, path: p.path })),
+    });
+
     return { ok: true, applied: [...patches] };
   },
 };
 
 function formatZodErrors(
-  issues: ReadonlyArray<{ path: ReadonlyArray<string | number>; message: string }>,
+  issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey>; message: string }>,
 ): string {
   return issues
     .slice(0, 5)
-    .map((i) => `${i.path.length > 0 ? `/${i.path.join('/')}` : '/'}: ${i.message}`)
+    .map(
+      (i) =>
+        `${i.path.length > 0 ? `/${i.path.map(String).join('/')}` : '/'}: ${i.message}`,
+    )
     .join('; ');
 }

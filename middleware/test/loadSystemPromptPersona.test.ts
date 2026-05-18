@@ -5,7 +5,9 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
 import {
+  composeBoundariesFromAgentMd,
   composePersonaFromAgentMd,
+  composeSycophancyFromAgentMd,
   inferFamilyFromModel,
 } from '../src/plugins/dynamicAgentRuntime.js';
 
@@ -162,5 +164,203 @@ persona:
     );
     const out = await composePersonaFromAgentMd(pkgRoot, 'claude-sonnet-4-6');
     assert.equal(out, '');
+  });
+});
+
+describe('composeSycophancyFromAgentMd (issue #51)', () => {
+  let pkgRoot: string;
+
+  beforeEach(async () => {
+    pkgRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'sycophancy-rt-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(pkgRoot, { recursive: true, force: true });
+  });
+
+  it("returns '' when AGENT.md is missing (legacy plugin)", async () => {
+    assert.equal(await composeSycophancyFromAgentMd(pkgRoot), '');
+  });
+
+  it("returns '' when AGENT.md has no quality block", async () => {
+    await fs.writeFile(
+      path.join(pkgRoot, 'AGENT.md'),
+      `---
+identity:
+  id: foo
+---
+
+# Body
+`,
+    );
+    assert.equal(await composeSycophancyFromAgentMd(pkgRoot), '');
+  });
+
+  it("returns '' when quality.sycophancy is 'off'", async () => {
+    await fs.writeFile(
+      path.join(pkgRoot, 'AGENT.md'),
+      `---
+quality:
+  sycophancy: off
+---
+
+# Body
+`,
+    );
+    assert.equal(await composeSycophancyFromAgentMd(pkgRoot), '');
+  });
+
+  it("compiles the medium tier when quality.sycophancy: medium", async () => {
+    await fs.writeFile(
+      path.join(pkgRoot, 'AGENT.md'),
+      `---
+quality:
+  sycophancy: medium
+---
+
+# Body
+`,
+    );
+    const out = await composeSycophancyFromAgentMd(pkgRoot);
+    assert.match(out, /^## Critical Thinking Guidelines\n/);
+    assert.match(out, /alternative approach/);
+  });
+
+  it("compiles the high tier when quality.sycophancy: high", async () => {
+    await fs.writeFile(
+      path.join(pkgRoot, 'AGENT.md'),
+      `---
+quality:
+  sycophancy: high
+---
+
+# Body
+`,
+    );
+    const out = await composeSycophancyFromAgentMd(pkgRoot);
+    assert.match(out, /^## Anti-Sycophancy Protocol \(STRICT/);
+    assert.equal((out.match(/MANDATORY:/g) ?? []).length, 3);
+  });
+
+  it("falls through to agent.md when AGENT.md is absent", async () => {
+    await fs.writeFile(
+      path.join(pkgRoot, 'agent.md'),
+      `---
+quality:
+  sycophancy: low
+---
+
+# Legacy hand-authored plugin
+`,
+    );
+    const out = await composeSycophancyFromAgentMd(pkgRoot);
+    assert.match(out, /^## Accuracy Guidelines\n/);
+  });
+});
+
+describe('composeBoundariesFromAgentMd (issue #54)', () => {
+  let pkgRoot: string;
+
+  beforeEach(async () => {
+    pkgRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'boundaries-rt-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(pkgRoot, { recursive: true, force: true });
+  });
+
+  it("returns '' when AGENT.md is missing (legacy plugin)", async () => {
+    assert.equal(await composeBoundariesFromAgentMd(pkgRoot), '');
+  });
+
+  it("returns '' when AGENT.md has no quality.boundaries block", async () => {
+    await fs.writeFile(
+      path.join(pkgRoot, 'AGENT.md'),
+      `---
+identity:
+  id: foo
+---
+
+# Body
+`,
+    );
+    assert.equal(await composeBoundariesFromAgentMd(pkgRoot), '');
+  });
+
+  it("returns '' when quality.boundaries has both presets and custom empty", async () => {
+    await fs.writeFile(
+      path.join(pkgRoot, 'AGENT.md'),
+      `---
+quality:
+  boundaries:
+    presets: []
+    custom: []
+---
+
+# Body
+`,
+    );
+    assert.equal(await composeBoundariesFromAgentMd(pkgRoot), '');
+  });
+
+  it('compiles the boundaries section from preset IDs', async () => {
+    await fs.writeFile(
+      path.join(pkgRoot, 'AGENT.md'),
+      `---
+quality:
+  boundaries:
+    presets:
+      - no-pii
+      - no-medical-data
+    custom: []
+---
+
+# Body
+`,
+    );
+    const out = await composeBoundariesFromAgentMd(pkgRoot);
+    assert.match(out, /^## Boundaries\n/);
+    assert.match(out, /personally identifiable information/);
+    assert.match(out, /medical diagnoses/);
+  });
+
+  it('includes custom "You must NOT:" lines after preset prompts', async () => {
+    await fs.writeFile(
+      path.join(pkgRoot, 'AGENT.md'),
+      `---
+quality:
+  boundaries:
+    presets:
+      - no-pii
+    custom:
+      - reveal staff names
+---
+
+# Body
+`,
+    );
+    const out = await composeBoundariesFromAgentMd(pkgRoot);
+    assert.match(out, /personally identifiable information/);
+    assert.match(out, /You must NOT: reveal staff names/);
+  });
+
+  it('silently skips unknown preset IDs at runtime (warnings are edit-time only)', async () => {
+    await fs.writeFile(
+      path.join(pkgRoot, 'AGENT.md'),
+      `---
+quality:
+  boundaries:
+    presets:
+      - no-pii
+      - does-not-exist
+    custom: []
+---
+
+# Body
+`,
+    );
+    const out = await composeBoundariesFromAgentMd(pkgRoot);
+    assert.match(out, /personally identifiable information/);
+    assert.equal(out.includes('does-not-exist'), false);
   });
 });

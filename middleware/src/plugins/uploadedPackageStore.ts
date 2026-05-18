@@ -149,6 +149,7 @@ export async function ensureHostNodeModulesLink(
   } catch (err) {
     throw new Error(
       `cannot locate host node_modules via zod/package.json: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
     );
   }
 

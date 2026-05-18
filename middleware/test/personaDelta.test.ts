@@ -157,3 +157,36 @@ describe('significantDeltas', () => {
     assert.deepEqual(out, []);
   });
 });
+
+describe('computePersonaDeltas — multi-family (issue #58)', () => {
+  it('accepts an arbitrary string family id without throwing', () => {
+    const out = computePersonaDeltas(
+      { directness: 90, warmth: 10 },
+      'openai-gpt',
+    );
+    assert.equal(out.length, 2);
+  });
+
+  it('falls back to the unknown profile for unrecognized strings', () => {
+    // unknown profile has directness=50; input 70 → delta=20 (slightly)
+    const out = computePersonaDeltas(
+      { directness: 70, warmth: 50 },
+      'mythical-llm',
+    );
+    const directness = out.find((d) => d.axis === 'directness');
+    assert.ok(directness);
+    assert.equal(directness.base, 50);
+    assert.equal(directness.delta, 20);
+    assert.equal(directness.magnitude, 'slightly');
+  });
+
+  it('Claude family literals still resolve via FAMILY_DEFAULTS (byte-identical AC)', () => {
+    // Sonnet warmth defaults to 60; input 60 → neutral delta.
+    const out = computePersonaDeltas({ warmth: 60 }, 'sonnet');
+    assert.equal(out.length, 1);
+    const w = out[0]!;
+    assert.equal(w.base, 60);
+    assert.equal(w.delta, 0);
+    assert.equal(w.magnitude, 'neutral');
+  });
+});
