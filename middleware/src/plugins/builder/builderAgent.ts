@@ -17,6 +17,9 @@ import { loadBoilerplate, type SlotDef } from './boilerplateSource.js';
 import type { DraftStore } from './draftStore.js';
 import type { SlotTypecheckService } from './slotTypecheckPipeline.js';
 import type { SpecEventBus } from './specEventBus.js';
+import type { UserChoiceCoordinator } from './userChoiceCoordinator.js';
+import type { BuilderTriageLog } from './builderTriageLog.js';
+import type { GithubIssueCache } from './githubIssueCache.js';
 import type { JsonPatch } from './specPatcher.js';
 import type {
   AgentSpecSkeleton,
@@ -238,6 +241,22 @@ export interface BuilderAgentDeps {
    * `<templateRoot>/node_modules`. Required.
    */
   templateRoot: string;
+  /**
+   * Native issue-reporting (concept plan): coordinator for the
+   * ask_user_choice smart-card flow. Optional — when unset, the
+   * agent loses access to ask_user_choice + report_platform_issue
+   * (the tools return `unavailable`) but everything else stays
+   * functional. Wired by `index.ts` once the coordinator + cache +
+   * triage-log + upstream config are constructed.
+   */
+  userChoice?: UserChoiceCoordinator;
+  triageLog?: BuilderTriageLog;
+  githubIssueCache?: GithubIssueCache;
+  upstreamIssueConfig?: {
+    owner: string;
+    repo: string;
+    labels: readonly string[];
+  };
   logger?: (...args: unknown[]) => void;
 }
 
@@ -274,6 +293,14 @@ export class BuilderAgent {
   private readonly maxIterations: number;
   private readonly maxConsecutiveBuildFailures: number;
   private readonly templateRoot: string;
+  private readonly userChoice?: UserChoiceCoordinator;
+  private readonly triageLog?: BuilderTriageLog;
+  private readonly githubIssueCache?: GithubIssueCache;
+  private readonly upstreamIssueConfig?: {
+    owner: string;
+    repo: string;
+    labels: readonly string[];
+  };
   private readonly log: (...args: unknown[]) => void;
 
   private cachedSystemPromptSeed: string | null = null;
@@ -295,6 +322,10 @@ export class BuilderAgent {
     this.maxConsecutiveBuildFailures =
       deps.maxConsecutiveBuildFailures ?? DEFAULT_MAX_CONSECUTIVE_BUILD_FAILURES;
     this.templateRoot = deps.templateRoot;
+    this.userChoice = deps.userChoice;
+    this.triageLog = deps.triageLog;
+    this.githubIssueCache = deps.githubIssueCache;
+    this.upstreamIssueConfig = deps.upstreamIssueConfig;
     this.log = deps.logger ?? (() => {});
   }
 
@@ -371,6 +402,12 @@ export class BuilderAgent {
       buildFailureBudget,
       templateRoot: this.templateRoot,
       userMessage: opts.userMessage,
+      ...(this.userChoice ? { userChoice: this.userChoice } : {}),
+      ...(this.triageLog ? { triageLog: this.triageLog } : {}),
+      ...(this.githubIssueCache ? { githubIssueCache: this.githubIssueCache } : {}),
+      ...(this.upstreamIssueConfig
+        ? { upstreamIssueConfig: this.upstreamIssueConfig }
+        : {}),
     };
 
     const subAgentTools = this.tools.map((tool) => bridgeBuilderTool(tool, toolCtx));

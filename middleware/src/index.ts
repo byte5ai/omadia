@@ -38,6 +38,10 @@ import { PreviewSecretBuffer } from './plugins/builder/previewSecretBuffer.js';
 import { PreviewRebuildScheduler } from './plugins/builder/previewRebuildScheduler.js';
 import { PreviewChatService } from './plugins/builder/previewChatService.js';
 import { BuilderAgent } from './plugins/builder/builderAgent.js';
+import { BuilderTriageLog } from './plugins/builder/builderTriageLog.js';
+import { GithubIssueCache } from './plugins/builder/githubIssueCache.js';
+import { UserChoiceCoordinator } from './plugins/builder/userChoiceCoordinator.js';
+import { loadUpstreamIssueConfig } from './plugins/builder/upstreamIssueConfig.js';
 import { SpecEventBus } from './plugins/builder/specEventBus.js';
 import { BuilderTurnRingBuffer } from './plugins/builder/turnRingBuffer.js';
 import { ensureBuildTemplate } from './plugins/builder/buildTemplate.js';
@@ -1612,6 +1616,19 @@ async function main(): Promise<void> {
     },
   });
 
+  // ── Native issue-reporting wiring (concept plan) ─────────────────────────
+  // The coordinator, triage log, and issue cache are constructed up-front
+  // so both the BuilderAgent (tool context) and the issue-reporting routes
+  // (operator-facing endpoints) share the same instances. All three are
+  // backed by the v2 schema on `drafts.db`, so no extra storage backend
+  // appears for this feature.
+  const builderUserChoice = new UserChoiceCoordinator({ bus: builderSpecBus });
+  const builderTriageLog = new BuilderTriageLog({ dbPath: DRAFTS_DB_PATH });
+  await builderTriageLog.open();
+  const builderGithubIssueCache = new GithubIssueCache({ dbPath: DRAFTS_DB_PATH });
+  await builderGithubIssueCache.open();
+  const upstreamIssueConfig = loadUpstreamIssueConfig();
+
   const builderAgent = new BuilderAgent({
     anthropic: client,
     draftStore,
@@ -1637,6 +1654,10 @@ async function main(): Promise<void> {
     // surfacing as the misleading "Required: source" error in the Builder
     // chat. See BUILDER_AGENT_MAX_TOKENS in config.ts.
     subAgentMaxTokens: config.BUILDER_AGENT_MAX_TOKENS,
+    userChoice: builderUserChoice,
+    triageLog: builderTriageLog,
+    githubIssueCache: builderGithubIssueCache,
+    upstreamIssueConfig,
     logger: (...args: unknown[]) => {
       console.log('[builder]', ...args);
     },
@@ -1666,6 +1687,11 @@ async function main(): Promise<void> {
       });
       await previewCache.closeAll();
       previewSecretBuffer.clear();
+      // Wake any pending ask_user_choice promises so the turns waiting
+      // on them resolve before we close the DB.
+      builderUserChoice.cancelAll();
+      await builderGithubIssueCache.close();
+      await builderTriageLog.close();
       await draftStore.close();
       // Stop every active routine (drops scheduler entries; in-flight runs
       // see their AbortSignal). Idempotent if undefined.
@@ -1724,6 +1750,20 @@ async function main(): Promise<void> {
             },
           }
         : {}),
+      // Native issue-reporting routes (concept plan). Always wired —
+      // the routes are no-ops when no operator has triggered a triage
+      // flow, but they need to exist so the UI can confirm browser-
+      // submitted issues.
+      issueReporting: {
+        store: draftStore,
+        userChoice: builderUserChoice,
+        githubIssueCache: builderGithubIssueCache,
+        upstream: {
+          owner: upstreamIssueConfig.owner,
+          repo: upstreamIssueConfig.repo,
+          requiredLabels: upstreamIssueConfig.labels,
+        },
+      },
     }),
   );
   console.log(
