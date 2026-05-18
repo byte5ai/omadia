@@ -324,7 +324,7 @@ describe('DraftStore', () => {
     }
   });
 
-  it('migrates v1 DBs to v2 without touching v1 data', async () => {
+  it('migrates v1 DBs to v4 without touching v1 data', async () => {
     const legacyPath = join(tmp, `legacy-${String(Date.now())}.db`);
     // Hand-craft a v1 DB: schema-version 1 + one drafts row.
     const seed = new Database(legacyPath);
@@ -362,7 +362,7 @@ describe('DraftStore', () => {
     const raw = new Database(legacyPath);
     try {
       const version = raw.pragma('user_version', { simple: true }) as number;
-      assert.equal(version, 2);
+      assert.equal(version, 4);
       const row = raw
         .prepare('SELECT name FROM drafts WHERE id = ?')
         .get('legacy-1') as { name: string } | undefined;
@@ -392,7 +392,7 @@ describe('DraftStore', () => {
   });
 });
 
-describe('DraftStore v1 → v3 migration (2026-05-18)', () => {
+describe('DraftStore v1 → v4 migration (2026-05-18)', () => {
   let tmp: string;
 
   before(() => {
@@ -465,7 +465,7 @@ describe('DraftStore v1 → v3 migration (2026-05-18)', () => {
     // Schema bump persisted.
     const inspect = new Database(dbPath);
     const version = inspect.pragma('user_version', { simple: true });
-    assert.equal(version, 3);
+    assert.equal(version, 4);
 
     // Column renamed; legacy column gone.
     const cols = (

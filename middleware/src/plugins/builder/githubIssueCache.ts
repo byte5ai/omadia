@@ -493,7 +493,6 @@ export class GithubIssueCache {
 }
 
 const defaultFetch: CacheFetch = async (url, init) => {
-  // eslint-disable-next-line no-undef
   const response = await fetch(url, init);
   return {
     ok: response.ok,
