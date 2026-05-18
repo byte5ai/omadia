@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Proposed (Round 4 — merge-ready pending final Codex pass) |
+| **Status** | Proposed |
 | **Capabilities (manifest refs)** | `platformIdentity@1`, `crossChannelConversationMemory@1` |
 | **Service-registry keys (runtime)** | `platformIdentity`, `crossChannelConversationMemory` |
 | **Plugins (provider candidates)** | `@omadia/platform-identity-neon`, `@omadia/platform-identity-inmemory`, `@omadia/cross-channel-conversation-memory-neon`, `@omadia/cross-channel-conversation-memory-inmemory` |
