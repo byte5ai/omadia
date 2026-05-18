@@ -21,6 +21,7 @@ import {
 } from '../../../../_lib/personaTypes';
 import { BoundariesSection } from './BoundariesSection';
 import { ConflictBanner } from './ConflictBanner';
+import { CulturePresetDropdown } from './CulturePresetDropdown';
 import { DimensionSlider } from './DimensionSlider';
 import { PersonaRadar, personaAxisToSliderTestId } from './PersonaRadar';
 
@@ -180,6 +181,19 @@ export function PersonaPillar({
       </p>
 
       <ConflictBanner warnings={warnings} />
+
+      {/* Issue #59 — culture / industry preset dropdown. One-shot
+       *  overlay; selecting a preset opens a confirm modal with the
+       *  diff list, and on confirm sends a single setPersonaConfig call
+       *  with the full merged persona. */}
+      <CulturePresetDropdown
+        draftId={draftId}
+        persona={persona}
+        disabled={disabled}
+        onApplied={(next) => {
+          setPersona(next);
+        }}
+      />
 
       {/* Radar (view-only, click axis label scrolls to slider) */}
       <PersonaRadar
