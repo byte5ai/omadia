@@ -9,6 +9,7 @@ import {
   type LocalSubAgentTool,
 } from '@omadia/orchestrator';
 
+import { warnIfEmptyInputSchema } from '../dynamicAgentRuntime.js';
 import { zodToJsonSchema } from '../zodToJsonSchema.js';
 import { composeContextualMessage } from './builderAgent.js';
 import type { DraftStore } from './draftStore.js';
@@ -296,6 +297,7 @@ function bridgePreviewTool(td: PreviewToolDescriptor): LocalSubAgentTool {
       ? schema.properties
       : {};
   const required = Array.isArray(schema.required) ? schema.required : [];
+  warnIfEmptyInputSchema(td.id, td.input, properties);
   return {
     spec: {
       name: td.id,

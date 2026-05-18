@@ -12,6 +12,7 @@ import {
 } from '@omadia/orchestrator';
 
 import { ASSETS } from '../../platform/assets.js';
+import { warnIfEmptyInputSchema } from '../dynamicAgentRuntime.js';
 import { zodToJsonSchema } from '../zodToJsonSchema.js';
 import { loadBoilerplate, type SlotDef } from './boilerplateSource.js';
 import type { DraftStore } from './draftStore.js';
@@ -663,6 +664,7 @@ function bridgeBuilderTool(
       ? schema.properties
       : {};
   const required = Array.isArray(schema.required) ? schema.required : [];
+  warnIfEmptyInputSchema(tool.id, tool.input, properties);
   return {
     spec: {
       name: tool.id,

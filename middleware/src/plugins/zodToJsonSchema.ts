@@ -7,13 +7,16 @@ import type { z } from 'zod';
  * plugin authors realistically reach for:
  *   ZodObject, ZodString, ZodNumber, ZodBoolean, ZodEnum, ZodLiteral,
  *   ZodArray, ZodOptional, ZodNullable, ZodDefault, ZodEffects,
- *   ZodUnion, ZodDiscriminatedUnion, ZodIntersection, ZodRecord, ZodTuple.
+ *   ZodUnion, ZodDiscriminatedUnion, ZodIntersection, ZodRecord, ZodTuple,
+ *   ZodAny, ZodUnknown.
  *
  * Anything still unknown falls back to a free-form `{}` schema — valid for
  * Anthropic tool_use, but the model gets less structural signal. The
  * previous iteration of this file also fell through `{}` for union/record/
  * tuple, which made plugins with those shapes materially worse tool-users
- * than built-ins. That gap closes here.
+ * than built-ins. That gap closes here. The fallback branch warns loudly
+ * with diagnostic context (typeName, ctor.name, _def presence) so the next
+ * surface of an unknown type is immediately actionable.
  */
 
 export interface JsonSchema {
@@ -223,10 +226,33 @@ function convert(schema: z.ZodTypeAny, def: ZodDef): JsonSchema {
       return out;
     }
 
-    default:
-      // Unknown type — leave as free-form object so the model at least receives
-      // a valid schema. Surface in the tool's description field when possible.
+    case 'ZodAny':
+    case 'ZodUnknown':
+      // Free-form payload — Anthropic tool-use accepts an empty object schema
+      // as "any JSON value". No structural hint to give the model, but at
+      // least don't trip the fallback warning below.
       return {};
+
+    default: {
+      // Unknown type — leave as free-form object so the model at least receives
+      // a valid schema. Log loudly so the next encounter surfaces the missing
+      // case instead of silently delivering an empty parameter list. Diagnostic
+      // helps trap module-boundary issues (plugin loads its own `zod` whose
+      // `_def.typeName` somehow differs) and exotic new Zod types added by
+      // plugins.
+      const typeName = def.typeName ?? '(no typeName)';
+      const hasUnderscoreDef =
+        schema != null && typeof schema === 'object' && '_def' in schema;
+      const constructorName =
+        (schema as { constructor?: { name?: string } } | null)?.constructor
+          ?.name ?? '(unknown)';
+      console.warn(
+        `[zodToJsonSchema] FALLBACK — unrecognised Zod type. ` +
+          `typeName='${typeName}' ctor='${constructorName}' hasUnderscoreDef=${String(hasUnderscoreDef)}. ` +
+          `Returning {} schema; the model will see no parameters.`,
+      );
+      return {};
+    }
   }
 }
 
