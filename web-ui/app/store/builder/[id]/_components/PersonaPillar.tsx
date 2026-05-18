@@ -24,6 +24,7 @@ import { ConflictBanner } from './ConflictBanner';
 import { CulturePresetDropdown } from './CulturePresetDropdown';
 import { DimensionSlider } from './DimensionSlider';
 import { PersonaRadar, personaAxisToSliderTestId } from './PersonaRadar';
+import { PersonaTemplateGallery } from './PersonaTemplateGallery';
 
 /**
  * Phase 3 / OB-67 Slice 4 — top-level persona pillar.
@@ -74,6 +75,8 @@ export function PersonaPillar({
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  // Issue #53 — modal-state for the persona-template gallery
+  const [galleryOpen, setGalleryOpen] = useState(false);
 
   const warnings: PersonaConflictWarning[] = useMemo(
     () => detectPersonaConflicts(quality, persona),
@@ -181,6 +184,38 @@ export function PersonaPillar({
       </p>
 
       <ConflictBanner warnings={warnings} />
+
+      {/* Issue #53 — Apply persona-template button + gallery modal.
+       *  Selecting an archetype calls setPersonaConfig server-side; the
+       *  tool merges the template's 12-axis profile with operator
+       *  overrides (override wins per axis). */}
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-xs text-[color:var(--fg-muted)]" data-testid="persona-template-badge">
+          {persona.template
+            ? `Vorlage: ${persona.template}${(persona.axes && Object.keys(persona.axes).length > 0) ? ' — angepasst' : ''}`
+            : 'Keine Vorlage'}
+        </span>
+        <button
+          type="button"
+          data-testid="persona-template-open"
+          onClick={() => setGalleryOpen(true)}
+          disabled={disabled || pending}
+          className="rounded border border-[color:var(--border)] px-2 py-1 text-xs"
+        >
+          Vorlage anwenden
+        </button>
+      </div>
+      {galleryOpen && (
+        <PersonaTemplateGallery
+          draftId={draftId}
+          persona={persona}
+          disabled={disabled}
+          onClose={() => setGalleryOpen(false)}
+          onApplied={(next) => {
+            setPersona(next);
+          }}
+        />
+      )}
 
       {/* Issue #59 — culture / industry preset dropdown. One-shot
        *  overlay; selecting a preset opens a confirm modal with the
