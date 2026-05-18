@@ -484,9 +484,12 @@ function parseScope(value: unknown): DraftListOptions['scope'] {
 }
 
 function parseStatus(value: unknown): DraftStatus | undefined {
-  if (value === 'draft' || value === 'installed' || value === 'archived') {
+  if (value === 'draft' || value === 'published' || value === 'archived') {
     return value;
   }
+  // Legacy alias — old API clients (or bookmarks) that still send the v1
+  // status name. Map silently so the rename is invisible to callers.
+  if (value === 'installed') return 'published';
   return undefined;
 }
 

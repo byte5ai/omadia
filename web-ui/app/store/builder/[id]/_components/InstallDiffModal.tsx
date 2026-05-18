@@ -64,7 +64,7 @@ type Phase =
   | { kind: 'idle' }
   | { kind: 'installing' }
   | { kind: 'failed'; failure: InstallFailureBody }
-  | { kind: 'succeeded'; installedAgentId: string; version: string };
+  | { kind: 'succeeded'; publishedAgentId: string; version: string };
 
 interface InstallFailureBody {
   reason: InstallFailureReason;
@@ -94,13 +94,13 @@ export function InstallDiffModal({
       if (result.ok) {
         setPhase({
           kind: 'succeeded',
-          installedAgentId: result.installedAgentId,
+          publishedAgentId: result.publishedAgentId,
           version: result.version,
         });
         // Brief delay so the user sees the success banner before the redirect.
         window.setTimeout(() => {
           router.push(
-            `/store?highlight=${encodeURIComponent(result.installedAgentId)}`,
+            `/store?highlight=${encodeURIComponent(result.publishedAgentId)}`,
           );
         }, 600);
         return;
@@ -230,7 +230,7 @@ export function InstallDiffModal({
           ) : null}
           {phase.kind === 'succeeded' ? (
             <SuccessBanner
-              installedAgentId={phase.installedAgentId}
+              publishedAgentId={phase.publishedAgentId}
               version={phase.version}
             />
           ) : null}
@@ -639,10 +639,10 @@ function FailureDetails({
 }
 
 function SuccessBanner({
-  installedAgentId,
+  publishedAgentId,
   version,
 }: {
-  installedAgentId: string;
+  publishedAgentId: string;
   version: string;
 }): React.ReactElement {
   return (
@@ -657,7 +657,7 @@ function SuccessBanner({
             Plugin installiert
           </p>
           <p className="mt-1 text-[12px] text-[color:var(--fg-strong)]">
-            <span className="font-mono-num">{installedAgentId}</span> v{version}{' '}
+            <span className="font-mono-num">{publishedAgentId}</span> v{version}{' '}
             ist im Store sichtbar. Weiterleitung läuft …
           </p>
         </div>

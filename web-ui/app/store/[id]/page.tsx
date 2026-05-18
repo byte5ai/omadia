@@ -264,7 +264,7 @@ export default async function PluginDetailPage({
               404 with hint if no source exists (typical: another operator
               installed it, or the source was hard-deleted). */}
           {plugin.install_state === 'installed' ? (
-            <EditFromStoreButton installedAgentId={plugin.id} />
+            <EditFromStoreButton publishedAgentId={plugin.id} />
           ) : null}
 
           {visibleCategories.length > 0 ? (

@@ -147,7 +147,7 @@ function makeHarness(opts?: { autoFixEnabled?: boolean }): Harness {
     codegenModel: 'sonnet',
     previewModel: 'sonnet',
     status: 'draft',
-    installedAgentId: null,
+    publishedAgentId: null,
     createdAt: 0,
     updatedAt: 0,
     deletedAt: null,

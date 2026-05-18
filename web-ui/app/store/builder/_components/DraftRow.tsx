@@ -31,7 +31,7 @@ const MODEL_LABEL: Record<BuilderModelId, string> = {
 
 const STATUS_LABEL: Record<DraftSummary['status'], string> = {
   draft: 'Entwurf',
-  installed: 'Installiert',
+  published: 'Veröffentlicht',
   archived: 'Archiviert',
 };
 
@@ -163,7 +163,7 @@ export function DraftRow({ draft, deleted = false }: DraftRowProps): React.React
             <span
               className={cn(
                 'inline-block size-1.5 rounded-full',
-                draft.status === 'installed'
+                draft.status === 'published'
                   ? 'bg-[color:var(--success)]'
                   : draft.status === 'archived'
                     ? 'bg-[color:var(--fg-subtle)]'
@@ -180,9 +180,9 @@ export function DraftRow({ draft, deleted = false }: DraftRowProps): React.React
           <span className="font-mono-num">
             Zuletzt {formatRelative(draft.updatedAt)}
           </span>
-          {draft.installedAgentId ? (
+          {draft.publishedAgentId ? (
             <span className="font-mono-num text-[color:var(--fg-subtle)]">
-              → {draft.installedAgentId}
+              → {draft.publishedAgentId}
             </span>
           ) : null}
         </div>

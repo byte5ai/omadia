@@ -6,7 +6,7 @@
 
 import type { PersonaConfig } from './personaTypes';
 
-export type DraftStatus = 'draft' | 'installed' | 'archived';
+export type DraftStatus = 'draft' | 'published' | 'archived';
 
 /** Phase-1 Kemia. TS-mirror of middleware QualityConfigSchema. */
 export type SycophancyLevel = 'off' | 'low' | 'medium' | 'high';
@@ -48,7 +48,7 @@ export interface DraftSummary {
   status: DraftStatus;
   codegenModel: BuilderModelId;
   previewModel: BuilderModelId;
-  installedAgentId: string | null;
+  publishedAgentId: string | null;
   updatedAt: number;
   createdAt: number;
 }
@@ -281,7 +281,7 @@ export type SpecBusEvent =
 
 export interface InstallSuccess {
   ok: true;
-  installedAgentId: string;
+  publishedAgentId: string;
   version: string;
   packageBytes: number;
 }
@@ -345,7 +345,7 @@ export interface CloneFromInstalledSuccess {
   ok: true;
   draftId: string;
   sourceDraftId: string;
-  installedAgentId: string;
+  publishedAgentId: string;
 }
 
 export type CloneFromInstalledFailureReason =

@@ -39,12 +39,12 @@ import {
  *   source_not_found   → 404  (no source draft for this agent_id + user)
  *   quota_exceeded     → 409  (user is at the draft cap)
  *
- * Success of /install returns 200 with `{ ok, installedAgentId, version,
+ * Success of /install returns 200 with `{ ok, publishedAgentId, version,
  * packageBytes }` — the InstallDiffModal redirects to
- * `/store?highlight=<installedAgentId>`.
+ * `/store?highlight=<publishedAgentId>`.
  *
  * Success of /from-installed returns 201 with `{ ok, draftId, sourceDraftId,
- * installedAgentId }` — the store-page Edit-button redirects to
+ * publishedAgentId }` — the store-page Edit-button redirects to
  * `/store/builder/<draftId>`.
  */
 
@@ -87,7 +87,7 @@ export function registerBuilderInstallRoutes(
       if (result.ok) {
         return sendJson(res, 200, {
           ok: true,
-          installedAgentId: result.installedAgentId,
+          publishedAgentId: result.publishedAgentId,
           version: result.version,
           packageBytes: result.packageBytes,
         });
@@ -126,7 +126,7 @@ export function registerBuilderInstallRoutes(
       let result: CloneResult;
       try {
         result = await cloneFromInstalled(
-          { userEmail: email, installedAgentId: agentId },
+          { userEmail: email, publishedAgentId: agentId },
           deps,
         );
       } catch (err) {
@@ -141,7 +141,7 @@ export function registerBuilderInstallRoutes(
           ok: true,
           draftId: result.draftId,
           sourceDraftId: result.sourceDraftId,
-          installedAgentId: result.installedAgentId,
+          publishedAgentId: result.publishedAgentId,
         });
       }
 

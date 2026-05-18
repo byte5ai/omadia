@@ -1245,23 +1245,23 @@ export async function installBuilderDraft(
 }
 
 /**
- * Edit-from-Store (B.6-3). Clones the source draft of an installed plugin
+ * Edit-from-Store (B.6-3). Clones the source draft of a published plugin
  * into a fresh draft and returns the new draft id so the UI can redirect
- * to `/store/builder/<draftId>`. The previously-installed plugin stays
+ * to `/store/builder/<draftId>`. The previously-published plugin stays
  * live; the new draft starts in `status='draft'` with no
- * `installed_agent_id` link until the operator runs install again.
+ * `published_agent_id` link until the operator runs install again.
  *
  * Same response semantics as `installBuilderDraft`: returns the parsed
  * body for documented HTTP outcomes (201 / 404 / 409); throws ApiError
  * only on transport failure or 401/403.
  */
 export async function cloneBuilderDraftFromInstalled(
-  installedAgentId: string,
+  publishedAgentId: string,
 ): Promise<CloneFromInstalledResponse> {
   const forwarded = await forwardCookieHeader();
   const res = await fetch(
     botApi(
-      `/v1/builder/drafts/from-installed/${encodeURIComponent(installedAgentId)}`,
+      `/v1/builder/drafts/from-installed/${encodeURIComponent(publishedAgentId)}`,
     ),
     {
       method: 'POST',
@@ -1281,14 +1281,14 @@ export async function cloneBuilderDraftFromInstalled(
   } catch {
     throw new ApiError(
       res.status,
-      `POST builder/drafts/from-installed/${installedAgentId}: non-JSON body (HTTP ${String(res.status)})`,
+      `POST builder/drafts/from-installed/${publishedAgentId}: non-JSON body (HTTP ${String(res.status)})`,
       text,
     );
   }
   if (res.status === 401 || res.status === 403) {
     throw new ApiError(
       res.status,
-      `POST builder/drafts/from-installed/${installedAgentId}: ${String(res.status)}`,
+      `POST builder/drafts/from-installed/${publishedAgentId}: ${String(res.status)}`,
       text,
     );
   }

@@ -81,7 +81,7 @@ const MODEL_LABEL: Record<BuilderModelId, string> = {
 
 const STATUS_LABEL: Record<Draft['status'], string> = {
   draft: 'Entwurf',
-  installed: 'Installiert',
+  published: 'Veröffentlicht',
   archived: 'Archiviert',
 };
 
@@ -1188,7 +1188,7 @@ function WorkspaceHeader({
 function StatusBadge({ status }: { status: Draft['status'] }): React.ReactElement {
   const palette: Record<Draft['status'], string> = {
     draft: 'bg-[color:var(--bg-soft)] text-[color:var(--fg-muted)]',
-    installed: 'bg-[color:var(--accent)]/12 text-[color:var(--accent)]',
+    published: 'bg-[color:var(--accent)]/12 text-[color:var(--accent)]',
     archived: 'bg-[color:var(--gray-100)] text-[color:var(--fg-subtle)]',
   };
   return (

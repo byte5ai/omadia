@@ -6,18 +6,18 @@ import type { Draft } from './types.js';
 /**
  * Edit-from-Store orchestrator (B.6-3).
  *
- * Resolves the source draft for an installed agent and clones its spec +
+ * Resolves the source draft for a published agent and clones its spec +
  * slots + transcript-stripped state into a new draft owned by the same
- * user. The previously-installed plugin stays live; the new draft starts
- * in `status='draft'` with a fresh `id` and no `installed_agent_id` link.
- * The operator can iterate freely; re-installing will route through the
+ * user. The previously-published plugin stays live; the new draft starts
+ * in `status='draft'` with a fresh `id` and no `published_agent_id` link.
+ * The operator can iterate freely; re-publishing will route through the
  * normal install-commit (B.6-1) flow + Conflict-Detection (Open Question
  * #2: block on duplicate_version → operator bumps `version` in the spec).
  *
  * Failure modes (mapped to HTTP by the route layer):
  *   source_not_found  → 404  (no draft pinned to that agentId for this
  *                              user — the source draft was hard-deleted
- *                              or another user did the original install)
+ *                              or another user did the original publish)
  *   quota_exceeded    → 409  (the user's draft cap is reached)
  *
  * NOT in scope (B.7+):
@@ -38,7 +38,7 @@ export interface CloneFromInstalledDeps {
 
 export interface CloneFromInstalledInput {
   userEmail: string;
-  installedAgentId: string;
+  publishedAgentId: string;
 }
 
 export type CloneFailureReason = 'source_not_found' | 'quota_exceeded';
@@ -47,7 +47,7 @@ export interface CloneSuccess {
   ok: true;
   draftId: string;
   sourceDraftId: string;
-  installedAgentId: string;
+  publishedAgentId: string;
 }
 
 export interface CloneFailure {
@@ -65,20 +65,20 @@ export async function cloneFromInstalled(
   deps: CloneFromInstalledDeps,
 ): Promise<CloneResult> {
   const log = deps.log ?? ((m: string) => console.log(m));
-  const { userEmail, installedAgentId } = input;
+  const { userEmail, publishedAgentId } = input;
 
-  // Step 1 — find the source draft. The `installed_agent_id` column is
+  // Step 1 — find the source draft. The `published_agent_id` column is
   // pinned by the install-commit endpoint (B.6-1) when ingest succeeds.
-  const source = await deps.draftStore.findByInstalledAgentId(
+  const source = await deps.draftStore.findByPublishedAgentId(
     userEmail,
-    installedAgentId,
+    publishedAgentId,
   );
   if (!source) {
     return {
       ok: false,
       reason: 'source_not_found',
       code: 'builder.source_draft_not_found',
-      message: `Kein Source-Draft für installiertes Plugin '${installedAgentId}' gefunden. Edit-from-Store benötigt den Original-Draft des Builders; eine Reverse-Codegen-Variante aus der installierten manifest.yaml kommt erst in B.7.`,
+      message: `Kein Source-Draft für veröffentlichtes Plugin '${publishedAgentId}' gefunden. Edit-from-Store benötigt den Original-Draft des Builders; eine Reverse-Codegen-Variante aus der veröffentlichten manifest.yaml kommt erst in B.7.`,
     };
   }
 
@@ -128,7 +128,7 @@ export async function cloneFromInstalled(
     // spec, not against stale conversation context.
     transcript: [],
     previewTranscript: [],
-    // status defaults to 'draft' from create(); no installed_agent_id
+    // status defaults to 'draft' from create(); no published_agent_id
     // link — that gets re-pinned only when the operator runs install
     // again on the cloned draft.
   });
@@ -148,14 +148,14 @@ export async function cloneFromInstalled(
   }
 
   log(
-    `[clone-from-installed] user=${userEmail} agent=${installedAgentId} source=${source.id} → new draft=${updated.id}`,
+    `[clone-from-installed] user=${userEmail} agent=${publishedAgentId} source=${source.id} → new draft=${updated.id}`,
   );
 
   return {
     ok: true,
     draftId: updated.id,
     sourceDraftId: source.id,
-    installedAgentId,
+    publishedAgentId,
   };
 }
 
