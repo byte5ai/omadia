@@ -313,3 +313,135 @@ describe('builderIssueReporting — confirm-issue route', () => {
     assert.equal(response.status, 400);
   });
 });
+
+describe('builderIssueReporting — resume-from-issue route', () => {
+  let app: TestApp;
+
+  afterEach(async () => {
+    if (app) await app.close();
+  });
+
+  async function pauseDraft(opts: {
+    app: TestApp;
+    issueNumber: number;
+  }): Promise<void> {
+    const draft = await opts.app.store.load(opts.app.userEmail, opts.app.draftId);
+    if (!draft) throw new Error('seed draft missing');
+    await opts.app.store.update(opts.app.userEmail, opts.app.draftId, {
+      spec: {
+        ...draft.spec,
+        builder_settings: {
+          auto_fix_enabled: false,
+          paused_on_issue: {
+            issueRef: {
+              owner: 'byte5ai',
+              repo: 'omadia',
+              number: opts.issueNumber,
+              url: `https://github.com/byte5ai/omadia/issues/${String(opts.issueNumber)}`,
+            },
+            fingerprint: 'aabbccdd',
+            pausedAt: Date.now() - 1000,
+          },
+        },
+      },
+    });
+  }
+
+  it('rejects resume while the upstream issue is still open', async () => {
+    const fetch: CacheFetch = () =>
+      Promise.resolve(
+        mockResponse({
+          status: 200,
+          body: { state: 'open', closed_at: null },
+        }),
+      );
+    app = await createTestApp(fetch);
+    await pauseDraft({ app, issueNumber: 42 });
+    const response = await globalThis.fetch(
+      `${app.baseUrl}/api/v1/builder/drafts/${app.draftId}/resume-from-issue`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      },
+    );
+    assert.equal(response.status, 409);
+    const payload = (await response.json()) as { code: string };
+    assert.equal(payload.code, 'builder.issue_still_open');
+  });
+
+  it('clears paused_on_issue and appends a briefing turn when the issue is closed', async () => {
+    const fetch: CacheFetch = () =>
+      Promise.resolve(
+        mockResponse({
+          status: 200,
+          body: {
+            state: 'closed',
+            closed_at: '2024-12-01T10:00:00Z',
+          },
+        }),
+      );
+    app = await createTestApp(fetch);
+    await pauseDraft({ app, issueNumber: 43 });
+    const response = await globalThis.fetch(
+      `${app.baseUrl}/api/v1/builder/drafts/${app.draftId}/resume-from-issue`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      },
+    );
+    assert.equal(response.status, 200);
+    const reloaded = await app.store.load(app.userEmail, app.draftId);
+    assert.ok(reloaded);
+    assert.equal(
+      reloaded.spec.builder_settings?.paused_on_issue,
+      undefined,
+      'paused_on_issue must be cleared',
+    );
+    const lastTurn = reloaded.transcript.at(-1);
+    assert.ok(lastTurn);
+    assert.equal(lastTurn.role, 'user');
+    assert.match(lastTurn.content, /Resume after pause on issue #43/);
+  });
+
+  it('allows force-resume even when the issue is still open', async () => {
+    const fetch: CacheFetch = () =>
+      Promise.resolve(
+        mockResponse({
+          status: 200,
+          body: { state: 'open', closed_at: null },
+        }),
+      );
+    app = await createTestApp(fetch);
+    await pauseDraft({ app, issueNumber: 44 });
+    const response = await globalThis.fetch(
+      `${app.baseUrl}/api/v1/builder/drafts/${app.draftId}/resume-from-issue`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ force: true }),
+      },
+    );
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as { forced: boolean };
+    assert.equal(payload.forced, true);
+  });
+
+  it('returns 409 when the draft is not paused', async () => {
+    const fetch: CacheFetch = () =>
+      Promise.resolve(mockResponse({ status: 200, body: {} }));
+    app = await createTestApp(fetch);
+    const response = await globalThis.fetch(
+      `${app.baseUrl}/api/v1/builder/drafts/${app.draftId}/resume-from-issue`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      },
+    );
+    assert.equal(response.status, 409);
+    const payload = (await response.json()) as { code: string };
+    assert.equal(payload.code, 'builder.not_paused');
+  });
+});

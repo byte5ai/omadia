@@ -1758,6 +1758,7 @@ async function main(): Promise<void> {
         store: draftStore,
         userChoice: builderUserChoice,
         githubIssueCache: builderGithubIssueCache,
+        bus: builderSpecBus,
         upstream: {
           owner: upstreamIssueConfig.owner,
           repo: upstreamIssueConfig.repo,

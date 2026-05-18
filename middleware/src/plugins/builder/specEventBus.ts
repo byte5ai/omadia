@@ -183,6 +183,39 @@ export type SpecBusEvent =
       type: 'user_choice_resolved';
       choiceId: string;
       value: string | null;
+    }
+  | {
+      /**
+       * Native issue-reporting: the builder agent refused a turn because
+       * the draft is paused waiting for an upstream issue to close. The
+       * UI uses this to render the pause banner with a "Check now"
+       * button.
+       */
+      type: 'paused_on_issue';
+      issueRef: {
+        owner: string;
+        repo: string;
+        number: number;
+        url: string;
+      };
+      fingerprint: string;
+      pausedAt: number;
+    }
+  | {
+      /**
+       * Native issue-reporting: surfaced by the issue-status lookup when
+       * an issue tracked as a pause trigger has flipped to `closed`. The
+       * UI uses this to swap the pause banner for the "Resume + rebuild"
+       * CTA.
+       */
+      type: 'auto_resume_available';
+      issueRef: {
+        owner: string;
+        repo: string;
+        number: number;
+        url: string;
+      };
+      closedAt: number | null;
     };
 
 export type SpecBusListener = (event: SpecBusEvent) => void;

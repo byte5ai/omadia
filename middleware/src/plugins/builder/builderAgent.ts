@@ -343,6 +343,26 @@ export class BuilderAgent {
       return;
     }
 
+    // Native issue-reporting: refuse new turns when the draft is paused
+    // on an open issue. The Resume route clears `paused_on_issue` before
+    // the next turn can run. Emit the event so the UI surfaces the
+    // pause + the "Issue closed?" check-now button.
+    const pause = draft.spec.builder_settings?.paused_on_issue;
+    if (pause) {
+      this.bus.emit(opts.draftId, {
+        type: 'paused_on_issue',
+        issueRef: pause.issueRef,
+        fingerprint: pause.fingerprint,
+        pausedAt: pause.pausedAt,
+      });
+      yield {
+        type: 'error',
+        code: 'builder.paused_on_issue',
+        message: `Draft is paused waiting for upstream issue #${String(pause.issueRef.number)} to close. Resume from the workspace once the fix lands.`,
+      };
+      return;
+    }
+
     yield { type: 'chat_message', role: 'user', text: opts.userMessage };
 
     const userTurn: TranscriptEntry = {
