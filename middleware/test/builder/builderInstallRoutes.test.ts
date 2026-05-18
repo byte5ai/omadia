@@ -260,13 +260,13 @@ describe('POST /api/v1/builder/drafts/:id/install (B.6-1)', () => {
     assert.equal(status, 200);
     assert.ok(json);
     assert.equal(json['ok'], true);
-    assert.equal(json['installedAgentId'], 'de.test.routes.installcommit');
+    assert.equal(json['publishedAgentId'], 'de.test.routes.installcommit');
     assert.equal(json['version'], '0.1.0');
 
     const refreshed = await app.draftStore.load(app.userEmail, app.draftId);
     assert.ok(refreshed);
-    assert.equal(refreshed.status, 'installed');
-    assert.equal(refreshed.installedAgentId, 'de.test.routes.installcommit');
+    assert.equal(refreshed.status, 'published');
+    assert.equal(refreshed.publishedAgentId, 'de.test.routes.installcommit');
   });
 
   it('returns 401 when session is missing', async () => {
@@ -314,7 +314,7 @@ describe('POST /api/v1/builder/drafts/:id/install (B.6-1)', () => {
     const refreshed = await app.draftStore.load(app.userEmail, app.draftId);
     assert.ok(refreshed);
     assert.equal(refreshed.status, 'draft');
-    assert.equal(refreshed.installedAgentId, null);
+    assert.equal(refreshed.publishedAgentId, null);
   });
 
   it('returns 409 with reason=conflict on package.duplicate_version', async () => {
@@ -506,12 +506,12 @@ describe('POST /api/v1/builder/drafts/from-installed/:agentId (B.6-3)', () => {
     if (app) await app.close();
   });
 
-  it('returns 201 with new draftId on happy path; source draft stays installed', async () => {
+  it('returns 201 with new draftId on happy path; source draft stays published', async () => {
     app = await createTestApp({});
     // Pretend the seeded draft was installed against agent_id "de.byte5.agent.x"
     await app.draftStore.update(app.userEmail, app.draftId, {
-      status: 'installed',
-      installedAgentId: 'de.byte5.agent.x',
+      status: 'published',
+      publishedAgentId: 'de.byte5.agent.x',
     });
 
     const { status, json } = await postJson(
@@ -521,25 +521,25 @@ describe('POST /api/v1/builder/drafts/from-installed/:agentId (B.6-3)', () => {
     assert.equal(status, 201);
     assert.ok(json);
     assert.equal(json['ok'], true);
-    assert.equal(json['installedAgentId'], 'de.byte5.agent.x');
+    assert.equal(json['publishedAgentId'], 'de.byte5.agent.x');
     assert.equal(json['sourceDraftId'], app.draftId);
     const newDraftId = json['draftId'];
     assert.equal(typeof newDraftId, 'string');
 
-    // New draft is in `draft` status, no installed_agent_id link.
+    // New draft is in `draft` status, no published_agent_id link.
     const cloned = await app.draftStore.load(
       app.userEmail,
       newDraftId as string,
     );
     assert.ok(cloned);
     assert.equal(cloned.status, 'draft');
-    assert.equal(cloned.installedAgentId, null);
+    assert.equal(cloned.publishedAgentId, null);
 
     // Source draft still installed + pinned.
     const source = await app.draftStore.load(app.userEmail, app.draftId);
     assert.ok(source);
-    assert.equal(source.status, 'installed');
-    assert.equal(source.installedAgentId, 'de.byte5.agent.x');
+    assert.equal(source.status, 'published');
+    assert.equal(source.publishedAgentId, 'de.byte5.agent.x');
   });
 
   it('returns 401 when session is missing', async () => {
@@ -555,7 +555,7 @@ describe('POST /api/v1/builder/drafts/from-installed/:agentId (B.6-3)', () => {
 
   it('returns 404 when no source draft pins this agentId for the user', async () => {
     app = await createTestApp({});
-    // No draft has installed_agent_id set yet.
+    // No draft has published_agent_id set yet.
     const { status, json } = await postJson(
       app.baseUrl,
       `/api/v1/builder/drafts/from-installed/de.byte5.agent.never-installed`,
@@ -569,8 +569,8 @@ describe('POST /api/v1/builder/drafts/from-installed/:agentId (B.6-3)', () => {
   it('returns 404 when the source draft belongs to another user (owner-scoped)', async () => {
     app = await createTestApp({});
     await app.draftStore.update(app.userEmail, app.draftId, {
-      status: 'installed',
-      installedAgentId: 'de.byte5.agent.x',
+      status: 'published',
+      publishedAgentId: 'de.byte5.agent.x',
     });
     app.setSession('attacker@example.com');
     const { status, json } = await postJson(

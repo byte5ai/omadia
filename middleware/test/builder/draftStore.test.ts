@@ -1,8 +1,10 @@
 import { describe, it, before, after, beforeEach } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+import Database from 'better-sqlite3';
 
 import { DraftStore } from '../../src/plugins/builder/draftStore.js';
 
@@ -35,7 +37,7 @@ describe('DraftStore', () => {
     // (Cost-Split — siehe modelRegistry.ts).
     assert.equal(draft.codegenModel, 'opus');
     assert.equal(draft.previewModel, 'sonnet');
-    assert.equal(draft.installedAgentId, null);
+    assert.equal(draft.publishedAgentId, null);
     assert.deepEqual(draft.transcript, []);
     assert.deepEqual(draft.previewTranscript, []);
     assert.equal(draft.spec.version, '0.1.0');
@@ -125,14 +127,14 @@ describe('DraftStore', () => {
     const a = await store.create('a@x', 'A');
     const b = await store.create('a@x', 'B');
     await store.update('a@x', a.id, {
-      status: 'installed',
-      installedAgentId: 'de.byte5.agent.weather',
+      status: 'published',
+      publishedAgentId: 'de.byte5.agent.weather',
     });
 
-    const installed = await store.list('a@x', { status: 'installed' });
-    assert.equal(installed.length, 1);
-    assert.equal(installed[0]?.id, a.id);
-    assert.equal(installed[0]?.installedAgentId, 'de.byte5.agent.weather');
+    const published = await store.list('a@x', { status: 'published' });
+    assert.equal(published.length, 1);
+    assert.equal(published[0]?.id, a.id);
+    assert.equal(published[0]?.publishedAgentId, 'de.byte5.agent.weather');
 
     const drafts = await store.list('a@x', { status: 'draft' });
     assert.equal(drafts.length, 1);
@@ -154,33 +156,33 @@ describe('DraftStore', () => {
     await store.open();
   });
 
-  it('purgeInstalled hard-deletes soft-deleted installed drafts past grace', async () => {
+  it('purgePublished hard-deletes soft-deleted published drafts past grace', async () => {
     const storeShort = new DraftStore({
       dbPath: join(tmp, `purge-${String(Date.now())}.db`),
-      installedPurgeGraceMs: 50,
+      publishedPurgeGraceMs: 50,
     });
     await storeShort.open();
 
-    const installed = await storeShort.create('a@x', 'inst');
+    const published = await storeShort.create('a@x', 'pub');
     const draftRow = await storeShort.create('a@x', 'plain');
-    await storeShort.update('a@x', installed.id, {
-      status: 'installed',
-      installedAgentId: 'de.byte5.agent.x',
+    await storeShort.update('a@x', published.id, {
+      status: 'published',
+      publishedAgentId: 'de.byte5.agent.x',
     });
 
-    await storeShort.softDelete('a@x', installed.id);
+    await storeShort.softDelete('a@x', published.id);
     await storeShort.softDelete('a@x', draftRow.id);
 
     // Under grace — nothing should purge
-    const earlyCount = await storeShort.purgeInstalled();
+    const earlyCount = await storeShort.purgePublished();
     assert.equal(earlyCount, 0);
 
     await new Promise((r) => setTimeout(r, 80));
 
-    const purged = await storeShort.purgeInstalled();
-    assert.equal(purged, 1, 'exactly the installed+soft-deleted one purges');
+    const purged = await storeShort.purgePublished();
+    assert.equal(purged, 1, 'exactly the published+soft-deleted one purges');
 
-    // Plain draft still there (never installed → never auto-purged)
+    // Plain draft still there (never published → never auto-purged)
     const leftover = await storeShort.list('a@x', { scope: 'deleted' });
     assert.equal(leftover.length, 1);
     assert.equal(leftover[0]?.id, draftRow.id);
@@ -188,64 +190,254 @@ describe('DraftStore', () => {
     await storeShort.close();
   });
 
-  it('findByInstalledAgentId returns the most recent matching active draft', async () => {
+  it('findByPublishedAgentId returns the most recent matching active draft', async () => {
     const a = await store.create('alice@example.com', 'A');
     const b = await store.create('alice@example.com', 'B');
     await store.update('alice@example.com', a.id, {
-      status: 'installed',
-      installedAgentId: 'de.byte5.agent.foo',
+      status: 'published',
+      publishedAgentId: 'de.byte5.agent.foo',
     });
-    // Same agent_id pinned to a SECOND draft (Edit-from-Store re-install
+    // Same agent_id pinned to a SECOND draft (Edit-from-Store re-publish
     // with a version bump produces this). updated_at on `b` is later, so
-    // findByInstalledAgentId should return `b`.
+    // findByPublishedAgentId should return `b`.
     await new Promise((r) => setTimeout(r, 5));
     await store.update('alice@example.com', b.id, {
-      status: 'installed',
-      installedAgentId: 'de.byte5.agent.foo',
+      status: 'published',
+      publishedAgentId: 'de.byte5.agent.foo',
     });
 
-    const hit = await store.findByInstalledAgentId(
+    const hit = await store.findByPublishedAgentId(
       'alice@example.com',
       'de.byte5.agent.foo',
     );
     assert.ok(hit, 'expected a hit');
     assert.equal(hit.id, b.id, 'expected the most-recent draft');
-    assert.equal(hit.installedAgentId, 'de.byte5.agent.foo');
+    assert.equal(hit.publishedAgentId, 'de.byte5.agent.foo');
   });
 
-  it('findByInstalledAgentId returns null for foreign user (owner-scoped)', async () => {
+  it('findByPublishedAgentId returns null for foreign user (owner-scoped)', async () => {
     const draft = await store.create('alice@example.com', 'A');
     await store.update('alice@example.com', draft.id, {
-      status: 'installed',
-      installedAgentId: 'de.byte5.agent.foo',
+      status: 'published',
+      publishedAgentId: 'de.byte5.agent.foo',
     });
-    const hit = await store.findByInstalledAgentId(
+    const hit = await store.findByPublishedAgentId(
       'attacker@example.com',
       'de.byte5.agent.foo',
     );
     assert.equal(hit, null);
   });
 
-  it('findByInstalledAgentId skips soft-deleted source drafts', async () => {
+  it('findByPublishedAgentId skips soft-deleted source drafts', async () => {
     const draft = await store.create('alice@example.com', 'A');
     await store.update('alice@example.com', draft.id, {
-      status: 'installed',
-      installedAgentId: 'de.byte5.agent.foo',
+      status: 'published',
+      publishedAgentId: 'de.byte5.agent.foo',
     });
     await store.softDelete('alice@example.com', draft.id);
-    const hit = await store.findByInstalledAgentId(
+    const hit = await store.findByPublishedAgentId(
       'alice@example.com',
       'de.byte5.agent.foo',
     );
     assert.equal(hit, null);
   });
 
-  it('findByInstalledAgentId returns null when no draft has been installed', async () => {
+  it('normalizes missing skeleton arrays on load (regression: install-diff crash)', async () => {
+    // Reproduces the GEO-Analyst draft state where patch_spec landed a spec
+    // payload without `setup_fields` (and friends). InstallDiffModal used to
+    // crash on `spec.setup_fields.length`; the store now guarantees the
+    // arrays exist so every UI consumer can rely on them.
+    const draft = await store.create('a@x', 'NoArrays');
+    const corrupted = {
+      id: 'de.byte5.agent.no-arrays',
+      name: 'NoArrays',
+      version: '0.1.0',
+      description: 'd',
+      category: 'other',
+      skill: { role: 'r' },
+      // intentionally missing: depends_on, tools, setup_fields,
+      // network, playbook, external_reads, ui_routes
+      slots: {},
+    } as unknown as Parameters<typeof store.update>[2]['spec'];
+    const patched = await store.update('a@x', draft.id, { spec: corrupted });
+    assert.ok(patched, 'patched draft should be returned');
+    assert.deepEqual(patched.spec.depends_on, []);
+    assert.deepEqual(patched.spec.tools, []);
+    assert.deepEqual(patched.spec.setup_fields, []);
+    assert.deepEqual(patched.spec.network.outbound, []);
+    assert.deepEqual(patched.spec.playbook.not_for, []);
+    assert.deepEqual(patched.spec.playbook.example_prompts, []);
+
+    // Re-load through a fresh connection to also exercise the read-path
+    // normalizer (independent of the write-path normalizer above).
+    await store.close();
+    const store2 = new DraftStore({ dbPath });
+    await store2.open();
+    const reloaded = await store2.load('a@x', draft.id);
+    assert.ok(reloaded);
+    assert.deepEqual(reloaded.spec.setup_fields, []);
+    assert.deepEqual(reloaded.spec.network.outbound, []);
+    await store2.close();
+    store = new DraftStore({ dbPath });
+    await store.open();
+  });
+
+  it('findByPublishedAgentId returns null when no draft has been published', async () => {
     await store.create('alice@example.com', 'A');
-    const hit = await store.findByInstalledAgentId(
+    const hit = await store.findByPublishedAgentId(
       'alice@example.com',
-      'de.byte5.agent.never-installed',
+      'de.byte5.agent.never-published',
     );
     assert.equal(hit, null);
+  });
+});
+
+describe('DraftStore v1 → v3 migration (2026-05-18)', () => {
+  let tmp: string;
+
+  before(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'draft-store-v1v2-'));
+  });
+
+  after(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('migrates installed → published, renames the column, bumps user_version, writes a backup', async () => {
+    // Build a v1-shaped DB by hand — the legacy schema_v1 SQL the migration
+    // expects to encounter on disk.
+    const dbPath = join(tmp, `v1-${String(Date.now())}-${String(Math.random())}.db`);
+    const v1 = new Database(dbPath);
+    v1.exec(`
+      CREATE TABLE drafts (
+        id                      TEXT PRIMARY KEY,
+        user_email              TEXT NOT NULL,
+        name                    TEXT NOT NULL,
+        spec_json               TEXT NOT NULL,
+        slots_json              TEXT NOT NULL DEFAULT '{}',
+        transcript_json         TEXT NOT NULL DEFAULT '[]',
+        preview_transcript_json TEXT NOT NULL DEFAULT '[]',
+        codegen_model           TEXT NOT NULL DEFAULT 'sonnet',
+        preview_model           TEXT NOT NULL DEFAULT 'sonnet',
+        status                  TEXT NOT NULL DEFAULT 'draft',
+        installed_agent_id      TEXT,
+        created_at              INTEGER NOT NULL,
+        updated_at              INTEGER NOT NULL,
+        deleted_at              INTEGER
+      );
+      CREATE INDEX idx_drafts_installed_purge ON drafts(status, deleted_at);
+    `);
+    v1.pragma('user_version = 1');
+    const now = Date.now();
+    v1.prepare(
+      `INSERT INTO drafts (id, user_email, name, spec_json, status, installed_agent_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      'd-installed-1',
+      'alice@example.com',
+      'Legacy installed draft',
+      '{"id":"de.byte5.agent.legacy","version":"0.1.0"}',
+      'installed',
+      'de.byte5.agent.legacy',
+      now,
+      now,
+    );
+    v1.prepare(
+      `INSERT INTO drafts (id, user_email, name, spec_json, status, installed_agent_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      'd-draft-1',
+      'alice@example.com',
+      'Legacy plain draft',
+      '{"id":"de.byte5.agent.wip","version":"0.0.1"}',
+      'draft',
+      null,
+      now,
+      now,
+    );
+    v1.close();
+
+    // Migrate via the store.
+    const store = new DraftStore({ dbPath });
+    await store.open();
+    await store.close();
+
+    // Schema bump persisted.
+    const inspect = new Database(dbPath);
+    const version = inspect.pragma('user_version', { simple: true });
+    assert.equal(version, 3);
+
+    // Column renamed; legacy column gone.
+    const cols = (
+      inspect.prepare(`SELECT name FROM pragma_table_info('drafts')`).all() as Array<{
+        name: string;
+      }>
+    ).map((r) => r.name);
+    assert.ok(cols.includes('published_agent_id'), 'published_agent_id should exist');
+    assert.ok(!cols.includes('installed_agent_id'), 'installed_agent_id should be gone');
+
+    // Data migrated: installed row is now 'published' with the agent id intact.
+    const rows = inspect
+      .prepare(`SELECT id, status, published_agent_id FROM drafts ORDER BY id`)
+      .all() as Array<{ id: string; status: string; published_agent_id: string | null }>;
+    inspect.close();
+
+    assert.equal(rows.length, 2);
+    const installedRow = rows.find((r) => r.id === 'd-installed-1');
+    const draftRow = rows.find((r) => r.id === 'd-draft-1');
+    assert.ok(installedRow);
+    assert.equal(installedRow.status, 'published');
+    assert.equal(installedRow.published_agent_id, 'de.byte5.agent.legacy');
+    assert.ok(draftRow);
+    assert.equal(draftRow.status, 'draft');
+    assert.equal(draftRow.published_agent_id, null);
+
+    // Online backup landed alongside the DB file.
+    const backups = readdirSync(tmp).filter(
+      (n) => n.startsWith(`${dbPath.split('/').pop()}.bak-v1-`),
+    );
+    assert.equal(backups.length, 1, 'exactly one v1 backup file should exist');
+  });
+
+  it('re-opening an already-migrated DB is a no-op (idempotent)', async () => {
+    const dbPath = join(tmp, `v2-${String(Date.now())}-${String(Math.random())}.db`);
+    const store1 = new DraftStore({ dbPath });
+    await store1.open();
+    const draft = await store1.create('alice@example.com', 'Fresh on v2');
+    await store1.close();
+
+    const store2 = new DraftStore({ dbPath });
+    await store2.open();
+    const reloaded = await store2.load('alice@example.com', draft.id);
+    await store2.close();
+
+    assert.ok(reloaded);
+    assert.equal(reloaded.name, 'Fresh on v2');
+
+    // No backup file should have been written on the second open.
+    const backups = readdirSync(tmp).filter(
+      (n) => n.startsWith(`${dbPath.split('/').pop()}.bak-v1-`),
+    );
+    assert.equal(backups.length, 0, 'no migration ⇒ no backup file');
+  });
+
+  it('refuses to open a DB with an unknown future schema version', async () => {
+    const dbPath = join(tmp, `future-${String(Date.now())}.db`);
+    const db = new Database(dbPath);
+    db.exec(
+      `CREATE TABLE drafts (id TEXT PRIMARY KEY, user_email TEXT, name TEXT,
+       spec_json TEXT NOT NULL, slots_json TEXT NOT NULL DEFAULT '{}',
+       transcript_json TEXT NOT NULL DEFAULT '[]',
+       preview_transcript_json TEXT NOT NULL DEFAULT '[]',
+       codegen_model TEXT, preview_model TEXT, status TEXT,
+       published_agent_id TEXT, created_at INTEGER, updated_at INTEGER,
+       deleted_at INTEGER);`,
+    );
+    db.pragma('user_version = 99');
+    db.close();
+
+    const store = new DraftStore({ dbPath });
+    await assert.rejects(() => store.open(), /schema version 99/);
+    assert.ok(existsSync(dbPath));
   });
 });

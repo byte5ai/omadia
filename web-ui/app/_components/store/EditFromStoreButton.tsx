@@ -20,14 +20,14 @@ import type { CloneFromInstalledResponse } from '../../_lib/builderTypes';
  *   quota_exceeded    → inline message ("Draft-Quota erreicht — lösche
  *                       bestehende Drafts")
  *
- * Per Open Question #4 (Edit-from-Store-State = clone): the installed
- * plugin stays live during edit. The new draft has no `installed_agent_id`
+ * Per Open Question #4 (Edit-from-Store-State = clone): the published
+ * plugin stays live during edit. The new draft has no `published_agent_id`
  * link; re-install routes through the install-commit flow with a
  * Conflict-Detection check on `id`/`version`.
  */
 
 export interface EditFromStoreButtonProps {
-  installedAgentId: string;
+  publishedAgentId: string;
   /** Optional override for tests — defaults to the real api fn. */
   clone?: (agentId: string) => Promise<CloneFromInstalledResponse>;
 }
@@ -38,7 +38,7 @@ type Phase =
   | { kind: 'failed'; message: string; hint: string | null };
 
 export function EditFromStoreButton({
-  installedAgentId,
+  publishedAgentId,
   clone,
 }: EditFromStoreButtonProps): React.ReactElement {
   const router = useRouter();
@@ -48,7 +48,7 @@ export function EditFromStoreButton({
     setPhase({ kind: 'cloning' });
     try {
       const fn = clone ?? cloneBuilderDraftFromInstalled;
-      const result = await fn(installedAgentId);
+      const result = await fn(publishedAgentId);
       if (result.ok) {
         router.push(`/store/builder/${encodeURIComponent(result.draftId)}`);
         return;

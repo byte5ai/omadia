@@ -1,6 +1,8 @@
 import { z } from 'zod';
 
 import { SycophancyLevelSpecSchema } from '../agentSpec.js';
+import { BuilderAuditAction } from '../auditActions.js';
+import { getBoundaryPreset } from '../boundaryPresets.js';
 import type { AgentSpecSkeleton } from '../types.js';
 import {
   IllegalSpecState,
@@ -53,6 +55,13 @@ interface OkResult {
   /** Echo of the persisted block — useful for the BuilderAgent's
    *  follow-up reasoning ("OK, sycophancy is now medium"). */
   quality: Input;
+  /**
+   * Non-fatal validation warnings — currently surfaces unknown boundary
+   * preset IDs. The spec is persisted as-submitted (forward compatible
+   * with future preset IDs); the UI renders an inline badge so the
+   * operator can correct typos before shipping. Absent when no warnings.
+   */
+  warnings?: string[];
 }
 
 interface ErrResult {
@@ -98,10 +107,29 @@ export const setQualityConfigTool: BuilderTool<Input, Result> = {
     });
     ctx.rebuildScheduler.schedule(ctx.userEmail, ctx.draftId);
 
-    return {
+    // Issue #54 — surface unknown boundary preset IDs as warnings (not as
+    // errors, so the spec round-trips for forward compatibility).
+    const unknownPresets =
+      input.boundaries?.presets?.filter((id) => !getBoundaryPreset(id)) ?? [];
+    const warnings =
+      unknownPresets.length > 0
+        ? unknownPresets.map((id) => `unknown preset: ${id}`)
+        : undefined;
+
+    // Issue #56 — fire-and-forget audit log
+    void ctx.audit.log(ctx.draftId, ctx.userEmail, BuilderAuditAction.QUALITY_UPDATED, {
+      sycophancy: input.sycophancy ?? null,
+      presets: input.boundaries?.presets ?? [],
+      customCount: input.boundaries?.custom?.length ?? 0,
+      ...(warnings ? { warnings } : {}),
+    });
+
+    const result: OkResult = {
       ok: true,
       applied: [...patches],
       quality: input,
     };
+    if (warnings) result.warnings = warnings;
+    return result;
   },
 };

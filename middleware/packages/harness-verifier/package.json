@@ -14,7 +14,7 @@
   "peerDependencies": {
     "@anthropic-ai/sdk": "*",
     "@omadia/plugin-api": "*",
-    "zod": "*",
+    "zod": "^4.0.0",
     "pg": "^8.13.0"
   },
   "engines": {

@@ -93,7 +93,7 @@ const ConfigSchema = z.object({
   DEV_ENDPOINTS_ENABLED: z
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
-    .default('false'),
+    .default(false),
 
   // Postgres connection string for the Neon-backed knowledge graph.
   // When set, `bootstrapKnowledgeGraphFromEnv` installs the
@@ -163,7 +163,7 @@ const ConfigSchema = z.object({
   ODOO_INSECURE_TLS: z
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
-    .default('false'),
+    .default(false),
 
   // Diagram rendering (Kroki + Tigris/MinIO). When all required fields are
   // present, the orchestrator exposes `render_diagram` and the middleware
@@ -194,7 +194,7 @@ const ConfigSchema = z.object({
   VAULT_BACKUP_ENABLED: z
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
-    .default('false'),
+    .default(false),
   VAULT_BACKUP_PREFIX: z.string().min(1).default('backups/vault/'),
   VAULT_BACKUP_RETENTION: z.coerce.number().int().min(1).max(365).default(30),
   VAULT_BACKUP_INTERVAL_HOURS: z.coerce.number().min(1).max(168).default(24),
@@ -216,7 +216,7 @@ const ConfigSchema = z.object({
   ODOO_ENTITY_SYNC_ENABLED: z
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
-    .default('false'),
+    .default(false),
   ODOO_ENTITY_SYNC_INTERVAL_HOURS: z.coerce.number().min(1).max(168).default(6),
   ODOO_ENTITY_SYNC_PAGE_SIZE: z.coerce.number().int().positive().default(100),
   ODOO_ENTITY_SYNC_MAX_PER_MODEL: z.coerce.number().int().positive().default(5000),
@@ -225,7 +225,7 @@ const ConfigSchema = z.object({
   CONFLUENCE_ENTITY_SYNC_ENABLED: z
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
-    .default('false'),
+    .default(false),
   CONFLUENCE_ENTITY_SYNC_INTERVAL_HOURS: z.coerce.number().min(1).max(168).default(12),
   CONFLUENCE_ENTITY_SYNC_PAGE_SIZE: z.coerce.number().int().positive().default(50),
   CONFLUENCE_ENTITY_SYNC_MAX_PAGES: z.coerce.number().int().positive().default(2000),
@@ -238,7 +238,7 @@ const ConfigSchema = z.object({
   GRAPH_EMBEDDING_BACKFILL_ENABLED: z
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
-    .default('true'),
+    .default(true),
   GRAPH_EMBEDDING_BACKFILL_INTERVAL_MINUTES: z.coerce.number().min(1).max(360).default(5),
   GRAPH_EMBEDDING_BACKFILL_BATCH_SIZE: z.coerce.number().int().positive().max(200).default(20),
   GRAPH_EMBEDDING_BACKFILL_MAX_ATTEMPTS: z.coerce.number().int().positive().max(50).default(5),
@@ -256,7 +256,7 @@ const ConfigSchema = z.object({
   NORTHDATA_ENABLED: z
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
-    .default('false'),
+    .default(false),
   NORTHDATA_API_KEY: z.string().optional(),
   NORTHDATA_BASE_URL: z.string().url().default('https://www.northdata.com/_api'),
   NORTHDATA_RATE_LIMIT_RPS: z.coerce.number().positive().default(2),
@@ -266,7 +266,7 @@ const ConfigSchema = z.object({
   NORTHDATA_WATCHLIST_ENABLED: z
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
-    .default('false'),
+    .default(false),
   NORTHDATA_WATCHLIST_INTERVAL_HOURS: z.coerce.number().min(1).max(168).default(24),
 
   // OpenRegister (https://openregister.de) — active enrichment provider. When
@@ -277,7 +277,7 @@ const ConfigSchema = z.object({
   OPENREGISTER_ENABLED: z
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
-    .default('false'),
+    .default(false),
   OPENREGISTER_API_KEY: z.string().optional(),
   OPENREGISTER_BASE_URL: z.string().url().default('https://api.openregister.de'),
   OPENREGISTER_RATE_LIMIT_RPS: z.coerce.number().positive().default(2),
@@ -301,7 +301,7 @@ const ConfigSchema = z.object({
   TEAMS_ATTACHMENT_STORAGE_ENABLED: z
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
-    .default('false'),
+    .default(false),
   TEAMS_ATTACHMENT_KEY_PREFIX: z.string().min(1).default('teams-attachments'),
   /** Per-file cap. Larger uploads are logged + skipped. */
   TEAMS_ATTACHMENT_MAX_BYTES: z.coerce.number().int().positive().default(25_000_000),
@@ -333,7 +333,7 @@ const ConfigSchema = z.object({
   VERIFIER_ENABLED: z
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
-    .default('false'),
+    .default(false),
   VERIFIER_MODE: z.enum(['shadow', 'enforce']).default('shadow'),
   VERIFIER_MODEL: z.string().min(1).default('claude-haiku-4-5-20251001'),
   VERIFIER_MAX_CLAIMS: z.coerce.number().int().positive().default(20),
@@ -347,7 +347,7 @@ const ConfigSchema = z.object({
   PACKAGE_UPLOAD_ENABLED: z
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
-    .default('true'),
+    .default(true),
   UPLOADED_PACKAGES_DIR: z.string().min(1).default('./.uploaded-packages'),
   PACKAGE_UPLOAD_MAX_BYTES: z.coerce.number().int().positive().default(15 * 1024 * 1024),
   PACKAGE_UPLOAD_MAX_EXTRACTED_BYTES: z.coerce.number().int().positive().default(80 * 1024 * 1024),

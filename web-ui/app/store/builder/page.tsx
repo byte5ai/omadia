@@ -4,7 +4,6 @@ import Link from 'next/link';
 import { listBuilderDrafts } from '../../_lib/api';
 import { redirectIfUnauthorized } from '../../_lib/authRedirect';
 import type {
-  DraftListScope,
   DraftSummary,
   ListDraftsResponse,
 } from '../../_lib/builderTypes';
@@ -20,12 +19,12 @@ export const metadata: Metadata = {
 
 export const dynamic = 'force-dynamic';
 
-type ScopeFilter = 'active' | 'installed' | 'deleted';
+type ScopeFilter = 'draft' | 'published' | 'deleted';
 
 const SCOPE_LABEL: Record<ScopeFilter, string> = {
-  active: 'Aktiv',
-  installed: 'Installiert',
-  deleted: 'Papierkorb',
+  draft: 'Entwurf',
+  published: 'Veröffentlicht',
+  deleted: 'Gelöscht',
 };
 
 export default async function BuilderDashboardPage({
@@ -36,19 +35,40 @@ export default async function BuilderDashboardPage({
   const params = await searchParams;
   const scope = parseScope(params.scope);
 
-  let response: ListDraftsResponse | null = null;
-  let loadError: string | null = null;
-
+  // Two parallel calls: the active list (drives draft+published counts and
+  // most-of-the-time the visible rows) plus the deleted list (drives the
+  // Gelöscht-tab badge — without this second call the trash count is
+  // always 0 because soft-deleted rows never appear under scope=active).
+  // Each call is awaited independently so a deleted-fetch failure does not
+  // mask the main view.
+  let activeResponse: ListDraftsResponse | null = null;
+  let activeError: string | null = null;
   try {
-    response = await listBuilderDrafts({ scope: apiScopeFor(scope) });
+    activeResponse = await listBuilderDrafts({ scope: 'active' });
   } catch (err) {
     await redirectIfUnauthorized(err);
-    loadError = err instanceof Error ? err.message : 'Drafts konnten nicht geladen werden.';
+    activeError = err instanceof Error ? err.message : 'Drafts konnten nicht geladen werden.';
   }
 
-  const items = response?.items ?? [];
+  let deletedResponse: ListDraftsResponse | null = null;
+  try {
+    deletedResponse = await listBuilderDrafts({ scope: 'deleted' });
+  } catch (err) {
+    await redirectIfUnauthorized(err);
+    // Silent: a failed deleted-fetch only blanks the trash-count badge; we
+    // log and let the user keep working with the rest of the dashboard.
+    console.warn(
+      '[builder] deleted-scope fetch failed (trash count will read 0):',
+      err instanceof Error ? err.message : err,
+    );
+  }
+
+  const activeItems = activeResponse?.items ?? [];
+  const deletedItems = deletedResponse?.items ?? [];
+  const loadError = activeError;
+
   const quota =
-    response?.quota ?? {
+    activeResponse?.quota ?? {
       used: 0,
       cap: 50,
       warnAt: 40,
@@ -57,8 +77,8 @@ export default async function BuilderDashboardPage({
       exceeded: false,
     };
 
-  const visible = filterByScope(items, scope);
-  const counts = countByScope(items);
+  const visible = filterByScope(activeItems, deletedItems, scope);
+  const counts = countByScope(activeItems, deletedItems);
 
   return (
     <main className="mx-auto max-w-[1280px] px-6 py-12 lg:px-10 lg:py-16">
@@ -72,7 +92,7 @@ export default async function BuilderDashboardPage({
         <div className="mt-6 flex items-start justify-between gap-6">
           <div className="max-w-2xl">
             <h1 className="font-display text-[clamp(2.25rem,4.5vw,3.75rem)] leading-[1.05] text-[color:var(--fg-strong)]">
-              Neue Agents zusammenstecken.
+              Neue Agents bauen.
             </h1>
             <p className="mt-6 text-[18px] font-semibold leading-[1.55] text-[color:var(--fg)]">
               <span className="b5-colon">:</span>
@@ -93,9 +113,9 @@ export default async function BuilderDashboardPage({
         </div>
 
         <dl className="mt-10 grid max-w-2xl grid-cols-4 gap-6 border-t border-[color:var(--divider)] pt-5 text-sm">
-          <Stat label="Drafts aktiv" value={counts.active} />
-          <Stat label="Installiert" value={counts.installed} />
-          <Stat label="Papierkorb" value={counts.deleted} />
+          <Stat label="Entwürfe" value={counts.draft} />
+          <Stat label="Veröffentlicht" value={counts.published} />
+          <Stat label="Gelöscht" value={counts.deleted} />
           <Stat label="Limit" value={quota.cap} />
         </dl>
       </header>
@@ -104,13 +124,13 @@ export default async function BuilderDashboardPage({
         className="mt-10 flex flex-wrap items-center gap-2"
         aria-label="Scope filter"
       >
-        {(['active', 'installed', 'deleted'] as ScopeFilter[]).map((s) => {
+        {(['draft', 'published', 'deleted'] as ScopeFilter[]).map((s) => {
           const active = s === scope;
           const count = counts[s];
           return (
             <Link
               key={s}
-              href={s === 'active' ? '/store/builder' : `/store/builder?scope=${s}`}
+              href={s === 'draft' ? '/store/builder' : `/store/builder?scope=${s}`}
               className={cn(
                 'inline-flex items-center gap-2 rounded-full px-4 py-1.5',
                 'text-[12px] font-semibold transition-colors duration-[140ms]',
@@ -191,17 +211,17 @@ function Stat({
 
 function EmptyState({ scope }: { scope: ScopeFilter }): React.ReactElement {
   const headline =
-    scope === 'active'
-      ? 'Noch keine Drafts.'
-      : scope === 'installed'
-        ? 'Noch nichts installiert.'
+    scope === 'draft'
+      ? 'Noch keine Entwürfe.'
+      : scope === 'published'
+        ? 'Noch nichts veröffentlicht.'
         : 'Papierkorb ist leer.';
   const hint =
-    scope === 'active'
-      ? 'Klicke rechts oben auf „Neuer Agent" um deinen ersten Draft anzulegen.'
-      : scope === 'installed'
-        ? 'Installierte Agents erscheinen hier, sobald du einen Draft über den Workspace ausgeliefert hast.'
-        : 'Gelöschte Drafts tauchen hier auf und können wiederhergestellt werden, bis du sie endgültig löschst.';
+    scope === 'draft'
+      ? 'Klicke rechts oben auf „Neuer Agent" um deinen ersten Entwurf anzulegen.'
+      : scope === 'published'
+        ? 'Veröffentlichte Agents erscheinen hier, sobald du einen Entwurf über den Workspace in die Plattform gepackt hast.'
+        : 'Gelöschte Entwürfe tauchen hier auf und können wiederhergestellt werden, bis du sie endgültig löschst.';
   return (
     <div className="rounded-[14px] border border-dashed border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] p-12 text-center">
       <p className="font-display text-[22px] text-[color:var(--fg-strong)]">{headline}</p>
@@ -230,48 +250,42 @@ function LoadErrorState({ message }: { message: string }): React.ReactElement {
 // ---------------------------------------------------------------------------
 
 function parseScope(raw: string | undefined): ScopeFilter {
-  if (raw === 'installed' || raw === 'deleted') return raw;
-  return 'active';
-}
-
-/**
- * The API has three scopes (`active`, `all`, `deleted`); we fan that out in
- * the UI to four filter buttons. `installed` is a status-filter applied on
- * top of the `active` scope, so the API request for both `active` and
- * `installed` is the same — the UI does the post-filter.
- */
-function apiScopeFor(uiScope: ScopeFilter): DraftListScope {
-  return uiScope === 'deleted' ? 'deleted' : 'active';
+  if (raw === 'published' || raw === 'deleted' || raw === 'draft') return raw;
+  // Legacy aliases — bookmarks from the pre-rename URL scheme still
+  // resolve to the new tabs.
+  if (raw === 'installed') return 'published';
+  if (raw === 'active') return 'draft';
+  return 'draft';
 }
 
 function filterByScope(
-  items: DraftSummary[],
+  activeItems: DraftSummary[],
+  deletedItems: DraftSummary[],
   scope: ScopeFilter,
 ): DraftSummary[] {
-  if (scope === 'installed') {
-    return items.filter((i) => i.status === 'installed');
+  if (scope === 'deleted') {
+    return deletedItems;
   }
-  if (scope === 'active') {
-    // Hide installed drafts from the "Aktiv" tab — they live under their own
-    // tab and would otherwise compete visually with in-flight work.
-    return items.filter((i) => i.status !== 'installed');
+  if (scope === 'published') {
+    return activeItems.filter((i) => i.status === 'published');
   }
-  return items;
+  // 'draft' — anything in the active scope that isn't yet published.
+  return activeItems.filter((i) => i.status !== 'published');
 }
 
-function countByScope(items: DraftSummary[]): Record<ScopeFilter, number> {
-  // `items` is already scope-scoped on the server; the counts shown in the
-  // filter buttons reflect what the user *would* see if they switched tabs.
-  // For B.0 we approximate: the `installed` count is drawn from the active-
-  // list (installed drafts live under scope=active but filtered out). The
-  // `deleted` tab gets a best-effort count of 0 unless we're already on it.
-  // Precise counts land in B.5 when we fetch `scope=all` once.
-  const installed = items.filter((i) => i.status === 'installed').length;
-  const activeNotInstalled = items.filter((i) => i.status !== 'installed').length;
-  const deleted = items.length > 0 && items[0]?.status === 'archived' ? items.length : 0;
+function countByScope(
+  activeItems: DraftSummary[],
+  deletedItems: DraftSummary[],
+): Record<ScopeFilter, number> {
+  // activeItems carries everything not in the trash; we partition by status.
+  // deletedItems is the authoritative source for the "Gelöscht" count —
+  // there is no other way to get it because the active scope filters out
+  // soft-deleted rows server-side.
+  const published = activeItems.filter((i) => i.status === 'published').length;
+  const draft = activeItems.filter((i) => i.status !== 'published').length;
   return {
-    active: activeNotInstalled,
-    installed,
-    deleted,
+    draft,
+    published,
+    deleted: deletedItems.length,
   };
 }

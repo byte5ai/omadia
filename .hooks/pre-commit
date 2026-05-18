@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Pre-commit hook for engineering-standards repos.
+#
+# Two checks, both run on every commit:
+#
+#   1) Main-tree discipline (mandatory engineering standard, see SKILL.md §3)
+#      The main clone never receives commits — every change lands in a
+#      worktree. This is branch-agnostic: an agent whose HEAD got switched
+#      to main by a parallel session is caught here too, not just one that
+#      created a feature branch in the wrong tree.
+#
+#      Bypass (one-off):    ALLOW_MAIN_TREE_BRANCH=1 git commit ...
+#      Opt-out (per repo):  git config engineering-standards.main-tree-discipline false
+#      Global opt-out:      status: exempt in .github/engineering-standards.yml
+#
+#   2) Per-branch path-guard (optional backstop)
+#      Refuses commits that stage paths inconsistent with the current
+#      branch's scope. No-op for branches without a rule in the case
+#      statement below — add per-branch rules as needed.
+#
+# Activated automatically when the repo runs:
+#   git config core.hooksPath .hooks
+
+set -e
+
+# --- (1) Main-tree discipline -------------------------------------------------
+
+mtd_enabled=$(git config --bool --get engineering-standards.main-tree-discipline 2>/dev/null || echo true)
+
+if [ "$mtd_enabled" != "false" ] && [ "${ALLOW_MAIN_TREE_BRANCH:-}" != "1" ]; then
+  main_tree=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')
+  current_tree=$(git rev-parse --show-toplevel 2>/dev/null)
+  current_branch=$(git branch --show-current 2>/dev/null)
+
+  if [ -n "$main_tree" ] && [ -n "$current_tree" ] && \
+     [ "$main_tree" = "$current_tree" ]; then
+    echo "pre-commit: commits from the main clone are not allowed." >&2
+    echo "Convention: every change — even single-line fixes — lands in a worktree." >&2
+    echo "Reason: the main clone's HEAD can be switched by parallel sessions; commits" >&2
+    echo "from here have unreliable branch attribution." >&2
+    echo "" >&2
+    if [ -n "$current_branch" ] && [ "$current_branch" != "main" ] && [ "$current_branch" != "master" ]; then
+      echo "  git worktree add ../$(basename "$current_tree")-${current_branch//\//-} $current_branch" >&2
+    else
+      echo "  git worktree add ../$(basename "$current_tree")-<feature> -b <branch> main" >&2
+    fi
+    echo "" >&2
+    echo "Bypass (one-off):  ALLOW_MAIN_TREE_BRANCH=1 git commit ..." >&2
+    echo "Opt-out per repo:  git config engineering-standards.main-tree-discipline false" >&2
+    exit 1
+  fi
+fi
+
+# --- (2) Per-branch path-guard ------------------------------------------------
+
+branch="$(git branch --show-current)"
+
+case "$branch" in
+  # --- examples; delete and replace with your own rules ---
+  #
+  # research/foo)
+  #   allow='^(experiments/foo/|docs/foo/)'
+  #   ;;
+  # main)
+  #   forbid='^experiments/'
+  #   ;;
+  # ---------------------------------------------------------
+  *)
+    exit 0
+    ;;
+esac
+
+staged="$(git diff --cached --name-only)"
+
+if [ -n "${allow:-}" ]; then
+  bad="$(printf '%s\n' "$staged" | grep -vE "$allow" || true)"
+  if [ -n "$bad" ]; then
+    echo "pre-commit: branch '$branch' should not stage these paths:" >&2
+    printf '  %s\n' $bad >&2
+    echo "Use a worktree for this branch (see AGENTS.md) to avoid the drift class entirely." >&2
+    exit 1
+  fi
+fi
+
+if [ -n "${forbid:-}" ]; then
+  bad="$(printf '%s\n' "$staged" | grep -E "$forbid" || true)"
+  if [ -n "$bad" ]; then
+    echo "pre-commit: branch '$branch' must not stage these paths:" >&2
+    printf '  %s\n' $bad >&2
+    exit 1
+  fi
+fi

@@ -14,6 +14,7 @@ import {
 import { ASSETS } from '../../platform/assets.js';
 import { warnIfEmptyInputSchema } from '../dynamicAgentRuntime.js';
 import { zodToJsonSchema } from '../zodToJsonSchema.js';
+import { type AuditLogger, createAuditLogger } from './audit.js';
 import { loadBoilerplate, type SlotDef } from './boilerplateSource.js';
 import type { DraftStore } from './draftStore.js';
 import type { SlotTypecheckService } from './slotTypecheckPipeline.js';
@@ -239,6 +240,13 @@ export interface BuilderAgentDeps {
    * `<templateRoot>/node_modules`. Required.
    */
   templateRoot: string;
+  /**
+   * Issue #56 — optional audit logger override. When omitted, the
+   * default `createAuditLogger(draftStore)` is wired so every mutating
+   * tool call lands in `builder_audit`. Tests can pass a spy to
+   * observe calls without touching SQLite.
+   */
+  audit?: AuditLogger;
   logger?: (...args: unknown[]) => void;
 }
 
@@ -265,6 +273,7 @@ export class BuilderAgent {
   private readonly catalogToolNames: CatalogToolNamesProvider;
   private readonly knownPluginIds: KnownPluginIdsProvider;
   private readonly slotTypechecker: SlotTypecheckService;
+  private readonly audit: AuditLogger;
   private readonly referenceCatalog: Readonly<
     Record<string, { root: string; description: string }>
   >;
@@ -288,6 +297,7 @@ export class BuilderAgent {
     this.knownPluginIds = deps.knownPluginIds;
     this.slotTypechecker = deps.slotTypechecker;
     this.referenceCatalog = deps.referenceCatalog;
+    this.audit = deps.audit ?? createAuditLogger(deps.draftStore);
     this.systemPromptSeed = deps.systemPromptSeed ?? defaultSystemPromptSeed;
     this.buildSubAgent = deps.buildSubAgent ?? defaultBuildSubAgent;
     this.tools = deps.tools ?? builderTools();
@@ -372,6 +382,7 @@ export class BuilderAgent {
       buildFailureBudget,
       templateRoot: this.templateRoot,
       userMessage: opts.userMessage,
+      audit: this.audit,
     };
 
     const subAgentTools = this.tools.map((tool) => bridgeBuilderTool(tool, toolCtx));
