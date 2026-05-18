@@ -576,9 +576,19 @@ async function loadSystemPrompt(
 }
 
 /**
- * Issue #51 — read the plugin's AGENT.md (if present), parse the
- * frontmatter, and compile the sycophancy-guard rule package for the
- * configured tier (`quality.sycophancy`). Returns `''` when:
+ * Issue #51 — **outer layer** of the sycophancy-section compose helper.
+ * Reads the plugin's AGENT.md (if present), parses the frontmatter, and
+ * delegates to the **inner layer** `compileSycophancyGuard(level)` for
+ * the actual prompt-text rendering.
+ *
+ * The same inner layer is called directly by the preview-prompt route
+ * (issue #55, `routes/builderPreviewPrompt.ts`) with the spec-side
+ * `quality.sycophancy` value — guaranteeing byte-identical output
+ * between the runtime compose path and the live preview without a
+ * dedicated refactor. Parity is enforced by
+ * `test/builder/previewPromptParity.test.ts`.
+ *
+ * Returns `''` when:
  *   - no AGENT.md or agent.md file at the package root
  *   - file read fails
  *   - frontmatter is missing / malformed
@@ -605,9 +615,17 @@ export async function composeSycophancyFromAgentMd(packageRoot: string): Promise
 }
 
 /**
- * Issue #54 — read the plugin's AGENT.md (if present), parse the
- * frontmatter, and compile the boundaries section (preset prompts +
- * custom `You must NOT: …` lines). Returns `''` when:
+ * Issue #54 — **outer layer** of the boundaries-section compose helper.
+ * Reads the plugin's AGENT.md (if present), parses the frontmatter, and
+ * delegates to the **inner layer** `compileBoundariesSection(presets,
+ * customLines)` for the actual prompt-text rendering.
+ *
+ * The same inner layer is called directly by the preview-prompt route
+ * (issue #55) with the spec-side `quality.boundaries` value —
+ * guaranteeing byte-identical output between runtime and preview.
+ * Parity is enforced by `test/builder/previewPromptParity.test.ts`.
+ *
+ * Returns `''` when:
  *   - no AGENT.md or agent.md file at the package root
  *   - file read fails
  *   - frontmatter is missing / malformed
@@ -644,8 +662,17 @@ export async function composeBoundariesFromAgentMd(packageRoot: string): Promise
 }
 
 /**
- * Phase 3 (OB-67) — read the plugin's AGENT.md (if present), parse the
- * frontmatter, and compose the `<persona>` system-prompt section.
+ * Phase 3 (OB-67) — **outer layer** of the persona-section compose
+ * helper. Reads the plugin's AGENT.md (if present), parses the
+ * frontmatter, and delegates to the **inner layer**
+ * `composePersonaSection({ persona, family })` from `personaCompose.ts`
+ * for the actual `<persona>`-XML rendering.
+ *
+ * The same inner layer is called directly by the preview-prompt route
+ * (issue #55) with the spec-side `persona` block — guaranteeing
+ * byte-identical output between runtime and preview. Parity is enforced
+ * by `test/builder/previewPromptParity.test.ts`.
+ *
  * Returns `''` when:
  *   - no AGENT.md or agent.md file at the package root
  *   - file read fails

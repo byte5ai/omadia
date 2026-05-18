@@ -58,16 +58,53 @@ describe('<PreviewPromptPanel />', () => {
     await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2));
   });
 
-  it('bumping refetchKey refetches', async () => {
-    fetchSpy.mockResolvedValue({
-      systemPrompt: '# Hi',
-      tokens: 1,
-      sections: [{ label: 'Header', content: '# Hi', kind: 'header' }],
-    });
-    const { rerender } = render(<PreviewPromptPanel draftId="draft-1" refetchKey={0} />);
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
-    rerender(<PreviewPromptPanel draftId="draft-1" refetchKey={1} />);
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2));
+  it('bumping refetchKey refetches after the 500ms debounce', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      fetchSpy.mockResolvedValue({
+        systemPrompt: '# Hi',
+        tokens: 1,
+        sections: [{ label: 'Header', content: '# Hi', kind: 'header' }],
+      });
+      const { rerender } = render(<PreviewPromptPanel draftId="draft-1" refetchKey={0} />);
+      // Initial mount fetches immediately
+      await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
+      rerender(<PreviewPromptPanel draftId="draft-1" refetchKey={1} />);
+      // Before debounce: still 1 call
+      await vi.advanceTimersByTimeAsync(250);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      // After 500ms total: the second call fires
+      await vi.advanceTimersByTimeAsync(300);
+      await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('coalesces a burst of refetchKey bumps into one debounced fetch', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      fetchSpy.mockResolvedValue({
+        systemPrompt: '# Hi',
+        tokens: 1,
+        sections: [{ label: 'Header', content: '# Hi', kind: 'header' }],
+      });
+      const { rerender } = render(<PreviewPromptPanel draftId="draft-1" refetchKey={0} />);
+      await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
+      // Three rapid bumps within 250ms each — only the last one survives
+      // the debounce
+      rerender(<PreviewPromptPanel draftId="draft-1" refetchKey={1} />);
+      await vi.advanceTimersByTimeAsync(100);
+      rerender(<PreviewPromptPanel draftId="draft-1" refetchKey={2} />);
+      await vi.advanceTimersByTimeAsync(100);
+      rerender(<PreviewPromptPanel draftId="draft-1" refetchKey={3} />);
+      // Still only the initial mount fetch
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(600);
+      await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('renders inline alert when fetch fails', async () => {

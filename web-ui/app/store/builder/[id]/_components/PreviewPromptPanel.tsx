@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
   fetchBuilderPreviewPrompt,
@@ -70,8 +70,24 @@ export function PreviewPromptPanel({
     }
   }, [draftId]);
 
+  // First mount: fetch immediately so the panel never shows an empty
+  // skeleton on tab-switch. Subsequent `refetchKey` bumps are 500 ms-
+  // debounced — operator slider-saves come in bursts, debouncing keeps
+  // the route calls bounded without losing per-edit feedback. (#55 AC:
+  // "Prompt updates within ~500 ms after a persisted spec patch".)
+  const initialLoadDoneRef = useRef(false);
   useEffect(() => {
-    void load();
+    if (!initialLoadDoneRef.current) {
+      initialLoadDoneRef.current = true;
+      void load();
+      return;
+    }
+    const handle = setTimeout(() => {
+      void load();
+    }, 500);
+    return () => {
+      clearTimeout(handle);
+    };
   }, [load, refetchKey]);
 
   const handleCopy = useCallback(async () => {
@@ -139,9 +155,7 @@ export function PreviewPromptPanel({
       <div className="space-y-1 font-mono text-xs" data-testid="preview-prompt-sections">
         {data?.sections.map((s, i) => (
           <pre
-            // Index is fine here — sections are deterministic per draft state
-            // eslint-disable-next-line react/no-array-index-key
-            key={i}
+            key={`${s.kind}-${String(i)}`}
             data-testid={`preview-prompt-section-${s.kind}`}
             className={`overflow-x-auto whitespace-pre-wrap rounded p-2 ${KIND_BG[s.kind]}`}
           >
