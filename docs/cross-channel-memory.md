@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Proposed (Round 3) |
+| **Status** | Proposed (Round 4 — merge-ready pending final Codex pass) |
 | **Capabilities (manifest refs)** | `platformIdentity@1`, `crossChannelConversationMemory@1` |
 | **Service-registry keys (runtime)** | `platformIdentity`, `crossChannelConversationMemory` |
 | **Plugins (provider candidates)** | `@omadia/platform-identity-neon`, `@omadia/platform-identity-inmemory`, `@omadia/cross-channel-conversation-memory-neon`, `@omadia/cross-channel-conversation-memory-inmemory` |
@@ -459,8 +459,13 @@ export interface CrossChannelConversationMemoryCapability {
 
 // Structured error contract for the adapter's failure handling (§7.4).
 // Implementations of the capability MUST raise CcmAppendError on
-// appendTurn failures and populate `code` accurately. Other methods
-// may raise standard Error subclasses.
+// appendTurn failures and populate `code` and `clientMessageId`
+// accurately. Other methods may raise standard Error subclasses.
+//
+// All readonly fields MUST be set by the constructor at throw-time —
+// the impl is expected to use a thin subclass / factory that takes
+// `{ code, messageId?, clientMessageId, cause? }` and assigns every
+// field, so consumers never see a partially-initialised instance.
 export class CcmAppendError extends Error {
   readonly code:
     | 'committed'   // server-side error AFTER row was committed; messageId set
@@ -652,7 +657,7 @@ in audit. The allowed keys are enumerated per op:
 | `op` | Allowed `detail` keys |
 |---|---|
 | `'read_raw'` | `limit`, `sinceMs`, `excludeCanvasSessionId`, `channelKinds`, `returnedCount` |
-| `'forget_user'` | `deletedTurns`, `deletedIdentities`, `deletedAuditRows` |
+| `'forget_user'` | `deletedTurns`, `deletedIdentities`, `deletedAuditRows`, `nullifiedAuditRows` |
 | `'merge_identities'` | `primaryUserId`, `secondaryUserId`, `mergedIdentities`, `source` |
 
 The capability impl validates the `detail` shape before insert; any
@@ -990,7 +995,7 @@ migrates.
 | `ccm_reads_total{kind}` | `getRecentByUser` / `getByChannelScope` (kind discriminates) |
 | `ccm_reads_redaction_pending_total` | Default-read excluded a `pending` row |
 | `ccm_reads_raw_total` | Privileged `includeRaw=true` reads |
-| `ccm_gc_deletes_total{pass}` | GC deletions (pass = `'ttl'`, `'count'`, `'bytes'`) |
+| `ccm_gc_deletes_total{pass}` | GC deletions (pass = `'ttl'`, `'count'`, `'bytes'`, `'audit'`) |
 
 ### 13.2 Performance targets
 
