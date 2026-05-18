@@ -92,7 +92,7 @@ export function PersonaTemplateGallery({
       aria-label="Persona-Vorlage auswählen"
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
     >
-      <div className="max-h-full w-full max-w-3xl overflow-y-auto rounded-lg bg-white p-4 shadow-xl">
+      <div className="max-h-full w-full max-w-3xl overflow-y-auto rounded-lg border border-[color:var(--border)] bg-[color:var(--bg-elevated,var(--bg))] p-4 text-[color:var(--fg)] shadow-xl">
         <header className="mb-3 flex items-baseline justify-between">
           <h2 className="text-lg font-semibold text-[color:var(--fg-strong)]">
             Persona-Vorlage auswählen
@@ -102,7 +102,7 @@ export function PersonaTemplateGallery({
             data-testid="gallery-close"
             onClick={onClose}
             disabled={pending}
-            className="rounded px-2 py-1 text-sm text-[color:var(--fg-muted)] hover:bg-gray-100"
+            className="rounded border border-[color:var(--border)] px-2 py-1 text-sm text-[color:var(--fg-muted)] hover:bg-[color:var(--accent-bg)]"
           >
             Schließen
           </button>
