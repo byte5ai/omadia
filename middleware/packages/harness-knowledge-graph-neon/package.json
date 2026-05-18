@@ -14,7 +14,7 @@
   "peerDependencies": {
     "@omadia/embeddings": "*",
     "@omadia/plugin-api": "*",
-    "zod": "^3.23.8",
+    "zod": "^4.0.0",
     "pg": "^8.13.0"
   },
   "engines": {

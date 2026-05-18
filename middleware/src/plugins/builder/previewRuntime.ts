@@ -269,6 +269,7 @@ export class PreviewRuntime {
       await fs.rm(previewDir, { recursive: true, force: true });
       throw new Error(
         `preview: failed to read package.json from extracted zip: ${(err as Error).message}`,
+        { cause: err },
       );
     }
     const agentId = pkg.name;
@@ -294,6 +295,7 @@ export class PreviewRuntime {
         await fs.rm(previewDir, { recursive: true, force: true });
         throw new Error(
           `preview: failed to symlink build-template node_modules into ${linkPath}: ${(err as Error).message}`,
+          { cause: err },
         );
       }
     }

@@ -123,6 +123,7 @@ export async function loadBuildTemplateConfig(
   } catch (err) {
     throw new Error(
       `loadBuildTemplateConfig: cannot read boilerplate package.json at ${pkgPath}: ${(err as Error).message}`,
+      { cause: err },
     );
   }
 
@@ -132,6 +133,7 @@ export async function loadBuildTemplateConfig(
   } catch (err) {
     throw new Error(
       `loadBuildTemplateConfig: malformed JSON in ${pkgPath}: ${(err as Error).message}`,
+      { cause: err },
     );
   }
 

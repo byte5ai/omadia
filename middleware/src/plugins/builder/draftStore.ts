@@ -36,8 +36,12 @@ import { DEFAULT_BUILDER_MODEL, BuilderModelRegistry } from './modelRegistry.js'
  * for a future worker-thread migration if we ever need it.
  */
 
-const CURRENT_SCHEMA_VERSION = 2;
+const CURRENT_SCHEMA_VERSION = 4;
 
+// v1 baseline drafts table. In v3 the historical `installed_agent_id` column
+// was renamed to `published_agent_id` — for fresh installs we create the
+// table directly with the v3 column name (saving a no-op rename); the
+// migration path handles existing v1/v2 DBs that still carry the old name.
 const SCHEMA_V1_SQL = `
 CREATE TABLE IF NOT EXISTS drafts (
   id                      TEXT PRIMARY KEY,
@@ -50,26 +54,51 @@ CREATE TABLE IF NOT EXISTS drafts (
   codegen_model           TEXT NOT NULL DEFAULT 'sonnet',
   preview_model           TEXT NOT NULL DEFAULT 'sonnet',
   status                  TEXT NOT NULL DEFAULT 'draft',
-  installed_agent_id      TEXT,
+  published_agent_id      TEXT,
   created_at              INTEGER NOT NULL,
   updated_at              INTEGER NOT NULL,
   deleted_at              INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_drafts_user_active
   ON drafts(user_email, deleted_at, updated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_drafts_installed_purge
+CREATE INDEX IF NOT EXISTS idx_drafts_published_purge
   ON drafts(status, deleted_at);
 `;
 
+// Issue #56 — v2 adds the builder_audit fire-and-forget table. Idempotent
+// `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS` so re-running
+// against an already-v2 DB is a no-op; mid-flight upgrade from v1 picks up
+// the table without losing existing drafts.
+const SCHEMA_V2_SQL = `
+CREATE TABLE IF NOT EXISTS builder_audit (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  draft_id      TEXT NOT NULL,
+  user_email    TEXT NOT NULL,
+  action        TEXT NOT NULL,
+  details_json  TEXT NOT NULL DEFAULT '{}',
+  created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_builder_audit_draft
+  ON builder_audit(draft_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_builder_audit_user
+  ON builder_audit(user_email, created_at DESC);
+`;
+
 /**
- * V2 — Native issue-reporting + workaround-tracking (concept plan:
+ * V4 — Native issue-reporting + workaround-tracking (concept plan:
  * docs/plans/native-issue-reporting.md). Three additive tables; no changes
  * to the existing `drafts` columns. Spec-side workaround data lives inside
  * `spec_json` (immutable identity) while operational state lives in
  * `agent_workaround_state` so re-installs of the same spec keep their
  * lifecycle state.
+ *
+ * Numbered v4 to layer on top of v3 (the `installed_agent_id`→
+ * `published_agent_id` rename from PR #98). v2 stays the audit table from
+ * issue #56; v3 is the column rename; v4 introduces these issue-reporting
+ * tables. The migration logic in `runMigrations` handles all four upgrade
+ * paths idempotently.
  */
-const SCHEMA_V2_SQL = `
+const SCHEMA_V4_SQL = `
 CREATE TABLE IF NOT EXISTS github_issue_cache (
   repo_owner       TEXT NOT NULL,
   repo_name        TEXT NOT NULL,
@@ -121,7 +150,7 @@ export interface DraftUpdate {
   codegenModel?: BuilderModelId;
   previewModel?: BuilderModelId;
   status?: DraftStatus;
-  installedAgentId?: string | null;
+  publishedAgentId?: string | null;
 }
 
 interface DraftRow {
@@ -135,7 +164,7 @@ interface DraftRow {
   codegen_model: string;
   preview_model: string;
   status: string;
-  installed_agent_id: string | null;
+  published_agent_id: string | null;
   created_at: number;
   updated_at: number;
   deleted_at: number | null;
@@ -147,7 +176,7 @@ interface DraftSummaryRow {
   status: string;
   codegen_model: string;
   preview_model: string;
-  installed_agent_id: string | null;
+  published_agent_id: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -162,11 +191,11 @@ export interface DraftListOptions {
 export interface DraftStoreOptions {
   dbPath: string;
   /**
-   * Grace period (ms) after soft-deletion before `purgeInstalled` hard-
-   * deletes installed drafts. Default: 30 days. Non-installed drafts are
+   * Grace period (ms) after soft-deletion before `purgePublished` hard-
+   * deletes published drafts. Default: 30 days. Non-published drafts are
    * never auto-purged.
    */
-  installedPurgeGraceMs?: number;
+  publishedPurgeGraceMs?: number;
   /**
    * OB-83 — optional post-update hook. Called after every successful
    * `update()` whose patch touched `spec` or `name` (i.e. fields that
@@ -186,7 +215,7 @@ export interface DraftStoreOptions {
   }) => Promise<void>;
 }
 
-const DEFAULT_INSTALLED_PURGE_GRACE_MS = 30 * 24 * 60 * 60 * 1000;
+const DEFAULT_PUBLISHED_PURGE_GRACE_MS = 30 * 24 * 60 * 60 * 1000;
 
 function shouldFireOnUpdated(patch: DraftUpdate): boolean {
   return patch.spec !== undefined || patch.name !== undefined;
@@ -195,13 +224,13 @@ function shouldFireOnUpdated(patch: DraftUpdate): boolean {
 export class DraftStore {
   private db: SqliteDatabase | null = null;
   private readonly dbPath: string;
-  private readonly installedPurgeGraceMs: number;
+  private readonly publishedPurgeGraceMs: number;
   private readonly onUpdated: DraftStoreOptions['onUpdated'];
 
   constructor(opts: DraftStoreOptions) {
     this.dbPath = opts.dbPath;
-    this.installedPurgeGraceMs =
-      opts.installedPurgeGraceMs ?? DEFAULT_INSTALLED_PURGE_GRACE_MS;
+    this.publishedPurgeGraceMs =
+      opts.publishedPurgeGraceMs ?? DEFAULT_PUBLISHED_PURGE_GRACE_MS;
     this.onUpdated = opts.onUpdated;
   }
 
@@ -211,7 +240,7 @@ export class DraftStore {
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');
     db.pragma('synchronous = NORMAL');
-    this.runMigrations(db);
+    await this.runMigrations(db);
     this.db = db;
   }
 
@@ -241,7 +270,7 @@ export class DraftStore {
          id, user_email, name, spec_json, slots_json,
          transcript_json, preview_transcript_json,
          codegen_model, preview_model, status,
-         installed_agent_id, created_at, updated_at, deleted_at
+         published_agent_id, created_at, updated_at, deleted_at
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)`,
     ).run(
       id,
@@ -298,20 +327,20 @@ export class DraftStore {
 
   /**
    * Edit-from-Store lookup (B.6-3). Returns the most recently updated
-   * non-deleted draft owned by `userEmail` whose last-successful install
-   * pinned `installed_agent_id == agentId`. Returns `null` if no such
+   * non-deleted draft owned by `userEmail` whose last-successful publish
+   * pinned `published_agent_id == agentId`. Returns `null` if no such
    * draft exists — typically because the source draft was hard-deleted
-   * after install OR another user installed the plugin.
+   * after publish OR another user published the plugin.
    *
    * The current Conflict-Resolution policy (Open-Question #2: block on
    * duplicate_version) guarantees at most one draft per (user, agent_id,
    * version) tuple; multiple drafts can pin the same agent_id only via
-   * Edit-from-Store re-install with a version bump. `ORDER BY
+   * Edit-from-Store re-publish with a version bump. `ORDER BY
    * updated_at DESC LIMIT 1` resolves that to "the most recently
-   * installed version" — what the operator expects when they click
+   * published version" — what the operator expects when they click
    * Edit on the store-card.
    */
-  async findByInstalledAgentId(
+  async findByPublishedAgentId(
     userEmail: string,
     agentId: string,
   ): Promise<Draft | null> {
@@ -320,7 +349,7 @@ export class DraftStore {
       .prepare(
         `SELECT * FROM drafts
          WHERE user_email = ?
-           AND installed_agent_id = ?
+           AND published_agent_id = ?
            AND deleted_at IS NULL
          ORDER BY updated_at DESC
          LIMIT 1`,
@@ -337,7 +366,7 @@ export class DraftStore {
     const scope = opts.scope ?? 'active';
 
     let sql = `SELECT id, name, status, codegen_model, preview_model,
-                      installed_agent_id, created_at, updated_at
+                      published_agent_id, created_at, updated_at
                FROM drafts WHERE user_email = ?`;
     const params: unknown[] = [userEmail];
 
@@ -392,7 +421,9 @@ export class DraftStore {
     }
     if (patch.spec !== undefined) {
       fields.push('spec_json = ?');
-      params.push(JSON.stringify(patch.spec));
+      // Normalize on write so already-persisted drafts heal themselves on
+      // the next auto-save, not just on read.
+      params.push(JSON.stringify(normalizeSkeletonArrays(patch.spec)));
     }
     if (patch.slots !== undefined) {
       fields.push('slots_json = ?');
@@ -418,9 +449,9 @@ export class DraftStore {
       fields.push('status = ?');
       params.push(patch.status);
     }
-    if (patch.installedAgentId !== undefined) {
-      fields.push('installed_agent_id = ?');
-      params.push(patch.installedAgentId);
+    if (patch.publishedAgentId !== undefined) {
+      fields.push('published_agent_id = ?');
+      params.push(patch.publishedAgentId);
     }
 
     if (fields.length === 0) {
@@ -475,7 +506,7 @@ export class DraftStore {
 
   /**
    * Hard-delete the row. Reserved for CLI/admin use or the auto-cleanup path
-   * (`purgeInstalled`). Regular user-delete goes through `softDelete`.
+   * (`purgePublished`). Regular user-delete goes through `softDelete`.
    */
   async hardDelete(userEmail: string, id: string): Promise<boolean> {
     const db = this.required();
@@ -487,17 +518,17 @@ export class DraftStore {
 
   /**
    * Best-effort daily cleanup: hard-delete soft-deleted drafts whose
-   * `status` is `'installed'` AND whose grace period has elapsed. Drafts
-   * that never got installed are never auto-purged — losing in-flight work
+   * `status` is `'published'` AND whose grace period has elapsed. Drafts
+   * that never got published are never auto-purged — losing in-flight work
    * to a cron job would be a UX regression.
    */
-  async purgeInstalled(now = Date.now()): Promise<number> {
+  async purgePublished(now = Date.now()): Promise<number> {
     const db = this.required();
-    const cutoff = now - this.installedPurgeGraceMs;
+    const cutoff = now - this.publishedPurgeGraceMs;
     const result = db
       .prepare(
         `DELETE FROM drafts
-         WHERE status = 'installed'
+         WHERE status = 'published'
            AND deleted_at IS NOT NULL
            AND deleted_at < ?`,
       )
@@ -507,23 +538,228 @@ export class DraftStore {
 
   // ── internals ─────────────────────────────────────────────────────────────
 
-  private runMigrations(db: SqliteDatabase): void {
+  private async runMigrations(db: SqliteDatabase): Promise<void> {
     const current = db.pragma('user_version', { simple: true }) as number;
+
     if (current > CURRENT_SCHEMA_VERSION) {
       throw new Error(
         `drafts.db schema version ${String(current)} is newer than this middleware supports ` +
           `(max ${String(CURRENT_SCHEMA_VERSION)}). Refusing to open — downgrade would corrupt data.`,
       );
     }
-    if (current < 1) {
+
+    if (current === 0) {
+      // Fresh DB: install at the final v4 layout in one shot. SCHEMA_V1_SQL
+      // creates the drafts table with the v3 column name (`published_agent_id`)
+      // directly, so no rename is needed on this path. SCHEMA_V2_SQL adds the
+      // audit table (#56); SCHEMA_V4_SQL adds the issue-reporting tables.
+      // The migration paths below handle existing v1/v2/v3 DBs.
       db.exec(SCHEMA_V1_SQL);
-    }
-    if (current < 2) {
       db.exec(SCHEMA_V2_SQL);
-    }
-    if (current < CURRENT_SCHEMA_VERSION) {
+      db.exec(SCHEMA_V4_SQL);
       db.pragma(`user_version = ${String(CURRENT_SCHEMA_VERSION)}`);
+      this.assertSchemaIntegrity(db);
+      return;
     }
+
+    if (current === 1) {
+      // v1 → v4: add audit table (#56), rename installed_agent_id →
+      // published_agent_id (#98), and add issue-reporting tables (#101).
+      // Online backup BEFORE the destructive column rename.
+      await this.backupBeforeV3(db);
+      db.transaction(() => {
+        db.exec(SCHEMA_V2_SQL);
+        this.renameInstalledToPublished(db);
+        db.exec(SCHEMA_V4_SQL);
+        db.pragma(`user_version = ${String(CURRENT_SCHEMA_VERSION)}`);
+      })();
+      this.assertSchemaIntegrity(db);
+      return;
+    }
+
+    if (current === 2) {
+      // v2 → v4: rename installed_agent_id → published_agent_id and add
+      // issue-reporting tables. TODO(2026-08-01): Remove the rename branches
+      // once the eigene Instanz is on v3+ — replace with a fatal error
+      // directing operators to restore from `.bak-v2-*` backup.
+      await this.backupBeforeV3(db);
+      db.transaction(() => {
+        this.renameInstalledToPublished(db);
+        db.exec(SCHEMA_V4_SQL);
+        db.pragma(`user_version = ${String(CURRENT_SCHEMA_VERSION)}`);
+      })();
+      this.assertSchemaIntegrity(db);
+      return;
+    }
+
+    if (current === 3) {
+      // v3 → v4: only add the issue-reporting tables. No column rename, so no
+      // pre-write backup needed — the SCHEMA_V4_SQL statements are all
+      // `CREATE TABLE IF NOT EXISTS` and re-runnable.
+      db.transaction(() => {
+        db.exec(SCHEMA_V4_SQL);
+        db.pragma(`user_version = ${String(CURRENT_SCHEMA_VERSION)}`);
+      })();
+      this.assertSchemaIntegrity(db);
+      return;
+    }
+
+    if (current === CURRENT_SCHEMA_VERSION) {
+      // Idempotent re-open. Still validate the schema — protects against an
+      // operator who pinned user_version by hand without running the
+      // migration.
+      this.assertSchemaIntegrity(db);
+      return;
+    }
+
+    throw new Error(
+      `drafts.db schema version ${String(current)} is unhandled (max ${String(CURRENT_SCHEMA_VERSION)}). ` +
+        `Refusing to open — investigate manually.`,
+    );
+  }
+
+  private async backupBeforeV3(db: SqliteDatabase): Promise<void> {
+    // Online backup BEFORE we touch the column rename. Timestamped so
+    // re-running the migration (after rollback) never overwrites an earlier
+    // snapshot. Tagged `.bak-v<current>-` so the source version is obvious.
+    const current = db.pragma('user_version', { simple: true }) as number;
+    const backupPath = `${this.dbPath}.bak-v${String(current)}-${String(Date.now())}`;
+    await db.backup(backupPath);
+    console.log(
+      `[draftStore] migrating drafts.db v${String(current)} → v${String(CURRENT_SCHEMA_VERSION)}; backup written to ${backupPath}`,
+    );
+  }
+
+  private renameInstalledToPublished(db: SqliteDatabase): void {
+    // DDL helper: rename status value + column + index. SQLite ≥ 3.25 (which
+    // better-sqlite3 ships) supports ALTER TABLE … RENAME COLUMN. Caller is
+    // responsible for the surrounding transaction + user_version pragma.
+    db.exec(`UPDATE drafts SET status = 'published' WHERE status = 'installed'`);
+    db.exec(
+      `ALTER TABLE drafts RENAME COLUMN installed_agent_id TO published_agent_id`,
+    );
+    // The v1 index referenced the column by name in its own identifier;
+    // rename the index too so DB introspection stays clean.
+    db.exec(`DROP INDEX IF EXISTS idx_drafts_installed_purge`);
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_drafts_published_purge ON drafts(status, deleted_at)`,
+    );
+  }
+
+  private assertSchemaIntegrity(db: SqliteDatabase): void {
+    // Post-migration sanity check. Refuses to start if the column the code
+    // expects is missing — surfaces schema drift at boot, not at the first
+    // query under traffic.
+    const cols = (
+      db
+        .prepare(`SELECT name FROM pragma_table_info('drafts')`)
+        .all() as Array<{ name: string }>
+    ).map((r) => r.name);
+    if (!cols.includes('published_agent_id')) {
+      throw new Error(
+        'drafts.db schema missing `published_agent_id` column after migration. ' +
+          'Aborting to avoid silent corruption. Restore the most recent ' +
+          '`drafts.db.bak-v*` backup if a v1/v2 schema was unexpectedly opened.',
+      );
+    }
+    if (cols.includes('installed_agent_id')) {
+      throw new Error(
+        'drafts.db still has legacy `installed_agent_id` column after migration. ' +
+          'Aborting. Investigate manually before continuing.',
+      );
+    }
+  }
+
+  // ── audit log (issue #56) ─────────────────────────────────────────────────
+
+  /**
+   * Append a single audit event. Synchronous SQLite write under the hood;
+   * wrapped in a Promise for the AuditLogger surface. Throws on DB errors
+   * — callers (e.g. `audit.ts`) swallow exceptions because the audit log
+   * is fire-and-forget.
+   */
+  async appendAudit(event: {
+    draftId: string;
+    userEmail: string;
+    action: string;
+    details: Readonly<Record<string, unknown>>;
+  }): Promise<void> {
+    const db = this.required();
+    db.prepare(
+      `INSERT INTO builder_audit (draft_id, user_email, action, details_json, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(
+      event.draftId,
+      event.userEmail,
+      event.action,
+      JSON.stringify(event.details ?? {}),
+      Date.now(),
+    );
+    return Promise.resolve();
+  }
+
+  /**
+   * Paginated audit listing for a draft, newest-first. Returns a tuple of
+   * `events` and `total` so the UI can render the "X of Y" footer without
+   * a second round-trip. Owner-scoped: events are filtered by the calling
+   * `userEmail` to mirror the draft-load access pattern.
+   */
+  async listAudit(
+    userEmail: string,
+    draftId: string,
+    opts: { limit?: number; offset?: number } = {},
+  ): Promise<{
+    events: {
+      id: number;
+      draftId: string;
+      userEmail: string;
+      action: string;
+      details: Record<string, unknown>;
+      createdAt: number;
+    }[];
+    total: number;
+  }> {
+    const db = this.required();
+    const limit = Math.max(1, Math.min(200, opts.limit ?? 30));
+    const offset = Math.max(0, opts.offset ?? 0);
+
+    const total = (
+      db
+        .prepare(
+          `SELECT COUNT(*) as n FROM builder_audit
+             WHERE draft_id = ? AND user_email = ?`,
+        )
+        .get(draftId, userEmail) as { n: number }
+    ).n;
+
+    const rows = db
+      .prepare(
+        `SELECT id, draft_id, user_email, action, details_json, created_at
+           FROM builder_audit
+          WHERE draft_id = ? AND user_email = ?
+          ORDER BY created_at DESC, id DESC
+          LIMIT ? OFFSET ?`,
+      )
+      .all(draftId, userEmail, limit, offset) as {
+      id: number;
+      draft_id: string;
+      user_email: string;
+      action: string;
+      details_json: string;
+      created_at: number;
+    }[];
+
+    return Promise.resolve({
+      total,
+      events: rows.map((r) => ({
+        id: r.id,
+        draftId: r.draft_id,
+        userEmail: r.user_email,
+        action: r.action,
+        details: JSON.parse(r.details_json) as Record<string, unknown>,
+        createdAt: r.created_at,
+      })),
+    });
   }
 
   private required(): SqliteDatabase {
@@ -534,19 +770,60 @@ export class DraftStore {
   }
 }
 
+/**
+ * Skeleton arrays may be missing on persisted drafts: the LLM's `patch_spec`
+ * can omit untouched fields, and the strict `AgentSpecSchema` (with Zod
+ * `.default([])`) only runs at install/codegen time — not on every save.
+ * UI consumers (Workspace, SpecOverview, SpecEditor, manifestLinter) already
+ * read these defensively with `?? []`; this normalizer hardens the store
+ * itself so every Draft handed back to the API layer has the expected array
+ * shape regardless of which build phase the LLM was in.
+ *
+ * Intentionally does NOT validate content (no Zod parse) — drafts mid-build
+ * may have empty `id` / `skill.role` / etc., and we don't want to reject
+ * them on read. Only fills `undefined`/`null` array slots with `[]` and
+ * ensures the structural sub-objects (`network`, `playbook`) exist.
+ */
+function normalizeSkeletonArrays(input: unknown): AgentSpecSkeleton {
+  const spec = (input ?? {}) as Record<string, unknown>;
+  const ensureArr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+
+  const network = (spec.network ?? {}) as Record<string, unknown>;
+  const playbook = (spec.playbook ?? {}) as Record<string, unknown>;
+
+  return {
+    ...(spec as object),
+    depends_on: ensureArr(spec.depends_on) as string[],
+    tools: ensureArr(spec.tools),
+    setup_fields: ensureArr(spec.setup_fields),
+    network: {
+      ...(network as object),
+      outbound: ensureArr(network.outbound) as string[],
+    },
+    playbook: {
+      ...(playbook as object),
+      when_to_use: (playbook.when_to_use as string | undefined) ?? '',
+      not_for: ensureArr(playbook.not_for) as string[],
+      example_prompts: ensureArr(playbook.example_prompts) as string[],
+    },
+    external_reads: ensureArr(spec.external_reads),
+    ui_routes: ensureArr(spec.ui_routes),
+  } as AgentSpecSkeleton;
+}
+
 function rowToDraft(row: DraftRow): Draft {
   return {
     id: row.id,
     userEmail: row.user_email,
     name: row.name,
-    spec: JSON.parse(row.spec_json) as AgentSpecSkeleton,
+    spec: normalizeSkeletonArrays(JSON.parse(row.spec_json)),
     slots: JSON.parse(row.slots_json) as Record<string, string>,
     transcript: JSON.parse(row.transcript_json) as TranscriptEntry[],
     previewTranscript: JSON.parse(row.preview_transcript_json) as TranscriptEntry[],
     codegenModel: normalizeModel(row.codegen_model),
     previewModel: normalizeModel(row.preview_model),
     status: normalizeStatus(row.status),
-    installedAgentId: row.installed_agent_id,
+    publishedAgentId: row.published_agent_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at,
@@ -560,7 +837,7 @@ function summaryRowToSummary(row: DraftSummaryRow): DraftSummary {
     status: normalizeStatus(row.status),
     codegenModel: normalizeModel(row.codegen_model),
     previewModel: normalizeModel(row.preview_model),
-    installedAgentId: row.installed_agent_id,
+    publishedAgentId: row.published_agent_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -571,6 +848,6 @@ function normalizeModel(value: string): BuilderModelId {
 }
 
 function normalizeStatus(value: string): DraftStatus {
-  if (value === 'installed' || value === 'archived') return value;
+  if (value === 'published' || value === 'archived') return value;
   return 'draft';
 }

@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 
+import type { AuditLogger } from '../audit.js';
 import type { DraftStore } from '../draftStore.js';
 import type { SlotTypecheckService } from '../slotTypecheckPipeline.js';
 import type { SpecEventBus } from '../specEventBus.js';
@@ -161,6 +162,13 @@ export interface BuilderToolContext {
     repo: string;
     labels: readonly string[];
   };
+  /**
+   * Issue #56 — fire-and-forget audit logger. Mutating tools (`set_persona_config`,
+   * `set_quality_config`, `patch_spec`, `fill_slot`) call `ctx.audit.log(...)`
+   * to append a row to the `builder_audit` table. Read-only tools (`lint_spec`,
+   * `read_reference`, …) leave it untouched.
+   */
+  readonly audit: AuditLogger;
 }
 
 /**

@@ -255,15 +255,15 @@ describe('installDraft (B.6-1 orchestrator)', () => {
 
     assert.equal(result.ok, true);
     if (!result.ok) return;
-    assert.equal(result.installedAgentId, 'de.test.draft.installcommit');
+    assert.equal(result.publishedAgentId, 'de.test.draft.installcommit');
     assert.equal(result.version, '0.1.0');
     assert.ok(result.packageBytes > 0);
 
-    // Draft is now status=installed and pinned to the agent id.
+    // Draft is now status=published and pinned to the agent id.
     const refreshed = await h.store.load(h.userEmail, h.draftId);
     assert.ok(refreshed);
-    assert.equal(refreshed.status, 'installed');
-    assert.equal(refreshed.installedAgentId, 'de.test.draft.installcommit');
+    assert.equal(refreshed.status, 'published');
+    assert.equal(refreshed.publishedAgentId, 'de.test.draft.installcommit');
 
     // Pipeline + ingest each saw exactly one call.
     assert.equal(pipeline.buildCalls().length, 1);
@@ -280,7 +280,7 @@ describe('installDraft (B.6-1 orchestrator)', () => {
     );
   });
 
-  it('build_failed → returns reason build_failed, draft NOT marked installed', async () => {
+  it('build_failed → returns reason build_failed, draft NOT marked published', async () => {
     const pipeline = makeFakePipeline({
       store: h.store,
       failWith: 'tsc',
@@ -317,7 +317,7 @@ describe('installDraft (B.6-1 orchestrator)', () => {
     const refreshed = await h.store.load(h.userEmail, h.draftId);
     assert.ok(refreshed);
     assert.equal(refreshed.status, 'draft');
-    assert.equal(refreshed.installedAgentId, null);
+    assert.equal(refreshed.publishedAgentId, null);
   });
 
   it('codegen_failed → reason codegen_failed with issues in details', async () => {
@@ -414,7 +414,7 @@ describe('installDraft (B.6-1 orchestrator)', () => {
     const refreshed = await h.store.load(h.userEmail, h.draftId);
     assert.ok(refreshed);
     assert.equal(refreshed.status, 'draft');
-    assert.equal(refreshed.installedAgentId, null);
+    assert.equal(refreshed.publishedAgentId, null);
   });
 
   it('conflict ingest code → reason conflict (duplicate_version)', async () => {

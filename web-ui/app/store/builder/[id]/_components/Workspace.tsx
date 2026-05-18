@@ -17,11 +17,12 @@ import {
   ChevronUp,
 } from 'lucide-react';
 import {
+  Group,
   Panel,
-  PanelGroup,
-  PanelResizeHandle,
-  type ImperativePanelGroupHandle,
-  type ImperativePanelHandle,
+  Separator,
+  useDefaultLayout,
+  useGroupRef,
+  usePanelRef,
 } from 'react-resizable-panels';
 
 import {
@@ -55,6 +56,8 @@ import { SlotEditor } from './SlotEditor';
 import { SpecEditor } from './SpecEditor';
 import { SpecOverview } from './SpecOverview';
 import { UiSurfacesTabPane } from './UiSurfacesTabPane';
+import { AuditTimelinePane } from './AuditTimelinePane';
+import { PreviewPromptPanel } from './PreviewPromptPanel';
 import { VersionsTab } from './VersionsTab';
 import { useSpecEvents } from './useSpecEvents';
 
@@ -81,7 +84,7 @@ const MODEL_LABEL: Record<BuilderModelId, string> = {
 
 const STATUS_LABEL: Record<Draft['status'], string> = {
   draft: 'Entwurf',
-  installed: 'Installiert',
+  published: 'Veröffentlicht',
   archived: 'Archiviert',
 };
 
@@ -178,13 +181,24 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
   // react-resizable-panels imperative refs (B.6-4). Each Panel exposes
   // collapse() / expand() / resize() — we drive them from the existing
   // collapsed state so the rail click remains the canonical gesture, and
-  // mirror the panel's own onCollapse/onExpand callbacks back into state
-  // so dragging the handle past the threshold also collapses cleanly.
-  const chatPanelRef = useRef<ImperativePanelHandle | null>(null);
-  const editorPanelRef = useRef<ImperativePanelHandle | null>(null);
-  const previewPanelRef = useRef<ImperativePanelHandle | null>(null);
-  const uiSurfacesPanelRef = useRef<ImperativePanelHandle | null>(null);
-  const panelGroupRef = useRef<ImperativePanelGroupHandle | null>(null);
+  // mirror the panel's `onResize` callback back into state (rrp v4 removed
+  // the dedicated onCollapse/onExpand props — we derive collapse from size
+  // crossing the collapsedSize threshold instead).
+  const chatPanelRef = usePanelRef();
+  const editorPanelRef = usePanelRef();
+  const previewPanelRef = usePanelRef();
+  const uiSurfacesPanelRef = usePanelRef();
+  const panelGroupRef = useGroupRef();
+
+  // rrp v4 layout persistence — replaces v2's `autoSaveId` Panel prop.
+  // `useDefaultLayout` reads from localStorage on mount, returns a
+  // defaultLayout to seed the Group, plus an onLayoutChanged callback that
+  // writes back on every settled drag. Keep the storage key in sync with
+  // the v2 autoSaveId so existing users don't lose their saved layout.
+  const { defaultLayout, onLayoutChanged } = useDefaultLayout({
+    id: 'builder-workspace-panes-v2',
+    panelIds: ['chat', 'editor', 'preview', 'ui-surfaces'],
+  });
 
   // Maximize-helper: sets the whole 3-pane layout in a single atomic
   // setLayout call so two simultaneous collapses don't fight each other.
@@ -201,29 +215,36 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
       // 4-pane layout: chat | editor | preview | ui-surfaces.
       // Restore default keeps ui-surfaces collapsed at 3% — matches
       // the initial-mount default. Maximize one = collapse the other three.
+      // rrp v4: setLayout signature changed from positional array to an
+      // object keyed by panel id.
       if (restore) {
-        group?.setLayout([30, 32, 32, 6]);
+        group?.setLayout({
+          chat: 30,
+          editor: 32,
+          preview: 32,
+          'ui-surfaces': 6,
+        });
         setChatCollapsed(false);
         setEditorCollapsed(false);
         setPreviewCollapsed(false);
         setUiSurfacesCollapsed(true);
         return;
       }
-      const layout =
+      const layout: Record<string, number> =
         which === 'chat'
-          ? [91, 3, 3, 3]
+          ? { chat: 91, editor: 3, preview: 3, 'ui-surfaces': 3 }
           : which === 'editor'
-            ? [3, 91, 3, 3]
+            ? { chat: 3, editor: 91, preview: 3, 'ui-surfaces': 3 }
             : which === 'preview'
-              ? [3, 3, 91, 3]
-              : [3, 3, 3, 91];
+              ? { chat: 3, editor: 3, preview: 91, 'ui-surfaces': 3 }
+              : { chat: 3, editor: 3, preview: 3, 'ui-surfaces': 91 };
       group?.setLayout(layout);
       setChatCollapsed(which !== 'chat');
       setEditorCollapsed(which !== 'editor');
       setPreviewCollapsed(which !== 'preview');
       setUiSurfacesCollapsed(which !== 'ui-surfaces');
     },
-    [],
+    [panelGroupRef],
   );
 
   // Option-C, C-2: shared "Fix mit Builder"-trigger reused by both error
@@ -488,25 +509,25 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
     if (!r) return;
     if (chatCollapsed) r.collapse();
     else r.expand();
-  }, [chatCollapsed]);
+  }, [chatCollapsed, chatPanelRef]);
   useEffect(() => {
     const r = editorPanelRef.current;
     if (!r) return;
     if (editorCollapsed) r.collapse();
     else r.expand();
-  }, [editorCollapsed]);
+  }, [editorCollapsed, editorPanelRef]);
   useEffect(() => {
     const r = previewPanelRef.current;
     if (!r) return;
     if (previewCollapsed) r.collapse();
     else r.expand();
-  }, [previewCollapsed]);
+  }, [previewCollapsed, previewPanelRef]);
   useEffect(() => {
     const r = uiSurfacesPanelRef.current;
     if (!r) return;
     if (uiSurfacesCollapsed) r.collapse();
     else r.expand();
-  }, [uiSurfacesCollapsed]);
+  }, [uiSurfacesCollapsed, uiSurfacesPanelRef]);
   const installEnabled =
     editorWarningTotal === 0 &&
     missingRequiredCredentials === 0 &&
@@ -657,9 +678,23 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
                     }));
                   }}
                 />
+                {/* Issue #55 — live compiled-prompt preview panel.
+                 *  Refetches whenever the draft state changes. */}
+                <PreviewPromptPanel
+                  draftId={draft.id}
+                  refetchKey={draft.updatedAt}
+                />
               </div>
             )}
-            {tab === 'versions' && <VersionsTab draftId={draft.id} />}
+            {tab === 'versions' && (
+              <>
+                <VersionsTab draftId={draft.id} />
+                {/* Issue #57 — audit timeline as a sidebar inside the
+                 *  Versions tab. Operators see snapshots above and the
+                 *  audit trail below. */}
+                <AuditTimelinePane draftId={draft.id} />
+              </>
+            )}
           </>
         );
         const previewPaneBody = (
@@ -690,23 +725,27 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
         if (isDesktop) {
           return (
             <LayoutGroup>
-              <PanelGroup
-                ref={panelGroupRef}
-                direction="horizontal"
-                autoSaveId="builder-workspace-panes-v2"
+              <Group
+                groupRef={panelGroupRef}
+                orientation="horizontal"
+                defaultLayout={defaultLayout}
+                onLayoutChanged={onLayoutChanged}
                 className="flex min-h-[640px] gap-0"
                 style={{ height: 'calc(100vh - 240px)' }}
               >
                 <Panel
                   id="chat"
-                  order={1}
-                  ref={chatPanelRef}
+                  panelRef={chatPanelRef}
                   collapsible
-                  collapsedSize={3}
-                  minSize={18}
-                  defaultSize={30}
-                  onCollapse={() => setChatCollapsed(true)}
-                  onExpand={() => setChatCollapsed(false)}
+                  collapsedSize="3%"
+                  minSize="18%"
+                  defaultSize="30%"
+                  onResize={(size) =>
+                    setChatCollapsed((prev) => {
+                      const next = size.asPercentage <= 3.5;
+                      return prev === next ? prev : next;
+                    })
+                  }
                   className="flex"
                 >
                   <PaneCard
@@ -739,14 +778,17 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
 
                 <Panel
                   id="editor"
-                  order={2}
-                  ref={editorPanelRef}
+                  panelRef={editorPanelRef}
                   collapsible
-                  collapsedSize={3}
-                  minSize={18}
-                  defaultSize={32}
-                  onCollapse={() => setEditorCollapsed(true)}
-                  onExpand={() => setEditorCollapsed(false)}
+                  collapsedSize="3%"
+                  minSize="18%"
+                  defaultSize="32%"
+                  onResize={(size) =>
+                    setEditorCollapsed((prev) => {
+                      const next = size.asPercentage <= 3.5;
+                      return prev === next ? prev : next;
+                    })
+                  }
                   className="flex"
                 >
                   <PaneCard
@@ -786,14 +828,17 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
 
                 <Panel
                   id="preview"
-                  order={3}
-                  ref={previewPanelRef}
+                  panelRef={previewPanelRef}
                   collapsible
-                  collapsedSize={3}
-                  minSize={18}
-                  defaultSize={32}
-                  onCollapse={() => setPreviewCollapsed(true)}
-                  onExpand={() => setPreviewCollapsed(false)}
+                  collapsedSize="3%"
+                  minSize="18%"
+                  defaultSize="32%"
+                  onResize={(size) =>
+                    setPreviewCollapsed((prev) => {
+                      const next = size.asPercentage <= 3.5;
+                      return prev === next ? prev : next;
+                    })
+                  }
                   className="flex"
                 >
                   <PaneCard
@@ -827,14 +872,17 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
 
                 <Panel
                   id="ui-surfaces"
-                  order={4}
-                  ref={uiSurfacesPanelRef}
+                  panelRef={uiSurfacesPanelRef}
                   collapsible
-                  collapsedSize={3}
-                  minSize={18}
-                  defaultSize={6}
-                  onCollapse={() => setUiSurfacesCollapsed(true)}
-                  onExpand={() => setUiSurfacesCollapsed(false)}
+                  collapsedSize="3%"
+                  minSize="18%"
+                  defaultSize="6%"
+                  onResize={(size) =>
+                    setUiSurfacesCollapsed((prev) => {
+                      const next = size.asPercentage <= 3.5;
+                      return prev === next ? prev : next;
+                    })
+                  }
                   className="flex"
                 >
                   <PaneCard
@@ -867,7 +915,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
                     />
                   </PaneCard>
                 </Panel>
-              </PanelGroup>
+              </Group>
             </LayoutGroup>
           );
         }
@@ -1079,12 +1127,12 @@ function MobilePaneTabs({
  */
 function ResizeHandle(): React.ReactElement {
   return (
-    <PanelResizeHandle className="group relative w-1 cursor-col-resize bg-transparent transition-colors data-[resize-handle-state=hover]:bg-[color:var(--accent)]/40 data-[resize-handle-state=drag]:bg-[color:var(--accent)]">
+    <Separator className="group relative w-1 cursor-col-resize bg-transparent transition-colors data-[resize-handle-state=hover]:bg-[color:var(--accent)]/40 data-[resize-handle-state=drag]:bg-[color:var(--accent)]">
       <span
         aria-hidden
         className="absolute inset-y-0 -inset-x-1 group-hover:bg-[color:var(--accent)]/0"
       />
-    </PanelResizeHandle>
+    </Separator>
   );
 }
 
@@ -1188,7 +1236,7 @@ function WorkspaceHeader({
 function StatusBadge({ status }: { status: Draft['status'] }): React.ReactElement {
   const palette: Record<Draft['status'], string> = {
     draft: 'bg-[color:var(--bg-soft)] text-[color:var(--fg-muted)]',
-    installed: 'bg-[color:var(--accent)]/12 text-[color:var(--accent)]',
+    published: 'bg-[color:var(--accent)]/12 text-[color:var(--accent)]',
     archived: 'bg-[color:var(--gray-100)] text-[color:var(--fg-subtle)]',
   };
   return (

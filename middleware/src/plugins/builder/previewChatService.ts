@@ -9,7 +9,11 @@ import {
   type LocalSubAgentTool,
 } from '@omadia/orchestrator';
 
+import { inferFamilyFromModel } from '../dynamicAgentRuntime.js';
+import { composePersonaSection } from '../personaCompose.js';
+import { compileSycophancyGuard } from '../sycophancyGuard.js';
 import { zodToJsonSchema } from '../zodToJsonSchema.js';
+import { compileBoundariesSection } from './boundaryPresets.js';
 import { composeContextualMessage } from './builderAgent.js';
 import type { DraftStore } from './draftStore.js';
 import type { PreviewHandle, PreviewToolDescriptor } from './previewRuntime.js';
@@ -74,11 +78,15 @@ export interface PreviewChatServiceDeps {
   draftStore: DraftStore;
   /**
    * Custom system-prompt-loader. Default: read `<previewDir>/skills/*.md`,
-   * strip frontmatter, concat with a header derived from the draft spec.
+   * strip frontmatter, concat with a header derived from the draft spec
+   * AND the live persona / boundaries / sycophancy from the spec — so
+   * the operator's slider/checkbox edits feed back into the preview
+   * chat **immediately**, without an Install round-trip.
    */
   systemPromptFor?: (
     handle: PreviewHandle,
     spec: AgentSpecSkeleton,
+    modelId: string,
   ) => Promise<string>;
   /**
    * Override sub-agent construction (test-only fake). Default:
@@ -156,7 +164,11 @@ export class PreviewChatService {
     });
 
     const tools = opts.handle.toolkit.tools.map(bridgePreviewTool);
-    const systemPrompt = await this.systemPromptFor(opts.handle, draft.spec);
+    const systemPrompt = await this.systemPromptFor(
+      opts.handle,
+      draft.spec,
+      opts.modelChoice,
+    );
 
     const subAgent = this.buildSubAgent({
       name: `preview-${opts.handle.agentId}`,
@@ -335,13 +347,27 @@ function defaultBuildSubAgent(opts: SubAgentBuildOptions): Askable {
 /**
  * Default system-prompt loader. Reads `<previewDir>/skills/*.md`, strips
  * leading frontmatter blocks (matching the boilerplate convention in
- * dynamicAgentRuntime.loadSystemPrompt), and concatenates with a header
- * derived from the draft spec. Missing skills/ dir is non-fatal — the agent
- * runs with header-only guidance.
+ * dynamicAgentRuntime.loadSystemPrompt), and concatenates with:
+ *
+ *   1. a header derived from the draft spec
+ *   2. **the live persona section** from `spec.persona` (no AGENT.md
+ *      round-trip — the operator's sliders feed into the preview chat
+ *      directly)
+ *   3. **the live boundaries section** from `spec.quality.boundaries`
+ *   4. **the live sycophancy guard** from `spec.quality.sycophancy`
+ *   5. the skill bodies from `<previewDir>/skills/*.md`
+ *
+ * Compose order matches the runtime path in
+ * `dynamicAgentRuntime.loadSystemPrompt` so the preview behaves
+ * byte-identically to what the installed agent would receive.
+ *
+ * Missing skills/ dir is non-fatal — the agent runs with header-only
+ * guidance.
  */
 export async function loadPreviewSystemPrompt(
   handle: PreviewHandle,
   spec: AgentSpecSkeleton,
+  modelId: string,
 ): Promise<string> {
   const skillsDir = path.join(handle.previewDir, 'skills');
   let entries: string[] = [];
@@ -351,22 +377,50 @@ export async function loadPreviewSystemPrompt(
     // skills dir absent — fall through to header-only prompt.
   }
   entries.sort();
-  const parts: string[] = [];
+  const skillBodies: string[] = [];
   for (const name of entries) {
     if (!name.endsWith('.md')) continue;
     const abs = path.join(skillsDir, name);
     if (!abs.startsWith(skillsDir + path.sep)) continue;
     try {
       const raw = await fs.readFile(abs, 'utf-8');
-      parts.push(stripFrontmatter(raw).trim());
+      skillBodies.push(stripFrontmatter(raw).trim());
     } catch {
       // unreadable file — skip silently.
     }
   }
 
-  const header = buildPreviewHeader(handle, spec);
-  if (parts.length === 0) return header;
-  return `${header}\n\n---\n\n${parts.join('\n\n---\n\n')}`;
+  // Live compose — same inner-layer helpers the runtime uses (and the
+  // preview-prompt route from #55). Operator slider/checkbox edits land
+  // here on the very next preview turn, no Install needed.
+  const personaSection = spec.persona
+    ? composePersonaSection({
+        persona: spec.persona,
+        family: inferFamilyFromModel(modelId),
+      })
+    : '';
+
+  const boundaries = spec.quality?.boundaries;
+  const boundariesSection = boundaries
+    ? compileBoundariesSection(boundaries.presets ?? [], boundaries.custom ?? [])
+        .text
+    : '';
+
+  const sycophancySection = compileSycophancyGuard(spec.quality?.sycophancy);
+
+  const parts: string[] = [buildPreviewHeader(handle, spec)];
+  if (personaSection.length > 0) parts.push(personaSection);
+  if (
+    typeof spec.persona?.custom_notes === 'string' &&
+    spec.persona.custom_notes.length > 0
+  ) {
+    parts.push(spec.persona.custom_notes);
+  }
+  if (boundariesSection.length > 0) parts.push(boundariesSection);
+  if (sycophancySection.length > 0) parts.push(sycophancySection);
+  if (skillBodies.length > 0) parts.push(skillBodies.join('\n\n---\n\n'));
+
+  return parts.join('\n\n---\n\n');
 }
 
 function buildPreviewHeader(

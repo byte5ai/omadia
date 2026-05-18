@@ -28,9 +28,21 @@ import {
   type BuilderChatDeps,
 } from './builderChat.js';
 import {
+  registerBuilderAuditRoute,
+  type BuilderAuditDeps,
+} from './builderAudit.js';
+import {
   registerBuilderEditRoutes,
   type BuilderEditDeps,
 } from './builderEdit.js';
+import {
+  registerBuilderPreviewPromptRoute,
+  type BuilderPreviewPromptDeps,
+} from './builderPreviewPrompt.js';
+import {
+  registerBuilderQualityRoute,
+  type BuilderQualityDeps,
+} from './builderQuality.js';
 import {
   registerBuilderEventsRoutes,
   type BuilderEventsDeps,
@@ -75,6 +87,15 @@ export interface BuilderRouterDeps {
    *  /drafts/:id/{spec,slot,model} endpoints stay absent. Wired by
    *  `index.ts` alongside the chat surface. */
   editing?: BuilderEditDeps;
+  /** Audit-log GET surface (issue #56). When omitted, the
+   *  GET /drafts/:id/audit endpoint stays absent. */
+  audit?: BuilderAuditDeps;
+  /** Preview-prompt POST surface (issue #55). When omitted, the
+   *  POST /drafts/:id/preview-prompt endpoint stays absent. */
+  previewPrompt?: BuilderPreviewPromptDeps;
+  /** Quality-score GET surface (issue #52). When omitted, the
+   *  GET /drafts/:id/quality endpoint stays absent. */
+  quality?: BuilderQualityDeps;
   /** SSE event-bus stream (B.5-4). When omitted, the
    *  GET /drafts/:id/events endpoint stays absent. Wired by `index.ts`
    *  alongside the chat + edit surfaces — a single SpecEventBus instance
@@ -451,6 +472,21 @@ export function createBuilderRouter(deps: BuilderRouterDeps): Router {
     registerBuilderEditRoutes(router, deps.editing);
   }
 
+  // ── Builder audit-log GET (issue #56) ──────────────────────────────────
+  if (deps.audit) {
+    registerBuilderAuditRoute(router, deps.audit);
+  }
+
+  // ── Builder preview-prompt POST (issue #55) ────────────────────────────
+  if (deps.previewPrompt) {
+    registerBuilderPreviewPromptRoute(router, deps.previewPrompt);
+  }
+
+  // ── Builder quality-score GET (issue #52) ──────────────────────────────
+  if (deps.quality) {
+    registerBuilderQualityRoute(router, deps.quality);
+  }
+
   // ── Builder SSE event stream (B.5-4) ──────────────────────────────────
   if (deps.events) {
     registerBuilderEventsRoutes(router, deps.events);
@@ -497,9 +533,12 @@ function parseScope(value: unknown): DraftListOptions['scope'] {
 }
 
 function parseStatus(value: unknown): DraftStatus | undefined {
-  if (value === 'draft' || value === 'installed' || value === 'archived') {
+  if (value === 'draft' || value === 'published' || value === 'archived') {
     return value;
   }
+  // Legacy alias — old API clients (or bookmarks) that still send the v1
+  // status name. Map silently so the rename is invisible to callers.
+  if (value === 'installed') return 'published';
   return undefined;
 }
 

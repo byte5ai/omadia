@@ -68,8 +68,8 @@ async function makeInstalledSource(
   await store.update(userEmail, draft.id, {
     spec: spec as never,
     slots: overrides.slots ?? { 'skill-prompt': '# Source Skill' },
-    status: 'installed',
-    installedAgentId: agentId,
+    status: 'published',
+    publishedAgentId: agentId,
     codegenModel: overrides.codegenModel ?? 'opus',
     previewModel: overrides.previewModel ?? 'haiku',
     transcript: overrides.transcript ?? [
@@ -96,20 +96,20 @@ describe('cloneFromInstalled (B.6-3)', () => {
     );
 
     const result = await cloneFromInstalled(
-      { userEmail: 'alice@example.com', installedAgentId: 'de.byte5.agent.foo' },
+      { userEmail: 'alice@example.com', publishedAgentId: 'de.byte5.agent.foo' },
       { draftStore: h.store, quota: h.quota, log: () => {} },
     );
 
     assert.equal(result.ok, true);
     if (!result.ok) return;
-    assert.equal(result.installedAgentId, 'de.byte5.agent.foo');
+    assert.equal(result.publishedAgentId, 'de.byte5.agent.foo');
     assert.equal(result.sourceDraftId, sourceId);
     assert.notEqual(result.draftId, sourceId);
 
     const fresh = await h.store.load('alice@example.com', result.draftId);
     assert.ok(fresh);
     assert.equal(fresh.status, 'draft');
-    assert.equal(fresh.installedAgentId, null);
+    assert.equal(fresh.publishedAgentId, null);
     assert.equal(fresh.spec.id, 'de.byte5.agent.foo');
     // Theme C: clone auto-bumps the patch version so re-install does
     // not collide with the already-installed package.duplicate_version.
@@ -130,13 +130,13 @@ describe('cloneFromInstalled (B.6-3)', () => {
       'de.byte5.agent.foo',
     );
     await cloneFromInstalled(
-      { userEmail: 'alice@example.com', installedAgentId: 'de.byte5.agent.foo' },
+      { userEmail: 'alice@example.com', publishedAgentId: 'de.byte5.agent.foo' },
       { draftStore: h.store, quota: h.quota, log: () => {} },
     );
     const source = await h.store.load('alice@example.com', sourceId);
     assert.ok(source);
-    assert.equal(source.status, 'installed');
-    assert.equal(source.installedAgentId, 'de.byte5.agent.foo');
+    assert.equal(source.status, 'published');
+    assert.equal(source.publishedAgentId, 'de.byte5.agent.foo');
     // Source transcript preserved.
     assert.equal(source.transcript.length, 1);
   });
@@ -146,7 +146,7 @@ describe('cloneFromInstalled (B.6-3)', () => {
       name: 'Weather Forecast',
     });
     const result = await cloneFromInstalled(
-      { userEmail: 'alice@example.com', installedAgentId: 'de.byte5.agent.foo' },
+      { userEmail: 'alice@example.com', publishedAgentId: 'de.byte5.agent.foo' },
       { draftStore: h.store, quota: h.quota, log: () => {} },
     );
     assert.equal(result.ok, true);
@@ -167,11 +167,11 @@ describe('cloneFromInstalled (B.6-3)', () => {
         description: 'fixture',
         category: 'analysis',
       } as never,
-      status: 'installed',
-      installedAgentId: 'de.byte5.agent.foo',
+      status: 'published',
+      publishedAgentId: 'de.byte5.agent.foo',
     });
     const result = await cloneFromInstalled(
-      { userEmail: 'alice@example.com', installedAgentId: 'de.byte5.agent.foo' },
+      { userEmail: 'alice@example.com', publishedAgentId: 'de.byte5.agent.foo' },
       { draftStore: h.store, quota: h.quota, log: () => {} },
     );
     assert.equal(result.ok, true);
@@ -180,9 +180,9 @@ describe('cloneFromInstalled (B.6-3)', () => {
     assert.equal(fresh?.name, 'Weather (Kopie 3)');
   });
 
-  it('source_not_found when no draft has installed_agent_id matching agentId', async () => {
+  it('source_not_found when no draft has published_agent_id matching agentId', async () => {
     const result = await cloneFromInstalled(
-      { userEmail: 'alice@example.com', installedAgentId: 'de.byte5.agent.never' },
+      { userEmail: 'alice@example.com', publishedAgentId: 'de.byte5.agent.never' },
       { draftStore: h.store, quota: h.quota, log: () => {} },
     );
     assert.equal(result.ok, false);
@@ -194,7 +194,7 @@ describe('cloneFromInstalled (B.6-3)', () => {
   it('source_not_found is owner-scoped — Bob cannot clone Alice\'s installed plugin', async () => {
     await makeInstalledSource(h.store, 'alice@example.com', 'de.byte5.agent.foo');
     const result = await cloneFromInstalled(
-      { userEmail: 'bob@example.com', installedAgentId: 'de.byte5.agent.foo' },
+      { userEmail: 'bob@example.com', publishedAgentId: 'de.byte5.agent.foo' },
       { draftStore: h.store, quota: h.quota, log: () => {} },
     );
     assert.equal(result.ok, false);
@@ -208,7 +208,7 @@ describe('cloneFromInstalled (B.6-3)', () => {
     await makeInstalledSource(h.store, 'alice@example.com', 'de.byte5.agent.foo');
     // Source draft itself counts against the quota; cap=1 → already at cap.
     const result = await cloneFromInstalled(
-      { userEmail: 'alice@example.com', installedAgentId: 'de.byte5.agent.foo' },
+      { userEmail: 'alice@example.com', publishedAgentId: 'de.byte5.agent.foo' },
       { draftStore: h.store, quota: h.quota, log: () => {} },
     );
     assert.equal(result.ok, false);
@@ -228,15 +228,15 @@ describe('cloneFromInstalled (B.6-3)', () => {
       { name: 'Iter 1' },
     );
     const r1 = await cloneFromInstalled(
-      { userEmail: 'alice@example.com', installedAgentId: 'de.byte5.agent.foo' },
+      { userEmail: 'alice@example.com', publishedAgentId: 'de.byte5.agent.foo' },
       { draftStore: h.store, quota: h.quota, log: () => {} },
     );
     assert.equal(r1.ok, true);
     if (!r1.ok) return;
-    // The clone has no installed_agent_id, so a second clone request still
+    // The clone has no published_agent_id, so a second clone request still
     // resolves to the original installed source draft.
     const r2 = await cloneFromInstalled(
-      { userEmail: 'alice@example.com', installedAgentId: 'de.byte5.agent.foo' },
+      { userEmail: 'alice@example.com', publishedAgentId: 'de.byte5.agent.foo' },
       { draftStore: h.store, quota: h.quota, log: () => {} },
     );
     assert.equal(r2.ok, true);
@@ -249,11 +249,11 @@ describe('cloneFromInstalled (B.6-3)', () => {
 
   it('clone of a clone bumps the patch version a second time', async () => {
     // Install at 0.1.0, clone → 0.1.1. Pretend that clone got
-    // installed too (simulate by setting status='installed' +
-    // installedAgentId), then clone again. Expected: 0.1.2.
+    // published too (simulate by setting status='published' +
+    // publishedAgentId), then clone again. Expected: 0.1.2.
     await makeInstalledSource(h.store, 'alice@example.com', 'de.byte5.agent.foo');
     const r1 = await cloneFromInstalled(
-      { userEmail: 'alice@example.com', installedAgentId: 'de.byte5.agent.foo' },
+      { userEmail: 'alice@example.com', publishedAgentId: 'de.byte5.agent.foo' },
       { draftStore: h.store, quota: h.quota, log: () => {} },
     );
     assert.equal(r1.ok, true);
@@ -264,14 +264,14 @@ describe('cloneFromInstalled (B.6-3)', () => {
     // Promote the clone to "installed" so it becomes the source for the
     // next round. Simulates the operator finishing the edit-cycle.
     await h.store.update('alice@example.com', r1.draftId, {
-      status: 'installed',
-      installedAgentId: 'de.byte5.agent.foo.v2',
+      status: 'published',
+      publishedAgentId: 'de.byte5.agent.foo.v2',
     });
 
     const r2 = await cloneFromInstalled(
       {
         userEmail: 'alice@example.com',
-        installedAgentId: 'de.byte5.agent.foo.v2',
+        publishedAgentId: 'de.byte5.agent.foo.v2',
       },
       { draftStore: h.store, quota: h.quota, log: () => {} },
     );

@@ -16,8 +16,8 @@ import type { WorkaroundStateStore } from './workaroundStateStore.js';
  *   2. On build success, hands the resulting zip buffer to
  *      `PackageUploadService.ingest()` for manifest validation, peer-resolve,
  *      and atomic move into the packages directory.
- *   3. On ingest success, marks the draft `status='installed'` and pins the
- *      `installedAgentId` so the dashboard / store-UI can deep-link back to
+ *   3. On ingest success, marks the draft `status='published'` and pins the
+ *      `publishedAgentId` so the dashboard / store-UI can deep-link back to
  *      the source draft (Edit-from-Store flow, B.6-3).
  *
  * Returns a discriminated union — the route layer maps `reason` → HTTP status
@@ -55,7 +55,7 @@ export type InstallFailureReason =
 
 export interface InstallSuccess {
   ok: true;
-  installedAgentId: string;
+  publishedAgentId: string;
   version: string;
   packageBytes: number;
 }
@@ -160,10 +160,10 @@ export async function installDraft(
     return mapIngestFailure(ingestResult);
   }
 
-  // Step 4: mark draft as installed + pin installed_agent_id.
+  // Step 4: mark draft as published + pin published_agent_id.
   await deps.draftStore.update(userEmail, draftId, {
-    status: 'installed',
-    installedAgentId: ingestResult.plugin_id,
+    status: 'published',
+    publishedAgentId: ingestResult.plugin_id,
   });
 
   // Native issue-reporting: persist any workarounds carried on the
@@ -197,7 +197,7 @@ export async function installDraft(
 
   return {
     ok: true,
-    installedAgentId: ingestResult.plugin_id,
+    publishedAgentId: ingestResult.plugin_id,
     version: ingestResult.version,
     packageBytes: ingestResult.package.zip_bytes,
   };

@@ -70,6 +70,7 @@ export function resolveAssetBundle(opts: ResolveOpts): AssetBundle {
         throw new Error(
           `Asset bundle '${opts.id}' (${opts.kind}) missing at ${root} (${reason}). ` +
             `Set ${opts.envVar} or ensure: ${opts.prodHint}.`,
+          { cause: err },
         );
       }
       if (opts.kind === 'directory' && !stat.isDirectory()) {

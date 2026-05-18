@@ -7,7 +7,7 @@
  * parses/validates on load in later phases.
  */
 
-export type DraftStatus = 'draft' | 'installed' | 'archived';
+export type DraftStatus = 'draft' | 'published' | 'archived';
 
 export type BuilderModelId = 'haiku' | 'sonnet' | 'opus';
 
@@ -186,7 +186,7 @@ export interface Draft {
   codegenModel: BuilderModelId;
   previewModel: BuilderModelId;
   status: DraftStatus;
-  installedAgentId: string | null;
+  publishedAgentId: string | null;
   createdAt: number;
   updatedAt: number;
   deletedAt: number | null;
@@ -199,7 +199,7 @@ export interface DraftSummary {
   status: DraftStatus;
   codegenModel: BuilderModelId;
   previewModel: BuilderModelId;
-  installedAgentId: string | null;
+  publishedAgentId: string | null;
   updatedAt: number;
   createdAt: number;
 }

@@ -57,6 +57,13 @@
  *   - `Employee\s+\d+`         — English form
  *   - `Person\s+\d+`           — Language-neutral form
  *   - `Anonym\s+\d+`           — German "Anonym 1/2/3" pattern
+ *   - `Platz\s+\d+`            — German "Platz 1/2/3" (ranking tables —
+ *                                live HR-Urlaubsranking failure mode
+ *                                2026-05-17 where the LLM rewrote
+ *                                tokens to positional ranks)
+ *   - `Rang\s+\d+`             — German "Rang 1/2/3" alt-spelling
+ *   - `Position\s+\d+`         — German/English "Position 1/2/3"
+ *   - `Rank\s+\d+`             — English "Rank 1/2/3" form
  *
  * Numbered-letter variants (`Mitarbeiter A/B/C`, `Person A/B/C`) are
  * intentionally NOT covered in this version — they are observed less
@@ -125,6 +132,10 @@ const PATTERNS: ReadonlyArray<{ readonly keyword: string; readonly regex: RegExp
   { keyword: 'employee', regex: /\bEmployee\s+(\d+)\b/g },
   { keyword: 'person', regex: /\bPerson\s+(\d+)\b/g },
   { keyword: 'anonym', regex: /\bAnonym\s+(\d+)\b/g },
+  { keyword: 'platz', regex: /\bPlatz\s+(\d+)\b/g },
+  { keyword: 'rang', regex: /\bRang\s+(\d+)\b/g },
+  { keyword: 'position', regex: /\bPosition\s+(\d+)\b/g },
+  { keyword: 'rank', regex: /\bRank\s+(\d+)\b/g },
 ];
 
 /**

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { BuilderAuditAction } from '../auditActions.js';
 import { loadBoilerplate } from '../boilerplateSource.js';
 import type { BuildError } from '../buildErrorParser.js';
 import type { SlotTypecheckReason } from '../slotTypecheckPipeline.js';
@@ -198,6 +199,14 @@ export const fillSlotTool: BuilderTool<Input, Result> = {
     ctx.slotRetryTracker.reset(slotKey);
     ctx.buildFailureBudget.reset();
     ctx.rebuildScheduler.schedule(ctx.userEmail, ctx.draftId);
+
+    // Issue #56 — fire-and-forget audit log
+    void ctx.audit.log(ctx.draftId, ctx.userEmail, BuilderAuditAction.SLOT_FILLED, {
+      slotKey,
+      bytes: source.length,
+      typecheckMs: tc.durationMs,
+    });
+
     return { ok: true, slotKey, bytes: source.length, typecheckMs: tc.durationMs };
   },
 };

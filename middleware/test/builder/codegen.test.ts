@@ -549,7 +549,7 @@ describe('codegen.generate', () => {
     // tsc time (codegen-emitted UiRouter imports them). Plugins WITHOUT
     // ui_routes carry them in peerDeps but never import them at runtime.
     assert.deepEqual(pkgJson.peerDependencies, {
-      zod: '^3.23.8',
+      zod: '^4.0.0',
       express: '^5.1.0',
       '@omadia/plugin-ui-helpers': '*',
     });
@@ -608,7 +608,7 @@ describe('codegen.generate', () => {
       pkgJson.peerDependencies?.['@omadia/integration-odoo'],
       '*',
     );
-    assert.equal(pkgJson.peerDependencies?.['zod'], '^3.23.8');
+    assert.equal(pkgJson.peerDependencies?.['zod'], '^4.0.0');
   });
 
   it('emits one service-lookup block when two external_reads share a service', async () => {

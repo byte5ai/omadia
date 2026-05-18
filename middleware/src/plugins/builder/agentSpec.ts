@@ -571,7 +571,7 @@ export function parseAgentSpec(input: unknown): AgentSpec {
  */
 export function safeParseAgentSpec(
   input: unknown,
-): z.SafeParseReturnType<unknown, AgentSpec> {
+): ReturnType<typeof AgentSpecSchema.safeParse> {
   return AgentSpecSchema.safeParse(migrateMissingDomain(input));
 }
 
