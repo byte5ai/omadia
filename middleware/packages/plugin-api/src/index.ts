@@ -1,6 +1,7 @@
 export * from './pluginContext.js';
 export * from './conversation.js';
 export * from './localSubAgentTool.js';
+export * from './piiAnnotation.js';
 
 // S+11-1: Knowledge-graph capability contract (interface + DTOs + node-id
 // helpers) lives on the plugin-api surface. Both the in-memory and the Neon

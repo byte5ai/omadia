@@ -24,6 +24,8 @@ import type {
   PrivacyPostEgressScrubResult,
   PrivacyReceipt,
   PrivacySelfAnonymizationResult,
+  PrivacyStableIdPiiField,
+  PrivacyStableIdPrepassResult,
   Routing,
 } from '@omadia/plugin-api';
 
@@ -76,6 +78,19 @@ export interface PrivacyTurnHandle {
     readonly text: string;
     readonly transformed: boolean;
   }>;
+  /**
+   * Privacy-Shield v3 (slice 1) — Stable-id tokenization pre-pass.
+   * Runs BEFORE `processToolResult` when a tool declares `piiFields`
+   * annotations. JSON-parses the text, rewrites annotated leaves to
+   * stable tokens via the same turn-scoped TokenizeMap the rest of
+   * the pipeline reads, and re-serialises. Strictly additive: empty
+   * annotations or non-JSON input pass through unchanged.
+   */
+  applyStableIdPrepass(input: {
+    readonly toolName: string;
+    readonly text: string;
+    readonly piiFields: ReadonlyArray<PrivacyStableIdPiiField>;
+  }): Promise<PrivacyStableIdPrepassResult>;
   /**
    * Privacy-Shield v2 (Slice S-6) — run the Egress Filter against the
    * final channel-bound text slots before the answer is handed to the
@@ -173,6 +188,16 @@ export function createPrivacyTurnHandle(deps: {
         text: input.text,
       });
       return { text: r.text, transformed: r.transformed };
+    },
+
+    async applyStableIdPrepass(input) {
+      return deps.service.applyStableIdPrepass({
+        sessionId: deps.sessionId,
+        turnId: deps.turnId,
+        toolName: input.toolName,
+        text: input.text,
+        piiFields: input.piiFields,
+      });
     },
 
     async egressFilter(input) {

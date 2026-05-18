@@ -480,11 +480,45 @@ export class LocalSubAgent {
         );
       }
     }
+    // Privacy-Shield v3 (slice 1) — Stable-id tokenization pre-pass.
+    // When the dispatched tool declared `piiFields`, run the tool-aware
+    // pre-pass BEFORE the NER-based `processToolResult`. See the twin
+    // wiring in `Orchestrator.dispatchTool` for the design rationale.
+    let resultForPrivacy = result;
     if (privacy !== undefined && typeof result === 'string' && result.length > 0) {
+      const piiFields = tool.piiFields;
+      if (piiFields !== undefined && piiFields.length > 0) {
+        try {
+          const prepass = await privacy.applyStableIdPrepass({
+            toolName,
+            text: result,
+            piiFields,
+          });
+          resultForPrivacy = prepass.text;
+          if (prepass.replaced > 0 || prepass.skipped > 0) {
+            console.log(
+              `[sub-agent ${this.name}] stable-id prepass on '${toolName}': replaced=${String(
+                prepass.replaced,
+              )} skipped=${String(prepass.skipped)} parsed=${String(prepass.parsed)}`,
+            );
+          }
+        } catch (err) {
+          console.warn(
+            `[sub-agent ${this.name}] privacy.applyStableIdPrepass threw on '${toolName}' — falling through to NER-only:`,
+            err,
+          );
+        }
+      }
+    }
+    if (
+      privacy !== undefined &&
+      typeof resultForPrivacy === 'string' &&
+      resultForPrivacy.length > 0
+    ) {
       try {
         const tokenised = await privacy.processToolResult({
           toolName,
-          text: result,
+          text: resultForPrivacy,
         });
         return tokenised.text;
       } catch (err) {
@@ -494,7 +528,7 @@ export class LocalSubAgent {
         );
       }
     }
-    return result;
+    return resultForPrivacy;
   }
 }
 

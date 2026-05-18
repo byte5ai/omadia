@@ -57,6 +57,8 @@ import type {
   PrivacyReceipt,
   PrivacySelfAnonymizationRequest,
   PrivacySelfAnonymizationResult,
+  PrivacyStableIdPrepassRequest,
+  PrivacyStableIdPrepassResult,
   PrivacyToolInputRequest,
   PrivacyToolInputResult,
   PrivacyToolResultRequest,
@@ -73,6 +75,7 @@ import {
   restoreSelfAnonymization,
   restoreUnresolvedPersonTokens,
 } from './selfAnonymization.js';
+import { applyStableIdTokenization } from './stableIdTokenization.js';
 import { extendHitsToWordBoundary } from './spanHelpers.js';
 import { createRegexDetector } from './regexDetector.js';
 import { TOKEN_REGEX, createTokenizeMap, type TokenizeMap } from './tokenizeMap.js';
@@ -808,6 +811,58 @@ export function createPrivacyGuardService(
       acc.originalChunks.push(`TOOL_RESULT(${request.toolName}):${request.text}`);
 
       return { text: transformed.text, transformed: wasTransformed };
+    },
+
+    // Privacy-Shield v3 (slice 1) — Stable-id tokenization pre-pass.
+    // Runs BEFORE `processToolResult` for tools that declared `piiFields`
+    // annotations. Parses the result string as JSON, walks the
+    // annotated leaves via `applyStableIdTokenization` against the
+    // same turn-scoped TokenizeMap that NER + processInbound use, and
+    // re-serialises. Non-JSON input or empty annotation list degrades
+    // to byte-identical pass-through — NER then runs as it always did.
+    //
+    // The pass touches the SAME map the rest of the pipeline reads,
+    // so a stable-id-minted token is indistinguishable from an NER-
+    // minted token at restoration time. That's the slice-1 contract:
+    // strictly additive, never breaks existing behaviour.
+    async applyStableIdPrepass(
+      request: PrivacyStableIdPrepassRequest,
+    ): Promise<PrivacyStableIdPrepassResult> {
+      // Empty input or empty annotations — pass-through. Still mark
+      // `parsed: true` so the caller doesn't log a false negative.
+      if (request.text.length === 0 || request.piiFields.length === 0) {
+        return { text: request.text, replaced: 0, skipped: 0, parsed: true };
+      }
+
+      let raw: unknown;
+      try {
+        raw = JSON.parse(request.text);
+      } catch {
+        // Tool returned a non-JSON string (status message, free-form
+        // narrative, …). NER will handle it as before.
+        return { text: request.text, replaced: 0, skipped: 0, parsed: false };
+      }
+
+      const map = mapFor(request.turnId);
+      const outcome = applyStableIdTokenization(raw, request.piiFields, map);
+      if (outcome.replaced === 0) {
+        // Nothing rewritten — preserve the original string verbatim to
+        // avoid re-serialisation drift (key order, whitespace) that the
+        // LLM could otherwise interpret as a change.
+        return {
+          text: request.text,
+          replaced: 0,
+          skipped: outcome.skipped,
+          parsed: true,
+        };
+      }
+
+      return {
+        text: JSON.stringify(outcome.value),
+        replaced: outcome.replaced,
+        skipped: outcome.skipped,
+        parsed: true,
+      };
     },
 
     // Privacy-Shield v2 (Slice S-5) — Output Validator. Re-runs the

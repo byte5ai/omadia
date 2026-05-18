@@ -71,12 +71,29 @@ export interface Askable {
  * orchestrator threads it onto every emitted `ReadonlyToolTraceEntry` so
  * the Nudge-Pipeline's multi-domain trigger can count distinct domains.
  */
+import type { ToolPIIField } from '@omadia/plugin-api';
+
 export interface DomainTool {
   name: string;
   spec: DomainToolSpec;
   /** OB-77 — see `PLUGIN_DOMAIN_REGEX` for the naming convention. */
   domain: string;
   handle(input: unknown, observer?: AskObserver): Promise<string>;
+  /**
+   * Privacy-Shield v3 (stable-id tokenization, slice 1) — optional PII
+   * field annotations. When present, the orchestrator's
+   * `dispatchTool` runs a stable-id tokenization pass on the tool's
+   * raw result JSON BEFORE serialising to string and BEFORE the
+   * NER-based detectors run. Each annotated field gets a stable token
+   * of the form `«<TYPE>_<id>»` where `<id>` is the value at `idPath`.
+   *
+   * Annotations live on the wrapper (not on `spec`) because Anthropic
+   * rejects unknown fields on a tool spec and PII metadata is a
+   * runtime concern of the harness, not a model-facing one.
+   *
+   * See `@omadia/plugin-api`'s `piiAnnotation.ts` for the full schema.
+   */
+  piiFields?: readonly ToolPIIField[];
 }
 
 export interface DomainToolSpec {

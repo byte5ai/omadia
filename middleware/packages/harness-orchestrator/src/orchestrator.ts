@@ -2399,11 +2399,50 @@ export class Orchestrator {
         );
       }
     }
+    // Privacy-Shield v3 (slice 1) — Stable-id tokenization pre-pass.
+    // When the dispatched tool is a DomainTool that declared
+    // `piiFields`, run the tool-aware pre-pass BEFORE the NER-based
+    // `processToolResult`. The pre-pass parses the JSON result,
+    // rewrites annotated leaves into stable tokens, and re-serialises;
+    // NER then runs on top as defense-in-depth for unannotated free
+    // text. Strictly additive — annotations missing / parse failure /
+    // empty piiFields all degrade to the slice-2.2 byte-identical
+    // behaviour.
+    let resultForPrivacy = result;
     if (privacy !== undefined && typeof result === 'string' && result.length > 0) {
+      const piiFields = this.domainToolsByName.get(name)?.piiFields;
+      if (piiFields !== undefined && piiFields.length > 0) {
+        try {
+          const prepass = await privacy.applyStableIdPrepass({
+            toolName: name,
+            text: result,
+            piiFields,
+          });
+          resultForPrivacy = prepass.text;
+          if (prepass.replaced > 0 || prepass.skipped > 0) {
+            console.log(
+              `[orchestrator.dispatchTool:${name}] stable-id prepass: replaced=${String(
+                prepass.replaced,
+              )} skipped=${String(prepass.skipped)} parsed=${String(prepass.parsed)}`,
+            );
+          }
+        } catch (err) {
+          console.warn(
+            `[orchestrator.dispatchTool:${name}] privacy.applyStableIdPrepass threw — falling through to NER-only:`,
+            err,
+          );
+        }
+      }
+    }
+    if (
+      privacy !== undefined &&
+      typeof resultForPrivacy === 'string' &&
+      resultForPrivacy.length > 0
+    ) {
       try {
         const tokenised = await privacy.processToolResult({
           toolName: name,
-          text: result,
+          text: resultForPrivacy,
         });
         return tokenised.text;
       } catch (err) {
@@ -2413,7 +2452,7 @@ export class Orchestrator {
         );
       }
     }
-    return result;
+    return resultForPrivacy;
   }
 
   private async dispatchToolInner(

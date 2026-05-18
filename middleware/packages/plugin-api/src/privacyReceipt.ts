@@ -493,6 +493,61 @@ export interface PrivacyToolResultResult {
 }
 
 // ---------------------------------------------------------------------------
+// Privacy-Shield v3 (slice 1) — Stable-id tokenization pre-pass.
+//
+// Runs BEFORE `processToolResult` for tools that declare `piiFields`
+// annotations. The provider parses the tool's text result as JSON,
+// walks the annotated leaves with `applyStableIdTokenization`, and
+// re-serialises so `processToolResult`'s NER pass sees pre-tokenized
+// PII fields. Eliminates the partial-name leak ("«PERSON_5» Vomberg")
+// and the row-doubling failure mode of NER-only tokenization.
+//
+// Strictly additive: a tool without annotations skips this hook, and
+// a parse failure degrades silently to "NER does what it always did".
+// ---------------------------------------------------------------------------
+
+/** A single PII annotation tuple — mirrors `@omadia/plugin-api`'s
+ *  `ToolPIIField` but inlined into the request so providers can be
+ *  package-internal. */
+export interface PrivacyStableIdPiiField {
+  readonly path: string;
+  readonly idPath: string;
+  readonly type?:
+    | 'PERSON'
+    | 'EMAIL'
+    | 'PHONE'
+    | 'IBAN'
+    | 'CARD'
+    | 'ADDRESS'
+    | 'ORG'
+    | 'APIKEY';
+}
+
+export interface PrivacyStableIdPrepassRequest {
+  readonly sessionId: string;
+  readonly turnId: string;
+  readonly toolName: string;
+  /** The tool handler's raw text return value. The provider parses it
+   *  as JSON; non-JSON input degrades to pass-through. */
+  readonly text: string;
+  /** Tool-declared annotations. Empty array degrades to pass-through. */
+  readonly piiFields: ReadonlyArray<PrivacyStableIdPiiField>;
+}
+
+export interface PrivacyStableIdPrepassResult {
+  /** Re-serialised text with annotated leaves rewritten to stable
+   *  tokens. Equals input on parse failure / empty annotations. */
+  readonly text: string;
+  /** Number of leaf string fields actually replaced with tokens. */
+  readonly replaced: number;
+  /** Number of annotations skipped (shape mismatch or malformed path). */
+  readonly skipped: number;
+  /** `false` when the input could not be JSON-parsed; the caller may
+   *  log this for telemetry but should still forward `text` to NER. */
+  readonly parsed: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Privacy-Shield v2 (Slice S-5) — Output Validator.
 //
 // Defense-in-depth between processInbound and channel.send. The host
@@ -753,6 +808,17 @@ export interface PrivacyGuardService {
    * tool roundtrips don't fragment the user-facing summary.
    */
   processToolResult(request: PrivacyToolResultRequest): Promise<PrivacyToolResultResult>;
+  /**
+   * Privacy-Shield v3 (slice 1) — Stable-id tokenization pre-pass.
+   * Runs BEFORE `processToolResult` for tools that declare PII field
+   * annotations. Parses the text as JSON, rewrites annotated leaves
+   * via `applyStableIdTokenization`, and re-serialises. On parse
+   * failure or empty annotations: byte-identical pass-through. Hits
+   * land in the SAME turn-accumulator as the NER pass.
+   */
+  applyStableIdPrepass(
+    request: PrivacyStableIdPrepassRequest,
+  ): Promise<PrivacyStableIdPrepassResult>;
   /**
    * Privacy-Shield v2 (Slice S-5) — Output Validator. Optional host
    * hook called between `processInbound` and channel send. Computes

@@ -51,3 +51,8 @@ export {
   type AllowlistMatch,
   type AllowlistSource,
 } from './allowlist.js';
+
+export {
+  applyStableIdTokenization,
+  type StableIdTokenizationOutcome,
+} from './stableIdTokenization.js';
