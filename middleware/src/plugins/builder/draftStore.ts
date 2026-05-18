@@ -36,7 +36,7 @@ import { DEFAULT_BUILDER_MODEL, BuilderModelRegistry } from './modelRegistry.js'
  * for a future worker-thread migration if we ever need it.
  */
 
-const CURRENT_SCHEMA_VERSION = 1;
+const CURRENT_SCHEMA_VERSION = 2;
 
 const SCHEMA_V1_SQL = `
 CREATE TABLE IF NOT EXISTS drafts (
@@ -59,6 +59,57 @@ CREATE INDEX IF NOT EXISTS idx_drafts_user_active
   ON drafts(user_email, deleted_at, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_drafts_installed_purge
   ON drafts(status, deleted_at);
+`;
+
+/**
+ * V2 — Native issue-reporting + workaround-tracking (concept plan:
+ * docs/plans/native-issue-reporting.md). Three additive tables; no changes
+ * to the existing `drafts` columns. Spec-side workaround data lives inside
+ * `spec_json` (immutable identity) while operational state lives in
+ * `agent_workaround_state` so re-installs of the same spec keep their
+ * lifecycle state.
+ */
+const SCHEMA_V2_SQL = `
+CREATE TABLE IF NOT EXISTS github_issue_cache (
+  repo_owner       TEXT NOT NULL,
+  repo_name        TEXT NOT NULL,
+  issue_number     INTEGER NOT NULL,
+  state            TEXT NOT NULL,
+  closed_at        INTEGER,
+  cached_at        INTEGER NOT NULL,
+  etag             TEXT,
+  backoff_until    INTEGER,
+  pending_until    INTEGER,
+  PRIMARY KEY (repo_owner, repo_name, issue_number)
+);
+
+CREATE TABLE IF NOT EXISTS agent_workaround_state (
+  installed_agent_id     TEXT NOT NULL,
+  workaround_id          TEXT NOT NULL,
+  status                 TEXT NOT NULL DEFAULT 'active',
+  resolved_at            INTEGER,
+  last_status_lookup_at  INTEGER,
+  patch_context_json     TEXT,
+  created_at             INTEGER NOT NULL,
+  PRIMARY KEY (installed_agent_id, workaround_id)
+);
+CREATE INDEX IF NOT EXISTS idx_workaround_state_status
+  ON agent_workaround_state(status);
+
+CREATE TABLE IF NOT EXISTS builder_triage_log (
+  id                TEXT PRIMARY KEY,
+  draft_id          TEXT NOT NULL,
+  user_email        TEXT NOT NULL,
+  fingerprint       TEXT NOT NULL,
+  classification    TEXT NOT NULL,
+  confidence        REAL NOT NULL,
+  reason            TEXT,
+  created_at        INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_triage_log_user_recent
+  ON builder_triage_log(user_email, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_triage_log_fingerprint
+  ON builder_triage_log(fingerprint);
 `;
 
 export interface DraftUpdate {
@@ -458,19 +509,20 @@ export class DraftStore {
 
   private runMigrations(db: SqliteDatabase): void {
     const current = db.pragma('user_version', { simple: true }) as number;
-    if (current < 1) {
-      db.exec(SCHEMA_V1_SQL);
-      db.pragma(`user_version = ${String(CURRENT_SCHEMA_VERSION)}`);
-      return;
-    }
-    // Future schema bumps land here as `if (current < 2) { … }` branches. For
-    // now the schema version is pinned at 1 and we trust `CREATE TABLE IF NOT
-    // EXISTS` to keep fresh DBs aligned with existing ones.
     if (current > CURRENT_SCHEMA_VERSION) {
       throw new Error(
         `drafts.db schema version ${String(current)} is newer than this middleware supports ` +
           `(max ${String(CURRENT_SCHEMA_VERSION)}). Refusing to open — downgrade would corrupt data.`,
       );
+    }
+    if (current < 1) {
+      db.exec(SCHEMA_V1_SQL);
+    }
+    if (current < 2) {
+      db.exec(SCHEMA_V2_SQL);
+    }
+    if (current < CURRENT_SCHEMA_VERSION) {
+      db.pragma(`user_version = ${String(CURRENT_SCHEMA_VERSION)}`);
     }
   }
 
