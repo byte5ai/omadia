@@ -20,8 +20,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   existing `ConversationHistoryStore` contract stays unchanged; a new
   `DurableConversationHistoryStore` adapter bridges to the capability
   and falls back to in-memory behavior when the capability is not
-  installed. PR sequence and consumer mechanics are spelled out in the
-  RFC. `docs/middleware-agent-handoff.md` §13 gains a Phase 13 roadmap
+  installed. The RFC also specifies a small additive extension to
+  `TurnContextValue` in `harness-orchestrator` (`tenantId?`,
+  `originatorUserRef?`, `originatorUserId?`, `canvasSessionId?`),
+  which lands with PR 4 and absorbs the Phase-12 `tenantId` work from
+  `docs/middleware-agent-handoff.md`. The RFC went through three
+  Codex-style review rounds before landing: service-registry-key form,
+  `TurnContextValue` field availability, the dual `ConversationTurn`
+  shape in the SDK, misuse of `ctx.notifications` as an ops/audit
+  surface, identity-merge race-safety, outbox idempotency via
+  `client_message_id`, structured `CcmAppendError` failure taxonomy,
+  audit-event PII minimization plus retention, and the absence of a
+  `permissions.routes` manifest key were all fixed against the real
+  code in `middleware/packages/` before merge. PR sequence and
+  consumer mechanics are spelled out in §15 of the RFC;
+  `docs/middleware-agent-handoff.md` §13 gains a Phase 13 roadmap
   entry pointing at the RFC.
 - byte5ai engineering-standards applied to the repo
   (`status: applied` in `.github/engineering-standards.yml`):

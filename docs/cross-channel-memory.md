@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Proposed (Round 2) |
+| **Status** | Proposed (Round 3) |
 | **Capabilities (manifest refs)** | `platformIdentity@1`, `crossChannelConversationMemory@1` |
 | **Service-registry keys (runtime)** | `platformIdentity`, `crossChannelConversationMemory` |
 | **Plugins (provider candidates)** | `@omadia/platform-identity-neon`, `@omadia/platform-identity-inmemory`, `@omadia/cross-channel-conversation-memory-neon`, `@omadia/cross-channel-conversation-memory-inmemory` |
@@ -105,6 +105,27 @@ Operators pick Neon for production, in-memory for CI / smoke / local-dev.
   impossible without a shared store.
 - Intended only for CI, smoke probes, local-dev where Postgres is not
   provisioned.
+
+**Contract parity with the Neon variant** — what the in-memory sibling
+honors and what it skips. The capability contract is shared; semantic
+gaps are listed explicitly so consumers know what they're testing
+against:
+
+| Behavior | Neon sibling | In-memory sibling |
+|---|---|---|
+| `appendTurn` idempotency via `client_message_id` | Postgres UNIQUE + `ON CONFLICT DO NOTHING` | JS `Map` keyed on `(tenantId, clientMessageId)`; second add returns the existing `messageId` |
+| `resolveUserId` race-safety (`platformIdentity@1`) | Partial UNIQUE index + `INSERT ON CONFLICT` | `async`-safe via single mutex; functionally equivalent for a single process |
+| Verified-email auto-merge (`pi_auto_merge_on_email`) | Partial UNIQUE index | Mirror logic in JS; same observable semantics |
+| `redaction_state` lifecycle | Column + async job | Field + same async pass; identical observable states |
+| Quotas (count + bytes) | Counters in `ccm_user_quotas` | Per-user counters in `Map` |
+| TTL + cap GC passes | Cron job | Same job, walking the in-memory data structures |
+| **Durable outbox** | `ccm_outbox` table + `ccm-outbox` job | **Not implemented** — the "destination" IS this process; if it crashes, the data is gone anyway. Sync calls cannot fail with `'timeout'` / `'transport'`. The contract methods exist but never trigger. |
+| **Audit table** (`ccm_audit_events`) | Persisted with retention pass | Ring buffer (default 1000 entries), accessible via `/ccm/audit` route on the same plugin — debug aid only, no retention guarantee. |
+| Multi-pod | Yes | **No** — single process only. |
+
+This makes the in-memory sibling a useful test target for the
+contract methods (idempotency, identity races, redaction lifecycle,
+quotas), while being honest about which guarantees only Neon provides.
 
 ### 3.2 Pragmatic packaging fallback (optional)
 
@@ -265,29 +286,42 @@ No per-call tenant multiplexing in v1.
 ### 5.3 Schema — `cross_channel_messages`
 
 ```
-id                  TEXT        NOT NULL   -- ULID, sortable by created_at
+id                  TEXT        NOT NULL   -- server-assigned ULID
 tenant_id           TEXT        NOT NULL
 user_id             TEXT        NOT NULL   -- from platformIdentity@1
+client_message_id   TEXT        NOT NULL   -- adapter-assigned ULID, idempotency key
 channel_kind        TEXT        NOT NULL   -- 'teams-aad' | 'slack-user' | ...
 channel_scope       TEXT        NOT NULL   -- native channel scope id
 canvas_session_id   TEXT        NULL       -- omadia-ui canvas correlation
 user_message        TEXT        NOT NULL   -- raw, never redacted at write
 assistant_answer    TEXT        NOT NULL   -- raw, never redacted at write
-user_message_bytes  INTEGER     NOT NULL   -- octet_length, materialized
-assistant_bytes     INTEGER     NOT NULL   -- octet_length, materialized
+user_message_bytes  INTEGER     NOT NULL CHECK (user_message_bytes >= 0)
+assistant_bytes     INTEGER     NOT NULL CHECK (assistant_bytes >= 0)
 tool_calls          JSONB       NULL
 metadata            JSONB       NOT NULL DEFAULT '{}'::jsonb
 redaction_metadata  JSONB       NULL       -- populated by async hook (§8)
-redaction_state     TEXT        NOT NULL DEFAULT 'pending'  -- 'pending' | 'clean' | 'redacted'
+redaction_state     TEXT        NOT NULL DEFAULT 'pending'
+                                CHECK (redaction_state IN ('pending','clean','redacted'))
 created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 expires_at          TIMESTAMPTZ NOT NULL   -- created_at + tenant TTL
 
 PRIMARY KEY (id)
+UNIQUE INDEX (tenant_id, client_message_id)
 INDEX (tenant_id, user_id, created_at DESC)
 INDEX (tenant_id, channel_scope, created_at DESC)
 INDEX (tenant_id, expires_at)
 INDEX (tenant_id, redaction_state) WHERE redaction_state = 'pending'
 ```
+
+`client_message_id` is the **idempotency key**. The adapter generates it
+once per turn (a fresh ULID, derived from `(turnId, role)` so user-turn
+and assistant-turn are distinct rows). Retries from the outbox reuse the
+same `client_message_id`. `appendTurn` is implemented as
+`INSERT … ON CONFLICT (tenant_id, client_message_id) DO NOTHING RETURNING id`:
+the second arrival sees no row returned and treats the operation as
+already-committed. No double-counting in quotas (the `INSERT` is
+skipped, the trigger that bumps the quota counters runs only on
+inserted rows).
 
 `user_id` is **not** a hard FK to `platform_identities`. Reasons:
 
@@ -329,9 +363,9 @@ transient failures.
 ```
 id            TEXT        NOT NULL   -- ULID
 tenant_id     TEXT        NOT NULL
-kind          TEXT        NOT NULL   -- 'append_turn' (v1; future ops added here)
-payload       JSONB       NOT NULL
-attempts      INTEGER     NOT NULL DEFAULT 0
+kind          TEXT        NOT NULL CHECK (kind IN ('append_turn'))
+payload       JSONB       NOT NULL   -- carries client_message_id for idempotency
+attempts      INTEGER     NOT NULL DEFAULT 0 CHECK (attempts >= 0)
 last_error    TEXT        NULL
 last_attempt  TIMESTAMPTZ NULL
 created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -340,15 +374,37 @@ PRIMARY KEY (id)
 INDEX (tenant_id, created_at) WHERE attempts < 5
 ```
 
-The outbox sits in the **destination** DB, not in the channel plugin's
-process. When the destination DB is reachable, failed sync calls write
-straight into the outbox; when unreachable, the adapter falls back to a
-**process-local bounded queue** (`ccm_outbox_local`, in-memory, max 1024
+The outbox sits in the **destination** DB. Every outbox payload carries
+the `client_message_id` from §5.3, so any number of retries (including
+a drain that overlaps with a successful direct write) is idempotent at
+the `cross_channel_messages` level.
+
+The `ccm-outbox` job (§12.4) flushes rows with exponential backoff up
+to 5 attempts; rows past 5 attempts are left in the table for operator
+inspection (`ccm_outbox_dlq_total` counter, §13.1).
+
+### 5.6 Process-local fallback — explicit data-loss disclaimer
+
+When the destination DB itself is **unreachable**, the adapter cannot
+write to `ccm_outbox`. The adapter then falls back to a process-local
+bounded ring buffer (`ccm_outbox_local`, in-memory, default cap 1024
 entries, oldest-dropped). On the next successful capability call, the
-adapter drains the local queue into the durable outbox. The
-`ccm-outbox` job (§12.4) flushes the durable outbox with exponential
-backoff up to 5 attempts; rows past 5 attempts are left in the table
-for operator inspection.
+adapter drains the local buffer into the durable outbox.
+
+**The local buffer is a recovery aid, not a durability guarantee:**
+
+- On process crash with non-empty local buffer → those entries are
+  lost.
+- On local-buffer overflow (more than 1024 unsent entries) → oldest
+  entries are dropped before newer ones queue, also lost.
+- This is a deliberate trade-off: bounded memory, simple code, no disk
+  spilling. The **durable outbox in the destination DB is the actual
+  durability boundary**. Tenants that need SLA-grade durability must
+  deploy with a reachable destination DB at all times (Neon serverless
+  is the design assumption).
+
+The adapter emits `ccm_outbox_local_dropped_total` per dropped entry
+so operators can alert on extended outages.
 
 ## 6. Capability API — `crossChannelConversationMemory@1`
 
@@ -398,7 +454,21 @@ export interface CrossChannelConversationMemoryCapability {
   forgetByUser(
     tenantId: string,
     userId: string,
-  ): Promise<{ deletedTurns: number }>;
+  ): Promise<{ deletedTurns: number; deletedAuditRows: number }>;
+}
+
+// Structured error contract for the adapter's failure handling (§7.4).
+// Implementations of the capability MUST raise CcmAppendError on
+// appendTurn failures and populate `code` accurately. Other methods
+// may raise standard Error subclasses.
+export class CcmAppendError extends Error {
+  readonly code:
+    | 'committed'   // server-side error AFTER row was committed; messageId set
+    | 'rejected'    // server-side validation rejection; do NOT retry
+    | 'timeout'     // sync call timed out; outcome unknown — retry via outbox
+    | 'transport';  // network / destination unreachable — retry via outbox
+  readonly messageId?: string;        // present iff code === 'committed'
+  readonly clientMessageId: string;   // always set; idempotency key
 }
 
 export interface CrossChannelTurn extends ConversationTurn {
@@ -481,26 +551,32 @@ at construction. If the capability is not registered (CI / dev / Neon
 plugin absent), the adapter behaves identically to
 `InMemoryConversationHistoryStore`. No breaking change.
 
-### 7.4 Failure handling
+### 7.4 Failure handling — structured error taxonomy
 
-The synchronous capability call is wrapped in `try/catch`:
+The adapter generates a fresh `client_message_id` (ULID) before
+calling `appendTurn`. The call is wrapped in `try/catch` and branches
+on the `CcmAppendError.code` (§6):
 
-- Success → done.
-- Failure with destination DB **reachable** (rare server-side error) →
-  the capability impl writes the payload into `ccm_outbox` itself
-  before returning the error; adapter logs and proceeds.
-- Failure with destination DB **unreachable** (transport error,
-  timeout) → adapter writes the payload into a process-local bounded
-  queue (`ccm_outbox_local`, in-memory, max 1024 entries,
-  oldest-dropped). On the next successful capability call the adapter
-  drains the local queue into the durable outbox.
-- All failures are logged via **`ctx.log`** — not `ctx.notifications`,
-  which is for cross-channel **user** notifications
-  (`pluginContext.ts:98-102`).
-- A plugin-owned counter `ccm_write_failures_total` is incremented per
-  failure. v1 metrics surface is plugin-internal (the PluginContext has
-  no metrics accessor today — see §13). When such an accessor lands, the
-  counter migrates.
+| `code` | Adapter behavior |
+|---|---|
+| (success) | Done. Local outbox drain attempted if non-empty. |
+| `'committed'` | Row was inserted server-side; only the response failed. Adapter treats as success. No retry, no outbox write (the row is already there; the durable outbox would just create a `DO NOTHING` no-op via `client_message_id` uniqueness anyway). Log `info` once for observability. |
+| `'rejected'` | Server validated and rejected (bad payload, tenant mismatch, schema violation). Do **not** retry. Log `warn` with the rejection reason; the turn is lost in the durable store but the in-memory inner store still has it for the current scope. |
+| `'timeout'` / `'transport'` | Outcome unknown or no commit. Adapter writes the payload (including `client_message_id`) into `ccm_outbox` via a separate idempotent admin call against the capability. If the destination DB itself is unreachable, fall back to `ccm_outbox_local` (§5.6). |
+
+Distinguishing `'committed'` from `'rejected'` requires the capability
+impl to know whether the transaction reached commit. Postgres makes
+this directly available: server errors raised after `COMMIT` (rare —
+network drop on `COMMIT;` ACK) vs. errors that originate during the
+INSERT itself.
+
+All failures are logged via **`ctx.log`** — not `ctx.notifications`,
+which is for cross-channel **user** notifications
+(`pluginContext.ts:98-102`).
+
+A plugin-owned counter `ccm_write_failures_total{code}` is incremented
+per failure with the `code` label. v1 metrics surface is plugin-internal
+(the PluginContext has no metrics accessor today — see §13).
 
 ### 7.5 Channels opt in per PR
 
@@ -555,23 +631,61 @@ table:
 
 ```
 ccm_audit_events
-  id          TEXT        NOT NULL    -- ULID
+  id          TEXT        NOT NULL   -- ULID
   tenant_id   TEXT        NOT NULL
-  actor       TEXT        NOT NULL    -- agentId of the calling plugin
-  op          TEXT        NOT NULL    -- 'read_raw' | 'forget_user' | 'merge_identities'
-  target_id   TEXT        NULL
-  user_id     TEXT        NULL
-  detail      JSONB       NULL
+  actor       TEXT        NOT NULL   -- agentId of the calling plugin
+  op          TEXT        NOT NULL
+              CHECK (op IN ('read_raw','forget_user','merge_identities'))
+  target_id   TEXT        NULL       -- messageId for 'read_raw', secondaryUserId for merge, null for forget
+  user_id     TEXT        NULL       -- nullified on GDPR forget (see retention below)
+  detail      JSONB       NULL       -- ENUMERATED FIELDS ONLY (see below)
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 
 PRIMARY KEY (id)
 INDEX (tenant_id, created_at DESC)
+INDEX (tenant_id, user_id, created_at DESC) WHERE user_id IS NOT NULL
 ```
+
+**`detail` JSONB is bounded.** Free-form turn content is **never** stored
+in audit. The allowed keys are enumerated per op:
+
+| `op` | Allowed `detail` keys |
+|---|---|
+| `'read_raw'` | `limit`, `sinceMs`, `excludeCanvasSessionId`, `channelKinds`, `returnedCount` |
+| `'forget_user'` | `deletedTurns`, `deletedIdentities`, `deletedAuditRows` |
+| `'merge_identities'` | `primaryUserId`, `secondaryUserId`, `mergedIdentities`, `source` |
+
+The capability impl validates the `detail` shape before insert; any
+extra key throws. This makes audit rows lossless for compliance review
+without becoming a secondary PII store.
 
 Written in-transaction with the audited operation. **Not** routed
 through `ctx.notifications` (broadcast to channels — wrong surface) nor
 through `ctx.log` (volatile — wrong retention). Audit data is durable,
 queryable, exportable.
+
+### 8.4.1 Audit retention & GDPR interaction
+
+Audit rows are themselves subject to retention:
+
+- `ccm_audit_retention_days` (tenant config, default `365`) — audit
+  rows older than this are deleted by the `ccm-gc` job's audit pass
+  (§12.2 pass 4).
+- On `forgetByUser(tenantId, userId)`: audit rows for the user are
+  handled in two ways:
+  1. Rows where `op IN ('read_raw')` referencing the forgotten user
+     are **deleted** in the same transaction.
+  2. Rows where `op IN ('forget_user','merge_identities')` referencing
+     the forgotten user have their `user_id` and `target_id` columns
+     **nullified** (but the row is retained). Rationale: a record that
+     "the user was forgotten" is itself a compliance artifact that
+     auditors may need to see; removing the PII identifier while
+     keeping the event satisfies both GDPR minimization and
+     audit-trail integrity.
+- The `deletedAuditRows` count returned by `forgetByUser` (§6) reflects
+  the rows actually deleted (case 1); the nullified rows are returned
+  separately if needed via `detail.nullifiedAuditRows` in the
+  associated `forget_user` audit event.
 
 ### 8.5 GDPR forget
 
@@ -654,8 +768,17 @@ export interface TurnContextValue {
   tenantId?: string;                  // channel adapter populates at ingress
   originatorUserRef?: ChannelUserRef; // raw ref, kept opaque to the orchestrator
   originatorUserId?: string;          // resolved via platformIdentity@1
+  canvasSessionId?: string;           // omadia-ui orchestrator populates at ingress
 }
 ```
+
+All four new fields are **optional**. Tools, sub-agents and routine
+handlers that run outside a channel-originated turn (background jobs,
+backfill scripts, ad-hoc invocations) will see `undefined` and the
+downstream code treats them as "no cross-channel context available" —
+the adapter skips its durable fan-out, the orchestrator skips its
+cross-channel read. No throw, no crash, byte-identical to today's
+behavior when CCM is not installed.
 
 Adding `tenantId` to `TurnContextValue` is also the work referenced by
 Phase 12 of `docs/middleware-agent-handoff.md` (diagram-cache tenancy).
@@ -690,6 +813,14 @@ orchestrator. It does so by:
 
 The orchestrator reads `turnContext.current()?.originatorUserId`
 directly — no per-call resolution, no extra DB roundtrip per turn.
+
+**Cache spec.** The "for the duration of the turn" cache is a
+`Map<string, string>` keyed by `(tenantId + ':' + platformId)` mapping
+to `userId`. It lives on the channel adapter's per-turn closure (the
+AsyncLocalStorage scope opened by `turnContext.run(...)`), not on a
+process-wide singleton. Multiple `ChannelUserRef`s in one turn (group
+chat with multiple senders) each get their own cache entry; the cache
+is dropped automatically when the turn's ALS frame exits.
 
 If `originatorUserId` is missing (very first ingress, ever; or
 `platformIdentity@1` not installed), the orchestrator skips the read
@@ -759,12 +890,19 @@ plugin-internal until a metrics accessor lands in PluginContext (§13).
   before any other predicate.
 - `tenantId` is **bound at plugin activate-time** from
   `ctx.config.get('ccm_tenant_id')` (single-tenant per plugin instance,
-  same model as KG; §5.2). Capability methods accept `tenantId` as their
-  first argument and the impl asserts
-  `args.tenantId === this.boundTenantId`. Mismatch throws
-  `TenantMismatchError`.
+  same model as KG; §5.2). Capability methods take `tenantId` as their
+  first argument; the impl asserts `args.tenantId === boundTenantId`
+  and throws `TenantMismatchError` on mismatch. The assertion catches
+  caller misconfiguration (forgotten plumbing, wrong tenant injected by
+  a buggy adapter) — not malicious cross-tenant reads, which the
+  single-tenant binding prevents structurally.
 - **Fail-closed:** if a caller passes `tenantId === undefined` or empty
   string the capability throws — no silent fallback. No admin override.
+- `pi_tenant_id` (platform-identity plugin) and `ccm_tenant_id` (CCM
+  plugin) MUST agree per host process. The capability constructors emit
+  a startup `ctx.log` warning if they detect a mismatch by sharing the
+  service registry (each capability exposes a `getBoundTenantId()`
+  introspection method).
 - Application-level isolation, not RLS — same operational model as KG.
 
 ## 12. Capacity & lifecycle
@@ -780,7 +918,7 @@ plugin-internal until a metrics accessor lands in PluginContext (§13).
 
 ### 12.2 Single job — `ccm-gc`
 
-Cron or interval, `overlap: 'skip'` (`pluginContext.ts:176`). Three
+Cron or interval, `overlap: 'skip'` (`pluginContext.ts:176`). Four
 passes per sweep, in order:
 
 1. **TTL pass:** `DELETE FROM cross_channel_messages WHERE tenant_id=$1
@@ -793,6 +931,10 @@ passes per sweep, in order:
 3. **Byte cap pass:** for each `(tenant_id, user_id)` with
    `byte_count > ccm_user_byte_cap`, delete the oldest rows until below
    cap; decrement counters.
+4. **Audit retention pass:** `DELETE FROM ccm_audit_events WHERE
+   tenant_id=$1 AND created_at < now() - INTERVAL '<retention> days'`,
+   where `<retention>` = `ccm_audit_retention_days` (default 365).
+   Chunked, same lock-window discipline.
 
 No score-decay table. No HOT / WARM / COLD tiering. Chronological log;
 value fades with time. v2 path to score-decay stays open.
@@ -817,13 +959,25 @@ operator inspection; emit `ccm_outbox_dlq_total` counter.
 PluginContext (`pluginContext.ts:31-147`) does **not** expose a metrics
 accessor today (it exposes `log`, `secrets`, `config`, `services`,
 `jobs`, `routes`, `notifications`, `tools`, `uiRoutes`, optional
-`scratch`/`http`/`memory`/`subAgent`/`knowledgeGraph`/`llm`). Plugins
-emit metrics via an internal Prometheus-style registry. The
-channel-teams plugin's `/metrics` route is the precedent. v1 of CCM
-does the same: a plugin-local registry, counters exposed via a
-`/ccm/metrics` route (manifest declares
-`permissions.routes.allowed: ['/ccm/metrics']`). When a future
-PluginContext extension adds `ctx.metrics`, CCM migrates.
+`scratch`/`http`/`memory`/`subAgent`/`knowledgeGraph`/`llm`). The
+manifest loader (`middleware/src/plugins/manifestLoader.ts:465-487`)
+extracts `permissions.{memory,graph,network,subAgents,llm}` — there is
+**no** `permissions.routes` permission key today; `RoutesAccessor`
+(`pluginContext.ts:470-472`) registers routers with no permission gate
+and the kernel does not inject auth/CORS middleware around them
+(per the doc-comment at `pluginContext.ts:464-468`).
+
+v1 of CCM therefore takes the same path the channel-teams plugin's
+`/metrics` route takes: plugin-local Prometheus-style registry,
+exposed via a normal `ctx.routes.register('/ccm', metricsRouter)`
+call. Authentication / authorization on the route is the plugin's own
+responsibility (e.g., a static token check against
+`ctx.config.get('ccm_metrics_token')`, or operator-managed
+reverse-proxy IP allow-listing). The manifest does **not** declare a
+permissions key for the route.
+
+When a future PluginContext extension adds `ctx.metrics`, CCM
+migrates.
 
 ### 13.1 Counters
 
@@ -892,7 +1046,6 @@ setup:
     - { id: "ccm_redact_on_persist",   type: "text",   required: false }
 permissions:
   network: { outbound: ["neon-database"] }
-  routes:  { allowed: ["/ccm/metrics"] }
 integrations:
   - id: "neon_database"
     kind: "tcp"
@@ -940,12 +1093,16 @@ review. End-to-end verification of the capability happens at PR 3
 AGENTS.md (lines 17-26) mandates specific doc updates per change type.
 This RFC binds the implementation PRs accordingly:
 
-| PR | `.env.example` | CHANGELOG migration ID | `security-architecture.md` | `middleware-agent-handoff.md` |
+| PR | `.env.example` | CHANGELOG migration IDs | `security-architecture.md` | `middleware-agent-handoff.md` |
 |---|---|---|---|---|
-| 2 | `PI_DATABASE_URL`, `PI_TENANT_ID`, `PI_AUTO_MERGE_ON_EMAIL` | `_pi_migrations` IDs | new section on raw email retention + verified-email semantics | §3/§8 |
-| 3 | `CCM_DATABASE_URL`, `CCM_TENANT_ID`, all `CCM_*` config fields | `_ccm_migrations` IDs | new section on raw turn retention + `redaction_state` semantics + audit events | §3/§8 |
+| 2 | `PI_DATABASE_URL`, `PI_TENANT_ID`, `PI_AUTO_MERGE_ON_EMAIL` | `pi/0001_init.sql` (platform_identities + partial unique email index) | new section on raw email retention + verified-email semantics | §3/§8 |
+| 3 | `CCM_DATABASE_URL`, `CCM_TENANT_ID`, all `CCM_*` config fields including `CCM_AUDIT_RETENTION_DAYS`, `CCM_METRICS_TOKEN` | `ccm/0001_init.sql` (cross_channel_messages + ccm_user_quotas + ccm_outbox + ccm_audit_events with CHECK constraints) | new section on raw turn retention + `redaction_state` semantics + audit events + audit retention | §3/§8 |
 | 4 | — | — | — | §3 (adapter), §13 (Phase 12 absorption) |
 | 5–8 | — | — | — | §3 channel-by-channel note |
+
+Migration filenames are placeholders for the concrete file the
+implementer creates; each implementation PR's CHANGELOG entry cites
+the exact filename and one-line purpose.
 
 ## 16. Open questions & future slices
 
