@@ -189,7 +189,7 @@ export async function runNudgePipeline(
     }
     if (isStateClosed(state, now)) continue;
 
-    let candidate: Nudge | null = null;
+    let candidate: Nudge | null;
     try {
       candidate = await evaluateWithTimeout(
         provider,

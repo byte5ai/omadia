@@ -120,6 +120,7 @@ export async function loadBoilerplate(templateId: string): Promise<BoilerplateBu
   } catch (err) {
     throw new Error(
       `BoilerplateSource: template '${templateId}' not found at ${dir} (${(err as Error).message})`,
+      { cause: err },
     );
   }
 
@@ -132,6 +133,7 @@ export async function loadBoilerplate(templateId: string): Promise<BoilerplateBu
   } catch (err) {
     throw new Error(
       `BoilerplateSource: failed to parse template.yaml for '${templateId}': ${(err as Error).message}`,
+      { cause: err },
     );
   }
 
