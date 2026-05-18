@@ -72,7 +72,7 @@ export default async function BuilderDashboardPage({
         <div className="mt-6 flex items-start justify-between gap-6">
           <div className="max-w-2xl">
             <h1 className="font-display text-[clamp(2.25rem,4.5vw,3.75rem)] leading-[1.05] text-[color:var(--fg-strong)]">
-              Neue Agents zusammenstecken.
+              Neue Agents bauen.
             </h1>
             <p className="mt-6 text-[18px] font-semibold leading-[1.55] text-[color:var(--fg)]">
               <span className="b5-colon">:</span>
