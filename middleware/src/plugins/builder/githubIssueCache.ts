@@ -309,6 +309,108 @@ export class GithubIssueCache {
     }
   }
 
+  /**
+   * Validate that a specific issue number actually represents the
+   * fingerprint the operator says it does. Used by the confirm-issue
+   * route after browser-submit so a tampered or mistyped issue number
+   * cannot link an unrelated upstream issue to the workaround.
+   *
+   * Validation rules:
+   *   - Issue exists (200 response from the issue REST endpoint).
+   *   - Body contains the fingerprint marker `<!-- omadia-fingerprint:
+   *     <hash> -->`.
+   *   - Every label in `requiredLabels` is present on the issue.
+   *   - State is 'open' or 'closed' (no other values exist on REST,
+   *     but defensive parsing).
+   */
+  async validateIssueMatchesFingerprint(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+    fingerprint: string,
+    requiredLabels: readonly string[],
+  ): Promise<
+    | {
+        ok: true;
+        state: IssueState;
+        url: string;
+        closedAt: number | null;
+      }
+    | {
+        ok: false;
+        reason:
+          | 'not_found'
+          | 'fingerprint_mismatch'
+          | 'missing_labels'
+          | 'fetch_failed';
+        details?: string;
+      }
+  > {
+    const url = `https://api.github.com/repos/${owner}/${repo}/issues/${String(issueNumber)}`;
+    const response = await this.fetchImpl(url, {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'omadia-builder/1',
+      },
+    });
+    if (response.status === 404) return { ok: false, reason: 'not_found' };
+    if (!response.ok) {
+      return {
+        ok: false,
+        reason: 'fetch_failed',
+        details: `status=${String(response.status)}`,
+      };
+    }
+    const payload = (await response.json()) as {
+      body?: string | null;
+      state?: string;
+      closed_at?: string | null;
+      html_url?: string;
+      labels?: Array<{ name?: string } | string>;
+    };
+    const marker = `<!-- omadia-fingerprint: ${fingerprint} -->`;
+    const body = payload.body ?? '';
+    if (!body.includes(marker)) {
+      return { ok: false, reason: 'fingerprint_mismatch' };
+    }
+    const labels = new Set(
+      (payload.labels ?? [])
+        .map((l) => (typeof l === 'string' ? l : l.name ?? ''))
+        .filter((s) => s.length > 0),
+    );
+    for (const required of requiredLabels) {
+      if (!labels.has(required)) {
+        return {
+          ok: false,
+          reason: 'missing_labels',
+          details: `expected label '${required}' not present`,
+        };
+      }
+    }
+    const state: IssueState = payload.state === 'closed' ? 'closed' : 'open';
+    const closedAt = payload.closed_at ? Date.parse(payload.closed_at) : null;
+
+    // Side-effect: cache the validated state so subsequent renders
+    // skip the network call.
+    const now = this.now();
+    const db = this.required();
+    const etag = response.headers.get('etag');
+    db.prepare(
+      `INSERT OR REPLACE INTO github_issue_cache
+         (repo_owner, repo_name, issue_number, state, closed_at, cached_at, etag, backoff_until)
+       VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
+    ).run(owner, repo, issueNumber, state, closedAt, now, etag ?? null);
+
+    return {
+      ok: true,
+      state,
+      url:
+        payload.html_url ??
+        `https://github.com/${owner}/${repo}/issues/${String(issueNumber)}`,
+      closedAt,
+    };
+  }
+
   private async doSearchByFingerprint(
     owner: string,
     repo: string,

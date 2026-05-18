@@ -156,6 +156,33 @@ export type SpecBusEvent =
       kind: 'build_failed' | 'smoke_failed';
       buildN: number;
       identicalCount?: number;
+    }
+  | {
+      /**
+       * Native issue-reporting: the builder agent invoked `ask_user_choice`
+       * and the UI should render a smart card with the listed buttons.
+       * The operator's pick is POSTed to the user-choice route and the
+       * coordinator resolves the pending tool call.
+       */
+      type: 'user_choice_required';
+      choiceId: string;
+      question: string;
+      options: ReadonlyArray<{
+        value: string;
+        label: string;
+        description?: string;
+      }>;
+    }
+  | {
+      /**
+       * Companion to `user_choice_required`. Sent once the choice was
+       * resolved (operator clicked, dismissed, or timed out). Multi-tab
+       * clients use this to clear the smart card on every tab. `value`
+       * is `null` when the choice was cancelled or timed out.
+       */
+      type: 'user_choice_resolved';
+      choiceId: string;
+      value: string | null;
     };
 
 export type SpecBusListener = (event: SpecBusEvent) => void;
