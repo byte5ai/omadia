@@ -145,10 +145,13 @@ export const patchSpecTool: BuilderTool<Input, Result> = {
 };
 
 function formatZodErrors(
-  issues: ReadonlyArray<{ path: ReadonlyArray<string | number>; message: string }>,
+  issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey>; message: string }>,
 ): string {
   return issues
     .slice(0, 5)
-    .map((i) => `${i.path.length > 0 ? `/${i.path.join('/')}` : '/'}: ${i.message}`)
+    .map(
+      (i) =>
+        `${i.path.length > 0 ? `/${i.path.map(String).join('/')}` : '/'}: ${i.message}`,
+    )
     .join('; ');
 }

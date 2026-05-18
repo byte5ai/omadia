@@ -271,7 +271,7 @@ describe('ManageRoutineTool — list / pause / resume / delete', () => {
   });
 
   it('pause requires id and forwards it', async () => {
-    const id = '11111111-1111-1111-1111-111111111111';
+    const id = '11111111-1111-4111-a111-111111111111';
     const { runner, calls } = stubRunner();
     const tool = new ManageRoutineTool({ runner, resolveContext: () => ctx });
     const result = await tool.handle({ action: 'pause', id });
@@ -282,7 +282,7 @@ describe('ManageRoutineTool — list / pause / resume / delete', () => {
   });
 
   it('delete reports not_found when the runner returns false', async () => {
-    const id = '22222222-2222-2222-2222-222222222222';
+    const id = '22222222-2222-4222-a222-222222222222';
     const { runner } = stubRunner({ deleteImpl: async () => false });
     const tool = new ManageRoutineTool({ runner, resolveContext: () => ctx });
     const result = await tool.handle({ action: 'delete', id });

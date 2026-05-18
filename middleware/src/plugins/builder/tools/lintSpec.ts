@@ -55,7 +55,7 @@ export const lintSpecTool: BuilderTool<Input, Result> = {
     // 1. Zod validation
     const parsed = safeParseAgentSpec(draft.spec);
     if (!parsed.success) {
-      for (const zerr of parsed.error.errors) {
+      for (const zerr of parsed.error.issues) {
         issues.push({
           severity: 'error',
           code: `zod.${zerr.code}`,
