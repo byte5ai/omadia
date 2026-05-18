@@ -2,11 +2,12 @@
 
 | | |
 |---|---|
-| **Status** | Proposed |
-| **Capabilities** | `platformIdentity@1`, `crossChannelConversationMemory@1` |
+| **Status** | Proposed (Round 2) |
+| **Capabilities (manifest refs)** | `platformIdentity@1`, `crossChannelConversationMemory@1` |
+| **Service-registry keys (runtime)** | `platformIdentity`, `crossChannelConversationMemory` |
 | **Plugins (provider candidates)** | `@omadia/platform-identity-neon`, `@omadia/platform-identity-inmemory`, `@omadia/cross-channel-conversation-memory-neon`, `@omadia/cross-channel-conversation-memory-inmemory` |
 | **Owners** | omadia-middleware (providers); omadia-ui Tier-2 orchestrator (first consumer); channel-plugin maintainers (write path) |
-| **Depends on** | `plugin-api` PluginContext, `harness-channel-sdk` ConversationHistoryStore contract, `harness-plugin-privacy-guard` (soft) |
+| **Depends on** | `plugin-api` PluginContext / capability resolver, `harness-channel-sdk` `ConversationHistoryStore` contract, `harness-plugin-privacy-guard` (soft), `harness-orchestrator` `TurnContextValue` extension (specified in §10) |
 
 ## 1. Context & Motivation
 
@@ -19,25 +20,35 @@ and treats cross-channel memory as an omadia-core responsibility.
 
 **Today's state in omadia main.**
 
-- `ConversationHistoryStore`
-  (`middleware/packages/harness-channel-sdk/src/stores.ts`):
-  `get(scope)`, `append(scope, turn)`, optional `clear(scope)`.
+- `ConversationHistoryStore` (`middleware/packages/harness-channel-sdk/src/stores.ts:29`):
+  `get(scope)`, `append(scope, turn)`, optional `clear(scope)`. The
+  canonical `ConversationTurn` is `{ userMessage, assistantAnswer, timestampMs? }`
+  (`stores.ts:15`).
 - `InMemoryConversationHistoryStore`
-  (`middleware/packages/harness-channel-sdk/src/inMemoryConversationHistory.ts`):
-  10 turns per scope, 2h TTL, 500 scopes LRU, in-process volatile.
-- `ChannelUserRef` (`incoming.ts`): `{kind, id, displayName?, email?}`
+  (`middleware/packages/harness-channel-sdk/src/inMemoryConversationHistory.ts:59`):
+  10 turns per scope, 2h TTL, 500 scopes LRU, in-process volatile,
+  not concurrency-safe across processes. Does **not** formally implement
+  `ConversationHistoryStore` and defines its own internal
+  `ConversationTurn` with required `at: number` (pre-existing tech-debt
+  noted in §7.2).
+- `ChannelUserRef` (`incoming.ts`): `{ kind, id, displayName?, email? }`
   with closed-union `kind`. `PlatformIdentity` is platform-local
   (`platformId = "${kind}:${id}"`); no cross-channel resolution today.
 - Scope = channel-native identifier (Teams thread id, Slack channel +
-  thread tuple, Telegram chat id). Not user-scoped.
+  thread tuple, Telegram chat id). Not user-scoped, not tenant-scoped.
 - Privacy redaction (`egressWalker` + `harness-plugin-privacy-guard`)
-  runs on egress, after the chat agent produces a result. Redaction
-  does not touch persistence today.
+  runs on egress, after the chat agent produces a result. Redaction does
+  not touch persistence today.
 - `SessionLogger` writes markdown transcripts to `MemoryStore` at
   `/memories/sessions/<scope>/YYYY-MM-DD.md`. Different code path; stays
   untouched by this RFC.
-- Slice 2.5 (cross-channel identity merging) is on the roadmap, not yet
-  implemented.
+- `TurnContextValue` (`harness-orchestrator/src/turnContext.ts:34`)
+  carries `turnId`, `turnDate`, optional `chatParticipants`,
+  `privacyHandle`, `captureRawToolResult`. It does **not** carry
+  `tenantId` or `userId`/`userRef` today. Adding those fields is part of
+  the work in §10 (and aligns with Phase 12 of the middleware roadmap).
+- Slice 2.5 (cross-channel identity merging UI) is on the roadmap, not
+  yet implemented.
 
 **Why a capability, not per-channel ad hoc.** Five channel plugins would
 each have to re-implement identity binding, durable storage, retention,
@@ -51,7 +62,7 @@ app.
 ## 2. Non-goals for v1
 
 - Multi-platform account claiming UI (Slice 2.5 owns this; v1 ships the
-  data model only).
+  data model and the merge entry-point only).
 - Summarization or compaction of older turns.
 - Semantic or vector recall — no pgvector. Recency plus per-user filter
   is the only retrieval axis in v1.
@@ -60,80 +71,96 @@ app.
   naturally with time. v2 path open.
 - Cross-tenant sharing or team memory.
 - Replacing or merging `SessionLogger`'s markdown transcript path.
+- Retroactively scrubbing content quoted by the assistant in later turns
+  (see §12.3).
 
 ## 3. Capability split — two capabilities, four plugins
 
 The RFC introduces **two capabilities**, deliberately separated:
 
 - `platformIdentity@1` — resolves `ChannelUserRef → stable userId`,
-  manages identity merges, handles GDPR forget. Slice 2.5 will replace
-  this capability's implementation with a fully-fledged identity
-  service; the contract is sized so the swap is mechanical for
-  consumers.
+  manages identity merges, handles GDPR forget.
 - `crossChannelConversationMemory@1` — append-only durable conversation
   log keyed by `(tenantId, userId, channel, createdAt)`. Requires
   `platformIdentity@1`.
 
-Each capability ships with a **Neon backend plus in-memory sibling**
-pair, mirroring `@omadia/knowledge-graph-neon` /
+Each capability ships with a **Neon backend plus in-memory sibling** pair,
+mirroring `@omadia/knowledge-graph-neon` /
 `@omadia/knowledge-graph-inmemory`:
 
 - `@omadia/platform-identity-neon` + `@omadia/platform-identity-inmemory`
 - `@omadia/cross-channel-conversation-memory-neon` +
   `@omadia/cross-channel-conversation-memory-inmemory`
 
-Mutual exclusion per capability — `installed.json` must contain at most
-one provider per capability. Operators pick Neon for production,
-in-memory for CI / smoke / local-dev. Specifying both Neon variants at
-once is rejected by the kernel resolver. Specifying both capabilities
-together is the point: it forces the contract to stay backend-agnostic,
-because Postgres semantics cannot leak into the interface if a Map-based
-sibling is required to satisfy the same tests.
+The kernel allows only **one** provider per capability
+(`ServicesAccessor.provide` throws on duplicate; `pluginContext.ts:323-325`).
+Operators pick Neon for production, in-memory for CI / smoke / local-dev.
 
-### Pragmatic fallback
+### 3.1 In-memory sibling semantics (operational reality)
 
-If the v1 boilerplate of four packages is excessive, a v1.0 may collapse
-both capabilities into one plugin per backend —
-`@omadia/platform-memory-neon` and `@omadia/platform-memory-inmemory` —
-each publishing both capabilities (`platformIdentity@1` +
-`crossChannelConversationMemory@1`). Pattern precedent:
-`@omadia/knowledge-graph-neon` already publishes six capabilities
-(`knowledgeGraph@1`, `entityRefBus@1`, `graphPool@1`, `graphLifecycle@1`,
-`agentPriorities@1`, `processMemory@1`) — see its `manifest.yaml`. The
-capabilities stay separate as contracts; only the packaging collapses.
-Slice 2.5 reverses the collapse with zero consumer churn.
+- Process-local, not concurrency-safe across processes (same caveat as
+  `InMemoryConversationHistoryStore`).
+- All state lost on restart.
+- **Not supported for multi-pod deployments** — cross-pod continuity is
+  impossible without a shared store.
+- Intended only for CI, smoke probes, local-dev where Postgres is not
+  provisioned.
 
-**Default in this RFC: keep the four packages, accept the boilerplate,
-get cleaner ownership boundaries.**
+### 3.2 Pragmatic packaging fallback (optional)
+
+Four packages is the default. If v1 boilerplate is prohibitive, the
+capabilities **MAY** be collapsed to one plugin per backend
+(`@omadia/platform-memory-neon` + `@omadia/platform-memory-inmemory`)
+each publishing both capabilities. Precedent:
+`@omadia/knowledge-graph-neon` publishes six capabilities from a single
+plugin (`manifest.yaml:44-50`). The capabilities stay separate as
+contracts; only the packaging collapses. Slice 2.5 reverses the collapse
+with zero consumer churn.
+
+**Default: four packages.**
 
 ## 4. Identity model v1 — `platformIdentity@1`
 
-### Goal
+### 4.1 Goal
 
 Stable, opaque `userId` (ULID) that one `ChannelUserRef` maps to
 deterministically. Multiple ChannelUserRefs across different channel
-kinds can resolve to the same `userId`.
+kinds **can** resolve to the same `userId` — but only under explicit
+conditions, never implicitly.
 
-### Auto-derivation rule
+### 4.2 Auto-derivation rule (opt-in per tenant)
 
-- Incoming `ChannelUserRef.email` matches an existing `platform_identities`
-  row's `email` → attach the same `userId`.
-- Otherwise → mint a new `userId`.
+Tenant config `pi_auto_merge_on_email` (default `false`) controls
+whether `email`-equality auto-merges:
 
-This handles Teams (AAD email always present) and Slack with the
-`users:read.email` scope without explicit linking.
+- **Disabled (default):** every fresh `ChannelUserRef` gets its own
+  `userId`. Cross-channel merge happens only via explicit
+  `mergeIdentities` call (Slice 2.5 UI or admin tooling).
+- **Enabled:** an incoming `ChannelUserRef.email` whose normalized form
+  matches an existing `platform_identities.email_normalized` row attaches
+  the same `userId` — but only if that row's `email_verified = true`.
+  Verified means the channel kind is known to ship trustworthy email
+  (Teams AAD, Google Workspace SSO). Slack and Telegram email is
+  treated as unverified by default until tenant policy says otherwise.
 
-### No-email fallback (Telegram, WhatsApp)
+### 4.3 Edge cases (called out, not hidden)
 
-Each `platformId` gets its own `userId` until a manual claim happens. A
-future tenant-admin UI emits a "merge claim" event; out of scope to
-build the UI in v1, in scope to make the mapping table mutable via
-`mergeIdentities(primary, secondary)`.
+| Edge | v1 behavior |
+|---|---|
+| Shared mailbox (`team@…` used by multiple humans) | Auto-merge disabled by default. If enabled, will silently merge — operators MUST set `pi_auto_merge_on_email=false` for tenants with shared mailboxes. |
+| Email rename on the same `platformId` | `resolveUserId` keeps the existing `userId`; updates `email_normalized` and `last_seen_at`. No re-merge to a different `userId`. |
+| Recycled email (former user's address handed to a new hire) | v1 does NOT detect this. Operator workflow: invoke `forgetUser` for the former employee BEFORE re-issuing the email. Documented limitation; Slice 2.5 covers via revocation flow. |
+| Two concurrent first-sights for the same ref | `INSERT … ON CONFLICT (tenant_id, platform_id) DO UPDATE SET last_seen_at = EXCLUDED.last_seen_at RETURNING user_id` makes the second arrival see the first arrival's `userId` deterministically. |
+| Unverified email (Telegram, WhatsApp, custom) | `email_verified = false`. Auto-merge ignores. Manual `mergeIdentities` is the only path. |
 
-### Capability surface
+### 4.4 Capability surface
 
 ```ts
-interface PlatformIdentityCapability {
+// Constants (also exported from @omadia/platform-identity-types)
+export const PLATFORM_IDENTITY_SERVICE = 'platformIdentity';
+export const PLATFORM_IDENTITY_CAPABILITY = 'platformIdentity@1';
+
+export interface PlatformIdentityCapability {
   resolveUserId(
     tenantId: string,
     ref: ChannelUserRef,
@@ -144,7 +171,7 @@ interface PlatformIdentityCapability {
     primaryUserId: string,
     secondaryUserId: string,
     source: 'manual' | 'system',
-  ): Promise<{ mergedRows: number }>;
+  ): Promise<{ mergedIdentities: number }>;
 
   forgetUser(
     tenantId: string,
@@ -158,54 +185,87 @@ interface PlatformIdentityCapability {
 }
 ```
 
-### Schema — `platform_identities`
+Service-registry contract:
+
+- Manifest declares `provides: ["platformIdentity@1"]`.
+- Plugin code calls
+  `ctx.services.provide(PLATFORM_IDENTITY_SERVICE, impl)` — bare name,
+  no `@1` suffix (see `pluginContext.ts:226-229`).
+- Consumers call
+  `ctx.services.get<PlatformIdentityCapability>(PLATFORM_IDENTITY_SERVICE)`.
+
+### 4.5 Schema — `platform_identities`
 
 ```
-tenant_id      TEXT        NOT NULL
-platform_id    TEXT        NOT NULL    -- "${kind}:${id}"
-user_id        TEXT        NOT NULL    -- ULID
-kind           TEXT        NOT NULL    -- ChannelUserRef.kind
-channel_id     TEXT        NOT NULL    -- ChannelUserRef.id
-display_name   TEXT        NULL
-email          TEXT        NULL
-first_seen_at  TIMESTAMPTZ NOT NULL
-last_seen_at   TIMESTAMPTZ NOT NULL
-claim_source   TEXT        NOT NULL    -- 'auto-email' | 'manual' | 'system'
+tenant_id         TEXT        NOT NULL
+platform_id       TEXT        NOT NULL    -- "${kind}:${id}"
+user_id           TEXT        NOT NULL    -- ULID
+kind              TEXT        NOT NULL    -- ChannelUserRef.kind
+channel_id        TEXT        NOT NULL    -- ChannelUserRef.id
+display_name      TEXT        NULL
+email             TEXT        NULL        -- raw, as the channel provided
+email_normalized  TEXT        NULL        -- lower-cased; Gmail-style dot-stripping documented
+email_verified    BOOLEAN     NOT NULL DEFAULT false
+first_seen_at     TIMESTAMPTZ NOT NULL
+last_seen_at      TIMESTAMPTZ NOT NULL
+claim_source      TEXT        NOT NULL    -- 'auto-email' | 'manual' | 'system'
 
 PRIMARY KEY (tenant_id, platform_id)
-INDEX        (tenant_id, email) WHERE email IS NOT NULL
-INDEX        (tenant_id, user_id)
+UNIQUE INDEX     (tenant_id, email_normalized)
+                 WHERE email_normalized IS NOT NULL AND email_verified = true
+INDEX            (tenant_id, user_id)
 ```
 
-### Resolution site
+The partial unique index is what makes auto-merge race-safe: a concurrent
+second insert with the same verified email triggers a constraint
+violation, the resolver catches it, re-reads, and returns the existing
+row's `user_id`.
 
-The channel plugin calls `resolveUserId(tenantId, ref)` at ingress,
-before calling `append()`. The resolved `userId` rides on the harness
-session context (`ctx.user.id`, a new field on `TurnContextValue`,
-populated by the channel adapter) and on every subsequent `appendTurn`
-write.
+### 4.6 Resolution site
+
+Each channel plugin calls
+`platformIdentity.resolveUserId(tenantId, ref)` at ingress, before
+invoking the orchestrator. The channel adapter then makes the resolved
+`userRef` and `userId` available to downstream code via the
+`TurnContextValue` extension specified in §10.
 
 ## 5. Storage backend (Neon variant) — `crossChannelConversationMemory@1`
 
 Postgres only, no pgvector for v1. Connection pool, migrations, tenant
-isolation mirror `@omadia/knowledge-graph-neon` exactly.
+binding mirror `@omadia/knowledge-graph-neon` precisely.
 
-### Wiring
+### 5.1 Wiring
 
-- Pool: `createNeonPool(ctx.secrets.get('database_url'))` (pattern from
-  `harness-knowledge-graph-neon/src/plugin.ts` activate body).
+- Pool: `createNeonPool(await ctx.secrets.get('database_url'))`
+  (`harness-knowledge-graph-neon/src/plugin.ts:117,138`).
 - Migrations: file-based `.sql` under
   `middleware/packages/harness-cross-channel-conversation-memory-neon/src/migrations/`,
-  tracked in a `_ccm_migrations` table, applied in a transaction
-  (pattern from `harness-knowledge-graph-neon/src/migrator.ts`).
-- If `database_url` is missing the plugin publishes no capability and
-  fails fast — mirrors the KG plugin's "no-op handle, downstream
-  consumers degrade" behavior.
+  tracked in a `_ccm_migrations` table, applied in a transaction.
+- If `database_url` is missing the plugin publishes **no** capability
+  and `activate()` returns a no-op handle, mirroring the KG plugin's
+  pattern (`plugin.ts:119-128`).
 
-### Schema — `cross_channel_messages`
+### 5.2 Tenant binding (matches KG model)
+
+`tenantId` is read at activate time:
+
+```ts
+const tenantId =
+  ctx.config.get<string>('ccm_tenant_id') ??
+  process.env['CCM_TENANT_ID'] ??
+  'default';
+```
+
+Single tenant per plugin instance. Multi-tenant hosts run multiple host
+processes today, one per tenant. Capability methods take `tenantId` as
+their first argument for defense-in-depth — the capability impl asserts
+`tenantId === boundTenantId` and throws `TenantMismatchError` if not.
+No per-call tenant multiplexing in v1.
+
+### 5.3 Schema — `cross_channel_messages`
 
 ```
-id                  TEXT        NOT NULL   -- ULID, sortable
+id                  TEXT        NOT NULL   -- ULID, sortable by created_at
 tenant_id           TEXT        NOT NULL
 user_id             TEXT        NOT NULL   -- from platformIdentity@1
 channel_kind        TEXT        NOT NULL   -- 'teams-aad' | 'slack-user' | ...
@@ -213,9 +273,12 @@ channel_scope       TEXT        NOT NULL   -- native channel scope id
 canvas_session_id   TEXT        NULL       -- omadia-ui canvas correlation
 user_message        TEXT        NOT NULL   -- raw, never redacted at write
 assistant_answer    TEXT        NOT NULL   -- raw, never redacted at write
+user_message_bytes  INTEGER     NOT NULL   -- octet_length, materialized
+assistant_bytes     INTEGER     NOT NULL   -- octet_length, materialized
 tool_calls          JSONB       NULL
 metadata            JSONB       NOT NULL DEFAULT '{}'::jsonb
 redaction_metadata  JSONB       NULL       -- populated by async hook (§8)
+redaction_state     TEXT        NOT NULL DEFAULT 'pending'  -- 'pending' | 'clean' | 'redacted'
 created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 expires_at          TIMESTAMPTZ NOT NULL   -- created_at + tenant TTL
 
@@ -223,34 +286,92 @@ PRIMARY KEY (id)
 INDEX (tenant_id, user_id, created_at DESC)
 INDEX (tenant_id, channel_scope, created_at DESC)
 INDEX (tenant_id, expires_at)
+INDEX (tenant_id, redaction_state) WHERE redaction_state = 'pending'
 ```
 
-### Quotas — `ccm_user_quotas`
+`user_id` is **not** a hard FK to `platform_identities`. Reasons:
+
+- The two capabilities are designed to be independently provided
+  (different plugins, different DBs theoretically). Cross-plugin FKs
+  break that flexibility.
+- `forgetUser` orchestrates deletion across both capabilities in a
+  single application-level transaction (§8.5).
+
+Integrity contract is application-enforced: every `appendTurn` first
+calls `platformIdentity.resolveUserId` (or accepts a pre-resolved
+`userId` from `TurnContextValue`) which guarantees the row exists at
+write time. Stale `user_id` (after a partial GDPR forget) returns empty
+results from reads.
+
+### 5.4 Quotas — `ccm_user_quotas`
 
 ```
-tenant_id   TEXT        NOT NULL
-user_id     TEXT        NOT NULL
-turn_count  BIGINT      NOT NULL DEFAULT 0
-byte_count  BIGINT      NOT NULL DEFAULT 0
-updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+tenant_id    TEXT        NOT NULL
+user_id      TEXT        NOT NULL
+turn_count   BIGINT      NOT NULL DEFAULT 0
+byte_count   BIGINT      NOT NULL DEFAULT 0
+updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 
 PRIMARY KEY (tenant_id, user_id)
 ```
 
-Counters are updated in the same transaction as the `INSERT` into
-`cross_channel_messages`. No scans on the hot path.
+Counters incremented in the same transaction as `INSERT` into
+`cross_channel_messages` (`turn_count += 1`,
+`byte_count += user_message_bytes + assistant_bytes`). GC decrements
+both counters in the same transaction as the `DELETE`. No hot-path
+scan.
+
+### 5.5 Outbox — `ccm_outbox`
+
+Bridges fire-and-forget durable writes (§7) for late delivery on
+transient failures.
+
+```
+id            TEXT        NOT NULL   -- ULID
+tenant_id     TEXT        NOT NULL
+kind          TEXT        NOT NULL   -- 'append_turn' (v1; future ops added here)
+payload       JSONB       NOT NULL
+attempts      INTEGER     NOT NULL DEFAULT 0
+last_error    TEXT        NULL
+last_attempt  TIMESTAMPTZ NULL
+created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+
+PRIMARY KEY (id)
+INDEX (tenant_id, created_at) WHERE attempts < 5
+```
+
+The outbox sits in the **destination** DB, not in the channel plugin's
+process. When the destination DB is reachable, failed sync calls write
+straight into the outbox; when unreachable, the adapter falls back to a
+**process-local bounded queue** (`ccm_outbox_local`, in-memory, max 1024
+entries, oldest-dropped). On the next successful capability call, the
+adapter drains the local queue into the durable outbox. The
+`ccm-outbox` job (§12.4) flushes the durable outbox with exponential
+backoff up to 5 attempts; rows past 5 attempts are left in the table
+for operator inspection.
 
 ## 6. Capability API — `crossChannelConversationMemory@1`
 
 ```ts
-interface CrossChannelConversationMemoryCapability {
+// Constants
+export const CROSS_CHANNEL_CONVERSATION_MEMORY_SERVICE =
+  'crossChannelConversationMemory';
+export const CROSS_CHANNEL_CONVERSATION_MEMORY_CAPABILITY =
+  'crossChannelConversationMemory@1';
+
+// The canonical ConversationTurn is the one in
+// harness-channel-sdk/src/stores.ts:15 — { userMessage; assistantAnswer; timestampMs? }.
+// The internal type in inMemoryConversationHistory.ts is legacy tech-debt
+// (§7.2) and is NOT the contract this capability speaks.
+
+export interface CrossChannelConversationMemoryCapability {
   appendTurn(args: {
     tenantId: string;
-    userId: string;              // resolved upstream via platformIdentity@1
+    userId: string;             // resolved upstream via platformIdentity@1
     channelKind: string;
     channelScope: string;
     canvasSessionId?: string;
-    turn: ConversationTurn;      // { userMessage, assistantAnswer, timestampMs? }
+    turn: ConversationTurn;     // canonical: stores.ts shape
     toolCalls?: unknown;
     metadata?: Record<string, unknown>;
   }): Promise<{ messageId: string }>;
@@ -259,15 +380,15 @@ interface CrossChannelConversationMemoryCapability {
     tenantId: string,
     userId: string,
     opts: {
-      limit: number;             // hard-cap 100
-      sinceMs?: number;          // epoch ms; default = no lower bound
+      limit: number;            // hard-cap 100
+      sinceMs?: number;         // epoch ms; default = no lower bound
       excludeCanvasSessionId?: string;
-      channelKinds?: string[];   // optional filter
-      includeRaw?: boolean;      // admin-only; default false → redacted
+      channelKinds?: string[];  // optional filter
+      includeRaw?: boolean;     // admin-only; default false → redacted; audit-logged when true
     },
   ): Promise<CrossChannelTurn[]>;
 
-  // Compat shim for today's ConversationHistoryStore.get() contract.
+  // Compat shim for today's ConversationHistoryStore.get() callers.
   getByChannelScope(
     tenantId: string,
     channelScope: string,
@@ -280,7 +401,7 @@ interface CrossChannelConversationMemoryCapability {
   ): Promise<{ deletedTurns: number }>;
 }
 
-interface CrossChannelTurn extends ConversationTurn {
+export interface CrossChannelTurn extends ConversationTurn {
   id: string;
   channelKind: string;
   channelScope: string;
@@ -288,47 +409,100 @@ interface CrossChannelTurn extends ConversationTurn {
   toolCalls?: unknown;
   metadata: Record<string, unknown>;
   createdAtMs: number;
+  redactionState: 'pending' | 'clean' | 'redacted';
 }
 ```
 
-### Relation to existing store
+Service-registry contract:
 
-The `ConversationHistoryStore` interface (`stores.ts`) stays unchanged.
-The new capability is **durable backing**.
+- Manifest declares `provides: ["crossChannelConversationMemory@1"]`.
+- Plugin code calls
+  `ctx.services.provide(CROSS_CHANNEL_CONVERSATION_MEMORY_SERVICE, impl)`.
+- Consumers call
+  `ctx.services.get<CrossChannelConversationMemoryCapability>(CROSS_CHANNEL_CONVERSATION_MEMORY_SERVICE)`.
+
+### Relation to `ConversationHistoryStore`
+
+The `ConversationHistoryStore` interface (`stores.ts:29`) stays
+unchanged. The new capability is **durable backing**.
 `InMemoryConversationHistoryStore` stays alive as a per-channel hot
 cache — the 10-turn read path stays fast and offline-tolerant. The
 bridge is the new `DurableConversationHistoryStore` adapter (§7).
 
 ## 7. Write path & adapter
 
-### New adapter
+### 7.1 Adapter overview
 
 `DurableConversationHistoryStore` in
 `middleware/packages/harness-channel-sdk/src/durableConversationHistory.ts`
-implements `ConversationHistoryStore` and fans out:
+implements `ConversationHistoryStore` from `stores.ts` cleanly and fans
+out:
 
 - `append(scope, turn)`:
-  1. delegate to an inner `InMemoryConversationHistoryStore` (existing
-     ring-buffer semantics, unchanged),
-  2. async `crossChannelConversationMemory.appendTurn(...)`
-     fire-and-forget; errors logged via `ctx.notifications` and a
-     bounded outbox.
+  1. delegate to an inner `InMemoryConversationHistoryStore` (ring-buffer
+     semantics, unchanged) after the type bridge below,
+  2. enqueue a `appendTurn` call to the capability with the userId /
+     tenantId resolved from `turnContext.current()` (§10).
 - `get(scope)`:
-  1. inner in-memory store first;
-  2. on cold start (empty bucket), hydrate from
+  1. inner in-memory store first,
+  2. on cold start (empty bucket), hydrate up to `limit` turns from
      `getByChannelScope(tenantId, scope, limit)`.
 
 Latency stays on the in-memory path. Durable write is best-effort; the
-hot turn never blocks.
+hot turn never blocks on the capability call.
 
-### Capability discovery and graceful degradation
+### 7.2 Type bridge — the two `ConversationTurn`s
 
-The adapter calls `ctx.services.get('crossChannelConversationMemory@1')`
+The SDK has two `ConversationTurn` types today (pre-existing tech-debt,
+predates this RFC):
+
+- `stores.ts:15` — public contract, `timestampMs?` optional.
+- `inMemoryConversationHistory.ts:23` — internal, `at: number` required.
+
+The adapter implements the **`stores.ts` contract**, accepting
+`{ userMessage, assistantAnswer, timestampMs? }`. When delegating to the
+inner in-memory class it converts:
+
+```ts
+const at = turn.timestampMs ?? Date.now();
+this.inner.append(scope, { userMessage, assistantAnswer, at });
+```
+
+When hydrating from the capability it converts the other way
+(`createdAtMs → timestampMs`). The legacy internal type stays untouched
+to keep this PR additive; a follow-up cleanup PR may unify the two
+types, but is out of scope here.
+
+### 7.3 Capability discovery & graceful degradation
+
+The adapter calls
+`ctx.services.get<CrossChannelConversationMemoryCapability>(CROSS_CHANNEL_CONVERSATION_MEMORY_SERVICE)`
 at construction. If the capability is not registered (CI / dev / Neon
-plugin absent), the adapter behaves exactly like
+plugin absent), the adapter behaves identically to
 `InMemoryConversationHistoryStore`. No breaking change.
 
-### Channels opt in per PR
+### 7.4 Failure handling
+
+The synchronous capability call is wrapped in `try/catch`:
+
+- Success → done.
+- Failure with destination DB **reachable** (rare server-side error) →
+  the capability impl writes the payload into `ccm_outbox` itself
+  before returning the error; adapter logs and proceeds.
+- Failure with destination DB **unreachable** (transport error,
+  timeout) → adapter writes the payload into a process-local bounded
+  queue (`ccm_outbox_local`, in-memory, max 1024 entries,
+  oldest-dropped). On the next successful capability call the adapter
+  drains the local queue into the durable outbox.
+- All failures are logged via **`ctx.log`** — not `ctx.notifications`,
+  which is for cross-channel **user** notifications
+  (`pluginContext.ts:98-102`).
+- A plugin-owned counter `ccm_write_failures_total` is incremented per
+  failure. v1 metrics surface is plugin-internal (the PluginContext has
+  no metrics accessor today — see §13). When such an accessor lands, the
+  counter migrates.
+
+### 7.5 Channels opt in per PR
 
 Each of `harness-channel-teams`, `harness-channel-slack`,
 `harness-channel-telegram`, `harness-channel-web-chat` replaces its
@@ -338,51 +512,109 @@ review independently. Roll-back is per-channel.
 
 ## 8. Privacy & redaction
 
-### Decision
+### 8.1 Decision
 
 **Persist the raw turn.** Egress-redaction (`egressWalker` → privacy
 service → `applyEgressReplacements`) keeps holding for outbound traffic;
 the existing pipeline does not change.
 
-### Rationale
+### 8.2 Rationale
 
 Egress PII filters are tuned for trimming user-facing text. Redacting on
 persist would silently corrupt continuity ("you mentioned Vendor X
-yesterday" fails when X was scrubbed). Storage fidelity is not the same
-problem as presentation fidelity.
+yesterday" fails when X was scrubbed). Storage fidelity is a different
+problem from presentation fidelity.
 
-### Pre-persist redaction hook (optional, per-tenant)
+### 8.3 Read-time behavior — handling the redaction window
+
+The window between `INSERT` and the async redaction job completing is
+real and must be bounded:
+
+| State (`redaction_state`) | Default read (`includeRaw=false`) | Privileged read (`includeRaw=true`, admin) |
+|---|---|---|
+| `pending` | Row excluded from results; emit `ccm_reads_redaction_pending_total` counter | Row returned, audited |
+| `clean` | Row returned verbatim | Row returned, audited |
+| `redacted` | Row returned with masks applied from `redaction_metadata` | Row returned verbatim, audited |
+
+"Exclude pending rows on default read" is opinionated: it trades a
+temporary recall gap (seconds, until the redaction job catches up) for
+never leaking unredacted text to a default consumer. The counter lets
+operators detect when the redaction job is falling behind.
 
 A tenant configuration flag `ccm_redact_on_persist` (default `false`)
-makes the adapter run an inline pass through
-`harness-plugin-privacy-guard` before append. Strict-compliance tenants
-set it to `true` and accept the continuity cost.
+forces an inline redaction pass before append. Strict-compliance tenants
+set this to `true`. With the flag on, rows land with
+`redaction_state='clean'` (or `'redacted'`) and the read-time exclusion
+never triggers.
 
-### Async redaction metadata (default mode)
+### 8.4 Audit — the right surface
 
-A scheduled job populates `redaction_metadata` (span offsets and tags)
-asynchronously by walking new rows through the privacy guard. Reads
-default to redacted-projection — mask spans tagged in
-`redaction_metadata` on the fly. The `includeRaw: true` flag is
-admin-only and tenant-scoped; each raw read is audit-logged via
-`ctx.notifications`.
+`includeRaw: true` reads and identity-mutating operations
+(`forgetUser`, `mergeIdentities`) write a row into a dedicated audit
+table:
 
-### GDPR
+```
+ccm_audit_events
+  id          TEXT        NOT NULL    -- ULID
+  tenant_id   TEXT        NOT NULL
+  actor       TEXT        NOT NULL    -- agentId of the calling plugin
+  op          TEXT        NOT NULL    -- 'read_raw' | 'forget_user' | 'merge_identities'
+  target_id   TEXT        NULL
+  user_id     TEXT        NULL
+  detail      JSONB       NULL
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 
-`forgetUser(tenantId, userId)` on `platformIdentity@1` and
-`forgetByUser(tenantId, userId)` on `crossChannelConversationMemory@1`
-run in a single transaction at the right-to-erasure flow. Quotas are
-zeroed. No tombstone row remains.
+PRIMARY KEY (id)
+INDEX (tenant_id, created_at DESC)
+```
+
+Written in-transaction with the audited operation. **Not** routed
+through `ctx.notifications` (broadcast to channels — wrong surface) nor
+through `ctx.log` (volatile — wrong retention). Audit data is durable,
+queryable, exportable.
+
+### 8.5 GDPR forget
+
+```
+forgetUser(tenantId, userId)         // on platformIdentity@1
+  → forgetByUser(tenantId, userId)   // on crossChannelConversationMemory@1
+```
+
+Both run in a single application-level transaction in the destination
+DB:
+
+1. `DELETE FROM cross_channel_messages WHERE tenant_id=$1 AND user_id=$2`
+2. `DELETE FROM ccm_user_quotas WHERE tenant_id=$1 AND user_id=$2`
+3. `DELETE FROM platform_identities WHERE tenant_id=$1 AND user_id=$2`
+4. Insert audit row (`op='forget_user'`)
+
+The channel plugins' in-memory hot caches
+(`InMemoryConversationHistoryStore`) are **not** purged automatically —
+they are scope-keyed, not user-keyed, and they naturally expire within
+2 hours of inactivity. For strict-compliance tenants, the adapter
+exposes `clearHotCacheForUser(userId)` (a new optional method on
+`DurableConversationHistoryStore`) that walks its inner store and drops
+buckets whose recent turns contain the target user. v1 ships the method
+but does not invoke it from `forgetUser` automatically; the tenant
+admin tool decides.
+
+### 8.6 Known limitation — assistant quotes survive forget
+
+If the assistant quoted PII in a prior turn (`"you mentioned Vendor X"`)
+and the *original* turn is the only one being forgotten, the quote in
+the later turn remains. v1 does not retroactively scrub. Documented
+limitation; tenants requiring strict erasure must enable
+`ccm_redact_on_persist` so the quote is masked at write time.
 
 ## 9. Consumer inventory
 
-### Primary
+### 9.1 Primary
 
 **omadia-ui Tier-2 orchestrator** — reads `getRecentByUser` at
 turn-start, writes through `DurableConversationHistoryStore` after each
 turn. Mechanics in §10.
 
-### Plausible next consumers (no commitment in v1)
+### 9.2 Plausible next consumers (no commitment in v1)
 
 - **search-agent** — read-only, recent turns inform query expansion and
   disambiguation across channels.
@@ -391,52 +623,97 @@ turn. Mechanics in §10.
 - **builder-ui** — read-only, "what was I working on" panel across
   sessions and devices.
 
-### Out of scope as consumer in v1
+### 9.3 Out of scope as consumer in v1
 
 - `SessionLogger` keeps its markdown transcript path.
 - `QualityGuard` has no cross-channel signal need.
 
 Consumers discover the capability via
-`ctx.services.get('crossChannelConversationMemory@1')`. Absence degrades
-gracefully — empty arrays, no error.
+`ctx.services.get<CrossChannelConversationMemoryCapability>(CROSS_CHANNEL_CONVERSATION_MEMORY_SERVICE)`.
+Absence degrades gracefully — empty arrays, no error.
 
 ## 10. Primary consumer mechanics — omadia-ui Tier-2 orchestrator
 
-### Pipeline placement
+### 10.1 Pre-requisite: `TurnContextValue` extension
+
+The orchestrator's per-turn context
+(`harness-orchestrator/src/turnContext.ts:34`) does **not** carry
+`tenantId` or user identity today. This RFC depends on a small additive
+change to that type, which lands in the same PR that adds the adapter
+(PR 4 in §15):
+
+```ts
+export interface TurnContextValue {
+  turnId: string;
+  turnDate: string;
+  chatParticipants?: ChatParticipantsProvider;
+  privacyHandle?: PrivacyTurnHandle;
+  captureRawToolResult?: (toolName: string, rawResult: string) => void;
+
+  // NEW (this RFC):
+  tenantId?: string;                  // channel adapter populates at ingress
+  originatorUserRef?: ChannelUserRef; // raw ref, kept opaque to the orchestrator
+  originatorUserId?: string;          // resolved via platformIdentity@1
+}
+```
+
+Adding `tenantId` to `TurnContextValue` is also the work referenced by
+Phase 12 of `docs/middleware-agent-handoff.md` (diagram-cache tenancy).
+It lands as part of this RFC's PR 4 and Phase 12 absorbs it
+retroactively — no duplicate work.
+
+### 10.2 Pipeline placement
 
 ```
 turn-start
-  ├─ resolve userId  (already on ctx.user.id, populated by channel adapter)
+  ├─ channel adapter (already populated):
+  │     turnContext.run({ ...prev, tenantId, originatorUserRef, originatorUserId }, ...)
   ├─ READ : crossChannelConversationMemory.getRecentByUser(tenantId, userId, {...})
-  ├─ build prompt  (system + cross-channel summary block + current session turns + user message)
+  ├─ build prompt   (system + cross-channel summary block + current session turns + user message)
   ├─ chatAgent.invoke(prompt)
   ├─ WRITE: DurableConversationHistoryStore.append(scope, turn)
-  │           → fans out to capability appendTurn(tenantId, userId, ...)
+  │            → reads tenantId, originatorUserId from turnContext
+  │            → calls crossChannelConversationMemory.appendTurn(...)
 turn-end
 ```
 
-### userId resolution
+### 10.3 userId resolution
 
-The orchestrator does not synthesize a `ChannelUserRef`. The channel
-plugin has already called
-`platformIdentity@1.resolveUserId(tenantId, ref)` at ingress and
-attached `userId` to `ctx.user.id` (a new field on the harness session
-context, populated by the channel adapter). The orchestrator reads
-`ctx.user.id` and `ctx.tenantId`.
+The channel adapter is responsible for populating
+`turnContext.current().originatorUserId` before invoking the
+orchestrator. It does so by:
 
-If `ctx.user.id` is missing (very first ingress, ever), the orchestrator
-skips the read step and proceeds with empty cross-channel context. The
-write step still happens — the first `appendTurn` pins the identity.
+1. Receiving the `IncomingTurn` with `userRef`.
+2. Calling `platformIdentity.resolveUserId(tenantId, userRef)` and
+   caching the result for the duration of the turn.
+3. Calling `turnContext.run({ ...prev, tenantId, originatorUserRef, originatorUserId }, fn)`.
 
-### Read call (turn-start)
+The orchestrator reads `turnContext.current()?.originatorUserId`
+directly — no per-call resolution, no extra DB roundtrip per turn.
+
+If `originatorUserId` is missing (very first ingress, ever; or
+`platformIdentity@1` not installed), the orchestrator skips the read
+step and proceeds with empty cross-channel context. The write step
+still happens via the adapter, which will skip its durable fan-out if
+`originatorUserId` is missing and just delegate to the in-memory inner
+store.
+
+### 10.4 Read call (turn-start)
 
 ```ts
-const recent = await ccm.getRecentByUser(tenantId, ctx.user.id, {
-  limit: 20,
-  sinceMs: Date.now() - 3 * 24 * 60 * 60 * 1000,   // 3-day window
-  excludeCanvasSessionId: ctx.canvasSessionId,      // skip current session
-  // channelKinds omitted: include all channels
-});
+const ctxValue = turnContext.current();
+if (!ctxValue?.tenantId || !ctxValue?.originatorUserId) {
+  return [];
+}
+const recent = await ccm.getRecentByUser(
+  ctxValue.tenantId,
+  ctxValue.originatorUserId,
+  {
+    limit: 20,
+    sinceMs: Date.now() - 3 * 24 * 60 * 60 * 1000,    // 3-day window
+    excludeCanvasSessionId: ctxValue.canvasSessionId, // skip current session
+  },
+);
 ```
 
 The orchestrator does **not** inject these verbatim into the LLM
@@ -446,7 +723,7 @@ the top 8 by recency, prepended to the system prompt under
 `## Recent context from other channels`. This caps cross-channel
 injection at ~2 KB regardless of history depth.
 
-### Write call (turn-end)
+### 10.5 Write call (turn-end)
 
 Through the adapter, no direct capability call from the orchestrator:
 
@@ -454,60 +731,133 @@ Through the adapter, no direct capability call from the orchestrator:
 await durableStore.append(scope, { userMessage, assistantAnswer, timestampMs });
 ```
 
-The adapter resolves `tenantId` and `userId` from the harness context
-and calls
-`crossChannelConversationMemory.appendTurn({ ..., toolCalls, metadata: { canvasSessionId } })`
-asynchronously. The orchestrator never blocks on this.
+The adapter reads `tenantId` and `originatorUserId` from
+`turnContext.current()` and calls
+`crossChannelConversationMemory.appendTurn({ tenantId, userId, channelKind, channelScope, turn, ... })`.
+The orchestrator never blocks on this.
 
-### Relevance strategy
+### 10.6 Relevance strategy
 
 Last 20 turns within 3 days, scoped to the same `userId` across all
 channels, current canvas-session excluded. Sorted by recency only.
 Semantic relevance is explicitly out of scope for v1.
 
-### Failure mode
+### 10.7 Failure mode
 
-Capability missing, throws, or returns empty: orchestrator logs `warn`
-once per session with `{ userId, reason }`, proceeds with empty
-cross-channel context, **does not block the turn**. The write side is
-already best-effort by adapter design. A counter
-`ccm_write_failures_total` is incremented for ops visibility.
+Capability missing, throws, or returns empty: orchestrator emits one
+`ctx.log` warn per session with `{ userId, reason }`, proceeds with
+empty cross-channel context, **does not block the turn**. The write
+side is already best-effort by adapter design. Counter
+`ccm_write_failures_total` is incremented; the counter is
+plugin-internal until a metrics accessor lands in PluginContext (§13).
 
 ## 11. Cross-tenant isolation
 
-- `tenant_id TEXT NOT NULL` on every table. No `DEFAULT 'default'` —
-  stricter than KG's `0001_graph_init.sql`.
-- Every query binds `WHERE tenant_id = $1` at the capability impl layer,
-  not at the consumer.
-- `tenantId` resolved from `ctx.config.get('ccm_tenant_id')` at
-  `activate()` time, mirrors KG's `graph_tenant_id` resolution.
-- **Fail-closed:** if `tenantId` is missing from any call context, the
-  capability throws. No silent default. No admin override.
+- `tenant_id TEXT NOT NULL` on every table. No `DEFAULT 'default'` at
+  the column level — stricter than KG's `0001_graph_init.sql`.
+- Every query at the capability impl layer binds `WHERE tenant_id = $1`
+  before any other predicate.
+- `tenantId` is **bound at plugin activate-time** from
+  `ctx.config.get('ccm_tenant_id')` (single-tenant per plugin instance,
+  same model as KG; §5.2). Capability methods accept `tenantId` as their
+  first argument and the impl asserts
+  `args.tenantId === this.boundTenantId`. Mismatch throws
+  `TenantMismatchError`.
+- **Fail-closed:** if a caller passes `tenantId === undefined` or empty
+  string the capability throws — no silent fallback. No admin override.
 - Application-level isolation, not RLS — same operational model as KG.
 
 ## 12. Capacity & lifecycle
 
-### Defaults (all configurable via `ctx.config`)
+### 12.1 Defaults (all configurable via `ctx.config`)
 
 - `ccm_ttl_days` = 90 (per-turn TTL).
 - `ccm_user_msg_cap` = 10000 (per-user hard cap on `turn_count`).
+- `ccm_user_byte_cap` = 50_000_000 (per-user hard cap on `byte_count`,
+  ~50 MB; corresponds to roughly 12M tokens at typical UTF-8 density).
 - `ccm_gc_cron` = `"0 4 * * *"` (daily 04:00 UTC).
 - `ccm_gc_interval_minutes` = empty (cron is used by default).
 
-### Single job — `ccm-gc`
+### 12.2 Single job — `ccm-gc`
 
-Cron or interval, `overlap: 'skip'`. Two passes per sweep:
+Cron or interval, `overlap: 'skip'` (`pluginContext.ts:176`). Three
+passes per sweep, in order:
 
-1. Delete rows where `expires_at < now()`.
-2. For each `(tenant_id, user_id)` with `turn_count > ccm_user_msg_cap`,
-   delete the oldest excess rows.
+1. **TTL pass:** `DELETE FROM cross_channel_messages WHERE tenant_id=$1
+   AND expires_at < now()`; decrement `ccm_user_quotas` in the same
+   transaction. Chunked to 10k rows per statement to keep lock windows
+   short.
+2. **Count cap pass:** for each `(tenant_id, user_id)` with
+   `turn_count > ccm_user_msg_cap`, delete the oldest excess rows;
+   decrement counters.
+3. **Byte cap pass:** for each `(tenant_id, user_id)` with
+   `byte_count > ccm_user_byte_cap`, delete the oldest rows until below
+   cap; decrement counters.
 
 No score-decay table. No HOT / WARM / COLD tiering. Chronological log;
 value fades with time. v2 path to score-decay stays open.
 
-## 13. Plugin manifests
+### 12.3 Anti-quoting limitation
 
-### `@omadia/cross-channel-conversation-memory-neon` (sketch)
+GC deletes the *original* turn but **cannot** retroactively scrub
+content that the assistant quoted in *later* turns. Operators who need
+strict scrub MUST enable `ccm_redact_on_persist` so the quote is masked
+at write time. Documented; not solvable without summarization /
+compaction (deferred to v2).
+
+### 12.4 Outbox flush job — `ccm-outbox`
+
+Separate from `ccm-gc`. Cron `"*/2 * * * *"` (every 2 minutes), drains
+`ccm_outbox` rows with `attempts < 5` using exponential backoff
+`(2^attempts * 30s)`. Rows exceeding 5 attempts stay in the table for
+operator inspection; emit `ccm_outbox_dlq_total` counter.
+
+## 13. Observability
+
+PluginContext (`pluginContext.ts:31-147`) does **not** expose a metrics
+accessor today (it exposes `log`, `secrets`, `config`, `services`,
+`jobs`, `routes`, `notifications`, `tools`, `uiRoutes`, optional
+`scratch`/`http`/`memory`/`subAgent`/`knowledgeGraph`/`llm`). Plugins
+emit metrics via an internal Prometheus-style registry. The
+channel-teams plugin's `/metrics` route is the precedent. v1 of CCM
+does the same: a plugin-local registry, counters exposed via a
+`/ccm/metrics` route (manifest declares
+`permissions.routes.allowed: ['/ccm/metrics']`). When a future
+PluginContext extension adds `ctx.metrics`, CCM migrates.
+
+### 13.1 Counters
+
+| Counter | When incremented |
+|---|---|
+| `ccm_appends_total{channel_kind}` | Each successful `appendTurn` |
+| `ccm_append_failures_total{stage}` | Capability call failed (stage = `'sync'` or `'outbox-drain'`) |
+| `ccm_outbox_pending` | Gauge of `ccm_outbox` row count where `attempts < 5` |
+| `ccm_outbox_dlq_total` | Outbox rows exceeding 5 attempts |
+| `ccm_reads_total{kind}` | `getRecentByUser` / `getByChannelScope` (kind discriminates) |
+| `ccm_reads_redaction_pending_total` | Default-read excluded a `pending` row |
+| `ccm_reads_raw_total` | Privileged `includeRaw=true` reads |
+| `ccm_gc_deletes_total{pass}` | GC deletions (pass = `'ttl'`, `'count'`, `'bytes'`) |
+
+### 13.2 Performance targets
+
+- `appendTurn` p99 < 100 ms (single-row INSERT + quota UPDATE).
+- `getRecentByUser` p99 < 50 ms at `limit ≤ 20` (covering index on
+  `(tenant_id, user_id, created_at DESC)`).
+- `ccm-gc` sweep completes in < 5 minutes for a tenant with 1M turns
+  (chunked DELETEs in batches of 10k).
+
+### 13.3 Eval / test matrix per PR
+
+| PR | Test surface |
+|---|---|
+| 2 (`platform-identity`) | Unit: resolve-new-user, resolve-existing-by-email (verified / unverified), concurrent first-sight race, merge, forget. Integration: Neon ephemeral branch. |
+| 3 (`ccm`) | Unit: append + getRecentByUser round-trip; tenant assertion; quotas incremented/decremented; GC TTL pass, count pass, byte pass; outbox drain + DLQ; pending-read exclusion. Integration: Neon ephemeral branch with full PII pipeline. |
+| 4 (adapter) | Capability registered and absent: capability-present writes durable, capability-absent is byte-identical to InMemory. TurnContextValue propagation tested via the harness-orchestrator. |
+| 5–8 (channels) | Each: one e2e test asserting a turn written via channel X is readable via the capability by `userId` from a second channel adapter. |
+
+## 14. Plugin manifests
+
+### 14.1 `@omadia/cross-channel-conversation-memory-neon` (sketch)
 
 ```yaml
 schema_version: "1"
@@ -535,12 +885,14 @@ setup:
     - { id: "ccm_tenant_id",           type: "text",   required: false }
     - { id: "ccm_ttl_days",            type: "number", required: false }
     - { id: "ccm_user_msg_cap",        type: "number", required: false }
+    - { id: "ccm_user_byte_cap",       type: "number", required: false }
     - { id: "ccm_gc_enabled",          type: "text",   required: false }
     - { id: "ccm_gc_cron",             type: "text",   required: false }
     - { id: "ccm_gc_interval_minutes", type: "number", required: false }
     - { id: "ccm_redact_on_persist",   type: "text",   required: false }
 permissions:
   network: { outbound: ["neon-database"] }
+  routes:  { allowed: ["/ccm/metrics"] }
 integrations:
   - id: "neon_database"
     kind: "tcp"
@@ -548,48 +900,73 @@ integrations:
     auth_from: "database_url"
 ```
 
-### `@omadia/platform-identity-neon` (sketch)
+### 14.2 `@omadia/platform-identity-neon` (sketch)
 
 Same shape with `provides: ["platformIdentity@1"]`, no `requires`, its
-own `setup.fields` for `database_url` and `pi_tenant_id`.
+own setup fields for `database_url`, `pi_tenant_id`,
+`pi_auto_merge_on_email`.
 
 In-memory siblings: identical manifests with `id` / `name` swapped, no
 `database_url` field, same `provides:`, no `integrations`. Mutual
-exclusion handled by the kernel's single-provider-per-capability rule.
+exclusion handled by the kernel's single-provider-per-service-key rule
+(`pluginContext.ts:323-325`).
 
-## 14. PR sequence
+## 15. PR sequence
 
-All PRs additive, none breaking. Each from a `feat/...` or `docs/...`
-feature branch per AGENTS.md ("Niemals direkt auf `main` pushen").
-Conventional commits, subject < 70 chars. CHANGELOG entry on every PR.
+All PRs are **source-mergeable independently**; **deployment** is
+gated by activation order. `requires` is checked at boot
+(`pluginContext.ts:224-225`): the kernel refuses to activate a plugin
+whose `requires` are not matched by another plugin's `provides`. The
+operator must therefore install upstream providers first.
 
-| # | PR title (conventional commit) | Adds / changes | Unblocks |
+| # | PR title (conventional commit) | Adds / changes | Deploy-prerequisite |
 |---|---|---|---|
-| 1 | `docs(rfc): cross-channel conversation memory + platform identity` | This RFC, `middleware-agent-handoff.md` Roadmap bullet, CHANGELOG entry | Contract frozen for Codex review |
-| 2 | `feat(harness-platform-identity-*): provide platformIdentity@1 (neon + inmemory)` | Two new packages, manifests, migrations (`_pi_migrations`, `platform_identities`), full impl | CCM plugin has a `requires:` target |
-| 3 | `feat(harness-cross-channel-conversation-memory-*): provide crossChannelConversationMemory@1 (neon + inmemory)` | Two new packages, migrations (`_ccm_migrations`, `cross_channel_messages`, `ccm_user_quotas`), full impl, `ccm-gc` job | Channels can opt in |
-| 4 | `feat(harness-channel-sdk): DurableConversationHistoryStore adapter` | New file `durableConversationHistory.ts`, capability-aware fallback to InMemory | Channel rollouts |
-| 5 | `feat(harness-channel-teams): opt into DurableConversationHistoryStore` | Swap store construction site | Teams cross-channel reads |
-| 6 | `feat(harness-channel-slack): opt into DurableConversationHistoryStore` | " | Slack cross-channel reads |
-| 7 | `feat(harness-channel-telegram): opt into DurableConversationHistoryStore` | " | Telegram cross-channel reads |
-| 8 | `feat(harness-channel-web-chat): opt into DurableConversationHistoryStore` | " | Web-chat cross-channel reads |
-| 9 | `feat(orchestrator): consume crossChannelConversationMemory@1` *(in omadia-ui repo)* | Read-at-turn-start, summary block, write via adapter | S-Bahn → office scenario |
+| **1** | `docs(rfc): cross-channel conversation memory + platform identity` | This RFC, `middleware-agent-handoff.md` Phase 13 entry, CHANGELOG | — |
+| 2 | `feat(harness-platform-identity-*): provide platformIdentity@1 (neon + inmemory)` | Two new packages, migrations (`_pi_migrations`, `platform_identities`), full impl | — |
+| 3 | `feat(harness-cross-channel-conversation-memory-*): provide crossChannelConversationMemory@1 (neon + inmemory)` | Two new packages, migrations (`_ccm_migrations`, `cross_channel_messages`, `ccm_user_quotas`, `ccm_outbox`, `ccm_audit_events`), full impl, `ccm-gc` + `ccm-outbox` jobs | PR 2 deployed first |
+| 4 | `feat(harness-channel-sdk): DurableConversationHistoryStore adapter + TurnContextValue extension` | New `durableConversationHistory.ts`; `TurnContextValue` gains `tenantId?`, `originatorUserRef?`, `originatorUserId?` (additive, optional fields) | PR 3 deployed if durable mode used |
+| 5 | `feat(harness-channel-teams): opt into DurableConversationHistoryStore` | Swap store construction; populate `TurnContextValue` extensions at ingress | PR 4 deployed |
+| 6 | `feat(harness-channel-slack): opt into DurableConversationHistoryStore` | " | PR 4 deployed |
+| 7 | `feat(harness-channel-telegram): opt into DurableConversationHistoryStore` | " | PR 4 deployed |
+| 8 | `feat(harness-channel-web-chat): opt into DurableConversationHistoryStore` | " | PR 4 deployed |
+| 9 | `feat(orchestrator): consume crossChannelConversationMemory@1` *(in omadia-ui repo)* | Read-at-turn-start, summary block, write via adapter | PRs 3+4 deployed |
 
-Each PR is independently mergeable. PR 1 is **docs-only** and lands
-first to lock the contract for Codex review. End-to-end verification of
-the capability happens at PR 3 and PR 9.
+PR 1 is **docs-only** and lands first to lock the contract for Codex
+review. End-to-end verification of the capability happens at PR 3
+(provider tests) and PR 9 (omadia-ui smoke).
 
-## 15. Open questions & future slices
+### 15.1 Required doc updates per implementation PR
 
-- **Slice 2.5 PlatformIdentity merging** — manual claim UI, OAuth-bound
-  link flow. The `platformIdentity@1` contract is sized to absorb a
-  richer impl without consumer churn.
+AGENTS.md (lines 17-26) mandates specific doc updates per change type.
+This RFC binds the implementation PRs accordingly:
+
+| PR | `.env.example` | CHANGELOG migration ID | `security-architecture.md` | `middleware-agent-handoff.md` |
+|---|---|---|---|---|
+| 2 | `PI_DATABASE_URL`, `PI_TENANT_ID`, `PI_AUTO_MERGE_ON_EMAIL` | `_pi_migrations` IDs | new section on raw email retention + verified-email semantics | §3/§8 |
+| 3 | `CCM_DATABASE_URL`, `CCM_TENANT_ID`, all `CCM_*` config fields | `_ccm_migrations` IDs | new section on raw turn retention + `redaction_state` semantics + audit events | §3/§8 |
+| 4 | — | — | — | §3 (adapter), §13 (Phase 12 absorption) |
+| 5–8 | — | — | — | §3 channel-by-channel note |
+
+## 16. Open questions & future slices
+
+- **Slice 2.5 PlatformIdentity merging UI** — manual claim flow,
+  OAuth-bound link. The `platformIdentity@1` contract is sized to absorb
+  a richer impl without consumer churn.
 - **Summarization / compaction** — once cross-channel turn counts grow
-  past the 10-turn working set meaningfully.
+  past the 10-turn working set meaningfully, and to make
+  forget-with-quote-scrub feasible (§12.3).
 - **pgvector semantic recall** —
   `getRelevantByUser(tenantId, userId, queryEmbedding)`.
+- **PluginContext metrics accessor** — when added, CCM's plugin-local
+  registry migrates.
 - **Federation across tenants** for shared workspaces.
 - **Reuse of `graphPool@1`** instead of a standalone pool (v1.1
   optimization; KG sets a strong precedent).
 - **Per-user encryption keys (BYOK)** for regulated tenants.
 - **Score-based decay (v2)** if recency-only suffers in practice.
+- **Recycled-email revocation flow** (§4.3 limitation).
+- **Multi-tenant per plugin instance** — today single-tenant per
+  activate, matching KG; multi-tenant would need per-call enforcement
+  and is a separate decision.
+- **Unify the two SDK `ConversationTurn` types** — pre-existing
+  tech-debt (§7.2). Cleanup-only PR, no consumer impact.
