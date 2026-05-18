@@ -341,7 +341,9 @@ export class DraftStore {
     }
     if (patch.spec !== undefined) {
       fields.push('spec_json = ?');
-      params.push(JSON.stringify(patch.spec));
+      // Normalize on write so already-persisted drafts heal themselves on
+      // the next auto-save, not just on read.
+      params.push(JSON.stringify(normalizeSkeletonArrays(patch.spec)));
     }
     if (patch.slots !== undefined) {
       fields.push('slots_json = ?');
@@ -482,12 +484,53 @@ export class DraftStore {
   }
 }
 
+/**
+ * Skeleton arrays may be missing on persisted drafts: the LLM's `patch_spec`
+ * can omit untouched fields, and the strict `AgentSpecSchema` (with Zod
+ * `.default([])`) only runs at install/codegen time — not on every save.
+ * UI consumers (Workspace, SpecOverview, SpecEditor, manifestLinter) already
+ * read these defensively with `?? []`; this normalizer hardens the store
+ * itself so every Draft handed back to the API layer has the expected array
+ * shape regardless of which build phase the LLM was in.
+ *
+ * Intentionally does NOT validate content (no Zod parse) — drafts mid-build
+ * may have empty `id` / `skill.role` / etc., and we don't want to reject
+ * them on read. Only fills `undefined`/`null` array slots with `[]` and
+ * ensures the structural sub-objects (`network`, `playbook`) exist.
+ */
+function normalizeSkeletonArrays(input: unknown): AgentSpecSkeleton {
+  const spec = (input ?? {}) as Record<string, unknown>;
+  const ensureArr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+
+  const network = (spec.network ?? {}) as Record<string, unknown>;
+  const playbook = (spec.playbook ?? {}) as Record<string, unknown>;
+
+  return {
+    ...(spec as object),
+    depends_on: ensureArr(spec.depends_on) as string[],
+    tools: ensureArr(spec.tools),
+    setup_fields: ensureArr(spec.setup_fields),
+    network: {
+      ...(network as object),
+      outbound: ensureArr(network.outbound) as string[],
+    },
+    playbook: {
+      ...(playbook as object),
+      when_to_use: (playbook.when_to_use as string | undefined) ?? '',
+      not_for: ensureArr(playbook.not_for) as string[],
+      example_prompts: ensureArr(playbook.example_prompts) as string[],
+    },
+    external_reads: ensureArr(spec.external_reads),
+    ui_routes: ensureArr(spec.ui_routes),
+  } as AgentSpecSkeleton;
+}
+
 function rowToDraft(row: DraftRow): Draft {
   return {
     id: row.id,
     userEmail: row.user_email,
     name: row.name,
-    spec: JSON.parse(row.spec_json) as AgentSpecSkeleton,
+    spec: normalizeSkeletonArrays(JSON.parse(row.spec_json)),
     slots: JSON.parse(row.slots_json) as Record<string, string>,
     transcript: JSON.parse(row.transcript_json) as TranscriptEntry[],
     previewTranscript: JSON.parse(row.preview_transcript_json) as TranscriptEntry[],
