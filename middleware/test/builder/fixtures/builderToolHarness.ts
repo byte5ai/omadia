@@ -214,6 +214,13 @@ export async function createBuilderToolHarness(
             description: 'test reference',
           },
         },
+        // Issue #56 — default no-op audit logger. Tests that need to
+        // observe audit calls swap this for a spy via context override.
+        audit: {
+          async log() {
+            /* discard */
+          },
+        },
       };
       return harnessState.userMessage !== undefined
         ? { ...base, userMessage: harnessState.userMessage }

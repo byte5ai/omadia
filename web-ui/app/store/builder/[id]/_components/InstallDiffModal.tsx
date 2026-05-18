@@ -290,6 +290,14 @@ export function InstallDiffModal({
 function DiffBody({ draft }: { draft: Draft }): React.ReactElement {
   const spec = draft.spec;
   const skillPromptSlot = draft.slots['skill-prompt'];
+  // Skeleton arrays may be undefined on drafts that were persisted before
+  // the LLM filled every section (patch_spec can omit untouched fields).
+  // The rest of the builder UI follows the same `?? []` convention, see
+  // Workspace.tsx / SpecEditor.tsx / SpecOverview.tsx / manifestLinter.ts.
+  const tools = spec.tools ?? [];
+  const dependsOn = spec.depends_on ?? [];
+  const outbound = spec.network?.outbound ?? [];
+  const setupFields = spec.setup_fields ?? [];
   return (
     <div className="space-y-6">
       <Section title="Identität">
@@ -327,13 +335,13 @@ function DiffBody({ draft }: { draft: Draft }): React.ReactElement {
 
       <Section
         title="Tools"
-        subtitle={`${String(spec.tools.length)} ${spec.tools.length === 1 ? 'Tool' : 'Tools'}`}
+        subtitle={`${String(tools.length)} ${tools.length === 1 ? 'Tool' : 'Tools'}`}
       >
-        {spec.tools.length === 0 ? (
+        {tools.length === 0 ? (
           <EmptyHint>Keine Tools definiert.</EmptyHint>
         ) : (
           <ul className="space-y-2">
-            {spec.tools.map((t) => (
+            {tools.map((t) => (
               <li
                 key={t.id}
                 className="rounded-md border border-[color:var(--divider)] bg-[color:var(--bg-soft)] px-3 py-2"
@@ -366,11 +374,11 @@ function DiffBody({ draft }: { draft: Draft }): React.ReactElement {
         title="Abhängigkeiten"
         subtitle="depends_on (gewährt Vault-Scopes)"
       >
-        {spec.depends_on.length === 0 ? (
+        {dependsOn.length === 0 ? (
           <EmptyHint>Keine Plugin-Abhängigkeiten.</EmptyHint>
         ) : (
           <ul className="space-y-1">
-            {spec.depends_on.map((d) => (
+            {dependsOn.map((d) => (
               <li
                 key={d}
                 className="font-mono-num text-[12px] text-[color:var(--fg-strong)]"
@@ -386,11 +394,11 @@ function DiffBody({ draft }: { draft: Draft }): React.ReactElement {
         title="Netzwerk"
         subtitle="permissions.network.outbound"
       >
-        {spec.network.outbound.length === 0 ? (
+        {outbound.length === 0 ? (
           <EmptyHint>Keine ausgehenden Hosts deklariert.</EmptyHint>
         ) : (
           <ul className="flex flex-wrap gap-1.5">
-            {spec.network.outbound.map((h) => (
+            {outbound.map((h) => (
               <li
                 key={h}
                 className="font-mono-num rounded-full border border-[color:var(--divider)] bg-[color:var(--bg-soft)] px-2.5 py-0.5 text-[11px] text-[color:var(--fg-strong)]"
@@ -406,11 +414,11 @@ function DiffBody({ draft }: { draft: Draft }): React.ReactElement {
         title="Setup-Felder"
         subtitle="vom Operator beim Aktivieren auszufüllen"
       >
-        {spec.setup_fields.length === 0 ? (
+        {setupFields.length === 0 ? (
           <EmptyHint>Kein Setup nötig.</EmptyHint>
         ) : (
           <ul className="space-y-1">
-            {spec.setup_fields.map((f) => (
+            {setupFields.map((f) => (
               <li
                 key={f.key}
                 className="flex items-baseline justify-between gap-3 rounded-md border border-[color:var(--divider)] px-3 py-1.5"

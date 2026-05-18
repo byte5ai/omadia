@@ -28,9 +28,11 @@ describe('setPersonaConfigTool', () => {
   });
 
   it('writes spec.persona on the active draft + emits spec_patch + schedules rebuild', async () => {
+    // Note (issue #53): when `template` is set, the tool merges the
+    // template's full 12-axis profile with explicit axis overrides.
+    // Here we test the no-template path so the explicit axes alone land.
     const result = await setPersonaConfigTool.run(
       {
-        template: 'software-engineer',
         axes: { directness: 80, warmth: 30, formality: 40 },
         custom_notes: 'Antworte auf Deutsch',
       },
@@ -44,7 +46,6 @@ describe('setPersonaConfigTool', () => {
         op: 'add',
         path: '/persona',
         value: {
-          template: 'software-engineer',
           axes: { directness: 80, warmth: 30, formality: 40 },
           custom_notes: 'Antworte auf Deutsch',
         },
@@ -57,7 +58,6 @@ describe('setPersonaConfigTool', () => {
     );
     assert.ok(reloaded);
     assert.deepEqual(reloaded.spec.persona, {
-      template: 'software-engineer',
       axes: { directness: 80, warmth: 30, formality: 40 },
       custom_notes: 'Antworte auf Deutsch',
     });
@@ -134,5 +134,67 @@ describe('setPersonaConfigTool', () => {
     assert.equal(result.ok, false);
     if (result.ok) return;
     assert.match(result.error, /not found/);
+  });
+
+  // ─── Issue #53 — template overlay ───────────────────────────────────────
+
+  it("issue #53 — template: 'customer-service' without axes override persists full customer-service axes", async () => {
+    const result = await setPersonaConfigTool.run(
+      { template: 'customer-service' },
+      harness.context(),
+    );
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.persona.template, 'customer-service');
+    assert.deepEqual(result.persona.axes, {
+      formality: 75,
+      directness: 30,
+      warmth: 85,
+      humor: 20,
+      sarcasm: 0,
+      conciseness: 40,
+      proactivity: 30,
+      autonomy: 20,
+      risk_tolerance: 15,
+      creativity: 25,
+      drama: 10,
+      philosophy: 5,
+    });
+  });
+
+  it('issue #53 — explicit axes override the template per-axis', async () => {
+    const result = await setPersonaConfigTool.run(
+      {
+        template: 'customer-service',
+        // override directness and warmth; the other 10 axes inherit
+        axes: { directness: 90, warmth: 50 },
+      },
+      harness.context(),
+    );
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.persona.axes?.directness, 90);
+    assert.equal(result.persona.axes?.warmth, 50);
+    // formality from the template — was not overridden
+    assert.equal(result.persona.axes?.formality, 75);
+  });
+
+  it('issue #53 — unknown template id short-circuits to ok=false with no persist / emit / rebuild', async () => {
+    const before = harness.events.length;
+    const beforeRebuilds = harness.rebuilds.length;
+    const result = await setPersonaConfigTool.run(
+      { template: 'mystery-archetype' },
+      harness.context(),
+    );
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.error, /unknown template/);
+    assert.equal(harness.events.length, before, 'spec_patch must not fire');
+    assert.equal(harness.rebuilds.length, beforeRebuilds, 'rebuild must not be scheduled');
+    const reloaded = await harness.draftStore.load(
+      harness.userEmail,
+      harness.draftId,
+    );
+    assert.equal(reloaded?.spec.persona, undefined);
   });
 });

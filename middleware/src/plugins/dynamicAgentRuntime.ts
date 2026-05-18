@@ -26,6 +26,8 @@ import type { JobScheduler } from './jobScheduler.js';
 import type { PluginCatalog, PluginCatalogEntry } from './manifestLoader.js';
 import { composePersonaSection } from './personaCompose.js';
 import type { PersonaModelFamily } from './personaDelta.js';
+import { compileBoundariesSection } from './builder/boundaryPresets.js';
+import { compileSycophancyGuard } from './sycophancyGuard.js';
 import { topoSortByDependsOn } from './topoSort.js';
 import type { UploadedPackageStore } from './uploadedPackageStore.js';
 import { zodToJsonSchema } from './zodToJsonSchema.js';
@@ -561,17 +563,116 @@ async function loadSystemPrompt(
   // simply get no persona injection. Read failures are swallowed so a
   // mis-packaged plugin doesn't take down activation.
   const personaSection = await composePersonaFromAgentMd(packageRoot, modelId);
+  const boundariesSection = await composeBoundariesFromAgentMd(packageRoot);
+  const sycophancySection = await composeSycophancyFromAgentMd(packageRoot);
 
   const header = buildHeader(entry);
   const parts: string[] = [header];
   if (personaSection.length > 0) parts.push(personaSection);
+  if (boundariesSection.length > 0) parts.push(boundariesSection);
+  if (sycophancySection.length > 0) parts.push(sycophancySection);
   if (skillParts.length > 0) parts.push(skillParts.join('\n\n---\n\n'));
   return parts.join('\n\n---\n\n');
 }
 
 /**
- * Phase 3 (OB-67) — read the plugin's AGENT.md (if present), parse the
- * frontmatter, and compose the `<persona>` system-prompt section.
+ * Issue #51 — **outer layer** of the sycophancy-section compose helper.
+ * Reads the plugin's AGENT.md (if present), parses the frontmatter, and
+ * delegates to the **inner layer** `compileSycophancyGuard(level)` for
+ * the actual prompt-text rendering.
+ *
+ * The same inner layer is called directly by the preview-prompt route
+ * (issue #55, `routes/builderPreviewPrompt.ts`) with the spec-side
+ * `quality.sycophancy` value — guaranteeing byte-identical output
+ * between the runtime compose path and the live preview without a
+ * dedicated refactor. Parity is enforced by
+ * `test/builder/previewPromptParity.test.ts`.
+ *
+ * Returns `''` when:
+ *   - no AGENT.md or agent.md file at the package root
+ *   - file read fails
+ *   - frontmatter is missing / malformed
+ *   - `quality.sycophancy` is absent, `undefined`, or `'off'`
+ *
+ * Sits between persona (tone) and skill (task instructions) in the
+ * compiled system prompt. Final compose order with F4 (boundaries) will
+ * be `[header, persona, boundaries, sycophancy, skill]`.
+ */
+export async function composeSycophancyFromAgentMd(packageRoot: string): Promise<string> {
+  for (const candidate of ['AGENT.md', 'agent.md']) {
+    const p = path.join(packageRoot, candidate);
+    let content: string;
+    try {
+      content = await fs.readFile(p, 'utf-8');
+    } catch {
+      continue;
+    }
+    const parsed = parseAgentMd(content);
+    const level = parsed.frontmatter?.quality?.sycophancy;
+    return compileSycophancyGuard(level);
+  }
+  return '';
+}
+
+/**
+ * Issue #54 — **outer layer** of the boundaries-section compose helper.
+ * Reads the plugin's AGENT.md (if present), parses the frontmatter, and
+ * delegates to the **inner layer** `compileBoundariesSection(presets,
+ * customLines)` for the actual prompt-text rendering.
+ *
+ * The same inner layer is called directly by the preview-prompt route
+ * (issue #55) with the spec-side `quality.boundaries` value —
+ * guaranteeing byte-identical output between runtime and preview.
+ * Parity is enforced by `test/builder/previewPromptParity.test.ts`.
+ *
+ * Returns `''` when:
+ *   - no AGENT.md or agent.md file at the package root
+ *   - file read fails
+ *   - frontmatter is missing / malformed
+ *   - `quality.boundaries` is absent or both `presets` and `custom` are empty
+ *
+ * Sits between persona (tone) and sycophancy (style) — boundaries are
+ * hard limits, sycophancy is stylistic. Final compose order:
+ * `[header, persona, boundaries, sycophancy, skill]`.
+ *
+ * Unknown preset IDs (legacy persisted values, or future kemia presets
+ * not yet ported) are silently skipped at runtime — the `setQualityConfig`
+ * tool surfaces them as warnings at edit time so the operator can act on
+ * them before they ship.
+ */
+export async function composeBoundariesFromAgentMd(packageRoot: string): Promise<string> {
+  for (const candidate of ['AGENT.md', 'agent.md']) {
+    const p = path.join(packageRoot, candidate);
+    let content: string;
+    try {
+      content = await fs.readFile(p, 'utf-8');
+    } catch {
+      continue;
+    }
+    const parsed = parseAgentMd(content);
+    const boundaries = parsed.frontmatter?.quality?.boundaries;
+    if (!boundaries) return '';
+    const { text } = compileBoundariesSection(
+      boundaries.presets ?? [],
+      boundaries.custom ?? [],
+    );
+    return text;
+  }
+  return '';
+}
+
+/**
+ * Phase 3 (OB-67) — **outer layer** of the persona-section compose
+ * helper. Reads the plugin's AGENT.md (if present), parses the
+ * frontmatter, and delegates to the **inner layer**
+ * `composePersonaSection({ persona, family })` from `personaCompose.ts`
+ * for the actual `<persona>`-XML rendering.
+ *
+ * The same inner layer is called directly by the preview-prompt route
+ * (issue #55) with the spec-side `persona` block — guaranteeing
+ * byte-identical output between runtime and preview. Parity is enforced
+ * by `test/builder/previewPromptParity.test.ts`.
+ *
  * Returns `''` when:
  *   - no AGENT.md or agent.md file at the package root
  *   - file read fails

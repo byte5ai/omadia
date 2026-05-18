@@ -242,6 +242,46 @@ describe('DraftStore', () => {
     assert.equal(hit, null);
   });
 
+  it('normalizes missing skeleton arrays on load (regression: install-diff crash)', async () => {
+    // Reproduces the GEO-Analyst draft state where patch_spec landed a spec
+    // payload without `setup_fields` (and friends). InstallDiffModal used to
+    // crash on `spec.setup_fields.length`; the store now guarantees the
+    // arrays exist so every UI consumer can rely on them.
+    const draft = await store.create('a@x', 'NoArrays');
+    const corrupted = {
+      id: 'de.byte5.agent.no-arrays',
+      name: 'NoArrays',
+      version: '0.1.0',
+      description: 'd',
+      category: 'other',
+      skill: { role: 'r' },
+      // intentionally missing: depends_on, tools, setup_fields,
+      // network, playbook, external_reads, ui_routes
+      slots: {},
+    } as unknown as Parameters<typeof store.update>[2]['spec'];
+    const patched = await store.update('a@x', draft.id, { spec: corrupted });
+    assert.ok(patched, 'patched draft should be returned');
+    assert.deepEqual(patched.spec.depends_on, []);
+    assert.deepEqual(patched.spec.tools, []);
+    assert.deepEqual(patched.spec.setup_fields, []);
+    assert.deepEqual(patched.spec.network.outbound, []);
+    assert.deepEqual(patched.spec.playbook.not_for, []);
+    assert.deepEqual(patched.spec.playbook.example_prompts, []);
+
+    // Re-load through a fresh connection to also exercise the read-path
+    // normalizer (independent of the write-path normalizer above).
+    await store.close();
+    const store2 = new DraftStore({ dbPath });
+    await store2.open();
+    const reloaded = await store2.load('a@x', draft.id);
+    assert.ok(reloaded);
+    assert.deepEqual(reloaded.spec.setup_fields, []);
+    assert.deepEqual(reloaded.spec.network.outbound, []);
+    await store2.close();
+    store = new DraftStore({ dbPath });
+    await store.open();
+  });
+
   it('findByPublishedAgentId returns null when no draft has been published', async () => {
     await store.create('alice@example.com', 'A');
     const hit = await store.findByPublishedAgentId(
@@ -252,7 +292,7 @@ describe('DraftStore', () => {
   });
 });
 
-describe('DraftStore v1 → v2 migration (2026-05-18)', () => {
+describe('DraftStore v1 → v3 migration (2026-05-18)', () => {
   let tmp: string;
 
   before(() => {
@@ -325,7 +365,7 @@ describe('DraftStore v1 → v2 migration (2026-05-18)', () => {
     // Schema bump persisted.
     const inspect = new Database(dbPath);
     const version = inspect.pragma('user_version', { simple: true });
-    assert.equal(version, 2);
+    assert.equal(version, 3);
 
     // Column renamed; legacy column gone.
     const cols = (

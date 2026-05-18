@@ -897,19 +897,82 @@ export async function patchBuilderSpec(
 }
 
 /**
- * Phase 3 / OB-67 — set the per-profile persona block on a draft. Thin
- * ergonomic wrapper over `patchBuilderSpec` so the Browser-View slider
- * pillar can call a single, structurally-shaped function instead of
- * hand-crafting JSON-Patch ops in every onChange handler. Replaces any
- * existing `spec.persona` block in full; pass `{}` to clear.
+ * Phase 3 / OB-67 — set the per-profile persona block on a draft.
+ *
+ * Issue #53 follow-up — calls the dedicated `PATCH /drafts/:id/persona`
+ * route which routes through `setPersonaConfigTool` server-side. That
+ * gives us tool-side validation, `SpecEventBus.cause='agent'`, and a
+ * `builder_audit` row — parity with BuilderAgent-initiated edits.
+ *
+ * Replaces any existing `spec.persona` block in full; pass `{}` to clear.
  */
 export async function setPersonaConfig(
   draftId: string,
   config: PersonaConfig,
 ): Promise<DraftEnvelope> {
-  return patchBuilderSpec(draftId, [
-    { op: 'add', path: '/persona', value: config },
-  ]);
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(
+    botApi(`/v1/builder/drafts/${encodeURIComponent(draftId)}/persona`),
+    {
+      method: 'PATCH',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+        ...forwarded,
+      },
+      body: JSON.stringify(config),
+      credentials: 'include',
+      cache: 'no-store',
+    },
+  );
+  const text = await res.text();
+  if (!res.ok) {
+    throw new ApiError(
+      res.status,
+      `PATCH builder/drafts/${draftId}/persona failed: ${res.status}`,
+      text,
+    );
+  }
+  return JSON.parse(text) as DraftEnvelope;
+}
+
+/**
+ * Issue #54 — set the per-profile quality block (sycophancy level +
+ * boundary presets + custom lines) on a draft.
+ *
+ * Issue #54 follow-up — calls the dedicated `PATCH /drafts/:id/quality`
+ * route which routes through `setQualityConfigTool` server-side. The
+ * tool's `warnings` for unknown preset IDs are surfaced as an optional
+ * sibling field on the response.
+ */
+export async function setQualityConfig(
+  draftId: string,
+  config: import('./builderTypes').QualityConfig,
+): Promise<DraftEnvelope & { warnings?: string[] }> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(
+    botApi(`/v1/builder/drafts/${encodeURIComponent(draftId)}/quality`),
+    {
+      method: 'PATCH',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+        ...forwarded,
+      },
+      body: JSON.stringify(config),
+      credentials: 'include',
+      cache: 'no-store',
+    },
+  );
+  const text = await res.text();
+  if (!res.ok) {
+    throw new ApiError(
+      res.status,
+      `PATCH builder/drafts/${draftId}/quality failed: ${res.status}`,
+      text,
+    );
+  }
+  return JSON.parse(text) as DraftEnvelope & { warnings?: string[] };
 }
 
 /**
@@ -1928,4 +1991,114 @@ export async function runOperatorPrivacyLiveTest(
   return postJson<PrivacyLiveTestResponse>('/v1/operator/privacy/live-test', {
     text,
   });
+}
+
+// ── Builder quality score (issue #52) ───────────────────────────────────────
+
+export interface QualitySuggestion {
+  code: string;
+  message: string;
+  dimension: 'completeness' | 'tokenEfficiency' | 'ruleQuality' | 'specificity';
+}
+
+export interface BuilderQualityResult {
+  draftId: string;
+  score: number;
+  dimensions: {
+    completeness: number;
+    tokenEfficiency: number;
+    ruleQuality: number;
+    specificity: number;
+  };
+  sweetspot: 'under' | 'sweet' | 'over';
+  tokenHealth: 'ok' | 'warning' | 'critical';
+  suggestions: QualitySuggestion[];
+}
+
+export async function fetchBuilderQuality(
+  draftId: string,
+): Promise<BuilderQualityResult> {
+  return getJson<BuilderQualityResult>(
+    `/v1/builder/drafts/${encodeURIComponent(draftId)}/quality`,
+  );
+}
+
+// ── Builder preview prompt (issue #55) ──────────────────────────────────────
+
+export interface PreviewPromptSection {
+  label: string;
+  content: string;
+  kind: 'header' | 'persona' | 'boundaries' | 'sycophancy' | 'skill' | 'custom_notes';
+}
+
+export interface BuilderPreviewPrompt {
+  systemPrompt: string;
+  tokens: number;
+  sections: PreviewPromptSection[];
+}
+
+/**
+ * Issue #55 — render the live compiled system prompt for a draft.
+ * POST so the route can carry future options (token-count mode, etc.)
+ * without breaking the GET surface.
+ */
+export async function fetchBuilderPreviewPrompt(
+  draftId: string,
+): Promise<BuilderPreviewPrompt> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(
+    botApi(`/v1/builder/drafts/${encodeURIComponent(draftId)}/preview-prompt`),
+    {
+      method: 'POST',
+      headers: { accept: 'application/json', ...forwarded },
+      credentials: 'include',
+      cache: 'no-store',
+    },
+  );
+  const text = await res.text();
+  if (!res.ok) {
+    throw new ApiError(
+      res.status,
+      `POST /v1/builder/drafts/${draftId}/preview-prompt failed: ${res.status}`,
+      text,
+    );
+  }
+  return JSON.parse(text) as BuilderPreviewPrompt;
+}
+
+// ── Builder audit log (issue #57) ───────────────────────────────────────────
+
+export interface BuilderAuditEvent {
+  id: number;
+  draftId: string;
+  userEmail: string;
+  action: string;
+  details: Record<string, unknown>;
+  createdAt: number;
+}
+
+export interface BuilderAuditPage {
+  draftId: string;
+  total: number;
+  limit: number;
+  offset: number;
+  events: BuilderAuditEvent[];
+}
+
+/**
+ * Paginated audit-log fetch for a draft. Backed by the `GET /v1/builder/
+ * drafts/:id/audit` route added in #56. Newest-first; default page size
+ * is 30 (server clamps 1..200).
+ */
+export async function listBuilderAudit(
+  draftId: string,
+  opts: { limit?: number; offset?: number } = {},
+): Promise<BuilderAuditPage> {
+  const q = new URLSearchParams();
+  if (typeof opts.limit === 'number') q.set('limit', String(opts.limit));
+  if (typeof opts.offset === 'number') q.set('offset', String(opts.offset));
+  const suffix = q.toString() ? `?${q.toString()}` : '';
+  return getJson<BuilderAuditPage>(
+    `/v1/builder/drafts/${encodeURIComponent(draftId)}/audit${suffix}`,
+  );
 }

@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { BuilderAuditAction } from '../auditActions.js';
+import { getPersonaTemplate } from '../personaTemplates.js';
 import type { AgentSpecSkeleton } from '../types.js';
 import {
   IllegalSpecState,
@@ -97,10 +99,25 @@ export const setPersonaConfigTool: BuilderTool<Input, Result> = {
         )
       : undefined;
 
+    // Issue #53 — if a template ID is supplied, load its full axis overlay
+    // from the registry and merge with any explicit `axes` override. The
+    // override wins per-axis: operator-set values stay; missing axes inherit
+    // the template default. Unknown template IDs short-circuit to an error
+    // — the spec is unchanged, no bus emit, no rebuild, no audit row.
+    let mergedAxes: Record<string, number> | undefined = filteredAxes;
+    if (typeof input.template === 'string' && input.template.length > 0) {
+      const tpl = getPersonaTemplate(input.template);
+      if (!tpl) {
+        return { ok: false, error: `unknown template: ${input.template}` };
+      }
+      // Start with the template's full axis profile, then layer overrides.
+      mergedAxes = { ...tpl.axes, ...(filteredAxes ?? {}) };
+    }
+
     const sanitized: Input = {
       ...(input.template !== undefined ? { template: input.template } : {}),
-      ...(filteredAxes && Object.keys(filteredAxes).length > 0
-        ? { axes: filteredAxes }
+      ...(mergedAxes && Object.keys(mergedAxes).length > 0
+        ? { axes: mergedAxes }
         : {}),
       ...(input.custom_notes !== undefined
         ? { custom_notes: input.custom_notes }
@@ -126,6 +143,13 @@ export const setPersonaConfigTool: BuilderTool<Input, Result> = {
       cause: 'agent',
     });
     ctx.rebuildScheduler.schedule(ctx.userEmail, ctx.draftId);
+
+    // Issue #56 — fire-and-forget audit log
+    void ctx.audit.log(ctx.draftId, ctx.userEmail, BuilderAuditAction.PERSONA_UPDATED, {
+      template: sanitized.template ?? null,
+      axes: Object.keys(sanitized.axes ?? {}),
+      hasCustomNotes: typeof sanitized.custom_notes === 'string' && sanitized.custom_notes.length > 0,
+    });
 
     return {
       ok: true,

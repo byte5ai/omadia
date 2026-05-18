@@ -166,7 +166,6 @@ export async function* streamMessageEvents(args: {
   if (privacy && pendingHold.length > 0) {
     const restored = await privacy.processInbound(pendingHold);
     yield { type: 'text_delta', text: restored };
-    pendingHold = '';
   }
 
   const response: Message = await stream.finalMessage();
