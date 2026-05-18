@@ -1,7 +1,10 @@
 import type { Router, Request, Response } from 'express';
 
+import { type AuditLogger, createAuditLogger } from '../plugins/builder/audit.js';
 import type { DraftStore } from '../plugins/builder/draftStore.js';
 import { BuilderModelRegistry } from '../plugins/builder/modelRegistry.js';
+import { setPersonaConfigTool } from '../plugins/builder/tools/setPersonaConfig.js';
+import { setQualityConfigTool } from '../plugins/builder/tools/setQualityConfig.js';
 import {
   IllegalSpecState,
   JsonPatchSchema,
@@ -9,7 +12,7 @@ import {
   type JsonPatch,
 } from '../plugins/builder/specPatcher.js';
 import type { SpecEventBus } from '../plugins/builder/specEventBus.js';
-import type { RebuildScheduler } from '../plugins/builder/tools/index.js';
+import type { BuilderToolContext, RebuildScheduler } from '../plugins/builder/tools/index.js';
 import type {
   AgentSpecSkeleton,
   BuilderModelId,
@@ -39,6 +42,61 @@ export interface BuilderEditDeps {
   draftStore: DraftStore;
   bus: SpecEventBus;
   rebuildScheduler: RebuildScheduler;
+  /**
+   * Override for the audit logger (test-only). Default: `createAuditLogger(deps.draftStore)`
+   * — so PATCH /persona and PATCH /quality emit `builder_audit` rows
+   * identically to BuilderAgent-initiated tool calls.
+   */
+  audit?: AuditLogger;
+}
+
+/**
+ * Issue #53 + #54 — assemble a `BuilderToolContext` for the route-side
+ * tool invocation path. The edit routes only need 6 fields (`userEmail`,
+ * `draftId`, `draftStore`, `bus`, `rebuildScheduler`, `audit`); the
+ * other `BuilderToolContext` fields are required by the type but never
+ * touched by the mutating tools (`set_persona_config` / `set_quality_config`
+ * / `patch_spec` / `fill_slot` collectively).
+ *
+ * Unused fields are filled with **thrower stubs** so any future tool
+ * that reaches for one fails loudly with a clear "not available in
+ * edit-route context" error — preventing silent contract violations.
+ * The accompanying test `builderEditRoutesTool.test.ts` exercises this:
+ * if `set_persona_config` is ever extended to call e.g.
+ * `ctx.slotTypechecker.check()`, the test fails the moment the route
+ * runs.
+ */
+export function assembleEditRouteContext(
+  deps: BuilderEditDeps,
+  userEmail: string,
+  draftId: string,
+): BuilderToolContext {
+  const audit = deps.audit ?? createAuditLogger(deps.draftStore);
+  const notAvailable = (field: string) => (): never => {
+    throw new Error(`${field} is not available in the edit-route BuilderToolContext`);
+  };
+  return {
+    userEmail,
+    draftId,
+    draftStore: deps.draftStore,
+    bus: deps.bus,
+    rebuildScheduler: deps.rebuildScheduler,
+    audit,
+    catalogToolNames: notAvailable('catalogToolNames'),
+    knownPluginIds: notAvailable('knownPluginIds'),
+    slotRetryTracker: {
+      recordFail: notAvailable('slotRetryTracker.recordFail'),
+      reset: notAvailable('slotRetryTracker.reset'),
+    },
+    buildFailureBudget: {
+      recordFail: notAvailable('buildFailureBudget.recordFail'),
+      reset: notAvailable('buildFailureBudget.reset'),
+      limit: 0,
+    },
+    templateRoot: '',
+    referenceCatalog: {},
+    slotTypechecker: notAvailable('slotTypechecker') as never,
+  };
 }
 
 export function registerBuilderEditRoutes(
@@ -187,6 +245,91 @@ export function registerBuilderEditRoutes(
     // Model switch deliberately does NOT trigger a rebuild — codegen/preview
     // model selection is a runtime knob, the built artifact does not change.
     res.json({ draft: updated });
+  });
+
+  // ── PATCH /drafts/:id/persona (issue #53) ─────────────────────────────
+  // Routes the request through `setPersonaConfigTool` so the UI-side
+  // call gets tool-side validation, `SpecEventBus.cause='agent'`, and a
+  // `builder_audit` row (#56) — parity with BuilderAgent-initiated edits.
+  router.patch('/drafts/:id/persona', async (req: Request, res: Response) => {
+    const email = readEmail(req);
+    if (!email) return sendJson(res, 401, { code: 'auth.missing', message: 'no session' });
+    const draftId = readId(req);
+    if (!draftId) return sendJson(res, 400, { code: 'builder.invalid_id', message: 'missing :id' });
+
+    const inputParsed = setPersonaConfigTool.input.safeParse(req.body ?? {});
+    if (!inputParsed.success) {
+      return sendJson(res, 400, {
+        code: 'builder.invalid_persona',
+        message: inputParsed.error.issues
+          .map((i) => `${i.path.join('.') || '<root>'}: ${i.message}`)
+          .join('; '),
+      });
+    }
+
+    const ctx = assembleEditRouteContext(deps, email, draftId);
+    const result = await setPersonaConfigTool.run(inputParsed.data, ctx);
+    if (!result.ok) {
+      // Tool surfaces the same `not found` path as the route's other
+      // endpoints. Map to 404 when the tool didn't find the draft.
+      const code = /not found/.test(result.error)
+        ? 'builder.draft_not_found'
+        : 'builder.illegal_patch';
+      const status = code === 'builder.draft_not_found' ? 404 : 400;
+      return sendJson(res, status, { code, message: result.error });
+    }
+    const draft = await deps.draftStore.load(email, draftId);
+    if (!draft) {
+      return sendJson(res, 404, {
+        code: 'builder.draft_not_found',
+        message: `kein Draft mit id '${draftId}'`,
+      });
+    }
+    res.json({ draft });
+  });
+
+  // ── PATCH /drafts/:id/quality (issue #54) ─────────────────────────────
+  // Same pattern as /persona above. The tool result also carries
+  // `warnings` for unknown boundary preset IDs; we surface them as a
+  // sibling field so the UI can render the inline badge from the live
+  // tool call rather than a client-side mirror.
+  router.patch('/drafts/:id/quality', async (req: Request, res: Response) => {
+    const email = readEmail(req);
+    if (!email) return sendJson(res, 401, { code: 'auth.missing', message: 'no session' });
+    const draftId = readId(req);
+    if (!draftId) return sendJson(res, 400, { code: 'builder.invalid_id', message: 'missing :id' });
+
+    const inputParsed = setQualityConfigTool.input.safeParse(req.body ?? {});
+    if (!inputParsed.success) {
+      return sendJson(res, 400, {
+        code: 'builder.invalid_quality',
+        message: inputParsed.error.issues
+          .map((i) => `${i.path.join('.') || '<root>'}: ${i.message}`)
+          .join('; '),
+      });
+    }
+
+    const ctx = assembleEditRouteContext(deps, email, draftId);
+    const result = await setQualityConfigTool.run(inputParsed.data, ctx);
+    if (!result.ok) {
+      const code = /not found/.test(result.error)
+        ? 'builder.draft_not_found'
+        : 'builder.illegal_patch';
+      const status = code === 'builder.draft_not_found' ? 404 : 400;
+      return sendJson(res, status, { code, message: result.error });
+    }
+    const draft = await deps.draftStore.load(email, draftId);
+    if (!draft) {
+      return sendJson(res, 404, {
+        code: 'builder.draft_not_found',
+        message: `kein Draft mit id '${draftId}'`,
+      });
+    }
+    const responseBody: { draft: typeof draft; warnings?: string[] } = { draft };
+    if (result.warnings && result.warnings.length > 0) {
+      responseBody.warnings = result.warnings;
+    }
+    res.json(responseBody);
   });
 }
 

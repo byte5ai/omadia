@@ -206,6 +206,53 @@ describe('selfAnonymization · restoreSelfAnonymization (Phase A)', () => {
     assert.equal(result.restored, 2);
     assert.deepEqual([...result.patternsHit].sort(), ['employee', 'mitarbeiter']);
   });
+
+  // Live HR-Urlaubsranking failure 2026-05-17: the LLM rewrote tokenised
+  // person rows into positional ranking labels ("Platz 1", "Platz 2", …)
+  // when emitting a Markdown ranking table. The directive forbids the
+  // anti-pattern; this restorer is the mechanical safety net.
+  it('restores Platz/Rang/Position/Rank positional labels (HR ranking case)', () => {
+    const map = createTokenizeMap();
+    const tMarvin = map.tokenFor('Marvin Vomberg', 'pii.name');
+    const tSophie = map.tokenFor('Sophie Neumann', 'pii.name');
+    const tMarcel = map.tokenFor('Marcel Wege', 'pii.name');
+    const tDennis = map.tokenFor('Dennis Zille', 'pii.name');
+    const tokenOrder = [tMarvin, tSophie, tMarcel, tDennis];
+    const text =
+      '| Rang | Mitarbeiter | PTO-Tage |\n' +
+      '| 1 | Platz 1 | 17,00 |\n' +
+      '| 2 | Rang 2 | 16,69 |\n' +
+      '| 3 | Position 3 | 12,00 |\n' +
+      '| 4 | Rank 4 | 10,00 |';
+    const result = restoreSelfAnonymization(text, tokenOrder, map);
+    assert.equal(result.detected, 4);
+    assert.equal(result.restored, 4);
+    assert.ok(result.text.includes('Marvin Vomberg'));
+    assert.ok(result.text.includes('Sophie Neumann'));
+    assert.ok(result.text.includes('Marcel Wege'));
+    assert.ok(result.text.includes('Dennis Zille'));
+    assert.ok(!result.text.includes('Platz 1'));
+    assert.ok(!result.text.includes('Rang 2'));
+    assert.ok(!result.text.includes('Position 3'));
+    assert.ok(!result.text.includes('Rank 4'));
+    assert.deepEqual(
+      [...result.patternsHit].sort(),
+      ['platz', 'position', 'rang', 'rank'].sort(),
+    );
+  });
+
+  it('detects Platz/Rang/Position/Rank in detectSelfAnonymizationLabels', () => {
+    const text = 'Tabelle: Platz 1, Rang 2, Position 3, Rank 4.';
+    const hits = detectSelfAnonymizationLabels(text);
+    assert.deepEqual(
+      hits.map((h) => h.keyword),
+      ['platz', 'rang', 'position', 'rank'],
+    );
+    assert.deepEqual(
+      hits.map((h) => h.index),
+      [1, 2, 3, 4],
+    );
+  });
 });
 
 describe('selfAnonymization · restoreUnresolvedPersonTokens (Phase A.1)', () => {

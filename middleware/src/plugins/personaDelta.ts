@@ -1,3 +1,4 @@
+import { getBaseProfile } from './basePersonas.js';
 import {
   CORE_PERSONA_AXES,
   EXTENDED_PERSONA_AXES,
@@ -112,13 +113,20 @@ export interface PersonaAxisDelta {
  * intentionally chose to inherit the family default. Axes whose delta
  * is within `NEUTRAL_THRESHOLD` are also skipped at the call site
  * (compose) — they are still returned here for telemetry / preview.
+ *
+ * The default Claude family path (haiku|sonnet|opus) is unchanged.
+ * Issue #58 — callers may also pass a `string` family id (e.g.
+ * `'openai-gpt'`) to opt into the multi-family `BASE_PROFILES` registry
+ * from `basePersonas.ts`. Unknown ids fall back to the `'unknown'`
+ * profile. This is preparation only — omadia's runtime still resolves
+ * exclusively to Claude, so no existing call site uses the string path.
  */
 export function computePersonaDeltas(
   axes: PersonaAxes | undefined,
-  family: PersonaModelFamily,
+  family: PersonaModelFamily | string,
 ): PersonaAxisDelta[] {
   if (!axes) return [];
-  const base = FAMILY_DEFAULTS[family];
+  const base = resolveBaseAxes(family);
   const out: PersonaAxisDelta[] = [];
 
   for (const axis of [...CORE_PERSONA_AXES, ...EXTENDED_PERSONA_AXES]) {
@@ -153,4 +161,20 @@ export function significantDeltas(
   deltas: readonly PersonaAxisDelta[],
 ): PersonaAxisDelta[] {
   return deltas.filter((d) => d.magnitude !== 'neutral');
+}
+
+/**
+ * Issue #58 — resolve the per-axis baseline for either the Claude tiers
+ * (`haiku` / `sonnet` / `opus`, current runtime path) or a multi-family
+ * id from the `BASE_PROFILES` registry (preparation for future
+ * non-Anthropic providers). The lookup is a static discriminator — a
+ * `PersonaModelFamily` literal short-circuits to `FAMILY_DEFAULTS`, any
+ * other string consults the new registry, and an unknown id falls back
+ * to the `unknown` profile.
+ */
+function resolveBaseAxes(family: PersonaModelFamily | string): Required<PersonaAxes> {
+  if (family === 'haiku' || family === 'sonnet' || family === 'opus') {
+    return FAMILY_DEFAULTS[family];
+  }
+  return getBaseProfile(family).dimensions;
 }

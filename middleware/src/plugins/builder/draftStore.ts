@@ -36,7 +36,7 @@ import { DEFAULT_BUILDER_MODEL, BuilderModelRegistry } from './modelRegistry.js'
  * for a future worker-thread migration if we ever need it.
  */
 
-const CURRENT_SCHEMA_VERSION = 1;
+const CURRENT_SCHEMA_VERSION = 2;
 
 const SCHEMA_V1_SQL = `
 CREATE TABLE IF NOT EXISTS drafts (
@@ -59,6 +59,25 @@ CREATE INDEX IF NOT EXISTS idx_drafts_user_active
   ON drafts(user_email, deleted_at, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_drafts_installed_purge
   ON drafts(status, deleted_at);
+`;
+
+// Issue #56 — v2 adds the builder_audit fire-and-forget table. Idempotent
+// `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS` so re-running
+// against an already-v2 DB is a no-op; mid-flight upgrade from v1 picks up
+// the table without losing existing drafts.
+const SCHEMA_V2_SQL = `
+CREATE TABLE IF NOT EXISTS builder_audit (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  draft_id      TEXT NOT NULL,
+  user_email    TEXT NOT NULL,
+  action        TEXT NOT NULL,
+  details_json  TEXT NOT NULL DEFAULT '{}',
+  created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_builder_audit_draft
+  ON builder_audit(draft_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_builder_audit_user
+  ON builder_audit(user_email, created_at DESC);
 `;
 
 export interface DraftUpdate {
@@ -462,18 +481,116 @@ export class DraftStore {
     const current = db.pragma('user_version', { simple: true }) as number;
     if (current < 1) {
       db.exec(SCHEMA_V1_SQL);
+      db.exec(SCHEMA_V2_SQL);
       db.pragma(`user_version = ${String(CURRENT_SCHEMA_VERSION)}`);
       return;
     }
-    // Future schema bumps land here as `if (current < 2) { … }` branches. For
-    // now the schema version is pinned at 1 and we trust `CREATE TABLE IF NOT
-    // EXISTS` to keep fresh DBs aligned with existing ones.
+    if (current < 2) {
+      // Issue #56 — mid-flight upgrade: an existing v1 DB picks up the
+      // builder_audit table without touching the drafts table. Existing
+      // rows survive unchanged; the audit log starts empty.
+      db.exec(SCHEMA_V2_SQL);
+      db.pragma(`user_version = ${String(CURRENT_SCHEMA_VERSION)}`);
+      return;
+    }
     if (current > CURRENT_SCHEMA_VERSION) {
       throw new Error(
         `drafts.db schema version ${String(current)} is newer than this middleware supports ` +
           `(max ${String(CURRENT_SCHEMA_VERSION)}). Refusing to open — downgrade would corrupt data.`,
       );
     }
+  }
+
+  // ── audit log (issue #56) ─────────────────────────────────────────────────
+
+  /**
+   * Append a single audit event. Synchronous SQLite write under the hood;
+   * wrapped in a Promise for the AuditLogger surface. Throws on DB errors
+   * — callers (e.g. `audit.ts`) swallow exceptions because the audit log
+   * is fire-and-forget.
+   */
+  async appendAudit(event: {
+    draftId: string;
+    userEmail: string;
+    action: string;
+    details: Readonly<Record<string, unknown>>;
+  }): Promise<void> {
+    const db = this.required();
+    db.prepare(
+      `INSERT INTO builder_audit (draft_id, user_email, action, details_json, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(
+      event.draftId,
+      event.userEmail,
+      event.action,
+      JSON.stringify(event.details ?? {}),
+      Date.now(),
+    );
+    return Promise.resolve();
+  }
+
+  /**
+   * Paginated audit listing for a draft, newest-first. Returns a tuple of
+   * `events` and `total` so the UI can render the "X of Y" footer without
+   * a second round-trip. Owner-scoped: events are filtered by the calling
+   * `userEmail` to mirror the draft-load access pattern.
+   */
+  async listAudit(
+    userEmail: string,
+    draftId: string,
+    opts: { limit?: number; offset?: number } = {},
+  ): Promise<{
+    events: {
+      id: number;
+      draftId: string;
+      userEmail: string;
+      action: string;
+      details: Record<string, unknown>;
+      createdAt: number;
+    }[];
+    total: number;
+  }> {
+    const db = this.required();
+    const limit = Math.max(1, Math.min(200, opts.limit ?? 30));
+    const offset = Math.max(0, opts.offset ?? 0);
+
+    const total = (
+      db
+        .prepare(
+          `SELECT COUNT(*) as n FROM builder_audit
+             WHERE draft_id = ? AND user_email = ?`,
+        )
+        .get(draftId, userEmail) as { n: number }
+    ).n;
+
+    const rows = db
+      .prepare(
+        `SELECT id, draft_id, user_email, action, details_json, created_at
+           FROM builder_audit
+          WHERE draft_id = ? AND user_email = ?
+          ORDER BY created_at DESC, id DESC
+          LIMIT ? OFFSET ?`,
+      )
+      .all(draftId, userEmail, limit, offset) as {
+      id: number;
+      draft_id: string;
+      user_email: string;
+      action: string;
+      details_json: string;
+      created_at: number;
+    }[];
+
+    return Promise.resolve({
+      total,
+      events: rows.map((r) => ({
+        id: r.id,
+        draftId: r.draft_id,
+        userEmail: r.user_email,
+        action: r.action,
+        details: JSON.parse(r.details_json) as Record<string, unknown>,
+        createdAt: r.created_at,
+      })),
+    });
   }
 
   private required(): SqliteDatabase {
