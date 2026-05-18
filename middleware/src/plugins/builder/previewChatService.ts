@@ -9,7 +9,10 @@ import {
   type LocalSubAgentTool,
 } from '@omadia/orchestrator';
 
-import { inferFamilyFromModel } from '../dynamicAgentRuntime.js';
+import {
+  inferFamilyFromModel,
+  warnIfEmptyInputSchema,
+} from '../dynamicAgentRuntime.js';
 import { composePersonaSection } from '../personaCompose.js';
 import { compileSycophancyGuard } from '../sycophancyGuard.js';
 import { zodToJsonSchema } from '../zodToJsonSchema.js';
@@ -308,6 +311,7 @@ function bridgePreviewTool(td: PreviewToolDescriptor): LocalSubAgentTool {
       ? schema.properties
       : {};
   const required = Array.isArray(schema.required) ? schema.required : [];
+  warnIfEmptyInputSchema(td.id, td.input, properties);
   return {
     spec: {
       name: td.id,

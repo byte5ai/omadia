@@ -351,6 +351,62 @@ describe('PreviewChatService', () => {
       assert.deepEqual(built.questions, ['go']);
     });
 
+    it('bridges Zod input schemas with their properties + required intact', async () => {
+      // Regression for the geo-analyst-style bug where the bridge silently
+      // delivered `{properties: {}, required: []}` to Claude even though the
+      // Zod schema was structurally rich. The previous assertion only checked
+      // `type === 'object'`, which a fully empty schema still satisfies —
+      // this test pins down the actual property mapping.
+      const draft = await store.create('alice@example.com', 'Echo Bot');
+      const tool = makeFakeTool({
+        id: 'analyze_page',
+        schema: z.object({
+          url: z.string().url().describe('Vollständige URL der Seite'),
+          max_pages: z.number().int().min(1).max(100).optional(),
+        }),
+      });
+      const handle = makeHandle({ draftId: draft.id, tools: [tool] });
+      const fake = fakeSubAgentBuilder({ finalText: 'OK' });
+      const svc = new PreviewChatService({
+        anthropic: fakeAnthropic,
+        draftStore: store,
+        systemPromptFor: async () => 'sp',
+        buildSubAgent: fake.build,
+        logger: () => {},
+      });
+
+      await collectEvents(
+        svc.runTurn({
+          handle,
+          userEmail: 'alice@example.com',
+          userMessage: 'go',
+          modelChoice: 'claude-haiku-4-5-20251001',
+        }),
+      );
+
+      const built = fake.records[0];
+      if (!built) throw new Error('expected one built sub-agent');
+      const spec = built.options.tools[0]?.spec;
+      if (!spec) throw new Error('expected one bridged tool spec');
+      assert.equal(spec.input_schema.type, 'object');
+
+      const props = spec.input_schema.properties as Record<
+        string,
+        { type?: string; format?: string; description?: string }
+      >;
+      assert.ok(
+        Object.keys(props).length > 0,
+        `bridge dropped all properties: ${JSON.stringify(spec.input_schema)}`,
+      );
+      assert.ok(props['url'], `url property missing: ${JSON.stringify(props)}`);
+      assert.equal(props['url']?.type, 'string');
+      assert.equal(props['url']?.format, 'uri');
+      assert.equal(props['url']?.description, 'Vollständige URL der Seite');
+      assert.ok(props['max_pages']);
+      // url is required, max_pages is optional
+      assert.deepEqual(spec.input_schema.required, ['url']);
+    });
+
     it('propagates sub-agent errors through the AsyncIterable', async () => {
       const draft = await store.create('alice@example.com', 'Echo Bot');
       const handle = makeHandle({ draftId: draft.id });
