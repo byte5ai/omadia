@@ -35,6 +35,35 @@ Wenn die Zuordnung unklar ist: lieber in CHANGELOG notieren als gar nicht — sp
 
 Ohne mindestens Punkte 1–3 darf kein Code geändert werden.
 
+## Working in a multi-session repo
+
+**Convention (enforced):** the main clone never receives commits. Every change — even a single-line typo fix — lands in a worktree. This is branch-agnostic: an agent whose HEAD got switched to `main` by a parallel session is caught here too, not just one that created a feature branch in the wrong tree. Enforced by the `.hooks/pre-commit` hook shipped via the engineering-standards skill.
+
+~~~bash
+git worktree add ../<repo>-<feature> -b <branch> main   # create with new branch
+git worktree add ../<repo>-<feature> <existing-branch>  # or attach existing
+# work in ../<repo>-<feature>/
+git worktree remove ../<repo>-<feature>                 # remove the tree
+git branch -D <feature>                                 # remove the branch ref (after merge or discard)
+git worktree list                                       # inspect
+~~~
+
+Build artefacts (`target/`, `node_modules/`, etc.) live per worktree — first build per tree is full cost, subsequent builds are independent.
+
+**Bypass levels** (in increasing persistence):
+
+| Level | Effect | How |
+|---|---|---|
+| One-off | this commit only | `ALLOW_MAIN_TREE_BRANCH=1 git commit ...` |
+| Per repo | persistent disable, other standards still apply | `git config engineering-standards.main-tree-discipline false` |
+| Repo exempt | all engineering-standards disabled for this repo | `status: exempt` in `.github/engineering-standards.yml` |
+
+### Drift signals (for any unusual main-tree work that is allowed)
+
+- Run `git branch --show-current` before each commit and confirm it matches what you intended.
+- Treat `git status` anomalies as drift signals: directories you didn't touch showing as `??`, unexpected `M` on files you didn't edit. Don't commit through that — `git reflog | head -20` first to see who moved your HEAD.
+- Don't reach for `git reset --hard` reflexively; another session may have uncommitted work in the shared tree. Inspect `git stash list` and `git diff --stat` first.
+
 ## Parallele Arbeit — Kollisionen vermeiden
 
 - **Fly-Deploys sind nicht atomar.** Wenn ein anderer Agent gerade deployt, abwarten (30-60s), sonst trittst du ihm auf den Zeh.
