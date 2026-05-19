@@ -69,6 +69,28 @@ describe('readSlotTool', () => {
     assert.deepEqual(result.available, []);
   });
 
+  it('treats an empty-string slot as not filled (mirrors codegen/lintSpec semantics)', async () => {
+    // `fill_slot` Zod-blocks empty source, so this only happens via DB drift
+    // or external mutation. Write directly through draftStore to simulate it.
+    await harness.draftStore.update(harness.userEmail, harness.draftId, {
+      slots: { 'activate-body': '', 'toolkit-impl': 'real();' },
+    });
+
+    const miss = await readSlotTool.run({ slotKey: 'activate-body' }, harness.context());
+    assert.equal(miss.ok, false);
+    if (miss.ok) return;
+    assert.match(miss.error, /not filled/);
+    // Empty-string slot MUST NOT show up in available[] — codegen skips it,
+    // so reporting it here would mislead the agent into another miss.
+    assert.deepEqual(miss.available, ['toolkit-impl']);
+
+    // Sanity: the real one still reads back.
+    const hit = await readSlotTool.run({ slotKey: 'toolkit-impl' }, harness.context());
+    assert.equal(hit.ok, true);
+    if (!hit.ok) return;
+    assert.equal(hit.source, 'real();');
+  });
+
   it('returns ok=false when the draft does not exist', async () => {
     const ctx = { ...harness.context(), draftId: 'no-such-draft' };
     const result = await readSlotTool.run({ slotKey: 'activate-body' }, ctx);

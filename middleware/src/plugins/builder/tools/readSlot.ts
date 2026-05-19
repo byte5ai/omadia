@@ -9,8 +9,16 @@ import type { BuilderTool } from './types.js';
  * resumed sessions where a previous turn filled the slot. Pure read, no
  * side effects, no tsc gate.
  *
- * On miss, returns the list of currently-filled slot keys so the agent
- * can recover without a second round-trip.
+ * "Filled" semantics match the rest of the builder (codegen.ts
+ * `filledPartialIndices`, agentSpec.ts ui_route slot-existence check,
+ * lintSpec.ts empty-slot diagnostic): a slot counts as filled iff its
+ * source is a non-empty string. `fill_slot` rejects empty source via
+ * Zod (`min(1)`), so the empty-string branch only triggers on DB drift
+ * or external mutation — but treating empty as filled would lie to the
+ * agent and contradict codegen, which skips empty entries entirely.
+ *
+ * On miss, returns the list of currently-filled (non-empty) slot keys
+ * so the agent can recover without a second round-trip.
  */
 
 const InputSchema = z
@@ -63,8 +71,11 @@ export const readSlotTool: BuilderTool<Input, Result> = {
     }
 
     const source = draft.slots[slotKey];
-    if (source === undefined) {
-      const available = Object.keys(draft.slots).sort();
+    if (source === undefined || source.length === 0) {
+      const available = Object.entries(draft.slots)
+        .filter(([, v]) => v.length > 0)
+        .map(([k]) => k)
+        .sort();
       return {
         ok: false,
         error: `slot '${slotKey}' is not filled in this draft`,
