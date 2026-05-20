@@ -97,6 +97,9 @@ function Tab({
 
   useEffect(() => {
     if (editing) {
+      // Seed the rename draft from the current title when entering edit
+      // mode; the focus/select below needs the input mounted first.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setDraft(session.title);
       // `select()` after a microtask so the input is actually mounted and focused.
       queueMicrotask(() => {

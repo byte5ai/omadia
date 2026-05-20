@@ -98,6 +98,9 @@ export function CredentialsEditor({
   }, [pluginId]);
 
   useEffect(() => {
+    // Fetch-on-mount: refreshKeys() touches state only after the awaited
+    // fetch — no synchronous cascading render.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void refreshKeys();
   }, [refreshKeys]);
 

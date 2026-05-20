@@ -1,30 +1,37 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useSyncExternalStore } from 'react';
 
 /**
  * SSR-safe useMediaQuery hook. Returns `false` on the server (no
- * `window`) and during the first browser render so the markup matches —
- * then re-evaluates against the live `MediaQueryList` once mounted.
+ * `window`) and during hydration so the markup matches — then
+ * re-evaluates against the live `MediaQueryList` once mounted.
  *
- * Re-uses the `MediaQueryList.addEventListener('change', …)` API rather
- * than polling so subscriptions piggy-back on the browser's own layout-
- * boundary notifications. The `change` callback only fires when the
- * boolean *flips*, so this is cheap to mount in many components.
+ * Backed by `useSyncExternalStore`: the `MediaQueryList` `change` event is
+ * the subscription and `mql.matches` is the snapshot, so the boolean is
+ * read directly during render instead of being mirrored into an effect.
+ * The `change` callback only fires when the boolean *flips*, so this is
+ * cheap to mount in many components.
  */
 export function useMediaQuery(query: string): boolean {
-  const [matches, setMatches] = useState(false);
+  const subscribe = useCallback(
+    (onStoreChange: () => void): (() => void) => {
+      if (typeof window === 'undefined' || !window.matchMedia) {
+        return () => {};
+      }
+      const mql = window.matchMedia(query);
+      mql.addEventListener('change', onStoreChange);
+      return () => mql.removeEventListener('change', onStoreChange);
+    },
+    [query],
+  );
 
-  useEffect(() => {
-    if (typeof window === 'undefined' || !window.matchMedia) return;
-    const mql = window.matchMedia(query);
-    setMatches(mql.matches);
-    const listener = (ev: MediaQueryListEvent): void => setMatches(ev.matches);
-    mql.addEventListener('change', listener);
-    return () => mql.removeEventListener('change', listener);
+  const getSnapshot = useCallback((): boolean => {
+    if (typeof window === 'undefined' || !window.matchMedia) return false;
+    return window.matchMedia(query).matches;
   }, [query]);
 
-  return matches;
+  return useSyncExternalStore(subscribe, getSnapshot, () => false);
 }
 
 /**
