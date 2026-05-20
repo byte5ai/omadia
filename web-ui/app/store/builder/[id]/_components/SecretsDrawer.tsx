@@ -73,6 +73,8 @@ export function SecretsDrawer({
   // in React state longer than necessary.
   useEffect(() => {
     if (!open) {
+      // Intentional form-state reset when the drawer closes.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setDraftValues({});
       setError(null);
     }

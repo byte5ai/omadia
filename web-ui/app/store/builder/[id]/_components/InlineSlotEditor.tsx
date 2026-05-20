@@ -59,6 +59,8 @@ export function InlineSlotEditor({
 
   // Re-seed when slotKey changes (operator switched to a different page row).
   useEffect(() => {
+    // Intentional state reset when the slotKey prop changes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setValue(initialValue);
     setStatus({ kind: 'idle' });
   }, [slotKey, initialValue]);

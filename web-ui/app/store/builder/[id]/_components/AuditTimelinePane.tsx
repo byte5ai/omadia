@@ -103,6 +103,9 @@ export function AuditTimelinePane({ draftId }: AuditTimelinePaneProps): React.Re
   );
 
   useEffect(() => {
+    // Fetch-on-mount: loadPage() touches state only after the awaited
+    // page fetch — no synchronous cascading render.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadPage(0, false);
   }, [loadPage]);
 

@@ -124,6 +124,9 @@ export function SlotEditor({
   useEffect(() => {
     if (active && slotKeys.includes(active)) return;
     const next = slotKeys[0] ?? '';
+    // Intentional: adjust the active slot when the slot list changes
+    // (initial load, or the current slot was removed).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setActive(next);
     const value = next ? (slots[next] ?? '') : '';
     setDraft(value);
@@ -140,6 +143,9 @@ export function SlotEditor({
     if (canonical === lastSavedRef.current) return;
     lastSavedRef.current = canonical;
     if (status.kind !== 'dirty' && status.kind !== 'pending') {
+      // Mirror the server-canonical slot value into the local draft when it
+      // changes and the user has no in-flight edit.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setDraft(canonical);
     }
   }, [active, slots, status.kind]);

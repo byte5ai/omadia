@@ -67,6 +67,9 @@ export function QualityPanel({ draftId, refetchKey }: QualityPanelProps): React.
   }, [draftId]);
 
   useEffect(() => {
+    // Fetch-on-mount / refetch: load() touches state only after the awaited
+    // fetch — no synchronous cascading render.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
   }, [load, refetchKey]);
 

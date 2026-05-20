@@ -73,6 +73,10 @@ export function SpecEditor({ draftId, spec, agentStuck }: SpecEditorProps): Reac
   // When the server-canonical spec catches up with our dirty edit, clear
   // the dirty entry so the input goes back to mirroring the server.
   useEffect(() => {
+    // Reconcile dirty edits against the server-canonical spec when it
+    // changes; the functional updater returns `prev` unchanged when there
+    // is nothing to clear, so React bails out of any redundant render.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setDirty((prev) => {
       let next: Partial<Record<string, string>> | null = null;
       for (const [path, value] of Object.entries(prev)) {

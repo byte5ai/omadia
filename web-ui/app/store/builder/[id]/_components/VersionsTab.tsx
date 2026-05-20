@@ -70,6 +70,9 @@ export function VersionsTab({ draftId }: VersionsTabProps): React.ReactElement {
   }, [draftId]);
 
   useEffect(() => {
+    // Fetch-on-mount: refresh() touches state only after the awaited
+    // snapshot-list fetch — no synchronous cascading render.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void refresh();
   }, [refresh]);
 

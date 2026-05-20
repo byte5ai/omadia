@@ -32,6 +32,9 @@ export function ToolTemplatesModal({
   const curated = listCuratedTemplates();
 
   useEffect(() => {
+    // Reads the operator's personal templates from localStorage — deferred
+    // to client mount because localStorage is unavailable during SSR.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setPersonal(listPersonalTemplates());
   }, []);
 
