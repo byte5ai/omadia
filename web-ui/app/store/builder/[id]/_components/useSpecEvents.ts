@@ -27,10 +27,18 @@ export function useSpecEvents(
   handler: (ev: SpecBusEvent) => void,
   opts: UseSpecEventsOptions = {},
 ): void {
-  const handlerRef = useRef(handler);
-  const onStatusRef = useRef(opts.onStatus);
-  handlerRef.current = handler;
-  onStatusRef.current = opts.onStatus;
+  // Latest-value refs so the subscription effect below doesn't tear down the
+  // EventSource on every render. Synced via a post-render effect (never during
+  // render) to satisfy the React-Compiler `refs` rule; lazily initialised so
+  // `.current` isn't treated as a frozen hook argument by `immutability`. Every
+  // consumer (`dispatch`, `onOpen`/`onError`, cleanup) runs asynchronously
+  // after commit, so the ref is always populated by the time it is read.
+  const handlerRef = useRef<((ev: SpecBusEvent) => void) | null>(null);
+  const onStatusRef = useRef<UseSpecEventsOptions['onStatus']>(undefined);
+  useEffect(() => {
+    handlerRef.current = handler;
+    onStatusRef.current = opts.onStatus;
+  });
 
   const enabled = opts.enabled !== false;
 
@@ -51,7 +59,7 @@ export function useSpecEvents(
       onStatusRef.current?.(source.readyState === 2 ? 'closed' : 'error');
     };
     const dispatch = (ev: SpecBusEvent): void => {
-      handlerRef.current(ev);
+      handlerRef.current?.(ev);
     };
 
     const onSpecPatch = (e: MessageEvent<string>): void => {

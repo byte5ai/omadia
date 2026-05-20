@@ -109,10 +109,15 @@ export function SlotEditor({
   );
   const [status, setStatus] = useState<SaveStatus>({ kind: 'idle' });
   const debounceRef = useRef<number | null>(null);
-  const draftRef = useRef(draft);
+  // Lazily initialised + synced via a post-render effect so the React-Compiler
+  // `refs`/`immutability` rules are satisfied. `draftRef` is only read inside
+  // `flush`, which runs on debounce/blur — always after commit.
+  const draftRef = useRef<string>('');
   const lastSavedRef = useRef<string>(slotKeys[0] ? (slots[slotKeys[0]] ?? '') : '');
   const selectId = useId();
-  draftRef.current = draft;
+  useEffect(() => {
+    draftRef.current = draft;
+  });
 
   // Switch to the first slot when the slot list changes from empty → non-
   // empty (initial load) or shrinks below the current selection.

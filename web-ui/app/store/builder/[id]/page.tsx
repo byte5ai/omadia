@@ -20,9 +20,12 @@ export default async function BuilderWorkspacePage({
 }): Promise<React.ReactElement> {
   const { id } = await params;
 
+  // Only the data fetch is wrapped — constructing the <Workspace> JSX inside
+  // the try would (correctly) trip the React-Compiler `error-boundaries` rule:
+  // render errors from <Workspace> are not caught by a try/catch around it.
+  let envelope: Awaited<ReturnType<typeof getBuilderDraft>>;
   try {
-    const envelope = await getBuilderDraft(id);
-    return <Workspace initialDraft={envelope.draft} />;
+    envelope = await getBuilderDraft(id);
   } catch (err) {
     if (err instanceof ApiError && err.status === 404) {
       notFound();
@@ -30,6 +33,7 @@ export default async function BuilderWorkspacePage({
     await redirectIfUnauthorized(err);
     return <LoadErrorState id={id} error={err} />;
   }
+  return <Workspace initialDraft={envelope.draft} />;
 }
 
 function LoadErrorState({
