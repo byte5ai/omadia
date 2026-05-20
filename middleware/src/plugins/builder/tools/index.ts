@@ -7,6 +7,7 @@ import { listReferencesTool } from './listReferences.js';
 import { patchSpecTool } from './patchSpec.js';
 import { readPackageTypesTool } from './readPackageTypes.js';
 import { readReferenceTool } from './readReference.js';
+import { readSlotTool } from './readSlot.js';
 import { reportPlatformIssueTool } from './reportPlatformIssue.js';
 import { setPersonaConfigTool } from './setPersonaConfig.js';
 import { setQualityConfigTool } from './setQualityConfig.js';
@@ -34,6 +35,7 @@ export {
   patchSpecTool,
   readPackageTypesTool,
   readReferenceTool,
+  readSlotTool,
   reportPlatformIssueTool,
   setPersonaConfigTool,
   setQualityConfigTool,
@@ -48,6 +50,7 @@ export function builderTools(): ReadonlyArray<BuilderTool<unknown, unknown>> {
   return [
     patchSpecTool as unknown as BuilderTool<unknown, unknown>,
     fillSlotTool as unknown as BuilderTool<unknown, unknown>,
+    readSlotTool as unknown as BuilderTool<unknown, unknown>,
     lintSpecTool as unknown as BuilderTool<unknown, unknown>,
     listCatalogToolsTool as unknown as BuilderTool<unknown, unknown>,
     listReferencesTool as unknown as BuilderTool<unknown, unknown>,

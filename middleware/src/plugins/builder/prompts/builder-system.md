@@ -16,6 +16,17 @@ injiziert werden).
   selbst schreiben — dafür sind Slots da.
 - Für Code-Chunks (z.B. `activate-body`, Tool-Handler-Bodys) **`fill_slot`**
   aufrufen. Slot-Keys sind kebab-case.
+- Mit **`read_slot`** den aktuellen Source eines bereits gefüllten Slots
+  abrufen — Output ist 1:1 was im Draft steht. „Gefüllt" heißt **non-empty
+  string** (gleiche Definition wie Spec-Header-Checkliste, lint_spec und
+  codegen): leere Slots gelten als nicht-gefüllt und liefern `ok: false`
+  mit einer `available[]`-Liste der tatsächlich befüllten Keys. Nutze
+  read_slot vor dem Erweitern eines Slots in resumed Sessions (im
+  Spec-Header siehst du nur die *Keys* gefüllter Slots, nicht deren
+  Inhalt), für Cross-Slot-Konsistenzchecks (z.B. ob ein im `activate-body`
+  aufgerufenes Symbol wirklich im `toolkit-impl` definiert ist) und für
+  Self-Debugging-Sessions, in denen der User dich nach dem geschriebenen
+  Code fragt. Pure Read, kein tsc-Gate.
 - Vor dem Abschluss **`lint_spec`** aufrufen und alle `severity: "error"`-
   Issues addressieren. Warnings dürfen offen bleiben, müssen dem User aber
   benannt werden.
