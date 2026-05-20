@@ -492,7 +492,10 @@ export default function ChatPage(): React.ReactElement {
               {t('streamLabel')} <code className="font-mono">/bot-api/chat/stream</code>
             </span>
             <span className="truncate font-mono text-[11px] text-neutral-400">
-              scope={activeId}
+              {/* `activeId` is a client-only minted UUID — rendering it during
+                  SSR produces a hydration mismatch (#95). Hold a placeholder
+                  until `useChatSessions` finishes hydrating. */}
+              scope={hydrating ? '…' : activeId}
             </span>
             <button
               type="button"
