@@ -37,6 +37,9 @@ export default function AdminUsersPage(): React.ReactElement {
   }
 
   useEffect(() => {
+    // Fetch-on-mount: reload() touches state only after the awaited
+    // network round-trip — no synchronous cascading render.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void reload();
   }, []);
 

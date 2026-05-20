@@ -57,6 +57,9 @@ export default function GraphPage(): React.ReactElement {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const mql = window.matchMedia('(prefers-color-scheme: dark)');
+    // Initial read of a browser API unavailable during SSR; the `change`
+    // listener below handles every subsequent update.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setDark(mql.matches);
     const handler = (e: MediaQueryListEvent): void => setDark(e.matches);
     mql.addEventListener('change', handler);
@@ -91,6 +94,9 @@ export default function GraphPage(): React.ReactElement {
   }, []);
 
   useEffect(() => {
+    // Fetch-on-mount: refresh()'s only synchronous setState is setError(null),
+    // a same-value no-op on mount; the data lands after the awaited fetch.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void refresh();
   }, [refresh]);
 
@@ -124,6 +130,9 @@ export default function GraphPage(): React.ReactElement {
   // Load the active session's own view on demand.
   useEffect(() => {
     if (selected === ALL) return;
+    // Load-on-selection: loadSessionView marks the scope 'loading' (one
+    // intended render) before fetching — not a cascading-render anti-pattern.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (!sessionViews[selected]) void loadSessionView(selected);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
@@ -132,6 +141,9 @@ export default function GraphPage(): React.ReactElement {
   useEffect(() => {
     if (selected !== ALL) return;
     for (const s of sessions) {
+      // loadSessionView marks each scope 'loading' (one intended render)
+      // before fetching — not a cascading-render anti-pattern.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       if (!sessionViews[s.scope]) void loadSessionView(s.scope);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -164,6 +176,9 @@ export default function GraphPage(): React.ReactElement {
     const view = sessionViews[selected];
     if (!view || view === 'loading' || view === 'missing') return;
     for (const t of view.turns) {
+      // loadRun marks the turn 'loading' (one intended render) before
+      // fetching — not a cascading-render anti-pattern.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       if (!runCache[t.turn.id]) void loadRun(t.turn.id);
     }
   }, [mode, selected, sessionViews, runCache, loadRun]);
