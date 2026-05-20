@@ -96,10 +96,16 @@ export default function MemoryPage(): React.ReactElement {
   }, []);
 
   useEffect(() => {
+    // Load-on-change: loadDir marks the list 'loading' (one intended render)
+    // before fetching the directory — not a cascading-render anti-pattern.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadDir(cwd);
   }, [cwd, loadDir]);
 
   useEffect(() => {
+    // Load-on-selection: loadFile marks the file 'loading' (one intended
+    // render) before fetching — not a cascading-render anti-pattern.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (selected) void loadFile(selected);
   }, [selected, loadFile]);
 
