@@ -11,6 +11,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Native issue-reporting + workaround-tracking for the agent builder.
+  When the builder hits a platform-side failure (forbidden-import
+  gate on valid code, codegen-internal error, core-stack-frame
+  crash, admin-route schema violation), it now offers the operator
+  a smart card with three options: report + workaround, report +
+  pause, or skip. Reports go through a browser-submit flow against
+  `byte5ai/omadia` so the operator owns the GitHub attribution; the
+  middleware never sees a PAT in v1. A 64 KB sanitizer strips
+  AWS keys / GitHub PATs / Slack tokens / IBANs / emails / internal
+  URLs before the operator confirms. Per-operator rate limit of 3
+  platform reports per 24 h, deduplication via a stable
+  fingerprint hash + GitHub search, ETag-aware status cache with
+  rate-limit backoff, pause-on-issue with operator-triggered
+  resume. Workaround lifecycle state survives re-installs in the
+  new `agent_workaround_state` table; identity (issue ref +
+  fingerprint + summary) lives on the spec so the manifest carries
+  it through to installed agents.
+- RFC `docs/cross-channel-memory.md` proposing two new core capabilities,
+  `platformIdentity@1` and `crossChannelConversationMemory@1`, plus four
+  provider plugins (Neon + in-memory siblings per capability). Driven by
+  the omadia-ui Tier-2 orchestrator's hard dependency on
+  `crossChannelConversationMemory@1` and the "Telegram → desktop"
+  continuity scenario. Additive against `harness-channel-sdk`: the
+  existing `ConversationHistoryStore` contract stays unchanged; a new
+  `DurableConversationHistoryStore` adapter bridges to the capability
+  and falls back to in-memory behavior when the capability is not
+  installed. The RFC also specifies a small additive extension to
+  `TurnContextValue` in `harness-orchestrator` (`tenantId?`,
+  `originatorUserRef?`, `originatorUserId?`, `canvasSessionId?`),
+  which lands with PR 4 and absorbs the Phase-12 `tenantId` work from
+  `docs/middleware-agent-handoff.md`. The RFC went through three
+  Codex-style review rounds before landing: service-registry-key form,
+  `TurnContextValue` field availability, the dual `ConversationTurn`
+  shape in the SDK, misuse of `ctx.notifications` as an ops/audit
+  surface, identity-merge race-safety, outbox idempotency via
+  `client_message_id`, structured `CcmAppendError` failure taxonomy,
+  audit-event PII minimization plus retention, and the absence of a
+  `permissions.routes` manifest key were all fixed against the real
+  code in `middleware/packages/` before merge. PR sequence and
+  consumer mechanics are spelled out in §15 of the RFC;
+  `docs/middleware-agent-handoff.md` §13 gains a Phase 13 roadmap
+  entry pointing at the RFC.
 - byte5ai engineering-standards applied to the repo
   (`status: applied` in `.github/engineering-standards.yml`):
   - `.hooks/pre-push` blocks direct pushes to `main`/`master` locally.

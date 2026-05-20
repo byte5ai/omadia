@@ -290,9 +290,109 @@ describe('DraftStore', () => {
     );
     assert.equal(hit, null);
   });
+
+  it('schema is at user_version >= 2 after open', () => {
+    const raw = new Database(dbPath);
+    try {
+      const version = raw.pragma('user_version', { simple: true }) as number;
+      assert.ok(
+        version >= 2,
+        `expected user_version >= 2, got ${String(version)}`,
+      );
+    } finally {
+      raw.close();
+    }
+  });
+
+  it('v2 schema exposes the issue-reporting + workaround tables', () => {
+    const raw = new Database(dbPath);
+    try {
+      const tables = (raw
+        .prepare(
+          `SELECT name FROM sqlite_master WHERE type='table' AND name IN
+            ('github_issue_cache','agent_workaround_state','builder_triage_log')`,
+        )
+        .all() as Array<{ name: string }>).map((r) => r.name)
+        .sort();
+      assert.deepEqual(tables, [
+        'agent_workaround_state',
+        'builder_triage_log',
+        'github_issue_cache',
+      ]);
+    } finally {
+      raw.close();
+    }
+  });
+
+  it('migrates v1 DBs to v4 without touching v1 data', async () => {
+    const legacyPath = join(tmp, `legacy-${String(Date.now())}.db`);
+    // Hand-craft a v1 DB: schema-version 1 + one drafts row.
+    const seed = new Database(legacyPath);
+    seed.exec(`
+      CREATE TABLE drafts (
+        id TEXT PRIMARY KEY,
+        user_email TEXT NOT NULL,
+        name TEXT NOT NULL,
+        spec_json TEXT NOT NULL,
+        slots_json TEXT NOT NULL DEFAULT '{}',
+        transcript_json TEXT NOT NULL DEFAULT '[]',
+        preview_transcript_json TEXT NOT NULL DEFAULT '[]',
+        codegen_model TEXT NOT NULL DEFAULT 'sonnet',
+        preview_model TEXT NOT NULL DEFAULT 'sonnet',
+        status TEXT NOT NULL DEFAULT 'draft',
+        installed_agent_id TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        deleted_at INTEGER
+      );
+    `);
+    const now = Date.now();
+    seed
+      .prepare(
+        `INSERT INTO drafts (id,user_email,name,spec_json,created_at,updated_at)
+         VALUES ('legacy-1','legacy@example.com','Legacy',?,?,?)`,
+      )
+      .run(JSON.stringify({ version: '0.1.0', id: 'legacy.agent' }), now, now);
+    seed.pragma('user_version = 1');
+    seed.close();
+
+    const upgraded = new DraftStore({ dbPath: legacyPath });
+    await upgraded.open();
+
+    const raw = new Database(legacyPath);
+    try {
+      const version = raw.pragma('user_version', { simple: true }) as number;
+      assert.equal(version, 4);
+      const row = raw
+        .prepare('SELECT name FROM drafts WHERE id = ?')
+        .get('legacy-1') as { name: string } | undefined;
+      assert.equal(row?.name, 'Legacy');
+      const tables = (raw
+        .prepare(
+          `SELECT name FROM sqlite_master WHERE type='table' AND name IN
+            ('github_issue_cache','agent_workaround_state','builder_triage_log')`,
+        )
+        .all() as Array<{ name: string }>).length;
+      assert.equal(tables, 3);
+    } finally {
+      raw.close();
+      await upgraded.close();
+    }
+  });
+
+  it('refuses to open a DB whose schema is newer than supported', async () => {
+    const futurePath = join(tmp, `future-${String(Date.now())}.db`);
+    const seed = new Database(futurePath);
+    seed.exec('CREATE TABLE drafts (id TEXT PRIMARY KEY);');
+    seed.pragma('user_version = 999');
+    seed.close();
+
+    const future = new DraftStore({ dbPath: futurePath });
+    await assert.rejects(() => future.open(), /newer than this middleware supports/);
+  });
 });
 
-describe('DraftStore v1 → v3 migration (2026-05-18)', () => {
+describe('DraftStore v1 → v4 migration (2026-05-18)', () => {
   let tmp: string;
 
   before(() => {
@@ -365,7 +465,7 @@ describe('DraftStore v1 → v3 migration (2026-05-18)', () => {
     // Schema bump persisted.
     const inspect = new Database(dbPath);
     const version = inspect.pragma('user_version', { simple: true });
-    assert.equal(version, 3);
+    assert.equal(version, 4);
 
     // Column renamed; legacy column gone.
     const cols = (

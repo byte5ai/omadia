@@ -7,13 +7,16 @@ import type { z } from 'zod';
  * plugin authors realistically reach for:
  *   ZodObject, ZodString, ZodNumber, ZodBoolean, ZodEnum, ZodLiteral,
  *   ZodArray, ZodOptional, ZodNullable, ZodDefault, ZodEffects,
- *   ZodUnion, ZodDiscriminatedUnion, ZodIntersection, ZodRecord, ZodTuple.
+ *   ZodUnion, ZodDiscriminatedUnion, ZodIntersection, ZodRecord, ZodTuple,
+ *   ZodAny, ZodUnknown.
  *
  * Anything still unknown falls back to a free-form `{}` schema — valid for
  * Anthropic tool_use, but the model gets less structural signal. The
  * previous iteration of this file also fell through `{}` for union/record/
  * tuple, which made plugins with those shapes materially worse tool-users
- * than built-ins. That gap closes here.
+ * than built-ins. That gap closes here. The fallback branch warns loudly
+ * with diagnostic context (typeName, ctor.name, _def presence) so the next
+ * surface of an unknown type is immediately actionable.
  */
 
 export interface JsonSchema {
@@ -45,15 +48,51 @@ export interface JsonSchema {
   allOf?: JsonSchema[];
 }
 
+/**
+ * Zod 4 internal shape. Field names diverge from Zod 3:
+ *   - `typeName` ("ZodObject") → `type` ("object")
+ *   - `shape()` (function)     → `shape` (direct object)
+ *   - array element via `type`  → `element`
+ *   - effects/transform        → `pipe` (with `in`/`out`)
+ *   - literal `value`          → `values: [v]`
+ *   - default factory          → `defaultValue` (primitive)
+ *   - check objects wrap defs as `_zod.def.{check, format, value, ...}`
+ *
+ * The walker discriminates on `def.type` (Zod 4) with a fallback to the
+ * legacy `typeName` so external plugins still on Zod 3 keep working.
+ */
+interface ZodCheckV4 {
+  _zod?: {
+    def?: {
+      check?: string;
+      format?: string;
+      pattern?: RegExp;
+      value?: number;
+      minimum?: number;
+      maximum?: number;
+      inclusive?: boolean;
+    };
+  };
+}
+
 interface ZodDef {
+  /** Zod 4 discriminator (lowercase): 'object' | 'string' | 'union' | ... */
+  type?: string;
+  /** Zod 3 discriminator (PascalCase): 'ZodObject' | 'ZodString' | ... */
   typeName?: string;
-  checks?: Array<Record<string, unknown>>;
+  checks?: Array<ZodCheckV4 & Record<string, unknown>>;
   description?: string;
+  /** Zod 3 enum values. */
   values?: ReadonlyArray<string>;
+  /** Zod 4 enum entries (record form). */
+  entries?: Record<string, string | number>;
   innerType?: z.ZodTypeAny;
-  type?: z.ZodTypeAny;
-  defaultValue?: () => unknown;
-  shape?: () => Record<string, z.ZodTypeAny>;
+  /** Zod 4 default value (primitive, not factory). */
+  defaultValue?: unknown;
+  /** Zod 3 default value factory. */
+  defaultValueFactory?: () => unknown;
+  /** Zod 4 object shape (direct object). */
+  shape?: Record<string, z.ZodTypeAny> | (() => Record<string, z.ZodTypeAny>);
   // Union-ish:
   options?: ReadonlyArray<z.ZodTypeAny> | Map<unknown, z.ZodTypeAny>;
   discriminator?: string;
@@ -66,6 +105,54 @@ interface ZodDef {
   // Tuple:
   items?: ReadonlyArray<z.ZodTypeAny>;
   rest?: z.ZodTypeAny | null;
+  // Zod 4 array element / pipe legs:
+  element?: z.ZodTypeAny;
+  in?: z.ZodTypeAny;
+  out?: z.ZodTypeAny;
+}
+
+/**
+ * Normalise the type tag to the Zod-3 PascalCase form used by the switch.
+ * Maps Zod-4 `def.type` strings onto the same labels so the body below
+ * stays single-source.
+ */
+function tagOf(def: ZodDef): string | undefined {
+  if (def.typeName) return def.typeName;
+  switch (def.type) {
+    case 'object': return 'ZodObject';
+    case 'string': return 'ZodString';
+    case 'number': return 'ZodNumber';
+    case 'boolean': return 'ZodBoolean';
+    case 'enum': return 'ZodEnum';
+    case 'literal': return 'ZodLiteral';
+    case 'array': return 'ZodArray';
+    case 'optional': return 'ZodOptional';
+    case 'nullable': return 'ZodNullable';
+    case 'default': return 'ZodDefault';
+    case 'pipe': return 'ZodEffects';
+    case 'union': return def.discriminator ? 'ZodDiscriminatedUnion' : 'ZodUnion';
+    case 'intersection': return 'ZodIntersection';
+    case 'record': return 'ZodRecord';
+    case 'tuple': return 'ZodTuple';
+    case 'any': return 'ZodAny';
+    case 'unknown': return 'ZodUnknown';
+    default: return undefined;
+  }
+}
+
+function resolveShape(def: ZodDef): Record<string, z.ZodTypeAny> {
+  if (!def.shape) return {};
+  return typeof def.shape === 'function' ? def.shape() : def.shape;
+}
+
+function checkKind(check: ZodCheckV4 & Record<string, unknown>): string | undefined {
+  const v4 = check._zod?.def?.check;
+  if (v4) return v4;
+  return check['kind'] as string | undefined;
+}
+
+function checkV4(check: ZodCheckV4 & Record<string, unknown>): NonNullable<NonNullable<ZodCheckV4['_zod']>['def']> | undefined {
+  return check._zod?.def;
 }
 
 function defOf(schema: z.ZodTypeAny): ZodDef {
@@ -74,8 +161,9 @@ function defOf(schema: z.ZodTypeAny): ZodDef {
 
 function isOptional(schema: z.ZodTypeAny): boolean {
   const def = defOf(schema);
-  if (def.typeName === 'ZodOptional' || def.typeName === 'ZodDefault') return true;
-  if (def.typeName === 'ZodNullable' && def.innerType) return isOptional(def.innerType);
+  const tag = tagOf(def);
+  if (tag === 'ZodOptional' || tag === 'ZodDefault') return true;
+  if (tag === 'ZodNullable' && def.innerType) return isOptional(def.innerType);
   if (typeof (schema as { isOptional?: () => boolean }).isOptional === 'function') {
     try {
       return (schema as { isOptional: () => boolean }).isOptional();
@@ -88,16 +176,21 @@ function isOptional(schema: z.ZodTypeAny): boolean {
 
 export function zodToJsonSchema(schema: z.ZodTypeAny): JsonSchema {
   const def = defOf(schema);
-  const description = def.description;
+  // Zod 4 moved descriptions off `_def.description` onto the schema instance
+  // (via `.describe()` and the `meta()` accessor). Zod 3 kept it on `_def`.
+  // Read from both so this works under either runtime.
+  const description =
+    (schema as { description?: string }).description ?? def.description;
   const base = convert(schema, def);
   if (description && !base.description) base.description = description;
   return base;
 }
 
 function convert(schema: z.ZodTypeAny, def: ZodDef): JsonSchema {
-  switch (def.typeName) {
+  const tag = tagOf(def);
+  switch (tag) {
     case 'ZodObject': {
-      const shape = def.shape?.() ?? {};
+      const shape = resolveShape(def);
       const properties: Record<string, JsonSchema> = {};
       const required: string[] = [];
       for (const [key, child] of Object.entries(shape)) {
@@ -115,7 +208,28 @@ function convert(schema: z.ZodTypeAny, def: ZodDef): JsonSchema {
     case 'ZodString': {
       const out: JsonSchema = { type: 'string' };
       for (const check of def.checks ?? []) {
-        const kind = check['kind'];
+        const v4 = checkV4(check);
+        const kind = checkKind(check);
+        // Zod 4: string-format lives under check='string_format' + format='url'|'email'|...
+        if (v4?.check === 'string_format') {
+          const fmt = v4.format;
+          if (fmt === 'url') out.format = 'uri';
+          else if (fmt === 'email') out.format = 'email';
+          else if (fmt === 'uuid') out.format = 'uuid';
+          else if (fmt === 'regex' && v4.pattern instanceof RegExp) {
+            out.pattern = v4.pattern.source;
+          }
+          continue;
+        }
+        if (v4?.check === 'min_length') {
+          out.minLength = v4.minimum;
+          continue;
+        }
+        if (v4?.check === 'max_length') {
+          out.maxLength = v4.maximum;
+          continue;
+        }
+        // Zod 3 fallback (in case a plugin still ships v3 schemas).
         if (kind === 'url') out.format = 'uri';
         else if (kind === 'email') out.format = 'email';
         else if (kind === 'uuid') out.format = 'uuid';
@@ -131,7 +245,22 @@ function convert(schema: z.ZodTypeAny, def: ZodDef): JsonSchema {
     case 'ZodNumber': {
       const out: JsonSchema = { type: 'number' };
       for (const check of def.checks ?? []) {
-        const kind = check['kind'];
+        const v4 = checkV4(check);
+        const kind = checkKind(check);
+        // Zod 4: `int()` is encoded as `number_format` with `format='safeint'`.
+        if (v4?.check === 'number_format' && v4.format === 'safeint') {
+          out.type = 'integer';
+          continue;
+        }
+        if (v4?.check === 'greater_than') {
+          out.minimum = v4.value;
+          continue;
+        }
+        if (v4?.check === 'less_than') {
+          out.maximum = v4.value;
+          continue;
+        }
+        // Zod 3 fallback.
         if (kind === 'int') out.type = 'integer';
         else if (kind === 'min') out.minimum = check['value'] as number;
         else if (kind === 'max') out.maximum = check['value'] as number;
@@ -140,39 +269,62 @@ function convert(schema: z.ZodTypeAny, def: ZodDef): JsonSchema {
     }
     case 'ZodBoolean':
       return { type: 'boolean' };
-    case 'ZodEnum':
-      return {
-        type: 'string',
-        enum: (def.values ?? []) as unknown as string[],
-      };
-    case 'ZodArray':
+    case 'ZodEnum': {
+      // Zod 4: `def.entries` is `{ key: value }`; values are the user-facing
+      // strings. Zod 3: `def.values` is the array.
+      const values = def.entries
+        ? (Object.values(def.entries) as unknown as string[])
+        : ((def.values ?? []) as unknown as string[]);
+      return { type: 'string', enum: values };
+    }
+    case 'ZodArray': {
+      // Zod 4 stores the element in `def.element`; Zod 3 used `def.type`
+      // (a `z.ZodTypeAny`). The `ZodDef.type` field is now a string in v4,
+      // so the v3 path needs the legacy interpretation via a cast.
+      const v4Element = def.element;
+      const v3Element = (def as unknown as { type?: z.ZodTypeAny }).type;
+      const element =
+        v4Element ?? (typeof v3Element === 'object' ? v3Element : undefined);
       return {
         type: 'array',
-        items: def.type ? zodToJsonSchema(def.type) : {},
+        items: element ? zodToJsonSchema(element) : {},
       };
+    }
     case 'ZodOptional':
     case 'ZodNullable':
       return def.innerType ? zodToJsonSchema(def.innerType) : {};
     case 'ZodDefault': {
       const inner = def.innerType ? zodToJsonSchema(def.innerType) : {};
       try {
-        if (def.defaultValue) inner.default = def.defaultValue();
+        // Zod 4: `defaultValue` is a primitive. Zod 3: factory function.
+        if (typeof def.defaultValue === 'function') {
+          inner.default = (def.defaultValue as () => unknown)();
+        } else if (def.defaultValue !== undefined) {
+          inner.default = def.defaultValue;
+        }
       } catch {
         // defaultValue factory may throw — schema stays valid without a default.
       }
       return inner;
     }
     case 'ZodLiteral': {
-      const literal = (def as unknown as { value: unknown }).value;
+      // Zod 4: `def.values = [v]`. Zod 3: `def.value = v`.
+      const literal =
+        def.values && def.values.length > 0
+          ? def.values[0]
+          : (def as unknown as { value?: unknown }).value;
       if (typeof literal === 'string') return { type: 'string', enum: [literal] };
       if (typeof literal === 'number') return { type: 'number', enum: [literal] };
       if (typeof literal === 'boolean') return { type: 'boolean', enum: [literal] };
       return {};
     }
-    case 'ZodEffects':
-      return (def as unknown as { schema: z.ZodTypeAny }).schema
-        ? zodToJsonSchema((def as unknown as { schema: z.ZodTypeAny }).schema)
-        : {};
+    case 'ZodEffects': {
+      // Zod 4 collapses transforms into pipes: `def.in` is the input schema.
+      // Zod 3 had `def.schema`.
+      const inner =
+        def.in ?? (def as unknown as { schema?: z.ZodTypeAny }).schema;
+      return inner ? zodToJsonSchema(inner) : {};
+    }
 
     case 'ZodUnion': {
       const branches = unwrapOptions(def.options);
@@ -223,10 +375,33 @@ function convert(schema: z.ZodTypeAny, def: ZodDef): JsonSchema {
       return out;
     }
 
-    default:
-      // Unknown type — leave as free-form object so the model at least receives
-      // a valid schema. Surface in the tool's description field when possible.
+    case 'ZodAny':
+    case 'ZodUnknown':
+      // Free-form payload — Anthropic tool-use accepts an empty object schema
+      // as "any JSON value". No structural hint to give the model, but at
+      // least don't trip the fallback warning below.
       return {};
+
+    default: {
+      // Unknown type — leave as free-form object so the model at least receives
+      // a valid schema. Log loudly so the next encounter surfaces the missing
+      // case instead of silently delivering an empty parameter list. Diagnostic
+      // helps trap module-boundary issues (plugin loads its own `zod` whose
+      // typeName/type somehow differs) and exotic new Zod types added by
+      // plugins.
+      const typeName = def.typeName ?? def.type ?? '(no typeName)';
+      const hasUnderscoreDef =
+        schema != null && typeof schema === 'object' && '_def' in schema;
+      const constructorName =
+        (schema as { constructor?: { name?: string } } | null)?.constructor
+          ?.name ?? '(unknown)';
+      console.warn(
+        `[zodToJsonSchema] FALLBACK — unrecognised Zod type. ` +
+          `typeName='${typeName}' ctor='${constructorName}' hasUnderscoreDef=${String(hasUnderscoreDef)}. ` +
+          `Returning {} schema; the model will see no parameters.`,
+      );
+      return {};
+    }
   }
 }
 

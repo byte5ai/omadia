@@ -642,6 +642,64 @@ Sobald wir mehrere Teams-Tenants bedienen, muss `tenantId` aus der Teams-Activit
 in `TurnContextValue` fließen — analog `turnId`. `DiagramService` liest dann
 `turnContext.currentTenantId()` statt `config.GRAPH_TENANT_ID`.
 
+### Phase 13 — Cross-Channel Conversation Memory
+
+Durable, user-scoped Conversation-Memory über Channel-Grenzen hinweg.
+Treiber: omadia-ui-Orchestrator deklariert `requires:
+crossChannelConversationMemory@1`. Use-Case ist die "S-Bahn → Büro"-
+Continuity (Telegram unterwegs → Desktop-App im Büro nahtlos weiter).
+
+Spec liegt als RFC unter [docs/cross-channel-memory.md](cross-channel-memory.md).
+Kurzfassung:
+
+- Zwei neue Capabilities: `platformIdentity@1` (ChannelUserRef → stabile
+  userId) und `crossChannelConversationMemory@1` (append-only durable
+  Conversation-Log pro userId, channel-agnostisch). Service-Registry-Keys
+  sind bare names (`platformIdentity`, `crossChannelConversationMemory`),
+  Capability-Refs mit `@major` nur im Manifest.
+- Vier Plugins als Provider, je Neon + Inmemory-Sibling pro Capability;
+  Mutual-Exclusion pro Capability — Operator wählt Neon für Prod,
+  Inmemory für CI / Smoke / Local-Dev. Pattern analog
+  `harness-knowledge-graph-neon` / `-inmemory`. Inmemory-Sibling ist
+  explizit nur Single-Process; Multi-Pod-Setups erfordern Neon.
+- Identity-Modell v1: Auto-Merge bei E-Mail-Gleichheit ist **opt-in pro
+  Tenant** (`pi_auto_merge_on_email`, default `false`) und greift nur
+  bei `email_verified=true`. Race-Sicherheit per `UNIQUE`-Index +
+  `INSERT ... ON CONFLICT`. Shared-Mailbox, Recycled-Email und
+  Email-Rename sind als Edge-Cases im RFC dokumentiert.
+- Backward-compat: `ConversationHistoryStore` aus `harness-channel-sdk`
+  bleibt unverändert. Neuer `DurableConversationHistoryStore`-Adapter
+  fungiert als Bridge zur Capability; Channel-Plugins opten pro PR ein.
+  Fehlt die Capability (CI / Dev), fällt der Adapter auf das bisherige
+  `InMemoryConversationHistoryStore`-Verhalten zurück. Type-Bridge
+  zwischen den zwei `ConversationTurn`-Shapes im SDK ist in §7.2 des
+  RFC spezifiziert.
+- `TurnContextValue` bekommt drei additive optionale Felder
+  (`tenantId?`, `originatorUserRef?`, `originatorUserId?`) — landet in
+  PR 4 zusammen mit dem Adapter und absorbiert die `tenantId`-Arbeit
+  aus Phase 12.
+- Persistenz raw, Egress-Redaction unverändert; optionaler
+  Pre-Persist-Redaction-Hook pro Tenant (`ccm_redact_on_persist`).
+  Lese-Default schließt Rows mit `redaction_state='pending'` aus.
+  Privileged-Reads (`includeRaw=true`) sind admin-only und werden in
+  einer eigenen `ccm_audit_events`-Tabelle persistiert — nicht über
+  `ctx.notifications` (Cross-Channel-User-Fan-out, falsche Surface).
+- Capacity: TTL 90 Tage (konfigurierbar), Per-User-Count-Cap 10000
+  Turns, zusätzlich Per-User-Byte-Cap (~50 MB), `ccm-gc`-Cron mit drei
+  Passes (TTL → count → bytes). Outbox-Tabelle plus separater
+  `ccm-outbox`-Job für Late-Delivery bei transienten Schreibfehlern.
+  Kein Score-Decay / Tier-Rotation — chronologisch, v2-Pfad offen.
+- Observability: PluginContext hat heute kein Metrics-API; CCM betreibt
+  einen plugin-internen Counter-Registry und exponiert `/ccm/metrics`.
+  Wenn `ctx.metrics` kommt, migriert die Surface.
+
+PR-Sequenz (additiv gegen `main`, **source-mergeable**; Deployment
+gekettet, weil `requires` beim Boot enforced wird): docs-RFC (diese PR)
+→ `platformIdentity@1`-Provider → `ccm@1`-Provider → Adapter im SDK
+(plus `TurnContextValue`-Extension) → vier Per-Channel-Opt-in-PRs →
+omadia-ui-Orchestrator-Consumer. Details + per-PR-Doc-Pflichten in §15
+des RFC.
+
 ---
 
 ## 14. Commands (vom `middleware/`-Dir aus)

@@ -36,7 +36,7 @@ import { DEFAULT_BUILDER_MODEL, BuilderModelRegistry } from './modelRegistry.js'
  * for a future worker-thread migration if we ever need it.
  */
 
-const CURRENT_SCHEMA_VERSION = 3;
+const CURRENT_SCHEMA_VERSION = 4;
 
 // v1 baseline drafts table. In v3 the historical `installed_agent_id` column
 // was renamed to `published_agent_id` — for fresh installs we create the
@@ -82,6 +82,63 @@ CREATE INDEX IF NOT EXISTS idx_builder_audit_draft
   ON builder_audit(draft_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_builder_audit_user
   ON builder_audit(user_email, created_at DESC);
+`;
+
+/**
+ * V4 — Native issue-reporting + workaround-tracking (concept plan:
+ * docs/plans/native-issue-reporting.md). Three additive tables; no changes
+ * to the existing `drafts` columns. Spec-side workaround data lives inside
+ * `spec_json` (immutable identity) while operational state lives in
+ * `agent_workaround_state` so re-installs of the same spec keep their
+ * lifecycle state.
+ *
+ * Numbered v4 to layer on top of v3 (the `installed_agent_id`→
+ * `published_agent_id` rename from PR #98). v2 stays the audit table from
+ * issue #56; v3 is the column rename; v4 introduces these issue-reporting
+ * tables. The migration logic in `runMigrations` handles all four upgrade
+ * paths idempotently.
+ */
+const SCHEMA_V4_SQL = `
+CREATE TABLE IF NOT EXISTS github_issue_cache (
+  repo_owner       TEXT NOT NULL,
+  repo_name        TEXT NOT NULL,
+  issue_number     INTEGER NOT NULL,
+  state            TEXT NOT NULL,
+  closed_at        INTEGER,
+  cached_at        INTEGER NOT NULL,
+  etag             TEXT,
+  backoff_until    INTEGER,
+  pending_until    INTEGER,
+  PRIMARY KEY (repo_owner, repo_name, issue_number)
+);
+
+CREATE TABLE IF NOT EXISTS agent_workaround_state (
+  installed_agent_id     TEXT NOT NULL,
+  workaround_id          TEXT NOT NULL,
+  status                 TEXT NOT NULL DEFAULT 'active',
+  resolved_at            INTEGER,
+  last_status_lookup_at  INTEGER,
+  patch_context_json     TEXT,
+  created_at             INTEGER NOT NULL,
+  PRIMARY KEY (installed_agent_id, workaround_id)
+);
+CREATE INDEX IF NOT EXISTS idx_workaround_state_status
+  ON agent_workaround_state(status);
+
+CREATE TABLE IF NOT EXISTS builder_triage_log (
+  id                TEXT PRIMARY KEY,
+  draft_id          TEXT NOT NULL,
+  user_email        TEXT NOT NULL,
+  fingerprint       TEXT NOT NULL,
+  classification    TEXT NOT NULL,
+  confidence        REAL NOT NULL,
+  reason            TEXT,
+  created_at        INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_triage_log_user_recent
+  ON builder_triage_log(user_email, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_triage_log_fingerprint
+  ON builder_triage_log(fingerprint);
 `;
 
 export interface DraftUpdate {
@@ -484,27 +541,36 @@ export class DraftStore {
   private async runMigrations(db: SqliteDatabase): Promise<void> {
     const current = db.pragma('user_version', { simple: true }) as number;
 
+    if (current > CURRENT_SCHEMA_VERSION) {
+      throw new Error(
+        `drafts.db schema version ${String(current)} is newer than this middleware supports ` +
+          `(max ${String(CURRENT_SCHEMA_VERSION)}). Refusing to open — downgrade would corrupt data.`,
+      );
+    }
+
     if (current === 0) {
-      // Fresh DB: install at the final V3 layout in one shot. SCHEMA_V1_SQL
-      // creates the drafts table with the V3 column name (`published_agent_id`)
-      // directly, so no rename is needed on this path. The migration paths
-      // below handle existing v1/v2 DBs that still carry `installed_agent_id`.
+      // Fresh DB: install at the final v4 layout in one shot. SCHEMA_V1_SQL
+      // creates the drafts table with the v3 column name (`published_agent_id`)
+      // directly, so no rename is needed on this path. SCHEMA_V2_SQL adds the
+      // audit table (#56); SCHEMA_V4_SQL adds the issue-reporting tables.
+      // The migration paths below handle existing v1/v2/v3 DBs.
       db.exec(SCHEMA_V1_SQL);
       db.exec(SCHEMA_V2_SQL);
+      db.exec(SCHEMA_V4_SQL);
       db.pragma(`user_version = ${String(CURRENT_SCHEMA_VERSION)}`);
       this.assertSchemaIntegrity(db);
       return;
     }
 
     if (current === 1) {
-      // v1 → v3: add the audit table (issue #56) AND rename
-      // installed_agent_id → published_agent_id. Existing draft rows survive
-      // unchanged; the audit log starts empty. Online backup BEFORE the
-      // destructive column rename.
+      // v1 → v4: add audit table (#56), rename installed_agent_id →
+      // published_agent_id (#98), and add issue-reporting tables (#101).
+      // Online backup BEFORE the destructive column rename.
       await this.backupBeforeV3(db);
       db.transaction(() => {
         db.exec(SCHEMA_V2_SQL);
         this.renameInstalledToPublished(db);
+        db.exec(SCHEMA_V4_SQL);
         db.pragma(`user_version = ${String(CURRENT_SCHEMA_VERSION)}`);
       })();
       this.assertSchemaIntegrity(db);
@@ -512,13 +578,26 @@ export class DraftStore {
     }
 
     if (current === 2) {
-      // v2 → v3: rename installed_agent_id → published_agent_id only.
-      // TODO(2026-08-01): Remove this branch once the eigene Instanz is on
-      // v3 — no real-world v1/v2 DBs left in the wild. Replace with a fatal
-      // error directing operators to restore from `.bak-v2-*` backup.
+      // v2 → v4: rename installed_agent_id → published_agent_id and add
+      // issue-reporting tables. TODO(2026-08-01): Remove the rename branches
+      // once the eigene Instanz is on v3+ — replace with a fatal error
+      // directing operators to restore from `.bak-v2-*` backup.
       await this.backupBeforeV3(db);
       db.transaction(() => {
         this.renameInstalledToPublished(db);
+        db.exec(SCHEMA_V4_SQL);
+        db.pragma(`user_version = ${String(CURRENT_SCHEMA_VERSION)}`);
+      })();
+      this.assertSchemaIntegrity(db);
+      return;
+    }
+
+    if (current === 3) {
+      // v3 → v4: only add the issue-reporting tables. No column rename, so no
+      // pre-write backup needed — the SCHEMA_V4_SQL statements are all
+      // `CREATE TABLE IF NOT EXISTS` and re-runnable.
+      db.transaction(() => {
+        db.exec(SCHEMA_V4_SQL);
         db.pragma(`user_version = ${String(CURRENT_SCHEMA_VERSION)}`);
       })();
       this.assertSchemaIntegrity(db);
@@ -534,8 +613,8 @@ export class DraftStore {
     }
 
     throw new Error(
-      `drafts.db schema version ${String(current)} is newer than this middleware supports ` +
-        `(max ${String(CURRENT_SCHEMA_VERSION)}). Refusing to open — downgrade would corrupt data.`,
+      `drafts.db schema version ${String(current)} is unhandled (max ${String(CURRENT_SCHEMA_VERSION)}). ` +
+        `Refusing to open — investigate manually.`,
     );
   }
 

@@ -156,6 +156,66 @@ export type SpecBusEvent =
       kind: 'build_failed' | 'smoke_failed';
       buildN: number;
       identicalCount?: number;
+    }
+  | {
+      /**
+       * Native issue-reporting: the builder agent invoked `ask_user_choice`
+       * and the UI should render a smart card with the listed buttons.
+       * The operator's pick is POSTed to the user-choice route and the
+       * coordinator resolves the pending tool call.
+       */
+      type: 'user_choice_required';
+      choiceId: string;
+      question: string;
+      options: ReadonlyArray<{
+        value: string;
+        label: string;
+        description?: string;
+      }>;
+    }
+  | {
+      /**
+       * Companion to `user_choice_required`. Sent once the choice was
+       * resolved (operator clicked, dismissed, or timed out). Multi-tab
+       * clients use this to clear the smart card on every tab. `value`
+       * is `null` when the choice was cancelled or timed out.
+       */
+      type: 'user_choice_resolved';
+      choiceId: string;
+      value: string | null;
+    }
+  | {
+      /**
+       * Native issue-reporting: the builder agent refused a turn because
+       * the draft is paused waiting for an upstream issue to close. The
+       * UI uses this to render the pause banner with a "Check now"
+       * button.
+       */
+      type: 'paused_on_issue';
+      issueRef: {
+        owner: string;
+        repo: string;
+        number: number;
+        url: string;
+      };
+      fingerprint: string;
+      pausedAt: number;
+    }
+  | {
+      /**
+       * Native issue-reporting: surfaced by the issue-status lookup when
+       * an issue tracked as a pause trigger has flipped to `closed`. The
+       * UI uses this to swap the pause banner for the "Resume + rebuild"
+       * CTA.
+       */
+      type: 'auto_resume_available';
+      issueRef: {
+        owner: string;
+        repo: string;
+        number: number;
+        url: string;
+      };
+      closedAt: number | null;
     };
 
 export type SpecBusListener = (event: SpecBusEvent) => void;
