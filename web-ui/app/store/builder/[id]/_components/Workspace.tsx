@@ -1227,7 +1227,7 @@ function WorkspaceHeader({
         )}
       >
         <Rocket className="size-3.5" aria-hidden />
-        Installieren
+        Veröffentlichen
       </button>
     </header>
   );
