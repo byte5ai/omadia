@@ -475,6 +475,24 @@ function reproduceManifestCapabilities(
     }
   }
 
+  // #91 — web_scanner lives on spec.network (not spec.permissions); emit it
+  // as permissions.network.web_scanner so the runtime egress filter can
+  // widen the allow-list for this audit/scanner plugin.
+  if (spec.network.web_scanner === true) {
+    const permsNode = doc.get('permissions', true);
+    if (yaml.isMap(permsNode)) {
+      const netNode = permsNode.get('network', true);
+      if (yaml.isMap(netNode)) {
+        netNode.set('web_scanner', true);
+      } else {
+        permsNode.set(
+          'network',
+          doc.createNode({ outbound: [], web_scanner: true }),
+        );
+      }
+    }
+  }
+
   const capsNode = doc.get('capabilities', true);
   if (!yaml.isSeq(capsNode) || capsNode.items.length === 0) {
     return doc.toString();

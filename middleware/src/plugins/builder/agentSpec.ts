@@ -110,7 +110,16 @@ export type TestCase = z.infer<typeof TestCaseSchema>;
 const SetupFieldSchema = z
   .object({
     key: z.string().regex(/^[a-z][a-z0-9_]*$/),
-    type: z.enum(['string', 'url', 'secret', 'oauth', 'enum', 'boolean', 'integer']),
+    type: z.enum([
+      'string',
+      'url',
+      'secret',
+      'oauth',
+      'enum',
+      'boolean',
+      'integer',
+      'host_list',
+    ]),
     required: z.boolean().optional(),
     description: z.string().optional(),
     default: z.unknown().optional(),
@@ -476,6 +485,10 @@ export const AgentSpecSchema = z
     network: z
       .object({
         outbound: z.array(z.string()).default([]),
+        // #91 — audit/scanner capability. When true the runtime egress
+        // filter may widen the allow-list per the operator-selected
+        // audit_mode; codegen emits it as permissions.network.web_scanner.
+        web_scanner: z.boolean().optional(),
       })
       .strict()
       .default({ outbound: [] }),

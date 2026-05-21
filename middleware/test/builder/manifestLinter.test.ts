@@ -194,12 +194,26 @@ describe('manifestLinter.validateSpec — network.outbound checks', () => {
     assert.equal(result.violations[0]?.kind, 'network_outbound_invalid');
   });
 
-  it('rejects wildcards', () => {
+  it('accepts a leading-wildcard subdomain host (#91)', () => {
     const result = validateSpec(
       { ...validSpec, network: { outbound: ['*.example.com'] } },
       { knownPluginIds: knownPlugins },
     );
-    assert.equal(result.violations[0]?.kind, 'network_outbound_invalid');
+    assert.equal(result.ok, true);
+  });
+
+  it('rejects non-leading wildcards', () => {
+    for (const host of ['api.*.example.com', '*example.com', 'a.*.b.com']) {
+      const result = validateSpec(
+        { ...validSpec, network: { outbound: [host] } },
+        { knownPluginIds: knownPlugins },
+      );
+      assert.equal(
+        result.violations[0]?.kind,
+        'network_outbound_invalid',
+        host,
+      );
+    }
   });
 
   it('rejects bare strings without TLD', () => {
@@ -287,7 +301,7 @@ describe('manifestLinter.validateSpec — multi-violation aggregation', () => {
         { id: 'BadName', description: 'a' },
         { id: 'BadName', description: 'b' },
       ],
-      network: { outbound: ['*.bad.com'] },
+      network: { outbound: ['https://bad.com'] },
     };
     const result = validateSpec(broken, { knownPluginIds: knownPlugins });
     const kinds = new Set(result.violations.map((v) => v.kind));
