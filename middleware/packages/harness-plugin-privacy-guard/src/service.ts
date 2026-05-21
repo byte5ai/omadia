@@ -79,6 +79,12 @@ import { applyStableIdTokenization } from './stableIdTokenization.js';
 import { extendHitsToWordBoundary } from './spanHelpers.js';
 import { createRegexDetector } from './regexDetector.js';
 import { TOKEN_REGEX, createTokenizeMap, type TokenizeMap } from './tokenizeMap.js';
+// Privacy-Shield v4 — Data-Plane Boundary.
+import { isV4Enabled } from './v4/featureFlag.js';
+import { createDatasetStore } from './v4/datasetStore.js';
+import { createShapeClassifier } from './v4/shapeClassifier.js';
+import { buildDigest, digestToToolResultText } from './v4/digest.js';
+import type { DatasetStore } from './v4/types.js';
 import {
   createAllowlist,
   filterHitsByAllowlist,
@@ -370,6 +376,10 @@ export function createPrivacyGuardService(
   // after restore), not from stable token names.
   const turnMaps = new Map<string, TokenizeMap>();
   const turnAccumulators = new Map<string, TurnAccumulator>();
+  // Privacy-Shield v4 — one turn-scoped Dataset Store per turn, minted
+  // lazily on the first `internToolResultV4` of a turn and dropped by
+  // `finalizeTurn`. Parallel to `turnMaps`; the v2/v3 path is untouched.
+  const v4Stores = new Map<string, DatasetStore>();
   // Privacy-Shield v2 (Slice S-3): build the allowlist at service
   // construction. Re-activating the plugin re-runs the factory.
   // Privacy-Shield v2 (Slice S-7): the operator-override list is
@@ -394,6 +404,20 @@ export function createPrivacyGuardService(
       turnMaps.set(turnId, m);
     }
     return m;
+  }
+
+  /** Get-or-create the Privacy-Shield v4 Dataset Store for a turn. */
+  function v4StoreFor(turnId: string): DatasetStore {
+    let s = v4Stores.get(turnId);
+    if (s === undefined) {
+      s = createDatasetStore({
+        classify: createShapeClassifier(),
+        buildDigest,
+        turnId,
+      });
+      v4Stores.set(turnId, s);
+    }
+    return s;
   }
 
   function accumulatorForIds(sessionId: string, turnId: string): TurnAccumulator {
@@ -472,6 +496,25 @@ export function createPrivacyGuardService(
   }
 
   return {
+    async internToolResultV4(request: {
+      readonly sessionId: string;
+      readonly turnId: string;
+      readonly toolName: string;
+      readonly rawResult: string;
+    }): Promise<{ readonly digestText: string } | undefined> {
+      // Privacy-Shield v4 — intern the raw tool result behind the
+      // data-plane boundary and return only the identity-free digest
+      // text. `undefined` when the feature flag is off ⇒ the host falls
+      // through to the v2/v3 token path.
+      if (!isV4Enabled()) return undefined;
+      const store = v4StoreFor(request.turnId);
+      const { digest } = store.internToolResult(
+        request.toolName,
+        request.rawResult,
+      );
+      return { digestText: digestToToolResultText(digest) };
+    },
+
     async processOutbound(
       request: PrivacyOutboundRequest,
     ): Promise<PrivacyOutboundResult> {
@@ -586,6 +629,10 @@ export function createPrivacyGuardService(
     },
 
     async finalizeTurn(turnId: string): Promise<PrivacyReceipt | undefined> {
+      // Privacy-Shield v4 — drop the turn's Dataset Store unconditionally,
+      // ahead of the v2-accumulator early-return below.
+      v4Stores.get(turnId)?.finalizeTurn();
+      v4Stores.delete(turnId);
       const acc = turnAccumulators.get(turnId);
       if (acc === undefined) return undefined;
       turnAccumulators.delete(turnId);

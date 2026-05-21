@@ -493,6 +493,31 @@ export interface PrivacyToolResultResult {
 }
 
 // ---------------------------------------------------------------------------
+// Privacy-Shield v4 — Data-Plane Boundary.
+//
+// When the v4 feature flag is on, a raw tool result is interned into a
+// turn-scoped server-side store and the LLM receives only an identity-free
+// digest. `internToolResultV4` is the host-facing entry point at the tool
+// dispatch seam; it returns `undefined` when v4 is disabled so the host
+// falls through to the v2/v3 token path.
+// ---------------------------------------------------------------------------
+
+export interface PrivacyToolResultV4Request {
+  readonly sessionId: string;
+  readonly turnId: string;
+  readonly toolName: string;
+  /** The tool's raw text result as the handler returned it. */
+  readonly rawResult: string;
+}
+
+export interface PrivacyToolResultV4Result {
+  /** The identity-free digest text to use verbatim as the `tool_result`
+   *  block content. The raw rows stay server-side, addressable by the
+   *  `datasetId` embedded in this text. */
+  readonly digestText: string;
+}
+
+// ---------------------------------------------------------------------------
 // Privacy-Shield v3 (slice 1) — Stable-id tokenization pre-pass.
 //
 // Runs BEFORE `processToolResult` for tools that declare `piiFields`
@@ -808,6 +833,16 @@ export interface PrivacyGuardService {
    * tool roundtrips don't fragment the user-facing summary.
    */
   processToolResult(request: PrivacyToolResultRequest): Promise<PrivacyToolResultResult>;
+  /**
+   * Privacy-Shield v4 — Data-Plane Boundary. Intern a raw tool result
+   * server-side and return the identity-free digest text to use as the
+   * `tool_result` block content. Returns `undefined` when the v4 feature
+   * flag is off, signalling the host to fall through to the v2/v3 token
+   * path. Optional — a provider predating v4 simply omits it.
+   */
+  internToolResultV4?(
+    request: PrivacyToolResultV4Request,
+  ): Promise<PrivacyToolResultV4Result | undefined>;
   /**
    * Privacy-Shield v3 (slice 1) — Stable-id tokenization pre-pass.
    * Runs BEFORE `processToolResult` for tools that declare PII field

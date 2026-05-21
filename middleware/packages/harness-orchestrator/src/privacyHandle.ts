@@ -79,6 +79,16 @@ export interface PrivacyTurnHandle {
     readonly transformed: boolean;
   }>;
   /**
+   * Privacy-Shield v4 — Data-Plane Boundary. Intern a raw tool result
+   * server-side; returns the identity-free digest text to use as the
+   * `tool_result` block content, or `undefined` when the v4 feature flag
+   * is off (the caller then falls through to the v2/v3 token path).
+   */
+  internToolResultV4(input: {
+    readonly toolName: string;
+    readonly rawResult: string;
+  }): Promise<{ readonly digestText: string } | undefined>;
+  /**
    * Privacy-Shield v3 (slice 1) — Stable-id tokenization pre-pass.
    * Runs BEFORE `processToolResult` when a tool declares `piiFields`
    * annotations. JSON-parses the text, rewrites annotated leaves to
@@ -188,6 +198,16 @@ export function createPrivacyTurnHandle(deps: {
         text: input.text,
       });
       return { text: r.text, transformed: r.transformed };
+    },
+
+    async internToolResultV4(input) {
+      if (deps.service.internToolResultV4 === undefined) return undefined;
+      return deps.service.internToolResultV4({
+        sessionId: deps.sessionId,
+        turnId: deps.turnId,
+        toolName: input.toolName,
+        rawResult: input.rawResult,
+      });
     },
 
     async applyStableIdPrepass(input) {

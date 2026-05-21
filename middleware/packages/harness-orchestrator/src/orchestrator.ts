@@ -2404,6 +2404,23 @@ export class Orchestrator {
         );
       }
     }
+    // Privacy-Shield v4 — Data-Plane Boundary. When the v4 feature flag is
+    // on, intern the raw result server-side and hand the LLM only the
+    // identity-free digest; the v2/v3 token path below is skipped.
+    if (privacy !== undefined && typeof result === 'string') {
+      try {
+        const v4 = await privacy.internToolResultV4({
+          toolName: name,
+          rawResult: result,
+        });
+        if (v4 !== undefined) return v4.digestText;
+      } catch (err) {
+        console.warn(
+          `[orchestrator.dispatchTool:${name}] privacy.internToolResultV4 threw — falling through to v2/v3:`,
+          err,
+        );
+      }
+    }
     // Privacy-Shield v3 (slice 1) — Stable-id tokenization pre-pass.
     // When the dispatched tool is a DomainTool that declared
     // `piiFields`, run the tool-aware pre-pass BEFORE the NER-based

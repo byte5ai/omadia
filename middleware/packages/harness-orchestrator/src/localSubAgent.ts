@@ -480,6 +480,23 @@ export class LocalSubAgent {
         );
       }
     }
+    // Privacy-Shield v4 — Data-Plane Boundary. When the v4 feature flag is
+    // on, intern the raw result server-side and hand the LLM only the
+    // identity-free digest; the v2/v3 token path below is skipped.
+    if (privacy !== undefined && typeof result === 'string') {
+      try {
+        const v4 = await privacy.internToolResultV4({
+          toolName,
+          rawResult: result,
+        });
+        if (v4 !== undefined) return v4.digestText;
+      } catch (err) {
+        console.warn(
+          `[sub-agent ${this.name}] privacy.internToolResultV4 threw on '${toolName}' — falling through to v2/v3:`,
+          err,
+        );
+      }
+    }
     // Privacy-Shield v3 (slice 1) — Stable-id tokenization pre-pass.
     // When the dispatched tool declared `piiFields`, run the tool-aware
     // pre-pass BEFORE the NER-based `processToolResult`. See the twin
