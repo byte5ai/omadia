@@ -6,6 +6,7 @@ import type { ChatAgentWrapIntrospection } from '../platform/chatAgentWrapRegist
 import type { PromptContributionRegistry } from '../platform/promptContributionRegistry.js';
 import type { ServiceRegistry } from '../platform/serviceRegistry.js';
 import type { TurnHookRegistry } from '../platform/turnHookRegistry.js';
+import { isAuditMode } from '../platform/httpAccessor.js';
 import { extractSetupSchema } from '../plugins/installService.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
@@ -120,6 +121,68 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
         res
           .status(500)
           .json({ code: 'runtime.update_failed', message });
+      }
+    },
+  );
+
+  // PATCH /installed/:id/audit-mode — #91 operator mode switch for an
+  // audit/scanner plugin. Body: { mode: 'single-host'|'allowlist'|'public-web' }.
+  // Rejected unless the manifest declares permissions.network.web_scanner.
+  // Merges `audit_mode` into the registry config (other keys untouched) and
+  // re-activates so the egress filter picks up the new mode.
+  router.patch(
+    '/installed/:id/audit-mode',
+    async (req: Request, res: Response) => {
+      const rawId = req.params['id'];
+      const id = typeof rawId === 'string' ? rawId : undefined;
+      if (!id) {
+        res
+          .status(400)
+          .json({ code: 'runtime.invalid_id', message: 'missing id' });
+        return;
+      }
+      const body = req.body as { mode?: unknown } | null;
+      const mode = body?.mode;
+      if (!isAuditMode(mode)) {
+        res.status(400).json({
+          code: 'runtime.invalid_audit_mode',
+          message:
+            "mode must be one of 'single-host', 'allowlist', 'public-web'",
+        });
+        return;
+      }
+      const installed = deps.installedRegistry.get(id);
+      if (!installed) {
+        res.status(404).json({
+          code: 'runtime.not_installed',
+          message: `agent '${id}' is not installed`,
+        });
+        return;
+      }
+      const isWebScanner =
+        deps.catalog?.get(id)?.plugin.permissions_summary.network_web_scanner ===
+        true;
+      if (!isWebScanner) {
+        res.status(400).json({
+          code: 'runtime.not_web_scanner',
+          message:
+            `agent '${id}' does not declare permissions.network.web_scanner — ` +
+            'audit_mode applies only to audit/scanner plugins',
+        });
+        return;
+      }
+      try {
+        await deps.installedRegistry.updateConfig(id, {
+          ...installed.config,
+          audit_mode: mode,
+        });
+        if (deps.reactivate) {
+          await deps.reactivate(id);
+        }
+        res.json({ id, audit_mode: mode });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        res.status(500).json({ code: 'runtime.update_failed', message });
       }
     },
   );
