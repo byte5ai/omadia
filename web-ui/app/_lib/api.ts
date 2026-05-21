@@ -2392,3 +2392,39 @@ export async function deleteMemory(
     throw new Error(body.code ?? `HTTP ${String(res.status)}`);
   }
 }
+
+export type MemorableAclAction =
+  | 'create'
+  | 'expand'
+  | 'shrink'
+  | 'delete'
+  | 'edit';
+
+export interface MemorableAclAuditEntry {
+  id: string;
+  memoryExternalId: string;
+  actorOmadiaUserId: string;
+  actorChannelIdentityId?: string;
+  action: MemorableAclAction;
+  beforeOwners: string[];
+  /** `null` only when `action === 'delete'`. */
+  afterOwners: string[] | null;
+  reason?: string;
+  createdAt: string;
+}
+
+export interface ListMemoryAuditResponse {
+  items: MemorableAclAuditEntry[];
+}
+
+export async function getMemoryAudit(
+  id: string,
+  opts: { limit?: number } = {},
+): Promise<ListMemoryAuditResponse> {
+  const params = new URLSearchParams();
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return getJson<ListMemoryAuditResponse>(
+    `/v1/memory/${encodeURIComponent(id)}/audit${qs ? `?${qs}` : ''}`,
+  );
+}

@@ -9,7 +9,7 @@ interface AclAuditEntry {
   memoryExternalId: string;
   actorOmadiaUserId: string;
   actorChannelIdentityId?: string;
-  action: 'create' | 'expand' | 'shrink' | 'delete';
+  action: 'create' | 'expand' | 'shrink' | 'delete' | 'edit';
   beforeOwners: string[];
   afterOwners: string[] | null;
   reason?: string;
@@ -327,7 +327,9 @@ export default function MemoryAclSection({
                             ? 'rounded bg-cyan-500/20 px-1 text-cyan-500'
                             : e.action === 'shrink'
                               ? 'rounded bg-amber-500/20 px-1 text-amber-500'
-                              : 'rounded bg-red-500/20 px-1 text-red-500'
+                              : e.action === 'edit'
+                                ? 'rounded bg-blue-500/20 px-1 text-blue-500'
+                                : 'rounded bg-red-500/20 px-1 text-red-500'
                       }
                     >
                       {e.action}

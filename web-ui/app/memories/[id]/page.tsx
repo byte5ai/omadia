@@ -7,7 +7,10 @@ import Link from 'next/link';
 import {
   deleteMemory,
   getMemory,
+  getMemoryAudit,
   updateMemory,
+  type MemorableAclAction,
+  type MemorableAclAuditEntry,
   type MemorableKind,
   type MemorableKnowledgeNode,
 } from '../../_lib/api';
@@ -35,6 +38,22 @@ const KIND_BADGE: Record<MemorableKind, string> = {
     'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
   reference:
     'bg-neutral-100 text-neutral-800 dark:bg-neutral-800 dark:text-neutral-300',
+};
+
+const ACTION_BADGE: Record<MemorableAclAction, string> = {
+  create: 'bg-green-500/20 text-green-700 dark:text-green-300',
+  expand: 'bg-cyan-500/20 text-cyan-700 dark:text-cyan-300',
+  shrink: 'bg-amber-500/20 text-amber-700 dark:text-amber-300',
+  delete: 'bg-red-500/20 text-red-700 dark:text-red-300',
+  edit: 'bg-blue-500/20 text-blue-700 dark:text-blue-300',
+};
+
+const ACTION_LABELS: Record<MemorableAclAction, string> = {
+  create: 'angelegt',
+  expand: 'Owner ergänzt',
+  shrink: 'Owner entfernt',
+  delete: 'gelöscht',
+  edit: 'bearbeitet',
 };
 
 /**
@@ -68,6 +87,24 @@ export default function MemoryDetailPage(): React.ReactElement {
   const [busy, setBusy] = useState(false);
   const [mutationError, setMutationError] = useState<string | null>(null);
 
+  const [audit, setAudit] = useState<MemorableAclAuditEntry[] | null>(null);
+  const [auditError, setAuditError] = useState<string | null>(null);
+  const [auditLoading, setAuditLoading] = useState(false);
+
+  const loadAudit = useCallback(async (): Promise<void> => {
+    setAuditLoading(true);
+    setAuditError(null);
+    try {
+      const res = await getMemoryAudit(id);
+      setAudit(res.items);
+    } catch (err) {
+      setAuditError(err instanceof Error ? err.message : String(err));
+      setAudit([]);
+    } finally {
+      setAuditLoading(false);
+    }
+  }, [id]);
+
   const load = useCallback(async (): Promise<void> => {
     setLoading(true);
     setLoadError(null);
@@ -87,8 +124,11 @@ export default function MemoryDetailPage(): React.ReactElement {
 
   useEffect(() => {
     if (!id) return;
-    queueMicrotask(() => void load());
-  }, [id, load]);
+    queueMicrotask(() => {
+      void load();
+      void loadAudit();
+    });
+  }, [id, load, loadAudit]);
 
   const save = useCallback(async (): Promise<void> => {
     if (!node) return;
@@ -121,12 +161,13 @@ export default function MemoryDetailPage(): React.ReactElement {
       setRationale(updated.props.rationale ?? '');
       setReason('');
       setEditing(false);
+      void loadAudit();
     } catch (err) {
       setMutationError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
-  }, [id, node, kind, summary, rationale, reason]);
+  }, [id, node, kind, summary, rationale, reason, loadAudit]);
 
   const discard = useCallback(async (): Promise<void> => {
     if (!node) return;
@@ -360,6 +401,107 @@ export default function MemoryDetailPage(): React.ReactElement {
               )}
             </div>
           </article>
+        )}
+
+        {!loading && node !== null && (
+          <section
+            aria-label="Audit-Verlauf"
+            className="mx-auto mt-4 max-w-2xl rounded border border-neutral-200 bg-white p-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900"
+          >
+            <header className="mb-3 flex items-center justify-between">
+              <h2 className="text-xs font-semibold uppercase tracking-wider text-neutral-500">
+                Verlauf
+              </h2>
+              <button
+                type="button"
+                onClick={() => void loadAudit()}
+                disabled={auditLoading}
+                className="text-[10px] text-neutral-500 underline-offset-2 hover:text-neutral-900 hover:underline disabled:opacity-50 dark:hover:text-neutral-100"
+              >
+                {auditLoading ? 'lädt…' : 'aktualisieren'}
+              </button>
+            </header>
+
+            {auditError !== null && (
+              <div className="mb-2 border-l-2 border-red-400 px-2 py-1 text-xs text-red-700 dark:text-red-300">
+                Verlauf nicht lesbar: {auditError}
+              </div>
+            )}
+            {audit !== null && audit.length === 0 && auditError === null && (
+              <p className="text-xs italic text-neutral-500">
+                Keine Audit-Einträge.
+              </p>
+            )}
+            {audit !== null && audit.length > 0 && (
+              <ol className="flex flex-col gap-2">
+                {audit.map((e) => {
+                  const ownersDelta =
+                    e.afterOwners === null
+                      ? null
+                      : e.afterOwners.length - e.beforeOwners.length;
+                  return (
+                    <li
+                      key={e.id}
+                      className="rounded border border-neutral-200 px-3 py-2 dark:border-neutral-800"
+                    >
+                      <div className="flex flex-wrap items-center gap-2 text-[10px]">
+                        <span
+                          className={[
+                            'rounded px-1.5 py-0.5 uppercase tracking-wider',
+                            ACTION_BADGE[e.action],
+                          ].join(' ')}
+                        >
+                          {ACTION_LABELS[e.action]}
+                        </span>
+                        <time
+                          dateTime={e.createdAt}
+                          className="font-mono text-neutral-500"
+                        >
+                          {new Date(e.createdAt).toLocaleString('de-DE')}
+                        </time>
+                        {ownersDelta !== null && ownersDelta !== 0 && (
+                          <span
+                            className={
+                              ownersDelta > 0
+                                ? 'font-mono text-green-600 dark:text-green-400'
+                                : 'font-mono text-amber-600 dark:text-amber-400'
+                            }
+                          >
+                            owners {ownersDelta > 0 ? '+' : ''}
+                            {ownersDelta}
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-1 font-mono text-[10px] text-neutral-500">
+                        actor: {e.actorOmadiaUserId}
+                      </div>
+                      {(e.action === 'expand' ||
+                        e.action === 'shrink' ||
+                        e.action === 'delete') && (
+                        <div className="mt-1 grid grid-cols-[max-content_1fr] gap-x-2 font-mono text-[10px] text-neutral-500">
+                          <span>before:</span>
+                          <span className="text-neutral-700 dark:text-neutral-300">
+                            [{e.beforeOwners.join(', ') || '—'}]
+                          </span>
+                          <span>after:</span>
+                          <span className="text-neutral-700 dark:text-neutral-300">
+                            {e.afterOwners === null
+                              ? '(deleted)'
+                              : `[${e.afterOwners.join(', ') || '—'}]`}
+                          </span>
+                        </div>
+                      )}
+                      {e.reason !== undefined && e.reason.length > 0 && (
+                        <p className="mt-1 text-xs italic text-neutral-600 dark:text-neutral-400">
+                          „{e.reason}“
+                        </p>
+                      )}
+                    </li>
+                  );
+                })}
+              </ol>
+            )}
+          </section>
         )}
       </section>
     </main>
