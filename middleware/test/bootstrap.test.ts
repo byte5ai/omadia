@@ -6,9 +6,12 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
 import {
+  bootstrapMemoryFromEnv,
   retryErroredPlugins,
   type RetryErroredPluginsDeps,
 } from '../src/plugins/bootstrap.js';
+import type { Config } from '../src/config.js';
+import type { SecretVault } from '../src/secrets/vault.js';
 import {
   InMemoryInstalledRegistry,
   type InstalledAgent,
@@ -317,6 +320,198 @@ describe('retryErroredPlugins — capability-resolution path', () => {
     });
 
     assert.equal(reg.get('consumer')?.status, 'errored');
+  });
+});
+
+describe('bootstrapMemoryFromEnv — env→config reconcile', () => {
+  // The `bootstrap` flow originally wrote `dev_memory_endpoints_enabled`
+  // into the @omadia/memory plugin's config exactly once (on first ever
+  // boot). Subsequent boots returned early on `registry.has(MEMORY_TOOL_ID)`
+  // — so operators who flipped `DEV_ENDPOINTS_ENABLED=true` in `.env`
+  // after first boot saw no effect and the local Next-UI's `/api/dev/memory`
+  // route stayed dark. This suite pins the reconcile path so the env
+  // var stays authoritative on every boot.
+
+  const MEMORY_ID = '@omadia/memory';
+
+  function makeConfig(devEnabled: boolean): Config {
+    return {
+      DEV_ENDPOINTS_ENABLED: devEnabled,
+      MEMORY_DIR: '/test/.memory',
+      MEMORY_SEED_DIR: '/test/seed/memory',
+      MEMORY_SEED_MODE: 'missing',
+    } as unknown as Config;
+  }
+
+  const noopVault: SecretVault = {
+    setMany: async () => {
+      /* no-op */
+    },
+    getMany: async () => ({}),
+    purge: async () => {
+      /* no-op */
+    },
+    list: async () => [],
+  } as unknown as SecretVault;
+
+  it('auto-installs with dev_memory_endpoints_enabled=true when env is on (first boot)', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    const cat = makeCatalog([
+      { id: MEMORY_ID, provides: [], requires: [], depends_on: [] },
+    ]);
+
+    await bootstrapMemoryFromEnv({
+      config: makeConfig(true),
+      catalog: cat,
+      registry: reg,
+      vault: noopVault,
+      log: () => {},
+    });
+
+    const entry = reg.get(MEMORY_ID);
+    assert.ok(entry, 'memory plugin should be auto-installed');
+    assert.equal(entry.status, 'active');
+    assert.equal(entry.config?.['dev_memory_endpoints_enabled'], 'true');
+  });
+
+  it('reconciles dev_memory_endpoints_enabled from false→true on subsequent boots when env flips on', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await reg.register({
+      id: MEMORY_ID,
+      installed_version: '0.1.0',
+      installed_at: '2026-04-29T00:00:00Z',
+      status: 'active',
+      config: {
+        memory_dir: '/test/.memory',
+        seed_dir: '/test/seed/memory',
+        seed_mode: 'missing',
+        dev_memory_endpoints_enabled: 'false',
+      },
+    });
+    const cat = makeCatalog([
+      { id: MEMORY_ID, provides: [], requires: [], depends_on: [] },
+    ]);
+
+    await bootstrapMemoryFromEnv({
+      config: makeConfig(true),
+      catalog: cat,
+      registry: reg,
+      vault: noopVault,
+      log: () => {},
+    });
+
+    assert.equal(
+      reg.get(MEMORY_ID)?.config?.['dev_memory_endpoints_enabled'],
+      'true',
+    );
+  });
+
+  it('reconciles dev_memory_endpoints_enabled from true→false on subsequent boots when env flips off', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await reg.register({
+      id: MEMORY_ID,
+      installed_version: '0.1.0',
+      installed_at: '2026-04-29T00:00:00Z',
+      status: 'active',
+      config: {
+        memory_dir: '/test/.memory',
+        seed_dir: '/test/seed/memory',
+        seed_mode: 'missing',
+        dev_memory_endpoints_enabled: 'true',
+      },
+    });
+    const cat = makeCatalog([
+      { id: MEMORY_ID, provides: [], requires: [], depends_on: [] },
+    ]);
+
+    await bootstrapMemoryFromEnv({
+      config: makeConfig(false),
+      catalog: cat,
+      registry: reg,
+      vault: noopVault,
+      log: () => {},
+    });
+
+    assert.equal(
+      reg.get(MEMORY_ID)?.config?.['dev_memory_endpoints_enabled'],
+      'false',
+    );
+  });
+
+  it('preserves operator-owned config keys (memory_dir, seed_dir, seed_mode) during reconcile', async () => {
+    // The reconcile path may NOT clobber non-env-derived config. Only
+    // `dev_memory_endpoints_enabled` is the env-driven flag; other
+    // values are operator-managed after first boot.
+    const reg = new InMemoryInstalledRegistry();
+    await reg.register({
+      id: MEMORY_ID,
+      installed_version: '0.1.0',
+      installed_at: '2026-04-29T00:00:00Z',
+      status: 'active',
+      config: {
+        memory_dir: '/operator/picked/.memory',
+        seed_dir: '/operator/picked/seed',
+        seed_mode: 'always',
+        dev_memory_endpoints_enabled: 'false',
+      },
+    });
+    const cat = makeCatalog([
+      { id: MEMORY_ID, provides: [], requires: [], depends_on: [] },
+    ]);
+
+    await bootstrapMemoryFromEnv({
+      config: makeConfig(true),
+      catalog: cat,
+      registry: reg,
+      vault: noopVault,
+      log: () => {},
+    });
+
+    const entry = reg.get(MEMORY_ID);
+    assert.equal(entry?.config?.['memory_dir'], '/operator/picked/.memory');
+    assert.equal(entry?.config?.['seed_dir'], '/operator/picked/seed');
+    assert.equal(entry?.config?.['seed_mode'], 'always');
+    assert.equal(entry?.config?.['dev_memory_endpoints_enabled'], 'true');
+  });
+
+  it('is a no-op when dev_memory_endpoints_enabled already matches env', async () => {
+    // Idempotency: a boot that finds the config already in the desired
+    // state must not rewrite the entry. We assert by snapshotting the
+    // installed_at field — a register-with-same-value would survive but
+    // log noise / activity should not change.
+    const reg = new InMemoryInstalledRegistry();
+    const installedAt = '2026-04-29T00:00:00Z';
+    await reg.register({
+      id: MEMORY_ID,
+      installed_version: '0.1.0',
+      installed_at: installedAt,
+      status: 'active',
+      config: {
+        memory_dir: '/test/.memory',
+        seed_dir: '/test/seed/memory',
+        seed_mode: 'missing',
+        dev_memory_endpoints_enabled: 'true',
+      },
+    });
+    const cat = makeCatalog([
+      { id: MEMORY_ID, provides: [], requires: [], depends_on: [] },
+    ]);
+
+    const logs: string[] = [];
+    await bootstrapMemoryFromEnv({
+      config: makeConfig(true),
+      catalog: cat,
+      registry: reg,
+      vault: noopVault,
+      log: (m) => logs.push(m),
+    });
+
+    assert.equal(reg.get(MEMORY_ID)?.installed_at, installedAt);
+    assert.equal(
+      logs.some((l) => l.includes('reconciled')),
+      false,
+      'no reconcile log line should be emitted when nothing changed',
+    );
   });
 });
 

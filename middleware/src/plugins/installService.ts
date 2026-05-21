@@ -8,7 +8,10 @@ import type {
   InstallSetupSchema,
 } from '../api/admin-v1.js';
 import type { SecretVault } from '../secrets/vault.js';
-import { walkCapabilityInstallChain } from './capabilityResolver.js';
+import {
+  findActiveProviderCollision,
+  walkCapabilityInstallChain,
+} from './capabilityResolver.js';
 import type { InstalledRegistry } from './installedRegistry.js';
 import type { PluginCatalog, PluginCatalogEntry } from './manifestLoader.js';
 
@@ -84,6 +87,27 @@ export class InstallService {
         'install.missing_dependencies',
         `plugin requires these parents to be installed first: ${missingParents.join(', ')}`,
         409,
+      );
+    }
+
+    // Provider-collision gate: if the candidate's `provides` overlaps a
+    // `<name>@<major>` already published by an active installed plugin,
+    // refuse the install. Without this gate the registry can persist two
+    // active providers for the same capability — boot then crashes in
+    // `buildProviderIndex` (capabilityResolver.ts) with no automatic
+    // recovery, because the kernel has no operator-intent signal to pick
+    // a winner. The operator must uninstall the existing provider first.
+    const collision = findActiveProviderCollision(
+      pluginId,
+      this.deps.catalog,
+      this.deps.registry,
+    );
+    if (collision) {
+      throw new InstallError(
+        'install.capability_already_provided',
+        `capability '${collision.capability}' is already provided by '${collision.ownerId}' — uninstall it first`,
+        409,
+        collision,
       );
     }
 

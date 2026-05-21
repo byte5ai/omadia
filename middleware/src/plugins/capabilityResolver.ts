@@ -415,6 +415,64 @@ function capabilityKey(ref: CapabilityRef): string {
   return `${ref.name}@${ref.major}`;
 }
 
+/**
+ * Walks the candidate plugin's `provides` list and returns the first
+ * `<name>@<major>` slot that is already claimed by another active
+ * installed plugin. Returns `null` when no collision — i.e. the install
+ * would not introduce a duplicate provider.
+ *
+ * Server-side install-time check: prevents the persisted registry from
+ * drifting into a state where `buildProviderIndex` throws at the next
+ * boot. Symmetric to the `requires`-chain walk in
+ * {@link walkCapabilityInstallChain} — that one rejects on missing
+ * providers; this one rejects on duplicate providers.
+ */
+export function findActiveProviderCollision(
+  candidatePluginId: string,
+  catalog: PluginCatalog,
+  registry: InstalledRegistry,
+): { capability: string; ownerId: string } | null {
+  const candidate = catalog.get(candidatePluginId);
+  if (!candidate) {
+    return null;
+  }
+  const ownerByCap = new Map<string, string>();
+  for (const installed of registry.list()) {
+    if (installed.status !== 'active') {
+      continue;
+    }
+    if (installed.id === candidatePluginId) {
+      continue;
+    }
+    const entry = catalog.get(installed.id);
+    if (!entry) {
+      continue;
+    }
+    for (const rawProv of entry.plugin.provides) {
+      try {
+        const ref = parseCapabilityRef(rawProv);
+        ownerByCap.set(capabilityKey(ref), installed.id);
+      } catch {
+        // manifestLoader already warned + dropped malformed entries; a
+        // string that slipped through doesn't claim a slot.
+      }
+    }
+  }
+  for (const rawProv of candidate.plugin.provides) {
+    let ref: CapabilityRef;
+    try {
+      ref = parseCapabilityRef(rawProv);
+    } catch {
+      continue;
+    }
+    const ownerId = ownerByCap.get(capabilityKey(ref));
+    if (ownerId) {
+      return { capability: rawProv, ownerId };
+    }
+  }
+  return null;
+}
+
 /** Set of `<name>@<major>` keys that are currently published by an
  *  active installed plugin. Computed from registry × catalog so the
  *  install-chain walker can short-circuit on already-satisfied caps. */

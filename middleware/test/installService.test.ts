@@ -342,6 +342,86 @@ describe('InstallService.create — capability gate', () => {
   });
 });
 
+describe('InstallService.create — provides-collision gate', () => {
+  it('blocks install with 409 install.capability_already_provided when an active plugin already publishes the same <name>@<major>', () => {
+    // Two siblings declare the same capability — the kg-inmemory / kg-neon
+    // shape. Once one is active, installing the other must be refused at
+    // install-time so the registry can never end up with two active
+    // providers of `knowledgeGraph@1` (which would crash boot in
+    // `buildProviderIndex`).
+    const cat = makeCatalog([
+      { id: 'kg-neon', provides: ['knowledgeGraph@1'], requires: [], depends_on: [] },
+      {
+        id: 'kg-inmemory',
+        provides: ['knowledgeGraph@1'],
+        requires: [],
+        depends_on: [],
+      },
+    ]);
+    const service = new InstallService({
+      catalog: cat,
+      registry: makeRegistry([makeActive('kg-neon')]),
+      vault: noopVault,
+    });
+
+    let caught: InstallError | undefined;
+    try {
+      service.create('kg-inmemory');
+    } catch (err) {
+      assert.ok(err instanceof InstallError);
+      caught = err;
+    }
+    assert.ok(caught, 'expected InstallError to be thrown');
+    assert.equal(caught.code, 'install.capability_already_provided');
+    assert.equal(caught.status, 409);
+    const details = caught.details as
+      | { capability: string; ownerId: string }
+      | undefined;
+    assert.ok(details, 'expected details payload');
+    assert.equal(details.capability, 'knowledgeGraph@1');
+    assert.equal(details.ownerId, 'kg-neon');
+  });
+
+  it('allows install when an inactive (errored) plugin nominally provides the same capability', () => {
+    // Only `active` providers count as live owners — a plugin marked
+    // errored has not run `ctx.services.provide`, so its slot is free.
+    const cat = makeCatalog([
+      { id: 'kg-neon', provides: ['knowledgeGraph@1'], requires: [], depends_on: [] },
+      {
+        id: 'kg-inmemory',
+        provides: ['knowledgeGraph@1'],
+        requires: [],
+        depends_on: [],
+      },
+    ]);
+    const erroredNeon: InstalledAgent = {
+      ...makeActive('kg-neon'),
+      status: 'errored',
+    };
+    const service = new InstallService({
+      catalog: cat,
+      registry: makeRegistry([erroredNeon]),
+      vault: noopVault,
+    });
+    const job = service.create('kg-inmemory');
+    assert.equal(job.plugin_id, 'kg-inmemory');
+    assert.equal(job.state, 'awaiting_config');
+  });
+
+  it('allows install when no installed plugin claims the candidate capability', () => {
+    const cat = makeCatalog([
+      { id: 'kg-neon', provides: ['knowledgeGraph@1'], requires: [], depends_on: [] },
+    ]);
+    const service = new InstallService({
+      catalog: cat,
+      registry: makeRegistry(),
+      vault: noopVault,
+    });
+    const job = service.create('kg-neon');
+    assert.equal(job.plugin_id, 'kg-neon');
+  });
+});
+
 describe('InstallError.details', () => {
   it('exposes details as a public, optional field', () => {
     const err = new InstallError('x', 'msg', 409, { a: 1 });
