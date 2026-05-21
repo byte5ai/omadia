@@ -13,6 +13,7 @@ import { AgentUsagePills } from './_components/chat/AgentUsagePills';
 import { CaptureDisclosure } from './_components/chat/CaptureDisclosure';
 import { NudgeCard, parseNudgeBlock } from './_components/chat/NudgeCard';
 import { PrivacyReceiptCard } from './_components/chat/PrivacyReceiptCard';
+import { SaveMemoryButton } from './_components/chat/SaveMemoryButton';
 import { Markdown } from './_components/Markdown';
 import {
   deriveTitle,
@@ -106,6 +107,9 @@ type StreamEvent =
       answer: string;
       toolCalls: number;
       iterations: number;
+      /** KG-persisted Turn external_id. Undefined when session-logging
+       *  was disabled or threw. Powers the save-as-memory button. */
+      turnId?: string;
       attachments?: DiagramAttachment[];
       pendingUserChoice?: PendingUserChoice;
       followUpOptions?: FollowUpOption[];
@@ -254,6 +258,7 @@ export default function ChatPage(): React.ReactElement {
                   tool_calls: event.toolCalls,
                   iterations: event.iterations,
                 },
+                ...(event.turnId ? { turnId: event.turnId } : {}),
                 ...(event.attachments && event.attachments.length > 0
                   ? { attachments: event.attachments }
                   : {}),
@@ -692,18 +697,29 @@ function MessageRow({
             )}
           </>
         )}
-        {!isUser && (message.telemetry || elapsed) && (
-          <div className="mt-2 border-t border-current/10 pt-2 text-[11px] text-neutral-500 dark:text-neutral-400">
-            {message.telemetry && (
-              <span>
-                tools={message.telemetry.tool_calls} · iterations=
-                {message.telemetry.iterations}
-              </span>
-            )}
-            {elapsed !== null && <span className="ml-3">⏱ {elapsed}s</span>}
-            {message.streaming && <span className="ml-3">{t('streamingSuffix')}</span>}
-          </div>
-        )}
+        {!isUser &&
+          (message.telemetry || elapsed || message.turnId !== undefined) && (
+            <div className="mt-2 flex flex-wrap items-center border-t border-current/10 pt-2 text-[11px] text-neutral-500 dark:text-neutral-400">
+              {message.telemetry && (
+                <span>
+                  tools={message.telemetry.tool_calls} · iterations=
+                  {message.telemetry.iterations}
+                </span>
+              )}
+              {elapsed !== null && <span className="ml-3">⏱ {elapsed}s</span>}
+              {message.streaming && (
+                <span className="ml-3">{t('streamingSuffix')}</span>
+              )}
+              {!message.streaming &&
+                !message.error &&
+                message.turnId !== undefined && (
+                  <SaveMemoryButton
+                    turnId={message.turnId}
+                    messageContent={message.content}
+                  />
+                )}
+            </div>
+          )}
       </div>
     </div>
   );

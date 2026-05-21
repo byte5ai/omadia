@@ -1629,6 +1629,10 @@ export class Orchestrator {
             status: 'success',
           });
           const attachments = this.drainAttachments();
+          // Hoisted so the return payload can carry the KG turn id back to
+          // the chat UI (powers the save-as-memory affordance). Stays
+          // undefined when session-logging is disabled or threw.
+          let persistedTurnId: string | undefined;
           if (this.sessionLogger && input.sessionScope) {
             // Await the log write: previous fire-and-forget let follow-ups
             // race ahead of the session persisting their prior turn, so the
@@ -1637,7 +1641,6 @@ export class Orchestrator {
             // the latency cost is worth the retrieval guarantee.
             const entityRefs = entityCollection?.drain() ?? [];
             const answerForGraph = appendToolDigest(answer, attachments);
-            let persistedTurnId: string | undefined;
             try {
               const logged = await this.sessionLogger.log({
                 scope: input.sessionScope,
@@ -1677,6 +1680,7 @@ export class Orchestrator {
             answer,
             toolCalls,
             iterations,
+            ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
             ...(runTrace ? { runTrace } : {}),
             ...(attachments ? { attachments } : {}),
             ...(followUpOptions ? { followUpOptions } : {}),
@@ -1782,13 +1786,14 @@ export class Orchestrator {
             iterations,
             status: 'success',
           });
+          let persistedTurnId: string | undefined;
           if (this.sessionLogger && input.sessionScope) {
             const entityRefs = entityCollection?.drain() ?? [];
             const loggedAnswer = answer.length > 0
               ? `${answer}\n\n[Rückfrage] ${pendingUserChoice.question}`
               : `[Rückfrage] ${pendingUserChoice.question}`;
             try {
-              await this.sessionLogger.log({
+              const logged = await this.sessionLogger.log({
                 scope: input.sessionScope,
                 userMessage: input.userMessage,
                 assistantAnswer: loggedAnswer,
@@ -1798,6 +1803,7 @@ export class Orchestrator {
                 ...(input.userId ? { userId: input.userId } : {}),
                 ...(runTrace ? { runTrace } : {}),
               });
+              persistedTurnId = logged.turnExternalId;
             } catch (err) {
               console.error(
                 '[orchestrator] session log failed (continuing with choice card):',
@@ -1810,6 +1816,7 @@ export class Orchestrator {
             toolCalls,
             iterations,
             pendingUserChoice,
+            ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
             ...(runTrace ? { runTrace } : {}),
           };
         }
@@ -2005,6 +2012,7 @@ export class Orchestrator {
             iterations,
             status: 'success',
           });
+          let persistedTurnId: string | undefined;
           if (this.sessionLogger && input.sessionScope) {
             const entityRefs = entityCollection?.drain() ?? [];
             // See chat(): we await the session log so the next turn's
@@ -2013,7 +2021,7 @@ export class Orchestrator {
             // so the extra ~sub-second is paid by the client already.
             const answerForGraph = appendToolDigest(answer, attachments);
             try {
-              await this.sessionLogger.log({
+              const logged = await this.sessionLogger.log({
                 scope: input.sessionScope,
                 userMessage: input.userMessage,
                 assistantAnswer: answerForGraph,
@@ -2023,6 +2031,7 @@ export class Orchestrator {
                 ...(input.userId ? { userId: input.userId } : {}),
                 ...(runTrace ? { runTrace } : {}),
               });
+              persistedTurnId = logged.turnExternalId;
             } catch (err) {
               console.error(
                 '[orchestrator] session log failed (continuing with answer):',
@@ -2039,6 +2048,7 @@ export class Orchestrator {
             answer,
             toolCalls,
             iterations,
+            ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
             ...(attachments ? { attachments } : {}),
             ...(runTrace ? { runTrace } : {}),
             ...(followUpOptions ? { followUpOptions } : {}),
@@ -2198,13 +2208,14 @@ export class Orchestrator {
             iterations,
             status: 'success',
           });
+          let persistedTurnId: string | undefined;
           if (this.sessionLogger && input.sessionScope) {
             const entityRefs = entityCollection?.drain() ?? [];
             const loggedAnswer = answer.length > 0
               ? `${answer}\n\n[Rückfrage] ${pendingUserChoice.question}`
               : `[Rückfrage] ${pendingUserChoice.question}`;
             try {
-              await this.sessionLogger.log({
+              const logged = await this.sessionLogger.log({
                 scope: input.sessionScope,
                 userMessage: input.userMessage,
                 assistantAnswer: loggedAnswer,
@@ -2214,6 +2225,7 @@ export class Orchestrator {
                 ...(input.userId ? { userId: input.userId } : {}),
                 ...(runTrace ? { runTrace } : {}),
               });
+              persistedTurnId = logged.turnExternalId;
             } catch (err) {
               console.error(
                 '[orchestrator] session log failed (continuing with choice card):',
@@ -2227,6 +2239,7 @@ export class Orchestrator {
             toolCalls,
             iterations,
             pendingUserChoice,
+            ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
             ...(runTrace ? { runTrace } : {}),
           };
           return;

@@ -54,9 +54,11 @@ export default function MemoryAclSection({
   const [auditError, setAuditError] = useState<string | null>(null);
 
   useEffect(() => {
-    setOwners(ownersFromProps);
-    // ownersFromProps is recomputed each render so we depend on its
-    // serialised form to avoid a per-render reset.
+    // Deferred out of the effect body — a synchronous setState in an
+    // effect triggers a cascading render (lint-flagged). ownersFromProps
+    // is recomputed each render so we depend on its serialised form to
+    // avoid a per-render reset.
+    queueMicrotask(() => setOwners(ownersFromProps));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify(ownersFromProps)]);
 
@@ -83,7 +85,9 @@ export default function MemoryAclSection({
   }, [memoryId]);
 
   useEffect(() => {
-    if (tab === 'audit' && audit === null) void loadAudit();
+    if (tab === 'audit' && audit === null) {
+      queueMicrotask(() => void loadAudit());
+    }
   }, [tab, audit, loadAudit]);
 
   const addOwner = useCallback(async () => {

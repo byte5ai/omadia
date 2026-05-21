@@ -198,6 +198,11 @@ export interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  /** KG-persisted Turn external_id (e.g. `turn:<sessionId>:<ts>`). Set
+   *  from the orchestrator's `done` event when session-logging succeeded.
+   *  Drives the save-as-memory affordance — without it there's no
+   *  DERIVED_FROM anchor for a new MemorableKnowledge. */
+  turnId?: string;
   tools?: ToolEvent[];
   /** OB-77 — nudges emitted during this turn. Rendered after tools. */
   nudges?: NudgeEvent[];

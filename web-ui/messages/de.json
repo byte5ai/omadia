@@ -4,6 +4,7 @@
     "store": "Store",
     "builder": "Builder",
     "memory": "Memory",
+    "memories": "Memories",
     "graph": "Graph",
     "routines": "Routinen",
     "admin": "Admin",
@@ -155,7 +156,37 @@
     "toolsThisIter": " · {count} Tools diese Iter",
     "stuckHint": " · vermutlich hängt — Stop drücken?",
     "livenessGapMs": "vor {ms}ms",
-    "livenessGapSec": "vor {seconds}s"
+    "livenessGapSec": "vor {seconds}s",
+    "saveAsMemory": {
+      "buttonLabel": "Als Memory speichern",
+      "buttonTitle": "Diesen Turn als kuratiertes MemorableKnowledge-Item ablegen",
+      "savedShort": "gespeichert",
+      "dialogTitle": "Als Memory speichern",
+      "closeAriaLabel": "Dialog schließen",
+      "kindLabel": "Typ",
+      "kind": {
+        "decision": "Entscheidung",
+        "insight": "Erkenntnis",
+        "preference": "Präferenz",
+        "reference": "Referenz"
+      },
+      "summaryLabel": "Zusammenfassung",
+      "summaryPlaceholder": "Kurz, worauf dieses Memory abzielt…",
+      "summaryRequired": "Zusammenfassung ist Pflicht.",
+      "rationaleLabel": "Begründung (optional)",
+      "rationalePlaceholder": "Warum ist das merkenswert? Kontext, den der Agent behalten soll…",
+      "linkedToTurn": "Verknüpft mit Turn {turnId}",
+      "errorPrefix": "Fehler:",
+      "cancel": "Abbrechen",
+      "save": "Speichern",
+      "saving": "speichert…",
+      "successHeadline": "Gespeichert. Das Memory erscheint unter /memories.",
+      "skippedInvolved": "skippedInvolved",
+      "skippedRequired": "skippedRequired",
+      "skippedDerivedFrom": "skippedDerivedFrom",
+      "openList": "/memories öffnen",
+      "close": "Schließen"
+    }
   },
   "privacyReceipt": {
     "summary": "🛡 Privacy Guard · {summary}",

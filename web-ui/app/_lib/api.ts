@@ -2269,3 +2269,78 @@ export async function listBuilderAudit(
     `/v1/builder/drafts/${encodeURIComponent(draftId)}/audit${suffix}`,
   );
 }
+
+// -----------------------------------------------------------------------------
+// MemorableKnowledge (Slice 3b REST surface)
+//
+// Backend lives at /api/v1/memory and is gated by `requireAuth` — every
+// route uses `requireSessionUserId`, so the browser MUST be logged in.
+// `listMemories` returns only MKs the session user is both INVOLVED in
+// AND an acl_owner of (Slice 3 strict-ACL semantic).
+// -----------------------------------------------------------------------------
+
+export type MemorableKind = 'decision' | 'insight' | 'preference' | 'reference';
+
+export interface MemorableKnowledgeNode {
+  id: string;
+  type: 'MemorableKnowledge';
+  props: {
+    kind: MemorableKind;
+    summary: string;
+    rationale?: string;
+    significance?: number;
+    acl_owners: string[];
+    created_at: string;
+    created_by: string;
+    [key: string]: unknown;
+  };
+}
+
+export interface ListMemoriesResponse {
+  items: MemorableKnowledgeNode[];
+}
+
+export interface ListMemoriesOptions {
+  kind?: MemorableKind;
+  limit?: number;
+}
+
+export async function listMemories(
+  opts: ListMemoriesOptions = {},
+): Promise<ListMemoriesResponse> {
+  const params = new URLSearchParams();
+  if (opts.kind) params.set('kind', opts.kind);
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return getJson<ListMemoriesResponse>(`/v1/memory${qs ? `?${qs}` : ''}`);
+}
+
+export async function getMemory(id: string): Promise<MemorableKnowledgeNode> {
+  return getJson<MemorableKnowledgeNode>(
+    `/v1/memory/${encodeURIComponent(id)}`,
+  );
+}
+
+export interface CreateMemoryRequest {
+  kind: MemorableKind;
+  summary: string;
+  rationale?: string;
+  significance?: number;
+  involvedOmadiaUserIds?: string[];
+  requiredEntityIds?: string[];
+  derivedFromTurnIds?: string[];
+  aclOwners?: string[];
+}
+
+export interface CreateMemoryResponse {
+  memorableKnowledgeNodeId: string;
+  skippedInvolved: number;
+  skippedRequired: number;
+  skippedDerivedFrom: number;
+}
+
+export async function createMemory(
+  body: CreateMemoryRequest,
+): Promise<CreateMemoryResponse> {
+  return postJson<CreateMemoryResponse>('/v1/memory', body);
+}
