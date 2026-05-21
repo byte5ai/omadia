@@ -22,19 +22,21 @@ model. You bring your own LLM API key, run the stack on a single machine
 git clone https://github.com/byte5ai/omadia.git
 cd omadia
 
-# 1. Provide an Anthropic API key. 
-cp infra/.env.example infra/.env
-$EDITOR middleware/.env                                   # set ANTHROPIC_API_KEY=...
-
-# 2. Set the DIAGRAM_URL_SECRET in the .env
-openssl rand -hex 32
-DIAGRAM_URL_SECRET={generated_key}
+# 1. Provide an Anthropic API key. Other env vars have sane local defaults.
+cp middleware/.env.example middleware/.env
+$EDITOR middleware/.env                              # set ANTHROPIC_API_KEY=...
 
 # 2. Bring up the stack (postgres + middleware + admin UI).
+#    Compose auto-discovers docker-compose.yaml and loads middleware/.env.
 docker compose up -d
 
 # 3. Open the management UI and complete the first-admin wizard.
 open http://localhost:3333                           # /setup walks you through
+
+# 4. (Optional) Enable diagram rendering: generate a secret and add it to
+#    middleware/.env as DIAGRAM_URL_SECRET — only needed alongside
+#    KROKI_BASE_URL + BUCKET_NAME.
+openssl rand -hex 32                                 # paste output into middleware/.env
 ```
 
 The first user-creation flow lands on `/setup`. Once an administrator exists,
