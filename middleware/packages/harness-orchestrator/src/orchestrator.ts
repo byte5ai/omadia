@@ -1166,6 +1166,17 @@ export class Orchestrator {
       },
       async () => {
         let result = await this.chatInContext(input, turnId);
+        // Privacy-Shield v4 — when a v4_render_answer call produced the
+        // answer this turn it is final and already safe (real values
+        // materialized server-side from ground truth). Swap it in and skip
+        // every v2 token-path post-processing step below, which would
+        // otherwise mask the real values the user is authorised to see.
+        const v4Rendered = privacyHandle
+          ? await privacyHandle.takeRenderedAnswerV4()
+          : undefined;
+        if (v4Rendered !== undefined) {
+          result = { ...result, answer: v4Rendered };
+        }
         // Privacy-Shield v2 (D-2) — Output Validator + Retry-Loop.
         // The validator decides whether the LLM's answer kept the
         // privacy tokens verbatim AND whether it produced any
@@ -1176,7 +1187,7 @@ export class Orchestrator {
         // answer that the egress filter then double-checks as
         // defence-in-depth. Same `turnId` → same privacyHandle +
         // receipt accumulator across both attempts.
-        if (privacyService && privacyHandle) {
+        if (privacyService && privacyHandle && v4Rendered === undefined) {
           result = await this.applyOutputValidator(
             input,
             result,
@@ -1195,7 +1206,7 @@ export class Orchestrator {
         // operation is conservative — when count of labels doesn't
         // fit the captured positional token list, the text is left
         // unchanged and the gap surfaces via the receipt.
-        if (privacyHandle) {
+        if (privacyHandle && v4Rendered === undefined) {
           result = await this.applyAntiSelfAnonymization(result, privacyHandle);
         }
         // Privacy-Shield v2 (Slice S-6) — Egress Filter. Last gate
@@ -1205,7 +1216,7 @@ export class Orchestrator {
         // span inline (default); `block` swaps the entire payload
         // for the configured placeholder. The egress receipt block
         // lands in the same `finalize()` aggregation below.
-        if (privacyService && privacyHandle) {
+        if (privacyService && privacyHandle && v4Rendered === undefined) {
           result = await this.applyEgressFilter(result, privacyService, privacyHandle);
         }
         // Privacy-Shield v2 (Phase A.2, post-deploy 2026-05-14 third
@@ -1217,7 +1228,7 @@ export class Orchestrator {
         // restoration + per-type German placeholder fallback,
         // guaranteeing the channel-bound text contains no token
         // shapes.
-        if (privacyHandle) {
+        if (privacyHandle && v4Rendered === undefined) {
           result = await this.applyPostEgressScrub(result, privacyHandle);
         }
         // Privacy-Engine Hardening Slice #4 — Orphan-Placeholder
@@ -1229,7 +1240,7 @@ export class Orchestrator {
         // expensive and rarely helpful since the LLM would likely
         // produce the same names; revisit when receipt-persistence
         // (S-7.5) lets us measure prevalence.
-        if (privacyHandle) {
+        if (privacyHandle && v4Rendered === undefined) {
           const orphanAnalysis = detectOrphanPlaceholders(result.answer);
           if (orphanAnalysis.count > 0) {
             console.warn(
@@ -1875,11 +1886,18 @@ export class Orchestrator {
     try {
       for await (const event of this.chatStreamInner(input, turnId, observer)) {
         if (event.type === 'done' && privacyHandle) {
+          // Privacy-Shield v4 — swap in the server-materialized answer
+          // (real values, never round-tripped through the LLM) before the
+          // turn's privacy state is finalized.
+          const v4Rendered = await privacyHandle.takeRenderedAnswerV4();
+          let doneEvent =
+            v4Rendered !== undefined
+              ? { ...event, answer: v4Rendered }
+              : event;
           try {
             const receipt = await privacyHandle.finalize();
             if (receipt) {
-              yield { ...event, privacyReceipt: receipt };
-              continue;
+              doneEvent = { ...doneEvent, privacyReceipt: receipt };
             }
           } catch (err) {
             console.warn(
@@ -1887,6 +1905,8 @@ export class Orchestrator {
               err,
             );
           }
+          yield doneEvent;
+          continue;
         }
         yield event;
       }
@@ -2372,6 +2392,14 @@ export class Orchestrator {
     // (Slice 2.1). Absent ⇒ no privacy provider installed; we degrade
     // to pre-Slice-2.2 byte-identical behaviour.
     const privacy = turnContext.current()?.privacyHandle;
+    // Privacy-Shield v4 — verb tools + the terminal render tool are served
+    // by the privacy provider's per-turn data-plane engine, not by a tool
+    // handler. When v4 is off these tools are never offered, so the prefix
+    // check never matches.
+    if (privacy !== undefined && name.startsWith('v4_')) {
+      const v4Tool = await privacy.runV4Tool({ toolName: name, input });
+      if (v4Tool !== undefined) return v4Tool.resultText;
+    }
     let dispatchInput = input;
     if (privacy !== undefined) {
       try {
@@ -2653,6 +2681,12 @@ export class Orchestrator {
     // agents become visible from the next iteration without reboot.
     for (const tool of this.domainToolsByName.values()) {
       tools.push(tool.spec);
+    }
+    // Privacy-Shield v4 — verb + render tools, offered only when the v4
+    // data-plane boundary is active for this turn.
+    const v4ToolSpecs = turnContext.current()?.privacyHandle?.v4ToolSpecs();
+    if (v4ToolSpecs) {
+      for (const spec of v4ToolSpecs) tools.push(spec);
     }
     // Prompt-cache the full tool-spec block. Anthropic caches every prior
     // content up to and including the tool that carries `cache_control` —

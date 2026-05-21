@@ -89,6 +89,28 @@ export interface PrivacyTurnHandle {
     readonly rawResult: string;
   }): Promise<{ readonly digestText: string } | undefined>;
   /**
+   * Privacy-Shield v4 — run a v4 verb tool or the terminal render tool the
+   * LLM called; returns the `tool_result` text, or `undefined` when v4 is off.
+   */
+  runV4Tool(input: {
+    readonly toolName: string;
+    readonly input: unknown;
+  }): Promise<{ readonly resultText: string } | undefined>;
+  /**
+   * Privacy-Shield v4 — take (and clear) the server-materialized final
+   * answer a `v4_render_answer` call stashed this turn, if any.
+   */
+  takeRenderedAnswerV4(): Promise<string | undefined>;
+  /**
+   * Privacy-Shield v4 — the verb + render tool specs to offer the LLM, or
+   * `undefined` when v4 is off.
+   */
+  v4ToolSpecs(): ReadonlyArray<{
+    readonly name: string;
+    readonly description: string;
+    readonly input_schema: Record<string, unknown>;
+  }> | undefined;
+  /**
    * Privacy-Shield v3 (slice 1) — Stable-id tokenization pre-pass.
    * Runs BEFORE `processToolResult` when a tool declares `piiFields`
    * annotations. JSON-parses the text, rewrites annotated leaves to
@@ -208,6 +230,25 @@ export function createPrivacyTurnHandle(deps: {
         toolName: input.toolName,
         rawResult: input.rawResult,
       });
+    },
+
+    async runV4Tool(input) {
+      if (deps.service.runV4Tool === undefined) return undefined;
+      return deps.service.runV4Tool({
+        sessionId: deps.sessionId,
+        turnId: deps.turnId,
+        toolName: input.toolName,
+        input: input.input,
+      });
+    },
+
+    async takeRenderedAnswerV4() {
+      if (deps.service.takeRenderedAnswerV4 === undefined) return undefined;
+      return deps.service.takeRenderedAnswerV4(deps.turnId);
+    },
+
+    v4ToolSpecs() {
+      return deps.service.v4ToolSpecs?.();
     },
 
     async applyStableIdPrepass(input) {

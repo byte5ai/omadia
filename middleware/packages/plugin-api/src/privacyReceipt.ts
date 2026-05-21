@@ -844,6 +844,32 @@ export interface PrivacyGuardService {
     request: PrivacyToolResultV4Request,
   ): Promise<PrivacyToolResultV4Result | undefined>;
   /**
+   * Privacy-Shield v4 — run a v4 verb tool or the terminal render tool the
+   * LLM called. Returns the text to place in the `tool_result` block, or
+   * `undefined` when v4 is off. A `v4_render_answer` call materializes the
+   * answer server-side and stashes it (see `takeRenderedAnswerV4`).
+   */
+  runV4Tool?(request: {
+    readonly sessionId: string;
+    readonly turnId: string;
+    readonly toolName: string;
+    readonly input: unknown;
+  }): Promise<{ readonly resultText: string } | undefined>;
+  /**
+   * Privacy-Shield v4 — take (and clear) the server-materialized final
+   * answer a `v4_render_answer` call stashed for this turn, if any.
+   */
+  takeRenderedAnswerV4?(turnId: string): Promise<string | undefined>;
+  /**
+   * Privacy-Shield v4 — the verb + render tool specs to offer the LLM, or
+   * `undefined` when v4 is off. Specs are Anthropic-tool-shaped.
+   */
+  v4ToolSpecs?(): ReadonlyArray<{
+    readonly name: string;
+    readonly description: string;
+    readonly input_schema: Record<string, unknown>;
+  }> | undefined;
+  /**
    * Privacy-Shield v3 (slice 1) — Stable-id tokenization pre-pass.
    * Runs BEFORE `processToolResult` for tools that declare PII field
    * annotations. Parses the text as JSON, rewrites annotated leaves

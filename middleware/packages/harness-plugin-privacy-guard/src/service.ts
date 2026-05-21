@@ -85,6 +85,14 @@ import { createDatasetStore } from './v4/datasetStore.js';
 import { createShapeClassifier } from './v4/shapeClassifier.js';
 import { buildDigest, digestToToolResultText } from './v4/digest.js';
 import type { DatasetStore } from './v4/types.js';
+import { createVerbEngine } from './v4/verbs/index.js';
+import {
+  RENDER_TOOL_SPEC,
+  VERB_TOOL_SPECS,
+  dispatchVerbCall,
+  parseRenderDirective,
+} from './v4/toolDefs.js';
+import { materialize } from './v4/materializer.js';
 import {
   createAllowlist,
   filterHitsByAllowlist,
@@ -380,6 +388,9 @@ export function createPrivacyGuardService(
   // lazily on the first `internToolResultV4` of a turn and dropped by
   // `finalizeTurn`. Parallel to `turnMaps`; the v2/v3 path is untouched.
   const v4Stores = new Map<string, DatasetStore>();
+  // Privacy-Shield v4 — per-turn stash for the server-materialized final
+  // answer produced by a `v4_render_answer` call.
+  const v4RenderedAnswers = new Map<string, string>();
   // Privacy-Shield v2 (Slice S-3): build the allowlist at service
   // construction. Re-activating the plugin re-runs the factory.
   // Privacy-Shield v2 (Slice S-7): the operator-override list is
@@ -515,6 +526,62 @@ export function createPrivacyGuardService(
       return { digestText: digestToToolResultText(digest) };
     },
 
+    async runV4Tool(request: {
+      readonly sessionId: string;
+      readonly turnId: string;
+      readonly toolName: string;
+      readonly input: unknown;
+    }): Promise<{ readonly resultText: string } | undefined> {
+      if (!isV4Enabled()) return undefined;
+      const store = v4StoreFor(request.turnId);
+      try {
+        if (request.toolName === RENDER_TOOL_SPEC.name) {
+          const directive = parseRenderDirective(request.input);
+          const rendered = materialize(store, directive);
+          v4RenderedAnswers.set(request.turnId, rendered.text);
+          return {
+            resultText:
+              '[privacy-shield-v4] Final answer rendered server-side for ' +
+              'the user. The turn is complete — do not restate the answer.',
+          };
+        }
+        const engine = createVerbEngine({
+          store,
+          classify: createShapeClassifier(),
+        });
+        const result = dispatchVerbCall(
+          engine,
+          request.toolName,
+          request.input,
+        );
+        return { resultText: digestToToolResultText(result.digest) };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { resultText: `[privacy-shield-v4] tool error: ${message}` };
+      }
+    },
+
+    async takeRenderedAnswerV4(turnId: string): Promise<string | undefined> {
+      const text = v4RenderedAnswers.get(turnId);
+      v4RenderedAnswers.delete(turnId);
+      return text;
+    },
+
+    v4ToolSpecs():
+      | ReadonlyArray<{
+          readonly name: string;
+          readonly description: string;
+          readonly input_schema: Record<string, unknown>;
+        }>
+      | undefined {
+      if (!isV4Enabled()) return undefined;
+      return [...VERB_TOOL_SPECS, RENDER_TOOL_SPEC].map((spec) => ({
+        name: spec.name,
+        description: spec.description,
+        input_schema: spec.inputSchema,
+      }));
+    },
+
     async processOutbound(
       request: PrivacyOutboundRequest,
     ): Promise<PrivacyOutboundResult> {
@@ -633,6 +700,7 @@ export function createPrivacyGuardService(
       // ahead of the v2-accumulator early-return below.
       v4Stores.get(turnId)?.finalizeTurn();
       v4Stores.delete(turnId);
+      v4RenderedAnswers.delete(turnId);
       const acc = turnAccumulators.get(turnId);
       if (acc === undefined) return undefined;
       turnAccumulators.delete(turnId);
