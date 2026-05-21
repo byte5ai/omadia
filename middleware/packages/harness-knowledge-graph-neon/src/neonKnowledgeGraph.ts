@@ -31,10 +31,14 @@ import {
   type AclAuditEntry,
   type AclMutationOptions,
   type ListMemorableKnowledgeOptions,
+  type ExcerptSearchOptions,
   type ExcerptSource,
+  type MemorableKnowledgeHit,
   type MemorableKnowledgeIngest,
   type MemorableKnowledgeIngestResult,
+  type MemorableKnowledgeSearchOptions,
   type MemorableKnowledgeUpdate,
+  type PalaiaExcerptHit,
   type PalaiaExcerptInput,
   type PalaiaExcerptNode,
   type PalaiaExcerptUpdate,
@@ -1526,6 +1530,30 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       });
 
       await client.query('COMMIT');
+
+      // Slice 7 — fire-and-forget embedding for the MK + each excerpt.
+      // Runs OUTSIDE the create-transaction so a slow Ollama doesn't
+      // delay the API response. Failures are logged and the
+      // backfill-sweep will retry. Detached on purpose: we don't
+      // await the promise so the caller's response goes back instantly.
+      const mkText = `${input.summary}\n\n${input.rationale ?? ''}`.trim();
+      void this.embedAndStoreNode(mkExtId, mkText);
+      if (input.palaiaExcerpts && input.palaiaExcerpts.texts.length > 0) {
+        const lookup = await this.pool.query<{ external_id: string; properties: { text: string } }>(
+          `SELECT ex.external_id, ex.properties
+           FROM graph_nodes ex
+           JOIN graph_edges e ON e.from_node = ex.id AND e.type = 'EXCERPT_OF'
+           JOIN graph_nodes mk ON mk.id = e.to_node
+           WHERE ex.tenant_id = $1
+             AND ex.type = 'PalaiaExcerpt'
+             AND mk.external_id = $2`,
+          [this.tenantId, mkExtId],
+        );
+        for (const row of lookup.rows) {
+          void this.embedAndStoreNode(row.external_id, row.properties.text);
+        }
+      }
+
       return {
         memorableKnowledgeNodeId: mkExtId,
         skippedInvolved,
@@ -1832,7 +1860,17 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       const validated = validateNodeProps('MemorableKnowledge', merged);
 
       await client.query(
-        `UPDATE graph_nodes SET properties = $2::jsonb WHERE id = $1`,
+        `UPDATE graph_nodes
+           SET properties = $2::jsonb,
+               -- Slice 7 — clear the now-stale embedding so the backfill
+               -- sweep (or the post-COMMIT re-embed below) writes a
+               -- fresh one. Without this, semantic recall would surface
+               -- the MK against its old summary indefinitely.
+               embedding = NULL,
+               embedding_attempts = 0,
+               embedding_last_error_at = NULL,
+               embedding_last_error = NULL
+         WHERE id = $1`,
         [uuid, JSON.stringify(validated)],
       );
       await this.writeAclAudit(client, {
@@ -1863,6 +1901,11 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         code: 'memory_not_found',
       });
     }
+
+    // Slice 7 — fire-and-forget re-embed with the freshly merged text.
+    const mkText = `${String(updated.props['summary'] ?? '')}\n\n${String(updated.props['rationale'] ?? '')}`.trim();
+    void this.embedAndStoreNode(memorableKnowledgeNodeId, mkText);
+
     return updated;
   }
 
@@ -2007,7 +2050,16 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       const validated = validateNodeProps('PalaiaExcerpt', merged);
 
       await client.query(
-        `UPDATE graph_nodes SET properties = $2::jsonb WHERE id = $1`,
+        `UPDATE graph_nodes
+           SET properties = $2::jsonb,
+               -- Slice 7 — clear stale embedding analogous to the
+               -- updateMemorableKnowledge path. Backfill / post-COMMIT
+               -- re-embed below writes the fresh vector.
+               embedding = NULL,
+               embedding_attempts = 0,
+               embedding_last_error_at = NULL,
+               embedding_last_error = NULL
+         WHERE id = $1`,
         [hit.id, JSON.stringify(validated)],
       );
 
@@ -2038,6 +2090,10 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         [hit.id],
       );
       const row = refetched.rows[0]!;
+
+      // Slice 7 — fire-and-forget re-embed with the freshly merged text.
+      void this.embedAndStoreNode(row.external_id, row.properties.text);
+
       return {
         id: row.external_id,
         type: 'PalaiaExcerpt' as const,
@@ -2053,6 +2109,156 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       throw err;
     } finally {
       client.release();
+    }
+  }
+
+  // ─── Slice 7 — Memory + Excerpt semantic search ─────────────────────
+
+  async searchMemorableKnowledgeByEmbedding(
+    opts: MemorableKnowledgeSearchOptions,
+  ): Promise<MemorableKnowledgeHit[]> {
+    if (opts.queryEmbedding.length === 0) return [];
+    const limit = Math.max(1, Math.min(opts.limit ?? 5, 50));
+    const minSimilarity = opts.minSimilarity ?? 0.3;
+    const queryLit = vectorLiteral(opts.queryEmbedding);
+
+    const sql = `
+      SELECT ${NODE_COLUMNS},
+             CASE
+               WHEN embedding IS NULL THEN 0
+               WHEN (1 - (embedding <=> $1::vector)) <> (1 - (embedding <=> $1::vector)) THEN 0
+               ELSE 1 - (embedding <=> $1::vector)
+             END AS cosine_sim
+      FROM graph_nodes
+      WHERE tenant_id = $2
+        AND type = 'MemorableKnowledge'
+        AND embedding IS NOT NULL
+        AND properties->'acl_owners' @> jsonb_build_array($3::text)
+      ORDER BY cosine_sim DESC
+      LIMIT $4
+    `;
+    const rows = await this.pool.query<NodeRow & { cosine_sim: number }>(sql, [
+      queryLit,
+      this.tenantId,
+      opts.viewerOmadiaUserId,
+      limit,
+    ]);
+    return rows.rows
+      .filter((r) => Number(r.cosine_sim) >= minSimilarity)
+      .map((r) => ({
+        mk: rowToNode(r),
+        cosineSim: Number(r.cosine_sim),
+      }));
+  }
+
+  async searchExcerptsByEmbedding(
+    opts: ExcerptSearchOptions,
+  ): Promise<PalaiaExcerptHit[]> {
+    if (opts.queryEmbedding.length === 0) return [];
+    const limit = Math.max(1, Math.min(opts.limit ?? 10, 50));
+    const minSimilarity = opts.minSimilarity ?? 0.3;
+    const queryLit = vectorLiteral(opts.queryEmbedding);
+
+    // JOIN excerpt → EXCERPT_OF → MK so the ACL gate runs against the
+    // parent MK's acl_owners (excerpts themselves carry no ACL).
+    const sql = `
+      SELECT ex.external_id AS excerpt_external_id,
+             ex.properties  AS excerpt_props,
+             mk.external_id AS mk_external_id,
+             CASE
+               WHEN ex.embedding IS NULL THEN 0
+               WHEN (1 - (ex.embedding <=> $1::vector)) <> (1 - (ex.embedding <=> $1::vector)) THEN 0
+               ELSE 1 - (ex.embedding <=> $1::vector)
+             END AS cosine_sim
+      FROM graph_nodes ex
+      JOIN graph_edges e ON e.from_node = ex.id AND e.type = 'EXCERPT_OF'
+      JOIN graph_nodes mk ON mk.id = e.to_node AND mk.type = 'MemorableKnowledge'
+      WHERE ex.tenant_id = $2
+        AND ex.type = 'PalaiaExcerpt'
+        AND ex.embedding IS NOT NULL
+        AND mk.tenant_id = $2
+        AND mk.properties->'acl_owners' @> jsonb_build_array($3::text)
+      ORDER BY cosine_sim DESC
+      LIMIT $4
+    `;
+    const rows = await this.pool.query<{
+      excerpt_external_id: string;
+      excerpt_props: {
+        text: string;
+        position: number;
+        source: ExcerptSource;
+        created_at: string;
+      };
+      mk_external_id: string;
+      cosine_sim: number;
+    }>(sql, [queryLit, this.tenantId, opts.viewerOmadiaUserId, limit]);
+
+    return rows.rows
+      .filter((r) => Number(r.cosine_sim) >= minSimilarity)
+      .map((r) => ({
+        excerpt: {
+          id: r.excerpt_external_id,
+          type: 'PalaiaExcerpt' as const,
+          props: {
+            text: r.excerpt_props.text,
+            position: r.excerpt_props.position,
+            source: r.excerpt_props.source,
+            created_at: r.excerpt_props.created_at,
+          },
+        },
+        parentMkId: r.mk_external_id,
+        cosineSim: Number(r.cosine_sim),
+      }));
+  }
+
+  /**
+   * Slice 7 — fire-and-forget post-COMMIT embedder for a single node.
+   * Keeps the create / update hot path snappy: the transaction
+   * commits without waiting for Ollama, and this method writes the
+   * embedding column independently. A failure (Ollama down, timeout)
+   * is logged but never thrown — the embedding-backfill sweep picks
+   * the row up on the next interval.
+   *
+   * `text` is composed by the caller (per-type composer); see
+   * `embedAndStoreNode` callsites in createMemorableKnowledge /
+   * writeExcerpts / updateMemorableKnowledge.
+   */
+  private async embedAndStoreNode(
+    externalId: string,
+    text: string,
+  ): Promise<void> {
+    if (!this.embeddingClient) return;
+    if (text.trim().length === 0) return;
+    try {
+      const vector = await this.embeddingClient.embed(text);
+      if (vector.length === 0) return;
+      await this.pool.query(
+        `UPDATE graph_nodes
+           SET embedding = $1::vector,
+               embedding_attempts = 0,
+               embedding_last_error_at = NULL,
+               embedding_last_error = NULL
+         WHERE tenant_id = $2 AND external_id = $3`,
+        [vectorLiteral(vector), this.tenantId, externalId],
+      );
+    } catch (err) {
+      // Log + bump attempt counter so the backfill sweep can rate-limit.
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[graph] sync embed failed for ${externalId}: ${message} — backfill will retry`,
+      );
+      try {
+        await this.pool.query(
+          `UPDATE graph_nodes
+             SET embedding_attempts = embedding_attempts + 1,
+                 embedding_last_error_at = NOW(),
+                 embedding_last_error = $1
+           WHERE tenant_id = $2 AND external_id = $3`,
+          [message.slice(0, 500), this.tenantId, externalId],
+        );
+      } catch {
+        // swallow — backfill will pick it up
+      }
     }
   }
 

@@ -215,6 +215,61 @@ export interface KnowledgeGraph {
     patch: PalaiaExcerptUpdate,
     actor: AclMutationOptions,
   ): Promise<PalaiaExcerptNode>;
+  /**
+   * Slice 7 — semantic search over MemorableKnowledge nodes. Cosine
+   * similarity on the `embedding` column (Slice-7 backfill writes the
+   * `summary + rationale` joint embedding). ACL-gated via
+   * `acl_owners @> [viewerOmadiaUserId]` — non-bypassable, no admin
+   * mode. Empty query embedding short-circuits to `[]`.
+   */
+  searchMemorableKnowledgeByEmbedding(
+    opts: MemorableKnowledgeSearchOptions,
+  ): Promise<MemorableKnowledgeHit[]>;
+  /**
+   * Slice 7 — semantic search over PalaiaExcerpt nodes. ACL-gated
+   * indirectly: each excerpt is JOINed back to its parent
+   * MemorableKnowledge via `EXCERPT_OF`, then the parent's
+   * `acl_owners` is checked against the viewer. Returns hits with
+   * `parentMkId` so callers can render the excerpt in context of its
+   * curated memory.
+   */
+  searchExcerptsByEmbedding(
+    opts: ExcerptSearchOptions,
+  ): Promise<PalaiaExcerptHit[]>;
+}
+
+/** Slice 7 — input for `searchMemorableKnowledgeByEmbedding`. */
+export interface MemorableKnowledgeSearchOptions {
+  queryEmbedding: number[];
+  /** Cluster-root id of the viewer. ACL is non-bypassable. */
+  viewerOmadiaUserId: string;
+  /** Max hits, clamped to [1, 50]. Default 5. */
+  limit?: number;
+  /** Hits below this cosine similarity dropped. Default 0.3. */
+  minSimilarity?: number;
+}
+
+/** Slice 7 — single MK hit from semantic search. */
+export interface MemorableKnowledgeHit {
+  mk: GraphNode;
+  cosineSim: number;
+}
+
+/** Slice 7 — input for `searchExcerptsByEmbedding`. Same shape as
+ *  the MK search; the JOIN to parent-MK is internal. */
+export interface ExcerptSearchOptions {
+  queryEmbedding: number[];
+  viewerOmadiaUserId: string;
+  limit?: number;
+  minSimilarity?: number;
+}
+
+/** Slice 7 — single excerpt hit, carries the parent-MK external_id
+ *  so callers can dedupe-merge against MK-hits. */
+export interface PalaiaExcerptHit {
+  excerpt: PalaiaExcerptNode;
+  parentMkId: string;
+  cosineSim: number;
 }
 
 /** Slice 5 — partial content-patch on a MemorableKnowledge. All fields

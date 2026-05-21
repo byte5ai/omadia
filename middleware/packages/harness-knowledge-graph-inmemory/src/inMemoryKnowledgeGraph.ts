@@ -30,10 +30,14 @@ import {
   type AclAuditEntry,
   type AclMutationOptions,
   type ListMemorableKnowledgeOptions,
+  type ExcerptSearchOptions,
   type ExcerptSource,
+  type MemorableKnowledgeHit,
   type MemorableKnowledgeIngest,
   type MemorableKnowledgeIngestResult,
+  type MemorableKnowledgeSearchOptions,
   type MemorableKnowledgeUpdate,
+  type PalaiaExcerptHit,
   type PalaiaExcerptInput,
   type PalaiaExcerptNode,
   type PalaiaExcerptUpdate,
@@ -68,6 +72,19 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
   private readonly sessionTurns = new Map<string, string[]>();
   /** Slice 3 — per-memory append-only ACL audit log. */
   private readonly aclAudit = new Map<string, AclAuditEntry[]>();
+
+  /** Slice 7 — embedding cache keyed by node externalId. The InMemory
+   *  backend has no `embedding` column on its node bag, so we keep a
+   *  parallel map. Tests can seed entries directly via `setEmbedding`
+   *  for cosine-search round-trips without an embedding provider. */
+  private readonly embeddings = new Map<string, number[]>();
+
+  /** Slice 7 — test/seed helper to attach a vector to an existing
+   *  node. Mirrors a successful Neon backfill row. Does NOT validate
+   *  the node exists; callers are tests in control of the substrate. */
+  setEmbedding(externalId: string, vector: number[]): void {
+    this.embeddings.set(externalId, [...vector]);
+  }
 
   async ingestTurn(turn: TurnIngest): Promise<TurnIngestResult> {
     const sessionId = sessionNodeId(turn.scope);
@@ -1032,6 +1049,10 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         this.edges.delete(key);
       }
     }
+    // Slice 7 — also drop the embeddings for the deleted MK + cascade-
+    // deleted excerpts so cosine-search can never resurrect a tombstoned
+    // memory by keeping its vector around.
+    for (const id of droppedIds) this.embeddings.delete(id);
   }
 
   async updateMemorableKnowledge(
@@ -1073,6 +1094,11 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     // `validateNodeProps` directly from `@omadia/knowledge-graph-neon`
     // when they need to assert the schema-side guarantees.
     node.props = next;
+
+    // Slice 7 — drop the now-stale embedding so cosine-search stops
+    // matching against the old summary text. Mirrors the Neon
+    // UPDATE … SET embedding = NULL clause.
+    this.embeddings.delete(node.id);
 
     this.appendAclAudit({
       memoryExternalId: memorableKnowledgeNodeId,
@@ -1210,6 +1236,9 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     if (patch.source !== undefined) next['source'] = patch.source;
     target.props = next;
 
+    // Slice 7 — drop the now-stale excerpt embedding.
+    this.embeddings.delete(target.id);
+
     this.appendAclAudit({
       memoryExternalId: memorableKnowledgeNodeId,
       actorOmadiaUserId: actor.actorOmadiaUserId,
@@ -1232,6 +1261,78 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         created_at: next['created_at'] as string,
       },
     };
+  }
+
+  // ─── Slice 7 — Memory + Excerpt semantic search ─────────────────────
+
+  async searchMemorableKnowledgeByEmbedding(
+    opts: MemorableKnowledgeSearchOptions,
+  ): Promise<MemorableKnowledgeHit[]> {
+    if (opts.queryEmbedding.length === 0) return [];
+    const limit = Math.max(1, Math.min(opts.limit ?? 5, 50));
+    const minSimilarity = opts.minSimilarity ?? 0.3;
+    const hits: MemorableKnowledgeHit[] = [];
+    for (const node of this.nodes.values()) {
+      if (node.type !== 'MemorableKnowledge') continue;
+      const owners = Array.isArray(node.props['acl_owners'])
+        ? (node.props['acl_owners'] as string[])
+        : [];
+      if (!owners.includes(opts.viewerOmadiaUserId)) continue;
+      const vector = this.embeddings.get(node.id);
+      if (!vector) continue;
+      const sim = cosine(opts.queryEmbedding, vector);
+      if (!Number.isFinite(sim) || sim < minSimilarity) continue;
+      hits.push({ mk: node, cosineSim: sim });
+    }
+    hits.sort((a, b) => b.cosineSim - a.cosineSim);
+    return hits.slice(0, limit);
+  }
+
+  async searchExcerptsByEmbedding(
+    opts: ExcerptSearchOptions,
+  ): Promise<PalaiaExcerptHit[]> {
+    if (opts.queryEmbedding.length === 0) return [];
+    const limit = Math.max(1, Math.min(opts.limit ?? 10, 50));
+    const minSimilarity = opts.minSimilarity ?? 0.3;
+    const hits: PalaiaExcerptHit[] = [];
+    for (const node of this.nodes.values()) {
+      if (node.type !== 'PalaiaExcerpt') continue;
+      const vector = this.embeddings.get(node.id);
+      if (!vector) continue;
+      // Resolve parent MK via EXCERPT_OF edge.
+      let parentMkId: string | null = null;
+      for (const edge of this.edges.values()) {
+        if (edge.type === 'EXCERPT_OF' && edge.from === node.id) {
+          parentMkId = edge.to;
+          break;
+        }
+      }
+      if (parentMkId === null) continue;
+      const parent = this.nodes.get(parentMkId);
+      if (!parent || parent.type !== 'MemorableKnowledge') continue;
+      const owners = Array.isArray(parent.props['acl_owners'])
+        ? (parent.props['acl_owners'] as string[])
+        : [];
+      if (!owners.includes(opts.viewerOmadiaUserId)) continue;
+      const sim = cosine(opts.queryEmbedding, vector);
+      if (!Number.isFinite(sim) || sim < minSimilarity) continue;
+      hits.push({
+        excerpt: {
+          id: node.id,
+          type: 'PalaiaExcerpt' as const,
+          props: {
+            text: node.props['text'] as string,
+            position: node.props['position'] as number,
+            source: node.props['source'] as ExcerptSource,
+            created_at: node.props['created_at'] as string,
+          },
+        },
+        parentMkId,
+        cosineSim: sim,
+      });
+    }
+    hits.sort((a, b) => b.cosineSim - a.cosineSim);
+    return hits.slice(0, limit);
   }
 
   async listMemoryAclAudit(
@@ -1434,4 +1535,25 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     const key = `${edge.from}|${edge.type}|${edge.to}`;
     this.edges.set(key, edge);
   }
+}
+
+/**
+ * Slice 7 — cosine similarity helper for the InMemory search loops.
+ * Returns NaN on length mismatch / zero-norm so callers can drop with
+ * a single `Number.isFinite` guard.
+ */
+function cosine(a: readonly number[], b: readonly number[]): number {
+  if (a.length === 0 || b.length === 0 || a.length !== b.length) return Number.NaN;
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    const av = a[i] ?? 0;
+    const bv = b[i] ?? 0;
+    dot += av * bv;
+    na += av * av;
+    nb += bv * bv;
+  }
+  if (na === 0 || nb === 0) return Number.NaN;
+  return dot / (Math.sqrt(na) * Math.sqrt(nb));
 }

@@ -167,6 +167,35 @@ export async function activate(
     100,
   );
 
+  // Slice 7 — memory-recall toggle + tuning. Default ON whenever an
+  // embeddingClient is wired (we still skip the leg in `loadMemoryHits`
+  // when no userId is present). Set KG_ACL_MEMORY_RECALL_ENABLED=false
+  // (or config key kg_acl_memory_recall_enabled=false) to A/B without
+  // a code change.
+  const memoryRecallEnabledRaw =
+    ctx.config.get<unknown>('kg_acl_memory_recall_enabled') ??
+    process.env['KG_ACL_MEMORY_RECALL_ENABLED'];
+  const memoryRecallDisabled =
+    typeof memoryRecallEnabledRaw === 'string'
+      ? memoryRecallEnabledRaw.toLowerCase() === 'false'
+      : memoryRecallEnabledRaw === false;
+  const memoryLimit = parseNumberOrDefault(
+    ctx.config.get<unknown>('kg_acl_memory_recall_limit'),
+    3,
+  );
+  const memoryExcerptsPerMemory = parseNumberOrDefault(
+    ctx.config.get<unknown>('kg_acl_memory_recall_excerpts_per_memory'),
+    2,
+  );
+  const memoryMinSimilarity = parseNumberOrDefault(
+    ctx.config.get<unknown>('kg_acl_memory_recall_min_similarity'),
+    0.5,
+  );
+  const memoryBoostFactor = parseNumberOrDefault(
+    ctx.config.get<unknown>('kg_acl_memory_recall_boost_factor'),
+    1.2,
+  );
+
   let anthropic: Anthropic | undefined;
   if (apiKey) {
     anthropic = new Anthropic({ apiKey });
@@ -241,12 +270,17 @@ export async function activate(
       charsPerToken: contextCharsPerToken,
       manualBoostFactor: contextManualBoostFactor,
       compactModeThreshold: contextCompactModeThreshold,
+      memoryRecallDisabled,
+      memoryLimit,
+      excerptsPerMemory: memoryExcerptsPerMemory,
+      memoryMinSimilarity,
+      memoryBoostFactor,
     },
     embeddingClient,
     agentPriorities,
   );
   ctx.log(
-    `[harness-orchestrator-extras] context-assembler ready (budget=${String(contextDefaultBudgetTokens)}tk, chars/tk=${String(contextCharsPerToken)}, manual-boost=${contextManualBoostFactor.toFixed(2)}, compact>${String(contextCompactModeThreshold)}, agentPriorities=${agentPriorities ? 'on' : 'off'})`,
+    `[harness-orchestrator-extras] context-assembler ready (budget=${String(contextDefaultBudgetTokens)}tk, chars/tk=${String(contextCharsPerToken)}, manual-boost=${contextManualBoostFactor.toFixed(2)}, compact>${String(contextCompactModeThreshold)}, agentPriorities=${agentPriorities ? 'on' : 'off'}, memoryRecall=${embeddingClient && !memoryRecallDisabled ? `on(limit=${String(memoryLimit)},excerpts=${String(memoryExcerptsPerMemory)},minSim=${memoryMinSimilarity.toFixed(2)})` : 'off'})`,
   );
   const disposeContext = ctx.services.provide(
     CONTEXT_RETRIEVER_SERVICE,

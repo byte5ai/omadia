@@ -56,6 +56,10 @@ import type {
   AclMutationOptions,
   PalaiaExcerptNode,
   PalaiaExcerptUpdate,
+  MemorableKnowledgeSearchOptions,
+  MemorableKnowledgeHit,
+  ExcerptSearchOptions,
+  PalaiaExcerptHit,
 } from '@omadia/plugin-api';
 import {
   sessionNodeId,
@@ -276,5 +280,17 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
       patch,
       actor,
     );
+  }
+
+  searchMemorableKnowledgeByEmbedding(
+    opts: MemorableKnowledgeSearchOptions,
+  ): Promise<MemorableKnowledgeHit[]> {
+    return this.inner.searchMemorableKnowledgeByEmbedding(opts);
+  }
+
+  searchExcerptsByEmbedding(
+    opts: ExcerptSearchOptions,
+  ): Promise<PalaiaExcerptHit[]> {
+    return this.inner.searchExcerptsByEmbedding(opts);
   }
 }
