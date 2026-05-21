@@ -290,6 +290,40 @@ tokenization; adapt the Privacy Receipt. `ensureWellFormedParams` is kept.
 **Independent Test**: Remove the code; run the full middleware suite + a boot
 smoke test; confirm green and the Privacy Receipt renders v4 fields.
 
+**Execution plan (pre-recon 2026-05-21) — leaves-first, build green per stage.**
+⚠️ All-or-nothing: a partial removal leaves the v2 (flag-off) path broken —
+there is no safe half-way state. Run the stages back-to-back in one pass.
+
+1. **Orchestrator → v4-only**: delete the 5 v2 post-loop steps and the 4
+   `apply*` method defs (`applyOutputValidator` / `applyEgressFilter` /
+   `applyAntiSelfAnonymization` / `applyPostEgressScrub`, ~lines 1188–1488);
+   the v2 calls in `dispatchTool` + `LocalSubAgent.dispatch` (`processToolInput`,
+   `applyStableIdPrepass`, `processToolResult`); the direct `messages.create`
+   v2 path (`applyPrivacyOutboundToParams` / `restorePrivacyInResponse`); drop
+   now-dead imports/helpers (`collectEgressSlots`, `orphanPlaceholderCheck`, …).
+2. **`streaming.ts`**: strip v2 from `streamMessageEvents`; keep
+   `ensureWellFormedParams`.
+3. **`privacyHandle.ts`**: drop the 9 v2 methods from `PrivacyTurnHandle` plus
+   `applyPrivacyOutboundToParams` / `restorePrivacyInResponse` /
+   `streamingTokenBoundary`; keep `ensureWellFormedParams` + the v4 methods.
+4. **`plugin-api`**: remove the v2 methods from the `PrivacyGuardService`
+   interface (`privacyReceipt.ts`).
+5. **`service.ts`**: v4-only rewrite — keep the v4 store/verb/render methods +
+   `finalizeTurn`; delete the ~1000 lines of v2 transform logic + helpers.
+6. **Delete files**: `selfAnonymization.ts`, `stableIdTokenization.ts`,
+   `tokenizeMap.ts` (verify each v2-only — also assess `egressFilter.ts`,
+   `policyEngine.ts`, `spanHelpers.ts`); adapt `receiptAssembler.ts` →
+   `PrivacyReceiptV4`; update `index.ts` exports.
+7. **Channel tendril**: `finalizeTurn` then returns `PrivacyReceiptV4` —
+   adjust every channel receipt renderer (Teams Adaptive-Card, Web inline
+   disclosure) that consumes the `PrivacyReceipt` shape.
+8. **Flag**: remove `PRIVACY_SHIELD_V4` — v4 becomes unconditional
+   (`featureFlag.ts` deleted; `isV4Enabled` call sites dropped).
+9. Full build + full `node:test` suite + boot smoke test green; update specs.
+
+Decisions in force: research **C7** (no inbound masker — user input is
+user-disclosed) and **C8** (this runs after the intensive live test).
+
 - [ ] T048 [US9] Delete the v2 stream-tokenization path: `processToolResult`
   tokenize path, `processInbound` restore, `streamingTokenBoundary`
   (`harness-orchestrator/src/streaming.ts` and privacy-guard `service.ts`).
