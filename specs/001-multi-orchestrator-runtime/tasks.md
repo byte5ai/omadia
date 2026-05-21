@@ -52,16 +52,17 @@ small foundational P1 increment and carries its own phase below.
 reach the `Plugin` object and that `manifestLinter` rejects a
 `multiInstance: false` manifest with no justification.
 
-- [ ] T002 [US1] Extend the `Plugin` type with `multiInstance: boolean`,
-  `multiInstanceJustification?: string`, and `privacyClass: 'strict' | 'default'`
-  in `middleware/src/api/admin-v1.ts`.
+- [ ] T002 [US1] Extend the `Plugin` type with `multi_instance: boolean`,
+  `multi_instance_justification?: string`, and
+  `privacy_class: 'strict' | 'default'` in `middleware/src/api/admin-v1.ts`.
 - [ ] T003 [US1] Extend `adaptManifestV1()` in
   `middleware/src/plugins/manifestLoader.ts` to map the new `manifest.yaml`
-  fields, defaulting `multiInstance` to `true` when absent.
-- [ ] T004 [US1] Add validation for the new fields to
-  `middleware/src/plugins/builder/manifestLinter.ts`: reject `multiInstance:
-  false` without a non-empty `multiInstanceJustification`; reject an unknown
-  `privacyClass`; name the failing field.
+  fields, defaulting `multi_instance` to `true` when absent.
+- [ ] T004 [US1] Validate the new fields at load time in `adaptManifestV1()`
+  (`manifestLoader.ts`): warn on a `multi_instance: false` with no
+  justification, and warn + fall back to `default` on an unknown
+  `privacy_class` (graceful-degradation contract). The Builder-side hard gate
+  in `manifestLinter.ts` moves to US2.
 - [ ] T005 [US1] Test: load a `manifest.yaml` carrying the new fields and assert
   they reach the `Plugin` object (with the `multiInstance` default); assert the
   linter rejects an invalid multi-instance / privacy declaration with a precise

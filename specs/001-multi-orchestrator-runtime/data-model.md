@@ -125,9 +125,9 @@ This feature adds two fields to the *existing* plugin `manifest.yaml` (loaded by
 
 | Field | Type | Meaning |
 |---|---|---|
-| `multiInstance` | `boolean` | May the plugin run as >1 instance in one process? Defaults to `true` when omitted. |
-| `multiInstanceJustification` | `string` | Required (non-empty) when `multiInstance` is `false`; why it cannot. |
-| `privacyClass` | `'strict' \| 'default'` | Plugin's data-handling class; the Builder defaults generated plugins to `strict`. Recorded, not enforced this feature (C3). |
+| `multi_instance` | `boolean` | May the plugin run as >1 instance in one process? Defaults to `true` when omitted. |
+| `multi_instance_justification` | `string` | Required (non-empty) when `multi_instance` is `false`; why it cannot. |
+| `privacy_class` | `'strict' \| 'default'` | Plugin's data-handling class; the Builder defaults generated plugins to `strict`. Recorded, not enforced this feature (C3). |
 
 Memory scoping reuses the manifest's existing `permissions.memory` block — no
 `memoryNamespaces` field is added. Capability needs are likewise the existing

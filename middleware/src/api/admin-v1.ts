@@ -218,6 +218,20 @@ export interface Plugin {
    * BuilderAgent reaches them via `BUILDER_REFERENCE_ESSENTIALS` instead.
    */
   is_reference_only?: boolean;
+  /**
+   * Multi-orchestrator runtime — may this plugin be activated for more
+   * than one Agent in a single process? Defaults to `true` (the loader
+   * fills it); a plugin that genuinely cannot sets `multi_instance: false`
+   * in its `manifest.yaml` and supplies `multi_instance_justification`.
+   */
+  multi_instance: boolean;
+  /** Required (non-empty) reason when `multi_instance` is `false`. */
+  multi_instance_justification?: string;
+  /**
+   * Plugin data-handling class, declared in `manifest.yaml`. Recorded for
+   * a later privacy workstream; not enforced today. Defaults to `default`.
+   */
+  privacy_class: 'strict' | 'default';
 }
 
 /**

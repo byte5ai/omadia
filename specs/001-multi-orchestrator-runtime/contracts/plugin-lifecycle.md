@@ -49,18 +49,23 @@ This feature adds two fields to the existing plugin `manifest.yaml`
 (`schema_version: "1"`). All other manifest fields — `identity`, `compat`,
 `permissions`, `jobs`, `capabilities`, … — are unchanged.
 
+Field names are snake_case, matching the existing top-level manifest keys
+(`schema_version`, `depends_on`, `is_reference_only`).
+
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `multiInstance` | `boolean` | optional, defaults `true` | May the plugin be activated for more than one Agent in one process? |
-| `multiInstanceJustification` | `string` | required iff `multiInstance: false` | Non-empty reason the plugin cannot be multi-instance. |
-| `privacyClass` | `'strict' \| 'default'` | optional, defaults `default` | Plugin's data-handling class. Recorded, not enforced this feature (research C3). |
+| `multi_instance` | `boolean` | optional, defaults `true` | May the plugin be activated for more than one Agent in one process? |
+| `multi_instance_justification` | `string` | required iff `multi_instance: false` | Non-empty reason the plugin cannot be multi-instance. |
+| `privacy_class` | `'strict' \| 'default'` | optional, defaults `default` | Plugin's data-handling class. Recorded, not enforced this feature (research C3). |
 
-The fields surface in three existing places:
+The fields surface in these existing places:
 
 - **`manifest.yaml`** — plugins (and the Builder boilerplate) declare them.
 - **`adaptManifestV1()` in `manifestLoader.ts`** — maps them onto the loaded
-  `Plugin` object (`middleware/src/api/admin-v1.ts`).
-- **`manifestLinter.ts`** — validates them (see §3).
+  `Plugin` object (`middleware/src/api/admin-v1.ts`), applying the defaults
+  and warning on an invalid value (see §3).
+- **`manifestLinter.ts`** (Builder spec) — gains the same checks in US2, once
+  the Builder's `AgentSpecSkeleton` carries the fields.
 
 `memoryNamespaces` and `requiredCapabilities` are **not** added — memory
 scoping derives from the manifest's existing `permissions.memory`, and
@@ -68,16 +73,17 @@ capability needs from the existing `permissions.*` blocks.
 
 ## 3. Manifest Validation
 
-`manifestLinter` (`middleware/src/plugins/builder/manifestLinter.ts` —
-hand-rolled checks, no JSON Schema) gains rules for the new fields:
+US1 validates at load time, in `adaptManifestV1()` (`manifestLoader.ts`),
+following the loader's graceful-degradation contract:
 
-- `multiInstance`, when present, must be a boolean.
-- `multiInstance: false` requires a non-empty `multiInstanceJustification`;
-  otherwise the lint fails, naming the field.
-- `privacyClass`, when present, must be `strict` or `default`.
+- `multi_instance` defaults to `true`; only an explicit `false` is honoured.
+- `multi_instance: false` with no non-empty `multi_instance_justification`
+  loads but logs a warning naming the plugin.
+- `privacy_class` defaults to `default`; an unknown value loads, warns, and
+  falls back to `default`.
 
-The linter runs in CI and in the Agent Builder; a failing check blocks the
-build / publish and names the failure.
+The Builder-side hard gate — `manifestLinter` rejecting an invalid spec —
+lands in US2, once the Builder's `AgentSpecSkeleton` carries the fields.
 
 ## 4. Registry Consumption
 

@@ -160,7 +160,7 @@ async function loadManifestV1Entries(
   return entries;
 }
 
-function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
+export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
   if (doc['schema_version'] !== '1') return null;
 
   const identity = asRecord(doc['identity']);
@@ -276,6 +276,32 @@ function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
     );
   }
 
+  // Multi-orchestrator runtime (US1) — multi-instance safety + privacy
+  // class. Both default permissively so a manifest without them still
+  // loads; invalid values warn and fall back, matching this loader's
+  // graceful-degradation contract.
+  const multiInstance = doc['multi_instance'] === false ? false : true;
+  const multiInstanceJustification = asString(
+    doc['multi_instance_justification'],
+  );
+  if (multiInstance === false && !multiInstanceJustification) {
+    console.warn(
+      `[manifest:${id}] multi_instance is false but multi_instance_justification is missing — add a non-empty reason to the plugin's manifest.yaml.`,
+    );
+  }
+  const privacyClassRaw = asString(doc['privacy_class']);
+  if (
+    privacyClassRaw !== undefined &&
+    privacyClassRaw !== 'strict' &&
+    privacyClassRaw !== 'default'
+  ) {
+    console.warn(
+      `[manifest:${id}] privacy_class '${privacyClassRaw}' is not 'strict' or 'default' — falling back to 'default'.`,
+    );
+  }
+  const privacyClass: 'strict' | 'default' =
+    privacyClassRaw === 'strict' ? 'strict' : 'default';
+
   const base: Plugin = {
     id,
     kind,
@@ -299,11 +325,19 @@ function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
     jobs,
     provides,
     requires,
+    multi_instance: multiInstance,
+    privacy_class: privacyClass,
   };
   let result: Plugin = base;
   if (channel) result = { ...result, channel };
   if (adminUiPath) result = { ...result, admin_ui_path: adminUiPath };
   if (isReferenceOnly) result = { ...result, is_reference_only: true };
+  if (multiInstanceJustification) {
+    result = {
+      ...result,
+      multi_instance_justification: multiInstanceJustification,
+    };
+  }
   return result;
 }
 
