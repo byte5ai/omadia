@@ -102,3 +102,10 @@ export * from './mergeCandidate.js';
 // name. Provider lives in `harness-orchestrator-extras/src/
 // topicClustering.ts`.
 export * from './topic.js';
+
+// KG-ACL Slice 12: ExcerptMergeCandidate. Near-duplicate PalaiaExcerpt
+// detection (cosine ≥ 0.97) — mirror of Slice 10 at the excerpt layer.
+// Operator resolves keep_a / keep_b / not_duplicate via
+// /admin/duplicates (Excerpts tab); keep_a/keep_b deletes the loser
+// excerpt via the new `deleteExcerpt` KG method.
+export * from './excerptMerge.js';

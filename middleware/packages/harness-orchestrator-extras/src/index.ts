@@ -131,3 +131,9 @@ export type { BulkMergeDetectDeps } from './bulkMergeDetect.js';
 // "Cluster N" fallback when no Anthropic key is configured.
 export { createTopicClusteringService } from './topicClustering.js';
 export type { TopicClusteringDeps } from './topicClustering.js';
+
+// KG-ACL Slice 12 — bulk pass over PalaiaExcerpts without a
+// `last_excerpt_merge_check_at` marker; complements the live trigger
+// in MergeTriggeringKnowledgeGraph's `updateExcerpt` decoration.
+export { createBulkExcerptMergeDetectService } from './bulkExcerptMergeDetect.js';
+export type { BulkExcerptMergeDetectDeps } from './bulkExcerptMergeDetect.js';

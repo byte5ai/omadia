@@ -9,6 +9,7 @@ import type {
   Visibility,
 } from '@omadia/plugin-api';
 import {
+  BULK_EXCERPT_MERGE_DETECT_SERVICE_NAME,
   BULK_INCONSISTENCY_SERVICE_NAME,
   BULK_MERGE_DETECT_SERVICE_NAME,
   BULK_PROMOTION_SERVICE_NAME,
@@ -29,6 +30,7 @@ import { CaptureFilteringKnowledgeGraph } from './captureFilteringKnowledgeGraph
 import { ContextRetriever } from './contextRetriever.js';
 import type { Pool } from 'pg';
 
+import { createBulkExcerptMergeDetectService } from './bulkExcerptMergeDetect.js';
 import { createBulkInconsistencyService } from './bulkInconsistency.js';
 import { createBulkMergeDetectService } from './bulkMergeDetect.js';
 import { createBulkPromotionService } from './bulkPromotion.js';
@@ -420,6 +422,21 @@ export async function activate(
     `[harness-orchestrator-extras] bulkMergeDetect ready (embed=${embeddingClient ? 'on' : 'off'})`,
   );
 
+  // Slice 12 — Bulk Excerpt Merge Detect. Cosine-only (no Anthropic
+  // dep) — always available when embeddingClient is wired.
+  const bulkExcerptMergeDetect = createBulkExcerptMergeDetectService({
+    kg: wrappedKg,
+    detector: mergeCandidateDetector,
+    log: (msg) => { console.error(msg); },
+  });
+  const disposeBulkExcerptMergeDetect = ctx.services.provide(
+    BULK_EXCERPT_MERGE_DETECT_SERVICE_NAME,
+    bulkExcerptMergeDetect,
+  );
+  ctx.log(
+    `[harness-orchestrator-extras] bulkExcerptMergeDetect ready (embed=${embeddingClient ? 'on' : 'off'})`,
+  );
+
   // Slice 11 — Topic clustering. Operator-triggered, cosine-only
   // discovery + optional Haiku naming (falls back to "Cluster N" when
   // no Anthropic key). Always published; the route 503s nothing — even
@@ -559,6 +576,7 @@ export async function activate(
       disposeTopicDetector?.();
       disposeFactExtractor?.();
       disposeTopicClustering();
+      disposeBulkExcerptMergeDetect();
       disposeBulkMergeDetect();
       disposeBulkInconsistency();
       disposeBulkPromotion?.();

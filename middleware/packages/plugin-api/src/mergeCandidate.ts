@@ -59,12 +59,24 @@ export interface CreateMergeCandidateInput {
 
 /**
  * Service surface published by the merge-detector provider. Mirrors
- * `InconsistencyDetectorService` from Slice 9.
+ * `InconsistencyDetectorService` from Slice 9. Slice 12 added the
+ * `detectForExcerpt` entry-point so the same detector handles both
+ * MK- and Excerpt-level near-duplicate flagging.
  */
 export interface MergeCandidateDetectorService {
   detectFor(memorableKnowledgeNodeId: string): Promise<{
     candidatesScanned: number;
     mergeCandidatesCreated: number;
+  }>;
+  /**
+   * Slice 12 — run the near-duplicate pass for a single Excerpt
+   * instead of an MK. Produces `ExcerptMergeCandidate` nodes (not
+   * `MergeCandidate`); count returned under
+   * `excerptMergeCandidatesCreated`.
+   */
+  detectForExcerpt(excerptExternalId: string): Promise<{
+    candidatesScanned: number;
+    excerptMergeCandidatesCreated: number;
   }>;
 }
 

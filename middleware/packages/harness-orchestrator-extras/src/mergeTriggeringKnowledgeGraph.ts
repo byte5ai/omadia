@@ -24,7 +24,11 @@ import type {
   AclMutationOptions,
   ChannelIdentityIngest,
   CreateInconsistencyInput,
+  CreateExcerptMergeCandidateInput,
   CreateMergeCandidateInput,
+  ExcerptMergeCandidateNode,
+  ExcerptMergeResolution,
+  ListExcerptMergeCandidatesOptions,
   EntityCapturedTurnsHit,
   EntityCapturedTurnsOptions,
   EntityIngest,
@@ -105,6 +109,24 @@ export class MergeTriggeringKnowledgeGraph implements KnowledgeGraph {
       });
   }
 
+  /** Slice 12 — fire the excerpt-side merge detector. */
+  private fireExcerpt(excerptId: string): void {
+    void this.detector
+      .detectForExcerpt(excerptId)
+      .then((stats) => {
+        if (stats.excerptMergeCandidatesCreated > 0) {
+          this.log(
+            `[merge-trigger-excerpt] ${excerptId}: scanned=${String(stats.candidatesScanned)} created=${String(stats.excerptMergeCandidatesCreated)}`,
+          );
+        }
+      })
+      .catch((err: unknown) => {
+        this.log(
+          `[merge-trigger-excerpt] ${excerptId}: detector failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+  }
+
   // ─── Decorated MK mutations ──────────────────────────────────────
 
   async createMemorableKnowledge(
@@ -112,6 +134,22 @@ export class MergeTriggeringKnowledgeGraph implements KnowledgeGraph {
   ): Promise<MemorableKnowledgeIngestResult> {
     const result = await this.inner.createMemorableKnowledge(input);
     this.fire(result.memorableKnowledgeNodeId);
+    // Slice 12 — also fire the excerpt detector for each excerpt the
+    // batch produced (the MemorableKnowledgeIngestResult doesn't carry
+    // their ids back, so we list them post-COMMIT from the KG). Skips
+    // silently when the MK had no excerpts.
+    if (input.palaiaExcerpts && input.palaiaExcerpts.texts.length > 0) {
+      void this.inner
+        .listExcerptsForMemory(result.memorableKnowledgeNodeId)
+        .then((excerpts) => {
+          for (const e of excerpts) this.fireExcerpt(e.id);
+        })
+        .catch((err: unknown) => {
+          this.log(
+            `[merge-trigger-excerpt] listExcerpts failed for ${result.memorableKnowledgeNodeId}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
+    }
     return result;
   }
 
@@ -126,6 +164,40 @@ export class MergeTriggeringKnowledgeGraph implements KnowledgeGraph {
       actor,
     );
     this.fire(memorableKnowledgeNodeId);
+    return result;
+  }
+
+  // Slice 12 — Excerpt-level mutations. updateExcerpt is the natural
+  // post-COMMIT hook; resolveExcerptMergeCandidate keep_a/keep_b
+  // re-fires the surviving excerpt.
+  async updateExcerpt(
+    memorableKnowledgeNodeId: string,
+    position: number,
+    patch: PalaiaExcerptUpdate,
+    actor: AclMutationOptions,
+  ): Promise<PalaiaExcerptNode> {
+    const result = await this.inner.updateExcerpt(
+      memorableKnowledgeNodeId,
+      position,
+      patch,
+      actor,
+    );
+    this.fireExcerpt(result.id);
+    return result;
+  }
+
+  async resolveExcerptMergeCandidate(
+    excerptMergeCandidateExternalId: string,
+    resolution: ExcerptMergeResolution,
+    actor: AclMutationOptions,
+  ): Promise<ExcerptMergeCandidateNode> {
+    const result = await this.inner.resolveExcerptMergeCandidate(
+      excerptMergeCandidateExternalId,
+      resolution,
+      actor,
+    );
+    if (resolution === 'keep_a') this.fireExcerpt(result.duplicateExcerptOf[0]);
+    else if (resolution === 'keep_b') this.fireExcerpt(result.duplicateExcerptOf[1]);
     return result;
   }
 
@@ -262,19 +334,7 @@ export class MergeTriggeringKnowledgeGraph implements KnowledgeGraph {
   ): Promise<PalaiaExcerptNode[]> {
     return this.inner.listExcerptsForMemory(memorableKnowledgeNodeId);
   }
-  updateExcerpt(
-    memorableKnowledgeNodeId: string,
-    position: number,
-    patch: PalaiaExcerptUpdate,
-    actor: AclMutationOptions,
-  ): Promise<PalaiaExcerptNode> {
-    return this.inner.updateExcerpt(
-      memorableKnowledgeNodeId,
-      position,
-      patch,
-      actor,
-    );
-  }
+  // updateExcerpt is decorated above (Slice 12); no passthrough entry.
   searchMemorableKnowledgeByEmbedding(
     opts: MemorableKnowledgeSearchOptions,
   ): Promise<MemorableKnowledgeHit[]> {
@@ -405,5 +465,50 @@ export class MergeTriggeringKnowledgeGraph implements KnowledgeGraph {
     }>;
   }> {
     return this.inner.listAllIssues(opts);
+  }
+
+  // Slice 12 — Excerpt-side delegates. The MergeTriggering wrapper
+  // additionally decorates `updateExcerpt` so the merge-detector fires
+  // for the freshly updated excerpt (see the override above the
+  // passthrough block when Slice 12 detector is wired).
+  listExcerptMergeCandidates(
+    opts: ListExcerptMergeCandidatesOptions,
+  ): Promise<ExcerptMergeCandidateNode[]> {
+    return this.inner.listExcerptMergeCandidates(opts);
+  }
+  getExcerptMergeCandidate(
+    externalId: string,
+    viewerOmadiaUserId: string,
+  ): Promise<ExcerptMergeCandidateNode | null> {
+    return this.inner.getExcerptMergeCandidate(externalId, viewerOmadiaUserId);
+  }
+  createExcerptMergeCandidate(
+    input: CreateExcerptMergeCandidateInput,
+  ): Promise<ExcerptMergeCandidateNode | null> {
+    return this.inner.createExcerptMergeCandidate(input);
+  }
+  // resolveExcerptMergeCandidate is decorated above (Slice 12); no
+  // passthrough entry.
+  deleteExcerpt(
+    memorableKnowledgeNodeId: string,
+    position: number,
+    actor: AclMutationOptions,
+  ): Promise<void> {
+    return this.inner.deleteExcerpt(memorableKnowledgeNodeId, position, actor);
+  }
+  listPalaiaExcerptIdsForBulkMergeCheck(opts: {
+    limit: number;
+  }): Promise<string[]> {
+    return this.inner.listPalaiaExcerptIdsForBulkMergeCheck(opts);
+  }
+  countPalaiaExcerptMergeCheckBuckets(): Promise<{
+    unchecked: number;
+    alreadyChecked: number;
+    withoutEmbedding: number;
+  }> {
+    return this.inner.countPalaiaExcerptMergeCheckBuckets();
+  }
+  markPalaiaExcerptMergeChecked(excerptExternalId: string): Promise<void> {
+    return this.inner.markPalaiaExcerptMergeChecked(excerptExternalId);
   }
 }

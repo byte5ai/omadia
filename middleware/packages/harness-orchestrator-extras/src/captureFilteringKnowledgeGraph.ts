@@ -61,10 +61,14 @@ import type {
   ExcerptSearchOptions,
   PalaiaExcerptHit,
   CreateInconsistencyInput,
+  CreateExcerptMergeCandidateInput,
   CreateMergeCandidateInput,
+  ExcerptMergeCandidateNode,
+  ExcerptMergeResolution,
   InconsistencyNode,
   InconsistencyResolution,
   InconsistencyStatus,
+  ListExcerptMergeCandidatesOptions,
   ListInconsistenciesOptions,
   ListMemoriesForScopeOptions,
   ListMergeCandidatesOptions,
@@ -471,5 +475,56 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
     }>;
   }> {
     return this.inner.listAllIssues(opts);
+  }
+
+  // Slice 12 delegates
+  listExcerptMergeCandidates(
+    opts: ListExcerptMergeCandidatesOptions,
+  ): Promise<ExcerptMergeCandidateNode[]> {
+    return this.inner.listExcerptMergeCandidates(opts);
+  }
+  getExcerptMergeCandidate(
+    externalId: string,
+    viewerOmadiaUserId: string,
+  ): Promise<ExcerptMergeCandidateNode | null> {
+    return this.inner.getExcerptMergeCandidate(externalId, viewerOmadiaUserId);
+  }
+  createExcerptMergeCandidate(
+    input: CreateExcerptMergeCandidateInput,
+  ): Promise<ExcerptMergeCandidateNode | null> {
+    return this.inner.createExcerptMergeCandidate(input);
+  }
+  resolveExcerptMergeCandidate(
+    externalId: string,
+    resolution: ExcerptMergeResolution,
+    actor: AclMutationOptions,
+  ): Promise<ExcerptMergeCandidateNode> {
+    return this.inner.resolveExcerptMergeCandidate(
+      externalId,
+      resolution,
+      actor,
+    );
+  }
+  deleteExcerpt(
+    memorableKnowledgeNodeId: string,
+    position: number,
+    actor: AclMutationOptions,
+  ): Promise<void> {
+    return this.inner.deleteExcerpt(memorableKnowledgeNodeId, position, actor);
+  }
+  listPalaiaExcerptIdsForBulkMergeCheck(opts: {
+    limit: number;
+  }): Promise<string[]> {
+    return this.inner.listPalaiaExcerptIdsForBulkMergeCheck(opts);
+  }
+  countPalaiaExcerptMergeCheckBuckets(): Promise<{
+    unchecked: number;
+    alreadyChecked: number;
+    withoutEmbedding: number;
+  }> {
+    return this.inner.countPalaiaExcerptMergeCheckBuckets();
+  }
+  markPalaiaExcerptMergeChecked(excerptExternalId: string): Promise<void> {
+    return this.inner.markPalaiaExcerptMergeChecked(excerptExternalId);
   }
 }

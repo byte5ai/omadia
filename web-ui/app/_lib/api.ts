@@ -2745,6 +2745,103 @@ export async function runBulkMergeDetect(
   );
 }
 
+// ─── Slice 12 — ExcerptMergeCandidate workflow ───────────────────────
+
+export type ExcerptMergeStatus = 'open' | 'resolved' | 'dismissed';
+export type ExcerptMergeResolution = 'keep_a' | 'keep_b' | 'not_duplicate';
+
+export interface ExcerptMergeNodeDto {
+  id: string;
+  type: 'ExcerptMergeCandidate';
+  props: {
+    cosine_sim: number;
+    status: ExcerptMergeStatus;
+    resolution: ExcerptMergeResolution | null;
+    created_at: string;
+    resolved_at: string | null;
+    resolved_by: string | null;
+  };
+  duplicateExcerptOf: [string, string];
+}
+
+export interface ExcerptMergeDetailDto extends ExcerptMergeNodeDto {
+  excerptA: {
+    id: string;
+    type: 'PalaiaExcerpt';
+    props: {
+      text: string;
+      position: number;
+      source: string;
+      created_at: string;
+    };
+  } | null;
+  excerptB: ExcerptMergeDetailDto['excerptA'];
+  mkA: MemorableKnowledgeNode | null;
+  mkB: MemorableKnowledgeNode | null;
+}
+
+export async function listExcerptMergeCandidates(opts: {
+  status?: ExcerptMergeStatus;
+  limit?: number;
+} = {}): Promise<{ items: ExcerptMergeDetailDto[] }> {
+  const params = new URLSearchParams();
+  if (opts.status) params.set('status', opts.status);
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return getJson<{ items: ExcerptMergeDetailDto[] }>(
+    `/v1/admin/duplicates/excerpts${qs ? `?${qs}` : ''}`,
+  );
+}
+
+export async function getExcerptMergeDetail(
+  id: string,
+): Promise<ExcerptMergeDetailDto> {
+  return getJson<ExcerptMergeDetailDto>(
+    `/v1/admin/duplicates/excerpts/${encodeURIComponent(id)}`,
+  );
+}
+
+export async function resolveExcerptMergeCandidate(
+  id: string,
+  body: { resolution: ExcerptMergeResolution; reason?: string },
+): Promise<ExcerptMergeNodeDto> {
+  return postJson<ExcerptMergeNodeDto>(
+    `/v1/admin/duplicates/excerpts/${encodeURIComponent(id)}/resolve`,
+    body,
+  );
+}
+
+export interface BulkExcerptMergeDetectPreviewDto {
+  unchecked: number;
+  alreadyChecked: number;
+  withoutEmbedding: number;
+  detectorAvailable: boolean;
+}
+
+export interface BulkExcerptMergeDetectResultDto {
+  scanned: number;
+  checked: number;
+  excerptMergeCandidatesCreated: number;
+  skippedNoEmbedding: number;
+  failed: number;
+  durationMs: number;
+}
+
+export async function previewBulkExcerptMergeDetect(): Promise<BulkExcerptMergeDetectPreviewDto> {
+  return getJson<BulkExcerptMergeDetectPreviewDto>(
+    '/v1/admin/duplicates/excerpts/bulk-detect/preview',
+  );
+}
+
+export async function runBulkExcerptMergeDetect(
+  limit?: number,
+): Promise<BulkExcerptMergeDetectResultDto> {
+  return postJson<BulkExcerptMergeDetectResultDto>(
+    '/v1/admin/duplicates/excerpts/bulk-detect',
+    limit !== undefined ? { limit } : {},
+  );
+}
+
 // ─── Slice 11 — Topic clustering ─────────────────────────────────────
 
 export type TopicNamingSource = 'haiku' | 'fallback';

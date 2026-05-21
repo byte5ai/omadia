@@ -6,6 +6,7 @@ import {
   agentInvocationNodeId,
   channelIdentityNodeId,
   entityNodeId,
+  excerptMergeCandidateNodeId,
   inconsistencyNodeId,
   memorableKnowledgeNodeId,
   mergeCandidateNodeId,
@@ -55,6 +56,11 @@ import {
   type MergeCandidateNode,
   type MergeCandidateResolution,
   type MergeCandidateStatus,
+  type CreateExcerptMergeCandidateInput,
+  type ExcerptMergeCandidateNode,
+  type ExcerptMergeResolution,
+  type ExcerptMergeStatus,
+  type ListExcerptMergeCandidatesOptions,
   type TopicNamingSource,
   type TopicNode,
   type PalaiaExcerptHit,
@@ -2895,6 +2901,397 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           AND external_id = $2
           AND type = 'MemorableKnowledge'`,
       [this.tenantId, memorableKnowledgeNodeId],
+    );
+  }
+
+  // ─── Slice 12 — ExcerptMergeCandidate + deleteExcerpt ─────────────
+
+  private hydrateExcerptMergeCandidate(
+    externalId: string,
+    properties: ExcerptMergeCandidateNode['props'] & {
+      excerpt_pair?: [string, string];
+    },
+  ): ExcerptMergeCandidateNode | null {
+    const pair = properties.excerpt_pair;
+    if (!Array.isArray(pair) || pair.length !== 2) return null;
+    return {
+      id: externalId,
+      type: 'ExcerptMergeCandidate' as const,
+      props: properties,
+      duplicateExcerptOf: [pair[0], pair[1]],
+    };
+  }
+
+  async createExcerptMergeCandidate(
+    input: CreateExcerptMergeCandidateInput,
+  ): Promise<ExcerptMergeCandidateNode | null> {
+    if (input.excerptAExternalId === input.excerptBExternalId) return null;
+    const sortedPair: [string, string] = [
+      input.excerptAExternalId,
+      input.excerptBExternalId,
+    ].sort() as [string, string];
+
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const existing = await client.query<{ external_id: string }>(
+        `SELECT mc.external_id
+           FROM graph_nodes mc
+           JOIN graph_edges e1 ON e1.from_node = mc.id AND e1.type = 'DUPLICATE_EXCERPT_OF'
+           JOIN graph_nodes ex1 ON ex1.id = e1.to_node
+           JOIN graph_edges e2 ON e2.from_node = mc.id AND e2.type = 'DUPLICATE_EXCERPT_OF'
+           JOIN graph_nodes ex2 ON ex2.id = e2.to_node
+          WHERE mc.tenant_id = $1
+            AND mc.type = 'ExcerptMergeCandidate'
+            AND ex1.external_id = $2
+            AND ex2.external_id = $3
+          LIMIT 1`,
+        [this.tenantId, sortedPair[0], sortedPair[1]],
+      );
+      if (existing.rows.length > 0) {
+        await client.query('COMMIT');
+        return null;
+      }
+
+      const excerptRows = await client.query<{ id: string; external_id: string }>(
+        `SELECT id, external_id FROM graph_nodes
+          WHERE tenant_id = $1
+            AND type = 'PalaiaExcerpt'
+            AND external_id = ANY($2::text[])`,
+        [this.tenantId, sortedPair],
+      );
+      if (excerptRows.rows.length !== 2) {
+        await client.query('COMMIT');
+        return null;
+      }
+
+      const now = new Date().toISOString();
+      const externalId = excerptMergeCandidateNodeId(randomUUID());
+      const props = validateNodeProps('ExcerptMergeCandidate', {
+        cosine_sim: input.cosineSim,
+        status: 'open' as const,
+        resolution: null,
+        created_at: now,
+        resolved_at: null,
+        resolved_by: null,
+        excerpt_pair: sortedPair,
+      });
+      const mcUuid = await this.upsertNode(client, {
+        externalId,
+        type: 'ExcerptMergeCandidate',
+        scope: null,
+        userId: null,
+        props,
+      });
+      for (const ex of excerptRows.rows) {
+        await this.upsertEdge(client, {
+          type: 'DUPLICATE_EXCERPT_OF',
+          fromUuid: mcUuid,
+          toUuid: ex.id,
+        });
+      }
+
+      await client.query('COMMIT');
+      return this.hydrateExcerptMergeCandidate(
+        externalId,
+        props as ExcerptMergeCandidateNode['props'] & {
+          excerpt_pair: [string, string];
+        },
+      );
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async listExcerptMergeCandidates(
+    opts: ListExcerptMergeCandidatesOptions,
+  ): Promise<ExcerptMergeCandidateNode[]> {
+    const limit = Math.max(1, Math.min(opts.limit ?? 50, 200));
+    // ACL: visible when the viewer owns at least one of the two
+    // excerpts' parent MKs. The JOIN goes:
+    //   ExcerptMergeCandidate -DUPLICATE_EXCERPT_OF-> Excerpt -EXCERPT_OF-> MK
+    const rows = await this.pool.query<{
+      external_id: string;
+      properties: ExcerptMergeCandidateNode['props'];
+    }>(
+      `SELECT DISTINCT mc.external_id, mc.properties
+         FROM graph_nodes mc
+         JOIN graph_edges de ON de.from_node = mc.id AND de.type = 'DUPLICATE_EXCERPT_OF'
+         JOIN graph_nodes ex ON ex.id = de.to_node AND ex.type = 'PalaiaExcerpt'
+         JOIN graph_edges eo ON eo.from_node = ex.id AND eo.type = 'EXCERPT_OF'
+         JOIN graph_nodes mk ON mk.id = eo.to_node AND mk.type = 'MemorableKnowledge'
+        WHERE mc.tenant_id = $1
+          AND mc.type = 'ExcerptMergeCandidate'
+          AND mk.properties->'acl_owners' @> jsonb_build_array($2::text)
+          AND ($3::text IS NULL OR mc.properties->>'status' = $3)
+        ORDER BY mc.external_id DESC
+        LIMIT $4`,
+      [this.tenantId, opts.viewerOmadiaUserId, opts.status ?? null, limit],
+    );
+    const out: ExcerptMergeCandidateNode[] = [];
+    for (const row of rows.rows) {
+      const node = this.hydrateExcerptMergeCandidate(
+        row.external_id,
+        row.properties as ExcerptMergeCandidateNode['props'] & {
+          excerpt_pair: [string, string];
+        },
+      );
+      if (node) out.push(node);
+    }
+    return out;
+  }
+
+  async getExcerptMergeCandidate(
+    externalId: string,
+    viewerOmadiaUserId: string,
+  ): Promise<ExcerptMergeCandidateNode | null> {
+    const rows = await this.pool.query<{
+      properties: ExcerptMergeCandidateNode['props'];
+      owns_one: boolean;
+    }>(
+      `SELECT mc.properties,
+              EXISTS(
+                SELECT 1
+                  FROM graph_edges de
+                  JOIN graph_nodes ex ON ex.id = de.to_node
+                  JOIN graph_edges eo ON eo.from_node = ex.id AND eo.type = 'EXCERPT_OF'
+                  JOIN graph_nodes mk ON mk.id = eo.to_node
+                 WHERE de.from_node = mc.id
+                   AND de.type = 'DUPLICATE_EXCERPT_OF'
+                   AND ex.type = 'PalaiaExcerpt'
+                   AND mk.type = 'MemorableKnowledge'
+                   AND mk.properties->'acl_owners' @> jsonb_build_array($3::text)
+              ) AS owns_one
+         FROM graph_nodes mc
+        WHERE mc.tenant_id = $1
+          AND mc.external_id = $2
+          AND mc.type = 'ExcerptMergeCandidate'
+        LIMIT 1`,
+      [this.tenantId, externalId, viewerOmadiaUserId],
+    );
+    const hit = rows.rows[0];
+    if (!hit || !hit.owns_one) return null;
+    return this.hydrateExcerptMergeCandidate(
+      externalId,
+      hit.properties as ExcerptMergeCandidateNode['props'] & {
+        excerpt_pair: [string, string];
+      },
+    );
+  }
+
+  async resolveExcerptMergeCandidate(
+    externalId: string,
+    resolution: ExcerptMergeResolution,
+    actor: AclMutationOptions,
+  ): Promise<ExcerptMergeCandidateNode> {
+    const existing = await this.getExcerptMergeCandidate(
+      externalId,
+      actor.actorOmadiaUserId,
+    );
+    if (!existing) {
+      throw Object.assign(new Error('excerpt_merge_candidate_not_found'), {
+        code: 'excerpt_merge_candidate_not_found',
+      });
+    }
+    if (existing.props.status !== 'open') {
+      throw Object.assign(new Error('already_resolved'), {
+        code: 'already_resolved',
+      });
+    }
+
+    const terminalStatus: ExcerptMergeStatus =
+      resolution === 'not_duplicate' ? 'dismissed' : 'resolved';
+
+    // keep_a/keep_b delete the loser excerpt. Look up parent MK +
+    // position for the loser, then delegate to deleteExcerpt.
+    const loserExternalId =
+      resolution === 'keep_a'
+        ? existing.duplicateExcerptOf[1]
+        : resolution === 'keep_b'
+          ? existing.duplicateExcerptOf[0]
+          : null;
+    if (loserExternalId) {
+      const loserMeta = await this.pool.query<{
+        parent_external: string;
+        position: number;
+      }>(
+        `SELECT mk.external_id AS parent_external,
+                (ex.properties->>'position')::int AS position
+           FROM graph_nodes ex
+           JOIN graph_edges eo ON eo.from_node = ex.id AND eo.type = 'EXCERPT_OF'
+           JOIN graph_nodes mk ON mk.id = eo.to_node AND mk.type = 'MemorableKnowledge'
+          WHERE ex.tenant_id = $1
+            AND ex.external_id = $2
+            AND ex.type = 'PalaiaExcerpt'
+          LIMIT 1`,
+        [this.tenantId, loserExternalId],
+      );
+      const meta = loserMeta.rows[0];
+      if (meta) {
+        await this.deleteExcerpt(meta.parent_external, meta.position, actor);
+      }
+    }
+
+    const now = new Date().toISOString();
+    const nextProps = {
+      ...(existing.props as Record<string, unknown>),
+      status: terminalStatus,
+      resolution,
+      resolved_at: now,
+      resolved_by: actor.actorOmadiaUserId,
+      excerpt_pair: existing.duplicateExcerptOf,
+    };
+    const validated = validateNodeProps('ExcerptMergeCandidate', nextProps);
+    await this.pool.query(
+      `UPDATE graph_nodes
+          SET properties = $2::jsonb
+        WHERE tenant_id = $1
+          AND external_id = $3
+          AND type = 'ExcerptMergeCandidate'`,
+      [this.tenantId, JSON.stringify(validated), externalId],
+    );
+
+    const refetched = this.hydrateExcerptMergeCandidate(
+      externalId,
+      validated as ExcerptMergeCandidateNode['props'] & {
+        excerpt_pair: [string, string];
+      },
+    );
+    return (
+      refetched ??
+      ({ ...existing, props: validated as ExcerptMergeCandidateNode['props'] })
+    );
+  }
+
+  async deleteExcerpt(
+    memorableKnowledgeNodeId: string,
+    position: number,
+    actor: AclMutationOptions,
+  ): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { owners } = await this.loadOwnersOrThrow(
+        client,
+        memorableKnowledgeNodeId,
+      );
+      this.assertActorIsOwner(owners, actor.actorOmadiaUserId);
+
+      const excerptRow = await client.query<{ id: string }>(
+        `SELECT ex.id
+           FROM graph_nodes mk
+           JOIN graph_edges e ON e.to_node = mk.id AND e.type = 'EXCERPT_OF'
+           JOIN graph_nodes ex ON ex.id = e.from_node AND ex.type = 'PalaiaExcerpt'
+          WHERE mk.tenant_id = $1
+            AND mk.external_id = $2
+            AND mk.type = 'MemorableKnowledge'
+            AND ex.tenant_id = $1
+            AND (ex.properties->>'position')::int = $3
+          LIMIT 1`,
+        [this.tenantId, memorableKnowledgeNodeId, position],
+      );
+      const hit = excerptRow.rows[0];
+      if (!hit) {
+        throw Object.assign(new Error('excerpt_not_found'), {
+          code: 'excerpt_not_found',
+        });
+      }
+
+      // Delete the excerpt + its EXCERPT_OF edge (cascades via FK).
+      await client.query(
+        `DELETE FROM graph_nodes WHERE tenant_id = $1 AND id = $2`,
+        [this.tenantId, hit.id],
+      );
+
+      await this.writeAclAudit(client, {
+        memoryExternalId: memorableKnowledgeNodeId,
+        actorOmadiaUserId: actor.actorOmadiaUserId,
+        ...(actor.actorChannelIdentityId
+          ? { actorChannelIdentityId: actor.actorChannelIdentityId }
+          : {}),
+        action: 'delete_excerpt',
+        beforeOwners: owners,
+        afterOwners: owners,
+        ...(actor.reason ? { reason: actor.reason } : {}),
+      });
+
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async listPalaiaExcerptIdsForBulkMergeCheck(opts: {
+    limit: number;
+  }): Promise<string[]> {
+    const limit = Math.max(1, Math.min(opts.limit, 500));
+    const rows = await this.pool.query<{ external_id: string }>(
+      `SELECT external_id
+         FROM graph_nodes
+        WHERE tenant_id = $1
+          AND type = 'PalaiaExcerpt'
+          AND embedding IS NOT NULL
+          AND NOT (properties ? 'last_excerpt_merge_check_at')
+        ORDER BY created_at ASC
+        LIMIT $2`,
+      [this.tenantId, limit],
+    );
+    return rows.rows.map((r) => r.external_id);
+  }
+
+  async countPalaiaExcerptMergeCheckBuckets(): Promise<{
+    unchecked: number;
+    alreadyChecked: number;
+    withoutEmbedding: number;
+  }> {
+    const row = await this.pool.query<{
+      unchecked: string;
+      already_checked: string;
+      without_embedding: string;
+    }>(
+      `SELECT
+         count(*) FILTER (
+           WHERE embedding IS NOT NULL
+             AND NOT (properties ? 'last_excerpt_merge_check_at')
+         )::text AS unchecked,
+         count(*) FILTER (
+           WHERE properties ? 'last_excerpt_merge_check_at'
+         )::text AS already_checked,
+         count(*) FILTER (WHERE embedding IS NULL)::text AS without_embedding
+       FROM graph_nodes
+       WHERE tenant_id = $1 AND type = 'PalaiaExcerpt'`,
+      [this.tenantId],
+    );
+    const r = row.rows[0];
+    return {
+      unchecked: Number(r?.unchecked ?? '0'),
+      alreadyChecked: Number(r?.already_checked ?? '0'),
+      withoutEmbedding: Number(r?.without_embedding ?? '0'),
+    };
+  }
+
+  async markPalaiaExcerptMergeChecked(
+    excerptExternalId: string,
+  ): Promise<void> {
+    await this.pool.query(
+      `UPDATE graph_nodes
+          SET properties = jsonb_set(
+                properties,
+                '{last_excerpt_merge_check_at}',
+                to_jsonb(now()::timestamptz),
+                true
+              )
+        WHERE tenant_id = $1
+          AND external_id = $2
+          AND type = 'PalaiaExcerpt'`,
+      [this.tenantId, excerptExternalId],
     );
   }
 

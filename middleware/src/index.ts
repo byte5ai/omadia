@@ -27,6 +27,7 @@ import { createAdminDomainsRouter } from './routes/adminDomains.js';
 import type { LifecycleService } from '@omadia/knowledge-graph-neon/dist/lifecycleService.js';
 import type {
   AgentPrioritiesStore,
+  BulkExcerptMergeDetectService,
   BulkInconsistencyService,
   BulkMergeDetectService,
   BulkPromotionService,
@@ -1034,6 +1035,8 @@ async function main(): Promise<void> {
     serviceRegistry.get<MergeCandidateDetectorService>('mergeCandidateDetector');
   const bulkMergeDetectService =
     serviceRegistry.get<BulkMergeDetectService>('bulkMergeDetect');
+  const bulkExcerptMergeDetectService =
+    serviceRegistry.get<BulkExcerptMergeDetectService>('bulkExcerptMergeDetect');
   app.use(
     '/api/v1/admin/duplicates',
     requireAuth,
@@ -1041,10 +1044,13 @@ async function main(): Promise<void> {
       graph: wrappedKgForRoutes,
       ...(mergeCandidateDetectorSvc ? { detector: mergeCandidateDetectorSvc } : {}),
       ...(bulkMergeDetectService ? { bulkDetect: bulkMergeDetectService } : {}),
+      ...(bulkExcerptMergeDetectService
+        ? { bulkExcerptDetect: bulkExcerptMergeDetectService }
+        : {}),
     }),
   );
   console.log(
-    `[middleware] duplicates endpoint ready at /api/v1/admin/duplicates (detector=${mergeCandidateDetectorSvc ? 'on' : 'off'}, bulk=${bulkMergeDetectService ? 'on' : 'off'})`,
+    `[middleware] duplicates endpoint ready at /api/v1/admin/duplicates (detector=${mergeCandidateDetectorSvc ? 'on' : 'off'}, bulk=${bulkMergeDetectService ? 'on' : 'off'}, excerptBulk=${bulkExcerptMergeDetectService ? 'on' : 'off'})`,
   );
 
   // Slice 11 — Topic clustering admin workflow. Service is always

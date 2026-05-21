@@ -39,6 +39,9 @@ export const GRAPH_NODE_TYPES = [
   'MergeCandidate',
   // Slice 11 — Haiku-named cluster over MK embeddings. MK -[HAS_TOPIC]-> Topic.
   'Topic',
+  // Slice 12 — near-duplicate marker between two PalaiaExcerpts
+  // (cosine ≥ 0.97). Two DUPLICATE_EXCERPT_OF edges per node.
+  'ExcerptMergeCandidate',
 ] as const;
 
 export const GRAPH_EDGE_TYPES = [
@@ -71,6 +74,8 @@ export const GRAPH_EDGE_TYPES = [
   'DUPLICATE_OF',
   // Slice 11 — MemorableKnowledge → Topic. 1:1 per MK.
   'HAS_TOPIC',
+  // Slice 12 — ExcerptMergeCandidate → PalaiaExcerpt (two per node).
+  'DUPLICATE_EXCERPT_OF',
 ] as const;
 
 export const GraphNodeTypeSchema = z.enum(GRAPH_NODE_TYPES);
@@ -356,6 +361,27 @@ const TopicPropsSchema = z
   })
   .passthrough();
 
+// Slice 12 — ExcerptMergeCandidate props schema. Mirrors Slice 10
+// MergeCandidate; the only behavioural difference is the threshold
+// (the schema doesn't enforce it — detector layer's job).
+export const EXCERPT_MERGE_STATUSES = ['open', 'resolved', 'dismissed'] as const;
+export const EXCERPT_MERGE_RESOLUTIONS = [
+  'keep_a',
+  'keep_b',
+  'not_duplicate',
+] as const;
+const ExcerptMergeCandidatePropsSchema = z
+  .object({
+    cosine_sim: z.number().min(0).max(1),
+    status: z.enum(EXCERPT_MERGE_STATUSES),
+    resolution: z.enum(EXCERPT_MERGE_RESOLUTIONS).nullable(),
+    created_at: z.string().datetime(),
+    resolved_at: z.string().datetime().nullable(),
+    resolved_by: z.string().uuid().nullable(),
+    excerpt_pair: z.tuple([z.string().min(1), z.string().min(1)]),
+  })
+  .passthrough();
+
 export const NodePropsSchemaByType: Record<
   GraphNodeTypeName,
   z.ZodType<Record<string, unknown>>
@@ -376,6 +402,7 @@ export const NodePropsSchemaByType: Record<
   Inconsistency: InconsistencyPropsSchema,
   MergeCandidate: MergeCandidatePropsSchema,
   Topic: TopicPropsSchema,
+  ExcerptMergeCandidate: ExcerptMergeCandidatePropsSchema,
 };
 
 export function validateNodeProps(

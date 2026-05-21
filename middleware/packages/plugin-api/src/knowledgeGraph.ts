@@ -13,6 +13,12 @@ import type {
   MergeCandidateResolution,
 } from './mergeCandidate.js';
 import type { TopicNamingSource, TopicNode } from './topic.js';
+import type {
+  CreateExcerptMergeCandidateInput,
+  ExcerptMergeCandidateNode,
+  ExcerptMergeResolution,
+  ListExcerptMergeCandidatesOptions,
+} from './excerptMerge.js';
 
 /**
  * The knowledge-graph surface the rest of the middleware talks to. Ingests
@@ -230,6 +236,20 @@ export interface KnowledgeGraph {
     actor: AclMutationOptions,
   ): Promise<PalaiaExcerptNode>;
   /**
+   * Slice 12 — hard-delete one PalaiaExcerpt of the given parent MK
+   * + position. Emits a `'delete_excerpt'` audit row on the parent
+   * MK. Actor must be in the parent MK's `acl_owners`. Leaves the
+   * remaining excerpts' positions untouched (sparse position array
+   * is allowed; the position-CHECK in migration 0018 only enforces
+   * the [0, 4] range, not density). Throws `excerpt_not_found` when
+   * no excerpt exists at the given position.
+   */
+  deleteExcerpt(
+    memorableKnowledgeNodeId: string,
+    position: number,
+    actor: AclMutationOptions,
+  ): Promise<void>;
+  /**
    * Slice 7 — semantic search over MemorableKnowledge nodes. Cosine
    * similarity on the `embedding` column (Slice-7 backfill writes the
    * `summary + rationale` joint embedding). ACL-gated via
@@ -398,6 +418,68 @@ export interface KnowledgeGraph {
   markMemorableKnowledgeMergeChecked(
     memorableKnowledgeNodeId: string,
   ): Promise<void>;
+  /**
+   * Slice 12 — list near-duplicate Excerpt-Candidate markers visible
+   * to the viewer. ACL gate: viewer must own at least one of the two
+   * parent MKs of the excerpts. Mirrors `listMergeCandidates`.
+   */
+  listExcerptMergeCandidates(
+    opts: ListExcerptMergeCandidatesOptions,
+  ): Promise<ExcerptMergeCandidateNode[]>;
+  /**
+   * Slice 12 — read a single ExcerptMergeCandidate. Returns null
+   * when the viewer doesn't own at least one of the involved parent
+   * MKs.
+   */
+  getExcerptMergeCandidate(
+    externalId: string,
+    viewerOmadiaUserId: string,
+  ): Promise<ExcerptMergeCandidateNode | null>;
+  /**
+   * Slice 12 — persist a near-duplicate marker between two excerpts.
+   * Idempotent: returns null when an ExcerptMergeCandidate between the
+   * same two excerpts (regardless of order, regardless of status)
+   * already exists; also null if one of the excerpts is missing.
+   * The excerpt pair is sorted ascending on persist.
+   */
+  createExcerptMergeCandidate(
+    input: CreateExcerptMergeCandidateInput,
+  ): Promise<ExcerptMergeCandidateNode | null>;
+  /**
+   * Slice 12 — operator resolves an open ExcerptMergeCandidate. The
+   * actor must own at least one of the two excerpts' parent MKs.
+   * Side-effects:
+   *   - `keep_a`        → deletes excerpt B via `deleteExcerpt`
+   *   - `keep_b`        → deletes excerpt A via `deleteExcerpt`
+   *   - `not_duplicate` → no excerpt changes; candidate marked dismissed
+   */
+  resolveExcerptMergeCandidate(
+    externalId: string,
+    resolution: ExcerptMergeResolution,
+    actor: AclMutationOptions,
+  ): Promise<ExcerptMergeCandidateNode>;
+  /**
+   * Slice 12 — list PalaiaExcerpt external_ids still needing a bulk
+   * merge-detect pass: embedding column populated AND no
+   * `last_excerpt_merge_check_at` marker. Ordered created_at ASC,
+   * clamped to [1, 500]. Mirrors the Slice 10 MK selection.
+   */
+  listPalaiaExcerptIdsForBulkMergeCheck(opts: {
+    limit: number;
+  }): Promise<string[]>;
+  /**
+   * Slice 12 — preview-stats for the bulk excerpt-merge-detect panel.
+   */
+  countPalaiaExcerptMergeCheckBuckets(): Promise<{
+    unchecked: number;
+    alreadyChecked: number;
+    withoutEmbedding: number;
+  }>;
+  /**
+   * Slice 12 — set the `last_excerpt_merge_check_at` marker on an
+   * Excerpt to `now()`. Idempotent.
+   */
+  markPalaiaExcerptMergeChecked(excerptExternalId: string): Promise<void>;
   /**
    * Slice 11 — list all Topic nodes for the tenant. Tenant-scoped only;
    * Topics are aggregate metadata so the read is not ACL-gated.
@@ -615,7 +697,11 @@ export type GraphNodeType =
   /** Slice 11 — cluster of semantically-related MemorableKnowledge
    *  nodes, named by Haiku. Aggregate metadata; lifetime is until the
    *  next operator-triggered re-cluster. */
-  | 'Topic';
+  | 'Topic'
+  /** Slice 12 — near-duplicate marker between two PalaiaExcerpts
+   *  (cosine ≥ 0.97). Mirror of Slice 10 MergeCandidate at the
+   *  excerpt layer. Linked to BOTH excerpts via DUPLICATE_EXCERPT_OF. */
+  | 'ExcerptMergeCandidate';
 export type GraphEdgeType =
   | 'IN_SESSION'
   | 'NEXT_TURN'
@@ -647,7 +733,11 @@ export type GraphEdgeType =
   | 'DUPLICATE_OF'
   /** Slice 11 — MemorableKnowledge → Topic. 1:1 per MK; re-cluster
    *  wipes and rebuilds every edge so the cardinality stays clean. */
-  | 'HAS_TOPIC';
+  | 'HAS_TOPIC'
+  /** Slice 12 — ExcerptMergeCandidate → PalaiaExcerpt. Two edges per
+   *  ExcerptMergeCandidate, one per near-duplicate excerpt. Same
+   *  direction convention as DUPLICATE_OF. */
+  | 'DUPLICATE_EXCERPT_OF';
 
 export type FactSeverity = 'info' | 'warning' | 'critical';
 
@@ -928,7 +1018,11 @@ export type AclAction =
   | 'shrink'
   | 'delete'
   | 'edit'
-  | 'edit_excerpt';
+  | 'edit_excerpt'
+  /** Slice 12 — emitted by `deleteExcerpt` when an operator picks
+   *  keep_a/keep_b on an ExcerptMergeCandidate, removing the loser
+   *  excerpt from the parent MK's excerpt batch. */
+  | 'delete_excerpt';
 
 /** Append-only audit-log row. Survives a `deleteMemory` (the
  *  underlying table has no FK on `memory_external_id`). */
@@ -1398,6 +1492,15 @@ export function mergeCandidateNodeId(mergeId: string): string {
  */
 export function topicNodeId(topicId: string): string {
   return `topic:${topicId}`;
+}
+
+/**
+ * Slice 12 — external_id for an ExcerptMergeCandidate node. The two
+ * near-duplicate excerpts are reachable via the DUPLICATE_EXCERPT_OF
+ * edges. Scheme `excerpt-merge:<uuid>`.
+ */
+export function excerptMergeCandidateNodeId(id: string): string {
+  return `excerpt-merge:${id}`;
 }
 
 export function runNodeId(turnExternalId: string): string {

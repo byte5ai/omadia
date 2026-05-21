@@ -4,6 +4,7 @@ import {
   agentInvocationNodeId,
   channelIdentityNodeId,
   entityNodeId,
+  excerptMergeCandidateNodeId,
   inconsistencyNodeId,
   memorableKnowledgeNodeId,
   mergeCandidateNodeId,
@@ -54,6 +55,11 @@ import {
   type MergeCandidateNode,
   type MergeCandidateResolution,
   type MergeCandidateStatus,
+  type CreateExcerptMergeCandidateInput,
+  type ExcerptMergeCandidateNode,
+  type ExcerptMergeResolution,
+  type ExcerptMergeStatus,
+  type ListExcerptMergeCandidatesOptions,
   type TopicNamingSource,
   type TopicNode,
   type PalaiaExcerptHit,
@@ -350,6 +356,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       Inconsistency: 0,
       MergeCandidate: 0,
       Topic: 0,
+      ExcerptMergeCandidate: 0,
     };
     for (const n of this.nodes.values()) byNodeType[n.type]++;
 
@@ -371,6 +378,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       CONFLICTS_WITH: 0,
       DUPLICATE_OF: 0,
       HAS_TOPIC: 0,
+      DUPLICATE_EXCERPT_OF: 0,
     };
     for (const e of this.edges.values()) byEdgeType[e.type]++;
 
@@ -1973,6 +1981,314 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       }
     }
     return { inconsistencies, mergeCandidates, edges };
+  }
+
+  // ─── Slice 12 — ExcerptMergeCandidate + deleteExcerpt ─────────────
+
+  private hydrateExcerptMergeCandidate(
+    externalId: string,
+  ): ExcerptMergeCandidateNode | null {
+    const node = this.nodes.get(externalId);
+    if (!node || node.type !== 'ExcerptMergeCandidate') return null;
+    const pair = node.props['excerpt_pair'];
+    if (!Array.isArray(pair) || pair.length !== 2) return null;
+    return {
+      id: node.id,
+      type: 'ExcerptMergeCandidate' as const,
+      props: {
+        cosine_sim: node.props['cosine_sim'] as number,
+        status: node.props['status'] as ExcerptMergeStatus,
+        resolution:
+          (node.props['resolution'] as ExcerptMergeResolution | null) ?? null,
+        created_at: node.props['created_at'] as string,
+        resolved_at: (node.props['resolved_at'] as string | null) ?? null,
+        resolved_by: (node.props['resolved_by'] as string | null) ?? null,
+      },
+      duplicateExcerptOf: [pair[0] as string, pair[1] as string],
+    };
+  }
+
+  async createExcerptMergeCandidate(
+    input: CreateExcerptMergeCandidateInput,
+  ): Promise<ExcerptMergeCandidateNode | null> {
+    if (input.excerptAExternalId === input.excerptBExternalId) return null;
+    const sortedPair: [string, string] = [
+      input.excerptAExternalId,
+      input.excerptBExternalId,
+    ].sort() as [string, string];
+
+    const exA = this.nodes.get(sortedPair[0]);
+    const exB = this.nodes.get(sortedPair[1]);
+    if (
+      !exA ||
+      exA.type !== 'PalaiaExcerpt' ||
+      !exB ||
+      exB.type !== 'PalaiaExcerpt'
+    ) {
+      return null;
+    }
+
+    for (const node of this.nodes.values()) {
+      if (node.type !== 'ExcerptMergeCandidate') continue;
+      const existing = this.hydrateExcerptMergeCandidate(node.id);
+      if (
+        existing &&
+        existing.duplicateExcerptOf[0] === sortedPair[0] &&
+        existing.duplicateExcerptOf[1] === sortedPair[1]
+      ) {
+        return null;
+      }
+    }
+
+    const now = new Date().toISOString();
+    const externalId = excerptMergeCandidateNodeId(randomUUID());
+    this.upsertNode({
+      id: externalId,
+      type: 'ExcerptMergeCandidate',
+      props: {
+        cosine_sim: input.cosineSim,
+        status: 'open',
+        resolution: null,
+        created_at: now,
+        resolved_at: null,
+        resolved_by: null,
+        excerpt_pair: sortedPair,
+      },
+    });
+    this.addEdge({
+      type: 'DUPLICATE_EXCERPT_OF',
+      from: externalId,
+      to: sortedPair[0],
+    });
+    this.addEdge({
+      type: 'DUPLICATE_EXCERPT_OF',
+      from: externalId,
+      to: sortedPair[1],
+    });
+    return this.hydrateExcerptMergeCandidate(externalId);
+  }
+
+  async listExcerptMergeCandidates(
+    opts: ListExcerptMergeCandidatesOptions,
+  ): Promise<ExcerptMergeCandidateNode[]> {
+    const limit = Math.max(1, Math.min(opts.limit ?? 50, 200));
+    const out: ExcerptMergeCandidateNode[] = [];
+    for (const node of this.nodes.values()) {
+      if (node.type !== 'ExcerptMergeCandidate') continue;
+      if (opts.status !== undefined && node.props['status'] !== opts.status) {
+        continue;
+      }
+      const hydrated = this.hydrateExcerptMergeCandidate(node.id);
+      if (!hydrated) continue;
+      // ACL: viewer must own one of the two parent MKs.
+      const ownsAtLeastOne = hydrated.duplicateExcerptOf.some((exId) => {
+        const parentMkExternalId = this.findParentMkExternalId(exId);
+        if (!parentMkExternalId) return false;
+        const mk = this.nodes.get(parentMkExternalId);
+        const owners = mk?.props['acl_owners'];
+        return (
+          Array.isArray(owners) &&
+          (owners as string[]).includes(opts.viewerOmadiaUserId)
+        );
+      });
+      if (!ownsAtLeastOne) continue;
+      out.push(hydrated);
+      if (out.length >= limit) break;
+    }
+    return out;
+  }
+
+  private findParentMkExternalId(excerptExternalId: string): string | null {
+    for (const edge of this.edges.values()) {
+      if (edge.type !== 'EXCERPT_OF') continue;
+      if (edge.from !== excerptExternalId) continue;
+      return edge.to;
+    }
+    return null;
+  }
+
+  async getExcerptMergeCandidate(
+    externalId: string,
+    viewerOmadiaUserId: string,
+  ): Promise<ExcerptMergeCandidateNode | null> {
+    const hydrated = this.hydrateExcerptMergeCandidate(externalId);
+    if (!hydrated) return null;
+    const ownsAtLeastOne = hydrated.duplicateExcerptOf.some((exId) => {
+      const parentMkExternalId = this.findParentMkExternalId(exId);
+      if (!parentMkExternalId) return false;
+      const mk = this.nodes.get(parentMkExternalId);
+      const owners = mk?.props['acl_owners'];
+      return (
+        Array.isArray(owners) &&
+        (owners as string[]).includes(viewerOmadiaUserId)
+      );
+    });
+    return ownsAtLeastOne ? hydrated : null;
+  }
+
+  async resolveExcerptMergeCandidate(
+    externalId: string,
+    resolution: ExcerptMergeResolution,
+    actor: AclMutationOptions,
+  ): Promise<ExcerptMergeCandidateNode> {
+    const existing = await this.getExcerptMergeCandidate(
+      externalId,
+      actor.actorOmadiaUserId,
+    );
+    if (!existing) {
+      throw Object.assign(new Error('excerpt_merge_candidate_not_found'), {
+        code: 'excerpt_merge_candidate_not_found',
+      });
+    }
+    if (existing.props.status !== 'open') {
+      throw Object.assign(new Error('already_resolved'), {
+        code: 'already_resolved',
+      });
+    }
+
+    const loser =
+      resolution === 'keep_a'
+        ? existing.duplicateExcerptOf[1]
+        : resolution === 'keep_b'
+          ? existing.duplicateExcerptOf[0]
+          : null;
+    if (loser) {
+      const parentMkExternalId = this.findParentMkExternalId(loser);
+      const ex = this.nodes.get(loser);
+      const position = ex?.props['position'];
+      if (parentMkExternalId && typeof position === 'number') {
+        await this.deleteExcerpt(parentMkExternalId, position, actor);
+      }
+    }
+
+    const node = this.nodes.get(externalId);
+    if (!node) {
+      throw Object.assign(new Error('excerpt_merge_candidate_not_found'), {
+        code: 'excerpt_merge_candidate_not_found',
+      });
+    }
+    const now = new Date().toISOString();
+    node.props = {
+      ...node.props,
+      status: resolution === 'not_duplicate' ? 'dismissed' : 'resolved',
+      resolution,
+      resolved_at: now,
+      resolved_by: actor.actorOmadiaUserId,
+    };
+    return this.hydrateExcerptMergeCandidate(externalId)!;
+  }
+
+  async deleteExcerpt(
+    memorableKnowledgeNodeId: string,
+    position: number,
+    actor: AclMutationOptions,
+  ): Promise<void> {
+    const mk = this.nodes.get(memorableKnowledgeNodeId);
+    if (!mk || mk.type !== 'MemorableKnowledge') {
+      throw Object.assign(new Error('memory_not_found'), {
+        code: 'memory_not_found',
+      });
+    }
+    const owners = Array.isArray(mk.props['acl_owners'])
+      ? (mk.props['acl_owners'] as string[])
+      : [];
+    if (!owners.includes(actor.actorOmadiaUserId)) {
+      throw Object.assign(new Error('not_an_owner'), {
+        code: 'not_an_owner',
+      });
+    }
+
+    let excerptExternalId: string | null = null;
+    for (const edge of this.edges.values()) {
+      if (edge.type !== 'EXCERPT_OF') continue;
+      if (edge.to !== memorableKnowledgeNodeId) continue;
+      const ex = this.nodes.get(edge.from);
+      if (ex?.type === 'PalaiaExcerpt' && ex.props['position'] === position) {
+        excerptExternalId = ex.id;
+        break;
+      }
+    }
+    if (!excerptExternalId) {
+      throw Object.assign(new Error('excerpt_not_found'), {
+        code: 'excerpt_not_found',
+      });
+    }
+
+    // Drop the excerpt + its EXCERPT_OF edge.
+    this.nodes.delete(excerptExternalId);
+    for (const [key, edge] of [...this.edges.entries()]) {
+      if (edge.type !== 'EXCERPT_OF') continue;
+      if (edge.from !== excerptExternalId) continue;
+      this.edges.delete(key);
+    }
+
+    // Audit-row on the MK.
+    const audit = this.aclAudit.get(memorableKnowledgeNodeId) ?? [];
+    audit.push({
+      id: randomUUID(),
+      memoryExternalId: memorableKnowledgeNodeId,
+      actorOmadiaUserId: actor.actorOmadiaUserId,
+      ...(actor.actorChannelIdentityId
+        ? { actorChannelIdentityId: actor.actorChannelIdentityId }
+        : {}),
+      action: 'delete_excerpt',
+      beforeOwners: [...owners],
+      afterOwners: [...owners],
+      ...(actor.reason ? { reason: actor.reason } : {}),
+      createdAt: new Date().toISOString(),
+    });
+    this.aclAudit.set(memorableKnowledgeNodeId, audit);
+  }
+
+  async listPalaiaExcerptIdsForBulkMergeCheck(opts: {
+    limit: number;
+  }): Promise<string[]> {
+    const limit = Math.max(1, Math.min(opts.limit, 500));
+    const candidates: { id: string; createdAt: string }[] = [];
+    for (const node of this.nodes.values()) {
+      if (node.type !== 'PalaiaExcerpt') continue;
+      if (!this.embeddings.has(node.id)) continue;
+      if (node.props['last_excerpt_merge_check_at'] !== undefined) continue;
+      const createdAt = String(node.props['created_at'] ?? '');
+      candidates.push({ id: node.id, createdAt });
+    }
+    candidates.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    return candidates.slice(0, limit).map((c) => c.id);
+  }
+
+  async countPalaiaExcerptMergeCheckBuckets(): Promise<{
+    unchecked: number;
+    alreadyChecked: number;
+    withoutEmbedding: number;
+  }> {
+    let unchecked = 0;
+    let alreadyChecked = 0;
+    let withoutEmbedding = 0;
+    for (const node of this.nodes.values()) {
+      if (node.type !== 'PalaiaExcerpt') continue;
+      const hasMarker =
+        node.props['last_excerpt_merge_check_at'] !== undefined;
+      const hasEmbedding = this.embeddings.has(node.id);
+      if (hasMarker) {
+        alreadyChecked++;
+      } else if (!hasEmbedding) {
+        withoutEmbedding++;
+      } else {
+        unchecked++;
+      }
+    }
+    return { unchecked, alreadyChecked, withoutEmbedding };
+  }
+
+  async markPalaiaExcerptMergeChecked(
+    excerptExternalId: string,
+  ): Promise<void> {
+    const node = this.nodes.get(excerptExternalId);
+    if (!node || node.type !== 'PalaiaExcerpt') return;
+    node.props = {
+      ...node.props,
+      last_excerpt_merge_check_at: new Date().toISOString(),
+    };
   }
 
   async listMemoryAclAudit(
