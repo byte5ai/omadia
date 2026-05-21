@@ -97,7 +97,7 @@ export function validateSpec(
           path: '/id',
           message:
             `spec.id '${specId}' is in the reserved namespace '${prefix}*'. ` +
-            'Pick a different prefix (e.g. `de.byte5.agent.<your-name>`).',
+            'Pick a different prefix (e.g. `@omadia/agent-<your-name>`).',
         });
         break;
       }

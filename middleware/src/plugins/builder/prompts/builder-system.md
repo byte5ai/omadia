@@ -95,7 +95,7 @@ sonst meldet `lint_spec` `severity: "error"`-Issues und der Turn endet
 ohne Codegen.
 
 Pflicht (per `patch_spec`):
-- **`spec.id`** — reverse-FQDN (`de.byte5.agent.<slug>`).
+- **`spec.id`** — npm-scoped (`@omadia/agent-<slug>`).
 - **`spec.name`** — human-readable (`Microsoft SharePoint Agent`).
 - **`spec.description`** — eine Zeile, was der Agent tut.
 - **`spec.category`** — productivity | crm | documents | communication | analysis | other.
