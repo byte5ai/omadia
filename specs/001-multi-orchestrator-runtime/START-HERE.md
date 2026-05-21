@@ -12,8 +12,10 @@ privacy profile; hot-reloadable; operator-managed via UI.
 
 ## Status
 
-- **Implementation-ready.** Authored, clarified, and `/speckit-analyze`-checked
-  2026-05-21; all findings remediated.
+- **Implementation-ready.** Authored, clarified, `/speckit-analyze`-checked,
+  and re-baselined against codebase reality — all 2026-05-21. P1 (US1–US3) was
+  re-scoped after the existing plugin lifecycle was discovered; see the revision
+  note in `spec.md`.
 - **Worktree**: `~/sources/odoo-bot-multi-orchestrator`, branch
   `001-multi-orchestrator-runtime` (off `main` @ `483ff18`).
 - **No implementation has started.** This package is spec-only.
@@ -29,11 +31,12 @@ privacy profile; hot-reloadable; operator-managed via UI.
    paths, P1/P2/P3 phasing.
 3. `research.md` — 7 resolved design decisions (D1–D7) with rejected
    alternatives, plus 4 clarifications resolved 2026-05-21 (C1–C4).
-4. `data-model.md` — DB schema (3 tables + `LISTEN/NOTIFY`), extended manifest,
-   runtime structures.
-5. `contracts/plugin-lifecycle.md` — the frozen `plugin-api` contract:
-   `Plugin`/`PluginScope` interfaces, manifest JSON Schema, builder-ready gate.
-6. `tasks.md` — 61 tasks (T001–T061) grouped by user story with a dependency
+4. `data-model.md` — DB schema (4 tables + `LISTEN/NOTIFY`), the 2-field
+   manifest extension, runtime structures.
+5. `contracts/plugin-lifecycle.md` — the existing `activate`/`close` /
+   `PluginContext` lifecycle (referenced, not redefined) + the `multiInstance` /
+   `privacyClass` manifest extension.
+6. `tasks.md` — 46 tasks (T001–T046) grouped by user story with a dependency
    graph.
 7. `../../.specify/memory/constitution.md` — the Omadia engineering constitution
    the plan is checked against.
@@ -56,14 +59,14 @@ A `/speckit-analyze` consistency pass was run; all findings were remediated.
 
 ## Recommended next actions for this session
 
-Clarification and analysis are done — the spec package is implementation-ready.
+Clarification, analysis, and the P1 re-baseline are done — the spec package is
+implementation-ready.
 
-1. Begin implementation with **US1** (freeze the `plugin-api` contract) — it
-   blocks every other story. Run `/speckit-implement` or work `tasks.md`
-   top-down.
-2. ⚠️ US2 (Agent Builder conditioning) is time-critical: the Builder runs in a
-   parallel worktree and must be re-pointed at the frozen contract before it
-   emits further plugins.
+1. Begin implementation with **US1** (extend the plugin manifest with
+   `multiInstance` / `privacyClass`) — small and foundational. Work `tasks.md`
+   top-down (T001 → …).
+2. **US3** (per-Agent `Orchestrator` construction) is the structural unlock for
+   US4 — it can run in parallel with US1/US2.
 
 ## Scope guard rails
 
@@ -73,4 +76,4 @@ Clarification and analysis are done — the spec package is implementation-ready
 - **Azure AD bot registrations** are an operational task done outside the
   codebase; the operator provides distinct bot identities.
 - **Per-record / per-user memory ACL** is explicitly deferred — visibility here
-  is coarse-grained (plugin enabled ⇒ namespace visible).
+  is coarse-grained (plugin enabled ⇒ its `permissions.memory` scope visible).

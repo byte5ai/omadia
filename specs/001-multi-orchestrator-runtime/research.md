@@ -6,8 +6,9 @@ shaping this feature, so implementers do not re-litigate them.
 ## D1 — Isolation model: in-process multi-tenant vs. multi-process
 
 **Decision**: In-process multi-tenant as the runtime model. Each Agent is an
-`Orchestrator` instance with its own `PluginScope` set; all Agents share one
-Node process. Hard process isolation is achieved, when needed, by running the
+`Orchestrator` instance with its own plugin activations — each plugin activated
+against a per-Agent `PluginContext`; all Agents share one Node process. Hard
+process isolation is achieved, when needed, by running the
 **same codebase** as separate Fly apps with different config — not by a
 different code path.
 
@@ -41,14 +42,15 @@ process, and a file watcher fights concurrent writes from UI vs. git.
 ## D3 — Hot-reload mechanism
 
 **Decision**: `OrchestratorRegistry.applyDiff(oldCfg, newCfg)` computes the
-minimal patch and applies it in place:
+minimal patch and applies it in place, using the existing plugin lifecycle
+(`activate(ctx)` / `handle.close()`):
 
-- new Agent → construct + `init` its scopes
-- removed Agent → drain sessions, then `dispose` its scopes
-- plugin added → `scope.attach(plugin)` → `plugin.init(scope)`
-- plugin removed → `plugin.dispose()`, drop the scope entry
-- plugin config changed → `plugin.reconfigure(...)` if supported, else
-  dispose + re-init
+- new Agent → construct its `Orchestrator` + `activate` its plugins
+- removed Agent → drain sessions, then `close()` its plugin handles
+- plugin added → `activate` it against the Agent's `PluginContext`
+- plugin removed → `close()` its handle, drop it from the Agent
+- plugin config changed → re-activate the plugin (`close()` then `activate`);
+  the lifecycle has no in-place `reconfigure`
 - channel binding changed → atomic swap in the resolver map
 
 HTTP routes stay process-static; the channel resolver consults the live
@@ -67,7 +69,7 @@ Re-binding HTTP routes per Agent — fragile, and unnecessary given a resolver.
 
 **Decision**: Session-snapshot pinning. At session start, the session captures
 an immutable `configSnapshot` (Agent id, plugin set + versions, tool ids,
-memory namespaces) stored in `chatSessionStore`. Reload affects only sessions
+memory scope) stored in `chatSessionStore`. Reload affects only sessions
 started afterwards. An explicit `force-invalidate` operator action ends and
 re-binds an Agent's existing sessions when an immediate change is required.
 
@@ -82,48 +84,55 @@ unsound mid-turn and far more complex than pinning.
 
 ## D5 — Memory visibility model
 
-**Decision**: Plugin-capability scoping. Each plugin declares
-`memoryNamespaces` in its manifest. An Agent's visible namespaces =
-⋃(enabled plugins' namespaces) ∪ `{core}`. Writes are tagged with the
-originating plugin. No per-record or per-user ACL.
+**Decision**: Plugin-capability scoping over the *existing* manifest. An Agent's
+visible memory is the union of its enabled plugins' existing `permissions.memory`
+declarations plus a shared `core` scope. Writes are tagged with the originating
+plugin. No per-record or per-user ACL, and no new manifest field.
 
 **Rationale**: Visibility becomes a set operation (Constitution V): a public
-Agent without the Odoo-HR plugin structurally cannot reach `odoo-hr` memory —
-no call-site auth check to forget. Tagging by origin lets any Agent with the
-same plugin share knowledge without the Agents knowing of each other. `core` is
-the deliberate shared floor (operator profile, channel bindings).
+Agent without the Odoo-HR plugin structurally cannot reach Odoo-HR memory — no
+call-site auth check to forget. Reusing `permissions.memory` avoids a redundant
+parallel `memoryNamespaces` field — plugins already declare their memory
+reads/writes there. Tagging by origin lets any Agent with the same plugin share
+knowledge without the Agents knowing of each other. `core` is the deliberate
+shared floor (operator profile, channel bindings).
 
-**Rejected for now**: Fine-grained per-record/per-user ACL — explicitly
-deferred by the operator; the coarse model is safe and sufficient for the
-public/general split.
+**Rejected**: A new `memoryNamespaces` manifest field — redundant with the
+`permissions.memory` block plugins already declare. Fine-grained
+per-record/per-user ACL — explicitly deferred by the operator; the coarse model
+is safe and sufficient for the public/general split.
 
-## D6 — Agent Builder conditioning timing
+## D6 — Agent Builder conditioning
 
-**Decision**: Freeze the `plugin-api` contract (US1) and re-point the Builder
-at it (US2) before any other work. The Builder enforces a four-check
-builder-ready gate: lifecycle-contract (tsc against `plugin-api`),
-no-module-state (custom ESLint rule), dispose-roundtrip (node --test), manifest
-schema (JSON Schema validator).
+**Decision**: The platform already has a plugin lifecycle (`activate(ctx)` /
+`handle.close()`) and the Builder already generates `activate`-style plugins
+with a `manifest.yaml`. "Conditioning" the Builder for multi-orchestrator is
+therefore narrow: once the manifest carries `multiInstance` and `privacyClass`
+(US1), the Builder's boilerplate manifests and manifest step must populate them
+(US2), and `manifestLinter` validates them.
 
-**Rationale**: The Builder runs in a parallel worktree and keeps emitting
-plugins. Every plugin generated against the old singleton model is debt that
-must be retrofitted. Freezing the contract first makes new Builder output
-correct by construction.
+**Rationale**: There is no new plugin contract to freeze and no plugin
+migration to retrofit — the original premise of a "four-check builder-ready
+gate" assumed a greenfield contract that does not exist. The only real Builder
+work is emitting two new manifest fields, gated by the existing
+`manifestLinter`.
 
-**Rejected**: Migrate Builder output later — guarantees a growing retrofit
-backlog.
+**Rejected**: A new lifecycle-contract / no-module-state / dispose-roundtrip
+gate — moot once the codebase's existing `activate`/`close` lifecycle is
+acknowledged (see the 2026-05-21 re-baseline note in `spec.md`).
 
 ## D7 — Where the registry and routing code live
 
 **Decision**: New sub-modules inside `harness-orchestrator`
-(`src/registry/`, `src/routing/`), not a new package. `plugin-api` *is* a new
-package boundary.
+(`src/registry/`, `src/routing/`), not a new package. No new shared-contract
+package is created — `plugin-api` already exists and already holds the plugin
+contract (`PluginContext`, the `activate`/`close` lifecycle).
 
 **Rationale**: The registry and router share the orchestrator's lifecycle and
 have no independent consumer — a separate package would be organisational-only
-(Constitution: no organisational-only libraries). The lifecycle contract, by
-contrast, has many consumers (every plugin, the Builder, the registry) and must
-be a hard package boundary so no consumer can re-declare it.
+(Constitution: no organisational-only libraries). The contract that many
+consumers depend on already has its package boundary; this feature extends the
+manifest, it does not add a parallel contract package.
 
 ## Out of Scope — consumed from elsewhere
 

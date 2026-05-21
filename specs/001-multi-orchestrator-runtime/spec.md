@@ -13,13 +13,14 @@ multi-orchestrator-ready from the start.
 
 ## Overview
 
-Today the platform runs a single `Orchestrator` with every plugin wired into one
-shared, process-global context. This feature turns the orchestrator into a
-**multi-tenant runtime**: N named orchestrator instances ("Agents") co-exist in
-one process, each with its own plugin set, channel bindings, memory scope, and
-privacy profile. Configuration is operator-managed and hot-reloadable — adding
-an Agent or toggling a plugin never restarts the process or disturbs other
-Agents.
+Today the platform runs a single `Orchestrator`: the `@omadia/orchestrator`
+plugin builds it once at boot and publishes it as the `chatAgent` service; every
+other plugin is activated against one shared, process-global service registry.
+This feature turns the orchestrator into a **multi-tenant runtime**: N named
+`Orchestrator` instances ("Agents") co-exist in one process, each with its own
+plugin set, channel bindings, memory scope, and privacy profile. Configuration
+is operator-managed and hot-reloadable — adding an Agent or toggling a plugin
+never restarts the process or disturbs other Agents.
 
 Out of scope (handled elsewhere or deferred):
 
@@ -27,9 +28,17 @@ Out of scope (handled elsewhere or deferred):
   worktree; this feature consumes whatever KG scoping that work produces and
   does not redesign it.
 - **Per-record / per-user ACL** on memory — deferred. Visibility here is
-  coarse-grained: plugin-enabled ⇒ namespace-visible.
+  coarse-grained: plugin-enabled ⇒ that plugin's memory scope is visible.
 - **Azure AD bot app registrations** — an operational task done outside the
   codebase; the spec assumes the operator provides distinct bot identities.
+
+**Revision note (2026-05-21)**: P1 (US1–US3) was re-baselined after codebase
+verification. The platform already has a plugin lifecycle — every plugin exports
+`activate(ctx: PluginContext): Promise<Handle>` with `handle.close()`, and
+`PluginContext` already provides per-plugin scoping and capability-gated service
+accessors. US1–US3 therefore *extend the existing manifest* and *parameterize
+Orchestrator construction* rather than introducing a new lifecycle contract or
+migrating every plugin.
 
 ## Clarifications
 
@@ -48,87 +57,90 @@ Out of scope (handled elsewhere or deferred):
 
 ## User Scenarios & Testing *(mandatory)*
 
-### User Story 1 - Frozen Plugin Lifecycle Contract (Priority: P1)
+### User Story 1 - Plugin Manifest Declares Multi-Instance Safety (Priority: P1)
 
-A platform developer needs one authoritative definition of what a plugin is —
-how it is created, configured, and torn down — so that orchestrators, the
-registry, and the Agent Builder all build against the same interface.
+A platform developer extends the existing plugin manifest so a plugin can
+declare whether it is safe to run as more than one instance in one process —
+the one piece of metadata the multi-orchestrator registry needs that today's
+`manifest.yaml` does not carry.
 
-**Why this priority**: Every other story depends on this contract. Producing it
-last would force a retrofit of all plugins and all Builder output. It is the
-foundational, blocking deliverable.
+**Why this priority**: The registry (US4) must know, per plugin, whether it may
+activate that plugin for a second Agent. Without the declaration the registry
+cannot safely build a second Orchestrator. Small, foundational, blocking.
 
-**Independent Test**: Compile `plugin-api` standalone; verify the exported
-`Plugin`, `PluginScope`, and extended `PluginManifest` types exist and that a
-trivial reference plugin can be type-checked against them.
+**Independent Test**: Add `multiInstance` to a plugin's `manifest.yaml`; load it
+through `manifestLoader`; confirm the value reaches the `Plugin` object and that
+`manifestLinter` rejects a `multiInstance: false` manifest that carries no
+justification.
 
 **Acceptance Scenarios**:
 
-1. **Given** the `plugin-api` package, **When** a developer imports the plugin
-   contract, **Then** they receive `Plugin` with `init`, `dispose`, and optional
-   `reconfigure`, plus `PluginScope` and `PluginManifest`.
-2. **Given** the extended manifest schema, **When** a manifest omits
-   `multiInstance`, `memoryNamespaces`, or `privacyClass`, **Then** schema
-   validation fails with a precise error.
-3. **Given** a plugin that declares `multiInstance: false`, **When** the
-   manifest is validated, **Then** a non-empty justification string is required.
+1. **Given** the extended manifest, **When** a plugin's `manifest.yaml` declares
+   `multiInstance` and `privacyClass`, **Then** `manifestLoader` maps both onto
+   the loaded `Plugin` object.
+2. **Given** a manifest that omits `multiInstance`, **When** it is loaded,
+   **Then** it defaults to `multiInstance: true` — multi-instance is the norm.
+3. **Given** a manifest with `multiInstance: false`, **When** it is linted,
+   **Then** a non-empty `multiInstanceJustification` is required, else the lint
+   fails with a precise error.
+4. **Given** a manifest with an unknown `privacyClass`, **When** it is linted,
+   **Then** the lint fails — `privacyClass` must be `strict` or `default`.
 
 ---
 
-### User Story 2 - Agent Builder Produces Multi-Orchestrator-Ready Plugins (Priority: P1)
+### User Story 2 - Agent Builder Emits the Multi-Instance Manifest Fields (Priority: P1)
 
-An operator uses the Agent Builder to create a new plugin. The generated
-scaffold must satisfy the multi-orchestrator contract out of the box — lifecycle
-hooks, no module-level state, scope-based service resolution — and must not be
-publishable until it provably does.
+An operator uses the Agent Builder to create a plugin. The generated
+`manifest.yaml` declares the new fields, and the Builder's manifest step lets
+the operator set them.
 
-**Why this priority**: The Builder runs in parallel and keeps emitting plugins.
-Until it is conditioned on the new contract, every plugin it produces is
-technical debt that must be retrofitted. Must land immediately after US1.
+**Why this priority**: The Builder keeps emitting plugins. Once the manifest
+carries the new fields (US1), Builder output must populate them so every new
+plugin is registry-ready by construction.
 
-**Independent Test**: Generate a fresh plugin from the Builder; run the
-builder-ready gate against it; confirm all four checks pass and that the
-generated `dispose-roundtrip` test is present and green.
+**Independent Test**: Generate a plugin from the Builder; confirm its
+`manifest.yaml` carries `multiInstance` and `privacyClass` and that the
+generated manifest passes `manifestLinter`.
 
 **Acceptance Scenarios**:
 
-1. **Given** a newly generated plugin scaffold, **When** the builder-ready gate
-   runs, **Then** lifecycle-contract, no-module-state, dispose-roundtrip, and
-   manifest-schema checks all pass.
-2. **Given** generated plugin code, **When** a developer inspects it, **Then**
-   external services are obtained via `scope.services.get(...)` and there is no
-   module-scope mutable state.
-3. **Given** a plugin that fails any gate check, **When** the operator opens it
-   in the Builder, **Then** the publish action is disabled and the failing check
-   is named.
-4. **Given** the Builder manifest wizard, **When** the operator creates a
-   plugin, **Then** they can set `multiInstance`, `memoryNamespaces`,
-   `privacyClass`, and `requiredCapabilities`.
+1. **Given** the Builder boilerplate manifests, **When** a plugin is generated,
+   **Then** the emitted `manifest.yaml` declares `multiInstance` and
+   `privacyClass`.
+2. **Given** the Builder's manifest step, **When** the operator creates a
+   plugin, **Then** they can set `multiInstance` — with a justification field
+   that is required when it is `false` — and `privacyClass`.
+3. **Given** a generated plugin, **When** `manifestLinter` runs in the Builder,
+   **Then** an invalid multi-instance or privacy declaration blocks the build
+   and names the failing check.
 
 ---
 
-### User Story 3 - Existing Plugins Migrated to the Lifecycle Contract (Priority: P1)
+### User Story 3 - Orchestrator Construction Is Per-Agent Parameterizable (Priority: P1)
 
-The platform's existing plugins (channels, integrations, agents, privacy/quality
-plugins) must implement `init`/`dispose` and move their process-global state
-into the per-scope container, with no change in observable behaviour.
+Today the `@omadia/orchestrator` plugin's `activate()` builds exactly one
+process-global `Orchestrator` and publishes it as the `chatAgent` service. To
+run N Agents, an `Orchestrator` must be constructible for a *named Agent* with a
+given plugin/tool set — not just once for the whole process.
 
-**Why this priority**: The registry cannot instantiate plugins per-orchestrator
-until every plugin honours the contract. A single non-compliant plugin with a
-leaked timer breaks hot-reload for the whole process.
+**Why this priority**: This is the structural unlock for US4. The registry
+cannot build N Orchestrators until Orchestrator construction is a parameterized
+function rather than a one-shot side effect of plugin activation.
 
-**Independent Test**: For each migrated plugin, run its `dispose-roundtrip`
-test; confirm `init → dispose → init → dispose` leaves zero extra active
-handles. Run the full middleware suite and confirm no behavioural regression.
+**Independent Test**: Call the extracted Orchestrator-construction function
+twice with two different Agent configs; confirm two independent `Orchestrator`
+instances result, each with only its own tool set; confirm single-Agent
+behaviour is unchanged when it is called once.
 
 **Acceptance Scenarios**:
 
-1. **Given** any existing plugin, **When** it is initialised and then disposed,
-   **Then** every client, timer, and listener it created is released.
-2. **Given** the full plugin set, **When** the migration is complete, **Then**
-   no plugin reads or writes mutable module-scope state.
-3. **Given** the migrated platform, **When** the existing single-orchestrator
-   behaviour is exercised, **Then** all current tests stay green.
+1. **Given** the orchestrator package, **When** an `Orchestrator` is constructed
+   for a named Agent, **Then** it receives that Agent's id, plugin/tool set, and
+   privacy profile — not a process-global set.
+2. **Given** the refactor, **When** the platform runs with a single Agent,
+   **Then** all current single-orchestrator behaviour and tests stay green.
+3. **Given** two construction calls in one process, **When** both complete,
+   **Then** the two `Orchestrator` instances share no mutable state.
 
 ---
 
@@ -180,12 +192,12 @@ process PID is unchanged.
 1. **Given** a running platform, **When** a new Agent is added to config,
    **Then** it becomes serviceable without a process restart.
 2. **Given** a running Agent, **When** a plugin is removed from it, **Then** that
-   plugin's `dispose` runs and its resources are released.
+   plugin's `close()` runs and its resources are released.
 3. **Given** a config change to Agent A, **When** it is applied, **Then** Agent B
    experiences zero downtime.
 4. **Given** a multi-machine deployment, **When** config changes, **Then** every
    machine converges to the new config without manual intervention.
-5. **Given** a plugin whose `dispose` throws during reload, **When** the reload
+5. **Given** a plugin whose `close()` throws during reload, **When** the reload
    runs, **Then** the error is isolated and logged and the reload completes for
    all other plugins and Agents.
 
@@ -208,7 +220,7 @@ unchanged; start a new session and confirm it sees the new tool set.
 **Acceptance Scenarios**:
 
 1. **Given** an active session, **When** its Agent's config changes, **Then**
-   the session keeps its start-time snapshot of plugins, tools, and namespaces.
+   the session keeps its start-time snapshot of plugins, tools, and memory scope.
 2. **Given** a config change, **When** a new session starts afterwards, **Then**
    it uses the updated configuration.
 3. **Given** an operator who must apply a routine change immediately, **When**
@@ -252,27 +264,28 @@ B; deliver a webhook for each; confirm each is handled by the intended Agent.
 
 ### User Story 8 - Memory Visibility Scoped by Enabled Plugins (Priority: P3)
 
-An orchestrator can read and write only the memory namespaces contributed by its
-enabled plugins, plus a shared `core` namespace. A "public" orchestrator with
-the Confluence plugin may read Confluence memory; without the Odoo-HR plugin it
-structurally cannot read Odoo-HR memory.
+An orchestrator can read and write only the memory its enabled plugins are
+permitted — each plugin's existing `permissions.memory` declarations — plus a
+shared `core` scope. A "public" orchestrator with the Confluence plugin may
+read Confluence memory; without the Odoo-HR plugin it structurally cannot read
+Odoo-HR memory.
 
 **Why this priority**: Refines the privacy boundary. Valuable but not required
 for the basic multi-orchestrator capability to function; the coarse default
-("core only" until namespaces wire up) is safe in the interim.
+("core only" until plugin scopes wire up) is safe in the interim.
 
 **Independent Test**: Configure a public Agent with Confluence but not Odoo-HR;
-seed memory entries in both namespaces; confirm the Agent reads Confluence
-entries and cannot read Odoo-HR entries.
+seed memory entries in both scopes; confirm the Agent reads Confluence entries
+and cannot read Odoo-HR entries.
 
 **Acceptance Scenarios**:
 
-1. **Given** a plugin declaring `memoryNamespaces`, **When** it is enabled for
-   an Agent, **Then** those namespaces become readable and writable by that
+1. **Given** a plugin with `permissions.memory` declarations, **When** it is
+   enabled for an Agent, **Then** those memory scopes become reachable by that
    Agent.
-2. **Given** an Agent's visible namespaces, **When** memory is queried, **Then**
-   the result is the union of its plugins' namespaces plus `core`, and nothing
-   else.
+2. **Given** an Agent's visible memory, **When** memory is queried, **Then** the
+   result is the union of its enabled plugins' `permissions.memory` scopes plus
+   `core`, and nothing else.
 3. **Given** a memory entry written by a plugin, **When** another Agent with the
    same plugin enabled reads memory, **Then** it sees that entry — without
    either Agent knowing of the other.
@@ -308,7 +321,7 @@ and disable actions made through the UI.
    **Then** the running session count is shown and a "drain & reload" action is
    available.
 5. **Given** the plugin multi-select, **When** the operator inspects a plugin,
-   **Then** its multi-instance compatibility and `memoryNamespaces` are shown.
+   **Then** its multi-instance compatibility and memory scopes are shown.
 
 ---
 
@@ -322,12 +335,14 @@ and disable actions made through the UI.
   rejects the configuration with a clear error.
 - **Dropped `LISTEN/NOTIFY` connection**: a periodic reconcile re-reads config
   so a missed notification cannot leave the registry stale (US5).
-- **`dispose()` throws**: isolated, logged; reload continues for everything else.
+- **A plugin's `close()` throws**: isolated, logged; reload continues for every
+  other plugin and Agent.
 - **Duplicate channel key across two Agents**: rejected at config-validation
   time (US7).
 - **Agent with zero plugins**: valid — a bare LLM agent.
-- **Plugin config edited without plugin set change**: handled by `reconfigure`
-  where the plugin supports it, avoiding an expensive dispose/init cycle.
+- **Plugin config edited without plugin set change**: the plugin is re-activated
+  (`close()` then `activate()`) on the affected Agent only; unaffected Agents
+  are untouched.
 - **Empty config / no Agents defined**: the platform starts idle and
   serviceable; the operator runs first-boot onboarding, which seeds the
   minimal-privilege fallback Agent and the first working Agent (via UI or CLI).
@@ -343,22 +358,25 @@ and disable actions made through the UI.
 
 ### Functional Requirements
 
-- **FR-001**: The system MUST define a single authoritative plugin lifecycle
-  contract (`init`, `dispose`, optional `reconfigure`) in the `plugin-api`
-  package, consumed by all plugins, the registry, and the Agent Builder.
-- **FR-002**: The plugin manifest schema MUST require `multiInstance`,
-  `memoryNamespaces`, `requiredCapabilities`, and `privacyClass`, and MUST
-  require a justification when `multiInstance` is `false`.
-- **FR-003**: Plugins MUST NOT hold mutable state at module scope; all runtime
-  state MUST be created in `init()` and released in `dispose()`.
-- **FR-004**: The Agent Builder MUST generate scaffolds that satisfy the
-  lifecycle contract, use scope-based service resolution, and include a
-  `dispose-roundtrip` test.
-- **FR-005**: The system MUST provide a builder-ready gate with four checks —
-  lifecycle-contract compliance, no-module-state, dispose-roundtrip, manifest
-  schema — and MUST block publishing a plugin that fails any check.
-- **FR-006**: All existing plugins MUST be migrated to the lifecycle contract
-  with no change in observable single-orchestrator behaviour.
+- **FR-001**: The existing plugin manifest — the `manifest.yaml` schema, the
+  `Plugin` type, the `manifestLoader`, and the `manifestLinter` — MUST be
+  extended with a `multiInstance` boolean and a `privacyClass` enum
+  (`strict | default`). No parallel manifest format is introduced.
+- **FR-002**: `multiInstance` MUST default to `true` when a manifest omits it;
+  a manifest with `multiInstance: false` MUST supply a non-empty
+  `multiInstanceJustification`, enforced by `manifestLinter`.
+- **FR-003**: The platform's existing plugin lifecycle — `activate(ctx)` /
+  `handle.close()` with the per-plugin `PluginContext` — IS the lifecycle
+  contract; this feature MUST NOT introduce a parallel one.
+- **FR-004**: The Agent Builder MUST emit `multiInstance` and `privacyClass` in
+  every generated `manifest.yaml` and expose them in its manifest step.
+- **FR-005**: `manifestLinter` MUST block a plugin whose multi-instance or
+  privacy declaration is invalid, naming the failing check, in CI and in the
+  Builder.
+- **FR-006**: `Orchestrator` construction MUST be a function parameterized by a
+  named Agent's config (id, plugin/tool set, privacy profile), MUST tolerate
+  being called more than once in one process, and MUST leave single-Agent
+  behaviour unchanged.
 - **FR-007**: The system MUST support multiple named orchestrator instances
   ("Agents") running concurrently in one process, each with an isolated plugin
   set, privacy profile, and channel bindings.
@@ -374,8 +392,8 @@ and disable actions made through the UI.
   multi-machine deployment, with a reconcile fallback if a change notification
   is missed.
 - **FR-013**: Each session MUST capture, at start, an immutable snapshot of its
-  Agent's plugin set, tool set, and memory namespaces, and MUST keep that
-  snapshot until the session ends.
+  Agent's plugin set, tool set, and memory scope, and MUST keep that snapshot
+  until the session ends.
 - **FR-014**: Configuration changes MUST affect only new sessions; the system
   MUST provide an explicit `force-invalidate` action with two modes — `drain`
   (let each in-flight turn finish, bounded by the per-turn LLM timeout, then
@@ -389,7 +407,7 @@ and disable actions made through the UI.
 - **FR-016**: Channel keys MUST be unique across Agents; configuration violating
   this MUST be rejected at validation time.
 - **FR-017**: An Agent's memory visibility MUST be the union of its enabled
-  plugins' `memoryNamespaces` plus the shared `core` namespace, and nothing
+  plugins' `permissions.memory` scopes plus the shared `core` scope, and nothing
   else.
 - **FR-018**: Memory writes MUST be tagged with their originating plugin so any
   Agent with that plugin enabled can read them, with no direct coupling between
@@ -415,14 +433,17 @@ and disable actions made through the UI.
   per-Agent plugin configuration.
 - **Channel Binding**: a mapping from a channel type + channel key to the Agent
   that owns it; channel keys are globally unique.
-- **Plugin Manifest**: declarative plugin metadata — version, `multiInstance`,
-  `memoryNamespaces`, `requiredCapabilities`, `privacyClass`.
-- **Plugin Scope**: the per-(Agent × plugin) runtime container holding that
-  plugin instance's services, disposables, and configuration.
+- **Plugin Manifest**: the existing plugin `manifest.yaml`, extended by this
+  feature with `multiInstance` (+ `multiInstanceJustification`) and
+  `privacyClass`. All other manifest fields are unchanged.
+- **Plugin Context**: the existing per-plugin runtime container (`PluginContext`)
+  — per-Agent scoped, with capability-gated service accessors. Reused unchanged;
+  the registry constructs one per (Agent × plugin).
 - **Config Snapshot**: the immutable, per-session frozen view of an Agent's
-  plugins, tools, and memory namespaces captured at session start.
-- **Memory Namespace**: a named partition of memory contributed by a plugin;
-  `core` is the shared partition available to every Agent.
+  plugins, tools, and memory scope captured at session start.
+- **Memory Scope**: the set of memory paths an Agent may reach, derived from its
+  enabled plugins' `permissions.memory` declarations; `core` is the shared scope
+  available to every Agent.
 
 ## Success Criteria *(mandatory)*
 
@@ -434,12 +455,12 @@ and disable actions made through the UI.
   Agent's new sessions within 10 seconds, with zero downtime measured for any
   other Agent.
 - **SC-003**: An orchestrator without a given plugin enabled cannot read that
-  plugin's memory namespace — verified by an automated test for the public vs.
+  plugin's memory scope — verified by an automated test for the public vs.
   general split.
-- **SC-004**: Every plugin completes an `init → dispose → init → dispose` cycle
-  with zero net change in active process handles, enforced as a CI gate.
-- **SC-005**: 100% of plugins — existing and Builder-generated — pass the
-  four-check builder-ready gate.
+- **SC-004**: 100% of existing plugins carry a valid `multiInstance` declaration
+  (with a justification when `false`); `manifestLinter` enforces it in CI.
+- **SC-005**: 100% of plugins newly generated by the Agent Builder carry
+  `multiInstance` and `privacyClass` and pass `manifestLinter`.
 - **SC-006**: An in-flight session's tool set and plugin set never change as a
   result of a configuration change to its Agent — verified by an automated
   test.
@@ -455,7 +476,7 @@ and disable actions made through the UI.
 - Knowledge-Graph ownership/ACL is delivered by a parallel workstream; this
   feature consumes its scoping output and does not redesign KG visibility.
 - Per-record and per-user memory ACL is out of scope; visibility is
-  coarse-grained at the plugin/namespace level.
+  coarse-grained at the plugin / `permissions.memory` level.
 - The platform continues to run primarily on Fly.io; "no infrastructure
   restart" means the Node process is not recycled, while Fly machines stay warm.
 - The existing dashboard (`web-ui`) and its plugin-UI platform are the host for
@@ -464,6 +485,9 @@ and disable actions made through the UI.
   and supports `LISTEN/NOTIFY`.
 - Multi-instance is the default expectation for plugins; truly single-instance
   plugins are rare and explicitly justified.
+- The existing plugin lifecycle (`activate`/`PluginContext`/`close`), service
+  registry, manifest loader/linter, and Builder are reused as-is; this feature
+  extends them, it does not replace them.
 - `privacy_profile` (Agent) and `privacyClass` (plugin manifest) are recorded in
   this feature — stored, validated, operator-set — but not yet enforced; no
   behaviour branches on their value. A later privacy workstream consumes them.

@@ -12,10 +12,10 @@ migration conventions (`middleware/migrations/`).
 | Agent–Plugin Assignment | persistent (DB row) | until plugin removed from Agent |
 | Channel Binding | persistent (DB row) | until rebound/removed |
 | Platform Settings | persistent (DB row) | single row, process-wide |
-| Plugin Manifest | declarative (file in plugin) | versioned with the plugin |
-| Plugin Scope | runtime (in-memory) | per (Agent × plugin), until reload/dispose |
+| Plugin Manifest | declarative (`manifest.yaml` in plugin) | versioned with the plugin |
+| Plugin Context | runtime (in-memory) | per (Agent × plugin), until reload/close |
 | Config Snapshot | runtime (session store) | per session, until session ends |
-| Memory Namespace | logical partition | implicit, defined by manifests |
+| Memory Scope | logical partition | derived from each plugin's `permissions.memory` |
 
 ## Persistent Schema (Postgres / Neon)
 
@@ -117,31 +117,34 @@ Every Fly machine runs `LISTEN agents_changed`; on notification the registry
 runs `applyDiff`. A periodic reconcile (re-read all three tables) is the
 fallback for a dropped `LISTEN` connection (D3).
 
-## Declarative Schema — Extended Plugin Manifest
+## Declarative Schema — Manifest Extension
 
-New required fields on `PluginManifest` (full TypeScript + JSON Schema in
-`contracts/plugin-lifecycle.md`):
+This feature adds two fields to the *existing* plugin `manifest.yaml` (loaded by
+`manifestLoader`, validated by `manifestLinter` — see
+`contracts/plugin-lifecycle.md`). No new manifest format is introduced.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `multiInstance` | `boolean` | May the plugin run as >1 instance in one process? Default `true`. |
-| `multiInstanceJustification` | `string` | Required when `multiInstance` is `false`; why it cannot. |
-| `memoryNamespaces` | `string[]` | Memory partitions this plugin contributes; `[]` ⇒ uses only `core`. |
-| `requiredCapabilities` | `string[]` | Capabilities the plugin needs from a scope, e.g. `"llm:chat"`, `"kg:read"`. |
-| `privacyClass` | `'strict' \| 'default'` | Plugin's data-handling class; the Builder defaults generated plugins to `strict`. |
+| `multiInstance` | `boolean` | May the plugin run as >1 instance in one process? Defaults to `true` when omitted. |
+| `multiInstanceJustification` | `string` | Required (non-empty) when `multiInstance` is `false`; why it cannot. |
+| `privacyClass` | `'strict' \| 'default'` | Plugin's data-handling class; the Builder defaults generated plugins to `strict`. Recorded, not enforced this feature (C3). |
+
+Memory scoping reuses the manifest's existing `permissions.memory` block — no
+`memoryNamespaces` field is added. Capability needs are likewise the existing
+`permissions.*` blocks.
 
 ## Runtime Structures (in-memory)
 
-### `PluginScope`
+### `PluginContext` (existing — reused)
 
-The per-(Agent × plugin) container. One Agent has one scope **per enabled
-plugin**; the Agent's overall context is the set of its scopes.
-
-- `agentId`, `pluginId`
-- `services` — capability-keyed service resolver (`services.get('llm:chat')`)
-- `disposables` — registry of teardown handles flushed by `dispose`
-- `config` — the validated per-Agent plugin config
-- `logger` — pre-bound with `agentId` + `pluginId` context
+The per-(Agent × plugin) container the kernel already builds and hands to a
+plugin's `activate()`. One Agent has one `PluginContext` **per enabled plugin**.
+This feature reuses it unchanged; the registry constructs one per (Agent ×
+plugin). It already provides `agentId`, `domain`, capability-gated accessors
+(`services`, `config`, `secrets`, and `memory?` / `llm?` / `http?` /
+`knowledgeGraph?` — present per the plugin's manifest permissions), `jobs`,
+`tools`, `routes`, and `log()`. Teardown is whatever the plugin's
+`handle.close()` does.
 
 ### `ConfigSnapshot`
 
@@ -150,7 +153,7 @@ Immutable, captured at session start, stored on the `chatSessionStore` record:
 - `agentId`
 - `pluginIds: string[]` + `pluginVersions: Record<string,string>`
 - `toolIds: string[]`
-- `memoryNamespaces: string[]`
+- `memoryScope: string[]` — the memory paths the Agent may reach
 
 The session uses this snapshot for its entire lifetime; reload never mutates it
 (D4). `force-invalidate` is the only operation that touches it: in `drain` mode
@@ -163,7 +166,7 @@ entry (C1/C4).
 ```text
 agents 1───n agent_plugins        (an Agent enables many plugins)
 agents 1───n channel_bindings     (an Agent owns many channel keys)
-agents 1───n PluginScope          (runtime: one scope per enabled plugin)
+agents 1───n PluginContext        (runtime: one context per enabled plugin)
 agents 1───n session/ConfigSnapshot (runtime: many live sessions)
 agents 0..1─1 platform_settings   (an Agent may be the fallback target)
 PluginManifest 1───n agent_plugins (one manifest, enabled on many Agents)
@@ -173,14 +176,14 @@ PluginManifest 1───n agent_plugins (one manifest, enabled on many Agents)
 
 - `agents.slug`: unique, immutable, URL-safe.
 - `channel_bindings`: `(channel_type, channel_key)` globally unique (FR-016).
-- `agent_plugins.config`: validated against the plugin's config schema at
-  `init`; an invalid config fails the Agent's load for that plugin only,
-  logged, without taking down the Agent or its other plugins.
+- `agent_plugins.config`: validated by the plugin during `activate()`; an
+  invalid config fails the Agent's activation for that plugin only, logged,
+  without taking down the Agent or its other plugins.
 - A plugin with `multiInstance: false` may appear in `agent_plugins` for at
   most one `agent_id`; the registry rejects a second assignment at `applyDiff`.
-- `requiredCapabilities`: every entry must be satisfiable by the scope the
-  registry builds for that Agent; an unsatisfiable capability fails that
-  plugin's load with a precise error.
+- A plugin's manifest `permissions.*` must be satisfiable by the per-Agent
+  `PluginContext` the registry builds; an unsatisfiable permission fails that
+  plugin's activation for the Agent with a precise error.
 - `platform_settings.fallback_agent_id`, when set, should reference an `enabled`
   Agent; if it resolves to a disabled or missing Agent the router treats
   unmatched channel keys as hard-rejected (degraded-safe).

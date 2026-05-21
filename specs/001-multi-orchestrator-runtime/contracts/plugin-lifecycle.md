@@ -1,194 +1,92 @@
-# Contract: Plugin Lifecycle & Manifest
+# Contract: Plugin Lifecycle & Manifest Extension
 
-Phase 1 output. The authoritative interface for plugins in the
-multi-orchestrator runtime. This contract lives in the `plugin-api` package and
-is the **single source of truth** (Constitution II) — plugins, the
-`OrchestratorRegistry`, and the Agent Builder all import from here; none
-re-declares it.
+Phase 1 output. The plugin contract the multi-orchestrator registry builds
+against. **The lifecycle already exists** — this document references it rather
+than redefining it — and the multi-orchestrator runtime adds two manifest
+fields. See the 2026-05-21 re-baseline note in `spec.md`.
 
-A breaking change to this contract requires a SemVer major bump of `plugin-api`
-and a migration note.
+## 1. Lifecycle — the existing `activate` / `close` contract
 
-## 1. Lifecycle Interface
-
-```ts
-// plugin-api/src/lifecycle.ts
-
-/** A teardown handle. dispose() MUST be idempotent and MUST NOT throw for
- *  an already-disposed resource. */
-export interface Disposable {
-  dispose(): Promise<void> | void;
-}
-
-/** Per-(Agent × plugin) runtime container handed to a plugin at init().
- *  A plugin obtains everything external through the scope — never via
- *  module-scope imports of singletons. */
-export interface PluginScope {
-  readonly agentId: string;
-  readonly pluginId: string;
-
-  /** Capability-keyed service resolver. Throws if the capability was not
-   *  declared in the manifest's requiredCapabilities. */
-  readonly services: {
-    get<T>(capability: string): T;
-    has(capability: string): boolean;
-  };
-
-  /** Structured logger pre-bound with agentId + pluginId. */
-  readonly logger: ScopeLogger;
-
-  /** Register a teardown handle; all registered handles are flushed,
-   *  in reverse order, when the plugin is disposed. */
-  registerDisposable(d: Disposable): void;
-}
-
-/** The plugin contract. C = plugin config type, H = plugin runtime handle. */
-export interface Plugin<C = unknown, H = unknown> {
-  readonly manifest: PluginManifest;
-
-  /** Create all runtime state (clients, caches, timers, listeners) here.
-   *  MUST NOT touch module-scope mutable state. Returns the runtime handle. */
-  init(scope: PluginScope, config: C): Promise<H>;
-
-  /** Release everything created in init(). MUST be safe to call once per
-   *  handle. Errors are isolated by the registry — a throwing dispose() MUST
-   *  NOT prevent other plugins/Agents from reloading. */
-  dispose(handle: H): Promise<void>;
-
-  /** OPTIONAL fast path for a config-only change: mutate in place instead of
-   *  a full dispose()+init() cycle. If absent, the registry falls back to
-   *  dispose()+init(). Returns the (possibly new) handle. */
-  reconfigure?(handle: H, next: C): Promise<H>;
-}
-```
-
-### Lifecycle rules
-
-1. **No module-scope mutable state.** Every client, cache, timer, interval,
-   event listener, subscription, or connection is created inside `init()` and
-   torn down inside `dispose()`. Enforced by the `no-module-state` ESLint rule.
-2. **`init` is total.** If `init` cannot complete (bad config, unsatisfiable
-   capability), it throws; the registry isolates the failure to that one
-   plugin on that one Agent and logs it.
-3. **`dispose` is idempotent and total.** It releases every handle registered
-   via `registerDisposable`, in reverse order, and never throws for an
-   already-released resource.
-4. **Multi-instance by default.** A plugin must tolerate being `init()`-ed
-   more than once concurrently in the same process against different scopes,
-   unless the manifest declares `multiInstance: false`.
-5. **Scope-only access.** External services are obtained via
-   `scope.services.get(...)`. Importing a singleton at module scope is a
-   contract violation.
-
-## 2. Manifest Interface
+Every plugin in the platform already follows one lifecycle. It is **not changed
+by this feature**:
 
 ```ts
-// plugin-api/src/manifest.ts
-
-export interface PluginManifest {
-  // --- existing fields (unchanged) ---
-  id: string;
-  name: string;
-  version: string;            // SemVer
-
-  // --- NEW: required for the multi-orchestrator runtime ---
-
-  /** May this plugin run as more than one instance in a single process?
-   *  Default true. */
-  multiInstance: boolean;
-
-  /** Required (non-empty) when multiInstance is false — why it cannot. */
-  multiInstanceJustification?: string;
-
-  /** Memory partitions this plugin contributes. [] ⇒ uses only "core". */
-  memoryNamespaces: string[];
-
-  /** Capabilities the plugin needs from its scope, e.g. "llm:chat". */
-  requiredCapabilities: string[];
-
-  /** Data-handling class. Builder-generated plugins default to "strict". */
-  privacyClass: 'strict' | 'default';
-}
+// Each plugin module exports:
+export async function activate(ctx: PluginContext): Promise<Handle>;
+// where the returned Handle has:
+//   close(): Promise<void>;
 ```
 
-## 3. Manifest JSON Schema
+- **`activate(ctx)`** — the kernel calls this once per (Agent × plugin),
+  passing a `PluginContext` scoped to that Agent. The plugin creates its
+  runtime state (clients, caches, timers, service registrations) and returns a
+  handle.
+- **`handle.close()`** — releases everything `activate()` created. The registry
+  calls it on plugin removal, Agent removal, or reload. There is no shared
+  `Handle` type; a `close()` method is the convention.
+- **`PluginContext`** — defined in `@omadia/plugin-api`
+  (`src/pluginContext.ts`); it is the single source of truth (Constitution II)
+  and is reused unchanged. It already carries `agentId`, `domain`, a service
+  registry (`services.provide`/`get`), `config`, `secrets`, `log()`, `jobs`,
+  `tools`, `routes`, and capability-gated optional accessors (`memory?`,
+  `llm?`, `http?`, `knowledgeGraph?`, `subAgent?`) that are present only when
+  the plugin's manifest declares the matching `permissions.*` — i.e. the
+  privacy-by-capability boundary (Constitution V) is already structural.
 
-Lives at `plugin-api/schemas/manifest.schema.json`; the builder-ready gate
-validates every manifest against it.
+What the registry guarantees when it drives this lifecycle:
 
-```json
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "PluginManifest",
-  "type": "object",
-  "required": ["id", "name", "version", "multiInstance",
-               "memoryNamespaces", "requiredCapabilities", "privacyClass"],
-  "properties": {
-    "id":      { "type": "string", "minLength": 1 },
-    "name":    { "type": "string", "minLength": 1 },
-    "version": { "type": "string",
-                 "pattern": "^\\d+\\.\\d+\\.\\d+([-+].+)?$" },
-    "multiInstance": { "type": "boolean" },
-    "multiInstanceJustification": { "type": "string", "minLength": 1 },
-    "memoryNamespaces": {
-      "type": "array", "items": { "type": "string", "minLength": 1 }
-    },
-    "requiredCapabilities": {
-      "type": "array", "items": { "type": "string", "minLength": 1 }
-    },
-    "privacyClass": { "enum": ["strict", "default"] }
-  },
-  "if":   { "properties": { "multiInstance": { "const": false } } },
-  "then": { "required": ["multiInstanceJustification"] }
-}
-```
+- One `PluginContext` per (Agent × plugin); a plugin reaches only what its
+  manifest permissions grant.
+- A throwing `activate()` or `close()` is caught, logged with
+  `agentId` + `pluginId`, and isolated — it never blocks reload of other
+  plugins or Agents.
+- There is no in-place `reconfigure`. A plugin-config change is applied as
+  `close()` then `activate()`.
 
-The package exports `validateManifest(value): ManifestValidationResult` as the
-single runtime validation path — the `OrchestratorRegistry` and the
-builder-ready gate call it rather than each wiring a JSON-Schema validator.
-`loadManifestJsonSchema()` returns the schema document itself for external
-tooling. `validateManifest` mirrors this schema exactly; a test guards the two
-against drift.
+## 2. Manifest Extension
 
-## 4. Builder-Ready Gate
+This feature adds two fields to the existing plugin `manifest.yaml`
+(`schema_version: "1"`). All other manifest fields — `identity`, `compat`,
+`permissions`, `jobs`, `capabilities`, … — are unchanged.
 
-A plugin is publishable only when all four checks pass (FR-005). The gate runs
-in CI and in the Agent Builder; a failing check disables the publish action and
-names the failure.
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `multiInstance` | `boolean` | optional, defaults `true` | May the plugin be activated for more than one Agent in one process? |
+| `multiInstanceJustification` | `string` | required iff `multiInstance: false` | Non-empty reason the plugin cannot be multi-instance. |
+| `privacyClass` | `'strict' \| 'default'` | optional, defaults `default` | Plugin's data-handling class. Recorded, not enforced this feature (research C3). |
 
-| # | Check | Tool / Method |
-|---|---|---|
-| 1 | Lifecycle contract implemented | `tsc` against the `Plugin` interface from `plugin-api` |
-| 2 | No module-scope mutable state | custom ESLint rule `no-module-state` |
-| 3 | Dispose-roundtrip clean | `node --test` runs the mandatory `dispose-roundtrip` test |
-| 4 | Manifest valid | JSON Schema validation against `manifest.schema.json` |
+The fields surface in three existing places:
 
-### Mandatory `dispose-roundtrip` test (generated for every plugin)
+- **`manifest.yaml`** — plugins (and the Builder boilerplate) declare them.
+- **`adaptManifestV1()` in `manifestLoader.ts`** — maps them onto the loaded
+  `Plugin` object (`middleware/src/api/admin-v1.ts`).
+- **`manifestLinter.ts`** — validates them (see §3).
 
-```ts
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
+`memoryNamespaces` and `requiredCapabilities` are **not** added — memory
+scoping derives from the manifest's existing `permissions.memory`, and
+capability needs from the existing `permissions.*` blocks.
 
-test('survives init → dispose → init → dispose without leaking handles', async () => {
-  const before = (process as any)._getActiveHandles().length;
-  for (let i = 0; i < 3; i++) {
-    const handle = await plugin.init(testScope(), testConfig());
-    await plugin.dispose(handle);
-  }
-  assert.equal((process as any)._getActiveHandles().length, before);
-});
-```
+## 3. Manifest Validation
 
-## 5. Registry Consumption Contract
+`manifestLinter` (`middleware/src/plugins/builder/manifestLinter.ts` —
+hand-rolled checks, no JSON Schema) gains rules for the new fields:
 
-The `OrchestratorRegistry` (in `harness-orchestrator`) is the only caller of
-`init`/`dispose`/`reconfigure`. It guarantees:
+- `multiInstance`, when present, must be a boolean.
+- `multiInstance: false` requires a non-empty `multiInstanceJustification`;
+  otherwise the lint fails, naming the field.
+- `privacyClass`, when present, must be `strict` or `default`.
 
-- One `PluginScope` is built per (Agent × plugin); `services` is populated only
-  with the plugin's declared `requiredCapabilities`.
-- `applyDiff` calls `reconfigure` for a config-only change when the plugin
-  provides it, otherwise `dispose` + `init`.
-- A throwing `init` or `dispose` is caught, logged with `agentId`+`pluginId`,
-  and isolated — it never blocks reload of other plugins or Agents.
-- A plugin with `multiInstance: false` is rejected if assigned to a second
-  Agent.
+The linter runs in CI and in the Agent Builder; a failing check blocks the
+build / publish and names the failure.
+
+## 4. Registry Consumption
+
+The `OrchestratorRegistry` (in `harness-orchestrator`) drives the lifecycle:
+
+- It activates each Agent's plugin set, building one `PluginContext` per
+  (Agent × plugin), and tracks the returned `close()` handles for reload and
+  shutdown.
+- `applyDiff` adds a plugin by `activate()`, removes one by `close()`, and
+  applies a config change as `close()` + `activate()`.
+- A plugin whose manifest declares `multiInstance: false` is rejected if it is
+  assigned to a second Agent — checked at `applyDiff`.

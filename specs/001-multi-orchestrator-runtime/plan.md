@@ -7,19 +7,22 @@
 
 Turn the single, process-global `Orchestrator` into a multi-tenant runtime. An
 `OrchestratorRegistry` instantiates N named Agents from operator-managed
-configuration; each Agent owns an isolated set of `PluginScope`s. Plugins gain
-an explicit `init`/`dispose`/`reconfigure` lifecycle defined once in
-`plugin-api`. Configuration lives in Postgres and is hot-reloaded via
-`LISTEN/NOTIFY` + a `Registry.applyDiff` patch step — no process restart.
-In-flight sessions are protected by a start-time config snapshot. Inbound
-channel webhooks are routed to the owning Agent by a binding resolver. Memory
-visibility is scoped to the union of an Agent's plugins' namespaces. The Agent
-Builder is conditioned on the frozen contract so every generated plugin is
-multi-orchestrator-ready, enforced by a four-check builder-ready gate.
+configuration; each Agent owns its own plugin activations, each plugin activated
+against a per-Agent `PluginContext`. The platform's existing plugin lifecycle
+(`activate(ctx)` / `handle.close()`) is reused as-is — no new contract. The
+plugin manifest is extended with `multiInstance` (and `privacyClass`), and
+`Orchestrator` construction is refactored into a function parameterized per
+Agent. Configuration lives in Postgres and is hot-reloaded via `LISTEN/NOTIFY`
++ a `Registry.applyDiff` patch step — no process restart. In-flight sessions
+are protected by a start-time config snapshot. Inbound channel webhooks are
+routed to the owning Agent by a binding resolver. Memory visibility is scoped to
+the union of an Agent's plugins' existing `permissions.memory` declarations. The
+Agent Builder emits the new manifest fields so generated plugins are
+registry-ready.
 
 ## Technical Context
 
-**Language/Version**: TypeScript 5.x, strict mode; Node 22.12.0 (pinned `.nvmrc`)
+**Language/Version**: TypeScript 6.x, strict mode; Node 22.22.3 (pinned `.nvmrc`)
 **Primary Dependencies**: existing `harness-*` monorepo packages, Express
 (HTTP/webhooks), `pg` (Neon Postgres client, `LISTEN/NOTIFY`), Anthropic SDK,
 React (dashboard `web-ui`), `harness-ui-helpers` (plugin-UI platform)
@@ -35,8 +38,9 @@ convention), boot smoke tests (`middleware/scripts/smoke-*.{ts,mjs}`)
 hot-reload causes zero downtime for unrelated Agents
 **Constraints**: no Node process restart on config change; one bad plugin must
 not wedge reload or other Agents; in-flight sessions immutable
-**Scale/Scope**: small N of Agents (single-digit to low-double-digit); ~22
-existing plugins to migrate; one new dashboard tab
+**Scale/Scope**: small N of Agents (single-digit to low-double-digit); the
+existing ~13 plugins are reused unchanged (already `activate`/`close`-
+conformant); one new dashboard tab
 
 ## Constitution Check
 
@@ -44,10 +48,10 @@ existing plugins to migrate; one new dashboard tab
 
 | Principle | Compliance |
 |---|---|
-| I. Plugin Isolation & Lifecycle | **Core driver.** US1/US3 define and enforce `init`/`dispose` and the no-module-state rule; the `dispose-roundtrip` test is the proof. |
-| II. Contract-First Extensibility | `plugin-api` is the single source of truth (US1); the Builder consumes it, never a local copy (US2). |
-| III. Server-Side Business Logic | Routing resolution, namespace-union computation, and config validation are server-side; the Agents UI is display + input only. |
-| IV. Test-Green Gate | Each user story carries an independent test; `dispose-roundtrip` and the builder-ready gate become CI gates. Per-step boot smoke tests required. |
+| I. Plugin Isolation & Lifecycle | Satisfied by the existing lifecycle: every plugin already implements `activate`/`close` with per-plugin `PluginContext` scoping. This feature reuses it and adds `multiInstance` so the registry knows a plugin's multi-instance safety. |
+| II. Contract-First Extensibility | `plugin-api` already holds the `PluginContext` contract as the single source of truth; this feature extends the manifest, it does not add a parallel contract. |
+| III. Server-Side Business Logic | Routing resolution, memory-scope-union computation, and config validation are server-side; the Agents UI is display + input only. |
+| IV. Test-Green Gate | Each user story carries an independent test; `manifestLinter` enforces the new fields in CI. Per-step boot smoke tests required. |
 | V. Privacy by Capability | Memory visibility (US8) is a set operation over enabled plugins; an Agent structurally cannot reach an un-enabled plugin (US4/FR-008). |
 | VI. Observability & Diagnostics | FR-020 requires structured logs on lifecycle, routing, and reload seams. |
 
@@ -71,55 +75,56 @@ specs/001-multi-orchestrator-runtime/
 ### Source Code (repository root)
 
 ```text
-middleware/packages/
-├── plugin-api/                       # US1 — frozen lifecycle + manifest contract
-│   ├── src/lifecycle.ts              #   Plugin, PluginScope, Disposable
-│   ├── src/manifest.ts               #   extended PluginManifest type
-│   └── schemas/manifest.schema.json  #   JSON Schema for the gate
-├── harness-orchestrator/
-│   ├── src/orchestrator.ts           # existing Orchestrator (consumes a scope)
-│   ├── src/registry/                 # US4 — OrchestratorRegistry, applyDiff
-│   ├── src/registry/configStore.ts   # US4 — Postgres-backed config repository
-│   ├── src/registry/reloadBus.ts     # US5 — LISTEN/NOTIFY + reconcile fallback
-│   ├── src/pluginScope.ts            # US3/US4 — per-(Agent×plugin) container
-│   ├── src/chatSessionStore.ts       # US6 — add configSnapshot
-│   └── src/routing/channelResolver.ts# US7 — channel binding → Agent
-├── harness-memory/
-│   └── src/                          # US8 — namespace-scoped read/write
-├── harness-channel-*/, harness-integration-*/, agent-*/,
-│   harness-plugin-*/                  # US3 — migrate each to init/dispose
-└── <agent-builder package>/          # US2 — templates, builder-ready gate
+middleware/src/
+├── api/admin-v1.ts                   # US1 — `Plugin` type: add multiInstance, privacyClass
+├── plugins/manifestLoader.ts         # US1 — adaptManifestV1: map the new fields
+├── plugins/builder/manifestLinter.ts # US1/US2 — validate the new fields
+└── plugins/builder/                  # US2 — boilerplate + manifest step emit the fields
 
+middleware/assets/boilerplate/*/manifest.yaml  # US2 — declare the new fields
+
+middleware/packages/harness-orchestrator/
+├── src/plugin.ts                     # US3 — activate(): build Orchestrator per Agent
+├── src/orchestrator.ts               # US3 — construction parameterized by Agent config
+├── src/registry/                     # US4 — OrchestratorRegistry, applyDiff
+├── src/registry/configStore.ts       # US4 — Postgres-backed config repository
+├── src/registry/reloadBus.ts         # US5 — LISTEN/NOTIFY + reconcile fallback
+├── src/chatSessionStore.ts           # US6 — add configSnapshot
+└── src/routing/channelResolver.ts    # US7 — channel binding → Agent
+
+middleware/packages/harness-memory/src/        # US8 — permissions.memory-scoped read/write
 middleware/migrations/                # US4/US7 — agents, agent_plugins, channel_bindings, platform_settings
 middleware/scripts/smoke-*.{ts,mjs}   # per-story boot smoke tests
 
 web-ui/                               # US9 — "Agents" dashboard tab
 ```
 
-**Structure Decision**: Web-service + web-frontend. All runtime work lands in
-the existing npm workspace `middleware/packages/*`; the new contract is a
-dedicated package boundary (`plugin-api`) to make Constitution Principle II
-physically enforceable. The registry and routing live inside
-`harness-orchestrator` as new sub-modules rather than a new package, because
-they share the orchestrator's lifecycle and have no independent consumer. The
-operator UI is a tab in the existing `web-ui` dashboard using the established
-plugin-UI platform (`harness-ui-helpers`).
+**Structure Decision**: Web-service + web-frontend. The manifest extension (US1)
+touches the existing manifest path — the `Plugin` type, `manifestLoader`,
+`manifestLinter` — under `middleware/src/`. The registry and routing (US4/US7)
+live inside `harness-orchestrator` as new sub-modules rather than a new package,
+because they share the orchestrator's lifecycle and have no independent consumer
+(Constitution: no organisational-only libraries). No new shared-contract package
+is created — `plugin-api` already exists. The operator UI is a tab in the
+existing `web-ui` dashboard using the established plugin-UI platform
+(`harness-ui-helpers`).
 
 ## Phasing
 
 Implementation follows the user-story priority cascade in `tasks.md`:
 
-- **P1 (MVP)**: US1 contract → US2 Builder conditioning → US3 plugin migration →
-  US4 registry + config store. End state: multiple orchestrators run from
-  config (restart-based apply).
+- **P1 (MVP)**: US1 manifest extension → US2 Builder emits the new fields →
+  US3 per-Agent `Orchestrator` construction → US4 registry + config store.
+  End state: multiple orchestrators run from config (restart-based apply).
 - **P2**: US5 hot-reload → US6 session snapshot pinning → US7 channel routing.
   End state: live, zero-downtime reconfiguration and correct per-channel
   routing.
-- **P3**: US8 memory namespace scoping → US9 operator "Agents" UI. End state:
-  full privacy-by-capability and operator self-service.
+- **P3**: US8 memory scoping by `permissions.memory` → US9 operator "Agents"
+  UI. End state: full privacy-by-capability and operator self-service.
 
-US1 and US2 are time-critical: the Agent Builder runs in a parallel worktree
-and must be re-pointed at the frozen contract before it emits further plugins.
+US3 is the structural unlock — until `Orchestrator` construction is
+parameterized per Agent, US4 cannot build N instances. US1/US2 are small and
+can land in parallel with US3.
 
 ## Complexity Tracking
 
