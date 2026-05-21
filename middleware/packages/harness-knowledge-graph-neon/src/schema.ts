@@ -22,6 +22,10 @@ export const GRAPH_NODE_TYPES = [
   'ToolCall',
   // Graph-RAG Phase E: atomic facts distilled out of turns via Haiku.
   'Fact',
+  // Slice 2 — first-class curated memory entity between atomic Fact and
+  // verbatim Turn. Carries the ACL (Slice 3) and is the sink for the
+  // Palaia significance-promotion pipeline (Slice 4).
+  'MemorableKnowledge',
 ] as const;
 
 export const GRAPH_EDGE_TYPES = [
@@ -40,6 +44,12 @@ export const GRAPH_EDGE_TYPES = [
   // Slice 1b — ChannelIdentity → User-Cluster cross-link. 1:N from a
   // single User-Cluster's perspective; exactly 1 outbound per identity.
   'IS_IDENTITY_OF',
+  // Slice 2 — MemorableKnowledge relationships.
+  //   MK -[INVOLVED]-> User      participating cluster-roots (multi)
+  //   MK -[REQUIRES]-> Entity    referenced domain entity (Odoo/Confluence/Plugin)
+  //   MK -[DERIVED_FROM]-> Turn  uses existing edge type for provenance
+  'INVOLVED',
+  'REQUIRES',
 ] as const;
 
 export const GraphNodeTypeSchema = z.enum(GRAPH_NODE_TYPES);
@@ -207,6 +217,44 @@ const FactPropsSchema = z
   })
   .passthrough();
 
+// Slice 2 — MemorableKnowledge taxonomy. `decision` carries a chosen
+// course of action; `insight` an observation worth recalling; `preference`
+// a stable user-level setting; `reference` a pointer-style note (link, doc
+// excerpt). One MK = one kind — split into multiple nodes if a turn
+// produces several.
+export const MEMORABLE_KINDS = [
+  'decision',
+  'insight',
+  'preference',
+  'reference',
+] as const;
+export type MemorableKind = (typeof MEMORABLE_KINDS)[number];
+
+const MemorableKnowledgePropsSchema = z
+  .object({
+    kind: z.enum(MEMORABLE_KINDS),
+    /** Short human-readable headline. The thing the user (or the LLM
+     *  recalling it) sees first. Hard limit 2k chars to keep the recall
+     *  prompt cheap. */
+    summary: z.string().min(1).max(2000),
+    /** Optional longer-form reasoning. The "why" behind the decision /
+     *  insight. Up to 10k chars; longer evidence belongs on a Turn. */
+    rationale: z.string().min(1).max(10000).optional(),
+    /** Palaia-scored significance in [0, 1]. Optional because Slice 2
+     *  ships before the Slice-4 promotion pipeline — early creators
+     *  may write MK without a score. */
+    significance: z.number().min(0).max(1).optional(),
+    /** Cluster-root omadiaUserIds (uuid) that count as owners. Empty
+     *  in Slice 2; populated by Slice 3 from the involved-Users
+     *  snapshot at creation time. */
+    acl_owners: z.array(z.string().uuid()).default([]),
+    created_at: z.string().datetime(),
+    /** ChannelIdentity external_id of the channel-bound identity that
+     *  produced the MK (audit trail — not the cluster root). */
+    created_by: z.string().min(1),
+  })
+  .passthrough();
+
 export const NodePropsSchemaByType: Record<
   GraphNodeTypeName,
   z.ZodType<Record<string, unknown>>
@@ -222,6 +270,7 @@ export const NodePropsSchemaByType: Record<
   AgentInvocation: AgentInvocationPropsSchema,
   ToolCall: ToolCallPropsSchema,
   Fact: FactPropsSchema,
+  MemorableKnowledge: MemorableKnowledgePropsSchema,
 };
 
 export function validateNodeProps(

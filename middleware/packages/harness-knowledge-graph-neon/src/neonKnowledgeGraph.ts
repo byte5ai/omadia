@@ -6,6 +6,7 @@ import {
   agentInvocationNodeId,
   channelIdentityNodeId,
   entityNodeId,
+  memorableKnowledgeNodeId,
   runNodeId,
   sessionNodeId,
   toolCallNodeId,
@@ -25,6 +26,9 @@ import {
   type GraphNodeType,
   type GraphStats,
   type KnowledgeGraph,
+  type ListMemorableKnowledgeOptions,
+  type MemorableKnowledgeIngest,
+  type MemorableKnowledgeIngestResult,
   type ResolveOrCreateChannelIdentityResult,
   type RunAgentInvocationView,
   type RunIngestResult,
@@ -1383,6 +1387,157 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     } finally {
       client.release();
     }
+  }
+
+  async createMemorableKnowledge(
+    input: MemorableKnowledgeIngest,
+  ): Promise<MemorableKnowledgeIngestResult> {
+    const memorableUuid = randomUUID();
+    const mkExtId = memorableKnowledgeNodeId(memorableUuid);
+    const now = new Date().toISOString();
+
+    const client = await this.pool.connect();
+    let skippedInvolved = 0;
+    let skippedRequired = 0;
+    let skippedDerivedFrom = 0;
+    try {
+      await client.query('BEGIN');
+
+      const props = validateNodeProps('MemorableKnowledge', {
+        kind: input.kind,
+        summary: input.summary,
+        ...(input.rationale ? { rationale: input.rationale } : {}),
+        ...(input.significance !== undefined
+          ? { significance: input.significance }
+          : {}),
+        acl_owners: [],
+        created_at: now,
+        created_by: input.createdBy,
+      });
+      const mkUuid = await this.upsertNode(client, {
+        externalId: mkExtId,
+        type: 'MemorableKnowledge',
+        scope: null,
+        userId: null,
+        props,
+      });
+
+      // INVOLVED edges — resolve omadiaUserId → user-cluster external_id
+      // → uuid. Missing clusters are skipped + counted.
+      for (const omadiaUserId of input.involvedOmadiaUserIds ?? []) {
+        const userUuid = await this.findUuidByExternalId(
+          client,
+          userNodeId(omadiaUserId),
+        );
+        if (!userUuid) {
+          skippedInvolved++;
+          continue;
+        }
+        await this.upsertEdge(client, {
+          type: 'INVOLVED',
+          fromUuid: mkUuid,
+          toUuid: userUuid,
+        });
+      }
+
+      // REQUIRES edges — target node must be an Entity (OdooEntity /
+      // ConfluencePage / PluginEntity). Other types or missing nodes
+      // skip + count.
+      for (const entityExtId of input.requiredEntityIds ?? []) {
+        const row = await client.query<{ id: string; type: string }>(
+          `SELECT id, type FROM graph_nodes
+           WHERE tenant_id = $1 AND external_id = $2 LIMIT 1`,
+          [this.tenantId, entityExtId],
+        );
+        const hit = row.rows[0];
+        if (
+          !hit ||
+          (hit.type !== 'OdooEntity' &&
+            hit.type !== 'ConfluencePage' &&
+            hit.type !== 'PluginEntity')
+        ) {
+          skippedRequired++;
+          continue;
+        }
+        await this.upsertEdge(client, {
+          type: 'REQUIRES',
+          fromUuid: mkUuid,
+          toUuid: hit.id,
+        });
+      }
+
+      // DERIVED_FROM edges — Turn nodes only.
+      for (const turnExtId of input.derivedFromTurnIds ?? []) {
+        const row = await client.query<{ id: string }>(
+          `SELECT id FROM graph_nodes
+           WHERE tenant_id = $1 AND external_id = $2 AND type = 'Turn'
+           LIMIT 1`,
+          [this.tenantId, turnExtId],
+        );
+        const hit = row.rows[0];
+        if (!hit) {
+          skippedDerivedFrom++;
+          continue;
+        }
+        await this.upsertEdge(client, {
+          type: 'DERIVED_FROM',
+          fromUuid: mkUuid,
+          toUuid: hit.id,
+        });
+      }
+
+      await client.query('COMMIT');
+      return {
+        memorableKnowledgeNodeId: mkExtId,
+        skippedInvolved,
+        skippedRequired,
+        skippedDerivedFrom,
+      };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async getMemorableKnowledge(
+    memorableKnowledgeNodeId: string,
+  ): Promise<GraphNode | null> {
+    const result = await this.pool.query<NodeRow>(
+      `SELECT ${NODE_COLUMNS}
+       FROM graph_nodes
+       WHERE tenant_id = $1
+         AND external_id = $2
+         AND type = 'MemorableKnowledge'
+       LIMIT 1`,
+      [this.tenantId, memorableKnowledgeNodeId],
+    );
+    const row = result.rows[0];
+    return row ? rowToNode(row) : null;
+  }
+
+  async listMemorableKnowledgeFor(
+    omadiaUserId: string,
+    opts: ListMemorableKnowledgeOptions = {},
+  ): Promise<GraphNode[]> {
+    const limit = Math.max(1, Math.min(opts.limit ?? 50, 500));
+    const userExtId = userNodeId(omadiaUserId);
+    // INVOLVED edges go MK → User; "memory I'm involved in" = inbound.
+    const rows = await this.pool.query<NodeRow>(
+      `SELECT ${NODE_COLUMNS.split(', ').map((c) => `mk.${c}`).join(', ')}
+       FROM graph_nodes user_node
+       JOIN graph_edges e ON e.to_node = user_node.id AND e.type = 'INVOLVED'
+       JOIN graph_nodes mk ON mk.id = e.from_node AND mk.type = 'MemorableKnowledge'
+       WHERE user_node.tenant_id = $1
+         AND user_node.external_id = $2
+         AND user_node.type = 'User'
+         AND ($3::text IS NULL OR mk.properties->>'kind' = $3)
+       ORDER BY mk.created_at DESC
+       LIMIT $4`,
+      [this.tenantId, userExtId, opts.kind ?? null, limit],
+    );
+    return rows.rows.map(rowToNode);
   }
 
   async findEntities(opts: FindEntitiesOptions): Promise<GraphNode[]> {

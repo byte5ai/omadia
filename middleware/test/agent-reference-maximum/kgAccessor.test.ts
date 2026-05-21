@@ -151,6 +151,14 @@ function makeFakeKg(calls: FakeKgCalls): KnowledgeGraph {
       isNewIdentity: false,
       isNewCluster: false,
     }),
+    createMemorableKnowledge: async () => ({
+      memorableKnowledgeNodeId: 'mk:stub',
+      skippedInvolved: 0,
+      skippedRequired: 0,
+      skippedDerivedFrom: 0,
+    }),
+    getMemorableKnowledge: async () => null,
+    listMemorableKnowledgeFor: async () => [],
   } as unknown as KnowledgeGraph;
 }
 

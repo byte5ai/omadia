@@ -105,6 +105,29 @@ export interface KnowledgeGraph {
   resolveOrCreateChannelIdentity(
     ingest: ChannelIdentityIngest,
   ): Promise<ResolveOrCreateChannelIdentityResult>;
+  /**
+   * Slice 2 — create a MemorableKnowledge node + its INVOLVED / REQUIRES
+   * / DERIVED_FROM edges in one transaction. Missing endpoints
+   * (User-Cluster, Entity, Turn) are silently skipped + counted in
+   * `skipped*` so the call doesn't abort on a single stale id. Returns
+   * the new MK external_id (`mk:<uuid>`).
+   */
+  createMemorableKnowledge(
+    input: MemorableKnowledgeIngest,
+  ): Promise<MemorableKnowledgeIngestResult>;
+  /** Slice 2 — read a MemorableKnowledge node by external_id. */
+  getMemorableKnowledge(
+    memorableKnowledgeNodeId: string,
+  ): Promise<GraphNode | null>;
+  /**
+   * Slice 2 — list MemorableKnowledge nodes the given User is INVOLVED
+   * in. Slice 3 will add an additional `acl_owners`-based filter; until
+   * then INVOLVED is the only access control.
+   */
+  listMemorableKnowledgeFor(
+    omadiaUserId: string,
+    opts?: ListMemorableKnowledgeOptions,
+  ): Promise<GraphNode[]>;
 }
 
 export interface SessionFilter {
@@ -128,7 +151,11 @@ export type GraphNodeType =
   | 'Run'
   | 'AgentInvocation'
   | 'ToolCall'
-  | 'Fact';
+  | 'Fact'
+  /** Slice 2 — first-class curated memory entity between atomic Fact
+   *  and verbatim Turn. Carries the ACL (Slice 3) and is the sink for
+   *  the Palaia significance-promotion pipeline (Slice 4). */
+  | 'MemorableKnowledge';
 export type GraphEdgeType =
   | 'IN_SESSION'
   | 'NEXT_TURN'
@@ -141,7 +168,12 @@ export type GraphEdgeType =
   | 'DERIVED_FROM'
   | 'MENTIONS'
   /** Slice 1b — ChannelIdentity → User-Cluster cross-link. */
-  | 'IS_IDENTITY_OF';
+  | 'IS_IDENTITY_OF'
+  /** Slice 2 — MemorableKnowledge → User-Cluster, participating users. */
+  | 'INVOLVED'
+  /** Slice 2 — MemorableKnowledge → Entity (Odoo/Confluence/Plugin),
+   *  domain references the MK is anchored to. */
+  | 'REQUIRES';
 
 export type FactSeverity = 'info' | 'warning' | 'critical';
 
@@ -283,6 +315,60 @@ export interface ResolveOrCreateChannelIdentityResult {
   isNewIdentity: boolean;
   /** True if a fresh User-Cluster was spun up (vs. joining an existing one). */
   isNewCluster: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Slice 2 — MemorableKnowledge ingest.
+// ---------------------------------------------------------------------------
+
+/** Taxonomy of the curated memory entity. Matches `MEMORABLE_KINDS` in
+ *  `@omadia/knowledge-graph-neon` — kept in sync manually for now since
+ *  the plugin-api layer is the public contract. */
+export type MemorableKind =
+  | 'decision'
+  | 'insight'
+  | 'preference'
+  | 'reference';
+
+export interface MemorableKnowledgeIngest {
+  kind: MemorableKind;
+  /** Short headline (≤ 2000 chars). What recall surfaces first. */
+  summary: string;
+  /** Optional longer-form reasoning (≤ 10000 chars). */
+  rationale?: string;
+  /** Palaia significance in [0, 1]. Optional — Slice 4 fills it in. */
+  significance?: number;
+  /** ChannelIdentity external_id of the channel-bound identity that
+   *  produced this MK (e.g. `web:<users.uuid>` or `teams:<aad-oid>`). */
+  createdBy: string;
+  /** Cluster-root `omadiaUserId`s the MK is about. Wired as INVOLVED
+   *  edges. Missing User-Clusters are silently skipped + counted. */
+  involvedOmadiaUserIds?: string[];
+  /** External ids of referenced Entities. Wired as REQUIRES edges.
+   *  Target node MUST be OdooEntity / ConfluencePage / PluginEntity —
+   *  others are silently skipped + counted. */
+  requiredEntityIds?: string[];
+  /** Turn external ids the MK was derived from. Wired as DERIVED_FROM
+   *  edges (re-uses the existing edge type). Missing Turns skipped. */
+  derivedFromTurnIds?: string[];
+}
+
+export interface MemorableKnowledgeIngestResult {
+  /** External id of the new MK node (`mk:<uuid>`). */
+  memorableKnowledgeNodeId: string;
+  /** Cluster-roots in `involvedOmadiaUserIds` that didn't resolve. */
+  skippedInvolved: number;
+  /** Entries in `requiredEntityIds` that didn't resolve OR weren't an
+   *  Entity-typed node. */
+  skippedRequired: number;
+  /** Entries in `derivedFromTurnIds` that didn't resolve to a Turn. */
+  skippedDerivedFrom: number;
+}
+
+export interface ListMemorableKnowledgeOptions {
+  limit?: number;
+  /** Filter to a single kind. */
+  kind?: MemorableKind;
 }
 
 /**
@@ -682,6 +768,15 @@ export function channelIdentityNodeId(
   channelUserId: string,
 ): string {
   return `${channelKind}:${channelUserId}`;
+}
+
+/**
+ * Slice 2 — MemorableKnowledge external id. Argument is an opaque
+ * uuid (caller-generated or `randomUUID()`-derived); the prefix
+ * disambiguates from User-Cluster (`user:<uuid>`).
+ */
+export function memorableKnowledgeNodeId(memorableId: string): string {
+  return `mk:${memorableId}`;
 }
 
 export function runNodeId(turnExternalId: string): string {

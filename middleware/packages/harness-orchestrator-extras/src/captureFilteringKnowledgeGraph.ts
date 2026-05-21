@@ -48,6 +48,9 @@ import type {
   FindEntitiesOptions,
   ChannelIdentityIngest,
   ResolveOrCreateChannelIdentityResult,
+  MemorableKnowledgeIngest,
+  MemorableKnowledgeIngestResult,
+  ListMemorableKnowledgeOptions,
 } from '@omadia/plugin-api';
 import {
   sessionNodeId,
@@ -175,5 +178,24 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
     ingest: ChannelIdentityIngest,
   ): Promise<ResolveOrCreateChannelIdentityResult> {
     return this.inner.resolveOrCreateChannelIdentity(ingest);
+  }
+
+  createMemorableKnowledge(
+    input: MemorableKnowledgeIngest,
+  ): Promise<MemorableKnowledgeIngestResult> {
+    return this.inner.createMemorableKnowledge(input);
+  }
+
+  getMemorableKnowledge(
+    memorableKnowledgeNodeId: string,
+  ): Promise<GraphNode | null> {
+    return this.inner.getMemorableKnowledge(memorableKnowledgeNodeId);
+  }
+
+  listMemorableKnowledgeFor(
+    omadiaUserId: string,
+    opts?: ListMemorableKnowledgeOptions,
+  ): Promise<GraphNode[]> {
+    return this.inner.listMemorableKnowledgeFor(omadiaUserId, opts);
   }
 }

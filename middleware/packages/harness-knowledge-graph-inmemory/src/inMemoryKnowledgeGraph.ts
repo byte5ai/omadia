@@ -4,6 +4,7 @@ import {
   agentInvocationNodeId,
   channelIdentityNodeId,
   entityNodeId,
+  memorableKnowledgeNodeId,
   runNodeId,
   sessionNodeId,
   toolCallNodeId,
@@ -24,6 +25,9 @@ import {
   type GraphNodeType,
   type GraphStats,
   type KnowledgeGraph,
+  type ListMemorableKnowledgeOptions,
+  type MemorableKnowledgeIngest,
+  type MemorableKnowledgeIngestResult,
   type ResolveOrCreateChannelIdentityResult,
   type RunAgentInvocationView,
   type RunIngestResult,
@@ -294,6 +298,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       AgentInvocation: 0,
       ToolCall: 0,
       Fact: 0,
+      MemorableKnowledge: 0,
     };
     for (const n of this.nodes.values()) byNodeType[n.type]++;
 
@@ -309,6 +314,8 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       DERIVED_FROM: 0,
       MENTIONS: 0,
       IS_IDENTITY_OF: 0,
+      INVOLVED: 0,
+      REQUIRES: 0,
     };
     for (const e of this.edges.values()) byEdgeType[e.type]++;
 
@@ -730,6 +737,103 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       isNewIdentity: true,
       isNewCluster,
     };
+  }
+
+  async createMemorableKnowledge(
+    input: MemorableKnowledgeIngest,
+  ): Promise<MemorableKnowledgeIngestResult> {
+    const memorableUuid = randomUUID();
+    const mkExtId = memorableKnowledgeNodeId(memorableUuid);
+    const now = new Date().toISOString();
+    let skippedInvolved = 0;
+    let skippedRequired = 0;
+    let skippedDerivedFrom = 0;
+
+    this.upsertNode({
+      id: mkExtId,
+      type: 'MemorableKnowledge',
+      props: {
+        kind: input.kind,
+        summary: input.summary,
+        ...(input.rationale ? { rationale: input.rationale } : {}),
+        ...(input.significance !== undefined
+          ? { significance: input.significance }
+          : {}),
+        acl_owners: [],
+        created_at: now,
+        created_by: input.createdBy,
+      },
+    });
+
+    for (const omadiaUserId of input.involvedOmadiaUserIds ?? []) {
+      const userExtId = userNodeId(omadiaUserId);
+      if (!this.nodes.has(userExtId)) {
+        skippedInvolved++;
+        continue;
+      }
+      this.addEdge({ type: 'INVOLVED', from: mkExtId, to: userExtId });
+    }
+
+    for (const entityExtId of input.requiredEntityIds ?? []) {
+      const node = this.nodes.get(entityExtId);
+      if (
+        !node ||
+        (node.type !== 'OdooEntity' &&
+          node.type !== 'ConfluencePage' &&
+          node.type !== 'PluginEntity')
+      ) {
+        skippedRequired++;
+        continue;
+      }
+      this.addEdge({ type: 'REQUIRES', from: mkExtId, to: entityExtId });
+    }
+
+    for (const turnExtId of input.derivedFromTurnIds ?? []) {
+      const node = this.nodes.get(turnExtId);
+      if (!node || node.type !== 'Turn') {
+        skippedDerivedFrom++;
+        continue;
+      }
+      this.addEdge({ type: 'DERIVED_FROM', from: mkExtId, to: turnExtId });
+    }
+
+    return {
+      memorableKnowledgeNodeId: mkExtId,
+      skippedInvolved,
+      skippedRequired,
+      skippedDerivedFrom,
+    };
+  }
+
+  async getMemorableKnowledge(
+    memorableKnowledgeNodeId: string,
+  ): Promise<GraphNode | null> {
+    const node = this.nodes.get(memorableKnowledgeNodeId);
+    if (!node || node.type !== 'MemorableKnowledge') return null;
+    return node;
+  }
+
+  async listMemorableKnowledgeFor(
+    omadiaUserId: string,
+    opts: ListMemorableKnowledgeOptions = {},
+  ): Promise<GraphNode[]> {
+    const limit = Math.max(1, Math.min(opts.limit ?? 50, 500));
+    const userExtId = userNodeId(omadiaUserId);
+    if (!this.nodes.has(userExtId)) return [];
+    const hits: GraphNode[] = [];
+    for (const edge of this.edges.values()) {
+      if (edge.type !== 'INVOLVED' || edge.to !== userExtId) continue;
+      const mk = this.nodes.get(edge.from);
+      if (!mk || mk.type !== 'MemorableKnowledge') continue;
+      if (opts.kind && mk.props['kind'] !== opts.kind) continue;
+      hits.push(mk);
+    }
+    hits.sort((a, b) => {
+      const at = String(a.props['created_at'] ?? '');
+      const bt = String(b.props['created_at'] ?? '');
+      return bt.localeCompare(at);
+    });
+    return hits.slice(0, limit);
   }
 
   async findEntities(opts: FindEntitiesOptions): Promise<GraphNode[]> {

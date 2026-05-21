@@ -4,14 +4,16 @@
  * email merge, fresh cluster) — InMemory unit tests prove the same
  * semantics, this checks the actual SQL plan and column-name wiring.
  *
- * Safe to re-run: leaves a couple of ChannelIdentity + User nodes
- * behind. `docker compose down -v` resets the DB.
+ * Idempotent: cleans the smoke-tenant before and after itself so the
+ * `isNewIdentity` / `isNewCluster` assertions hold on every run.
  */
 import 'dotenv/config';
 
 import { Pool } from 'pg';
 
 import { NeonKnowledgeGraph } from '@omadia/knowledge-graph-neon';
+
+const TENANT = 'kg-local-smoke';
 
 async function main(): Promise<void> {
   const url = process.env['DATABASE_URL'];
@@ -20,8 +22,13 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const pool = new Pool({ connectionString: url, max: 2 });
-  const kg = new NeonKnowledgeGraph({ pool, tenantId: 'kg-local-smoke' });
+  const kg = new NeonKnowledgeGraph({ pool, tenantId: TENANT });
   const failures: string[] = [];
+
+  // Reset smoke-tenant so the first-call assertions (isNew=true) hold
+  // even when a previous run left residue.
+  await pool.query(`DELETE FROM graph_edges WHERE tenant_id = $1`, [TENANT]);
+  await pool.query(`DELETE FROM graph_nodes WHERE tenant_id = $1`, [TENANT]);
 
   try {
     const teams = await kg.resolveOrCreateChannelIdentity({
@@ -77,6 +84,8 @@ async function main(): Promise<void> {
     console.log(`  slack joined:   ${slack.omadiaUserId} (should equal teams)`);
     console.log(`  telegram:       ${telegram.omadiaUserId} (should differ)`);
   } finally {
+    await pool.query(`DELETE FROM graph_edges WHERE tenant_id = $1`, [TENANT]);
+    await pool.query(`DELETE FROM graph_nodes WHERE tenant_id = $1`, [TENANT]);
     await pool.end();
   }
 

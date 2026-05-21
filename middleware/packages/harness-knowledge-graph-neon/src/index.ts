@@ -39,5 +39,15 @@ export type { NeonAgentPrioritiesStoreOptions } from './agentPrioritiesStore.js'
 export {
   GRAPH_NODE_TYPES,
   GRAPH_EDGE_TYPES,
+  CHANNEL_KINDS,
+  MEMORABLE_KINDS,
+  GraphNodeTypeSchema,
+  GraphEdgeTypeSchema,
   validateNodeProps,
+} from './schema.js';
+export type {
+  ChannelKind,
+  GraphEdgeTypeName,
+  GraphNodeTypeName,
+  MemorableKind,
 } from './schema.js';
