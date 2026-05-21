@@ -432,22 +432,37 @@ export function createMemoryRouter(deps: {
     // Authorise: only owners of the (possibly-deleted) memory or admins
     // could read the trail. Since we don't have an admin-role concept
     // yet, we check the latest non-delete audit row's owners.
+    //
+    // When the audit trail is EMPTY (pre-Slice-6 MKs, or rows directly
+    // INSERTed via seed-SQL without going through createMemorableKnowledge),
+    // we fall back to the same ACL check `GET /v1/memory/:id` uses —
+    // `getMemorableKnowledge` returns null when the viewer is not in
+    // `acl_owners`. Without this fallback an empty trail would 403 every
+    // owner of a seeded MK, which the frontend (correctly) refuses to
+    // mask as a logout. See HANDOFF-2026-05-16-auth-bounce-fix.
     try {
       const opts: { limit?: number } = {};
       if (parsed.data.limit !== undefined) opts.limit = parsed.data.limit;
-      const entries = await deps.graph.listMemoryAclAudit(
-        String(req.params['id'] ?? ''),
-        opts,
-      );
+      const memoryId = String(req.params['id'] ?? '');
+      const entries = await deps.graph.listMemoryAclAudit(memoryId, opts);
+      const latest = entries[0];
+      if (latest === undefined) {
+        const node = await deps.graph.getMemorableKnowledge(
+          memoryId,
+          sessionUserId,
+        );
+        if (!node) {
+          res.status(404).json({ code: 'memory.not_found' });
+          return;
+        }
+        res.json({ items: [] });
+        return;
+      }
       // Determine the last-known owner set: latest entry's afterOwners
       // if non-null, otherwise the latest beforeOwners (covers the
       // "after delete" case so trails stay visible for the user who
       // owned the MK at delete-time).
-      const latest = entries[0];
-      const lastKnownOwners =
-        latest === undefined
-          ? []
-          : latest.afterOwners ?? latest.beforeOwners;
+      const lastKnownOwners = latest.afterOwners ?? latest.beforeOwners;
       if (!lastKnownOwners.includes(sessionUserId)) {
         res.status(403).json({ code: 'memory.not_an_owner' });
         return;

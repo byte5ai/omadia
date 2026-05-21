@@ -84,12 +84,21 @@ async function forwardCookieHeader(): Promise<Record<string, string>> {
 }
 
 /**
- * Browser-side bounce-to-login on 401/403. The edge middleware handles
+ * Browser-side bounce-to-login on 401 ONLY. The edge middleware handles
  * missing/expired cookies up-front, but if a cookie has a future `exp`
  * with a signature the backend rejects (key rotation, claims mismatch),
  * the middleware passes through and the API call surfaces 401 — at that
  * point we navigate the browser to /login so the user can recover
  * instead of staring at a "FEHLER" card.
+ *
+ * 403 is NOT bounced here. Per HTTP semantics, 403 means "authenticated
+ * but forbidden" — the cookie is fine, the user just lacks permission
+ * for this specific resource (e.g. non-owner reading a memory's audit,
+ * non-admin hitting an admin endpoint). Bouncing those to /login would
+ * mask the actual ACL violation as a session issue, log the user out
+ * unnecessarily, and trigger a redirect loop after the user re-logs in.
+ * Callers must surface 403s in-page (the page-level catch blocks already
+ * do — they render the error code without further redirect).
  *
  * Skip when already on /login or /setup to avoid loops. Skip on the
  * server too — server-side 401s are handled by `redirectIfUnauthorized`
@@ -97,7 +106,7 @@ async function forwardCookieHeader(): Promise<Record<string, string>> {
  */
 function maybeNavigateToLogin(status: number): void {
   if (typeof window === 'undefined') return;
-  if (status !== 401 && status !== 403) return;
+  if (status !== 401) return;
   const { pathname } = window.location;
   if (pathname === '/login' || pathname === '/setup') return;
   const returnPath = pathname + window.location.search;
