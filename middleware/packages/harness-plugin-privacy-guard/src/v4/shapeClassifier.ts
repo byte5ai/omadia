@@ -45,8 +45,8 @@ export const DEFAULT_THRESHOLDS: ClassifierThresholds = {
 /**
  * A one-way PII booster. Returns `true` when a value looks like PII. A hit
  * forces `sensitive-masked`; a miss has NO effect — it never promotes a field
- * to `safe-cleartext` (D4). Supplied by US3 wiring (regex detector + the
- * `privacy.detector@1` registry); omitted, the classifier is shape+stats only.
+ * to `safe-cleartext` (D4). An optional injection point; when omitted (the
+ * default) the classifier is shape + value-statistics only.
  */
 export type DetectorBooster = (value: string) => boolean;
 
