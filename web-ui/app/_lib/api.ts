@@ -2496,3 +2496,48 @@ export async function updateMemoryExcerpt(
   }
   return (await res.json()) as PalaiaExcerptNode;
 }
+
+// ── Slice 8 — Retrospective bulk score + promotion ───────────────────────────
+
+export interface BulkPromotePreview {
+  nullSignificanceCount: number;
+  eligibleForPromoteCount: number;
+  alreadyPromotedCount: number;
+  scorerAvailable: boolean;
+  threshold: number;
+}
+
+export interface BulkPromoteRunOptions {
+  scoreLimit?: number;
+  promoteLimit?: number;
+  threshold?: number;
+}
+
+export interface BulkPromoteRunResult {
+  scorePhase: { scanned: number; scored: number; failed: number };
+  promotePhase: {
+    scanned: number;
+    promoted: number;
+    alreadyPromoted: number;
+    belowThreshold: number;
+    failed: number;
+  };
+  durationMs: number;
+}
+
+export async function previewBulkPromote(
+  threshold = 0.7,
+): Promise<BulkPromotePreview> {
+  return getJson<BulkPromotePreview>(
+    `/v1/admin/bulk-promote/preview?threshold=${String(threshold)}`,
+  );
+}
+
+export async function runBulkPromote(
+  options: BulkPromoteRunOptions,
+): Promise<BulkPromoteRunResult> {
+  return postJson<BulkPromoteRunResult>(
+    '/v1/admin/bulk-promote',
+    options,
+  );
+}

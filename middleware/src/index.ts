@@ -10,6 +10,7 @@ import type { MemoryStore, PrivacyGuardService } from '@omadia/plugin-api';
 import { createAdminRouter } from './routes/admin.js';
 import { createChatRouter } from './routes/chat.js';
 import { createMemoryRouter } from './routes/memory.js';
+import { createBulkPromotionRouter } from './routes/bulkPromotion.js';
 import { createOperatorPrivacyRouter } from './routes/operatorPrivacy.js';
 import { createAgentResolver } from './agents/resolveAgentForTool.js';
 // `/attachments/<signed-key>` is now mounted by the de.byte5.channel.teams
@@ -21,7 +22,7 @@ import { createDevGraphLifecycleRouter } from './routes/devGraphLifecycle.js';
 import { createAgentPrioritiesRouter } from './routes/agentPriorities.js';
 import { createAdminDomainsRouter } from './routes/adminDomains.js';
 import type { LifecycleService } from '@omadia/knowledge-graph-neon/dist/lifecycleService.js';
-import type { AgentPrioritiesStore } from '@omadia/plugin-api';
+import type { AgentPrioritiesStore, BulkPromotionService } from '@omadia/plugin-api';
 import { createHarnessAdminUiRouter } from './routes/harnessAdminUi.js';
 import { createStoreRouter } from './routes/store.js';
 import { createInstallRouter } from './routes/install.js';
@@ -961,6 +962,28 @@ async function main(): Promise<void> {
     createMemoryRouter({ graph: knowledgeGraph }),
   );
   console.log('[middleware] memory endpoint ready at /api/v1/memory (auth-gated)');
+
+  // Slice 8 — bulk score + promote admin endpoint. Mounted only when
+  // the orchestrator-extras plugin published the bulkPromotion service
+  // (which requires a graphPool capability — i.e. the Neon backend).
+  // `requireAuth` gates the router, consistent with /api/v1/memory; the
+  // router's `requireSessionUserId` guard runs per-route on top.
+  const bulkPromotionService =
+    serviceRegistry.get<BulkPromotionService>('bulkPromotion');
+  if (bulkPromotionService) {
+    app.use(
+      '/api/v1/admin/bulk-promote',
+      requireAuth,
+      createBulkPromotionRouter({ service: bulkPromotionService }),
+    );
+    console.log(
+      '[middleware] bulk-promotion endpoint ready at /api/v1/admin/bulk-promote',
+    );
+  } else {
+    console.log(
+      '[middleware] bulk-promotion endpoint skipped — service not published (Neon backend missing?)',
+    );
+  }
 
   // Privacy-Shield v2 (Slice S-7) — Operator-UI backend. Mounted under
   // /api/v1/operator/privacy/* (same convention as the rest of v1

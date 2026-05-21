@@ -96,3 +96,11 @@ export type { HaikuPalaiaExcerptExtractorOptions } from './excerptExtractor.js';
 // declines all promotions with reason='no-significance'.
 export { promoteTurnIfSignificant } from './promotion.js';
 export type { PromoteTurnInput, PromoteTurnResult } from './promotion.js';
+
+// KG-ACL Slice 8 — operator-triggered retrospective bulk score +
+// promotion. Two-phase pass over historical Turns: (1) Haiku-score
+// rows with significance=NULL, (2) promote rows with
+// significance>=threshold via the same `promoteTurnIfSignificant`
+// pipeline the live path uses. Idempotent in both phases.
+export { createBulkPromotionService } from './bulkPromotion.js';
+export type { BulkPromotionDeps } from './bulkPromotion.js';

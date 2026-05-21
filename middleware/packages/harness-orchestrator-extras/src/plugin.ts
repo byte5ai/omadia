@@ -9,6 +9,7 @@ import type {
   Visibility,
 } from '@omadia/plugin-api';
 import {
+  BULK_PROMOTION_SERVICE_NAME,
   NUDGE_PROVIDERS_SERVICE_NAME,
   PALAIA_EXCERPT_SERVICE_NAME,
   PROCESS_MEMORY_SERVICE_NAME,
@@ -23,6 +24,7 @@ import { CaptureFilteringKnowledgeGraph } from './captureFilteringKnowledgeGraph
 import { ContextRetriever } from './contextRetriever.js';
 import type { Pool } from 'pg';
 
+import { createBulkPromotionService } from './bulkPromotion.js';
 import { createHaikuPalaiaExcerptExtractor } from './excerptExtractor.js';
 import { FactExtractor } from './factExtractor.js';
 import { createHaikuSessionSummaryGenerator } from './sessionSummaryGenerator.js';
@@ -226,17 +228,22 @@ export async function activate(
     defaultThresholdForLevel(captureLevel),
   );
 
+  // Slice 8 — extract the scorer so the bulkPromotion service can
+  // reuse it. CaptureFilter wraps it transparently for the live path;
+  // the bulk job calls `.score(text)` directly.
+  const significanceScorer = anthropic
+    ? createHaikuSignificanceScorer({
+        anthropic,
+        model: factModel,
+        log: ctx.log,
+      })
+    : undefined;
+
   const captureFilter = new CaptureFilter({
     captureLevel,
     defaultVisibility: captureDefaultVisibility,
     significanceThreshold: captureSignificanceThreshold,
-    significanceScorer: anthropic
-      ? createHaikuSignificanceScorer({
-          anthropic,
-          model: factModel,
-          log: ctx.log,
-        })
-      : undefined,
+    ...(significanceScorer ? { significanceScorer } : {}),
     log: ctx.log,
   });
   const disposeCaptureFilter = ctx.services.provide(
@@ -286,6 +293,38 @@ export async function activate(
     CONTEXT_RETRIEVER_SERVICE,
     contextRetriever,
   );
+
+  // Slice 8 — bulk score+promote service, always published. `preview`
+  // works without a scorer (returns scorerAvailable=false); `run`
+  // throws bulk.scorer_unavailable when called without one. Pool is
+  // resolved from the optional graphPool capability — when absent,
+  // the service stays unpublished.
+  let disposeBulkPromotion: (() => void) | undefined;
+  const bulkPromotionPool = ctx.services.get<Pool>('graphPool');
+  const bulkPromotionTenantId =
+    ctx.config.get<string>('graph_tenant_id') ??
+    process.env['GRAPH_TENANT_ID'] ??
+    'default';
+  if (bulkPromotionPool) {
+    const bulkPromotion = createBulkPromotionService({
+      pool: bulkPromotionPool,
+      tenantId: bulkPromotionTenantId,
+      kg: wrappedKg,
+      ...(significanceScorer ? { scorer: significanceScorer } : {}),
+      log: (msg) => { console.error(msg); },
+    });
+    disposeBulkPromotion = ctx.services.provide(
+      BULK_PROMOTION_SERVICE_NAME,
+      bulkPromotion,
+    );
+    ctx.log(
+      `[harness-orchestrator-extras] bulkPromotion ready (scorer=${significanceScorer ? 'on' : 'off'}, tenant=${bulkPromotionTenantId})`,
+    );
+  } else {
+    ctx.log(
+      '[harness-orchestrator-extras] bulkPromotion skipped — graphPool capability not published',
+    );
+  }
 
   let disposeFactExtractor: (() => void) | undefined;
   let disposeTopicDetector: (() => void) | undefined;
@@ -408,6 +447,7 @@ export async function activate(
       disposeSessionBriefing?.();
       disposeTopicDetector?.();
       disposeFactExtractor?.();
+      disposeBulkPromotion?.();
       disposeContext();
       // Tear down KG wrapper FIRST (restores original provider), THEN
       // the captureFilter capability — symmetric with the activate order.

@@ -65,3 +65,11 @@ export * from './routinesIntegration.js';
 // automatic MemorableKnowledge creations share the same payload shape.
 // Provider lives in `harness-orchestrator-extras/src/excerptExtractor.ts`.
 export * from './palaiaExcerpt.js';
+
+// KG-ACL Slice 8: retrospective bulk score + promotion. Operator-
+// triggered admin endpoint that scores historical Turns with
+// significance=NULL via the existing Haiku scorer and promotes those
+// crossing threshold via the existing promoteTurnIfSignificant
+// pipeline. Provider lives in `harness-orchestrator-extras/src/
+// bulkPromotion.ts`.
+export * from './bulkPromotion.js';
