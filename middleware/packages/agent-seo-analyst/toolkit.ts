@@ -30,6 +30,9 @@ export interface ToolkitOptions {
   userAgent: string;
   crawlMaxPages: number;
   crawlMaxDepth: number;
+  /** #91 — operator-selected audit mode, woven into the blocked-host error
+   *  message so the agent reports honestly instead of substituting a URL. */
+  auditMode: string;
   log: (...args: unknown[]) => void;
 }
 
@@ -58,6 +61,13 @@ export function createToolkit(opts: ToolkitOptions): Toolkit {
         const { url } = analyzePageInput.parse(raw);
         opts.log('tool:analyze_page', { url });
         const res = await opts.fetcher.get(url, true);
+        if (res.blocked !== undefined) {
+          throw new Error(
+            `${res.blocked} (audit mode: ${opts.auditMode}). The requested ` +
+              'URL was NOT analysed — ask the operator to widen the audit ' +
+              'mode or add the host to the allow-list.',
+          );
+        }
         if (res.status === 0) {
           throw new Error(`fetch failed for ${url}`);
         }

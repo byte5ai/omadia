@@ -16,7 +16,18 @@ export interface AgentHandle {
 }
 
 export async function activate(ctx: PluginContext): Promise<AgentHandle> {
-  ctx.log('activating');
+  // #91 — all outbound traffic must go through ctx.http so the manifest
+  // allow-list + audit mode are enforced. Without it the plugin cannot run.
+  if (!ctx.http) {
+    throw new Error(
+      'seo-analyst: ctx.http is unavailable — the manifest must declare ' +
+        'permissions.network.outbound so the kernel provisions the HTTP accessor.',
+    );
+  }
+  // #91 — operator-selected audit mode. Surfaced in the blocked-host error
+  // path so the agent never silently substitutes a different URL.
+  const auditMode = ctx.config.get<string>('audit_mode') ?? 'single-host';
+  ctx.log('activating', { auditMode });
 
   const targetBaseUrl = ctx.config.get<string>('target_base_url') ?? DEFAULT_BASE_URL;
   const userAgent = ctx.config.get<string>('user_agent') ?? DEFAULT_USER_AGENT;
@@ -28,11 +39,16 @@ export async function activate(ctx: PluginContext): Promise<AgentHandle> {
     userAgent,
     timeoutMs,
     log: ctx.log,
+    http: ctx.http,
   });
 
   // Self-Test: is the target URL reachable? HEAD would suffice, but many
   // websites answer HEAD with 405. So GET with a short timeout.
   const ping = await fetcher.get(targetBaseUrl, true);
+  if (ping.blocked !== undefined) {
+    ctx.log('self-test blocked', { targetBaseUrl, auditMode });
+    throw new Error(`seo-analyst: ${ping.blocked}`);
+  }
   if (ping.status === 0) {
     ctx.log('self-test failed', { targetBaseUrl });
     throw new Error(`seo-analyst: Ziel-URL nicht erreichbar (${targetBaseUrl})`);
@@ -45,6 +61,7 @@ export async function activate(ctx: PluginContext): Promise<AgentHandle> {
     userAgent,
     crawlMaxPages,
     crawlMaxDepth,
+    auditMode,
     log: ctx.log,
   });
 

@@ -1,3 +1,5 @@
+import type { HttpAccessor } from '@omadia/plugin-api';
+
 export interface FetchResult {
   url: string;
   finalUrl: string;
@@ -7,20 +9,35 @@ export interface FetchResult {
   bytes: number;
   contentType: string | null;
   redirected: boolean;
+  /** #91 — set when ctx.http refused the host (manifest allow-list or the
+   *  SSRF guard). Carries the permission-error message; `status` stays 0
+   *  so existing callers keep treating it as a failed fetch, while
+   *  honesty-aware callers can surface the precise reason. */
+  blocked?: string;
 }
 
 export interface FetcherOptions {
   userAgent: string;
   timeoutMs: number;
   log: (...args: unknown[]) => void;
+  /** #91 — the per-plugin ctx.http accessor. Every outbound request goes
+   *  through it so the manifest allow-list and the operator-selected
+   *  audit mode are enforced (no raw global `fetch`). */
+  http: HttpAccessor;
 }
+
+/** Error names thrown by ctx.http when a host is not permitted. */
+const PERMISSION_ERROR_NAMES = new Set([
+  'HttpForbiddenError',
+  'HttpBlockedAddressError',
+]);
 
 export function createFetcher(opts: FetcherOptions) {
   async function get(url: string, acceptHtml = true): Promise<FetchResult> {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), opts.timeoutMs);
     try {
-      const res = await fetch(url, {
+      const res = await opts.http.fetch(url, {
         method: 'GET',
         redirect: 'follow',
         signal: ctrl.signal,
@@ -47,7 +64,18 @@ export function createFetcher(opts: FetcherOptions) {
         redirected: res.redirected,
       };
     } catch (err) {
-      opts.log('fetch error', { url, err: String(err) });
+      // #91 — a permission rejection from ctx.http is a distinct outcome
+      // from a network failure: surface its message so callers never
+      // silently substitute a different URL than the one requested.
+      const blocked =
+        err instanceof Error && PERMISSION_ERROR_NAMES.has(err.name)
+          ? err.message
+          : undefined;
+      opts.log('fetch error', {
+        url,
+        err: String(err),
+        blocked: blocked !== undefined,
+      });
       return {
         url,
         finalUrl: url,
@@ -57,6 +85,7 @@ export function createFetcher(opts: FetcherOptions) {
         bytes: 0,
         contentType: null,
         redirected: false,
+        ...(blocked !== undefined ? { blocked } : {}),
       };
     } finally {
       clearTimeout(t);
