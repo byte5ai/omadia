@@ -102,7 +102,7 @@ public/general split.
 **Decision**: Freeze the `plugin-api` contract (US1) and re-point the Builder
 at it (US2) before any other work. The Builder enforces a four-check
 builder-ready gate: lifecycle-contract (tsc against `plugin-api`),
-no-module-state (custom ESLint rule), dispose-roundtrip (vitest), manifest
+no-module-state (custom ESLint rule), dispose-roundtrip (node --test), manifest
 schema (JSON Schema validator).
 
 **Rationale**: The Builder runs in a parallel worktree and keeps emitting

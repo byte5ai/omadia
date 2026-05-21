@@ -26,8 +26,8 @@ React (dashboard `web-ui`), `harness-ui-helpers` (plugin-UI platform)
 **Storage**: Neon Postgres — new config tables (`agents`, `agent_plugins`,
 `channel_bindings`, `platform_settings`); existing `chatSessionStore` extended
 with a config snapshot
-**Testing**: vitest (middleware unit + integration), boot smoke tests
-(`middleware/scripts/smoke-*.{ts,mjs}`)
+**Testing**: Node's native test runner (`node --import tsx --test`, repo
+convention), boot smoke tests (`middleware/scripts/smoke-*.{ts,mjs}`)
 **Target Platform**: Linux server on Fly.io (one or more warm machines)
 **Project Type**: web-service (TypeScript monorepo middleware) + web frontend
 (React dashboard)

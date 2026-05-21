@@ -30,8 +30,9 @@ independently testable increment in priority order.
   the npm workspace).
 - [ ] T002 [P] Add the migrations directory + runner convention check under
   `middleware/migrations/` if not already present.
-- [ ] T003 [P] Confirm Node 22.12.0 toolchain (`.nvmrc`), vitest, and ESLint
-  config resolve for the new package.
+- [ ] T003 [P] Confirm Node 22.12.0 toolchain (`.nvmrc`), Node's native test
+  runner (`node --import tsx --test`), and ESLint config resolve for the
+  `plugin-api` package.
 
 ---
 

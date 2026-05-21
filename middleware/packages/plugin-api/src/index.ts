@@ -56,3 +56,12 @@ export * from './nudge.js';
 // dynamic-import / plugin-store flow stays clean (no constructor-injected
 // Deps).
 export * from './routinesIntegration.js';
+
+// Multi-Orchestrator Runtime (US1): the frozen plugin lifecycle +
+// manifest contract. `Plugin`, `PluginScope`, `Disposable`,
+// `ScopeLogger`, `PluginManifest`, and `validateManifest` are the
+// single source of truth — the orchestrator registry, every plugin,
+// and the Agent Builder import them from here and never re-declare
+// them (Constitution II).
+export * from './lifecycle.js';
+export * from './manifest.js';

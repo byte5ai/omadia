@@ -143,6 +143,13 @@ validates every manifest against it.
 }
 ```
 
+The package exports `validateManifest(value): ManifestValidationResult` as the
+single runtime validation path — the `OrchestratorRegistry` and the
+builder-ready gate call it rather than each wiring a JSON-Schema validator.
+`loadManifestJsonSchema()` returns the schema document itself for external
+tooling. `validateManifest` mirrors this schema exactly; a test guards the two
+against drift.
+
 ## 4. Builder-Ready Gate
 
 A plugin is publishable only when all four checks pass (FR-005). The gate runs
@@ -153,19 +160,22 @@ names the failure.
 |---|---|---|
 | 1 | Lifecycle contract implemented | `tsc` against the `Plugin` interface from `plugin-api` |
 | 2 | No module-scope mutable state | custom ESLint rule `no-module-state` |
-| 3 | Dispose-roundtrip clean | `vitest` runs the mandatory `dispose-roundtrip` test |
+| 3 | Dispose-roundtrip clean | `node --test` runs the mandatory `dispose-roundtrip` test |
 | 4 | Manifest valid | JSON Schema validation against `manifest.schema.json` |
 
 ### Mandatory `dispose-roundtrip` test (generated for every plugin)
 
 ```ts
-it('survives init → dispose → init → dispose without leaking handles', async () => {
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+test('survives init → dispose → init → dispose without leaking handles', async () => {
   const before = (process as any)._getActiveHandles().length;
   for (let i = 0; i < 3; i++) {
     const handle = await plugin.init(testScope(), testConfig());
     await plugin.dispose(handle);
   }
-  expect((process as any)._getActiveHandles().length).toBe(before);
+  assert.equal((process as any)._getActiveHandles().length, before);
 });
 ```
 

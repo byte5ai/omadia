@@ -12,11 +12,13 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "schemas"
   ],
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
+    "test": "node --import tsx --test --test-reporter=spec 'test/**/*.test.ts'",
     "clean": "rm -rf dist"
   },
   "engines": {
