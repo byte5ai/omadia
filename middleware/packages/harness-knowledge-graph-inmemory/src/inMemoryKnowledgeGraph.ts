@@ -25,6 +25,9 @@ import {
   type GraphNodeType,
   type GraphStats,
   type KnowledgeGraph,
+  type AclAction,
+  type AclAuditEntry,
+  type AclMutationOptions,
   type ListMemorableKnowledgeOptions,
   type MemorableKnowledgeIngest,
   type MemorableKnowledgeIngestResult,
@@ -57,6 +60,8 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
   private readonly edges = new Map<string, GraphEdge>();
   /** For each session, the chronologically ordered turn-ids. */
   private readonly sessionTurns = new Map<string, string[]>();
+  /** Slice 3 — per-memory append-only ACL audit log. */
+  private readonly aclAudit = new Map<string, AclAuditEntry[]>();
 
   async ingestTurn(turn: TurnIngest): Promise<TurnIngestResult> {
     const sessionId = sessionNodeId(turn.scope);
@@ -749,6 +754,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     let skippedRequired = 0;
     let skippedDerivedFrom = 0;
 
+    const initialOwners = input.aclOwners ?? [];
     this.upsertNode({
       id: mkExtId,
       type: 'MemorableKnowledge',
@@ -759,10 +765,23 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         ...(input.significance !== undefined
           ? { significance: input.significance }
           : {}),
-        acl_owners: [],
+        acl_owners: initialOwners,
         created_at: now,
         created_by: input.createdBy,
       },
+    });
+    // Slice 3 — unconditional `create` audit row.
+    const auditActor =
+      input.actorOmadiaUserId ??
+      initialOwners[0] ??
+      '00000000-0000-0000-0000-000000000000';
+    this.appendAclAudit({
+      memoryExternalId: mkExtId,
+      actorOmadiaUserId: auditActor,
+      actorChannelIdentityId: input.createdBy,
+      action: 'create',
+      beforeOwners: [],
+      afterOwners: initialOwners,
     });
 
     for (const omadiaUserId of input.involvedOmadiaUserIds ?? []) {
@@ -807,9 +826,16 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
 
   async getMemorableKnowledge(
     memorableKnowledgeNodeId: string,
+    viewerOmadiaUserId?: string,
   ): Promise<GraphNode | null> {
     const node = this.nodes.get(memorableKnowledgeNodeId);
     if (!node || node.type !== 'MemorableKnowledge') return null;
+    if (viewerOmadiaUserId !== undefined) {
+      const owners = Array.isArray(node.props['acl_owners'])
+        ? (node.props['acl_owners'] as string[])
+        : [];
+      if (!owners.includes(viewerOmadiaUserId)) return null;
+    }
     return node;
   }
 
@@ -826,6 +852,11 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       const mk = this.nodes.get(edge.from);
       if (!mk || mk.type !== 'MemorableKnowledge') continue;
       if (opts.kind && mk.props['kind'] !== opts.kind) continue;
+      // Slice 3 — gate by acl_owners; empty owners ⇒ invisible.
+      const owners = Array.isArray(mk.props['acl_owners'])
+        ? (mk.props['acl_owners'] as string[])
+        : [];
+      if (!owners.includes(omadiaUserId)) continue;
       hits.push(mk);
     }
     hits.sort((a, b) => {
@@ -834,6 +865,159 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       return bt.localeCompare(at);
     });
     return hits.slice(0, limit);
+  }
+
+  // ─── Slice 3 — ACL mutations + audit ──────────────────────────────────
+
+  private appendAclAudit(entry: {
+    memoryExternalId: string;
+    actorOmadiaUserId: string;
+    actorChannelIdentityId?: string;
+    action: AclAction;
+    beforeOwners: string[];
+    afterOwners: string[] | null;
+    reason?: string;
+  }): void {
+    const row: AclAuditEntry = {
+      id: randomUUID(),
+      memoryExternalId: entry.memoryExternalId,
+      actorOmadiaUserId: entry.actorOmadiaUserId,
+      ...(entry.actorChannelIdentityId
+        ? { actorChannelIdentityId: entry.actorChannelIdentityId }
+        : {}),
+      action: entry.action,
+      beforeOwners: [...entry.beforeOwners],
+      afterOwners: entry.afterOwners === null ? null : [...entry.afterOwners],
+      ...(entry.reason ? { reason: entry.reason } : {}),
+      createdAt: new Date().toISOString(),
+    };
+    const list = this.aclAudit.get(entry.memoryExternalId) ?? [];
+    list.push(row);
+    this.aclAudit.set(entry.memoryExternalId, list);
+  }
+
+  private requireMkOrThrow(memorableKnowledgeNodeId: string): GraphNode {
+    const node = this.nodes.get(memorableKnowledgeNodeId);
+    if (!node || node.type !== 'MemorableKnowledge') {
+      throw Object.assign(new Error('memory_not_found'), {
+        code: 'memory_not_found',
+      });
+    }
+    return node;
+  }
+
+  async addOwner(
+    memorableKnowledgeNodeId: string,
+    omadiaUserIdToAdd: string,
+    actor: AclMutationOptions,
+  ): Promise<string[]> {
+    const node = this.requireMkOrThrow(memorableKnowledgeNodeId);
+    const owners = Array.isArray(node.props['acl_owners'])
+      ? (node.props['acl_owners'] as string[])
+      : [];
+    if (!owners.includes(actor.actorOmadiaUserId)) {
+      throw Object.assign(new Error('not_an_owner'), { code: 'not_an_owner' });
+    }
+    const next = owners.includes(omadiaUserIdToAdd)
+      ? owners
+      : [...owners, omadiaUserIdToAdd];
+    this.upsertNode({
+      id: node.id,
+      type: 'MemorableKnowledge',
+      props: { ...node.props, acl_owners: next },
+    });
+    this.appendAclAudit({
+      memoryExternalId: memorableKnowledgeNodeId,
+      actorOmadiaUserId: actor.actorOmadiaUserId,
+      ...(actor.actorChannelIdentityId
+        ? { actorChannelIdentityId: actor.actorChannelIdentityId }
+        : {}),
+      action: 'expand',
+      beforeOwners: owners,
+      afterOwners: next,
+      ...(actor.reason ? { reason: actor.reason } : {}),
+    });
+    return next;
+  }
+
+  async removeOwner(
+    memorableKnowledgeNodeId: string,
+    omadiaUserIdToRemove: string,
+    actor: AclMutationOptions,
+  ): Promise<string[]> {
+    const node = this.requireMkOrThrow(memorableKnowledgeNodeId);
+    const owners = Array.isArray(node.props['acl_owners'])
+      ? (node.props['acl_owners'] as string[])
+      : [];
+    if (!owners.includes(actor.actorOmadiaUserId)) {
+      throw Object.assign(new Error('not_an_owner'), { code: 'not_an_owner' });
+    }
+    const next = owners.filter((id) => id !== omadiaUserIdToRemove);
+    if (owners.includes(omadiaUserIdToRemove) && next.length === 0) {
+      throw Object.assign(new Error('cannot_remove_last_owner'), {
+        code: 'cannot_remove_last_owner',
+      });
+    }
+    this.upsertNode({
+      id: node.id,
+      type: 'MemorableKnowledge',
+      props: { ...node.props, acl_owners: next },
+    });
+    this.appendAclAudit({
+      memoryExternalId: memorableKnowledgeNodeId,
+      actorOmadiaUserId: actor.actorOmadiaUserId,
+      ...(actor.actorChannelIdentityId
+        ? { actorChannelIdentityId: actor.actorChannelIdentityId }
+        : {}),
+      action: 'shrink',
+      beforeOwners: owners,
+      afterOwners: next,
+      ...(actor.reason ? { reason: actor.reason } : {}),
+    });
+    return next;
+  }
+
+  async deleteMemory(
+    memorableKnowledgeNodeId: string,
+    actor: AclMutationOptions,
+  ): Promise<void> {
+    const node = this.requireMkOrThrow(memorableKnowledgeNodeId);
+    const owners = Array.isArray(node.props['acl_owners'])
+      ? (node.props['acl_owners'] as string[])
+      : [];
+    if (!owners.includes(actor.actorOmadiaUserId)) {
+      throw Object.assign(new Error('not_an_owner'), { code: 'not_an_owner' });
+    }
+    // Audit BEFORE delete (matches Neon semantics).
+    this.appendAclAudit({
+      memoryExternalId: memorableKnowledgeNodeId,
+      actorOmadiaUserId: actor.actorOmadiaUserId,
+      ...(actor.actorChannelIdentityId
+        ? { actorChannelIdentityId: actor.actorChannelIdentityId }
+        : {}),
+      action: 'delete',
+      beforeOwners: owners,
+      afterOwners: null,
+      ...(actor.reason ? { reason: actor.reason } : {}),
+    });
+    // Drop the node + every edge touching it.
+    this.nodes.delete(node.id);
+    for (const [key, edge] of this.edges.entries()) {
+      if (edge.from === node.id || edge.to === node.id) this.edges.delete(key);
+    }
+  }
+
+  async listMemoryAclAudit(
+    memorableKnowledgeNodeId: string,
+    opts: { limit?: number } = {},
+  ): Promise<AclAuditEntry[]> {
+    const limit = Math.max(1, Math.min(opts.limit ?? 100, 500));
+    const list = this.aclAudit.get(memorableKnowledgeNodeId) ?? [];
+    // Newest-first via insertion-order reverse — timestamp sort would
+    // be unstable when two audit rows land in the same millisecond
+    // (e.g. createMemorableKnowledge followed by addOwner in the same
+    // test tick).
+    return [...list].reverse().slice(0, limit);
   }
 
   async findEntities(opts: FindEntitiesOptions): Promise<GraphNode[]> {

@@ -26,6 +26,9 @@ import {
   type GraphNodeType,
   type GraphStats,
   type KnowledgeGraph,
+  type AclAction,
+  type AclAuditEntry,
+  type AclMutationOptions,
   type ListMemorableKnowledgeOptions,
   type MemorableKnowledgeIngest,
   type MemorableKnowledgeIngestResult,
@@ -1403,6 +1406,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     try {
       await client.query('BEGIN');
 
+      const initialOwners = input.aclOwners ?? [];
       const props = validateNodeProps('MemorableKnowledge', {
         kind: input.kind,
         summary: input.summary,
@@ -1410,7 +1414,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         ...(input.significance !== undefined
           ? { significance: input.significance }
           : {}),
-        acl_owners: [],
+        acl_owners: initialOwners,
         created_at: now,
         created_by: input.createdBy,
       });
@@ -1486,6 +1490,22 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         });
       }
 
+      // Slice 3 — audit-log the create with the initial-owner snapshot.
+      // We log unconditionally (even empty owners) so every MK has a
+      // create-row; downstream tooling can rely on `audit.length >= 1`.
+      const auditActor =
+        input.actorOmadiaUserId ??
+        initialOwners[0] ??
+        '00000000-0000-0000-0000-000000000000';
+      await this.writeAclAudit(client, {
+        memoryExternalId: mkExtId,
+        actorOmadiaUserId: auditActor,
+        actorChannelIdentityId: input.createdBy,
+        action: 'create',
+        beforeOwners: [],
+        afterOwners: initialOwners,
+      });
+
       await client.query('COMMIT');
       return {
         memorableKnowledgeNodeId: mkExtId,
@@ -1503,6 +1523,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
 
   async getMemorableKnowledge(
     memorableKnowledgeNodeId: string,
+    viewerOmadiaUserId?: string,
   ): Promise<GraphNode | null> {
     const result = await this.pool.query<NodeRow>(
       `SELECT ${NODE_COLUMNS}
@@ -1510,8 +1531,12 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
        WHERE tenant_id = $1
          AND external_id = $2
          AND type = 'MemorableKnowledge'
+         AND (
+           $3::text IS NULL
+           OR properties->'acl_owners' @> jsonb_build_array($3::text)
+         )
        LIMIT 1`,
-      [this.tenantId, memorableKnowledgeNodeId],
+      [this.tenantId, memorableKnowledgeNodeId, viewerOmadiaUserId ?? null],
     );
     const row = result.rows[0];
     return row ? rowToNode(row) : null;
@@ -1524,6 +1549,9 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     const limit = Math.max(1, Math.min(opts.limit ?? 50, 500));
     const userExtId = userNodeId(omadiaUserId);
     // INVOLVED edges go MK → User; "memory I'm involved in" = inbound.
+    // Slice 3 — additionally gate by `acl_owners @> [omadiaUserId]`
+    // so the caller only sees MKs they are authorised to read. Empty
+    // `acl_owners` always fails the @> check → admin-only invisible.
     const rows = await this.pool.query<NodeRow>(
       `SELECT ${NODE_COLUMNS.split(', ').map((c) => `mk.${c}`).join(', ')}
        FROM graph_nodes user_node
@@ -1532,12 +1560,251 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
        WHERE user_node.tenant_id = $1
          AND user_node.external_id = $2
          AND user_node.type = 'User'
-         AND ($3::text IS NULL OR mk.properties->>'kind' = $3)
+         AND mk.properties->'acl_owners' @> jsonb_build_array($3::text)
+         AND ($4::text IS NULL OR mk.properties->>'kind' = $4)
        ORDER BY mk.created_at DESC
-       LIMIT $4`,
-      [this.tenantId, userExtId, opts.kind ?? null, limit],
+       LIMIT $5`,
+      [this.tenantId, userExtId, omadiaUserId, opts.kind ?? null, limit],
     );
     return rows.rows.map(rowToNode);
+  }
+
+  // ─── Slice 3 — ACL mutations + audit ──────────────────────────────────
+
+  private async writeAclAudit(
+    client: PoolClient,
+    entry: {
+      memoryExternalId: string;
+      actorOmadiaUserId: string;
+      actorChannelIdentityId?: string;
+      action: AclAction;
+      beforeOwners: string[];
+      afterOwners: string[] | null;
+      reason?: string;
+    },
+  ): Promise<void> {
+    await client.query(
+      `INSERT INTO memory_acl_audit
+         (tenant_id, memory_external_id, actor_omadia_user_id,
+          actor_channel_identity_id, action, before_owners, after_owners,
+          reason)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8)`,
+      [
+        this.tenantId,
+        entry.memoryExternalId,
+        entry.actorOmadiaUserId,
+        entry.actorChannelIdentityId ?? null,
+        entry.action,
+        JSON.stringify(entry.beforeOwners),
+        entry.afterOwners === null ? null : JSON.stringify(entry.afterOwners),
+        entry.reason ?? null,
+      ],
+    );
+  }
+
+  private async loadOwnersOrThrow(
+    client: PoolClient,
+    mkExternalId: string,
+  ): Promise<{ uuid: string; owners: string[] }> {
+    const row = await client.query<{ id: string; owners: unknown }>(
+      `SELECT id, properties->'acl_owners' AS owners
+       FROM graph_nodes
+       WHERE tenant_id = $1 AND external_id = $2 AND type = 'MemorableKnowledge'
+       LIMIT 1`,
+      [this.tenantId, mkExternalId],
+    );
+    const hit = row.rows[0];
+    if (!hit) {
+      throw Object.assign(new Error('memory_not_found'), {
+        code: 'memory_not_found',
+      });
+    }
+    const owners = Array.isArray(hit.owners) ? (hit.owners as string[]) : [];
+    return { uuid: hit.id, owners };
+  }
+
+  private assertActorIsOwner(
+    owners: string[],
+    actorOmadiaUserId: string,
+  ): void {
+    if (!owners.includes(actorOmadiaUserId)) {
+      throw Object.assign(new Error('not_an_owner'), { code: 'not_an_owner' });
+    }
+  }
+
+  async addOwner(
+    memorableKnowledgeNodeId: string,
+    omadiaUserIdToAdd: string,
+    actor: AclMutationOptions,
+  ): Promise<string[]> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { uuid, owners } = await this.loadOwnersOrThrow(
+        client,
+        memorableKnowledgeNodeId,
+      );
+      this.assertActorIsOwner(owners, actor.actorOmadiaUserId);
+      const next = owners.includes(omadiaUserIdToAdd)
+        ? owners
+        : [...owners, omadiaUserIdToAdd];
+      await client.query(
+        `UPDATE graph_nodes
+           SET properties = jsonb_set(properties, '{acl_owners}', $2::jsonb, true)
+         WHERE id = $1`,
+        [uuid, JSON.stringify(next)],
+      );
+      await this.writeAclAudit(client, {
+        memoryExternalId: memorableKnowledgeNodeId,
+        actorOmadiaUserId: actor.actorOmadiaUserId,
+        ...(actor.actorChannelIdentityId
+          ? { actorChannelIdentityId: actor.actorChannelIdentityId }
+          : {}),
+        action: 'expand',
+        beforeOwners: owners,
+        afterOwners: next,
+        ...(actor.reason ? { reason: actor.reason } : {}),
+      });
+      await client.query('COMMIT');
+      return next;
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async removeOwner(
+    memorableKnowledgeNodeId: string,
+    omadiaUserIdToRemove: string,
+    actor: AclMutationOptions,
+  ): Promise<string[]> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { uuid, owners } = await this.loadOwnersOrThrow(
+        client,
+        memorableKnowledgeNodeId,
+      );
+      this.assertActorIsOwner(owners, actor.actorOmadiaUserId);
+      const next = owners.filter((id) => id !== omadiaUserIdToRemove);
+      if (owners.includes(omadiaUserIdToRemove) && next.length === 0) {
+        throw Object.assign(new Error('cannot_remove_last_owner'), {
+          code: 'cannot_remove_last_owner',
+        });
+      }
+      await client.query(
+        `UPDATE graph_nodes
+           SET properties = jsonb_set(properties, '{acl_owners}', $2::jsonb, true)
+         WHERE id = $1`,
+        [uuid, JSON.stringify(next)],
+      );
+      await this.writeAclAudit(client, {
+        memoryExternalId: memorableKnowledgeNodeId,
+        actorOmadiaUserId: actor.actorOmadiaUserId,
+        ...(actor.actorChannelIdentityId
+          ? { actorChannelIdentityId: actor.actorChannelIdentityId }
+          : {}),
+        action: 'shrink',
+        beforeOwners: owners,
+        afterOwners: next,
+        ...(actor.reason ? { reason: actor.reason } : {}),
+      });
+      await client.query('COMMIT');
+      return next;
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async deleteMemory(
+    memorableKnowledgeNodeId: string,
+    actor: AclMutationOptions,
+  ): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { uuid, owners } = await this.loadOwnersOrThrow(
+        client,
+        memorableKnowledgeNodeId,
+      );
+      this.assertActorIsOwner(owners, actor.actorOmadiaUserId);
+      // Audit BEFORE delete so the row references a still-existing
+      // memory (even though there's no FK).
+      await this.writeAclAudit(client, {
+        memoryExternalId: memorableKnowledgeNodeId,
+        actorOmadiaUserId: actor.actorOmadiaUserId,
+        ...(actor.actorChannelIdentityId
+          ? { actorChannelIdentityId: actor.actorChannelIdentityId }
+          : {}),
+        action: 'delete',
+        beforeOwners: owners,
+        afterOwners: null,
+        ...(actor.reason ? { reason: actor.reason } : {}),
+      });
+      // CASCADE on graph_edges FK removes inbound/outbound edges.
+      await client.query(`DELETE FROM graph_nodes WHERE id = $1`, [uuid]);
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async listMemoryAclAudit(
+    memorableKnowledgeNodeId: string,
+    opts: { limit?: number } = {},
+  ): Promise<AclAuditEntry[]> {
+    const limit = Math.max(1, Math.min(opts.limit ?? 100, 500));
+    const rows = await this.pool.query<{
+      id: string;
+      memory_external_id: string;
+      actor_omadia_user_id: string;
+      actor_channel_identity_id: string | null;
+      action: AclAction;
+      before_owners: unknown;
+      after_owners: unknown;
+      reason: string | null;
+      created_at: Date;
+    }>(
+      `SELECT id, memory_external_id, actor_omadia_user_id,
+              actor_channel_identity_id, action,
+              before_owners, after_owners, reason, created_at
+       FROM memory_acl_audit
+       WHERE tenant_id = $1 AND memory_external_id = $2
+       ORDER BY created_at DESC
+       LIMIT $3`,
+      [this.tenantId, memorableKnowledgeNodeId, limit],
+    );
+    return rows.rows.map((r) => ({
+      id: r.id,
+      memoryExternalId: r.memory_external_id,
+      actorOmadiaUserId: r.actor_omadia_user_id,
+      ...(r.actor_channel_identity_id
+        ? { actorChannelIdentityId: r.actor_channel_identity_id }
+        : {}),
+      action: r.action,
+      beforeOwners: Array.isArray(r.before_owners)
+        ? (r.before_owners as string[])
+        : [],
+      afterOwners:
+        r.after_owners === null
+          ? null
+          : Array.isArray(r.after_owners)
+            ? (r.after_owners as string[])
+            : [],
+      ...(r.reason ? { reason: r.reason } : {}),
+      createdAt:
+        r.created_at instanceof Date
+          ? r.created_at.toISOString()
+          : String(r.created_at),
+    }));
   }
 
   async findEntities(opts: FindEntitiesOptions): Promise<GraphNode[]> {

@@ -115,19 +115,68 @@ export interface KnowledgeGraph {
   createMemorableKnowledge(
     input: MemorableKnowledgeIngest,
   ): Promise<MemorableKnowledgeIngestResult>;
-  /** Slice 2 — read a MemorableKnowledge node by external_id. */
+  /**
+   * Slice 2 / 3 — read a MemorableKnowledge node by external_id. When
+   * `viewerOmadiaUserId` is provided, the result is gated by the
+   * Slice 3 ACL: the viewer must be in `props.acl_owners` or `null`
+   * is returned. Pass `undefined` to bypass the ACL gate (internal /
+   * admin paths only).
+   */
   getMemorableKnowledge(
     memorableKnowledgeNodeId: string,
+    viewerOmadiaUserId?: string,
   ): Promise<GraphNode | null>;
   /**
-   * Slice 2 — list MemorableKnowledge nodes the given User is INVOLVED
-   * in. Slice 3 will add an additional `acl_owners`-based filter; until
-   * then INVOLVED is the only access control.
+   * Slice 2 / 3 — list MemorableKnowledge nodes the given User is
+   * INVOLVED in. Slice 3 adds an additional ACL gate: the caller is
+   * implicitly the viewer (same `omadiaUserId`) and must be in each
+   * MK's `acl_owners` array; rows that fail the check are dropped.
+   * MKs with empty `acl_owners` are invisible to everyone (admin-only,
+   * see Decision-Lock L_s3.8).
    */
   listMemorableKnowledgeFor(
     omadiaUserId: string,
     opts?: ListMemorableKnowledgeOptions,
   ): Promise<GraphNode[]>;
+  /**
+   * Slice 3 — add a cluster-root user to a MemorableKnowledge's
+   * `acl_owners`. The actor must already be in `acl_owners`. Returns
+   * the new owner list. No-op (idempotent) if the user is already an
+   * owner; still writes an audit row.
+   */
+  addOwner(
+    memorableKnowledgeNodeId: string,
+    omadiaUserIdToAdd: string,
+    actor: AclMutationOptions,
+  ): Promise<string[]>;
+  /**
+   * Slice 3 — remove a cluster-root user from `acl_owners`. The actor
+   * must be in `acl_owners`. Removing the last owner throws
+   * `cannot_remove_last_owner` — use `deleteMemory` for explicit
+   * teardown.
+   */
+  removeOwner(
+    memorableKnowledgeNodeId: string,
+    omadiaUserIdToRemove: string,
+    actor: AclMutationOptions,
+  ): Promise<string[]>;
+  /**
+   * Slice 3 — hard-delete a MemorableKnowledge (and its edges via
+   * cascade). The actor must be in `acl_owners`. The audit row
+   * survives the delete (no FK on `memory_external_id`).
+   */
+  deleteMemory(
+    memorableKnowledgeNodeId: string,
+    actor: AclMutationOptions,
+  ): Promise<void>;
+  /**
+   * Slice 3 — read the ACL audit-log for a single MemorableKnowledge.
+   * Returns newest-first. Survives delete of the MK.
+   */
+  listMemoryAclAudit(
+    memorableKnowledgeNodeId: string,
+    opts?: { limit?: number },
+  ): Promise<AclAuditEntry[]>;
 }
 
 export interface SessionFilter {
@@ -351,6 +400,24 @@ export interface MemorableKnowledgeIngest {
   /** Turn external ids the MK was derived from. Wired as DERIVED_FROM
    *  edges (re-uses the existing edge type). Missing Turns skipped. */
   derivedFromTurnIds?: string[];
+  /**
+   * Slice 3 — initial cluster-root owners (snapshot at-creation). The
+   * caller is responsible for resolving the right set (e.g. all
+   * verified Teams-channel members for a Teams-sourced MK, just the
+   * web-session user for an Admin-UI save). When omitted, defaults to
+   * `[]` — the MK is invisible to every viewer (admin-only).
+   * `createMemorableKnowledge` writes a `create` row to the audit-log
+   * regardless of whether owners are set.
+   */
+  aclOwners?: string[];
+  /**
+   * Slice 3 — cluster-root that triggered the create. Audited as the
+   * `actor_omadia_user_id` of the `create` row. Falls back to
+   * `aclOwners[0]` when omitted; if both are missing, the actor is
+   * the zero-uuid (`00000000-…`) which marks the create as
+   * system-driven.
+   */
+  actorOmadiaUserId?: string;
 }
 
 export interface MemorableKnowledgeIngestResult {
@@ -369,6 +436,41 @@ export interface ListMemorableKnowledgeOptions {
   limit?: number;
   /** Filter to a single kind. */
   kind?: MemorableKind;
+}
+
+// ---------------------------------------------------------------------------
+// Slice 3 — ACL on MemorableKnowledge.
+// ---------------------------------------------------------------------------
+
+/** Action recorded in the audit-log. `create` is logged by
+ *  `createMemorableKnowledge` when `aclOwners.length > 0` (so the
+ *  initial-owner snapshot is auditable). */
+export type AclAction = 'create' | 'expand' | 'shrink' | 'delete';
+
+/** Append-only audit-log row. Survives a `deleteMemory` (the
+ *  underlying table has no FK on `memory_external_id`). */
+export interface AclAuditEntry {
+  id: string;
+  memoryExternalId: string;
+  actorOmadiaUserId: string;
+  actorChannelIdentityId?: string;
+  action: AclAction;
+  beforeOwners: string[];
+  /** `null` only when `action === 'delete'`. */
+  afterOwners: string[] | null;
+  reason?: string;
+  createdAt: string;
+}
+
+/** Args every owner-mutating call shares. Actor must already be in
+ *  `acl_owners` of the target MK. */
+export interface AclMutationOptions {
+  actorOmadiaUserId: string;
+  /** Optional ChannelIdentity external_id, e.g. `web:<users.uuid>` —
+   *  used for audit context only, not for authorisation. */
+  actorChannelIdentityId?: string;
+  /** Optional rationale shown in the audit trail. */
+  reason?: string;
 }
 
 /**

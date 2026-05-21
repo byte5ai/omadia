@@ -51,6 +51,8 @@ import type {
   MemorableKnowledgeIngest,
   MemorableKnowledgeIngestResult,
   ListMemorableKnowledgeOptions,
+  AclAuditEntry,
+  AclMutationOptions,
 } from '@omadia/plugin-api';
 import {
   sessionNodeId,
@@ -188,8 +190,12 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
 
   getMemorableKnowledge(
     memorableKnowledgeNodeId: string,
+    viewerOmadiaUserId?: string,
   ): Promise<GraphNode | null> {
-    return this.inner.getMemorableKnowledge(memorableKnowledgeNodeId);
+    return this.inner.getMemorableKnowledge(
+      memorableKnowledgeNodeId,
+      viewerOmadiaUserId,
+    );
   }
 
   listMemorableKnowledgeFor(
@@ -197,5 +203,43 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
     opts?: ListMemorableKnowledgeOptions,
   ): Promise<GraphNode[]> {
     return this.inner.listMemorableKnowledgeFor(omadiaUserId, opts);
+  }
+
+  addOwner(
+    memorableKnowledgeNodeId: string,
+    omadiaUserIdToAdd: string,
+    actor: AclMutationOptions,
+  ): Promise<string[]> {
+    return this.inner.addOwner(
+      memorableKnowledgeNodeId,
+      omadiaUserIdToAdd,
+      actor,
+    );
+  }
+
+  removeOwner(
+    memorableKnowledgeNodeId: string,
+    omadiaUserIdToRemove: string,
+    actor: AclMutationOptions,
+  ): Promise<string[]> {
+    return this.inner.removeOwner(
+      memorableKnowledgeNodeId,
+      omadiaUserIdToRemove,
+      actor,
+    );
+  }
+
+  deleteMemory(
+    memorableKnowledgeNodeId: string,
+    actor: AclMutationOptions,
+  ): Promise<void> {
+    return this.inner.deleteMemory(memorableKnowledgeNodeId, actor);
+  }
+
+  listMemoryAclAudit(
+    memorableKnowledgeNodeId: string,
+    opts?: { limit?: number },
+  ): Promise<AclAuditEntry[]> {
+    return this.inner.listMemoryAclAudit(memorableKnowledgeNodeId, opts);
   }
 }

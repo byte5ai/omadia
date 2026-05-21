@@ -3,10 +3,14 @@ export type NodeType =
   | 'Turn'
   | 'OdooEntity'
   | 'ConfluencePage'
+  | 'PluginEntity'
   | 'User'
+  | 'ChannelIdentity'
   | 'Run'
   | 'AgentInvocation'
-  | 'ToolCall';
+  | 'ToolCall'
+  | 'Fact'
+  | 'MemorableKnowledge';
 
 /** Lifecycle bucket projected by the Neon backend (palaia Phase 4). */
 export type Tier = 'HOT' | 'WARM' | 'COLD';
@@ -131,8 +135,16 @@ export function nodeColor(type: NodeType): string {
       return '#10b981';
     case 'ConfluencePage':
       return '#3b82f6';
+    case 'PluginEntity':
+      return '#22c55e';
     case 'User':
       return '#ec4899';
+    case 'ChannelIdentity':
+      return '#14b8a6';
+    case 'Fact':
+      return '#fbbf24';
+    case 'MemorableKnowledge':
+      return '#d946ef';
     default:
       return '#94a3b8';
   }
@@ -207,14 +219,22 @@ export function nodeIcon(type: NodeType): string {
       return '🏷';
     case 'ConfluencePage':
       return '📄';
+    case 'PluginEntity':
+      return '🔌';
     case 'User':
       return '👤';
+    case 'ChannelIdentity':
+      return '📡';
     case 'Run':
       return '▶';
     case 'AgentInvocation':
       return '🤖';
     case 'ToolCall':
       return '🔧';
+    case 'Fact':
+      return '✦';
+    case 'MemorableKnowledge':
+      return '⭐';
     default:
       return '•';
   }

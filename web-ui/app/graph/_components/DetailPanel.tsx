@@ -7,6 +7,7 @@ import {
   nodeColor,
   nodeIcon,
 } from './graphTypes';
+import MemoryAclSection from './MemoryAclSection';
 
 interface Props {
   node: GraphNode;
@@ -15,6 +16,9 @@ interface Props {
   onExpand: (nodeId: string) => void;
   onClose: () => void;
   loadingNeighbors: boolean;
+  /** Slice 3c — invoked when the user deletes the displayed MK so the
+   *  parent can drop it from the selection / refresh. */
+  onMemoryDeleted?: (nodeId: string) => void;
 }
 
 export default function DetailPanel({
@@ -24,6 +28,7 @@ export default function DetailPanel({
   onExpand,
   onClose,
   loadingNeighbors,
+  onMemoryDeleted,
 }: Props): React.ReactElement {
   const propEntries = Object.entries(node.props).filter(
     ([, v]) => v !== null && v !== undefined && v !== '',
@@ -89,6 +94,13 @@ export default function DetailPanel({
         >
           {loadingNeighbors ? 'lade Nachbarn…' : '↔ Nachbarn expandieren'}
         </button>
+
+        {node.type === 'MemorableKnowledge' && (
+          <MemoryAclSection
+            memory={node}
+            onDeleted={() => onMemoryDeleted?.(node.id)}
+          />
+        )}
 
         {neighbors && neighbors.length > 0 && (
           <div className="mt-3">

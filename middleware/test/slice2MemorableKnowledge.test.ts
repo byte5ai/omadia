@@ -220,18 +220,21 @@ describe('Slice 2 · InMemory createMemorableKnowledge round-trip', () => {
       summary: 'Only A involved',
       createdBy: channelByA,
       involvedOmadiaUserIds: [a.omadiaUserId],
+      aclOwners: [a.omadiaUserId],
     });
     await kg.createMemorableKnowledge({
       kind: 'decision',
       summary: 'Both A and B involved',
       createdBy: channelByA,
       involvedOmadiaUserIds: [a.omadiaUserId, b.omadiaUserId],
+      aclOwners: [a.omadiaUserId, b.omadiaUserId],
     });
     await kg.createMemorableKnowledge({
       kind: 'reference',
       summary: 'Only B involved',
       createdBy: channelByA,
       involvedOmadiaUserIds: [b.omadiaUserId],
+      aclOwners: [b.omadiaUserId],
     });
 
     const forA = await kg.listMemorableKnowledgeFor(a.omadiaUserId);
@@ -251,12 +254,14 @@ describe('Slice 2 · InMemory createMemorableKnowledge round-trip', () => {
       summary: 'D1',
       createdBy: channelByA,
       involvedOmadiaUserIds: [a.omadiaUserId],
+      aclOwners: [a.omadiaUserId],
     });
     await kg.createMemorableKnowledge({
       kind: 'preference',
       summary: 'P1',
       createdBy: channelByA,
       involvedOmadiaUserIds: [a.omadiaUserId],
+      aclOwners: [a.omadiaUserId],
     });
 
     const decisions = await kg.listMemorableKnowledgeFor(a.omadiaUserId, {

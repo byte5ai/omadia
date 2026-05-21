@@ -159,6 +159,10 @@ function makeFakeKg(calls: FakeKgCalls): KnowledgeGraph {
     }),
     getMemorableKnowledge: async () => null,
     listMemorableKnowledgeFor: async () => [],
+    addOwner: async () => [],
+    removeOwner: async () => [],
+    deleteMemory: async () => undefined,
+    listMemoryAclAudit: async () => [],
   } as unknown as KnowledgeGraph;
 }
 

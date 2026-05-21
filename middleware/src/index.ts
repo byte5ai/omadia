@@ -9,6 +9,7 @@ import { createTigrisStore } from '@omadia/diagrams';
 import type { MemoryStore, PrivacyGuardService } from '@omadia/plugin-api';
 import { createAdminRouter } from './routes/admin.js';
 import { createChatRouter } from './routes/chat.js';
+import { createMemoryRouter } from './routes/memory.js';
 import { createOperatorPrivacyRouter } from './routes/operatorPrivacy.js';
 import { createAgentResolver } from './agents/resolveAgentForTool.js';
 // `/attachments/<signed-key>` is now mounted by the de.byte5.channel.teams
@@ -948,6 +949,18 @@ async function main(): Promise<void> {
   // travels with it.
   app.use('/api/chat', requireAuth, createChatSessionsRouter({ store: chatSessionStore }));
   console.log('[middleware] chat-sessions endpoint ready at /api/chat/sessions (auth-gated)');
+
+  // Slice 3b — MemorableKnowledge REST surface. `requireAuth` gates the
+  // whole router, consistent with the `/api` OB-106 line and the
+  // `/api/chat` defence-in-depth mount above. Mutating endpoints
+  // additionally call `requireSessionUserId` internally; the ACL filter
+  // scopes reads to the viewer's owned / involved memories.
+  app.use(
+    '/api/v1/memory',
+    requireAuth,
+    createMemoryRouter({ graph: knowledgeGraph }),
+  );
+  console.log('[middleware] memory endpoint ready at /api/v1/memory (auth-gated)');
 
   // Privacy-Shield v2 (Slice S-7) — Operator-UI backend. Mounted under
   // /api/v1/operator/privacy/* (same convention as the rest of v1
