@@ -11,7 +11,7 @@ const actual = process.versions.modules;
 if (actual !== required) {
   console.error(
     `❌ Node 22.x required (modules=${required}). Got node=${process.version} modules=${actual}.\n` +
-      `   Run \`nvm use\` (or restart your shell after \`nvm alias default 22.12.0\`) and try again.`,
+      `   Run \`nvm use\` (or restart your shell after \`nvm alias default 22.22.3\`) and try again.`,
   );
   process.exit(1);
 }
