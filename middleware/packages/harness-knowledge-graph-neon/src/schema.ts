@@ -34,6 +34,9 @@ export const GRAPH_NODE_TYPES = [
   // MKs whose content disagrees. Two CONFLICTS_WITH edges per node
   // point to the offending MKs.
   'Inconsistency',
+  // Slice 10 — near-duplicate marker (cosine ≥ 0.95, no contradiction).
+  // Two DUPLICATE_OF edges per node point to the near-duplicate MKs.
+  'MergeCandidate',
 ] as const;
 
 export const GRAPH_EDGE_TYPES = [
@@ -62,6 +65,8 @@ export const GRAPH_EDGE_TYPES = [
   'EXCERPT_OF',
   // Slice 9 — Inconsistency → MemorableKnowledge (two per Inconsistency).
   'CONFLICTS_WITH',
+  // Slice 10 — MergeCandidate → MemorableKnowledge (two per node).
+  'DUPLICATE_OF',
 ] as const;
 
 export const GraphNodeTypeSchema = z.enum(GRAPH_NODE_TYPES);
@@ -311,6 +316,27 @@ const InconsistencyPropsSchema = z
   })
   .passthrough();
 
+// Slice 10 — MergeCandidate: near-duplicate marker between two MKs.
+// `cosine_sim` captured at detect-time so the UI can show why the pair
+// was flagged. status + resolution mirror Slice 9 Inconsistency.
+export const MERGE_CANDIDATE_STATUSES = ['open', 'resolved', 'dismissed'] as const;
+export const MERGE_CANDIDATE_RESOLUTIONS = [
+  'keep_a',
+  'keep_b',
+  'not_duplicate',
+] as const;
+const MergeCandidatePropsSchema = z
+  .object({
+    cosine_sim: z.number().min(0).max(1),
+    status: z.enum(MERGE_CANDIDATE_STATUSES),
+    resolution: z.enum(MERGE_CANDIDATE_RESOLUTIONS).nullable(),
+    created_at: z.string().datetime(),
+    resolved_at: z.string().datetime().nullable(),
+    resolved_by: z.string().uuid().nullable(),
+    mk_pair: z.tuple([z.string().min(1), z.string().min(1)]),
+  })
+  .passthrough();
+
 export const NodePropsSchemaByType: Record<
   GraphNodeTypeName,
   z.ZodType<Record<string, unknown>>
@@ -329,6 +355,7 @@ export const NodePropsSchemaByType: Record<
   MemorableKnowledge: MemorableKnowledgePropsSchema,
   PalaiaExcerpt: PalaiaExcerptPropsSchema,
   Inconsistency: InconsistencyPropsSchema,
+  MergeCandidate: MergeCandidatePropsSchema,
 };
 
 export function validateNodeProps(

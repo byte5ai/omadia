@@ -2645,3 +2645,102 @@ export async function runBulkInconsistencyDetect(
     limit !== undefined ? { limit } : {},
   );
 }
+
+// ─── Slice 10 — near-duplicate (MergeCandidate) workflow ─────────────
+
+export type MergeCandidateStatus = 'open' | 'resolved' | 'dismissed';
+export type MergeCandidateResolution = 'keep_a' | 'keep_b' | 'not_duplicate';
+
+export interface MergeCandidateNodeDto {
+  id: string;
+  type: 'MergeCandidate';
+  props: {
+    cosine_sim: number;
+    status: MergeCandidateStatus;
+    resolution: MergeCandidateResolution | null;
+    created_at: string;
+    resolved_at: string | null;
+    resolved_by: string | null;
+  };
+  duplicateOf: [string, string];
+}
+
+export interface MergeCandidateDetailDto extends MergeCandidateNodeDto {
+  mkA: MemorableKnowledgeNode | null;
+  mkB: MemorableKnowledgeNode | null;
+}
+
+export interface ListMergeCandidatesResponse {
+  items: MergeCandidateDetailDto[];
+}
+
+export async function listMergeCandidates(opts: {
+  status?: MergeCandidateStatus;
+  limit?: number;
+} = {}): Promise<ListMergeCandidatesResponse> {
+  const params = new URLSearchParams();
+  if (opts.status) params.set('status', opts.status);
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return getJson<ListMergeCandidatesResponse>(
+    `/v1/admin/duplicates${qs ? `?${qs}` : ''}`,
+  );
+}
+
+export async function getMergeCandidateDetail(
+  id: string,
+): Promise<MergeCandidateDetailDto> {
+  return getJson<MergeCandidateDetailDto>(
+    `/v1/admin/duplicates/${encodeURIComponent(id)}`,
+  );
+}
+
+export async function resolveMergeCandidate(
+  id: string,
+  body: { resolution: MergeCandidateResolution; reason?: string },
+): Promise<MergeCandidateNodeDto> {
+  return postJson<MergeCandidateNodeDto>(
+    `/v1/admin/duplicates/${encodeURIComponent(id)}/resolve`,
+    body,
+  );
+}
+
+export async function triggerMergeCandidateDetect(
+  mkId: string,
+): Promise<{ candidatesScanned: number; mergeCandidatesCreated: number }> {
+  return postJson<{
+    candidatesScanned: number;
+    mergeCandidatesCreated: number;
+  }>('/v1/admin/duplicates/detect', { mkId });
+}
+
+export interface BulkMergeDetectPreviewDto {
+  unchecked: number;
+  alreadyChecked: number;
+  withoutEmbedding: number;
+  detectorAvailable: boolean;
+}
+
+export interface BulkMergeDetectResultDto {
+  scanned: number;
+  checked: number;
+  mergeCandidatesCreated: number;
+  skippedNoEmbedding: number;
+  failed: number;
+  durationMs: number;
+}
+
+export async function previewBulkMergeDetect(): Promise<BulkMergeDetectPreviewDto> {
+  return getJson<BulkMergeDetectPreviewDto>(
+    '/v1/admin/duplicates/bulk-detect/preview',
+  );
+}
+
+export async function runBulkMergeDetect(
+  limit?: number,
+): Promise<BulkMergeDetectResultDto> {
+  return postJson<BulkMergeDetectResultDto>(
+    '/v1/admin/duplicates/bulk-detect',
+    limit !== undefined ? { limit } : {},
+  );
+}

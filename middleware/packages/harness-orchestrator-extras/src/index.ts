@@ -116,3 +116,12 @@ export type { InconsistencyDetectorDeps } from './inconsistencyDetector.js';
 // for the judgement pass; idempotent via the marker.
 export { createBulkInconsistencyService } from './bulkInconsistency.js';
 export type { BulkInconsistencyDeps } from './bulkInconsistency.js';
+
+// KG-ACL Slice 10 — cosine-only near-duplicate detector (cosine ≥ 0.95),
+// MergeTriggering wrapper, and bulk pass with separate marker.
+export { createMergeCandidateDetector } from './mergeCandidateDetector.js';
+export type { MergeCandidateDetectorDeps } from './mergeCandidateDetector.js';
+export { MergeTriggeringKnowledgeGraph } from './mergeTriggeringKnowledgeGraph.js';
+export type { MergeTriggeringKnowledgeGraphOptions } from './mergeTriggeringKnowledgeGraph.js';
+export { createBulkMergeDetectService } from './bulkMergeDetect.js';
+export type { BulkMergeDetectDeps } from './bulkMergeDetect.js';

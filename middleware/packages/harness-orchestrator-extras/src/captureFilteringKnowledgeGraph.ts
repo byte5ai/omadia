@@ -61,11 +61,15 @@ import type {
   ExcerptSearchOptions,
   PalaiaExcerptHit,
   CreateInconsistencyInput,
+  CreateMergeCandidateInput,
   InconsistencyNode,
   InconsistencyResolution,
   ListInconsistenciesOptions,
   ListMemoriesForScopeOptions,
+  ListMergeCandidatesOptions,
   MemoriesProvenanceView,
+  MergeCandidateNode,
+  MergeCandidateResolution,
 } from '@omadia/plugin-api';
 import {
   sessionNodeId,
@@ -359,6 +363,62 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
     memorableKnowledgeNodeId: string,
   ): Promise<void> {
     return this.inner.markMemorableKnowledgeInconsistencyChecked(
+      memorableKnowledgeNodeId,
+    );
+  }
+
+  listMergeCandidates(
+    opts: ListMergeCandidatesOptions,
+  ): Promise<MergeCandidateNode[]> {
+    return this.inner.listMergeCandidates(opts);
+  }
+
+  getMergeCandidate(
+    mergeCandidateExternalId: string,
+    viewerOmadiaUserId: string,
+  ): Promise<MergeCandidateNode | null> {
+    return this.inner.getMergeCandidate(
+      mergeCandidateExternalId,
+      viewerOmadiaUserId,
+    );
+  }
+
+  createMergeCandidate(
+    input: CreateMergeCandidateInput,
+  ): Promise<MergeCandidateNode | null> {
+    return this.inner.createMergeCandidate(input);
+  }
+
+  resolveMergeCandidate(
+    mergeCandidateExternalId: string,
+    resolution: MergeCandidateResolution,
+    actor: AclMutationOptions,
+  ): Promise<MergeCandidateNode> {
+    return this.inner.resolveMergeCandidate(
+      mergeCandidateExternalId,
+      resolution,
+      actor,
+    );
+  }
+
+  listMemorableKnowledgeIdsForBulkMergeCheck(opts: {
+    limit: number;
+  }): Promise<string[]> {
+    return this.inner.listMemorableKnowledgeIdsForBulkMergeCheck(opts);
+  }
+
+  countMemorableKnowledgeMergeCheckBuckets(): Promise<{
+    unchecked: number;
+    alreadyChecked: number;
+    withoutEmbedding: number;
+  }> {
+    return this.inner.countMemorableKnowledgeMergeCheckBuckets();
+  }
+
+  markMemorableKnowledgeMergeChecked(
+    memorableKnowledgeNodeId: string,
+  ): Promise<void> {
+    return this.inner.markMemorableKnowledgeMergeChecked(
       memorableKnowledgeNodeId,
     );
   }

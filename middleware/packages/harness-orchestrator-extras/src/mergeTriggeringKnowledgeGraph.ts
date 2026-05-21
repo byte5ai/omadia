@@ -1,17 +1,22 @@
 /**
  * @omadia/orchestrator-extras — KG wrapper that fires the
- * Inconsistency-Detector after every MemorableKnowledge mutation
- * (Slice 9).
+ * MergeCandidate-Detector after every MemorableKnowledge mutation
+ * (Slice 10).
  *
- * Decorates `createMemorableKnowledge`, `updateMemorableKnowledge`,
- * and `resolveInconsistency` (a_wins / b_wins delete the loser → may
- * change the inconsistency landscape on the surviving MK). Detection
- * is fire-and-forget: the caller's promise resolves with the original
- * result; the detector runs detached on the event loop.
+ * Symmetric to `InconsistencyTriggeringKnowledgeGraph` (Slice 9):
+ * decorates the same three mutation points (createMK, updateMK,
+ * resolveInconsistency a_wins/b_wins) plus `resolveMergeCandidate`
+ * itself when `keep_a` / `keep_b` deletes the loser → may change the
+ * near-duplicate landscape on the surviving MK. Detection is
+ * fire-and-forget.
  *
- * Wired in `activate()` AFTER CaptureFilteringKnowledgeGraph so the
- * detect call sees the same filtered KG as live recall — and so a
- * `services.replace` chain stays symmetric on dispose.
+ * Wrapper-Stack on `activate()` (outer → inner):
+ *   MergeTrigger → InconsistencyTrigger → CaptureFilter → original
+ *
+ * That way both triggers fire on the same set of mutations and the
+ * `services.replace` chain stays symmetric on dispose. The merge-
+ * detector runs AFTER the inconsistency-detector, which is fine since
+ * they don't depend on each other's output.
  */
 
 import type {
@@ -30,7 +35,6 @@ import type {
   FindEntitiesOptions,
   GraphNode,
   GraphStats,
-  InconsistencyDetectorService,
   InconsistencyNode,
   InconsistencyResolution,
   KnowledgeGraph,
@@ -44,6 +48,7 @@ import type {
   MemorableKnowledgeIngestResult,
   MemorableKnowledgeSearchOptions,
   MemorableKnowledgeUpdate,
+  MergeCandidateDetectorService,
   MergeCandidateNode,
   MergeCandidateResolution,
   PalaiaExcerptHit,
@@ -63,18 +68,18 @@ import type {
   TurnSearchHit,
 } from '@omadia/plugin-api';
 
-export interface InconsistencyTriggeringKnowledgeGraphOptions {
+export interface MergeTriggeringKnowledgeGraphOptions {
   inner: KnowledgeGraph;
-  detector: InconsistencyDetectorService;
+  detector: MergeCandidateDetectorService;
   log?: (msg: string) => void;
 }
 
-export class InconsistencyTriggeringKnowledgeGraph implements KnowledgeGraph {
+export class MergeTriggeringKnowledgeGraph implements KnowledgeGraph {
   private readonly inner: KnowledgeGraph;
-  private readonly detector: InconsistencyDetectorService;
+  private readonly detector: MergeCandidateDetectorService;
   private readonly log: (msg: string) => void;
 
-  constructor(opts: InconsistencyTriggeringKnowledgeGraphOptions) {
+  constructor(opts: MergeTriggeringKnowledgeGraphOptions) {
     this.inner = opts.inner;
     this.detector = opts.detector;
     this.log = opts.log ?? ((msg: string): void => { console.error(msg); });
@@ -84,15 +89,15 @@ export class InconsistencyTriggeringKnowledgeGraph implements KnowledgeGraph {
     void this.detector
       .detectFor(mkId)
       .then((stats) => {
-        if (stats.inconsistenciesCreated > 0) {
+        if (stats.mergeCandidatesCreated > 0) {
           this.log(
-            `[inconsistency-trigger] ${mkId}: scanned=${String(stats.candidatesScanned)} created=${String(stats.inconsistenciesCreated)}`,
+            `[merge-trigger] ${mkId}: scanned=${String(stats.candidatesScanned)} created=${String(stats.mergeCandidatesCreated)}`,
           );
         }
       })
       .catch((err: unknown) => {
         this.log(
-          `[inconsistency-trigger] ${mkId}: detector failed: ${err instanceof Error ? err.message : String(err)}`,
+          `[merge-trigger] ${mkId}: detector failed: ${err instanceof Error ? err.message : String(err)}`,
         );
       });
   }
@@ -131,8 +136,26 @@ export class InconsistencyTriggeringKnowledgeGraph implements KnowledgeGraph {
       resolution,
       actor,
     );
+    // a_wins / b_wins delete the loser → re-fire merge detection on
+    // the survivor in case the surviving MK has a new near-duplicate
+    // landscape (rare but possible).
     if (resolution === 'a_wins') this.fire(result.conflictsWith[0]);
     else if (resolution === 'b_wins') this.fire(result.conflictsWith[1]);
+    return result;
+  }
+
+  async resolveMergeCandidate(
+    mergeCandidateExternalId: string,
+    resolution: MergeCandidateResolution,
+    actor: AclMutationOptions,
+  ): Promise<MergeCandidateNode> {
+    const result = await this.inner.resolveMergeCandidate(
+      mergeCandidateExternalId,
+      resolution,
+      actor,
+    );
+    if (resolution === 'keep_a') this.fire(result.duplicateOf[0]);
+    else if (resolution === 'keep_b') this.fire(result.duplicateOf[1]);
     return result;
   }
 
@@ -284,13 +307,11 @@ export class InconsistencyTriggeringKnowledgeGraph implements KnowledgeGraph {
   ): Promise<MemoriesProvenanceView> {
     return this.inner.listMemoriesForScope(scope, opts);
   }
-
   listMemorableKnowledgeIdsForBulkInconsistencyCheck(opts: {
     limit: number;
   }): Promise<string[]> {
     return this.inner.listMemorableKnowledgeIdsForBulkInconsistencyCheck(opts);
   }
-
   countMemorableKnowledgeInconsistencyCheckBuckets(): Promise<{
     unchecked: number;
     alreadyChecked: number;
@@ -298,7 +319,6 @@ export class InconsistencyTriggeringKnowledgeGraph implements KnowledgeGraph {
   }> {
     return this.inner.countMemorableKnowledgeInconsistencyCheckBuckets();
   }
-
   markMemorableKnowledgeInconsistencyChecked(
     memorableKnowledgeNodeId: string,
   ): Promise<void> {
@@ -306,13 +326,11 @@ export class InconsistencyTriggeringKnowledgeGraph implements KnowledgeGraph {
       memorableKnowledgeNodeId,
     );
   }
-
   listMergeCandidates(
     opts: ListMergeCandidatesOptions,
   ): Promise<MergeCandidateNode[]> {
     return this.inner.listMergeCandidates(opts);
   }
-
   getMergeCandidate(
     mergeCandidateExternalId: string,
     viewerOmadiaUserId: string,
@@ -322,31 +340,16 @@ export class InconsistencyTriggeringKnowledgeGraph implements KnowledgeGraph {
       viewerOmadiaUserId,
     );
   }
-
   createMergeCandidate(
     input: CreateMergeCandidateInput,
   ): Promise<MergeCandidateNode | null> {
     return this.inner.createMergeCandidate(input);
   }
-
-  resolveMergeCandidate(
-    mergeCandidateExternalId: string,
-    resolution: MergeCandidateResolution,
-    actor: AclMutationOptions,
-  ): Promise<MergeCandidateNode> {
-    return this.inner.resolveMergeCandidate(
-      mergeCandidateExternalId,
-      resolution,
-      actor,
-    );
-  }
-
   listMemorableKnowledgeIdsForBulkMergeCheck(opts: {
     limit: number;
   }): Promise<string[]> {
     return this.inner.listMemorableKnowledgeIdsForBulkMergeCheck(opts);
   }
-
   countMemorableKnowledgeMergeCheckBuckets(): Promise<{
     unchecked: number;
     alreadyChecked: number;
@@ -354,7 +357,6 @@ export class InconsistencyTriggeringKnowledgeGraph implements KnowledgeGraph {
   }> {
     return this.inner.countMemorableKnowledgeMergeCheckBuckets();
   }
-
   markMemorableKnowledgeMergeChecked(
     memorableKnowledgeNodeId: string,
   ): Promise<void> {

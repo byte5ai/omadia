@@ -5,6 +5,12 @@ import type {
   InconsistencyResolution,
   ListInconsistenciesOptions,
 } from './inconsistency.js';
+import type {
+  CreateMergeCandidateInput,
+  ListMergeCandidatesOptions,
+  MergeCandidateNode,
+  MergeCandidateResolution,
+} from './mergeCandidate.js';
 
 /**
  * The knowledge-graph surface the rest of the middleware talks to. Ingests
@@ -318,6 +324,79 @@ export interface KnowledgeGraph {
     memorableKnowledgeNodeId: string,
   ): Promise<void>;
   /**
+   * Slice 10 — list near-duplicate-candidate markers visible to the
+   * viewer. ACL gate identical to {@link listInconsistencies}: viewer
+   * must own at least one of the two near-duplicate MKs. Filtered by
+   * status when provided.
+   */
+  listMergeCandidates(
+    opts: ListMergeCandidatesOptions,
+  ): Promise<MergeCandidateNode[]>;
+  /**
+   * Slice 10 — read a single MergeCandidate. Returns null when the
+   * viewer doesn't own at least one of the near-duplicate MKs.
+   */
+  getMergeCandidate(
+    mergeCandidateExternalId: string,
+    viewerOmadiaUserId: string,
+  ): Promise<MergeCandidateNode | null>;
+  /**
+   * Slice 10 — persist a near-duplicate marker between two MKs.
+   * Idempotent: returns null when a MergeCandidate between the same
+   * two MKs (regardless of order, regardless of status) already
+   * exists — operator already saw it. Returns null also when one of
+   * the MKs is missing (race with deleteMemory). The MK pair is
+   * sorted ascending on persist so dedupe-checks are
+   * direction-independent.
+   */
+  createMergeCandidate(
+    input: CreateMergeCandidateInput,
+  ): Promise<MergeCandidateNode | null>;
+  /**
+   * Slice 10 — operator resolves an open MergeCandidate. The actor
+   * must own at least one of the two near-duplicate MKs. Side-effects
+   * depend on `resolution`:
+   *   - `keep_a`         → deletes mkB via `deleteMemory(mkB, actor)`
+   *   - `keep_b`         → deletes mkA via `deleteMemory(mkA, actor)`
+   *   - `not_duplicate`  → no MK changes; candidate marked dismissed
+   * Throws `merge_candidate_not_found`, `not_an_owner`, or
+   * `already_resolved` accordingly.
+   */
+  resolveMergeCandidate(
+    mergeCandidateExternalId: string,
+    resolution: MergeCandidateResolution,
+    actor: AclMutationOptions,
+  ): Promise<MergeCandidateNode>;
+  /**
+   * Slice 10 — list `MemorableKnowledge` external_ids still needing a
+   * bulk merge-detect pass: embedding column populated AND no
+   * `last_merge_check_at` marker. Ordered created_at ascending,
+   * clamped to [1, 500]. Mirrors
+   * {@link listMemorableKnowledgeIdsForBulkInconsistencyCheck} but
+   * tracks a separate marker so the two bulk passes are independent.
+   */
+  listMemorableKnowledgeIdsForBulkMergeCheck(opts: {
+    limit: number;
+  }): Promise<string[]>;
+  /**
+   * Slice 10 — preview-stats for the bulk merge-detect panel.
+   * Mirrors {@link countMemorableKnowledgeInconsistencyCheckBuckets}
+   * but reads the `last_merge_check_at` marker.
+   */
+  countMemorableKnowledgeMergeCheckBuckets(): Promise<{
+    unchecked: number;
+    alreadyChecked: number;
+    withoutEmbedding: number;
+  }>;
+  /**
+   * Slice 10 — set the `last_merge_check_at` marker on an MK to
+   * `now()`. Called by the merge-detector at the end of every
+   * successful run. Idempotent.
+   */
+  markMemorableKnowledgeMergeChecked(
+    memorableKnowledgeNodeId: string,
+  ): Promise<void>;
+  /**
    * Dev-UI · Memory Focused View — list every memory (MemorableKnowledge
    * + PalaiaExcerpt) anchored to the given scope along with its 2-hop
    * provenance ancestors, pre-resolved in a single round-trip. ACL is
@@ -464,7 +543,12 @@ export type GraphNodeType =
    *  MemorableKnowledge nodes whose content disagrees. Carries
    *  `summary`, `severity`, `status`, `resolution` in `props`. Linked
    *  to BOTH offending MKs via `CONFLICTS_WITH`. */
-  | 'Inconsistency';
+  | 'Inconsistency'
+  /** Slice 10 — near-duplicate marker between two MKs whose cosine
+   *  similarity is ≥ 0.95. No contradiction; just redundancy. Carries
+   *  `cosine_sim`, `status`, `resolution` in `props`. Linked to BOTH
+   *  MKs via `DUPLICATE_OF`. */
+  | 'MergeCandidate';
 export type GraphEdgeType =
   | 'IN_SESSION'
   | 'NEXT_TURN'
@@ -489,7 +573,11 @@ export type GraphEdgeType =
   /** Slice 9 — Inconsistency → MemorableKnowledge. Two edges per
    *  Inconsistency, one per conflicting MK. Direction: from the
    *  marker to the MKs it flags. */
-  | 'CONFLICTS_WITH';
+  | 'CONFLICTS_WITH'
+  /** Slice 10 — MergeCandidate → MemorableKnowledge. Two edges per
+   *  MergeCandidate, one per near-duplicate MK. Same direction
+   *  convention as CONFLICTS_WITH. */
+  | 'DUPLICATE_OF';
 
 export type FactSeverity = 'info' | 'warning' | 'critical';
 
@@ -1223,6 +1311,15 @@ export function palaiaExcerptNodeId(excerptId: string): string {
  */
 export function inconsistencyNodeId(inconsistencyId: string): string {
   return `inconsistency:${inconsistencyId}`;
+}
+
+/**
+ * Slice 10 — external_id for a MergeCandidate node. Stable uuid
+ * generated per-pair on persist; the near-duplicate MKs are reachable
+ * via the two DUPLICATE_OF edges.
+ */
+export function mergeCandidateNodeId(mergeId: string): string {
+  return `merge:${mergeId}`;
 }
 
 export function runNodeId(turnExternalId: string): string {

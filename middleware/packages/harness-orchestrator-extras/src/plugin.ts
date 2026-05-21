@@ -10,8 +10,10 @@ import type {
 } from '@omadia/plugin-api';
 import {
   BULK_INCONSISTENCY_SERVICE_NAME,
+  BULK_MERGE_DETECT_SERVICE_NAME,
   BULK_PROMOTION_SERVICE_NAME,
   INCONSISTENCY_DETECTOR_SERVICE_NAME,
+  MERGE_CANDIDATE_DETECTOR_SERVICE_NAME,
   NUDGE_PROVIDERS_SERVICE_NAME,
   PALAIA_EXCERPT_SERVICE_NAME,
   PROCESS_MEMORY_SERVICE_NAME,
@@ -27,7 +29,10 @@ import { ContextRetriever } from './contextRetriever.js';
 import type { Pool } from 'pg';
 
 import { createBulkInconsistencyService } from './bulkInconsistency.js';
+import { createBulkMergeDetectService } from './bulkMergeDetect.js';
 import { createBulkPromotionService } from './bulkPromotion.js';
+import { createMergeCandidateDetector } from './mergeCandidateDetector.js';
+import { MergeTriggeringKnowledgeGraph } from './mergeTriggeringKnowledgeGraph.js';
 import { createHaikuPalaiaExcerptExtractor } from './excerptExtractor.js';
 import { createInconsistencyDetector } from './inconsistencyDetector.js';
 import { InconsistencyTriggeringKnowledgeGraph } from './inconsistencyTriggeringKnowledgeGraph.js';
@@ -263,7 +268,7 @@ export async function activate(
   });
 
   // Slice 9 — Inconsistency detector + triggering wrapper. Stack
-  // order: capture-filter (inner) → inconsistency-trigger (outer).
+  // order: capture-filter (inner) → inconsistency-trigger.
   // The trigger fires fire-and-forget AFTER each MK mutation; the
   // detector calls back into the same wrapped KG via the published
   // service so its own searches see the same view live readers do.
@@ -277,9 +282,31 @@ export async function activate(
     INCONSISTENCY_DETECTOR_SERVICE_NAME,
     inconsistencyDetector,
   );
-  const wrappedKg = new InconsistencyTriggeringKnowledgeGraph({
+  const inconsistencyWrappedKg = new InconsistencyTriggeringKnowledgeGraph({
     inner: captureWrappedKg,
     detector: inconsistencyDetector,
+    log: (msg) => { console.error(msg); },
+  });
+  ctx.log(
+    `[harness-orchestrator-extras] inconsistency-detector ready (embed=${embeddingClient ? 'on' : 'off'}, judge=${anthropic ? 'on' : 'off'})`,
+  );
+
+  // Slice 10 — MergeCandidate detector + triggering wrapper. Stack
+  // order: capture-filter → inconsistency-trigger → merge-trigger
+  // (outermost). Cosine-only, no Anthropic dependency. Always active
+  // when embeddingClient is wired.
+  const mergeCandidateDetector = createMergeCandidateDetector({
+    graph: inconsistencyWrappedKg,
+    ...(embeddingClient ? { embeddingClient } : {}),
+    log: (msg) => { console.error(msg); },
+  });
+  const disposeMergeCandidateDetector = ctx.services.provide(
+    MERGE_CANDIDATE_DETECTOR_SERVICE_NAME,
+    mergeCandidateDetector,
+  );
+  const wrappedKg = new MergeTriggeringKnowledgeGraph({
+    inner: inconsistencyWrappedKg,
+    detector: mergeCandidateDetector,
     log: (msg) => { console.error(msg); },
   });
   const disposeWrappedKg = ctx.services.replace(
@@ -287,7 +314,7 @@ export async function activate(
     wrappedKg,
   );
   ctx.log(
-    `[harness-orchestrator-extras] inconsistency-detector ready (embed=${embeddingClient ? 'on' : 'off'}, judge=${anthropic ? 'on' : 'off'})`,
+    `[harness-orchestrator-extras] merge-candidate-detector ready (embed=${embeddingClient ? 'on' : 'off'})`,
   );
 
   ctx.log(
@@ -373,6 +400,22 @@ export async function activate(
   );
   ctx.log(
     `[harness-orchestrator-extras] bulkInconsistency ready (judge=${anthropic ? 'on' : 'off'})`,
+  );
+
+  // Slice 10 — bulk merge-detect service. Cosine-only → always
+  // available (no Anthropic key gate). `preview()` reports
+  // `detectorAvailable: true` unconditionally.
+  const bulkMergeDetect = createBulkMergeDetectService({
+    kg: wrappedKg,
+    detector: mergeCandidateDetector,
+    log: (msg) => { console.error(msg); },
+  });
+  const disposeBulkMergeDetect = ctx.services.provide(
+    BULK_MERGE_DETECT_SERVICE_NAME,
+    bulkMergeDetect,
+  );
+  ctx.log(
+    `[harness-orchestrator-extras] bulkMergeDetect ready (embed=${embeddingClient ? 'on' : 'off'})`,
   );
 
   let disposeFactExtractor: (() => void) | undefined;
@@ -496,13 +539,17 @@ export async function activate(
       disposeSessionBriefing?.();
       disposeTopicDetector?.();
       disposeFactExtractor?.();
+      disposeBulkMergeDetect();
       disposeBulkInconsistency();
       disposeBulkPromotion?.();
       disposeContext();
       // Tear down KG wrappers FIRST (restores original provider), THEN
       // the captureFilter capability — symmetric with the activate order.
-      // The triggering wrapper is the outer; CFKG is the inner.
+      // Stack disposal: outermost (merge-trigger) → inconsistency-trigger
+      // is implicit (the `services.replace` only swaps the outermost; the
+      // inner wrappers go out of scope with their parent).
       disposeWrappedKg();
+      disposeMergeCandidateDetector();
       disposeInconsistencyDetector();
       disposeCaptureFilter();
     },

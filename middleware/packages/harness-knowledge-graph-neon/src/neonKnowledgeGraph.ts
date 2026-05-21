@@ -8,6 +8,7 @@ import {
   entityNodeId,
   inconsistencyNodeId,
   memorableKnowledgeNodeId,
+  mergeCandidateNodeId,
   palaiaExcerptNodeId,
   runNodeId,
   sessionNodeId,
@@ -15,6 +16,7 @@ import {
   turnNodeId,
   userNodeId,
   type ChannelIdentityIngest,
+  type CreateMergeCandidateInput,
   type EntityCapturedTurnsHit,
   type EntityCapturedTurnsOptions,
   type EntityIngest,
@@ -32,6 +34,7 @@ import {
   type AclAuditEntry,
   type AclMutationOptions,
   type ListMemorableKnowledgeOptions,
+  type ListMergeCandidatesOptions,
   type CreateInconsistencyInput,
   type ExcerptSearchOptions,
   type ExcerptSource,
@@ -48,6 +51,9 @@ import {
   type MemorableKnowledgeIngestResult,
   type MemorableKnowledgeSearchOptions,
   type MemorableKnowledgeUpdate,
+  type MergeCandidateNode,
+  type MergeCandidateResolution,
+  type MergeCandidateStatus,
   type PalaiaExcerptHit,
   type PalaiaExcerptInput,
   type PalaiaExcerptNode,
@@ -2580,6 +2586,305 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           SET properties = jsonb_set(
                 properties,
                 '{last_inconsistency_check_at}',
+                to_jsonb(now()::timestamptz),
+                true
+              )
+        WHERE tenant_id = $1
+          AND external_id = $2
+          AND type = 'MemorableKnowledge'`,
+      [this.tenantId, memorableKnowledgeNodeId],
+    );
+  }
+
+  // ─── Slice 10 — MergeCandidate persistence + resolve ────────────────
+
+  private hydrateMergeCandidate(
+    externalId: string,
+    properties: MergeCandidateNode['props'] & { mk_pair?: [string, string] },
+  ): MergeCandidateNode | null {
+    const pair = properties.mk_pair;
+    if (!Array.isArray(pair) || pair.length !== 2) return null;
+    return {
+      id: externalId,
+      type: 'MergeCandidate' as const,
+      props: properties,
+      duplicateOf: [pair[0], pair[1]],
+    };
+  }
+
+  async createMergeCandidate(
+    input: CreateMergeCandidateInput,
+  ): Promise<MergeCandidateNode | null> {
+    if (input.mkAExternalId === input.mkBExternalId) return null;
+    const sortedPair: [string, string] = [
+      input.mkAExternalId,
+      input.mkBExternalId,
+    ].sort() as [string, string];
+
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const existing = await client.query<{ external_id: string }>(
+        `SELECT mc.external_id
+           FROM graph_nodes mc
+           JOIN graph_edges e1 ON e1.from_node = mc.id AND e1.type = 'DUPLICATE_OF'
+           JOIN graph_nodes mk1 ON mk1.id = e1.to_node
+           JOIN graph_edges e2 ON e2.from_node = mc.id AND e2.type = 'DUPLICATE_OF'
+           JOIN graph_nodes mk2 ON mk2.id = e2.to_node
+          WHERE mc.tenant_id = $1
+            AND mc.type = 'MergeCandidate'
+            AND mk1.external_id = $2
+            AND mk2.external_id = $3
+          LIMIT 1`,
+        [this.tenantId, sortedPair[0], sortedPair[1]],
+      );
+      if (existing.rows.length > 0) {
+        await client.query('COMMIT');
+        return null;
+      }
+
+      const mkRows = await client.query<{ id: string; external_id: string }>(
+        `SELECT id, external_id FROM graph_nodes
+          WHERE tenant_id = $1
+            AND type = 'MemorableKnowledge'
+            AND external_id = ANY($2::text[])`,
+        [this.tenantId, sortedPair],
+      );
+      if (mkRows.rows.length !== 2) {
+        await client.query('COMMIT');
+        return null;
+      }
+
+      const now = new Date().toISOString();
+      const externalId = mergeCandidateNodeId(randomUUID());
+      const props = validateNodeProps('MergeCandidate', {
+        cosine_sim: input.cosineSim,
+        status: 'open' as const,
+        resolution: null,
+        created_at: now,
+        resolved_at: null,
+        resolved_by: null,
+        mk_pair: sortedPair,
+      });
+      const mcUuid = await this.upsertNode(client, {
+        externalId,
+        type: 'MergeCandidate',
+        scope: null,
+        userId: null,
+        props,
+      });
+      for (const mk of mkRows.rows) {
+        await this.upsertEdge(client, {
+          type: 'DUPLICATE_OF',
+          fromUuid: mcUuid,
+          toUuid: mk.id,
+        });
+      }
+
+      await client.query('COMMIT');
+      return this.hydrateMergeCandidate(
+        externalId,
+        props as MergeCandidateNode['props'] & { mk_pair: [string, string] },
+      );
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async listMergeCandidates(
+    opts: ListMergeCandidatesOptions,
+  ): Promise<MergeCandidateNode[]> {
+    const limit = Math.max(1, Math.min(opts.limit ?? 50, 200));
+    const rows = await this.pool.query<{
+      external_id: string;
+      properties: MergeCandidateNode['props'];
+    }>(
+      `SELECT DISTINCT mc.external_id, mc.properties
+         FROM graph_nodes mc
+         JOIN graph_edges e ON e.from_node = mc.id AND e.type = 'DUPLICATE_OF'
+         JOIN graph_nodes mk ON mk.id = e.to_node AND mk.type = 'MemorableKnowledge'
+        WHERE mc.tenant_id = $1
+          AND mc.type = 'MergeCandidate'
+          AND mk.properties->'acl_owners' @> jsonb_build_array($2::text)
+          AND ($3::text IS NULL OR mc.properties->>'status' = $3)
+        ORDER BY mc.external_id DESC
+        LIMIT $4`,
+      [this.tenantId, opts.viewerOmadiaUserId, opts.status ?? null, limit],
+    );
+    const out: MergeCandidateNode[] = [];
+    for (const row of rows.rows) {
+      const node = this.hydrateMergeCandidate(
+        row.external_id,
+        row.properties as MergeCandidateNode['props'] & {
+          mk_pair: [string, string];
+        },
+      );
+      if (node) out.push(node);
+    }
+    return out;
+  }
+
+  async getMergeCandidate(
+    externalId: string,
+    viewerOmadiaUserId: string,
+  ): Promise<MergeCandidateNode | null> {
+    const rows = await this.pool.query<{
+      properties: MergeCandidateNode['props'];
+      owns_one: boolean;
+    }>(
+      `SELECT mc.properties,
+              EXISTS(
+                SELECT 1
+                  FROM graph_edges e
+                  JOIN graph_nodes mk ON mk.id = e.to_node
+                 WHERE e.from_node = mc.id
+                   AND e.type = 'DUPLICATE_OF'
+                   AND mk.type = 'MemorableKnowledge'
+                   AND mk.properties->'acl_owners' @> jsonb_build_array($3::text)
+              ) AS owns_one
+         FROM graph_nodes mc
+        WHERE mc.tenant_id = $1
+          AND mc.external_id = $2
+          AND mc.type = 'MergeCandidate'
+        LIMIT 1`,
+      [this.tenantId, externalId, viewerOmadiaUserId],
+    );
+    const hit = rows.rows[0];
+    if (!hit || !hit.owns_one) return null;
+    return this.hydrateMergeCandidate(
+      externalId,
+      hit.properties as MergeCandidateNode['props'] & {
+        mk_pair: [string, string];
+      },
+    );
+  }
+
+  async resolveMergeCandidate(
+    externalId: string,
+    resolution: MergeCandidateResolution,
+    actor: AclMutationOptions,
+  ): Promise<MergeCandidateNode> {
+    const existing = await this.getMergeCandidate(
+      externalId,
+      actor.actorOmadiaUserId,
+    );
+    if (!existing) {
+      throw Object.assign(new Error('merge_candidate_not_found'), {
+        code: 'merge_candidate_not_found',
+      });
+    }
+    if (existing.props.status !== 'open') {
+      throw Object.assign(new Error('already_resolved'), {
+        code: 'already_resolved',
+      });
+    }
+
+    // Map resolution → terminal status. not_duplicate = false-positive
+    // → 'dismissed'; keep_a/keep_b → 'resolved'.
+    const terminalStatus: MergeCandidateStatus =
+      resolution === 'not_duplicate' ? 'dismissed' : 'resolved';
+
+    if (resolution === 'keep_a') {
+      await this.deleteMemory(existing.duplicateOf[1], actor);
+    } else if (resolution === 'keep_b') {
+      await this.deleteMemory(existing.duplicateOf[0], actor);
+    }
+
+    const now = new Date().toISOString();
+    const nextProps = {
+      ...(existing.props as Record<string, unknown>),
+      status: terminalStatus,
+      resolution,
+      resolved_at: now,
+      resolved_by: actor.actorOmadiaUserId,
+      mk_pair: existing.duplicateOf,
+    };
+    const validated = validateNodeProps('MergeCandidate', nextProps);
+    await this.pool.query(
+      `UPDATE graph_nodes
+          SET properties = $2::jsonb
+        WHERE tenant_id = $1
+          AND external_id = $3
+          AND type = 'MergeCandidate'`,
+      [this.tenantId, JSON.stringify(validated), externalId],
+    );
+
+    const refetched = this.hydrateMergeCandidate(
+      externalId,
+      validated as MergeCandidateNode['props'] & {
+        mk_pair: [string, string];
+      },
+    );
+    if (!refetched) {
+      return {
+        ...existing,
+        props: validated as MergeCandidateNode['props'],
+      };
+    }
+    return refetched;
+  }
+
+  async listMemorableKnowledgeIdsForBulkMergeCheck(opts: {
+    limit: number;
+  }): Promise<string[]> {
+    const limit = Math.max(1, Math.min(opts.limit, 500));
+    const rows = await this.pool.query<{ external_id: string }>(
+      `SELECT external_id
+         FROM graph_nodes
+        WHERE tenant_id = $1
+          AND type = 'MemorableKnowledge'
+          AND embedding IS NOT NULL
+          AND NOT (properties ? 'last_merge_check_at')
+        ORDER BY created_at ASC
+        LIMIT $2`,
+      [this.tenantId, limit],
+    );
+    return rows.rows.map((r) => r.external_id);
+  }
+
+  async countMemorableKnowledgeMergeCheckBuckets(): Promise<{
+    unchecked: number;
+    alreadyChecked: number;
+    withoutEmbedding: number;
+  }> {
+    const row = await this.pool.query<{
+      unchecked: string;
+      already_checked: string;
+      without_embedding: string;
+    }>(
+      `SELECT
+         count(*) FILTER (
+           WHERE embedding IS NOT NULL
+             AND NOT (properties ? 'last_merge_check_at')
+         )::text AS unchecked,
+         count(*) FILTER (
+           WHERE properties ? 'last_merge_check_at'
+         )::text AS already_checked,
+         count(*) FILTER (WHERE embedding IS NULL)::text AS without_embedding
+       FROM graph_nodes
+       WHERE tenant_id = $1 AND type = 'MemorableKnowledge'`,
+      [this.tenantId],
+    );
+    const r = row.rows[0];
+    return {
+      unchecked: Number(r?.unchecked ?? '0'),
+      alreadyChecked: Number(r?.already_checked ?? '0'),
+      withoutEmbedding: Number(r?.without_embedding ?? '0'),
+    };
+  }
+
+  async markMemorableKnowledgeMergeChecked(
+    memorableKnowledgeNodeId: string,
+  ): Promise<void> {
+    await this.pool.query(
+      `UPDATE graph_nodes
+          SET properties = jsonb_set(
+                properties,
+                '{last_merge_check_at}',
                 to_jsonb(now()::timestamptz),
                 true
               )

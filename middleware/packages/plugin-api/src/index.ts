@@ -87,3 +87,11 @@ export * from './inconsistency.js';
 // Slice 9. Reuses the existing detector; idempotent via marker. Provider
 // lives in `harness-orchestrator-extras/src/bulkInconsistency.ts`.
 export * from './bulkInconsistency.js';
+
+// KG-ACL Slice 10: MK-Auto-Merge. Near-duplicate MKs (cosine ≥ 0.95)
+// become a `MergeCandidate` node + two `DUPLICATE_OF` edges. Operator
+// resolves keep_a / keep_b / not_duplicate via /admin/duplicates.
+// Cosine-only detection (no Haiku) → cost-free. Provider lives in
+// `harness-orchestrator-extras/src/mergeCandidateDetector.ts` and
+// `harness-orchestrator-extras/src/bulkMergeDetect.ts`.
+export * from './mergeCandidate.js';

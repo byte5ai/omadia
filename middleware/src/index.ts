@@ -12,6 +12,7 @@ import { createChatRouter } from './routes/chat.js';
 import { createMemoryRouter } from './routes/memory.js';
 import { createBulkPromotionRouter } from './routes/bulkPromotion.js';
 import { createInconsistenciesRouter } from './routes/inconsistencies.js';
+import { createDuplicatesRouter } from './routes/duplicates.js';
 import { createOperatorPrivacyRouter } from './routes/operatorPrivacy.js';
 import { createAgentResolver } from './agents/resolveAgentForTool.js';
 // `/attachments/<signed-key>` is now mounted by the de.byte5.channel.teams
@@ -26,8 +27,10 @@ import type { LifecycleService } from '@omadia/knowledge-graph-neon/dist/lifecyc
 import type {
   AgentPrioritiesStore,
   BulkInconsistencyService,
+  BulkMergeDetectService,
   BulkPromotionService,
   InconsistencyDetectorService,
+  MergeCandidateDetectorService,
 } from '@omadia/plugin-api';
 import { createHarnessAdminUiRouter } from './routes/harnessAdminUi.js';
 import { createStoreRouter } from './routes/store.js';
@@ -1019,6 +1022,27 @@ async function main(): Promise<void> {
   );
   console.log(
     `[middleware] inconsistencies endpoint ready at /api/v1/admin/inconsistencies (detector=${inconsistencyDetectorSvc ? 'on' : 'off'}, bulk=${bulkInconsistencyService ? 'on' : 'off'})`,
+  );
+
+  // Slice 10 — near-duplicate MK workflow. Mirrors the Slice 9
+  // mounting pattern: detector + bulk are optional, route 503s when
+  // missing. `requireAuth` gates the router, consistent with the
+  // other /api/v1/admin/* mounts (Werkstatt optionalAuth dropped).
+  const mergeCandidateDetectorSvc =
+    serviceRegistry.get<MergeCandidateDetectorService>('mergeCandidateDetector');
+  const bulkMergeDetectService =
+    serviceRegistry.get<BulkMergeDetectService>('bulkMergeDetect');
+  app.use(
+    '/api/v1/admin/duplicates',
+    requireAuth,
+    createDuplicatesRouter({
+      graph: wrappedKgForRoutes,
+      ...(mergeCandidateDetectorSvc ? { detector: mergeCandidateDetectorSvc } : {}),
+      ...(bulkMergeDetectService ? { bulkDetect: bulkMergeDetectService } : {}),
+    }),
+  );
+  console.log(
+    `[middleware] duplicates endpoint ready at /api/v1/admin/duplicates (detector=${mergeCandidateDetectorSvc ? 'on' : 'off'}, bulk=${bulkMergeDetectService ? 'on' : 'off'})`,
   );
 
   // Privacy-Shield v2 (Slice S-7) — Operator-UI backend. Mounted under

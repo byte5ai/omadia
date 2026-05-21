@@ -6,6 +6,7 @@ import {
   entityNodeId,
   inconsistencyNodeId,
   memorableKnowledgeNodeId,
+  mergeCandidateNodeId,
   palaiaExcerptNodeId,
   runNodeId,
   sessionNodeId,
@@ -13,6 +14,7 @@ import {
   turnNodeId,
   userNodeId,
   type ChannelIdentityIngest,
+  type CreateMergeCandidateInput,
   type EntityRef,
   type EntityCapturedTurnsHit,
   type EntityCapturedTurnsOptions,
@@ -31,6 +33,7 @@ import {
   type AclAuditEntry,
   type AclMutationOptions,
   type ListMemorableKnowledgeOptions,
+  type ListMergeCandidatesOptions,
   type CreateInconsistencyInput,
   type ExcerptSearchOptions,
   type ExcerptSource,
@@ -47,6 +50,9 @@ import {
   type MemorableKnowledgeIngestResult,
   type MemorableKnowledgeSearchOptions,
   type MemorableKnowledgeUpdate,
+  type MergeCandidateNode,
+  type MergeCandidateResolution,
+  type MergeCandidateStatus,
   type PalaiaExcerptHit,
   type PalaiaExcerptInput,
   type PalaiaExcerptNode,
@@ -339,6 +345,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       MemorableKnowledge: 0,
       PalaiaExcerpt: 0,
       Inconsistency: 0,
+      MergeCandidate: 0,
     };
     for (const n of this.nodes.values()) byNodeType[n.type]++;
 
@@ -358,6 +365,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       REQUIRES: 0,
       EXCERPT_OF: 0,
       CONFLICTS_WITH: 0,
+      DUPLICATE_OF: 0,
     };
     for (const e of this.edges.values()) byEdgeType[e.type]++;
 
@@ -1576,6 +1584,225 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     node.props = {
       ...node.props,
       last_inconsistency_check_at: new Date().toISOString(),
+    };
+  }
+
+  // ─── Slice 10 — MergeCandidate persistence + resolve ─────────────────
+
+  private hydrateMergeCandidate(externalId: string): MergeCandidateNode | null {
+    const node = this.nodes.get(externalId);
+    if (!node || node.type !== 'MergeCandidate') return null;
+    const pair = node.props['mk_pair'];
+    if (!Array.isArray(pair) || pair.length !== 2) return null;
+    return {
+      id: node.id,
+      type: 'MergeCandidate' as const,
+      props: {
+        cosine_sim: node.props['cosine_sim'] as number,
+        status: node.props['status'] as MergeCandidateStatus,
+        resolution:
+          (node.props['resolution'] as MergeCandidateResolution | null) ?? null,
+        created_at: node.props['created_at'] as string,
+        resolved_at: (node.props['resolved_at'] as string | null) ?? null,
+        resolved_by: (node.props['resolved_by'] as string | null) ?? null,
+      },
+      duplicateOf: [pair[0] as string, pair[1] as string],
+    };
+  }
+
+  async createMergeCandidate(
+    input: CreateMergeCandidateInput,
+  ): Promise<MergeCandidateNode | null> {
+    if (input.mkAExternalId === input.mkBExternalId) return null;
+    const sortedPair: [string, string] = [
+      input.mkAExternalId,
+      input.mkBExternalId,
+    ].sort() as [string, string];
+
+    const mkA = this.nodes.get(sortedPair[0]);
+    const mkB = this.nodes.get(sortedPair[1]);
+    if (
+      !mkA ||
+      mkA.type !== 'MemorableKnowledge' ||
+      !mkB ||
+      mkB.type !== 'MemorableKnowledge'
+    ) {
+      return null;
+    }
+
+    for (const node of this.nodes.values()) {
+      if (node.type !== 'MergeCandidate') continue;
+      const existing = this.hydrateMergeCandidate(node.id);
+      if (
+        existing &&
+        existing.duplicateOf[0] === sortedPair[0] &&
+        existing.duplicateOf[1] === sortedPair[1]
+      ) {
+        return null;
+      }
+    }
+
+    const now = new Date().toISOString();
+    const externalId = mergeCandidateNodeId(randomUUID());
+    this.upsertNode({
+      id: externalId,
+      type: 'MergeCandidate',
+      props: {
+        cosine_sim: input.cosineSim,
+        status: 'open',
+        resolution: null,
+        created_at: now,
+        resolved_at: null,
+        resolved_by: null,
+        mk_pair: sortedPair,
+      },
+    });
+    this.addEdge({
+      type: 'DUPLICATE_OF',
+      from: externalId,
+      to: sortedPair[0],
+    });
+    this.addEdge({
+      type: 'DUPLICATE_OF',
+      from: externalId,
+      to: sortedPair[1],
+    });
+    return this.hydrateMergeCandidate(externalId);
+  }
+
+  async listMergeCandidates(
+    opts: ListMergeCandidatesOptions,
+  ): Promise<MergeCandidateNode[]> {
+    const limit = Math.max(1, Math.min(opts.limit ?? 50, 200));
+    const out: MergeCandidateNode[] = [];
+    for (const node of this.nodes.values()) {
+      if (node.type !== 'MergeCandidate') continue;
+      if (opts.status !== undefined && node.props['status'] !== opts.status) {
+        continue;
+      }
+      const hydrated = this.hydrateMergeCandidate(node.id);
+      if (!hydrated) continue;
+      const ownsAtLeastOne = hydrated.duplicateOf.some((mkId) => {
+        const mk = this.nodes.get(mkId);
+        const owners = mk?.props['acl_owners'];
+        return (
+          Array.isArray(owners) &&
+          (owners as string[]).includes(opts.viewerOmadiaUserId)
+        );
+      });
+      if (!ownsAtLeastOne) continue;
+      out.push(hydrated);
+      if (out.length >= limit) break;
+    }
+    return out;
+  }
+
+  async getMergeCandidate(
+    externalId: string,
+    viewerOmadiaUserId: string,
+  ): Promise<MergeCandidateNode | null> {
+    const hydrated = this.hydrateMergeCandidate(externalId);
+    if (!hydrated) return null;
+    const ownsAtLeastOne = hydrated.duplicateOf.some((mkId) => {
+      const mk = this.nodes.get(mkId);
+      const owners = mk?.props['acl_owners'];
+      return (
+        Array.isArray(owners) &&
+        (owners as string[]).includes(viewerOmadiaUserId)
+      );
+    });
+    return ownsAtLeastOne ? hydrated : null;
+  }
+
+  async resolveMergeCandidate(
+    externalId: string,
+    resolution: MergeCandidateResolution,
+    actor: AclMutationOptions,
+  ): Promise<MergeCandidateNode> {
+    const existing = await this.getMergeCandidate(
+      externalId,
+      actor.actorOmadiaUserId,
+    );
+    if (!existing) {
+      throw Object.assign(new Error('merge_candidate_not_found'), {
+        code: 'merge_candidate_not_found',
+      });
+    }
+    if (existing.props.status !== 'open') {
+      throw Object.assign(new Error('already_resolved'), {
+        code: 'already_resolved',
+      });
+    }
+    if (resolution === 'keep_a') {
+      await this.deleteMemory(existing.duplicateOf[1], actor);
+    } else if (resolution === 'keep_b') {
+      await this.deleteMemory(existing.duplicateOf[0], actor);
+    }
+
+    const node = this.nodes.get(externalId);
+    if (!node) {
+      throw Object.assign(new Error('merge_candidate_not_found'), {
+        code: 'merge_candidate_not_found',
+      });
+    }
+    const now = new Date().toISOString();
+    node.props = {
+      ...node.props,
+      status: resolution === 'not_duplicate' ? 'dismissed' : 'resolved',
+      resolution,
+      resolved_at: now,
+      resolved_by: actor.actorOmadiaUserId,
+    };
+    return this.hydrateMergeCandidate(externalId)!;
+  }
+
+  async listMemorableKnowledgeIdsForBulkMergeCheck(opts: {
+    limit: number;
+  }): Promise<string[]> {
+    const limit = Math.max(1, Math.min(opts.limit, 500));
+    const candidates: { id: string; createdAt: string }[] = [];
+    for (const node of this.nodes.values()) {
+      if (node.type !== 'MemorableKnowledge') continue;
+      if (!this.embeddings.has(node.id)) continue;
+      if (node.props['last_merge_check_at'] !== undefined) continue;
+      const createdAt = String(node.props['created_at'] ?? '');
+      candidates.push({ id: node.id, createdAt });
+    }
+    candidates.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    return candidates.slice(0, limit).map((c) => c.id);
+  }
+
+  async countMemorableKnowledgeMergeCheckBuckets(): Promise<{
+    unchecked: number;
+    alreadyChecked: number;
+    withoutEmbedding: number;
+  }> {
+    let unchecked = 0;
+    let alreadyChecked = 0;
+    let withoutEmbedding = 0;
+    for (const node of this.nodes.values()) {
+      if (node.type !== 'MemorableKnowledge') continue;
+      const hasMarker = node.props['last_merge_check_at'] !== undefined;
+      const hasEmbedding = this.embeddings.has(node.id);
+      if (hasMarker) {
+        alreadyChecked++;
+      } else if (!hasEmbedding) {
+        withoutEmbedding++;
+      } else {
+        unchecked++;
+      }
+    }
+    return { unchecked, alreadyChecked, withoutEmbedding };
+  }
+
+  async markMemorableKnowledgeMergeChecked(
+    memorableKnowledgeNodeId: string,
+  ): Promise<void> {
+    const node = this.nodes.get(memorableKnowledgeNodeId);
+    if (!node || node.type !== 'MemorableKnowledge') return;
+    node.props = {
+      ...node.props,
+      last_merge_check_at: new Date().toISOString(),
     };
   }
 
