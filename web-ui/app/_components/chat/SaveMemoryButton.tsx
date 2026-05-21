@@ -355,10 +355,10 @@ export function SaveMemoryButton({
                 </dl>
                 <div className="flex justify-end gap-2">
                   <a
-                    href="/memories"
+                    href={`/memories/${encodeURIComponent(saved.memorableKnowledgeNodeId)}`}
                     className="rounded border border-neutral-300 px-3 py-1 text-xs hover:border-neutral-400 dark:border-neutral-700 dark:hover:border-neutral-500"
                   >
-                    {t('openList')}
+                    {t('openDetail')}
                   </a>
                   <button
                     type="button"

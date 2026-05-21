@@ -177,6 +177,30 @@ export interface KnowledgeGraph {
     memorableKnowledgeNodeId: string,
     opts?: { limit?: number },
   ): Promise<AclAuditEntry[]>;
+  /**
+   * Slice 5 — partial content-update on a MemorableKnowledge. Only the
+   * fields present in `patch` are changed; passing `rationale: null`
+   * explicitly removes the rationale property. The actor must be in
+   * `acl_owners`. Writes an `'edit'` audit row (beforeOwners and
+   * afterOwners identical — content-edits don't affect ownership but
+   * still belong on the trail). Returns the updated node.
+   */
+  updateMemorableKnowledge(
+    memorableKnowledgeNodeId: string,
+    patch: MemorableKnowledgeUpdate,
+    actor: AclMutationOptions,
+  ): Promise<GraphNode>;
+}
+
+/** Slice 5 — partial content-patch on a MemorableKnowledge. All fields
+ *  optional; `rationale: null` removes the field. */
+export interface MemorableKnowledgeUpdate {
+  kind?: MemorableKind;
+  summary?: string;
+  /** Pass `null` to delete the rationale; `undefined` (default) to
+   *  leave it untouched; a string to set/replace. */
+  rationale?: string | null;
+  significance?: number;
 }
 
 export interface SessionFilter {
@@ -445,7 +469,7 @@ export interface ListMemorableKnowledgeOptions {
 /** Action recorded in the audit-log. `create` is logged by
  *  `createMemorableKnowledge` when `aclOwners.length > 0` (so the
  *  initial-owner snapshot is auditable). */
-export type AclAction = 'create' | 'expand' | 'shrink' | 'delete';
+export type AclAction = 'create' | 'expand' | 'shrink' | 'delete' | 'edit';
 
 /** Append-only audit-log row. Survives a `deleteMemory` (the
  *  underlying table has no FK on `memory_external_id`). */

@@ -32,6 +32,7 @@ import {
   type ListMemorableKnowledgeOptions,
   type MemorableKnowledgeIngest,
   type MemorableKnowledgeIngestResult,
+  type MemorableKnowledgeUpdate,
   type ResolveOrCreateChannelIdentityResult,
   type RunAgentInvocationView,
   type RunIngestResult,
@@ -1755,6 +1756,80 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     } finally {
       client.release();
     }
+  }
+
+  async updateMemorableKnowledge(
+    memorableKnowledgeNodeId: string,
+    patch: MemorableKnowledgeUpdate,
+    actor: AclMutationOptions,
+  ): Promise<GraphNode> {
+    const hasField =
+      patch.kind !== undefined ||
+      patch.summary !== undefined ||
+      patch.rationale !== undefined ||
+      patch.significance !== undefined;
+    if (!hasField) {
+      throw Object.assign(new Error('empty_patch'), { code: 'empty_patch' });
+    }
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { uuid, owners } = await this.loadOwnersOrThrow(
+        client,
+        memorableKnowledgeNodeId,
+      );
+      this.assertActorIsOwner(owners, actor.actorOmadiaUserId);
+
+      const propsRow = await client.query<{
+        properties: Record<string, unknown>;
+      }>(`SELECT properties FROM graph_nodes WHERE id = $1`, [uuid]);
+      const current = propsRow.rows[0]!.properties;
+      const merged: Record<string, unknown> = { ...current };
+      if (patch.kind !== undefined) merged['kind'] = patch.kind;
+      if (patch.summary !== undefined) merged['summary'] = patch.summary;
+      if (patch.rationale === null) {
+        delete merged['rationale'];
+      } else if (patch.rationale !== undefined) {
+        merged['rationale'] = patch.rationale;
+      }
+      if (patch.significance !== undefined) {
+        merged['significance'] = patch.significance;
+      }
+      const validated = validateNodeProps('MemorableKnowledge', merged);
+
+      await client.query(
+        `UPDATE graph_nodes SET properties = $2::jsonb WHERE id = $1`,
+        [uuid, JSON.stringify(validated)],
+      );
+      await this.writeAclAudit(client, {
+        memoryExternalId: memorableKnowledgeNodeId,
+        actorOmadiaUserId: actor.actorOmadiaUserId,
+        ...(actor.actorChannelIdentityId
+          ? { actorChannelIdentityId: actor.actorChannelIdentityId }
+          : {}),
+        action: 'edit',
+        beforeOwners: owners,
+        afterOwners: owners,
+        ...(actor.reason ? { reason: actor.reason } : {}),
+      });
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    const updated = await this.getMemorableKnowledge(
+      memorableKnowledgeNodeId,
+      actor.actorOmadiaUserId,
+    );
+    if (!updated) {
+      throw Object.assign(new Error('memory_not_found'), {
+        code: 'memory_not_found',
+      });
+    }
+    return updated;
   }
 
   async listMemoryAclAudit(

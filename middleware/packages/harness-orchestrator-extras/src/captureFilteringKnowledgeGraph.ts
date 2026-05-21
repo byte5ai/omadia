@@ -50,6 +50,7 @@ import type {
   ResolveOrCreateChannelIdentityResult,
   MemorableKnowledgeIngest,
   MemorableKnowledgeIngestResult,
+  MemorableKnowledgeUpdate,
   ListMemorableKnowledgeOptions,
   AclAuditEntry,
   AclMutationOptions,
@@ -241,5 +242,17 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
     opts?: { limit?: number },
   ): Promise<AclAuditEntry[]> {
     return this.inner.listMemoryAclAudit(memorableKnowledgeNodeId, opts);
+  }
+
+  updateMemorableKnowledge(
+    memorableKnowledgeNodeId: string,
+    patch: MemorableKnowledgeUpdate,
+    actor: AclMutationOptions,
+  ): Promise<GraphNode> {
+    return this.inner.updateMemorableKnowledge(
+      memorableKnowledgeNodeId,
+      patch,
+      actor,
+    );
   }
 }

@@ -2344,3 +2344,51 @@ export async function createMemory(
 ): Promise<CreateMemoryResponse> {
   return postJson<CreateMemoryResponse>('/v1/memory', body);
 }
+
+export interface UpdateMemoryRequest {
+  kind?: MemorableKind;
+  summary?: string;
+  /** `null` removes the rationale; omit to leave untouched; string sets it. */
+  rationale?: string | null;
+  significance?: number;
+  /** Optional rationale for the ACL audit-log row this PATCH writes. */
+  reason?: string;
+}
+
+export async function updateMemory(
+  id: string,
+  patch: UpdateMemoryRequest,
+): Promise<MemorableKnowledgeNode> {
+  const res = await fetch(`/bot-api/v1/memory/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as {
+      code?: string;
+      message?: string;
+    };
+    throw new Error(body.code ?? body.message ?? `HTTP ${String(res.status)}`);
+  }
+  return (await res.json()) as MemorableKnowledgeNode;
+}
+
+export async function deleteMemory(
+  id: string,
+  reason?: string,
+): Promise<void> {
+  const res = await fetch(`/bot-api/v1/memory/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(reason ? { reason } : {}),
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  if (!res.ok && res.status !== 204) {
+    const body = (await res.json().catch(() => ({}))) as { code?: string };
+    throw new Error(body.code ?? `HTTP ${String(res.status)}`);
+  }
+}

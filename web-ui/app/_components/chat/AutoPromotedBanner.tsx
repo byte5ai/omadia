@@ -74,7 +74,7 @@ export function AutoPromotedBanner({
         {mkId.length > 12 ? `${mkId.slice(0, 12)}…` : mkId}
       </span>
       <a
-        href="/memories"
+        href={`/memories/${encodeURIComponent(mkId)}`}
         className="rounded border border-green-300 px-1 py-0.5 text-[10px] hover:bg-green-100 dark:border-green-700 dark:hover:bg-green-900/40"
         title={t('viewTitle')}
       >

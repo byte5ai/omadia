@@ -31,6 +31,7 @@ import {
   type ListMemorableKnowledgeOptions,
   type MemorableKnowledgeIngest,
   type MemorableKnowledgeIngestResult,
+  type MemorableKnowledgeUpdate,
   type ResolveOrCreateChannelIdentityResult,
   type RunAgentInvocationView,
   type RunIngestResult,
@@ -1005,6 +1006,60 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     for (const [key, edge] of this.edges.entries()) {
       if (edge.from === node.id || edge.to === node.id) this.edges.delete(key);
     }
+  }
+
+  async updateMemorableKnowledge(
+    memorableKnowledgeNodeId: string,
+    patch: MemorableKnowledgeUpdate,
+    actor: AclMutationOptions,
+  ): Promise<GraphNode> {
+    const hasField =
+      patch.kind !== undefined ||
+      patch.summary !== undefined ||
+      patch.rationale !== undefined ||
+      patch.significance !== undefined;
+    if (!hasField) {
+      throw Object.assign(new Error('empty_patch'), { code: 'empty_patch' });
+    }
+    const node = this.requireMkOrThrow(memorableKnowledgeNodeId);
+    const owners = Array.isArray(node.props['acl_owners'])
+      ? (node.props['acl_owners'] as string[])
+      : [];
+    if (!owners.includes(actor.actorOmadiaUserId)) {
+      throw Object.assign(new Error('not_an_owner'), { code: 'not_an_owner' });
+    }
+
+    const next: Record<string, unknown> = { ...node.props };
+    if (patch.kind !== undefined) next['kind'] = patch.kind;
+    if (patch.summary !== undefined) next['summary'] = patch.summary;
+    if (patch.rationale === null) {
+      delete next['rationale'];
+    } else if (patch.rationale !== undefined) {
+      next['rationale'] = patch.rationale;
+    }
+    if (patch.significance !== undefined) {
+      next['significance'] = patch.significance;
+    }
+    // InMemory backend does no Zod-validation (mirrors the existing
+    // `createMemorableKnowledge` pattern in this file). Production
+    // strict-validation lives in NeonKnowledgeGraph via the
+    // MemorableKnowledgePropsSchema; tests against InMemory can call
+    // `validateNodeProps` directly from `@omadia/knowledge-graph-neon`
+    // when they need to assert the schema-side guarantees.
+    node.props = next;
+
+    this.appendAclAudit({
+      memoryExternalId: memorableKnowledgeNodeId,
+      actorOmadiaUserId: actor.actorOmadiaUserId,
+      ...(actor.actorChannelIdentityId
+        ? { actorChannelIdentityId: actor.actorChannelIdentityId }
+        : {}),
+      action: 'edit',
+      beforeOwners: owners,
+      afterOwners: owners,
+      ...(actor.reason ? { reason: actor.reason } : {}),
+    });
+    return { ...node, props: { ...node.props } };
   }
 
   async listMemoryAclAudit(

@@ -210,7 +210,7 @@
       "skippedInvolved": "skippedInvolved",
       "skippedRequired": "skippedRequired",
       "skippedDerivedFrom": "skippedDerivedFrom",
-      "openList": "Open /memories",
+      "openDetail": "Open memory",
       "close": "Close"
     }
   },

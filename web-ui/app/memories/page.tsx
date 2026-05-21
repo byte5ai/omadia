@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
+import Link from 'next/link';
+
 import {
   listMemories,
   type MemorableKind,
@@ -128,54 +130,53 @@ export default function MemoriesPage(): React.ReactElement {
         {!loading && error === null && items.length > 0 && (
           <ul className="space-y-3">
             {items.map((mk) => (
-              <li
-                key={mk.id}
-                className="rounded border border-neutral-200 bg-white px-4 py-3 shadow-sm dark:border-neutral-800 dark:bg-neutral-900"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <span
-                    className={[
-                      'rounded px-2 py-0.5 text-[10px] uppercase tracking-wider',
-                      KIND_BADGE[mk.props.kind],
-                    ].join(' ')}
-                  >
-                    {KIND_LABELS[mk.props.kind]}
-                  </span>
-                  <time
-                    className="font-mono text-[10px] text-neutral-500"
-                    dateTime={mk.props.created_at}
-                  >
-                    {new Date(mk.props.created_at).toLocaleString('de-DE')}
-                  </time>
-                </div>
-                <p className="mt-2 text-sm text-neutral-900 dark:text-neutral-100">
-                  {mk.props.summary}
-                </p>
-                {mk.props.rationale !== undefined && (
-                  <p className="mt-1 text-xs text-neutral-600 dark:text-neutral-400">
-                    {mk.props.rationale}
+              <li key={mk.id}>
+                <Link
+                  href={`/memories/${encodeURIComponent(mk.id)}`}
+                  className="block rounded border border-neutral-200 bg-white px-4 py-3 shadow-sm transition hover:border-neutral-400 hover:shadow dark:border-neutral-800 dark:bg-neutral-900 dark:hover:border-neutral-500"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <span
+                      className={[
+                        'rounded px-2 py-0.5 text-[10px] uppercase tracking-wider',
+                        KIND_BADGE[mk.props.kind],
+                      ].join(' ')}
+                    >
+                      {KIND_LABELS[mk.props.kind]}
+                    </span>
+                    <time
+                      className="font-mono text-[10px] text-neutral-500"
+                      dateTime={mk.props.created_at}
+                    >
+                      {new Date(mk.props.created_at).toLocaleString('de-DE')}
+                    </time>
+                  </div>
+                  <p className="mt-2 text-sm text-neutral-900 dark:text-neutral-100">
+                    {mk.props.summary}
                   </p>
-                )}
-                <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-neutral-500">
-                  <span className="font-mono">{mk.id}</span>
-                  <span aria-hidden>·</span>
-                  <span>
-                    {mk.props.acl_owners.length}{' '}
-                    {mk.props.acl_owners.length === 1 ? 'Owner' : 'Owner'}
-                  </span>
-                  {typeof mk.props.significance === 'number' && (
-                    <>
-                      <span aria-hidden>·</span>
-                      <span>
-                        significance {mk.props.significance.toFixed(2)}
-                      </span>
-                    </>
+                  {mk.props.rationale !== undefined && (
+                    <p className="mt-1 text-xs text-neutral-600 dark:text-neutral-400">
+                      {mk.props.rationale}
+                    </p>
                   )}
-                  <span aria-hidden>·</span>
-                  <span className="font-mono">
-                    created_by {mk.props.created_by}
-                  </span>
-                </div>
+                  <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-neutral-500">
+                    <span className="font-mono">{mk.id}</span>
+                    <span aria-hidden>·</span>
+                    <span>{mk.props.acl_owners.length} Owner</span>
+                    {typeof mk.props.significance === 'number' && (
+                      <>
+                        <span aria-hidden>·</span>
+                        <span>
+                          significance {mk.props.significance.toFixed(2)}
+                        </span>
+                      </>
+                    )}
+                    <span aria-hidden>·</span>
+                    <span className="font-mono">
+                      created_by {mk.props.created_by}
+                    </span>
+                  </div>
+                </Link>
               </li>
             ))}
           </ul>

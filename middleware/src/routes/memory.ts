@@ -50,6 +50,24 @@ const DeleteBodySchema = z
   .object({ reason: z.string().min(1).max(1000).optional() })
   .partial();
 
+const PatchMemorySchema = z
+  .object({
+    kind: z.enum(MEMORABLE_KINDS).optional(),
+    summary: z.string().min(1).max(2000).optional(),
+    /** `null` removes the rationale; omit to leave untouched; string sets/replaces. */
+    rationale: z.string().min(1).max(10000).nullable().optional(),
+    significance: z.number().min(0).max(1).optional(),
+    reason: z.string().min(1).max(1000).optional(),
+  })
+  .refine(
+    (v) =>
+      v.kind !== undefined ||
+      v.summary !== undefined ||
+      v.rationale !== undefined ||
+      v.significance !== undefined,
+    { message: 'patch must touch at least one of kind/summary/rationale/significance' },
+  );
+
 const ListQuerySchema = z.object({
   kind: z.enum(MEMORABLE_KINDS).optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
@@ -78,6 +96,8 @@ function mapErrorToHttp(err: unknown): { status: number; code: string } {
         return { status: 403, code: 'memory.not_an_owner' };
       case 'cannot_remove_last_owner':
         return { status: 409, code: 'memory.cannot_remove_last_owner' };
+      case 'empty_patch':
+        return { status: 400, code: 'memory.empty_patch' };
     }
   }
   return { status: 500, code: 'memory.internal_error' };
@@ -232,6 +252,43 @@ export function createMemoryRouter(deps: {
         actor,
       );
       res.json({ owners });
+    } catch (err) {
+      const { status, code } = mapErrorToHttp(err);
+      res.status(status).json({ code });
+    }
+  });
+
+  // ── PATCH /memory/:id — content-edit (kind/summary/rationale) ──────────
+  router.patch('/:id', async (req: Request, res: Response) => {
+    const sessionUserId = requireSessionUserId(req, res);
+    if (!sessionUserId) return;
+    const parsed = PatchMemorySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res
+        .status(400)
+        .json({ code: 'memory.invalid_request', issues: parsed.error.issues });
+      return;
+    }
+    const body = parsed.data;
+    try {
+      const actor: AclMutationOptions = {
+        actorOmadiaUserId: sessionUserId,
+        ...(body.reason ? { reason: body.reason } : {}),
+      };
+      const patch = {
+        ...(body.kind !== undefined ? { kind: body.kind } : {}),
+        ...(body.summary !== undefined ? { summary: body.summary } : {}),
+        ...(body.rationale !== undefined ? { rationale: body.rationale } : {}),
+        ...(body.significance !== undefined
+          ? { significance: body.significance }
+          : {}),
+      };
+      const updated = await deps.graph.updateMemorableKnowledge(
+        String(req.params['id'] ?? ''),
+        patch,
+        actor,
+      );
+      res.json(updated);
     } catch (err) {
       const { status, code } = mapErrorToHttp(err);
       res.status(status).json({ code });
