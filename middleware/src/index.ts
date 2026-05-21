@@ -11,6 +11,7 @@ import { createAdminRouter } from './routes/admin.js';
 import { createChatRouter } from './routes/chat.js';
 import { createMemoryRouter } from './routes/memory.js';
 import { createBulkPromotionRouter } from './routes/bulkPromotion.js';
+import { createInconsistenciesRouter } from './routes/inconsistencies.js';
 import { createOperatorPrivacyRouter } from './routes/operatorPrivacy.js';
 import { createAgentResolver } from './agents/resolveAgentForTool.js';
 // `/attachments/<signed-key>` is now mounted by the de.byte5.channel.teams
@@ -22,7 +23,11 @@ import { createDevGraphLifecycleRouter } from './routes/devGraphLifecycle.js';
 import { createAgentPrioritiesRouter } from './routes/agentPriorities.js';
 import { createAdminDomainsRouter } from './routes/adminDomains.js';
 import type { LifecycleService } from '@omadia/knowledge-graph-neon/dist/lifecycleService.js';
-import type { AgentPrioritiesStore, BulkPromotionService } from '@omadia/plugin-api';
+import type {
+  AgentPrioritiesStore,
+  BulkPromotionService,
+  InconsistencyDetectorService,
+} from '@omadia/plugin-api';
 import { createHarnessAdminUiRouter } from './routes/harnessAdminUi.js';
 import { createStoreRouter } from './routes/store.js';
 import { createInstallRouter } from './routes/install.js';
@@ -984,6 +989,31 @@ async function main(): Promise<void> {
       '[middleware] bulk-promotion endpoint skipped — service not published (Neon backend missing?)',
     );
   }
+
+  // Slice 9 — inconsistency detection workflow. Always mount (the
+  // routes work without a detector — manual /detect 503s, list/get/
+  // resolve work because they only touch the KG). Resolve hits the
+  // CURRENT registry entry (= the inconsistency-triggering wrapper
+  // when orchestrator-extras is active) so a_wins/b_wins re-fire
+  // detection on the surviving MK automatically. `requireAuth` gates
+  // the router, consistent with the other /api/v1/admin/* mounts;
+  // Werkstatt optionalAuth dropped per OB-106.
+  const inconsistencyDetectorSvc =
+    serviceRegistry.get<InconsistencyDetectorService>('inconsistencyDetector');
+  const wrappedKgForRoutes =
+    serviceRegistry.get<typeof knowledgeGraph>('knowledgeGraph') ??
+    knowledgeGraph;
+  app.use(
+    '/api/v1/admin/inconsistencies',
+    requireAuth,
+    createInconsistenciesRouter({
+      graph: wrappedKgForRoutes,
+      ...(inconsistencyDetectorSvc ? { detector: inconsistencyDetectorSvc } : {}),
+    }),
+  );
+  console.log(
+    `[middleware] inconsistencies endpoint ready at /api/v1/admin/inconsistencies (detector=${inconsistencyDetectorSvc ? 'on' : 'off'})`,
+  );
 
   // Privacy-Shield v2 (Slice S-7) — Operator-UI backend. Mounted under
   // /api/v1/operator/privacy/* (same convention as the rest of v1

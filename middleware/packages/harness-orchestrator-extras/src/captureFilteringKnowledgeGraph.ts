@@ -60,6 +60,12 @@ import type {
   MemorableKnowledgeHit,
   ExcerptSearchOptions,
   PalaiaExcerptHit,
+  CreateInconsistencyInput,
+  InconsistencyNode,
+  InconsistencyResolution,
+  ListInconsistenciesOptions,
+  ListMemoriesForScopeOptions,
+  MemoriesProvenanceView,
 } from '@omadia/plugin-api';
 import {
   sessionNodeId,
@@ -292,5 +298,46 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
     opts: ExcerptSearchOptions,
   ): Promise<PalaiaExcerptHit[]> {
     return this.inner.searchExcerptsByEmbedding(opts);
+  }
+
+  listInconsistencies(
+    opts: ListInconsistenciesOptions,
+  ): Promise<InconsistencyNode[]> {
+    return this.inner.listInconsistencies(opts);
+  }
+
+  getInconsistency(
+    inconsistencyExternalId: string,
+    viewerOmadiaUserId: string,
+  ): Promise<InconsistencyNode | null> {
+    return this.inner.getInconsistency(
+      inconsistencyExternalId,
+      viewerOmadiaUserId,
+    );
+  }
+
+  createInconsistency(
+    input: CreateInconsistencyInput,
+  ): Promise<InconsistencyNode | null> {
+    return this.inner.createInconsistency(input);
+  }
+
+  resolveInconsistency(
+    inconsistencyExternalId: string,
+    resolution: InconsistencyResolution,
+    actor: AclMutationOptions,
+  ): Promise<InconsistencyNode> {
+    return this.inner.resolveInconsistency(
+      inconsistencyExternalId,
+      resolution,
+      actor,
+    );
+  }
+
+  listMemoriesForScope(
+    scope: string | undefined,
+    opts?: ListMemoriesForScopeOptions,
+  ): Promise<MemoriesProvenanceView> {
+    return this.inner.listMemoriesForScope(scope, opts);
   }
 }

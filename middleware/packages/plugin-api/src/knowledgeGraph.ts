@@ -1,4 +1,10 @@
 import type { EntityRef } from './entityRef.js';
+import type {
+  CreateInconsistencyInput,
+  InconsistencyNode,
+  InconsistencyResolution,
+  ListInconsistenciesOptions,
+} from './inconsistency.js';
 
 /**
  * The knowledge-graph surface the rest of the middleware talks to. Ingests
@@ -236,6 +242,114 @@ export interface KnowledgeGraph {
   searchExcerptsByEmbedding(
     opts: ExcerptSearchOptions,
   ): Promise<PalaiaExcerptHit[]>;
+  /**
+   * Slice 9 — list inconsistency markers visible to the viewer.
+   * ACL gate: viewer must own at least one of the two conflicting
+   * MKs (union, not intersection — single-owner pairs would
+   * otherwise be invisible to anyone). Filtered by status when
+   * provided; default lists all.
+   */
+  listInconsistencies(
+    opts: ListInconsistenciesOptions,
+  ): Promise<InconsistencyNode[]>;
+  /**
+   * Slice 9 — read a single Inconsistency. Returns null when the
+   * viewer doesn't own at least one of the conflicting MKs (404
+   * doesn't leak existence to non-owners).
+   */
+  getInconsistency(
+    inconsistencyExternalId: string,
+    viewerOmadiaUserId: string,
+  ): Promise<InconsistencyNode | null>;
+  /**
+   * Slice 9 — persist a new Inconsistency between two MKs. Idempotent:
+   * returns null when an Inconsistency between the same two MKs
+   * (regardless of order) already exists, even if it's already
+   * resolved or dismissed (operator already saw it; don't re-flag).
+   */
+  createInconsistency(
+    input: CreateInconsistencyInput,
+  ): Promise<InconsistencyNode | null>;
+  /**
+   * Slice 9 — operator resolves an open Inconsistency. The actor
+   * must own at least one of the two conflicting MKs. Side-effects
+   * depend on `resolution`:
+   *   - `a_wins`  → deletes mkB via `deleteMemory(mkB, actor)`
+   *   - `b_wins`  → deletes mkA via `deleteMemory(mkA, actor)`
+   *   - `both`    → no MK changes; conflict marked resolved
+   *   - `dismiss` → no MK changes; conflict marked dismissed
+   * Throws `inconsistency_not_found`, `not_an_owner`, or
+   * `already_resolved` accordingly.
+   */
+  resolveInconsistency(
+    inconsistencyExternalId: string,
+    resolution: InconsistencyResolution,
+    actor: AclMutationOptions,
+  ): Promise<InconsistencyNode>;
+  /**
+   * Dev-UI · Memory Focused View — list every memory (MemorableKnowledge
+   * + PalaiaExcerpt) anchored to the given scope along with its 2-hop
+   * provenance ancestors, pre-resolved in a single round-trip. ACL is
+   * intentionally NOT enforced: the endpoint that exposes this method
+   * (`GET /dev/graph/memories`) sits behind `DEV_ENDPOINTS_ENABLED` and
+   * is never reachable in production.
+   *
+   * Provenance chain (per `schema.ts`):
+   *   `PalaiaExcerpt -EXCERPT_OF-> MK -DERIVED_FROM-> Turn -IN_SESSION-> Session`
+   *   `MK -INVOLVED-> User`, `MK -REQUIRES-> Entity`
+   *
+   * Per-memory `level1` / `level2` contents:
+   *   - MK:      L1 = Turn + INVOLVED Users + REQUIRES Entities;
+   *              L2 = Session
+   *   - Excerpt: L1 = parent MK;
+   *              L2 = MK's own L1 (Turn + Users + Entities)
+   *
+   * When `scope` is omitted, returns memories across every session
+   * (cap remains `limit`). The companion `edges` array carries the real
+   * graph_edges rows so the canvas can render them with their actual
+   * labels instead of guessing.
+   */
+  listMemoriesForScope(
+    scope: string | undefined,
+    opts?: ListMemoriesForScopeOptions,
+  ): Promise<MemoriesProvenanceView>;
+}
+
+/**
+ * Single memory row + its 2-hop provenance neighbours. See
+ * {@link KnowledgeGraph.listMemoriesForScope} for the level semantics.
+ */
+export interface MemoryWithAncestors {
+  node: GraphNode;
+  level1: GraphNode[];
+  level2: GraphNode[];
+}
+
+/**
+ * Edge row exposed alongside {@link MemoryWithAncestors}. `from` and
+ * `to` are `external_id`s (matching `GraphNode.id`) so the frontend can
+ * dedupe via the same key space it already uses.
+ */
+export interface MemoryProvenanceEdge {
+  from: string;
+  to: string;
+  type: GraphEdgeType;
+}
+
+/** Top-level payload returned by `listMemoriesForScope`. */
+export interface MemoriesProvenanceView {
+  memories: MemoryWithAncestors[];
+  edges: MemoryProvenanceEdge[];
+}
+
+/** Options for {@link KnowledgeGraph.listMemoriesForScope}. */
+export interface ListMemoriesForScopeOptions {
+  /** Max MK count returned. Excerpts are bounded by their parent MK's
+   *  presence in the result. Clamped to [1, 500]. Default 200. */
+  limit?: number;
+  /** When false, omits PalaiaExcerpt rows from the result entirely.
+   *  Default true. */
+  includeExcerpts?: boolean;
 }
 
 /** Slice 7 — input for `searchMemorableKnowledgeByEmbedding`. */
@@ -314,7 +428,12 @@ export type GraphNodeType =
    *  carries `text`, `position` (0-4), `source` ('llm'|'hint'|
    *  'fallback') in `props`. Linked to its parent MK via
    *  `EXCERPT_OF`. */
-  | 'PalaiaExcerpt';
+  | 'PalaiaExcerpt'
+  /** Slice 9 — contradiction marker between two semantically-similar
+   *  MemorableKnowledge nodes whose content disagrees. Carries
+   *  `summary`, `severity`, `status`, `resolution` in `props`. Linked
+   *  to BOTH offending MKs via `CONFLICTS_WITH`. */
+  | 'Inconsistency';
 export type GraphEdgeType =
   | 'IN_SESSION'
   | 'NEXT_TURN'
@@ -335,7 +454,11 @@ export type GraphEdgeType =
   | 'REQUIRES'
   /** Slice 6.5 — PalaiaExcerpt → MemorableKnowledge. The verbatim
    *  source-snippet "belongs to" the curated memory it underpins. */
-  | 'EXCERPT_OF';
+  | 'EXCERPT_OF'
+  /** Slice 9 — Inconsistency → MemorableKnowledge. Two edges per
+   *  Inconsistency, one per conflicting MK. Direction: from the
+   *  marker to the MKs it flags. */
+  | 'CONFLICTS_WITH';
 
 export type FactSeverity = 'info' | 'warning' | 'critical';
 
@@ -1060,6 +1183,15 @@ export function memorableKnowledgeNodeId(memorableId: string): string {
  */
 export function palaiaExcerptNodeId(excerptId: string): string {
   return `excerpt:${excerptId}`;
+}
+
+/**
+ * Slice 9 — external_id for an Inconsistency node. Stable uuid
+ * generated per-conflict on persist; the offending MKs are reachable
+ * via the two CONFLICTS_WITH edges.
+ */
+export function inconsistencyNodeId(inconsistencyId: string): string {
+  return `inconsistency:${inconsistencyId}`;
 }
 
 export function runNodeId(turnExternalId: string): string {

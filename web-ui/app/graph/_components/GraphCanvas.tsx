@@ -15,6 +15,7 @@ import {
   TRACE_TYPES,
   type GraphFilter,
   type GraphNode,
+  type MemoryView,
   type NodeType,
   type RunTraceView,
   type SessionView,
@@ -40,6 +41,15 @@ interface Props {
   extraSessions?: SessionView[];
   runs: Record<string, RunTraceView>;
   expansions: ExpansionNeighbor[];
+  /** Slice — Palaia Focused View. When present and the filter has
+   *  `showMemories=true` (or `focusMemories` is set), MemorableKnowledge
+   *  + PalaiaExcerpt nodes plus their 2-hop provenance edges are merged
+   *  into the rendered graph. */
+  memoryView?: MemoryView | null;
+  /** When true the canvas hides everything except the memory subgraph
+   *  (memories + Lvl-1 + Lvl-2 ancestors). Used by the dedicated
+   *  "Memory" view-mode tab and the "🧠 Alle Memories" sidebar entry. */
+  focusMemories?: boolean;
   selectedId: string | null;
   filter?: GraphFilter;
   onSelectNode: (node: GraphNode | null) => void;
@@ -64,6 +74,8 @@ function buildElements(
   runs: Record<string, RunTraceView>,
   expansions: ExpansionNeighbor[],
   filter: GraphFilter,
+  memoryView: MemoryView | null,
+  focusMemories: boolean,
 ): BuiltElements {
   const nodes = new Map<string, GraphNode>();
   const edges = new Map<string, ElementDefinition>();
@@ -218,6 +230,30 @@ function buildElements(
     }
   }
 
+  // Memory Focused View — inject MK/Excerpt nodes + the 2-hop provenance
+  // edges returned by `/dev/graph/memories`. The toggle is gated by either
+  // `showMemories` (overlay in the regular graph view) or `focusMemories`
+  // (dedicated Memory tab / sidebar entry).
+  const memorySet = new Set<string>();
+  if (memoryView && (filter.showMemories || focusMemories)) {
+    for (const m of memoryView.memories) {
+      addNode(m.node);
+      memorySet.add(m.node.id);
+      for (const n of m.level1) {
+        addNode(n);
+        memorySet.add(n.id);
+      }
+      for (const n of m.level2) {
+        addNode(n);
+        memorySet.add(n.id);
+      }
+    }
+    for (const e of memoryView.edges) {
+      if (!nodes.has(e.from) || !nodes.has(e.to)) continue;
+      addEdge(e.from, e.to, e.type);
+    }
+  }
+
   // Prune isolated entity nodes when the user has no way to see them
   // connected (no PRODUCED, no MENTIONS edge, no expansion). Avoids floating
   // dots that carry no relational meaning in the current view.
@@ -230,6 +266,15 @@ function buildElements(
     }
     for (const [id, n] of [...nodes]) {
       if (ENTITY_TYPES.has(n.type) && !connected.has(id)) nodes.delete(id);
+    }
+  }
+
+  // Focused Memory mode — drop every node + edge that isn't part of the
+  // memory subgraph. Cleaner canvas with only ⭐/❝ memories and their
+  // direct ancestors visible.
+  if (focusMemories && memoryView) {
+    for (const [id] of [...nodes]) {
+      if (!memorySet.has(id)) nodes.delete(id);
     }
   }
 
@@ -317,6 +362,8 @@ export default function GraphCanvas({
   extraSessions = [],
   runs,
   expansions,
+  memoryView = null,
+  focusMemories = false,
   selectedId,
   filter = DEFAULT_FILTER,
   onSelectNode,
@@ -328,8 +375,17 @@ export default function GraphCanvas({
   const nodesRef = useRef<Map<string, GraphNode>>(new Map());
 
   const { nodes, elements } = useMemo(
-    () => buildElements(session, extraSessions, runs, expansions, filter),
-    [session, extraSessions, runs, expansions, filter],
+    () =>
+      buildElements(
+        session,
+        extraSessions,
+        runs,
+        expansions,
+        filter,
+        memoryView,
+        focusMemories,
+      ),
+    [session, extraSessions, runs, expansions, filter, memoryView, focusMemories],
   );
   // Synced via a post-render effect (never during render) to satisfy the
   // React-Compiler `refs` rule; the only reader is the cytoscape `tap` handler,
@@ -440,6 +496,16 @@ export default function GraphCanvas({
             'line-style': 'dotted',
             width: 1,
             opacity: 0.35,
+          },
+        },
+        {
+          selector:
+            'edge[label = "DERIVED_FROM"], edge[label = "EXCERPT_OF"], edge[label = "INVOLVED"], edge[label = "REQUIRES"], edge[label = "IN_SESSION"]',
+          style: {
+            'line-color': '#d946ef',
+            'target-arrow-color': '#d946ef',
+            width: 1.5,
+            opacity: 0.85,
           },
         },
         // Trace scaffolding edges fade into the background.
@@ -648,10 +714,15 @@ function Legend({
       ['ToolCall', 'Tool'],
     );
   }
+  if (filter.showMemories) {
+    items.push(['MemorableKnowledge', 'Memory'], ['PalaiaExcerpt', 'Excerpt']);
+  }
   const edgeRows: Array<[string, string]> = [['#10b981', 'PRODUCED']];
   edgeRows.push(['#ec4899', 'TRIGGERED']);
   if (filter.showCrossRefs) edgeRows.push(['#a855f7', 'RELATED']);
   if (filter.showMentions) edgeRows.push(['#94a3b8', 'MENTIONS']);
+  if (filter.showMemories)
+    edgeRows.push(['#d946ef', 'Provenance (DERIVED · EXCERPT · …)']);
 
   return (
     <div

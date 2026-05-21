@@ -2541,3 +2541,74 @@ export async function runBulkPromote(
     options,
   );
 }
+
+// ── Slice 9 — Contradiction detection workflow ───────────────────────────────
+
+export type InconsistencyStatus = 'open' | 'resolved' | 'dismissed';
+export type InconsistencyResolution =
+  | 'a_wins' | 'b_wins' | 'both' | 'dismiss';
+export type InconsistencySeverity = 'low' | 'medium' | 'high';
+
+export interface InconsistencyNodeDto {
+  id: string;
+  type: 'Inconsistency';
+  props: {
+    summary: string;
+    severity: InconsistencySeverity;
+    status: InconsistencyStatus;
+    resolution: InconsistencyResolution | null;
+    created_at: string;
+    resolved_at: string | null;
+    resolved_by: string | null;
+  };
+  conflictsWith: [string, string];
+}
+
+export interface InconsistencyDetailDto extends InconsistencyNodeDto {
+  mkA: MemorableKnowledgeNode | null;
+  mkB: MemorableKnowledgeNode | null;
+}
+
+export interface ListInconsistenciesResponse {
+  items: InconsistencyDetailDto[];
+}
+
+export async function listInconsistencies(opts: {
+  status?: InconsistencyStatus;
+  limit?: number;
+} = {}): Promise<ListInconsistenciesResponse> {
+  const params = new URLSearchParams();
+  if (opts.status) params.set('status', opts.status);
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return getJson<ListInconsistenciesResponse>(
+    `/v1/admin/inconsistencies${qs ? `?${qs}` : ''}`,
+  );
+}
+
+export async function getInconsistencyDetail(
+  id: string,
+): Promise<InconsistencyDetailDto> {
+  return getJson<InconsistencyDetailDto>(
+    `/v1/admin/inconsistencies/${encodeURIComponent(id)}`,
+  );
+}
+
+export async function resolveInconsistency(
+  id: string,
+  body: { resolution: InconsistencyResolution; reason?: string },
+): Promise<InconsistencyNodeDto> {
+  return postJson<InconsistencyNodeDto>(
+    `/v1/admin/inconsistencies/${encodeURIComponent(id)}/resolve`,
+    body,
+  );
+}
+
+export async function triggerInconsistencyDetect(
+  mkId: string,
+): Promise<{ candidatesScanned: number; inconsistenciesCreated: number }> {
+  return postJson<{ candidatesScanned: number; inconsistenciesCreated: number }>(
+    '/v1/admin/inconsistencies/detect',
+    { mkId },
+  );
+}

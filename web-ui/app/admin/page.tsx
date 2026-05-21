@@ -49,6 +49,11 @@ export default function AdminIndexPage(): React.ReactElement {
           title="Memory · Bulk-Promotion"
           description="Historische Turns nachträglich auf Significance scoren und bei hoher Bewertung als MemorableKnowledge promoten. Idempotent."
         />
+        <AdminCard
+          href="/admin/inconsistencies"
+          title="Memory · Widersprüche"
+          description="Semantisch ähnliche Memories mit widersprüchlichen Aussagen — Operator entscheidet welche korrekt ist (oder ob beide gelten)."
+        />
       </ul>
     </main>
   );

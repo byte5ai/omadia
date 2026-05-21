@@ -73,3 +73,10 @@ export * from './palaiaExcerpt.js';
 // pipeline. Provider lives in `harness-orchestrator-extras/src/
 // bulkPromotion.ts`.
 export * from './bulkPromotion.js';
+
+// KG-ACL Slice 9: contradiction detection on MemorableKnowledge.
+// Two semantically-similar MKs with disagreeing content become an
+// `Inconsistency` node + two `CONFLICTS_WITH` edges. Operator
+// resolves manually via /admin/inconsistencies. Provider lives in
+// `harness-orchestrator-extras/src/inconsistencyDetector.ts`.
+export * from './inconsistency.js';

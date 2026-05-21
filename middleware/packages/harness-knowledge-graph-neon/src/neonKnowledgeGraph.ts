@@ -6,6 +6,7 @@ import {
   agentInvocationNodeId,
   channelIdentityNodeId,
   entityNodeId,
+  inconsistencyNodeId,
   memorableKnowledgeNodeId,
   palaiaExcerptNodeId,
   runNodeId,
@@ -31,9 +32,18 @@ import {
   type AclAuditEntry,
   type AclMutationOptions,
   type ListMemorableKnowledgeOptions,
+  type CreateInconsistencyInput,
   type ExcerptSearchOptions,
   type ExcerptSource,
+  type InconsistencyNode,
+  type InconsistencyResolution,
+  type InconsistencyStatus,
+  type ListInconsistenciesOptions,
+  type ListMemoriesForScopeOptions,
   type MemorableKnowledgeHit,
+  type MemoriesProvenanceView,
+  type MemoryProvenanceEdge,
+  type MemoryWithAncestors,
   type MemorableKnowledgeIngest,
   type MemorableKnowledgeIngestResult,
   type MemorableKnowledgeSearchOptions,
@@ -2262,6 +2272,254 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     }
   }
 
+  // ─── Slice 9 — Inconsistency persistence + resolve ──────────────────
+
+  /**
+   * Build an InconsistencyNode from the stored properties. The
+   * `mk_pair` property is the source of truth for the conflicting
+   * MKs — robust to a_wins/b_wins which delete the loser + cascade
+   * its CONFLICTS_WITH edge.
+   */
+  private hydrateInconsistency(
+    externalId: string,
+    properties: InconsistencyNode['props'] & { mk_pair?: [string, string] },
+  ): InconsistencyNode | null {
+    const pair = properties.mk_pair;
+    if (!Array.isArray(pair) || pair.length !== 2) return null;
+    return {
+      id: externalId,
+      type: 'Inconsistency' as const,
+      props: properties,
+      conflictsWith: [pair[0], pair[1]],
+    };
+  }
+
+  async createInconsistency(
+    input: CreateInconsistencyInput,
+  ): Promise<InconsistencyNode | null> {
+    if (input.mkAExternalId === input.mkBExternalId) return null;
+    const sortedPair: [string, string] = [
+      input.mkAExternalId,
+      input.mkBExternalId,
+    ].sort() as [string, string];
+
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Idempotency: dedupe-check on the (sorted) pair regardless of
+      // the existing record's status — operator already saw it.
+      const existing = await client.query<{ external_id: string }>(
+        `SELECT ix.external_id
+           FROM graph_nodes ix
+           JOIN graph_edges e1 ON e1.from_node = ix.id AND e1.type = 'CONFLICTS_WITH'
+           JOIN graph_nodes mk1 ON mk1.id = e1.to_node
+           JOIN graph_edges e2 ON e2.from_node = ix.id AND e2.type = 'CONFLICTS_WITH'
+           JOIN graph_nodes mk2 ON mk2.id = e2.to_node
+          WHERE ix.tenant_id = $1
+            AND ix.type = 'Inconsistency'
+            AND mk1.external_id = $2
+            AND mk2.external_id = $3
+          LIMIT 1`,
+        [this.tenantId, sortedPair[0], sortedPair[1]],
+      );
+      if (existing.rows.length > 0) {
+        await client.query('COMMIT');
+        return null;
+      }
+
+      // Resolve the two MK uuids upfront so we can fail-fast if one is
+      // missing (race with deleteMemory).
+      const mkRows = await client.query<{ id: string; external_id: string }>(
+        `SELECT id, external_id FROM graph_nodes
+          WHERE tenant_id = $1
+            AND type = 'MemorableKnowledge'
+            AND external_id = ANY($2::text[])`,
+        [this.tenantId, sortedPair],
+      );
+      if (mkRows.rows.length !== 2) {
+        await client.query('COMMIT');
+        return null;
+      }
+
+      const now = new Date().toISOString();
+      const externalId = inconsistencyNodeId(randomUUID());
+      const props = validateNodeProps('Inconsistency', {
+        summary: input.summary,
+        severity: input.severity,
+        status: 'open' as const,
+        resolution: null,
+        created_at: now,
+        resolved_at: null,
+        resolved_by: null,
+        mk_pair: sortedPair,
+      });
+      const ixUuid = await this.upsertNode(client, {
+        externalId,
+        type: 'Inconsistency',
+        scope: null,
+        userId: null,
+        props,
+      });
+      for (const mk of mkRows.rows) {
+        await this.upsertEdge(client, {
+          type: 'CONFLICTS_WITH',
+          fromUuid: ixUuid,
+          toUuid: mk.id,
+        });
+      }
+
+      await client.query('COMMIT');
+      return this.hydrateInconsistency(
+        externalId,
+        props as InconsistencyNode['props'] & { mk_pair: [string, string] },
+      );
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async listInconsistencies(
+    opts: ListInconsistenciesOptions,
+  ): Promise<InconsistencyNode[]> {
+    const limit = Math.max(1, Math.min(opts.limit ?? 50, 200));
+    // Surface inconsistencies where the viewer owns at least one of
+    // the two conflicting MKs (union-ACL).
+    const rows = await this.pool.query<{
+      external_id: string;
+      properties: InconsistencyNode['props'];
+    }>(
+      `SELECT DISTINCT ix.external_id, ix.properties
+         FROM graph_nodes ix
+         JOIN graph_edges e ON e.from_node = ix.id AND e.type = 'CONFLICTS_WITH'
+         JOIN graph_nodes mk ON mk.id = e.to_node AND mk.type = 'MemorableKnowledge'
+        WHERE ix.tenant_id = $1
+          AND ix.type = 'Inconsistency'
+          AND mk.properties->'acl_owners' @> jsonb_build_array($2::text)
+          AND ($3::text IS NULL OR ix.properties->>'status' = $3)
+        ORDER BY ix.external_id DESC
+        LIMIT $4`,
+      [this.tenantId, opts.viewerOmadiaUserId, opts.status ?? null, limit],
+    );
+    const out: InconsistencyNode[] = [];
+    for (const row of rows.rows) {
+      const node = this.hydrateInconsistency(
+        row.external_id,
+        row.properties as InconsistencyNode['props'] & { mk_pair: [string, string] },
+      );
+      if (node) out.push(node);
+    }
+    return out;
+  }
+
+  async getInconsistency(
+    externalId: string,
+    viewerOmadiaUserId: string,
+  ): Promise<InconsistencyNode | null> {
+    const rows = await this.pool.query<{
+      properties: InconsistencyNode['props'];
+      owns_one: boolean;
+    }>(
+      `SELECT ix.properties,
+              EXISTS(
+                SELECT 1
+                  FROM graph_edges e
+                  JOIN graph_nodes mk ON mk.id = e.to_node
+                 WHERE e.from_node = ix.id
+                   AND e.type = 'CONFLICTS_WITH'
+                   AND mk.type = 'MemorableKnowledge'
+                   AND mk.properties->'acl_owners' @> jsonb_build_array($3::text)
+              ) AS owns_one
+         FROM graph_nodes ix
+        WHERE ix.tenant_id = $1
+          AND ix.external_id = $2
+          AND ix.type = 'Inconsistency'
+        LIMIT 1`,
+      [this.tenantId, externalId, viewerOmadiaUserId],
+    );
+    const hit = rows.rows[0];
+    if (!hit || !hit.owns_one) return null;
+    return this.hydrateInconsistency(
+      externalId,
+      hit.properties as InconsistencyNode['props'] & { mk_pair: [string, string] },
+    );
+  }
+
+  async resolveInconsistency(
+    externalId: string,
+    resolution: InconsistencyResolution,
+    actor: AclMutationOptions,
+  ): Promise<InconsistencyNode> {
+    const existing = await this.getInconsistency(
+      externalId,
+      actor.actorOmadiaUserId,
+    );
+    if (!existing) {
+      throw Object.assign(new Error('inconsistency_not_found'), {
+        code: 'inconsistency_not_found',
+      });
+    }
+    if (existing.props.status !== 'open') {
+      throw Object.assign(new Error('already_resolved'), {
+        code: 'already_resolved',
+      });
+    }
+
+    // Map resolution → terminal status. dismiss = false-positive →
+    // 'dismissed'; everything else = 'resolved'.
+    const terminalStatus: InconsistencyStatus =
+      resolution === 'dismiss' ? 'dismissed' : 'resolved';
+
+    // a_wins / b_wins: delete the loser BEFORE marking resolved so a
+    // failed delete (not_an_owner) leaves the inconsistency open.
+    if (resolution === 'a_wins') {
+      await this.deleteMemory(existing.conflictsWith[1], actor);
+    } else if (resolution === 'b_wins') {
+      await this.deleteMemory(existing.conflictsWith[0], actor);
+    }
+
+    const now = new Date().toISOString();
+    // existing.props comes from hydrateInconsistency which spread the
+    // entire property bag — the mk_pair Zod-passthrough survives.
+    const nextProps = {
+      ...(existing.props as Record<string, unknown>),
+      status: terminalStatus,
+      resolution,
+      resolved_at: now,
+      resolved_by: actor.actorOmadiaUserId,
+      // Defensive: ensure mk_pair lands in the next-write even if the
+      // existing record predates the schema field.
+      mk_pair: existing.conflictsWith,
+    };
+    const validated = validateNodeProps('Inconsistency', nextProps);
+    await this.pool.query(
+      `UPDATE graph_nodes
+          SET properties = $2::jsonb
+        WHERE tenant_id = $1
+          AND external_id = $3
+          AND type = 'Inconsistency'`,
+      [this.tenantId, JSON.stringify(validated), externalId],
+    );
+
+    const refetched = this.hydrateInconsistency(
+      externalId,
+      validated as InconsistencyNode['props'] & { mk_pair: [string, string] },
+    );
+    if (!refetched) {
+      // Should be unreachable — at least one of the MKs was deleted
+      // by a_wins/b_wins; the surviving one remains. Fallback:
+      // synthesise from existing.
+      return {
+        ...existing,
+        props: validated as InconsistencyNode['props'],
+      };
+    }
+    return refetched;
+  }
+
   async listMemoryAclAudit(
     memorableKnowledgeNodeId: string,
     opts: { limit?: number } = {},
@@ -2310,6 +2568,219 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           ? r.created_at.toISOString()
           : String(r.created_at),
     }));
+  }
+
+  async listMemoriesForScope(
+    scope: string | undefined,
+    opts: ListMemoriesForScopeOptions = {},
+  ): Promise<MemoriesProvenanceView> {
+    const limit = Math.max(1, Math.min(opts.limit ?? 200, 500));
+    const includeExcerpts = opts.includeExcerpts !== false;
+    const scopeArg = scope ?? null;
+
+    // Step 1: anchor MK UUIDs. When a scope is given, only MKs whose
+    // DERIVED_FROM provenance lands in a Turn of that scope qualify; in
+    // __ALL__ mode every MK is eligible (newest first, capped by limit).
+    const mkRows = await this.pool.query<NodeRow>(
+      `
+      SELECT ${NODE_COLUMNS.split(', ')
+        .map((c) => `mk.${c}`)
+        .join(', ')}
+      FROM graph_nodes mk
+      WHERE mk.tenant_id = $1
+        AND mk.type = 'MemorableKnowledge'
+        AND (
+          $2::text IS NULL
+          OR EXISTS (
+            SELECT 1
+            FROM graph_edges e
+            JOIN graph_nodes t ON t.id = e.to_node
+            WHERE e.from_node = mk.id
+              AND e.type = 'DERIVED_FROM'
+              AND e.tenant_id = $1
+              AND t.tenant_id = $1
+              AND t.type = 'Turn'
+              AND t.scope = $2
+          )
+        )
+      ORDER BY mk.created_at DESC
+      LIMIT $3
+      `,
+      [this.tenantId, scopeArg, limit],
+    );
+
+    if (mkRows.rows.length === 0) {
+      return { memories: [], edges: [] };
+    }
+
+    const mkExtIdByUuid = new Map<string, string>();
+    const mkNodeByExtId = new Map<string, GraphNode>();
+    const mkUuids: string[] = [];
+    for (const r of mkRows.rows) {
+      const node = rowToNode(r);
+      mkExtIdByUuid.set(r.id, node.id);
+      mkNodeByExtId.set(node.id, node);
+      mkUuids.push(r.id);
+    }
+
+    // Step 2: load Lvl-1 neighbours (Turn / User / Entity) of every MK.
+    const lvl1Rows = await this.pool.query<
+      NodeRow & { from_uuid: string; edge_type: string }
+    >(
+      `
+      SELECT e.from_node AS from_uuid,
+             e.type      AS edge_type,
+             ${NODE_COLUMNS.split(', ')
+               .map((c) => `n.${c}`)
+               .join(', ')}
+      FROM graph_edges e
+      JOIN graph_nodes n ON n.id = e.to_node
+      WHERE e.tenant_id = $1
+        AND e.from_node = ANY($2::uuid[])
+        AND e.type IN ('DERIVED_FROM', 'INVOLVED', 'REQUIRES')
+        AND n.tenant_id = $1
+      `,
+      [this.tenantId, mkUuids],
+    );
+
+    const level1ByMk = new Map<string, GraphNode[]>();
+    const turnUuidsByMk = new Map<string, string[]>();
+    const turnExtIdByUuid = new Map<string, string>();
+    const edges: MemoryProvenanceEdge[] = [];
+
+    for (const r of lvl1Rows.rows) {
+      const mkExtId = mkExtIdByUuid.get(r.from_uuid);
+      if (mkExtId === undefined) continue;
+      const node = rowToNode(r);
+      const list = level1ByMk.get(mkExtId) ?? [];
+      list.push(node);
+      level1ByMk.set(mkExtId, list);
+      edges.push({
+        from: mkExtId,
+        to: node.id,
+        type: r.edge_type as GraphEdgeType,
+      });
+      if (r.edge_type === 'DERIVED_FROM' && node.type === 'Turn') {
+        turnExtIdByUuid.set(r.id, node.id);
+        const turns = turnUuidsByMk.get(mkExtId) ?? [];
+        turns.push(r.id);
+        turnUuidsByMk.set(mkExtId, turns);
+      }
+    }
+
+    // Step 3: Lvl-2 = Session via IN_SESSION from every Lvl-1 Turn.
+    const allTurnUuids = [...turnExtIdByUuid.keys()];
+    const level2ByMk = new Map<string, GraphNode[]>();
+    if (allTurnUuids.length > 0) {
+      const sessionRows = await this.pool.query<
+        NodeRow & { from_uuid: string; edge_type: string }
+      >(
+        `
+        SELECT e.from_node AS from_uuid,
+               e.type      AS edge_type,
+               ${NODE_COLUMNS.split(', ')
+                 .map((c) => `n.${c}`)
+                 .join(', ')}
+        FROM graph_edges e
+        JOIN graph_nodes n ON n.id = e.to_node
+        WHERE e.tenant_id = $1
+          AND e.from_node = ANY($2::uuid[])
+          AND e.type = 'IN_SESSION'
+          AND n.tenant_id = $1
+          AND n.type = 'Session'
+        `,
+        [this.tenantId, allTurnUuids],
+      );
+
+      const sessionsByTurnExtId = new Map<string, GraphNode[]>();
+      for (const r of sessionRows.rows) {
+        const turnExtId = turnExtIdByUuid.get(r.from_uuid);
+        if (turnExtId === undefined) continue;
+        const node = rowToNode(r);
+        const list = sessionsByTurnExtId.get(turnExtId) ?? [];
+        list.push(node);
+        sessionsByTurnExtId.set(turnExtId, list);
+        edges.push({
+          from: turnExtId,
+          to: node.id,
+          type: 'IN_SESSION',
+        });
+      }
+
+      for (const [mkExtId, turnUuids] of turnUuidsByMk) {
+        const sessions: GraphNode[] = [];
+        const seen = new Set<string>();
+        for (const tUuid of turnUuids) {
+          const tExtId = turnExtIdByUuid.get(tUuid);
+          if (tExtId === undefined) continue;
+          for (const s of sessionsByTurnExtId.get(tExtId) ?? []) {
+            if (seen.has(s.id)) continue;
+            seen.add(s.id);
+            sessions.push(s);
+          }
+        }
+        if (sessions.length > 0) level2ByMk.set(mkExtId, sessions);
+      }
+    }
+
+    // Step 4: Excerpts whose parent MK lives in the result set.
+    const excerptRowsByMk = new Map<string, GraphNode[]>();
+    if (includeExcerpts) {
+      const excerptRows = await this.pool.query<
+        NodeRow & { to_uuid: string }
+      >(
+        `
+        SELECT e.to_node AS to_uuid,
+               ${NODE_COLUMNS.split(', ')
+                 .map((c) => `ex.${c}`)
+                 .join(', ')}
+        FROM graph_edges e
+        JOIN graph_nodes ex ON ex.id = e.from_node
+        WHERE e.tenant_id = $1
+          AND e.to_node = ANY($2::uuid[])
+          AND e.type = 'EXCERPT_OF'
+          AND ex.tenant_id = $1
+          AND ex.type = 'PalaiaExcerpt'
+        ORDER BY (ex.properties->>'position')::int ASC NULLS LAST
+        `,
+        [this.tenantId, mkUuids],
+      );
+
+      for (const r of excerptRows.rows) {
+        const mkExtId = mkExtIdByUuid.get(r.to_uuid);
+        if (mkExtId === undefined) continue;
+        const node = rowToNode(r);
+        const list = excerptRowsByMk.get(mkExtId) ?? [];
+        list.push(node);
+        excerptRowsByMk.set(mkExtId, list);
+        edges.push({
+          from: node.id,
+          to: mkExtId,
+          type: 'EXCERPT_OF',
+        });
+      }
+    }
+
+    // Assemble per-memory provenance views — MKs first (sorted as they
+    // came out of step 1), then their excerpts attached.
+    const memories: MemoryWithAncestors[] = [];
+    for (const r of mkRows.rows) {
+      const mkExtId = r.external_id;
+      const mkNode = mkNodeByExtId.get(mkExtId);
+      if (!mkNode) continue;
+      const mkLevel1 = level1ByMk.get(mkExtId) ?? [];
+      const mkLevel2 = level2ByMk.get(mkExtId) ?? [];
+      memories.push({ node: mkNode, level1: mkLevel1, level2: mkLevel2 });
+      for (const ex of excerptRowsByMk.get(mkExtId) ?? []) {
+        memories.push({
+          node: ex,
+          level1: [mkNode],
+          level2: mkLevel1,
+        });
+      }
+    }
+
+    return { memories, edges };
   }
 
   async findEntities(opts: FindEntitiesOptions): Promise<GraphNode[]> {

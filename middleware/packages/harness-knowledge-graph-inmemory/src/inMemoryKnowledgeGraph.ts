@@ -4,6 +4,7 @@ import {
   agentInvocationNodeId,
   channelIdentityNodeId,
   entityNodeId,
+  inconsistencyNodeId,
   memorableKnowledgeNodeId,
   palaiaExcerptNodeId,
   runNodeId,
@@ -30,9 +31,18 @@ import {
   type AclAuditEntry,
   type AclMutationOptions,
   type ListMemorableKnowledgeOptions,
+  type CreateInconsistencyInput,
   type ExcerptSearchOptions,
   type ExcerptSource,
+  type InconsistencyNode,
+  type InconsistencyResolution,
+  type InconsistencyStatus,
+  type ListInconsistenciesOptions,
+  type ListMemoriesForScopeOptions,
   type MemorableKnowledgeHit,
+  type MemoriesProvenanceView,
+  type MemoryProvenanceEdge,
+  type MemoryWithAncestors,
   type MemorableKnowledgeIngest,
   type MemorableKnowledgeIngestResult,
   type MemorableKnowledgeSearchOptions,
@@ -328,6 +338,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       Fact: 0,
       MemorableKnowledge: 0,
       PalaiaExcerpt: 0,
+      Inconsistency: 0,
     };
     for (const n of this.nodes.values()) byNodeType[n.type]++;
 
@@ -346,6 +357,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       INVOLVED: 0,
       REQUIRES: 0,
       EXCERPT_OF: 0,
+      CONFLICTS_WITH: 0,
     };
     for (const e of this.edges.values()) byEdgeType[e.type]++;
 
@@ -1335,6 +1347,185 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     return hits.slice(0, limit);
   }
 
+  // ─── Slice 9 — Inconsistency persistence + resolve ──────────────────
+
+  private hydrateInconsistency(externalId: string): InconsistencyNode | null {
+    const node = this.nodes.get(externalId);
+    if (!node || node.type !== 'Inconsistency') return null;
+    // Source of truth = the mk_pair property (survives a_wins/b_wins).
+    const pair = node.props['mk_pair'];
+    if (!Array.isArray(pair) || pair.length !== 2) return null;
+    return {
+      id: node.id,
+      type: 'Inconsistency' as const,
+      props: {
+        summary: node.props['summary'] as string,
+        severity: node.props['severity'] as InconsistencyNode['props']['severity'],
+        status: node.props['status'] as InconsistencyStatus,
+        resolution:
+          (node.props['resolution'] as InconsistencyResolution | null) ?? null,
+        created_at: node.props['created_at'] as string,
+        resolved_at: (node.props['resolved_at'] as string | null) ?? null,
+        resolved_by: (node.props['resolved_by'] as string | null) ?? null,
+      },
+      conflictsWith: [pair[0] as string, pair[1] as string],
+    };
+  }
+
+  async createInconsistency(
+    input: CreateInconsistencyInput,
+  ): Promise<InconsistencyNode | null> {
+    if (input.mkAExternalId === input.mkBExternalId) return null;
+    const sortedPair: [string, string] = [
+      input.mkAExternalId,
+      input.mkBExternalId,
+    ].sort() as [string, string];
+
+    // Fail-fast: both MKs must exist.
+    const mkA = this.nodes.get(sortedPair[0]);
+    const mkB = this.nodes.get(sortedPair[1]);
+    if (
+      !mkA ||
+      mkA.type !== 'MemorableKnowledge' ||
+      !mkB ||
+      mkB.type !== 'MemorableKnowledge'
+    ) {
+      return null;
+    }
+
+    // Idempotency: check if any Inconsistency already wires the pair.
+    for (const node of this.nodes.values()) {
+      if (node.type !== 'Inconsistency') continue;
+      const existing = this.hydrateInconsistency(node.id);
+      if (
+        existing &&
+        existing.conflictsWith[0] === sortedPair[0] &&
+        existing.conflictsWith[1] === sortedPair[1]
+      ) {
+        return null;
+      }
+    }
+
+    const now = new Date().toISOString();
+    const externalId = inconsistencyNodeId(randomUUID());
+    this.upsertNode({
+      id: externalId,
+      type: 'Inconsistency',
+      props: {
+        summary: input.summary,
+        severity: input.severity,
+        status: 'open',
+        resolution: null,
+        created_at: now,
+        resolved_at: null,
+        resolved_by: null,
+        mk_pair: sortedPair,
+      },
+    });
+    this.addEdge({
+      type: 'CONFLICTS_WITH',
+      from: externalId,
+      to: sortedPair[0],
+    });
+    this.addEdge({
+      type: 'CONFLICTS_WITH',
+      from: externalId,
+      to: sortedPair[1],
+    });
+    return this.hydrateInconsistency(externalId);
+  }
+
+  async listInconsistencies(
+    opts: ListInconsistenciesOptions,
+  ): Promise<InconsistencyNode[]> {
+    const limit = Math.max(1, Math.min(opts.limit ?? 50, 200));
+    const out: InconsistencyNode[] = [];
+    for (const node of this.nodes.values()) {
+      if (node.type !== 'Inconsistency') continue;
+      if (
+        opts.status !== undefined &&
+        node.props['status'] !== opts.status
+      ) {
+        continue;
+      }
+      const hydrated = this.hydrateInconsistency(node.id);
+      if (!hydrated) continue;
+      // Union-ACL: viewer must own one of the two MKs.
+      const ownsAtLeastOne = hydrated.conflictsWith.some((mkId) => {
+        const mk = this.nodes.get(mkId);
+        const owners = mk?.props['acl_owners'];
+        return (
+          Array.isArray(owners) &&
+          (owners as string[]).includes(opts.viewerOmadiaUserId)
+        );
+      });
+      if (!ownsAtLeastOne) continue;
+      out.push(hydrated);
+      if (out.length >= limit) break;
+    }
+    return out;
+  }
+
+  async getInconsistency(
+    externalId: string,
+    viewerOmadiaUserId: string,
+  ): Promise<InconsistencyNode | null> {
+    const hydrated = this.hydrateInconsistency(externalId);
+    if (!hydrated) return null;
+    const ownsAtLeastOne = hydrated.conflictsWith.some((mkId) => {
+      const mk = this.nodes.get(mkId);
+      const owners = mk?.props['acl_owners'];
+      return (
+        Array.isArray(owners) &&
+        (owners as string[]).includes(viewerOmadiaUserId)
+      );
+    });
+    return ownsAtLeastOne ? hydrated : null;
+  }
+
+  async resolveInconsistency(
+    externalId: string,
+    resolution: InconsistencyResolution,
+    actor: AclMutationOptions,
+  ): Promise<InconsistencyNode> {
+    const existing = await this.getInconsistency(
+      externalId,
+      actor.actorOmadiaUserId,
+    );
+    if (!existing) {
+      throw Object.assign(new Error('inconsistency_not_found'), {
+        code: 'inconsistency_not_found',
+      });
+    }
+    if (existing.props.status !== 'open') {
+      throw Object.assign(new Error('already_resolved'), {
+        code: 'already_resolved',
+      });
+    }
+
+    if (resolution === 'a_wins') {
+      await this.deleteMemory(existing.conflictsWith[1], actor);
+    } else if (resolution === 'b_wins') {
+      await this.deleteMemory(existing.conflictsWith[0], actor);
+    }
+
+    const node = this.nodes.get(externalId);
+    if (!node) {
+      throw Object.assign(new Error('inconsistency_not_found'), {
+        code: 'inconsistency_not_found',
+      });
+    }
+    const now = new Date().toISOString();
+    node.props = {
+      ...node.props,
+      status: resolution === 'dismiss' ? 'dismissed' : 'resolved',
+      resolution,
+      resolved_at: now,
+      resolved_by: actor.actorOmadiaUserId,
+    };
+    return this.hydrateInconsistency(externalId)!;
+  }
+
   async listMemoryAclAudit(
     memorableKnowledgeNodeId: string,
     opts: { limit?: number } = {},
@@ -1346,6 +1537,125 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     // (e.g. createMemorableKnowledge followed by addOwner in the same
     // test tick).
     return [...list].reverse().slice(0, limit);
+  }
+
+  async listMemoriesForScope(
+    scope: string | undefined,
+    opts: ListMemoriesForScopeOptions = {},
+  ): Promise<MemoriesProvenanceView> {
+    const limit = Math.max(1, Math.min(opts.limit ?? 200, 500));
+    const includeExcerpts = opts.includeExcerpts !== false;
+
+    const allMks: GraphNode[] = [];
+    for (const node of this.nodes.values()) {
+      if (node.type !== 'MemorableKnowledge') continue;
+      if (scope !== undefined) {
+        let inScope = false;
+        for (const edge of this.edges.values()) {
+          if (edge.type !== 'DERIVED_FROM' || edge.from !== node.id) continue;
+          const turn = this.nodes.get(edge.to);
+          if (turn?.type === 'Turn' && turn.props['scope'] === scope) {
+            inScope = true;
+            break;
+          }
+        }
+        if (!inScope) continue;
+      }
+      allMks.push(node);
+    }
+    allMks.sort((a, b) => {
+      const at = String(a.props['created_at'] ?? '');
+      const bt = String(b.props['created_at'] ?? '');
+      return bt.localeCompare(at);
+    });
+    const mks = allMks.slice(0, limit);
+    if (mks.length === 0) return { memories: [], edges: [] };
+
+    const mkIds = new Set(mks.map((m) => m.id));
+    const edges: MemoryProvenanceEdge[] = [];
+
+    const level1ByMk = new Map<string, GraphNode[]>();
+    const level2ByMk = new Map<string, GraphNode[]>();
+    const turnsByMk = new Map<string, GraphNode[]>();
+
+    for (const mk of mks) {
+      const lvl1: GraphNode[] = [];
+      const turns: GraphNode[] = [];
+      const seen = new Set<string>();
+      for (const edge of this.edges.values()) {
+        if (edge.from !== mk.id) continue;
+        if (
+          edge.type !== 'DERIVED_FROM' &&
+          edge.type !== 'INVOLVED' &&
+          edge.type !== 'REQUIRES'
+        )
+          continue;
+        const target = this.nodes.get(edge.to);
+        if (!target || seen.has(target.id)) continue;
+        seen.add(target.id);
+        lvl1.push(target);
+        edges.push({ from: mk.id, to: target.id, type: edge.type });
+        if (edge.type === 'DERIVED_FROM' && target.type === 'Turn') {
+          turns.push(target);
+        }
+      }
+      level1ByMk.set(mk.id, lvl1);
+      turnsByMk.set(mk.id, turns);
+    }
+
+    for (const [mkId, turns] of turnsByMk) {
+      const sessions: GraphNode[] = [];
+      const seen = new Set<string>();
+      for (const turn of turns) {
+        for (const edge of this.edges.values()) {
+          if (edge.type !== 'IN_SESSION' || edge.from !== turn.id) continue;
+          const session = this.nodes.get(edge.to);
+          if (!session || seen.has(session.id)) continue;
+          seen.add(session.id);
+          sessions.push(session);
+          edges.push({ from: turn.id, to: session.id, type: 'IN_SESSION' });
+        }
+      }
+      if (sessions.length > 0) level2ByMk.set(mkId, sessions);
+    }
+
+    const excerptsByMk = new Map<string, GraphNode[]>();
+    if (includeExcerpts) {
+      for (const edge of this.edges.values()) {
+        if (edge.type !== 'EXCERPT_OF') continue;
+        if (!mkIds.has(edge.to)) continue;
+        const excerpt = this.nodes.get(edge.from);
+        if (!excerpt || excerpt.type !== 'PalaiaExcerpt') continue;
+        const list = excerptsByMk.get(edge.to) ?? [];
+        list.push(excerpt);
+        excerptsByMk.set(edge.to, list);
+        edges.push({ from: excerpt.id, to: edge.to, type: 'EXCERPT_OF' });
+      }
+      for (const list of excerptsByMk.values()) {
+        list.sort((a, b) => {
+          const ap =
+            typeof a.props['position'] === 'number'
+              ? (a.props['position'] as number)
+              : Number.MAX_SAFE_INTEGER;
+          const bp =
+            typeof b.props['position'] === 'number'
+              ? (b.props['position'] as number)
+              : Number.MAX_SAFE_INTEGER;
+          return ap - bp;
+        });
+      }
+    }
+
+    const memories: MemoryWithAncestors[] = [];
+    for (const mk of mks) {
+      const lvl1 = level1ByMk.get(mk.id) ?? [];
+      const lvl2 = level2ByMk.get(mk.id) ?? [];
+      memories.push({ node: mk, level1: lvl1, level2: lvl2 });
+      for (const excerpt of excerptsByMk.get(mk.id) ?? []) {
+        memories.push({ node: excerpt, level1: [mk], level2: lvl1 });
+      }
+    }
+    return { memories, edges };
   }
 
   async findEntities(opts: FindEntitiesOptions): Promise<GraphNode[]> {

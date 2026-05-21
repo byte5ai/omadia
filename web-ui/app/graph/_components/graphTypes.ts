@@ -80,6 +80,39 @@ export interface Stats {
 }
 
 /**
+ * Memory Focused View payload from `GET /bot-api/dev/graph/memories`.
+ * Each memory carries the 2-hop provenance ancestors the dedicated tab
+ * needs to render the canvas without further /neighbors round-trips.
+ *
+ * Provenance chain:
+ *   `PalaiaExcerpt -EXCERPT_OF-> MK -DERIVED_FROM-> Turn -IN_SESSION-> Session`
+ *   `MK -INVOLVED-> User`, `MK -REQUIRES-> Entity`
+ */
+export interface MemoryWithAncestors {
+  node: GraphNode;
+  level1: GraphNode[];
+  level2: GraphNode[];
+}
+
+/** Real graph_edges row connecting the memory subgraph. */
+export interface MemoryProvenanceEdge {
+  from: string;
+  to: string;
+  type:
+    | 'DERIVED_FROM'
+    | 'INVOLVED'
+    | 'REQUIRES'
+    | 'IN_SESSION'
+    | 'EXCERPT_OF';
+}
+
+export interface MemoryView {
+  scope: string;
+  memories: MemoryWithAncestors[];
+  edges: MemoryProvenanceEdge[];
+}
+
+/**
  * Visibility filter for the Cytoscape canvas. The persistence layer is
  * unchanged — these toggles only control what is rendered.
  *
@@ -93,6 +126,10 @@ export interface GraphFilter {
   showTrace: boolean;
   showMentions: boolean;
   showCrossRefs: boolean;
+  /** Slice — Palaia Focused View. When true, the canvas additionally
+   *  renders MemorableKnowledge + PalaiaExcerpt nodes loaded via
+   *  `/dev/graph/memories`, along with their 2-hop provenance edges. */
+  showMemories: boolean;
 }
 
 export const DEFAULT_FILTER: GraphFilter = {
@@ -100,6 +137,7 @@ export const DEFAULT_FILTER: GraphFilter = {
   showTrace: false,
   showMentions: false,
   showCrossRefs: true,
+  showMemories: false,
 };
 
 export const TRACE_TYPES: ReadonlySet<NodeType> = new Set<NodeType>([

@@ -30,6 +30,10 @@ export const GRAPH_NODE_TYPES = [
   // MemorableKnowledge. Stable provenance anchor; survives MK-PATCH
   // and is the embedding-source for Slice 7 retrieval.
   'PalaiaExcerpt',
+  // Slice 9 — contradiction marker between two semantically-similar
+  // MKs whose content disagrees. Two CONFLICTS_WITH edges per node
+  // point to the offending MKs.
+  'Inconsistency',
 ] as const;
 
 export const GRAPH_EDGE_TYPES = [
@@ -56,6 +60,8 @@ export const GRAPH_EDGE_TYPES = [
   'REQUIRES',
   // Slice 6.5 — PalaiaExcerpt → MemorableKnowledge.
   'EXCERPT_OF',
+  // Slice 9 — Inconsistency → MemorableKnowledge (two per Inconsistency).
+  'CONFLICTS_WITH',
 ] as const;
 
 export const GraphNodeTypeSchema = z.enum(GRAPH_NODE_TYPES);
@@ -276,6 +282,35 @@ const PalaiaExcerptPropsSchema = z
   })
   .passthrough();
 
+// Slice 9 — Inconsistency: contradiction marker between two MKs.
+// `summary` truncated at 1000 to keep the row compact in the operator
+// list; `severity` informs UI sorting; `status` + `resolution` form
+// the operator-resolution state machine (resolution=null while open).
+export const INCONSISTENCY_STATUSES = ['open', 'resolved', 'dismissed'] as const;
+export const INCONSISTENCY_RESOLUTIONS = [
+  'a_wins',
+  'b_wins',
+  'both',
+  'dismiss',
+] as const;
+export const INCONSISTENCY_SEVERITIES = ['low', 'medium', 'high'] as const;
+const InconsistencyPropsSchema = z
+  .object({
+    summary: z.string().min(1).max(1000),
+    severity: z.enum(INCONSISTENCY_SEVERITIES),
+    status: z.enum(INCONSISTENCY_STATUSES),
+    resolution: z.enum(INCONSISTENCY_RESOLUTIONS).nullable(),
+    created_at: z.string().datetime(),
+    resolved_at: z.string().datetime().nullable(),
+    resolved_by: z.string().uuid().nullable(),
+    /** Slice 9 — sorted [mkA, mkB] external_ids stored as properties so
+     *  hydration survives a_wins/b_wins which deletes the loser MK +
+     *  cascades its CONFLICTS_WITH edge. The edges themselves are kept
+     *  for neighbor traversal + dedupe queries. */
+    mk_pair: z.tuple([z.string().min(1), z.string().min(1)]),
+  })
+  .passthrough();
+
 export const NodePropsSchemaByType: Record<
   GraphNodeTypeName,
   z.ZodType<Record<string, unknown>>
@@ -293,6 +328,7 @@ export const NodePropsSchemaByType: Record<
   Fact: FactPropsSchema,
   MemorableKnowledge: MemorableKnowledgePropsSchema,
   PalaiaExcerpt: PalaiaExcerptPropsSchema,
+  Inconsistency: InconsistencyPropsSchema,
 };
 
 export function validateNodeProps(

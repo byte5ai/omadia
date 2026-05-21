@@ -104,3 +104,9 @@ export type { PromoteTurnInput, PromoteTurnResult } from './promotion.js';
 // pipeline the live path uses. Idempotent in both phases.
 export { createBulkPromotionService } from './bulkPromotion.js';
 export type { BulkPromotionDeps } from './bulkPromotion.js';
+
+// KG-ACL Slice 9 — contradiction detector. Per MK create / update /
+// auto-promotion: cosine top-k → Haiku judgement-pass → persist
+// Inconsistency on disagreement. Idempotent on the (sorted) MK pair.
+export { createInconsistencyDetector } from './inconsistencyDetector.js';
+export type { InconsistencyDetectorDeps } from './inconsistencyDetector.js';

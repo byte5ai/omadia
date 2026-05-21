@@ -10,6 +10,7 @@ import type {
 } from '@omadia/plugin-api';
 import {
   BULK_PROMOTION_SERVICE_NAME,
+  INCONSISTENCY_DETECTOR_SERVICE_NAME,
   NUDGE_PROVIDERS_SERVICE_NAME,
   PALAIA_EXCERPT_SERVICE_NAME,
   PROCESS_MEMORY_SERVICE_NAME,
@@ -26,6 +27,8 @@ import type { Pool } from 'pg';
 
 import { createBulkPromotionService } from './bulkPromotion.js';
 import { createHaikuPalaiaExcerptExtractor } from './excerptExtractor.js';
+import { createInconsistencyDetector } from './inconsistencyDetector.js';
+import { InconsistencyTriggeringKnowledgeGraph } from './inconsistencyTriggeringKnowledgeGraph.js';
 import { FactExtractor } from './factExtractor.js';
 import { createHaikuSessionSummaryGenerator } from './sessionSummaryGenerator.js';
 import { createSessionBriefingService } from './sessionBriefing.js';
@@ -251,14 +254,38 @@ export async function activate(
     captureFilter,
   );
 
-  const wrappedKg = new CaptureFilteringKnowledgeGraph({
+  const captureWrappedKg = new CaptureFilteringKnowledgeGraph({
     inner: knowledgeGraph,
     filter: captureFilter,
     log: ctx.log,
   });
+
+  // Slice 9 — Inconsistency detector + triggering wrapper. Stack
+  // order: capture-filter (inner) → inconsistency-trigger (outer).
+  // The trigger fires fire-and-forget AFTER each MK mutation; the
+  // detector calls back into the same wrapped KG via the published
+  // service so its own searches see the same view live readers do.
+  const inconsistencyDetector = createInconsistencyDetector({
+    graph: captureWrappedKg,
+    ...(embeddingClient ? { embeddingClient } : {}),
+    ...(anthropic ? { anthropic, model: factModel } : {}),
+    log: (msg) => { console.error(msg); },
+  });
+  const disposeInconsistencyDetector = ctx.services.provide(
+    INCONSISTENCY_DETECTOR_SERVICE_NAME,
+    inconsistencyDetector,
+  );
+  const wrappedKg = new InconsistencyTriggeringKnowledgeGraph({
+    inner: captureWrappedKg,
+    detector: inconsistencyDetector,
+    log: (msg) => { console.error(msg); },
+  });
   const disposeWrappedKg = ctx.services.replace(
     KNOWLEDGE_GRAPH_SERVICE,
     wrappedKg,
+  );
+  ctx.log(
+    `[harness-orchestrator-extras] inconsistency-detector ready (embed=${embeddingClient ? 'on' : 'off'}, judge=${anthropic ? 'on' : 'off'})`,
   );
 
   ctx.log(
@@ -449,9 +476,11 @@ export async function activate(
       disposeFactExtractor?.();
       disposeBulkPromotion?.();
       disposeContext();
-      // Tear down KG wrapper FIRST (restores original provider), THEN
+      // Tear down KG wrappers FIRST (restores original provider), THEN
       // the captureFilter capability — symmetric with the activate order.
+      // The triggering wrapper is the outer; CFKG is the inner.
       disposeWrappedKg();
+      disposeInconsistencyDetector();
       disposeCaptureFilter();
     },
   };
