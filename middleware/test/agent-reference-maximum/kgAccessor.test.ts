@@ -144,20 +144,6 @@ function makeFakeKg(calls: FakeKgCalls): KnowledgeGraph {
     searchTurnsByEmbedding: async () => [],
     findEntityCapturedTurns: async () => [],
     findEntities: async () => [],
-    ingestCompanies: async () => ({ companyIds: [], inserted: 0, updated: 0 }),
-    ingestPersons: async () => ({ personIds: [], inserted: 0, updated: 0 }),
-    ingestManagesEdges: async () => ({ inserted: 0, updated: 0 }),
-    ingestShareholderEdges: async () => ({ inserted: 0, updated: 0 }),
-    ingestSucceededByEdges: async () => ({ inserted: 0, updated: 0 }),
-    ingestRefersToEdges: async () => ({ inserted: 0, updated: 0 }),
-    ingestFinancialSnapshots: async () => ({ ids: [], inserted: 0, updated: 0 }),
-    listCompaniesForPerson: async () => [],
-    listPersonsForCompany: async () => [],
-    listShareholdersForCompany: async () => [],
-    listOwnedCompaniesForPerson: async () => [],
-    listFinancialsForCompany: async () => [],
-    findCompanyByExternalId: async () => null,
-    findPersonByExternalId: async () => null,
   } as unknown as KnowledgeGraph;
 }
 

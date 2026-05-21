@@ -46,16 +46,6 @@ import type {
   EntityCapturedTurnsHit,
   SearchTurnsByEmbeddingOptions,
   FindEntitiesOptions,
-  CompanyIngest,
-  CompanyIngestResult,
-  PersonIngest,
-  PersonIngestResult,
-  CompanyRelationsIngest,
-  CompanyRelationsResult,
-  LinkCompanyToOdooOptions,
-  LinkCompanyToOdooResult,
-  FinancialSnapshotIngest,
-  FinancialSnapshotIngestResult,
 } from '@omadia/plugin-api';
 import {
   sessionNodeId,
@@ -121,10 +111,10 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
 
   // -------------------------------------------------------------------------
   // Pass-through methods. The capture-filter only governs Turn-write. Every
-  // other surface (entities, facts, search, runs, companies, …) forwards
-  // verbatim to the inner KG. We could codegen these from the interface,
-  // but explicit forwards keep the wrapper greppable and the type system
-  // catches additions.
+  // other surface (entities, facts, search, runs, …) forwards verbatim to
+  // the inner KG. We could codegen these from the interface, but explicit
+  // forwards keep the wrapper greppable and the type system catches
+  // additions.
   // -------------------------------------------------------------------------
 
   ingestEntities(entities: EntityIngest[]): Promise<EntityIngestResult> {
@@ -177,31 +167,5 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
 
   findEntities(opts: FindEntitiesOptions): Promise<GraphNode[]> {
     return this.inner.findEntities(opts);
-  }
-
-  ingestCompanies(companies: CompanyIngest[]): Promise<CompanyIngestResult> {
-    return this.inner.ingestCompanies(companies);
-  }
-
-  ingestPersons(persons: PersonIngest[]): Promise<PersonIngestResult> {
-    return this.inner.ingestPersons(persons);
-  }
-
-  ingestCompanyRelations(
-    relations: CompanyRelationsIngest,
-  ): Promise<CompanyRelationsResult> {
-    return this.inner.ingestCompanyRelations(relations);
-  }
-
-  linkCompanyToOdoo(
-    opts: LinkCompanyToOdooOptions,
-  ): Promise<LinkCompanyToOdooResult> {
-    return this.inner.linkCompanyToOdoo(opts);
-  }
-
-  ingestFinancialSnapshots(
-    snapshots: FinancialSnapshotIngest[],
-  ): Promise<FinancialSnapshotIngestResult> {
-    return this.inner.ingestFinancialSnapshots(snapshots);
   }
 }

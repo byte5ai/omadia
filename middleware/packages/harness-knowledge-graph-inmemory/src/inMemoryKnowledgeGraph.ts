@@ -1,27 +1,18 @@
 import {
   agentInvocationNodeId,
-  companyNodeId,
   entityNodeId,
-  financialSnapshotNodeId,
-  personNodeId,
   runNodeId,
   sessionNodeId,
   toolCallNodeId,
   turnNodeId,
   userNodeId,
-  type CompanyIngest,
   type EntityRef,
-  type CompanyIngestResult,
-  type CompanyRelationsIngest,
-  type CompanyRelationsResult,
   type EntityCapturedTurnsHit,
   type EntityCapturedTurnsOptions,
   type EntityIngest,
   type EntityIngestResult,
   type FactIngest,
   type FactIngestResult,
-  type FinancialSnapshotIngest,
-  type FinancialSnapshotIngestResult,
   type FindEntitiesOptions,
   type GraphEdge,
   type GraphEdgeType,
@@ -29,10 +20,6 @@ import {
   type GraphNodeType,
   type GraphStats,
   type KnowledgeGraph,
-  type LinkCompanyToOdooOptions,
-  type LinkCompanyToOdooResult,
-  type PersonIngest,
-  type PersonIngestResult,
   type RunAgentInvocationView,
   type RunIngestResult,
   type RunToolCallView,
@@ -295,9 +282,6 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       AgentInvocation: 0,
       ToolCall: 0,
       Fact: 0,
-      Company: 0,
-      Person: 0,
-      FinancialSnapshot: 0,
     };
     for (const n of this.nodes.values()) byNodeType[n.type]++;
 
@@ -312,11 +296,6 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       PRODUCED: 0,
       DERIVED_FROM: 0,
       MENTIONS: 0,
-      MANAGES: 0,
-      SHAREHOLDER_OF: 0,
-      SUCCEEDED_BY: 0,
-      REFERS_TO: 0,
-      HAS_FINANCIALS: 0,
     };
     for (const e of this.edges.values()) byEdgeType[e.type]++;
 
@@ -673,217 +652,6 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       else inserted++;
     }
     return { entityIds: ids, inserted, updated };
-  }
-
-  async ingestCompanies(
-    companies: CompanyIngest[],
-  ): Promise<CompanyIngestResult> {
-    const companyIds: string[] = [];
-    let inserted = 0;
-    let updated = 0;
-    const lastSyncedAt = new Date().toISOString();
-    for (const c of companies) {
-      const id = companyNodeId(c.externalId);
-      const isUpdate = this.nodes.has(id);
-      this.upsertNode({
-        id,
-        type: 'Company',
-        props: {
-          system: 'northdata',
-          externalId: c.externalId,
-          name: c.name,
-          lastSyncedAt,
-          ...(c.rawName ? { rawName: c.rawName } : {}),
-          ...(c.legalForm ? { legalForm: c.legalForm } : {}),
-          ...(c.registerCourt ? { registerCourt: c.registerCourt } : {}),
-          ...(c.registerNumber ? { registerNumber: c.registerNumber } : {}),
-          ...(c.registerCountry ? { registerCountry: c.registerCountry } : {}),
-          ...(c.status ? { status: c.status } : {}),
-          ...(c.terminated !== undefined ? { terminated: c.terminated } : {}),
-          ...(c.address ? { address: c.address } : {}),
-          ...(c.vatId ? { vatId: c.vatId } : {}),
-          ...(c.proxyPolicy ? { proxyPolicy: c.proxyPolicy } : {}),
-          ...(c.northDataUrl ? { northDataUrl: c.northDataUrl } : {}),
-          ...(c.segmentCodes ? { segmentCodes: c.segmentCodes } : {}),
-          ...(c.riskLevel ? { riskLevel: c.riskLevel } : {}),
-          ...(c.riskSignals && c.riskSignals.length > 0
-            ? { riskSignals: c.riskSignals }
-            : {}),
-          ...(c.isWatched !== undefined ? { isWatched: c.isWatched } : {}),
-          ...(c.extras ?? {}),
-        },
-      });
-      companyIds.push(id);
-      if (isUpdate) updated++;
-      else inserted++;
-    }
-    return { companyIds, inserted, updated };
-  }
-
-  async ingestPersons(persons: PersonIngest[]): Promise<PersonIngestResult> {
-    const personIds: string[] = [];
-    let inserted = 0;
-    let updated = 0;
-    const lastSyncedAt = new Date().toISOString();
-    for (const p of persons) {
-      const id = personNodeId(p.externalId);
-      const isUpdate = this.nodes.has(id);
-      this.upsertNode({
-        id,
-        type: 'Person',
-        props: {
-          system: 'northdata',
-          externalId: p.externalId,
-          name: p.name,
-          lastName: p.lastName,
-          lastSyncedAt,
-          ...(p.firstName ? { firstName: p.firstName } : {}),
-          ...(p.birthDate ? { birthDate: p.birthDate } : {}),
-          ...(p.city ? { city: p.city } : {}),
-          ...(p.internalNorthDataId
-            ? { internalNorthDataId: p.internalNorthDataId }
-            : {}),
-          ...(p.extras ?? {}),
-        },
-      });
-      personIds.push(id);
-      if (isUpdate) updated++;
-      else inserted++;
-    }
-    return { personIds, inserted, updated };
-  }
-
-  async ingestCompanyRelations(
-    relations: CompanyRelationsIngest,
-  ): Promise<CompanyRelationsResult> {
-    const result: CompanyRelationsResult = {
-      manages: 0,
-      shareholders: 0,
-      successions: 0,
-      skipped: 0,
-    };
-    for (const m of relations.manages ?? []) {
-      const from = personNodeId(m.personExternalId);
-      const to = companyNodeId(m.companyExternalId);
-      if (!this.nodes.has(from) || !this.nodes.has(to)) {
-        result.skipped++;
-        continue;
-      }
-      this.addEdge({
-        type: 'MANAGES',
-        from,
-        to,
-        props: {
-          ...(m.role ? { role: m.role } : {}),
-          ...(m.since ? { since: m.since } : {}),
-          ...(m.until ? { until: m.until } : {}),
-        },
-      });
-      result.manages++;
-    }
-    for (const s of relations.shareholders ?? []) {
-      const from =
-        s.holderType === 'Company'
-          ? companyNodeId(s.holderExternalId)
-          : personNodeId(s.holderExternalId);
-      const to = companyNodeId(s.companyExternalId);
-      if (!this.nodes.has(from) || !this.nodes.has(to)) {
-        result.skipped++;
-        continue;
-      }
-      this.addEdge({
-        type: 'SHAREHOLDER_OF',
-        from,
-        to,
-        props: {
-          ...(s.sharePercent !== undefined
-            ? { sharePercent: s.sharePercent }
-            : {}),
-          ...(s.since ? { since: s.since } : {}),
-          ...(s.until ? { until: s.until } : {}),
-        },
-      });
-      result.shareholders++;
-    }
-    for (const succ of relations.successions ?? []) {
-      const from = companyNodeId(succ.fromCompanyExternalId);
-      const to = companyNodeId(succ.toCompanyExternalId);
-      if (!this.nodes.has(from) || !this.nodes.has(to)) {
-        result.skipped++;
-        continue;
-      }
-      this.addEdge({
-        type: 'SUCCEEDED_BY',
-        from,
-        to,
-        props: {
-          ...(succ.reason ? { reason: succ.reason } : {}),
-        },
-      });
-      result.successions++;
-    }
-    return result;
-  }
-
-  async linkCompanyToOdoo(
-    opts: LinkCompanyToOdooOptions,
-  ): Promise<LinkCompanyToOdooResult> {
-    const from = companyNodeId(opts.companyExternalId);
-    const to = opts.odooEntityExternalId;
-    if (!this.nodes.has(from) || !this.nodes.has(to)) {
-      return { linked: false };
-    }
-    this.addEdge({ type: 'REFERS_TO', from, to });
-    return { linked: true };
-  }
-
-  async ingestFinancialSnapshots(
-    snapshots: FinancialSnapshotIngest[],
-  ): Promise<FinancialSnapshotIngestResult> {
-    const snapshotIds: string[] = [];
-    let inserted = 0;
-    let updated = 0;
-    let skipped = 0;
-    const lastSyncedAt = new Date().toISOString();
-    for (const s of snapshots) {
-      const companyId = companyNodeId(s.companyExternalId);
-      if (!this.nodes.has(companyId)) {
-        skipped++;
-        continue;
-      }
-      const id = financialSnapshotNodeId(s.companyExternalId, s.fiscalYear);
-      const isUpdate = this.nodes.has(id);
-      this.upsertNode({
-        id,
-        type: 'FinancialSnapshot',
-        props: {
-          companyExternalId: s.companyExternalId,
-          fiscalYear: s.fiscalYear,
-          lastSyncedAt,
-          ...(s.date ? { date: s.date } : {}),
-          ...(s.consolidated !== undefined
-            ? { consolidated: s.consolidated }
-            : {}),
-          ...(s.sourceName ? { sourceName: s.sourceName } : {}),
-          items: s.items,
-        },
-      });
-      snapshotIds.push(id);
-      if (isUpdate) updated++;
-      else inserted++;
-      this.addEdge({
-        type: 'HAS_FINANCIALS',
-        from: companyId,
-        to: id,
-        props: {
-          fiscalYear: s.fiscalYear,
-          ...(s.consolidated !== undefined
-            ? { consolidated: s.consolidated }
-            : {}),
-        },
-      });
-    }
-    return { snapshotIds, inserted, updated, skipped };
   }
 
   async findEntityCapturedTurns(

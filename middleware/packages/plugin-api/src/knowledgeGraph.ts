@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import type { EntityRef } from './entityRef.js';
 
 /**
@@ -90,44 +89,6 @@ export interface KnowledgeGraph {
    * Scope-filtering is up to the caller — the graph returns every match.
    */
   findEntities(opts: FindEntitiesOptions): Promise<GraphNode[]>;
-  /**
-   * Upsert NorthData companies. Idempotent per (tenant, externalId) where
-   * externalId is NorthData's permalink fragment (e.g. `/hr/Berlin/HRB/123`).
-   * Merges `extras` into `properties` so a later sync can add fields without
-   * clobbering earlier ones.
-   */
-  ingestCompanies(companies: CompanyIngest[]): Promise<CompanyIngestResult>;
-  /**
-   * Upsert NorthData persons (GFs, shareholders). Same idempotency contract
-   * as {@link ingestCompanies}. Only public register metadata — never full
-   * birth date or private address.
-   */
-  ingestPersons(persons: PersonIngest[]): Promise<PersonIngestResult>;
-  /**
-   * Upsert verflechtungs-edges between Companies / Persons. The three shapes
-   * share one batch call so a full NorthData company-details response can be
-   * persisted in a single round-trip.
-   */
-  ingestCompanyRelations(
-    relations: CompanyRelationsIngest,
-  ): Promise<CompanyRelationsResult>;
-  /**
-   * Cross-link a NorthData `Company` to an Odoo `OdooEntity(res.partner)` via
-   * VAT or Handelsregister match. Writes a single `REFERS_TO` edge — no Odoo
-   * mutation. Tolerates a missing Odoo node (returns `{linked:false}`).
-   */
-  linkCompanyToOdoo(
-    opts: LinkCompanyToOdooOptions,
-  ): Promise<LinkCompanyToOdooResult>;
-  /**
-   * Upsert one or more `FinancialSnapshot` nodes. Each snapshot is keyed by
-   * `(companyExternalId, fiscalYear)` and linked to its Company via a
-   * `HAS_FINANCIALS {fiscalYear, consolidated}` edge. Missing parent Company
-   * → snapshot skipped (tolerated, counted). Idempotent per key.
-   */
-  ingestFinancialSnapshots(
-    snapshots: FinancialSnapshotIngest[],
-  ): Promise<FinancialSnapshotIngestResult>;
 }
 
 export interface SessionFilter {
@@ -147,10 +108,7 @@ export type GraphNodeType =
   | 'Run'
   | 'AgentInvocation'
   | 'ToolCall'
-  | 'Fact'
-  | 'Company'
-  | 'Person'
-  | 'FinancialSnapshot';
+  | 'Fact';
 export type GraphEdgeType =
   | 'IN_SESSION'
   | 'NEXT_TURN'
@@ -161,15 +119,8 @@ export type GraphEdgeType =
   | 'INVOKED_TOOL'
   | 'PRODUCED'
   | 'DERIVED_FROM'
-  | 'MENTIONS'
-  | 'MANAGES'
-  | 'SHAREHOLDER_OF'
-  | 'SUCCEEDED_BY'
-  | 'REFERS_TO'
-  | 'HAS_FINANCIALS';
+  | 'MENTIONS';
 
-export type CompanyStatus = 'active' | 'liquidation' | 'terminated';
-export type RiskLevel = 'low' | 'medium' | 'high' | 'critical';
 export type FactSeverity = 'info' | 'warning' | 'critical';
 
 // ---------------------------------------------------------------------------
@@ -257,153 +208,6 @@ export interface EntityIngestResult {
   entityIds: string[];
   inserted: number;
   updated: number;
-}
-
-/**
- * NorthData Company upsert payload. `externalId` must be `register.uniqueKey`
- * from the API response — the only stable identifier NorthData exposes for
- * companies (the internal `id` field is documented as volatile).
- *
- * Optional fields mirror the subset of the NorthData Company definition we
- * flatten into Company-node properties. Fields that only exist as nested
- * structures in the API (relations, capital, full history) are modelled via
- * their own nodes/edges rather than duplicated here.
- */
-export interface CompanyIngest {
-  externalId: string;
-  name: string;
-  rawName?: string;
-  legalForm?: string;
-  registerCourt?: string;
-  registerNumber?: string;
-  registerCountry?: string;
-  status?: CompanyStatus;
-  terminated?: boolean;
-  address?: string;
-  /** Hoisted from `extras.items[id=vatId]`; only set when `extras=true`. */
-  vatId?: string;
-  proxyPolicy?: string;
-  northDataUrl?: string;
-  segmentCodes?: Record<string, string[]>;
-  /** Derived at ingest. */
-  riskLevel?: RiskLevel;
-  /** Derived at ingest. */
-  riskSignals?: string[];
-  isWatched?: boolean;
-  /** Extra fields stored on `properties` JSONB (GIN-indexed — keep small). */
-  extras?: Record<string, unknown>;
-}
-
-export interface CompanyIngestResult {
-  /** External ids (`company:<externalId>`) in input order. */
-  companyIds: string[];
-  inserted: number;
-  updated: number;
-}
-
-/**
- * NorthData Person upsert payload. `externalId` is a synthetic deterministic
- * hash (see {@link personSyntheticId}) because NorthData's own Person.id is
- * documented as volatile and must not be persisted as an identity key.
- */
-export interface PersonIngest {
-  /** sha1(lastName|firstName|birthDate|city) — use {@link personSyntheticId}. */
-  externalId: string;
-  /** Full display name, typically `${title} ${firstName} ${lastName}`. */
-  name: string;
-  firstName?: string;
-  lastName: string;
-  /** Public-register birth date (ISO `YYYY-MM-DD`). */
-  birthDate?: string;
-  city?: string;
-  /** The API's volatile internal id, kept only for freshness lookup. */
-  internalNorthDataId?: string;
-  extras?: Record<string, unknown>;
-}
-
-export interface PersonIngestResult {
-  personIds: string[];
-  inserted: number;
-  updated: number;
-}
-
-export interface ManagesEdgeIngest {
-  personExternalId: string;
-  companyExternalId: string;
-  role?: string;
-  since?: string;
-  until?: string;
-}
-
-export interface ShareholderEdgeIngest {
-  /** Either a Person or a Company node acting as shareholder. */
-  holderExternalId: string;
-  holderType: 'Person' | 'Company';
-  companyExternalId: string;
-  sharePercent?: number;
-  since?: string;
-  until?: string;
-}
-
-export interface SucceededByEdgeIngest {
-  fromCompanyExternalId: string;
-  toCompanyExternalId: string;
-  reason?: string;
-}
-
-export interface CompanyRelationsIngest {
-  manages?: ManagesEdgeIngest[];
-  shareholders?: ShareholderEdgeIngest[];
-  successions?: SucceededByEdgeIngest[];
-}
-
-export interface CompanyRelationsResult {
-  manages: number;
-  shareholders: number;
-  successions: number;
-  /** Edges dropped because at least one endpoint was missing. */
-  skipped: number;
-}
-
-export interface LinkCompanyToOdooOptions {
-  companyExternalId: string;
-  /** External id in the shape `<system>:<model>:<id>`, e.g.
-   *  `odoo:res.partner:42`. Must already exist — caller looks this up via
-   *  `findEntities({model:'res.partner', nameContains:…})` or VAT match. */
-  odooEntityExternalId: string;
-}
-
-export interface LinkCompanyToOdooResult {
-  linked: boolean;
-}
-
-/** One Financial indicator row as it comes out of NorthData. */
-export interface FinancialIndicator {
-  id: string;
-  name?: string;
-  value?: number;
-  unit?: string;
-  estimate?: boolean;
-  note?: string;
-}
-
-/** Structured annual-financials upsert. */
-export interface FinancialSnapshotIngest {
-  companyExternalId: string;
-  fiscalYear: number;
-  /** ISO date the figures were published for. */
-  date?: string;
-  consolidated?: boolean;
-  sourceName?: string;
-  items: FinancialIndicator[];
-}
-
-export interface FinancialSnapshotIngestResult {
-  snapshotIds: string[];
-  inserted: number;
-  updated: number;
-  /** Skipped because the parent Company node didn't exist. */
-  skipped: number;
 }
 
 /**
@@ -774,52 +578,6 @@ export function turnNodeId(scope: string, time: string): string {
 
 export function entityNodeId(ref: EntityRef): string {
   return `${ref.system}:${ref.model}:${String(ref.id)}`;
-}
-
-/** Stable external id for a NorthData Company node. */
-export function companyNodeId(externalId: string): string {
-  return `company:${externalId}`;
-}
-
-/** Stable external id for a NorthData Person node. */
-export function personNodeId(externalId: string): string {
-  return `person:${externalId}`;
-}
-
-/**
- * Deterministic synthetic id for a natural person. Used instead of
- * NorthData's `Person.id` because the API marks that id as volatile. Inputs
- * are normalised (trim + lowercase) so trivial formatting differences across
- * syncs collapse into the same node.
- *
- * Collision note: two distinct people with the same `(lastName, firstName,
- * birthDate, city)` quadruple are indistinguishable here. Without birthDate,
- * the chance is real — callers should prefer sources where birthDate is
- * populated. Caller must pass at least `lastName`; the other components
- * default to empty strings so a hash is always computable.
- */
-export function personSyntheticId(parts: {
-  lastName: string;
-  firstName?: string;
-  birthDate?: string;
-  city?: string;
-}): string {
-  const norm = (s?: string): string => (s ?? '').trim().toLowerCase();
-  const joined = [
-    norm(parts.lastName),
-    norm(parts.firstName),
-    norm(parts.birthDate),
-    norm(parts.city),
-  ].join('|');
-  return createHash('sha1').update(joined).digest('hex').slice(0, 16);
-}
-
-/** External id for a `FinancialSnapshot` node keyed by (company, fiscalYear). */
-export function financialSnapshotNodeId(
-  companyExternalId: string,
-  fiscalYear: number,
-): string {
-  return `finsnap:${companyExternalId}:${String(fiscalYear)}`;
 }
 
 export function userNodeId(userId: string): string {
