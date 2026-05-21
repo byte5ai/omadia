@@ -160,8 +160,8 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
         return;
       }
       const isWebScanner =
-        deps.catalog?.get(id)?.plugin.permissions_summary.network_web_scanner ===
-        true;
+        deps.catalog?.get(id)?.plugin.permissions_summary
+          ?.network_web_scanner === true;
       if (!isWebScanner) {
         res.status(400).json({
           code: 'runtime.not_web_scanner',

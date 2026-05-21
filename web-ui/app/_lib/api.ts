@@ -1,4 +1,5 @@
 import type {
+  AuditMode,
   InstallConfigureResponse,
   InstallCreateResponse,
   InstallJob,
@@ -1617,6 +1618,43 @@ export async function patchInstalledSecrets(
     );
   }
   return (await res.json()) as InstalledSecretsState;
+}
+
+/**
+ * #91 — set the audit egress mode for an installed web_scanner plugin.
+ * The middleware validates the mode enum and rejects the call when the
+ * plugin does not declare `permissions.network.web_scanner`.
+ */
+export async function setAuditMode(
+  pluginId: string,
+  mode: AuditMode,
+): Promise<{ id: string; audit_mode: AuditMode }> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(
+    botApi(
+      `/v1/admin/runtime/installed/${encodeURIComponent(pluginId)}/audit-mode`,
+    ),
+    {
+      method: 'PATCH',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+        ...forwarded,
+      },
+      body: JSON.stringify({ mode }),
+      credentials: 'include',
+      cache: 'no-store',
+    },
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new ApiError(
+      res.status,
+      `PATCH installed/${pluginId}/audit-mode failed: ${res.status}`,
+      text,
+    );
+  }
+  return (await res.json()) as { id: string; audit_mode: AuditMode };
 }
 
 // -----------------------------------------------------------------------------

@@ -11,7 +11,12 @@ export type SetupFieldType =
   | 'oauth'
   | 'enum'
   | 'boolean'
-  | 'integer';
+  | 'integer'
+  /** #91 — operator-curated list of bare hostnames. */
+  | 'host_list';
+
+/** #91 — operator-selected egress mode for an audit/scanner plugin. */
+export type AuditMode = 'single-host' | 'allowlist' | 'public-web';
 
 export interface PluginSetupField {
   key: string;
@@ -34,6 +39,10 @@ export interface PluginPermissionsSummary {
   graph_reads: string[];
   graph_writes: string[];
   network_outbound: string[];
+  /** #91 — true when the plugin is an audit/scanner whose `ctx.http` may
+   *  reach arbitrary public hosts (gated by the operator-selected
+   *  `audit_mode`). Optional: absent on pre-#91 store payloads. */
+  network_web_scanner?: boolean;
 }
 
 export type PluginInstallState =
