@@ -139,6 +139,18 @@ export function SaveMemoryButton({
         ...(trimmedRationale.length > 0
           ? { rationale: trimmedRationale }
           : {}),
+        // Slice 6.5 — persist the verbatim source-snippets so the
+        // detail-page can show provenance after page-reloads. Skip
+        // when the extractor returned no excerpts (cold-fallback
+        // path) — the backend short-circuits empty arrays.
+        ...(palaiaExcerpt && palaiaExcerpt.excerpts.length > 0
+          ? {
+              palaiaExcerpts: {
+                texts: palaiaExcerpt.excerpts,
+                source: palaiaExcerpt.source,
+              },
+            }
+          : {}),
       });
       setSaved(res);
     } catch (err) {
@@ -146,7 +158,7 @@ export function SaveMemoryButton({
     } finally {
       setBusy(false);
     }
-  }, [kind, summary, rationale, turnId, t]);
+  }, [kind, summary, rationale, turnId, palaiaExcerpt, t]);
 
   const close = useCallback((): void => {
     setOpen(false);

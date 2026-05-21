@@ -168,6 +168,19 @@ export async function promoteTurnIfSignificant(
       involvedOmadiaUserIds: [input.userId],
       aclOwners: [input.userId],
       derivedFromTurnIds: [input.turnId],
+      // Slice 6.5 — symmetric to manual save: persist the verbatim
+      // source-snippets so the auto-promoted MK has the same
+      // provenance trail as a hand-saved one. Only when the
+      // extractor produced any (skip empty arrays — no point
+      // persisting a hard-cap-zero batch).
+      ...(input.palaiaExcerpt && input.palaiaExcerpt.excerpts.length > 0
+        ? {
+            palaiaExcerpts: {
+              texts: [...input.palaiaExcerpt.excerpts],
+              source: input.palaiaExcerpt.source,
+            },
+          }
+        : {}),
     });
 
     log(

@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 import type {
   AclMutationOptions,
+  ExcerptSource,
   KnowledgeGraph,
   MemorableKind,
 } from '@omadia/plugin-api';
@@ -27,6 +28,13 @@ const MEMORABLE_KINDS = [
   'reference',
 ] as const satisfies readonly MemorableKind[];
 
+const EXCERPT_SOURCES = ['llm', 'hint', 'fallback'] as const satisfies readonly ExcerptSource[];
+
+const PalaiaExcerptsSchema = z.object({
+  texts: z.array(z.string().min(1).max(300)).max(5),
+  source: z.enum(EXCERPT_SOURCES),
+});
+
 const CreateMemorySchema = z.object({
   kind: z.enum(MEMORABLE_KINDS),
   summary: z.string().min(1).max(2000),
@@ -39,7 +47,24 @@ const CreateMemorySchema = z.object({
    *  session user is appended automatically (so a Web-UI save always
    *  ends up with at least the saver as owner). */
   aclOwners: z.array(z.string().uuid()).optional(),
+  /** Slice 6.5 — verbatim source-snippets that underpin this MK.
+   *  Persisted as PalaiaExcerpt nodes in the same transaction as the
+   *  MK. The chat side fills this from the `palaiaExcerpt` carried on
+   *  the `done`-event so future detail-page reloads can show provenance. */
+  palaiaExcerpts: PalaiaExcerptsSchema.optional(),
 });
+
+const PatchExcerptSchema = z
+  .object({
+    text: z.string().min(1).max(300).optional(),
+    source: z.enum(EXCERPT_SOURCES).optional(),
+    reason: z.string().min(1).max(1000).optional(),
+  })
+  .refine((v) => v.text !== undefined || v.source !== undefined, {
+    message: 'patch must touch at least one of text/source',
+  });
+
+const PositionParamSchema = z.coerce.number().int().min(0).max(4);
 
 const OwnerMutationBodySchema = z.object({
   omadiaUserId: z.string().uuid(),
@@ -98,6 +123,12 @@ function mapErrorToHttp(err: unknown): { status: number; code: string } {
         return { status: 409, code: 'memory.cannot_remove_last_owner' };
       case 'empty_patch':
         return { status: 400, code: 'memory.empty_patch' };
+      case 'excerpt_not_found':
+        return { status: 404, code: 'memory.excerpt_not_found' };
+      case 'excerpt_count_exceeded':
+        return { status: 400, code: 'memory.excerpt_count_exceeded' };
+      case 'excerpt_text_too_long':
+        return { status: 400, code: 'memory.excerpt_text_too_long' };
     }
   }
   return { status: 500, code: 'memory.internal_error' };
@@ -152,6 +183,9 @@ export function createMemoryRouter(deps: {
           : {}),
         ...(body.derivedFromTurnIds
           ? { derivedFromTurnIds: body.derivedFromTurnIds }
+          : {}),
+        ...(body.palaiaExcerpts
+          ? { palaiaExcerpts: body.palaiaExcerpts }
           : {}),
       });
       res.status(201).json(result);
@@ -315,6 +349,74 @@ export function createMemoryRouter(deps: {
       res.status(status).json({ code });
     }
   });
+
+  // ── GET /memory/:id/excerpts — list Palaia-Excerpt provenance ──────────
+  router.get('/:id/excerpts', async (req: Request, res: Response) => {
+    const sessionUserId = requireSessionUserId(req, res);
+    if (!sessionUserId) return;
+    const id = String(req.params['id'] ?? '');
+    try {
+      // ACL-gate via the same mechanism as GET /memory/:id — returning
+      // null (= not an owner / not found) collapses both cases to 404
+      // so we don't leak which MKs exist to non-owners.
+      const node = await deps.graph.getMemorableKnowledge(id, sessionUserId);
+      if (!node) {
+        res.status(404).json({ code: 'memory.not_found' });
+        return;
+      }
+      const items = await deps.graph.listExcerptsForMemory(id);
+      res.json({ items });
+    } catch (err) {
+      const { status, code } = mapErrorToHttp(err);
+      res.status(status).json({ code });
+    }
+  });
+
+  // ── PATCH /memory/:id/excerpts/:position — edit excerpt content ────────
+  router.patch(
+    '/:id/excerpts/:position',
+    async (req: Request, res: Response) => {
+      const sessionUserId = requireSessionUserId(req, res);
+      if (!sessionUserId) return;
+      const positionParsed = PositionParamSchema.safeParse(
+        req.params['position'],
+      );
+      if (!positionParsed.success) {
+        res
+          .status(400)
+          .json({ code: 'memory.invalid_position', issues: positionParsed.error.issues });
+        return;
+      }
+      const parsed = PatchExcerptSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res
+          .status(400)
+          .json({ code: 'memory.invalid_request', issues: parsed.error.issues });
+        return;
+      }
+      const body = parsed.data;
+      try {
+        const actor: AclMutationOptions = {
+          actorOmadiaUserId: sessionUserId,
+          ...(body.reason ? { reason: body.reason } : {}),
+        };
+        const patch = {
+          ...(body.text !== undefined ? { text: body.text } : {}),
+          ...(body.source !== undefined ? { source: body.source } : {}),
+        };
+        const updated = await deps.graph.updateExcerpt(
+          String(req.params['id'] ?? ''),
+          positionParsed.data,
+          patch,
+          actor,
+        );
+        res.json(updated);
+      } catch (err) {
+        const { status, code } = mapErrorToHttp(err);
+        res.status(status).json({ code });
+      }
+    },
+  );
 
   // ── GET /memory/:id/audit — list ACL audit-trail ────────────────────────
   router.get('/:id/audit', async (req: Request, res: Response) => {

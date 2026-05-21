@@ -54,6 +54,8 @@ import type {
   ListMemorableKnowledgeOptions,
   AclAuditEntry,
   AclMutationOptions,
+  PalaiaExcerptNode,
+  PalaiaExcerptUpdate,
 } from '@omadia/plugin-api';
 import {
   sessionNodeId,
@@ -251,6 +253,26 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
   ): Promise<GraphNode> {
     return this.inner.updateMemorableKnowledge(
       memorableKnowledgeNodeId,
+      patch,
+      actor,
+    );
+  }
+
+  listExcerptsForMemory(
+    memorableKnowledgeNodeId: string,
+  ): Promise<PalaiaExcerptNode[]> {
+    return this.inner.listExcerptsForMemory(memorableKnowledgeNodeId);
+  }
+
+  updateExcerpt(
+    memorableKnowledgeNodeId: string,
+    position: number,
+    patch: PalaiaExcerptUpdate,
+    actor: AclMutationOptions,
+  ): Promise<PalaiaExcerptNode> {
+    return this.inner.updateExcerpt(
+      memorableKnowledgeNodeId,
+      position,
       patch,
       actor,
     );

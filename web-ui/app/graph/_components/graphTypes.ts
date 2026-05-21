@@ -10,7 +10,11 @@ export type NodeType =
   | 'AgentInvocation'
   | 'ToolCall'
   | 'Fact'
-  | 'MemorableKnowledge';
+  | 'MemorableKnowledge'
+  /** Slice 6.5 — verbatim source-snippet that underpins a
+   *  MemorableKnowledge. Reachable via EXCERPT_OF edges from MK's
+   *  "Nachbarn expandieren" expansion. */
+  | 'PalaiaExcerpt';
 
 /** Lifecycle bucket projected by the Neon backend (palaia Phase 4). */
 export type Tier = 'HOT' | 'WARM' | 'COLD';
@@ -116,6 +120,14 @@ export function nodeLabel(n: GraphNode): string {
   if (n.type === 'Session') return String(p['scope'] ?? n.id);
   if (n.type === 'User') return String(p['userId'] ?? n.id);
   if (n.type === 'Run') return `Run · ${String(p['status'] ?? '')}`;
+  if (n.type === 'PalaiaExcerpt') {
+    const text = String(p['text'] ?? '');
+    return text.length > 40 ? `${text.slice(0, 40)}…` : text || 'Excerpt';
+  }
+  if (n.type === 'MemorableKnowledge') {
+    const summary = String(p['summary'] ?? '');
+    return summary.length > 40 ? `${summary.slice(0, 40)}…` : summary || 'Memory';
+  }
   return n.id;
 }
 
@@ -145,6 +157,8 @@ export function nodeColor(type: NodeType): string {
       return '#fbbf24';
     case 'MemorableKnowledge':
       return '#d946ef';
+    case 'PalaiaExcerpt':
+      return '#0ea5e9';
     default:
       return '#94a3b8';
   }
@@ -235,6 +249,8 @@ export function nodeIcon(type: NodeType): string {
       return '✦';
     case 'MemorableKnowledge':
       return '⭐';
+    case 'PalaiaExcerpt':
+      return '❝';
     default:
       return '•';
   }

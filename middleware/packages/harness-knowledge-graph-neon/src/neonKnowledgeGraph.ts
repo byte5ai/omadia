@@ -7,6 +7,7 @@ import {
   channelIdentityNodeId,
   entityNodeId,
   memorableKnowledgeNodeId,
+  palaiaExcerptNodeId,
   runNodeId,
   sessionNodeId,
   toolCallNodeId,
@@ -30,9 +31,13 @@ import {
   type AclAuditEntry,
   type AclMutationOptions,
   type ListMemorableKnowledgeOptions,
+  type ExcerptSource,
   type MemorableKnowledgeIngest,
   type MemorableKnowledgeIngestResult,
   type MemorableKnowledgeUpdate,
+  type PalaiaExcerptInput,
+  type PalaiaExcerptNode,
+  type PalaiaExcerptUpdate,
   type ResolveOrCreateChannelIdentityResult,
   type RunAgentInvocationView,
   type RunIngestResult,
@@ -1491,6 +1496,19 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         });
       }
 
+      // Slice 6.5 — atomically persist Palaia-Excerpts as their own
+      // PalaiaExcerpt nodes + EXCERPT_OF edges. Throws on hard-cap
+      // violation BEFORE COMMIT so callers get a typed error and the
+      // MK row is never half-persisted with bad excerpts.
+      if (input.palaiaExcerpts && input.palaiaExcerpts.texts.length > 0) {
+        await this.writeExcerpts(
+          client,
+          mkUuid,
+          input.palaiaExcerpts,
+          now,
+        );
+      }
+
       // Slice 3 — audit-log the create with the initial-owner snapshot.
       // We log unconditionally (even empty owners) so every MK has a
       // create-row; downstream tooling can rely on `audit.length >= 1`.
@@ -1747,6 +1765,22 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         afterOwners: null,
         ...(actor.reason ? { reason: actor.reason } : {}),
       });
+      // Slice 6.5 — cascade-delete the PalaiaExcerpt nodes attached
+      // to this MK. The EXCERPT_OF edges are auto-cleaned by graph_edges
+      // FK CASCADE on either side, but the Excerpt nodes themselves are
+      // standalone graph_nodes rows and would orphan if not removed.
+      await client.query(
+        `DELETE FROM graph_nodes
+         WHERE tenant_id = $1
+           AND type = 'PalaiaExcerpt'
+           AND id IN (
+             SELECT from_node FROM graph_edges
+             WHERE tenant_id = $1
+               AND to_node = $2
+               AND type = 'EXCERPT_OF'
+           )`,
+        [this.tenantId, uuid],
+      );
       // CASCADE on graph_edges FK removes inbound/outbound edges.
       await client.query(`DELETE FROM graph_nodes WHERE id = $1`, [uuid]);
       await client.query('COMMIT');
@@ -1830,6 +1864,196 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       });
     }
     return updated;
+  }
+
+  // ─── Slice 6.5 — PalaiaExcerpt persistence ──────────────────────────
+
+  /**
+   * Persist a Palaia-Excerpt batch attached to a freshly-inserted MK.
+   * Called from inside `createMemorableKnowledge`'s transaction —
+   * relies on the caller to BEGIN/COMMIT. Throws
+   * `excerpt_count_exceeded` (>5) or `excerpt_text_too_long` (>300
+   * chars) before any insert so the parent MK transaction can roll
+   * back cleanly.
+   */
+  private async writeExcerpts(
+    client: PoolClient,
+    parentMkUuid: string,
+    input: PalaiaExcerptInput,
+    nowIso: string,
+  ): Promise<void> {
+    if (input.texts.length > 5) {
+      throw Object.assign(new Error('excerpt_count_exceeded'), {
+        code: 'excerpt_count_exceeded',
+      });
+    }
+    for (const t of input.texts) {
+      if (t.length === 0 || t.length > 300) {
+        throw Object.assign(new Error('excerpt_text_too_long'), {
+          code: 'excerpt_text_too_long',
+        });
+      }
+    }
+    for (let i = 0; i < input.texts.length; i++) {
+      const text = input.texts[i]!;
+      const excerptUuid = randomUUID();
+      const excerptExtId = palaiaExcerptNodeId(excerptUuid);
+      const props = validateNodeProps('PalaiaExcerpt', {
+        text,
+        position: i,
+        source: input.source,
+        created_at: nowIso,
+      });
+      const excerptNodeUuid = await this.upsertNode(client, {
+        externalId: excerptExtId,
+        type: 'PalaiaExcerpt',
+        scope: null,
+        userId: null,
+        props,
+      });
+      await this.upsertEdge(client, {
+        type: 'EXCERPT_OF',
+        fromUuid: excerptNodeUuid,
+        toUuid: parentMkUuid,
+      });
+    }
+  }
+
+  async listExcerptsForMemory(
+    memorableKnowledgeNodeId: string,
+  ): Promise<PalaiaExcerptNode[]> {
+    const rows = await this.pool.query<{
+      external_id: string;
+      properties: {
+        text: string;
+        position: number;
+        source: ExcerptSource;
+        created_at: string;
+      };
+    }>(
+      `SELECT ex.external_id, ex.properties
+       FROM graph_nodes mk
+       JOIN graph_edges e ON e.to_node = mk.id AND e.type = 'EXCERPT_OF'
+       JOIN graph_nodes ex ON ex.id = e.from_node AND ex.type = 'PalaiaExcerpt'
+       WHERE mk.tenant_id = $1
+         AND mk.external_id = $2
+         AND mk.type = 'MemorableKnowledge'
+         AND ex.tenant_id = $1
+       ORDER BY (ex.properties->>'position')::int ASC`,
+      [this.tenantId, memorableKnowledgeNodeId],
+    );
+    return rows.rows.map((r) => ({
+      id: r.external_id,
+      type: 'PalaiaExcerpt' as const,
+      props: {
+        text: r.properties.text,
+        position: r.properties.position,
+        source: r.properties.source,
+        created_at: r.properties.created_at,
+      },
+    }));
+  }
+
+  async updateExcerpt(
+    memorableKnowledgeNodeId: string,
+    position: number,
+    patch: PalaiaExcerptUpdate,
+    actor: AclMutationOptions,
+  ): Promise<PalaiaExcerptNode> {
+    const hasField = patch.text !== undefined || patch.source !== undefined;
+    if (!hasField) {
+      throw Object.assign(new Error('empty_patch'), { code: 'empty_patch' });
+    }
+    if (patch.text !== undefined && (patch.text.length === 0 || patch.text.length > 300)) {
+      throw Object.assign(new Error('excerpt_text_too_long'), {
+        code: 'excerpt_text_too_long',
+      });
+    }
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { owners } = await this.loadOwnersOrThrow(
+        client,
+        memorableKnowledgeNodeId,
+      );
+      this.assertActorIsOwner(owners, actor.actorOmadiaUserId);
+
+      const excerptRow = await client.query<{
+        id: string;
+        properties: Record<string, unknown>;
+      }>(
+        `SELECT ex.id, ex.properties
+         FROM graph_nodes mk
+         JOIN graph_edges e ON e.to_node = mk.id AND e.type = 'EXCERPT_OF'
+         JOIN graph_nodes ex ON ex.id = e.from_node AND ex.type = 'PalaiaExcerpt'
+         WHERE mk.tenant_id = $1
+           AND mk.external_id = $2
+           AND mk.type = 'MemorableKnowledge'
+           AND ex.tenant_id = $1
+           AND (ex.properties->>'position')::int = $3
+         LIMIT 1`,
+        [this.tenantId, memorableKnowledgeNodeId, position],
+      );
+      const hit = excerptRow.rows[0];
+      if (!hit) {
+        throw Object.assign(new Error('excerpt_not_found'), {
+          code: 'excerpt_not_found',
+        });
+      }
+
+      const merged: Record<string, unknown> = { ...hit.properties };
+      if (patch.text !== undefined) merged['text'] = patch.text;
+      if (patch.source !== undefined) merged['source'] = patch.source;
+      const validated = validateNodeProps('PalaiaExcerpt', merged);
+
+      await client.query(
+        `UPDATE graph_nodes SET properties = $2::jsonb WHERE id = $1`,
+        [hit.id, JSON.stringify(validated)],
+      );
+
+      await this.writeAclAudit(client, {
+        memoryExternalId: memorableKnowledgeNodeId,
+        actorOmadiaUserId: actor.actorOmadiaUserId,
+        ...(actor.actorChannelIdentityId
+          ? { actorChannelIdentityId: actor.actorChannelIdentityId }
+          : {}),
+        action: 'edit_excerpt',
+        beforeOwners: owners,
+        afterOwners: owners,
+        ...(actor.reason ? { reason: actor.reason } : {}),
+      });
+
+      await client.query('COMMIT');
+
+      const refetched = await client.query<{
+        external_id: string;
+        properties: {
+          text: string;
+          position: number;
+          source: ExcerptSource;
+          created_at: string;
+        };
+      }>(
+        `SELECT external_id, properties FROM graph_nodes WHERE id = $1`,
+        [hit.id],
+      );
+      const row = refetched.rows[0]!;
+      return {
+        id: row.external_id,
+        type: 'PalaiaExcerpt' as const,
+        props: {
+          text: row.properties.text,
+          position: row.properties.position,
+          source: row.properties.source,
+          created_at: row.properties.created_at,
+        },
+      };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   async listMemoryAclAudit(

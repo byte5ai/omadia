@@ -8,11 +8,15 @@ import {
   deleteMemory,
   getMemory,
   getMemoryAudit,
+  getMemoryExcerpts,
   updateMemory,
+  updateMemoryExcerpt,
+  type ExcerptSource,
   type MemorableAclAction,
   type MemorableAclAuditEntry,
   type MemorableKind,
   type MemorableKnowledgeNode,
+  type PalaiaExcerptNode,
 } from '../../_lib/api';
 
 const KINDS: readonly MemorableKind[] = [
@@ -46,6 +50,7 @@ const ACTION_BADGE: Record<MemorableAclAction, string> = {
   shrink: 'bg-amber-500/20 text-amber-700 dark:text-amber-300',
   delete: 'bg-red-500/20 text-red-700 dark:text-red-300',
   edit: 'bg-blue-500/20 text-blue-700 dark:text-blue-300',
+  edit_excerpt: 'bg-violet-500/20 text-violet-700 dark:text-violet-300',
 };
 
 const ACTION_LABELS: Record<MemorableAclAction, string> = {
@@ -54,6 +59,20 @@ const ACTION_LABELS: Record<MemorableAclAction, string> = {
   shrink: 'Owner entfernt',
   delete: 'gelöscht',
   edit: 'bearbeitet',
+  edit_excerpt: 'Excerpt bearbeitet',
+};
+
+const SOURCE_LABELS: Record<ExcerptSource, string> = {
+  llm: 'LLM-extrahiert',
+  hint: 'Hint-übernommen',
+  fallback: 'Fallback',
+};
+
+const SOURCE_BADGE: Record<ExcerptSource, string> = {
+  llm: 'bg-neutral-200 text-neutral-700 dark:bg-neutral-700 dark:text-neutral-200',
+  hint: 'bg-amber-200 text-amber-800 dark:bg-amber-800/40 dark:text-amber-200',
+  fallback:
+    'bg-orange-200 text-orange-800 dark:bg-orange-900/40 dark:text-orange-200',
 };
 
 /**
@@ -91,6 +110,17 @@ export default function MemoryDetailPage(): React.ReactElement {
   const [auditError, setAuditError] = useState<string | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
 
+  const [excerpts, setExcerpts] = useState<PalaiaExcerptNode[] | null>(null);
+  const [excerptsError, setExcerptsError] = useState<string | null>(null);
+  const [editingExcerptPos, setEditingExcerptPos] = useState<number | null>(
+    null,
+  );
+  const [excerptDraft, setExcerptDraft] = useState('');
+  const [excerptDraftSource, setExcerptDraftSource] =
+    useState<ExcerptSource>('llm');
+  const [excerptBusy, setExcerptBusy] = useState(false);
+  const [copiedPos, setCopiedPos] = useState<number | null>(null);
+
   const loadAudit = useCallback(async (): Promise<void> => {
     setAuditLoading(true);
     setAuditError(null);
@@ -104,6 +134,69 @@ export default function MemoryDetailPage(): React.ReactElement {
       setAuditLoading(false);
     }
   }, [id]);
+
+  const loadExcerpts = useCallback(async (): Promise<void> => {
+    setExcerptsError(null);
+    try {
+      const res = await getMemoryExcerpts(id);
+      setExcerpts(res.items);
+    } catch (err) {
+      setExcerptsError(err instanceof Error ? err.message : String(err));
+      setExcerpts([]);
+    }
+  }, [id]);
+
+  const startExcerptEdit = useCallback((excerpt: PalaiaExcerptNode): void => {
+    setEditingExcerptPos(excerpt.props.position);
+    setExcerptDraft(excerpt.props.text);
+    setExcerptDraftSource(excerpt.props.source);
+  }, []);
+
+  const cancelExcerptEdit = useCallback((): void => {
+    setEditingExcerptPos(null);
+    setExcerptDraft('');
+  }, []);
+
+  const saveExcerptEdit = useCallback(async (): Promise<void> => {
+    if (editingExcerptPos === null) return;
+    const trimmed = excerptDraft.trim();
+    if (trimmed.length === 0) return;
+    setExcerptBusy(true);
+    try {
+      await updateMemoryExcerpt(id, editingExcerptPos, {
+        text: trimmed,
+        source: excerptDraftSource,
+      });
+      setEditingExcerptPos(null);
+      setExcerptDraft('');
+      await Promise.all([loadExcerpts(), loadAudit()]);
+    } catch (err) {
+      setExcerptsError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExcerptBusy(false);
+    }
+  }, [
+    id,
+    editingExcerptPos,
+    excerptDraft,
+    excerptDraftSource,
+    loadExcerpts,
+    loadAudit,
+  ]);
+
+  const copyExcerpt = useCallback(async (excerpt: PalaiaExcerptNode): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(excerpt.props.text);
+      setCopiedPos(excerpt.props.position);
+      window.setTimeout(() => {
+        setCopiedPos((prev) => (prev === excerpt.props.position ? null : prev));
+      }, 1500);
+    } catch {
+      // Clipboard rejection (insecure context, denied) — fall back to a
+      // visible toast on the row by reusing copiedPos sentinel = -1.
+      setCopiedPos(-1);
+    }
+  }, []);
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -127,8 +220,9 @@ export default function MemoryDetailPage(): React.ReactElement {
     queueMicrotask(() => {
       void load();
       void loadAudit();
+      void loadExcerpts();
     });
-  }, [id, load, loadAudit]);
+  }, [id, load, loadAudit, loadExcerpts]);
 
   const save = useCallback(async (): Promise<void> => {
     if (!node) return;
@@ -401,6 +495,154 @@ export default function MemoryDetailPage(): React.ReactElement {
               )}
             </div>
           </article>
+        )}
+
+        {!loading && node !== null && (
+          <section
+            aria-label="Quellen-Snippets"
+            className="mx-auto mt-4 max-w-2xl rounded border border-neutral-200 bg-white p-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900"
+          >
+            <header className="mb-3 flex items-center justify-between">
+              <div>
+                <h2 className="text-xs font-semibold uppercase tracking-wider text-neutral-500">
+                  Quellen-Snippets
+                </h2>
+                <p className="mt-0.5 text-[10px] text-neutral-500">
+                  Verbatim aus dem ursprünglichen Turn — Provenance-Anker für die Memory.
+                </p>
+              </div>
+            </header>
+
+            {excerptsError !== null && (
+              <div className="mb-2 border-l-2 border-red-400 px-2 py-1 text-xs text-red-700 dark:text-red-300">
+                Snippets nicht lesbar: {excerptsError}
+              </div>
+            )}
+            {excerpts !== null && excerpts.length === 0 && excerptsError === null && (
+              <p className="text-xs italic text-neutral-500">
+                Keine Quellen-Snippets — Memory wurde vor Slice 6.5 gespeichert oder
+                der Extractor lieferte keine Excerpts.
+              </p>
+            )}
+            {excerpts !== null && excerpts.length > 0 && (
+              <ol className="flex flex-col gap-2">
+                {excerpts.map((ex) => {
+                  const isEditing = editingExcerptPos === ex.props.position;
+                  const justCopied = copiedPos === ex.props.position;
+                  return (
+                    <li
+                      key={ex.id}
+                      className="rounded border border-neutral-200 px-3 py-2 dark:border-neutral-800"
+                    >
+                      <div className="mb-1 flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 text-[10px]">
+                          <span className="font-mono text-neutral-500">
+                            #{ex.props.position + 1}
+                          </span>
+                          <span
+                            className={[
+                              'rounded px-1.5 py-0.5 uppercase tracking-wider',
+                              SOURCE_BADGE[ex.props.source],
+                            ].join(' ')}
+                          >
+                            {SOURCE_LABELS[ex.props.source]}
+                          </span>
+                        </div>
+                        {!isEditing && (
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => void copyExcerpt(ex)}
+                              className="rounded border border-neutral-200 px-2 py-0.5 text-[10px] text-neutral-600 hover:border-neutral-400 hover:text-neutral-900 dark:border-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-100"
+                              title="Snippet in die Zwischenablage kopieren"
+                            >
+                              {justCopied ? '✓ kopiert' : 'kopieren'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => startExcerptEdit(ex)}
+                              className="rounded border border-neutral-200 px-2 py-0.5 text-[10px] text-neutral-600 hover:border-neutral-400 hover:text-neutral-900 dark:border-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-100"
+                            >
+                              bearbeiten
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      {isEditing ? (
+                        <div className="flex flex-col gap-2">
+                          <textarea
+                            value={excerptDraft}
+                            onChange={(e) => setExcerptDraft(e.target.value)}
+                            disabled={excerptBusy}
+                            maxLength={300}
+                            rows={3}
+                            className="w-full resize-y rounded border border-neutral-300 px-2 py-1 text-sm focus:border-neutral-500 focus:outline-none dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
+                          />
+                          <div className="flex flex-wrap items-center gap-2">
+                            <label className="text-[10px] uppercase tracking-wider text-neutral-500">
+                              Quelle:
+                            </label>
+                            {(['llm', 'hint', 'fallback'] as const).map((s) => (
+                              <label
+                                key={s}
+                                className={[
+                                  'cursor-pointer rounded border px-2 py-0.5 text-[10px]',
+                                  excerptDraftSource === s
+                                    ? 'border-neutral-900 bg-neutral-900 text-white dark:border-neutral-200 dark:bg-neutral-200 dark:text-neutral-900'
+                                    : 'border-neutral-300 text-neutral-700 dark:border-neutral-700 dark:text-neutral-300',
+                                ].join(' ')}
+                              >
+                                <input
+                                  type="radio"
+                                  name={`excerpt-source-${String(ex.props.position)}`}
+                                  value={s}
+                                  checked={excerptDraftSource === s}
+                                  onChange={() => setExcerptDraftSource(s)}
+                                  disabled={excerptBusy}
+                                  className="sr-only"
+                                />
+                                {SOURCE_LABELS[s]}
+                              </label>
+                            ))}
+                            <div className="ml-auto flex gap-1">
+                              <button
+                                type="button"
+                                onClick={cancelExcerptEdit}
+                                disabled={excerptBusy}
+                                className="rounded border border-neutral-300 px-2 py-0.5 text-[10px] hover:border-neutral-400 disabled:opacity-50 dark:border-neutral-700"
+                              >
+                                Abbrechen
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void saveExcerptEdit()}
+                                disabled={
+                                  excerptBusy || excerptDraft.trim().length === 0
+                                }
+                                className="rounded bg-neutral-900 px-2 py-0.5 text-[10px] text-white hover:bg-neutral-700 disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+                              >
+                                {excerptBusy ? 'speichert…' : 'Speichern'}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="whitespace-pre-wrap text-sm text-neutral-800 dark:text-neutral-200">
+                          {ex.props.text}
+                        </p>
+                      )}
+                    </li>
+                  );
+                })}
+              </ol>
+            )}
+            {copiedPos === -1 && (
+              <p className="mt-2 text-[10px] italic text-amber-700 dark:text-amber-300">
+                Kopieren fehlgeschlagen (Browser blockiert Clipboard).
+              </p>
+            )}
+          </section>
         )}
 
         {!loading && node !== null && (

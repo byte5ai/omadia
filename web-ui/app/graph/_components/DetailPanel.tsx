@@ -128,6 +128,8 @@ export default function DetailPanel({
                         n.props['displayName'] ??
                           n.props['agentName'] ??
                           n.props['toolName'] ??
+                          n.props['summary'] ??
+                          n.props['text'] ??
                           n.props['userMessage'] ??
                           n.id,
                       )}

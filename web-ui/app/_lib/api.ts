@@ -2321,6 +2321,24 @@ export async function getMemory(id: string): Promise<MemorableKnowledgeNode> {
   );
 }
 
+export type ExcerptSource = 'llm' | 'hint' | 'fallback';
+
+export interface PalaiaExcerptsInput {
+  texts: readonly string[];
+  source: ExcerptSource;
+}
+
+export interface PalaiaExcerptNode {
+  id: string;
+  type: 'PalaiaExcerpt';
+  props: {
+    text: string;
+    position: number;
+    source: ExcerptSource;
+    created_at: string;
+  };
+}
+
 export interface CreateMemoryRequest {
   kind: MemorableKind;
   summary: string;
@@ -2330,6 +2348,10 @@ export interface CreateMemoryRequest {
   requiredEntityIds?: string[];
   derivedFromTurnIds?: string[];
   aclOwners?: string[];
+  /** Slice 6.5 — verbatim source-snippets to persist alongside the MK
+   *  in the same transaction. Empty `texts` is a no-op (the backend
+   *  short-circuits and writes no PalaiaExcerpt nodes). */
+  palaiaExcerpts?: PalaiaExcerptsInput;
 }
 
 export interface CreateMemoryResponse {
@@ -2398,7 +2420,8 @@ export type MemorableAclAction =
   | 'expand'
   | 'shrink'
   | 'delete'
-  | 'edit';
+  | 'edit'
+  | 'edit_excerpt';
 
 export interface MemorableAclAuditEntry {
   id: string;
@@ -2427,4 +2450,49 @@ export async function getMemoryAudit(
   return getJson<ListMemoryAuditResponse>(
     `/v1/memory/${encodeURIComponent(id)}/audit${qs ? `?${qs}` : ''}`,
   );
+}
+
+// ── Slice 6.5 — Palaia-Excerpt provenance ────────────────────────────────────
+
+export interface ListMemoryExcerptsResponse {
+  items: PalaiaExcerptNode[];
+}
+
+export async function getMemoryExcerpts(
+  id: string,
+): Promise<ListMemoryExcerptsResponse> {
+  return getJson<ListMemoryExcerptsResponse>(
+    `/v1/memory/${encodeURIComponent(id)}/excerpts`,
+  );
+}
+
+export interface UpdateExcerptRequest {
+  text?: string;
+  source?: ExcerptSource;
+  reason?: string;
+}
+
+export async function updateMemoryExcerpt(
+  id: string,
+  position: number,
+  patch: UpdateExcerptRequest,
+): Promise<PalaiaExcerptNode> {
+  const res = await fetch(
+    `/bot-api/v1/memory/${encodeURIComponent(id)}/excerpts/${String(position)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+      credentials: 'include',
+      cache: 'no-store',
+    },
+  );
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as {
+      code?: string;
+      message?: string;
+    };
+    throw new Error(body.code ?? body.message ?? `HTTP ${String(res.status)}`);
+  }
+  return (await res.json()) as PalaiaExcerptNode;
 }

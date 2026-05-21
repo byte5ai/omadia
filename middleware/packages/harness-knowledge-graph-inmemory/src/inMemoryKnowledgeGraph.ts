@@ -5,6 +5,7 @@ import {
   channelIdentityNodeId,
   entityNodeId,
   memorableKnowledgeNodeId,
+  palaiaExcerptNodeId,
   runNodeId,
   sessionNodeId,
   toolCallNodeId,
@@ -29,9 +30,13 @@ import {
   type AclAuditEntry,
   type AclMutationOptions,
   type ListMemorableKnowledgeOptions,
+  type ExcerptSource,
   type MemorableKnowledgeIngest,
   type MemorableKnowledgeIngestResult,
   type MemorableKnowledgeUpdate,
+  type PalaiaExcerptInput,
+  type PalaiaExcerptNode,
+  type PalaiaExcerptUpdate,
   type ResolveOrCreateChannelIdentityResult,
   type RunAgentInvocationView,
   type RunIngestResult,
@@ -305,6 +310,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       ToolCall: 0,
       Fact: 0,
       MemorableKnowledge: 0,
+      PalaiaExcerpt: 0,
     };
     for (const n of this.nodes.values()) byNodeType[n.type]++;
 
@@ -322,6 +328,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       IS_IDENTITY_OF: 0,
       INVOLVED: 0,
       REQUIRES: 0,
+      EXCERPT_OF: 0,
     };
     for (const e of this.edges.values()) byEdgeType[e.type]++;
 
@@ -817,6 +824,11 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       this.addEdge({ type: 'DERIVED_FROM', from: mkExtId, to: turnExtId });
     }
 
+    // Slice 6.5 — atomic excerpt persistence. Mirrors NeonKnowledgeGraph.
+    if (input.palaiaExcerpts && input.palaiaExcerpts.texts.length > 0) {
+      this.writeExcerpts(mkExtId, input.palaiaExcerpts, now);
+    }
+
     return {
       memorableKnowledgeNodeId: mkExtId,
       skippedInvolved,
@@ -1001,10 +1013,24 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       afterOwners: null,
       ...(actor.reason ? { reason: actor.reason } : {}),
     });
-    // Drop the node + every edge touching it.
+    // Slice 6.5 — cascade-delete attached PalaiaExcerpt nodes BEFORE
+    // dropping the parent + its edges; otherwise the edge-purge loop
+    // below would orphan the excerpt nodes themselves.
+    const excerptIdsToDrop: string[] = [];
+    for (const edge of this.edges.values()) {
+      if (edge.type === 'EXCERPT_OF' && edge.to === node.id) {
+        excerptIdsToDrop.push(edge.from);
+      }
+    }
+    for (const exId of excerptIdsToDrop) this.nodes.delete(exId);
+
+    // Drop the node + every edge touching it (or any cascaded excerpt).
+    const droppedIds = new Set<string>([node.id, ...excerptIdsToDrop]);
     this.nodes.delete(node.id);
     for (const [key, edge] of this.edges.entries()) {
-      if (edge.from === node.id || edge.to === node.id) this.edges.delete(key);
+      if (droppedIds.has(edge.from) || droppedIds.has(edge.to)) {
+        this.edges.delete(key);
+      }
     }
   }
 
@@ -1060,6 +1086,152 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       ...(actor.reason ? { reason: actor.reason } : {}),
     });
     return { ...node, props: { ...node.props } };
+  }
+
+  // ─── Slice 6.5 — PalaiaExcerpt persistence ──────────────────────────
+
+  /**
+   * Write a Palaia-Excerpt batch attached to the given parent MK.
+   * Mirrors the Neon implementation's pre-insert validation
+   * (`excerpt_count_exceeded` >5, `excerpt_text_too_long` >300 chars).
+   */
+  private writeExcerpts(
+    parentMkExtId: string,
+    input: PalaiaExcerptInput,
+    nowIso: string,
+  ): void {
+    if (input.texts.length > 5) {
+      throw Object.assign(new Error('excerpt_count_exceeded'), {
+        code: 'excerpt_count_exceeded',
+      });
+    }
+    for (const t of input.texts) {
+      if (t.length === 0 || t.length > 300) {
+        throw Object.assign(new Error('excerpt_text_too_long'), {
+          code: 'excerpt_text_too_long',
+        });
+      }
+    }
+    for (let i = 0; i < input.texts.length; i++) {
+      const text = input.texts[i]!;
+      const excerptExtId = palaiaExcerptNodeId(randomUUID());
+      this.upsertNode({
+        id: excerptExtId,
+        type: 'PalaiaExcerpt',
+        props: {
+          text,
+          position: i,
+          source: input.source,
+          created_at: nowIso,
+        },
+      });
+      this.addEdge({
+        type: 'EXCERPT_OF',
+        from: excerptExtId,
+        to: parentMkExtId,
+      });
+    }
+  }
+
+  async listExcerptsForMemory(
+    memorableKnowledgeNodeId: string,
+  ): Promise<PalaiaExcerptNode[]> {
+    const result: PalaiaExcerptNode[] = [];
+    for (const edge of this.edges.values()) {
+      if (edge.type !== 'EXCERPT_OF' || edge.to !== memorableKnowledgeNodeId) {
+        continue;
+      }
+      const node = this.nodes.get(edge.from);
+      if (!node || node.type !== 'PalaiaExcerpt') continue;
+      result.push({
+        id: node.id,
+        type: 'PalaiaExcerpt' as const,
+        props: {
+          text: node.props['text'] as string,
+          position: node.props['position'] as number,
+          source: node.props['source'] as ExcerptSource,
+          created_at: node.props['created_at'] as string,
+        },
+      });
+    }
+    result.sort((a, b) => a.props.position - b.props.position);
+    return result;
+  }
+
+  async updateExcerpt(
+    memorableKnowledgeNodeId: string,
+    position: number,
+    patch: PalaiaExcerptUpdate,
+    actor: AclMutationOptions,
+  ): Promise<PalaiaExcerptNode> {
+    const hasField = patch.text !== undefined || patch.source !== undefined;
+    if (!hasField) {
+      throw Object.assign(new Error('empty_patch'), { code: 'empty_patch' });
+    }
+    if (
+      patch.text !== undefined &&
+      (patch.text.length === 0 || patch.text.length > 300)
+    ) {
+      throw Object.assign(new Error('excerpt_text_too_long'), {
+        code: 'excerpt_text_too_long',
+      });
+    }
+    const mk = this.requireMkOrThrow(memorableKnowledgeNodeId);
+    const owners = Array.isArray(mk.props['acl_owners'])
+      ? (mk.props['acl_owners'] as string[])
+      : [];
+    if (!owners.includes(actor.actorOmadiaUserId)) {
+      throw Object.assign(new Error('not_an_owner'), { code: 'not_an_owner' });
+    }
+
+    let target: GraphNode | undefined;
+    for (const edge of this.edges.values()) {
+      if (edge.type !== 'EXCERPT_OF' || edge.to !== memorableKnowledgeNodeId) {
+        continue;
+      }
+      const candidate = this.nodes.get(edge.from);
+      if (
+        candidate &&
+        candidate.type === 'PalaiaExcerpt' &&
+        candidate.props['position'] === position
+      ) {
+        target = candidate;
+        break;
+      }
+    }
+    if (!target) {
+      throw Object.assign(new Error('excerpt_not_found'), {
+        code: 'excerpt_not_found',
+      });
+    }
+
+    const next: Record<string, unknown> = { ...target.props };
+    if (patch.text !== undefined) next['text'] = patch.text;
+    if (patch.source !== undefined) next['source'] = patch.source;
+    target.props = next;
+
+    this.appendAclAudit({
+      memoryExternalId: memorableKnowledgeNodeId,
+      actorOmadiaUserId: actor.actorOmadiaUserId,
+      ...(actor.actorChannelIdentityId
+        ? { actorChannelIdentityId: actor.actorChannelIdentityId }
+        : {}),
+      action: 'edit_excerpt',
+      beforeOwners: owners,
+      afterOwners: owners,
+      ...(actor.reason ? { reason: actor.reason } : {}),
+    });
+
+    return {
+      id: target.id,
+      type: 'PalaiaExcerpt' as const,
+      props: {
+        text: next['text'] as string,
+        position: next['position'] as number,
+        source: next['source'] as ExcerptSource,
+        created_at: next['created_at'] as string,
+      },
+    };
   }
 
   async listMemoryAclAudit(

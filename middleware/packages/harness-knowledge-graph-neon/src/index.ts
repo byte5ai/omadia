@@ -41,6 +41,7 @@ export {
   GRAPH_EDGE_TYPES,
   CHANNEL_KINDS,
   MEMORABLE_KINDS,
+  EXCERPT_SOURCES,
   GraphNodeTypeSchema,
   GraphEdgeTypeSchema,
   validateNodeProps,

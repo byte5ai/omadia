@@ -26,6 +26,10 @@ export const GRAPH_NODE_TYPES = [
   // verbatim Turn. Carries the ACL (Slice 3) and is the sink for the
   // Palaia significance-promotion pipeline (Slice 4).
   'MemorableKnowledge',
+  // Slice 6.5 — verbatim source-snippet that underpins a
+  // MemorableKnowledge. Stable provenance anchor; survives MK-PATCH
+  // and is the embedding-source for Slice 7 retrieval.
+  'PalaiaExcerpt',
 ] as const;
 
 export const GRAPH_EDGE_TYPES = [
@@ -50,6 +54,8 @@ export const GRAPH_EDGE_TYPES = [
   //   MK -[DERIVED_FROM]-> Turn  uses existing edge type for provenance
   'INVOLVED',
   'REQUIRES',
+  // Slice 6.5 — PalaiaExcerpt → MemorableKnowledge.
+  'EXCERPT_OF',
 ] as const;
 
 export const GraphNodeTypeSchema = z.enum(GRAPH_NODE_TYPES);
@@ -255,6 +261,21 @@ const MemorableKnowledgePropsSchema = z
   })
   .passthrough();
 
+// Slice 6.5 — PalaiaExcerpt: verbatim source-snippet under a parent
+// MemorableKnowledge. `text` ≤300 to keep the chip-rendered detail-page
+// row compact; `position` 0-4 enforces the L_s6.5.5 hard cap of 5
+// excerpts per parent (also enforced at the SQL CHECK level via
+// migration 0018, so DB stays consistent even on direct INSERT).
+export const EXCERPT_SOURCES = ['llm', 'hint', 'fallback'] as const;
+const PalaiaExcerptPropsSchema = z
+  .object({
+    text: z.string().min(1).max(300),
+    position: z.number().int().min(0).max(4),
+    source: z.enum(EXCERPT_SOURCES),
+    created_at: z.string().datetime(),
+  })
+  .passthrough();
+
 export const NodePropsSchemaByType: Record<
   GraphNodeTypeName,
   z.ZodType<Record<string, unknown>>
@@ -271,6 +292,7 @@ export const NodePropsSchemaByType: Record<
   ToolCall: ToolCallPropsSchema,
   Fact: FactPropsSchema,
   MemorableKnowledge: MemorableKnowledgePropsSchema,
+  PalaiaExcerpt: PalaiaExcerptPropsSchema,
 };
 
 export function validateNodeProps(

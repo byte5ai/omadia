@@ -190,6 +190,31 @@ export interface KnowledgeGraph {
     patch: MemorableKnowledgeUpdate,
     actor: AclMutationOptions,
   ): Promise<GraphNode>;
+  /**
+   * Slice 6.5 — list all Palaia-Excerpt nodes attached to a
+   * MemorableKnowledge, ordered by `position` ascending. Returns an
+   * empty array when the MK has no excerpts (legacy MKs from before
+   * Slice 6.5, or post-promotion where the extractor returned none).
+   * Does NOT enforce ACL — callers are expected to gate via
+   * `getMemorableKnowledge(id, viewer)` first.
+   */
+  listExcerptsForMemory(
+    memorableKnowledgeNodeId: string,
+  ): Promise<PalaiaExcerptNode[]>;
+  /**
+   * Slice 6.5 — partial update on a single Palaia-Excerpt identified by
+   * its parent MK + position. The actor must be in the MK's
+   * `acl_owners`. Writes an `'edit_excerpt'` audit row on the parent
+   * MK (beforeOwners and afterOwners identical — content-edits don't
+   * affect ownership). Empty patch throws `empty_patch`; missing
+   * excerpt throws `excerpt_not_found`.
+   */
+  updateExcerpt(
+    memorableKnowledgeNodeId: string,
+    position: number,
+    patch: PalaiaExcerptUpdate,
+    actor: AclMutationOptions,
+  ): Promise<PalaiaExcerptNode>;
 }
 
 /** Slice 5 — partial content-patch on a MemorableKnowledge. All fields
@@ -228,7 +253,13 @@ export type GraphNodeType =
   /** Slice 2 — first-class curated memory entity between atomic Fact
    *  and verbatim Turn. Carries the ACL (Slice 3) and is the sink for
    *  the Palaia significance-promotion pipeline (Slice 4). */
-  | 'MemorableKnowledge';
+  | 'MemorableKnowledge'
+  /** Slice 6.5 — verbatim text snippet from the original turn that
+   *  underpins a MemorableKnowledge. Stable provenance anchor;
+   *  carries `text`, `position` (0-4), `source` ('llm'|'hint'|
+   *  'fallback') in `props`. Linked to its parent MK via
+   *  `EXCERPT_OF`. */
+  | 'PalaiaExcerpt';
 export type GraphEdgeType =
   | 'IN_SESSION'
   | 'NEXT_TURN'
@@ -246,7 +277,10 @@ export type GraphEdgeType =
   | 'INVOLVED'
   /** Slice 2 — MemorableKnowledge → Entity (Odoo/Confluence/Plugin),
    *  domain references the MK is anchored to. */
-  | 'REQUIRES';
+  | 'REQUIRES'
+  /** Slice 6.5 — PalaiaExcerpt → MemorableKnowledge. The verbatim
+   *  source-snippet "belongs to" the curated memory it underpins. */
+  | 'EXCERPT_OF';
 
 export type FactSeverity = 'info' | 'warning' | 'critical';
 
@@ -442,6 +476,56 @@ export interface MemorableKnowledgeIngest {
    * system-driven.
    */
   actorOmadiaUserId?: string;
+  /**
+   * Slice 6.5 — verbatim source snippets that underpin this MK,
+   * persisted atomically in the same transaction. The Palaia-Excerpt-
+   * Extractor fills `texts` (0-5 entries, each ≤300 chars) and
+   * tags the batch with a single `source` discriminator. The
+   * provenance is read-only via {@link KnowledgeGraph.listExcerptsForMemory}
+   * and editable via {@link KnowledgeGraph.updateExcerpt}.
+   */
+  palaiaExcerpts?: PalaiaExcerptInput;
+}
+
+/**
+ * Slice 6.5 — provenance discriminator for a Palaia-Excerpt batch.
+ *   - 'llm'      — Haiku-extracted from the cleaned assistant answer.
+ *   - 'hint'     — derived from an explicit `<palaia-hint>` annotation
+ *                  in the user message.
+ *   - 'fallback' — degraded extractor output (parse failure / empty
+ *                  answer). Should rarely be persisted — extractors
+ *                  prefer to return `undefined` instead.
+ */
+export type ExcerptSource = 'llm' | 'hint' | 'fallback';
+
+/** Slice 6.5 — input shape for the optional Excerpt batch on
+ *  `createMemorableKnowledge`. Length 0 is allowed (caller filtered all
+ *  excerpts out); >5 throws `excerpt_count_exceeded`. */
+export interface PalaiaExcerptInput {
+  texts: readonly string[];
+  source: ExcerptSource;
+}
+
+/** Slice 6.5 — Excerpt-node read shape. `position` is dense in
+ *  [0, n-1] for the n excerpts of a parent MK; the order is the LLM's
+ *  document order at extract-time and is preserved across edits. */
+export interface PalaiaExcerptNode {
+  /** External id, scheme `excerpt:<uuid-v4>`. */
+  id: string;
+  type: 'PalaiaExcerpt';
+  props: {
+    text: string;
+    position: number;
+    source: ExcerptSource;
+    created_at: string;
+  };
+}
+
+/** Slice 6.5 — partial update shape. At least one of `text` / `source`
+ *  must be present, else `empty_patch` is thrown. */
+export interface PalaiaExcerptUpdate {
+  text?: string;
+  source?: ExcerptSource;
 }
 
 export interface MemorableKnowledgeIngestResult {
@@ -468,8 +552,16 @@ export interface ListMemorableKnowledgeOptions {
 
 /** Action recorded in the audit-log. `create` is logged by
  *  `createMemorableKnowledge` when `aclOwners.length > 0` (so the
- *  initial-owner snapshot is auditable). */
-export type AclAction = 'create' | 'expand' | 'shrink' | 'delete' | 'edit';
+ *  initial-owner snapshot is auditable). `edit_excerpt` (Slice 6.5)
+ *  is written by `updateExcerpt` and shares the no-op-owners
+ *  invariant with `'edit'`. */
+export type AclAction =
+  | 'create'
+  | 'expand'
+  | 'shrink'
+  | 'delete'
+  | 'edit'
+  | 'edit_excerpt';
 
 /** Append-only audit-log row. Survives a `deleteMemory` (the
  *  underlying table has no FK on `memory_external_id`). */
@@ -903,6 +995,16 @@ export function channelIdentityNodeId(
  */
 export function memorableKnowledgeNodeId(memorableId: string): string {
   return `mk:${memorableId}`;
+}
+
+/**
+ * Slice 6.5 — external_id for a PalaiaExcerpt node. The uuid is
+ * generated per-excerpt on persist; the parent MK is reachable via
+ * the EXCERPT_OF edge, so the external_id deliberately does NOT
+ * encode mkId or position (would force a rewrite on cascade-renumber).
+ */
+export function palaiaExcerptNodeId(excerptId: string): string {
+  return `excerpt:${excerptId}`;
 }
 
 export function runNodeId(turnExternalId: string): string {
