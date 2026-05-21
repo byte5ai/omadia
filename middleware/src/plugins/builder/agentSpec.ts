@@ -36,11 +36,18 @@ const ToolIdSchema = z
   .string()
   .regex(/^[a-z][a-z0-9_]*$/, 'Tool ID must be snake_case (lowercase, digits, underscore)');
 
-// DNS-label compatible — agent IDs become URL-safe directory names and
-// flow into the manifest as the package id.
+// Builder-generated agents are npm-scoped (`@omadia/agent-<slug>`), matching
+// the hand-coded platform agents (`@omadia/agent-seo-analyst`). The scope +
+// slug flow into the manifest as the package id; `deriveAgentSlug` strips the
+// scope down to a URL-safe directory name. The legacy reverse-FQDN form
+// (`de.byte5.agent.<slug>`) stays accepted so drafts created before the
+// namespace migration still parse.
 const AgentIdSchema = z
   .string()
-  .regex(/^[a-z][a-z0-9.-]*$/, 'Agent ID must be a DNS-label-compatible reverse-FQDN');
+  .regex(
+    /^(?:@[a-z][a-z0-9-]*\/[a-z][a-z0-9-]*|[a-z][a-z0-9.-]*)$/,
+    'Agent ID must be npm-scoped (`@omadia/agent-foo`) or a reverse-FQDN (`de.byte5.agent.foo`)',
+  );
 
 // `depends_on` and (transitively) downstream cross-plugin references must
 // also accept npm-scoped IDs (`@omadia/agent-seo-analyst`, `@omadia/memory`)
@@ -49,9 +56,8 @@ const AgentIdSchema = z
 // existing platform plugin at all — Zod rejects the `@`/`/` characters at
 // parse time, long before the manifestLinter's catalog check runs.
 //
-// `spec.id` itself stays restricted to reverse-FQDN (Builder-convention) —
-// only depends_on (and capability/service refs that ride on the same naming
-// space) is widened.
+// `spec.id` accepts the same widened shape (see AgentIdSchema above) — the
+// Builder now emits npm-scoped ids by default.
 const DependsOnIdSchema = z
   .string()
   .regex(

@@ -39,6 +39,14 @@ describe('agentSpec', () => {
       assert.throws(() => parseAgentSpec({ ...validBase, id: '1foo' }));
     });
 
+    it('accepts an npm-scoped agent id (`@omadia/agent-<slug>`)', () => {
+      // Builder now emits npm-scoped ids by default, analogous to the
+      // hand-coded `@omadia/agent-seo-analyst`. The legacy reverse-FQDN
+      // form stays accepted (see `validBase` above).
+      const spec = parseAgentSpec({ ...validBase, id: '@omadia/agent-weather' });
+      assert.equal(spec.id, '@omadia/agent-weather');
+    });
+
     it('rejects unknown top-level keys via strict()', () => {
       assert.throws(() => parseAgentSpec({ ...validBase, extra_field: 'x' }));
     });

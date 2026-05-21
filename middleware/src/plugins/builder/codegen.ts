@@ -196,7 +196,7 @@ function placeholderHintFor(source: string): string {
       'de.byte5.integration.confluence) — the agent-integration template ' +
       'requires at least one entry to wire the vault scope.';
   }
-  if (source === 'id') return 'Set spec.id to a reverse-FQDN (e.g. de.byte5.agent.example).';
+  if (source === 'id') return 'Set spec.id to an npm-scoped name (e.g. @omadia/agent-example).';
   if (source === 'name') return 'Set spec.name to a human-readable agent name.';
   if (source === 'category') return 'Set spec.category (e.g. "communication", "analytics").';
   if (source === 'skill.role') return 'Set spec.skill.role to describe the agent\'s persona.';

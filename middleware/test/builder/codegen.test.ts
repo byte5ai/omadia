@@ -101,6 +101,30 @@ describe('codegen.generate', () => {
     assert.match(pluginText, /AGENT_ID = 'de\.byte5\.agent\.weather'/);
   });
 
+  it('generates a valid package for an npm-scoped agent id (`@omadia/agent-*`)', async () => {
+    const { spec: base, slots } = loadFixture();
+    const spec = parseAgentSpec({
+      ...base,
+      id: '@omadia/agent-monty-python',
+      name: 'Entertainer',
+    });
+    const out = await generate({ spec, slots });
+
+    // Manifest carries the scoped id verbatim; the `agent:<id>:*` permission
+    // scopes derive from it (mirrors the hand-coded @omadia/agent-seo-analyst).
+    const manifestText = out.get('manifest.yaml')!.toString('utf-8');
+    assert.match(manifestText, /id:\s*"@omadia\/agent-monty-python"/);
+    assert.match(manifestText, /agent:@omadia\/agent-monty-python:\*/);
+
+    // plugin.ts AGENT_ID constant gets the scoped id.
+    const pluginText = out.get('plugin.ts')!.toString('utf-8');
+    assert.match(pluginText, /AGENT_ID = '@omadia\/agent-monty-python'/);
+
+    // deriveAgentSlug strips the npm scope → URL-safe directory/file name.
+    assert.ok(out.has('skills/agent-monty-python-expert.md'));
+    assert.equal(out.has('skills/{{AGENT_SLUG}}-expert.md'), false);
+  });
+
   it('injects the toolkit-impl slot between markers', async () => {
     const { spec, slots } = loadFixture();
     const out = await generate({ spec, slots });

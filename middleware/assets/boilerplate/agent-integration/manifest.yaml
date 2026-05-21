@@ -9,7 +9,7 @@ schema_version: "1"
 # ===========================================================================
 
 identity:
-  id: "{{AGENT_ID}}"                     # z.B. de.byte5.agent.sharepoint
+  id: "{{AGENT_ID}}"                     # z.B. @omadia/agent-sharepoint
   kind: "agent"
   domain: "{{AGENT_DOMAIN}}"             # z.B. m365.sharepoint, odoo.hr — lowercase, dotted, kebab-case mid-segment OK
   name: "{{AGENT_NAME}}"
