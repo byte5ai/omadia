@@ -66,9 +66,9 @@ specs/001-multi-orchestrator-runtime/
 ├── spec.md              # Feature specification (the WHAT)
 ├── plan.md              # This file (the HOW)
 ├── research.md          # Resolved design decisions & rejected alternatives
-├── data-model.md        # Entities, DB schema, manifest schema
+├── data-model.md        # Entities, DB schema, manifest extension
 ├── contracts/
-│   └── plugin-lifecycle.md   # Plugin / PluginScope / manifest contract
+│   └── plugin-lifecycle.md   # existing activate/close lifecycle + manifest extension
 └── tasks.md             # Task breakdown by user story
 ```
 

@@ -27,8 +27,8 @@ count.
 ## D2 — Configuration storage: YAML file vs. database
 
 **Decision**: Postgres-backed configuration (`agents`, `agent_plugins`,
-`channel_bindings`). An optional YAML file is supported only as a one-time
-bootstrap seed for an empty database.
+`channel_bindings`, `platform_settings`). An optional YAML file is supported
+only as a one-time bootstrap seed for an empty database.
 
 **Rationale**: The hard requirement is hot-reload driven by an operator UI
 (US9). A UI mutating a checked-in YAML file and then triggering a process

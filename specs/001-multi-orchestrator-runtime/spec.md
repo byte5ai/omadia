@@ -433,6 +433,9 @@ and disable actions made through the UI.
   per-Agent plugin configuration.
 - **Channel Binding**: a mapping from a channel type + channel key to the Agent
   that owns it; channel keys are globally unique.
+- **Platform Settings**: process-wide configuration not owned by any single
+  Agent — notably `fallbackAgentId`, the Agent that receives inbound messages
+  whose channel key has no binding (FR-015, FR-021).
 - **Plugin Manifest**: the existing plugin `manifest.yaml`, extended by this
   feature with `multiInstance` (+ `multiInstanceJustification`) and
   `privacyClass`. All other manifest fields are unchanged.
