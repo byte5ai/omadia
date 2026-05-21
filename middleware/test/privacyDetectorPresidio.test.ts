@@ -227,6 +227,56 @@ describe('createPresidioDetector · adapter contract (Slice 3.4)', () => {
     assert.equal(text.slice(...outcome.hits[0]!.span), 'John');
   });
 
+  it('translates Presidio code-point offsets to UTF-16 for astral-char input', async () => {
+    // 😀 (U+1F600) is one Unicode code point but two UTF-16 code units.
+    // Presidio runs on a Python `str` and reports code-point offsets:
+    // "John Müller" sits at code points [1, 12).
+    const text = '😀John Müller ist da.';
+    const detector = createPresidioDetector({
+      client: stubClient(() => ({ hits: [rawHit('PERSON', 1, 12, 0.9)] })),
+      language: 'de',
+      detectorId: 'presidio:test',
+      maxInputChars: 100_000,
+      timeoutMs: 3000,
+      scoreThreshold: 0.4,
+      log: () => {},
+    });
+    const outcome = await detector.detect(text);
+    assert.equal(outcome.hits.length, 1);
+    const hit = outcome.hits[0]!;
+    // The span is UTF-16 — slicing the original text yields the real name.
+    assert.equal(text.slice(...hit.span), 'John Müller');
+    assert.equal(hit.value, 'John Müller');
+  });
+
+  it('astral offset never leaves a lone surrogate after span replacement', async () => {
+    // Reproduces the production `400 invalid high surrogate` failure: a
+    // span boundary that — read as a UTF-16 offset — falls between the
+    // high and low surrogate of an emoji. The privacy guard rebuilds the
+    // text as `slice(0,start) + token + slice(end)`; it must stay
+    // well-formed.
+    const text = '😀John';
+    const detector = createPresidioDetector({
+      client: stubClient(() => ({ hits: [rawHit('PERSON', 1, 5, 0.9)] })),
+      language: 'de',
+      detectorId: 'presidio:test',
+      maxInputChars: 100_000,
+      timeoutMs: 3000,
+      scoreThreshold: 0.4,
+      log: () => {},
+    });
+    const outcome = await detector.detect(text);
+    assert.equal(outcome.hits.length, 1);
+    const [start, end] = outcome.hits[0]!.span;
+    const rebuilt = text.slice(0, start) + '«PERSON_1»' + text.slice(end);
+    assert.doesNotMatch(
+      rebuilt,
+      /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/,
+      'rebuilt text must contain no lone surrogate',
+    );
+    assert.equal(rebuilt, '😀«PERSON_1»');
+  });
+
   it('declares scanTargets={systemPrompt:false, userMessages:true, assistantMessages:true} — Slice 3.4.3', () => {
     // Slice 3.4 boot-smoke surfaced 270+ hits in one turn (memory
     // recall in the system prompt). 3.4.2 narrowed to user-only, but

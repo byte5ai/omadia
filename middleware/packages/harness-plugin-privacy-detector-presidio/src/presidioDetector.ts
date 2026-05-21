@@ -14,11 +14,13 @@
  *   - The detector is safe to call concurrently. The Presidio sidecar
  *     handles concurrent /analyze requests internally; the client adds
  *     no shared state.
- *   - Span offsets returned by Presidio are byte-accurate (computed in
- *     Python from the same UTF-16 string we sent). We still re-anchor
- *     defensively via `text.indexOf(value, cursor)` to stay symmetric
- *     with the Slice-3.2 Ollama detector and survive any future
- *     surrogate-pair mismatches.
+ *   - Span offsets returned by Presidio are Unicode CODE-POINT indices
+ *     (Python `str` semantics), not UTF-16 code units. They coincide
+ *     for BMP-only text but diverge by one per astral character (emoji,
+ *     …); `mapHits` translates them to UTF-16 offsets before slicing so
+ *     a span boundary can never fall inside a surrogate pair. A leftover
+ *     lone surrogate would otherwise reach the Anthropic request body
+ *     and fail the whole turn with `400 invalid high surrogate`.
  */
 
 import type {
@@ -152,6 +154,39 @@ export function createPresidioDetector(
 }
 
 /**
+ * Build a code-point-index → UTF-16-code-unit-index lookup table.
+ *
+ * `map[i]` is the UTF-16 offset of the i-th Unicode code point;
+ * `map[cpCount]` is `text.length` (sentinel, so exclusive end offsets
+ * resolve). Presidio reports spans in Python `str` semantics — code
+ * points — while JS `string.slice` indexes UTF-16 code units; applying
+ * a code-point offset directly can split a surrogate pair.
+ */
+function buildCodePointToUnitMap(text: string): number[] {
+  const map: number[] = [];
+  let unit = 0;
+  for (const ch of text) {
+    map.push(unit);
+    unit += ch.length; // 1 for a BMP char, 2 for an astral char
+  }
+  map.push(unit);
+  return map;
+}
+
+/**
+ * True when `text` carries a UTF-16 high surrogate — i.e. an astral
+ * character (or a lone surrogate). BMP-only text needs no offset
+ * translation, so the common path stays allocation-free.
+ */
+function hasHighSurrogate(text: string): boolean {
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text.charCodeAt(i);
+    if (c >= 0xd800 && c <= 0xdbff) return true;
+  }
+  return false;
+}
+
+/**
  * Map raw Presidio hits to canonical `PrivacyDetectorHit`s.
  *
  *   - Drops hits whose entity type is on the exclude list (DATE_TIME,
@@ -159,8 +194,10 @@ export function createPresidioDetector(
  *   - Drops hits below `scoreThreshold` (defence in depth — the
  *     sidecar already filters but the operator's plugin-side
  *     threshold may be stricter than the sidecar's process-wide one).
- *   - Re-anchors spans via `indexOf` if the byte offsets don't slice
- *     to the expected substring (extra robustness).
+ *   - Translates Presidio's code-point offsets to UTF-16 code-unit
+ *     offsets so a span boundary can never split a surrogate pair.
+ *   - Re-anchors spans via `indexOf` if the slice carries stray
+ *     whitespace (extra robustness).
  *   - Computes the matched substring from the source text since the
  *     sidecar response intentionally omits it (smaller wire payload,
  *     PII-free transport).
@@ -174,30 +211,48 @@ function mapHits(
 ): PrivacyDetectorHit[] {
   const out: PrivacyDetectorHit[] = [];
   let cursor = 0;
+
+  // Presidio offsets are Python code-point indices. Translate them to
+  // UTF-16 code-unit indices when the text contains astral characters,
+  // so a span boundary can never land inside a surrogate pair — a split
+  // pair leaves a lone surrogate that fails the Anthropic request body.
+  const cpToUnit = hasHighSurrogate(text)
+    ? buildCodePointToUnitMap(text)
+    : undefined;
+  const maxOffset = cpToUnit ? cpToUnit.length - 1 : text.length;
+
   for (const raw of rawHits) {
     if (raw.score < scoreThreshold) continue;
     const mappedType = mapPresidioType(raw.entity_type, language);
     if (mappedType === undefined) continue;
 
-    const len = text.length;
     let { start, end } = raw;
     if (
       !Number.isInteger(start) ||
       !Number.isInteger(end) ||
       start < 0 ||
-      end > len ||
+      end > maxOffset ||
       start >= end
     ) {
       // Out-of-range — drop the hit, we can't trust the value.
       continue;
     }
 
+    // Translate code-point offsets → UTF-16 code-unit offsets.
+    if (cpToUnit) {
+      const unitStart = cpToUnit[start];
+      const unitEnd = cpToUnit[end];
+      if (unitStart === undefined || unitEnd === undefined) continue;
+      start = unitStart;
+      end = unitEnd;
+    }
+
     let value = text.slice(start, end);
     if (value.length === 0) continue;
 
-    // Defensive re-anchor: if the slice somehow doesn't read like a
-    // proper match (e.g. UTF-16 surrogate-pair edge case), try to
-    // realign via indexOf from the cursor.
+    // Defensive re-anchor: if the slice carries stray leading/trailing
+    // whitespace, realign to the trimmed match via indexOf from the
+    // cursor.
     const trimmed = value.trim();
     if (trimmed.length === 0) continue;
     if (trimmed !== value) {

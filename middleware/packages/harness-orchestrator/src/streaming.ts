@@ -2,6 +2,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 import type { AskObserver } from './tools/domainQueryTool.js';
 import {
   applyPrivacyOutboundToParams,
+  ensureWellFormedParams,
   restorePrivacyInResponse,
   streamingTokenBoundary,
 } from './privacyHandle.js';
@@ -66,9 +67,12 @@ export async function* streamMessageEvents(args: {
 
   // Privacy-Proxy outbound transform.
   const privacy = turnContext.current()?.privacyHandle;
-  const params = privacy
+  const transformedParams = privacy
     ? await applyPrivacyOutboundToParams(args.params, privacy, streamLabel)
     : args.params;
+  // Last-resort guard: repair any lone UTF-16 surrogate so the request
+  // body is valid JSON for the Anthropic API. See ensureWellFormedParams.
+  const params = ensureWellFormedParams(transformedParams);
 
   safe(
     () => observer?.onIterationPhase?.({ iteration, phase: 'thinking' }),

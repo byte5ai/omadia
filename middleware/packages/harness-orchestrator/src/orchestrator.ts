@@ -73,6 +73,7 @@ import {
 import {
   applyPrivacyOutboundToParams,
   createPrivacyTurnHandle,
+  ensureWellFormedParams,
   restorePrivacyInResponse,
 } from './privacyHandle.js';
 import { RunTraceCollector, type InvocationHandle } from './runTraceCollector.js';
@@ -1603,9 +1604,13 @@ export class Orchestrator {
         const outboundParams = privacy
           ? await applyPrivacyOutboundToParams(baseParams, privacy, 'orchestrator')
           : baseParams;
+        // Last-resort guard: repair any lone UTF-16 surrogate before the
+        // SDK serialises the body — the Anthropic API rejects it as
+        // invalid JSON. See ensureWellFormedParams.
+        const safeParams = ensureWellFormedParams(outboundParams);
 
         const response: Message = await this.client.messages.create(
-          outboundParams,
+          safeParams,
           { headers: { 'anthropic-beta': MEMORY_BETA_HEADER } },
         );
 

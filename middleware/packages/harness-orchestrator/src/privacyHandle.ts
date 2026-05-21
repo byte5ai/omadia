@@ -336,6 +336,65 @@ export async function applyPrivacyOutboundToParams(
   return { ...params, system: newSystem, messages: newMessages };
 }
 
+// ---------------------------------------------------------------------------
+// Outbound surrogate hardening — last-resort guard before the API call.
+//
+// A JS string may legally hold a lone UTF-16 surrogate, but JSON cannot.
+// The Anthropic SDK `JSON.stringify`s the request body, and the API
+// rejects a lone surrogate with `400 invalid_request_error: invalid high
+// surrogate in string`. Detector-driven span replacement in the privacy
+// guard can split a surrogate pair when an upstream offset is off, and
+// corrupt upstream data can carry one in directly — this guard repairs
+// the payload so one bad character in a large tool result can't fail the
+// whole turn.
+// ---------------------------------------------------------------------------
+
+const ANY_SURROGATE = /[\uD800-\uDFFF]/;
+const LONE_SURROGATE =
+  /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+/**
+ * Replace every lone UTF-16 surrogate in `value` with U+FFFD. Returns a
+ * value-equal string when the input is already well-formed — well-formed
+ * strings (the overwhelming majority) skip the rewrite entirely.
+ */
+function toWellFormed(value: string): string {
+  if (!ANY_SURROGATE.test(value)) return value;
+  return value.replace(LONE_SURROGATE, '�');
+}
+
+/**
+ * Deep-walk an Anthropic-API-shape `params` object and repair every
+ * reachable string so the serialised request body is valid JSON.
+ * Structurally shares everything that needed no change — when the whole
+ * payload is well-formed the original reference is returned untouched.
+ */
+export function ensureWellFormedParams<T>(value: T): T {
+  if (typeof value === 'string') {
+    return toWellFormed(value) as T;
+  }
+  if (Array.isArray(value)) {
+    let changed = false;
+    const out = value.map((item) => {
+      const next = ensureWellFormedParams(item);
+      if (next !== item) changed = true;
+      return next;
+    });
+    return (changed ? out : value) as T;
+  }
+  if (value !== null && typeof value === 'object') {
+    let changed = false;
+    const out: Record<string, unknown> = {};
+    for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+      const next = ensureWellFormedParams(v);
+      if (next !== v) changed = true;
+      out[key] = next;
+    }
+    return (changed ? out : value) as T;
+  }
+  return value;
+}
+
 /**
  * Walk an Anthropic-API-shape response message and restore tokens in
  * every `text` content block. Mutates in place. Safe to call when the
