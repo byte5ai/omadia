@@ -51,7 +51,7 @@ app/                   Next.js App Router pages + components
 i18n/                  Locale config + per-request resolution
 messages/              Translation JSON (en, de) + convention doc
 scripts/i18n-validate.mjs  CI-runnable parity gate
-middleware.ts          Auth-cookie gate
+proxy.ts               Auth-cookie gate (Next 16 proxy convention)
 next.config.ts         Build config + next-intl plugin wiring
 ```
 

@@ -1,3 +1,4 @@
+import { askUserChoiceTool } from './askUserChoice.js';
 import { fillSlotTool } from './fillSlot.js';
 import { lintSpecTool } from './lintSpec.js';
 import { listCatalogToolsTool } from './listCatalogTools.js';
@@ -6,6 +7,8 @@ import { listReferencesTool } from './listReferences.js';
 import { patchSpecTool } from './patchSpec.js';
 import { readPackageTypesTool } from './readPackageTypes.js';
 import { readReferenceTool } from './readReference.js';
+import { readSlotTool } from './readSlot.js';
+import { reportPlatformIssueTool } from './reportPlatformIssue.js';
 import { setPersonaConfigTool } from './setPersonaConfig.js';
 import { setQualityConfigTool } from './setQualityConfig.js';
 import { suggestDependsOnTool } from './suggestDependsOn.js';
@@ -23,6 +26,7 @@ export type {
 } from './types.js';
 export type { LintIssue, LintSeverity } from './lintSpec.js';
 export {
+  askUserChoiceTool,
   fillSlotTool,
   lintSpecTool,
   listCatalogToolsTool,
@@ -31,6 +35,8 @@ export {
   patchSpecTool,
   readPackageTypesTool,
   readReferenceTool,
+  readSlotTool,
+  reportPlatformIssueTool,
   setPersonaConfigTool,
   setQualityConfigTool,
   suggestDependsOnTool,
@@ -44,6 +50,7 @@ export function builderTools(): ReadonlyArray<BuilderTool<unknown, unknown>> {
   return [
     patchSpecTool as unknown as BuilderTool<unknown, unknown>,
     fillSlotTool as unknown as BuilderTool<unknown, unknown>,
+    readSlotTool as unknown as BuilderTool<unknown, unknown>,
     lintSpecTool as unknown as BuilderTool<unknown, unknown>,
     listCatalogToolsTool as unknown as BuilderTool<unknown, unknown>,
     listReferencesTool as unknown as BuilderTool<unknown, unknown>,
@@ -53,5 +60,7 @@ export function builderTools(): ReadonlyArray<BuilderTool<unknown, unknown>> {
     setQualityConfigTool as unknown as BuilderTool<unknown, unknown>,
     setPersonaConfigTool as unknown as BuilderTool<unknown, unknown>,
     suggestDependsOnTool as unknown as BuilderTool<unknown, unknown>,
+    askUserChoiceTool as unknown as BuilderTool<unknown, unknown>,
+    reportPlatformIssueTool as unknown as BuilderTool<unknown, unknown>,
   ];
 }

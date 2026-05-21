@@ -60,6 +60,18 @@ describe('agentSpec', () => {
       assert.equal(spec.setup_fields[0]?.type, 'secret');
     });
 
+    it('accepts #91 network.web_scanner + host_list setup field', () => {
+      const spec = parseAgentSpec({
+        ...validBase,
+        network: { outbound: [], web_scanner: true },
+        setup_fields: [
+          { key: 'audit_hosts', type: 'host_list', required: false },
+        ],
+      });
+      assert.equal(spec.network.web_scanner, true);
+      assert.equal(spec.setup_fields[0]?.type, 'host_list');
+    });
+
     it('rejects an unknown template id', () => {
       assert.throws(() =>
         parseAgentSpec({ ...validBase, template: 'nonexistent-template' }),

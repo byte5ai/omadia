@@ -4,7 +4,12 @@ import type { NextRequest } from 'next/server';
 const SESSION_COOKIE = 'omadia_session';
 
 /**
- * Edge-middleware — gates every page + API call on the Admin UI.
+ * Next.js proxy — gates every page + API call on the Admin UI.
+ *
+ * This is the Next 16 `proxy.ts` file convention (the successor to the
+ * deprecated `middleware.ts`). The proxy convention runs on the Node.js
+ * runtime; this gate uses only runtime-agnostic APIs (cookie read, base64
+ * decode, JSON parse) so the Node runtime is a non-issue.
  *
  * Rules:
  *   - `/login`, `/setup`, and `/bot-api/v1/auth/*` pass through (the auth
@@ -17,7 +22,7 @@ const SESSION_COOKIE = 'omadia_session';
  *     malformed cookie bounces to `/login?return=<encoded original path>`
  *     instead of rendering a broken page that 401s on every API call.
  */
-export function middleware(req: NextRequest) {
+export function proxy(req: NextRequest) {
   const { pathname, search } = req.nextUrl;
 
   if (isPublicPath(pathname)) {

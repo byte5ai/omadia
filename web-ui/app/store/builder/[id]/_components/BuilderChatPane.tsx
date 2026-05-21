@@ -419,6 +419,9 @@ export function BuilderChatPane({
       return;
     }
     if (pendingInput.autoSubmit) {
+      // Consuming a one-shot command prop from the parent: mirror the
+      // pending input into the controlled textarea — not a render cascade.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setInput('');
       void onSend(pendingInput.text);
     } else {

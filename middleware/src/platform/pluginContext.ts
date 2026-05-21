@@ -50,7 +50,7 @@ import type { NativeToolRegistry } from '@omadia/orchestrator';
 import type { PluginRouteRegistry } from './pluginRouteRegistry.js';
 import type { NotificationRouter } from './notificationRouter.js';
 import type { UiRouteCatalog } from './uiRouteCatalog.js';
-import { createHttpAccessor } from './httpAccessor.js';
+import { createHttpAccessor, isAuditMode, type AuditMode } from './httpAccessor.js';
 import { createMemoryAccessor } from './memoryAccessor.js';
 import { SCRATCH_DIR } from './paths.js';
 import type { ServiceRegistry } from './serviceRegistry.js';
@@ -196,16 +196,28 @@ export function createPluginContext(
     ? createScratchAccessor(agentId)
     : undefined;
 
-  // HTTP accessor: gated on `manifest.permissions.network.outbound` being
-  // non-empty. When absent, ctx.http is undefined and plugins that didn't
-  // declare network access can't make outbound calls via the accessor.
-  // Today the global `fetch` is still reachable — future hardening will
-  // sandbox that. Plugins should use ctx.http exclusively to stay
-  // forward-compatible.
+  // HTTP accessor: present when the manifest declares outbound hosts OR the
+  // plugin is a #91 web_scanner (audit/scanner plugins fetch user-supplied
+  // URLs and may declare no static hosts at all). The effective allow-list
+  // is resolved from the manifest plus the operator-selected audit mode +
+  // host_list config. Today the global `fetch` is still reachable — a future
+  // hardening pass will sandbox it; plugins should use ctx.http exclusively.
   const outboundHosts = extractOutboundAllowlist(agentId, catalog);
+  const webScanner =
+    catalog.get(agentId)?.plugin.permissions_summary.network_web_scanner ===
+    true;
+  const auditConfig = extractAuditConfig(agentId, catalog, registry);
   const http: HttpAccessor | undefined =
-    outboundHosts.length > 0
-      ? createHttpAccessor({ agentId, outbound: outboundHosts })
+    outboundHosts.length > 0 || webScanner
+      ? createHttpAccessor({
+          agentId,
+          outbound: outboundHosts,
+          webScanner,
+          extraHosts: auditConfig.extraHosts,
+          ...(auditConfig.auditMode
+            ? { auditMode: auditConfig.auditMode }
+            : {}),
+        })
       : undefined;
 
   // Memory accessor: present when the manifest declares memory permissions
@@ -729,6 +741,36 @@ function extractOutboundAllowlist(
   const outbound = network?.['outbound'];
   if (!Array.isArray(outbound)) return [];
   return outbound.filter((h): h is string => typeof h === 'string');
+}
+
+/**
+ * #91 — resolve the operator-set audit config for a plugin: the selected
+ * `audit_mode` and the union of every `host_list` setup field's value. Both
+ * live in the plugin's own InstalledRegistry config (written by the admin
+ * mode-switch UI); unset or malformed entries are simply ignored, so a
+ * fresh install defaults to `single-host` with no extra hosts.
+ */
+function extractAuditConfig(
+  agentId: string,
+  catalog: PluginCatalog,
+  registry: InstalledRegistry,
+): { auditMode?: AuditMode; extraHosts: string[] } {
+  const config = registry.get(agentId)?.config ?? {};
+  const extraHosts: string[] = [];
+  const fields = catalog.get(agentId)?.plugin.required_secrets ?? [];
+  for (const field of fields) {
+    if (field.type !== 'host_list') continue;
+    const value = config[field.key];
+    if (!Array.isArray(value)) continue;
+    for (const host of value) {
+      if (typeof host === 'string' && host.length > 0) extraHosts.push(host);
+    }
+  }
+  const rawMode = config['audit_mode'];
+  return {
+    ...(isAuditMode(rawMode) ? { auditMode: rawMode } : {}),
+    extraHosts,
+  };
 }
 
 function scratchEnabled(agentId: string, catalog: PluginCatalog): boolean {

@@ -4,6 +4,9 @@ import type { AuditLogger } from '../audit.js';
 import type { DraftStore } from '../draftStore.js';
 import type { SlotTypecheckService } from '../slotTypecheckPipeline.js';
 import type { SpecEventBus } from '../specEventBus.js';
+import type { UserChoiceCoordinator } from '../userChoiceCoordinator.js';
+import type { BuilderTriageLog } from '../builderTriageLog.js';
+import type { GithubIssueCache } from '../githubIssueCache.js';
 
 /**
  * Resolves catalog tool names that newly-built agents must not collide with.
@@ -129,6 +132,36 @@ export interface BuilderToolContext {
    * guard is bypassed.
    */
   readonly userMessage?: string;
+  /**
+   * Native issue-reporting (concept plan): coordinator for the
+   * `ask_user_choice` tool's smart-card flow. Optional so existing
+   * tests do not have to wire it up; the tool errors out cleanly
+   * when it is missing.
+   */
+  readonly userChoice?: UserChoiceCoordinator;
+  /**
+   * Native issue-reporting: persisted triage log. Used by the
+   * `report_platform_issue` tool for rate-limit accounting and by
+   * the builder agent for "triage notiert" UI feedback. Optional.
+   */
+  readonly triageLog?: BuilderTriageLog;
+  /**
+   * Native issue-reporting: shared GitHub-issue cache used by the
+   * `report_platform_issue` tool to dedup against existing issues.
+   * Optional.
+   */
+  readonly githubIssueCache?: GithubIssueCache;
+  /**
+   * Native issue-reporting: upstream-repo config consulted by the
+   * `report_platform_issue` tool. Optional so the tool can fail
+   * loudly when the config is missing rather than silently using a
+   * default that points at the wrong repo.
+   */
+  readonly upstreamIssueConfig?: {
+    owner: string;
+    repo: string;
+    labels: readonly string[];
+  };
   /**
    * Issue #56 — fire-and-forget audit logger. Mutating tools (`set_persona_config`,
    * `set_quality_config`, `patch_spec`, `fill_slot`) call `ctx.audit.log(...)`

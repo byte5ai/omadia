@@ -51,6 +51,10 @@ import {
   registerBuilderInstallRoutes,
   type BuilderInstallDeps,
 } from './builderInstall.js';
+import {
+  registerBuilderIssueReportingRoutes,
+  type BuilderIssueReportingDeps,
+} from './builderIssueReporting.js';
 
 /**
  * Builder REST surface — Phase B.0 scope.
@@ -104,6 +108,10 @@ export interface BuilderRouterDeps {
    *  build-pipeline instance also drives preview rebuilds, so an install
    *  serializes naturally behind any pending preview build for the draft. */
   install?: BuilderInstallDeps;
+  /** Native issue-reporting (concept plan). When omitted, the user-
+   *  choice + confirm-issue endpoints stay absent so legacy callers
+   *  see no behaviour change. */
+  issueReporting?: BuilderIssueReportingDeps;
 }
 
 export function createBuilderRouter(deps: BuilderRouterDeps): Router {
@@ -487,6 +495,11 @@ export function createBuilderRouter(deps: BuilderRouterDeps): Router {
   // ── Builder install-commit (B.6-1) ─────────────────────────────────────
   if (deps.install) {
     registerBuilderInstallRoutes(router, deps.install);
+  }
+
+  // ── Builder native issue-reporting (concept plan) ─────────────────────
+  if (deps.issueReporting) {
+    registerBuilderIssueReportingRoutes(router, deps.issueReporting);
   }
 
   return router;

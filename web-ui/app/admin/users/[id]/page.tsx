@@ -54,6 +54,9 @@ export default function AdminUserEditPage(): React.ReactElement {
   }
 
   useEffect(() => {
+    // Fetch-on-mount: load() touches state only after the awaited network
+    // round-trip — no synchronous cascading render.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);

@@ -165,20 +165,24 @@ export function validateSpec(
   const outbound = Array.isArray(network?.outbound) ? network.outbound : [];
   outbound.forEach((host, i) => {
     if (typeof host !== 'string') return;
+    // #91 — a leading `*.` subdomain wildcard is permitted (the runtime
+    // egress matcher supports it); strip it before the bare-host check.
+    // Any other `*` remains invalid.
+    const bare = host.startsWith('*.') ? host.slice(2) : host;
     const invalid =
       host.length === 0 ||
       host.includes('://') ||
-      host.includes('*') ||
       host.includes('/') ||
-      !HOST_RE.test(host);
+      bare.includes('*') ||
+      !HOST_RE.test(bare);
     if (invalid) {
       violations.push({
         kind: 'network_outbound_invalid',
         path: `/network/outbound/${String(i)}`,
         message:
           `network.outbound[${String(i)}] '${host}' must be a bare hostname ` +
-          `(no protocol, no wildcards, no path; must contain a TLD). ` +
-          `E.g. 'api.example.com'.`,
+          `or a leading-wildcard host (no protocol, no path; must contain a ` +
+          `TLD). E.g. 'api.example.com' or '*.example.com'.`,
       });
     }
   });

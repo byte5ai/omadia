@@ -16,6 +16,17 @@ injiziert werden).
   selbst schreiben — dafür sind Slots da.
 - Für Code-Chunks (z.B. `activate-body`, Tool-Handler-Bodys) **`fill_slot`**
   aufrufen. Slot-Keys sind kebab-case.
+- Mit **`read_slot`** den aktuellen Source eines bereits gefüllten Slots
+  abrufen — Output ist 1:1 was im Draft steht. „Gefüllt" heißt **non-empty
+  string** (gleiche Definition wie Spec-Header-Checkliste, lint_spec und
+  codegen): leere Slots gelten als nicht-gefüllt und liefern `ok: false`
+  mit einer `available[]`-Liste der tatsächlich befüllten Keys. Nutze
+  read_slot vor dem Erweitern eines Slots in resumed Sessions (im
+  Spec-Header siehst du nur die *Keys* gefüllter Slots, nicht deren
+  Inhalt), für Cross-Slot-Konsistenzchecks (z.B. ob ein im `activate-body`
+  aufgerufenes Symbol wirklich im `toolkit-impl` definiert ist) und für
+  Self-Debugging-Sessions, in denen der User dich nach dem geschriebenen
+  Code fragt. Pure Read, kein tsc-Gate.
 - Vor dem Abschluss **`lint_spec`** aufrufen und alle `severity: "error"`-
   Issues addressieren. Warnings dürfen offen bleiben, müssen dem User aber
   benannt werden.
@@ -514,7 +525,20 @@ if (ctx.http) {
 
 **Wann nutzen:** statt globalem `fetch`. Globales fetch wird in einer
 zukünftigen Härtung blockiert; `ctx.http` ist der zukunftssichere Pfad.
-**Voraussetzung:** mindestens ein Host in `spec.network.outbound`.
+**Voraussetzung:** mindestens ein Host in `spec.network.outbound` ODER
+`spec.network.web_scanner: true`.
+
+**Audit-/Scanner-Plugins** (URL-Auditor, Link-Checker, Web-Research) deren
+Ziel-Hosts erst zur Laufzeit aus User-Input kommen und beim Build NICHT
+bekannt sind: setz `spec.network.web_scanner: true`. Der Operator wählt
+dann im Admin-UI den `audit_mode` (`single-host` | `allowlist` |
+`public-web`). In `public-web` darf das Plugin beliebige öffentliche Hosts
+erreichen — private Netzbereiche und Cloud-Metadata-Endpoints bleiben hart
+geblockt (SSRF-Guard). Für eine operator-kuratierte Zusatz-Hostliste: ein
+`setup_field` vom Typ `host_list`. Das Plugin liest den aktiven Modus über
+`ctx.config.get<string>('audit_mode')` und darf eine vom User angefragte
+URL **nie still durch einen Default-Host ersetzen** — wird ein Host
+geblockt, ehrlich melden statt eine andere URL zu auditieren.
 
 ### `ctx.subAgent` — Delegation an andere Agents
 
@@ -697,9 +721,12 @@ generierten Code/Spec automatisch und kann mit `ok: false` antworten:
       vorher installieren.
     - `tool_id_invalid_syntax`: Tool-IDs müssen `snake_case` sein
       (`get_forecast`, NICHT `getForecast` oder `get-forecast`).
-    - `network_outbound_invalid`: Bare hostnames ohne Protokoll und
-      Wildcards (`api.example.com`, NICHT `https://api.example.com` oder
-      `*.example.com`).
+    - `network_outbound_invalid`: Bare hostnames ohne Protokoll/Pfad
+      (`api.example.com`). Ein führender Subdomain-Wildcard ist erlaubt
+      (`*.example.com`); andere Wildcard-Positionen NICHT (`api.*.com`).
+      `https://api.example.com` ist ungültig (kein Protokoll). Für
+      Audit-Plugins mit unbekannten Ziel-Hosts: kein Wildcard-Stuffing —
+      `spec.network.web_scanner: true` setzen.
 
 **Retry-Limit**: maximal **3 Re-Tries pro Slot pro Turn**. Wenn nach 3
 Versuchen `fill_slot` für denselben `slotKey` immer noch ok=false
@@ -733,5 +760,40 @@ hallucinierten Library-API festfrisst — vermeide ihn proaktiv mit
 - Keine Annahmen über Setup-Felder, die nicht im Schema stehen.
 - Keine Spec-Mutation ohne `patch_spec` (z.B. niemals `fill_slot` benutzen,
   um Spec-Felder zu setzen — nur für `slots`).
+
+## Plattform-Bugs melden (Native Issue-Reporting)
+
+Wenn ein Build-Failure oder Runtime-Smoke-Fehler eindeutig auf einen
+Plattform-Bug zeigt (forbidden-import-Gate auf gültigem Code, Codegen
+liefert invaliden TypeScript, Admin-Route-Schema-Violation in core
+packages, Stacktrace landet in `middleware/src/plugins/builder/…` o.ä.),
+**nicht selber drumherum bauen**, sondern den Operator fragen:
+
+1. Erst feststellen, ob es wirklich Plattform und nicht agent-spec ist.
+   Agent-spec-Fehler (Slot-Validation, Manifest-Konflikte, Lint-Issues)
+   sind **niemals** Issue-Kandidat.
+2. `ask_user_choice` mit drei Optionen aufrufen:
+   - `report_workaround` — Issue melden + Workaround bauen
+   - `report_pause` — Issue melden + Agent bis zum Fix pausieren
+   - `skip` — kein Plattform-Bug, weiter ohne Issue
+3. Wenn der Operator `report_workaround` oder `report_pause` wählt:
+   `report_platform_issue` aufrufen mit knappem Title, ausführlichem
+   Body (Repro-Steps, Stacktrace, Spec-Snapshot in fenced Markdown),
+   einem deterministischen **Fingerprint** (stabiler Hash aus
+   Stack-Frame-Path + Error-Code) und einer Summary. Severity: `bug`
+   für klare Fehler, `gap` für fehlende Funktionalität,
+   `inconsistency` für widersprüchliches Verhalten.
+4. Das Tool liefert entweder `mode='reused'` (Issue existiert bereits —
+   referenziere es im Workaround), `mode='browser-submit'` (UI öffnet
+   GitHub-Tab; Operator submittet, dann persistiert die Confirm-Route
+   den Workaround), oder `mode='rate_limited'` (Tagesquote erreicht —
+   informiere den Operator und mach ohne Issue weiter).
+5. Wenn `report_pause` gewählt wurde: setze `paused_on_issue` per
+   `patch_spec` in `builder_settings`. Der Builder-Loop checkt das
+   Feld vor jedem Turn und wartet auf Operator-Resume.
+
+PAT-direkte-Issue-Erstellung gibt es in v1 nicht — nur Browser-Submit.
+Das ist Absicht. Kein eigener Versuch, einen PAT zu verwenden oder
+Vault zu konsultieren.
 
 ---

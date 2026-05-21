@@ -12,7 +12,7 @@ import { DraftStore } from '../../src/plugins/builder/draftStore.js';
  * Issue #56 — audit-log backend tests.
  *
  * Coverage:
- *   - DraftStore v3 schema migration (user_version=3, builder_audit table exists)
+ *   - DraftStore v3 schema migration (user_version=4, builder_audit table exists)
  *   - Mid-flight v1 → v2 upgrade keeps existing drafts intact
  *   - createAuditLogger.log writes a row with correct columns
  *   - listAudit returns newest-first paginated events with `total`
@@ -20,7 +20,7 @@ import { DraftStore } from '../../src/plugins/builder/draftStore.js';
  *   - noopAuditLogger is a valid AuditLogger instance
  */
 
-describe('audit log — DraftStore v3 migration (issue #56)', () => {
+describe('audit log — DraftStore v4 migration (issue #56)', () => {
   let tmpRoot: string;
   let dbPath: string;
 
@@ -33,13 +33,13 @@ describe('audit log — DraftStore v3 migration (issue #56)', () => {
     rmSync(tmpRoot, { recursive: true, force: true });
   });
 
-  it('fresh DB initialises at user_version=3 with both tables', async () => {
+  it('fresh DB initialises at user_version=4 with both tables', async () => {
     const store = new DraftStore({ dbPath });
     await store.open();
     const db = new Database(dbPath);
     try {
       const version = db.pragma('user_version', { simple: true }) as number;
-      assert.equal(version, 3);
+      assert.equal(version, 4);
       // both tables exist
       const tables = (
         db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as {
@@ -54,7 +54,7 @@ describe('audit log — DraftStore v3 migration (issue #56)', () => {
     }
   });
 
-  it('mid-flight v1 → v3 upgrade keeps existing drafts intact and adds the audit table', async () => {
+  it('mid-flight v1 → v4 upgrade keeps existing drafts intact and adds the audit table', async () => {
     // Seed a v1 DB by hand: drafts table + a row + user_version=1.
     const db = new Database(dbPath);
     db.exec(`
@@ -82,12 +82,12 @@ describe('audit log — DraftStore v3 migration (issue #56)', () => {
     db.pragma('user_version = 1');
     db.close();
 
-    // Open via DraftStore — migration to v3 should run.
+    // Open via DraftStore — migration to v4 should run.
     const store = new DraftStore({ dbPath });
     await store.open();
     const post = new Database(dbPath);
     try {
-      assert.equal(post.pragma('user_version', { simple: true }) as number, 3);
+      assert.equal(post.pragma('user_version', { simple: true }) as number, 4);
       const draft = post
         .prepare("SELECT id, name FROM drafts WHERE id = 'legacy-draft'")
         .get() as { id: string; name: string };

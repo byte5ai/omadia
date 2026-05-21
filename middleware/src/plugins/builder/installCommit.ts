@@ -5,6 +5,7 @@ import type {
   IngestResult,
   PackageUploadService,
 } from '../packageUploadService.js';
+import type { WorkaroundStateStore } from './workaroundStateStore.js';
 
 /**
  * Install-Commit Orchestrator (B.6-1).
@@ -28,6 +29,11 @@ export interface InstallDraftDeps {
   draftStore: DraftStore;
   buildPipeline: BuildPipeline;
   packageUploadService: PackageUploadService;
+  /** Native issue-reporting: when present, install hooks every
+   *  workaround in the spec into agent_workaround_state with
+   *  status='active'. Optional so deployments without the v2 schema
+   *  upgrade do not crash. */
+  workaroundStateStore?: WorkaroundStateStore;
   log?: (line: string) => void;
 }
 
@@ -159,6 +165,29 @@ export async function installDraft(
     status: 'published',
     publishedAgentId: ingestResult.plugin_id,
   });
+
+  // Native issue-reporting: persist any workarounds carried on the
+  // spec into agent_workaround_state with status='active'. Failures
+  // here are non-fatal — the install itself already succeeded, and
+  // the workaround state can be re-initialized by the next render.
+  if (deps.workaroundStateStore) {
+    try {
+      const workarounds =
+        pipelineResult.draft.spec.builder_settings?.workarounds ?? [];
+      if (workarounds.length > 0) {
+        deps.workaroundStateStore.initializeForInstall({
+          installedAgentId: ingestResult.plugin_id,
+          workarounds,
+        });
+      }
+    } catch (err) {
+      log(
+        `[install] draft=${draftId} workaround state init failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
 
   log(
     `[install] draft=${draftId} ok plugin=${ingestResult.plugin_id} version=${ingestResult.version} bytes=${String(

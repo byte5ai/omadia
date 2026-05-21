@@ -323,7 +323,12 @@ export default function GraphCanvas({
     () => buildElements(session, extraSessions, runs, expansions, filter),
     [session, extraSessions, runs, expansions, filter],
   );
-  nodesRef.current = nodes;
+  // Synced via a post-render effect (never during render) to satisfy the
+  // React-Compiler `refs` rule; the only reader is the cytoscape `tap` handler,
+  // which fires on user clicks long after commit.
+  useEffect(() => {
+    nodesRef.current = nodes;
+  });
   const sparse = !filter.showTrace;
 
   useEffect(() => {

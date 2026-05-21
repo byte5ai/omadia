@@ -72,6 +72,9 @@ export function PagePreviewFrame({
   }, [previewUrl]);
 
   useEffect(() => {
+    // Probe-on-mount: probe() touches state only after the awaited fetch —
+    // no synchronous cascading render.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void probe();
     return () => {
       inFlight.current?.abort();

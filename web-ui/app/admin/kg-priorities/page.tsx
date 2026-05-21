@@ -61,6 +61,9 @@ export default function KgPrioritiesPage(): React.ReactElement {
   }, [agentId]);
 
   useEffect(() => {
+    // Fetch-on-mount: reload()'s only synchronous setState is setError(null),
+    // a same-value no-op on mount; the data lands after the awaited fetch.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void reload();
   }, [reload]);
 

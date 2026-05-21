@@ -677,6 +677,21 @@ export function useChatSessions(): UseChatSessionsResult {
     [activeId],
   );
 
+  // Refs kept in sync with state so persistActive reads the latest snapshot
+  // without forcing callers to resubscribe on every message delta. Declared —
+  // and synced — *before* persistActive so the React-Compiler `immutability`
+  // rule sees the `.current` writes happen before the useCallback closes over
+  // the refs. Initialised with throwaway literals (identical to the `useState`
+  // initial values); the effects below own the actual sync.
+  const sessionsRef = useRef<ChatSession[]>([]);
+  const activeIdRef = useRef<string>('');
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
+  useEffect(() => {
+    activeIdRef.current = activeId;
+  }, [activeId]);
+
   const persistActive = useCallback(async (): Promise<void> => {
     const snapshot = sessionsRef.current.find((s) => s.id === activeIdRef.current);
     if (!snapshot) return;
@@ -689,17 +704,6 @@ export function useChatSessions(): UseChatSessionsResult {
       );
     }
   }, []);
-
-  // Refs kept in sync with state so persistActive reads the latest snapshot
-  // without forcing callers to resubscribe on every message delta.
-  const sessionsRef = useRef(sessions);
-  const activeIdRef = useRef(activeId);
-  useEffect(() => {
-    sessionsRef.current = sessions;
-  }, [sessions]);
-  useEffect(() => {
-    activeIdRef.current = activeId;
-  }, [activeId]);
 
   // Always return *some* active session so the caller doesn't have to guard.
   // Build an ephemeral empty one during the brief hydrating window.

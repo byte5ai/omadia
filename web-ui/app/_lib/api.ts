@@ -1,4 +1,5 @@
 import type {
+  AuditMode,
   InstallConfigureResponse,
   InstallCreateResponse,
   InstallJob,
@@ -1619,6 +1620,43 @@ export async function patchInstalledSecrets(
   return (await res.json()) as InstalledSecretsState;
 }
 
+/**
+ * #91 — set the audit egress mode for an installed web_scanner plugin.
+ * The middleware validates the mode enum and rejects the call when the
+ * plugin does not declare `permissions.network.web_scanner`.
+ */
+export async function setAuditMode(
+  pluginId: string,
+  mode: AuditMode,
+): Promise<{ id: string; audit_mode: AuditMode }> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(
+    botApi(
+      `/v1/admin/runtime/installed/${encodeURIComponent(pluginId)}/audit-mode`,
+    ),
+    {
+      method: 'PATCH',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+        ...forwarded,
+      },
+      body: JSON.stringify({ mode }),
+      credentials: 'include',
+      cache: 'no-store',
+    },
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new ApiError(
+      res.status,
+      `PATCH installed/${pluginId}/audit-mode failed: ${res.status}`,
+      text,
+    );
+  }
+  return (await res.json()) as { id: string; audit_mode: AuditMode };
+}
+
 // -----------------------------------------------------------------------------
 // Routines (operator dashboard)
 // -----------------------------------------------------------------------------
@@ -1991,6 +2029,78 @@ export async function runOperatorPrivacyLiveTest(
   return postJson<PrivacyLiveTestResponse>('/v1/operator/privacy/live-test', {
     text,
   });
+}
+
+// ─── Native issue-reporting (concept plan) ─────────────────────────────────
+
+export type WorkaroundConfirmIssueResponse = {
+  ok: true;
+  workaround: {
+    id: string;
+    fingerprint: string;
+    summary: string;
+    createdAt: number;
+    issueRef: {
+      owner: string;
+      repo: string;
+      number: number;
+      url: string;
+    };
+  };
+  issueState: 'open' | 'closed';
+  closedAt: number | null;
+};
+
+export async function confirmBuilderIssue(input: {
+  draftId: string;
+  issueNumber: number;
+  fingerprint: string;
+  summary: string;
+}): Promise<WorkaroundConfirmIssueResponse> {
+  return postJson<WorkaroundConfirmIssueResponse>(
+    `/v1/builder/drafts/${encodeURIComponent(input.draftId)}/workarounds/confirm-issue`,
+    {
+      issueNumber: input.issueNumber,
+      fingerprint: input.fingerprint,
+      summary: input.summary,
+    },
+  );
+}
+
+export async function resolveBuilderUserChoice(input: {
+  draftId: string;
+  choiceId: string;
+  value: string;
+}): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>(
+    `/v1/builder/drafts/${encodeURIComponent(input.draftId)}/user-choice/${encodeURIComponent(input.choiceId)}`,
+    { value: input.value },
+  );
+}
+
+export async function cancelBuilderUserChoice(input: {
+  draftId: string;
+  choiceId: string;
+}): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>(
+    `/v1/builder/drafts/${encodeURIComponent(input.draftId)}/user-choice/${encodeURIComponent(input.choiceId)}`,
+    { cancel: true },
+  );
+}
+
+export async function resumeBuilderFromIssue(input: {
+  draftId: string;
+  force?: boolean;
+}): Promise<{
+  ok: true;
+  resumedAt: number;
+  issueState: string;
+  forced: boolean;
+}> {
+  return postJson(
+    `/v1/builder/drafts/${encodeURIComponent(input.draftId)}/resume-from-issue`,
+    { force: input.force === true },
+  );
 }
 
 // ── Builder quality score (issue #52) ───────────────────────────────────────
