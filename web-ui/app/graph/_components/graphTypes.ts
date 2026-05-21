@@ -14,7 +14,17 @@ export type NodeType =
   /** Slice 6.5 — verbatim source-snippet that underpins a
    *  MemorableKnowledge. Reachable via EXCERPT_OF edges from MK's
    *  "Nachbarn expandieren" expansion. */
-  | 'PalaiaExcerpt';
+  | 'PalaiaExcerpt'
+  /** Slice 9 — contradiction marker between two MKs. Reachable via
+   *  CONFLICTS_WITH edges. Loaded explicitly via /dev/graph/issues
+   *  (showIssues filter) — not part of /neighbors expansions. */
+  | 'Inconsistency'
+  /** Slice 10 — near-duplicate marker (cosine ≥ 0.95) between two MKs.
+   *  Reachable via DUPLICATE_OF edges. Same load path as Inconsistency. */
+  | 'MergeCandidate'
+  /** Slice 11 — clustered group of MKs named by Haiku. Reachable via
+   *  HAS_TOPIC edges. Loaded via /dev/graph/topics (showTopics filter). */
+  | 'Topic';
 
 /** Lifecycle bucket projected by the Neon backend (palaia Phase 4). */
 export type Tier = 'HOT' | 'WARM' | 'COLD';
@@ -106,6 +116,23 @@ export interface MemoryProvenanceEdge {
     | 'EXCERPT_OF';
 }
 
+/** Slice 11.5 — payload from `GET /bot-api/dev/graph/topics`. */
+export interface TopicOverlay {
+  topics: GraphNode[];
+  edges: Array<{ from: string; to: string }>;
+}
+
+/** Slice 11.5 — payload from `GET /bot-api/dev/graph/issues`. */
+export interface IssueOverlay {
+  inconsistencies: GraphNode[];
+  mergeCandidates: GraphNode[];
+  edges: Array<{
+    from: string;
+    to: string;
+    type: 'CONFLICTS_WITH' | 'DUPLICATE_OF';
+  }>;
+}
+
 export interface MemoryView {
   scope: string;
   memories: MemoryWithAncestors[];
@@ -130,6 +157,14 @@ export interface GraphFilter {
    *  renders MemorableKnowledge + PalaiaExcerpt nodes loaded via
    *  `/dev/graph/memories`, along with their 2-hop provenance edges. */
   showMemories: boolean;
+  /** Slice 11.5 — when true, the canvas overlays every Topic node + its
+   *  HAS_TOPIC edges, loaded via `/dev/graph/topics`. Independent of
+   *  showMemories. */
+  showTopics: boolean;
+  /** Slice 11.5 — when true, the canvas overlays Inconsistency +
+   *  MergeCandidate nodes + their CONFLICTS_WITH / DUPLICATE_OF edges,
+   *  loaded via `/dev/graph/issues`. */
+  showIssues: boolean;
 }
 
 export const DEFAULT_FILTER: GraphFilter = {
@@ -138,6 +173,8 @@ export const DEFAULT_FILTER: GraphFilter = {
   showMentions: false,
   showCrossRefs: true,
   showMemories: false,
+  showTopics: false,
+  showIssues: false,
 };
 
 export const TRACE_TYPES: ReadonlySet<NodeType> = new Set<NodeType>([
@@ -165,6 +202,28 @@ export function nodeLabel(n: GraphNode): string {
   if (n.type === 'MemorableKnowledge') {
     const summary = String(p['summary'] ?? '');
     return summary.length > 40 ? `${summary.slice(0, 40)}…` : summary || 'Memory';
+  }
+  if (n.type === 'Topic') {
+    const name = String(p['name'] ?? '');
+    const count =
+      typeof p['member_count'] === 'number'
+        ? ` (${String(p['member_count'])})`
+        : '';
+    return name.length > 40 ? `${name.slice(0, 40)}…${count}` : `${name}${count}` || 'Topic';
+  }
+  if (n.type === 'Inconsistency') {
+    const summary = String(p['summary'] ?? '');
+    const sev = p['severity'] ? `[${String(p['severity'])}] ` : '';
+    return summary.length > 36
+      ? `${sev}${summary.slice(0, 36)}…`
+      : `${sev}${summary}` || 'Inconsistency';
+  }
+  if (n.type === 'MergeCandidate') {
+    const cos =
+      typeof p['cosine_sim'] === 'number'
+        ? Number(p['cosine_sim']).toFixed(2)
+        : '?';
+    return `dup? cos=${cos}`;
   }
   return n.id;
 }
@@ -197,6 +256,15 @@ export function nodeColor(type: NodeType): string {
       return '#d946ef';
     case 'PalaiaExcerpt':
       return '#0ea5e9';
+    case 'Topic':
+      // Teal — pops against the existing palette without clashing with
+      // ChannelIdentity (same family) because nodes sit in different
+      // canvas regions.
+      return '#14b8a6';
+    case 'Inconsistency':
+      return '#ef4444';
+    case 'MergeCandidate':
+      return '#f97316';
     default:
       return '#94a3b8';
   }
@@ -289,6 +357,12 @@ export function nodeIcon(type: NodeType): string {
       return '⭐';
     case 'PalaiaExcerpt':
       return '❝';
+    case 'Topic':
+      return '🧩';
+    case 'Inconsistency':
+      return '⚠';
+    case 'MergeCandidate':
+      return '⇄';
     default:
       return '•';
   }

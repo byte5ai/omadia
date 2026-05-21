@@ -8,11 +8,13 @@ import {
   DEFAULT_FILTER,
   type GraphFilter,
   type GraphNode,
+  type IssueOverlay,
   type MemoryView,
   type RunTraceView,
   type SessionSummary,
   type SessionView,
   type Stats,
+  type TopicOverlay,
   createLimiter,
   relativeTime,
 } from './_components/graphTypes';
@@ -54,6 +56,14 @@ export default function GraphPage(): React.ReactElement {
   const [memoryViews, setMemoryViews] = useState<
     Record<string, MemoryView | 'loading' | 'missing'>
   >({});
+  // Slice 11.5 — Topic + Issue overlays. Single cached payload per
+  // overlay (tenant-wide, not scope-dependent). Refetched on toggle.
+  const [topicOverlay, setTopicOverlay] = useState<
+    TopicOverlay | 'loading' | 'missing' | null
+  >(null);
+  const [issueOverlay, setIssueOverlay] = useState<
+    IssueOverlay | 'loading' | 'missing' | null
+  >(null);
   const [error, setError] = useState<string | null>(null);
   const [dark, setDark] = useState(false);
   const [filter, setFilter] = useState('');
@@ -191,6 +201,64 @@ export default function GraphPage(): React.ReactElement {
       if (!runCache[t.turn.id]) void loadRun(t.turn.id);
     }
   }, [mode, selected, sessionViews, runCache, loadRun]);
+
+  const loadTopicOverlay = useCallback(async (): Promise<void> => {
+    setTopicOverlay('loading');
+    try {
+      const res = await fetch('/bot-api/dev/graph/topics');
+      if (!res.ok) {
+        setTopicOverlay('missing');
+        return;
+      }
+      const body = (await res.json()) as TopicOverlay;
+      setTopicOverlay(body);
+    } catch {
+      setTopicOverlay('missing');
+    }
+  }, []);
+
+  const loadIssueOverlay = useCallback(async (): Promise<void> => {
+    setIssueOverlay('loading');
+    try {
+      const res = await fetch('/bot-api/dev/graph/issues');
+      if (!res.ok) {
+        setIssueOverlay('missing');
+        return;
+      }
+      const body = (await res.json()) as IssueOverlay;
+      setIssueOverlay(body);
+    } catch {
+      setIssueOverlay('missing');
+    }
+  }, []);
+
+  // Slice 11.5 — lazy-load on first filter activation. The overlays
+  // are tenant-wide, so one cached fetch per page lifetime is enough.
+  useEffect(() => {
+    if (graphFilter.showTopics && topicOverlay === null) {
+      // loadTopicOverlay marks the overlay 'loading' before fetching —
+      // one intended render, not a cascading-render anti-pattern.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      void loadTopicOverlay();
+    }
+  }, [graphFilter.showTopics, topicOverlay, loadTopicOverlay]);
+  useEffect(() => {
+    if (graphFilter.showIssues && issueOverlay === null) {
+      // loadIssueOverlay marks the overlay 'loading' before fetching —
+      // one intended render, not a cascading-render anti-pattern.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      void loadIssueOverlay();
+    }
+  }, [graphFilter.showIssues, issueOverlay, loadIssueOverlay]);
+
+  const activeTopicOverlay: TopicOverlay | null =
+    typeof topicOverlay === 'object' && topicOverlay !== null
+      ? topicOverlay
+      : null;
+  const activeIssueOverlay: IssueOverlay | null =
+    typeof issueOverlay === 'object' && issueOverlay !== null
+      ? issueOverlay
+      : null;
 
   const loadMemoryView = useCallback(
     async (scope: string): Promise<void> => {
@@ -495,42 +563,63 @@ export default function GraphPage(): React.ReactElement {
               : `${turnSum} Turn${turnSum === 1 ? '' : 's'}`}
             {loadingAll ? ' · lade…' : ''}
           </span>
-          {mode === 'graph' && (
+          {mode !== 'list' && (
             <div className="ml-auto flex flex-wrap items-center gap-1">
+              {mode === 'graph' && (
+                <>
+                  <FilterChip
+                    label="Entitäten"
+                    hint="Odoo · Confluence"
+                    active={graphFilter.showEntities}
+                    onClick={() => toggleFilter('showEntities')}
+                    tone="emerald"
+                  />
+                  <FilterChip
+                    label="Cross-Refs"
+                    hint="RELATED · expandiert"
+                    active={graphFilter.showCrossRefs}
+                    onClick={() => toggleFilter('showCrossRefs')}
+                    tone="purple"
+                  />
+                  <FilterChip
+                    label="Mentions"
+                    hint="aggregiert pro Session"
+                    active={graphFilter.showMentions}
+                    onClick={() => toggleFilter('showMentions')}
+                    tone="slate"
+                  />
+                  <FilterChip
+                    label="Trace"
+                    hint="Turn · Run · Agent · Tool"
+                    active={graphFilter.showTrace}
+                    onClick={() => toggleFilter('showTrace')}
+                    tone="amber"
+                  />
+                  <FilterChip
+                    label="Memories"
+                    hint="MK + Excerpt + Provenance (2 Hops)"
+                    active={graphFilter.showMemories}
+                    onClick={() => toggleFilter('showMemories')}
+                    tone="fuchsia"
+                  />
+                </>
+              )}
+              {/* Topics + Issues sind in jedem Canvas-Mode nützlich —
+                  sowohl im graph-Modus als Overlay, als auch im
+                  memory-Modus als Cluster-Brücke zwischen MKs. */}
               <FilterChip
-                label="Entitäten"
-                hint="Odoo · Confluence"
-                active={graphFilter.showEntities}
-                onClick={() => toggleFilter('showEntities')}
-                tone="emerald"
+                label="Topics"
+                hint="Cluster-Knoten + HAS_TOPIC (Slice 11)"
+                active={graphFilter.showTopics}
+                onClick={() => toggleFilter('showTopics')}
+                tone="teal"
               />
               <FilterChip
-                label="Cross-Refs"
-                hint="RELATED · expandiert"
-                active={graphFilter.showCrossRefs}
-                onClick={() => toggleFilter('showCrossRefs')}
-                tone="purple"
-              />
-              <FilterChip
-                label="Mentions"
-                hint="aggregiert pro Session"
-                active={graphFilter.showMentions}
-                onClick={() => toggleFilter('showMentions')}
-                tone="slate"
-              />
-              <FilterChip
-                label="Trace"
-                hint="Turn · Run · Agent · Tool"
-                active={graphFilter.showTrace}
-                onClick={() => toggleFilter('showTrace')}
-                tone="amber"
-              />
-              <FilterChip
-                label="Memories"
-                hint="MK + Excerpt + Provenance (2 Hops)"
-                active={graphFilter.showMemories}
-                onClick={() => toggleFilter('showMemories')}
-                tone="fuchsia"
+                label="Issues"
+                hint="Konflikte + Duplikat-Kandidaten"
+                active={graphFilter.showIssues}
+                onClick={() => toggleFilter('showIssues')}
+                tone="red"
               />
             </div>
           )}
@@ -570,6 +659,8 @@ export default function GraphPage(): React.ReactElement {
                 expansions={expansionList}
                 memoryView={activeMemoryView}
                 focusMemories
+                topicOverlay={graphFilter.showTopics ? activeTopicOverlay : null}
+                issueOverlay={graphFilter.showIssues ? activeIssueOverlay : null}
                 selectedId={selectedNode?.id ?? null}
                 filter={{ ...graphFilter, showMemories: true }}
                 onSelectNode={setSelectedNode}
@@ -592,6 +683,8 @@ export default function GraphPage(): React.ReactElement {
               memoryView={
                 graphFilter.showMemories ? activeMemoryView : null
               }
+              topicOverlay={graphFilter.showTopics ? activeTopicOverlay : null}
+              issueOverlay={graphFilter.showIssues ? activeIssueOverlay : null}
               selectedId={selectedNode?.id ?? null}
               filter={graphFilter}
               onSelectNode={setSelectedNode}
@@ -612,6 +705,8 @@ export default function GraphPage(): React.ReactElement {
                 expansions={expansionList}
                 memoryView={activeMemoryView}
                 focusMemories
+                topicOverlay={graphFilter.showTopics ? activeTopicOverlay : null}
+                issueOverlay={graphFilter.showIssues ? activeIssueOverlay : null}
                 selectedId={selectedNode?.id ?? null}
                 filter={{ ...graphFilter, showMemories: true }}
                 onSelectNode={setSelectedNode}
@@ -633,6 +728,8 @@ export default function GraphPage(): React.ReactElement {
               memoryView={
                 graphFilter.showMemories ? activeMemoryView : null
               }
+              topicOverlay={graphFilter.showTopics ? activeTopicOverlay : null}
+              issueOverlay={graphFilter.showIssues ? activeIssueOverlay : null}
               selectedId={selectedNode?.id ?? null}
               filter={graphFilter}
               onSelectNode={setSelectedNode}
@@ -809,7 +906,7 @@ function FilterChip({
   hint: string;
   active: boolean;
   onClick: () => void;
-  tone: 'emerald' | 'purple' | 'slate' | 'amber' | 'fuchsia';
+  tone: 'emerald' | 'purple' | 'slate' | 'amber' | 'fuchsia' | 'teal' | 'red';
 }): React.ReactElement {
   const activeTone: Record<typeof tone, string> = {
     emerald:
@@ -822,6 +919,10 @@ function FilterChip({
       'border-amber-400 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-100',
     fuchsia:
       'border-fuchsia-400 bg-fuchsia-50 text-fuchsia-900 dark:border-fuchsia-700 dark:bg-fuchsia-900/30 dark:text-fuchsia-100',
+    teal:
+      'border-teal-400 bg-teal-50 text-teal-900 dark:border-teal-700 dark:bg-teal-900/30 dark:text-teal-100',
+    red:
+      'border-red-400 bg-red-50 text-red-900 dark:border-red-700 dark:bg-red-900/30 dark:text-red-100',
   };
   return (
     <button

@@ -1919,6 +1919,62 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     return this.hydrateTopic(this.nodes.get(externalId)!)!;
   }
 
+  // ─── Slice 11.5 — Dev-UI overlays ─────────────────────────────────
+
+  async listTopicMembershipEdges(): Promise<
+    Array<{ from: string; to: string }>
+  > {
+    const out: Array<{ from: string; to: string }> = [];
+    for (const edge of this.edges.values()) {
+      if (edge.type !== 'HAS_TOPIC') continue;
+      const from = this.nodes.get(edge.from);
+      const to = this.nodes.get(edge.to);
+      if (
+        from?.type === 'MemorableKnowledge' &&
+        to?.type === 'Topic'
+      ) {
+        out.push({ from: edge.from, to: edge.to });
+      }
+    }
+    return out;
+  }
+
+  async listAllIssues(opts?: { status?: InconsistencyStatus }): Promise<{
+    inconsistencies: InconsistencyNode[];
+    mergeCandidates: MergeCandidateNode[];
+    edges: Array<{
+      from: string;
+      to: string;
+      type: 'CONFLICTS_WITH' | 'DUPLICATE_OF';
+    }>;
+  }> {
+    const status = opts?.status;
+    const inconsistencies: InconsistencyNode[] = [];
+    const mergeCandidates: MergeCandidateNode[] = [];
+    for (const node of this.nodes.values()) {
+      if (node.type === 'Inconsistency') {
+        if (status !== undefined && node.props['status'] !== status) continue;
+        const h = this.hydrateInconsistency(node.id);
+        if (h) inconsistencies.push(h);
+      } else if (node.type === 'MergeCandidate') {
+        if (status !== undefined && node.props['status'] !== status) continue;
+        const h = this.hydrateMergeCandidate(node.id);
+        if (h) mergeCandidates.push(h);
+      }
+    }
+    const edges: Array<{
+      from: string;
+      to: string;
+      type: 'CONFLICTS_WITH' | 'DUPLICATE_OF';
+    }> = [];
+    for (const edge of this.edges.values()) {
+      if (edge.type === 'CONFLICTS_WITH' || edge.type === 'DUPLICATE_OF') {
+        edges.push({ from: edge.from, to: edge.to, type: edge.type });
+      }
+    }
+    return { inconsistencies, mergeCandidates, edges };
+  }
+
   async listMemoryAclAudit(
     memorableKnowledgeNodeId: string,
     opts: { limit?: number } = {},

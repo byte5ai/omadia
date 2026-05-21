@@ -145,5 +145,46 @@ export function createDevGraphRouter(deps: DevGraphDeps): Router {
     }
   });
 
+  // Slice 11.5 — Topic overlay. Returns `topics` (every Topic node in
+  // the tenant) + `edges` (every HAS_TOPIC edge as external-id pair).
+  // Dev-only; ACL bypass behind DEV_ENDPOINTS_ENABLED.
+  router.get('/topics', async (_req: Request, res: Response) => {
+    try {
+      const [topics, edges] = await Promise.all([
+        deps.graph.listTopics(),
+        deps.graph.listTopicMembershipEdges(),
+      ]);
+      res.json({ topics, edges });
+    } catch (err) {
+      res
+        .status(500)
+        .json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // Slice 11.5 — Issue overlay. Returns every Inconsistency +
+  // MergeCandidate + their MK-side edges as external-id pairs. Pass
+  // `?status=open|resolved|dismissed` to filter; omit for all.
+  router.get('/issues', async (req: Request, res: Response) => {
+    const statusParam = req.query['status'];
+    const status =
+      typeof statusParam === 'string' &&
+      (statusParam === 'open' ||
+        statusParam === 'resolved' ||
+        statusParam === 'dismissed')
+        ? statusParam
+        : undefined;
+    try {
+      const view = await deps.graph.listAllIssues(
+        status ? { status } : undefined,
+      );
+      res.json({ ...view, ...(status ? { status } : {}) });
+    } catch (err) {
+      res
+        .status(500)
+        .json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   return router;
 }

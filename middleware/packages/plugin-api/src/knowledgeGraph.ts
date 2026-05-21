@@ -3,6 +3,7 @@ import type {
   CreateInconsistencyInput,
   InconsistencyNode,
   InconsistencyResolution,
+  InconsistencyStatus,
   ListInconsistenciesOptions,
 } from './inconsistency.js';
 import type {
@@ -435,6 +436,29 @@ export interface KnowledgeGraph {
     namingSource: TopicNamingSource;
     memberMkIds: readonly string[];
   }): Promise<TopicNode>;
+  /**
+   * Slice 11.5 — every `HAS_TOPIC` edge in the tenant (MK → Topic),
+   * exposed as external-id pairs for the Dev-UI to overlay on the
+   * `/graph` canvas. ACL is intentionally NOT enforced — the endpoint
+   * exposing this (`GET /dev/graph/topics`) sits behind
+   * `DEV_ENDPOINTS_ENABLED` and is never reachable in production.
+   */
+  listTopicMembershipEdges(): Promise<Array<{ from: string; to: string }>>;
+  /**
+   * Slice 11.5 — every open + resolved + dismissed Inconsistency and
+   * MergeCandidate in the tenant, plus their MK-side edges expressed
+   * as external-id pairs. Same dev-bypass as
+   * {@link listTopicMembershipEdges}: not ACL-gated.
+   */
+  listAllIssues(opts?: { status?: InconsistencyStatus }): Promise<{
+    inconsistencies: InconsistencyNode[];
+    mergeCandidates: MergeCandidateNode[];
+    edges: Array<{
+      from: string;
+      to: string;
+      type: 'CONFLICTS_WITH' | 'DUPLICATE_OF';
+    }>;
+  }>;
   /**
    * Dev-UI · Memory Focused View — list every memory (MemorableKnowledge
    * + PalaiaExcerpt) anchored to the given scope along with its 2-hop

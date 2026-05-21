@@ -3089,6 +3089,99 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     }
   }
 
+  // ─── Slice 11.5 — Dev-UI overlays over Slice 9/10/11 nodes ───────
+
+  async listTopicMembershipEdges(): Promise<
+    Array<{ from: string; to: string }>
+  > {
+    const rows = await this.pool.query<{ from_xid: string; to_xid: string }>(
+      `SELECT mk.external_id AS from_xid, tp.external_id AS to_xid
+         FROM graph_edges e
+         JOIN graph_nodes mk ON mk.id = e.from_node
+         JOIN graph_nodes tp ON tp.id = e.to_node
+        WHERE e.tenant_id = $1
+          AND e.type = 'HAS_TOPIC'
+          AND mk.type = 'MemorableKnowledge'
+          AND tp.type = 'Topic'`,
+      [this.tenantId],
+    );
+    return rows.rows.map((r) => ({ from: r.from_xid, to: r.to_xid }));
+  }
+
+  async listAllIssues(opts?: { status?: InconsistencyStatus }): Promise<{
+    inconsistencies: InconsistencyNode[];
+    mergeCandidates: MergeCandidateNode[];
+    edges: Array<{
+      from: string;
+      to: string;
+      type: 'CONFLICTS_WITH' | 'DUPLICATE_OF';
+    }>;
+  }> {
+    const statusFilter = opts?.status ?? null;
+
+    const [incRows, mcRows, edgeRows] = await Promise.all([
+      this.pool.query<{
+        external_id: string;
+        properties: InconsistencyNode['props'] & { mk_pair: [string, string] };
+      }>(
+        `SELECT external_id, properties
+           FROM graph_nodes
+          WHERE tenant_id = $1 AND type = 'Inconsistency'
+            AND ($2::text IS NULL OR properties->>'status' = $2)
+          ORDER BY external_id DESC`,
+        [this.tenantId, statusFilter],
+      ),
+      this.pool.query<{
+        external_id: string;
+        properties: MergeCandidateNode['props'] & { mk_pair: [string, string] };
+      }>(
+        `SELECT external_id, properties
+           FROM graph_nodes
+          WHERE tenant_id = $1 AND type = 'MergeCandidate'
+            AND ($2::text IS NULL OR properties->>'status' = $2)
+          ORDER BY external_id DESC`,
+        [this.tenantId, statusFilter],
+      ),
+      this.pool.query<{
+        from_xid: string;
+        to_xid: string;
+        edge_type: 'CONFLICTS_WITH' | 'DUPLICATE_OF';
+      }>(
+        `SELECT src.external_id AS from_xid,
+                dst.external_id AS to_xid,
+                e.type AS edge_type
+           FROM graph_edges e
+           JOIN graph_nodes src ON src.id = e.from_node
+           JOIN graph_nodes dst ON dst.id = e.to_node
+          WHERE e.tenant_id = $1
+            AND e.type IN ('CONFLICTS_WITH', 'DUPLICATE_OF')
+            AND src.type IN ('Inconsistency', 'MergeCandidate')
+            AND dst.type = 'MemorableKnowledge'`,
+        [this.tenantId],
+      ),
+    ]);
+
+    const inconsistencies: InconsistencyNode[] = [];
+    for (const r of incRows.rows) {
+      const node = this.hydrateInconsistency(r.external_id, r.properties);
+      if (node) inconsistencies.push(node);
+    }
+    const mergeCandidates: MergeCandidateNode[] = [];
+    for (const r of mcRows.rows) {
+      const node = this.hydrateMergeCandidate(r.external_id, r.properties);
+      if (node) mergeCandidates.push(node);
+    }
+    return {
+      inconsistencies,
+      mergeCandidates,
+      edges: edgeRows.rows.map((r) => ({
+        from: r.from_xid,
+        to: r.to_xid,
+        type: r.edge_type,
+      })),
+    };
+  }
+
   async listMemoryAclAudit(
     memorableKnowledgeNodeId: string,
     opts: { limit?: number } = {},

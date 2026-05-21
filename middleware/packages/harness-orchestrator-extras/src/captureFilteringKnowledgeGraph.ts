@@ -64,6 +64,7 @@ import type {
   CreateMergeCandidateInput,
   InconsistencyNode,
   InconsistencyResolution,
+  InconsistencyStatus,
   ListInconsistenciesOptions,
   ListMemoriesForScopeOptions,
   ListMergeCandidatesOptions,
@@ -454,5 +455,21 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
     memberMkIds: readonly string[];
   }): Promise<TopicNode> {
     return this.inner.createTopic(input);
+  }
+
+  listTopicMembershipEdges(): Promise<Array<{ from: string; to: string }>> {
+    return this.inner.listTopicMembershipEdges();
+  }
+
+  listAllIssues(opts?: { status?: InconsistencyStatus }): Promise<{
+    inconsistencies: InconsistencyNode[];
+    mergeCandidates: MergeCandidateNode[];
+    edges: Array<{
+      from: string;
+      to: string;
+      type: 'CONFLICTS_WITH' | 'DUPLICATE_OF';
+    }>;
+  }> {
+    return this.inner.listAllIssues(opts);
   }
 }
