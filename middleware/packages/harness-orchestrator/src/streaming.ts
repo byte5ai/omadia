@@ -1,12 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import type { AskObserver } from './tools/domainQueryTool.js';
-import {
-  applyPrivacyOutboundToParams,
-  ensureWellFormedParams,
-  restorePrivacyInResponse,
-  streamingTokenBoundary,
-} from './privacyHandle.js';
-import { turnContext } from './turnContext.js';
+import { ensureWellFormedParams } from './privacyHandle.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Message = any;
@@ -37,14 +31,9 @@ export type StreamMessageEvent =
  * `streamLabel` is used as the prefix for observer-callback warnings so the
  * caller (sub-agent vs. orchestrator) can be identified in logs.
  *
- * Privacy-Proxy Slice 2.1: this function reads `turnContext.current()
- * ?.privacyHandle` and, if present, applies `processOutbound` to
- * `params.system + params.messages` BEFORE starting the stream and
- * `processInbound` to every `text_delta` (with buffered lookahead for
- * partial tokens crossing chunk boundaries) and to the assistant text
- * blocks in the reconstructed `finalMessage()` AFTER the stream ends.
- * When no provider is registered the function is byte-identical to its
- * pre-Slice-2.1 behaviour.
+ * Privacy Shield v4 keeps no outbound/inbound transform on this path — raw
+ * tool results are interned at the tool-dispatch seam, never on the wire,
+ * so the streamed assistant text needs no token restoration.
  */
 export async function* streamMessageEvents(args: {
   client: Anthropic;
@@ -65,14 +54,9 @@ export async function* streamMessageEvents(args: {
     }
   };
 
-  // Privacy-Proxy outbound transform.
-  const privacy = turnContext.current()?.privacyHandle;
-  const transformedParams = privacy
-    ? await applyPrivacyOutboundToParams(args.params, privacy, streamLabel)
-    : args.params;
   // Last-resort guard: repair any lone UTF-16 surrogate so the request
   // body is valid JSON for the Anthropic API. See ensureWellFormedParams.
-  const params = ensureWellFormedParams(transformedParams);
+  const params = ensureWellFormedParams(args.params);
 
   safe(
     () => observer?.onIterationPhase?.({ iteration, phase: 'thinking' }),
@@ -89,9 +73,6 @@ export async function* streamMessageEvents(args: {
   let windowTokens = 0;
   let lastTokensPerSec = 0;
   let phase: 'thinking' | 'streaming' | 'tool_running' = 'thinking';
-  // Streaming-buffered Restore: hold trailing chars that could complete a
-  // `«TYPE_N»` token in the next chunk. Flushed on stream end.
-  let pendingHold = '';
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   for await (const event of stream as AsyncIterable<any>) {
@@ -151,35 +132,12 @@ export async function* streamMessageEvents(args: {
       // is emitted once the content block closes, which is both cheaper
       // and more usable for the UI).
       if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
-        if (privacy) {
-          const combined = pendingHold + delta.text;
-          const split = streamingTokenBoundary(combined);
-          pendingHold = split.hold;
-          if (split.safe.length > 0) {
-            const restored = await privacy.processInbound(split.safe);
-            yield { type: 'text_delta', text: restored };
-          }
-        } else {
-          yield { type: 'text_delta', text: delta.text };
-        }
+        yield { type: 'text_delta', text: delta.text };
       }
     }
   }
 
-  // Flush any held trailing chars that never grew into a complete token.
-  if (privacy && pendingHold.length > 0) {
-    const restored = await privacy.processInbound(pendingHold);
-    yield { type: 'text_delta', text: restored };
-  }
-
   const response: Message = await stream.finalMessage();
-
-  // Inbound restore on the reconstructed final message — the SDK builds
-  // it from the RAW deltas (tokens still present), so we must restore
-  // before downstream code reads `response.content[].text`.
-  if (privacy) {
-    await restorePrivacyInResponse(response, privacy);
-  }
 
   const usage = response?.usage;
   if (usage) {
@@ -230,4 +188,3 @@ export async function streamMessageWithObserver(
   }
   throw new Error(`[${streamLabel}] stream ended without a final message`);
 }
-

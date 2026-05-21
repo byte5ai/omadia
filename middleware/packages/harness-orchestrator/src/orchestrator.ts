@@ -1,9 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type Anthropic from '@anthropic-ai/sdk';
 import {
-  applyEgressReplacements,
-  buildBlockedResult,
-  collectEgressSlots,
   toSemanticAnswer,
   type ChatStreamEvent,
   type ChatTurnInput,
@@ -60,7 +57,6 @@ import type {
   NudgeRegistry,
   NudgeStateStore,
   PrivacyGuardService,
-  PrivacyOutputValidationResult,
   ProcessMemoryService,
   ResponseGuardService,
   SessionBriefingService,
@@ -71,23 +67,13 @@ import {
   type NudgeTurnCounter,
 } from './nudgePipeline.js';
 import {
-  applyPrivacyOutboundToParams,
   createPrivacyTurnHandle,
   ensureWellFormedParams,
-  restorePrivacyInResponse,
 } from './privacyHandle.js';
 import { RunTraceCollector, type InvocationHandle } from './runTraceCollector.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import type { SessionLogger } from './sessionLogger.js';
 import { streamMessageEvents } from './streaming.js';
-import {
-  appendOrphanPlaceholderFooter,
-  detectOrphanPlaceholders,
-} from './orphanPlaceholderCheck.js';
-import {
-  analyzeTokenSaturation,
-  bypassCannedAnswer,
-} from './tokenSaturationBypass.js';
 import { buildDateHeader, today, turnContext } from './turnContext.js';
 
 // S+10-2 back-compat re-exports: kernel-side callers that still
@@ -1166,93 +1152,13 @@ export class Orchestrator {
       },
       async () => {
         let result = await this.chatInContext(input, turnId);
-        // Privacy-Shield v4 — when a v4_render_answer call produced the
+        // Privacy Shield v4 — when a v4_render_answer call produced the
         // answer this turn it is final and already safe (real values
-        // materialized server-side from ground truth). Swap it in and skip
-        // every v2 token-path post-processing step below, which would
-        // otherwise mask the real values the user is authorised to see.
-        const v4Rendered = privacyHandle
-          ? await privacyHandle.takeRenderedAnswerV4()
-          : undefined;
-        if (v4Rendered !== undefined) {
-          result = { ...result, answer: v4Rendered };
-        }
-        // Privacy-Shield v2 (D-2) — Output Validator + Retry-Loop.
-        // The validator decides whether the LLM's answer kept the
-        // privacy tokens verbatim AND whether it produced any
-        // spontaneous PII; on `retry` we re-run `chatInContext`
-        // ONCE with a stricter directive correction; on `block`
-        // we swap the entire payload for the placeholder. Runs
-        // BEFORE the egress filter so a retry generates a fresh
-        // answer that the egress filter then double-checks as
-        // defence-in-depth. Same `turnId` → same privacyHandle +
-        // receipt accumulator across both attempts.
-        if (privacyService && privacyHandle && v4Rendered === undefined) {
-          result = await this.applyOutputValidator(
-            input,
-            result,
-            turnId,
-            privacyService,
-            privacyHandle,
-          );
-        }
-        // Privacy-Shield v2 (Phase A, post-deploy 2026-05-14) —
-        // mechanical restoration of LLM self-anonymization patterns
-        // ("Mitarbeiter 1/2/3", "Employee N", "Person N", …) that
-        // the directive cannot reliably suppress. Runs AFTER the
-        // validator's retry decision (so the second-attempt answer is
-        // what gets repaired) and BEFORE the egress filter (so the
-        // spontaneous-PII scan sees a clean restored text). The
-        // operation is conservative — when count of labels doesn't
-        // fit the captured positional token list, the text is left
-        // unchanged and the gap surfaces via the receipt.
-        if (privacyHandle && v4Rendered === undefined) {
-          result = await this.applyAntiSelfAnonymization(result, privacyHandle);
-        }
-        // Privacy-Shield v2 (Slice S-6) — Egress Filter. Last gate
-        // before the receipt drains; re-scans every user-facing text
-        // slot with the full detector pool and reacts to spontaneous
-        // PII per the operator-configured mode. `mask` rewrites the
-        // span inline (default); `block` swaps the entire payload
-        // for the configured placeholder. The egress receipt block
-        // lands in the same `finalize()` aggregation below.
-        if (privacyService && privacyHandle && v4Rendered === undefined) {
-          result = await this.applyEgressFilter(result, privacyService, privacyHandle);
-        }
-        // Privacy-Shield v2 (Phase A.2, post-deploy 2026-05-14 third
-        // iteration) — final-scrub pass. The egress filter's `mask`
-        // mode replaces spontaneous PII with FRESH `«TYPE_N»` tokens.
-        // Those tokens otherwise flow through to the user as
-        // token-shape cruft (HR-routine Zusammenfassung v152). This
-        // pass scrubs every remaining token via positional
-        // restoration + per-type German placeholder fallback,
-        // guaranteeing the channel-bound text contains no token
-        // shapes.
-        if (privacyHandle && v4Rendered === undefined) {
-          result = await this.applyPostEgressScrub(result, privacyHandle);
-        }
-        // Privacy-Engine Hardening Slice #4 — Orphan-Placeholder
-        // explainer footer. Phase A.2's scrub may leave the answer
-        // with `[Name]` / `[Adresse]` / … strings when positional
-        // restoration was uncertain. Without a hint the user has no
-        // way to interpret them. Append a brief diagnostic so they
-        // know what happened and how to rephrase. No retry — that's
-        // expensive and rarely helpful since the LLM would likely
-        // produce the same names; revisit when receipt-persistence
-        // (S-7.5) lets us measure prevalence.
-        if (privacyHandle && v4Rendered === undefined) {
-          const orphanAnalysis = detectOrphanPlaceholders(result.answer);
-          if (orphanAnalysis.count > 0) {
-            console.warn(
-              `[orchestrator.orphanPlaceholders] turn=${turnId} count=${String(orphanAnalysis.count)} types=${orphanAnalysis.types.join(',')}`,
-            );
-            result = {
-              ...result,
-              answer: appendOrphanPlaceholderFooter(
-                result.answer,
-                orphanAnalysis,
-              ),
-            };
+        // materialized server-side from ground truth). Swap it in.
+        if (privacyHandle) {
+          const v4Rendered = await privacyHandle.takeRenderedAnswerV4();
+          if (v4Rendered !== undefined) {
+            result = { ...result, answer: v4Rendered };
           }
         }
         if (privacyHandle) {
@@ -1271,220 +1177,6 @@ export class Orchestrator {
         return result;
       },
     );
-  }
-
-  /**
-   * Privacy-Shield v2 (D-2) — apply the Output Validator and act on
-   * its recommendation:
-   *
-   *   - `pass`:  ship the result unchanged.
-   *   - `retry`: re-run `chatInContext` with an `extraSystemHint` that
-   *              calls out the failure mode (token-loss → emit tokens
-   *              verbatim; spontaneous PII → ask for clarification).
-   *              Caps at ONE retry; a third attempt is not started even
-   *              if the validator still says `retry`.
-   *   - `block`: replace the payload with the operator-configured
-   *              egress block placeholder (same helper as S-6).
-   *
-   * The retry path re-enters `chatInContext` under the SAME `turnId`,
-   * so the privacy handle's accumulator and tokenise-map are reused —
-   * the receipt at finalize covers both attempts in one row.
-   */
-  private async applyOutputValidator(
-    input: ChatTurnInput,
-    result: ChatTurnResult,
-    turnId: string,
-    privacyService: PrivacyGuardService,
-    privacyHandle: ReturnType<typeof createPrivacyTurnHandle>,
-  ): Promise<ChatTurnResult> {
-    if (result.pendingUserChoice) {
-      // Clarification turns have no fact content — same short-circuit
-      // the verifier uses. The validator's spontaneous-PII detector
-      // would only see the question text, never the user's data.
-      return result;
-    }
-    let verdict;
-    try {
-      verdict = await privacyHandle.validateOutput({ assistantText: result.answer });
-    } catch (err) {
-      console.warn(
-        '[orchestrator] privacyGuard.validateOutput threw — shipping un-validated:',
-        err,
-      );
-      return result;
-    }
-    if (verdict.recommendation === 'pass') return result;
-    // D-2.1 hotfix: both `retry` and `block` recommendations get one
-    // retry attempt with the appropriate anti-paraphrase / anti-
-    // hallucination directive. Originally `block` short-circuited
-    // straight to the placeholder, but in practice that turns a
-    // paraphrased HR-routine answer into a "filter withheld this"
-    // notice instead of giving the LLM a chance to re-emit the
-    // restored values verbatim. Now: try ONCE more for both; only
-    // the second-pass `block` actually ships the placeholder.
-    // recommendation === 'retry' OR 'block'
-    const correction = buildValidatorCorrectionPrompt(verdict);
-    const retryInput: ChatTurnInput = {
-      ...input,
-      extraSystemHint: composeRetryHint(input.extraSystemHint, correction),
-    };
-    let retried: ChatTurnResult;
-    try {
-      retried = await this.chatInContext(retryInput, turnId);
-    } catch (err) {
-      console.warn('[orchestrator] privacyGuard.validateOutput retry FAIL — keeping first answer:', err);
-      return result;
-    }
-    // D-2.2: after the retry, ALWAYS ship the retried answer. The
-    // downstream egress filter (S-6) is the safety net for any
-    // remaining spontaneous PII — with `egress_filter_mode=mask`
-    // (default) those spans are replaced inline with `«PERSON_N»`
-    // tokens, so the user sees a usable answer with masked
-    // hallucinations rather than a "filter withheld this" placeholder.
-    // The placeholder path only fires when the operator has set
-    // `egress_filter_mode=block` AND the egress filter detects
-    // spontaneous PII — i.e. when the operator explicitly opted into
-    // hard-block-on-residual-PII semantics. Re-validating the
-    // retried text here would only re-discover what the egress
-    // filter is about to act on.
-    return retried;
-  }
-
-  /**
-   * Privacy-Shield v2 (Slice S-6) — apply the egress filter to a
-   * `ChatTurnResult` before the receipt is finalised. The filter
-   * walks every user-facing text slot via `collectEgressSlots`,
-   * calls the privacy-guard service for spontaneous-PII detection
-   * + replacement, and merges the transformed texts back via
-   * `applyEgressReplacements`. On `routing: 'blocked'` the entire
-   * payload is replaced with the configured placeholder via
-   * `buildBlockedResult` so the channel never sees the original
-   * potentially-PII-bearing content.
-   *
-   * Safe to call when egress is disabled in operator config (`enabled
-   * === false`) or no text slots exist (the result has empty
-   * `answer` and no interactive payload). Errors are caught and
-   * surfaced as warnings — egress is best-effort defence-in-depth,
-   * not a hard gate.
-   */
-  private async applyEgressFilter(
-    result: ChatTurnResult,
-    privacyService: PrivacyGuardService,
-    privacyHandle: ReturnType<typeof createPrivacyTurnHandle>,
-  ): Promise<ChatTurnResult> {
-    let config;
-    try {
-      config = privacyService.getEgressConfig();
-    } catch (err) {
-      console.warn('[orchestrator] privacyGuard.getEgressConfig threw — skipping egress:', err);
-      return result;
-    }
-    if (!config.enabled) return result;
-    const slots = collectEgressSlots(result);
-    if (slots.length === 0) return result;
-    let egress;
-    try {
-      egress = await privacyHandle.egressFilter({ texts: slots });
-    } catch (err) {
-      console.warn('[orchestrator] privacyGuard.egressFilter threw — shipping un-filtered:', err);
-      return result;
-    }
-    if (egress.routing === 'blocked') {
-      return buildBlockedResult(result, config.blockPlaceholderText);
-    }
-    if (egress.routing === 'allow') return result;
-    const replacements = new Map<string, string>();
-    for (const slot of egress.texts) {
-      replacements.set(slot.id, slot.text);
-    }
-    return applyEgressReplacements(result, replacements);
-  }
-
-  /**
-   * Privacy-Shield v2 (Phase A, post-deploy 2026-05-14) — apply the
-   * self-anonymization label restorer to every channel-bound text
-   * slot before the egress filter runs.
-   *
-   * The restorer is **strictly additive**: it rewrites recognised
-   * label patterns to real names from the turn-map's most recent
-   * tool-result capture, and conservatively skips when the positional
-   * mapping is ambiguous. It cannot widen the set of values reaching
-   * the channel — every substitution comes from a real value the
-   * shield already chose to tokenise on inbound, so the user receives
-   * data the system already had authorisation to surface. Errors are
-   * caught and surfaced as warnings; on failure the un-restored text
-   * is shipped (egress filter is the second line of defence).
-   */
-  private async applyAntiSelfAnonymization(
-    result: ChatTurnResult,
-    privacyHandle: ReturnType<typeof createPrivacyTurnHandle>,
-  ): Promise<ChatTurnResult> {
-    const slots = collectEgressSlots(result);
-    if (slots.length === 0) return result;
-    const replacements = new Map<string, string>();
-    let changed = false;
-    for (const slot of slots) {
-      let outcome;
-      try {
-        outcome = await privacyHandle.restoreSelfAnonymizationLabels({
-          text: slot.text,
-        });
-      } catch (err) {
-        console.warn(
-          '[orchestrator] privacyGuard.restoreSelfAnonymizationLabels threw — keeping original slot:',
-          err,
-        );
-        continue;
-      }
-      if (outcome.text !== slot.text) {
-        replacements.set(slot.id, outcome.text);
-        changed = true;
-      }
-    }
-    if (!changed) return result;
-    return applyEgressReplacements(result, replacements);
-  }
-
-  /**
-   * Privacy-Shield v2 (Phase A.2, post-deploy 2026-05-14 third
-   * iteration) — final-scrub pass that runs AFTER the egress filter.
-   * Guarantees the channel-bound text contains no `«TYPE_N»` token
-   * shapes by attempting positional restoration against unaccounted
-   * tool-result names first, then falling back to per-type German
-   * placeholders for the remainder.
-   *
-   * Strictly additive: errors are caught and surfaced as warnings;
-   * on failure the slot ships with whatever tokens egress left in
-   * place. The post-condition is a guarantee on the happy path.
-   */
-  private async applyPostEgressScrub(
-    result: ChatTurnResult,
-    privacyHandle: ReturnType<typeof createPrivacyTurnHandle>,
-  ): Promise<ChatTurnResult> {
-    const slots = collectEgressSlots(result);
-    if (slots.length === 0) return result;
-    const replacements = new Map<string, string>();
-    let changed = false;
-    for (const slot of slots) {
-      let outcome;
-      try {
-        outcome = await privacyHandle.restoreOrScrubRemainingTokens({
-          text: slot.text,
-        });
-      } catch (err) {
-        console.warn(
-          '[orchestrator] privacyGuard.restoreOrScrubRemainingTokens threw — keeping original slot:',
-          err,
-        );
-        continue;
-      }
-      if (outcome.text !== slot.text) {
-        replacements.set(slot.id, outcome.text);
-        changed = true;
-      }
-    }
-    if (!changed) return result;
-    return applyEgressReplacements(result, replacements);
   }
 
   private async chatInContext(
@@ -1566,41 +1258,8 @@ export class Orchestrator {
     // `responseGuard@1` provider is installed; identical cache shape then.
     const prependRules = await this.resolvePrependRules(messages);
 
-    // Privacy-Engine Hardening — Single-Token-Bypass.
-    // When the user's input message tokenises to mostly PII tokens
-    // (≥70% non-whitespace chars replaced), the LLM has no semantic
-    // content to reason about and tends to rationalise the leftover
-    // tokens as "unfilled template variables" — producing polite
-    // hallucinations like "you forgot to fill in [Name]". Short-circuit
-    // here and ship a clear refusal answer so the user can re-phrase.
-    // The bypass detection itself goes through `privacy.processOutbound`,
-    // so the receipt accumulator records the detections — operators
-    // see what fired in the per-turn receipt.
-    const privacyForBypass = turnContext.current()?.privacyHandle;
-    if (privacyForBypass && input.userMessage.trim().length > 0) {
-      const saturation = await analyzeTokenSaturation(
-        input.userMessage,
-        privacyForBypass,
-      );
-      if (saturation.triggered) {
-        console.warn(
-          `[orchestrator.privacyBypass] turn=${turnId} ratio=${saturation.coverageRatio.toFixed(2)} tokens=${String(saturation.tokenCount)} originalChars=${String(saturation.originalChars)} survived=${String(saturation.survivedChars)} — skipping LLM call`,
-        );
-        entityCollection?.drain();
-        return {
-          answer: bypassCannedAnswer(saturation),
-          toolCalls: 0,
-          iterations: 0,
-        };
-      }
-    }
-
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
-        // Privacy-Proxy Slice 2.1: tokenise outbound payload + restore
-        // inbound text blocks. Pulls the per-turn handle off
-        // `turnContext.current()`. No-op when no provider is registered.
-        const privacy = turnContext.current()?.privacyHandle;
         const baseParams = {
           model: this.model,
           max_tokens: this.maxTokens,
@@ -1612,22 +1271,15 @@ export class Orchestrator {
           tools: this.buildToolsList(),
           messages,
         };
-        const outboundParams = privacy
-          ? await applyPrivacyOutboundToParams(baseParams, privacy, 'orchestrator')
-          : baseParams;
         // Last-resort guard: repair any lone UTF-16 surrogate before the
         // SDK serialises the body — the Anthropic API rejects it as
         // invalid JSON. See ensureWellFormedParams.
-        const safeParams = ensureWellFormedParams(outboundParams);
+        const safeParams = ensureWellFormedParams(baseParams);
 
         const response: Message = await this.client.messages.create(
           safeParams,
           { headers: { 'anthropic-beta': MEMORY_BETA_HEADER } },
         );
-
-        if (privacy) {
-          await restorePrivacyInResponse(response, privacy);
-        }
 
         messages.push({ role: 'assistant', content: response.content });
         textParts.push(...collectTextBlocks(response.content));
@@ -2378,49 +2030,21 @@ export class Orchestrator {
     input: unknown,
     observer?: AskObserver,
   ): Promise<string> {
-    // Slice 2.2 — privacy-proxy tool roundtrip.
-    //
-    // Restore tokens in the input BEFORE the handler runs so domain tools
-    // (Odoo, Calendar, KG) see real user data instead of `tok_<hex>`
-    // placeholders that the downstream system would not be able to
-    // resolve. Re-scan the result text AFTER the handler returns so any
-    // fresh PII the tool surfaced (e.g. "John Doe" from query_odoo_hr)
-    // is tokenised before it flows back to the LLM as a `tool_result`
-    // block — the public LLM never sees the plaintext.
-    //
-    // The privacy handle is threaded through `turnContext.privacyHandle`
-    // (Slice 2.1). Absent ⇒ no privacy provider installed; we degrade
-    // to pre-Slice-2.2 byte-identical behaviour.
+    // Privacy Shield v4 — Data-Plane Boundary. The privacy handle is
+    // threaded through `turnContext.privacyHandle`; absent ⇒ no privacy
+    // provider installed and the tool result flows through unchanged.
     const privacy = turnContext.current()?.privacyHandle;
-    // Privacy-Shield v4 — verb tools + the terminal render tool are served
-    // by the privacy provider's per-turn data-plane engine, not by a tool
-    // handler. When v4 is off these tools are never offered, so the prefix
-    // check never matches.
+    // Verb tools + the terminal render tool are served by the privacy
+    // provider's per-turn data-plane engine, not by a tool handler.
     if (privacy !== undefined && name.startsWith('v4_')) {
       const v4Tool = await privacy.runV4Tool({ toolName: name, input });
-      if (v4Tool !== undefined) return v4Tool.resultText;
+      return v4Tool.resultText;
     }
-    let dispatchInput = input;
-    if (privacy !== undefined) {
-      try {
-        const restored = await privacy.processToolInput({
-          toolName: name,
-          input,
-        });
-        dispatchInput = restored.input;
-      } catch (err) {
-        console.warn(
-          `[orchestrator.dispatchTool:${name}] privacy.processToolInput threw — proceeding with original input:`,
-          err,
-        );
-      }
-    }
-    const result = await this.dispatchToolInner(name, dispatchInput, observer);
+    const result = await this.dispatchToolInner(name, input, observer);
     // Phase C.2 — Raw tool-result capture. Outer scope (routine runner)
-    // may install a callback that stashes the pre-tokenisation result
-    // keyed by tool name; later template rendering uses it as the source
-    // of truth for data sections so the LLM never authors data rows.
-    // Absent callback ⇒ no capture (chat + non-templated routines).
+    // may install a callback that stashes the raw result keyed by tool
+    // name; later template rendering uses it as the source of truth for
+    // data sections. Absent callback ⇒ no capture.
     const capture = turnContext.current()?.captureRawToolResult;
     if (capture !== undefined && typeof result === 'string') {
       try {
@@ -2432,77 +2056,23 @@ export class Orchestrator {
         );
       }
     }
-    // Privacy-Shield v4 — Data-Plane Boundary. When the v4 feature flag is
-    // on, intern the raw result server-side and hand the LLM only the
-    // identity-free digest; the v2/v3 token path below is skipped.
+    // Intern the raw result server-side and hand the LLM only the
+    // identity-free digest — the raw rows never reach the LLM wire.
     if (privacy !== undefined && typeof result === 'string') {
       try {
         const v4 = await privacy.internToolResultV4({
           toolName: name,
           rawResult: result,
         });
-        if (v4 !== undefined) return v4.digestText;
+        return v4.digestText;
       } catch (err) {
         console.warn(
-          `[orchestrator.dispatchTool:${name}] privacy.internToolResultV4 threw — falling through to v2/v3:`,
+          `[orchestrator.dispatchTool:${name}] privacy.internToolResultV4 threw — sending raw result:`,
           err,
         );
       }
     }
-    // Privacy-Shield v3 (slice 1) — Stable-id tokenization pre-pass.
-    // When the dispatched tool is a DomainTool that declared
-    // `piiFields`, run the tool-aware pre-pass BEFORE the NER-based
-    // `processToolResult`. The pre-pass parses the JSON result,
-    // rewrites annotated leaves into stable tokens, and re-serialises;
-    // NER then runs on top as defense-in-depth for unannotated free
-    // text. Strictly additive — annotations missing / parse failure /
-    // empty piiFields all degrade to the slice-2.2 byte-identical
-    // behaviour.
-    let resultForPrivacy = result;
-    if (privacy !== undefined && typeof result === 'string' && result.length > 0) {
-      const piiFields = this.domainToolsByName.get(name)?.piiFields;
-      if (piiFields !== undefined && piiFields.length > 0) {
-        try {
-          const prepass = await privacy.applyStableIdPrepass({
-            toolName: name,
-            text: result,
-            piiFields,
-          });
-          resultForPrivacy = prepass.text;
-          if (prepass.replaced > 0 || prepass.skipped > 0) {
-            console.log(
-              `[orchestrator.dispatchTool:${name}] stable-id prepass: replaced=${String(
-                prepass.replaced,
-              )} skipped=${String(prepass.skipped)} parsed=${String(prepass.parsed)}`,
-            );
-          }
-        } catch (err) {
-          console.warn(
-            `[orchestrator.dispatchTool:${name}] privacy.applyStableIdPrepass threw — falling through to NER-only:`,
-            err,
-          );
-        }
-      }
-    }
-    if (
-      privacy !== undefined &&
-      typeof resultForPrivacy === 'string' &&
-      resultForPrivacy.length > 0
-    ) {
-      try {
-        const tokenised = await privacy.processToolResult({
-          toolName: name,
-          text: resultForPrivacy,
-        });
-        return tokenised.text;
-      } catch (err) {
-        console.warn(
-          `[orchestrator.dispatchTool:${name}] privacy.processToolResult threw — sending original result:`,
-          err,
-        );
-      }
-    }
-    return resultForPrivacy;
+    return result;
   }
 
   private async dispatchToolInner(
@@ -2745,52 +2315,3 @@ function collectTextBlocks(content: ContentBlock[]): string[] {
 // It's imported at the top of this file and re-exported via the back-compat
 // barrel so `import { toSemanticAnswer } from '../orchestrator.js'` callers
 // (verifier wrapper today, channel adapters until S+11) keep working.
-
-// ---------------------------------------------------------------------------
-// Privacy-Shield v2 (D-2) — Output Validator retry-prompt helpers.
-// ---------------------------------------------------------------------------
-
-/**
- * Pick a correction prompt based on what the validator flagged. The
- * directive is appended to the system prompt for the retry attempt;
- * it does NOT carry PII (no values, no spans) so it is safe to log.
- */
-export function buildValidatorCorrectionPrompt(verdict: PrivacyOutputValidationResult): string {
-  const reason = verdict.recommendationReason ?? '';
-  // Spontaneous PII signal: the validator already routes spontaneous
-  // hits to recommendation=`block`, but `retry` can also be issued by
-  // a future validator extension. Branch on the reason prefix instead
-  // of recomputing from `verdict.spontaneousPiiHits`.
-  if (reason.startsWith('spontaneous PII') || verdict.spontaneousPiiHits.length > 0) {
-    return [
-      '<privacy-validator-retry>',
-      'Your previous answer contained PII values that were never supplied',
-      'via a tool result or user message. Do not invent identifiers (names,',
-      'emails, IBANs, phone numbers, addresses). If a required value is',
-      'missing, ask a single clarifying question instead of guessing.',
-      '</privacy-validator-retry>',
-    ].join('\n');
-  }
-  // Token-loss is the default failure mode (HR-routine regression).
-  return [
-    '<privacy-validator-retry>',
-    'Your previous answer dropped privacy tokens. Tokens look like',
-    '`«PERSON_1»`, `«EMAIL_2»`, etc. Re-emit the answer; every token from',
-    'tool results MUST appear verbatim where its value would go — in table',
-    'cells, list items, sentences, JSON. Do not paraphrase, summarise,',
-    'invent, or translate token values. The privacy shield restores them',
-    'to the real values after you finish.',
-    '</privacy-validator-retry>',
-  ].join('\n');
-}
-
-/**
- * Append the validator correction to an existing `extraSystemHint` so
- * a caller-supplied hint (e.g. the answer-verifier's contradiction
- * note) is preserved alongside the privacy directive. Both fire in
- * the same retry, double-budget for both signals.
- */
-export function composeRetryHint(existing: string | undefined, correction: string): string {
-  if (existing === undefined || existing.trim().length === 0) return correction;
-  return `${existing}\n\n${correction}`;
-}

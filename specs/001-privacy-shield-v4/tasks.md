@@ -324,23 +324,23 @@ there is no safe half-way state. Run the stages back-to-back in one pass.
 Decisions in force: research **C7** (no inbound masker — user input is
 user-disclosed) and **C8** (this runs after the intensive live test).
 
-- [ ] T048 [US9] Delete the v2 stream-tokenization path: `processToolResult`
+- [x] T048 [US9] Delete the v2 stream-tokenization path: `processToolResult`
   tokenize path, `processInbound` restore, `streamingTokenBoundary`
   (`harness-orchestrator/src/streaming.ts` and privacy-guard `service.ts`).
-- [ ] T049 [US9] Delete `selfAnonymization.ts` in full — Phase A.0/A.1/A.2,
+- [x] T049 [US9] Delete `selfAnonymization.ts` in full — Phase A.0/A.1/A.2,
   `restoreSelfAnonymizationLabels`, `restoreOrScrubRemainingTokens`, the
   Mitarbeiter-/Employee-/Person-/Platz-/Rang-pattern restorers.
-- [ ] T050 [US9] Delete v3 stable-id: `stableIdTokenization.ts`,
+- [x] T050 [US9] Delete v3 stable-id: `stableIdTokenization.ts`,
   `tokenizeMap.ts`, `applyStableIdTokenization`, `applyStableIdPrepass`,
   `tokenForStableId`, the `piiFields` annotations and Odoo helpers.
-- [ ] T051 [US9] Remove or simplify the now-redundant Output-Validator
+- [x] T051 [US9] Remove or simplify the now-redundant Output-Validator
   token-leak retry path; document what validation remains.
-- [ ] T052 [US9] Adapt `receiptAssembler.ts` — the Privacy Receipt reports
+- [x] T052 [US9] Adapt `receiptAssembler.ts` — the Privacy Receipt reports
   datasets interned, fields masked per classification, and verbs executed,
   instead of token counts (FR-028).
-- [ ] T053 [US9] Verify `ensureWellFormedParams` (surrogate hardening, PR #118)
+- [x] T053 [US9] Verify `ensureWellFormedParams` (surrogate hardening, PR #118)
   is still present and wired — it is orthogonal and explicitly retained.
-- [ ] T054 [US9] Test: full middleware suite + boot smoke test green after
+- [x] T054 [US9] Test: full middleware suite + boot smoke test green after
   removal; Privacy Receipt renders v4 fields (US9 acceptance scenarios 1–5,
   SC-010).
 

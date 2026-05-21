@@ -37,19 +37,18 @@ export interface TurnContextValue {
   chatParticipants?: ChatParticipantsProvider;
   /**
    * Privacy-Proxy Slice 2.1: per-turn privacy handle threaded through the
-   * call tree so every `messages.create` / `messages.stream` site can
-   * tokenise outbound payloads + restore inbound tokens without an
-   * explicit parameter sweep. Set by the orchestrator at the start of
-   * `chatInContextInner` when a `privacy.redact@1` provider is registered;
-   * undefined when no provider is installed (then call sites pass
-   * payloads through unmodified — byte-identical pre-plugin behaviour).
+   * call tree so every tool-dispatch site can intern raw tool results
+   * behind the Privacy Shield v4 Data-Plane Boundary without an explicit
+   * parameter sweep. Set by the orchestrator at the start of the turn
+   * when a `privacy.redact@1` provider is registered; undefined when no
+   * provider is installed (then tool results flow through unmodified).
    */
   privacyHandle?: PrivacyTurnHandle;
   /**
    * Phase C.2 — Raw tool-result capture hook. When set by an outer scope
    * (currently: the routine runner), every tool dispatch site (main agent
    * + sub-agents) invokes this callback with the RAW handler-returned
-   * result BEFORE `privacy.processToolResult` tokenises it. The callback
+   * result BEFORE `privacy.internToolResultV4` interns it. The callback
    * is responsible for stashing the value somewhere it can be consumed
    * later (typically `routineTurnContext.currentRawToolResults()` from
    * the routines plugin). Repeat calls for the same tool name overwrite

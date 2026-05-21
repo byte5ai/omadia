@@ -6,10 +6,9 @@ import express from 'express';
 import cookieParser from 'cookie-parser';
 import { config } from './config.js';
 import { createTigrisStore } from '@omadia/diagrams';
-import type { MemoryStore, PrivacyGuardService } from '@omadia/plugin-api';
+import type { MemoryStore } from '@omadia/plugin-api';
 import { createAdminRouter } from './routes/admin.js';
 import { createChatRouter } from './routes/chat.js';
-import { createOperatorPrivacyRouter } from './routes/operatorPrivacy.js';
 import { createAgentResolver } from './agents/resolveAgentForTool.js';
 // `/attachments/<signed-key>` is now mounted by the de.byte5.channel.teams
 // plugin via ctx.routes.register (see packages/harness-channel-teams/src/plugin.ts,
@@ -945,22 +944,6 @@ async function main(): Promise<void> {
   // travels with it.
   app.use('/api/chat', requireAuth, createChatSessionsRouter({ store: chatSessionStore }));
   console.log('[middleware] chat-sessions endpoint ready at /api/chat/sessions (auth-gated)');
-
-  // Privacy-Shield v2 (Slice S-7) — Operator-UI backend. Mounted under
-  // /api/v1/operator/privacy/* (same convention as the rest of v1
-  // admin routes). Auth-gated by `requireAuth`. Routes 503 when no
-  // `privacy.redact@1` provider is installed.
-  app.use(
-    '/api/v1/operator/privacy',
-    requireAuth,
-    createOperatorPrivacyRouter({
-      getPrivacyGuard: () =>
-        serviceRegistry.get<PrivacyGuardService>('privacyRedact'),
-    }),
-  );
-  console.log(
-    '[middleware] operator-privacy endpoints ready at /api/v1/operator/privacy/* (auth-gated)',
-  );
 
   // ── OB-49 — provider-aware auth bootstrap ────────────────────────────────
   // graphPool is resolved above (line ~595). Auth schema + UserStore +

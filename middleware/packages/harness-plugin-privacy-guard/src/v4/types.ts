@@ -278,16 +278,3 @@ export interface PseudonymMap {
   /** pseudonym → real value. */
   readonly reverse: ReadonlyMap<string, string>;
 }
-
-// ---------------------------------------------------------------------------
-// Privacy Receipt (v4 shape — US9 adapts receiptAssembler to emit this)
-// ---------------------------------------------------------------------------
-
-/** The per-turn user-facing report, re-expressed in v4 terms (FR-028). */
-export interface PrivacyReceiptV4 {
-  readonly datasetsInterned: number;
-  readonly fieldsMasked: number;
-  readonly fieldsCleartext: number;
-  readonly verbsExecuted: ReadonlyArray<VerbName>;
-  readonly pseudonymProjectionUsed: boolean;
-}
