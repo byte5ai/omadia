@@ -9,6 +9,7 @@ import {
   KeyRound,
   Network,
   Plug,
+  ShieldAlert,
   ShieldCheck,
 } from 'lucide-react';
 
@@ -21,6 +22,7 @@ import {
   AdminUiToggle,
 } from '../../_components/store/AdminUiPanel';
 import { Chip } from '../../_components/store/Chip';
+import { AuditModeSwitch } from '../../_components/store/AuditModeSwitch';
 import { CredentialsEditor } from '../../_components/store/CredentialsEditor';
 import { EditFromStoreButton } from '../../_components/store/EditFromStoreButton';
 import { InstallButton } from '../../_components/store/InstallButton';
@@ -183,6 +185,20 @@ export default async function PluginDetailPage({
                 pluginId={plugin.id}
                 setupFields={plugin.required_secrets}
               />
+            </Section>
+          ) : null}
+
+          {/* #91 — audit egress mode switch. Surfaced only for an installed
+              audit/scanner plugin (one declaring permissions.network.web_scanner). */}
+          {(plugin.install_state === 'installed' ||
+            plugin.install_state === 'update-available') &&
+          plugin.permissions_summary.network_web_scanner === true ? (
+            <Section
+              label="Audit-Modus"
+              numeral="II.c"
+              icon={<ShieldAlert className="size-4" aria-hidden />}
+            >
+              <AuditModeSwitch pluginId={plugin.id} />
             </Section>
           ) : null}
 

@@ -504,7 +504,7 @@ export function PreviewChatPane({
               <div className="mt-1 text-[11px] text-[color:var(--fg-muted)]">
                 Preview führt Cross-Integration-Lookups (<code>spec.external_reads</code>)
                 nicht aus — der Agent erkennt den fehlenden Service korrekt
-                und wirft. Installiere den Agent in den Plattform-Store, um
+                und wirft. Veröffentliche den Agent in den Plattform-Store, um
                 den echten Datenpfad zu testen.
               </div>
             </div>

@@ -525,7 +525,20 @@ if (ctx.http) {
 
 **Wann nutzen:** statt globalem `fetch`. Globales fetch wird in einer
 zukünftigen Härtung blockiert; `ctx.http` ist der zukunftssichere Pfad.
-**Voraussetzung:** mindestens ein Host in `spec.network.outbound`.
+**Voraussetzung:** mindestens ein Host in `spec.network.outbound` ODER
+`spec.network.web_scanner: true`.
+
+**Audit-/Scanner-Plugins** (URL-Auditor, Link-Checker, Web-Research) deren
+Ziel-Hosts erst zur Laufzeit aus User-Input kommen und beim Build NICHT
+bekannt sind: setz `spec.network.web_scanner: true`. Der Operator wählt
+dann im Admin-UI den `audit_mode` (`single-host` | `allowlist` |
+`public-web`). In `public-web` darf das Plugin beliebige öffentliche Hosts
+erreichen — private Netzbereiche und Cloud-Metadata-Endpoints bleiben hart
+geblockt (SSRF-Guard). Für eine operator-kuratierte Zusatz-Hostliste: ein
+`setup_field` vom Typ `host_list`. Das Plugin liest den aktiven Modus über
+`ctx.config.get<string>('audit_mode')` und darf eine vom User angefragte
+URL **nie still durch einen Default-Host ersetzen** — wird ein Host
+geblockt, ehrlich melden statt eine andere URL zu auditieren.
 
 ### `ctx.subAgent` — Delegation an andere Agents
 
@@ -708,9 +721,12 @@ generierten Code/Spec automatisch und kann mit `ok: false` antworten:
       vorher installieren.
     - `tool_id_invalid_syntax`: Tool-IDs müssen `snake_case` sein
       (`get_forecast`, NICHT `getForecast` oder `get-forecast`).
-    - `network_outbound_invalid`: Bare hostnames ohne Protokoll und
-      Wildcards (`api.example.com`, NICHT `https://api.example.com` oder
-      `*.example.com`).
+    - `network_outbound_invalid`: Bare hostnames ohne Protokoll/Pfad
+      (`api.example.com`). Ein führender Subdomain-Wildcard ist erlaubt
+      (`*.example.com`); andere Wildcard-Positionen NICHT (`api.*.com`).
+      `https://api.example.com` ist ungültig (kein Protokoll). Für
+      Audit-Plugins mit unbekannten Ziel-Hosts: kein Wildcard-Stuffing —
+      `spec.network.web_scanner: true` setzen.
 
 **Retry-Limit**: maximal **3 Re-Tries pro Slot pro Turn**. Wenn nach 3
 Versuchen `fill_slot` für denselben `slotKey` immer noch ok=false

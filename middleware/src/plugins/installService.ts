@@ -642,6 +642,45 @@ function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
       }
       return { value: raw };
     }
+    case 'host_list': {
+      // #91 Option B — operator-curated list of bare hostnames. Unioned
+      // into the plugin's effective ctx.http allowlist at runtime. Stored
+      // as config (non-secret). Entries are normalised (trim + lowercase);
+      // protocol prefixes and paths are rejected. A subdomain wildcard
+      // (`*.example.com`) is permitted — the egress matcher supports it.
+      if (raw === undefined || raw === null) return { value: [] };
+      if (!Array.isArray(raw)) {
+        return {
+          error: {
+            code: 'wrong_type',
+            message: `"${field.label}" muss eine Liste von Hostnamen sein.`,
+          },
+        };
+      }
+      const hosts: string[] = [];
+      for (const h of raw) {
+        if (typeof h !== 'string') {
+          return {
+            error: {
+              code: 'wrong_type',
+              message: `"${field.label}" darf nur Text-Hostnamen enthalten.`,
+            },
+          };
+        }
+        const host = h.trim().toLowerCase();
+        if (host.length === 0) continue;
+        if (host.includes('://') || host.includes('/') || /\s/.test(host)) {
+          return {
+            error: {
+              code: 'invalid_host',
+              message: `"${host}" ist kein gültiger Hostname (kein Protokoll, kein Pfad).`,
+            },
+          };
+        }
+        hosts.push(host);
+      }
+      return { value: hosts };
+    }
     case 'oauth':
       return {
         error: {
@@ -686,6 +725,7 @@ const SUPPORTED_TYPES = new Set<string>([
   'enum',
   'boolean',
   'integer',
+  'host_list',
 ]);
 
 function isSupportedType(t: string): t is InstallSetupField['type'] {

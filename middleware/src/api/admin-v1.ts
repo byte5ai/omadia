@@ -40,7 +40,10 @@ export type SetupFieldType =
   | 'oauth'
   | 'enum'
   | 'boolean'
-  | 'integer';
+  | 'integer'
+  /** #91: operator-curated list of bare hostnames. Values are unioned into
+   *  the plugin's effective `ctx.http` allowlist at runtime (Option B). */
+  | 'host_list';
 
 export interface PluginSetupField {
   key: string;
@@ -50,8 +53,9 @@ export interface PluginSetupField {
    *  editor so the operator sees the same hint as in the install wizard. */
   help?: string;
   /** Manifest default. Forwarded so the post-install editor can pre-select
-   *  the default option in an `enum` dropdown when no value is stored yet. */
-  default?: string;
+   *  the default option in an `enum` dropdown when no value is stored yet.
+   *  A `string[]` for `type === 'host_list'`, a `string` otherwise. */
+  default?: string | string[];
   /** Allowed values for `type === 'enum'`. Mirrors the install-wizard
    *  schema so the post-install editor can render a `<select>` instead of
    *  a free-text input. */
@@ -64,6 +68,13 @@ export interface PluginPermissionsSummary {
   graph_reads: EntityURI[];
   graph_writes: EntityURI[];
   network_outbound: string[];
+  /** #91: when true the plugin is an audit/scanner — its `ctx.http` may
+   *  contact arbitrary public hosts at runtime (target URLs are supplied
+   *  by the end user and unknown at build time). The runtime egress filter
+   *  still hard-blocks private IP ranges and cloud-metadata endpoints, and
+   *  the operator must confirm at install time. Optional; the loader
+   *  defaults to `false`. */
+  network_web_scanner?: boolean;
   /** OB-29-1: agentId whitelist this plugin may call via `ctx.subAgent.ask`.
    *  Wildcards allowed (`'de.byte5.agent.*'`). Optional to keep legacy
    *  fixtures buildable; the loader always populates with `[]` when the
