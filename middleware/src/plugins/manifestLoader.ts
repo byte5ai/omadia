@@ -189,8 +189,19 @@ function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
     const entry: PluginSetupField = { key, label, type };
     const help = asString(f['help']);
     if (help) entry.help = help;
-    const defaultValue = asString(f['default']);
-    if (defaultValue !== undefined) entry.default = defaultValue;
+    if (type === 'host_list') {
+      // #91 Option B — the default for a host_list is an array of bare
+      // hostnames, not a scalar string.
+      const rawDefault = f['default'];
+      if (Array.isArray(rawDefault)) {
+        entry.default = rawDefault.filter(
+          (h): h is string => typeof h === 'string',
+        );
+      }
+    } else {
+      const defaultValue = asString(f['default']);
+      if (defaultValue !== undefined) entry.default = defaultValue;
+    }
     if (type === 'enum') {
       const enumRaw = f['enum'];
       if (Array.isArray(enumRaw)) {
@@ -502,6 +513,7 @@ function extractPermissions(
     graph_reads: extractStringArray(graph?.['reads']),
     graph_writes: extractStringArray(graph?.['writes']),
     network_outbound: extractStringArray(network?.['outbound']),
+    network_web_scanner: network?.['web_scanner'] === true,
     sub_agents_calls: extractStringArray(subAgents?.['calls']),
     sub_agents_calls_per_invocation: parsedBudget,
     graph_entity_systems: entitySystems,
@@ -587,6 +599,7 @@ function isSetupFieldType(value: string): value is PluginSetupField['type'] {
     value === 'oauth' ||
     value === 'enum' ||
     value === 'boolean' ||
-    value === 'integer'
+    value === 'integer' ||
+    value === 'host_list'
   );
 }
