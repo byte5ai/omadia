@@ -523,6 +523,15 @@ export function createPrivacyGuardService(
         request.toolName,
         request.rawResult,
       );
+      const maskedFields = digest.fields.filter(
+        (f) => f.classification === 'sensitive-masked',
+      ).length;
+      console.log(
+        `[privacy-guard v4] intern turn=${request.turnId} ` +
+          `tool=${request.toolName} datasetId=${digest.datasetId} ` +
+          `rows=${String(digest.rowCount)} fields=${String(digest.fields.length)} ` +
+          `masked=${String(maskedFields)}${digest.truncated ? ' truncated' : ''}`,
+      );
       return { digestText: digestToToolResultText(digest) };
     },
 
@@ -539,6 +548,11 @@ export function createPrivacyGuardService(
           const directive = parseRenderDirective(request.input);
           const rendered = materialize(store, directive);
           v4RenderedAnswers.set(request.turnId, rendered.text);
+          console.log(
+            `[privacy-guard v4] render turn=${request.turnId} ` +
+              `datasetId=${directive.datasetId} rows=${String(rendered.rowCount)} ` +
+              `format=${directive.format}`,
+          );
           return {
             resultText:
               '[privacy-shield-v4] Final answer rendered server-side for ' +
@@ -554,9 +568,18 @@ export function createPrivacyGuardService(
           request.toolName,
           request.input,
         );
+        console.log(
+          `[privacy-guard v4] verb turn=${request.turnId} ` +
+            `tool=${request.toolName} datasetId=${result.digest.datasetId} ` +
+            `rows=${String(result.digest.rowCount)}`,
+        );
         return { resultText: digestToToolResultText(result.digest) };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[privacy-guard v4] tool error turn=${request.turnId} ` +
+            `tool=${request.toolName}: ${message}`,
+        );
         return { resultText: `[privacy-shield-v4] tool error: ${message}` };
       }
     },
