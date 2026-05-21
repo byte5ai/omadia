@@ -622,6 +622,20 @@ async function main(): Promise<void> {
       // pages like /p/channel-teams/{hub,tab-config} are public-by-
       // design and the reference dashboard is read-only demo state.
       /^\/p\/[^/]+(?:\/|$|\?)/,
+      // Local dev surfaces. The `/api/dev/*` mount itself is conditional
+      // on `DEV_ENDPOINTS_ENABLED=true` further down (see graph +
+      // memory dev routers around the "DEV endpoints enabled" log line)
+      // — when that flag is on the operator has already opted into an
+      // unauthenticated surface and the local Next-UI relies on the
+      // routes being callable without a session cookie. When the flag
+      // is off, no `/api/dev/*` routes are mounted at all, so this
+      // bypass cannot leak anything. When the flag is on AND the stack
+      // is exposed beyond localhost, that is a separate operator
+      // mistake the compose `127.0.0.1` port bindings are designed to
+      // prevent.
+      ...(config.DEV_ENDPOINTS_ENABLED
+        ? [/^\/api\/dev(?:\/|$|\?)/]
+        : []),
     ],
   });
 

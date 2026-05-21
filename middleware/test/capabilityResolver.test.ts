@@ -9,6 +9,7 @@ import {
 
 import {
   MissingCapabilityError,
+  findActiveProviderCollision,
   findCapabilityProvidersInCatalog,
   resolveCapabilities,
   resolveEligiblePlugins,
@@ -503,6 +504,91 @@ describe('walkCapabilityInstallChain', () => {
     const provider = result.available_providers[0]?.providers[0];
     assert.equal(provider?.already_installed, true);
     assert.equal(provider?.active, false);
+  });
+});
+
+describe('findActiveProviderCollision', () => {
+  it('returns null when no active provider claims the candidate capability', () => {
+    const cat = makeCatalog([
+      { id: 'kg-neon', provides: ['knowledgeGraph@1'], requires: [], depends_on: [] },
+    ]);
+    const result = findActiveProviderCollision('kg-neon', cat, makeRegistry());
+    assert.equal(result, null);
+  });
+
+  it('returns the colliding capability + owner when an active sibling already publishes the same slot', () => {
+    const cat = makeCatalog([
+      { id: 'kg-neon', provides: ['knowledgeGraph@1'], requires: [], depends_on: [] },
+      { id: 'kg-inmemory', provides: ['knowledgeGraph@1'], requires: [], depends_on: [] },
+    ]);
+    const result = findActiveProviderCollision(
+      'kg-inmemory',
+      cat,
+      makeRegistry([makeActiveAgent('kg-neon')]),
+    );
+    assert.deepEqual(result, { capability: 'knowledgeGraph@1', ownerId: 'kg-neon' });
+  });
+
+  it('ignores inactive (errored) installed plugins — their slot is free', () => {
+    const cat = makeCatalog([
+      { id: 'kg-neon', provides: ['knowledgeGraph@1'], requires: [], depends_on: [] },
+      { id: 'kg-inmemory', provides: ['knowledgeGraph@1'], requires: [], depends_on: [] },
+    ]);
+    const erroredNeon: InstalledAgent = {
+      ...makeActiveAgent('kg-neon'),
+      status: 'errored',
+    };
+    const result = findActiveProviderCollision('kg-inmemory', cat, makeRegistry([erroredNeon]));
+    assert.equal(result, null);
+  });
+
+  it('ignores self — a plugin already in the registry does not collide with itself', () => {
+    // Defensive: keeps the helper safe for callers that pass the same id
+    // (e.g. a reactivation path that checks before re-registering).
+    const cat = makeCatalog([
+      { id: 'kg-neon', provides: ['knowledgeGraph@1'], requires: [], depends_on: [] },
+    ]);
+    const result = findActiveProviderCollision(
+      'kg-neon',
+      cat,
+      makeRegistry([makeActiveAgent('kg-neon')]),
+    );
+    assert.equal(result, null);
+  });
+
+  it('returns the first colliding capability when the candidate publishes multiple', () => {
+    const cat = makeCatalog([
+      {
+        id: 'incumbent',
+        provides: ['knowledgeGraph@1', 'entityRefBus@1'],
+        requires: [],
+        depends_on: [],
+      },
+      {
+        id: 'candidate',
+        provides: ['knowledgeGraph@1', 'entityRefBus@1'],
+        requires: [],
+        depends_on: [],
+      },
+    ]);
+    const result = findActiveProviderCollision(
+      'candidate',
+      cat,
+      makeRegistry([makeActiveAgent('incumbent')]),
+    );
+    assert.ok(result);
+    // First-match semantics — both would collide; we surface the first
+    // declared on the candidate. Order matches the manifest declaration.
+    assert.equal(result.capability, 'knowledgeGraph@1');
+    assert.equal(result.ownerId, 'incumbent');
+  });
+
+  it('returns null when the candidate id is not in the catalog', () => {
+    const cat = makeCatalog([
+      { id: 'something', provides: ['foo@1'], requires: [], depends_on: [] },
+    ]);
+    const result = findActiveProviderCollision('does-not-exist', cat, makeRegistry());
+    assert.equal(result, null);
   });
 });
 

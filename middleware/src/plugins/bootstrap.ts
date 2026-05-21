@@ -264,13 +264,46 @@ async function migrateAnthropicKeyToVault(
  * plugin lands with the proper config instead of the empty auto-install
  * default that would miss the env-provided paths.
  *
- * Idempotent: once the registry entry exists we never overwrite the
- * operator's settings.
+ * Idempotent: once the registry entry exists, operator-owned settings
+ * (memory_dir, seed_dir, seed_mode) are never overwritten. The single
+ * exception is `dev_memory_endpoints_enabled`, which is reconciled from
+ * `DEV_ENDPOINTS_ENABLED` on every boot so a container-env flip takes
+ * effect on restart (see the reconcile path below).
  */
-async function bootstrapMemoryFromEnv(deps: BootstrapDeps): Promise<void> {
+export async function bootstrapMemoryFromEnv(deps: BootstrapDeps): Promise<void> {
   const log = deps.log ?? ((m) => console.log(m));
 
-  if (deps.registry.has(MEMORY_TOOL_ID)) return;
+  const desiredDevEndpoints = deps.config.DEV_ENDPOINTS_ENABLED
+    ? 'true'
+    : 'false';
+
+  // Reconcile path: when the plugin is already installed, env-driven flags
+  // still need to track operator intent expressed via container env on
+  // restart. Without this the operator can flip `DEV_ENDPOINTS_ENABLED` in
+  // .env, restart, and the memory plugin's `dev_memory_endpoints_enabled`
+  // stays at its first-boot value forever — because the rest of the
+  // function returns early when the registry entry exists. Other env-
+  // derived config (memory_dir, seed_dir, seed_mode) is operator-owned
+  // and stays untouched.
+  if (deps.registry.has(MEMORY_TOOL_ID)) {
+    const entry = deps.registry.get(MEMORY_TOOL_ID);
+    if (
+      entry &&
+      entry.config?.['dev_memory_endpoints_enabled'] !== desiredDevEndpoints
+    ) {
+      await deps.registry.register({
+        ...entry,
+        config: {
+          ...entry.config,
+          dev_memory_endpoints_enabled: desiredDevEndpoints,
+        },
+      });
+      log(
+        `[bootstrap] ⚐ ${MEMORY_TOOL_ID} dev_memory_endpoints_enabled reconciled to '${desiredDevEndpoints}' (from DEV_ENDPOINTS_ENABLED env)`,
+      );
+    }
+    return;
+  }
 
   const catalogEntry = deps.catalog.get(MEMORY_TOOL_ID);
   if (!catalogEntry) {
@@ -289,9 +322,7 @@ async function bootstrapMemoryFromEnv(deps: BootstrapDeps): Promise<void> {
       memory_dir: deps.config.MEMORY_DIR,
       seed_dir: deps.config.MEMORY_SEED_DIR,
       seed_mode: deps.config.MEMORY_SEED_MODE,
-      dev_memory_endpoints_enabled: deps.config.DEV_ENDPOINTS_ENABLED
-        ? 'true'
-        : 'false',
+      dev_memory_endpoints_enabled: desiredDevEndpoints,
     },
   });
 
