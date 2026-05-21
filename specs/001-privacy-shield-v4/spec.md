@@ -480,11 +480,15 @@ boot smoke test; confirm green and that the Privacy Receipt renders v4 fields.
 - **FR-022**: Pseudonym Projection MUST be an optional, gated layer — off unless
   an operation explicitly requires individual-level prose.
 
-#### Inbound user PII
+#### Inbound user input
 
-- **FR-023**: Free-text PII in the user's own inbound chat message MUST be
-  masked by the same deny-by-default classifier before the message reaches the
-  LLM.
+- **FR-023**: The user's own inbound chat message is treated as
+  **user-disclosed input** and is NOT subject to the data-plane boundary — the
+  boundary governs *tool results* (data the user never saw), not what the user
+  themselves typed. A name the user types reaches a tool's input directly so
+  the tool can resolve the entity; that tool's *result* is then interned and
+  digested like any other. (Supersedes the earlier draft requirement to mask
+  inbound user PII — see research C7.)
 
 #### Proof and genericity
 

@@ -219,3 +219,32 @@ specific individuals the Pseudonym Projection must support is **not yet pinned
 down**. It MUST be scoped from real HR/agent transcripts before US7 is built, so
 the projection is sized to actual demand and not over-built. US7 is P2
 specifically so this scoping can happen after the P1 chain proves the boundary.
+
+### C7 — Inbound user PII (affects US8, FR-023) — resolved post-spec
+
+**Decision**: The user's own chat message is **user-disclosed input** and is
+NOT masked. The data-plane boundary governs *tool results* — data the LLM must
+not process — not what the user themselves typed and already knows. When a user
+names a person, that name reaches the tool's input directly so the tool can
+resolve the entity; the tool's *result* is interned + digested as usual.
+
+**Rationale**: v2 tokenized the inbound message mainly for intra-turn token
+coherence with tool results — a need v4 does not have (v4 never tokenizes tool
+results). Masking the user's own input would also break tool resolution (the
+tool needs the real name) without a reversible-restore mechanism, which v4
+deliberately drops. FR-023's draft "mask inbound user PII" is therefore
+superseded — no v4-native inbound masker is built.
+
+**Rejected**: a minimal v4 tokenize-restore kept only for user→tool input —
+re-introduces the v2 token machinery US9 exists to remove, for a case (the user
+disclosing data they already hold) that is not the threat model.
+
+### C8 — US9 deletion timing — resolved post-spec
+
+**Decision**: The v2/v3 deletion (US9) runs **after** the intensive live test,
+not before. Until then v4 (flag on) and v2/v3 (flag off) coexist.
+
+**Rationale**: v4's LLM-loop behaviour is not yet live-verified. Keeping v2/v3
+in place during the test preserves a working A/B baseline; if the test finds a
+v4 loop bug, the prior behaviour is still runnable for comparison. The deletion
+is pure debt-removal and loses nothing by waiting.

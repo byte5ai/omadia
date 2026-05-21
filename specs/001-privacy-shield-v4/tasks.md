@@ -265,8 +265,9 @@ them to real names.
 **Independent Test**: Flag on for the HR agent; ask "Wer hat dieses Jahr den
 meisten Urlaub?"; verify SC-001/SC-002 (answer) and SC-003 (wire).
 
-- [ ] T043 [US8] Mask free-text PII in the user's own inbound chat message with
-  the deny-by-default classifier before it reaches the LLM (FR-023).
+- [x] T043 [US8] Inbound user PII — RESOLVED (research C7): the user's own
+  chat message is user-disclosed input and is NOT masked; no v4-native inbound
+  masker is built. No code change.
 - [ ] T044 [US8] Flip the v4 feature flag on for the HR agent.
 - [ ] T045 [US8] Acceptance run: "Wer hat dieses Jahr den meisten Urlaub?" —
   verify real complete names, correct ranks, no duplicated / no invented people
