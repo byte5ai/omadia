@@ -287,6 +287,37 @@ export interface KnowledgeGraph {
     actor: AclMutationOptions,
   ): Promise<InconsistencyNode>;
   /**
+   * Slice 9.5 — list `MemorableKnowledge` external_ids that still need a
+   * bulk inconsistency-check pass: embedding column populated AND no
+   * `last_inconsistency_check_at` marker on the row. Ordered by
+   * `created_at` ascending (oldest first — most likely source of
+   * historical conflicts that predate Slice 9). Clamped to [1, 200].
+   * Returns external_ids (`mk:<uuid>`), not internal uuids, so callers
+   * can feed them straight into `inconsistencyDetector.detectFor()`.
+   */
+  listMemorableKnowledgeIdsForBulkInconsistencyCheck(opts: {
+    limit: number;
+  }): Promise<string[]>;
+  /**
+   * Slice 9.5 — preview-stats for the bulk inconsistency-detect panel.
+   * `unchecked` = candidates the next run would process. Tenant-scoped.
+   */
+  countMemorableKnowledgeInconsistencyCheckBuckets(): Promise<{
+    unchecked: number;
+    alreadyChecked: number;
+    withoutEmbedding: number;
+  }>;
+  /**
+   * Slice 9.5 — set the `last_inconsistency_check_at` marker on an MK to
+   * `now()`. Called by `inconsistencyDetector.detectFor()` at the end
+   * of every successful run (whether 0 or N Inconsistencies were
+   * created) so the bulk-job dedupes correctly. Idempotent: re-writing
+   * the marker just refreshes the timestamp.
+   */
+  markMemorableKnowledgeInconsistencyChecked(
+    memorableKnowledgeNodeId: string,
+  ): Promise<void>;
+  /**
    * Dev-UI · Memory Focused View — list every memory (MemorableKnowledge
    * + PalaiaExcerpt) anchored to the given scope along with its 2-hop
    * provenance ancestors, pre-resolved in a single round-trip. ACL is

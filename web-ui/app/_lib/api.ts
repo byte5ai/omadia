@@ -2612,3 +2612,36 @@ export async function triggerInconsistencyDetect(
     { mkId },
   );
 }
+
+// ─── Slice 9.5 — bulk inconsistency detect ───────────────────────────
+
+export interface BulkInconsistencyPreviewDto {
+  unchecked: number;
+  alreadyChecked: number;
+  withoutEmbedding: number;
+  detectorAvailable: boolean;
+}
+
+export interface BulkInconsistencyResultDto {
+  scanned: number;
+  checked: number;
+  inconsistenciesCreated: number;
+  skippedNoEmbedding: number;
+  failed: number;
+  durationMs: number;
+}
+
+export async function previewBulkInconsistencyDetect(): Promise<BulkInconsistencyPreviewDto> {
+  return getJson<BulkInconsistencyPreviewDto>(
+    '/v1/admin/inconsistencies/bulk-detect/preview',
+  );
+}
+
+export async function runBulkInconsistencyDetect(
+  limit?: number,
+): Promise<BulkInconsistencyResultDto> {
+  return postJson<BulkInconsistencyResultDto>(
+    '/v1/admin/inconsistencies/bulk-detect',
+    limit !== undefined ? { limit } : {},
+  );
+}

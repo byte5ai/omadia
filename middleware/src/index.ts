@@ -25,6 +25,7 @@ import { createAdminDomainsRouter } from './routes/adminDomains.js';
 import type { LifecycleService } from '@omadia/knowledge-graph-neon/dist/lifecycleService.js';
 import type {
   AgentPrioritiesStore,
+  BulkInconsistencyService,
   BulkPromotionService,
   InconsistencyDetectorService,
 } from '@omadia/plugin-api';
@@ -1003,16 +1004,21 @@ async function main(): Promise<void> {
   const wrappedKgForRoutes =
     serviceRegistry.get<typeof knowledgeGraph>('knowledgeGraph') ??
     knowledgeGraph;
+  // Slice 9.5 — bulk-detect service is optional; the route 503s when
+  // it's not published, so the UI can render the panel uniformly.
+  const bulkInconsistencyService =
+    serviceRegistry.get<BulkInconsistencyService>('bulkInconsistencyDetect');
   app.use(
     '/api/v1/admin/inconsistencies',
     requireAuth,
     createInconsistenciesRouter({
       graph: wrappedKgForRoutes,
       ...(inconsistencyDetectorSvc ? { detector: inconsistencyDetectorSvc } : {}),
+      ...(bulkInconsistencyService ? { bulkDetect: bulkInconsistencyService } : {}),
     }),
   );
   console.log(
-    `[middleware] inconsistencies endpoint ready at /api/v1/admin/inconsistencies (detector=${inconsistencyDetectorSvc ? 'on' : 'off'})`,
+    `[middleware] inconsistencies endpoint ready at /api/v1/admin/inconsistencies (detector=${inconsistencyDetectorSvc ? 'on' : 'off'}, bulk=${bulkInconsistencyService ? 'on' : 'off'})`,
   );
 
   // Privacy-Shield v2 (Slice S-7) — Operator-UI backend. Mounted under

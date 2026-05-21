@@ -243,6 +243,21 @@ export function createInconsistencyDetector(
       }
     }
 
+    // Slice 9.5 — bump the marker last. We only reach this point after a
+    // full pass over the candidate window completed (the embed-call /
+    // search-call early-returns above leave the marker untouched on
+    // purpose, so the bulk job retries on the next sweep). A judgement-
+    // call failure on a single candidate still counts as "checked" —
+    // we made our best effort against the rest, no point in re-running
+    // the whole top-k.
+    try {
+      await deps.graph.markMemorableKnowledgeInconsistencyChecked(source.id);
+    } catch (err) {
+      log(
+        `[inconsistency] marker write failed for ${source.id}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
     return { candidatesScanned: filtered.length, inconsistenciesCreated: created };
   }
 

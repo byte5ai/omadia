@@ -2520,6 +2520,76 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     return refetched;
   }
 
+  async listMemorableKnowledgeIdsForBulkInconsistencyCheck(opts: {
+    limit: number;
+  }): Promise<string[]> {
+    const limit = Math.max(1, Math.min(opts.limit, 200));
+    const rows = await this.pool.query<{ external_id: string }>(
+      `SELECT external_id
+         FROM graph_nodes
+        WHERE tenant_id = $1
+          AND type = 'MemorableKnowledge'
+          AND embedding IS NOT NULL
+          AND NOT (properties ? 'last_inconsistency_check_at')
+        ORDER BY created_at ASC
+        LIMIT $2`,
+      [this.tenantId, limit],
+    );
+    return rows.rows.map((r) => r.external_id);
+  }
+
+  async countMemorableKnowledgeInconsistencyCheckBuckets(): Promise<{
+    unchecked: number;
+    alreadyChecked: number;
+    withoutEmbedding: number;
+  }> {
+    const row = await this.pool.query<{
+      unchecked: string;
+      already_checked: string;
+      without_embedding: string;
+    }>(
+      `SELECT
+         count(*) FILTER (
+           WHERE embedding IS NOT NULL
+             AND NOT (properties ? 'last_inconsistency_check_at')
+         )::text AS unchecked,
+         count(*) FILTER (
+           WHERE properties ? 'last_inconsistency_check_at'
+         )::text AS already_checked,
+         count(*) FILTER (WHERE embedding IS NULL)::text AS without_embedding
+       FROM graph_nodes
+       WHERE tenant_id = $1 AND type = 'MemorableKnowledge'`,
+      [this.tenantId],
+    );
+    const r = row.rows[0];
+    return {
+      unchecked: Number(r?.unchecked ?? '0'),
+      alreadyChecked: Number(r?.already_checked ?? '0'),
+      withoutEmbedding: Number(r?.without_embedding ?? '0'),
+    };
+  }
+
+  async markMemorableKnowledgeInconsistencyChecked(
+    memorableKnowledgeNodeId: string,
+  ): Promise<void> {
+    // jsonb_set creates the key if absent, replaces if present. The
+    // timestamp string is wrapped in to_jsonb so the column stays
+    // jsonb-typed end-to-end.
+    await this.pool.query(
+      `UPDATE graph_nodes
+          SET properties = jsonb_set(
+                properties,
+                '{last_inconsistency_check_at}',
+                to_jsonb(now()::timestamptz),
+                true
+              )
+        WHERE tenant_id = $1
+          AND external_id = $2
+          AND type = 'MemorableKnowledge'`,
+      [this.tenantId, memorableKnowledgeNodeId],
+    );
+  }
+
   async listMemoryAclAudit(
     memorableKnowledgeNodeId: string,
     opts: { limit?: number } = {},

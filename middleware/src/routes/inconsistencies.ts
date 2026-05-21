@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 import type {
   AclMutationOptions,
+  BulkInconsistencyService,
   GraphNode,
   InconsistencyDetectorService,
   InconsistencyNode,
@@ -38,6 +39,12 @@ const ResolveBodySchema = z.object({
 
 const DetectBodySchema = z.object({
   mkId: z.string().min(1),
+});
+
+// Slice 9.5 — bulk-detect run body. Limit default 25, hard-cap 200
+// matches the service-side clamp. UI confirm-gate triggers at > 25.
+const BulkDetectBodySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).optional(),
 });
 
 function requireSessionUserId(req: Request, res: Response): string | null {
@@ -85,8 +92,69 @@ async function hydrateDetail(
 export function createInconsistenciesRouter(deps: {
   graph: KnowledgeGraph;
   detector?: InconsistencyDetectorService;
+  /** Slice 9.5 — optional bulk-detect service. When absent, the
+   *  `/bulk-detect` + `/bulk-detect/preview` endpoints 503 with the
+   *  same shape the single-MK `/detect` endpoint uses. */
+  bulkDetect?: BulkInconsistencyService;
 }): Router {
   const router = Router();
+
+  // ─── Slice 9.5 — bulk-detect endpoints (mounted before the
+  //     dynamic `/:id` matchers so `bulk-detect/preview` doesn't get
+  //     swallowed by `GET /:id`). ─────────────────────────────────────
+
+  router.get('/bulk-detect/preview', async (req: Request, res: Response) => {
+    if (!requireSessionUserId(req, res)) return;
+    if (!deps.bulkDetect) {
+      res.status(503).json({
+        code: 'inconsistency.bulk_unavailable',
+        message: 'Bulk inconsistency-detect service not wired.',
+      });
+      return;
+    }
+    try {
+      const preview = await deps.bulkDetect.preview();
+      res.json(preview);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ code: 'inconsistency.bulk_preview_failed', message });
+    }
+  });
+
+  router.post('/bulk-detect', async (req: Request, res: Response) => {
+    if (!requireSessionUserId(req, res)) return;
+    if (!deps.bulkDetect) {
+      res.status(503).json({
+        code: 'inconsistency.bulk_unavailable',
+        message: 'Bulk inconsistency-detect service not wired.',
+      });
+      return;
+    }
+    const parsed = BulkDetectBodySchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res
+        .status(400)
+        .json({ code: 'inconsistency.invalid_request', issues: parsed.error.issues });
+      return;
+    }
+    try {
+      const result = await deps.bulkDetect.run(
+        parsed.data.limit !== undefined ? { limit: parsed.data.limit } : {},
+      );
+      res.json(result);
+    } catch (err) {
+      if (err && typeof err === 'object' && 'code' in err &&
+          (err as { code: string }).code === 'bulk.detector_unavailable') {
+        res.status(503).json({
+          code: 'bulk.detector_unavailable',
+          message: 'Detector judgement-pass not wired — Anthropic key required.',
+        });
+        return;
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ code: 'inconsistency.bulk_run_failed', message });
+    }
+  });
 
   router.get('/', async (req: Request, res: Response) => {
     const sessionUserId = requireSessionUserId(req, res);

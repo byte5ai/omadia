@@ -110,3 +110,9 @@ export type { BulkPromotionDeps } from './bulkPromotion.js';
 // Inconsistency on disagreement. Idempotent on the (sorted) MK pair.
 export { createInconsistencyDetector } from './inconsistencyDetector.js';
 export type { InconsistencyDetectorDeps } from './inconsistencyDetector.js';
+
+// KG-ACL Slice 9.5 — operator-triggered bulk pass over MKs without a
+// `last_inconsistency_check_at` marker. Reuses the Slice-9 detector
+// for the judgement pass; idempotent via the marker.
+export { createBulkInconsistencyService } from './bulkInconsistency.js';
+export type { BulkInconsistencyDeps } from './bulkInconsistency.js';

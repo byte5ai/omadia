@@ -280,4 +280,26 @@ export class InconsistencyTriggeringKnowledgeGraph implements KnowledgeGraph {
   ): Promise<MemoriesProvenanceView> {
     return this.inner.listMemoriesForScope(scope, opts);
   }
+
+  listMemorableKnowledgeIdsForBulkInconsistencyCheck(opts: {
+    limit: number;
+  }): Promise<string[]> {
+    return this.inner.listMemorableKnowledgeIdsForBulkInconsistencyCheck(opts);
+  }
+
+  countMemorableKnowledgeInconsistencyCheckBuckets(): Promise<{
+    unchecked: number;
+    alreadyChecked: number;
+    withoutEmbedding: number;
+  }> {
+    return this.inner.countMemorableKnowledgeInconsistencyCheckBuckets();
+  }
+
+  markMemorableKnowledgeInconsistencyChecked(
+    memorableKnowledgeNodeId: string,
+  ): Promise<void> {
+    return this.inner.markMemorableKnowledgeInconsistencyChecked(
+      memorableKnowledgeNodeId,
+    );
+  }
 }

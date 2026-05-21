@@ -80,3 +80,10 @@ export * from './bulkPromotion.js';
 // resolves manually via /admin/inconsistencies. Provider lives in
 // `harness-orchestrator-extras/src/inconsistencyDetector.ts`.
 export * from './inconsistency.js';
+
+// KG-ACL Slice 9.5: operator-triggered bulk pass over MemorableKnowledge
+// rows that have an embedding but no `last_inconsistency_check_at`
+// marker yet — surfaces contradictions in memories that predate
+// Slice 9. Reuses the existing detector; idempotent via marker. Provider
+// lives in `harness-orchestrator-extras/src/bulkInconsistency.ts`.
+export * from './bulkInconsistency.js';

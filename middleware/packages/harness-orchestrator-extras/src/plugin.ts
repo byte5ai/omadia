@@ -9,6 +9,7 @@ import type {
   Visibility,
 } from '@omadia/plugin-api';
 import {
+  BULK_INCONSISTENCY_SERVICE_NAME,
   BULK_PROMOTION_SERVICE_NAME,
   INCONSISTENCY_DETECTOR_SERVICE_NAME,
   NUDGE_PROVIDERS_SERVICE_NAME,
@@ -25,6 +26,7 @@ import { CaptureFilteringKnowledgeGraph } from './captureFilteringKnowledgeGraph
 import { ContextRetriever } from './contextRetriever.js';
 import type { Pool } from 'pg';
 
+import { createBulkInconsistencyService } from './bulkInconsistency.js';
 import { createBulkPromotionService } from './bulkPromotion.js';
 import { createHaikuPalaiaExcerptExtractor } from './excerptExtractor.js';
 import { createInconsistencyDetector } from './inconsistencyDetector.js';
@@ -353,6 +355,26 @@ export async function activate(
     );
   }
 
+  // Slice 9.5 — operator-triggered bulk inconsistency-detect pass.
+  // Reuses the Slice-9 detector (already constructed above) and the
+  // wrapped KG. Always publishes — `preview()` reflects whether the
+  // judgement-pass is wired (Anthropic key present); `run()` throws
+  // `bulk.detector_unavailable` if the operator triggers it without
+  // a key configured.
+  const bulkInconsistency = createBulkInconsistencyService({
+    kg: wrappedKg,
+    detector: inconsistencyDetector,
+    judgementAvailable: anthropic !== undefined,
+    log: (msg) => { console.error(msg); },
+  });
+  const disposeBulkInconsistency = ctx.services.provide(
+    BULK_INCONSISTENCY_SERVICE_NAME,
+    bulkInconsistency,
+  );
+  ctx.log(
+    `[harness-orchestrator-extras] bulkInconsistency ready (judge=${anthropic ? 'on' : 'off'})`,
+  );
+
   let disposeFactExtractor: (() => void) | undefined;
   let disposeTopicDetector: (() => void) | undefined;
   let disposeSessionBriefing: (() => void) | undefined;
@@ -474,6 +496,7 @@ export async function activate(
       disposeSessionBriefing?.();
       disposeTopicDetector?.();
       disposeFactExtractor?.();
+      disposeBulkInconsistency();
       disposeBulkPromotion?.();
       disposeContext();
       // Tear down KG wrappers FIRST (restores original provider), THEN

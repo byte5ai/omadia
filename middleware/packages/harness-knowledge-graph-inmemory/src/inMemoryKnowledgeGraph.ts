@@ -1526,6 +1526,59 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     return this.hydrateInconsistency(externalId)!;
   }
 
+  // ─── Slice 9.5 — Bulk Inconsistency Detect markers ───────────────────
+
+  async listMemorableKnowledgeIdsForBulkInconsistencyCheck(opts: {
+    limit: number;
+  }): Promise<string[]> {
+    const limit = Math.max(1, Math.min(opts.limit, 200));
+    const candidates: { id: string; createdAt: string }[] = [];
+    for (const node of this.nodes.values()) {
+      if (node.type !== 'MemorableKnowledge') continue;
+      if (!this.embeddings.has(node.id)) continue;
+      if (node.props['last_inconsistency_check_at'] !== undefined) continue;
+      const createdAt = String(node.props['created_at'] ?? '');
+      candidates.push({ id: node.id, createdAt });
+    }
+    candidates.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    return candidates.slice(0, limit).map((c) => c.id);
+  }
+
+  async countMemorableKnowledgeInconsistencyCheckBuckets(): Promise<{
+    unchecked: number;
+    alreadyChecked: number;
+    withoutEmbedding: number;
+  }> {
+    let unchecked = 0;
+    let alreadyChecked = 0;
+    let withoutEmbedding = 0;
+    for (const node of this.nodes.values()) {
+      if (node.type !== 'MemorableKnowledge') continue;
+      const hasMarker =
+        node.props['last_inconsistency_check_at'] !== undefined;
+      const hasEmbedding = this.embeddings.has(node.id);
+      if (hasMarker) {
+        alreadyChecked++;
+      } else if (!hasEmbedding) {
+        withoutEmbedding++;
+      } else {
+        unchecked++;
+      }
+    }
+    return { unchecked, alreadyChecked, withoutEmbedding };
+  }
+
+  async markMemorableKnowledgeInconsistencyChecked(
+    memorableKnowledgeNodeId: string,
+  ): Promise<void> {
+    const node = this.nodes.get(memorableKnowledgeNodeId);
+    if (!node || node.type !== 'MemorableKnowledge') return;
+    node.props = {
+      ...node.props,
+      last_inconsistency_check_at: new Date().toISOString(),
+    };
+  }
+
   async listMemoryAclAudit(
     memorableKnowledgeNodeId: string,
     opts: { limit?: number } = {},
