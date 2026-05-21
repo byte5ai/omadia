@@ -11,6 +11,7 @@ import type {
   MergeCandidateNode,
   MergeCandidateResolution,
 } from './mergeCandidate.js';
+import type { TopicNamingSource, TopicNode } from './topic.js';
 
 /**
  * The knowledge-graph surface the rest of the middleware talks to. Ingests
@@ -397,6 +398,44 @@ export interface KnowledgeGraph {
     memorableKnowledgeNodeId: string,
   ): Promise<void>;
   /**
+   * Slice 11 — list all Topic nodes for the tenant. Tenant-scoped only;
+   * Topics are aggregate metadata so the read is not ACL-gated.
+   */
+  listTopics(): Promise<TopicNode[]>;
+  /**
+   * Slice 11 — read one Topic by external_id. Null when missing.
+   */
+  getTopic(topicExternalId: string): Promise<TopicNode | null>;
+  /**
+   * Slice 11 — return the MK members of a Topic. ACL-gating happens in
+   * the route layer (per-member `getMemorableKnowledge(id, viewer)`).
+   */
+  listTopicMembers(topicExternalId: string): Promise<GraphNode[]>;
+  /**
+   * Slice 11 — pull every MK with a populated embedding column. Used
+   * by the clustering pass; tenant-scoped, no ACL filter (re-cluster
+   * is a dev/admin action).
+   */
+  listMemorableKnowledgeWithEmbeddings(): Promise<
+    Array<{ mk: GraphNode; embedding: number[] }>
+  >;
+  /**
+   * Slice 11 — wipe every Topic node and its HAS_TOPIC edges for the
+   * tenant. Returns the number of Topics removed. Run BEFORE
+   * `createTopic` calls in a re-cluster pass.
+   */
+  deleteAllTopics(): Promise<number>;
+  /**
+   * Slice 11 — persist one Topic + n HAS_TOPIC edges in a single
+   * transaction. Missing MK external_ids are silently skipped.
+   */
+  createTopic(input: {
+    name: string;
+    description: string;
+    namingSource: TopicNamingSource;
+    memberMkIds: readonly string[];
+  }): Promise<TopicNode>;
+  /**
    * Dev-UI · Memory Focused View — list every memory (MemorableKnowledge
    * + PalaiaExcerpt) anchored to the given scope along with its 2-hop
    * provenance ancestors, pre-resolved in a single round-trip. ACL is
@@ -548,7 +587,11 @@ export type GraphNodeType =
    *  similarity is ≥ 0.95. No contradiction; just redundancy. Carries
    *  `cosine_sim`, `status`, `resolution` in `props`. Linked to BOTH
    *  MKs via `DUPLICATE_OF`. */
-  | 'MergeCandidate';
+  | 'MergeCandidate'
+  /** Slice 11 — cluster of semantically-related MemorableKnowledge
+   *  nodes, named by Haiku. Aggregate metadata; lifetime is until the
+   *  next operator-triggered re-cluster. */
+  | 'Topic';
 export type GraphEdgeType =
   | 'IN_SESSION'
   | 'NEXT_TURN'
@@ -577,7 +620,10 @@ export type GraphEdgeType =
   /** Slice 10 — MergeCandidate → MemorableKnowledge. Two edges per
    *  MergeCandidate, one per near-duplicate MK. Same direction
    *  convention as CONFLICTS_WITH. */
-  | 'DUPLICATE_OF';
+  | 'DUPLICATE_OF'
+  /** Slice 11 — MemorableKnowledge → Topic. 1:1 per MK; re-cluster
+   *  wipes and rebuilds every edge so the cardinality stays clean. */
+  | 'HAS_TOPIC';
 
 export type FactSeverity = 'info' | 'warning' | 'critical';
 
@@ -1320,6 +1366,14 @@ export function inconsistencyNodeId(inconsistencyId: string): string {
  */
 export function mergeCandidateNodeId(mergeId: string): string {
   return `merge:${mergeId}`;
+}
+
+/**
+ * Slice 11 — external_id for a Topic node. Generated per re-cluster
+ * pass; old ids are wiped by the destructive rebuild.
+ */
+export function topicNodeId(topicId: string): string {
+  return `topic:${topicId}`;
 }
 
 export function runNodeId(turnExternalId: string): string {

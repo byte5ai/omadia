@@ -13,6 +13,7 @@ import { createMemoryRouter } from './routes/memory.js';
 import { createBulkPromotionRouter } from './routes/bulkPromotion.js';
 import { createInconsistenciesRouter } from './routes/inconsistencies.js';
 import { createDuplicatesRouter } from './routes/duplicates.js';
+import { createTopicsRouter } from './routes/topics.js';
 import { createOperatorPrivacyRouter } from './routes/operatorPrivacy.js';
 import { createAgentResolver } from './agents/resolveAgentForTool.js';
 // `/attachments/<signed-key>` is now mounted by the de.byte5.channel.teams
@@ -31,6 +32,7 @@ import type {
   BulkPromotionService,
   InconsistencyDetectorService,
   MergeCandidateDetectorService,
+  TopicClusteringService,
 } from '@omadia/plugin-api';
 import { createHarnessAdminUiRouter } from './routes/harnessAdminUi.js';
 import { createStoreRouter } from './routes/store.js';
@@ -1044,6 +1046,27 @@ async function main(): Promise<void> {
   console.log(
     `[middleware] duplicates endpoint ready at /api/v1/admin/duplicates (detector=${mergeCandidateDetectorSvc ? 'on' : 'off'}, bulk=${bulkMergeDetectService ? 'on' : 'off'})`,
   );
+
+  // Slice 11 — Topic clustering admin workflow. Service is always
+  // published when orchestrator-extras is active; the route 503s
+  // when the capability is missing. `requireAuth` gates the router,
+  // consistent with the other /api/v1/admin/* mounts.
+  const topicClusteringService =
+    serviceRegistry.get<TopicClusteringService>('topicClustering');
+  if (topicClusteringService) {
+    app.use(
+      '/api/v1/admin/topics',
+      requireAuth,
+      createTopicsRouter({ service: topicClusteringService }),
+    );
+    console.log(
+      '[middleware] topics endpoint ready at /api/v1/admin/topics',
+    );
+  } else {
+    console.log(
+      '[middleware] topics endpoint skipped — topicClustering service not published',
+    );
+  }
 
   // Privacy-Shield v2 (Slice S-7) — Operator-UI backend. Mounted under
   // /api/v1/operator/privacy/* (same convention as the rest of v1

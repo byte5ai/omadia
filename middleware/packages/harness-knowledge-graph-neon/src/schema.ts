@@ -37,6 +37,8 @@ export const GRAPH_NODE_TYPES = [
   // Slice 10 — near-duplicate marker (cosine ≥ 0.95, no contradiction).
   // Two DUPLICATE_OF edges per node point to the near-duplicate MKs.
   'MergeCandidate',
+  // Slice 11 — Haiku-named cluster over MK embeddings. MK -[HAS_TOPIC]-> Topic.
+  'Topic',
 ] as const;
 
 export const GRAPH_EDGE_TYPES = [
@@ -67,6 +69,8 @@ export const GRAPH_EDGE_TYPES = [
   'CONFLICTS_WITH',
   // Slice 10 — MergeCandidate → MemorableKnowledge (two per node).
   'DUPLICATE_OF',
+  // Slice 11 — MemorableKnowledge → Topic. 1:1 per MK.
+  'HAS_TOPIC',
 ] as const;
 
 export const GraphNodeTypeSchema = z.enum(GRAPH_NODE_TYPES);
@@ -337,6 +341,21 @@ const MergeCandidatePropsSchema = z
   })
   .passthrough();
 
+// Slice 11 — Topic: aggregate metadata over MK embeddings. `name` length
+// matches the SQL CHECK. `naming_source` distinguishes Haiku output from
+// the deterministic fallback so the UI can show provenance.
+export const TOPIC_NAMING_SOURCES = ['haiku', 'fallback'] as const;
+const TopicPropsSchema = z
+  .object({
+    name: z.string().min(1).max(200),
+    description: z.string().max(2000),
+    member_count: z.number().int().min(0),
+    created_at: z.string().datetime(),
+    updated_at: z.string().datetime(),
+    naming_source: z.enum(TOPIC_NAMING_SOURCES),
+  })
+  .passthrough();
+
 export const NodePropsSchemaByType: Record<
   GraphNodeTypeName,
   z.ZodType<Record<string, unknown>>
@@ -356,6 +375,7 @@ export const NodePropsSchemaByType: Record<
   PalaiaExcerpt: PalaiaExcerptPropsSchema,
   Inconsistency: InconsistencyPropsSchema,
   MergeCandidate: MergeCandidatePropsSchema,
+  Topic: TopicPropsSchema,
 };
 
 export function validateNodeProps(

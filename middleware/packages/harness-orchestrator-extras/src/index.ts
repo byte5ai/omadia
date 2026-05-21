@@ -125,3 +125,9 @@ export { MergeTriggeringKnowledgeGraph } from './mergeTriggeringKnowledgeGraph.j
 export type { MergeTriggeringKnowledgeGraphOptions } from './mergeTriggeringKnowledgeGraph.js';
 export { createBulkMergeDetectService } from './bulkMergeDetect.js';
 export type { BulkMergeDetectDeps } from './bulkMergeDetect.js';
+
+// KG-ACL Slice 11 — operator-triggered Topic clustering. Connected-
+// components on cosine ≥ threshold; Haiku-generated names with
+// "Cluster N" fallback when no Anthropic key is configured.
+export { createTopicClusteringService } from './topicClustering.js';
+export type { TopicClusteringDeps } from './topicClustering.js';

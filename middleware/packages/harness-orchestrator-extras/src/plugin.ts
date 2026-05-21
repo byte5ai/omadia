@@ -17,6 +17,7 @@ import {
   NUDGE_PROVIDERS_SERVICE_NAME,
   PALAIA_EXCERPT_SERVICE_NAME,
   PROCESS_MEMORY_SERVICE_NAME,
+  TOPIC_CLUSTERING_SERVICE_NAME,
 } from '@omadia/plugin-api';
 
 import {
@@ -33,6 +34,7 @@ import { createBulkMergeDetectService } from './bulkMergeDetect.js';
 import { createBulkPromotionService } from './bulkPromotion.js';
 import { createMergeCandidateDetector } from './mergeCandidateDetector.js';
 import { MergeTriggeringKnowledgeGraph } from './mergeTriggeringKnowledgeGraph.js';
+import { createTopicClusteringService } from './topicClustering.js';
 import { createHaikuPalaiaExcerptExtractor } from './excerptExtractor.js';
 import { createInconsistencyDetector } from './inconsistencyDetector.js';
 import { InconsistencyTriggeringKnowledgeGraph } from './inconsistencyTriggeringKnowledgeGraph.js';
@@ -418,6 +420,23 @@ export async function activate(
     `[harness-orchestrator-extras] bulkMergeDetect ready (embed=${embeddingClient ? 'on' : 'off'})`,
   );
 
+  // Slice 11 — Topic clustering. Operator-triggered, cosine-only
+  // discovery + optional Haiku naming (falls back to "Cluster N" when
+  // no Anthropic key). Always published; the route 503s nothing — even
+  // without Haiku the operator can still cluster + browse.
+  const topicClustering = createTopicClusteringService({
+    kg: wrappedKg,
+    ...(anthropic ? { anthropic, model: factModel } : {}),
+    log: (msg) => { console.error(msg); },
+  });
+  const disposeTopicClustering = ctx.services.provide(
+    TOPIC_CLUSTERING_SERVICE_NAME,
+    topicClustering,
+  );
+  ctx.log(
+    `[harness-orchestrator-extras] topicClustering ready (naming=${anthropic ? 'haiku' : 'fallback'})`,
+  );
+
   let disposeFactExtractor: (() => void) | undefined;
   let disposeTopicDetector: (() => void) | undefined;
   let disposeSessionBriefing: (() => void) | undefined;
@@ -539,6 +558,7 @@ export async function activate(
       disposeSessionBriefing?.();
       disposeTopicDetector?.();
       disposeFactExtractor?.();
+      disposeTopicClustering();
       disposeBulkMergeDetect();
       disposeBulkInconsistency();
       disposeBulkPromotion?.();

@@ -47,6 +47,7 @@ export {
   INCONSISTENCY_SEVERITIES,
   MERGE_CANDIDATE_STATUSES,
   MERGE_CANDIDATE_RESOLUTIONS,
+  TOPIC_NAMING_SOURCES,
   GraphNodeTypeSchema,
   GraphEdgeTypeSchema,
   validateNodeProps,

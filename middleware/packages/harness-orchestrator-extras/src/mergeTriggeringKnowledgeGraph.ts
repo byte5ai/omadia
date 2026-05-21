@@ -51,6 +51,8 @@ import type {
   MergeCandidateDetectorService,
   MergeCandidateNode,
   MergeCandidateResolution,
+  TopicNamingSource,
+  TopicNode,
   PalaiaExcerptHit,
   PalaiaExcerptNode,
   PalaiaExcerptUpdate,
@@ -363,5 +365,30 @@ export class MergeTriggeringKnowledgeGraph implements KnowledgeGraph {
     return this.inner.markMemorableKnowledgeMergeChecked(
       memorableKnowledgeNodeId,
     );
+  }
+  listTopics(): Promise<TopicNode[]> {
+    return this.inner.listTopics();
+  }
+  getTopic(topicExternalId: string): Promise<TopicNode | null> {
+    return this.inner.getTopic(topicExternalId);
+  }
+  listTopicMembers(topicExternalId: string): Promise<GraphNode[]> {
+    return this.inner.listTopicMembers(topicExternalId);
+  }
+  listMemorableKnowledgeWithEmbeddings(): Promise<
+    Array<{ mk: GraphNode; embedding: number[] }>
+  > {
+    return this.inner.listMemorableKnowledgeWithEmbeddings();
+  }
+  deleteAllTopics(): Promise<number> {
+    return this.inner.deleteAllTopics();
+  }
+  createTopic(input: {
+    name: string;
+    description: string;
+    namingSource: TopicNamingSource;
+    memberMkIds: readonly string[];
+  }): Promise<TopicNode> {
+    return this.inner.createTopic(input);
   }
 }

@@ -95,3 +95,10 @@ export * from './bulkInconsistency.js';
 // `harness-orchestrator-extras/src/mergeCandidateDetector.ts` and
 // `harness-orchestrator-extras/src/bulkMergeDetect.ts`.
 export * from './mergeCandidate.js';
+
+// KG-ACL Slice 11: Topic clustering. Operator-triggered pass that
+// clusters MemorableKnowledge nodes by their embedding (connected-
+// components on cosine ≥ threshold) and gives each cluster a Haiku
+// name. Provider lives in `harness-orchestrator-extras/src/
+// topicClustering.ts`.
+export * from './topic.js';

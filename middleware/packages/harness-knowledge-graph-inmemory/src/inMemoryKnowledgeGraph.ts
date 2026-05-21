@@ -11,6 +11,7 @@ import {
   runNodeId,
   sessionNodeId,
   toolCallNodeId,
+  topicNodeId,
   turnNodeId,
   userNodeId,
   type ChannelIdentityIngest,
@@ -53,6 +54,8 @@ import {
   type MergeCandidateNode,
   type MergeCandidateResolution,
   type MergeCandidateStatus,
+  type TopicNamingSource,
+  type TopicNode,
   type PalaiaExcerptHit,
   type PalaiaExcerptInput,
   type PalaiaExcerptNode,
@@ -346,6 +349,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       PalaiaExcerpt: 0,
       Inconsistency: 0,
       MergeCandidate: 0,
+      Topic: 0,
     };
     for (const n of this.nodes.values()) byNodeType[n.type]++;
 
@@ -366,6 +370,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       EXCERPT_OF: 0,
       CONFLICTS_WITH: 0,
       DUPLICATE_OF: 0,
+      HAS_TOPIC: 0,
     };
     for (const e of this.edges.values()) byEdgeType[e.type]++;
 
@@ -1804,6 +1809,114 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       ...node.props,
       last_merge_check_at: new Date().toISOString(),
     };
+  }
+
+  // ─── Slice 11 — Topic clustering ─────────────────────────────────
+
+  private hydrateTopic(node: GraphNode): TopicNode | null {
+    if (node.type !== 'Topic') return null;
+    return {
+      id: node.id,
+      type: 'Topic' as const,
+      props: {
+        name: node.props['name'] as string,
+        description: (node.props['description'] as string) ?? '',
+        member_count: (node.props['member_count'] as number) ?? 0,
+        created_at: node.props['created_at'] as string,
+        updated_at: node.props['updated_at'] as string,
+        naming_source: node.props['naming_source'] as TopicNamingSource,
+      },
+    };
+  }
+
+  async listTopics(): Promise<TopicNode[]> {
+    const out: TopicNode[] = [];
+    for (const node of this.nodes.values()) {
+      const t = this.hydrateTopic(node);
+      if (t) out.push(t);
+    }
+    out.sort((a, b) => {
+      if (b.props.member_count !== a.props.member_count) {
+        return b.props.member_count - a.props.member_count;
+      }
+      return a.props.name.localeCompare(b.props.name);
+    });
+    return out;
+  }
+
+  async getTopic(externalId: string): Promise<TopicNode | null> {
+    const node = this.nodes.get(externalId);
+    return node ? this.hydrateTopic(node) : null;
+  }
+
+  async listTopicMembers(topicExternalId: string): Promise<GraphNode[]> {
+    const members: GraphNode[] = [];
+    for (const edge of this.edges.values()) {
+      if (edge.type !== 'HAS_TOPIC') continue;
+      if (edge.to !== topicExternalId) continue;
+      const mk = this.nodes.get(edge.from);
+      if (mk && mk.type === 'MemorableKnowledge') members.push(mk);
+    }
+    return members;
+  }
+
+  async listMemorableKnowledgeWithEmbeddings(): Promise<
+    Array<{ mk: GraphNode; embedding: number[] }>
+  > {
+    const out: Array<{ mk: GraphNode; embedding: number[] }> = [];
+    for (const node of this.nodes.values()) {
+      if (node.type !== 'MemorableKnowledge') continue;
+      const vec = this.embeddings.get(node.id);
+      if (!vec || vec.length === 0) continue;
+      out.push({ mk: node, embedding: [...vec] });
+    }
+    return out;
+  }
+
+  async deleteAllTopics(): Promise<number> {
+    let deleted = 0;
+    for (const node of [...this.nodes.values()]) {
+      if (node.type === 'Topic') {
+        this.nodes.delete(node.id);
+        deleted++;
+      }
+    }
+    for (const [key, edge] of [...this.edges.entries()]) {
+      if (edge.type === 'HAS_TOPIC') this.edges.delete(key);
+    }
+    return deleted;
+  }
+
+  async createTopic(input: {
+    name: string;
+    description: string;
+    namingSource: TopicNamingSource;
+    memberMkIds: readonly string[];
+  }): Promise<TopicNode> {
+    const now = new Date().toISOString();
+    const externalId = topicNodeId(randomUUID());
+    this.upsertNode({
+      id: externalId,
+      type: 'Topic',
+      props: {
+        name: input.name,
+        description: input.description,
+        member_count: input.memberMkIds.length,
+        created_at: now,
+        updated_at: now,
+        naming_source: input.namingSource,
+      },
+    });
+    for (const mkId of input.memberMkIds) {
+      const mk = this.nodes.get(mkId);
+      if (!mk || mk.type !== 'MemorableKnowledge') continue;
+      this.addEdge({
+        type: 'HAS_TOPIC',
+        from: mkId,
+        to: externalId,
+      });
+    }
+    return this.hydrateTopic(this.nodes.get(externalId)!)!;
   }
 
   async listMemoryAclAudit(

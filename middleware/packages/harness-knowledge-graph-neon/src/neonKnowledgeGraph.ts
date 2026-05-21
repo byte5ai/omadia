@@ -13,6 +13,7 @@ import {
   runNodeId,
   sessionNodeId,
   toolCallNodeId,
+  topicNodeId,
   turnNodeId,
   userNodeId,
   type ChannelIdentityIngest,
@@ -54,6 +55,8 @@ import {
   type MergeCandidateNode,
   type MergeCandidateResolution,
   type MergeCandidateStatus,
+  type TopicNamingSource,
+  type TopicNode,
   type PalaiaExcerptHit,
   type PalaiaExcerptInput,
   type PalaiaExcerptNode,
@@ -2893,6 +2896,197 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           AND type = 'MemorableKnowledge'`,
       [this.tenantId, memorableKnowledgeNodeId],
     );
+  }
+
+  // ─── Slice 11 — Topic clustering persistence ──────────────────────
+
+  private hydrateTopic(row: {
+    external_id: string;
+    properties: TopicNode['props'];
+  }): TopicNode {
+    return {
+      id: row.external_id,
+      type: 'Topic' as const,
+      props: row.properties,
+    };
+  }
+
+  async listTopics(): Promise<TopicNode[]> {
+    const rows = await this.pool.query<{
+      external_id: string;
+      properties: TopicNode['props'];
+    }>(
+      `SELECT external_id, properties
+         FROM graph_nodes
+        WHERE tenant_id = $1 AND type = 'Topic'
+        ORDER BY (properties->>'member_count')::int DESC NULLS LAST,
+                 properties->>'name' ASC`,
+      [this.tenantId],
+    );
+    return rows.rows.map((r) => this.hydrateTopic(r));
+  }
+
+  async getTopic(externalId: string): Promise<TopicNode | null> {
+    const rows = await this.pool.query<{
+      external_id: string;
+      properties: TopicNode['props'];
+    }>(
+      `SELECT external_id, properties
+         FROM graph_nodes
+        WHERE tenant_id = $1 AND external_id = $2 AND type = 'Topic'
+        LIMIT 1`,
+      [this.tenantId, externalId],
+    );
+    const hit = rows.rows[0];
+    return hit ? this.hydrateTopic(hit) : null;
+  }
+
+  async listTopicMembers(topicExternalId: string): Promise<GraphNode[]> {
+    const rows = await this.pool.query<NodeRow>(
+      `SELECT ${NODE_COLUMNS.split(', ').map((c) => `mk.${c}`).join(', ')}
+         FROM graph_nodes topic_node
+         JOIN graph_edges e ON e.to_node = topic_node.id AND e.type = 'HAS_TOPIC'
+         JOIN graph_nodes mk ON mk.id = e.from_node AND mk.type = 'MemorableKnowledge'
+        WHERE topic_node.tenant_id = $1
+          AND topic_node.external_id = $2
+          AND topic_node.type = 'Topic'
+        ORDER BY mk.created_at DESC`,
+      [this.tenantId, topicExternalId],
+    );
+    return rows.rows.map(rowToNode);
+  }
+
+  async listMemorableKnowledgeWithEmbeddings(): Promise<
+    Array<{ mk: GraphNode; embedding: number[] }>
+  > {
+    const rows = await this.pool.query<NodeRow & { embedding: string | null }>(
+      `SELECT ${NODE_COLUMNS}, embedding::text AS embedding
+         FROM graph_nodes
+        WHERE tenant_id = $1
+          AND type = 'MemorableKnowledge'
+          AND embedding IS NOT NULL`,
+      [this.tenantId],
+    );
+    const out: Array<{ mk: GraphNode; embedding: number[] }> = [];
+    for (const row of rows.rows) {
+      if (!row.embedding) continue;
+      const text = row.embedding;
+      // pgvector text format: `[0.1,0.2,…]`. Strip brackets, split, parse.
+      const inner = text.startsWith('[') && text.endsWith(']')
+        ? text.slice(1, -1)
+        : text;
+      const parts = inner.split(',');
+      const vec: number[] = new Array(parts.length);
+      let allFinite = true;
+      for (let i = 0; i < parts.length; i++) {
+        const n = Number.parseFloat(parts[i]!);
+        if (!Number.isFinite(n)) {
+          allFinite = false;
+          break;
+        }
+        vec[i] = n;
+      }
+      if (!allFinite) continue;
+      out.push({ mk: rowToNode(row), embedding: vec });
+    }
+    return out;
+  }
+
+  async deleteAllTopics(): Promise<number> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      // graph_edges cascades on graph_nodes delete, but the FK is on
+      // the internal uuid not external_id — fetch uuids first, then
+      // delete edges + nodes in one transaction.
+      const uuidRows = await client.query<{ id: string }>(
+        `SELECT id FROM graph_nodes WHERE tenant_id = $1 AND type = 'Topic'`,
+        [this.tenantId],
+      );
+      const uuids = uuidRows.rows.map((r) => r.id);
+      if (uuids.length === 0) {
+        await client.query('COMMIT');
+        return 0;
+      }
+      await client.query(
+        `DELETE FROM graph_edges
+          WHERE tenant_id = $1
+            AND type = 'HAS_TOPIC'
+            AND to_node = ANY($2::uuid[])`,
+        [this.tenantId, uuids],
+      );
+      const deleted = await client.query(
+        `DELETE FROM graph_nodes
+          WHERE tenant_id = $1 AND type = 'Topic'`,
+        [this.tenantId],
+      );
+      await client.query('COMMIT');
+      return deleted.rowCount ?? 0;
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async createTopic(input: {
+    name: string;
+    description: string;
+    namingSource: TopicNamingSource;
+    memberMkIds: readonly string[];
+  }): Promise<TopicNode> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const now = new Date().toISOString();
+      const externalId = topicNodeId(randomUUID());
+      const props = validateNodeProps('Topic', {
+        name: input.name,
+        description: input.description,
+        member_count: input.memberMkIds.length,
+        created_at: now,
+        updated_at: now,
+        naming_source: input.namingSource,
+      });
+      const topicUuid = await this.upsertNode(client, {
+        externalId,
+        type: 'Topic',
+        scope: null,
+        userId: null,
+        props,
+      });
+
+      if (input.memberMkIds.length > 0) {
+        const mkRows = await client.query<{ id: string; external_id: string }>(
+          `SELECT id, external_id FROM graph_nodes
+            WHERE tenant_id = $1
+              AND type = 'MemorableKnowledge'
+              AND external_id = ANY($2::text[])`,
+          [this.tenantId, input.memberMkIds],
+        );
+        for (const mk of mkRows.rows) {
+          await this.upsertEdge(client, {
+            type: 'HAS_TOPIC',
+            fromUuid: mk.id,
+            toUuid: topicUuid,
+          });
+        }
+      }
+
+      await client.query('COMMIT');
+      return {
+        id: externalId,
+        type: 'Topic' as const,
+        props: props as TopicNode['props'],
+      };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   async listMemoryAclAudit(

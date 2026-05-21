@@ -2744,3 +2744,49 @@ export async function runBulkMergeDetect(
     limit !== undefined ? { limit } : {},
   );
 }
+
+// ─── Slice 11 — Topic clustering ─────────────────────────────────────
+
+export type TopicNamingSource = 'haiku' | 'fallback';
+
+export interface TopicNodeDto {
+  id: string;
+  type: 'Topic';
+  props: {
+    name: string;
+    description: string;
+    member_count: number;
+    created_at: string;
+    updated_at: string;
+    naming_source: TopicNamingSource;
+  };
+}
+
+export interface TopicDetailDto extends TopicNodeDto {
+  members: MemorableKnowledgeNode[];
+}
+
+export interface TopicReclusterResultDto {
+  totalMemoriesScanned: number;
+  memoriesWithEmbedding: number;
+  topicsDeleted: number;
+  topicsCreated: number;
+  unclusteredMemories: number;
+  haikuCalls: number;
+  durationMs: number;
+}
+
+export async function listTopics(): Promise<{ items: TopicNodeDto[] }> {
+  return getJson<{ items: TopicNodeDto[] }>('/v1/admin/topics');
+}
+
+export async function getTopicDetail(id: string): Promise<TopicDetailDto> {
+  return getJson<TopicDetailDto>(`/v1/admin/topics/${encodeURIComponent(id)}`);
+}
+
+export async function reclusterTopics(opts: {
+  similarityThreshold?: number;
+  minClusterSize?: number;
+} = {}): Promise<TopicReclusterResultDto> {
+  return postJson<TopicReclusterResultDto>('/v1/admin/topics/recluster', opts);
+}
