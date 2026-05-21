@@ -468,10 +468,11 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
   listAllIssues(opts?: { status?: InconsistencyStatus }): Promise<{
     inconsistencies: InconsistencyNode[];
     mergeCandidates: MergeCandidateNode[];
+    excerptMergeCandidates: ExcerptMergeCandidateNode[];
     edges: Array<{
       from: string;
       to: string;
-      type: 'CONFLICTS_WITH' | 'DUPLICATE_OF';
+      type: 'CONFLICTS_WITH' | 'DUPLICATE_OF' | 'DUPLICATE_EXCERPT_OF';
     }>;
   }> {
     return this.inner.listAllIssues(opts);

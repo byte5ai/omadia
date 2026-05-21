@@ -527,18 +527,24 @@ export interface KnowledgeGraph {
    */
   listTopicMembershipEdges(): Promise<Array<{ from: string; to: string }>>;
   /**
-   * Slice 11.5 — every open + resolved + dismissed Inconsistency and
-   * MergeCandidate in the tenant, plus their MK-side edges expressed
-   * as external-id pairs. Same dev-bypass as
-   * {@link listTopicMembershipEdges}: not ACL-gated.
+   * Slice 11.5 + 12.5 — every open + resolved + dismissed Inconsistency,
+   * MergeCandidate, and ExcerptMergeCandidate in the tenant, plus the
+   * MK-side / Excerpt-side edges expressed as external-id pairs. Same
+   * dev-bypass as {@link listTopicMembershipEdges}: not ACL-gated.
+   *
+   * Edge types:
+   *  - CONFLICTS_WITH:        Inconsistency → MemorableKnowledge
+   *  - DUPLICATE_OF:          MergeCandidate → MemorableKnowledge
+   *  - DUPLICATE_EXCERPT_OF:  ExcerptMergeCandidate → PalaiaExcerpt
    */
   listAllIssues(opts?: { status?: InconsistencyStatus }): Promise<{
     inconsistencies: InconsistencyNode[];
     mergeCandidates: MergeCandidateNode[];
+    excerptMergeCandidates: ExcerptMergeCandidateNode[];
     edges: Array<{
       from: string;
       to: string;
-      type: 'CONFLICTS_WITH' | 'DUPLICATE_OF';
+      type: 'CONFLICTS_WITH' | 'DUPLICATE_OF' | 'DUPLICATE_EXCERPT_OF';
     }>;
   }>;
   /**

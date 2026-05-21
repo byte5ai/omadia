@@ -1950,15 +1950,17 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
   async listAllIssues(opts?: { status?: InconsistencyStatus }): Promise<{
     inconsistencies: InconsistencyNode[];
     mergeCandidates: MergeCandidateNode[];
+    excerptMergeCandidates: ExcerptMergeCandidateNode[];
     edges: Array<{
       from: string;
       to: string;
-      type: 'CONFLICTS_WITH' | 'DUPLICATE_OF';
+      type: 'CONFLICTS_WITH' | 'DUPLICATE_OF' | 'DUPLICATE_EXCERPT_OF';
     }>;
   }> {
     const status = opts?.status;
     const inconsistencies: InconsistencyNode[] = [];
     const mergeCandidates: MergeCandidateNode[] = [];
+    const excerptMergeCandidates: ExcerptMergeCandidateNode[] = [];
     for (const node of this.nodes.values()) {
       if (node.type === 'Inconsistency') {
         if (status !== undefined && node.props['status'] !== status) continue;
@@ -1968,19 +1970,27 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         if (status !== undefined && node.props['status'] !== status) continue;
         const h = this.hydrateMergeCandidate(node.id);
         if (h) mergeCandidates.push(h);
+      } else if (node.type === 'ExcerptMergeCandidate') {
+        if (status !== undefined && node.props['status'] !== status) continue;
+        const h = this.hydrateExcerptMergeCandidate(node.id);
+        if (h) excerptMergeCandidates.push(h);
       }
     }
     const edges: Array<{
       from: string;
       to: string;
-      type: 'CONFLICTS_WITH' | 'DUPLICATE_OF';
+      type: 'CONFLICTS_WITH' | 'DUPLICATE_OF' | 'DUPLICATE_EXCERPT_OF';
     }> = [];
     for (const edge of this.edges.values()) {
-      if (edge.type === 'CONFLICTS_WITH' || edge.type === 'DUPLICATE_OF') {
+      if (
+        edge.type === 'CONFLICTS_WITH' ||
+        edge.type === 'DUPLICATE_OF' ||
+        edge.type === 'DUPLICATE_EXCERPT_OF'
+      ) {
         edges.push({ from: edge.from, to: edge.to, type: edge.type });
       }
     }
-    return { inconsistencies, mergeCandidates, edges };
+    return { inconsistencies, mergeCandidates, excerptMergeCandidates, edges };
   }
 
   // ─── Slice 12 — ExcerptMergeCandidate + deleteExcerpt ─────────────

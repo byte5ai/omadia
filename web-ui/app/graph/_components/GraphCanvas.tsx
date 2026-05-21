@@ -310,6 +310,11 @@ function buildElements(
   if (issueOverlay && filter.showIssues) {
     for (const n of issueOverlay.inconsistencies) addNode(n);
     for (const n of issueOverlay.mergeCandidates) addNode(n);
+    // Slice 12.5 — Excerpt-side duplicates are part of the same issue
+    // mental model. The `to` side is a PalaiaExcerpt, which is only in
+    // the canvas when `showMemories` is on; the edge is pruned otherwise
+    // by the same `nodes.has(e.to)` guard the MK-edges use.
+    for (const n of issueOverlay.excerptMergeCandidates) addNode(n);
     for (const e of issueOverlay.edges) {
       if (!nodes.has(e.to)) continue;
       addEdge(e.from, e.to, e.type);
@@ -343,7 +348,8 @@ function buildElements(
       if (
         n.type === 'Topic' ||
         n.type === 'Inconsistency' ||
-        n.type === 'MergeCandidate'
+        n.type === 'MergeCandidate' ||
+        n.type === 'ExcerptMergeCandidate'
       ) {
         continue;
       }
@@ -388,6 +394,7 @@ function baseSize(type: NodeType): number {
       return 40;
     case 'Inconsistency':
     case 'MergeCandidate':
+    case 'ExcerptMergeCandidate':
       // Markers — smaller than MK so they orbit visibly without
       // dominating the canvas.
       return 22;
@@ -655,6 +662,17 @@ export default function GraphCanvas({
           },
         },
         {
+          // Slice 12.5 — Excerpt-side duplicates use the lighter shade so
+          // they read as the Excerpt-layer mirror of DUPLICATE_OF.
+          selector: 'edge[label = "DUPLICATE_EXCERPT_OF"]',
+          style: {
+            'line-color': '#fb923c',
+            'target-arrow-color': '#fb923c',
+            'line-style': 'dashed',
+            opacity: 0.85,
+          },
+        },
+        {
           selector: 'edge.faded',
           style: { opacity: 0.08 },
         },
@@ -861,6 +879,7 @@ function Legend({
     items.push(
       ['Inconsistency', 'Konflikt'],
       ['MergeCandidate', 'Duplikat-Kandidat'],
+      ['ExcerptMergeCandidate', 'Excerpt-Duplikat'],
     );
   }
   const edgeRows: Array<[string, string]> = [['#10b981', 'PRODUCED']];
@@ -875,7 +894,8 @@ function Legend({
   }
   if (filter.showIssues) {
     edgeRows.push(['#ef4444', 'CONFLICTS_WITH']);
-    edgeRows.push(['#f97316', 'DUPLICATE_OF']);
+    edgeRows.push(['#f97316', 'DUPLICATE_OF (MK)']);
+    edgeRows.push(['#fb923c', 'DUPLICATE_EXCERPT_OF']);
   }
 
   return (

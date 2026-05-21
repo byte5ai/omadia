@@ -3508,15 +3508,16 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
   async listAllIssues(opts?: { status?: InconsistencyStatus }): Promise<{
     inconsistencies: InconsistencyNode[];
     mergeCandidates: MergeCandidateNode[];
+    excerptMergeCandidates: ExcerptMergeCandidateNode[];
     edges: Array<{
       from: string;
       to: string;
-      type: 'CONFLICTS_WITH' | 'DUPLICATE_OF';
+      type: 'CONFLICTS_WITH' | 'DUPLICATE_OF' | 'DUPLICATE_EXCERPT_OF';
     }>;
   }> {
     const statusFilter = opts?.status ?? null;
 
-    const [incRows, mcRows, edgeRows] = await Promise.all([
+    const [incRows, mcRows, emcRows, edgeRows] = await Promise.all([
       this.pool.query<{
         external_id: string;
         properties: InconsistencyNode['props'] & { mk_pair: [string, string] };
@@ -3540,9 +3541,22 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         [this.tenantId, statusFilter],
       ),
       this.pool.query<{
+        external_id: string;
+        properties: ExcerptMergeCandidateNode['props'] & {
+          excerpt_pair: [string, string];
+        };
+      }>(
+        `SELECT external_id, properties
+           FROM graph_nodes
+          WHERE tenant_id = $1 AND type = 'ExcerptMergeCandidate'
+            AND ($2::text IS NULL OR properties->>'status' = $2)
+          ORDER BY external_id DESC`,
+        [this.tenantId, statusFilter],
+      ),
+      this.pool.query<{
         from_xid: string;
         to_xid: string;
-        edge_type: 'CONFLICTS_WITH' | 'DUPLICATE_OF';
+        edge_type: 'CONFLICTS_WITH' | 'DUPLICATE_OF' | 'DUPLICATE_EXCERPT_OF';
       }>(
         `SELECT src.external_id AS from_xid,
                 dst.external_id AS to_xid,
@@ -3551,9 +3565,14 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
            JOIN graph_nodes src ON src.id = e.from_node
            JOIN graph_nodes dst ON dst.id = e.to_node
           WHERE e.tenant_id = $1
-            AND e.type IN ('CONFLICTS_WITH', 'DUPLICATE_OF')
-            AND src.type IN ('Inconsistency', 'MergeCandidate')
-            AND dst.type = 'MemorableKnowledge'`,
+            AND (
+              (e.type IN ('CONFLICTS_WITH', 'DUPLICATE_OF')
+                 AND src.type IN ('Inconsistency', 'MergeCandidate')
+                 AND dst.type = 'MemorableKnowledge')
+              OR (e.type = 'DUPLICATE_EXCERPT_OF'
+                 AND src.type = 'ExcerptMergeCandidate'
+                 AND dst.type = 'PalaiaExcerpt')
+            )`,
         [this.tenantId],
       ),
     ]);
@@ -3568,9 +3587,18 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       const node = this.hydrateMergeCandidate(r.external_id, r.properties);
       if (node) mergeCandidates.push(node);
     }
+    const excerptMergeCandidates: ExcerptMergeCandidateNode[] = [];
+    for (const r of emcRows.rows) {
+      const node = this.hydrateExcerptMergeCandidate(
+        r.external_id,
+        r.properties,
+      );
+      if (node) excerptMergeCandidates.push(node);
+    }
     return {
       inconsistencies,
       mergeCandidates,
+      excerptMergeCandidates,
       edges: edgeRows.rows.map((r) => ({
         from: r.from_xid,
         to: r.to_xid,

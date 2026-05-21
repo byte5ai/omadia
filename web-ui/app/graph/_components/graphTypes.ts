@@ -22,6 +22,10 @@ export type NodeType =
   /** Slice 10 — near-duplicate marker (cosine ≥ 0.95) between two MKs.
    *  Reachable via DUPLICATE_OF edges. Same load path as Inconsistency. */
   | 'MergeCandidate'
+  /** Slice 12 — near-duplicate marker (cosine ≥ 0.97) between two
+   *  PalaiaExcerpts. Reachable via DUPLICATE_EXCERPT_OF edges. Same load
+   *  path as MergeCandidate (Issue-Overlay). */
+  | 'ExcerptMergeCandidate'
   /** Slice 11 — clustered group of MKs named by Haiku. Reachable via
    *  HAS_TOPIC edges. Loaded via /dev/graph/topics (showTopics filter). */
   | 'Topic';
@@ -122,14 +126,18 @@ export interface TopicOverlay {
   edges: Array<{ from: string; to: string }>;
 }
 
-/** Slice 11.5 — payload from `GET /bot-api/dev/graph/issues`. */
+/** Slice 11.5 + 12.5 — payload from `GET /bot-api/dev/graph/issues`. */
 export interface IssueOverlay {
   inconsistencies: GraphNode[];
   mergeCandidates: GraphNode[];
+  /** Slice 12.5 — near-duplicate Excerpt markers. Same overlay-toggle
+   *  (`showIssues`) as the other two — operator-mental-model is "alle
+   *  Duplikat-/Konflikt-Marker im Tenant". */
+  excerptMergeCandidates: GraphNode[];
   edges: Array<{
     from: string;
     to: string;
-    type: 'CONFLICTS_WITH' | 'DUPLICATE_OF';
+    type: 'CONFLICTS_WITH' | 'DUPLICATE_OF' | 'DUPLICATE_EXCERPT_OF';
   }>;
 }
 
@@ -225,6 +233,13 @@ export function nodeLabel(n: GraphNode): string {
         : '?';
     return `dup? cos=${cos}`;
   }
+  if (n.type === 'ExcerptMergeCandidate') {
+    const cos =
+      typeof p['cosine_sim'] === 'number'
+        ? Number(p['cosine_sim']).toFixed(2)
+        : '?';
+    return `excerpt-dup? cos=${cos}`;
+  }
   return n.id;
 }
 
@@ -265,6 +280,12 @@ export function nodeColor(type: NodeType): string {
       return '#ef4444';
     case 'MergeCandidate':
       return '#f97316';
+    case 'ExcerptMergeCandidate':
+      // Same orange hue as MergeCandidate but a lighter shade
+      // (Tailwind orange-400 vs orange-500) so operators distinguish the
+      // Excerpt-side marker at a glance without breaking the shared
+      // "orange = duplicate" mental model.
+      return '#fb923c';
     default:
       return '#94a3b8';
   }
@@ -362,6 +383,8 @@ export function nodeIcon(type: NodeType): string {
     case 'Inconsistency':
       return '⚠';
     case 'MergeCandidate':
+      return '⇄';
+    case 'ExcerptMergeCandidate':
       return '⇄';
     default:
       return '•';
