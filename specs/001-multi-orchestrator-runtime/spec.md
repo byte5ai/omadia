@@ -1,8 +1,8 @@
 # Feature Specification: Multi-Orchestrator Runtime
 
-**Feature Branch**: `feat/multi-orchestrator`
+**Feature Branch**: `001-multi-orchestrator-runtime`
 **Created**: 2026-05-21
-**Status**: Draft
+**Status**: Ready
 **Input**: Operator wants to run multiple independent orchestrator instances in
 the platform — e.g. a "public" orchestrator bound to one Teams channel with a
 restricted plugin set, alongside a "general" orchestrator bound to a different
@@ -30,6 +30,21 @@ Out of scope (handled elsewhere or deferred):
   coarse-grained: plugin-enabled ⇒ namespace-visible.
 - **Azure AD bot app registrations** — an operational task done outside the
   codebase; the spec assumes the operator provides distinct bot identities.
+
+## Clarifications
+
+### Session 2026-05-21
+
+- Q: Should `force-invalidate` end sessions immediately or drain them? → A: Two
+  modes — `drain` (default; the in-flight turn finishes, then the session is
+  re-bound and its history kept) and `kill` (immediate end mid-turn, session
+  store entry discarded — for a leaked plugin). See research C1/C4.
+- Q: How is an unmatched inbound channel key handled? → A: Routed to a
+  configurable platform-level `fallbackAgentId` when one is set, hard-rejected
+  when it is not; logged either way. Onboarding seeds a minimal-privilege
+  fallback Agent as the default target. See research C2.
+- Q: Are two privacy profiles enough? → A: Yes — `strict | default` enum for
+  this feature, modelled for a later extensible profile table. See research C3.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -148,8 +163,9 @@ plugin set; confirm a plugin enabled for one is unavailable to the other.
 ### User Story 5 - Hot-Reload Without Infrastructure Restart (Priority: P2)
 
 An operator changes configuration — adds an Agent, toggles a plugin, edits a
-plugin's config — and the change takes effect within seconds, with no process
-restart and no disruption to unrelated Agents or in-flight sessions.
+plugin's config — and the change takes effect within the SC-002 target window
+(≤ 10 s), with no process restart and no disruption to unrelated Agents or
+in-flight sessions.
 
 **Why this priority**: A hard product requirement, but it builds directly on the
 US4 registry. Restart-based US4 is the testable foundation; US5 makes it live.
@@ -195,9 +211,14 @@ unchanged; start a new session and confirm it sees the new tool set.
    the session keeps its start-time snapshot of plugins, tools, and namespaces.
 2. **Given** a config change, **When** a new session starts afterwards, **Then**
    it uses the updated configuration.
-3. **Given** an operator who must apply a change immediately, **When** they
-   trigger a force-invalidate for an Agent, **Then** that Agent's existing
-   sessions are ended and re-bound to the new config.
+3. **Given** an operator who must apply a routine change immediately, **When**
+   they trigger `force-invalidate` in `drain` mode, **Then** each in-flight turn
+   finishes and the session is then re-bound to the new config with its
+   conversation history retained.
+4. **Given** a leaked or compromised plugin that must stop serving now, **When**
+   the operator triggers `force-invalidate` in `kill` mode, **Then** the Agent's
+   sessions end immediately — mid-turn if necessary — and their session-store
+   entries are discarded.
 
 ---
 
@@ -218,8 +239,9 @@ B; deliver a webhook for each; confirm each is handled by the intended Agent.
 1. **Given** two channel bindings to two Agents, **When** a webhook arrives,
    **Then** it is dispatched to the Agent that owns the binding's channel key.
 2. **Given** an inbound message whose channel key has no binding, **When** it is
-   received, **Then** it is rejected or sent to a configured default, and the
-   event is logged — never silently dropped.
+   received, **Then** it is routed to the configured `fallbackAgentId` if one is
+   set, otherwise hard-rejected, and the event is logged either way — never
+   silently dropped.
 3. **Given** a binding moved from Agent A to Agent B, **When** the move is
    applied, **Then** subsequent messages route to B while a conversation
    already in flight finishes on A.
@@ -306,8 +328,16 @@ and disable actions made through the UI.
 - **Agent with zero plugins**: valid — a bare LLM agent.
 - **Plugin config edited without plugin set change**: handled by `reconfigure`
   where the plugin supports it, avoiding an expensive dispose/init cycle.
-- **Empty config / no Agents defined**: platform starts idle and serviceable;
-  operator creates the first Agent via UI or CLI.
+- **Empty config / no Agents defined**: the platform starts idle and
+  serviceable; the operator runs first-boot onboarding, which seeds the
+  minimal-privilege fallback Agent and the first working Agent (via UI or CLI).
+- **Unmatched channel key**: routed to the configured `fallbackAgentId` if one
+  is set, otherwise hard-rejected; logged either way, never silently dropped
+  (US7).
+- **`force-invalidate` modes**: `drain` lets the in-flight turn finish then
+  re-binds the session keeping its history; a turn that exceeds the per-turn
+  timeout escalates to `kill`. `kill` ends sessions immediately and discards
+  their session-store entries (US6).
 
 ## Requirements *(mandatory)*
 
@@ -347,11 +377,15 @@ and disable actions made through the UI.
   Agent's plugin set, tool set, and memory namespaces, and MUST keep that
   snapshot until the session ends.
 - **FR-014**: Configuration changes MUST affect only new sessions; the system
-  MUST provide an explicit force-invalidate action to end and re-bind an
-  Agent's existing sessions.
+  MUST provide an explicit `force-invalidate` action with two modes — `drain`
+  (let each in-flight turn finish, bounded by the per-turn LLM timeout, then
+  re-bind the session, keeping its history; a turn exceeding that timeout
+  escalates to `kill`) and `kill` (end sessions immediately and discard their
+  session-store entries) — to apply a change to an Agent's existing sessions.
 - **FR-015**: Inbound channel messages MUST be routed to the orchestrator that
-  owns the matching channel binding; unmatched messages MUST be rejected or
-  routed to a configured default and logged, never silently dropped.
+  owns the matching channel binding; an unmatched message MUST be routed to the
+  configured `fallbackAgentId` when one is set, hard-rejected when it is not,
+  and logged in either case — never silently dropped.
 - **FR-016**: Channel keys MUST be unique across Agents; configuration violating
   this MUST be rejected at validation time.
 - **FR-017**: An Agent's memory visibility MUST be the union of its enabled
@@ -366,11 +400,17 @@ and disable actions made through the UI.
 - **FR-020**: Lifecycle transitions, routing decisions, and reload operations
   MUST emit structured logs carrying orchestrator id, plugin id, and session id
   where applicable.
+- **FR-021**: First-boot onboarding MUST seed a minimal-privilege fallback Agent
+  (zero plugins, `strict` privacy profile) and set it as the platform's
+  `fallbackAgentId`, so unmatched inbound traffic always has a safe default
+  routing target.
 
 ### Key Entities
 
 - **Agent (Orchestrator Instance)**: a named, independently configured
-  orchestrator — identity (slug, name, description), privacy profile, status.
+  orchestrator — identity (slug, name, description), privacy profile
+  (`strict | default` — a two-value enum for now, modelled for later
+  extension), status.
 - **Agent–Plugin Assignment**: the enablement of a plugin for an Agent, with
   per-Agent plugin configuration.
 - **Channel Binding**: a mapping from a channel type + channel key to the Agent
@@ -424,3 +464,6 @@ and disable actions made through the UI.
   and supports `LISTEN/NOTIFY`.
 - Multi-instance is the default expectation for plugins; truly single-instance
   plugins are rare and explicitly justified.
+- `privacy_profile` (Agent) and `privacyClass` (plugin manifest) are recorded in
+  this feature — stored, validated, operator-set — but not yet enforced; no
+  behaviour branches on their value. A later privacy workstream consumes them.

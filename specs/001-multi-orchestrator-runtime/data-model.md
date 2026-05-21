@@ -11,6 +11,7 @@ migration conventions (`middleware/migrations/`).
 | Agent | persistent (DB row) | until operator deletes |
 | Agent–Plugin Assignment | persistent (DB row) | until plugin removed from Agent |
 | Channel Binding | persistent (DB row) | until rebound/removed |
+| Platform Settings | persistent (DB row) | single row, process-wide |
 | Plugin Manifest | declarative (file in plugin) | versioned with the plugin |
 | Plugin Scope | runtime (in-memory) | per (Agent × plugin), until reload/dispose |
 | Config Snapshot | runtime (session store) | per session, until session ends |
@@ -39,6 +40,10 @@ CREATE TABLE agents (
 
 - `slug` is the routing/log identifier and is immutable after creation.
 - `status = 'disabled'` keeps the row but removes the Agent from the registry.
+- `privacy_profile` is stored as `TEXT` + `CHECK` deliberately, not a Postgres
+  `ENUM` type (C3): extending the value set or migrating to a future
+  `privacy_profiles` FK table then means dropping one `CHECK`, not an
+  `ALTER TYPE`.
 
 ### `agent_plugins`
 
@@ -74,6 +79,27 @@ CREATE INDEX channel_bindings_agent_idx ON channel_bindings(agent_id);
 ```
 
 - The composite PK enforces FR-016: one channel key cannot bind to two Agents.
+
+### `platform_settings`
+
+Process-wide settings not owned by any single Agent. A single-row table.
+
+```sql
+CREATE TABLE platform_settings (
+  id                BOOLEAN PRIMARY KEY DEFAULT true CHECK (id),  -- single row
+  fallback_agent_id UUID REFERENCES agents(id) ON DELETE SET NULL,
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+- `fallback_agent_id` is the C2 unmatched-channel-key target. `NULL` ⇒ unmatched
+  keys are hard-rejected; set ⇒ they route to that Agent. `ON DELETE SET NULL`
+  degrades safely to hard-reject if the fallback Agent is deleted.
+- First-boot onboarding seeds a minimal-privilege fallback Agent (zero plugins,
+  `strict` profile) and sets this column to it (C2; FR-021).
+- A change here emits `agents_changed` via a dedicated trigger (payload: the
+  literal `platform`) so every machine's channel resolver reloads the fallback
+  target.
 
 ### Change-notification trigger
 
@@ -127,7 +153,10 @@ Immutable, captured at session start, stored on the `chatSessionStore` record:
 - `memoryNamespaces: string[]`
 
 The session uses this snapshot for its entire lifetime; reload never mutates it
-(D4). `force-invalidate` is the only operation that discards it.
+(D4). `force-invalidate` is the only operation that touches it: in `drain` mode
+it swaps the snapshot for the current Agent config and keeps the session-store
+entry; in `kill` mode it deletes the snapshot and the entire session-store
+entry (C1/C4).
 
 ## Relationships
 
@@ -136,6 +165,7 @@ agents 1───n agent_plugins        (an Agent enables many plugins)
 agents 1───n channel_bindings     (an Agent owns many channel keys)
 agents 1───n PluginScope          (runtime: one scope per enabled plugin)
 agents 1───n session/ConfigSnapshot (runtime: many live sessions)
+agents 0..1─1 platform_settings   (an Agent may be the fallback target)
 PluginManifest 1───n agent_plugins (one manifest, enabled on many Agents)
 ```
 
@@ -151,3 +181,6 @@ PluginManifest 1───n agent_plugins (one manifest, enabled on many Agents)
 - `requiredCapabilities`: every entry must be satisfiable by the scope the
   registry builds for that Agent; an unsatisfiable capability fails that
   plugin's load with a precise error.
+- `platform_settings.fallback_agent_id`, when set, should reference an `enabled`
+  Agent; if it resolves to a disabled or missing Agent the router treats
+  unmatched channel keys as hard-rejected (degraded-safe).

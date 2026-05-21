@@ -98,6 +98,8 @@ four checks pass and the `dispose-roundtrip` test is present and green.
   default `privacyClass` to `strict`.
 - [ ] T016 [US2] Test: generate a plugin and assert all four gate checks pass;
   inject a module-level `let` and assert the gate fails with `no-module-state`.
+  Boot smoke test: load the generated plugin into a dev orchestrator and confirm
+  its `init` runs clean (Constitution IV).
 
 **Checkpoint**: Builder output is multi-orchestrator-ready by construction.
 
@@ -155,13 +157,16 @@ set; cross-Agent plugin access is impossible.
   `middleware/packages/harness-orchestrator/src/registry/`.
 - [ ] T031 [US4] Refactor `Orchestrator` to consume an injected scope set
   instead of process-global plugin wiring (`src/orchestrator.ts`,
-  `OrchestratorOptions`).
+  `OrchestratorOptions`); isolate runtime plugin errors during a turn so a throw
+  in one Agent never crashes the process or degrades another Agent (FR-009,
+  SC-007).
 - [ ] T032 [US4] Enforce config validation: unique channel keys,
   `multiInstance:false` single-assignment, satisfiable capabilities.
 - [ ] T033 [P] [US4] CLI `agents:apply` to load/refresh config from DB for
   local E2E.
 - [ ] T034 [US4] Test: two-Agent config; assert isolation (US4 acceptance
-  scenarios 1–4, SC-007 plugin-failure isolation).
+  scenarios 1–4, SC-007 plugin-failure isolation). Boot smoke test: start the
+  platform with both Agents (dev server + log monitor + one request per Agent).
 
 **Checkpoint**: 🎯 MVP — multiple orchestrators exist and are demonstrable.
 
@@ -177,13 +182,17 @@ unchanged; Agent A untouched.
 
 - [ ] T035 [US5] Implement `applyDiff(oldCfg, newCfg)` (add/remove Agent,
   attach/detach plugin, reconfigure, swap binding) in
-  `harness-orchestrator/src/registry/`.
+  `harness-orchestrator/src/registry/`; emit a structured log on every diff
+  action (`agentId`, `pluginId` — FR-020, Constitution VI).
 - [ ] T036 [US5] Implement `reloadBus.ts`: Postgres `LISTEN agents_changed` +
-  periodic reconcile fallback.
+  periodic reconcile fallback; log every notification and reconcile pass with
+  structured context (FR-020).
 - [ ] T037 [US5] Isolate `init`/`dispose` failures in `applyDiff` (catch, log
   with `agentId`+`pluginId`, continue).
 - [ ] T038 [US5] Test: hot add/remove Agent + plugin; assert PID stable, other
-  Agents zero-downtime (SC-001, SC-002), throwing `dispose` isolated.
+  Agents zero-downtime (SC-001, SC-002), throwing `dispose` isolated. Boot smoke
+  test: apply a live change against a running dev server, confirm via the log
+  monitor + a request.
 
 **Checkpoint**: Live reconfiguration works across all machines.
 
@@ -200,10 +209,15 @@ session tool set unchanged; new session sees the change.
   `harness-orchestrator/src/chatSessionStore.ts`.
 - [ ] T040 [US6] Make turn execution read plugins/tools/namespaces from the
   session snapshot, not the live registry.
-- [ ] T041 [US6] Implement the `force-invalidate` endpoint/action (end + re-bind
-  an Agent's sessions).
+- [ ] T041 [US6] Implement the two-mode `force-invalidate` endpoint/action —
+  `drain` (let the in-flight turn finish — bounded by the per-turn timeout,
+  escalating to `kill` on overrun — then re-bind the session, keep its history)
+  and `kill` (end sessions immediately, discard the session-store entry); emit a
+  structured log per invocation (`agentId`, `mode`, `sessionId` — FR-020).
 - [ ] T042 [US6] Test: SC-006 — in-flight tool set immutable under config
-  change; new session reflects change; force-invalidate re-binds.
+  change; new session reflects change; `force-invalidate` `drain` re-binds and
+  keeps history, `kill` ends the session and discards its store entry. Boot
+  smoke test: exercise a live session on a running dev server across a reload.
 
 **Checkpoint**: Hot-reload is safe for live conversations.
 
@@ -217,13 +231,22 @@ session tool set unchanged; new session sees the change.
 intended Agent.
 
 - [ ] T043 [US7] Implement `channelResolver.ts` (channel type + key → Agent via
-  live registry) in `harness-orchestrator/src/routing/`.
-- [ ] T044 [US7] Wire the static webhook handlers (`/api/teams/messages`,
+  live registry) in `harness-orchestrator/src/routing/`; log every routing
+  decision with structured context (`channelKey`, resolved `agentId` — FR-020).
+- [ ] T044 [US7] Migration: `platform_settings` table (single-row,
+  `fallback_agent_id`) + its dedicated `agents_changed` trigger, in
+  `middleware/migrations/`; extend `configStore` to read it. First-boot
+  onboarding seeds a minimal-privilege fallback Agent (zero plugins, `strict`
+  profile) and points `fallback_agent_id` at it (C2; FR-021).
+- [ ] T045 [US7] Wire the static webhook handlers (`/api/teams/messages`,
   Telegram) through the resolver.
-- [ ] T045 [US7] Handle unmatched keys: reject or configured default, always
-  logged (FR-015).
-- [ ] T046 [US7] Test: SC-008 — correct routing for bound keys; unmatched keys
-  logged; binding-move finishes in-flight on old Agent.
+- [ ] T046 [US7] Handle unmatched keys in the resolver: route to
+  `platform_settings.fallback_agent_id` when set, hard-reject when unset, always
+  logged (FR-015, C2).
+- [ ] T047 [US7] Test: SC-008 — correct routing for bound keys; unmatched keys
+  route to the fallback Agent when one is configured and hard-reject + log when
+  not; binding-move finishes in-flight on old Agent. Boot smoke test: deliver a
+  real webhook per binding against a running dev server.
 
 **Checkpoint**: Public vs. general channel split is live for end users.
 
@@ -236,13 +259,13 @@ intended Agent.
 **Independent Test**: Public Agent with Confluence but not Odoo-HR reads
 Confluence memory, cannot read Odoo-HR memory.
 
-- [ ] T047 [US8] Consume `memoryNamespaces` from manifests; compute an Agent's
+- [ ] T048 [US8] Consume `memoryNamespaces` from manifests; compute an Agent's
   visible-namespace union in scope construction.
-- [ ] T048 [US8] Make `harness-memory` read/write filter by the scope's
+- [ ] T049 [US8] Make `harness-memory` read/write filter by the scope's
   namespace set; tag writes with origin plugin.
-- [ ] T049 [US8] Include `memoryNamespaces` in the session `ConfigSnapshot`
+- [ ] T050 [US8] Include `memoryNamespaces` in the session `ConfigSnapshot`
   (pinned per US6).
-- [ ] T050 [US8] Test: SC-003 — public vs. general namespace isolation;
+- [ ] T051 [US8] Test: SC-003 — public vs. general namespace isolation;
   cross-Agent shared-plugin read; removed-plugin entry persists but invisible.
 
 **Checkpoint**: Privacy-by-capability enforced for memory.
@@ -256,17 +279,18 @@ Confluence memory, cannot read Odoo-HR memory.
 **Independent Test**: Create an Agent via UI with plugins + binding; it appears,
 serves, and reflects edits/disable.
 
-- [ ] T051 [US9] Backend: REST endpoints for Agent CRUD + channel bindings over
+- [ ] T052 [US9] Backend: REST endpoints for Agent CRUD + channel bindings over
   `configStore` (server-side validation per FR-016, FR-008).
-- [ ] T052 [US9] Add the "Agents" tab to the `web-ui` dashboard via the
+- [ ] T053 [US9] Add the "Agents" tab to the `web-ui` dashboard via the
   plugin-UI platform (`harness-ui-helpers`).
-- [ ] T053 [US9] Build the create-Agent wizard (identity → plugins → channels →
+- [ ] T054 [US9] Build the create-Agent wizard (identity → plugins → channels →
   privacy profile).
-- [ ] T054 [P] [US9] Plugin multi-select shows multi-instance compatibility +
+- [ ] T055 [P] [US9] Plugin multi-select shows multi-instance compatibility +
   `memoryNamespaces` from the manifest.
-- [ ] T055 [P] [US9] Per-Agent running-session count + "drain & reload" action.
-- [ ] T056 [US9] Test: UI create/edit/disable round-trips via hot-reload (US9
-  acceptance scenarios 1–5).
+- [ ] T056 [P] [US9] Per-Agent running-session count + "drain & reload" action.
+- [ ] T057 [US9] Test: UI create/edit/disable round-trips via hot-reload (US9
+  acceptance scenarios 1–5). Boot smoke test: drive the create/edit/disable flow
+  in a browser against a running dev server (dev server + log monitor).
 
 **Checkpoint**: Operator self-service complete.
 
@@ -274,13 +298,15 @@ serves, and reflects edits/disable.
 
 ## Phase 12: Polish & Cross-Cutting Concerns
 
-- [ ] T057 [P] Structured logging audit across lifecycle, routing, reload seams
-  (FR-020).
-- [ ] T058 [P] Update `docs/` + Notion architecture subpages for the
+- [ ] T058 [P] Verify structured-logging coverage across lifecycle, routing, and
+  reload seams — each seam task above emits its logs inline (FR-020,
+  Constitution VI); this task is the final cross-cutting check, not where
+  logging is first added.
+- [ ] T059 [P] Update `docs/` + Notion architecture subpages for the
   multi-orchestrator runtime.
-- [ ] T059 Boot smoke test covering the full public-vs-general two-Agent
+- [ ] T060 Boot smoke test covering the full public-vs-general two-Agent
   deployment shape.
-- [ ] T060 Run quickstart validation end-to-end; confirm all Success Criteria
+- [ ] T061 Run quickstart validation end-to-end; confirm all Success Criteria
   SC-001…SC-008.
 
 ---

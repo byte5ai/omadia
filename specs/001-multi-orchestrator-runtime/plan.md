@@ -1,6 +1,6 @@
 # Implementation Plan: Multi-Orchestrator Runtime
 
-**Branch**: `feat/multi-orchestrator` | **Date**: 2026-05-21 | **Spec**: [spec.md](./spec.md)
+**Branch**: `001-multi-orchestrator-runtime` | **Date**: 2026-05-21 | **Spec**: [spec.md](./spec.md)
 **Input**: Feature specification from `/specs/001-multi-orchestrator-runtime/spec.md`
 
 ## Summary
@@ -24,7 +24,8 @@ multi-orchestrator-ready, enforced by a four-check builder-ready gate.
 (HTTP/webhooks), `pg` (Neon Postgres client, `LISTEN/NOTIFY`), Anthropic SDK,
 React (dashboard `web-ui`), `harness-ui-helpers` (plugin-UI platform)
 **Storage**: Neon Postgres — new config tables (`agents`, `agent_plugins`,
-`channel_bindings`); existing `chatSessionStore` extended with a config snapshot
+`channel_bindings`, `platform_settings`); existing `chatSessionStore` extended
+with a config snapshot
 **Testing**: vitest (middleware unit + integration), boot smoke tests
 (`middleware/scripts/smoke-*.{ts,mjs}`)
 **Target Platform**: Linux server on Fly.io (one or more warm machines)
@@ -89,7 +90,7 @@ middleware/packages/
 │   harness-plugin-*/                  # US3 — migrate each to init/dispose
 └── <agent-builder package>/          # US2 — templates, builder-ready gate
 
-middleware/migrations/                # US4 — agents / agent_plugins / channel_bindings
+middleware/migrations/                # US4/US7 — agents, agent_plugins, channel_bindings, platform_settings
 middleware/scripts/smoke-*.{ts,mjs}   # per-story boot smoke tests
 
 web-ui/                               # US9 — "Agents" dashboard tab

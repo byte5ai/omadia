@@ -12,10 +12,10 @@ privacy profile; hot-reloadable; operator-managed via UI.
 
 ## Status
 
-- **DRAFT.** Authored 2026-05-21. The design is settled; wording is open to
-  review.
+- **Implementation-ready.** Authored, clarified, and `/speckit-analyze`-checked
+  2026-05-21; all findings remediated.
 - **Worktree**: `~/sources/odoo-bot-multi-orchestrator`, branch
-  `feat/multi-orchestrator` (off `main` @ `483ff18`).
+  `001-multi-orchestrator-runtime` (off `main` @ `483ff18`).
 - **No implementation has started.** This package is spec-only.
 - `CLAUDE.local.md` was copied into this worktree manually (it is gitignored and
   not shared between worktrees) — it carries the single-repo setup, where
@@ -23,44 +23,47 @@ privacy profile; hot-reloadable; operator-managed via UI.
 
 ## Artifacts & reading order
 
-1. `spec.md` — the WHAT: 9 prioritized user stories (US1–US9), 20 functional
+1. `spec.md` — the WHAT: 9 prioritized user stories (US1–US9), 21 functional
    requirements, 8 measurable success criteria, edge cases, key entities.
 2. `plan.md` — the HOW: technical context, constitution check, real monorepo
    paths, P1/P2/P3 phasing.
 3. `research.md` — 7 resolved design decisions (D1–D7) with rejected
-   alternatives, plus **4 open clarification questions** (see below).
+   alternatives, plus 4 clarifications resolved 2026-05-21 (C1–C4).
 4. `data-model.md` — DB schema (3 tables + `LISTEN/NOTIFY`), extended manifest,
    runtime structures.
 5. `contracts/plugin-lifecycle.md` — the frozen `plugin-api` contract:
    `Plugin`/`PluginScope` interfaces, manifest JSON Schema, builder-ready gate.
-6. `tasks.md` — 60 tasks (T001–T060) grouped by user story with a dependency
+6. `tasks.md` — 61 tasks (T001–T061) grouped by user story with a dependency
    graph.
 7. `../../.specify/memory/constitution.md` — the Omadia engineering constitution
    the plan is checked against.
 
-## Open clarification questions (resolve before locking the plan)
+## Clarifications — resolved 2026-05-21
 
-From `research.md` §"Open Questions":
+The four open questions (Q1–Q4) are resolved and folded into the spec, data
+model, and tasks. Detail in `research.md` §"Clarifications — resolved
+2026-05-21" (C1–C4):
 
-- **Q1** — `force-invalidate`: end sessions immediately, or drain with a grace
-  period? (Affects US6.)
-- **Q2** — unmatched inbound channel key: hard reject, or a configurable
-  fallback Agent? (Affects US7 / FR-015.)
-- **Q3** — privacy profiles: is `strict` / `default` enough, or is a
-  named/extensible profile set needed? (Affects US4 / US9.)
-- **Q4** — session TTL: does `force-invalidate` also clear the session-store
-  entry, or only re-bind the snapshot? (Affects US6.)
+- **C1** — `force-invalidate` is two-mode: `drain` (default, bounded by the
+  per-turn timeout) and `kill`.
+- **C2** — unmatched channel key → configurable `fallbackAgentId`, else
+  hard-reject; onboarding seeds a bare-LLM fallback Agent (FR-021).
+- **C3** — privacy profile stays a `strict`/`default` enum, recorded but not
+  yet enforced; modelled for a later extensible profile table.
+- **C4** — `drain` keeps the session-store entry, `kill` discards it.
+
+A `/speckit-analyze` consistency pass was run; all findings were remediated.
 
 ## Recommended next actions for this session
 
-1. Answer Q1–Q4 with the operator (or run `/speckit-clarify`, which is installed
-   as a skill in a fresh session and will work through `spec.md` interactively).
-2. Fold the answers into `spec.md` / `research.md`.
-3. Optionally run `/speckit-analyze` for a cross-artifact consistency check.
-4. Begin implementation with **US1** (freeze the `plugin-api` contract) — it
-   blocks every other story. ⚠️ US2 (Agent Builder conditioning) is
-   time-critical: the Builder runs in a parallel worktree and must be re-pointed
-   at the frozen contract before it emits further plugins.
+Clarification and analysis are done — the spec package is implementation-ready.
+
+1. Begin implementation with **US1** (freeze the `plugin-api` contract) — it
+   blocks every other story. Run `/speckit-implement` or work `tasks.md`
+   top-down.
+2. ⚠️ US2 (Agent Builder conditioning) is time-critical: the Builder runs in a
+   parallel worktree and must be re-pointed at the frozen contract before it
+   emits further plugins.
 
 ## Scope guard rails
 

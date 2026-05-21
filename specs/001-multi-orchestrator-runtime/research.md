@@ -134,13 +134,73 @@ be a hard package boundary so no consumer can re-declare it.
 - **Azure AD bot registrations**: operational task; the operator provisions
   distinct bot identities for the public and general bots.
 
-## Open Questions for `/speckit-clarify`
+## Clarifications — resolved 2026-05-21
 
-- **Q1**: Target window for `force-invalidate` — end sessions immediately, or
-  drain with a grace period? (Affects US6.)
-- **Q2**: Default route for an unmatched inbound channel key — hard reject vs. a
-  configurable fallback Agent? (Affects US7/FR-015.)
-- **Q3**: Privacy profiles — is `strict` vs. `default` sufficient, or is a
-  named/extensible profile set needed? (Affects US4/US9.)
-- **Q4**: Session TTL interaction — does `force-invalidate` also clear the
-  session store entry, or only re-bind the snapshot? (Affects US6.)
+The four open questions were resolved with the operator. Decisions below; the
+spec and data model reflect them.
+
+### C1 — `force-invalidate` timing (was Q1; affects US6, FR-014)
+
+**Decision**: Two-tier action — `force-invalidate(agentId, mode)`:
+
+- `mode: 'drain'` (default) — the in-flight LLM turn is allowed to finish, then
+  the session is re-bound to the new config. The wait is bounded by the existing
+  per-turn LLM timeout; a turn that exceeds it escalates to `kill`, so a hung
+  turn cannot block the re-bind indefinitely. The routine "apply now" path.
+- `mode: 'kill'` — the session is ended immediately, mid-turn if necessary. The
+  security path for a leaked or compromised plugin that must stop serving now.
+
+**Rationale**: The routine case and the security incident are genuinely
+different requirements; a single timing policy serves one of them badly. A
+`mode` parameter is cheaper than the wrong unified default.
+
+### C2 — unmatched inbound channel key (was Q2; affects US7, FR-015)
+
+**Decision**: A configurable, nullable platform-level `fallbackAgentId`. When
+set, an inbound message whose channel key has no binding is routed to that
+Agent. When unset, the message is hard-rejected. Either way the event is logged
+— never silently dropped.
+
+First-boot onboarding seeds a dedicated minimal-privilege fallback Agent — zero
+plugins (a bare LLM agent, valid per US4 AS4) with `privacy_profile = 'strict'`
+— and points `fallbackAgentId` at it. This makes the safe configuration the default one and
+removes the leak risk of routing unclassified traffic into a full-plugin Agent.
+Re-pointing `fallbackAgentId` at a powerful Agent stays possible but is then a
+deliberate operator act, not an accident — so no validation guard is required.
+
+**Rejected**: hard-reject-only — bounces every channel until its binding is
+created, poor onboarding ergonomics. Mandatory fallback — would force a routing
+target even when the operator wants strict rejection.
+
+### C3 — privacy profiles (was Q3; affects US4, US9)
+
+**Decision**: `privacy_profile` stays a two-value enum (`'strict' | 'default'`)
+for this feature. The column is modelled so a later migration to a
+`privacy_profiles` table (named, operator-extensible profiles) is non-breaking.
+
+**Rationale**: What a profile concretely controls (tokenization aggressiveness,
+allowed model providers, redaction rules) is not yet pinned down. Designing an
+extensible profile table before the knob set is known is premature; the enum is
+sufficient for the public/general split. Extensibility is preserved by storing
+the value as `TEXT` + `CHECK` (not a Postgres `ENUM` type), so the migration to
+an FK is a dropped constraint, not an `ALTER TYPE`.
+
+**Scope note**: In this feature `privacy_profile` (Agent) and `privacyClass`
+(plugin manifest) are *recorded* — stored, schema-validated, operator-set — but
+not yet *enforced*: no FR or task derives behaviour from them. They are the data
+foundation a later privacy workstream (the Privacy-Proxy effort) consumes.
+Implementers must not infer hidden behaviour from these fields here.
+
+### C4 — session store on `force-invalidate` (was Q4; affects US6)
+
+**Decision**: Coupled to C1's `mode`:
+
+- `mode: 'drain'` — the `chatSessionStore` entry is **kept**; only the
+  `ConfigSnapshot` is swapped for the new Agent config. Conversation history
+  survives.
+- `mode: 'kill'` — the `chatSessionStore` entry is **deleted** along with its
+  snapshot. The next inbound message starts a fresh session.
+
+**Rationale**: A leaked-plugin purge must not leave that plugin's output sitting
+in conversation history; the routine path must not destroy a user's
+conversation. The split falls naturally out of the C1 modes.
