@@ -78,3 +78,21 @@ export { createHaikuSignificanceScorer } from './significanceScorer.js';
 export type { HaikuSignificanceScorerOptions } from './significanceScorer.js';
 export { CaptureFilteringKnowledgeGraph } from './captureFilteringKnowledgeGraph.js';
 export type { CaptureFilteringKnowledgeGraphOptions } from './captureFilteringKnowledgeGraph.js';
+
+// KG-ACL Slice 4a — Palaia-Excerpt-Extractor for the save-as-memory
+// suggestion. Capability contract lives in @omadia/plugin-api
+// (PalaiaExcerpt + PalaiaExcerptExtractor); this Haiku-backed
+// implementation is what the orchestrator wires into its `done`
+// stream-event spread and what Slice 4b's auto-promotion pipeline
+// hands to createMemorableKnowledge.
+export { createHaikuPalaiaExcerptExtractor } from './excerptExtractor.js';
+export type { HaikuPalaiaExcerptExtractorOptions } from './excerptExtractor.js';
+
+// KG-ACL Slice 4b — Auto-Promotion at significance >= threshold.
+// One fire-and-forget call per persisted turn from the orchestrator's
+// chatStreamInner. Idempotent (DERIVED_FROM edge lookup) so a re-run
+// stays a no-op. Requires `capture_level >= normal` so the scorer
+// actually writes a significance value; below that the function
+// declines all promotions with reason='no-significance'.
+export { promoteTurnIfSignificant } from './promotion.js';
+export type { PromoteTurnInput, PromoteTurnResult } from './promotion.js';

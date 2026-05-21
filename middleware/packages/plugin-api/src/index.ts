@@ -56,3 +56,12 @@ export * from './nudge.js';
 // dynamic-import / plugin-store flow stays clean (no constructor-injected
 // Deps).
 export * from './routinesIntegration.js';
+
+// KG-ACL Slice 4a: Palaia-Excerpt-Extractor capability. Haiku-backed
+// per-turn enrichment producing {suggestedKind, suggestedSummary,
+// suggestedRationale?, excerpts[]}. Streamed via the orchestrator's
+// `done` event so the chat-side save-as-memory modal can pre-fill,
+// and (Slice 4b) consumed by the auto-promotion hook so manual and
+// automatic MemorableKnowledge creations share the same payload shape.
+// Provider lives in `harness-orchestrator-extras/src/excerptExtractor.ts`.
+export * from './palaiaExcerpt.js';

@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import type { Pool } from 'pg';
 import type { ChatAgent } from '@omadia/channel-sdk';
 import type { EmbeddingClient } from '@omadia/embeddings';
 // Phase 5B: structural shim — `@omadia/integration-microsoft365` lives
@@ -11,6 +12,7 @@ import type {
   KnowledgeGraph,
   NudgeProvider,
   NudgeStateStore,
+  PalaiaExcerptExtractor,
   ProcessMemoryService,
   ResponseGuardService,
   SessionBriefingService,
@@ -20,6 +22,7 @@ import {
   NUDGE_PROVIDERS_SERVICE_NAME,
   NUDGE_REGISTRY_SERVICE_NAME,
   NUDGE_STATE_SERVICE_NAME,
+  PALAIA_EXCERPT_SERVICE_NAME,
   PROCESS_MEMORY_SERVICE_NAME,
 } from '@omadia/plugin-api';
 import type {
@@ -148,6 +151,14 @@ function parseNumberOrDefault(raw: unknown, fallback: number): number {
   return fallback;
 }
 
+/** Truthy values: '1', 'true', 'yes', 'on' (case-insensitive). Everything
+ *  else is false — including undefined/empty. */
+function parseBooleanEnv(raw: string | undefined): boolean {
+  if (!raw) return false;
+  const v = raw.trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
 export async function activate(
   ctx: PluginContext,
 ): Promise<OrchestratorPluginHandle> {
@@ -237,6 +248,14 @@ export async function activate(
   const contextRetriever =
     ctx.services.get<ContextRetriever>('contextRetriever');
   const factExtractor = ctx.services.get<FactExtractor>('factExtractor');
+  // KG-ACL Slice 4a — Palaia-Excerpt-Extractor. Published by
+  // harness-orchestrator-extras when an Anthropic key is configured.
+  // Absent → orchestrator's `done` event ships without `palaiaExcerpt`
+  // and the chat-side save-as-memory modal falls back to its dumb
+  // 240-char prefix.
+  const excerptExtractor = ctx.services.get<PalaiaExcerptExtractor>(
+    PALAIA_EXCERPT_SERVICE_NAME,
+  );
   // OB-75 (Palaia Phase 6) — optional. Published by harness-orchestrator-extras
   // when an Anthropic key is configured. Absent → orchestrator skips the
   // briefing prepend, behaviour identical to pre-OB-75.
@@ -275,6 +294,22 @@ export async function activate(
     ctx.config.get<unknown>('max_tool_iterations'),
     DEFAULT_MAX_ITERATIONS,
   );
+
+  // KG-ACL Slice 4b — env-var opt-in for auto-promotion at
+  // significance ≥ threshold. Read straight from process.env (these
+  // are operator-level feature flags, not per-plugin setup fields).
+  // Default OFF — no auto-saves without an explicit signal from
+  // both the capture-filter scorer AND the operator.
+  const autoPromote = parseBooleanEnv(process.env['KG_ACL_AUTO_PROMOTE']);
+  const autoPromoteThreshold = parseNumberOrDefault(
+    process.env['KG_ACL_AUTO_PROMOTE_THRESHOLD'],
+    0.7,
+  );
+  const graphPool = ctx.services.get<Pool>('graphPool');
+  const graphTenantId =
+    process.env['GRAPH_TENANT_ID'] ??
+    ctx.config.get<string>('graph_tenant_id') ??
+    'default';
 
   // Anthropic client + storage layer
   const client = new Anthropic({ apiKey });
@@ -351,6 +386,11 @@ export async function activate(
     ...(contextRetriever ? { contextRetriever } : {}),
     ...(sessionBriefing ? { sessionBriefing } : {}),
     ...(factExtractor ? { factExtractor } : {}),
+    ...(excerptExtractor ? { excerptExtractor } : {}),
+    autoPromote,
+    autoPromoteThreshold,
+    ...(graphPool ? { graphPool } : {}),
+    graphTenantId,
     chatParticipantsTool,
     askUserChoiceTool,
     suggestFollowUpsTool,
@@ -432,7 +472,7 @@ export async function activate(
   ctx.services.provide(CHAT_AGENT_SERVICE, bundle);
 
   ctx.log(
-    `[harness-orchestrator] chatAgent@1 published (model=${model}, maxTokens=${String(maxTokens)}, maxIter=${String(maxIterations)}, verifier=${verifierBundle ? 'on' : 'off'}, calendar=${microsoft365 ? 'on' : 'off'}, contextRetriever=${contextRetriever ? 'on' : 'off'}, factExtractor=${factExtractor ? 'on' : 'off'}, embeddingClient=${embeddingClient ? 'on' : 'off'}, responseGuard=late-bound)`,
+    `[harness-orchestrator] chatAgent@1 published (model=${model}, maxTokens=${String(maxTokens)}, maxIter=${String(maxIterations)}, verifier=${verifierBundle ? 'on' : 'off'}, calendar=${microsoft365 ? 'on' : 'off'}, contextRetriever=${contextRetriever ? 'on' : 'off'}, factExtractor=${factExtractor ? 'on' : 'off'}, palaiaExcerpt=${excerptExtractor ? 'on' : 'off'}, autoPromote=${autoPromote ? `on@${autoPromoteThreshold.toFixed(2)}` : 'off'}, embeddingClient=${embeddingClient ? 'on' : 'off'}, responseGuard=late-bound)`,
   );
 
   return {

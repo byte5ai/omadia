@@ -10,6 +10,7 @@ import type {
 } from '@omadia/plugin-api';
 import {
   NUDGE_PROVIDERS_SERVICE_NAME,
+  PALAIA_EXCERPT_SERVICE_NAME,
   PROCESS_MEMORY_SERVICE_NAME,
 } from '@omadia/plugin-api';
 
@@ -22,6 +23,7 @@ import { CaptureFilteringKnowledgeGraph } from './captureFilteringKnowledgeGraph
 import { ContextRetriever } from './contextRetriever.js';
 import type { Pool } from 'pg';
 
+import { createHaikuPalaiaExcerptExtractor } from './excerptExtractor.js';
 import { FactExtractor } from './factExtractor.js';
 import { createHaikuSessionSummaryGenerator } from './sessionSummaryGenerator.js';
 import { createSessionBriefingService } from './sessionBriefing.js';
@@ -254,6 +256,7 @@ export async function activate(
   let disposeFactExtractor: (() => void) | undefined;
   let disposeTopicDetector: (() => void) | undefined;
   let disposeSessionBriefing: (() => void) | undefined;
+  let disposePalaiaExcerpt: (() => void) | undefined;
 
   if (anthropic) {
     const factExtractor = new FactExtractor({
@@ -264,6 +267,21 @@ export async function activate(
     disposeFactExtractor = ctx.services.provide(
       FACT_EXTRACTOR_SERVICE,
       factExtractor,
+    );
+
+    // KG-ACL Slice 4a — Palaia-Excerpt-Extractor. Same Haiku key as the
+    // fact-extractor + session-summary generator; no separate config
+    // surface to make this opt-in. The orchestrator plugin's activate()
+    // picks it up via `palaiaExcerpt` service-name and threads it
+    // through new Orchestrator({…, excerptExtractor}).
+    const palaiaExcerptExtractor = createHaikuPalaiaExcerptExtractor({
+      anthropic,
+      model: factModel,
+      log: (msg) => { console.error(msg); },
+    });
+    disposePalaiaExcerpt = ctx.services.provide(
+      PALAIA_EXCERPT_SERVICE_NAME,
+      palaiaExcerptExtractor,
     );
 
     // OB-75 (Phase 6) — Session-Continuity. Only published when an
@@ -340,7 +358,7 @@ export async function activate(
   );
 
   ctx.log(
-    `[harness-orchestrator-extras] ready (contextRetriever=on, factExtractor=${anthropic ? 'on' : 'off'}, topicDetector=${anthropic && embeddingClient ? 'on' : 'off'}, sessionBriefing=${disposeSessionBriefing ? 'on' : 'off'}, nudgeProviders=on)`,
+    `[harness-orchestrator-extras] ready (contextRetriever=on, factExtractor=${anthropic ? 'on' : 'off'}, topicDetector=${anthropic && embeddingClient ? 'on' : 'off'}, sessionBriefing=${disposeSessionBriefing ? 'on' : 'off'}, palaiaExcerpt=${disposePalaiaExcerpt ? 'on' : 'off'}, nudgeProviders=on)`,
   );
 
   return {
@@ -352,6 +370,7 @@ export async function activate(
       // hot-uninstall of an already-registered provider is best-effort
       // until OB-78's curate-cron introduces a proper retire API.
       disposeNudgeProviders();
+      disposePalaiaExcerpt?.();
       disposeSessionBriefing?.();
       disposeTopicDetector?.();
       disposeFactExtractor?.();

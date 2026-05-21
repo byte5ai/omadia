@@ -8,6 +8,7 @@ import {
   type CreateMemoryResponse,
   type MemorableKind,
 } from '../../_lib/api';
+import type { PalaiaExcerpt } from '../../_lib/chatSessions';
 
 const KINDS: readonly MemorableKind[] = [
   'decision',
@@ -19,11 +20,17 @@ const KINDS: readonly MemorableKind[] = [
 const MAX_SUMMARY_PREFILL = 240;
 
 interface Props {
-  /** Turn id from `captureDisclosure.graphRefs.turnId`. Backend uses it
-   *  for the DERIVED_FROM edge (skipped if the Turn no longer exists). */
+  /** Turn id the orchestrator emitted with the `done` event. Backend
+   *  uses it for the DERIVED_FROM edge (skipped if the Turn no longer
+   *  exists). */
   turnId: string;
-  /** Assistant message content — used to pre-fill the summary field. */
+  /** Assistant message content — fallback pre-fill source when
+   *  `palaiaExcerpt` is absent. */
   messageContent: string;
+  /** Slice 4a — Palaia-Extractor suggestion. When present, the modal
+   *  pre-fills kind/summary/rationale from it and renders excerpt
+   *  chips as one-click "insert into summary" affordances. */
+  palaiaExcerpt?: PalaiaExcerpt;
 }
 
 /**
@@ -38,10 +45,13 @@ interface Props {
 export function SaveMemoryButton({
   turnId,
   messageContent,
+  palaiaExcerpt,
 }: Props): React.ReactElement {
   const t = useTranslations('chat.saveAsMemory');
   const [open, setOpen] = useState(false);
-  const [kind, setKind] = useState<MemorableKind>('insight');
+  const [kind, setKind] = useState<MemorableKind>(
+    palaiaExcerpt?.suggestedKind ?? 'insight',
+  );
   const [summary, setSummary] = useState('');
   const [rationale, setRationale] = useState('');
   const [busy, setBusy] = useState(false);
@@ -49,10 +59,9 @@ export function SaveMemoryButton({
   const [saved, setSaved] = useState<CreateMemoryResponse | null>(null);
   const summaryRef = useRef<HTMLTextAreaElement | null>(null);
 
-  // Pre-fill summary with a trimmed slice of the message body each time
-  // the dialog opens. Don't overwrite while the user is editing (so a
-  // re-open without close keeps their draft) — we tie pre-fill to the
-  // open transition only.
+  // Pre-fill from the Palaia-Extractor suggestion when present; fall
+  // back to a trimmed slice of the message body. Tied to the dialog
+  // open-transition so a re-open without close keeps the user's draft.
   useEffect(() => {
     if (!open) return;
     if (summary.length > 0) {
@@ -60,18 +69,39 @@ export function SaveMemoryButton({
       summaryRef.current?.focus();
       return;
     }
-    const cleaned = messageContent.trim().replace(/\s+/g, ' ');
-    const prefill =
-      cleaned.length > MAX_SUMMARY_PREFILL
-        ? `${cleaned.slice(0, MAX_SUMMARY_PREFILL).trimEnd()}…`
-        : cleaned;
-    // Defer the state write + focus out of the effect body: a synchronous
-    // setState in an effect triggers a cascading render (lint-flagged).
+    // Defer the state writes + focus out of the effect body: a
+    // synchronous setState in an effect triggers a cascading render
+    // (lint-flagged).
     queueMicrotask(() => {
-      setSummary(prefill);
+      if (palaiaExcerpt) {
+        setKind(palaiaExcerpt.suggestedKind);
+        setSummary(palaiaExcerpt.suggestedSummary);
+        if (palaiaExcerpt.suggestedRationale !== undefined) {
+          setRationale(palaiaExcerpt.suggestedRationale);
+        }
+      } else {
+        const cleaned = messageContent.trim().replace(/\s+/g, ' ');
+        setSummary(
+          cleaned.length > MAX_SUMMARY_PREFILL
+            ? `${cleaned.slice(0, MAX_SUMMARY_PREFILL).trimEnd()}…`
+            : cleaned,
+        );
+      }
       summaryRef.current?.focus();
     });
-  }, [open, messageContent, summary.length]);
+  }, [open, messageContent, palaiaExcerpt, summary.length]);
+
+  // One-click excerpt insertion: append the excerpt as a quoted line
+  // to the summary textarea. Caret-position-aware insertion is
+  // out-of-scope; appending is good enough for the common "I want
+  // this exact sentence in the memory" flow.
+  const insertExcerpt = useCallback((excerpt: string): void => {
+    setSummary((prev) => {
+      const sep = prev.length > 0 && !prev.endsWith('\n') ? '\n' : '';
+      return `${prev}${sep}„${excerpt}"`;
+    });
+    queueMicrotask(() => summaryRef.current?.focus());
+  }, []);
 
   // Allow Esc to close.
   useEffect(() => {
@@ -150,12 +180,27 @@ export function SaveMemoryButton({
         >
           <div className="w-full max-w-lg rounded-lg bg-white p-5 shadow-xl dark:bg-neutral-900">
             <div className="mb-3 flex items-center justify-between">
-              <h2
-                id="save-memory-title"
-                className="text-sm font-medium text-neutral-900 dark:text-neutral-100"
-              >
-                {t('dialogTitle')}
-              </h2>
+              <div className="flex items-center gap-2">
+                <h2
+                  id="save-memory-title"
+                  className="text-sm font-medium text-neutral-900 dark:text-neutral-100"
+                >
+                  {t('dialogTitle')}
+                </h2>
+                {palaiaExcerpt && (
+                  <span
+                    className={[
+                      'rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wider',
+                      palaiaExcerpt.source === 'hint'
+                        ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200'
+                        : 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300',
+                    ].join(' ')}
+                    title={t(`source.${palaiaExcerpt.source}Title`)}
+                  >
+                    {t(`source.${palaiaExcerpt.source}Label`)}
+                  </span>
+                )}
+              </div>
               <button
                 type="button"
                 onClick={close}
@@ -217,6 +262,35 @@ export function SaveMemoryButton({
                     {summary.length} / 2000
                   </span>
                 </label>
+
+                {palaiaExcerpt && palaiaExcerpt.excerpts.length > 0 && (
+                  <div className="mb-3">
+                    <div className="mb-1 flex items-center justify-between text-[11px] uppercase tracking-wider text-neutral-500">
+                      <span>{t('excerptsLabel')}</span>
+                      <span className="text-[10px] normal-case tracking-normal text-neutral-400">
+                        {t('excerptsHint')}
+                      </span>
+                    </div>
+                    <ul className="flex flex-col gap-1">
+                      {palaiaExcerpt.excerpts.map((excerpt, idx) => (
+                        <li key={`${idx}-${excerpt.slice(0, 24)}`}>
+                          <button
+                            type="button"
+                            onClick={() => insertExcerpt(excerpt)}
+                            disabled={busy}
+                            className="group w-full rounded border border-neutral-200 bg-neutral-50 px-2 py-1 text-left text-xs text-neutral-700 transition hover:border-indigo-300 hover:bg-indigo-50 disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-800/60 dark:text-neutral-300 dark:hover:border-indigo-700 dark:hover:bg-indigo-900/20"
+                            title={t('excerptInsertTitle')}
+                          >
+                            <span className="mr-1 text-neutral-400 group-hover:text-indigo-400">
+                              +
+                            </span>
+                            {excerpt}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
 
                 <label className="mb-3 block">
                   <span className="mb-1 block text-[11px] uppercase tracking-wider text-neutral-500">
