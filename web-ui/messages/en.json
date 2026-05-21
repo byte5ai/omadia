@@ -89,6 +89,17 @@
     "signedInAs": "Signed in as",
     "signOut": "Sign out"
   },
+  "session": {
+    "expiresAtLabel": "Session valid until",
+    "warningTitle": "Session expiring soon",
+    "warningBody": "Your session ends in {time}. Sign in again now so you are not interrupted in the middle of your work.",
+    "warningCta": "Sign in now",
+    "warningDismiss": "Later",
+    "expiredKicker": "Session",
+    "expiredTitle": "Session expired",
+    "expiredBody": "Your session has expired. Please sign in again to continue working.",
+    "expiredCta": "Sign in again"
+  },
   "agentDetailsModal": {
     "ariaLabelTitle": "{label} tool calls",
     "ariaCloseBackdrop": "Close",

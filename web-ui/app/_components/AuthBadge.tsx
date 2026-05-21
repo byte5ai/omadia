@@ -2,18 +2,20 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 
 import { ApiError, getAuthMe, postAuthLogout, type AuthUser } from '../_lib/api';
 
 type State =
   | { kind: 'loading' }
-  | { kind: 'authed'; user: AuthUser }
+  | { kind: 'authed'; user: AuthUser; expiresAt: number }
   | { kind: 'anon' }
   | { kind: 'error'; message: string };
 
 export function AuthBadge(): React.ReactElement | null {
   const t = useTranslations('authBadge');
+  const tSession = useTranslations('session');
+  const locale = useLocale();
   const [state, setState] = useState<State>({ kind: 'loading' });
   const [menuOpen, setMenuOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
@@ -24,7 +26,12 @@ export function AuthBadge(): React.ReactElement | null {
     (async () => {
       try {
         const res = await getAuthMe();
-        if (!cancelled) setState({ kind: 'authed', user: res.user });
+        if (!cancelled)
+          setState({
+            kind: 'authed',
+            user: res.user,
+            expiresAt: res.expires_at,
+          });
       } catch (err) {
         if (cancelled) return;
         if (err instanceof ApiError && err.status === 401) {
@@ -111,6 +118,10 @@ export function AuthBadge(): React.ReactElement | null {
 
   const { user } = state;
   const initials = getInitials(user.display_name || user.email);
+  const expiryLabel = new Date(state.expiresAt * 1000).toLocaleTimeString(
+    locale,
+    { hour: '2-digit', minute: '2-digit' },
+  );
   return (
     <div ref={menuRef} className="relative">
       <motion.button
@@ -160,6 +171,12 @@ export function AuthBadge(): React.ReactElement | null {
               </div>
               <div className="font-mono text-[11px] text-[color:var(--fg-muted)]">
                 {user.email}
+              </div>
+              <div className="mt-2 flex items-center gap-1.5 text-[10px] uppercase tracking-[0.14em] text-[color:var(--fg-subtle)]">
+                {tSession('expiresAtLabel')}
+                <span className="font-mono normal-case tracking-normal text-[color:var(--fg-muted)]">
+                  {expiryLabel}
+                </span>
               </div>
             </div>
             <div className="border-t border-[color:var(--border)] pt-2">

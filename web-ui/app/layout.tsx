@@ -11,6 +11,7 @@ import { getLocale, getMessages, getTranslations } from 'next-intl/server';
 import { AuthBadge } from './_components/AuthBadge';
 import { LocaleSwitcher } from './_components/LocaleSwitcher';
 import { Nav } from './_components/Nav';
+import { SessionWatcher } from './_components/SessionWatcher';
 import './globals.css';
 
 /**
@@ -103,6 +104,7 @@ export default async function RootLayout({
             </div>
           </header>
           <div className="min-h-0 flex-1">{children}</div>
+          <SessionWatcher />
         </NextIntlClientProvider>
       </body>
     </html>

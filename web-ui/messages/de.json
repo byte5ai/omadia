@@ -89,6 +89,17 @@
     "signedInAs": "Angemeldet als",
     "signOut": "Abmelden"
   },
+  "session": {
+    "expiresAtLabel": "Sitzung gültig bis",
+    "warningTitle": "Sitzung läuft bald ab",
+    "warningBody": "Deine Sitzung endet in {time}. Melde dich jetzt neu an, damit du nicht mitten in der Arbeit unterbrochen wirst.",
+    "warningCta": "Jetzt neu anmelden",
+    "warningDismiss": "Später",
+    "expiredKicker": "Sitzung",
+    "expiredTitle": "Sitzung abgelaufen",
+    "expiredBody": "Deine Sitzung ist abgelaufen. Bitte melde dich erneut an, um weiterzuarbeiten.",
+    "expiredCta": "Neu anmelden"
+  },
   "agentDetailsModal": {
     "ariaLabelTitle": "{label} Tool-Aufrufe",
     "ariaCloseBackdrop": "Schließen",

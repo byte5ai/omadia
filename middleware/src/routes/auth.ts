@@ -278,6 +278,13 @@ export function createAuthRouter(deps: AuthDeps): Router {
           role: claims.role,
           provider: claims.provider,
         },
+        // Expiry timestamps let the Admin UI render a visible countdown
+        // and a deliberate auto-logout instead of the session silently
+        // dying. `server_now` is the server clock at response time so the
+        // client can correct for clock skew rather than trusting its own.
+        // Both are Unix epoch SECONDS, matching the JWT `exp` convention.
+        expires_at: claims.exp,
+        server_now: Math.floor(Date.now() / 1000),
       });
     } catch {
       res.status(401).json({ code: 'auth.invalid' });

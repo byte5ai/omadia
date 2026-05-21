@@ -20,6 +20,21 @@ export interface SessionClaims {
 }
 
 /**
+ * The result of verifying a session token: the signed identity claims plus
+ * the JWT registered timestamps. `exp`/`iat` are intentionally NOT part of
+ * `SessionClaims` because that type doubles as the *input* to
+ * `signSession`, which mints those timestamps itself. Identity-only callers
+ * keep using `SessionClaims`; expiry-aware paths (GET /me, the UI session
+ * watcher) read `exp` to drive the visible countdown / auto-logout.
+ */
+export interface VerifiedSession extends SessionClaims {
+  /** Expiry — Unix epoch **seconds** (JWT `exp`). */
+  exp: number;
+  /** Issued-at — Unix epoch **seconds** (JWT `iat`). */
+  iat: number;
+}
+
+/**
  * Sign a session token. Default lifetime is the 4h access window from the
  * plan; callers can override for short-lived side-channel tokens (e.g. the
  * PKCE verifier cookie).
@@ -40,11 +55,16 @@ export async function signSession(
 export async function verifySession(
   token: string,
   key: Uint8Array,
-): Promise<SessionClaims> {
+): Promise<VerifiedSession> {
   const { payload } = await jwtVerify(token, key, {
     issuer: ISSUER,
     algorithms: [ALG],
   });
+  // `jwtVerify` already rejects an expired token; these reads only surface
+  // the timestamps for callers. Both are always present on tokens minted
+  // by `signSession` (it sets iat + expiration), but narrow defensively.
+  const exp = typeof payload['exp'] === 'number' ? payload['exp'] : 0;
+  const iat = typeof payload['iat'] === 'number' ? payload['iat'] : 0;
   const sub = typeof payload['sub'] === 'string' ? payload['sub'] : '';
   const email = typeof payload['email'] === 'string' ? payload['email'] : '';
   const displayName =
@@ -68,5 +88,7 @@ export async function verifySession(
     display_name: displayName,
     role,
     provider,
+    exp,
+    iat,
   };
 }

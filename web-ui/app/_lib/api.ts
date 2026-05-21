@@ -562,6 +562,25 @@ export interface AuthUser {
 
 export interface AuthMeResponse {
   user: AuthUser;
+  /** Session expiry — Unix epoch SECONDS (JWT `exp`). */
+  expires_at: number;
+  /** Server clock at response time — Unix epoch SECONDS. Lets the client
+   *  correct for local clock skew instead of trusting its own `Date.now()`. */
+  server_now: number;
+}
+
+/**
+ * Outcome of a `getSessionStatus` probe. A missing/expired session is a
+ * normal result here (`authenticated: false`), not an error — the caller
+ * (SessionWatcher) decides how to surface it.
+ */
+export interface SessionStatus {
+  authenticated: boolean;
+  user: AuthUser | null;
+  /** Session expiry, Unix epoch seconds — null when unauthenticated. */
+  expiresAt: number | null;
+  /** Server clock at probe time, Unix epoch seconds — null when unauthenticated. */
+  serverNow: number | null;
 }
 
 export interface AuthProviderSummary {
@@ -601,6 +620,44 @@ export interface AuthSetupSuccess {
 
 export async function getAuthMe(): Promise<AuthMeResponse> {
   return getJson<AuthMeResponse>('/v1/auth/me');
+}
+
+/**
+ * Browser-only session probe for the SessionWatcher heartbeat. Unlike
+ * `getAuthMe` (via `getJson`), this deliberately does NOT call
+ * `maybeNavigateToLogin` on a 401 — the watcher must render its own
+ * visible "session expired" overlay first instead of an abrupt redirect.
+ * A 401 is therefore an expected outcome, returned as `authenticated:false`.
+ */
+export async function getSessionStatus(): Promise<SessionStatus> {
+  const res = await fetch(botApi('/v1/auth/me'), {
+    headers: { accept: 'application/json' },
+    cache: 'no-store',
+    credentials: 'include',
+  });
+  if (res.status === 401) {
+    return {
+      authenticated: false,
+      user: null,
+      expiresAt: null,
+      serverNow: null,
+    };
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new ApiError(
+      res.status,
+      `GET /v1/auth/me failed: ${res.status}`,
+      text,
+    );
+  }
+  const data = (await res.json()) as AuthMeResponse;
+  return {
+    authenticated: true,
+    user: data.user,
+    expiresAt: data.expires_at,
+    serverNow: data.server_now,
+  };
 }
 
 export async function getAuthProviders(): Promise<AuthProvidersResponse> {
