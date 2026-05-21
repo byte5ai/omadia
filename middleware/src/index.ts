@@ -83,7 +83,10 @@ import {
   resolveActiveProviderIds,
 } from './auth/providerRegistry.js';
 import { LocalPasswordProvider } from './auth/providers/LocalPasswordProvider.js';
-import { EntraProvider } from './auth/providers/EntraProvider.js';
+import {
+  ENTRA_PROVIDER_ID,
+  EntraProvider,
+} from './auth/providers/EntraProvider.js';
 import { runAuthBootstrap } from './auth/bootstrap.js';
 import { AdminAuditLog } from './auth/adminAuditLog.js';
 import {
@@ -1046,6 +1049,48 @@ async function main(): Promise<void> {
         publicBaseUrl: config.PUBLIC_BASE_URL,
         defaultReturnPath: config.AUTH_DEFAULT_RETURN_PATH,
         setupAllowed: bootstrapResult.setupRequired,
+        // Slice 1b-channel-web — on each login (local + entra), resolve
+        // (or create) the KG User-Cluster + ChannelIdentity and cache
+        // the omadiaUserId in the session JWT so chat ingest can skip
+        // the round-trip. Returns undefined if the users-row was just
+        // created in the same request (post-OIDC-upsert + pre-commit
+        // window — eventually consistent, next request will pick up).
+        resolveChannelIdentity: async (input) => {
+          const row = await userStore.findByProviderUserId(
+            input.provider,
+            input.providerUserId,
+          );
+          if (!row) return undefined;
+          const isEntra = input.provider === ENTRA_PROVIDER_ID;
+          // For entra, `providerUserId` IS the AAD object id (see
+          // EntraProvider.handleCallback → providerUserId: claims.oid).
+          // Setting it as `aadObjectId` makes the resolver merge the
+          // Web Admin UI identity with any future Teams ChannelIdentity
+          // that lands on the same oid — deterministic cross-channel
+          // link without going through the email fallback.
+          //
+          // emailVerified=true regardless of provider: in this single-
+          // tenant deployment `users.email` is either set by an admin
+          // (`adminUsersRouter.create()`, gated by `users.role='admin'`)
+          // or by an OIDC callback (Entra ships its own verified claim).
+          // The `(provider, lower(email))` unique index already prevents
+          // intra-provider email reuse, so the resolver's hybrid-email-
+          // merge path can safely treat both sides as trusted and keep
+          // a local-password login + Entra login on the same cluster.
+          //
+          // Multi-tenant SaaS deployments should replace this with a
+          // per-tenant `localPasswordEmailTrusted` config (default false)
+          // and a real verification-mail flow for local-password users.
+          const result = await knowledgeGraph.resolveOrCreateChannelIdentity({
+            channelKind: 'web',
+            channelUserId: row.id,
+            displayName: input.displayName,
+            ...(input.email ? { email: input.email } : {}),
+            emailVerified: true,
+            ...(isEntra ? { aadObjectId: input.providerUserId } : {}),
+          });
+          return result.omadiaUserId;
+        },
       }),
     );
     console.log('[middleware] admin auth endpoints ready at /api/v1/auth');

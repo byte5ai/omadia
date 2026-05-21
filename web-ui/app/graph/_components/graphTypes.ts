@@ -40,6 +40,10 @@ export interface SessionSummary {
 export interface SessionView {
   session: GraphNode;
   turns: Array<{ turn: GraphNode; entities: GraphNode[] }>;
+  /** Slice 1b-channel-web — User-Cluster the session belongs to.
+   *  Backend resolves it via `session.props.userId`; the canvas adds
+   *  the User node + a synthetic `BELONGS_TO` edge to the session. */
+  user?: GraphNode;
 }
 
 export interface RunToolCallView {

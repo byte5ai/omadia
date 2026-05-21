@@ -1,13 +1,17 @@
 import { Pool, type PoolClient } from 'pg';
 
+import { randomUUID } from 'node:crypto';
+
 import {
   agentInvocationNodeId,
+  channelIdentityNodeId,
   entityNodeId,
   runNodeId,
   sessionNodeId,
   toolCallNodeId,
   turnNodeId,
   userNodeId,
+  type ChannelIdentityIngest,
   type EntityCapturedTurnsHit,
   type EntityCapturedTurnsOptions,
   type EntityIngest,
@@ -21,6 +25,7 @@ import {
   type GraphNodeType,
   type GraphStats,
   type KnowledgeGraph,
+  type ResolveOrCreateChannelIdentityResult,
   type RunAgentInvocationView,
   type RunIngestResult,
   type RunToolCallView,
@@ -483,12 +488,27 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       this.accessTracker?.markAccessed(r.external_id);
     }
 
+    // Slice 1b-channel-web — include the User-Cluster so graph viewers
+    // render the user as a first-class session neighbor without a 2-hop
+    // walk via the Turn → User BELONGS_TO edge.
+    const sessionUserId =
+      typeof sessionRow.properties === 'object' &&
+      sessionRow.properties !== null
+        ? (sessionRow.properties as { userId?: unknown })['userId']
+        : undefined;
+    let user: GraphNode | undefined;
+    if (typeof sessionUserId === 'string' && sessionUserId.length > 0) {
+      const userRow = await this.findNodeByExternalId(userNodeId(sessionUserId));
+      if (userRow) user = rowToNode(userRow);
+    }
+
     return {
       session: rowToNode(sessionRow),
       turns: turnRows.rows.map((r) => ({
         turn: rowToNode(r),
         entities: entityByTurn.get(r.id) ?? [],
       })),
+      ...(user ? { user } : {}),
     };
   }
 
@@ -621,21 +641,33 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         );
       }
 
+      // Slice 1b — `trace.userId` is the cluster-root `omadiaUserId`.
+      // The User-Cluster node must already exist (created upstream via
+      // `resolveOrCreateChannelIdentity`). We verify, refresh `lastSeenAt`,
+      // and link via BELONGS_TO. We do NOT auto-create the cluster here —
+      // doing so would mask channel-resolution bugs by silently producing
+      // orphan clusters with no IS_IDENTITY_OF edges.
       let userUuid: string | undefined;
       if (userExtId && trace.userId) {
-        const userProps = validateNodeProps('User', {
-          userId: trace.userId,
-          firstSeenAt: trace.startedAt,
-          lastSeenAt: trace.finishedAt,
-        });
-        userUuid = await this.upsertNode(client, {
-          externalId: userExtId,
-          type: 'User',
-          scope: null,
-          userId: trace.userId,
-          props: userProps,
-          mergeProps: { lastSeenAt: trace.finishedAt },
-        });
+        const userRow = await client.query<{ id: string }>(
+          `SELECT id FROM graph_nodes
+           WHERE tenant_id = $1 AND external_id = $2 AND type = 'User'`,
+          [this.tenantId, userExtId],
+        );
+        userUuid = userRow.rows[0]?.id;
+        if (!userUuid) {
+          await client.query('ROLLBACK');
+          throw new Error(
+            `ingestRun: User-Cluster ${userExtId} not found — call resolveOrCreateChannelIdentity first`,
+          );
+        }
+        // Refresh lastSeenAt so cluster activity stays current.
+        await client.query(
+          `UPDATE graph_nodes
+             SET properties = jsonb_set(properties, '{lastSeenAt}', to_jsonb($2::text))
+           WHERE id = $1`,
+          [userUuid, trace.finishedAt],
+        );
         await this.upsertEdge(client, {
           type: 'BELONGS_TO',
           fromUuid: turnUuid,
@@ -1156,6 +1188,201 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         this.accessTracker?.markAccessed(hit.turnId);
         return hit;
       });
+  }
+
+  async resolveOrCreateChannelIdentity(
+    ingest: ChannelIdentityIngest,
+  ): Promise<ResolveOrCreateChannelIdentityResult> {
+    const identityExtId = channelIdentityNodeId(
+      ingest.channelKind,
+      ingest.channelUserId,
+    );
+    const now = new Date().toISOString();
+    const normalizedEmail = ingest.email?.trim().toLowerCase();
+    const verifiedEmail =
+      normalizedEmail && ingest.emailVerified === true ? normalizedEmail : null;
+
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Fast path 1: this exact ChannelIdentity already exists. Refresh
+      // `lastSeenAt` + return the existing cluster pointer.
+      const existingIdentity = await client.query<{
+        identity_uuid: string;
+        cluster_uuid: string;
+        omadia_user_id: string;
+      }>(
+        `SELECT
+           ci.id AS identity_uuid,
+           u.id  AS cluster_uuid,
+           (u.properties->>'omadiaUserId') AS omadia_user_id
+         FROM graph_nodes ci
+         JOIN graph_edges e ON e.from_node = ci.id AND e.type = 'IS_IDENTITY_OF'
+         JOIN graph_nodes u ON u.id = e.to_node AND u.type = 'User'
+         WHERE ci.tenant_id = $1
+           AND ci.external_id = $2
+           AND ci.type = 'ChannelIdentity'
+         LIMIT 1`,
+        [this.tenantId, identityExtId],
+      );
+      const existing = existingIdentity.rows[0];
+      if (existing) {
+        await client.query(
+          `UPDATE graph_nodes
+             SET properties = jsonb_set(properties, '{lastSeenAt}', to_jsonb($2::text))
+           WHERE id = $1`,
+          [existing.identity_uuid, now],
+        );
+        await client.query(
+          `UPDATE graph_nodes
+             SET properties = jsonb_set(properties, '{lastSeenAt}', to_jsonb($2::text))
+           WHERE id = $1`,
+          [existing.cluster_uuid, now],
+        );
+        await client.query('COMMIT');
+        return {
+          channelIdentityNodeId: identityExtId,
+          userNodeId: userNodeId(existing.omadia_user_id),
+          omadiaUserId: existing.omadia_user_id,
+          isNewIdentity: false,
+          isNewCluster: false,
+        };
+      }
+
+      // Merge strategy:
+      //   1. AAD-oid match: same tenant, any kind, identical aadObjectId.
+      //      Stable Microsoft identifier — robust across channels even
+      //      when one side has no email (e.g. a future Teams-bot path
+      //      that only carries the AAD oid).
+      //   2. Verified-email match: same tenant, lowercased email,
+      //      both sides emailVerified=true. Fallback for non-AAD
+      //      cross-channel cases (entra-web + verified email channel).
+      let clusterUuid: string | undefined;
+      let clusterOmadiaUserId: string | undefined;
+      let isNewCluster = false;
+
+      if (ingest.aadObjectId) {
+        const matched = await client.query<{
+          cluster_uuid: string;
+          omadia_user_id: string;
+        }>(
+          `SELECT
+             u.id AS cluster_uuid,
+             (u.properties->>'omadiaUserId') AS omadia_user_id
+           FROM graph_nodes ci
+           JOIN graph_edges e ON e.from_node = ci.id AND e.type = 'IS_IDENTITY_OF'
+           JOIN graph_nodes u ON u.id = e.to_node AND u.type = 'User'
+           WHERE ci.tenant_id = $1
+             AND ci.type = 'ChannelIdentity'
+             AND ci.properties->>'aadObjectId' = $2
+           ORDER BY ci.created_at ASC
+           LIMIT 1`,
+          [this.tenantId, ingest.aadObjectId],
+        );
+        const hit = matched.rows[0];
+        if (hit) {
+          clusterUuid = hit.cluster_uuid;
+          clusterOmadiaUserId = hit.omadia_user_id;
+        }
+      }
+
+      if (!clusterUuid && verifiedEmail) {
+        const matched = await client.query<{
+          cluster_uuid: string;
+          omadia_user_id: string;
+        }>(
+          `SELECT
+             u.id AS cluster_uuid,
+             (u.properties->>'omadiaUserId') AS omadia_user_id
+           FROM graph_nodes ci
+           JOIN graph_edges e ON e.from_node = ci.id AND e.type = 'IS_IDENTITY_OF'
+           JOIN graph_nodes u ON u.id = e.to_node AND u.type = 'User'
+           WHERE ci.tenant_id = $1
+             AND ci.type = 'ChannelIdentity'
+             AND lower(ci.properties->>'email') = $2
+             AND (ci.properties->>'emailVerified')::boolean = true
+           ORDER BY ci.created_at ASC
+           LIMIT 1`,
+          [this.tenantId, verifiedEmail],
+        );
+        const hit = matched.rows[0];
+        if (hit) {
+          clusterUuid = hit.cluster_uuid;
+          clusterOmadiaUserId = hit.omadia_user_id;
+        }
+      }
+
+      // No match — spin up a fresh 1:1 cluster.
+      if (!clusterUuid || !clusterOmadiaUserId) {
+        clusterOmadiaUserId = randomUUID();
+        const userProps = validateNodeProps('User', {
+          omadiaUserId: clusterOmadiaUserId,
+          firstSeenAt: now,
+          lastSeenAt: now,
+          ...(ingest.displayName ? { displayName: ingest.displayName } : {}),
+        });
+        clusterUuid = await this.upsertNode(client, {
+          externalId: userNodeId(clusterOmadiaUserId),
+          type: 'User',
+          scope: null,
+          userId: clusterOmadiaUserId,
+          props: userProps,
+        });
+        isNewCluster = true;
+      } else {
+        // Refresh the existing cluster's lastSeenAt.
+        await client.query(
+          `UPDATE graph_nodes
+             SET properties = jsonb_set(properties, '{lastSeenAt}', to_jsonb($2::text))
+           WHERE id = $1`,
+          [clusterUuid, now],
+        );
+      }
+
+      // Create the ChannelIdentity node + IS_IDENTITY_OF edge.
+      const identityProps = validateNodeProps('ChannelIdentity', {
+        channelKind: ingest.channelKind,
+        channelUserId: ingest.channelUserId,
+        firstSeenAt: now,
+        lastSeenAt: now,
+        ...(ingest.displayName ? { displayName: ingest.displayName } : {}),
+        ...(normalizedEmail ? { email: normalizedEmail } : {}),
+        ...(ingest.emailVerified !== undefined
+          ? { emailVerified: ingest.emailVerified }
+          : {}),
+        ...(ingest.aadObjectId ? { aadObjectId: ingest.aadObjectId } : {}),
+        ...(ingest.internalChannelData
+          ? { internalChannelData: ingest.internalChannelData }
+          : {}),
+      });
+      const identityUuid = await this.upsertNode(client, {
+        externalId: identityExtId,
+        type: 'ChannelIdentity',
+        scope: null,
+        userId: null,
+        props: identityProps,
+      });
+      await this.upsertEdge(client, {
+        type: 'IS_IDENTITY_OF',
+        fromUuid: identityUuid,
+        toUuid: clusterUuid,
+      });
+
+      await client.query('COMMIT');
+      return {
+        channelIdentityNodeId: identityExtId,
+        userNodeId: userNodeId(clusterOmadiaUserId),
+        omadiaUserId: clusterOmadiaUserId,
+        isNewIdentity: true,
+        isNewCluster,
+      };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   async findEntities(opts: FindEntitiesOptions): Promise<GraphNode[]> {

@@ -10,8 +10,13 @@ export const GRAPH_NODE_TYPES = [
   // on `props`; the namespace string is what the plugin declared in
   // permissions.graph.entity_systems.
   'PluginEntity',
-  // Agentic-run-graph additions (Track B1).
+  // Slice 1b — User-Cluster + ChannelIdentity. `User` is now the
+  // channel-agnostic Omadia identity (cluster root, opaque omadiaUserId).
+  // `ChannelIdentity` is the channel-bound leaf that carries the raw
+  // platform id (AAD oid, Telegram chat-id, …) plus optional verified email
+  // for cross-channel cluster-merge.
   'User',
+  'ChannelIdentity',
   'Run',
   'AgentInvocation',
   'ToolCall',
@@ -32,6 +37,9 @@ export const GRAPH_EDGE_TYPES = [
   // Graph-RAG Phase E: Fact provenance + entity mentions.
   'DERIVED_FROM',
   'MENTIONS',
+  // Slice 1b — ChannelIdentity → User-Cluster cross-link. 1:N from a
+  // single User-Cluster's perspective; exactly 1 outbound per identity.
+  'IS_IDENTITY_OF',
 ] as const;
 
 export const GraphNodeTypeSchema = z.enum(GRAPH_NODE_TYPES);
@@ -95,11 +103,50 @@ const PluginEntityPropsSchema = z
   })
   .passthrough();
 
+// Slice 1b — User is now a channel-agnostic cluster root. `omadiaUserId` is
+// an opaque uuid the host generates on first identity-resolve (not derived
+// from any platform id). `displayName` is seeded from the first
+// ChannelIdentity that joins the cluster and is otherwise user-controlled.
 const UserPropsSchema = z
   .object({
-    userId: z.string().min(1),
+    omadiaUserId: z.string().uuid(),
     firstSeenAt: z.string().datetime(),
     lastSeenAt: z.string().datetime(),
+    displayName: z.string().min(1).optional(),
+  })
+  .passthrough();
+
+// Slice 1b — ChannelIdentity is the channel-bound leaf node. `channelKind`
+// pins the platform; `channelUserId` is the raw platform id (Teams AAD oid,
+// Telegram numeric chat-id, …). `email` + `emailVerified` enable
+// cross-channel cluster-merge: when an incoming identity carries a verified
+// email that matches an existing ChannelIdentity in the same tenant, both
+// land on the same User-Cluster. Without verified email (default for
+// Telegram), each identity gets its own 1:1 cluster.
+// Slice 1b-channel-web adds 'web' — the Admin UI as a first-class channel.
+// Channel-bound id is the users-table row id; emailVerified follows the
+// auth provider (entra → true, local → false). 'admin-ui' would have been
+// more specific but the broader 'web' label keeps the door open for a
+// future end-user chat surface without another migration.
+export const CHANNEL_KINDS = ['teams', 'telegram', 'slack', 'email', 'web'] as const;
+export type ChannelKind = (typeof CHANNEL_KINDS)[number];
+
+const ChannelIdentityPropsSchema = z
+  .object({
+    channelKind: z.enum(CHANNEL_KINDS),
+    channelUserId: z.string().min(1),
+    displayName: z.string().min(1).optional(),
+    email: z.string().email().optional(),
+    emailVerified: z.boolean().optional(),
+    /** Microsoft AAD object id (claims.oid). First-class merge key —
+     *  used by the resolver to deterministically link AAD-authenticated
+     *  identities across channels (Web admin UI + Teams). Indexed
+     *  partially via migration 0014. */
+    aadObjectId: z.string().min(1).optional(),
+    firstSeenAt: z.string().datetime(),
+    lastSeenAt: z.string().datetime(),
+    /** Free-form channel-side payload (Telegram from-object, etc.). */
+    internalChannelData: z.record(z.string(), z.unknown()).optional(),
   })
   .passthrough();
 
@@ -170,6 +217,7 @@ export const NodePropsSchemaByType: Record<
   ConfluencePage: ConfluencePagePropsSchema,
   PluginEntity: PluginEntityPropsSchema,
   User: UserPropsSchema,
+  ChannelIdentity: ChannelIdentityPropsSchema,
   Run: RunPropsSchema,
   AgentInvocation: AgentInvocationPropsSchema,
   ToolCall: ToolCallPropsSchema,

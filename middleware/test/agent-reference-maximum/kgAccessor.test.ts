@@ -144,6 +144,13 @@ function makeFakeKg(calls: FakeKgCalls): KnowledgeGraph {
     searchTurnsByEmbedding: async () => [],
     findEntityCapturedTurns: async () => [],
     findEntities: async () => [],
+    resolveOrCreateChannelIdentity: async () => ({
+      channelIdentityNodeId: 'stub:stub',
+      userNodeId: 'user:stub',
+      omadiaUserId: 'stub',
+      isNewIdentity: false,
+      isNewCluster: false,
+    }),
   } as unknown as KnowledgeGraph;
 }
 

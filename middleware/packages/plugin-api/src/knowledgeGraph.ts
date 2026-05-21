@@ -89,6 +89,22 @@ export interface KnowledgeGraph {
    * Scope-filtering is up to the caller — the graph returns every match.
    */
   findEntities(opts: FindEntitiesOptions): Promise<GraphNode[]>;
+  /**
+   * Slice 1b — resolve an incoming channel-bound identity to a User-Cluster.
+   * Creates the `ChannelIdentity` node if missing and either joins it to an
+   * existing User-Cluster (when `email` + `emailVerified=true` matches another
+   * ChannelIdentity in the same tenant) or spins up a fresh 1:1 cluster.
+   *
+   * Idempotent: re-calling with the same `(channelKind, channelUserId)` pair
+   * returns the same `(channelIdentityNodeId, omadiaUserId)` and does NOT
+   * create duplicate edges.
+   *
+   * Tenant-strict: cross-tenant email matches are NEVER merged — each
+   * tenant gets its own clusters even for the same human.
+   */
+  resolveOrCreateChannelIdentity(
+    ingest: ChannelIdentityIngest,
+  ): Promise<ResolveOrCreateChannelIdentityResult>;
 }
 
 export interface SessionFilter {
@@ -104,7 +120,11 @@ export type GraphNodeType =
    *  `props`; the namespace string is what the plugin declared in its
    *  manifest's `permissions.graph.entity_systems`. */
   | 'PluginEntity'
+  /** Slice 1b — channel-agnostic Omadia identity (cluster root). */
   | 'User'
+  /** Slice 1b — channel-bound leaf node carrying raw platform id +
+   *  optional verified email for cross-channel cluster-merge. */
+  | 'ChannelIdentity'
   | 'Run'
   | 'AgentInvocation'
   | 'ToolCall'
@@ -119,7 +139,9 @@ export type GraphEdgeType =
   | 'INVOKED_TOOL'
   | 'PRODUCED'
   | 'DERIVED_FROM'
-  | 'MENTIONS';
+  | 'MENTIONS'
+  /** Slice 1b — ChannelIdentity → User-Cluster cross-link. */
+  | 'IS_IDENTITY_OF';
 
 export type FactSeverity = 'info' | 'warning' | 'critical';
 
@@ -208,6 +230,59 @@ export interface EntityIngestResult {
   entityIds: string[];
   inserted: number;
   updated: number;
+}
+
+// ---------------------------------------------------------------------------
+// Slice 1b — Channel-aware identity resolution.
+// ---------------------------------------------------------------------------
+
+/** Supported platform discriminators for ChannelIdentity nodes. `web` is
+ *  the admin UI (and any future end-user surface served from the same
+ *  middleware); the channelUserId there is the local `users.id` uuid. */
+export type ChannelKind = 'teams' | 'telegram' | 'slack' | 'email' | 'web';
+
+/**
+ * Payload for {@link KnowledgeGraph.resolveOrCreateChannelIdentity}.
+ *
+ * `email` paired with `emailVerified=true` is the cross-channel merge key:
+ * two ChannelIdentities sharing a verified email in the same tenant join
+ * the same User-Cluster. Anything else (no email, unverified email,
+ * different tenant) gets its own 1:1 cluster.
+ */
+export interface ChannelIdentityIngest {
+  channelKind: ChannelKind;
+  /** Raw platform id (Teams AAD oid, Telegram numeric chat-id, …). */
+  channelUserId: string;
+  displayName?: string;
+  email?: string;
+  emailVerified?: boolean;
+  /**
+   * Microsoft AAD object id (`claims.oid`). First-class merge key —
+   * when set, the resolver matches existing identities in the same
+   * tenant via this oid BEFORE falling back to the verified-email
+   * merge. Stable AAD identifier (cannot be renamed at the IdP), so
+   * cross-channel links for Microsoft-authenticated users are more
+   * robust than the email path. Both the Admin-UI entra-login and the
+   * Teams plugin (when it nachzieht) populate this field, which lets
+   * them deterministically land on the same User-Cluster.
+   */
+  aadObjectId?: string;
+  /** Free-form channel-side payload (Telegram from-object, etc.).
+   *  AAD oid is NOT stored here — it has its own first-class field. */
+  internalChannelData?: Record<string, unknown>;
+}
+
+export interface ResolveOrCreateChannelIdentityResult {
+  /** External id of the ChannelIdentity node (`<channelKind>:<channelUserId>`). */
+  channelIdentityNodeId: string;
+  /** External id of the User-Cluster node (`user:<omadiaUserId>`). */
+  userNodeId: string;
+  /** Opaque cluster-root uuid, also stored on `Run.user_id` / `Turn.userId`. */
+  omadiaUserId: string;
+  /** True if the ChannelIdentity was newly created in this call. */
+  isNewIdentity: boolean;
+  /** True if a fresh User-Cluster was spun up (vs. joining an existing one). */
+  isNewCluster: boolean;
 }
 
 /**
@@ -426,6 +501,14 @@ export interface SessionView {
     turn: GraphNode;
     entities: GraphNode[];
   }>;
+  /**
+   * Slice 1b-channel-web — User-Cluster the session belongs to. Resolved
+   * via `session.props.userId` (= `omadiaUserId`) so graph viewers and
+   * audit consumers can render the user as a first-class neighbor of the
+   * session without an extra round-trip. Undefined when the session has
+   * no `userId` (anonymous or pre-Slice-1b).
+   */
+  user?: GraphNode;
 }
 
 export interface GraphStats {
@@ -580,8 +663,25 @@ export function entityNodeId(ref: EntityRef): string {
   return `${ref.system}:${ref.model}:${String(ref.id)}`;
 }
 
-export function userNodeId(userId: string): string {
-  return `user:${userId}`;
+/**
+ * Slice 1b — User-Cluster external id. Argument is the opaque
+ * `omadiaUserId` (uuid), not a channel-bound platform id.
+ */
+export function userNodeId(omadiaUserId: string): string {
+  return `user:${omadiaUserId}`;
+}
+
+/**
+ * Slice 1b — ChannelIdentity external id. Matches the v1
+ * `PlatformIdentity.platformId` shape from `@omadia/channel-sdk`
+ * (`${channelKind}:${platformId}`) so channel adapters can pass either
+ * verbatim.
+ */
+export function channelIdentityNodeId(
+  channelKind: ChannelKind,
+  channelUserId: string,
+): string {
+  return `${channelKind}:${channelUserId}`;
 }
 
 export function runNodeId(turnExternalId: string): string {

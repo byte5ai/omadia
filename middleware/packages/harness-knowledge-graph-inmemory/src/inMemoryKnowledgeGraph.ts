@@ -1,11 +1,15 @@
+import { randomUUID } from 'node:crypto';
+
 import {
   agentInvocationNodeId,
+  channelIdentityNodeId,
   entityNodeId,
   runNodeId,
   sessionNodeId,
   toolCallNodeId,
   turnNodeId,
   userNodeId,
+  type ChannelIdentityIngest,
   type EntityRef,
   type EntityCapturedTurnsHit,
   type EntityCapturedTurnsOptions,
@@ -20,6 +24,7 @@ import {
   type GraphNodeType,
   type GraphStats,
   type KnowledgeGraph,
+  type ResolveOrCreateChannelIdentityResult,
   type RunAgentInvocationView,
   type RunIngestResult,
   type RunToolCallView,
@@ -231,7 +236,13 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         .filter((n): n is GraphNode => n !== undefined);
       return { turn: turnNode as GraphNode, entities };
     });
-    return { session, turns };
+    // Slice 1b-channel-web — User-Cluster as first-class neighbor.
+    const sessionUserId = session.props['userId'];
+    const user =
+      typeof sessionUserId === 'string' && sessionUserId.length > 0
+        ? this.nodes.get(userNodeId(sessionUserId))
+        : undefined;
+    return { session, turns, ...(user ? { user } : {}) };
   }
 
   async listSessions(filter?: SessionFilter): Promise<SessionSummary[]> {
@@ -278,6 +289,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       ConfluencePage: 0,
       PluginEntity: 0,
       User: 0,
+      ChannelIdentity: 0,
       Run: 0,
       AgentInvocation: 0,
       ToolCall: 0,
@@ -296,6 +308,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       PRODUCED: 0,
       DERIVED_FROM: 0,
       MENTIONS: 0,
+      IS_IDENTITY_OF: 0,
     };
     for (const e of this.edges.values()) byEdgeType[e.type]++;
 
@@ -311,15 +324,21 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     const runId = runNodeId(trace.turnId);
     const userNode = trace.userId ? userNodeId(trace.userId) : undefined;
 
+    // Slice 1b — `trace.userId` is the cluster-root `omadiaUserId`. The
+    // User-Cluster must already exist (created via
+    // `resolveOrCreateChannelIdentity`). We refresh `lastSeenAt` and link
+    // via BELONGS_TO; we do NOT auto-create the cluster here.
     if (userNode && trace.userId) {
+      const existing = this.nodes.get(userNode);
+      if (!existing) {
+        throw new Error(
+          `ingestRun: User-Cluster ${userNode} not found — call resolveOrCreateChannelIdentity first`,
+        );
+      }
       this.upsertNode({
         id: userNode,
         type: 'User',
-        props: {
-          userId: trace.userId,
-          firstSeenAt: trace.startedAt,
-          lastSeenAt: trace.finishedAt,
-        },
+        props: { ...existing.props, lastSeenAt: trace.finishedAt },
       });
       this.addEdge({ type: 'BELONGS_TO', from: trace.turnId, to: userNode });
     }
@@ -555,6 +574,162 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     }
     scored.sort((a, b) => b._hybrid - a._hybrid);
     return scored.slice(0, limit).map(({ _hybrid: _, ...hit }) => hit);
+  }
+
+  async resolveOrCreateChannelIdentity(
+    ingest: ChannelIdentityIngest,
+  ): Promise<ResolveOrCreateChannelIdentityResult> {
+    const identityExtId = channelIdentityNodeId(
+      ingest.channelKind,
+      ingest.channelUserId,
+    );
+    const now = new Date().toISOString();
+    const normalizedEmail = ingest.email?.trim().toLowerCase();
+    const verifiedEmail =
+      normalizedEmail && ingest.emailVerified === true ? normalizedEmail : null;
+
+    // Fast path: exact ChannelIdentity already exists.
+    const existing = this.nodes.get(identityExtId);
+    if (existing && existing.type === 'ChannelIdentity') {
+      const link = [...this.edges.values()].find(
+        (e) => e.type === 'IS_IDENTITY_OF' && e.from === identityExtId,
+      );
+      const cluster = link ? this.nodes.get(link.to) : undefined;
+      if (cluster && cluster.type === 'User') {
+        const clusterOmadiaUserId = String(cluster.props['omadiaUserId'] ?? '');
+        this.upsertNode({
+          id: identityExtId,
+          type: 'ChannelIdentity',
+          props: { ...existing.props, lastSeenAt: now },
+        });
+        this.upsertNode({
+          id: cluster.id,
+          type: 'User',
+          props: { ...cluster.props, lastSeenAt: now },
+        });
+        return {
+          channelIdentityNodeId: identityExtId,
+          userNodeId: cluster.id,
+          omadiaUserId: clusterOmadiaUserId,
+          isNewIdentity: false,
+          isNewCluster: false,
+        };
+      }
+    }
+
+    // Merge strategy (mirrors NeonKnowledgeGraph.resolveOrCreateChannelIdentity):
+    //   1. AAD-oid match: any kind in single-tenant in-memory store
+    //      carrying the same aadObjectId.
+    //   2. Verified-email match.
+    let clusterId: string | undefined;
+    let clusterOmadiaUserId: string | undefined;
+    let isNewCluster = false;
+
+    const findClusterForIdentity = (
+      predicate: (n: GraphNode) => boolean,
+    ): { clusterId: string; omadiaUserId: string } | undefined => {
+      for (const n of this.nodes.values()) {
+        if (n.type !== 'ChannelIdentity') continue;
+        if (!predicate(n)) continue;
+        const link = [...this.edges.values()].find(
+          (e) => e.type === 'IS_IDENTITY_OF' && e.from === n.id,
+        );
+        if (!link) continue;
+        const c = this.nodes.get(link.to);
+        if (c && c.type === 'User') {
+          return {
+            clusterId: c.id,
+            omadiaUserId: String(c.props['omadiaUserId'] ?? ''),
+          };
+        }
+      }
+      return undefined;
+    };
+
+    if (ingest.aadObjectId) {
+      const hit = findClusterForIdentity(
+        (n) => n.props['aadObjectId'] === ingest.aadObjectId,
+      );
+      if (hit) {
+        clusterId = hit.clusterId;
+        clusterOmadiaUserId = hit.omadiaUserId;
+      }
+    }
+
+    if (!clusterId && verifiedEmail) {
+      const hit = findClusterForIdentity((n) => {
+        const ne = String(n.props['email'] ?? '').toLowerCase();
+        const verified = n.props['emailVerified'] === true;
+        return ne === verifiedEmail && verified;
+      });
+      if (hit) {
+        clusterId = hit.clusterId;
+        clusterOmadiaUserId = hit.omadiaUserId;
+      }
+    }
+
+    if (clusterId) {
+      // Refresh the existing cluster's lastSeenAt.
+      const c = this.nodes.get(clusterId);
+      if (c && c.type === 'User') {
+        this.upsertNode({
+          id: c.id,
+          type: 'User',
+          props: { ...c.props, lastSeenAt: now },
+        });
+      }
+    }
+
+    // No match — fresh 1:1 cluster.
+    if (!clusterId || !clusterOmadiaUserId) {
+      clusterOmadiaUserId = randomUUID();
+      clusterId = userNodeId(clusterOmadiaUserId);
+      this.upsertNode({
+        id: clusterId,
+        type: 'User',
+        props: {
+          omadiaUserId: clusterOmadiaUserId,
+          firstSeenAt: now,
+          lastSeenAt: now,
+          ...(ingest.displayName ? { displayName: ingest.displayName } : {}),
+        },
+      });
+      isNewCluster = true;
+    }
+
+    // Write the ChannelIdentity + edge.
+    this.upsertNode({
+      id: identityExtId,
+      type: 'ChannelIdentity',
+      props: {
+        channelKind: ingest.channelKind,
+        channelUserId: ingest.channelUserId,
+        firstSeenAt: now,
+        lastSeenAt: now,
+        ...(ingest.displayName ? { displayName: ingest.displayName } : {}),
+        ...(normalizedEmail ? { email: normalizedEmail } : {}),
+        ...(ingest.emailVerified !== undefined
+          ? { emailVerified: ingest.emailVerified }
+          : {}),
+        ...(ingest.aadObjectId ? { aadObjectId: ingest.aadObjectId } : {}),
+        ...(ingest.internalChannelData
+          ? { internalChannelData: ingest.internalChannelData }
+          : {}),
+      },
+    });
+    this.addEdge({
+      type: 'IS_IDENTITY_OF',
+      from: identityExtId,
+      to: clusterId,
+    });
+
+    return {
+      channelIdentityNodeId: identityExtId,
+      userNodeId: clusterId,
+      omadiaUserId: clusterOmadiaUserId,
+      isNewIdentity: true,
+      isNewCluster,
+    };
   }
 
   async findEntities(opts: FindEntitiesOptions): Promise<GraphNode[]> {

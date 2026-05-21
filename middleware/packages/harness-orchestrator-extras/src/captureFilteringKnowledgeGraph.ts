@@ -46,6 +46,8 @@ import type {
   EntityCapturedTurnsHit,
   SearchTurnsByEmbeddingOptions,
   FindEntitiesOptions,
+  ChannelIdentityIngest,
+  ResolveOrCreateChannelIdentityResult,
 } from '@omadia/plugin-api';
 import {
   sessionNodeId,
@@ -167,5 +169,11 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
 
   findEntities(opts: FindEntitiesOptions): Promise<GraphNode[]> {
     return this.inner.findEntities(opts);
+  }
+
+  resolveOrCreateChannelIdentity(
+    ingest: ChannelIdentityIngest,
+  ): Promise<ResolveOrCreateChannelIdentityResult> {
+    return this.inner.resolveOrCreateChannelIdentity(ingest);
   }
 }

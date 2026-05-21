@@ -113,6 +113,14 @@ function buildElements(
 
   const addSessionView = (sv: SessionView): void => {
     addNode(sv.session);
+    // Slice 1b-channel-web — render the User-Cluster as a first-class
+    // neighbor of the session (BELONGS_TO is the canonical relation in
+    // the graph; we surface it as TRIGGERED here to align with the
+    // existing run-user visualisation).
+    if (sv.user) {
+      addNode(sv.user);
+      addEdge(sv.user.id, sv.session.id, 'TRIGGERED');
+    }
     for (const { turn, entities } of sv.turns) {
       if (filter.showTrace) {
         addNode(turn);
