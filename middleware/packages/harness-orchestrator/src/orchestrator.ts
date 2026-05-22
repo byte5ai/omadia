@@ -129,6 +129,12 @@ const KERNEL_NATIVE_TOOL_NAMES: readonly string[] = [
 // `services/orchestrator.js`.
 
 export interface OrchestratorOptions {
+  /**
+   * The Agent (orchestrator instance) this build belongs to. Optional for
+   * back-compat with direct constructions; the per-Agent factory
+   * (`buildOrchestratorForAgent`) always sets it. Defaults to `'default'`.
+   */
+  agentId?: string;
   client: Anthropic;
   model: string;
   maxTokens: number;
@@ -657,6 +663,8 @@ export function parseToolEmittedRoutineList(
 }
 
 export class Orchestrator {
+  /** The Agent (orchestrator instance) this object serves. */
+  readonly agentId: string;
   private readonly client: Anthropic;
   private readonly model: string;
   private readonly maxTokens: number;
@@ -694,6 +702,7 @@ export class Orchestrator {
   private pendingRoutineList: PendingRoutineList | undefined;
 
   constructor(options: OrchestratorOptions) {
+    this.agentId = options.agentId ?? 'default';
     this.client = options.client;
     this.model = options.model;
     this.maxTokens = options.maxTokens;

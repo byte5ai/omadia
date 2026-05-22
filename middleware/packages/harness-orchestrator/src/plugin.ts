@@ -34,15 +34,11 @@ import {
 } from '@omadia/plugin-api';
 import type { VerifierBundle } from '@omadia/verifier';
 
-import { ChatSessionStore } from './chatSessionStore.js';
+import { buildOrchestratorForAgent } from './buildOrchestrator.js';
+import type { ChatSessionStore } from './chatSessionStore.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
-import { Orchestrator } from './orchestrator.js';
-import { SessionLogger } from './sessionLogger.js';
-import { AskUserChoiceTool } from './tools/askUserChoiceTool.js';
-import { BookMeetingTool } from './tools/bookMeetingTool.js';
-import { ChatParticipantsTool } from './tools/chatParticipantsTool.js';
-import { FindFreeSlotsTool } from './tools/findFreeSlotsTool.js';
-import { SuggestFollowUpsTool } from './tools/suggestFollowUpsTool.js';
+import type { Orchestrator } from './orchestrator.js';
+import type { SessionLogger } from './sessionLogger.js';
 import {
   EDIT_PROCESS_TOOL_NAME,
   PROCESS_MEMORY_SYSTEM_PROMPT_DOC,
@@ -58,8 +54,6 @@ import {
   runStoredProcessToolSpec,
   writeProcessToolSpec,
 } from './tools/processMemoryTool.js';
-import { VerifierService } from './verifierService.js';
-
 /**
  * @omadia/orchestrator — plugin entry point.
  *
@@ -276,33 +270,8 @@ export async function activate(
     DEFAULT_MAX_ITERATIONS,
   );
 
-  // Anthropic client + storage layer
+  // Anthropic client — shared across every Agent built from this plugin.
   const client = new Anthropic({ apiKey });
-  const chatSessionStore = new ChatSessionStore(memoryStore);
-  const sessionLogger = new SessionLogger(
-    memoryStore,
-    knowledgeGraph,
-    chatSessionStore,
-  );
-
-  // Native-tool instances (channel-coupled UI cards + calendar)
-  const chatParticipantsTool = new ChatParticipantsTool();
-  const askUserChoiceTool = new AskUserChoiceTool();
-  const suggestFollowUpsTool = new SuggestFollowUpsTool();
-  const findFreeSlotsTool = microsoft365
-    ? new FindFreeSlotsTool(
-        microsoft365.obo,
-        microsoft365.calendar,
-        microsoft365.slots,
-      )
-    : undefined;
-  const bookMeetingTool = microsoft365
-    ? new BookMeetingTool(
-        microsoft365.obo,
-        microsoft365.calendar,
-        microsoft365.slots,
-      )
-    : undefined;
 
   // OB-77 (Palaia Phase 8) — Nudge-Pipeline. Publish a fresh in-memory
   // registry, then drain `nudgeProviders@1` (side-channel for plugins
@@ -333,36 +302,9 @@ export async function activate(
     `[harness-orchestrator] nudgeRegistry@1 published (stateStore=${nudgeStateStore ? 'on' : 'off'}, queuedProviders=${String(queuedNudgeProviders.length)})`,
   );
 
-  // Orchestrator construction. domainTools is intentionally empty here —
-  // sub-agents (kernel-built calendar/accounting/hr/confluence + uploaded
-  // agents from dynamicAgentRuntime) self-register via the kernel's
-  // `dynamicAgentRuntime.attachOrchestrator(bundle.raw)` post-activate
-  // callout, mirroring today's hot-register flow.
-  const orchestrator = new Orchestrator({
-    client,
-    model,
-    maxTokens,
-    maxToolIterations: maxIterations,
-    domainTools: [],
-    nativeToolRegistry,
-    sessionLogger,
-    entityRefBus,
-    knowledgeGraph,
-    ...(contextRetriever ? { contextRetriever } : {}),
-    ...(sessionBriefing ? { sessionBriefing } : {}),
-    ...(factExtractor ? { factExtractor } : {}),
-    chatParticipantsTool,
-    askUserChoiceTool,
-    suggestFollowUpsTool,
-    ...(findFreeSlotsTool ? { findFreeSlotsTool } : {}),
-    ...(bookMeetingTool ? { bookMeetingTool } : {}),
-    ...(embeddingClient ? { embeddingClient } : {}),
-    responseGuard: responseGuardGetter,
-    privacyGuard: privacyGuardGetter,
-    nudgeRegistry,
-    ...(nudgeStateStore ? { nudgeStateStore } : {}),
-    ...(processMemory ? { nudgeProcessMemory: processMemory } : {}),
-  });
+  // US3 — Orchestrator construction is the per-Agent factory
+  // `buildOrchestratorForAgent`; invoked below, after the process-wide
+  // ProcessMemory tool registration.
 
   // OB-76: attach 4 ProcessMemory native tools via the nativeToolRegistry.
   // Full registration (handler + spec + promptDoc) — the
@@ -405,31 +347,37 @@ export async function activate(
     );
   }
 
-  // Verifier wrapper — only when the verifier@1 capability is published.
-  // Without it, the bare Orchestrator IS the chatAgent (it implements the
-  // duck-typed ChatAgent contract via chat() + chatStream()).
-  let agent: ChatAgent = orchestrator;
-  if (verifierBundle) {
-    agent = new VerifierService({
-      orchestrator,
-      pipeline: verifierBundle.pipeline,
-      ...(verifierBundle.store ? { store: verifierBundle.store } : {}),
-      enabled: true,
-      mode: verifierBundle.mode,
-      maxRetries: verifierBundle.maxRetries,
-    });
-    ctx.log(
-      `[harness-orchestrator] verifier wrapper enabled (mode=${verifierBundle.mode}, store=${verifierBundle.store ? 'on' : 'off'}, maxRetries=${String(verifierBundle.maxRetries)})`,
-    );
-  }
-
-  const bundle: ChatAgentBundle = {
-    agent,
-    raw: orchestrator,
-    sessionLogger,
-    chatSessionStore,
-  };
-  ctx.services.provide(CHAT_AGENT_SERVICE, bundle);
+  // US3 — per-Agent Orchestrator construction. The orchestrator plugin
+  // builds the single "default" Agent; the multi-orchestrator registry
+  // (US4) will call the same factory once per configured Agent. The
+  // process-shared services resolved above are passed in via `deps`.
+  const built = buildOrchestratorForAgent(
+    {
+      agentId: 'default',
+      model,
+      maxTokens,
+      maxToolIterations: maxIterations,
+    },
+    {
+      client,
+      knowledgeGraph,
+      memoryStore,
+      entityRefBus,
+      nativeToolRegistry,
+      nudgeRegistry,
+      responseGuard: responseGuardGetter,
+      privacyGuard: privacyGuardGetter,
+      ...(contextRetriever ? { contextRetriever } : {}),
+      ...(sessionBriefing ? { sessionBriefing } : {}),
+      ...(factExtractor ? { factExtractor } : {}),
+      ...(embeddingClient ? { embeddingClient } : {}),
+      ...(microsoft365 ? { microsoft365 } : {}),
+      ...(verifierBundle ? { verifierBundle } : {}),
+      ...(nudgeStateStore ? { nudgeStateStore } : {}),
+      ...(processMemory ? { processMemory } : {}),
+    },
+  );
+  ctx.services.provide(CHAT_AGENT_SERVICE, built.bundle);
 
   ctx.log(
     `[harness-orchestrator] chatAgent@1 published (model=${model}, maxTokens=${String(maxTokens)}, maxIter=${String(maxIterations)}, verifier=${verifierBundle ? 'on' : 'off'}, calendar=${microsoft365 ? 'on' : 'off'}, contextRetriever=${contextRetriever ? 'on' : 'off'}, factExtractor=${factExtractor ? 'on' : 'off'}, embeddingClient=${embeddingClient ? 'on' : 'off'}, responseGuard=late-bound)`,
