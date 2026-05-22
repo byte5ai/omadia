@@ -165,9 +165,12 @@ export const VERB_TOOL_SPECS: ReadonlyArray<V4ToolSpec> = [
 export const RENDER_TOOL_SPEC: V4ToolSpec = {
   name: 'v4_render_answer',
   description:
-    'Produce the final answer. Provide PII-free prose plus the datasetId, ' +
-    'the columns to show, and a format (table/list/scalar). The server ' +
-    'renders the real values into the user-facing answer.',
+    'Produce the final answer — ALWAYS end a data question with this call; ' +
+    'never write the data table/list yourself. Provide PII-free prose plus ' +
+    'the datasetId, the columns to show, and a format (table/list/scalar). ' +
+    '`columns` SHOULD include identity / sensitive-masked fields (names, ' +
+    'e-mails): the server fills in their real values for the authorised ' +
+    'user. The rendered answer never returns through you.',
   inputSchema: {
     type: 'object',
     properties: {

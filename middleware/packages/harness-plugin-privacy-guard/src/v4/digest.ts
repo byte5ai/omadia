@@ -122,11 +122,27 @@ export function buildDigest(dataset: Dataset): Digest {
  * (US6), keyed by `datasetId`.
  */
 export function digestToToolResultText(digest: Digest): string {
-  const header =
-    '[privacy-shield-v4] The raw tool result is held server-side. ' +
-    'You receive a structural digest only — no row data. Operate on it ' +
-    'through the verb tools (filter/sort/group/aggregate/top_n/select/' +
-    'count/join) keyed by datasetId, then emit a render directive for the ' +
-    'final answer. Masked fields carry no values; never invent them.';
+  const header = [
+    '[privacy-shield-v4] The raw tool result is held server-side; you',
+    'receive this structural digest only — no row data. Work on it through',
+    'the verb tools (filter/sort/group/aggregate/top_n/select/count/join)',
+    'keyed by datasetId, then call v4_render_answer to produce the final',
+    'answer.',
+    '',
+    'A field whose digest shows "classification":"sensitive-masked" is',
+    'hidden from YOU only — its real value exists server-side and the end',
+    'user IS authorised to see it. Therefore:',
+    '- To show masked values (names, e-mails, …) in the answer, INCLUDE',
+    '  that column in v4_render_answer.columns — the server fills in the',
+    '  real values for the user.',
+    '- The final data answer MUST be a v4_render_answer call. Never write',
+    '  the table/list yourself, never drop an identity column, and never',
+    '  tell the user the data is "filtered" or "cannot be shown" — they',
+    '  receive the real values, not "[masked]".',
+    '- Never invent or guess a masked value yourself.',
+    '- aggregate/group keep only the key + aggregate columns; to keep a',
+    '  name on aggregated rows, join the result back to a dataset that',
+    '  still carries the identity column.',
+  ].join('\n');
   return `${header}\n\n${JSON.stringify(digest)}`;
 }
