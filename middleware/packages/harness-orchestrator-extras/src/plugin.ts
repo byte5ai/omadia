@@ -9,8 +9,16 @@ import type {
   Visibility,
 } from '@omadia/plugin-api';
 import {
+  BULK_EXCERPT_MERGE_DETECT_SERVICE_NAME,
+  BULK_INCONSISTENCY_SERVICE_NAME,
+  BULK_MERGE_DETECT_SERVICE_NAME,
+  BULK_PROMOTION_SERVICE_NAME,
+  INCONSISTENCY_DETECTOR_SERVICE_NAME,
+  MERGE_CANDIDATE_DETECTOR_SERVICE_NAME,
   NUDGE_PROVIDERS_SERVICE_NAME,
+  PALAIA_EXCERPT_SERVICE_NAME,
   PROCESS_MEMORY_SERVICE_NAME,
+  TOPIC_CLUSTERING_SERVICE_NAME,
 } from '@omadia/plugin-api';
 
 import {
@@ -22,6 +30,16 @@ import { CaptureFilteringKnowledgeGraph } from './captureFilteringKnowledgeGraph
 import { ContextRetriever } from './contextRetriever.js';
 import type { Pool } from 'pg';
 
+import { createBulkExcerptMergeDetectService } from './bulkExcerptMergeDetect.js';
+import { createBulkInconsistencyService } from './bulkInconsistency.js';
+import { createBulkMergeDetectService } from './bulkMergeDetect.js';
+import { createBulkPromotionService } from './bulkPromotion.js';
+import { createMergeCandidateDetector } from './mergeCandidateDetector.js';
+import { MergeTriggeringKnowledgeGraph } from './mergeTriggeringKnowledgeGraph.js';
+import { createTopicClusteringService } from './topicClustering.js';
+import { createHaikuPalaiaExcerptExtractor } from './excerptExtractor.js';
+import { createInconsistencyDetector } from './inconsistencyDetector.js';
+import { InconsistencyTriggeringKnowledgeGraph } from './inconsistencyTriggeringKnowledgeGraph.js';
 import { FactExtractor } from './factExtractor.js';
 import { createHaikuSessionSummaryGenerator } from './sessionSummaryGenerator.js';
 import { createSessionBriefingService } from './sessionBriefing.js';
@@ -165,6 +183,35 @@ export async function activate(
     100,
   );
 
+  // Slice 7 — memory-recall toggle + tuning. Default ON whenever an
+  // embeddingClient is wired (we still skip the leg in `loadMemoryHits`
+  // when no userId is present). Set KG_ACL_MEMORY_RECALL_ENABLED=false
+  // (or config key kg_acl_memory_recall_enabled=false) to A/B without
+  // a code change.
+  const memoryRecallEnabledRaw =
+    ctx.config.get<unknown>('kg_acl_memory_recall_enabled') ??
+    process.env['KG_ACL_MEMORY_RECALL_ENABLED'];
+  const memoryRecallDisabled =
+    typeof memoryRecallEnabledRaw === 'string'
+      ? memoryRecallEnabledRaw.toLowerCase() === 'false'
+      : memoryRecallEnabledRaw === false;
+  const memoryLimit = parseNumberOrDefault(
+    ctx.config.get<unknown>('kg_acl_memory_recall_limit'),
+    3,
+  );
+  const memoryExcerptsPerMemory = parseNumberOrDefault(
+    ctx.config.get<unknown>('kg_acl_memory_recall_excerpts_per_memory'),
+    2,
+  );
+  const memoryMinSimilarity = parseNumberOrDefault(
+    ctx.config.get<unknown>('kg_acl_memory_recall_min_similarity'),
+    0.5,
+  );
+  const memoryBoostFactor = parseNumberOrDefault(
+    ctx.config.get<unknown>('kg_acl_memory_recall_boost_factor'),
+    1.2,
+  );
+
   let anthropic: Anthropic | undefined;
   if (apiKey) {
     anthropic = new Anthropic({ apiKey });
@@ -195,17 +242,22 @@ export async function activate(
     defaultThresholdForLevel(captureLevel),
   );
 
+  // Slice 8 — extract the scorer so the bulkPromotion service can
+  // reuse it. CaptureFilter wraps it transparently for the live path;
+  // the bulk job calls `.score(text)` directly.
+  const significanceScorer = anthropic
+    ? createHaikuSignificanceScorer({
+        anthropic,
+        model: factModel,
+        log: ctx.log,
+      })
+    : undefined;
+
   const captureFilter = new CaptureFilter({
     captureLevel,
     defaultVisibility: captureDefaultVisibility,
     significanceThreshold: captureSignificanceThreshold,
-    significanceScorer: anthropic
-      ? createHaikuSignificanceScorer({
-          anthropic,
-          model: factModel,
-          log: ctx.log,
-        })
-      : undefined,
+    ...(significanceScorer ? { significanceScorer } : {}),
     log: ctx.log,
   });
   const disposeCaptureFilter = ctx.services.provide(
@@ -213,14 +265,60 @@ export async function activate(
     captureFilter,
   );
 
-  const wrappedKg = new CaptureFilteringKnowledgeGraph({
+  const captureWrappedKg = new CaptureFilteringKnowledgeGraph({
     inner: knowledgeGraph,
     filter: captureFilter,
     log: ctx.log,
   });
+
+  // Slice 9 — Inconsistency detector + triggering wrapper. Stack
+  // order: capture-filter (inner) → inconsistency-trigger.
+  // The trigger fires fire-and-forget AFTER each MK mutation; the
+  // detector calls back into the same wrapped KG via the published
+  // service so its own searches see the same view live readers do.
+  const inconsistencyDetector = createInconsistencyDetector({
+    graph: captureWrappedKg,
+    ...(embeddingClient ? { embeddingClient } : {}),
+    ...(anthropic ? { anthropic, model: factModel } : {}),
+    log: (msg) => { console.error(msg); },
+  });
+  const disposeInconsistencyDetector = ctx.services.provide(
+    INCONSISTENCY_DETECTOR_SERVICE_NAME,
+    inconsistencyDetector,
+  );
+  const inconsistencyWrappedKg = new InconsistencyTriggeringKnowledgeGraph({
+    inner: captureWrappedKg,
+    detector: inconsistencyDetector,
+    log: (msg) => { console.error(msg); },
+  });
+  ctx.log(
+    `[harness-orchestrator-extras] inconsistency-detector ready (embed=${embeddingClient ? 'on' : 'off'}, judge=${anthropic ? 'on' : 'off'})`,
+  );
+
+  // Slice 10 — MergeCandidate detector + triggering wrapper. Stack
+  // order: capture-filter → inconsistency-trigger → merge-trigger
+  // (outermost). Cosine-only, no Anthropic dependency. Always active
+  // when embeddingClient is wired.
+  const mergeCandidateDetector = createMergeCandidateDetector({
+    graph: inconsistencyWrappedKg,
+    ...(embeddingClient ? { embeddingClient } : {}),
+    log: (msg) => { console.error(msg); },
+  });
+  const disposeMergeCandidateDetector = ctx.services.provide(
+    MERGE_CANDIDATE_DETECTOR_SERVICE_NAME,
+    mergeCandidateDetector,
+  );
+  const wrappedKg = new MergeTriggeringKnowledgeGraph({
+    inner: inconsistencyWrappedKg,
+    detector: mergeCandidateDetector,
+    log: (msg) => { console.error(msg); },
+  });
   const disposeWrappedKg = ctx.services.replace(
     KNOWLEDGE_GRAPH_SERVICE,
     wrappedKg,
+  );
+  ctx.log(
+    `[harness-orchestrator-extras] merge-candidate-detector ready (embed=${embeddingClient ? 'on' : 'off'})`,
   );
 
   ctx.log(
@@ -239,21 +337,127 @@ export async function activate(
       charsPerToken: contextCharsPerToken,
       manualBoostFactor: contextManualBoostFactor,
       compactModeThreshold: contextCompactModeThreshold,
+      memoryRecallDisabled,
+      memoryLimit,
+      excerptsPerMemory: memoryExcerptsPerMemory,
+      memoryMinSimilarity,
+      memoryBoostFactor,
     },
     embeddingClient,
     agentPriorities,
   );
   ctx.log(
-    `[harness-orchestrator-extras] context-assembler ready (budget=${String(contextDefaultBudgetTokens)}tk, chars/tk=${String(contextCharsPerToken)}, manual-boost=${contextManualBoostFactor.toFixed(2)}, compact>${String(contextCompactModeThreshold)}, agentPriorities=${agentPriorities ? 'on' : 'off'})`,
+    `[harness-orchestrator-extras] context-assembler ready (budget=${String(contextDefaultBudgetTokens)}tk, chars/tk=${String(contextCharsPerToken)}, manual-boost=${contextManualBoostFactor.toFixed(2)}, compact>${String(contextCompactModeThreshold)}, agentPriorities=${agentPriorities ? 'on' : 'off'}, memoryRecall=${embeddingClient && !memoryRecallDisabled ? `on(limit=${String(memoryLimit)},excerpts=${String(memoryExcerptsPerMemory)},minSim=${memoryMinSimilarity.toFixed(2)})` : 'off'})`,
   );
   const disposeContext = ctx.services.provide(
     CONTEXT_RETRIEVER_SERVICE,
     contextRetriever,
   );
 
+  // Slice 8 — bulk score+promote service, always published. `preview`
+  // works without a scorer (returns scorerAvailable=false); `run`
+  // throws bulk.scorer_unavailable when called without one. Pool is
+  // resolved from the optional graphPool capability — when absent,
+  // the service stays unpublished.
+  let disposeBulkPromotion: (() => void) | undefined;
+  const bulkPromotionPool = ctx.services.get<Pool>('graphPool');
+  const bulkPromotionTenantId =
+    ctx.config.get<string>('graph_tenant_id') ??
+    process.env['GRAPH_TENANT_ID'] ??
+    'default';
+  if (bulkPromotionPool) {
+    const bulkPromotion = createBulkPromotionService({
+      pool: bulkPromotionPool,
+      tenantId: bulkPromotionTenantId,
+      kg: wrappedKg,
+      ...(significanceScorer ? { scorer: significanceScorer } : {}),
+      log: (msg) => { console.error(msg); },
+    });
+    disposeBulkPromotion = ctx.services.provide(
+      BULK_PROMOTION_SERVICE_NAME,
+      bulkPromotion,
+    );
+    ctx.log(
+      `[harness-orchestrator-extras] bulkPromotion ready (scorer=${significanceScorer ? 'on' : 'off'}, tenant=${bulkPromotionTenantId})`,
+    );
+  } else {
+    ctx.log(
+      '[harness-orchestrator-extras] bulkPromotion skipped — graphPool capability not published',
+    );
+  }
+
+  // Slice 9.5 — operator-triggered bulk inconsistency-detect pass.
+  // Reuses the Slice-9 detector (already constructed above) and the
+  // wrapped KG. Always publishes — `preview()` reflects whether the
+  // judgement-pass is wired (Anthropic key present); `run()` throws
+  // `bulk.detector_unavailable` if the operator triggers it without
+  // a key configured.
+  const bulkInconsistency = createBulkInconsistencyService({
+    kg: wrappedKg,
+    detector: inconsistencyDetector,
+    judgementAvailable: anthropic !== undefined,
+    log: (msg) => { console.error(msg); },
+  });
+  const disposeBulkInconsistency = ctx.services.provide(
+    BULK_INCONSISTENCY_SERVICE_NAME,
+    bulkInconsistency,
+  );
+  ctx.log(
+    `[harness-orchestrator-extras] bulkInconsistency ready (judge=${anthropic ? 'on' : 'off'})`,
+  );
+
+  // Slice 10 — bulk merge-detect service. Cosine-only → always
+  // available (no Anthropic key gate). `preview()` reports
+  // `detectorAvailable: true` unconditionally.
+  const bulkMergeDetect = createBulkMergeDetectService({
+    kg: wrappedKg,
+    detector: mergeCandidateDetector,
+    log: (msg) => { console.error(msg); },
+  });
+  const disposeBulkMergeDetect = ctx.services.provide(
+    BULK_MERGE_DETECT_SERVICE_NAME,
+    bulkMergeDetect,
+  );
+  ctx.log(
+    `[harness-orchestrator-extras] bulkMergeDetect ready (embed=${embeddingClient ? 'on' : 'off'})`,
+  );
+
+  // Slice 12 — Bulk Excerpt Merge Detect. Cosine-only (no Anthropic
+  // dep) — always available when embeddingClient is wired.
+  const bulkExcerptMergeDetect = createBulkExcerptMergeDetectService({
+    kg: wrappedKg,
+    detector: mergeCandidateDetector,
+    log: (msg) => { console.error(msg); },
+  });
+  const disposeBulkExcerptMergeDetect = ctx.services.provide(
+    BULK_EXCERPT_MERGE_DETECT_SERVICE_NAME,
+    bulkExcerptMergeDetect,
+  );
+  ctx.log(
+    `[harness-orchestrator-extras] bulkExcerptMergeDetect ready (embed=${embeddingClient ? 'on' : 'off'})`,
+  );
+
+  // Slice 11 — Topic clustering. Operator-triggered, cosine-only
+  // discovery + optional Haiku naming (falls back to "Cluster N" when
+  // no Anthropic key). Always published; the route 503s nothing — even
+  // without Haiku the operator can still cluster + browse.
+  const topicClustering = createTopicClusteringService({
+    kg: wrappedKg,
+    ...(anthropic ? { anthropic, model: factModel } : {}),
+    log: (msg) => { console.error(msg); },
+  });
+  const disposeTopicClustering = ctx.services.provide(
+    TOPIC_CLUSTERING_SERVICE_NAME,
+    topicClustering,
+  );
+  ctx.log(
+    `[harness-orchestrator-extras] topicClustering ready (naming=${anthropic ? 'haiku' : 'fallback'})`,
+  );
+
   let disposeFactExtractor: (() => void) | undefined;
   let disposeTopicDetector: (() => void) | undefined;
   let disposeSessionBriefing: (() => void) | undefined;
+  let disposePalaiaExcerpt: (() => void) | undefined;
 
   if (anthropic) {
     const factExtractor = new FactExtractor({
@@ -264,6 +468,21 @@ export async function activate(
     disposeFactExtractor = ctx.services.provide(
       FACT_EXTRACTOR_SERVICE,
       factExtractor,
+    );
+
+    // KG-ACL Slice 4a — Palaia-Excerpt-Extractor. Same Haiku key as the
+    // fact-extractor + session-summary generator; no separate config
+    // surface to make this opt-in. The orchestrator plugin's activate()
+    // picks it up via `palaiaExcerpt` service-name and threads it
+    // through new Orchestrator({…, excerptExtractor}).
+    const palaiaExcerptExtractor = createHaikuPalaiaExcerptExtractor({
+      anthropic,
+      model: factModel,
+      log: (msg) => { console.error(msg); },
+    });
+    disposePalaiaExcerpt = ctx.services.provide(
+      PALAIA_EXCERPT_SERVICE_NAME,
+      palaiaExcerptExtractor,
     );
 
     // OB-75 (Phase 6) — Session-Continuity. Only published when an
@@ -340,7 +559,7 @@ export async function activate(
   );
 
   ctx.log(
-    `[harness-orchestrator-extras] ready (contextRetriever=on, factExtractor=${anthropic ? 'on' : 'off'}, topicDetector=${anthropic && embeddingClient ? 'on' : 'off'}, sessionBriefing=${disposeSessionBriefing ? 'on' : 'off'}, nudgeProviders=on)`,
+    `[harness-orchestrator-extras] ready (contextRetriever=on, factExtractor=${anthropic ? 'on' : 'off'}, topicDetector=${anthropic && embeddingClient ? 'on' : 'off'}, sessionBriefing=${disposeSessionBriefing ? 'on' : 'off'}, palaiaExcerpt=${disposePalaiaExcerpt ? 'on' : 'off'}, nudgeProviders=on)`,
   );
 
   return {
@@ -352,13 +571,24 @@ export async function activate(
       // hot-uninstall of an already-registered provider is best-effort
       // until OB-78's curate-cron introduces a proper retire API.
       disposeNudgeProviders();
+      disposePalaiaExcerpt?.();
       disposeSessionBriefing?.();
       disposeTopicDetector?.();
       disposeFactExtractor?.();
+      disposeTopicClustering();
+      disposeBulkExcerptMergeDetect();
+      disposeBulkMergeDetect();
+      disposeBulkInconsistency();
+      disposeBulkPromotion?.();
       disposeContext();
-      // Tear down KG wrapper FIRST (restores original provider), THEN
+      // Tear down KG wrappers FIRST (restores original provider), THEN
       // the captureFilter capability — symmetric with the activate order.
+      // Stack disposal: outermost (merge-trigger) → inconsistency-trigger
+      // is implicit (the `services.replace` only swaps the outermost; the
+      // inner wrappers go out of scope with their parent).
       disposeWrappedKg();
+      disposeMergeCandidateDetector();
+      disposeInconsistencyDetector();
       disposeCaptureFilter();
     },
   };

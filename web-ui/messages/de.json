@@ -4,6 +4,7 @@
     "store": "Store",
     "builder": "Builder",
     "memory": "Memory",
+    "memories": "Memories",
     "graph": "Graph",
     "routines": "Routinen",
     "admin": "Admin",
@@ -155,7 +156,63 @@
     "toolsThisIter": " · {count} Tools diese Iter",
     "stuckHint": " · vermutlich hängt — Stop drücken?",
     "livenessGapMs": "vor {ms}ms",
-    "livenessGapSec": "vor {seconds}s"
+    "livenessGapSec": "vor {seconds}s",
+    "autoPromoted": {
+      "label": "Als {kind} von Palaia gespeichert",
+      "kind": {
+        "decision": "Entscheidung",
+        "insight": "Erkenntnis",
+        "preference": "Präferenz",
+        "reference": "Referenz"
+      },
+      "view": "Anzeigen",
+      "viewTitle": "Dieses Memory in /memories öffnen",
+      "discard": "Verwerfen",
+      "discardTitle": "Dieses auto-gespeicherte Memory löschen — der manuelle Save-Button kommt zurück",
+      "discardConfirm": "Auto-gespeichertes Memory verwerfen? Der manuelle Save-Button erscheint wieder, du kannst dann mit eigener Klassifikation neu speichern.",
+      "discarding": "verwirft…"
+    },
+    "saveAsMemory": {
+      "buttonLabel": "Als Memory speichern",
+      "buttonTitle": "Diesen Turn als kuratiertes MemorableKnowledge-Item ablegen",
+      "savedShort": "gespeichert",
+      "dialogTitle": "Als Memory speichern",
+      "closeAriaLabel": "Dialog schließen",
+      "kindLabel": "Typ",
+      "kind": {
+        "decision": "Entscheidung",
+        "insight": "Erkenntnis",
+        "preference": "Präferenz",
+        "reference": "Referenz"
+      },
+      "summaryLabel": "Zusammenfassung",
+      "summaryPlaceholder": "Kurz, worauf dieses Memory abzielt…",
+      "summaryRequired": "Zusammenfassung ist Pflicht.",
+      "excerptsLabel": "Auszüge",
+      "excerptsHint": "anklicken zum Einfügen",
+      "excerptInsertTitle": "Diesen Auszug in die Zusammenfassung einfügen",
+      "source": {
+        "llmLabel": "KI-Vorschlag",
+        "llmTitle": "Vorausgefüllt durch den Palaia-Excerpt-Extractor",
+        "hintLabel": "hint",
+        "hintTitle": "Klassifiziert anhand deines <palaia-hint>-Tags",
+        "fallbackLabel": "fallback",
+        "fallbackTitle": "Eingeschränkter Vorschlag (Parsing fehlgeschlagen)"
+      },
+      "rationaleLabel": "Begründung (optional)",
+      "rationalePlaceholder": "Warum ist das merkenswert? Kontext, den der Agent behalten soll…",
+      "linkedToTurn": "Verknüpft mit Turn {turnId}",
+      "errorPrefix": "Fehler:",
+      "cancel": "Abbrechen",
+      "save": "Speichern",
+      "saving": "speichert…",
+      "successHeadline": "Gespeichert. Das Memory erscheint unter /memories.",
+      "skippedInvolved": "skippedInvolved",
+      "skippedRequired": "skippedRequired",
+      "skippedDerivedFrom": "skippedDerivedFrom",
+      "openDetail": "Memory öffnen",
+      "close": "Schließen"
+    }
   },
   "privacyReceipt": {
     "summary": "🛡 Privacy Guard · {summary}",

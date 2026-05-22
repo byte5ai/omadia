@@ -7,6 +7,9 @@ import {
   type EntryType,
   type GraphNode,
   type KnowledgeGraph,
+  type MemorableKnowledgeHit,
+  type PalaiaExcerptHit,
+  type PalaiaExcerptNode,
   type TurnSearchHit,
 } from '@omadia/plugin-api';
 
@@ -39,6 +42,24 @@ export interface ContextRetrieverOptions {
   /** Above this hit count, Compact-Snippet-Mode activates.
    *  Default 100. */
   compactModeThreshold?: number;
+
+  // Slice 7 — Memory + Excerpt semantic recall knobs.
+  /** Disable the memory-recall leg entirely. Default false (= enabled
+   *  whenever an embeddingClient is wired). Set to true via
+   *  KG_ACL_MEMORY_RECALL_ENABLED=false at the plugin layer to A/B
+   *  with vs without curated-memory injection. */
+  memoryRecallDisabled?: boolean;
+  /** Max MK hits surfaced per turn. Default 3. */
+  memoryLimit?: number;
+  /** Max excerpt-quotes rendered per surfaced MK. Default 2. */
+  excerptsPerMemory?: number;
+  /** Min cosine similarity for both MK and excerpt search. Default 0.5
+   *  — higher than Turn-search (0.3) because curated memory should
+   *  surface only on a strong match. */
+  memoryMinSimilarity?: number;
+  /** Score multiplier for memory-origin hits in the assembler. Default
+   *  1.2 — curated memory ranks above raw FTS hits at similar cosine. */
+  memoryBoostFactor?: number;
 }
 
 export interface ContextBuildInput {
@@ -64,7 +85,27 @@ export interface ContextBuildResult {
      */
     relatedEntities: GraphNode[];
     extractedTerms: string[];
+    /** Slice 7 — curated-memory recall results. Empty when the leg
+     *  was skipped (no embedding client, no userId, or
+     *  memoryRecallDisabled). */
+    memoryHits: MemoryRecallHit[];
   };
+}
+
+/**
+ * Slice 7 — one curated-memory hit ready to render. Either the MK
+ * itself matched semantically, or one or more of its excerpts did
+ * (deduped: an excerpt-hit always resolves to its parent MK).
+ */
+export interface MemoryRecallHit {
+  /** The MemorableKnowledge node (kind / summary / rationale / …). */
+  mk: GraphNode;
+  /** Excerpts under this MK that survived the cosine + per-MK cap.
+   *  Empty array means "MK matched directly, no excerpt drove the hit". */
+  excerpts: PalaiaExcerptNode[];
+  /** Final score = max(MK cosine, best-excerpt cosine). Used to
+   *  rank against other recall sources in the assembler. */
+  score: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -165,6 +206,12 @@ const DEFAULTS: Required<
   charsPerToken: 4,
   manualBoostFactor: 1.3,
   compactModeThreshold: 100,
+  // Slice 7 defaults.
+  memoryRecallDisabled: false,
+  memoryLimit: 3,
+  excerptsPerMemory: 2,
+  memoryMinSimilarity: 0.5,
+  memoryBoostFactor: 1.2,
 };
 
 // Tiny, language-agnostic stopword list. We keep it short because the real
@@ -247,10 +294,11 @@ export class ContextRetriever {
   async build(input: ContextBuildInput): Promise<ContextBuildResult> {
     const extractedTerms = extractCandidateTerms(input.userMessage);
 
-    const [tail, entityHits, ftsHits] = await Promise.all([
+    const [tail, entityHits, ftsHits, memoryHits] = await Promise.all([
       this.loadTail(input),
       this.loadEntityHits(input, extractedTerms),
       this.loadFtsHits(input),
+      this.loadMemoryHits(input),
     ]);
 
     const seenTurnIds = new Set<string>();
@@ -277,6 +325,7 @@ export class ContextRetriever {
       entityHits: entityHitsFiltered,
       ftsHits: ftsHitsFiltered,
       relatedEntities,
+      memoryHits,
       maxChars: this.opts.maxChars,
     });
 
@@ -286,7 +335,7 @@ export class ContextRetriever {
     const scope = input.sessionScope ?? '<no-scope>';
     const termsPreview = extractedTerms.slice(0, 5).join(',');
     console.error(
-      `[context:inner] scope=${scope} tail=${String(tail.length)} entity-hits=${String(entityHitsFiltered.length)} fts=${String(ftsHitsFiltered.length)} terms=[${termsPreview}] rendered=${String(text.length)}B`,
+      `[context:inner] scope=${scope} tail=${String(tail.length)} entity-hits=${String(entityHitsFiltered.length)} fts=${String(ftsHitsFiltered.length)} memory=${String(memoryHits.length)} terms=[${termsPreview}] rendered=${String(text.length)}B`,
     );
 
     return {
@@ -297,6 +346,7 @@ export class ContextRetriever {
         ftsHits: ftsHitsFiltered,
         relatedEntities,
         extractedTerms,
+        memoryHits,
       },
     };
   }
@@ -568,6 +618,128 @@ export class ContextRetriever {
     });
   }
 
+  /**
+   * Slice 7 — semantic recall over curated memories + their verbatim
+   * excerpts. Skipped when:
+   *   - no embeddingClient is wired (the legs need a query vector)
+   *   - no `userId` on the input (ACL gate is non-bypassable)
+   *   - `memoryRecallDisabled` is true (operator A/B kill switch)
+   *
+   * Strategy: run MK-search and excerpt-search in parallel against
+   * the same query embedding; dedupe on parent-MK external_id so a
+   * single MK never fires twice (excerpt-hit takes priority — verbatim
+   * matched, the user's question used wording close to the source);
+   * fetch parent MKs for excerpt-only hits; pack the top
+   * `memoryLimit` memories with up to `excerptsPerMemory` quotes
+   * each; score = max(direct MK cosine, best excerpt cosine).
+   *
+   * On any error returns []: a degraded recall path must not kill the
+   * whole turn.
+   */
+  private async loadMemoryHits(
+    input: ContextBuildInput,
+  ): Promise<MemoryRecallHit[]> {
+    if (this.opts.memoryRecallDisabled) return [];
+    if (!this.embeddingClient || !input.userId) return [];
+
+    let queryVector: number[];
+    try {
+      queryVector = await this.embeddingClient.embed(input.userMessage);
+    } catch (err) {
+      console.error(
+        '[context:memory] query embed failed — skipping memory recall:',
+        err instanceof Error ? err.message : err,
+      );
+      return [];
+    }
+    if (queryVector.length === 0) return [];
+
+    const overshoot = Math.max(this.opts.memoryLimit * 2, 6);
+    const excerptOvershoot = Math.max(
+      this.opts.memoryLimit * this.opts.excerptsPerMemory * 2,
+      10,
+    );
+
+    let mkHits: MemorableKnowledgeHit[];
+    let excerptHits: PalaiaExcerptHit[];
+    try {
+      [mkHits, excerptHits] = await Promise.all([
+        this.graph.searchMemorableKnowledgeByEmbedding({
+          queryEmbedding: queryVector,
+          viewerOmadiaUserId: input.userId,
+          limit: overshoot,
+          minSimilarity: this.opts.memoryMinSimilarity,
+        }),
+        this.graph.searchExcerptsByEmbedding({
+          queryEmbedding: queryVector,
+          viewerOmadiaUserId: input.userId,
+          limit: excerptOvershoot,
+          minSimilarity: this.opts.memoryMinSimilarity,
+        }),
+      ]);
+    } catch (err) {
+      console.error(
+        '[context:memory] backend search failed — skipping memory recall:',
+        err instanceof Error ? err.message : err,
+      );
+      return [];
+    }
+
+    // Group excerpt-hits by their parent MK so we can fold them into
+    // the per-MK render. Sort each group desc so the strongest matches
+    // surface first.
+    const excerptsByMk = new Map<string, PalaiaExcerptHit[]>();
+    for (const eh of excerptHits) {
+      const list = excerptsByMk.get(eh.parentMkId) ?? [];
+      list.push(eh);
+      excerptsByMk.set(eh.parentMkId, list);
+    }
+    for (const list of excerptsByMk.values()) {
+      list.sort((a, b) => b.cosineSim - a.cosineSim);
+    }
+
+    // Index MK-hits + collect parent-MK ids that only excerpts matched.
+    const mkById = new Map<string, MemorableKnowledgeHit>();
+    for (const mh of mkHits) mkById.set(mh.mk.id, mh);
+    const parentsToFetch: string[] = [];
+    for (const parentId of excerptsByMk.keys()) {
+      if (!mkById.has(parentId)) parentsToFetch.push(parentId);
+    }
+
+    // Fetch missing parent MKs (excerpt-only matches). Done sequentially
+    // to keep the path simple — count is bounded by excerptOvershoot.
+    for (const parentId of parentsToFetch) {
+      try {
+        const node = await this.graph.getMemorableKnowledge(
+          parentId,
+          input.userId,
+        );
+        if (!node) continue; // ACL drop or already deleted
+        // Synthetic MK-hit at score 0 — best excerpt drives the score below.
+        mkById.set(node.id, { mk: node, cosineSim: 0 });
+      } catch {
+        // swallow — best-effort fetch
+      }
+    }
+
+    const merged: MemoryRecallHit[] = [];
+    for (const [mkId, mh] of mkById.entries()) {
+      const excerpts = (excerptsByMk.get(mkId) ?? []).slice(
+        0,
+        this.opts.excerptsPerMemory,
+      );
+      const bestExcerpt = excerpts[0]?.cosineSim ?? 0;
+      const score = Math.max(mh.cosineSim, bestExcerpt);
+      merged.push({
+        mk: mh.mk,
+        excerpts: excerpts.map((e) => e.excerpt),
+        score,
+      });
+    }
+    merged.sort((a, b) => b.score - a.score);
+    return merged.slice(0, this.opts.memoryLimit);
+  }
+
   private async loadFtsHits(input: ContextBuildInput): Promise<TurnSearchHit[]> {
     // Vector search first when we have an embedding client + the backend
     // supports it. Semantic recall catches paraphrases ("kredite" ↔ "darlehen")
@@ -618,6 +790,8 @@ interface RenderInput {
   entityHits: EntityCapturedTurnsHit[];
   ftsHits: TurnSearchHit[];
   relatedEntities: GraphNode[];
+  /** Slice 7 — curated-memory hits to render in their own section. */
+  memoryHits: MemoryRecallHit[];
   maxChars: number;
 }
 
@@ -680,7 +854,43 @@ function renderContext(input: RenderInput): string {
     }
   }
 
+  // Slice 7 — curated-memory section. Rendered LAST so it follows the
+  // recall sources (tail / entity / FTS) the LLM already trusts; this
+  // keeps the prompt-cache prefix stable when the memory leg returns
+  // [] (frequent in cold-start), at the cost of placing the strongest
+  // signal at the bottom (LLM still sees it within the same block).
+  if (input.memoryHits.length > 0 && budget > 400) {
+    push('\n## Verwandte Memories');
+    for (const hit of input.memoryHits) {
+      const chunk = renderMemoryChunk(hit);
+      if (!push(chunk)) break;
+    }
+  }
+
   return parts.join('\n');
+}
+
+/**
+ * Slice 7 — render a single memory-recall hit. One header line per
+ * MK with kind + summary, optional truncated rationale, and up to N
+ * verbatim excerpt blockquotes. Hard char-cap per render so a few
+ * verbose memories don't blow the context budget.
+ */
+function renderMemoryChunk(hit: MemoryRecallHit): string {
+  const kind = String(hit.mk.props['kind'] ?? 'memory');
+  const summary = truncate(String(hit.mk.props['summary'] ?? ''), 400);
+  const rationaleRaw = hit.mk.props['rationale'];
+  const lines = [
+    `### ${kind}: ${summary} (score=${hit.score.toFixed(2)})`,
+  ];
+  if (typeof rationaleRaw === 'string' && rationaleRaw.length > 0) {
+    lines.push(truncate(rationaleRaw, 300));
+  }
+  for (const ex of hit.excerpts) {
+    const quote = truncate(ex.props.text, 240);
+    lines.push(`> "${quote}"`);
+  }
+  return lines.join('\n');
 }
 
 function truncate(s: string, max: number): string {

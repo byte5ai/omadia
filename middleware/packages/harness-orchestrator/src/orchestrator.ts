@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type Anthropic from '@anthropic-ai/sdk';
+import type { Pool } from 'pg';
 import {
   applyEgressReplacements,
   buildBlockedResult,
@@ -17,6 +18,7 @@ import type {
   ContextRetriever,
   FactExtractor,
 } from '@omadia/orchestrator-extras';
+import { promoteTurnIfSignificant } from '@omadia/orchestrator-extras';
 import type { AskObserver, DomainTool } from './tools/domainQueryTool.js';
 import {
   KnowledgeGraphTool,
@@ -59,6 +61,8 @@ import type {
   KnowledgeGraph,
   NudgeRegistry,
   NudgeStateStore,
+  PalaiaExcerpt,
+  PalaiaExcerptExtractor,
   PrivacyGuardService,
   PrivacyOutputValidationResult,
   ProcessMemoryService,
@@ -252,6 +256,31 @@ export interface OrchestratorOptions {
    * (`palaia.process-promote`) skips its canonical-hash dedup check.
    */
   nudgeProcessMemory?: ProcessMemoryService;
+  /**
+   * KG-ACL Slice 4a — Palaia-Excerpt-Extractor. When set, the
+   * orchestrator runs a single Haiku call inside `chatStreamInner`
+   * (between `sessionLogger.log()` and the `done` yield) to produce a
+   * {kind, summary, rationale?, excerpts[]} suggestion, then ships it
+   * to the chat UI via the `done` event so the save-as-memory modal
+   * can pre-fill. Absent → no enrichment, the modal falls back to its
+   * 240-char prefix and (Slice 4b) auto-promotion is a no-op.
+   */
+  excerptExtractor?: PalaiaExcerptExtractor;
+  /**
+   * KG-ACL Slice 4b — Auto-Promotion at significance ≥ threshold.
+   * When `autoPromote=true` AND `graphPool`+`graphTenantId` are set,
+   * the orchestrator fires `promoteTurnIfSignificant` after
+   * `sessionLogger.log()`. Requires `capture_level >= normal` so the
+   * scorer actually writes a significance value — otherwise every
+   * promotion attempt skips with reason='no-significance'.
+   *
+   * Default OFF. The `KG_ACL_AUTO_PROMOTE` env-var opts in;
+   * `KG_ACL_AUTO_PROMOTE_THRESHOLD` (default 0.7) tunes the gate.
+   */
+  autoPromote?: boolean;
+  autoPromoteThreshold?: number;
+  graphPool?: Pool;
+  graphTenantId?: string;
 }
 
 // `ChatTurnInput` and `ChatTurnAttachment` were lifted to
@@ -683,6 +712,16 @@ export class Orchestrator {
   private readonly nudgeRegistry: NudgeRegistry | undefined;
   private readonly nudgeStateStore: NudgeStateStore | undefined;
   private readonly nudgeProcessMemory: ProcessMemoryService | undefined;
+  private readonly excerptExtractor: PalaiaExcerptExtractor | undefined;
+  /** Raw KnowledgeGraph handle — kept for Slice 4b auto-promotion to
+   *  call `createMemorableKnowledge` directly. The wrapped
+   *  `knowledgeGraphTool` is a different abstraction (tool-spec adapter)
+   *  that doesn't expose the underlying create-write path. */
+  private readonly knowledgeGraph: KnowledgeGraph | undefined;
+  private readonly autoPromote: boolean;
+  private readonly autoPromoteThreshold: number;
+  private readonly graphPool: Pool | undefined;
+  private readonly graphTenantId: string | undefined;
   private readonly nativeTools: NativeToolRegistry;
   /**
    * Per-turn scratchpad for the routine list smart-card emitted in-band by
@@ -699,6 +738,7 @@ export class Orchestrator {
     this.maxTokens = options.maxTokens;
     this.maxIterations = options.maxToolIterations;
     this.domainToolsByName = new Map(options.domainTools.map((t) => [t.name, t]));
+    this.knowledgeGraph = options.knowledgeGraph;
     this.knowledgeGraphTool = options.knowledgeGraph
       ? new KnowledgeGraphTool(options.knowledgeGraph, options.embeddingClient)
       : undefined;
@@ -713,6 +753,11 @@ export class Orchestrator {
     this.nudgeRegistry = options.nudgeRegistry;
     this.nudgeStateStore = options.nudgeStateStore;
     this.nudgeProcessMemory = options.nudgeProcessMemory;
+    this.excerptExtractor = options.excerptExtractor;
+    this.autoPromote = options.autoPromote ?? false;
+    this.autoPromoteThreshold = options.autoPromoteThreshold ?? 0.7;
+    this.graphPool = options.graphPool;
+    this.graphTenantId = options.graphTenantId;
     this.sessionLogger = options.sessionLogger;
     this.entityRefBus = options.entityRefBus;
     this.contextRetriever = options.contextRetriever;
@@ -723,6 +768,89 @@ export class Orchestrator {
       if (!this.nativeTools.has(name)) {
         this.nativeTools.register(name);
       }
+    }
+  }
+
+  /**
+   * Slice 4b/4c — auto-promotion call. Awaited (not fire-and-forget)
+   * since 4c so the chat-side `done` event can carry the resulting
+   * `autoPromotedMkId` and the UI can render an inline banner with
+   * Edit/Discard affordances immediately.
+   *
+   * No-op when `autoPromote=false` (default) or the required handles
+   * are absent — returns undefined in microseconds, no DB touch.
+   *
+   * Significance lives on `graph_nodes.significance` (column). At
+   * `capture_level=minimal` the scorer is off and significance stays
+   * null — the helper then skips with reason='no-significance' and the
+   * orchestrator returns undefined. That's intentional: auto-saves
+   * require an explicit signal — operator opts into BOTH
+   * `capture_level>=normal` AND `KG_ACL_AUTO_PROMOTE=true`.
+   *
+   * Never throws. Failures inside promoteTurnIfSignificant are caught
+   * and logged there; we still defend against unexpected throws with
+   * a try/catch so the `done` yield always fires.
+   */
+  private async maybePromoteTurn(opts: {
+    turnId: string | undefined;
+    userId: string | undefined;
+    palaiaExcerpt: PalaiaExcerpt | undefined;
+    fallbackAssistantAnswer: string;
+  }): Promise<string | undefined> {
+    if (!this.autoPromote) return undefined;
+    if (!this.graphPool || !this.graphTenantId) return undefined;
+    if (!opts.turnId || !opts.userId) return undefined;
+    if (!this.knowledgeGraph) return undefined;
+    const promotionInput = {
+      pool: this.graphPool,
+      tenantId: this.graphTenantId,
+      kg: this.knowledgeGraph,
+      turnId: opts.turnId,
+      userId: opts.userId,
+      threshold: this.autoPromoteThreshold,
+      fallbackAssistantAnswer: opts.fallbackAssistantAnswer,
+      ...(opts.palaiaExcerpt ? { palaiaExcerpt: opts.palaiaExcerpt } : {}),
+    };
+    try {
+      const result = await promoteTurnIfSignificant(promotionInput);
+      return result.mkId;
+    } catch (err) {
+      console.error(
+        '[orchestrator] auto-promote unexpected throw (continuing):',
+        err instanceof Error ? err.message : err,
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * Slice 4a — fetch a Palaia-Excerpt for the save-as-memory modal. No-op
+   * when the extractor isn't installed. All failure paths return
+   * `undefined` so the `done` yield never throws on an enrichment miss.
+   *
+   * Note: we currently pass the raw user message + assistant answer
+   * directly. Hint precedence (`<palaia-hint type=…>`) is supported by
+   * the extractor API but not yet wired here — that requires surfacing
+   * the capture-filter's parseHints output, which is hidden behind the
+   * sessionLogger.log pipeline today. Slice 4c can revisit when the
+   * decision becomes reachable from this scope.
+   */
+  private async maybeExtractExcerpt(
+    userMessage: string,
+    answer: string,
+  ): Promise<PalaiaExcerpt | undefined> {
+    if (!this.excerptExtractor) return undefined;
+    try {
+      return await this.excerptExtractor.extract({
+        cleanedUserMessage: userMessage,
+        cleanedAssistantAnswer: answer,
+      });
+    } catch (err) {
+      console.error(
+        '[orchestrator] palaia-excerpt extraction failed (continuing without enrichment):',
+        err instanceof Error ? err.message : err,
+      );
+      return undefined;
     }
   }
 
@@ -1629,6 +1757,10 @@ export class Orchestrator {
             status: 'success',
           });
           const attachments = this.drainAttachments();
+          // Hoisted so the return payload can carry the KG turn id back to
+          // the chat UI (powers the save-as-memory affordance). Stays
+          // undefined when session-logging is disabled or threw.
+          let persistedTurnId: string | undefined;
           if (this.sessionLogger && input.sessionScope) {
             // Await the log write: previous fire-and-forget let follow-ups
             // race ahead of the session persisting their prior turn, so the
@@ -1637,7 +1769,6 @@ export class Orchestrator {
             // the latency cost is worth the retrieval guarantee.
             const entityRefs = entityCollection?.drain() ?? [];
             const answerForGraph = appendToolDigest(answer, attachments);
-            let persistedTurnId: string | undefined;
             try {
               const logged = await this.sessionLogger.log({
                 scope: input.sessionScope,
@@ -1677,6 +1808,7 @@ export class Orchestrator {
             answer,
             toolCalls,
             iterations,
+            ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
             ...(runTrace ? { runTrace } : {}),
             ...(attachments ? { attachments } : {}),
             ...(followUpOptions ? { followUpOptions } : {}),
@@ -1782,13 +1914,14 @@ export class Orchestrator {
             iterations,
             status: 'success',
           });
+          let persistedTurnId: string | undefined;
           if (this.sessionLogger && input.sessionScope) {
             const entityRefs = entityCollection?.drain() ?? [];
             const loggedAnswer = answer.length > 0
               ? `${answer}\n\n[Rückfrage] ${pendingUserChoice.question}`
               : `[Rückfrage] ${pendingUserChoice.question}`;
             try {
-              await this.sessionLogger.log({
+              const logged = await this.sessionLogger.log({
                 scope: input.sessionScope,
                 userMessage: input.userMessage,
                 assistantAnswer: loggedAnswer,
@@ -1798,6 +1931,7 @@ export class Orchestrator {
                 ...(input.userId ? { userId: input.userId } : {}),
                 ...(runTrace ? { runTrace } : {}),
               });
+              persistedTurnId = logged.turnExternalId;
             } catch (err) {
               console.error(
                 '[orchestrator] session log failed (continuing with choice card):',
@@ -1810,6 +1944,7 @@ export class Orchestrator {
             toolCalls,
             iterations,
             pendingUserChoice,
+            ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
             ...(runTrace ? { runTrace } : {}),
           };
         }
@@ -2005,6 +2140,7 @@ export class Orchestrator {
             iterations,
             status: 'success',
           });
+          let persistedTurnId: string | undefined;
           if (this.sessionLogger && input.sessionScope) {
             const entityRefs = entityCollection?.drain() ?? [];
             // See chat(): we await the session log so the next turn's
@@ -2013,7 +2149,7 @@ export class Orchestrator {
             // so the extra ~sub-second is paid by the client already.
             const answerForGraph = appendToolDigest(answer, attachments);
             try {
-              await this.sessionLogger.log({
+              const logged = await this.sessionLogger.log({
                 scope: input.sessionScope,
                 userMessage: input.userMessage,
                 assistantAnswer: answerForGraph,
@@ -2023,6 +2159,7 @@ export class Orchestrator {
                 ...(input.userId ? { userId: input.userId } : {}),
                 ...(runTrace ? { runTrace } : {}),
               });
+              persistedTurnId = logged.turnExternalId;
             } catch (err) {
               console.error(
                 '[orchestrator] session log failed (continuing with answer):',
@@ -2034,11 +2171,34 @@ export class Orchestrator {
           const pendingSlotCard = this.drainPendingSlotCard();
           const pendingRoutineList = this.drainPendingRoutineList();
           const pendingOAuthConsent = this.drainConsentRequired();
+          // Slice 4a — Haiku-backed enrichment for the save-as-memory
+          // modal. Inline because the `done` event is the natural
+          // carrier and the chat UI wants the suggestion immediately;
+          // accept the 300-800ms latency cost. Failure → undefined,
+          // modal falls back to its 240-char prefill.
+          const palaiaExcerpt = await this.maybeExtractExcerpt(
+            input.userMessage,
+            answer,
+          );
+          // Slice 4b/4c — auto-promotion. Awaited so the resulting
+          // mkId rides the same `done` event and the UI can render an
+          // inline banner immediately. No-op (returns undefined fast)
+          // when autoPromote is off / capture-scorer disabled /
+          // threshold not met / required handles missing.
+          const autoPromotedMkId = await this.maybePromoteTurn({
+            turnId: persistedTurnId,
+            userId: input.userId,
+            palaiaExcerpt,
+            fallbackAssistantAnswer: answer,
+          });
           yield {
             type: 'done',
             answer,
             toolCalls,
             iterations,
+            ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
+            ...(palaiaExcerpt ? { palaiaExcerpt } : {}),
+            ...(autoPromotedMkId ? { autoPromotedMkId } : {}),
             ...(attachments ? { attachments } : {}),
             ...(runTrace ? { runTrace } : {}),
             ...(followUpOptions ? { followUpOptions } : {}),
@@ -2198,13 +2358,14 @@ export class Orchestrator {
             iterations,
             status: 'success',
           });
+          let persistedTurnId: string | undefined;
           if (this.sessionLogger && input.sessionScope) {
             const entityRefs = entityCollection?.drain() ?? [];
             const loggedAnswer = answer.length > 0
               ? `${answer}\n\n[Rückfrage] ${pendingUserChoice.question}`
               : `[Rückfrage] ${pendingUserChoice.question}`;
             try {
-              await this.sessionLogger.log({
+              const logged = await this.sessionLogger.log({
                 scope: input.sessionScope,
                 userMessage: input.userMessage,
                 assistantAnswer: loggedAnswer,
@@ -2214,6 +2375,7 @@ export class Orchestrator {
                 ...(input.userId ? { userId: input.userId } : {}),
                 ...(runTrace ? { runTrace } : {}),
               });
+              persistedTurnId = logged.turnExternalId;
             } catch (err) {
               console.error(
                 '[orchestrator] session log failed (continuing with choice card):',
@@ -2227,6 +2389,7 @@ export class Orchestrator {
             toolCalls,
             iterations,
             pendingUserChoice,
+            ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
             ...(runTrace ? { runTrace } : {}),
           };
           return;

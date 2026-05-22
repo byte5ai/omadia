@@ -10,9 +10,11 @@ import {
 import { useTranslations } from 'next-intl';
 import { ChatTabs } from './_components/ChatTabs';
 import { AgentUsagePills } from './_components/chat/AgentUsagePills';
+import { AutoPromotedBanner } from './_components/chat/AutoPromotedBanner';
 import { CaptureDisclosure } from './_components/chat/CaptureDisclosure';
 import { NudgeCard, parseNudgeBlock } from './_components/chat/NudgeCard';
 import { PrivacyReceiptCard } from './_components/chat/PrivacyReceiptCard';
+import { SaveMemoryButton } from './_components/chat/SaveMemoryButton';
 import { Markdown } from './_components/Markdown';
 import {
   deriveTitle,
@@ -23,6 +25,7 @@ import {
   type FollowUpOption,
   type Message,
   type NudgeEvent,
+  type PalaiaExcerpt,
   type PendingUserChoice,
   type PrivacyReceipt,
   type SubAgentEvent,
@@ -106,6 +109,18 @@ type StreamEvent =
       answer: string;
       toolCalls: number;
       iterations: number;
+      /** KG-persisted Turn external_id. Undefined when session-logging
+       *  was disabled or threw. Powers the save-as-memory button. */
+      turnId?: string;
+      /** Slice 4a — Palaia-Excerpt suggestion for the save-as-memory
+       *  modal pre-fill. Undefined when the extractor wasn't installed
+       *  or the Haiku call failed / returned junk; modal falls back
+       *  to the dumb 240-char prefix. */
+      palaiaExcerpt?: PalaiaExcerpt;
+      /** Slice 4c — MK external_id when this turn was auto-promoted
+       *  (significance >= threshold AND `KG_ACL_AUTO_PROMOTE=true`).
+       *  Drives the inline "Saved by Palaia" banner. */
+      autoPromotedMkId?: string;
       attachments?: DiagramAttachment[];
       pendingUserChoice?: PendingUserChoice;
       followUpOptions?: FollowUpOption[];
@@ -254,6 +269,13 @@ export default function ChatPage(): React.ReactElement {
                   tool_calls: event.toolCalls,
                   iterations: event.iterations,
                 },
+                ...(event.turnId ? { turnId: event.turnId } : {}),
+                ...(event.palaiaExcerpt
+                  ? { palaiaExcerpt: event.palaiaExcerpt }
+                  : {}),
+                ...(event.autoPromotedMkId
+                  ? { autoPromotedMkId: event.autoPromotedMkId }
+                  : {}),
                 ...(event.attachments && event.attachments.length > 0
                   ? { attachments: event.attachments }
                   : {}),
@@ -281,6 +303,25 @@ export default function ChatPage(): React.ReactElement {
             default:
               return m;
           }
+        });
+        return { ...session, messages: nextMessages, updatedAt: Date.now() };
+      });
+    },
+    [mutateActive],
+  );
+
+  /**
+   * Slice 4c — clear the auto-promoted-MK marker on a message after
+   * the user Discards it. The manual save-as-memory button then
+   * comes back so the user can re-save with their own classification.
+   */
+  const clearAutoPromoted = useCallback(
+    (messageId: string): void => {
+      mutateActive((session) => {
+        const nextMessages = session.messages.map((m) => {
+          if (m.id !== messageId) return m;
+          const { autoPromotedMkId: _drop, ...rest } = m;
+          return rest;
         });
         return { ...session, messages: nextMessages, updatedAt: Date.now() };
       });
@@ -532,6 +573,7 @@ export default function ChatPage(): React.ReactElement {
               onChoose={(value) => {
                 void send(value);
               }}
+              onDiscardAutoPromoted={clearAutoPromoted}
             />
           ))}
         </div>
@@ -607,10 +649,15 @@ function MessageRow({
   message,
   disabled,
   onChoose,
+  onDiscardAutoPromoted,
 }: {
   message: Message;
   disabled: boolean;
   onChoose: (value: string) => void;
+  /** Slice 4c — called when the user successfully Discards an
+   *  auto-promoted MK so the parent can clear `autoPromotedMkId` on
+   *  this message and the manual save-as-memory button comes back. */
+  onDiscardAutoPromoted: (messageId: string) => void;
 }): React.ReactElement {
   const t = useTranslations('chat');
   const isUser = message.role === 'user';
@@ -692,18 +739,39 @@ function MessageRow({
             )}
           </>
         )}
-        {!isUser && (message.telemetry || elapsed) && (
-          <div className="mt-2 border-t border-current/10 pt-2 text-[11px] text-neutral-500 dark:text-neutral-400">
-            {message.telemetry && (
-              <span>
-                tools={message.telemetry.tool_calls} · iterations=
-                {message.telemetry.iterations}
-              </span>
-            )}
-            {elapsed !== null && <span className="ml-3">⏱ {elapsed}s</span>}
-            {message.streaming && <span className="ml-3">{t('streamingSuffix')}</span>}
-          </div>
-        )}
+        {!isUser &&
+          (message.telemetry || elapsed || message.turnId !== undefined) && (
+            <div className="mt-2 flex flex-wrap items-center border-t border-current/10 pt-2 text-[11px] text-neutral-500 dark:text-neutral-400">
+              {message.telemetry && (
+                <span>
+                  tools={message.telemetry.tool_calls} · iterations=
+                  {message.telemetry.iterations}
+                </span>
+              )}
+              {elapsed !== null && <span className="ml-3">⏱ {elapsed}s</span>}
+              {message.streaming && (
+                <span className="ml-3">{t('streamingSuffix')}</span>
+              )}
+              {!message.streaming &&
+                !message.error &&
+                message.turnId !== undefined &&
+                (message.autoPromotedMkId !== undefined ? (
+                  <AutoPromotedBanner
+                    mkId={message.autoPromotedMkId}
+                    kind={message.palaiaExcerpt?.suggestedKind ?? 'insight'}
+                    onDiscarded={() => onDiscardAutoPromoted(message.id)}
+                  />
+                ) : (
+                  <SaveMemoryButton
+                    turnId={message.turnId}
+                    messageContent={message.content}
+                    {...(message.palaiaExcerpt
+                      ? { palaiaExcerpt: message.palaiaExcerpt }
+                      : {})}
+                  />
+                ))}
+            </div>
+          )}
       </div>
     </div>
   );

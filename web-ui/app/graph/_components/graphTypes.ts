@@ -3,10 +3,32 @@ export type NodeType =
   | 'Turn'
   | 'OdooEntity'
   | 'ConfluencePage'
+  | 'PluginEntity'
   | 'User'
+  | 'ChannelIdentity'
   | 'Run'
   | 'AgentInvocation'
-  | 'ToolCall';
+  | 'ToolCall'
+  | 'Fact'
+  | 'MemorableKnowledge'
+  /** Slice 6.5 — verbatim source-snippet that underpins a
+   *  MemorableKnowledge. Reachable via EXCERPT_OF edges from MK's
+   *  "Nachbarn expandieren" expansion. */
+  | 'PalaiaExcerpt'
+  /** Slice 9 — contradiction marker between two MKs. Reachable via
+   *  CONFLICTS_WITH edges. Loaded explicitly via /dev/graph/issues
+   *  (showIssues filter) — not part of /neighbors expansions. */
+  | 'Inconsistency'
+  /** Slice 10 — near-duplicate marker (cosine ≥ 0.95) between two MKs.
+   *  Reachable via DUPLICATE_OF edges. Same load path as Inconsistency. */
+  | 'MergeCandidate'
+  /** Slice 12 — near-duplicate marker (cosine ≥ 0.97) between two
+   *  PalaiaExcerpts. Reachable via DUPLICATE_EXCERPT_OF edges. Same load
+   *  path as MergeCandidate (Issue-Overlay). */
+  | 'ExcerptMergeCandidate'
+  /** Slice 11 — clustered group of MKs named by Haiku. Reachable via
+   *  HAS_TOPIC edges. Loaded via /dev/graph/topics (showTopics filter). */
+  | 'Topic';
 
 /** Lifecycle bucket projected by the Neon backend (palaia Phase 4). */
 export type Tier = 'HOT' | 'WARM' | 'COLD';
@@ -40,6 +62,10 @@ export interface SessionSummary {
 export interface SessionView {
   session: GraphNode;
   turns: Array<{ turn: GraphNode; entities: GraphNode[] }>;
+  /** Slice 1b-channel-web — User-Cluster the session belongs to.
+   *  Backend resolves it via `session.props.userId`; the canvas adds
+   *  the User node + a synthetic `BELONGS_TO` edge to the session. */
+  user?: GraphNode;
 }
 
 export interface RunToolCallView {
@@ -68,6 +94,60 @@ export interface Stats {
 }
 
 /**
+ * Memory Focused View payload from `GET /bot-api/dev/graph/memories`.
+ * Each memory carries the 2-hop provenance ancestors the dedicated tab
+ * needs to render the canvas without further /neighbors round-trips.
+ *
+ * Provenance chain:
+ *   `PalaiaExcerpt -EXCERPT_OF-> MK -DERIVED_FROM-> Turn -IN_SESSION-> Session`
+ *   `MK -INVOLVED-> User`, `MK -REQUIRES-> Entity`
+ */
+export interface MemoryWithAncestors {
+  node: GraphNode;
+  level1: GraphNode[];
+  level2: GraphNode[];
+}
+
+/** Real graph_edges row connecting the memory subgraph. */
+export interface MemoryProvenanceEdge {
+  from: string;
+  to: string;
+  type:
+    | 'DERIVED_FROM'
+    | 'INVOLVED'
+    | 'REQUIRES'
+    | 'IN_SESSION'
+    | 'EXCERPT_OF';
+}
+
+/** Slice 11.5 — payload from `GET /bot-api/dev/graph/topics`. */
+export interface TopicOverlay {
+  topics: GraphNode[];
+  edges: Array<{ from: string; to: string }>;
+}
+
+/** Slice 11.5 + 12.5 — payload from `GET /bot-api/dev/graph/issues`. */
+export interface IssueOverlay {
+  inconsistencies: GraphNode[];
+  mergeCandidates: GraphNode[];
+  /** Slice 12.5 — near-duplicate Excerpt markers. Same overlay-toggle
+   *  (`showIssues`) as the other two — operator-mental-model is "alle
+   *  Duplikat-/Konflikt-Marker im Tenant". */
+  excerptMergeCandidates: GraphNode[];
+  edges: Array<{
+    from: string;
+    to: string;
+    type: 'CONFLICTS_WITH' | 'DUPLICATE_OF' | 'DUPLICATE_EXCERPT_OF';
+  }>;
+}
+
+export interface MemoryView {
+  scope: string;
+  memories: MemoryWithAncestors[];
+  edges: MemoryProvenanceEdge[];
+}
+
+/**
  * Visibility filter for the Cytoscape canvas. The persistence layer is
  * unchanged — these toggles only control what is rendered.
  *
@@ -81,6 +161,18 @@ export interface GraphFilter {
   showTrace: boolean;
   showMentions: boolean;
   showCrossRefs: boolean;
+  /** Slice — Palaia Focused View. When true, the canvas additionally
+   *  renders MemorableKnowledge + PalaiaExcerpt nodes loaded via
+   *  `/dev/graph/memories`, along with their 2-hop provenance edges. */
+  showMemories: boolean;
+  /** Slice 11.5 — when true, the canvas overlays every Topic node + its
+   *  HAS_TOPIC edges, loaded via `/dev/graph/topics`. Independent of
+   *  showMemories. */
+  showTopics: boolean;
+  /** Slice 11.5 — when true, the canvas overlays Inconsistency +
+   *  MergeCandidate nodes + their CONFLICTS_WITH / DUPLICATE_OF edges,
+   *  loaded via `/dev/graph/issues`. */
+  showIssues: boolean;
 }
 
 export const DEFAULT_FILTER: GraphFilter = {
@@ -88,6 +180,9 @@ export const DEFAULT_FILTER: GraphFilter = {
   showTrace: false,
   showMentions: false,
   showCrossRefs: true,
+  showMemories: false,
+  showTopics: false,
+  showIssues: false,
 };
 
 export const TRACE_TYPES: ReadonlySet<NodeType> = new Set<NodeType>([
@@ -108,6 +203,43 @@ export function nodeLabel(n: GraphNode): string {
   if (n.type === 'Session') return String(p['scope'] ?? n.id);
   if (n.type === 'User') return String(p['userId'] ?? n.id);
   if (n.type === 'Run') return `Run · ${String(p['status'] ?? '')}`;
+  if (n.type === 'PalaiaExcerpt') {
+    const text = String(p['text'] ?? '');
+    return text.length > 40 ? `${text.slice(0, 40)}…` : text || 'Excerpt';
+  }
+  if (n.type === 'MemorableKnowledge') {
+    const summary = String(p['summary'] ?? '');
+    return summary.length > 40 ? `${summary.slice(0, 40)}…` : summary || 'Memory';
+  }
+  if (n.type === 'Topic') {
+    const name = String(p['name'] ?? '');
+    const count =
+      typeof p['member_count'] === 'number'
+        ? ` (${String(p['member_count'])})`
+        : '';
+    return name.length > 40 ? `${name.slice(0, 40)}…${count}` : `${name}${count}` || 'Topic';
+  }
+  if (n.type === 'Inconsistency') {
+    const summary = String(p['summary'] ?? '');
+    const sev = p['severity'] ? `[${String(p['severity'])}] ` : '';
+    return summary.length > 36
+      ? `${sev}${summary.slice(0, 36)}…`
+      : `${sev}${summary}` || 'Inconsistency';
+  }
+  if (n.type === 'MergeCandidate') {
+    const cos =
+      typeof p['cosine_sim'] === 'number'
+        ? Number(p['cosine_sim']).toFixed(2)
+        : '?';
+    return `dup? cos=${cos}`;
+  }
+  if (n.type === 'ExcerptMergeCandidate') {
+    const cos =
+      typeof p['cosine_sim'] === 'number'
+        ? Number(p['cosine_sim']).toFixed(2)
+        : '?';
+    return `excerpt-dup? cos=${cos}`;
+  }
   return n.id;
 }
 
@@ -127,8 +259,33 @@ export function nodeColor(type: NodeType): string {
       return '#10b981';
     case 'ConfluencePage':
       return '#3b82f6';
+    case 'PluginEntity':
+      return '#22c55e';
     case 'User':
       return '#ec4899';
+    case 'ChannelIdentity':
+      return '#14b8a6';
+    case 'Fact':
+      return '#fbbf24';
+    case 'MemorableKnowledge':
+      return '#d946ef';
+    case 'PalaiaExcerpt':
+      return '#0ea5e9';
+    case 'Topic':
+      // Teal — pops against the existing palette without clashing with
+      // ChannelIdentity (same family) because nodes sit in different
+      // canvas regions.
+      return '#14b8a6';
+    case 'Inconsistency':
+      return '#ef4444';
+    case 'MergeCandidate':
+      return '#f97316';
+    case 'ExcerptMergeCandidate':
+      // Same orange hue as MergeCandidate but a lighter shade
+      // (Tailwind orange-400 vs orange-500) so operators distinguish the
+      // Excerpt-side marker at a glance without breaking the shared
+      // "orange = duplicate" mental model.
+      return '#fb923c';
     default:
       return '#94a3b8';
   }
@@ -203,14 +360,32 @@ export function nodeIcon(type: NodeType): string {
       return '🏷';
     case 'ConfluencePage':
       return '📄';
+    case 'PluginEntity':
+      return '🔌';
     case 'User':
       return '👤';
+    case 'ChannelIdentity':
+      return '📡';
     case 'Run':
       return '▶';
     case 'AgentInvocation':
       return '🤖';
     case 'ToolCall':
       return '🔧';
+    case 'Fact':
+      return '✦';
+    case 'MemorableKnowledge':
+      return '⭐';
+    case 'PalaiaExcerpt':
+      return '❝';
+    case 'Topic':
+      return '🧩';
+    case 'Inconsistency':
+      return '⚠';
+    case 'MergeCandidate':
+      return '⇄';
+    case 'ExcerptMergeCandidate':
+      return '⇄';
     default:
       return '•';
   }

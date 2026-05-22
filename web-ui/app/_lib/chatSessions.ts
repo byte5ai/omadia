@@ -194,10 +194,41 @@ export interface NudgeEvent {
   };
 }
 
+/**
+ * Slice 4a — Palaia-Excerpt suggestion. Mirrors `PalaiaExcerpt` in
+ * `@omadia/plugin-api` 1:1; declared locally so the web-ui bundle
+ * doesn't need to pull the backend type-graph in. Backend-side shape
+ * lives in `middleware/packages/plugin-api/src/palaiaExcerpt.ts`.
+ */
+export interface PalaiaExcerpt {
+  suggestedKind: 'decision' | 'insight' | 'preference' | 'reference';
+  suggestedSummary: string;
+  suggestedRationale?: string;
+  excerpts: readonly string[];
+  source: 'llm' | 'hint' | 'fallback';
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  /** KG-persisted Turn external_id (e.g. `turn:<sessionId>:<ts>`). Set
+   *  from the orchestrator's `done` event when session-logging succeeded.
+   *  Drives the save-as-memory affordance — without it there's no
+   *  DERIVED_FROM anchor for a new MemorableKnowledge. */
+  turnId?: string;
+  /** Slice 4a — pre-classified suggestion from the Palaia-Excerpt-
+   *  Extractor for this turn. Undefined when the extractor wasn't
+   *  installed, the Haiku call failed, or the JSON couldn't be parsed
+   *  — the save-as-memory modal then falls back to its 240-char
+   *  prefill on the cleaned assistant answer. */
+  palaiaExcerpt?: PalaiaExcerpt;
+  /** Slice 4c — when this turn was auto-promoted (significance gate
+   *  passed AND `KG_ACL_AUTO_PROMOTE=true`), carries the resulting MK
+   *  external_id. The UI then renders an inline "Saved by Palaia"
+   *  banner in place of the manual save-as-memory button. Cleared by
+   *  the user's Discard action to allow re-saving. */
+  autoPromotedMkId?: string;
   tools?: ToolEvent[];
   /** OB-77 — nudges emitted during this turn. Rendered after tools. */
   nudges?: NudgeEvent[];

@@ -44,6 +44,16 @@ export default function AdminIndexPage(): React.ReactElement {
           title="Plugin-Domains"
           description="Übersicht aller registrierten Plugins gruppiert nach Domain (z.B. odoo, m365.calendar, core.knowledge-graph). Read-only — Curation kommt mit Phase 9."
         />
+        <AdminCard
+          href="/admin/bulk-promote"
+          title="Memory · Bulk-Promotion"
+          description="Historische Turns nachträglich auf Significance scoren und bei hoher Bewertung als MemorableKnowledge promoten. Idempotent."
+        />
+        <AdminCard
+          href="/admin/inconsistencies"
+          title="Memory · Widersprüche"
+          description="Semantisch ähnliche Memories mit widersprüchlichen Aussagen — Operator entscheidet welche korrekt ist (oder ob beide gelten)."
+        />
       </ul>
     </main>
   );

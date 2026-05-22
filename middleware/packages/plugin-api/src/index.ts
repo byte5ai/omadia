@@ -56,3 +56,56 @@ export * from './nudge.js';
 // dynamic-import / plugin-store flow stays clean (no constructor-injected
 // Deps).
 export * from './routinesIntegration.js';
+
+// KG-ACL Slice 4a: Palaia-Excerpt-Extractor capability. Haiku-backed
+// per-turn enrichment producing {suggestedKind, suggestedSummary,
+// suggestedRationale?, excerpts[]}. Streamed via the orchestrator's
+// `done` event so the chat-side save-as-memory modal can pre-fill,
+// and (Slice 4b) consumed by the auto-promotion hook so manual and
+// automatic MemorableKnowledge creations share the same payload shape.
+// Provider lives in `harness-orchestrator-extras/src/excerptExtractor.ts`.
+export * from './palaiaExcerpt.js';
+
+// KG-ACL Slice 8: retrospective bulk score + promotion. Operator-
+// triggered admin endpoint that scores historical Turns with
+// significance=NULL via the existing Haiku scorer and promotes those
+// crossing threshold via the existing promoteTurnIfSignificant
+// pipeline. Provider lives in `harness-orchestrator-extras/src/
+// bulkPromotion.ts`.
+export * from './bulkPromotion.js';
+
+// KG-ACL Slice 9: contradiction detection on MemorableKnowledge.
+// Two semantically-similar MKs with disagreeing content become an
+// `Inconsistency` node + two `CONFLICTS_WITH` edges. Operator
+// resolves manually via /admin/inconsistencies. Provider lives in
+// `harness-orchestrator-extras/src/inconsistencyDetector.ts`.
+export * from './inconsistency.js';
+
+// KG-ACL Slice 9.5: operator-triggered bulk pass over MemorableKnowledge
+// rows that have an embedding but no `last_inconsistency_check_at`
+// marker yet — surfaces contradictions in memories that predate
+// Slice 9. Reuses the existing detector; idempotent via marker. Provider
+// lives in `harness-orchestrator-extras/src/bulkInconsistency.ts`.
+export * from './bulkInconsistency.js';
+
+// KG-ACL Slice 10: MK-Auto-Merge. Near-duplicate MKs (cosine ≥ 0.95)
+// become a `MergeCandidate` node + two `DUPLICATE_OF` edges. Operator
+// resolves keep_a / keep_b / not_duplicate via /admin/duplicates.
+// Cosine-only detection (no Haiku) → cost-free. Provider lives in
+// `harness-orchestrator-extras/src/mergeCandidateDetector.ts` and
+// `harness-orchestrator-extras/src/bulkMergeDetect.ts`.
+export * from './mergeCandidate.js';
+
+// KG-ACL Slice 11: Topic clustering. Operator-triggered pass that
+// clusters MemorableKnowledge nodes by their embedding (connected-
+// components on cosine ≥ threshold) and gives each cluster a Haiku
+// name. Provider lives in `harness-orchestrator-extras/src/
+// topicClustering.ts`.
+export * from './topic.js';
+
+// KG-ACL Slice 12: ExcerptMergeCandidate. Near-duplicate PalaiaExcerpt
+// detection (cosine ≥ 0.97) — mirror of Slice 10 at the excerpt layer.
+// Operator resolves keep_a / keep_b / not_duplicate via
+// /admin/duplicates (Excerpts tab); keep_a/keep_b deletes the loser
+// excerpt via the new `deleteExcerpt` KG method.
+export * from './excerptMerge.js';
