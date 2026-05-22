@@ -59,6 +59,17 @@ export interface TurnContextValue {
    * pre-C.2.
    */
   captureRawToolResult?: (toolName: string, rawResult: string) => void;
+  /**
+   * Privacy Shield v4 — sub-agent data-plane bridge. Set by the
+   * orchestrator in a nested scope around a single domain-tool dispatch
+   * (one per call, so concurrent sub-agents each get their own array via
+   * AsyncLocalStorage). Every `internToolResultV4` a sub-agent runs inside
+   * that scope pushes its `datasetId` here; the orchestrator then hands the
+   * parent agent the digests of those REAL datasets instead of re-interning
+   * the sub-agent's `[masked]`-baked prose. Undefined outside a domain-tool
+   * dispatch — sub-agent interning then behaves byte-identically to before.
+   */
+  subAgentDatasetSink?: string[];
 }
 
 const storage = new AsyncLocalStorage<TurnContextValue>();

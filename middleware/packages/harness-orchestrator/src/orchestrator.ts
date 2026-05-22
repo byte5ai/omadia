@@ -431,6 +431,7 @@ function buildSystemPrompt(
   hasAskUserChoice: boolean,
   hasSuggestFollowUps: boolean,
   hasCalendar: boolean,
+  hasPrivacyV4: boolean,
   extraToolDocs: readonly string[] = [],
 ): string {
   const domainList = domainTools.length
@@ -466,6 +467,31 @@ function buildSystemPrompt(
   // caller signature stays stable during the transition.
   void hasDiagramTool;
 
+  // Privacy Shield v4 — turn-start directive. The digest header + tool
+  // descriptions only reach the model AFTER it has already interned a tool
+  // result; by then it has finished planning which tools to fetch. This
+  // block puts the data-plane contract in front of the model before the
+  // first tool call so it knows to (a) always terminate a data answer with
+  // `v4_render_answer` and (b) fetch the entity directory it needs for the
+  // join-back that re-attaches a masked identity column to an aggregate.
+  const privacyV4Block = hasPrivacyV4
+    ? `
+**Datenschutz-Datenschicht (Privacy Shield v4) — PFLICHT bei jeder Datenfrage:**
+
+Fach-Agent-Ergebnisse durchlaufen eine Datenschutz-Grenze: statt der Rohdaten erhältst du einen **Digest** (identitätsfreie Strukturbeschreibung). Felder mit \`"classification":"sensitive-masked"\` zeigen dir nur den Platzhalter \`[masked]\` — **nicht weil der User sie nicht sehen darf, sondern nur weil DU sie nicht sehen sollst.** Der angemeldete User IST berechtigt, diese Werte (Namen, E-Mails, …) zu sehen.
+
+a) **Jede Datenantwort (Tabelle, Liste, Ranking, Einzelwert) endet zwingend mit einem \`v4_render_answer\`-Aufruf.** Schreibe die Daten-Tabelle/-Liste NIEMALS selbst in den Antworttext und kopiere NIEMALS \`[masked]\` in eine Antwort. Der Server füllt in \`v4_render_answer\` die echten Werte ein — auch die maskierten — und stellt sie dem User zu. Nimm die Identitäts-Spalte (\`employee\`, \`name\`, …) immer in \`columns\` mit auf.
+
+b) **Behaupte NIEMALS, Daten seien „gefiltert", „maskiert" oder „aus Datenschutzgründen nicht verfügbar".** Kein „⚠️ Datenschutzfilter aktiv", kein „wende dich an einen Administrator". Du siehst \`[masked]\` — der User bekommt den echten Wert. Erfinde maskierte Werte niemals selbst.
+
+c) **Join-Back-Rezept für Rankings/Aggregate mit Namen:** \`v4_aggregate\`/\`v4_group\`/\`v4_join\` arbeiten nur über **safe (nicht-maskierte)** Schlüssel — Gruppieren nach einem maskierten Namen ist nicht möglich, ein Aggregat verliert daher die Namens-Spalte. Um sie zurückzuholen:
+   1. Hole **beide** Datasets: die Transaktionsdaten (z.B. Urlaubsanträge) UND das Stammdaten-Directory (z.B. Mitarbeiterliste mit \`employee_id\` + Name) — das sind in der Regel zwei Fach-Agent-Aufrufe.
+   2. \`v4_aggregate\` die Transaktionen über den safe Schlüssel (z.B. \`employee_id\`).
+   3. \`v4_join\` das Aggregat mit dem Directory auf \`employee_id\` → jede Zeile trägt wieder den Namen.
+   4. \`v4_sort\`/\`v4_top_n\`, dann \`v4_render_answer\` mit \`columns: ["employee", …]\`.
+`
+    : '';
+
   return `Du bist der byte5 Assistent. Du beantwortest Fragen zu unserer Odoo-17-Produktion, indem du an die spezialisierten Sub-Agenten delegierst und Lernpunkte persistent merkst.
 
 Sprache: Antworte immer auf Deutsch, außer der Nutzer wechselt explizit die Sprache.
@@ -495,7 +521,7 @@ Wenn du nichts beizutragen hast, antworte mit dem **alleinigen, exakten** Token 
 - Reine FYI-Nachricht im Chat ohne Frage oder Aufforderung, auf die keine Reaktion erwartet wird.
 
 **Pflicht-Form**: \`NO_REPLY\` muss die **vollständige** Antwort sein — nichts davor, nichts danach, keine Anführungszeichen, keine Begründung. "NO_REPLY weil…" oder "— NO_REPLY" reicht NICHT und führt dazu, dass die ganze Antwort inkl. Begründung an den User rausgeht.
-
+${privacyV4Block}
 Regeln:
 1. Erfinde keine Daten. Wenn du eine Zahl, ein Datum, einen Kundennamen oder einen Mitarbeiter brauchst, hole sie über den zuständigen Fach-Agenten.
 2. Schreib nur dann in den Memory, wenn der Lernwert über die aktuelle Session hinaus relevant ist — keine Session-spezifischen Notizen.
@@ -1297,7 +1323,7 @@ export class Orchestrator {
         }
         if (privacyHandle) {
           try {
-            const receipt = await privacyHandle.finalize();
+            const receipt = await privacyHandle.finalize(input.userMessage);
             if (receipt) {
               return { ...result, privacyReceipt: receipt };
             }
@@ -1694,7 +1720,7 @@ export class Orchestrator {
                 }
               : event;
           try {
-            const receipt = await privacyHandle.finalize();
+            const receipt = await privacyHandle.finalize(input.userMessage);
             if (receipt) {
               doneEvent = { ...doneEvent, privacyReceipt: receipt };
             }
@@ -2217,14 +2243,37 @@ export class Orchestrator {
     // Privacy Shield v4 — Data-Plane Boundary. The privacy handle is
     // threaded through `turnContext.privacyHandle`; absent ⇒ no privacy
     // provider installed and the tool result flows through unchanged.
-    const privacy = turnContext.current()?.privacyHandle;
+    const ctx = turnContext.current();
+    const privacy = ctx?.privacyHandle;
     // Verb tools + the terminal render tool are served by the privacy
     // provider's per-turn data-plane engine, not by a tool handler.
     if (privacy !== undefined && name.startsWith('v4_')) {
       const v4Tool = await privacy.runV4Tool({ toolName: name, input });
       return v4Tool.resultText;
     }
-    const result = await this.dispatchToolInner(name, input, observer);
+    // Privacy Shield v4 — sub-agent data-plane bridge. A domain tool wraps a
+    // LocalSubAgent that runs its own LLM loop behind the SAME v4 boundary:
+    // every result it fetches is interned, so its LLM only ever sees
+    // `[masked]` and the prose answer it returns has `[masked]` baked in.
+    // Re-interning that prose would destroy the real values for good. So for
+    // a domain tool we run the dispatch in a nested scope carrying a fresh
+    // `subAgentDatasetSink`; the sub-agent pushes every datasetId it interns
+    // into it, and below we hand the parent agent the digests of those REAL
+    // datasets by reference instead of re-interning the prose.
+    const subAgentSink: string[] = [];
+    let result: string;
+    if (
+      privacy !== undefined &&
+      ctx !== undefined &&
+      this.domainToolsByName.has(name)
+    ) {
+      result = await turnContext.run(
+        { ...ctx, subAgentDatasetSink: subAgentSink },
+        () => this.dispatchToolInner(name, input, observer),
+      );
+    } else {
+      result = await this.dispatchToolInner(name, input, observer);
+    }
     // Phase C.2 — Raw tool-result capture. Outer scope (routine runner)
     // may install a callback that stashes the raw result keyed by tool
     // name; later template rendering uses it as the source of truth for
@@ -2240,9 +2289,26 @@ export class Orchestrator {
         );
       }
     }
-    // Intern the raw result server-side and hand the LLM only the
-    // identity-free digest — the raw rows never reach the LLM wire.
     if (privacy !== undefined && typeof result === 'string') {
+      // Sub-agent bridge: the sub-agent interned ≥1 dataset this dispatch —
+      // pass those REAL datasets up by reference so the parent agent's
+      // `v4_render_answer` resolves ground truth, not the `[masked]` prose.
+      if (subAgentSink.length > 0) {
+        try {
+          const bridged = await privacy.subAgentResultV4({
+            narration: result,
+            datasetIds: subAgentSink,
+          });
+          return bridged.resultText;
+        } catch (err) {
+          console.warn(
+            `[orchestrator.dispatchTool:${name}] privacy.subAgentResultV4 threw — interning prose instead:`,
+            err,
+          );
+        }
+      }
+      // Intern the raw result server-side and hand the LLM only the
+      // identity-free digest — the raw rows never reach the LLM wire.
       try {
         const v4 = await privacy.internToolResultV4({
           toolName: name,
@@ -2318,6 +2384,7 @@ export class Orchestrator {
       this.askUserChoiceTool !== undefined,
       this.suggestFollowUpsTool !== undefined,
       this.findFreeSlotsTool !== undefined && this.bookMeetingTool !== undefined,
+      this.privacyGuard?.() !== undefined,
       extraDocs,
     );
   }

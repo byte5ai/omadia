@@ -219,14 +219,17 @@
     "summaryMasked": "{count, plural, one {# field masked} other {# fields masked}}",
     "summaryVerbs": "{count, plural, one {# verb} other {# verbs}}",
     "summaryPseudonyms": "pseudonyms used",
+    "summaryIdentityOnWire": "⚠ {count, plural, one {# name to the model} other {# names to the model}}",
     "factDatasets": "Tool results interned",
     "factFieldsMasked": "Fields masked",
     "factFieldsCleartext": "Fields cleartext",
     "factVerbs": "Verbs executed",
     "factPseudonym": "Pseudonym projection",
+    "factIdentityOnWire": "Names sent to the model (self-named)",
     "verbsNone": "—",
     "pseudonymYes": "used",
     "pseudonymNo": "not used",
-    "explainer": "Raw tool results stayed server-side behind the data-plane boundary — the model only ever saw an identity-free digest."
+    "explainer": "Raw tool results stayed server-side behind the data-plane boundary — the model only ever saw an identity-free digest.",
+    "explainerBreach": "You named a person in your request — that name reached the model in cleartext. The data fetched from tools stayed server-side behind the boundary."
   }
 }

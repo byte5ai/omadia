@@ -26,7 +26,7 @@ export interface PrivacyTurnHandle {
   internToolResultV4(input: {
     readonly toolName: string;
     readonly rawResult: string;
-  }): Promise<{ readonly digestText: string }>;
+  }): Promise<{ readonly digestText: string; readonly datasetId: string }>;
   /**
    * Run a v4 verb tool or the terminal render tool the LLM called; returns
    * the `tool_result` text.
@@ -34,6 +34,18 @@ export interface PrivacyTurnHandle {
   runV4Tool(input: {
     readonly toolName: string;
     readonly input: unknown;
+  }): Promise<{ readonly resultText: string }>;
+  /**
+   * Bridge a sub-agent's result across the data-plane boundary. Given the
+   * `datasetId`s the sub-agent interned this dispatch, returns the
+   * `tool_result` text for the parent agent — the sub-agent's narration plus
+   * the digests of those REAL datasets — so the parent's `v4_render_answer`
+   * resolves ground truth, not the sub-agent's `[masked]`-baked prose. Used
+   * in place of `internToolResultV4` for a domain/sub-agent tool result.
+   */
+  subAgentResultV4(input: {
+    readonly narration: string;
+    readonly datasetIds: readonly string[];
   }): Promise<{ readonly resultText: string }>;
   /**
    * Take (and clear) the server-materialized final answer a
@@ -45,9 +57,11 @@ export interface PrivacyTurnHandle {
   v4ToolSpecs(): ReadonlyArray<PrivacyV4ToolSpec>;
   /**
    * Drop the turn's Dataset Store and drain the user-facing receipt.
-   * Returns `undefined` when the turn interned no tool results.
+   * `turnInput` — the requester's own message text — lets the receipt
+   * report identity values the user named themselves. Returns `undefined`
+   * when the turn interned no tool results.
    */
-  finalize(): Promise<PrivacyReceipt | undefined>;
+  finalize(turnInput?: string): Promise<PrivacyReceipt | undefined>;
 }
 
 export function createPrivacyTurnHandle(deps: {
@@ -74,6 +88,14 @@ export function createPrivacyTurnHandle(deps: {
       });
     },
 
+    async subAgentResultV4(input) {
+      return deps.service.subAgentResultV4({
+        turnId: deps.turnId,
+        narration: input.narration,
+        datasetIds: input.datasetIds,
+      });
+    },
+
     async takeRenderedAnswerV4() {
       return deps.service.takeRenderedAnswerV4(deps.turnId);
     },
@@ -82,8 +104,8 @@ export function createPrivacyTurnHandle(deps: {
       return deps.service.v4ToolSpecs();
     },
 
-    async finalize() {
-      return deps.service.finalizeTurn(deps.turnId);
+    async finalize(turnInput) {
+      return deps.service.finalizeTurn(deps.turnId, turnInput);
     },
   };
 }

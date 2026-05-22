@@ -16,9 +16,12 @@ interface PrivacyReceiptCardProps {
  * and whether the gated pseudonym projection was released.
  *
  * The receipt is PII-free by construction (counts + verb names only), so
- * this component renders it directly without any masking logic. v4 has no
- * failure surface in the receipt — a receipt existing at all means the
- * boundary did its job — so there is no severity colour-coding.
+ * this component renders it directly without any masking logic.
+ *
+ * Severity: the card reads calm emerald by default. When the requester named
+ * a real personal identity in their own request — `identityValuesOnWire > 0`,
+ * i.e. a real name reached the model — the WHOLE card switches to red so the
+ * transparency notice is impossible to miss.
  */
 
 // `useTranslations` is a hook so we cannot call it from the pure helper
@@ -33,39 +36,48 @@ export function PrivacyReceiptCard({
   const t = useTranslations('privacyReceipt');
   const verbs = receipt.verbsExecuted;
 
+  // A real identity value the requester named themselves reached the model
+  // → flip the whole card to the red palette.
+  const breached = (receipt.identityValuesOnWire ?? 0) > 0;
+  const palette = breached ? PALETTE_BREACH : PALETTE_OK;
+
   return (
     <details
       className={[
         'mt-2 rounded text-xs ring-1',
-        PALETTE.container,
+        palette.container,
         className ?? '',
       ].join(' ')}
     >
       <summary
         className={[
           'cursor-pointer select-none px-2 py-1 font-medium',
-          PALETTE.summary,
+          palette.summary,
         ].join(' ')}
       >
         {t('summary', { summary: summarisePrivacyReceipt(receipt, t) })}
       </summary>
-      <div className={['space-y-2 px-2 pb-2 pt-1', PALETTE.body].join(' ')}>
+      <div className={['space-y-2 px-2 pb-2 pt-1', palette.body].join(' ')}>
         <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1">
           <Fact
             label={t('factDatasets')}
             value={String(receipt.datasetsInterned)}
+            labelClass={palette.label}
           />
           <Fact
             label={t('factFieldsMasked')}
             value={String(receipt.fieldsMasked)}
+            labelClass={palette.label}
           />
           <Fact
             label={t('factFieldsCleartext')}
             value={String(receipt.fieldsCleartext)}
+            labelClass={palette.label}
           />
           <Fact
             label={t('factVerbs')}
             value={verbs.length > 0 ? verbs.join(', ') : t('verbsNone')}
+            labelClass={palette.label}
           />
           <Fact
             label={t('factPseudonym')}
@@ -74,10 +86,18 @@ export function PrivacyReceiptCard({
                 ? t('pseudonymYes')
                 : t('pseudonymNo')
             }
+            labelClass={palette.label}
           />
+          {breached && (
+            <Fact
+              label={t('factIdentityOnWire')}
+              value={String(receipt.identityValuesOnWire)}
+              labelClass={palette.label}
+            />
+          )}
         </dl>
-        <div className={['text-[11px] italic', PALETTE.muted].join(' ')}>
-          {t('explainer')}
+        <div className={['text-[11px] italic', palette.muted].join(' ')}>
+          {t(breached ? 'explainerBreach' : 'explainer')}
         </div>
       </div>
     </details>
@@ -85,17 +105,26 @@ export function PrivacyReceiptCard({
 }
 
 // ---------------------------------------------------------------------------
-// Single palette. v4 has no failure state in the receipt, so the card always
-// reads as the "boundary active" state — emerald, byte5 brand.
+// Two palettes. Emerald = the calm "boundary did its job" default. Red = the
+// requester named a real identity that reached the model — surfaced loud.
 // ---------------------------------------------------------------------------
 
-const PALETTE = {
+const PALETTE_OK = {
   container:
     'bg-emerald-50/60 ring-emerald-100 dark:bg-emerald-950/30 dark:ring-emerald-900/60',
   summary: 'text-emerald-800 dark:text-emerald-200',
   body: 'text-emerald-900 dark:text-emerald-100',
   label: 'text-emerald-700/80 dark:text-emerald-300/80',
   muted: 'text-emerald-900/80 dark:text-emerald-200/90',
+} as const;
+
+const PALETTE_BREACH = {
+  container:
+    'bg-red-50/80 ring-red-300 dark:bg-red-950/40 dark:ring-red-800/70',
+  summary: 'font-semibold text-red-800 dark:text-red-200',
+  body: 'text-red-900 dark:text-red-100',
+  label: 'text-red-700/80 dark:text-red-300/80',
+  muted: 'text-red-900/80 dark:text-red-200/90',
 } as const;
 
 /**
@@ -117,6 +146,11 @@ export function summarisePrivacyReceipt(r: PrivacyReceipt, t: TFn): string {
   if (r.pseudonymProjectionUsed) {
     parts.push(t('summaryPseudonyms'));
   }
+  const onWire = r.identityValuesOnWire ?? 0;
+  if (onWire > 0) {
+    // Lead with the breach clause so it is the first thing read.
+    parts.unshift(t('summaryIdentityOnWire', { count: onWire }));
+  }
   return parts.join(' · ');
 }
 
@@ -127,15 +161,16 @@ export function summarisePrivacyReceipt(r: PrivacyReceipt, t: TFn): string {
 interface FactProps {
   label: string;
   value: React.ReactNode;
+  labelClass: string;
 }
 
-function Fact({ label, value }: FactProps): React.ReactElement {
+function Fact({ label, value, labelClass }: FactProps): React.ReactElement {
   return (
     <div className="contents">
       <dt
         className={[
           'text-[10px] font-semibold uppercase tracking-wider',
-          PALETTE.label,
+          labelClass,
         ].join(' ')}
       >
         {label}

@@ -463,6 +463,12 @@ export class LocalSubAgent {
           toolName,
           rawResult: result,
         });
+        // Privacy Shield v4 — record the interned datasetId so the parent
+        // orchestrator can pass the REAL dataset up by reference instead of
+        // re-interning this sub-agent's `[masked]`-baked prose. The sink is
+        // installed by the parent's dispatchTool scope; absent ⇒ this
+        // sub-agent is not running under a domain-tool bridge.
+        turnContext.current()?.subAgentDatasetSink?.push(v4.datasetId);
         return v4.digestText;
       } catch (err) {
         console.warn(

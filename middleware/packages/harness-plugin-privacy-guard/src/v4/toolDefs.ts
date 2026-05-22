@@ -14,6 +14,7 @@
 import type {
   AggregateOp,
   Predicate,
+  RenderColumn,
   RenderDirective,
   RenderFormat,
   SortDirection,
@@ -167,17 +168,48 @@ export const RENDER_TOOL_SPEC: V4ToolSpec = {
   description:
     'Produce the final answer — ALWAYS end a data question with this call; ' +
     'never write the data table/list yourself. Provide PII-free prose plus ' +
-    'the datasetId, the columns to show, and a format (table/list/scalar). ' +
-    '`columns` SHOULD include identity / sensitive-masked fields (names, ' +
-    'e-mails): the server fills in their real values for the authorised ' +
-    'user. The rendered answer never returns through you.',
+    'the datasetId, the columns, and a format (table/list/scalar). Each ' +
+    'column is an object {field, label}: `field` is the dataset field path, ' +
+    '`label` is the human-readable header to display (e.g. "Mitarbeiter", ' +
+    '"Summe Tage", "Anzahl Anträge") — always set a clean label, never ship ' +
+    'a raw field name as a header. `columns` SHOULD include identity / ' +
+    'sensitive-masked fields (names, e-mails): the server fills in their ' +
+    'real values for the authorised user. For a sorted ranking / top-N, set ' +
+    '`rankColumn` (e.g. "Rang") to prepend a 1-based rank column. The ' +
+    'rendered answer never returns through you.',
   inputSchema: {
     type: 'object',
     properties: {
       datasetId: DATASET_ID,
-      columns: { type: 'array', items: { type: 'string' } },
+      columns: {
+        type: 'array',
+        description:
+          'Columns to render, in order. Each gives the dataset `field` to ' +
+          'read and a human-readable `label` for the header.',
+        items: {
+          type: 'object',
+          properties: {
+            field: {
+              type: 'string',
+              description: 'Dataset field path to read.',
+            },
+            label: {
+              type: 'string',
+              description:
+                'Human-readable column header. Defaults to `field` if omitted.',
+            },
+          },
+          required: ['field'],
+        },
+      },
       format: { enum: ['table', 'list', 'scalar'] },
       prose: { type: 'string' },
+      rankColumn: {
+        type: 'string',
+        description:
+          'Optional header for a 1-based rank column prepended to a table ' +
+          '(e.g. "Rang"). Use for sorted rankings / top-N; omit otherwise.',
+      },
     },
     required: ['datasetId', 'columns', 'format'],
   },
@@ -326,6 +358,40 @@ export function dispatchVerbCall(
   }
 }
 
+/**
+ * Parse the `columns` field of a render directive. Each item is either a bare
+ * field-path string or a `{ field, label? }` object; both normalize to a
+ * `RenderColumn` whose `label` defaults to the field path. The bare-string
+ * form is kept for backward compatibility — the tool schema steers the LLM to
+ * the object form so it always supplies a human-readable header.
+ */
+function reqRenderColumns(value: unknown): RenderColumn[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new VerbError('render "columns" must be a non-empty array');
+  }
+  return value.map((raw): RenderColumn => {
+    if (typeof raw === 'string') {
+      if (raw.length === 0) {
+        throw new VerbError('render column name must be a non-empty string');
+      }
+      return { field: raw, label: raw };
+    }
+    const o = asObject(raw, 'render column');
+    const field = o.field;
+    if (typeof field !== 'string' || field.length === 0) {
+      throw new VerbError('render column "field" must be a non-empty string');
+    }
+    const label = o.label;
+    if (label !== undefined && typeof label !== 'string') {
+      throw new VerbError('render column "label" must be a string');
+    }
+    return {
+      field,
+      label: typeof label === 'string' && label.length > 0 ? label : field,
+    };
+  });
+}
+
 /** Parse an LLM `v4_render_answer` call into a validated `RenderDirective`. */
 export function parseRenderDirective(input: unknown): RenderDirective {
   const o = asObject(input, 'render directive');
@@ -337,11 +403,18 @@ export function parseRenderDirective(input: unknown): RenderDirective {
   if (prose !== undefined && typeof prose !== 'string') {
     throw new VerbError('render "prose" must be a string');
   }
+  const rankColumn = o.rankColumn;
+  if (rankColumn !== undefined && typeof rankColumn !== 'string') {
+    throw new VerbError('render "rankColumn" must be a string');
+  }
   const directive: RenderDirective = {
     datasetId: reqString(o, 'datasetId'),
-    columns: reqStringArray(o, 'columns'),
+    columns: reqRenderColumns(o.columns),
     format: format as RenderFormat,
     ...(typeof prose === 'string' ? { prose } : {}),
+    ...(typeof rankColumn === 'string' && rankColumn.length > 0
+      ? { rankColumn }
+      : {}),
   };
   return directive;
 }

@@ -255,15 +255,28 @@ export type VerbResult = DigestEnvelope;
 
 export type RenderFormat = 'table' | 'list' | 'scalar';
 
-/** The LLM's final-answer instruction to the Materializer. `columns` MAY name
- *  `sensitive-masked` fields — the Materializer renders their real values into
+/** One column of a render directive: the dataset field path to read plus the
+ *  human-readable header to display for it. */
+export interface RenderColumn {
+  /** Dataset field path to read, e.g. `"employee_id"`. */
+  readonly field: string;
+  /** Display header for the column. Defaults to `field` when the LLM gives
+   *  no label. */
+  readonly label: string;
+}
+
+/** The LLM's final-answer instruction to the Materializer. A column MAY name
+ *  a `sensitive-masked` field — the Materializer renders its real values into
  *  the channel-bound output for the authenticated user (FR-016/FR-017). */
 export interface RenderDirective {
   readonly datasetId: string;
-  readonly columns: ReadonlyArray<string>;
+  readonly columns: ReadonlyArray<RenderColumn>;
   readonly format: RenderFormat;
   /** PII-free surrounding prose from the LLM. */
   readonly prose?: string;
+  /** When set, a 1-based rank column is prepended (table format only),
+   *  headed by this label — e.g. `"Rang"` for a sorted ranking. */
+  readonly rankColumn?: string;
 }
 
 // ---------------------------------------------------------------------------

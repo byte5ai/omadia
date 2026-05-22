@@ -29,13 +29,22 @@ export async function activate(
 ): Promise<PrivacyGuardPluginHandle> {
   ctx.log('[privacy-guard] activating (Privacy Shield v4 — Data-Plane Boundary)');
 
-  const service = createPrivacyGuardService();
+  // Slice 2 — host-LLM accessor for schema-level PII classification. Present
+  // only when the manifest's `permissions.llm` is honoured AND the host has
+  // an LLM provider (ANTHROPIC_API_KEY). Absent ⇒ the classifier simply does
+  // not run; interning behaves byte-identically to before.
+  const llm = ctx.llm;
+  const service = createPrivacyGuardService(
+    llm ? { llmComplete: llm.complete.bind(llm) } : undefined,
+  );
   const disposeService = ctx.services.provide<PrivacyGuardService>(
     PRIVACY_REDACT_SERVICE_NAME,
     service,
   );
 
-  ctx.log('[privacy-guard] ready');
+  ctx.log(
+    `[privacy-guard] ready (schema PII classifier: ${llm ? 'on' : 'off'})`,
+  );
 
   return {
     async close(): Promise<void> {
