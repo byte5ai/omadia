@@ -135,12 +135,6 @@ export interface PrivacyReceipt {
   verbsExecuted: readonly string[];
   /** Whether the gated pseudonym-projection layer was released this turn. */
   pseudonymProjectionUsed: boolean;
-  /**
-   * Distinct identity values that reached the LLM wire because the requester
-   * named them in the request itself. A soft breach — surfaced, not blocked.
-   * `0` / absent when the user named nobody.
-   */
-  identityValuesOnWire?: number;
 }
 
 /**

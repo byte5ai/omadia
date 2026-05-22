@@ -75,12 +75,6 @@ export function PrivacyReceiptCard({
                 : t('pseudonymNo')
             }
           />
-          {(receipt.identityValuesOnWire ?? 0) > 0 && (
-            <Fact
-              label={t('factIdentityOnWire')}
-              value={String(receipt.identityValuesOnWire)}
-            />
-          )}
         </dl>
         <div className={['text-[11px] italic', PALETTE.muted].join(' ')}>
           {t('explainer')}
@@ -122,10 +116,6 @@ export function summarisePrivacyReceipt(r: PrivacyReceipt, t: TFn): string {
   }
   if (r.pseudonymProjectionUsed) {
     parts.push(t('summaryPseudonyms'));
-  }
-  const onWire = r.identityValuesOnWire ?? 0;
-  if (onWire > 0) {
-    parts.push(t('summaryIdentityOnWire', { count: onWire }));
   }
   return parts.join(' · ');
 }

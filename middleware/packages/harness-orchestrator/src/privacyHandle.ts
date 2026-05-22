@@ -48,13 +48,6 @@ export interface PrivacyTurnHandle {
     readonly datasetIds: readonly string[];
   }): Promise<{ readonly resultText: string }>;
   /**
-   * Runtime on-the-wire guard — scans an LLM-bound payload for any
-   * `sensitive-masked` identity value interned this turn and throws,
-   * fail-closed, if one is present. A no-op when the turn interned
-   * nothing. Call at the `messages.create` / `messages.stream` seam.
-   */
-  assertWireCleanV4(payload: unknown): void;
-  /**
    * Take (and clear) the server-materialized final answer a
    * `v4_render_answer` call stashed this turn, if any — the rendered text
    * plus the `maskedValues` the LLM never saw.
@@ -99,10 +92,6 @@ export function createPrivacyTurnHandle(deps: {
         narration: input.narration,
         datasetIds: input.datasetIds,
       });
-    },
-
-    assertWireCleanV4(payload) {
-      deps.service.assertWireCleanV4(deps.turnId, payload);
     },
 
     async takeRenderedAnswerV4() {

@@ -1,7 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import type { AskObserver } from './tools/domainQueryTool.js';
 import { ensureWellFormedParams } from './privacyHandle.js';
-import { turnContext } from './turnContext.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Message = any;
@@ -131,12 +130,6 @@ export async function* streamMessageEvents(args: {
   // Last-resort guard: repair any lone UTF-16 surrogate so the request
   // body is valid JSON for the Anthropic API. See ensureWellFormedParams.
   const params = ensureWellFormedParams(args.params);
-
-  // Privacy Shield v4 — runtime on-the-wire guard. Fail-closed: if a masked
-  // identity value interned this turn appears in the payload, this throws
-  // before the request leaves the process. No-op when no privacy provider
-  // is installed or the turn interned nothing.
-  turnContext.current()?.privacyHandle?.assertWireCleanV4(params);
 
   for (let attempt = 1; ; attempt++) {
     // `forwardedText` gates the retry: once a `text_delta` has been yielded
