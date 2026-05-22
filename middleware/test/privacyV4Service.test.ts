@@ -241,4 +241,38 @@ describe('PrivacyGuardService.assertWireCleanV4', () => {
       }),
     );
   });
+
+  it('does not flag a user-named employee echoed into an assistant tool call', async () => {
+    const svc = createPrivacyGuardService();
+    const turnId = 't-wire-echo';
+    // HR data interned — "Marvin Vomberg" becomes a masked needle.
+    await svc.internToolResultV4({
+      sessionId: 's',
+      turnId,
+      toolName: 'hr.leave',
+      rawResult: JSON.stringify(HR_LEAVE),
+    });
+    // The user asked about Marvin by name; the LLM echoed that name into an
+    // Odoo tool call (the assistant tool_use). The name came from the user,
+    // not from interned data — it is not a data-plane leak, so the guard
+    // must NOT fire even though the name is also a masked dataset value.
+    assert.doesNotThrow(() =>
+      svc.assertWireCleanV4(turnId, {
+        messages: [
+          { role: 'user', content: 'Wie viel Urlaub hat Marvin Vomberg?' },
+          {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'tu_1',
+                name: 'query_odoo_hr',
+                input: { question: 'Urlaub von Marvin Vomberg 2026' },
+              },
+            ],
+          },
+        ],
+      }),
+    );
+  });
 });

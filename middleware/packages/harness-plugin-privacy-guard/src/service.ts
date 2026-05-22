@@ -104,6 +104,39 @@ function dataPlaneSurfaces(payload: unknown): unknown[] {
   return surfaces;
 }
 
+/** Concatenate every piece of text the human authored in an LLM-bound
+ *  payload — plain-string user messages and `text` blocks in user messages.
+ *  `tool_result` blocks (also user-role, but data-plane) are excluded. A
+ *  masked value that appears in here was supplied BY the user, so its
+ *  presence on the wire is not a data-plane leak — the wire guard drops it
+ *  from its needle set. */
+function userAuthoredText(payload: unknown): string {
+  if (payload === null || typeof payload !== 'object') return '';
+  const messages = (payload as { messages?: unknown }).messages;
+  if (!Array.isArray(messages)) return '';
+  const parts: string[] = [];
+  for (const msg of messages) {
+    if (msg === null || typeof msg !== 'object') continue;
+    const m = msg as { role?: unknown; content?: unknown };
+    if (m.role !== 'user') continue;
+    if (typeof m.content === 'string') {
+      parts.push(m.content);
+    } else if (Array.isArray(m.content)) {
+      for (const block of m.content) {
+        if (
+          block !== null &&
+          typeof block === 'object' &&
+          (block as { type?: unknown }).type === 'text' &&
+          typeof (block as { text?: unknown }).text === 'string'
+        ) {
+          parts.push((block as { text: string }).text);
+        }
+      }
+    }
+  }
+  return parts.join('\n');
+}
+
 export function createPrivacyGuardService(): PrivacyGuardService {
   // One turn-scoped Dataset Store per turn, minted lazily on the first
   // `internToolResultV4` and dropped by `finalizeTurn`.
@@ -294,8 +327,15 @@ export function createPrivacyGuardService(): PrivacyGuardService {
         }
       }
       if (needles.size === 0) return;
+      // A masked value the user themselves typed into the conversation is
+      // not a data-plane leak: they already know it, and the LLM legitimately
+      // echoes it downstream (e.g. into an Odoo name filter). Drop those so
+      // the guard only flags values that escaped FROM interned tool data.
+      const userText = userAuthoredText(payload);
+      const needleList = [...needles].filter((n) => !userText.includes(n));
+      if (needleList.length === 0) return;
       try {
-        assertNoIdentityOnWire(dataPlaneSurfaces(payload), [...needles]);
+        assertNoIdentityOnWire(dataPlaneSurfaces(payload), needleList);
       } catch (err) {
         console.error(
           `[privacy-guard v4] WIRE GUARD turn=${turnId} — blocking the ` +
