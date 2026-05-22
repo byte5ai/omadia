@@ -277,6 +277,29 @@ describe('PrivacyGuardService.assertWireCleanV4', () => {
     );
   });
 
+  it('records a user-named identity as a soft breach in the receipt (no throw)', async () => {
+    const svc = createPrivacyGuardService();
+    const turnId = 't-wire-soft';
+    await svc.internToolResultV4({
+      sessionId: 's',
+      turnId,
+      toolName: 'hr.leave',
+      rawResult: JSON.stringify(HR_LEAVE),
+    });
+    // The user named Marvin — the guard records it (soft breach) and does
+    // NOT throw; the turn completes.
+    assert.doesNotThrow(() =>
+      svc.assertWireCleanV4(turnId, {
+        messages: [
+          { role: 'user', content: 'Wie viel Urlaub hat Marvin Vomberg?' },
+        ],
+      }),
+    );
+    const receipt = await svc.finalizeTurn(turnId);
+    assert.ok(receipt);
+    assert.equal(receipt.identityValuesOnWire, 1);
+  });
+
   it('does not flag a user-named employee echoed into an assistant tool call', async () => {
     const svc = createPrivacyGuardService();
     const turnId = 't-wire-echo';

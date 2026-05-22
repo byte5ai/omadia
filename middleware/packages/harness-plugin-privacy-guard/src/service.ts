@@ -47,6 +47,10 @@ interface V4ReceiptAccum {
   fieldsCleartext: number;
   readonly verbsExecuted: string[];
   pseudonymProjectionUsed: boolean;
+  /** Identity values that reached the wire because the user named them
+   *  (soft breach — recorded, not blocked). A Set so repeat guard calls
+   *  within the turn dedupe; the receipt reports `.size`. */
+  readonly identityOnWire: Set<string>;
 }
 
 /** Min length of a masked string value worth scanning for on the wire.
@@ -171,6 +175,7 @@ export function createPrivacyGuardService(): PrivacyGuardService {
         fieldsCleartext: 0,
         verbsExecuted: [],
         pseudonymProjectionUsed: false,
+        identityOnWire: new Set<string>(),
       };
       receipts.set(turnId, r);
     }
@@ -328,15 +333,24 @@ export function createPrivacyGuardService(): PrivacyGuardService {
         }
       }
       if (needles.size === 0) return;
-      // A masked value the user themselves typed into the conversation is
-      // not a data-plane leak: they already know it, and the LLM legitimately
-      // echoes it downstream (e.g. into an Odoo name filter). Drop those so
-      // the guard only flags values that escaped FROM interned tool data.
+      // Two tiers. A masked value the user themselves named in the request is
+      // not a hard leak — they already know it, and the LLM legitimately
+      // echoes it downstream (e.g. into an Odoo name filter). It is recorded
+      // as a soft breach (surfaced in the receipt) but does NOT block. A
+      // masked value the user did NOT provide is a hard leak — fail closed.
       const userText = userAuthoredText(payload);
-      const needleList = [...needles].filter((n) => !userText.includes(n));
-      if (needleList.length === 0) return;
+      const receipt = receiptFor(turnId);
+      const leakNeedles: string[] = [];
+      for (const needle of needles) {
+        if (userText.includes(needle)) {
+          receipt.identityOnWire.add(needle);
+        } else {
+          leakNeedles.push(needle);
+        }
+      }
+      if (leakNeedles.length === 0) return;
       try {
-        assertNoIdentityOnWire(dataPlaneSurfaces(payload), needleList);
+        assertNoIdentityOnWire(dataPlaneSurfaces(payload), leakNeedles);
       } catch (err) {
         console.error(
           `[privacy-guard v4] WIRE GUARD turn=${turnId} — blocking the ` +
@@ -376,7 +390,8 @@ export function createPrivacyGuardService(): PrivacyGuardService {
           `datasets=${String(accum.datasetsInterned)} ` +
           `masked=${String(accum.fieldsMasked)} ` +
           `cleartext=${String(accum.fieldsCleartext)} ` +
-          `verbs=[${accum.verbsExecuted.join(',')}]`,
+          `verbs=[${accum.verbsExecuted.join(',')}] ` +
+          `identityOnWire=${String(accum.identityOnWire.size)}`,
       );
       return {
         datasetsInterned: accum.datasetsInterned,
@@ -384,6 +399,7 @@ export function createPrivacyGuardService(): PrivacyGuardService {
         fieldsCleartext: accum.fieldsCleartext,
         verbsExecuted: [...accum.verbsExecuted],
         pseudonymProjectionUsed: accum.pseudonymProjectionUsed,
+        identityValuesOnWire: accum.identityOnWire.size,
       };
     },
   };

@@ -34,6 +34,16 @@ export interface PrivacyReceipt {
   readonly verbsExecuted: readonly string[];
   /** Whether the gated pseudonym-projection layer was released this turn. */
   readonly pseudonymProjectionUsed: boolean;
+  /**
+   * Distinct identity values that reached the LLM wire because the requester
+   * named them in the request itself (a name typed into the chat). The turn
+   * is NOT blocked for these — the user already knows the value — but it is
+   * surfaced as a soft breach so the disclosure stays honest: yes, a real
+   * name was on the wire this turn. `0` (or absent) when the user named
+   * nobody. A masked value the user did NOT provide that reaches the wire is
+   * a *hard* breach — the turn fails closed and emits no receipt at all.
+   */
+  readonly identityValuesOnWire?: number;
 }
 
 // ---------------------------------------------------------------------------
