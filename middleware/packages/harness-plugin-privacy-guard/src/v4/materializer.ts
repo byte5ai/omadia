@@ -8,6 +8,11 @@
  * channel-bound output for the authenticated internal user (FR-016/FR-017).
  * Real identity values never pass back through the LLM.
  *
+ * It also returns `maskedValues`: the distinct real values it rendered from
+ * `sensitive-masked` columns — i.e. exactly the values that never reached the
+ * LLM. Channels surface these (e.g. a violet highlight) so the asker can see
+ * at a glance which data the server filled in behind the boundary.
+ *
  * Design note: the spec suggested generalizing `routineTemplateRenderer`.
  * That renderer is coupled to the routine-template section model (narrative
  * slots, adaptive cards, mustache interpolation); driving an ad-hoc directive
@@ -36,6 +41,14 @@ export class MaterializerError extends Error {
 export interface MaterializeResult {
   readonly text: string;
   readonly rowCount: number;
+  /**
+   * Distinct real values rendered into `text` from `sensitive-masked`
+   * columns — the values the LLM never saw (it only ever saw `[masked]` in
+   * the Digest). Channels MAY highlight their occurrences so the user sees
+   * which data the server resolved behind the data-plane boundary. Empty
+   * when the rendered columns were all `safe-cleartext`.
+   */
+  readonly maskedValues: readonly string[];
 }
 
 /** Format a single cell value for display. */
@@ -95,6 +108,33 @@ function renderScalar(
 }
 
 /**
+ * Collect the distinct real values rendered from `sensitive-masked` columns.
+ * `renderedColumns` is the subset of the directive's columns that actually
+ * appear in the output (all of them for table/list; just the first for
+ * scalar). The `—` null placeholder is never reported.
+ */
+function collectMaskedValues(
+  dataset: Dataset,
+  renderedColumns: ReadonlyArray<string>,
+): string[] {
+  const maskedPaths = new Set(
+    dataset.schema.fields
+      .filter((f) => f.classification === 'sensitive-masked')
+      .map((f) => f.path),
+  );
+  const maskedColumns = renderedColumns.filter((c) => maskedPaths.has(c));
+  if (maskedColumns.length === 0) return [];
+  const values = new Set<string>();
+  for (const row of dataset.rows) {
+    for (const c of maskedColumns) {
+      const v = cell(row[c]);
+      if (v.length > 0 && v !== '—') values.add(v);
+    }
+  }
+  return [...values];
+}
+
+/**
  * Render a `RenderDirective` against the turn's Dataset Store. Throws
  * `MaterializerError` for an unknown `datasetId`, an unknown column, or an
  * unsupported format — never renders a guess (FR-019).
@@ -114,7 +154,11 @@ export function materialize(
   }
 
   if (dataset.rows.length === 0) {
-    return { text: withProse(directive.prose, '(no rows)'), rowCount: 0 };
+    return {
+      text: withProse(directive.prose, '(no rows)'),
+      rowCount: 0,
+      maskedValues: [],
+    };
   }
 
   const known = new Set(dataset.schema.fields.map((f) => f.path));
@@ -127,15 +171,20 @@ export function materialize(
   }
 
   let body: string;
+  let renderedColumns: ReadonlyArray<string>;
   switch (directive.format) {
     case 'table':
       body = renderTable(dataset, directive.columns);
+      renderedColumns = directive.columns;
       break;
     case 'list':
       body = renderList(dataset, directive.columns);
+      renderedColumns = directive.columns;
       break;
     case 'scalar':
       body = renderScalar(dataset, directive.columns);
+      // Only the first column ever reaches the rendered scalar.
+      renderedColumns = directive.columns.slice(0, 1);
       break;
     default:
       throw new MaterializerError(
@@ -146,5 +195,6 @@ export function materialize(
   return {
     text: withProse(directive.prose, body),
     rowCount: dataset.rows.length,
+    maskedValues: collectMaskedValues(dataset, renderedColumns),
   };
 }

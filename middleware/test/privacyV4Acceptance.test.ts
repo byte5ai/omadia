@@ -107,23 +107,26 @@ describe('Privacy Shield v4 — HR-Urlaubsranking acceptance', () => {
 
     const answer = await svc.takeRenderedAnswerV4(turnId);
     assert.ok(answer, 'a final answer was rendered');
+    const text = answer.text;
 
     // SC-001 — real, complete names; no tokens / partials / invented labels.
     for (const name of REAL_NAMES) {
-      assert.ok(answer.includes(name), `answer is missing "${name}"`);
+      assert.ok(text.includes(name), `answer is missing "${name}"`);
     }
-    assert.ok(!answer.includes('«'), 'answer carries a v2 token');
-    assert.ok(!/Mitarbeiter \d|Platz \d/.test(answer), 'answer carries an invented label');
+    assert.ok(!text.includes('«'), 'answer carries a v2 token');
+    assert.ok(!/Mitarbeiter \d|Platz \d/.test(text), 'answer carries an invented label');
 
     // SC-002 — correct ranking: Anna (32) > Marvin (24) > Thomas (16).
-    assert.ok(answer.indexOf('Anna Rüsche') < answer.indexOf('Marvin Vomberg'));
-    assert.ok(
-      answer.indexOf('Marvin Vomberg') < answer.indexOf('Thomas Görres'),
-    );
+    assert.ok(text.indexOf('Anna Rüsche') < text.indexOf('Marvin Vomberg'));
+    assert.ok(text.indexOf('Marvin Vomberg') < text.indexOf('Thomas Görres'));
     // no duplicated people
     for (const name of REAL_NAMES) {
-      assert.equal(answer.split(name).length - 1, 1, `"${name}" appears twice`);
+      assert.equal(text.split(name).length - 1, 1, `"${name}" appears twice`);
     }
+
+    // The masked employee names — what the LLM never saw — are surfaced so
+    // the channel can highlight them for the asker.
+    assert.deepEqual([...answer.maskedValues].sort(), [...REAL_NAMES].sort());
 
     // SC-003 / SC-006 — zero identity values in any LLM-bound payload.
     assertNoIdentityOnWire(wire, REAL_NAMES);

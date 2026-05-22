@@ -139,3 +139,32 @@ describe('Materializer — guard rails', () => {
     );
   });
 });
+
+describe('Materializer — maskedValues', () => {
+  it('reports the real values rendered from sensitive-masked columns', () => {
+    const { store } = harness();
+    const { datasetId } = store.internToolResult('hr.leave', HR_LEAVE);
+    const { maskedValues } = materialize(store, {
+      datasetId,
+      columns: ['employee', 'days'],
+      format: 'table',
+    });
+    // `employee` (human names) is sensitive-masked; `days` (numbers) is
+    // safe-cleartext — only the names are reported as masked.
+    assert.deepEqual(
+      [...maskedValues].sort(),
+      ['Anna Rüsche', 'Marvin Vomberg', 'Thomas Görres'],
+    );
+  });
+
+  it('is empty when only safe-cleartext columns are rendered', () => {
+    const { store } = harness();
+    const { datasetId } = store.internToolResult('hr.leave', HR_LEAVE);
+    const { maskedValues } = materialize(store, {
+      datasetId,
+      columns: ['days'],
+      format: 'table',
+    });
+    assert.deepEqual(maskedValues, []);
+  });
+});

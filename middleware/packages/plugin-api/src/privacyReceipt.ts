@@ -81,6 +81,19 @@ export interface PrivacyV4ToolSpec {
   readonly input_schema: Record<string, unknown>;
 }
 
+/** The server-materialized final answer produced by a `v4_render_answer` call. */
+export interface PrivacyRenderedAnswer {
+  /** The rendered, channel-bound answer body (real values). */
+  readonly text: string;
+  /**
+   * Distinct real values rendered into `text` from `sensitive-masked`
+   * columns — exactly the values the LLM never saw. Channels MAY highlight
+   * their occurrences so the user sees what the server resolved behind the
+   * boundary. Empty when the rendered answer exposed no masked field.
+   */
+  readonly maskedValues: readonly string[];
+}
+
 /**
  * Service surface published by the `privacy.redact@1` provider plugin.
  */
@@ -102,9 +115,13 @@ export interface PrivacyGuardService {
   runV4Tool(request: PrivacyV4ToolRequest): Promise<{ readonly resultText: string }>;
   /**
    * Privacy Shield v4 — take (and clear) the server-materialized final
-   * answer a `v4_render_answer` call stashed for this turn, if any.
+   * answer a `v4_render_answer` call stashed for this turn, if any. Carries
+   * `maskedValues` — the real values rendered into the answer that the LLM
+   * never saw — so channels can highlight them for the user.
    */
-  takeRenderedAnswerV4(turnId: string): Promise<string | undefined>;
+  takeRenderedAnswerV4(
+    turnId: string,
+  ): Promise<PrivacyRenderedAnswer | undefined>;
   /**
    * Privacy Shield v4 — the verb + render tool specs to offer the LLM.
    */

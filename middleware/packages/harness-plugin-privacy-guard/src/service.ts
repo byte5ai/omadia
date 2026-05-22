@@ -18,6 +18,7 @@
 import type {
   PrivacyGuardService,
   PrivacyReceipt,
+  PrivacyRenderedAnswer,
   PrivacyToolResultV4Request,
   PrivacyToolResultV4Result,
   PrivacyV4ToolRequest,
@@ -51,8 +52,9 @@ export function createPrivacyGuardService(): PrivacyGuardService {
   // `internToolResultV4` and dropped by `finalizeTurn`.
   const stores = new Map<string, DatasetStore>();
   // Per-turn stash for the server-materialized final answer produced by a
-  // `v4_render_answer` call.
-  const renderedAnswers = new Map<string, string>();
+  // `v4_render_answer` call — the rendered text plus the masked values it
+  // resolved behind the boundary.
+  const renderedAnswers = new Map<string, PrivacyRenderedAnswer>();
   // Per-turn receipt counters.
   const receipts = new Map<string, V4ReceiptAccum>();
 
@@ -117,7 +119,10 @@ export function createPrivacyGuardService(): PrivacyGuardService {
         if (request.toolName === RENDER_TOOL_SPEC.name) {
           const directive = parseRenderDirective(request.input);
           const rendered = materialize(store, directive);
-          renderedAnswers.set(request.turnId, rendered.text);
+          renderedAnswers.set(request.turnId, {
+            text: rendered.text,
+            maskedValues: rendered.maskedValues,
+          });
           console.log(
             `[privacy-guard v4] render turn=${request.turnId} ` +
               `datasetId=${directive.datasetId} rows=${String(rendered.rowCount)} ` +
@@ -153,10 +158,12 @@ export function createPrivacyGuardService(): PrivacyGuardService {
       }
     },
 
-    async takeRenderedAnswerV4(turnId: string): Promise<string | undefined> {
-      const text = renderedAnswers.get(turnId);
+    async takeRenderedAnswerV4(
+      turnId: string,
+    ): Promise<PrivacyRenderedAnswer | undefined> {
+      const answer = renderedAnswers.get(turnId);
       renderedAnswers.delete(turnId);
-      return text;
+      return answer;
     },
 
     v4ToolSpecs(): ReadonlyArray<PrivacyV4ToolSpec> {

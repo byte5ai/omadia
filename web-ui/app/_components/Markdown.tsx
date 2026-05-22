@@ -1,5 +1,6 @@
 'use client';
 
+import { useMemo, type ComponentProps } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -8,11 +9,112 @@ import remarkGfm from 'remark-gfm';
  * `.md-view` class. Global styles in globals.css handle typography. Keeping
  * the component dumb means the streaming chat can re-render cheaply as the
  * source string grows.
+ *
+ * Privacy Shield v4: when `highlightTerms` is given, every occurrence of
+ * those values is wrapped in a violet chip. They are the real values the
+ * server resolved behind the data-plane boundary — the data the LLM never
+ * saw — so the asker can spot at a glance what was protected.
  */
-export function Markdown({ source }: { source: string }): React.ReactElement {
+
+type RehypePlugins = ComponentProps<typeof ReactMarkdown>['rehypePlugins'];
+
+/** Minimal hast node shape — enough to walk and rewrite text nodes. */
+interface HastNode {
+  type: string;
+  value?: string;
+  tagName?: string;
+  properties?: Record<string, unknown>;
+  children?: HastNode[];
+}
+
+/**
+ * Tailwind utilities for a Privacy-Shield-revealed value. Written as a
+ * literal array so the Tailwind JIT picks the classes up from this file.
+ */
+const PII_REVEALED_CLASS: readonly string[] = [
+  'rounded-[3px]',
+  'bg-violet-100',
+  'px-1',
+  'text-violet-950',
+  'dark:bg-violet-400/25',
+  'dark:text-violet-50',
+];
+
+/**
+ * Build a rehype plugin that wraps every occurrence of `terms` in a violet
+ * `<span>`. Longest term first so a term that contains another wins the scan.
+ */
+function buildHighlightPlugin(terms: readonly string[]): RehypePlugins {
+  const sorted = [...new Set(terms)]
+    .filter((t) => t.trim().length > 0)
+    .sort((a, b) => b.length - a.length);
+  if (sorted.length === 0) return undefined;
+
+  function splitText(value: string): HastNode[] {
+    const parts: HastNode[] = [];
+    let buf = '';
+    let i = 0;
+    while (i < value.length) {
+      const term = sorted.find((t) => value.startsWith(t, i));
+      if (term !== undefined) {
+        if (buf.length > 0) {
+          parts.push({ type: 'text', value: buf });
+          buf = '';
+        }
+        parts.push({
+          type: 'element',
+          tagName: 'span',
+          properties: { className: [...PII_REVEALED_CLASS] },
+          children: [{ type: 'text', value: term }],
+        });
+        i += term.length;
+      } else {
+        buf += value.charAt(i);
+        i += 1;
+      }
+    }
+    if (buf.length > 0) parts.push({ type: 'text', value: buf });
+    return parts;
+  }
+
+  function walk(node: HastNode): void {
+    const children = node.children;
+    if (children === undefined) return;
+    const next: HastNode[] = [];
+    for (const child of children) {
+      if (child.type === 'text' && typeof child.value === 'string') {
+        next.push(...splitText(child.value));
+      } else {
+        walk(child);
+        next.push(child);
+      }
+    }
+    node.children = next;
+  }
+
+  return [() => (tree: unknown): void => walk(tree as HastNode)];
+}
+
+export function Markdown({
+  source,
+  highlightTerms,
+}: {
+  source: string;
+  /** Privacy Shield v4 — real values to highlight as boundary-protected. */
+  highlightTerms?: readonly string[];
+}): React.ReactElement {
+  const rehypePlugins = useMemo<RehypePlugins>(
+    () =>
+      highlightTerms && highlightTerms.length > 0
+        ? buildHighlightPlugin(highlightTerms)
+        : undefined,
+    [highlightTerms],
+  );
   return (
     <div className="md-view">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{source}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={rehypePlugins}>
+        {source}
+      </ReactMarkdown>
     </div>
   );
 }

@@ -13,6 +13,7 @@
 import type {
   PrivacyGuardService,
   PrivacyReceipt,
+  PrivacyRenderedAnswer,
   PrivacyV4ToolSpec,
 } from '@omadia/plugin-api';
 
@@ -36,9 +37,10 @@ export interface PrivacyTurnHandle {
   }): Promise<{ readonly resultText: string }>;
   /**
    * Take (and clear) the server-materialized final answer a
-   * `v4_render_answer` call stashed this turn, if any.
+   * `v4_render_answer` call stashed this turn, if any — the rendered text
+   * plus the `maskedValues` the LLM never saw.
    */
-  takeRenderedAnswerV4(): Promise<string | undefined>;
+  takeRenderedAnswerV4(): Promise<PrivacyRenderedAnswer | undefined>;
   /** The verb + render tool specs to offer the LLM. */
   v4ToolSpecs(): ReadonlyArray<PrivacyV4ToolSpec>;
   /**

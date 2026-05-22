@@ -81,5 +81,8 @@ export function toSemanticAnswer(r: ChatTurnResult): SemanticAnswer {
     ...(interactive ? { interactive } : {}),
     ...(r.pendingOAuthConsent ? { oauthConsentPending: true } : {}),
     ...(r.privacyReceipt ? { privacyReceipt: r.privacyReceipt } : {}),
+    ...(r.maskedValues && r.maskedValues.length > 0
+      ? { maskedValues: r.maskedValues }
+      : {}),
   };
 }

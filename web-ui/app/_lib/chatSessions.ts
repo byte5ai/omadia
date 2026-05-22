@@ -192,6 +192,14 @@ export interface Message {
    * when no privacy-guard plugin is installed.
    */
   privacyReceipt?: PrivacyReceipt;
+  /**
+   * Privacy Shield v4 — real values in `content` that the LLM never saw,
+   * resolved server-side behind the data-plane boundary. `<Markdown>`
+   * highlights their occurrences in violet so the asker sees what was
+   * protected. Undefined when the turn produced no server-materialized
+   * answer or it exposed no masked field.
+   */
+  maskedValues?: readonly string[];
   error?: boolean;
   startedAt: number;
   finishedAt?: number;

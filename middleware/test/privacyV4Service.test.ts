@@ -112,9 +112,18 @@ describe('PrivacyGuardService.runV4Tool — end-to-end data path', () => {
     const answer = await svc.takeRenderedAnswerV4(turnId);
     assert.ok(answer);
     // Real, complete names in correct rank order: 30 > 24 > 18.
-    assert.ok(answer.indexOf('Anna Rüsche') < answer.indexOf('Marvin Vomberg'));
     assert.ok(
-      answer.indexOf('Marvin Vomberg') < answer.indexOf('Thomas Görres'),
+      answer.text.indexOf('Anna Rüsche') < answer.text.indexOf('Marvin Vomberg'),
+    );
+    assert.ok(
+      answer.text.indexOf('Marvin Vomberg') <
+        answer.text.indexOf('Thomas Görres'),
+    );
+    // The masked employee names — what the LLM never saw — are reported so
+    // channels can highlight them.
+    assert.deepEqual(
+      [...answer.maskedValues].sort(),
+      ['Anna Rüsche', 'Marvin Vomberg', 'Thomas Görres'],
     );
 
     // The turn receipt reports what the data-plane boundary did.

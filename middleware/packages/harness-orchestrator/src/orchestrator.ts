@@ -1158,7 +1158,13 @@ export class Orchestrator {
         if (privacyHandle) {
           const v4Rendered = await privacyHandle.takeRenderedAnswerV4();
           if (v4Rendered !== undefined) {
-            result = { ...result, answer: v4Rendered };
+            result = {
+              ...result,
+              answer: v4Rendered.text,
+              ...(v4Rendered.maskedValues.length > 0
+                ? { maskedValues: v4Rendered.maskedValues }
+                : {}),
+            };
           }
         }
         if (privacyHandle) {
@@ -1544,7 +1550,13 @@ export class Orchestrator {
           const v4Rendered = await privacyHandle.takeRenderedAnswerV4();
           let doneEvent =
             v4Rendered !== undefined
-              ? { ...event, answer: v4Rendered }
+              ? {
+                  ...event,
+                  answer: v4Rendered.text,
+                  ...(v4Rendered.maskedValues.length > 0
+                    ? { maskedValues: v4Rendered.maskedValues }
+                    : {}),
+                }
               : event;
           try {
             const receipt = await privacyHandle.finalize();
