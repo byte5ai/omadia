@@ -93,6 +93,26 @@ describe('<PrivacyReceiptCard />', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('switches the whole card to red when the user named an identity', () => {
+    const { container } = renderWithIntl(
+      <PrivacyReceiptCard receipt={NAMED} />,
+      { locale: 'de' },
+    );
+    const root = container.querySelector('details');
+    expect(root?.className).toMatch(/red/);
+    expect(root?.className).not.toMatch(/emerald/);
+  });
+
+  it('stays emerald when the user named nobody', () => {
+    const { container } = renderWithIntl(
+      <PrivacyReceiptCard receipt={RANKED} />,
+      { locale: 'de' },
+    );
+    const root = container.querySelector('details');
+    expect(root?.className).toMatch(/emerald/);
+    expect(root?.className).not.toMatch(/red/);
+  });
+
   it('never leaks a PII-shaped value — the receipt carries only counts', () => {
     // The v4 receipt is PII-free by construction: counts and verb names
     // only. This pins the contract — if the schema ever regains a value

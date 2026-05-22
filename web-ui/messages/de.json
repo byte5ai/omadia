@@ -229,6 +229,7 @@
     "verbsNone": "—",
     "pseudonymYes": "verwendet",
     "pseudonymNo": "nicht verwendet",
-    "explainer": "Rohe Tool-Ergebnisse blieben server-seitig hinter der Data-Plane-Boundary — das Modell sah nur einen identitätsfreien Digest."
+    "explainer": "Rohe Tool-Ergebnisse blieben server-seitig hinter der Data-Plane-Boundary — das Modell sah nur einen identitätsfreien Digest.",
+    "explainerBreach": "Du hast eine Person namentlich genannt — dieser Name ging im Klartext an das Modell. Die aus den Tools geholten Daten blieben server-seitig hinter der Boundary."
   }
 }
