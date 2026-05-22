@@ -135,6 +135,12 @@ export interface PrivacyReceipt {
   verbsExecuted: readonly string[];
   /** Whether the gated pseudonym-projection layer was released this turn. */
   pseudonymProjectionUsed: boolean;
+  /**
+   * Personal-identity values that reached the model because the requester
+   * named them in their own message. A transparency notice, not a leak.
+   * `0` / absent when the user named no one.
+   */
+  identityValuesOnWire?: number;
 }
 
 /**

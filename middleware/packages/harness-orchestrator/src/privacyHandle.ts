@@ -57,9 +57,11 @@ export interface PrivacyTurnHandle {
   v4ToolSpecs(): ReadonlyArray<PrivacyV4ToolSpec>;
   /**
    * Drop the turn's Dataset Store and drain the user-facing receipt.
-   * Returns `undefined` when the turn interned no tool results.
+   * `turnInput` — the requester's own message text — lets the receipt
+   * report identity values the user named themselves. Returns `undefined`
+   * when the turn interned no tool results.
    */
-  finalize(): Promise<PrivacyReceipt | undefined>;
+  finalize(turnInput?: string): Promise<PrivacyReceipt | undefined>;
 }
 
 export function createPrivacyTurnHandle(deps: {
@@ -102,8 +104,8 @@ export function createPrivacyTurnHandle(deps: {
       return deps.service.v4ToolSpecs();
     },
 
-    async finalize() {
-      return deps.service.finalizeTurn(deps.turnId);
+    async finalize(turnInput) {
+      return deps.service.finalizeTurn(deps.turnId, turnInput);
     },
   };
 }

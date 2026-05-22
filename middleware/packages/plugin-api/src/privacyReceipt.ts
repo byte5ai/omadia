@@ -34,6 +34,18 @@ export interface PrivacyReceipt {
   readonly verbsExecuted: readonly string[];
   /** Whether the gated pseudonym-projection layer was released this turn. */
   readonly pseudonymProjectionUsed: boolean;
+  /**
+   * Distinct personal-identity values that reached the LLM because the
+   * requester named them in the request itself — e.g. typing an employee's
+   * name into the chat. This is NOT a leak of tool data (the v4 boundary
+   * kept that server-side); it is a transparency notice that the user
+   * themselves put a real identity on the wire to the model. `0` / absent
+   * when the user named no one. Derived from the Haiku schema classifier
+   * (which fields are personal-identity data) intersected with the user's
+   * own message — never from deny-by-default masking, so non-PII values
+   * (status codes, model names) can never inflate it.
+   */
+  readonly identityValuesOnWire?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -166,9 +178,14 @@ export interface PrivacyGuardService {
   v4ToolSpecs(): ReadonlyArray<PrivacyV4ToolSpec>;
   /**
    * Emit the aggregated user-facing receipt for the turn and drop the
-   * turn's Dataset Store. Returns `undefined` when the turn interned no
+   * turn's Dataset Store. `turnInput` — the requester's own message text —
+   * lets the receipt report `identityValuesOnWire`: personal-identity values
+   * the user named themselves. Returns `undefined` when the turn interned no
    * tool results (nothing to report). Idempotent — a second call with the
    * same `turnId` returns `undefined`.
    */
-  finalizeTurn(turnId: string): Promise<PrivacyReceipt | undefined>;
+  finalizeTurn(
+    turnId: string,
+    turnInput?: string,
+  ): Promise<PrivacyReceipt | undefined>;
 }

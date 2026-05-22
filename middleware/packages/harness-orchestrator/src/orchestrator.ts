@@ -1323,7 +1323,7 @@ export class Orchestrator {
         }
         if (privacyHandle) {
           try {
-            const receipt = await privacyHandle.finalize();
+            const receipt = await privacyHandle.finalize(input.userMessage);
             if (receipt) {
               return { ...result, privacyReceipt: receipt };
             }
@@ -1720,7 +1720,7 @@ export class Orchestrator {
                 }
               : event;
           try {
-            const receipt = await privacyHandle.finalize();
+            const receipt = await privacyHandle.finalize(input.userMessage);
             if (receipt) {
               doneEvent = { ...doneEvent, privacyReceipt: receipt };
             }

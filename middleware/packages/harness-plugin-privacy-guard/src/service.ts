@@ -44,6 +44,29 @@ import {
   type PiiSchemaClassifier,
 } from './v4/piiClassifier.js';
 
+/**
+ * Collect the identity-bearing string(s) of a single field VALUE into `out`
+ * — a plain string, or the display label of an Odoo many2one `[id,"name"]`
+ * tuple. Used to gather the REAL values of Haiku-classified PII fields so
+ * the receipt can report which ones the user named in their own request.
+ * Values shorter than 3 chars are skipped (too loose to match reliably).
+ */
+function collectIdentityValues(value: unknown, out: Set<string>): void {
+  if (typeof value === 'string') {
+    if (value.length >= 3) out.add(value);
+    return;
+  }
+  if (
+    Array.isArray(value) &&
+    value.length === 2 &&
+    typeof value[0] === 'number' &&
+    typeof value[1] === 'string' &&
+    value[1].length >= 3
+  ) {
+    out.add(value[1]);
+  }
+}
+
 /** Per-turn counters drained into the user-facing `PrivacyReceipt`. */
 interface V4ReceiptAccum {
   datasetsInterned: number;
@@ -71,6 +94,10 @@ export function createPrivacyGuardService(deps?: {
   const renderedAnswers = new Map<string, PrivacyRenderedAnswer>();
   // Per-turn receipt counters.
   const receipts = new Map<string, V4ReceiptAccum>();
+  // Per-turn bag of REAL values from Haiku-classified PII fields. Stays
+  // server-side; only the count of those the user named themselves reaches
+  // the receipt (`identityValuesOnWire`). Dropped by `finalizeTurn`.
+  const turnPiiValues = new Map<string, Set<string>>();
   // Slice 2 — cached, Haiku-backed schema PII classifier. Process-scoped
   // (its cache spans turns — schema verdicts are tool-shape-stable). Absent
   // when no host LLM is wired.
@@ -153,15 +180,29 @@ export function createPrivacyGuardService(deps?: {
       );
       // Slice 2 — schema-level PII classification. Schema only (field names
       // + types, never a value); cached per tool shape. Never throws; the
-      // verdict drives detection only, not masking. Step A surfaces it via
-      // the log — the receipt consumer lands in Step B.
+      // verdict drives detection only, not masking.
       if (piiClassifier !== undefined) {
         const dataset = stores.get(request.turnId)?.get(result.datasetId);
         if (dataset !== undefined) {
-          await piiClassifier.classify(
+          const piiPaths = await piiClassifier.classify(
             request.toolName,
             dataset.schema.fields.map((f) => ({ path: f.path, type: f.type })),
           );
+          // Gather the REAL values of the PII-classified fields so the
+          // receipt can report which ones the user named themselves. The
+          // values stay server-side — only the count reaches the receipt.
+          if (piiPaths.size > 0) {
+            let bag = turnPiiValues.get(request.turnId);
+            if (bag === undefined) {
+              bag = new Set<string>();
+              turnPiiValues.set(request.turnId, bag);
+            }
+            for (const row of dataset.rows) {
+              for (const path of piiPaths) {
+                collectIdentityValues(row[path], bag);
+              }
+            }
+          }
         }
       }
       return result;
@@ -275,21 +316,36 @@ export function createPrivacyGuardService(deps?: {
       }));
     },
 
-    async finalizeTurn(turnId: string): Promise<PrivacyReceipt | undefined> {
+    async finalizeTurn(
+      turnId: string,
+      turnInput?: string,
+    ): Promise<PrivacyReceipt | undefined> {
       stores.get(turnId)?.finalizeTurn();
       stores.delete(turnId);
       renderedAnswers.delete(turnId);
       const accum = receipts.get(turnId);
       receipts.delete(turnId);
+      const piiValues = turnPiiValues.get(turnId);
+      turnPiiValues.delete(turnId);
       // No receipt for a turn that interned nothing — there is nothing to
       // report and a zero receipt is just noise in the channel UI.
       if (accum === undefined || accum.datasetsInterned === 0) return undefined;
+      // identityValuesOnWire — personal-identity values the requester named
+      // in their own message text. A transparency notice (the user put a
+      // real identity on the wire), NOT a leak of tool data.
+      let identityValuesOnWire = 0;
+      if (turnInput !== undefined && piiValues !== undefined) {
+        for (const value of piiValues) {
+          if (turnInput.includes(value)) identityValuesOnWire += 1;
+        }
+      }
       console.log(
         `[privacy-guard v4] finalize turn=${turnId} ` +
           `datasets=${String(accum.datasetsInterned)} ` +
           `masked=${String(accum.fieldsMasked)} ` +
           `cleartext=${String(accum.fieldsCleartext)} ` +
-          `verbs=[${accum.verbsExecuted.join(',')}]`,
+          `verbs=[${accum.verbsExecuted.join(',')}] ` +
+          `identityOnWire=${String(identityValuesOnWire)}`,
       );
       return {
         datasetsInterned: accum.datasetsInterned,
@@ -297,6 +353,7 @@ export function createPrivacyGuardService(deps?: {
         fieldsCleartext: accum.fieldsCleartext,
         verbsExecuted: [...accum.verbsExecuted],
         pseudonymProjectionUsed: accum.pseudonymProjectionUsed,
+        identityValuesOnWire,
       };
     },
   };

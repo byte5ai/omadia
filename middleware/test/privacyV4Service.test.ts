@@ -166,3 +166,43 @@ describe('PrivacyGuardService.runV4Tool — end-to-end data path', () => {
     assert.equal(receipt, undefined);
   });
 });
+
+describe('PrivacyGuardService — identityValuesOnWire (Slice 2B)', () => {
+  it('counts identity values the requester named in their own message', async () => {
+    // Fake Haiku schema classifier: marks the `employee` field as PII.
+    const svc = createPrivacyGuardService({
+      llmComplete: async () => ({ text: '["employee"]' }),
+    });
+    const turnId = 't-iow';
+    await svc.internToolResultV4({
+      sessionId: 's',
+      turnId,
+      toolName: 'hr.leave',
+      rawResult: JSON.stringify(HR_LEAVE),
+    });
+    // The user named Marvin Vomberg themselves → 1 identity value on the
+    // wire (the other two employees were not named, so they don't count).
+    const receipt = await svc.finalizeTurn(
+      turnId,
+      'Wie viel Urlaub hat Marvin Vomberg?',
+    );
+    assert.ok(receipt);
+    assert.equal(receipt.identityValuesOnWire, 1);
+  });
+
+  it('reports 0 identity values when the requester named no one', async () => {
+    const svc = createPrivacyGuardService({
+      llmComplete: async () => ({ text: '["employee"]' }),
+    });
+    const turnId = 't-iow-none';
+    await svc.internToolResultV4({
+      sessionId: 's',
+      turnId,
+      toolName: 'hr.leave',
+      rawResult: JSON.stringify(HR_LEAVE),
+    });
+    const receipt = await svc.finalizeTurn(turnId, 'Wer hat den meisten Urlaub?');
+    assert.ok(receipt);
+    assert.equal(receipt.identityValuesOnWire, 0);
+  });
+});

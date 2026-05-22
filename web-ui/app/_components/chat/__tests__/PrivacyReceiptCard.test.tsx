@@ -32,6 +32,16 @@ const PSEUDONYM: PrivacyReceipt = {
   pseudonymProjectionUsed: true,
 };
 
+/** The requester named an employee — that name reached the model. */
+const NAMED: PrivacyReceipt = {
+  datasetsInterned: 1,
+  fieldsMasked: 1,
+  fieldsCleartext: 3,
+  verbsExecuted: ['filter'],
+  pseudonymProjectionUsed: false,
+  identityValuesOnWire: 1,
+};
+
 describe('<PrivacyReceiptCard />', () => {
   it('renders the collapsed summary with dataset + masked-field counts', () => {
     renderWithIntl(<PrivacyReceiptCard receipt={RANKED} />, { locale: 'de' });
@@ -66,6 +76,23 @@ describe('<PrivacyReceiptCard />', () => {
     expect(screen.getByText('nicht verwendet')).toBeInTheDocument();
   });
 
+  it('flags identity values the requester named themselves', () => {
+    renderWithIntl(<PrivacyReceiptCard receipt={NAMED} />, { locale: 'de' });
+    expect(
+      screen.getByText('Namen ans Modell (selbst genannt)'),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Privacy Shield/).textContent).toContain(
+      'Name ans Modell',
+    );
+  });
+
+  it('omits the identity-on-wire fact when the user named nobody', () => {
+    renderWithIntl(<PrivacyReceiptCard receipt={RANKED} />, { locale: 'de' });
+    expect(
+      screen.queryByText('Namen ans Modell (selbst genannt)'),
+    ).not.toBeInTheDocument();
+  });
+
   it('never leaks a PII-shaped value — the receipt carries only counts', () => {
     // The v4 receipt is PII-free by construction: counts and verb names
     // only. This pins the contract — if the schema ever regains a value
@@ -96,5 +123,17 @@ describe('summarisePrivacyReceipt()', () => {
 
   it('omits the masked-fields clause when nothing was masked', () => {
     expect(summarisePrivacyReceipt(PLAIN, t)).not.toContain('summaryMasked');
+  });
+
+  it('adds the identity-on-wire clause when the user named an identity', () => {
+    expect(summarisePrivacyReceipt(NAMED, t)).toContain(
+      'summaryIdentityOnWire:1',
+    );
+  });
+
+  it('omits the identity-on-wire clause when the user named nobody', () => {
+    expect(summarisePrivacyReceipt(RANKED, t)).not.toContain(
+      'summaryIdentityOnWire',
+    );
   });
 });
