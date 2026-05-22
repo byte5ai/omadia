@@ -72,7 +72,7 @@ setup:
       label: "Orchestrator Model"
       type: "text"
       required: false
-      help: "Anthropic-Model-ID für die Haupt-Loop. Default: claude-sonnet-4-5-20251022. Migriert aus ORCHESTRATOR_MODEL."
+      help: "Anthropic-Model-ID für die Haupt-Loop. Default: claude-opus-4-7. Migriert aus ORCHESTRATOR_MODEL."
     - key: "orchestrator_max_tokens"
       label: "Max Output Tokens"
       type: "number"

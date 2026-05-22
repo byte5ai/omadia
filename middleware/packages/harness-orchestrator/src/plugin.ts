@@ -117,7 +117,12 @@ import { VerifierService } from './verifierService.js';
 const CHAT_AGENT_SERVICE = 'chatAgent';
 const NATIVE_TOOL_REGISTRY_SERVICE = 'nativeToolRegistry';
 
-const DEFAULT_MODEL = 'claude-sonnet-4-5-20251022';
+// Fallback when the operator has not set `orchestrator_model` in the install
+// config. Must be a currently-served Anthropic model id — a stale/typo'd id
+// makes every turn fail with `404 not_found_error` (the orchestrator main
+// loop has no other model source). Kept in sync with the kernel default
+// `ORCHESTRATOR_MODEL` in middleware/src/config.ts.
+const DEFAULT_MODEL = 'claude-opus-4-7';
 const DEFAULT_MAX_TOKENS = 4096;
 const DEFAULT_MAX_ITERATIONS = 12;
 
