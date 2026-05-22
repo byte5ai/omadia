@@ -54,133 +54,133 @@ requires:
 
 setup:
   fields:
-    - id: "database_url"
+    - key: "database_url"
       label: "Database URL"
       type: "secret"
       required: false
-      description: "Postgres-Connection-String (Neon serverless URL). Ohne Wert publiziert das Plugin KEINE Capabilities — der Capability-Resolver droppt downstream-Konsumenten aus der eligible-Menge oder Boot fail't. Bootstrap migriert DATABASE_URL aus dem legacy .env in den Vault. (S+12.5-3: type: secret — DSN wird im Vault gespeichert, nicht in installed.json config.)"
-    - id: "graph_tenant_id"
+      help: "Postgres-Connection-String (Neon serverless URL). Ohne Wert publiziert das Plugin KEINE Capabilities — der Capability-Resolver droppt downstream-Konsumenten aus der eligible-Menge oder Boot fail't. Bootstrap migriert DATABASE_URL aus dem legacy .env in den Vault. (S+12.5-3: type: secret — DSN wird im Vault gespeichert, nicht in installed.json config.)"
+    - key: "graph_tenant_id"
       label: "Graph Tenant ID"
       type: "text"
       required: false
-      description: "Tenant-Schlüssel für die Neon-Tabellen (graph_nodes.tenant_id-Spalte). Migriert aus GRAPH_TENANT_ID. Default: 'default'."
-    - id: "graph_embedding_backfill_enabled"
+      help: "Tenant-Schlüssel für die Neon-Tabellen (graph_nodes.tenant_id-Spalte). Migriert aus GRAPH_TENANT_ID. Default: 'default'."
+    - key: "graph_embedding_backfill_enabled"
       label: "Embedding Backfill Enabled"
       type: "text"
       required: false
-      description: "'true' aktiviert den in-process Embedding-Backfill-Scheduler (re-embedded Turns deren post-commit `embedAndStoreTurn` failed). Default: 'true'. Migriert aus GRAPH_EMBEDDING_BACKFILL_ENABLED. No-op ohne `embeddingClient`."
-    - id: "graph_embedding_backfill_interval_minutes"
+      help: "'true' aktiviert den in-process Embedding-Backfill-Scheduler (re-embedded Turns deren post-commit `embedAndStoreTurn` failed). Default: 'true'. Migriert aus GRAPH_EMBEDDING_BACKFILL_ENABLED. No-op ohne `embeddingClient`."
+    - key: "graph_embedding_backfill_interval_minutes"
       label: "Backfill Interval (minutes)"
       type: "number"
       required: false
-      description: "Sweep-Intervall des Backfill-Schedulers. Default: 5. Migriert aus GRAPH_EMBEDDING_BACKFILL_INTERVAL_MINUTES."
-    - id: "graph_embedding_backfill_batch_size"
+      help: "Sweep-Intervall des Backfill-Schedulers. Default: 5. Migriert aus GRAPH_EMBEDDING_BACKFILL_INTERVAL_MINUTES."
+    - key: "graph_embedding_backfill_batch_size"
       label: "Backfill Batch Size"
       type: "number"
       required: false
-      description: "Maximale Anzahl Turns pro Sweep. Default: 20. Migriert aus GRAPH_EMBEDDING_BACKFILL_BATCH_SIZE."
-    - id: "graph_embedding_backfill_max_attempts"
+      help: "Maximale Anzahl Turns pro Sweep. Default: 20. Migriert aus GRAPH_EMBEDDING_BACKFILL_BATCH_SIZE."
+    - key: "graph_embedding_backfill_max_attempts"
       label: "Backfill Max Attempts"
       type: "number"
       required: false
-      description: "Hard cap auf Retries pro Turn. Default: 5. Migriert aus GRAPH_EMBEDDING_BACKFILL_MAX_ATTEMPTS."
+      help: "Hard cap auf Retries pro Turn. Default: 5. Migriert aus GRAPH_EMBEDDING_BACKFILL_MAX_ATTEMPTS."
     # OB-73 (Phase 4): Tiering-Lifecycle. Decay-Score-Update + HOT/WARM/COLD
     # rotation + Done-Task-TTL run as an hourly cron (decay-rotation), GC + hard
     # limits as a daily cron (gc-quotas — Slice C). This job USES the columns
     # from Migration 0007 — no new migration. Default values mirror
     # palaia-ADR-004: λ=0.05/d (~14d half-life), HOT→WARM at score<0.5+7d
     # idle, WARM→COLD at score<0.1+30d, Done-Tasks hard-deleted after 24h.
-    - id: "graph_decay_enabled"
+    - key: "graph_decay_enabled"
       label: "Decay & Tier-Rotation Enabled"
       type: "text"
       required: false
-      description: "'true' aktiviert den hourly Decay+Rotation-Job. Default: 'true'. 'false' lässt das Plugin laufen, ohne den Cron zu registrieren — sinnvoll für CI/Smoke."
-    - id: "graph_decay_interval_minutes"
+      help: "'true' aktiviert den hourly Decay+Rotation-Job. Default: 'true'. 'false' lässt das Plugin laufen, ohne den Cron zu registrieren — sinnvoll für CI/Smoke."
+    - key: "graph_decay_interval_minutes"
       label: "Decay Interval (minutes)"
       type: "number"
       required: false
-      description: "Sweep-Intervall des Decay+Rotation-Jobs. Default: 60 (1×/h)."
-    - id: "graph_decay_lambda"
+      help: "Sweep-Intervall des Decay+Rotation-Jobs. Default: 60 (1×/h)."
+    - key: "graph_decay_lambda"
       label: "Decay Lambda (per day)"
       type: "number"
       required: false
-      description: "Daily decay-rate constant in `score = exp(-λ · age_days) · (1 + ln(1 + access_count))`. Default: 0.05 (~14d Halbwertszeit). Höher = schnellerer Decay."
-    - id: "graph_decay_hot_to_warm_score"
+      help: "Daily decay-rate constant in `score = exp(-λ · age_days) · (1 + ln(1 + access_count))`. Default: 0.05 (~14d Halbwertszeit). Höher = schnellerer Decay."
+    - key: "graph_decay_hot_to_warm_score"
       label: "HOT→WARM Score Threshold"
       type: "number"
       required: false
-      description: "decay_score-Schwelle für die HOT→WARM-Rotation (additionally idle ≥ hot_to_warm_idle_days). Default: 0.5."
-    - id: "graph_decay_hot_to_warm_idle_days"
+      help: "decay_score-Schwelle für die HOT→WARM-Rotation (additionally idle ≥ hot_to_warm_idle_days). Default: 0.5."
+    - key: "graph_decay_hot_to_warm_idle_days"
       label: "HOT→WARM Idle Days"
       type: "number"
       required: false
-      description: "Idle-Days-Gate für HOT→WARM (gegen `COALESCE(accessed_at, created_at)`). Default: 7."
-    - id: "graph_decay_warm_to_cold_score"
+      help: "Idle-Days-Gate für HOT→WARM (gegen `COALESCE(accessed_at, created_at)`). Default: 7."
+    - key: "graph_decay_warm_to_cold_score"
       label: "WARM→COLD Score Threshold"
       type: "number"
       required: false
-      description: "decay_score-Schwelle für die WARM→COLD-Rotation. Default: 0.1."
-    - id: "graph_decay_warm_to_cold_idle_days"
+      help: "decay_score-Schwelle für die WARM→COLD-Rotation. Default: 0.1."
+    - key: "graph_decay_warm_to_cold_idle_days"
       label: "WARM→COLD Idle Days"
       type: "number"
       required: false
-      description: "Idle-Days-Gate für WARM→COLD. Default: 30."
-    - id: "graph_decay_done_task_ttl_hours"
+      help: "Idle-Days-Gate für WARM→COLD. Default: 30."
+    - key: "graph_decay_done_task_ttl_hours"
       label: "Done-Task TTL (hours)"
       type: "number"
       required: false
-      description: "TTL für `entry_type='task' AND task_status='done'`-Rows. Nach Ablauf hard-DELETE. Default: 24. Markdown-Audit-Transkript bleibt unberührt."
+      help: "TTL für `entry_type='task' AND task_status='done'`-Rows. Nach Ablauf hard-DELETE. Default: 24. Markdown-Audit-Transkript bleibt unberührt."
     # OB-73 (Phase 4 / Slice C): GC + hard-limits per scope. Daily cron
     # (default 04:00 UTC). Eviction-Order: type-weight × decay_score ASC,
     # ties broken by created_at ASC. Type-weights from palaia-ADR-004:
     # process > task > memory. `done-task-TTL` runs separately in the hourly
     # decay-job, not here.
-    - id: "graph_gc_enabled"
+    - key: "graph_gc_enabled"
       label: "GC & Hard-Limits Enabled"
       type: "text"
       required: false
-      description: "'true' aktiviert den daily GC-Job (count + char Quota per scope). Default: 'true'."
-    - id: "graph_gc_cron"
+      help: "'true' aktiviert den daily GC-Job (count + char Quota per scope). Default: 'true'."
+    - key: "graph_gc_cron"
       label: "GC Cron"
       type: "text"
       required: false
-      description: "5-stelliger Cron für den GC-Sweep. Default: '0 4 * * *' (täglich 04:00 UTC). Bei intervalMs-Override: graph_gc_interval_minutes (überschreibt cron)."
-    - id: "graph_gc_interval_minutes"
+      help: "5-stelliger Cron für den GC-Sweep. Default: '0 4 * * *' (täglich 04:00 UTC). Bei intervalMs-Override: graph_gc_interval_minutes (überschreibt cron)."
+    - key: "graph_gc_interval_minutes"
       label: "GC Interval Override (minutes)"
       type: "number"
       required: false
-      description: "Optional: Statt Cron einen festen Intervall fahren (für Tests / hot-Loops). Default: leer (Cron wird verwendet)."
-    - id: "graph_gc_hot_max_entries"
+      help: "Optional: Statt Cron einen festen Intervall fahren (für Tests / hot-Loops). Default: leer (Cron wird verwendet)."
+    - key: "graph_gc_hot_max_entries"
       label: "Hot-Tier Max Entries (per scope)"
       type: "number"
       required: false
-      description: "Per-scope Obergrenze für Turn-Count. Über dem Limit werden die niedrig-priorisierten Excess-Rows pro Sweep evicted. Default: 50."
-    - id: "graph_gc_max_total_chars"
+      help: "Per-scope Obergrenze für Turn-Count. Über dem Limit werden die niedrig-priorisierten Excess-Rows pro Sweep evicted. Default: 50."
+    - key: "graph_gc_max_total_chars"
       label: "Max Total Chars (per scope)"
       type: "number"
       required: false
-      description: "Per-scope Obergrenze für SUM(LENGTH(userMessage)+LENGTH(assistantAnswer)). Default: 500000 (~125k Tokens)."
-    - id: "graph_gc_type_weight_memory"
+      help: "Per-scope Obergrenze für SUM(LENGTH(userMessage)+LENGTH(assistantAnswer)). Default: 500000 (~125k Tokens)."
+    - key: "graph_gc_type_weight_memory"
       label: "GC Type-Weight (memory)"
       type: "number"
       required: false
-      description: "Eviction-Priorität-Gewicht für entry_type='memory'. Default: 1.0 (baseline). Höher = wird länger behalten."
-    - id: "graph_gc_type_weight_process"
+      help: "Eviction-Priorität-Gewicht für entry_type='memory'. Default: 1.0 (baseline). Höher = wird länger behalten."
+    - key: "graph_gc_type_weight_process"
       label: "GC Type-Weight (process)"
       type: "number"
       required: false
-      description: "Default: 2.0. Process-Knowledge wird länger behalten als generic memory."
-    - id: "graph_gc_type_weight_task"
+      help: "Default: 2.0. Process-Knowledge wird länger behalten als generic memory."
+    - key: "graph_gc_type_weight_task"
       label: "GC Type-Weight (task)"
       type: "number"
       required: false
-      description: "Default: 1.5."
+      help: "Default: 1.5."
     # OB-76 (Phase 7) Process-Memory: Dedup-First-Write threshold.
-    - id: "process_dedup_threshold"
+    - key: "process_dedup_threshold"
       label: "Process Dedup Threshold"
       type: "number"
       required: false
-      description: "Cosine-similarity-Schwelle für `write_process`-Dedup. Default: 0.9. Tiefer = aggressiveres Blocken; höher = mehr near-duplicates erlaubt."
+      help: "Cosine-similarity-Schwelle für `write_process`-Dedup. Default: 0.9. Tiefer = aggressiveres Blocken; höher = mehr near-duplicates erlaubt."
 
 playbook:
   when_to_use: |

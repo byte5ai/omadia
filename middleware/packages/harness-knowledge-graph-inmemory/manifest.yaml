@@ -43,11 +43,11 @@ requires: []
 
 setup:
   fields:
-    - id: "graph_tenant_id"
+    - key: "graph_tenant_id"
       label: "Graph Tenant ID"
       type: "text"
       required: false
-      description: "Tenant-Schlüssel für die in-memory-Graph-Instanz (kosmetisch — bei in-memory gibt es nur einen Tenant pro Prozess). Default: 'default'."
+      help: "Tenant-Schlüssel für die in-memory-Graph-Instanz (kosmetisch — bei in-memory gibt es nur einen Tenant pro Prozess). Default: 'default'."
 
 playbook:
   when_to_use: |
