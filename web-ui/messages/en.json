@@ -4,6 +4,7 @@
     "store": "Store",
     "builder": "Builder",
     "memory": "Memory",
+    "memories": "Memories",
     "graph": "Graph",
     "routines": "Routines",
     "admin": "Admin",
@@ -154,7 +155,63 @@
     "toolsThisIter": " · {count} tools this iter",
     "stuckHint": " · likely stuck — press Stop?",
     "livenessGapMs": "{ms}ms ago",
-    "livenessGapSec": "{seconds}s ago"
+    "livenessGapSec": "{seconds}s ago",
+    "autoPromoted": {
+      "label": "Saved as {kind} by Palaia",
+      "kind": {
+        "decision": "decision",
+        "insight": "insight",
+        "preference": "preference",
+        "reference": "reference"
+      },
+      "view": "View",
+      "viewTitle": "Open this memory in /memories",
+      "discard": "Discard",
+      "discardTitle": "Delete this auto-saved memory — the manual save button comes back",
+      "discardConfirm": "Discard the auto-saved memory? The manual save button will come back so you can re-save with your own classification.",
+      "discarding": "discarding…"
+    },
+    "saveAsMemory": {
+      "buttonLabel": "Save as memory",
+      "buttonTitle": "Promote this turn into a curated MemorableKnowledge entry",
+      "savedShort": "saved",
+      "dialogTitle": "Save as memory",
+      "closeAriaLabel": "Close dialog",
+      "kindLabel": "Type",
+      "kind": {
+        "decision": "Decision",
+        "insight": "Insight",
+        "preference": "Preference",
+        "reference": "Reference"
+      },
+      "summaryLabel": "Summary",
+      "summaryPlaceholder": "Short summary of what this memory captures…",
+      "summaryRequired": "Summary is required.",
+      "excerptsLabel": "Excerpts",
+      "excerptsHint": "click to insert into summary",
+      "excerptInsertTitle": "Insert this excerpt into the summary",
+      "source": {
+        "llmLabel": "AI suggestion",
+        "llmTitle": "Pre-filled by the Palaia excerpt extractor",
+        "hintLabel": "hint",
+        "hintTitle": "Pre-classified from your <palaia-hint> tag",
+        "fallbackLabel": "fallback",
+        "fallbackTitle": "Degraded suggestion (parse failed)"
+      },
+      "rationaleLabel": "Rationale (optional)",
+      "rationalePlaceholder": "Why is this memorable? Context the agent should keep…",
+      "linkedToTurn": "Linked to turn {turnId}",
+      "errorPrefix": "Error:",
+      "cancel": "Cancel",
+      "save": "Save",
+      "saving": "Saving…",
+      "successHeadline": "Saved. The memory is now visible on /memories.",
+      "skippedInvolved": "skippedInvolved",
+      "skippedRequired": "skippedRequired",
+      "skippedDerivedFrom": "skippedDerivedFrom",
+      "openDetail": "Open memory",
+      "close": "Close"
+    }
   },
   "privacyReceipt": {
     "summary": "🛡 Privacy Shield · {summary}",

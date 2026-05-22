@@ -102,5 +102,89 @@ export function createDevGraphRouter(deps: DevGraphDeps): Router {
     }
   });
 
+  // Memory Focused View — every MemorableKnowledge (+ its PalaiaExcerpts)
+  // with 2-hop provenance ancestors pre-resolved. Pass `?scope=__ALL__` (or
+  // omit the param) to walk every session; pass a concrete session scope
+  // to filter MKs to those `DERIVED_FROM` a Turn of that scope. ACL is NOT
+  // enforced; the gating happens at the DEV_ENDPOINTS_ENABLED level.
+  router.get('/memories', async (req: Request, res: Response) => {
+    const scopeParam = req.query['scope'];
+    const limitParam = req.query['limit'];
+    const includeExcerptsParam = req.query['includeExcerpts'];
+    const scope =
+      typeof scopeParam === 'string' &&
+      scopeParam.length > 0 &&
+      scopeParam !== '__ALL__'
+        ? scopeParam
+        : undefined;
+    const limit =
+      typeof limitParam === 'string' && limitParam.length > 0
+        ? Number.parseInt(limitParam, 10)
+        : undefined;
+    const includeExcerpts =
+      typeof includeExcerptsParam === 'string'
+        ? includeExcerptsParam !== 'false' && includeExcerptsParam !== '0'
+        : undefined;
+    if (limit !== undefined && (!Number.isFinite(limit) || limit < 1)) {
+      res.status(400).json({ error: 'invalid_limit' });
+      return;
+    }
+    try {
+      const view = await deps.graph.listMemoriesForScope(scope, {
+        ...(limit !== undefined ? { limit } : {}),
+        ...(includeExcerpts !== undefined ? { includeExcerpts } : {}),
+      });
+      res.json({
+        ...(scope ? { scope } : { scope: '__ALL__' }),
+        ...view,
+      });
+    } catch (err) {
+      res
+        .status(500)
+        .json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // Slice 11.5 — Topic overlay. Returns `topics` (every Topic node in
+  // the tenant) + `edges` (every HAS_TOPIC edge as external-id pair).
+  // Dev-only; ACL bypass behind DEV_ENDPOINTS_ENABLED.
+  router.get('/topics', async (_req: Request, res: Response) => {
+    try {
+      const [topics, edges] = await Promise.all([
+        deps.graph.listTopics(),
+        deps.graph.listTopicMembershipEdges(),
+      ]);
+      res.json({ topics, edges });
+    } catch (err) {
+      res
+        .status(500)
+        .json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // Slice 11.5 — Issue overlay. Returns every Inconsistency +
+  // MergeCandidate + their MK-side edges as external-id pairs. Pass
+  // `?status=open|resolved|dismissed` to filter; omit for all.
+  router.get('/issues', async (req: Request, res: Response) => {
+    const statusParam = req.query['status'];
+    const status =
+      typeof statusParam === 'string' &&
+      (statusParam === 'open' ||
+        statusParam === 'resolved' ||
+        statusParam === 'dismissed')
+        ? statusParam
+        : undefined;
+    try {
+      const view = await deps.graph.listAllIssues(
+        status ? { status } : undefined,
+      );
+      res.json({ ...view, ...(status ? { status } : {}) });
+    } catch (err) {
+      res
+        .status(500)
+        .json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   return router;
 }

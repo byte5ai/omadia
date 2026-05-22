@@ -2,11 +2,13 @@
 
 import {
   type GraphNode,
+  type MemoryWithAncestors,
   type NodeType,
   type Tier,
   nodeColor,
   nodeIcon,
 } from './graphTypes';
+import MemoryAclSection from './MemoryAclSection';
 
 interface Props {
   node: GraphNode;
@@ -15,6 +17,13 @@ interface Props {
   onExpand: (nodeId: string) => void;
   onClose: () => void;
   loadingNeighbors: boolean;
+  /** Slice 3c — invoked when the user deletes the displayed MK so the
+   *  parent can drop it from the selection / refresh. */
+  onMemoryDeleted?: (nodeId: string) => void;
+  /** Palaia Focused View — when the inspected node is a MK or
+   *  PalaiaExcerpt and the parent has the matching `MemoryWithAncestors`
+   *  row cached, render Lvl-1 / Lvl-2 provenance lists below the props. */
+  provenance?: MemoryWithAncestors | null;
 }
 
 export default function DetailPanel({
@@ -24,6 +33,8 @@ export default function DetailPanel({
   onExpand,
   onClose,
   loadingNeighbors,
+  onMemoryDeleted,
+  provenance = null,
 }: Props): React.ReactElement {
   const propEntries = Object.entries(node.props).filter(
     ([, v]) => v !== null && v !== undefined && v !== '',
@@ -90,6 +101,17 @@ export default function DetailPanel({
           {loadingNeighbors ? 'lade Nachbarn…' : '↔ Nachbarn expandieren'}
         </button>
 
+        {node.type === 'MemorableKnowledge' && (
+          <MemoryAclSection
+            memory={node}
+            onDeleted={() => onMemoryDeleted?.(node.id)}
+          />
+        )}
+
+        {provenance && (
+          <ProvenanceSection node={node} provenance={provenance} onSelect={onSelect} />
+        )}
+
         {neighbors && neighbors.length > 0 && (
           <div className="mt-3">
             <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-neutral-400">
@@ -116,6 +138,8 @@ export default function DetailPanel({
                         n.props['displayName'] ??
                           n.props['agentName'] ??
                           n.props['toolName'] ??
+                          n.props['summary'] ??
+                          n.props['text'] ??
                           n.props['userMessage'] ??
                           n.id,
                       )}
@@ -174,6 +198,95 @@ function TierBadge({
     >
       {tier}
     </span>
+  );
+}
+
+function ProvenanceSection({
+  node,
+  provenance,
+  onSelect,
+}: {
+  node: GraphNode;
+  provenance: MemoryWithAncestors;
+  onSelect: (n: GraphNode) => void;
+}): React.ReactElement | null {
+  if (node.type !== 'MemorableKnowledge' && node.type !== 'PalaiaExcerpt') {
+    return null;
+  }
+  const lvl1Label =
+    node.type === 'MemorableKnowledge'
+      ? 'Lvl 1 · Turn / User / Entitäten'
+      : 'Lvl 1 · Parent-Memory';
+  const lvl2Label =
+    node.type === 'MemorableKnowledge'
+      ? 'Lvl 2 · Session'
+      : 'Lvl 2 · Turn / User / Entitäten';
+  return (
+    <div className="mt-3 rounded border border-fuchsia-200 bg-fuchsia-50/50 p-2 dark:border-fuchsia-800/60 dark:bg-fuchsia-900/10">
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-fuchsia-700 dark:text-fuchsia-300">
+        Provenance (2 Hops)
+      </div>
+      <ProvenanceList label={lvl1Label} nodes={provenance.level1} onSelect={onSelect} />
+      <ProvenanceList label={lvl2Label} nodes={provenance.level2} onSelect={onSelect} />
+    </div>
+  );
+}
+
+function ProvenanceList({
+  label,
+  nodes,
+  onSelect,
+}: {
+  label: string;
+  nodes: GraphNode[];
+  onSelect: (n: GraphNode) => void;
+}): React.ReactElement {
+  if (nodes.length === 0) {
+    return (
+      <div className="mt-1">
+        <div className="text-[10px] uppercase tracking-wide text-neutral-400">
+          {label}
+        </div>
+        <div className="text-[11px] italic text-neutral-400">keine</div>
+      </div>
+    );
+  }
+  return (
+    <div className="mt-1">
+      <div className="text-[10px] uppercase tracking-wide text-neutral-400">
+        {label}
+      </div>
+      <div className="mt-1 flex flex-col gap-1">
+        {nodes.map((n) => (
+          <button
+            key={n.id}
+            type="button"
+            onClick={() => onSelect(n)}
+            className="flex items-start gap-2 rounded border border-neutral-200 bg-white px-2 py-1 text-left hover:border-fuchsia-400 dark:border-neutral-700 dark:bg-neutral-900 dark:hover:border-fuchsia-500"
+          >
+            <span
+              className="mt-1 h-2 w-2 shrink-0 rounded-full"
+              style={{ backgroundColor: nodeColor(n.type) }}
+            />
+            <span className="min-w-0">
+              <span className="block font-mono text-[10px] text-neutral-500">
+                {nodeIcon(n.type)} {n.type}
+              </span>
+              <span className="block truncate">
+                {String(
+                  n.props['displayName'] ??
+                    n.props['summary'] ??
+                    n.props['scope'] ??
+                    n.props['text'] ??
+                    n.props['userMessage'] ??
+                    n.id,
+                )}
+              </span>
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 

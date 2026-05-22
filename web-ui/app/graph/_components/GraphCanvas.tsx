@@ -15,9 +15,12 @@ import {
   TRACE_TYPES,
   type GraphFilter,
   type GraphNode,
+  type IssueOverlay,
+  type MemoryView,
   type NodeType,
   type RunTraceView,
   type SessionView,
+  type TopicOverlay,
   nodeColor,
   nodeLabel,
 } from './graphTypes';
@@ -40,6 +43,22 @@ interface Props {
   extraSessions?: SessionView[];
   runs: Record<string, RunTraceView>;
   expansions: ExpansionNeighbor[];
+  /** Slice — Palaia Focused View. When present and the filter has
+   *  `showMemories=true` (or `focusMemories` is set), MemorableKnowledge
+   *  + PalaiaExcerpt nodes plus their 2-hop provenance edges are merged
+   *  into the rendered graph. */
+  memoryView?: MemoryView | null;
+  /** When true the canvas hides everything except the memory subgraph
+   *  (memories + Lvl-1 + Lvl-2 ancestors). Used by the dedicated
+   *  "Memory" view-mode tab and the "🧠 Alle Memories" sidebar entry. */
+  focusMemories?: boolean;
+  /** Slice 11.5 — Topic overlay (every Topic node + HAS_TOPIC edges).
+   *  Rendered when `filter.showTopics=true`. */
+  topicOverlay?: TopicOverlay | null;
+  /** Slice 11.5 — Issue overlay (Inconsistency + MergeCandidate +
+   *  CONFLICTS_WITH/DUPLICATE_OF edges). Rendered when
+   *  `filter.showIssues=true`. */
+  issueOverlay?: IssueOverlay | null;
   selectedId: string | null;
   filter?: GraphFilter;
   onSelectNode: (node: GraphNode | null) => void;
@@ -64,6 +83,10 @@ function buildElements(
   runs: Record<string, RunTraceView>,
   expansions: ExpansionNeighbor[],
   filter: GraphFilter,
+  memoryView: MemoryView | null,
+  focusMemories: boolean,
+  topicOverlay: TopicOverlay | null,
+  issueOverlay: IssueOverlay | null,
 ): BuiltElements {
   const nodes = new Map<string, GraphNode>();
   const edges = new Map<string, ElementDefinition>();
@@ -113,6 +136,14 @@ function buildElements(
 
   const addSessionView = (sv: SessionView): void => {
     addNode(sv.session);
+    // Slice 1b-channel-web — render the User-Cluster as a first-class
+    // neighbor of the session (BELONGS_TO is the canonical relation in
+    // the graph; we surface it as TRIGGERED here to align with the
+    // existing run-user visualisation).
+    if (sv.user) {
+      addNode(sv.user);
+      addEdge(sv.user.id, sv.session.id, 'TRIGGERED');
+    }
     for (const { turn, entities } of sv.turns) {
       if (filter.showTrace) {
         addNode(turn);
@@ -210,6 +241,86 @@ function buildElements(
     }
   }
 
+  // Memory Focused View — inject MK/Excerpt nodes + the 2-hop provenance
+  // edges returned by `/dev/graph/memories`. The toggle is gated by either
+  // `showMemories` (overlay in the regular graph view) or `focusMemories`
+  // (dedicated Memory tab / sidebar entry).
+  //
+  // Order matters: memory MUST be injected BEFORE the topic + issue
+  // overlays so the Topic / CONFLICTS_WITH / DUPLICATE_OF edges find
+  // their MK endpoint already in `nodes` and render properly. (Earlier
+  // versions of Slice 11.5 had this reversed, which silently dropped
+  // every HAS_TOPIC edge in the memory-focus view.)
+  const memorySet = new Set<string>();
+  if (memoryView && (filter.showMemories || focusMemories)) {
+    for (const m of memoryView.memories) {
+      addNode(m.node);
+      memorySet.add(m.node.id);
+      for (const n of m.level1) {
+        addNode(n);
+        memorySet.add(n.id);
+      }
+      for (const n of m.level2) {
+        addNode(n);
+        memorySet.add(n.id);
+      }
+    }
+    for (const e of memoryView.edges) {
+      if (!nodes.has(e.from) || !nodes.has(e.to)) continue;
+      addEdge(e.from, e.to, e.type);
+    }
+  }
+
+  // Slice 11.5 — Topic overlay. Inject Topic nodes + HAS_TOPIC edges.
+  // Edges are only rendered when the MK endpoint is already in the
+  // canvas (memoryView or session entities), so an unmoored Topic
+  // node may still appear in the canvas if its members are out of
+  // scope — that's intentional, the operator sees the full clustering
+  // landscape even if only a slice of MKs is loaded.
+  if (topicOverlay && filter.showTopics) {
+    for (const t of topicOverlay.topics) addNode(t);
+    for (const e of topicOverlay.edges) {
+      if (!nodes.has(e.from)) continue;
+      addEdge(e.from, e.to, 'HAS_TOPIC');
+    }
+    // Inferred Excerpt → Topic membership: an Excerpt conceptually
+    // belongs to the same topic its parent MK was clustered into. The
+    // schema doesn't store this directly (Topics only know MKs), but
+    // visually it's much more useful to show the Excerpts as part of
+    // the cluster than dangling off their MK alone. Edge label
+    // 'HAS_TOPIC_INDIRECT' gets a dotted style so the inferred
+    // relationship reads as weaker than the real HAS_TOPIC.
+    const mkToTopic = new Map<string, string>();
+    for (const e of topicOverlay.edges) mkToTopic.set(e.from, e.to);
+    for (const ed of [...edges.values()]) {
+      const d = ed.data as { source: string; target: string; label: string };
+      if (d.label !== 'EXCERPT_OF') continue;
+      const topicId = mkToTopic.get(d.target);
+      if (!topicId) continue;
+      if (!nodes.has(d.source) || !nodes.has(topicId)) continue;
+      addEdge(d.source, topicId, 'HAS_TOPIC_INDIRECT');
+    }
+  }
+
+  // Slice 11.5 — Issue overlay. Inconsistency + MergeCandidate plus
+  // their MK-side edges. The MK side (`e.to`) must already be in the
+  // canvas for the edge to make sense; the marker itself is always
+  // added so the operator can see open issues even when no source MK
+  // is loaded yet.
+  if (issueOverlay && filter.showIssues) {
+    for (const n of issueOverlay.inconsistencies) addNode(n);
+    for (const n of issueOverlay.mergeCandidates) addNode(n);
+    // Slice 12.5 — Excerpt-side duplicates are part of the same issue
+    // mental model. The `to` side is a PalaiaExcerpt, which is only in
+    // the canvas when `showMemories` is on; the edge is pruned otherwise
+    // by the same `nodes.has(e.to)` guard the MK-edges use.
+    for (const n of issueOverlay.excerptMergeCandidates) addNode(n);
+    for (const e of issueOverlay.edges) {
+      if (!nodes.has(e.to)) continue;
+      addEdge(e.from, e.to, e.type);
+    }
+  }
+
   // Prune isolated entity nodes when the user has no way to see them
   // connected (no PRODUCED, no MENTIONS edge, no expansion). Avoids floating
   // dots that carry no relational meaning in the current view.
@@ -222,6 +333,27 @@ function buildElements(
     }
     for (const [id, n] of [...nodes]) {
       if (ENTITY_TYPES.has(n.type) && !connected.has(id)) nodes.delete(id);
+    }
+  }
+
+  // Focused Memory mode — drop every node + edge that isn't part of the
+  // memory subgraph. Cleaner canvas with only ⭐/❝ memories and their
+  // direct ancestors visible. Slice 11.5: Topic / Inconsistency /
+  // MergeCandidate nodes that the operator explicitly opted into via
+  // `showTopics` / `showIssues` are kept (they're conceptually a
+  // *member* of the memory neighbourhood, not noise).
+  if (focusMemories && memoryView) {
+    for (const [id, n] of [...nodes]) {
+      if (memorySet.has(id)) continue;
+      if (
+        n.type === 'Topic' ||
+        n.type === 'Inconsistency' ||
+        n.type === 'MergeCandidate' ||
+        n.type === 'ExcerptMergeCandidate'
+      ) {
+        continue;
+      }
+      nodes.delete(id);
     }
   }
 
@@ -252,10 +384,20 @@ function baseSize(type: NodeType): number {
   switch (type) {
     case 'Session':
       return 52;
+    case 'Topic':
+      // Cluster head — same prominence as Session so the user-cluster
+      // and topic-hubs read symmetric on the canvas.
+      return 50;
     case 'Run':
       return 44;
     case 'Turn':
       return 40;
+    case 'Inconsistency':
+    case 'MergeCandidate':
+    case 'ExcerptMergeCandidate':
+      // Markers — smaller than MK so they orbit visibly without
+      // dominating the canvas.
+      return 22;
     case 'AgentInvocation':
       return 36;
     case 'ToolCall':
@@ -309,6 +451,10 @@ export default function GraphCanvas({
   extraSessions = [],
   runs,
   expansions,
+  memoryView = null,
+  focusMemories = false,
+  topicOverlay = null,
+  issueOverlay = null,
   selectedId,
   filter = DEFAULT_FILTER,
   onSelectNode,
@@ -320,8 +466,29 @@ export default function GraphCanvas({
   const nodesRef = useRef<Map<string, GraphNode>>(new Map());
 
   const { nodes, elements } = useMemo(
-    () => buildElements(session, extraSessions, runs, expansions, filter),
-    [session, extraSessions, runs, expansions, filter],
+    () =>
+      buildElements(
+        session,
+        extraSessions,
+        runs,
+        expansions,
+        filter,
+        memoryView,
+        focusMemories,
+        topicOverlay,
+        issueOverlay,
+      ),
+    [
+      session,
+      extraSessions,
+      runs,
+      expansions,
+      filter,
+      memoryView,
+      focusMemories,
+      topicOverlay,
+      issueOverlay,
+    ],
   );
   // Synced via a post-render effect (never during render) to satisfy the
   // React-Compiler `refs` rule; the only reader is the cytoscape `tap` handler,
@@ -434,6 +601,16 @@ export default function GraphCanvas({
             opacity: 0.35,
           },
         },
+        {
+          selector:
+            'edge[label = "DERIVED_FROM"], edge[label = "EXCERPT_OF"], edge[label = "INVOLVED"], edge[label = "REQUIRES"], edge[label = "IN_SESSION"]',
+          style: {
+            'line-color': '#d946ef',
+            'target-arrow-color': '#d946ef',
+            width: 1.5,
+            opacity: 0.85,
+          },
+        },
         // Trace scaffolding edges fade into the background.
         {
           selector:
@@ -441,6 +618,58 @@ export default function GraphCanvas({
           style: {
             width: 1,
             opacity: 0.4,
+          },
+        },
+        // Slice 11.5 — Topic overlay (HAS_TOPIC) + Issue overlay
+        // (CONFLICTS_WITH, DUPLICATE_OF) get their own colours so
+        // they read distinctly from the provenance edges.
+        {
+          selector: 'edge[label = "HAS_TOPIC"]',
+          style: {
+            'line-color': '#14b8a6',
+            'target-arrow-color': '#14b8a6',
+            opacity: 0.7,
+          },
+        },
+        {
+          // Inferred Excerpt → Topic via parent-MK transitivity. Dotted
+          // + thinner so it reads as weaker than the real HAS_TOPIC.
+          selector: 'edge[label = "HAS_TOPIC_INDIRECT"]',
+          style: {
+            'line-color': '#14b8a6',
+            'target-arrow-color': '#14b8a6',
+            'line-style': 'dotted',
+            width: 1,
+            opacity: 0.45,
+          },
+        },
+        {
+          selector: 'edge[label = "CONFLICTS_WITH"]',
+          style: {
+            'line-color': '#ef4444',
+            'target-arrow-color': '#ef4444',
+            'line-style': 'dashed',
+            opacity: 0.85,
+          },
+        },
+        {
+          selector: 'edge[label = "DUPLICATE_OF"]',
+          style: {
+            'line-color': '#f97316',
+            'target-arrow-color': '#f97316',
+            'line-style': 'dashed',
+            opacity: 0.85,
+          },
+        },
+        {
+          // Slice 12.5 — Excerpt-side duplicates use the lighter shade so
+          // they read as the Excerpt-layer mirror of DUPLICATE_OF.
+          selector: 'edge[label = "DUPLICATE_EXCERPT_OF"]',
+          style: {
+            'line-color': '#fb923c',
+            'target-arrow-color': '#fb923c',
+            'line-style': 'dashed',
+            opacity: 0.85,
           },
         },
         {
@@ -640,10 +869,34 @@ function Legend({
       ['ToolCall', 'Tool'],
     );
   }
+  if (filter.showMemories) {
+    items.push(['MemorableKnowledge', 'Memory'], ['PalaiaExcerpt', 'Excerpt']);
+  }
+  if (filter.showTopics) {
+    items.push(['Topic', 'Topic-Cluster']);
+  }
+  if (filter.showIssues) {
+    items.push(
+      ['Inconsistency', 'Konflikt'],
+      ['MergeCandidate', 'Duplikat-Kandidat'],
+      ['ExcerptMergeCandidate', 'Excerpt-Duplikat'],
+    );
+  }
   const edgeRows: Array<[string, string]> = [['#10b981', 'PRODUCED']];
   edgeRows.push(['#ec4899', 'TRIGGERED']);
   if (filter.showCrossRefs) edgeRows.push(['#a855f7', 'RELATED']);
   if (filter.showMentions) edgeRows.push(['#94a3b8', 'MENTIONS']);
+  if (filter.showMemories)
+    edgeRows.push(['#d946ef', 'Provenance (DERIVED · EXCERPT · …)']);
+  if (filter.showTopics) {
+    edgeRows.push(['#14b8a6', 'HAS_TOPIC']);
+    edgeRows.push(['#14b8a6', 'HAS_TOPIC (Excerpt, transitiv)']);
+  }
+  if (filter.showIssues) {
+    edgeRows.push(['#ef4444', 'CONFLICTS_WITH']);
+    edgeRows.push(['#f97316', 'DUPLICATE_OF (MK)']);
+    edgeRows.push(['#fb923c', 'DUPLICATE_EXCERPT_OF']);
+  }
 
   return (
     <div

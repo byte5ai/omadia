@@ -9,6 +9,11 @@ import { createTigrisStore } from '@omadia/diagrams';
 import type { MemoryStore } from '@omadia/plugin-api';
 import { createAdminRouter } from './routes/admin.js';
 import { createChatRouter } from './routes/chat.js';
+import { createMemoryRouter } from './routes/memory.js';
+import { createBulkPromotionRouter } from './routes/bulkPromotion.js';
+import { createInconsistenciesRouter } from './routes/inconsistencies.js';
+import { createDuplicatesRouter } from './routes/duplicates.js';
+import { createTopicsRouter } from './routes/topics.js';
 import { createAgentResolver } from './agents/resolveAgentForTool.js';
 // `/attachments/<signed-key>` is now mounted by the de.byte5.channel.teams
 // plugin via ctx.routes.register (see packages/harness-channel-teams/src/plugin.ts,
@@ -19,7 +24,16 @@ import { createDevGraphLifecycleRouter } from './routes/devGraphLifecycle.js';
 import { createAgentPrioritiesRouter } from './routes/agentPriorities.js';
 import { createAdminDomainsRouter } from './routes/adminDomains.js';
 import type { LifecycleService } from '@omadia/knowledge-graph-neon/dist/lifecycleService.js';
-import type { AgentPrioritiesStore } from '@omadia/plugin-api';
+import type {
+  AgentPrioritiesStore,
+  BulkExcerptMergeDetectService,
+  BulkInconsistencyService,
+  BulkMergeDetectService,
+  BulkPromotionService,
+  InconsistencyDetectorService,
+  MergeCandidateDetectorService,
+  TopicClusteringService,
+} from '@omadia/plugin-api';
 import { createHarnessAdminUiRouter } from './routes/harnessAdminUi.js';
 import { createStoreRouter } from './routes/store.js';
 import { createInstallRouter } from './routes/install.js';
@@ -82,7 +96,10 @@ import {
   resolveActiveProviderIds,
 } from './auth/providerRegistry.js';
 import { LocalPasswordProvider } from './auth/providers/LocalPasswordProvider.js';
-import { EntraProvider } from './auth/providers/EntraProvider.js';
+import {
+  ENTRA_PROVIDER_ID,
+  EntraProvider,
+} from './auth/providers/EntraProvider.js';
 import { runAuthBootstrap } from './auth/bootstrap.js';
 import { AdminAuditLog } from './auth/adminAuditLog.js';
 import {
@@ -212,7 +229,15 @@ async function main(): Promise<void> {
   // calls) and the Teams channel (anthropicClient dep). The orchestrator-
   // plugin constructs ITS OWN client from `anthropic_api_key` setup-field —
   // they're functionally equivalent but separate instances.
-  const client = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY });
+  //
+  // maxRetries: the Anthropic SDK auto-retries 408/409/429/500/529 with
+  // exponential backoff. The SDK default is 2; bumped to 5 so a transient
+  // `overloaded_error` (HTTP 529) burst is far more likely to ride out
+  // inside the SDK instead of surfacing as a failed turn.
+  const client = new Anthropic({
+    apiKey: config.ANTHROPIC_API_KEY,
+    maxRetries: 5,
+  });
 
   // Phase 5B: publish the raw Anthropic client so dynamic-imported channel
   // plugins (Teams, future) can late-resolve it via ctx.services.get(...)
@@ -945,6 +970,117 @@ async function main(): Promise<void> {
   app.use('/api/chat', requireAuth, createChatSessionsRouter({ store: chatSessionStore }));
   console.log('[middleware] chat-sessions endpoint ready at /api/chat/sessions (auth-gated)');
 
+  // Slice 3b — MemorableKnowledge REST surface. `requireAuth` gates the
+  // whole router, consistent with the `/api` OB-106 line and the
+  // `/api/chat` defence-in-depth mount above. Mutating endpoints
+  // additionally call `requireSessionUserId` internally; the ACL filter
+  // scopes reads to the viewer's owned / involved memories.
+  app.use(
+    '/api/v1/memory',
+    requireAuth,
+    createMemoryRouter({ graph: knowledgeGraph }),
+  );
+  console.log('[middleware] memory endpoint ready at /api/v1/memory (auth-gated)');
+
+  // Slice 8 — bulk score + promote admin endpoint. Mounted only when
+  // the orchestrator-extras plugin published the bulkPromotion service
+  // (which requires a graphPool capability — i.e. the Neon backend).
+  // `requireAuth` gates the router, consistent with /api/v1/memory; the
+  // router's `requireSessionUserId` guard runs per-route on top.
+  const bulkPromotionService =
+    serviceRegistry.get<BulkPromotionService>('bulkPromotion');
+  if (bulkPromotionService) {
+    app.use(
+      '/api/v1/admin/bulk-promote',
+      requireAuth,
+      createBulkPromotionRouter({ service: bulkPromotionService }),
+    );
+    console.log(
+      '[middleware] bulk-promotion endpoint ready at /api/v1/admin/bulk-promote',
+    );
+  } else {
+    console.log(
+      '[middleware] bulk-promotion endpoint skipped — service not published (Neon backend missing?)',
+    );
+  }
+
+  // Slice 9 — inconsistency detection workflow. Always mount (the
+  // routes work without a detector — manual /detect 503s, list/get/
+  // resolve work because they only touch the KG). Resolve hits the
+  // CURRENT registry entry (= the inconsistency-triggering wrapper
+  // when orchestrator-extras is active) so a_wins/b_wins re-fire
+  // detection on the surviving MK automatically. `requireAuth` gates
+  // the router, consistent with the other /api/v1/admin/* mounts;
+  // Werkstatt optionalAuth dropped per OB-106.
+  const inconsistencyDetectorSvc =
+    serviceRegistry.get<InconsistencyDetectorService>('inconsistencyDetector');
+  const wrappedKgForRoutes =
+    serviceRegistry.get<typeof knowledgeGraph>('knowledgeGraph') ??
+    knowledgeGraph;
+  // Slice 9.5 — bulk-detect service is optional; the route 503s when
+  // it's not published, so the UI can render the panel uniformly.
+  const bulkInconsistencyService =
+    serviceRegistry.get<BulkInconsistencyService>('bulkInconsistencyDetect');
+  app.use(
+    '/api/v1/admin/inconsistencies',
+    requireAuth,
+    createInconsistenciesRouter({
+      graph: wrappedKgForRoutes,
+      ...(inconsistencyDetectorSvc ? { detector: inconsistencyDetectorSvc } : {}),
+      ...(bulkInconsistencyService ? { bulkDetect: bulkInconsistencyService } : {}),
+    }),
+  );
+  console.log(
+    `[middleware] inconsistencies endpoint ready at /api/v1/admin/inconsistencies (detector=${inconsistencyDetectorSvc ? 'on' : 'off'}, bulk=${bulkInconsistencyService ? 'on' : 'off'})`,
+  );
+
+  // Slice 10 — near-duplicate MK workflow. Mirrors the Slice 9
+  // mounting pattern: detector + bulk are optional, route 503s when
+  // missing. `requireAuth` gates the router, consistent with the
+  // other /api/v1/admin/* mounts (Werkstatt optionalAuth dropped).
+  const mergeCandidateDetectorSvc =
+    serviceRegistry.get<MergeCandidateDetectorService>('mergeCandidateDetector');
+  const bulkMergeDetectService =
+    serviceRegistry.get<BulkMergeDetectService>('bulkMergeDetect');
+  const bulkExcerptMergeDetectService =
+    serviceRegistry.get<BulkExcerptMergeDetectService>('bulkExcerptMergeDetect');
+  app.use(
+    '/api/v1/admin/duplicates',
+    requireAuth,
+    createDuplicatesRouter({
+      graph: wrappedKgForRoutes,
+      ...(mergeCandidateDetectorSvc ? { detector: mergeCandidateDetectorSvc } : {}),
+      ...(bulkMergeDetectService ? { bulkDetect: bulkMergeDetectService } : {}),
+      ...(bulkExcerptMergeDetectService
+        ? { bulkExcerptDetect: bulkExcerptMergeDetectService }
+        : {}),
+    }),
+  );
+  console.log(
+    `[middleware] duplicates endpoint ready at /api/v1/admin/duplicates (detector=${mergeCandidateDetectorSvc ? 'on' : 'off'}, bulk=${bulkMergeDetectService ? 'on' : 'off'}, excerptBulk=${bulkExcerptMergeDetectService ? 'on' : 'off'})`,
+  );
+
+  // Slice 11 — Topic clustering admin workflow. Service is always
+  // published when orchestrator-extras is active; the route 503s
+  // when the capability is missing. `requireAuth` gates the router,
+  // consistent with the other /api/v1/admin/* mounts.
+  const topicClusteringService =
+    serviceRegistry.get<TopicClusteringService>('topicClustering');
+  if (topicClusteringService) {
+    app.use(
+      '/api/v1/admin/topics',
+      requireAuth,
+      createTopicsRouter({ service: topicClusteringService }),
+    );
+    console.log(
+      '[middleware] topics endpoint ready at /api/v1/admin/topics',
+    );
+  } else {
+    console.log(
+      '[middleware] topics endpoint skipped — topicClustering service not published',
+    );
+  }
+
   // ── OB-49 — provider-aware auth bootstrap ────────────────────────────────
   // graphPool is resolved above (line ~595). Auth schema + UserStore +
   // ProviderRegistry + first-user-bootstrap all live on the same Postgres.
@@ -1029,6 +1165,48 @@ async function main(): Promise<void> {
         publicBaseUrl: config.PUBLIC_BASE_URL,
         defaultReturnPath: config.AUTH_DEFAULT_RETURN_PATH,
         setupAllowed: bootstrapResult.setupRequired,
+        // Slice 1b-channel-web — on each login (local + entra), resolve
+        // (or create) the KG User-Cluster + ChannelIdentity and cache
+        // the omadiaUserId in the session JWT so chat ingest can skip
+        // the round-trip. Returns undefined if the users-row was just
+        // created in the same request (post-OIDC-upsert + pre-commit
+        // window — eventually consistent, next request will pick up).
+        resolveChannelIdentity: async (input) => {
+          const row = await userStore.findByProviderUserId(
+            input.provider,
+            input.providerUserId,
+          );
+          if (!row) return undefined;
+          const isEntra = input.provider === ENTRA_PROVIDER_ID;
+          // For entra, `providerUserId` IS the AAD object id (see
+          // EntraProvider.handleCallback → providerUserId: claims.oid).
+          // Setting it as `aadObjectId` makes the resolver merge the
+          // Web Admin UI identity with any future Teams ChannelIdentity
+          // that lands on the same oid — deterministic cross-channel
+          // link without going through the email fallback.
+          //
+          // emailVerified=true regardless of provider: in this single-
+          // tenant deployment `users.email` is either set by an admin
+          // (`adminUsersRouter.create()`, gated by `users.role='admin'`)
+          // or by an OIDC callback (Entra ships its own verified claim).
+          // The `(provider, lower(email))` unique index already prevents
+          // intra-provider email reuse, so the resolver's hybrid-email-
+          // merge path can safely treat both sides as trusted and keep
+          // a local-password login + Entra login on the same cluster.
+          //
+          // Multi-tenant SaaS deployments should replace this with a
+          // per-tenant `localPasswordEmailTrusted` config (default false)
+          // and a real verification-mail flow for local-password users.
+          const result = await knowledgeGraph.resolveOrCreateChannelIdentity({
+            channelKind: 'web',
+            channelUserId: row.id,
+            displayName: input.displayName,
+            ...(input.email ? { email: input.email } : {}),
+            emailVerified: true,
+            ...(isEntra ? { aadObjectId: input.providerUserId } : {}),
+          });
+          return result.omadiaUserId;
+        },
       }),
     );
     console.log('[middleware] admin auth endpoints ready at /api/v1/auth');

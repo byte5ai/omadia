@@ -2,10 +2,8 @@ import { z } from 'zod';
 import type { KnowledgeGraph } from '@omadia/plugin-api';
 import type { LocalSubAgentTool } from '@omadia/plugin-api';
 
-// Phase 5B: `OdooScope` mirror — kept verbatim from
-// `@omadia/integration-odoo` (now removed from this repo). The
-// graphLookupTool is generic over scope so a future first-party Odoo
-// integration shipped from a different repo can pass either literal.
+// `OdooScope` literal — graphLookupTool is generic over scope so an Odoo
+// integration shipped from a separate repo can pass either literal.
 type OdooScope = 'accounting' | 'hr';
 
 /**

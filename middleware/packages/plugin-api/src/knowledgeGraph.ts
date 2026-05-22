@@ -1,5 +1,24 @@
-import { createHash } from 'node:crypto';
 import type { EntityRef } from './entityRef.js';
+import type {
+  CreateInconsistencyInput,
+  InconsistencyNode,
+  InconsistencyResolution,
+  InconsistencyStatus,
+  ListInconsistenciesOptions,
+} from './inconsistency.js';
+import type {
+  CreateMergeCandidateInput,
+  ListMergeCandidatesOptions,
+  MergeCandidateNode,
+  MergeCandidateResolution,
+} from './mergeCandidate.js';
+import type { TopicNamingSource, TopicNode } from './topic.js';
+import type {
+  CreateExcerptMergeCandidateInput,
+  ExcerptMergeCandidateNode,
+  ExcerptMergeResolution,
+  ListExcerptMergeCandidatesOptions,
+} from './excerptMerge.js';
 
 /**
  * The knowledge-graph surface the rest of the middleware talks to. Ingests
@@ -91,43 +110,552 @@ export interface KnowledgeGraph {
    */
   findEntities(opts: FindEntitiesOptions): Promise<GraphNode[]>;
   /**
-   * Upsert NorthData companies. Idempotent per (tenant, externalId) where
-   * externalId is NorthData's permalink fragment (e.g. `/hr/Berlin/HRB/123`).
-   * Merges `extras` into `properties` so a later sync can add fields without
-   * clobbering earlier ones.
+   * Slice 1b — resolve an incoming channel-bound identity to a User-Cluster.
+   * Creates the `ChannelIdentity` node if missing and either joins it to an
+   * existing User-Cluster (when `email` + `emailVerified=true` matches another
+   * ChannelIdentity in the same tenant) or spins up a fresh 1:1 cluster.
+   *
+   * Idempotent: re-calling with the same `(channelKind, channelUserId)` pair
+   * returns the same `(channelIdentityNodeId, omadiaUserId)` and does NOT
+   * create duplicate edges.
+   *
+   * Tenant-strict: cross-tenant email matches are NEVER merged — each
+   * tenant gets its own clusters even for the same human.
    */
-  ingestCompanies(companies: CompanyIngest[]): Promise<CompanyIngestResult>;
+  resolveOrCreateChannelIdentity(
+    ingest: ChannelIdentityIngest,
+  ): Promise<ResolveOrCreateChannelIdentityResult>;
   /**
-   * Upsert NorthData persons (GFs, shareholders). Same idempotency contract
-   * as {@link ingestCompanies}. Only public register metadata — never full
-   * birth date or private address.
+   * Slice 2 — create a MemorableKnowledge node + its INVOLVED / REQUIRES
+   * / DERIVED_FROM edges in one transaction. Missing endpoints
+   * (User-Cluster, Entity, Turn) are silently skipped + counted in
+   * `skipped*` so the call doesn't abort on a single stale id. Returns
+   * the new MK external_id (`mk:<uuid>`).
    */
-  ingestPersons(persons: PersonIngest[]): Promise<PersonIngestResult>;
+  createMemorableKnowledge(
+    input: MemorableKnowledgeIngest,
+  ): Promise<MemorableKnowledgeIngestResult>;
   /**
-   * Upsert verflechtungs-edges between Companies / Persons. The three shapes
-   * share one batch call so a full NorthData company-details response can be
-   * persisted in a single round-trip.
+   * Slice 2 / 3 — read a MemorableKnowledge node by external_id. When
+   * `viewerOmadiaUserId` is provided, the result is gated by the
+   * Slice 3 ACL: the viewer must be in `props.acl_owners` or `null`
+   * is returned. Pass `undefined` to bypass the ACL gate (internal /
+   * admin paths only).
    */
-  ingestCompanyRelations(
-    relations: CompanyRelationsIngest,
-  ): Promise<CompanyRelationsResult>;
+  getMemorableKnowledge(
+    memorableKnowledgeNodeId: string,
+    viewerOmadiaUserId?: string,
+  ): Promise<GraphNode | null>;
   /**
-   * Cross-link a NorthData `Company` to an Odoo `OdooEntity(res.partner)` via
-   * VAT or Handelsregister match. Writes a single `REFERS_TO` edge — no Odoo
-   * mutation. Tolerates a missing Odoo node (returns `{linked:false}`).
+   * Slice 2 / 3 — list MemorableKnowledge nodes the given User is
+   * INVOLVED in. Slice 3 adds an additional ACL gate: the caller is
+   * implicitly the viewer (same `omadiaUserId`) and must be in each
+   * MK's `acl_owners` array; rows that fail the check are dropped.
+   * MKs with empty `acl_owners` are invisible to everyone (admin-only,
+   * see Decision-Lock L_s3.8).
    */
-  linkCompanyToOdoo(
-    opts: LinkCompanyToOdooOptions,
-  ): Promise<LinkCompanyToOdooResult>;
+  listMemorableKnowledgeFor(
+    omadiaUserId: string,
+    opts?: ListMemorableKnowledgeOptions,
+  ): Promise<GraphNode[]>;
   /**
-   * Upsert one or more `FinancialSnapshot` nodes. Each snapshot is keyed by
-   * `(companyExternalId, fiscalYear)` and linked to its Company via a
-   * `HAS_FINANCIALS {fiscalYear, consolidated}` edge. Missing parent Company
-   * → snapshot skipped (tolerated, counted). Idempotent per key.
+   * Slice 3 — add a cluster-root user to a MemorableKnowledge's
+   * `acl_owners`. The actor must already be in `acl_owners`. Returns
+   * the new owner list. No-op (idempotent) if the user is already an
+   * owner; still writes an audit row.
    */
-  ingestFinancialSnapshots(
-    snapshots: FinancialSnapshotIngest[],
-  ): Promise<FinancialSnapshotIngestResult>;
+  addOwner(
+    memorableKnowledgeNodeId: string,
+    omadiaUserIdToAdd: string,
+    actor: AclMutationOptions,
+  ): Promise<string[]>;
+  /**
+   * Slice 3 — remove a cluster-root user from `acl_owners`. The actor
+   * must be in `acl_owners`. Removing the last owner throws
+   * `cannot_remove_last_owner` — use `deleteMemory` for explicit
+   * teardown.
+   */
+  removeOwner(
+    memorableKnowledgeNodeId: string,
+    omadiaUserIdToRemove: string,
+    actor: AclMutationOptions,
+  ): Promise<string[]>;
+  /**
+   * Slice 3 — hard-delete a MemorableKnowledge (and its edges via
+   * cascade). The actor must be in `acl_owners`. The audit row
+   * survives the delete (no FK on `memory_external_id`).
+   */
+  deleteMemory(
+    memorableKnowledgeNodeId: string,
+    actor: AclMutationOptions,
+  ): Promise<void>;
+  /**
+   * Slice 3 — read the ACL audit-log for a single MemorableKnowledge.
+   * Returns newest-first. Survives delete of the MK.
+   */
+  listMemoryAclAudit(
+    memorableKnowledgeNodeId: string,
+    opts?: { limit?: number },
+  ): Promise<AclAuditEntry[]>;
+  /**
+   * Slice 5 — partial content-update on a MemorableKnowledge. Only the
+   * fields present in `patch` are changed; passing `rationale: null`
+   * explicitly removes the rationale property. The actor must be in
+   * `acl_owners`. Writes an `'edit'` audit row (beforeOwners and
+   * afterOwners identical — content-edits don't affect ownership but
+   * still belong on the trail). Returns the updated node.
+   */
+  updateMemorableKnowledge(
+    memorableKnowledgeNodeId: string,
+    patch: MemorableKnowledgeUpdate,
+    actor: AclMutationOptions,
+  ): Promise<GraphNode>;
+  /**
+   * Slice 6.5 — list all Palaia-Excerpt nodes attached to a
+   * MemorableKnowledge, ordered by `position` ascending. Returns an
+   * empty array when the MK has no excerpts (legacy MKs from before
+   * Slice 6.5, or post-promotion where the extractor returned none).
+   * Does NOT enforce ACL — callers are expected to gate via
+   * `getMemorableKnowledge(id, viewer)` first.
+   */
+  listExcerptsForMemory(
+    memorableKnowledgeNodeId: string,
+  ): Promise<PalaiaExcerptNode[]>;
+  /**
+   * Slice 6.5 — partial update on a single Palaia-Excerpt identified by
+   * its parent MK + position. The actor must be in the MK's
+   * `acl_owners`. Writes an `'edit_excerpt'` audit row on the parent
+   * MK (beforeOwners and afterOwners identical — content-edits don't
+   * affect ownership). Empty patch throws `empty_patch`; missing
+   * excerpt throws `excerpt_not_found`.
+   */
+  updateExcerpt(
+    memorableKnowledgeNodeId: string,
+    position: number,
+    patch: PalaiaExcerptUpdate,
+    actor: AclMutationOptions,
+  ): Promise<PalaiaExcerptNode>;
+  /**
+   * Slice 12 — hard-delete one PalaiaExcerpt of the given parent MK
+   * + position. Emits a `'delete_excerpt'` audit row on the parent
+   * MK. Actor must be in the parent MK's `acl_owners`. Leaves the
+   * remaining excerpts' positions untouched (sparse position array
+   * is allowed; the position-CHECK in migration 0018 only enforces
+   * the [0, 4] range, not density). Throws `excerpt_not_found` when
+   * no excerpt exists at the given position.
+   */
+  deleteExcerpt(
+    memorableKnowledgeNodeId: string,
+    position: number,
+    actor: AclMutationOptions,
+  ): Promise<void>;
+  /**
+   * Slice 7 — semantic search over MemorableKnowledge nodes. Cosine
+   * similarity on the `embedding` column (Slice-7 backfill writes the
+   * `summary + rationale` joint embedding). ACL-gated via
+   * `acl_owners @> [viewerOmadiaUserId]` — non-bypassable, no admin
+   * mode. Empty query embedding short-circuits to `[]`.
+   */
+  searchMemorableKnowledgeByEmbedding(
+    opts: MemorableKnowledgeSearchOptions,
+  ): Promise<MemorableKnowledgeHit[]>;
+  /**
+   * Slice 7 — semantic search over PalaiaExcerpt nodes. ACL-gated
+   * indirectly: each excerpt is JOINed back to its parent
+   * MemorableKnowledge via `EXCERPT_OF`, then the parent's
+   * `acl_owners` is checked against the viewer. Returns hits with
+   * `parentMkId` so callers can render the excerpt in context of its
+   * curated memory.
+   */
+  searchExcerptsByEmbedding(
+    opts: ExcerptSearchOptions,
+  ): Promise<PalaiaExcerptHit[]>;
+  /**
+   * Slice 9 — list inconsistency markers visible to the viewer.
+   * ACL gate: viewer must own at least one of the two conflicting
+   * MKs (union, not intersection — single-owner pairs would
+   * otherwise be invisible to anyone). Filtered by status when
+   * provided; default lists all.
+   */
+  listInconsistencies(
+    opts: ListInconsistenciesOptions,
+  ): Promise<InconsistencyNode[]>;
+  /**
+   * Slice 9 — read a single Inconsistency. Returns null when the
+   * viewer doesn't own at least one of the conflicting MKs (404
+   * doesn't leak existence to non-owners).
+   */
+  getInconsistency(
+    inconsistencyExternalId: string,
+    viewerOmadiaUserId: string,
+  ): Promise<InconsistencyNode | null>;
+  /**
+   * Slice 9 — persist a new Inconsistency between two MKs. Idempotent:
+   * returns null when an Inconsistency between the same two MKs
+   * (regardless of order) already exists, even if it's already
+   * resolved or dismissed (operator already saw it; don't re-flag).
+   */
+  createInconsistency(
+    input: CreateInconsistencyInput,
+  ): Promise<InconsistencyNode | null>;
+  /**
+   * Slice 9 — operator resolves an open Inconsistency. The actor
+   * must own at least one of the two conflicting MKs. Side-effects
+   * depend on `resolution`:
+   *   - `a_wins`  → deletes mkB via `deleteMemory(mkB, actor)`
+   *   - `b_wins`  → deletes mkA via `deleteMemory(mkA, actor)`
+   *   - `both`    → no MK changes; conflict marked resolved
+   *   - `dismiss` → no MK changes; conflict marked dismissed
+   * Throws `inconsistency_not_found`, `not_an_owner`, or
+   * `already_resolved` accordingly.
+   */
+  resolveInconsistency(
+    inconsistencyExternalId: string,
+    resolution: InconsistencyResolution,
+    actor: AclMutationOptions,
+  ): Promise<InconsistencyNode>;
+  /**
+   * Slice 9.5 — list `MemorableKnowledge` external_ids that still need a
+   * bulk inconsistency-check pass: embedding column populated AND no
+   * `last_inconsistency_check_at` marker on the row. Ordered by
+   * `created_at` ascending (oldest first — most likely source of
+   * historical conflicts that predate Slice 9). Clamped to [1, 200].
+   * Returns external_ids (`mk:<uuid>`), not internal uuids, so callers
+   * can feed them straight into `inconsistencyDetector.detectFor()`.
+   */
+  listMemorableKnowledgeIdsForBulkInconsistencyCheck(opts: {
+    limit: number;
+  }): Promise<string[]>;
+  /**
+   * Slice 9.5 — preview-stats for the bulk inconsistency-detect panel.
+   * `unchecked` = candidates the next run would process. Tenant-scoped.
+   */
+  countMemorableKnowledgeInconsistencyCheckBuckets(): Promise<{
+    unchecked: number;
+    alreadyChecked: number;
+    withoutEmbedding: number;
+  }>;
+  /**
+   * Slice 9.5 — set the `last_inconsistency_check_at` marker on an MK to
+   * `now()`. Called by `inconsistencyDetector.detectFor()` at the end
+   * of every successful run (whether 0 or N Inconsistencies were
+   * created) so the bulk-job dedupes correctly. Idempotent: re-writing
+   * the marker just refreshes the timestamp.
+   */
+  markMemorableKnowledgeInconsistencyChecked(
+    memorableKnowledgeNodeId: string,
+  ): Promise<void>;
+  /**
+   * Slice 10 — list near-duplicate-candidate markers visible to the
+   * viewer. ACL gate identical to {@link listInconsistencies}: viewer
+   * must own at least one of the two near-duplicate MKs. Filtered by
+   * status when provided.
+   */
+  listMergeCandidates(
+    opts: ListMergeCandidatesOptions,
+  ): Promise<MergeCandidateNode[]>;
+  /**
+   * Slice 10 — read a single MergeCandidate. Returns null when the
+   * viewer doesn't own at least one of the near-duplicate MKs.
+   */
+  getMergeCandidate(
+    mergeCandidateExternalId: string,
+    viewerOmadiaUserId: string,
+  ): Promise<MergeCandidateNode | null>;
+  /**
+   * Slice 10 — persist a near-duplicate marker between two MKs.
+   * Idempotent: returns null when a MergeCandidate between the same
+   * two MKs (regardless of order, regardless of status) already
+   * exists — operator already saw it. Returns null also when one of
+   * the MKs is missing (race with deleteMemory). The MK pair is
+   * sorted ascending on persist so dedupe-checks are
+   * direction-independent.
+   */
+  createMergeCandidate(
+    input: CreateMergeCandidateInput,
+  ): Promise<MergeCandidateNode | null>;
+  /**
+   * Slice 10 — operator resolves an open MergeCandidate. The actor
+   * must own at least one of the two near-duplicate MKs. Side-effects
+   * depend on `resolution`:
+   *   - `keep_a`         → deletes mkB via `deleteMemory(mkB, actor)`
+   *   - `keep_b`         → deletes mkA via `deleteMemory(mkA, actor)`
+   *   - `not_duplicate`  → no MK changes; candidate marked dismissed
+   * Throws `merge_candidate_not_found`, `not_an_owner`, or
+   * `already_resolved` accordingly.
+   */
+  resolveMergeCandidate(
+    mergeCandidateExternalId: string,
+    resolution: MergeCandidateResolution,
+    actor: AclMutationOptions,
+  ): Promise<MergeCandidateNode>;
+  /**
+   * Slice 10 — list `MemorableKnowledge` external_ids still needing a
+   * bulk merge-detect pass: embedding column populated AND no
+   * `last_merge_check_at` marker. Ordered created_at ascending,
+   * clamped to [1, 500]. Mirrors
+   * {@link listMemorableKnowledgeIdsForBulkInconsistencyCheck} but
+   * tracks a separate marker so the two bulk passes are independent.
+   */
+  listMemorableKnowledgeIdsForBulkMergeCheck(opts: {
+    limit: number;
+  }): Promise<string[]>;
+  /**
+   * Slice 10 — preview-stats for the bulk merge-detect panel.
+   * Mirrors {@link countMemorableKnowledgeInconsistencyCheckBuckets}
+   * but reads the `last_merge_check_at` marker.
+   */
+  countMemorableKnowledgeMergeCheckBuckets(): Promise<{
+    unchecked: number;
+    alreadyChecked: number;
+    withoutEmbedding: number;
+  }>;
+  /**
+   * Slice 10 — set the `last_merge_check_at` marker on an MK to
+   * `now()`. Called by the merge-detector at the end of every
+   * successful run. Idempotent.
+   */
+  markMemorableKnowledgeMergeChecked(
+    memorableKnowledgeNodeId: string,
+  ): Promise<void>;
+  /**
+   * Slice 12 — list near-duplicate Excerpt-Candidate markers visible
+   * to the viewer. ACL gate: viewer must own at least one of the two
+   * parent MKs of the excerpts. Mirrors `listMergeCandidates`.
+   */
+  listExcerptMergeCandidates(
+    opts: ListExcerptMergeCandidatesOptions,
+  ): Promise<ExcerptMergeCandidateNode[]>;
+  /**
+   * Slice 12 — read a single ExcerptMergeCandidate. Returns null
+   * when the viewer doesn't own at least one of the involved parent
+   * MKs.
+   */
+  getExcerptMergeCandidate(
+    externalId: string,
+    viewerOmadiaUserId: string,
+  ): Promise<ExcerptMergeCandidateNode | null>;
+  /**
+   * Slice 12 — persist a near-duplicate marker between two excerpts.
+   * Idempotent: returns null when an ExcerptMergeCandidate between the
+   * same two excerpts (regardless of order, regardless of status)
+   * already exists; also null if one of the excerpts is missing.
+   * The excerpt pair is sorted ascending on persist.
+   */
+  createExcerptMergeCandidate(
+    input: CreateExcerptMergeCandidateInput,
+  ): Promise<ExcerptMergeCandidateNode | null>;
+  /**
+   * Slice 12 — operator resolves an open ExcerptMergeCandidate. The
+   * actor must own at least one of the two excerpts' parent MKs.
+   * Side-effects:
+   *   - `keep_a`        → deletes excerpt B via `deleteExcerpt`
+   *   - `keep_b`        → deletes excerpt A via `deleteExcerpt`
+   *   - `not_duplicate` → no excerpt changes; candidate marked dismissed
+   */
+  resolveExcerptMergeCandidate(
+    externalId: string,
+    resolution: ExcerptMergeResolution,
+    actor: AclMutationOptions,
+  ): Promise<ExcerptMergeCandidateNode>;
+  /**
+   * Slice 12 — list PalaiaExcerpt external_ids still needing a bulk
+   * merge-detect pass: embedding column populated AND no
+   * `last_excerpt_merge_check_at` marker. Ordered created_at ASC,
+   * clamped to [1, 500]. Mirrors the Slice 10 MK selection.
+   */
+  listPalaiaExcerptIdsForBulkMergeCheck(opts: {
+    limit: number;
+  }): Promise<string[]>;
+  /**
+   * Slice 12 — preview-stats for the bulk excerpt-merge-detect panel.
+   */
+  countPalaiaExcerptMergeCheckBuckets(): Promise<{
+    unchecked: number;
+    alreadyChecked: number;
+    withoutEmbedding: number;
+  }>;
+  /**
+   * Slice 12 — set the `last_excerpt_merge_check_at` marker on an
+   * Excerpt to `now()`. Idempotent.
+   */
+  markPalaiaExcerptMergeChecked(excerptExternalId: string): Promise<void>;
+  /**
+   * Slice 11 — list all Topic nodes for the tenant. Tenant-scoped only;
+   * Topics are aggregate metadata so the read is not ACL-gated.
+   */
+  listTopics(): Promise<TopicNode[]>;
+  /**
+   * Slice 11 — read one Topic by external_id. Null when missing.
+   */
+  getTopic(topicExternalId: string): Promise<TopicNode | null>;
+  /**
+   * Slice 11 — return the MK members of a Topic. ACL-gating happens in
+   * the route layer (per-member `getMemorableKnowledge(id, viewer)`).
+   */
+  listTopicMembers(topicExternalId: string): Promise<GraphNode[]>;
+  /**
+   * Slice 11 — pull every MK with a populated embedding column. Used
+   * by the clustering pass; tenant-scoped, no ACL filter (re-cluster
+   * is a dev/admin action).
+   */
+  listMemorableKnowledgeWithEmbeddings(): Promise<
+    Array<{ mk: GraphNode; embedding: number[] }>
+  >;
+  /**
+   * Slice 11 — wipe every Topic node and its HAS_TOPIC edges for the
+   * tenant. Returns the number of Topics removed. Run BEFORE
+   * `createTopic` calls in a re-cluster pass.
+   */
+  deleteAllTopics(): Promise<number>;
+  /**
+   * Slice 11 — persist one Topic + n HAS_TOPIC edges in a single
+   * transaction. Missing MK external_ids are silently skipped.
+   */
+  createTopic(input: {
+    name: string;
+    description: string;
+    namingSource: TopicNamingSource;
+    memberMkIds: readonly string[];
+  }): Promise<TopicNode>;
+  /**
+   * Slice 11.5 — every `HAS_TOPIC` edge in the tenant (MK → Topic),
+   * exposed as external-id pairs for the Dev-UI to overlay on the
+   * `/graph` canvas. ACL is intentionally NOT enforced — the endpoint
+   * exposing this (`GET /dev/graph/topics`) sits behind
+   * `DEV_ENDPOINTS_ENABLED` and is never reachable in production.
+   */
+  listTopicMembershipEdges(): Promise<Array<{ from: string; to: string }>>;
+  /**
+   * Slice 11.5 + 12.5 — every open + resolved + dismissed Inconsistency,
+   * MergeCandidate, and ExcerptMergeCandidate in the tenant, plus the
+   * MK-side / Excerpt-side edges expressed as external-id pairs. Same
+   * dev-bypass as {@link listTopicMembershipEdges}: not ACL-gated.
+   *
+   * Edge types:
+   *  - CONFLICTS_WITH:        Inconsistency → MemorableKnowledge
+   *  - DUPLICATE_OF:          MergeCandidate → MemorableKnowledge
+   *  - DUPLICATE_EXCERPT_OF:  ExcerptMergeCandidate → PalaiaExcerpt
+   */
+  listAllIssues(opts?: { status?: InconsistencyStatus }): Promise<{
+    inconsistencies: InconsistencyNode[];
+    mergeCandidates: MergeCandidateNode[];
+    excerptMergeCandidates: ExcerptMergeCandidateNode[];
+    edges: Array<{
+      from: string;
+      to: string;
+      type: 'CONFLICTS_WITH' | 'DUPLICATE_OF' | 'DUPLICATE_EXCERPT_OF';
+    }>;
+  }>;
+  /**
+   * Dev-UI · Memory Focused View — list every memory (MemorableKnowledge
+   * + PalaiaExcerpt) anchored to the given scope along with its 2-hop
+   * provenance ancestors, pre-resolved in a single round-trip. ACL is
+   * intentionally NOT enforced: the endpoint that exposes this method
+   * (`GET /dev/graph/memories`) sits behind `DEV_ENDPOINTS_ENABLED` and
+   * is never reachable in production.
+   *
+   * Provenance chain (per `schema.ts`):
+   *   `PalaiaExcerpt -EXCERPT_OF-> MK -DERIVED_FROM-> Turn -IN_SESSION-> Session`
+   *   `MK -INVOLVED-> User`, `MK -REQUIRES-> Entity`
+   *
+   * Per-memory `level1` / `level2` contents:
+   *   - MK:      L1 = Turn + INVOLVED Users + REQUIRES Entities;
+   *              L2 = Session
+   *   - Excerpt: L1 = parent MK;
+   *              L2 = MK's own L1 (Turn + Users + Entities)
+   *
+   * When `scope` is omitted, returns memories across every session
+   * (cap remains `limit`). The companion `edges` array carries the real
+   * graph_edges rows so the canvas can render them with their actual
+   * labels instead of guessing.
+   */
+  listMemoriesForScope(
+    scope: string | undefined,
+    opts?: ListMemoriesForScopeOptions,
+  ): Promise<MemoriesProvenanceView>;
+}
+
+/**
+ * Single memory row + its 2-hop provenance neighbours. See
+ * {@link KnowledgeGraph.listMemoriesForScope} for the level semantics.
+ */
+export interface MemoryWithAncestors {
+  node: GraphNode;
+  level1: GraphNode[];
+  level2: GraphNode[];
+}
+
+/**
+ * Edge row exposed alongside {@link MemoryWithAncestors}. `from` and
+ * `to` are `external_id`s (matching `GraphNode.id`) so the frontend can
+ * dedupe via the same key space it already uses.
+ */
+export interface MemoryProvenanceEdge {
+  from: string;
+  to: string;
+  type: GraphEdgeType;
+}
+
+/** Top-level payload returned by `listMemoriesForScope`. */
+export interface MemoriesProvenanceView {
+  memories: MemoryWithAncestors[];
+  edges: MemoryProvenanceEdge[];
+}
+
+/** Options for {@link KnowledgeGraph.listMemoriesForScope}. */
+export interface ListMemoriesForScopeOptions {
+  /** Max MK count returned. Excerpts are bounded by their parent MK's
+   *  presence in the result. Clamped to [1, 500]. Default 200. */
+  limit?: number;
+  /** When false, omits PalaiaExcerpt rows from the result entirely.
+   *  Default true. */
+  includeExcerpts?: boolean;
+}
+
+/** Slice 7 — input for `searchMemorableKnowledgeByEmbedding`. */
+export interface MemorableKnowledgeSearchOptions {
+  queryEmbedding: number[];
+  /** Cluster-root id of the viewer. ACL is non-bypassable. */
+  viewerOmadiaUserId: string;
+  /** Max hits, clamped to [1, 50]. Default 5. */
+  limit?: number;
+  /** Hits below this cosine similarity dropped. Default 0.3. */
+  minSimilarity?: number;
+}
+
+/** Slice 7 — single MK hit from semantic search. */
+export interface MemorableKnowledgeHit {
+  mk: GraphNode;
+  cosineSim: number;
+}
+
+/** Slice 7 — input for `searchExcerptsByEmbedding`. Same shape as
+ *  the MK search; the JOIN to parent-MK is internal. */
+export interface ExcerptSearchOptions {
+  queryEmbedding: number[];
+  viewerOmadiaUserId: string;
+  limit?: number;
+  minSimilarity?: number;
+}
+
+/** Slice 7 — single excerpt hit, carries the parent-MK external_id
+ *  so callers can dedupe-merge against MK-hits. */
+export interface PalaiaExcerptHit {
+  excerpt: PalaiaExcerptNode;
+  parentMkId: string;
+  cosineSim: number;
+}
+
+/** Slice 5 — partial content-patch on a MemorableKnowledge. All fields
+ *  optional; `rationale: null` removes the field. */
+export interface MemorableKnowledgeUpdate {
+  kind?: MemorableKind;
+  summary?: string;
+  /** Pass `null` to delete the rationale; `undefined` (default) to
+   *  leave it untouched; a string to set/replace. */
+  rationale?: string | null;
+  significance?: number;
 }
 
 export interface SessionFilter {
@@ -143,14 +671,43 @@ export type GraphNodeType =
    *  `props`; the namespace string is what the plugin declared in its
    *  manifest's `permissions.graph.entity_systems`. */
   | 'PluginEntity'
+  /** Slice 1b — channel-agnostic Omadia identity (cluster root). */
   | 'User'
+  /** Slice 1b — channel-bound leaf node carrying raw platform id +
+   *  optional verified email for cross-channel cluster-merge. */
+  | 'ChannelIdentity'
   | 'Run'
   | 'AgentInvocation'
   | 'ToolCall'
   | 'Fact'
-  | 'Company'
-  | 'Person'
-  | 'FinancialSnapshot';
+  /** Slice 2 — first-class curated memory entity between atomic Fact
+   *  and verbatim Turn. Carries the ACL (Slice 3) and is the sink for
+   *  the Palaia significance-promotion pipeline (Slice 4). */
+  | 'MemorableKnowledge'
+  /** Slice 6.5 — verbatim text snippet from the original turn that
+   *  underpins a MemorableKnowledge. Stable provenance anchor;
+   *  carries `text`, `position` (0-4), `source` ('llm'|'hint'|
+   *  'fallback') in `props`. Linked to its parent MK via
+   *  `EXCERPT_OF`. */
+  | 'PalaiaExcerpt'
+  /** Slice 9 — contradiction marker between two semantically-similar
+   *  MemorableKnowledge nodes whose content disagrees. Carries
+   *  `summary`, `severity`, `status`, `resolution` in `props`. Linked
+   *  to BOTH offending MKs via `CONFLICTS_WITH`. */
+  | 'Inconsistency'
+  /** Slice 10 — near-duplicate marker between two MKs whose cosine
+   *  similarity is ≥ 0.95. No contradiction; just redundancy. Carries
+   *  `cosine_sim`, `status`, `resolution` in `props`. Linked to BOTH
+   *  MKs via `DUPLICATE_OF`. */
+  | 'MergeCandidate'
+  /** Slice 11 — cluster of semantically-related MemorableKnowledge
+   *  nodes, named by Haiku. Aggregate metadata; lifetime is until the
+   *  next operator-triggered re-cluster. */
+  | 'Topic'
+  /** Slice 12 — near-duplicate marker between two PalaiaExcerpts
+   *  (cosine ≥ 0.97). Mirror of Slice 10 MergeCandidate at the
+   *  excerpt layer. Linked to BOTH excerpts via DUPLICATE_EXCERPT_OF. */
+  | 'ExcerptMergeCandidate';
 export type GraphEdgeType =
   | 'IN_SESSION'
   | 'NEXT_TURN'
@@ -162,14 +719,32 @@ export type GraphEdgeType =
   | 'PRODUCED'
   | 'DERIVED_FROM'
   | 'MENTIONS'
-  | 'MANAGES'
-  | 'SHAREHOLDER_OF'
-  | 'SUCCEEDED_BY'
-  | 'REFERS_TO'
-  | 'HAS_FINANCIALS';
+  /** Slice 1b — ChannelIdentity → User-Cluster cross-link. */
+  | 'IS_IDENTITY_OF'
+  /** Slice 2 — MemorableKnowledge → User-Cluster, participating users. */
+  | 'INVOLVED'
+  /** Slice 2 — MemorableKnowledge → Entity (Odoo/Confluence/Plugin),
+   *  domain references the MK is anchored to. */
+  | 'REQUIRES'
+  /** Slice 6.5 — PalaiaExcerpt → MemorableKnowledge. The verbatim
+   *  source-snippet "belongs to" the curated memory it underpins. */
+  | 'EXCERPT_OF'
+  /** Slice 9 — Inconsistency → MemorableKnowledge. Two edges per
+   *  Inconsistency, one per conflicting MK. Direction: from the
+   *  marker to the MKs it flags. */
+  | 'CONFLICTS_WITH'
+  /** Slice 10 — MergeCandidate → MemorableKnowledge. Two edges per
+   *  MergeCandidate, one per near-duplicate MK. Same direction
+   *  convention as CONFLICTS_WITH. */
+  | 'DUPLICATE_OF'
+  /** Slice 11 — MemorableKnowledge → Topic. 1:1 per MK; re-cluster
+   *  wipes and rebuilds every edge so the cardinality stays clean. */
+  | 'HAS_TOPIC'
+  /** Slice 12 — ExcerptMergeCandidate → PalaiaExcerpt. Two edges per
+   *  ExcerptMergeCandidate, one per near-duplicate excerpt. Same
+   *  direction convention as DUPLICATE_OF. */
+  | 'DUPLICATE_EXCERPT_OF';
 
-export type CompanyStatus = 'active' | 'liquidation' | 'terminated';
-export type RiskLevel = 'low' | 'medium' | 'high' | 'critical';
 export type FactSeverity = 'info' | 'warning' | 'critical';
 
 // ---------------------------------------------------------------------------
@@ -259,151 +834,226 @@ export interface EntityIngestResult {
   updated: number;
 }
 
+// ---------------------------------------------------------------------------
+// Slice 1b — Channel-aware identity resolution.
+// ---------------------------------------------------------------------------
+
+/** Supported platform discriminators for ChannelIdentity nodes. `web` is
+ *  the admin UI (and any future end-user surface served from the same
+ *  middleware); the channelUserId there is the local `users.id` uuid. */
+export type ChannelKind = 'teams' | 'telegram' | 'slack' | 'email' | 'web';
+
 /**
- * NorthData Company upsert payload. `externalId` must be `register.uniqueKey`
- * from the API response — the only stable identifier NorthData exposes for
- * companies (the internal `id` field is documented as volatile).
+ * Payload for {@link KnowledgeGraph.resolveOrCreateChannelIdentity}.
  *
- * Optional fields mirror the subset of the NorthData Company definition we
- * flatten into Company-node properties. Fields that only exist as nested
- * structures in the API (relations, capital, full history) are modelled via
- * their own nodes/edges rather than duplicated here.
+ * `email` paired with `emailVerified=true` is the cross-channel merge key:
+ * two ChannelIdentities sharing a verified email in the same tenant join
+ * the same User-Cluster. Anything else (no email, unverified email,
+ * different tenant) gets its own 1:1 cluster.
  */
-export interface CompanyIngest {
-  externalId: string;
-  name: string;
-  rawName?: string;
-  legalForm?: string;
-  registerCourt?: string;
-  registerNumber?: string;
-  registerCountry?: string;
-  status?: CompanyStatus;
-  terminated?: boolean;
-  address?: string;
-  /** Hoisted from `extras.items[id=vatId]`; only set when `extras=true`. */
-  vatId?: string;
-  proxyPolicy?: string;
-  northDataUrl?: string;
-  segmentCodes?: Record<string, string[]>;
-  /** Derived at ingest. */
-  riskLevel?: RiskLevel;
-  /** Derived at ingest. */
-  riskSignals?: string[];
-  isWatched?: boolean;
-  /** Extra fields stored on `properties` JSONB (GIN-indexed — keep small). */
-  extras?: Record<string, unknown>;
+export interface ChannelIdentityIngest {
+  channelKind: ChannelKind;
+  /** Raw platform id (Teams AAD oid, Telegram numeric chat-id, …). */
+  channelUserId: string;
+  displayName?: string;
+  email?: string;
+  emailVerified?: boolean;
+  /**
+   * Microsoft AAD object id (`claims.oid`). First-class merge key —
+   * when set, the resolver matches existing identities in the same
+   * tenant via this oid BEFORE falling back to the verified-email
+   * merge. Stable AAD identifier (cannot be renamed at the IdP), so
+   * cross-channel links for Microsoft-authenticated users are more
+   * robust than the email path. Both the Admin-UI entra-login and the
+   * Teams plugin (when it nachzieht) populate this field, which lets
+   * them deterministically land on the same User-Cluster.
+   */
+  aadObjectId?: string;
+  /** Free-form channel-side payload (Telegram from-object, etc.).
+   *  AAD oid is NOT stored here — it has its own first-class field. */
+  internalChannelData?: Record<string, unknown>;
 }
 
-export interface CompanyIngestResult {
-  /** External ids (`company:<externalId>`) in input order. */
-  companyIds: string[];
-  inserted: number;
-  updated: number;
+export interface ResolveOrCreateChannelIdentityResult {
+  /** External id of the ChannelIdentity node (`<channelKind>:<channelUserId>`). */
+  channelIdentityNodeId: string;
+  /** External id of the User-Cluster node (`user:<omadiaUserId>`). */
+  userNodeId: string;
+  /** Opaque cluster-root uuid, also stored on `Run.user_id` / `Turn.userId`. */
+  omadiaUserId: string;
+  /** True if the ChannelIdentity was newly created in this call. */
+  isNewIdentity: boolean;
+  /** True if a fresh User-Cluster was spun up (vs. joining an existing one). */
+  isNewCluster: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Slice 2 — MemorableKnowledge ingest.
+// ---------------------------------------------------------------------------
+
+/** Taxonomy of the curated memory entity. Matches `MEMORABLE_KINDS` in
+ *  `@omadia/knowledge-graph-neon` — kept in sync manually for now since
+ *  the plugin-api layer is the public contract. */
+export type MemorableKind =
+  | 'decision'
+  | 'insight'
+  | 'preference'
+  | 'reference';
+
+export interface MemorableKnowledgeIngest {
+  kind: MemorableKind;
+  /** Short headline (≤ 2000 chars). What recall surfaces first. */
+  summary: string;
+  /** Optional longer-form reasoning (≤ 10000 chars). */
+  rationale?: string;
+  /** Palaia significance in [0, 1]. Optional — Slice 4 fills it in. */
+  significance?: number;
+  /** ChannelIdentity external_id of the channel-bound identity that
+   *  produced this MK (e.g. `web:<users.uuid>` or `teams:<aad-oid>`). */
+  createdBy: string;
+  /** Cluster-root `omadiaUserId`s the MK is about. Wired as INVOLVED
+   *  edges. Missing User-Clusters are silently skipped + counted. */
+  involvedOmadiaUserIds?: string[];
+  /** External ids of referenced Entities. Wired as REQUIRES edges.
+   *  Target node MUST be OdooEntity / ConfluencePage / PluginEntity —
+   *  others are silently skipped + counted. */
+  requiredEntityIds?: string[];
+  /** Turn external ids the MK was derived from. Wired as DERIVED_FROM
+   *  edges (re-uses the existing edge type). Missing Turns skipped. */
+  derivedFromTurnIds?: string[];
+  /**
+   * Slice 3 — initial cluster-root owners (snapshot at-creation). The
+   * caller is responsible for resolving the right set (e.g. all
+   * verified Teams-channel members for a Teams-sourced MK, just the
+   * web-session user for an Admin-UI save). When omitted, defaults to
+   * `[]` — the MK is invisible to every viewer (admin-only).
+   * `createMemorableKnowledge` writes a `create` row to the audit-log
+   * regardless of whether owners are set.
+   */
+  aclOwners?: string[];
+  /**
+   * Slice 3 — cluster-root that triggered the create. Audited as the
+   * `actor_omadia_user_id` of the `create` row. Falls back to
+   * `aclOwners[0]` when omitted; if both are missing, the actor is
+   * the zero-uuid (`00000000-…`) which marks the create as
+   * system-driven.
+   */
+  actorOmadiaUserId?: string;
+  /**
+   * Slice 6.5 — verbatim source snippets that underpin this MK,
+   * persisted atomically in the same transaction. The Palaia-Excerpt-
+   * Extractor fills `texts` (0-5 entries, each ≤300 chars) and
+   * tags the batch with a single `source` discriminator. The
+   * provenance is read-only via {@link KnowledgeGraph.listExcerptsForMemory}
+   * and editable via {@link KnowledgeGraph.updateExcerpt}.
+   */
+  palaiaExcerpts?: PalaiaExcerptInput;
 }
 
 /**
- * NorthData Person upsert payload. `externalId` is a synthetic deterministic
- * hash (see {@link personSyntheticId}) because NorthData's own Person.id is
- * documented as volatile and must not be persisted as an identity key.
+ * Slice 6.5 — provenance discriminator for a Palaia-Excerpt batch.
+ *   - 'llm'      — Haiku-extracted from the cleaned assistant answer.
+ *   - 'hint'     — derived from an explicit `<palaia-hint>` annotation
+ *                  in the user message.
+ *   - 'fallback' — degraded extractor output (parse failure / empty
+ *                  answer). Should rarely be persisted — extractors
+ *                  prefer to return `undefined` instead.
  */
-export interface PersonIngest {
-  /** sha1(lastName|firstName|birthDate|city) — use {@link personSyntheticId}. */
-  externalId: string;
-  /** Full display name, typically `${title} ${firstName} ${lastName}`. */
-  name: string;
-  firstName?: string;
-  lastName: string;
-  /** Public-register birth date (ISO `YYYY-MM-DD`). */
-  birthDate?: string;
-  city?: string;
-  /** The API's volatile internal id, kept only for freshness lookup. */
-  internalNorthDataId?: string;
-  extras?: Record<string, unknown>;
+export type ExcerptSource = 'llm' | 'hint' | 'fallback';
+
+/** Slice 6.5 — input shape for the optional Excerpt batch on
+ *  `createMemorableKnowledge`. Length 0 is allowed (caller filtered all
+ *  excerpts out); >5 throws `excerpt_count_exceeded`. */
+export interface PalaiaExcerptInput {
+  texts: readonly string[];
+  source: ExcerptSource;
 }
 
-export interface PersonIngestResult {
-  personIds: string[];
-  inserted: number;
-  updated: number;
-}
-
-export interface ManagesEdgeIngest {
-  personExternalId: string;
-  companyExternalId: string;
-  role?: string;
-  since?: string;
-  until?: string;
-}
-
-export interface ShareholderEdgeIngest {
-  /** Either a Person or a Company node acting as shareholder. */
-  holderExternalId: string;
-  holderType: 'Person' | 'Company';
-  companyExternalId: string;
-  sharePercent?: number;
-  since?: string;
-  until?: string;
-}
-
-export interface SucceededByEdgeIngest {
-  fromCompanyExternalId: string;
-  toCompanyExternalId: string;
-  reason?: string;
-}
-
-export interface CompanyRelationsIngest {
-  manages?: ManagesEdgeIngest[];
-  shareholders?: ShareholderEdgeIngest[];
-  successions?: SucceededByEdgeIngest[];
-}
-
-export interface CompanyRelationsResult {
-  manages: number;
-  shareholders: number;
-  successions: number;
-  /** Edges dropped because at least one endpoint was missing. */
-  skipped: number;
-}
-
-export interface LinkCompanyToOdooOptions {
-  companyExternalId: string;
-  /** External id in the shape `<system>:<model>:<id>`, e.g.
-   *  `odoo:res.partner:42`. Must already exist — caller looks this up via
-   *  `findEntities({model:'res.partner', nameContains:…})` or VAT match. */
-  odooEntityExternalId: string;
-}
-
-export interface LinkCompanyToOdooResult {
-  linked: boolean;
-}
-
-/** One Financial indicator row as it comes out of NorthData. */
-export interface FinancialIndicator {
+/** Slice 6.5 — Excerpt-node read shape. `position` is dense in
+ *  [0, n-1] for the n excerpts of a parent MK; the order is the LLM's
+ *  document order at extract-time and is preserved across edits. */
+export interface PalaiaExcerptNode {
+  /** External id, scheme `excerpt:<uuid-v4>`. */
   id: string;
-  name?: string;
-  value?: number;
-  unit?: string;
-  estimate?: boolean;
-  note?: string;
+  type: 'PalaiaExcerpt';
+  props: {
+    text: string;
+    position: number;
+    source: ExcerptSource;
+    created_at: string;
+  };
 }
 
-/** Structured annual-financials upsert. */
-export interface FinancialSnapshotIngest {
-  companyExternalId: string;
-  fiscalYear: number;
-  /** ISO date the figures were published for. */
-  date?: string;
-  consolidated?: boolean;
-  sourceName?: string;
-  items: FinancialIndicator[];
+/** Slice 6.5 — partial update shape. At least one of `text` / `source`
+ *  must be present, else `empty_patch` is thrown. */
+export interface PalaiaExcerptUpdate {
+  text?: string;
+  source?: ExcerptSource;
 }
 
-export interface FinancialSnapshotIngestResult {
-  snapshotIds: string[];
-  inserted: number;
-  updated: number;
-  /** Skipped because the parent Company node didn't exist. */
-  skipped: number;
+export interface MemorableKnowledgeIngestResult {
+  /** External id of the new MK node (`mk:<uuid>`). */
+  memorableKnowledgeNodeId: string;
+  /** Cluster-roots in `involvedOmadiaUserIds` that didn't resolve. */
+  skippedInvolved: number;
+  /** Entries in `requiredEntityIds` that didn't resolve OR weren't an
+   *  Entity-typed node. */
+  skippedRequired: number;
+  /** Entries in `derivedFromTurnIds` that didn't resolve to a Turn. */
+  skippedDerivedFrom: number;
+}
+
+export interface ListMemorableKnowledgeOptions {
+  limit?: number;
+  /** Filter to a single kind. */
+  kind?: MemorableKind;
+}
+
+// ---------------------------------------------------------------------------
+// Slice 3 — ACL on MemorableKnowledge.
+// ---------------------------------------------------------------------------
+
+/** Action recorded in the audit-log. `create` is logged by
+ *  `createMemorableKnowledge` when `aclOwners.length > 0` (so the
+ *  initial-owner snapshot is auditable). `edit_excerpt` (Slice 6.5)
+ *  is written by `updateExcerpt` and shares the no-op-owners
+ *  invariant with `'edit'`. */
+export type AclAction =
+  | 'create'
+  | 'expand'
+  | 'shrink'
+  | 'delete'
+  | 'edit'
+  | 'edit_excerpt'
+  /** Slice 12 — emitted by `deleteExcerpt` when an operator picks
+   *  keep_a/keep_b on an ExcerptMergeCandidate, removing the loser
+   *  excerpt from the parent MK's excerpt batch. */
+  | 'delete_excerpt';
+
+/** Append-only audit-log row. Survives a `deleteMemory` (the
+ *  underlying table has no FK on `memory_external_id`). */
+export interface AclAuditEntry {
+  id: string;
+  memoryExternalId: string;
+  actorOmadiaUserId: string;
+  actorChannelIdentityId?: string;
+  action: AclAction;
+  beforeOwners: string[];
+  /** `null` only when `action === 'delete'`. */
+  afterOwners: string[] | null;
+  reason?: string;
+  createdAt: string;
+}
+
+/** Args every owner-mutating call shares. Actor must already be in
+ *  `acl_owners` of the target MK. */
+export interface AclMutationOptions {
+  actorOmadiaUserId: string;
+  /** Optional ChannelIdentity external_id, e.g. `web:<users.uuid>` —
+   *  used for audit context only, not for authorisation. */
+  actorChannelIdentityId?: string;
+  /** Optional rationale shown in the audit trail. */
+  reason?: string;
 }
 
 /**
@@ -622,6 +1272,14 @@ export interface SessionView {
     turn: GraphNode;
     entities: GraphNode[];
   }>;
+  /**
+   * Slice 1b-channel-web — User-Cluster the session belongs to. Resolved
+   * via `session.props.userId` (= `omadiaUserId`) so graph viewers and
+   * audit consumers can render the user as a first-class neighbor of the
+   * session without an extra round-trip. Undefined when the session has
+   * no `userId` (anonymous or pre-Slice-1b).
+   */
+  user?: GraphNode;
 }
 
 export interface GraphStats {
@@ -776,54 +1434,79 @@ export function entityNodeId(ref: EntityRef): string {
   return `${ref.system}:${ref.model}:${String(ref.id)}`;
 }
 
-/** Stable external id for a NorthData Company node. */
-export function companyNodeId(externalId: string): string {
-  return `company:${externalId}`;
-}
-
-/** Stable external id for a NorthData Person node. */
-export function personNodeId(externalId: string): string {
-  return `person:${externalId}`;
+/**
+ * Slice 1b — User-Cluster external id. Argument is the opaque
+ * `omadiaUserId` (uuid), not a channel-bound platform id.
+ */
+export function userNodeId(omadiaUserId: string): string {
+  return `user:${omadiaUserId}`;
 }
 
 /**
- * Deterministic synthetic id for a natural person. Used instead of
- * NorthData's `Person.id` because the API marks that id as volatile. Inputs
- * are normalised (trim + lowercase) so trivial formatting differences across
- * syncs collapse into the same node.
- *
- * Collision note: two distinct people with the same `(lastName, firstName,
- * birthDate, city)` quadruple are indistinguishable here. Without birthDate,
- * the chance is real — callers should prefer sources where birthDate is
- * populated. Caller must pass at least `lastName`; the other components
- * default to empty strings so a hash is always computable.
+ * Slice 1b — ChannelIdentity external id. Matches the v1
+ * `PlatformIdentity.platformId` shape from `@omadia/channel-sdk`
+ * (`${channelKind}:${platformId}`) so channel adapters can pass either
+ * verbatim.
  */
-export function personSyntheticId(parts: {
-  lastName: string;
-  firstName?: string;
-  birthDate?: string;
-  city?: string;
-}): string {
-  const norm = (s?: string): string => (s ?? '').trim().toLowerCase();
-  const joined = [
-    norm(parts.lastName),
-    norm(parts.firstName),
-    norm(parts.birthDate),
-    norm(parts.city),
-  ].join('|');
-  return createHash('sha1').update(joined).digest('hex').slice(0, 16);
-}
-
-/** External id for a `FinancialSnapshot` node keyed by (company, fiscalYear). */
-export function financialSnapshotNodeId(
-  companyExternalId: string,
-  fiscalYear: number,
+export function channelIdentityNodeId(
+  channelKind: ChannelKind,
+  channelUserId: string,
 ): string {
-  return `finsnap:${companyExternalId}:${String(fiscalYear)}`;
+  return `${channelKind}:${channelUserId}`;
 }
 
-export function userNodeId(userId: string): string {
-  return `user:${userId}`;
+/**
+ * Slice 2 — MemorableKnowledge external id. Argument is an opaque
+ * uuid (caller-generated or `randomUUID()`-derived); the prefix
+ * disambiguates from User-Cluster (`user:<uuid>`).
+ */
+export function memorableKnowledgeNodeId(memorableId: string): string {
+  return `mk:${memorableId}`;
+}
+
+/**
+ * Slice 6.5 — external_id for a PalaiaExcerpt node. The uuid is
+ * generated per-excerpt on persist; the parent MK is reachable via
+ * the EXCERPT_OF edge, so the external_id deliberately does NOT
+ * encode mkId or position (would force a rewrite on cascade-renumber).
+ */
+export function palaiaExcerptNodeId(excerptId: string): string {
+  return `excerpt:${excerptId}`;
+}
+
+/**
+ * Slice 9 — external_id for an Inconsistency node. Stable uuid
+ * generated per-conflict on persist; the offending MKs are reachable
+ * via the two CONFLICTS_WITH edges.
+ */
+export function inconsistencyNodeId(inconsistencyId: string): string {
+  return `inconsistency:${inconsistencyId}`;
+}
+
+/**
+ * Slice 10 — external_id for a MergeCandidate node. Stable uuid
+ * generated per-pair on persist; the near-duplicate MKs are reachable
+ * via the two DUPLICATE_OF edges.
+ */
+export function mergeCandidateNodeId(mergeId: string): string {
+  return `merge:${mergeId}`;
+}
+
+/**
+ * Slice 11 — external_id for a Topic node. Generated per re-cluster
+ * pass; old ids are wiped by the destructive rebuild.
+ */
+export function topicNodeId(topicId: string): string {
+  return `topic:${topicId}`;
+}
+
+/**
+ * Slice 12 — external_id for an ExcerptMergeCandidate node. The two
+ * near-duplicate excerpts are reachable via the DUPLICATE_EXCERPT_OF
+ * edges. Scheme `excerpt-merge:<uuid>`.
+ */
+export function excerptMergeCandidateNodeId(id: string): string {
+  return `excerpt-merge:${id}`;
 }
 
 export function runNodeId(turnExternalId: string): string {

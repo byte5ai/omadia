@@ -32,6 +32,25 @@ interface AuthDeps {
    * the gate stays correct even if the boot-time value drifts.
    */
   setupAllowed: boolean;
+  /**
+   * Slice 1b-channel-web — optional adapter that resolves the just-
+   * authenticated identity into a KG `User`-Cluster + `ChannelIdentity`
+   * pair and returns the cluster-root `omadiaUserId`. Wired by the
+   * bootstrap when the `knowledgeGraph` capability is available; left
+   * undefined for tests / kg-shell-only deployments. When undefined the
+   * session cookie still mints fine, just without the `omadia_user_id`
+   * claim — chat ingest stays anonymous for that user.
+   */
+  resolveChannelIdentity?: (input: {
+    /** Provider id ('local' | 'entra' | future plugin). Used by the
+     *  caller to decide whether to forward `providerUserId` as
+     *  `aadObjectId` to the KG resolver — only 'entra' has an AAD oid. */
+    provider: string;
+    /** `users.provider_user_id` — stable per-provider identifier. */
+    providerUserId: string;
+    email: string;
+    displayName: string;
+  }) => Promise<string | undefined>;
 }
 
 const PKCE_COOKIE = 'harness_auth_pkce';
@@ -110,6 +129,9 @@ export function createAuthRouter(deps: AuthDeps): Router {
       success: result,
       provider,
       signingKey: deps.signingKey,
+      ...(deps.resolveChannelIdentity
+        ? { resolveChannelIdentity: deps.resolveChannelIdentity }
+        : {}),
     });
     res.json({ ok: true, user: userPayload(result, provider) });
   });
@@ -197,6 +219,9 @@ export function createAuthRouter(deps: AuthDeps): Router {
       success: result,
       provider,
       signingKey: deps.signingKey,
+      ...(deps.resolveChannelIdentity
+        ? { resolveChannelIdentity: deps.resolveChannelIdentity }
+        : {}),
     });
 
     let returnTo = deps.defaultReturnPath;
@@ -361,6 +386,9 @@ export function createAuthRouter(deps: AuthDeps): Router {
       },
       provider: { id: LOCAL_PROVIDER_ID, kind: 'password' },
       signingKey: deps.signingKey,
+      ...(deps.resolveChannelIdentity
+        ? { resolveChannelIdentity: deps.resolveChannelIdentity }
+        : {}),
     });
     void deps.userStore.markLoginNow(user.id).catch(() => undefined);
 
@@ -440,9 +468,30 @@ interface MintArgs {
   success: AuthSuccess;
   provider: { id: string; kind: 'password' | 'oidc' };
   signingKey: Uint8Array;
+  /**
+   * Slice 1b-channel-web — optional. Returns the cluster-root
+   * `omadiaUserId` for the just-authenticated identity. Failure is
+   * non-fatal: the session still mints, just without the
+   * `omadia_user_id` claim. Caller is responsible for catching/logging.
+   */
+  resolveChannelIdentity?: AuthDeps['resolveChannelIdentity'];
 }
 
 async function mintSessionAndSetCookie(args: MintArgs): Promise<void> {
+  let omadiaUserId: string | undefined;
+  if (args.resolveChannelIdentity) {
+    try {
+      omadiaUserId = await args.resolveChannelIdentity({
+        provider: args.provider.id,
+        providerUserId: args.success.providerUserId,
+        email: args.success.email,
+        displayName: args.success.displayName,
+      });
+    } catch (err) {
+      // Cluster resolution is advisory — never block login on a KG hiccup.
+      console.error('[auth] resolveChannelIdentity failed:', err);
+    }
+  }
   const session = await signSession(
     {
       sub: args.success.providerUserId,
@@ -450,6 +499,7 @@ async function mintSessionAndSetCookie(args: MintArgs): Promise<void> {
       display_name: args.success.displayName,
       role: 'admin',
       provider: args.provider.id,
+      ...(omadiaUserId ? { omadia_user_id: omadiaUserId } : {}),
     },
     args.signingKey,
     `${SESSION_COOKIE_MAX_AGE_S}s`,

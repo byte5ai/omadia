@@ -84,12 +84,21 @@ async function forwardCookieHeader(): Promise<Record<string, string>> {
 }
 
 /**
- * Browser-side bounce-to-login on 401/403. The edge middleware handles
+ * Browser-side bounce-to-login on 401 ONLY. The edge middleware handles
  * missing/expired cookies up-front, but if a cookie has a future `exp`
  * with a signature the backend rejects (key rotation, claims mismatch),
  * the middleware passes through and the API call surfaces 401 — at that
  * point we navigate the browser to /login so the user can recover
  * instead of staring at a "FEHLER" card.
+ *
+ * 403 is NOT bounced here. Per HTTP semantics, 403 means "authenticated
+ * but forbidden" — the cookie is fine, the user just lacks permission
+ * for this specific resource (e.g. non-owner reading a memory's audit,
+ * non-admin hitting an admin endpoint). Bouncing those to /login would
+ * mask the actual ACL violation as a session issue, log the user out
+ * unnecessarily, and trigger a redirect loop after the user re-logs in.
+ * Callers must surface 403s in-page (the page-level catch blocks already
+ * do — they render the error code without further redirect).
  *
  * Skip when already on /login or /setup to avoid loops. Skip on the
  * server too — server-side 401s are handled by `redirectIfUnauthorized`
@@ -97,7 +106,7 @@ async function forwardCookieHeader(): Promise<Record<string, string>> {
  */
 function maybeNavigateToLogin(status: number): void {
   if (typeof window === 'undefined') return;
-  if (status !== 401 && status !== 403) return;
+  if (status !== 401) return;
   const { pathname } = window.location;
   if (pathname === '/login' || pathname === '/setup') return;
   const returnPath = pathname + window.location.search;
@@ -2182,4 +2191,622 @@ export async function listBuilderAudit(
   return getJson<BuilderAuditPage>(
     `/v1/builder/drafts/${encodeURIComponent(draftId)}/audit${suffix}`,
   );
+}
+
+// -----------------------------------------------------------------------------
+// MemorableKnowledge (Slice 3b REST surface)
+//
+// Backend lives at /api/v1/memory and is gated by `requireAuth` — every
+// route uses `requireSessionUserId`, so the browser MUST be logged in.
+// `listMemories` returns only MKs the session user is both INVOLVED in
+// AND an acl_owner of (Slice 3 strict-ACL semantic).
+// -----------------------------------------------------------------------------
+
+export type MemorableKind = 'decision' | 'insight' | 'preference' | 'reference';
+
+export interface MemorableKnowledgeNode {
+  id: string;
+  type: 'MemorableKnowledge';
+  props: {
+    kind: MemorableKind;
+    summary: string;
+    rationale?: string;
+    significance?: number;
+    acl_owners: string[];
+    created_at: string;
+    created_by: string;
+    [key: string]: unknown;
+  };
+}
+
+export interface ListMemoriesResponse {
+  items: MemorableKnowledgeNode[];
+}
+
+export interface ListMemoriesOptions {
+  kind?: MemorableKind;
+  limit?: number;
+}
+
+export async function listMemories(
+  opts: ListMemoriesOptions = {},
+): Promise<ListMemoriesResponse> {
+  const params = new URLSearchParams();
+  if (opts.kind) params.set('kind', opts.kind);
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return getJson<ListMemoriesResponse>(`/v1/memory${qs ? `?${qs}` : ''}`);
+}
+
+export async function getMemory(id: string): Promise<MemorableKnowledgeNode> {
+  return getJson<MemorableKnowledgeNode>(
+    `/v1/memory/${encodeURIComponent(id)}`,
+  );
+}
+
+export type ExcerptSource = 'llm' | 'hint' | 'fallback';
+
+export interface PalaiaExcerptsInput {
+  texts: readonly string[];
+  source: ExcerptSource;
+}
+
+export interface PalaiaExcerptNode {
+  id: string;
+  type: 'PalaiaExcerpt';
+  props: {
+    text: string;
+    position: number;
+    source: ExcerptSource;
+    created_at: string;
+  };
+}
+
+export interface CreateMemoryRequest {
+  kind: MemorableKind;
+  summary: string;
+  rationale?: string;
+  significance?: number;
+  involvedOmadiaUserIds?: string[];
+  requiredEntityIds?: string[];
+  derivedFromTurnIds?: string[];
+  aclOwners?: string[];
+  /** Slice 6.5 — verbatim source-snippets to persist alongside the MK
+   *  in the same transaction. Empty `texts` is a no-op (the backend
+   *  short-circuits and writes no PalaiaExcerpt nodes). */
+  palaiaExcerpts?: PalaiaExcerptsInput;
+}
+
+export interface CreateMemoryResponse {
+  memorableKnowledgeNodeId: string;
+  skippedInvolved: number;
+  skippedRequired: number;
+  skippedDerivedFrom: number;
+}
+
+export async function createMemory(
+  body: CreateMemoryRequest,
+): Promise<CreateMemoryResponse> {
+  return postJson<CreateMemoryResponse>('/v1/memory', body);
+}
+
+export interface UpdateMemoryRequest {
+  kind?: MemorableKind;
+  summary?: string;
+  /** `null` removes the rationale; omit to leave untouched; string sets it. */
+  rationale?: string | null;
+  significance?: number;
+  /** Optional rationale for the ACL audit-log row this PATCH writes. */
+  reason?: string;
+}
+
+export async function updateMemory(
+  id: string,
+  patch: UpdateMemoryRequest,
+): Promise<MemorableKnowledgeNode> {
+  const res = await fetch(`/bot-api/v1/memory/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as {
+      code?: string;
+      message?: string;
+    };
+    throw new Error(body.code ?? body.message ?? `HTTP ${String(res.status)}`);
+  }
+  return (await res.json()) as MemorableKnowledgeNode;
+}
+
+export async function deleteMemory(
+  id: string,
+  reason?: string,
+): Promise<void> {
+  const res = await fetch(`/bot-api/v1/memory/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(reason ? { reason } : {}),
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  if (!res.ok && res.status !== 204) {
+    const body = (await res.json().catch(() => ({}))) as { code?: string };
+    throw new Error(body.code ?? `HTTP ${String(res.status)}`);
+  }
+}
+
+export type MemorableAclAction =
+  | 'create'
+  | 'expand'
+  | 'shrink'
+  | 'delete'
+  | 'edit'
+  | 'edit_excerpt';
+
+export interface MemorableAclAuditEntry {
+  id: string;
+  memoryExternalId: string;
+  actorOmadiaUserId: string;
+  actorChannelIdentityId?: string;
+  action: MemorableAclAction;
+  beforeOwners: string[];
+  /** `null` only when `action === 'delete'`. */
+  afterOwners: string[] | null;
+  reason?: string;
+  createdAt: string;
+}
+
+export interface ListMemoryAuditResponse {
+  items: MemorableAclAuditEntry[];
+}
+
+export async function getMemoryAudit(
+  id: string,
+  opts: { limit?: number } = {},
+): Promise<ListMemoryAuditResponse> {
+  const params = new URLSearchParams();
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return getJson<ListMemoryAuditResponse>(
+    `/v1/memory/${encodeURIComponent(id)}/audit${qs ? `?${qs}` : ''}`,
+  );
+}
+
+// ── Slice 6.5 — Palaia-Excerpt provenance ────────────────────────────────────
+
+export interface ListMemoryExcerptsResponse {
+  items: PalaiaExcerptNode[];
+}
+
+export async function getMemoryExcerpts(
+  id: string,
+): Promise<ListMemoryExcerptsResponse> {
+  return getJson<ListMemoryExcerptsResponse>(
+    `/v1/memory/${encodeURIComponent(id)}/excerpts`,
+  );
+}
+
+export interface UpdateExcerptRequest {
+  text?: string;
+  source?: ExcerptSource;
+  reason?: string;
+}
+
+export async function updateMemoryExcerpt(
+  id: string,
+  position: number,
+  patch: UpdateExcerptRequest,
+): Promise<PalaiaExcerptNode> {
+  const res = await fetch(
+    `/bot-api/v1/memory/${encodeURIComponent(id)}/excerpts/${String(position)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+      credentials: 'include',
+      cache: 'no-store',
+    },
+  );
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as {
+      code?: string;
+      message?: string;
+    };
+    throw new Error(body.code ?? body.message ?? `HTTP ${String(res.status)}`);
+  }
+  return (await res.json()) as PalaiaExcerptNode;
+}
+
+// ── Slice 8 — Retrospective bulk score + promotion ───────────────────────────
+
+export interface BulkPromotePreview {
+  nullSignificanceCount: number;
+  eligibleForPromoteCount: number;
+  alreadyPromotedCount: number;
+  scorerAvailable: boolean;
+  threshold: number;
+}
+
+export interface BulkPromoteRunOptions {
+  scoreLimit?: number;
+  promoteLimit?: number;
+  threshold?: number;
+}
+
+export interface BulkPromoteRunResult {
+  scorePhase: { scanned: number; scored: number; failed: number };
+  promotePhase: {
+    scanned: number;
+    promoted: number;
+    alreadyPromoted: number;
+    belowThreshold: number;
+    failed: number;
+  };
+  durationMs: number;
+}
+
+export async function previewBulkPromote(
+  threshold = 0.7,
+): Promise<BulkPromotePreview> {
+  return getJson<BulkPromotePreview>(
+    `/v1/admin/bulk-promote/preview?threshold=${String(threshold)}`,
+  );
+}
+
+export async function runBulkPromote(
+  options: BulkPromoteRunOptions,
+): Promise<BulkPromoteRunResult> {
+  return postJson<BulkPromoteRunResult>(
+    '/v1/admin/bulk-promote',
+    options,
+  );
+}
+
+// ── Slice 9 — Contradiction detection workflow ───────────────────────────────
+
+export type InconsistencyStatus = 'open' | 'resolved' | 'dismissed';
+export type InconsistencyResolution =
+  | 'a_wins' | 'b_wins' | 'both' | 'dismiss';
+export type InconsistencySeverity = 'low' | 'medium' | 'high';
+
+export interface InconsistencyNodeDto {
+  id: string;
+  type: 'Inconsistency';
+  props: {
+    summary: string;
+    severity: InconsistencySeverity;
+    status: InconsistencyStatus;
+    resolution: InconsistencyResolution | null;
+    created_at: string;
+    resolved_at: string | null;
+    resolved_by: string | null;
+  };
+  conflictsWith: [string, string];
+}
+
+export interface InconsistencyDetailDto extends InconsistencyNodeDto {
+  mkA: MemorableKnowledgeNode | null;
+  mkB: MemorableKnowledgeNode | null;
+}
+
+export interface ListInconsistenciesResponse {
+  items: InconsistencyDetailDto[];
+}
+
+export async function listInconsistencies(opts: {
+  status?: InconsistencyStatus;
+  limit?: number;
+} = {}): Promise<ListInconsistenciesResponse> {
+  const params = new URLSearchParams();
+  if (opts.status) params.set('status', opts.status);
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return getJson<ListInconsistenciesResponse>(
+    `/v1/admin/inconsistencies${qs ? `?${qs}` : ''}`,
+  );
+}
+
+export async function getInconsistencyDetail(
+  id: string,
+): Promise<InconsistencyDetailDto> {
+  return getJson<InconsistencyDetailDto>(
+    `/v1/admin/inconsistencies/${encodeURIComponent(id)}`,
+  );
+}
+
+export async function resolveInconsistency(
+  id: string,
+  body: { resolution: InconsistencyResolution; reason?: string },
+): Promise<InconsistencyNodeDto> {
+  return postJson<InconsistencyNodeDto>(
+    `/v1/admin/inconsistencies/${encodeURIComponent(id)}/resolve`,
+    body,
+  );
+}
+
+export async function triggerInconsistencyDetect(
+  mkId: string,
+): Promise<{ candidatesScanned: number; inconsistenciesCreated: number }> {
+  return postJson<{ candidatesScanned: number; inconsistenciesCreated: number }>(
+    '/v1/admin/inconsistencies/detect',
+    { mkId },
+  );
+}
+
+// ─── Slice 9.5 — bulk inconsistency detect ───────────────────────────
+
+export interface BulkInconsistencyPreviewDto {
+  unchecked: number;
+  alreadyChecked: number;
+  withoutEmbedding: number;
+  detectorAvailable: boolean;
+}
+
+export interface BulkInconsistencyResultDto {
+  scanned: number;
+  checked: number;
+  inconsistenciesCreated: number;
+  skippedNoEmbedding: number;
+  failed: number;
+  durationMs: number;
+}
+
+export async function previewBulkInconsistencyDetect(): Promise<BulkInconsistencyPreviewDto> {
+  return getJson<BulkInconsistencyPreviewDto>(
+    '/v1/admin/inconsistencies/bulk-detect/preview',
+  );
+}
+
+export async function runBulkInconsistencyDetect(
+  limit?: number,
+): Promise<BulkInconsistencyResultDto> {
+  return postJson<BulkInconsistencyResultDto>(
+    '/v1/admin/inconsistencies/bulk-detect',
+    limit !== undefined ? { limit } : {},
+  );
+}
+
+// ─── Slice 10 — near-duplicate (MergeCandidate) workflow ─────────────
+
+export type MergeCandidateStatus = 'open' | 'resolved' | 'dismissed';
+export type MergeCandidateResolution = 'keep_a' | 'keep_b' | 'not_duplicate';
+
+export interface MergeCandidateNodeDto {
+  id: string;
+  type: 'MergeCandidate';
+  props: {
+    cosine_sim: number;
+    status: MergeCandidateStatus;
+    resolution: MergeCandidateResolution | null;
+    created_at: string;
+    resolved_at: string | null;
+    resolved_by: string | null;
+  };
+  duplicateOf: [string, string];
+}
+
+export interface MergeCandidateDetailDto extends MergeCandidateNodeDto {
+  mkA: MemorableKnowledgeNode | null;
+  mkB: MemorableKnowledgeNode | null;
+}
+
+export interface ListMergeCandidatesResponse {
+  items: MergeCandidateDetailDto[];
+}
+
+export async function listMergeCandidates(opts: {
+  status?: MergeCandidateStatus;
+  limit?: number;
+} = {}): Promise<ListMergeCandidatesResponse> {
+  const params = new URLSearchParams();
+  if (opts.status) params.set('status', opts.status);
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return getJson<ListMergeCandidatesResponse>(
+    `/v1/admin/duplicates${qs ? `?${qs}` : ''}`,
+  );
+}
+
+export async function getMergeCandidateDetail(
+  id: string,
+): Promise<MergeCandidateDetailDto> {
+  return getJson<MergeCandidateDetailDto>(
+    `/v1/admin/duplicates/${encodeURIComponent(id)}`,
+  );
+}
+
+export async function resolveMergeCandidate(
+  id: string,
+  body: { resolution: MergeCandidateResolution; reason?: string },
+): Promise<MergeCandidateNodeDto> {
+  return postJson<MergeCandidateNodeDto>(
+    `/v1/admin/duplicates/${encodeURIComponent(id)}/resolve`,
+    body,
+  );
+}
+
+export async function triggerMergeCandidateDetect(
+  mkId: string,
+): Promise<{ candidatesScanned: number; mergeCandidatesCreated: number }> {
+  return postJson<{
+    candidatesScanned: number;
+    mergeCandidatesCreated: number;
+  }>('/v1/admin/duplicates/detect', { mkId });
+}
+
+export interface BulkMergeDetectPreviewDto {
+  unchecked: number;
+  alreadyChecked: number;
+  withoutEmbedding: number;
+  detectorAvailable: boolean;
+}
+
+export interface BulkMergeDetectResultDto {
+  scanned: number;
+  checked: number;
+  mergeCandidatesCreated: number;
+  skippedNoEmbedding: number;
+  failed: number;
+  durationMs: number;
+}
+
+export async function previewBulkMergeDetect(): Promise<BulkMergeDetectPreviewDto> {
+  return getJson<BulkMergeDetectPreviewDto>(
+    '/v1/admin/duplicates/bulk-detect/preview',
+  );
+}
+
+export async function runBulkMergeDetect(
+  limit?: number,
+): Promise<BulkMergeDetectResultDto> {
+  return postJson<BulkMergeDetectResultDto>(
+    '/v1/admin/duplicates/bulk-detect',
+    limit !== undefined ? { limit } : {},
+  );
+}
+
+// ─── Slice 12 — ExcerptMergeCandidate workflow ───────────────────────
+
+export type ExcerptMergeStatus = 'open' | 'resolved' | 'dismissed';
+export type ExcerptMergeResolution = 'keep_a' | 'keep_b' | 'not_duplicate';
+
+export interface ExcerptMergeNodeDto {
+  id: string;
+  type: 'ExcerptMergeCandidate';
+  props: {
+    cosine_sim: number;
+    status: ExcerptMergeStatus;
+    resolution: ExcerptMergeResolution | null;
+    created_at: string;
+    resolved_at: string | null;
+    resolved_by: string | null;
+  };
+  duplicateExcerptOf: [string, string];
+}
+
+export interface ExcerptMergeDetailDto extends ExcerptMergeNodeDto {
+  excerptA: {
+    id: string;
+    type: 'PalaiaExcerpt';
+    props: {
+      text: string;
+      position: number;
+      source: string;
+      created_at: string;
+    };
+  } | null;
+  excerptB: ExcerptMergeDetailDto['excerptA'];
+  mkA: MemorableKnowledgeNode | null;
+  mkB: MemorableKnowledgeNode | null;
+}
+
+export async function listExcerptMergeCandidates(opts: {
+  status?: ExcerptMergeStatus;
+  limit?: number;
+} = {}): Promise<{ items: ExcerptMergeDetailDto[] }> {
+  const params = new URLSearchParams();
+  if (opts.status) params.set('status', opts.status);
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return getJson<{ items: ExcerptMergeDetailDto[] }>(
+    `/v1/admin/duplicates/excerpts${qs ? `?${qs}` : ''}`,
+  );
+}
+
+export async function getExcerptMergeDetail(
+  id: string,
+): Promise<ExcerptMergeDetailDto> {
+  return getJson<ExcerptMergeDetailDto>(
+    `/v1/admin/duplicates/excerpts/${encodeURIComponent(id)}`,
+  );
+}
+
+export async function resolveExcerptMergeCandidate(
+  id: string,
+  body: { resolution: ExcerptMergeResolution; reason?: string },
+): Promise<ExcerptMergeNodeDto> {
+  return postJson<ExcerptMergeNodeDto>(
+    `/v1/admin/duplicates/excerpts/${encodeURIComponent(id)}/resolve`,
+    body,
+  );
+}
+
+export interface BulkExcerptMergeDetectPreviewDto {
+  unchecked: number;
+  alreadyChecked: number;
+  withoutEmbedding: number;
+  detectorAvailable: boolean;
+}
+
+export interface BulkExcerptMergeDetectResultDto {
+  scanned: number;
+  checked: number;
+  excerptMergeCandidatesCreated: number;
+  skippedNoEmbedding: number;
+  failed: number;
+  durationMs: number;
+}
+
+export async function previewBulkExcerptMergeDetect(): Promise<BulkExcerptMergeDetectPreviewDto> {
+  return getJson<BulkExcerptMergeDetectPreviewDto>(
+    '/v1/admin/duplicates/excerpts/bulk-detect/preview',
+  );
+}
+
+export async function runBulkExcerptMergeDetect(
+  limit?: number,
+): Promise<BulkExcerptMergeDetectResultDto> {
+  return postJson<BulkExcerptMergeDetectResultDto>(
+    '/v1/admin/duplicates/excerpts/bulk-detect',
+    limit !== undefined ? { limit } : {},
+  );
+}
+
+// ─── Slice 11 — Topic clustering ─────────────────────────────────────
+
+export type TopicNamingSource = 'haiku' | 'fallback';
+
+export interface TopicNodeDto {
+  id: string;
+  type: 'Topic';
+  props: {
+    name: string;
+    description: string;
+    member_count: number;
+    created_at: string;
+    updated_at: string;
+    naming_source: TopicNamingSource;
+  };
+}
+
+export interface TopicDetailDto extends TopicNodeDto {
+  members: MemorableKnowledgeNode[];
+}
+
+export interface TopicReclusterResultDto {
+  totalMemoriesScanned: number;
+  memoriesWithEmbedding: number;
+  topicsDeleted: number;
+  topicsCreated: number;
+  unclusteredMemories: number;
+  haikuCalls: number;
+  durationMs: number;
+}
+
+export async function listTopics(): Promise<{ items: TopicNodeDto[] }> {
+  return getJson<{ items: TopicNodeDto[] }>('/v1/admin/topics');
+}
+
+export async function getTopicDetail(id: string): Promise<TopicDetailDto> {
+  return getJson<TopicDetailDto>(`/v1/admin/topics/${encodeURIComponent(id)}`);
+}
+
+export async function reclusterTopics(opts: {
+  similarityThreshold?: number;
+  minClusterSize?: number;
+} = {}): Promise<TopicReclusterResultDto> {
+  return postJson<TopicReclusterResultDto>('/v1/admin/topics/recluster', opts);
 }

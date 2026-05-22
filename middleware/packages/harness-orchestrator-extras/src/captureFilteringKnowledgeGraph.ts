@@ -46,16 +46,37 @@ import type {
   EntityCapturedTurnsHit,
   SearchTurnsByEmbeddingOptions,
   FindEntitiesOptions,
-  CompanyIngest,
-  CompanyIngestResult,
-  PersonIngest,
-  PersonIngestResult,
-  CompanyRelationsIngest,
-  CompanyRelationsResult,
-  LinkCompanyToOdooOptions,
-  LinkCompanyToOdooResult,
-  FinancialSnapshotIngest,
-  FinancialSnapshotIngestResult,
+  ChannelIdentityIngest,
+  ResolveOrCreateChannelIdentityResult,
+  MemorableKnowledgeIngest,
+  MemorableKnowledgeIngestResult,
+  MemorableKnowledgeUpdate,
+  ListMemorableKnowledgeOptions,
+  AclAuditEntry,
+  AclMutationOptions,
+  PalaiaExcerptNode,
+  PalaiaExcerptUpdate,
+  MemorableKnowledgeSearchOptions,
+  MemorableKnowledgeHit,
+  ExcerptSearchOptions,
+  PalaiaExcerptHit,
+  CreateInconsistencyInput,
+  CreateExcerptMergeCandidateInput,
+  CreateMergeCandidateInput,
+  ExcerptMergeCandidateNode,
+  ExcerptMergeResolution,
+  InconsistencyNode,
+  InconsistencyResolution,
+  InconsistencyStatus,
+  ListExcerptMergeCandidatesOptions,
+  ListInconsistenciesOptions,
+  ListMemoriesForScopeOptions,
+  ListMergeCandidatesOptions,
+  MemoriesProvenanceView,
+  MergeCandidateNode,
+  MergeCandidateResolution,
+  TopicNamingSource,
+  TopicNode,
 } from '@omadia/plugin-api';
 import {
   sessionNodeId,
@@ -121,10 +142,10 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
 
   // -------------------------------------------------------------------------
   // Pass-through methods. The capture-filter only governs Turn-write. Every
-  // other surface (entities, facts, search, runs, companies, …) forwards
-  // verbatim to the inner KG. We could codegen these from the interface,
-  // but explicit forwards keep the wrapper greppable and the type system
-  // catches additions.
+  // other surface (entities, facts, search, runs, …) forwards verbatim to
+  // the inner KG. We could codegen these from the interface, but explicit
+  // forwards keep the wrapper greppable and the type system catches
+  // additions.
   // -------------------------------------------------------------------------
 
   ingestEntities(entities: EntityIngest[]): Promise<EntityIngestResult> {
@@ -179,29 +200,332 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
     return this.inner.findEntities(opts);
   }
 
-  ingestCompanies(companies: CompanyIngest[]): Promise<CompanyIngestResult> {
-    return this.inner.ingestCompanies(companies);
+  resolveOrCreateChannelIdentity(
+    ingest: ChannelIdentityIngest,
+  ): Promise<ResolveOrCreateChannelIdentityResult> {
+    return this.inner.resolveOrCreateChannelIdentity(ingest);
   }
 
-  ingestPersons(persons: PersonIngest[]): Promise<PersonIngestResult> {
-    return this.inner.ingestPersons(persons);
+  createMemorableKnowledge(
+    input: MemorableKnowledgeIngest,
+  ): Promise<MemorableKnowledgeIngestResult> {
+    return this.inner.createMemorableKnowledge(input);
   }
 
-  ingestCompanyRelations(
-    relations: CompanyRelationsIngest,
-  ): Promise<CompanyRelationsResult> {
-    return this.inner.ingestCompanyRelations(relations);
+  getMemorableKnowledge(
+    memorableKnowledgeNodeId: string,
+    viewerOmadiaUserId?: string,
+  ): Promise<GraphNode | null> {
+    return this.inner.getMemorableKnowledge(
+      memorableKnowledgeNodeId,
+      viewerOmadiaUserId,
+    );
   }
 
-  linkCompanyToOdoo(
-    opts: LinkCompanyToOdooOptions,
-  ): Promise<LinkCompanyToOdooResult> {
-    return this.inner.linkCompanyToOdoo(opts);
+  listMemorableKnowledgeFor(
+    omadiaUserId: string,
+    opts?: ListMemorableKnowledgeOptions,
+  ): Promise<GraphNode[]> {
+    return this.inner.listMemorableKnowledgeFor(omadiaUserId, opts);
   }
 
-  ingestFinancialSnapshots(
-    snapshots: FinancialSnapshotIngest[],
-  ): Promise<FinancialSnapshotIngestResult> {
-    return this.inner.ingestFinancialSnapshots(snapshots);
+  addOwner(
+    memorableKnowledgeNodeId: string,
+    omadiaUserIdToAdd: string,
+    actor: AclMutationOptions,
+  ): Promise<string[]> {
+    return this.inner.addOwner(
+      memorableKnowledgeNodeId,
+      omadiaUserIdToAdd,
+      actor,
+    );
+  }
+
+  removeOwner(
+    memorableKnowledgeNodeId: string,
+    omadiaUserIdToRemove: string,
+    actor: AclMutationOptions,
+  ): Promise<string[]> {
+    return this.inner.removeOwner(
+      memorableKnowledgeNodeId,
+      omadiaUserIdToRemove,
+      actor,
+    );
+  }
+
+  deleteMemory(
+    memorableKnowledgeNodeId: string,
+    actor: AclMutationOptions,
+  ): Promise<void> {
+    return this.inner.deleteMemory(memorableKnowledgeNodeId, actor);
+  }
+
+  listMemoryAclAudit(
+    memorableKnowledgeNodeId: string,
+    opts?: { limit?: number },
+  ): Promise<AclAuditEntry[]> {
+    return this.inner.listMemoryAclAudit(memorableKnowledgeNodeId, opts);
+  }
+
+  updateMemorableKnowledge(
+    memorableKnowledgeNodeId: string,
+    patch: MemorableKnowledgeUpdate,
+    actor: AclMutationOptions,
+  ): Promise<GraphNode> {
+    return this.inner.updateMemorableKnowledge(
+      memorableKnowledgeNodeId,
+      patch,
+      actor,
+    );
+  }
+
+  listExcerptsForMemory(
+    memorableKnowledgeNodeId: string,
+  ): Promise<PalaiaExcerptNode[]> {
+    return this.inner.listExcerptsForMemory(memorableKnowledgeNodeId);
+  }
+
+  updateExcerpt(
+    memorableKnowledgeNodeId: string,
+    position: number,
+    patch: PalaiaExcerptUpdate,
+    actor: AclMutationOptions,
+  ): Promise<PalaiaExcerptNode> {
+    return this.inner.updateExcerpt(
+      memorableKnowledgeNodeId,
+      position,
+      patch,
+      actor,
+    );
+  }
+
+  searchMemorableKnowledgeByEmbedding(
+    opts: MemorableKnowledgeSearchOptions,
+  ): Promise<MemorableKnowledgeHit[]> {
+    return this.inner.searchMemorableKnowledgeByEmbedding(opts);
+  }
+
+  searchExcerptsByEmbedding(
+    opts: ExcerptSearchOptions,
+  ): Promise<PalaiaExcerptHit[]> {
+    return this.inner.searchExcerptsByEmbedding(opts);
+  }
+
+  listInconsistencies(
+    opts: ListInconsistenciesOptions,
+  ): Promise<InconsistencyNode[]> {
+    return this.inner.listInconsistencies(opts);
+  }
+
+  getInconsistency(
+    inconsistencyExternalId: string,
+    viewerOmadiaUserId: string,
+  ): Promise<InconsistencyNode | null> {
+    return this.inner.getInconsistency(
+      inconsistencyExternalId,
+      viewerOmadiaUserId,
+    );
+  }
+
+  createInconsistency(
+    input: CreateInconsistencyInput,
+  ): Promise<InconsistencyNode | null> {
+    return this.inner.createInconsistency(input);
+  }
+
+  resolveInconsistency(
+    inconsistencyExternalId: string,
+    resolution: InconsistencyResolution,
+    actor: AclMutationOptions,
+  ): Promise<InconsistencyNode> {
+    return this.inner.resolveInconsistency(
+      inconsistencyExternalId,
+      resolution,
+      actor,
+    );
+  }
+
+  listMemoriesForScope(
+    scope: string | undefined,
+    opts?: ListMemoriesForScopeOptions,
+  ): Promise<MemoriesProvenanceView> {
+    return this.inner.listMemoriesForScope(scope, opts);
+  }
+
+  listMemorableKnowledgeIdsForBulkInconsistencyCheck(opts: {
+    limit: number;
+  }): Promise<string[]> {
+    return this.inner.listMemorableKnowledgeIdsForBulkInconsistencyCheck(opts);
+  }
+
+  countMemorableKnowledgeInconsistencyCheckBuckets(): Promise<{
+    unchecked: number;
+    alreadyChecked: number;
+    withoutEmbedding: number;
+  }> {
+    return this.inner.countMemorableKnowledgeInconsistencyCheckBuckets();
+  }
+
+  markMemorableKnowledgeInconsistencyChecked(
+    memorableKnowledgeNodeId: string,
+  ): Promise<void> {
+    return this.inner.markMemorableKnowledgeInconsistencyChecked(
+      memorableKnowledgeNodeId,
+    );
+  }
+
+  listMergeCandidates(
+    opts: ListMergeCandidatesOptions,
+  ): Promise<MergeCandidateNode[]> {
+    return this.inner.listMergeCandidates(opts);
+  }
+
+  getMergeCandidate(
+    mergeCandidateExternalId: string,
+    viewerOmadiaUserId: string,
+  ): Promise<MergeCandidateNode | null> {
+    return this.inner.getMergeCandidate(
+      mergeCandidateExternalId,
+      viewerOmadiaUserId,
+    );
+  }
+
+  createMergeCandidate(
+    input: CreateMergeCandidateInput,
+  ): Promise<MergeCandidateNode | null> {
+    return this.inner.createMergeCandidate(input);
+  }
+
+  resolveMergeCandidate(
+    mergeCandidateExternalId: string,
+    resolution: MergeCandidateResolution,
+    actor: AclMutationOptions,
+  ): Promise<MergeCandidateNode> {
+    return this.inner.resolveMergeCandidate(
+      mergeCandidateExternalId,
+      resolution,
+      actor,
+    );
+  }
+
+  listMemorableKnowledgeIdsForBulkMergeCheck(opts: {
+    limit: number;
+  }): Promise<string[]> {
+    return this.inner.listMemorableKnowledgeIdsForBulkMergeCheck(opts);
+  }
+
+  countMemorableKnowledgeMergeCheckBuckets(): Promise<{
+    unchecked: number;
+    alreadyChecked: number;
+    withoutEmbedding: number;
+  }> {
+    return this.inner.countMemorableKnowledgeMergeCheckBuckets();
+  }
+
+  markMemorableKnowledgeMergeChecked(
+    memorableKnowledgeNodeId: string,
+  ): Promise<void> {
+    return this.inner.markMemorableKnowledgeMergeChecked(
+      memorableKnowledgeNodeId,
+    );
+  }
+
+  listTopics(): Promise<TopicNode[]> {
+    return this.inner.listTopics();
+  }
+
+  getTopic(topicExternalId: string): Promise<TopicNode | null> {
+    return this.inner.getTopic(topicExternalId);
+  }
+
+  listTopicMembers(topicExternalId: string): Promise<GraphNode[]> {
+    return this.inner.listTopicMembers(topicExternalId);
+  }
+
+  listMemorableKnowledgeWithEmbeddings(): Promise<
+    Array<{ mk: GraphNode; embedding: number[] }>
+  > {
+    return this.inner.listMemorableKnowledgeWithEmbeddings();
+  }
+
+  deleteAllTopics(): Promise<number> {
+    return this.inner.deleteAllTopics();
+  }
+
+  createTopic(input: {
+    name: string;
+    description: string;
+    namingSource: TopicNamingSource;
+    memberMkIds: readonly string[];
+  }): Promise<TopicNode> {
+    return this.inner.createTopic(input);
+  }
+
+  listTopicMembershipEdges(): Promise<Array<{ from: string; to: string }>> {
+    return this.inner.listTopicMembershipEdges();
+  }
+
+  listAllIssues(opts?: { status?: InconsistencyStatus }): Promise<{
+    inconsistencies: InconsistencyNode[];
+    mergeCandidates: MergeCandidateNode[];
+    excerptMergeCandidates: ExcerptMergeCandidateNode[];
+    edges: Array<{
+      from: string;
+      to: string;
+      type: 'CONFLICTS_WITH' | 'DUPLICATE_OF' | 'DUPLICATE_EXCERPT_OF';
+    }>;
+  }> {
+    return this.inner.listAllIssues(opts);
+  }
+
+  // Slice 12 delegates
+  listExcerptMergeCandidates(
+    opts: ListExcerptMergeCandidatesOptions,
+  ): Promise<ExcerptMergeCandidateNode[]> {
+    return this.inner.listExcerptMergeCandidates(opts);
+  }
+  getExcerptMergeCandidate(
+    externalId: string,
+    viewerOmadiaUserId: string,
+  ): Promise<ExcerptMergeCandidateNode | null> {
+    return this.inner.getExcerptMergeCandidate(externalId, viewerOmadiaUserId);
+  }
+  createExcerptMergeCandidate(
+    input: CreateExcerptMergeCandidateInput,
+  ): Promise<ExcerptMergeCandidateNode | null> {
+    return this.inner.createExcerptMergeCandidate(input);
+  }
+  resolveExcerptMergeCandidate(
+    externalId: string,
+    resolution: ExcerptMergeResolution,
+    actor: AclMutationOptions,
+  ): Promise<ExcerptMergeCandidateNode> {
+    return this.inner.resolveExcerptMergeCandidate(
+      externalId,
+      resolution,
+      actor,
+    );
+  }
+  deleteExcerpt(
+    memorableKnowledgeNodeId: string,
+    position: number,
+    actor: AclMutationOptions,
+  ): Promise<void> {
+    return this.inner.deleteExcerpt(memorableKnowledgeNodeId, position, actor);
+  }
+  listPalaiaExcerptIdsForBulkMergeCheck(opts: {
+    limit: number;
+  }): Promise<string[]> {
+    return this.inner.listPalaiaExcerptIdsForBulkMergeCheck(opts);
+  }
+  countPalaiaExcerptMergeCheckBuckets(): Promise<{
+    unchecked: number;
+    alreadyChecked: number;
+    withoutEmbedding: number;
+  }> {
+    return this.inner.countPalaiaExcerptMergeCheckBuckets();
+  }
+  markPalaiaExcerptMergeChecked(excerptExternalId: string): Promise<void> {
+    return this.inner.markPalaiaExcerptMergeChecked(excerptExternalId);
   }
 }

@@ -17,6 +17,15 @@ export interface SessionClaims {
   provider: string;
   /** Whitelist label — currently always 'admin' until roles split. */
   role: 'admin';
+  /** Slice 1b-channel-web — Omadia-Identity cluster root for this user
+   *  in the knowledge graph. Resolved at login via
+   *  `kg.resolveOrCreateChannelIdentity({channelKind: 'web', …})` and
+   *  cached so chat requests skip the round-trip. Optional: (a) old
+   *  tokens predate the field, (b) bootstrap may disable cluster
+   *  resolution when no `knowledgeGraph` capability is wired (tests,
+   *  kg-shell-only deployments). Consumers MUST treat absence as "no
+   *  cluster yet", never "cookie invalid". */
+  omadia_user_id?: string;
 }
 
 /**
@@ -79,6 +88,11 @@ export async function verifySession(
     typeof payload['provider'] === 'string' && payload['provider'].length > 0
       ? payload['provider']
       : 'entra';
+  const omadiaUserId =
+    typeof payload['omadia_user_id'] === 'string' &&
+    payload['omadia_user_id'].length > 0
+      ? payload['omadia_user_id']
+      : undefined;
   if (!sub || !email || !role) {
     throw new Error('session token missing required claims');
   }
@@ -88,6 +102,7 @@ export async function verifySession(
     display_name: displayName,
     role,
     provider,
+    ...(omadiaUserId ? { omadia_user_id: omadiaUserId } : {}),
     exp,
     iat,
   };
