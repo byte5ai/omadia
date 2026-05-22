@@ -26,6 +26,7 @@
 import type {
   Dataset,
   DatasetStore,
+  RenderColumn,
   RenderDirective,
 } from './types.js';
 
@@ -58,6 +59,17 @@ function cell(value: unknown): string {
   if (typeof value === 'number' || typeof value === 'boolean') {
     return String(value);
   }
+  // Odoo many2one fields arrive as a [id, "Display Name"] pair — render the
+  // display label, not the raw `[198,"…"]` tuple. Restricted to exactly
+  // [number, string] so genuine two-element data arrays are left untouched.
+  if (
+    Array.isArray(value) &&
+    value.length === 2 &&
+    typeof value[0] === 'number' &&
+    typeof value[1] === 'string'
+  ) {
+    return value[1];
+  }
   return JSON.stringify(value);
 }
 
@@ -72,39 +84,44 @@ function withProse(prose: string | undefined, body: string): string {
 
 function renderTable(
   dataset: Dataset,
-  columns: ReadonlyArray<string>,
+  columns: ReadonlyArray<RenderColumn>,
+  rankColumn: string | undefined,
 ): string {
-  const header = `| ${columns.join(' | ')} |`;
-  const separator = `| ${columns.map(() => '---').join(' | ')} |`;
+  const headers = columns.map((c) => c.label);
+  const cells = rankColumn !== undefined ? [rankColumn, ...headers] : headers;
+  const header = `| ${cells.join(' | ')} |`;
+  const separator = `| ${cells.map(() => '---').join(' | ')} |`;
   const body = dataset.rows
-    .map(
-      (row) =>
-        `| ${columns.map((c) => escapeCell(cell(row[c]))).join(' | ')} |`,
-    )
+    .map((row, i) => {
+      const rowCells = columns.map((c) => escapeCell(cell(row[c.field])));
+      const all =
+        rankColumn !== undefined ? [String(i + 1), ...rowCells] : rowCells;
+      return `| ${all.join(' | ')} |`;
+    })
     .join('\n');
   return `${header}\n${separator}\n${body}`;
 }
 
 function renderList(
   dataset: Dataset,
-  columns: ReadonlyArray<string>,
+  columns: ReadonlyArray<RenderColumn>,
 ): string {
   return dataset.rows
     .map(
       (row) =>
-        `- ${columns.map((c) => `${c}: ${cell(row[c])}`).join(', ')}`,
+        `- ${columns.map((c) => `${c.label}: ${cell(row[c.field])}`).join(', ')}`,
     )
     .join('\n');
 }
 
 function renderScalar(
   dataset: Dataset,
-  columns: ReadonlyArray<string>,
+  columns: ReadonlyArray<RenderColumn>,
 ): string {
   const first = dataset.rows[0];
   const col = columns[0];
   if (first === undefined || col === undefined) return '(no result)';
-  return cell(first[col]);
+  return cell(first[col.field]);
 }
 
 /**
@@ -115,19 +132,21 @@ function renderScalar(
  */
 function collectMaskedValues(
   dataset: Dataset,
-  renderedColumns: ReadonlyArray<string>,
+  renderedColumns: ReadonlyArray<RenderColumn>,
 ): string[] {
   const maskedPaths = new Set(
     dataset.schema.fields
       .filter((f) => f.classification === 'sensitive-masked')
       .map((f) => f.path),
   );
-  const maskedColumns = renderedColumns.filter((c) => maskedPaths.has(c));
+  const maskedColumns = renderedColumns.filter((c) =>
+    maskedPaths.has(c.field),
+  );
   if (maskedColumns.length === 0) return [];
   const values = new Set<string>();
   for (const row of dataset.rows) {
     for (const c of maskedColumns) {
-      const v = cell(row[c]);
+      const v = cell(row[c.field]);
       if (v.length > 0 && v !== '—') values.add(v);
     }
   }
@@ -163,18 +182,18 @@ export function materialize(
 
   const known = new Set(dataset.schema.fields.map((f) => f.path));
   for (const column of directive.columns) {
-    if (!known.has(column)) {
+    if (!known.has(column.field)) {
       throw new MaterializerError(
-        `render directive references unknown column "${column}"`,
+        `render directive references unknown column "${column.field}"`,
       );
     }
   }
 
   let body: string;
-  let renderedColumns: ReadonlyArray<string>;
+  let renderedColumns: ReadonlyArray<RenderColumn>;
   switch (directive.format) {
     case 'table':
-      body = renderTable(dataset, directive.columns);
+      body = renderTable(dataset, directive.columns, directive.rankColumn);
       renderedColumns = directive.columns;
       break;
     case 'list':

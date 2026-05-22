@@ -24,6 +24,11 @@ const HR_LEAVE = [
   { employee: 'Thomas Görres', days: 18 },
 ];
 
+/** Build RenderColumns from bare field names — label defaults to the field. */
+function cols(...fields: string[]): { field: string; label: string }[] {
+  return fields.map((field) => ({ field, label: field }));
+}
+
 function harness() {
   const classify = createShapeClassifier();
   const store = createDatasetStore({ classify, buildDigest, turnId: 'turn-test' });
@@ -37,7 +42,7 @@ describe('Materializer — formats', () => {
     const { datasetId } = store.internToolResult('hr.leave', HR_LEAVE);
     const { text, rowCount } = materialize(store, {
       datasetId,
-      columns: ['employee', 'days'],
+      columns: cols('employee', 'days'),
       format: 'table',
     });
     assert.equal(rowCount, 3);
@@ -51,7 +56,7 @@ describe('Materializer — formats', () => {
     const { datasetId } = store.internToolResult('hr.leave', HR_LEAVE);
     const { text } = materialize(store, {
       datasetId,
-      columns: ['employee', 'days'],
+      columns: cols('employee', 'days'),
       format: 'list',
     });
     assert.ok(text.includes('- employee: Marvin Vomberg, days: 24'));
@@ -63,7 +68,7 @@ describe('Materializer — formats', () => {
     const counted = engine.count(datasetId);
     const { text } = materialize(store, {
       datasetId: counted.datasetId,
-      columns: ['count'],
+      columns: cols('count'),
       format: 'scalar',
     });
     assert.equal(text, '3');
@@ -74,7 +79,7 @@ describe('Materializer — formats', () => {
     const { datasetId } = store.internToolResult('hr.leave', HR_LEAVE);
     const { text } = materialize(store, {
       datasetId,
-      columns: ['employee'],
+      columns: cols('employee'),
       format: 'list',
       prose: 'Hier ist das Urlaubsranking:',
     });
@@ -86,7 +91,7 @@ describe('Materializer — formats', () => {
     const { datasetId } = store.internToolResult('hr.leave', []);
     const { text, rowCount } = materialize(store, {
       datasetId,
-      columns: ['employee'],
+      columns: cols('employee'),
       format: 'table',
     });
     assert.equal(rowCount, 0);
@@ -102,7 +107,7 @@ describe('Materializer — end-to-end data path', () => {
     const top = engine.topN(sorted.datasetId, 2, 'days', 'desc');
     const { text } = materialize(store, {
       datasetId: top.datasetId,
-      columns: ['employee', 'days'],
+      columns: cols('employee', 'days'),
       format: 'table',
     });
     // Real, complete names in correct rank order — Anna (30) before Marvin (24).
@@ -118,7 +123,7 @@ describe('Materializer — guard rails', () => {
       () =>
         materialize(store, {
           datasetId: 'ds_missing',
-          columns: ['employee'],
+          columns: cols('employee'),
           format: 'table',
         }),
       MaterializerError,
@@ -132,7 +137,7 @@ describe('Materializer — guard rails', () => {
       () =>
         materialize(store, {
           datasetId,
-          columns: ['salary'],
+          columns: cols('salary'),
           format: 'table',
         }),
       MaterializerError,
@@ -146,7 +151,7 @@ describe('Materializer — maskedValues', () => {
     const { datasetId } = store.internToolResult('hr.leave', HR_LEAVE);
     const { maskedValues } = materialize(store, {
       datasetId,
-      columns: ['employee', 'days'],
+      columns: cols('employee', 'days'),
       format: 'table',
     });
     // `employee` (human names) is sensitive-masked; `days` (numbers) is
@@ -162,9 +167,57 @@ describe('Materializer — maskedValues', () => {
     const { datasetId } = store.internToolResult('hr.leave', HR_LEAVE);
     const { maskedValues } = materialize(store, {
       datasetId,
-      columns: ['days'],
+      columns: cols('days'),
       format: 'table',
     });
     assert.deepEqual(maskedValues, []);
+  });
+});
+
+describe('Materializer — display polish', () => {
+  it('renders an Odoo many2one [id,"label"] tuple as just the label', () => {
+    const { store } = harness();
+    const { datasetId } = store.internToolResult('hr.leave', [
+      { employee_id: [198, 'Sophie Neumann'], days: 58 },
+      { employee_id: [206, 'Moses Otten'], days: 43 },
+    ]);
+    const { text, maskedValues } = materialize(store, {
+      datasetId,
+      columns: cols('employee_id', 'days'),
+      format: 'table',
+    });
+    assert.ok(text.includes('Sophie Neumann'));
+    assert.ok(!text.includes('[198'), 'the raw [id,name] tuple must not leak');
+    // the masked-value highlight tracks the flattened label, not the tuple.
+    assert.ok(maskedValues.includes('Sophie Neumann'));
+  });
+
+  it('uses each column label as the table header', () => {
+    const { store } = harness();
+    const { datasetId } = store.internToolResult('hr.leave', HR_LEAVE);
+    const { text } = materialize(store, {
+      datasetId,
+      columns: [
+        { field: 'employee', label: 'Mitarbeiter' },
+        { field: 'days', label: 'Summe Tage' },
+      ],
+      format: 'table',
+    });
+    assert.ok(text.includes('| Mitarbeiter | Summe Tage |'));
+  });
+
+  it('prepends a 1-based rank column when rankColumn is set', () => {
+    const { store, engine } = harness();
+    const { datasetId } = store.internToolResult('hr.leave', HR_LEAVE);
+    const sorted = engine.sort(datasetId, 'days', 'desc');
+    const { text } = materialize(store, {
+      datasetId: sorted.datasetId,
+      columns: [{ field: 'employee', label: 'Mitarbeiter' }],
+      format: 'table',
+      rankColumn: 'Rang',
+    });
+    assert.ok(text.includes('| Rang | Mitarbeiter |'));
+    // First data row is rank 1 — Anna Rüsche (30 days, the max).
+    assert.ok(text.split('\n')[2]?.startsWith('| 1 | Anna Rüsche'));
   });
 });

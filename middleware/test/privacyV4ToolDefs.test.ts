@@ -138,9 +138,31 @@ describe('parseRenderDirective', () => {
       prose: 'Ranking:',
     });
     assert.equal(d.datasetId, 'ds_1');
-    assert.deepEqual(d.columns, ['employee', 'days']);
+    // Bare-string columns normalize to RenderColumns — label defaults to field.
+    assert.deepEqual(d.columns, [
+      { field: 'employee', label: 'employee' },
+      { field: 'days', label: 'days' },
+    ]);
     assert.equal(d.format, 'table');
     assert.equal(d.prose, 'Ranking:');
+  });
+
+  it('parses {field,label} columns and rankColumn', () => {
+    const d = parseRenderDirective({
+      datasetId: 'ds_1',
+      columns: [
+        { field: 'employee_id', label: 'Mitarbeiter' },
+        { field: 'total' },
+      ],
+      format: 'table',
+      rankColumn: 'Rang',
+    });
+    // An explicit label is kept; an omitted label falls back to the field.
+    assert.deepEqual(d.columns, [
+      { field: 'employee_id', label: 'Mitarbeiter' },
+      { field: 'total', label: 'total' },
+    ]);
+    assert.equal(d.rankColumn, 'Rang');
   });
 
   it('rejects an invalid format', () => {
