@@ -151,11 +151,13 @@ export default function ChatPage(): React.ReactElement {
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
+  // Keep the newest message in view as it streams. Smooth scrolling can't
+  // keep pace with rapid token deltas — the animation restarts further
+  // behind on every tick and never reaches the bottom, leaving the latest
+  // content hidden under the input footer — so this jumps instantly.
   useEffect(() => {
-    scrollRef.current?.scrollTo({
-      top: scrollRef.current.scrollHeight,
-      behavior: 'smooth',
-    });
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [activeSession.messages]);
 
   // Abort any in-flight stream when switching tabs; otherwise the pending
