@@ -148,4 +148,83 @@ describe('Privacy Shield v4 — HR-Urlaubsranking acceptance', () => {
     assert.ok(!r.digestText.includes('Brigitte Kaltenbach'));
     assert.ok(!r.digestText.includes('Hans-Peter Donnerwetter'));
   });
+
+  it('sub-agent boundary — interned datasets bridge by reference, render yields real names', async () => {
+    // The failure-of-record path: `query_odoo_hr` is a sub-agent whose own
+    // LLM runs behind the SAME v4 boundary — it only ever sees `[masked]`,
+    // so the prose it returns has `[masked]` baked in. Re-interning that
+    // prose loses the real names for good. This proves the dataset-reference
+    // bridge: the sub-agent's interned datasets are handed to the parent
+    // agent by id, and a render on them surfaces the REAL names.
+    const svc = createPrivacyGuardService();
+    const turnId = 't-subagent';
+    const ids = { sessionId: 's', turnId };
+
+    // The sub-agent interns its two Odoo fetches — real rows, server-side.
+    const leave = await svc.internToolResultV4({
+      ...ids,
+      toolName: 'hr.leave',
+      rawResult: JSON.stringify(LEAVE_RECORDS),
+    });
+    const emps = await svc.internToolResultV4({
+      ...ids,
+      toolName: 'hr.employees',
+      rawResult: JSON.stringify(EMPLOYEES),
+    });
+
+    // The sub-agent only ever saw `[masked]`; its prose answer carries the
+    // placeholder plus an apologetic caveat — the live bug-of-record.
+    const subAgentProse =
+      'Top-Ranking: [masked] mit 32 Tagen — die Namen sind durch den ' +
+      'Datenschutzfilter maskiert und können nicht angezeigt werden.';
+
+    // Bridge: the orchestrator hands the parent agent the REAL datasets by
+    // reference instead of re-interning the `[masked]`-poisoned prose.
+    const bridged = await svc.subAgentResultV4({
+      turnId,
+      narration: subAgentProse,
+      datasetIds: [leave.datasetId, emps.datasetId],
+    });
+
+    // The bridged tool_result is LLM-bound — it must carry zero identity
+    // values, exactly like any digest (SC-003) …
+    assertNoIdentityOnWire([bridged.resultText], REAL_NAMES);
+    // … but it must reference the real datasets so the parent can render.
+    assert.ok(bridged.resultText.includes(leave.datasetId));
+    assert.ok(bridged.resultText.includes(emps.datasetId));
+
+    // The parent agent composes the verb chain on the bridged datasetIds
+    // and renders — the real names must surface (the bug: they did not).
+    const run = async (toolName: string, input: unknown): Promise<string> => {
+      return (await svc.runV4Tool({ ...ids, toolName, input })).resultText;
+    };
+    const agg = await run('v4_aggregate', {
+      datasetId: leave.datasetId,
+      groupBy: ['employee_id'],
+      ops: [{ alias: 'total', fn: 'sum', field: 'days' }],
+    });
+    const joined = await run('v4_join', {
+      leftDatasetId: datasetIdOf(agg),
+      rightDatasetId: emps.datasetId,
+      leftKey: 'employee_id',
+      rightKey: 'employee_id',
+    });
+    const sorted = await run('v4_sort', {
+      datasetId: datasetIdOf(joined),
+      by: 'total',
+      direction: 'desc',
+    });
+    await run('v4_render_answer', {
+      datasetId: datasetIdOf(sorted),
+      columns: ['employee', 'total'],
+      format: 'table',
+    });
+
+    const answer = await svc.takeRenderedAnswerV4(turnId);
+    assert.ok(answer, 'a final answer was rendered');
+    for (const name of REAL_NAMES) {
+      assert.ok(answer.text.includes(name), `answer is missing "${name}"`);
+    }
+    assert.deepEqual([...answer.maskedValues].sort(), [...REAL_NAMES].sort());
+  });
 });

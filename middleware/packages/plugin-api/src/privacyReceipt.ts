@@ -63,6 +63,32 @@ export interface PrivacyToolResultV4Result {
    *  block content. The raw rows stay server-side, addressable by the
    *  `datasetId` embedded in this text. */
   readonly digestText: string;
+  /** The `datasetId` the raw rows were interned behind — also embedded in
+   *  `digestText`, surfaced here so a caller (e.g. a sub-agent tracking the
+   *  datasets it produced) need not parse the digest JSON. */
+  readonly datasetId: string;
+}
+
+/**
+ * Privacy Shield v4 — sub-agent data-plane bridge.
+ *
+ * A domain tool wraps a sub-agent that runs its own LLM loop behind the SAME
+ * v4 boundary: every tool result it fetches is interned, so its LLM only ever
+ * sees `[masked]` and the prose answer it returns has `[masked]` baked in.
+ * Re-interning that prose as a fresh dataset would lose the real values for
+ * good. Instead the orchestrator tracks the `datasetId`s the sub-agent
+ * interned and passes them — by reference — to `subAgentResultV4`, which
+ * re-surfaces the digests of those REAL datasets to the parent agent so its
+ * `v4_render_answer` resolves ground truth.
+ */
+export interface PrivacySubAgentResultV4Request {
+  readonly turnId: string;
+  /** The sub-agent's own narration — LLM prose. Already PII-free: the
+   *  sub-agent only ever saw masked digests. Passed through as context. */
+  readonly narration: string;
+  /** The `datasetId`s the sub-agent interned this dispatch, in intern
+   *  order. Each still lives in the turn's Dataset Store with real rows. */
+  readonly datasetIds: readonly string[];
 }
 
 export interface PrivacyV4ToolRequest {
@@ -113,6 +139,18 @@ export interface PrivacyGuardService {
    * it (drained via `takeRenderedAnswerV4`).
    */
   runV4Tool(request: PrivacyV4ToolRequest): Promise<{ readonly resultText: string }>;
+  /**
+   * Privacy Shield v4 — bridge a sub-agent's result across the data-plane
+   * boundary. Given the `datasetId`s the sub-agent interned, returns the
+   * `tool_result` text for the parent agent: the sub-agent's narration plus
+   * the digests of those REAL datasets (still server-side, addressable by
+   * id) — so the parent's `v4_render_answer` resolves ground truth instead
+   * of the sub-agent's `[masked]`-baked prose. Used in place of
+   * `internToolResultV4` for a domain/sub-agent tool result.
+   */
+  subAgentResultV4(
+    request: PrivacySubAgentResultV4Request,
+  ): Promise<{ readonly resultText: string }>;
   /**
    * Privacy Shield v4 — take (and clear) the server-materialized final
    * answer a `v4_render_answer` call stashed for this turn, if any. Carries

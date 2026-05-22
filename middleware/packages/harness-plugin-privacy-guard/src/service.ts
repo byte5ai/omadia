@@ -19,6 +19,7 @@ import type {
   PrivacyGuardService,
   PrivacyReceipt,
   PrivacyRenderedAnswer,
+  PrivacySubAgentResultV4Request,
   PrivacyToolResultV4Request,
   PrivacyToolResultV4Result,
   PrivacyV4ToolRequest,
@@ -86,29 +87,45 @@ export function createPrivacyGuardService(): PrivacyGuardService {
     return r;
   }
 
+  /** Intern a raw tool result, update the turn receipt, return the digest
+   *  text + datasetId. Shared by `internToolResultV4` and the
+   *  `subAgentResultV4` fallback so the receipt accounting lives in one
+   *  place. */
+  function internAndCount(
+    turnId: string,
+    toolName: string,
+    rawResult: string,
+  ): PrivacyToolResultV4Result {
+    const store = storeFor(turnId);
+    const { digest } = store.internToolResult(toolName, rawResult);
+    const maskedFields = digest.fields.filter(
+      (f) => f.classification === 'sensitive-masked',
+    ).length;
+    const receipt = receiptFor(turnId);
+    receipt.datasetsInterned += 1;
+    receipt.fieldsMasked += maskedFields;
+    receipt.fieldsCleartext += digest.fields.length - maskedFields;
+    console.log(
+      `[privacy-guard v4] intern turn=${turnId} ` +
+        `tool=${toolName} datasetId=${digest.datasetId} ` +
+        `rows=${String(digest.rowCount)} fields=${String(digest.fields.length)} ` +
+        `masked=${String(maskedFields)}${digest.truncated ? ' truncated' : ''}`,
+    );
+    return {
+      digestText: digestToToolResultText(digest),
+      datasetId: digest.datasetId,
+    };
+  }
+
   return {
     async internToolResultV4(
       request: PrivacyToolResultV4Request,
     ): Promise<PrivacyToolResultV4Result> {
-      const store = storeFor(request.turnId);
-      const { digest } = store.internToolResult(
+      return internAndCount(
+        request.turnId,
         request.toolName,
         request.rawResult,
       );
-      const maskedFields = digest.fields.filter(
-        (f) => f.classification === 'sensitive-masked',
-      ).length;
-      const receipt = receiptFor(request.turnId);
-      receipt.datasetsInterned += 1;
-      receipt.fieldsMasked += maskedFields;
-      receipt.fieldsCleartext += digest.fields.length - maskedFields;
-      console.log(
-        `[privacy-guard v4] intern turn=${request.turnId} ` +
-          `tool=${request.toolName} datasetId=${digest.datasetId} ` +
-          `rows=${String(digest.rowCount)} fields=${String(digest.fields.length)} ` +
-          `masked=${String(maskedFields)}${digest.truncated ? ' truncated' : ''}`,
-      );
-      return { digestText: digestToToolResultText(digest) };
     },
 
     async runV4Tool(
@@ -156,6 +173,51 @@ export function createPrivacyGuardService(): PrivacyGuardService {
         );
         return { resultText: `[privacy-shield-v4] tool error: ${message}` };
       }
+    },
+
+    async subAgentResultV4(
+      request: PrivacySubAgentResultV4Request,
+    ): Promise<{ readonly resultText: string }> {
+      const store = stores.get(request.turnId);
+      const digests: string[] = [];
+      if (store !== undefined) {
+        for (const id of request.datasetIds) {
+          const ds = store.get(id);
+          if (ds !== undefined) digests.push(JSON.stringify(buildDigest(ds)));
+        }
+      }
+      // No dataset resolved — the sub-agent interned nothing addressable
+      // (pure graph lookup, an error, or stale ids). Fall back to interning
+      // the narration so the parent agent still gets a usable digest.
+      if (digests.length === 0) {
+        return {
+          resultText: internAndCount(
+            request.turnId,
+            'sub-agent',
+            request.narration,
+          ).digestText,
+        };
+      }
+      console.log(
+        `[privacy-guard v4] sub-agent bridge turn=${request.turnId} ` +
+          `datasets=${String(digests.length)}`,
+      );
+      const header = [
+        '[privacy-shield-v4] A sub-agent fetched data behind the data-plane',
+        'boundary. Its working notes are below, then the datasets it produced',
+        '— each holds the REAL rows server-side, addressable by its datasetId.',
+        'To answer the user, pick the relevant datasetId and call',
+        'v4_render_answer (compose the verb tools first if you must filter /',
+        'aggregate / join). Include identity / sensitive-masked columns — the',
+        'server fills in their real values. The sub-agent only ever saw',
+        '"[masked]"; do NOT repeat any "cannot show" / "filtered" caveat from',
+        'its notes — the user receives the real values.',
+      ].join('\n');
+      return {
+        resultText:
+          `${header}\n\n--- sub-agent notes ---\n${request.narration}\n\n` +
+          `--- datasets (${String(digests.length)}) ---\n${digests.join('\n')}`,
+      };
     },
 
     async takeRenderedAnswerV4(

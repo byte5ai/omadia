@@ -2243,14 +2243,37 @@ export class Orchestrator {
     // Privacy Shield v4 — Data-Plane Boundary. The privacy handle is
     // threaded through `turnContext.privacyHandle`; absent ⇒ no privacy
     // provider installed and the tool result flows through unchanged.
-    const privacy = turnContext.current()?.privacyHandle;
+    const ctx = turnContext.current();
+    const privacy = ctx?.privacyHandle;
     // Verb tools + the terminal render tool are served by the privacy
     // provider's per-turn data-plane engine, not by a tool handler.
     if (privacy !== undefined && name.startsWith('v4_')) {
       const v4Tool = await privacy.runV4Tool({ toolName: name, input });
       return v4Tool.resultText;
     }
-    const result = await this.dispatchToolInner(name, input, observer);
+    // Privacy Shield v4 — sub-agent data-plane bridge. A domain tool wraps a
+    // LocalSubAgent that runs its own LLM loop behind the SAME v4 boundary:
+    // every result it fetches is interned, so its LLM only ever sees
+    // `[masked]` and the prose answer it returns has `[masked]` baked in.
+    // Re-interning that prose would destroy the real values for good. So for
+    // a domain tool we run the dispatch in a nested scope carrying a fresh
+    // `subAgentDatasetSink`; the sub-agent pushes every datasetId it interns
+    // into it, and below we hand the parent agent the digests of those REAL
+    // datasets by reference instead of re-interning the prose.
+    const subAgentSink: string[] = [];
+    let result: string;
+    if (
+      privacy !== undefined &&
+      ctx !== undefined &&
+      this.domainToolsByName.has(name)
+    ) {
+      result = await turnContext.run(
+        { ...ctx, subAgentDatasetSink: subAgentSink },
+        () => this.dispatchToolInner(name, input, observer),
+      );
+    } else {
+      result = await this.dispatchToolInner(name, input, observer);
+    }
     // Phase C.2 — Raw tool-result capture. Outer scope (routine runner)
     // may install a callback that stashes the raw result keyed by tool
     // name; later template rendering uses it as the source of truth for
@@ -2266,9 +2289,26 @@ export class Orchestrator {
         );
       }
     }
-    // Intern the raw result server-side and hand the LLM only the
-    // identity-free digest — the raw rows never reach the LLM wire.
     if (privacy !== undefined && typeof result === 'string') {
+      // Sub-agent bridge: the sub-agent interned ≥1 dataset this dispatch —
+      // pass those REAL datasets up by reference so the parent agent's
+      // `v4_render_answer` resolves ground truth, not the `[masked]` prose.
+      if (subAgentSink.length > 0) {
+        try {
+          const bridged = await privacy.subAgentResultV4({
+            narration: result,
+            datasetIds: subAgentSink,
+          });
+          return bridged.resultText;
+        } catch (err) {
+          console.warn(
+            `[orchestrator.dispatchTool:${name}] privacy.subAgentResultV4 threw — interning prose instead:`,
+            err,
+          );
+        }
+      }
+      // Intern the raw result server-side and hand the LLM only the
+      // identity-free digest — the raw rows never reach the LLM wire.
       try {
         const v4 = await privacy.internToolResultV4({
           toolName: name,
