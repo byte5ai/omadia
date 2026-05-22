@@ -1436,6 +1436,11 @@ export class Orchestrator {
         // invalid JSON. See ensureWellFormedParams.
         const safeParams = ensureWellFormedParams(baseParams);
 
+        // Privacy Shield v4 — runtime on-the-wire guard. Fail-closed: throws
+        // before dispatch if a masked identity value interned this turn
+        // appears in the payload.
+        turnContext.current()?.privacyHandle?.assertWireCleanV4(safeParams);
+
         const response: Message = await this.client.messages.create(
           safeParams,
           { headers: { 'anthropic-beta': MEMORY_BETA_HEADER } },

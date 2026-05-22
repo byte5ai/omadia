@@ -152,6 +152,17 @@ export interface PrivacyGuardService {
     request: PrivacySubAgentResultV4Request,
   ): Promise<{ readonly resultText: string }>;
   /**
+   * Privacy Shield v4 — runtime on-the-wire guard. Scans an LLM-bound
+   * payload (the `messages.create` / `messages.stream` params) for any
+   * `sensitive-masked` identity value interned this turn and throws,
+   * fail-closed, if one is present. Only the data-plane surfaces are
+   * scanned — `tool_result` blocks and assistant content — never the
+   * human's own typed text or the static system prompt, so a name the
+   * user volunteered is not a false positive. A no-op when the turn
+   * interned nothing. Call at the API-call seam, just before dispatch.
+   */
+  assertWireCleanV4(turnId: string, payload: unknown): void;
+  /**
    * Privacy Shield v4 — take (and clear) the server-materialized final
    * answer a `v4_render_answer` call stashed for this turn, if any. Carries
    * `maskedValues` — the real values rendered into the answer that the LLM

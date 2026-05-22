@@ -207,6 +207,10 @@ export function createDatasetStore(deps: DatasetStoreDeps): DatasetStore {
       return datasets.get(datasetId);
     },
 
+    allDatasets(): ReadonlyArray<Dataset> {
+      return [...datasets.values()];
+    },
+
     finalizeTurn(): void {
       datasets.clear();
     },

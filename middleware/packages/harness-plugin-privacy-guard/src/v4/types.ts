@@ -144,6 +144,9 @@ export interface DatasetStore {
   /** Server-side resolution of the real rows. Trusted callers only (verbs,
    *  the Materializer) — its result MUST NOT be serialized to the LLM. */
   get(datasetId: string): Dataset | undefined;
+  /** Every dataset interned or derived this turn. Trusted callers only
+   *  (e.g. the runtime on-the-wire guard) — the rows hold real data. */
+  allDatasets(): ReadonlyArray<Dataset>;
   /** Drop every dataset for the turn. Total and idempotent. */
   finalizeTurn(): void;
   /** Count of datasets interned this turn (for the Privacy Receipt). */

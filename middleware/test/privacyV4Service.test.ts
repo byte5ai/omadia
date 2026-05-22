@@ -166,3 +166,79 @@ describe('PrivacyGuardService.runV4Tool — end-to-end data path', () => {
     assert.equal(receipt, undefined);
   });
 });
+
+describe('PrivacyGuardService.assertWireCleanV4', () => {
+  it('passes a clean payload, fails closed when a masked name leaked into a tool_result', async () => {
+    const svc = createPrivacyGuardService();
+    const turnId = 't-wire';
+    await svc.internToolResultV4({
+      sessionId: 's',
+      turnId,
+      toolName: 'hr.leave',
+      rawResult: JSON.stringify(HR_LEAVE),
+    });
+
+    // A clean payload — the tool_result is a digest, no real names.
+    assert.doesNotThrow(() =>
+      svc.assertWireCleanV4(turnId, {
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'tool_result', tool_use_id: 'x', content: 'rows: [masked]' },
+            ],
+          },
+        ],
+      }),
+    );
+
+    // A real name in a tool_result block is a data-plane leak — fail closed.
+    assert.throws(
+      () =>
+        svc.assertWireCleanV4(turnId, {
+          messages: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'tool_result',
+                  tool_use_id: 'x',
+                  content: 'employee: Marvin Vomberg',
+                },
+              ],
+            },
+          ],
+        }),
+      /confidentiality breach/,
+    );
+  });
+
+  it('does not flag a name the user typed in their own question', async () => {
+    const svc = createPrivacyGuardService();
+    const turnId = 't-wire-user';
+    await svc.internToolResultV4({
+      sessionId: 's',
+      turnId,
+      toolName: 'hr.leave',
+      rawResult: JSON.stringify(HR_LEAVE),
+    });
+    // The human volunteered the name — it is not a data-plane leak, so the
+    // user's own message text is never scanned.
+    assert.doesNotThrow(() =>
+      svc.assertWireCleanV4(turnId, {
+        messages: [
+          { role: 'user', content: 'Wie viele Urlaubstage hat Marvin Vomberg?' },
+        ],
+      }),
+    );
+  });
+
+  it('is a no-op for a turn that interned nothing', () => {
+    const svc = createPrivacyGuardService();
+    assert.doesNotThrow(() =>
+      svc.assertWireCleanV4('t-none', {
+        messages: [{ role: 'assistant', content: 'Marvin Vomberg' }],
+      }),
+    );
+  });
+});

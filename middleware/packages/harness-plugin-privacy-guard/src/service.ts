@@ -38,6 +38,7 @@ import {
   parseRenderDirective,
 } from './v4/toolDefs.js';
 import { materialize } from './v4/materializer.js';
+import { assertNoIdentityOnWire } from './v4/onTheWire.js';
 
 /** Per-turn counters drained into the user-facing `PrivacyReceipt`. */
 interface V4ReceiptAccum {
@@ -46,6 +47,61 @@ interface V4ReceiptAccum {
   fieldsCleartext: number;
   readonly verbsExecuted: string[];
   pseudonymProjectionUsed: boolean;
+}
+
+/** Min length of a masked string value worth scanning for on the wire.
+ *  Shorter values substring-match too freely to be reliable needles. */
+const MIN_WIRE_NEEDLE_LEN = 3;
+
+/** Collect every string leaf (length ≥ `MIN_WIRE_NEEDLE_LEN`) of an arbitrary
+ *  value into `out` — handles the Odoo many2one `[id,"name"]` tuple, nested
+ *  objects, and arrays so a masked name buried in any of them is captured. */
+function collectStringLeaves(value: unknown, out: Set<string>): void {
+  if (typeof value === 'string') {
+    if (value.length >= MIN_WIRE_NEEDLE_LEN) out.add(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const v of value) collectStringLeaves(v, out);
+    return;
+  }
+  if (value !== null && typeof value === 'object') {
+    for (const v of Object.values(value as Record<string, unknown>)) {
+      collectStringLeaves(v, out);
+    }
+  }
+}
+
+/** Pull the data-plane surfaces out of an LLM-bound payload: the content of
+ *  every `tool_result` block plus every assistant message. The human's own
+ *  typed text and the static system prompt are deliberately excluded — a
+ *  name the user volunteered is not a data-plane leak. */
+function dataPlaneSurfaces(payload: unknown): unknown[] {
+  const surfaces: unknown[] = [];
+  if (payload === null || typeof payload !== 'object') return surfaces;
+  const messages = (payload as { messages?: unknown }).messages;
+  if (!Array.isArray(messages)) return surfaces;
+  for (const msg of messages) {
+    if (msg === null || typeof msg !== 'object') continue;
+    const m = msg as { role?: unknown; content?: unknown };
+    if (m.role === 'assistant') {
+      surfaces.push(m.content);
+      continue;
+    }
+    // user role — scan only `tool_result` blocks, never the human's own text.
+    if (Array.isArray(m.content)) {
+      for (const block of m.content) {
+        if (
+          block !== null &&
+          typeof block === 'object' &&
+          (block as { type?: unknown }).type === 'tool_result'
+        ) {
+          surfaces.push((block as { content?: unknown }).content);
+        }
+      }
+    }
+  }
+  return surfaces;
 }
 
 export function createPrivacyGuardService(): PrivacyGuardService {
@@ -218,6 +274,35 @@ export function createPrivacyGuardService(): PrivacyGuardService {
           `${header}\n\n--- sub-agent notes ---\n${request.narration}\n\n` +
           `--- datasets (${String(digests.length)}) ---\n${digests.join('\n')}`,
       };
+    },
+
+    assertWireCleanV4(turnId: string, payload: unknown): void {
+      const store = stores.get(turnId);
+      if (store === undefined) return;
+      // Every real `sensitive-masked` value interned this turn — across the
+      // originally interned datasets AND every verb-derived one.
+      const needles = new Set<string>();
+      for (const ds of store.allDatasets()) {
+        const maskedPaths = ds.schema.fields
+          .filter((f) => f.classification === 'sensitive-masked')
+          .map((f) => f.path);
+        if (maskedPaths.length === 0) continue;
+        for (const row of ds.rows) {
+          for (const path of maskedPaths) {
+            collectStringLeaves(row[path], needles);
+          }
+        }
+      }
+      if (needles.size === 0) return;
+      try {
+        assertNoIdentityOnWire(dataPlaneSurfaces(payload), [...needles]);
+      } catch (err) {
+        console.error(
+          `[privacy-guard v4] WIRE GUARD turn=${turnId} — blocking the ` +
+            `LLM call: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        throw err;
+      }
     },
 
     async takeRenderedAnswerV4(
