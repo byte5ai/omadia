@@ -230,7 +230,15 @@ async function main(): Promise<void> {
   // calls) and the Teams channel (anthropicClient dep). The orchestrator-
   // plugin constructs ITS OWN client from `anthropic_api_key` setup-field —
   // they're functionally equivalent but separate instances.
-  const client = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY });
+  //
+  // maxRetries: the Anthropic SDK auto-retries 408/409/429/500/529 with
+  // exponential backoff. The SDK default is 2; bumped to 5 so a transient
+  // `overloaded_error` (HTTP 529) burst is far more likely to ride out
+  // inside the SDK instead of surfacing as a failed turn.
+  const client = new Anthropic({
+    apiKey: config.ANTHROPIC_API_KEY,
+    maxRetries: 5,
+  });
 
   // Phase 5B: publish the raw Anthropic client so dynamic-imported channel
   // plugins (Teams, future) can late-resolve it via ctx.services.get(...)

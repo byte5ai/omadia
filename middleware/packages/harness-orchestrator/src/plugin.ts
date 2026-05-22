@@ -311,8 +311,13 @@ export async function activate(
     ctx.config.get<string>('graph_tenant_id') ??
     'default';
 
-  // Anthropic client + storage layer
-  const client = new Anthropic({ apiKey });
+  // Anthropic client + storage layer.
+  //
+  // maxRetries: the Anthropic SDK auto-retries 408/409/429/500/529 with
+  // exponential backoff. The SDK default is 2; bumped to 5 so a transient
+  // `overloaded_error` (HTTP 529) burst is far more likely to ride out
+  // inside the SDK instead of surfacing as a failed turn.
+  const client = new Anthropic({ apiKey, maxRetries: 5 });
   const chatSessionStore = new ChatSessionStore(memoryStore);
   const sessionLogger = new SessionLogger(
     memoryStore,

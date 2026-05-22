@@ -2401,6 +2401,15 @@ export class Orchestrator {
         message: `Orchestrator exceeded maxToolIterations (${String(this.maxIterations)}) without reaching a final answer.`,
       };
     } catch (err) {
+      // This catch did not log before — a turn failing on a transient
+      // provider error (e.g. Anthropic `overloaded_error` / HTTP 529) was
+      // invisible in the server logs. Log the technical detail here. The
+      // user-facing error-message wording is handled separately (Privacy
+      // Shield v4).
+      console.error(
+        '[orchestrator] turn failed:',
+        err instanceof Error ? (err.stack ?? err.message) : err,
+      );
       yield {
         type: 'error',
         message: err instanceof Error ? err.message : String(err),
