@@ -38,6 +38,11 @@ import {
   parseRenderDirective,
 } from './v4/toolDefs.js';
 import { materialize } from './v4/materializer.js';
+import {
+  createPiiSchemaClassifier,
+  type LlmComplete,
+  type PiiSchemaClassifier,
+} from './v4/piiClassifier.js';
 
 /** Per-turn counters drained into the user-facing `PrivacyReceipt`. */
 interface V4ReceiptAccum {
@@ -48,7 +53,15 @@ interface V4ReceiptAccum {
   pseudonymProjectionUsed: boolean;
 }
 
-export function createPrivacyGuardService(): PrivacyGuardService {
+export function createPrivacyGuardService(deps?: {
+  /**
+   * Host-LLM accessor (`ctx.llm.complete`) for Slice-2 schema-level PII
+   * classification. Absent ⇒ no classifier runs and intern behaves
+   * byte-identically to the pre-Slice-2 path — the deny-by-default shape
+   * masking is wholly independent of this.
+   */
+  readonly llmComplete?: LlmComplete;
+}): PrivacyGuardService {
   // One turn-scoped Dataset Store per turn, minted lazily on the first
   // `internToolResultV4` and dropped by `finalizeTurn`.
   const stores = new Map<string, DatasetStore>();
@@ -58,6 +71,18 @@ export function createPrivacyGuardService(): PrivacyGuardService {
   const renderedAnswers = new Map<string, PrivacyRenderedAnswer>();
   // Per-turn receipt counters.
   const receipts = new Map<string, V4ReceiptAccum>();
+  // Slice 2 — cached, Haiku-backed schema PII classifier. Process-scoped
+  // (its cache spans turns — schema verdicts are tool-shape-stable). Absent
+  // when no host LLM is wired.
+  const piiClassifier: PiiSchemaClassifier | undefined =
+    deps?.llmComplete !== undefined
+      ? createPiiSchemaClassifier({
+          complete: deps.llmComplete,
+          log: (msg) => {
+            console.log(msg);
+          },
+        })
+      : undefined;
 
   function storeFor(turnId: string): DatasetStore {
     let s = stores.get(turnId);
@@ -121,11 +146,25 @@ export function createPrivacyGuardService(): PrivacyGuardService {
     async internToolResultV4(
       request: PrivacyToolResultV4Request,
     ): Promise<PrivacyToolResultV4Result> {
-      return internAndCount(
+      const result = internAndCount(
         request.turnId,
         request.toolName,
         request.rawResult,
       );
+      // Slice 2 — schema-level PII classification. Schema only (field names
+      // + types, never a value); cached per tool shape. Never throws; the
+      // verdict drives detection only, not masking. Step A surfaces it via
+      // the log — the receipt consumer lands in Step B.
+      if (piiClassifier !== undefined) {
+        const dataset = stores.get(request.turnId)?.get(result.datasetId);
+        if (dataset !== undefined) {
+          await piiClassifier.classify(
+            request.toolName,
+            dataset.schema.fields.map((f) => ({ path: f.path, type: f.type })),
+          );
+        }
+      }
+      return result;
     },
 
     async runV4Tool(

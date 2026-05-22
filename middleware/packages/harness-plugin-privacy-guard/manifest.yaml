@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/plugin-privacy-guard"
   name: "Privacy Guard"
-  version: "0.1.0"
+  version: "0.2.0"
   kind: "tool"
   domain: "privacy.redact"
   description: "Privacy Shield v4 core plugin. Publishes the `privacy.redact@1` capability — a Data-Plane Boundary that interns raw tool results server-side and hands the LLM only an identity-free Digest. Identity-/order-critical work runs through a server-side Verb API; the final answer is materialized from ground truth. Emits a PII-free PrivacyReceipt the channel renderers (Teams Adaptive-Card, Web inline disclosure) consume to surface what was protected on each turn."
@@ -63,6 +63,16 @@ permissions:
     outbound: []
   filesystem:
     scratch: false
+  # Slice 2 — schema-level PII classification. The plugin asks a cheap Haiku
+  # model which fields of an interned tool result carry personal identity
+  # data, given ONLY the schema (tool name + field names + types, never a
+  # value). Drives leak detection / the honest receipt; never the masking
+  # itself (deny-by-default stays the safety net). Host pays — no plugin key.
+  llm:
+    models_allowed:
+      - "claude-haiku-4-5"
+    calls_per_invocation: 1000
+    max_tokens_per_call: 512
 
 provides:
   - "privacy.redact@1"
