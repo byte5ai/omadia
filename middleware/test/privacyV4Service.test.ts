@@ -242,6 +242,41 @@ describe('PrivacyGuardService.assertWireCleanV4', () => {
     );
   });
 
+  it('does not turn structural strings inside a nested masked field into needles', async () => {
+    const svc = createPrivacyGuardService();
+    const turnId = 't-wire-nested';
+    // A graph-shaped result: each row carries a nested object holding the
+    // Odoo model name plus the employee name. The nested field is masked.
+    await svc.internToolResultV4({
+      sessionId: 's',
+      turnId,
+      toolName: 'query_graph',
+      rawResult: JSON.stringify([
+        { node: { model: 'hr.employee', name: 'Marvin Vomberg' } },
+        { node: { model: 'hr.employee', name: 'Anna Rüsche' } },
+      ]),
+    });
+    // "hr.employee" is a structural model name buried in a nested masked
+    // field — it must NOT become a needle, so the LLM legitimately naming
+    // that model in a tool_result is not flagged as a leak.
+    assert.doesNotThrow(() =>
+      svc.assertWireCleanV4(turnId, {
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'x',
+                content: 'queried Odoo model hr.employee',
+              },
+            ],
+          },
+        ],
+      }),
+    );
+  });
+
   it('does not flag a user-named employee echoed into an assistant tool call', async () => {
     const svc = createPrivacyGuardService();
     const turnId = 't-wire-echo';

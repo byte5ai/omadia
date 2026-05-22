@@ -53,29 +53,36 @@ interface V4ReceiptAccum {
  *  Shorter values substring-match too freely to be reliable needles. */
 const MIN_WIRE_NEEDLE_LEN = 3;
 
-/** Collect every string leaf (length ≥ `MIN_WIRE_NEEDLE_LEN`) of an arbitrary
- *  value into `out` — handles the Odoo many2one `[id,"name"]` tuple, nested
- *  objects, and arrays so a masked name buried in any of them is captured. */
-function collectStringLeaves(value: unknown, out: Set<string>): void {
+/** Collect the identity-bearing string(s) of one masked field VALUE into
+ *  `out`. Only the value itself is taken — a plain string, or the display
+ *  label of an Odoo many2one `[id,"name"]` tuple. Nested objects / general
+ *  arrays are deliberately NOT walked: their string leaves are mostly
+ *  structural (model names like `hr.employee`, type tags, field labels), not
+ *  identity values, and sweeping them in turned legitimate tool parameters
+ *  into spurious leak hits. */
+function collectMaskedNeedle(value: unknown, out: Set<string>): void {
   if (typeof value === 'string') {
     if (value.length >= MIN_WIRE_NEEDLE_LEN) out.add(value);
     return;
   }
-  if (Array.isArray(value)) {
-    for (const v of value) collectStringLeaves(v, out);
-    return;
-  }
-  if (value !== null && typeof value === 'object') {
-    for (const v of Object.values(value as Record<string, unknown>)) {
-      collectStringLeaves(v, out);
-    }
+  // Odoo many2one: [id, "Display Name"] — the label is the identity value.
+  if (
+    Array.isArray(value) &&
+    value.length === 2 &&
+    typeof value[0] === 'number' &&
+    typeof value[1] === 'string' &&
+    value[1].length >= MIN_WIRE_NEEDLE_LEN
+  ) {
+    out.add(value[1]);
   }
 }
 
 /** Pull the data-plane surfaces out of an LLM-bound payload: the content of
- *  every `tool_result` block plus every assistant message. The human's own
- *  typed text and the static system prompt are deliberately excluded — a
- *  name the user volunteered is not a data-plane leak. */
+ *  every `tool_result` block. That is the only path interned tool data takes
+ *  to the LLM. The human's typed text, the system prompt, and the model's own
+ *  `tool_use` inputs are all excluded — none is a data-plane leak surface,
+ *  and a `tool_use` input legitimately carries model names and filter values
+ *  the model composed itself. */
 function dataPlaneSurfaces(payload: unknown): unknown[] {
   const surfaces: unknown[] = [];
   if (payload === null || typeof payload !== 'object') return surfaces;
@@ -83,21 +90,15 @@ function dataPlaneSurfaces(payload: unknown): unknown[] {
   if (!Array.isArray(messages)) return surfaces;
   for (const msg of messages) {
     if (msg === null || typeof msg !== 'object') continue;
-    const m = msg as { role?: unknown; content?: unknown };
-    if (m.role === 'assistant') {
-      surfaces.push(m.content);
-      continue;
-    }
-    // user role — scan only `tool_result` blocks, never the human's own text.
-    if (Array.isArray(m.content)) {
-      for (const block of m.content) {
-        if (
-          block !== null &&
-          typeof block === 'object' &&
-          (block as { type?: unknown }).type === 'tool_result'
-        ) {
-          surfaces.push((block as { content?: unknown }).content);
-        }
+    const content = (msg as { content?: unknown }).content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (
+        block !== null &&
+        typeof block === 'object' &&
+        (block as { type?: unknown }).type === 'tool_result'
+      ) {
+        surfaces.push((block as { content?: unknown }).content);
       }
     }
   }
@@ -322,7 +323,7 @@ export function createPrivacyGuardService(): PrivacyGuardService {
         if (maskedPaths.length === 0) continue;
         for (const row of ds.rows) {
           for (const path of maskedPaths) {
-            collectStringLeaves(row[path], needles);
+            collectMaskedNeedle(row[path], needles);
           }
         }
       }
