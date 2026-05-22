@@ -70,9 +70,15 @@ setup:
       help: "Anthropic-API-Key für die Haupt-Claude-Loop des Orchestrators. Ohne Key publiziert das Plugin KEIN `chatAgent@1` — Kernel + Channels degradieren auf no-chat. Geteilt mit @omadia/orchestrator-extras + @omadia/verifier (gleicher Anthropic-Account). Bootstrap migriert ANTHROPIC_API_KEY aus dem legacy .env in den Vault. (S+12.6: type: secret — Key wird im Vault gespeichert, nicht in installed.json config.)"
     - key: "orchestrator_model"
       label: "Orchestrator Model"
-      type: "text"
+      type: "enum"
       required: false
-      help: "Anthropic-Model-ID für die Haupt-Loop. Default: claude-sonnet-4-5-20251022. Migriert aus ORCHESTRATOR_MODEL."
+      default: "claude-opus-4-7"
+      enum:
+        - value: "claude-opus-4-7"
+          label: "Claude Opus 4.7 (Default — höchste Reasoning-Tiefe)"
+        - value: "claude-sonnet-4-6"
+          label: "Claude Sonnet 4.6 (schneller, günstiger)"
+      help: "Anthropic-Model-ID für die Orchestrator-Haupt-Loop. Als Dropdown gepflegt, damit keine ungültige Model-ID (→ 404 not_found_error) eingetragen werden kann. Migriert aus ORCHESTRATOR_MODEL."
     - key: "orchestrator_max_tokens"
       label: "Max Output Tokens"
       type: "number"
