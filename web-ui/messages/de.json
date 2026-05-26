@@ -132,6 +132,12 @@
     "streamLabel": "Stream:",
     "clearTabTitle": "Nur den aktiven Tab leeren",
     "clearTabButton": "Verlauf leeren",
+    "composerResetTitle": "Chat zurücksetzen (⌘⇧K) — Verlauf weg, Memory bleibt",
+    "composerResetAriaLabel": "Chat zurücksetzen",
+    "resetConfirmTitle": "Chat neu starten?",
+    "resetConfirmBody": "Der Verlauf in diesem Chat wird gelöscht und der Agent vergisst den bisherigen Kontext. Memory und Knowledge-Graph-Einträge bleiben erhalten.",
+    "resetConfirmAction": "Chat zurücksetzen",
+    "resetCancel": "Abbrechen",
     "placeholder": "Frage an den Orchestrator…",
     "stopButton": "Stop",
     "sendButton": "Senden",
@@ -231,5 +237,16 @@
     "pseudonymNo": "nicht verwendet",
     "explainer": "Rohe Tool-Ergebnisse blieben server-seitig hinter der Data-Plane-Boundary — das Modell sah nur einen identitätsfreien Digest.",
     "explainerBreach": "Du hast eine Person namentlich genannt — dieser Name ging im Klartext an das Modell. Die aus den Tools geholten Daten blieben server-seitig hinter der Boundary."
+  },
+  "streamToasts": {
+    "phaseThinking": "Agent denkt",
+    "phaseStreaming": "Antwort läuft",
+    "phaseToolRunning": "Tool läuft",
+    "phaseDone": "Antwort fertig",
+    "phaseError": "Fehler",
+    "phaseAborted": "Abgebrochen",
+    "elapsedSec": "{sec}s",
+    "dismissAriaLabel": "Stream abbrechen",
+    "dismissTitle": "Abbrechen"
   }
 }

@@ -132,6 +132,12 @@
     "streamLabel": "Stream:",
     "clearTabTitle": "Clear only the active tab",
     "clearTabButton": "Clear history",
+    "composerResetTitle": "Reset chat (⌘⇧K) — history goes, memory stays",
+    "composerResetAriaLabel": "Reset chat",
+    "resetConfirmTitle": "Restart this chat?",
+    "resetConfirmBody": "The conversation in this chat will be cleared and the agent forgets its current context. Memory and Knowledge-Graph entries are preserved.",
+    "resetConfirmAction": "Reset chat",
+    "resetCancel": "Cancel",
     "placeholder": "Ask the orchestrator…",
     "stopButton": "Stop",
     "sendButton": "Send",
@@ -231,5 +237,16 @@
     "pseudonymNo": "not used",
     "explainer": "Raw tool results stayed server-side behind the data-plane boundary — the model only ever saw an identity-free digest.",
     "explainerBreach": "You named a person in your request — that name reached the model in cleartext. The data fetched from tools stayed server-side behind the boundary."
+  },
+  "streamToasts": {
+    "phaseThinking": "Agent is thinking",
+    "phaseStreaming": "Answer streaming",
+    "phaseToolRunning": "Tool running",
+    "phaseDone": "Answer ready",
+    "phaseError": "Error",
+    "phaseAborted": "Aborted",
+    "elapsedSec": "{sec}s",
+    "dismissAriaLabel": "Cancel stream",
+    "dismissTitle": "Cancel"
   }
 }

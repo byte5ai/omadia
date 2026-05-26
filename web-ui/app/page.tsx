@@ -8,126 +8,31 @@ import {
   type KeyboardEvent,
 } from 'react';
 import { useTranslations } from 'next-intl';
+import { Eraser } from 'lucide-react';
 import { ChatTabs } from './_components/ChatTabs';
 import { AgentUsagePills } from './_components/chat/AgentUsagePills';
 import { AutoPromotedBanner } from './_components/chat/AutoPromotedBanner';
 import { CaptureDisclosure } from './_components/chat/CaptureDisclosure';
+import { ConfirmDialog } from './_components/ConfirmDialog';
 import { NudgeCard, parseNudgeBlock } from './_components/chat/NudgeCard';
 import { PrivacyReceiptCard } from './_components/chat/PrivacyReceiptCard';
 import { SaveMemoryButton } from './_components/chat/SaveMemoryButton';
 import { Markdown } from './_components/Markdown';
+import { resetChatSession } from './_lib/api';
 import {
   deriveTitle,
   newSessionId,
-  useChatSessions,
   type ChatSession,
   type DiagramAttachment,
   type FollowUpOption,
   type Message,
   type NudgeEvent,
-  type PalaiaExcerpt,
   type PendingUserChoice,
-  type PrivacyReceipt,
   type SubAgentEvent,
   type ToolEvent,
 } from './_lib/chatSessions';
-
-// Event shapes mirror ChatStreamEvent in middleware/src/services/orchestrator.ts.
-// Keep these in sync with the backend type. Validation is lax on purpose — the
-// server is trusted and any shape drift should surface as an obvious UI bug.
-type StreamEvent =
-  | { type: 'iteration_start'; iteration: number }
-  | { type: 'text_delta'; text: string }
-  | {
-      type: 'tool_use';
-      id: string;
-      name: string;
-      input: unknown;
-      /** Server-resolved agent metadata; absent for helper tools. */
-      agent?: ToolEvent['agent'];
-    }
-  | {
-      type: 'tool_result';
-      id: string;
-      output: string;
-      durationMs: number;
-      isError?: boolean;
-    }
-  | {
-      type: 'nudge';
-      id: string;
-      nudgeId: string;
-      text: string;
-      cta?: {
-        label: string;
-        toolName: string;
-        arguments: Record<string, unknown>;
-      };
-    }
-  | { type: 'tool_progress'; id: string; elapsedMs: number }
-  | {
-      type: 'heartbeat';
-      sinceLastActivityMs: number;
-      currentIteration: number;
-      toolCallsThisIter: number;
-      phase?: 'thinking' | 'streaming' | 'tool_running' | 'idle';
-      tokensStreamedThisIter?: number;
-    }
-  | {
-      type: 'stream_token_chunk';
-      iteration: number;
-      deltaTokens: number;
-      cumulativeOutputTokens: number;
-      tokensPerSec: number;
-    }
-  | {
-      type: 'iteration_usage';
-      iteration: number;
-      inputTokens: number;
-      outputTokens: number;
-      cacheReadInputTokens: number;
-      cacheCreationInputTokens: number;
-    }
-  | { type: 'sub_iteration'; parentId: string; iteration: number }
-  | {
-      type: 'sub_tool_use';
-      parentId: string;
-      id: string;
-      name: string;
-      input: unknown;
-    }
-  | {
-      type: 'sub_tool_result';
-      parentId: string;
-      id: string;
-      output: string;
-      durationMs: number;
-      isError: boolean;
-    }
-  | {
-      type: 'done';
-      answer: string;
-      toolCalls: number;
-      iterations: number;
-      /** KG-persisted Turn external_id. Undefined when session-logging
-       *  was disabled or threw. Powers the save-as-memory button. */
-      turnId?: string;
-      /** Slice 4a — Palaia-Excerpt suggestion for the save-as-memory
-       *  modal pre-fill. Undefined when the extractor wasn't installed
-       *  or the Haiku call failed / returned junk; modal falls back
-       *  to the dumb 240-char prefix. */
-      palaiaExcerpt?: PalaiaExcerpt;
-      /** Slice 4c — MK external_id when this turn was auto-promoted
-       *  (significance >= threshold AND `KG_ACL_AUTO_PROMOTE=true`).
-       *  Drives the inline "Saved by Palaia" banner. */
-      autoPromotedMkId?: string;
-      attachments?: DiagramAttachment[];
-      pendingUserChoice?: PendingUserChoice;
-      followUpOptions?: FollowUpOption[];
-      privacyReceipt?: PrivacyReceipt;
-      maskedValues?: readonly string[];
-    }
-  | { type: 'error'; message: string };
+import { useChatSessionsCtx } from './_lib/chatSessionsContext';
+import { useStreamStore } from './_lib/streamStore';
 
 export default function ChatPage(): React.ReactElement {
   const t = useTranslations('chat');
@@ -142,12 +47,13 @@ export default function ChatPage(): React.ReactElement {
     setActive,
     clearMessages,
     mutateActive,
-    persistActive,
-  } = useChatSessions();
+  } = useChatSessionsCtx();
+  const streamStore = useStreamStore();
+  const sending = streamStore.isActive(activeId);
 
   const [input, setInput] = useState('');
-  const [sending, setSending] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
+  const [resetPending, setResetPending] = useState(false);
+  const [confirmResetOpen, setConfirmResetOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -160,172 +66,9 @@ export default function ChatPage(): React.ReactElement {
     if (el) el.scrollTop = el.scrollHeight;
   }, [activeSession.messages]);
 
-  // Abort any in-flight stream when switching tabs; otherwise the pending
-  // response would land in a session the user left.
-  useEffect(() => {
-    return () => {
-      abortRef.current?.abort();
-    };
-  }, [activeId]);
-
-  const applyEvent = useCallback(
-    (targetSessionId: string, pendingId: string, event: StreamEvent): void => {
-      mutateActive((session) => {
-        if (session.id !== targetSessionId) return session;
-        const nextMessages = session.messages.map((m) => {
-          if (m.id !== pendingId) return m;
-          switch (event.type) {
-            case 'text_delta':
-              return { ...m, content: m.content + event.text };
-            case 'tool_use': {
-              const tool: ToolEvent = {
-                id: event.id,
-                name: event.name,
-                input: event.input,
-                startedAt: Date.now(),
-                subEvents: [],
-                ...(event.agent ? { agent: event.agent } : {}),
-              };
-              return { ...m, tools: [...(m.tools ?? []), tool] };
-            }
-            case 'tool_progress': {
-              const tools = (m.tools ?? []).map((t) =>
-                t.id === event.id ? { ...t, liveElapsedMs: event.elapsedMs } : t,
-              );
-              return { ...m, tools };
-            }
-            case 'heartbeat':
-              return {
-                ...m,
-                liveness: {
-                  sinceLastActivityMs: event.sinceLastActivityMs,
-                  iteration: event.currentIteration,
-                  toolCallsThisIter: event.toolCallsThisIter,
-                  ...(event.phase ? { phase: event.phase } : {}),
-                  ...(typeof event.tokensStreamedThisIter === 'number'
-                    ? { tokensThisIter: event.tokensStreamedThisIter }
-                    : {}),
-                },
-              };
-            case 'stream_token_chunk':
-              return {
-                ...m,
-                tokensPerSec: event.tokensPerSec,
-                liveness: m.liveness
-                  ? {
-                      ...m.liveness,
-                      tokensThisIter: event.cumulativeOutputTokens,
-                    }
-                  : m.liveness,
-              };
-            case 'iteration_usage':
-              return {
-                ...m,
-                lastUsage: {
-                  inputTokens: event.inputTokens,
-                  cacheReadInputTokens: event.cacheReadInputTokens,
-                },
-              };
-            case 'tool_result': {
-              const tools = (m.tools ?? []).map((t) =>
-                t.id === event.id
-                  ? {
-                      ...t,
-                      output: event.output,
-                      durationMs: event.durationMs,
-                      isError: event.isError ?? false,
-                      liveElapsedMs: undefined,
-                    }
-                  : t,
-              );
-              return { ...m, tools };
-            }
-            case 'nudge': {
-              const next: NudgeEvent = {
-                id: event.id,
-                nudgeId: event.nudgeId,
-                text: event.text,
-                ...(event.cta ? { cta: event.cta } : {}),
-              };
-              const existing = m.nudges ?? [];
-              // De-dupe by (id, nudgeId): the pipeline only emits once per
-              // tool-call but reducer replays during reconnects can double-up.
-              const filtered = existing.filter(
-                (n) => !(n.id === next.id && n.nudgeId === next.nudgeId),
-              );
-              return { ...m, nudges: [...filtered, next] };
-            }
-            case 'sub_iteration':
-            case 'sub_tool_use':
-            case 'sub_tool_result': {
-              const tools = (m.tools ?? []).map((t) => {
-                if (t.id !== event.parentId) return t;
-                const sub: SubAgentEvent = toSubAgentEvent(event);
-                return { ...t, subEvents: [...(t.subEvents ?? []), sub] };
-              });
-              return { ...m, tools };
-            }
-            case 'done':
-              return {
-                ...m,
-                // The done event carries the authoritative final answer. For
-                // a Privacy Shield v4 turn this is the server-materialized
-                // table — never streamed as deltas — so it must replace the
-                // live preview.
-                content: event.answer,
-                telemetry: {
-                  tool_calls: event.toolCalls,
-                  iterations: event.iterations,
-                },
-                ...(event.turnId ? { turnId: event.turnId } : {}),
-                ...(event.palaiaExcerpt
-                  ? { palaiaExcerpt: event.palaiaExcerpt }
-                  : {}),
-                ...(event.autoPromotedMkId
-                  ? { autoPromotedMkId: event.autoPromotedMkId }
-                  : {}),
-                ...(event.attachments && event.attachments.length > 0
-                  ? { attachments: event.attachments }
-                  : {}),
-                ...(event.pendingUserChoice
-                  ? { pendingUserChoice: event.pendingUserChoice }
-                  : {}),
-                ...(event.followUpOptions && event.followUpOptions.length > 0
-                  ? { followUpOptions: event.followUpOptions }
-                  : {}),
-                ...(event.privacyReceipt
-                  ? { privacyReceipt: event.privacyReceipt }
-                  : {}),
-                ...(event.maskedValues && event.maskedValues.length > 0
-                  ? { maskedValues: event.maskedValues }
-                  : {}),
-                finishedAt: Date.now(),
-                streaming: false,
-              };
-            case 'error':
-              return {
-                ...m,
-                content: m.content + (m.content ? '\n\n' : '') + event.message,
-                error: true,
-                finishedAt: Date.now(),
-                streaming: false,
-              };
-            case 'iteration_start':
-            default:
-              return m;
-          }
-        });
-        return { ...session, messages: nextMessages, updatedAt: Date.now() };
-      });
-    },
-    [mutateActive],
-  );
-
-  /**
-   * Slice 4c — clear the auto-promoted-MK marker on a message after
-   * the user Discards it. The manual save-as-memory button then
-   * comes back so the user can re-save with their own classification.
-   */
+  // Slice 4c — clear the auto-promoted-MK marker on a message after the
+  // user Discards it. The manual save-as-memory button then comes back so
+  // the user can re-save with their own classification.
   const clearAutoPromoted = useCallback(
     (messageId: string): void => {
       mutateActive((session) => {
@@ -340,187 +83,139 @@ export default function ChatPage(): React.ReactElement {
     [mutateActive],
   );
 
-  const send = useCallback(async (overrideText?: string): Promise<void> => {
-    // Two entry points use this: the Senden button (reads `input`) and the
-    // Smart-Card option buttons (pass the chosen label via overrideText).
-    // The override takes precedence so a click doesn't require the textarea
-    // to be clear.
-    const trimmed = (overrideText ?? input).trim();
-    if (!trimmed || sending || hydrating) return;
+  const send = useCallback(
+    (overrideText?: string): void => {
+      // Two entry points use this: the Senden button (reads `input`) and the
+      // Smart-Card option buttons (pass the chosen label via overrideText).
+      const trimmed = (overrideText ?? input).trim();
+      if (!trimmed || sending || hydrating) return;
 
-    const targetSessionId = activeId;
-    const userMsg: Message = {
-      id: newSessionId(),
-      role: 'user',
-      content: trimmed,
-      startedAt: Date.now(),
-      finishedAt: Date.now(),
-    };
-    const pendingId = newSessionId();
-    const pending: Message = {
-      id: pendingId,
-      role: 'assistant',
-      content: '',
-      tools: [],
-      startedAt: Date.now(),
-      streaming: true,
-    };
-
-    mutateActive((session) => {
-      if (session.id !== targetSessionId) return session;
-      const isFirst = session.messages.length === 0;
-      // Strip pendingUserChoice AND followUpOptions from older assistant
-      // messages so the button rows disappear as soon as the user commits
-      // to a choice or types a fresh message. The answer text stays in
-      // history; only the interactive affordances go away.
-      const cleanedMessages = session.messages.map((m) => {
-        if (!m.pendingUserChoice && !m.followUpOptions) return m;
-        const {
-          pendingUserChoice: _dropChoice,
-          followUpOptions: _dropFollowUps,
-          ...rest
-        } = m;
-        return rest;
-      });
-      return {
-        ...session,
-        title: isFirst ? deriveTitle(trimmed) : session.title,
-        messages: [...cleanedMessages, userMsg, pending],
-        updatedAt: Date.now(),
+      const targetSessionId = activeId;
+      const userMsg: Message = {
+        id: newSessionId(),
+        role: 'user',
+        content: trimmed,
+        startedAt: Date.now(),
+        finishedAt: Date.now(),
       };
-    });
-    if (overrideText === undefined) setInput('');
-    setSending(true);
+      const pendingId = newSessionId();
+      const pending: Message = {
+        id: pendingId,
+        role: 'assistant',
+        content: '',
+        tools: [],
+        startedAt: Date.now(),
+        streaming: true,
+      };
 
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    try {
-      const res = await fetch('/bot-api/chat/stream', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          message: trimmed,
-          sessionId: targetSessionId,
-        }),
-        signal: controller.signal,
-      });
-
-      // Friendly diagnostics before we touch the body. Three common failure
-      // modes we distinguish: (1) Next proxy couldn't reach middleware →
-      // HTML error page, (2) middleware returned JSON error, (3) middleware
-      // returned NDJSON (the happy path). Anything else falls back to raw text.
-      const contentType = res.headers.get('content-type') ?? '';
-      if (!res.ok || !res.body) {
-        const fallback = await res.text().catch(() => '');
-        const looksHtml =
-          fallback.trimStart().toLowerCase().startsWith('<!doctype') ||
-          fallback.trimStart().startsWith('<html');
-        let message: string;
-        if (looksHtml || contentType.includes('text/html')) {
-          message =
-            res.status === 500
-              ? t('errorMiddlewareUnreachable')
-              : t('errorProxyFailure', { status: String(res.status) });
-        } else if (contentType.includes('application/json')) {
-          try {
-            const parsed = JSON.parse(fallback) as {
-              error?: string;
-              message?: string;
-            };
-            message =
-              parsed.message ?? parsed.error ?? `HTTP ${String(res.status)}`;
-          } catch {
-            message = fallback || `HTTP ${String(res.status)}`;
-          }
-        } else {
-          message = fallback || `HTTP ${String(res.status)}`;
-        }
-        applyEvent(targetSessionId, pendingId, { type: 'error', message });
-        return;
-      }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-        for (const line of lines) {
-          const trimmedLine = line.trim();
-          if (!trimmedLine) continue;
-          try {
-            const event = JSON.parse(trimmedLine) as StreamEvent;
-            applyEvent(targetSessionId, pendingId, event);
-          } catch {
-            // Ignore malformed lines — stream partial writes shouldn't happen
-            // because buffer.pop() keeps the incomplete tail around.
-          }
-        }
-      }
-      // Flush any residual buffer as a final event — unlikely but safe.
-      const tail = buffer.trim();
-      if (tail) {
-        try {
-          applyEvent(targetSessionId, pendingId, JSON.parse(tail) as StreamEvent);
-        } catch {
-          /* ignore */
-        }
-      }
-    } catch (err) {
-      if ((err as Error).name === 'AbortError') {
-        applyEvent(targetSessionId, pendingId, {
-          type: 'error',
-          message: t('errorAborted'),
-        });
-      } else {
-        applyEvent(targetSessionId, pendingId, {
-          type: 'error',
-          message: err instanceof Error ? err.message : String(err),
-        });
-      }
-    } finally {
-      abortRef.current = null;
-      setSending(false);
       mutateActive((session) => {
         if (session.id !== targetSessionId) return session;
+        const isFirst = session.messages.length === 0;
+        // Strip pendingUserChoice AND followUpOptions from older assistant
+        // messages so the button rows disappear as soon as the user commits
+        // to a choice or types a fresh message.
+        const cleanedMessages = session.messages.map((m) => {
+          if (!m.pendingUserChoice && !m.followUpOptions) return m;
+          const {
+            pendingUserChoice: _dropChoice,
+            followUpOptions: _dropFollowUps,
+            ...rest
+          } = m;
+          return rest;
+        });
         return {
           ...session,
-          messages: session.messages.map((m) =>
-            m.id === pendingId && m.streaming
-              ? { ...m, streaming: false, finishedAt: Date.now() }
-              : m,
-          ),
+          title: isFirst ? deriveTitle(trimmed) : session.title,
+          messages: [...cleanedMessages, userMsg, pending],
           updatedAt: Date.now(),
         };
       });
-      void persistActive();
+      if (overrideText === undefined) setInput('');
+
+      // Hand the stream off to <StreamRunner /> via the store. The runner
+      // owns the fetch + NDJSON-parse loop and writes deltas back into
+      // ChatSessions via context, so a menu-switch or ChatTabs switch no
+      // longer kills the stream.
+      streamStore.startTurn({
+        sessionId: targetSessionId,
+        pendingMessageId: pendingId,
+        message: trimmed,
+      });
       inputRef.current?.focus();
-    }
-  }, [input, sending, hydrating, activeId, mutateActive, applyEvent, persistActive, t]);
+    },
+    [input, sending, hydrating, activeId, mutateActive, streamStore],
+  );
 
   const abort = (): void => {
-    abortRef.current?.abort();
+    streamStore.abort(activeId);
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
-      void send();
+      send();
     }
   };
 
-  const resetActive = (): void => {
-    if (sending) return;
-    void clearMessages(activeId);
+  const requestReset = (): void => {
+    if (resetPending) return;
+    if (activeSession.messages.length === 0) return;
+    setConfirmResetOpen(true);
   };
+
+  const performReset = useCallback(async (): Promise<void> => {
+    setConfirmResetOpen(false);
+    setResetPending(true);
+    try {
+      // Abort any in-flight stream for this session first — otherwise the
+      // runner would happily keep writing deltas into a freshly cleared
+      // message list.
+      streamStore.abort(activeId);
+      // Backend rotates the conversation pointer so the agent starts a new
+      // turn-chain. KG / Memory are NOT touched. If the backend isn't
+      // reachable we still clear locally — the user wanted a fresh slate.
+      try {
+        await resetChatSession(activeId);
+      } catch (err) {
+        console.warn(
+          '[chat-reset] backend reset failed, clearing locally only:',
+          err instanceof Error ? err.message : err,
+        );
+      }
+      await clearMessages(activeId);
+    } finally {
+      setResetPending(false);
+      inputRef.current?.focus();
+    }
+  }, [activeId, clearMessages, streamStore]);
+
+  // Cmd/Ctrl+Shift+K resets the active chat (with confirm). Standard
+  // ChatGPT/Claude.ai shortcut so muscle memory carries over.
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent): void => {
+      const isModK =
+        (e.metaKey || e.ctrlKey) &&
+        e.shiftKey &&
+        (e.key === 'k' || e.key === 'K');
+      if (!isModK) return;
+      e.preventDefault();
+      requestReset();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+    };
+    // requestReset is a stable closure over component state but eslint can't
+    // prove it; we depend on activeSession.messages.length implicitly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSession.messages.length, resetPending]);
 
   const handleClose = (id: string): void => {
     void deleteSession(id);
   };
+
+  const canReset =
+    !hydrating && !resetPending && activeSession.messages.length > 0;
 
   return (
     <main className="flex h-full flex-col">
@@ -538,7 +233,8 @@ export default function ChatPage(): React.ReactElement {
 
       <div className="border-b border-neutral-200 bg-white/60 px-6 py-2 text-xs dark:border-neutral-800 dark:bg-neutral-900/60">
         <div className="mx-auto flex max-w-4xl flex-col gap-2">
-          {/* Row 1 — stream info + Verlauf-Leeren */}
+          {/* Row 1 — stream info. Verlauf-Leeren wanderte 2026-05-26 als
+              Eraser-Icon in den Composer (links neben Senden). */}
           <div className="flex flex-wrap items-center gap-3 text-neutral-500">
             <span>
               {t('streamLabel')} <code className="font-mono">/bot-api/chat/stream</code>
@@ -549,17 +245,6 @@ export default function ChatPage(): React.ReactElement {
                   until `useChatSessions` finishes hydrating. */}
               scope={hydrating ? '…' : activeId}
             </span>
-            <button
-              type="button"
-              onClick={resetActive}
-              className="ml-auto rounded border border-neutral-300 px-3 py-1 transition hover:border-neutral-400 disabled:opacity-30 dark:border-neutral-700"
-              disabled={
-                sending || activeSession.messages.length === 0 || hydrating
-              }
-              title={t('clearTabTitle')}
-            >
-              {t('clearTabButton')}
-            </button>
           </div>
 
           {/* Row 2 — Agent-Usage-Pills (only when anything was invoked) */}
@@ -582,7 +267,7 @@ export default function ChatPage(): React.ReactElement {
               message={m}
               disabled={sending || hydrating}
               onChoose={(value) => {
-                void send(value);
+                send(value);
               }}
               onDiscardAutoPromoted={clearAutoPromoted}
             />
@@ -591,7 +276,17 @@ export default function ChatPage(): React.ReactElement {
       </div>
 
       <footer className="border-t border-neutral-200 bg-white/80 px-6 py-4 backdrop-blur dark:border-neutral-800 dark:bg-neutral-900/80">
-        <div className="mx-auto flex max-w-4xl items-end gap-3">
+        <div className="mx-auto flex max-w-4xl items-end gap-2">
+          <button
+            type="button"
+            onClick={requestReset}
+            disabled={!canReset}
+            className="rounded border border-neutral-300 bg-white p-2 text-neutral-500 transition hover:border-neutral-400 hover:text-neutral-700 disabled:cursor-not-allowed disabled:opacity-30 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-200"
+            title={t('composerResetTitle')}
+            aria-label={t('composerResetAriaLabel')}
+          >
+            <Eraser size={16} aria-hidden />
+          </button>
           <textarea
             ref={inputRef}
             value={input}
@@ -616,7 +311,7 @@ export default function ChatPage(): React.ReactElement {
             <button
               type="button"
               onClick={() => {
-                void send();
+                send();
               }}
               disabled={input.trim().length === 0 || hydrating}
               className="rounded bg-neutral-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
@@ -626,6 +321,21 @@ export default function ChatPage(): React.ReactElement {
           )}
         </div>
       </footer>
+
+      <ConfirmDialog
+        open={confirmResetOpen}
+        title={t('resetConfirmTitle')}
+        body={t('resetConfirmBody')}
+        confirmLabel={t('resetConfirmAction')}
+        cancelLabel={t('resetCancel')}
+        tone="danger"
+        onCancel={() => {
+          setConfirmResetOpen(false);
+        }}
+        onConfirm={() => {
+          void performReset();
+        }}
+      />
     </main>
   );
 }
@@ -1143,48 +853,6 @@ function summarizeKnowledgeGraphInput(input: unknown): string | null {
   }
   if (typeof rec['limit'] === 'number') bits.push(`limit=${rec['limit']}`);
   return bits.length > 0 ? `${query}: ${bits.join(' ')}` : query;
-}
-
-function toSubAgentEvent(
-  event:
-    | { type: 'sub_iteration'; parentId: string; iteration: number }
-    | {
-        type: 'sub_tool_use';
-        parentId: string;
-        id: string;
-        name: string;
-        input: unknown;
-      }
-    | {
-        type: 'sub_tool_result';
-        parentId: string;
-        id: string;
-        output: string;
-        durationMs: number;
-        isError: boolean;
-      },
-): SubAgentEvent {
-  const at = Date.now();
-  if (event.type === 'sub_iteration') {
-    return { kind: 'iteration', at, iteration: event.iteration };
-  }
-  if (event.type === 'sub_tool_use') {
-    return {
-      kind: 'tool_use',
-      at,
-      id: event.id,
-      name: event.name,
-      input: event.input,
-    };
-  }
-  return {
-    kind: 'tool_result',
-    at,
-    id: event.id,
-    output: event.output,
-    durationMs: event.durationMs,
-    isError: event.isError,
-  };
 }
 
 function formatMs(ms: number): string {

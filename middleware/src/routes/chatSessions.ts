@@ -147,6 +147,38 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
     }
   });
 
+  /**
+   * Reset a session: drop messages, keep id/title, return a fresh
+   * conversation-id so the client (and a future audit log) can correlate
+   * the boundary. Memory and Knowledge-Graph entries are NOT touched —
+   * a reset only wipes the agent's working context window.
+   */
+  router.post('/sessions/:id/reset', async (req: Request, res: Response) => {
+    const id = req.params['id'];
+    if (typeof id !== 'string' || !isValidSessionId(id)) {
+      res.status(400).json({ error: 'invalid_id' });
+      return;
+    }
+    try {
+      const updated = await store.resetMessages(id);
+      if (!updated) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      res.json({
+        sessionId: updated.id,
+        newConversationId: `${updated.id}:${String(updated.updatedAt)}`,
+        resetAt: updated.updatedAt,
+      });
+    } catch (err) {
+      if (err instanceof InvalidSessionIdError) {
+        res.status(400).json({ error: 'invalid_id' });
+        return;
+      }
+      failure(res, err, '[chat-sessions] reset');
+    }
+  });
+
   return router;
 }
 

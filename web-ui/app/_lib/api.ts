@@ -2810,3 +2810,29 @@ export async function reclusterTopics(opts: {
 } = {}): Promise<TopicReclusterResultDto> {
   return postJson<TopicReclusterResultDto>('/v1/admin/topics/recluster', opts);
 }
+
+// -----------------------------------------------------------------------------
+// Chat session reset (2026-05-26).
+// -----------------------------------------------------------------------------
+
+export interface ResetChatSessionResponse {
+  sessionId: string;
+  /** New conversation pointer minted by the orchestrator. */
+  newConversationId: string;
+  resetAt: number;
+}
+
+/**
+ * Rotates the conversation pointer for a chat session. The backend keeps
+ * the session-id stable (so KG / memory references stay valid) but starts
+ * a fresh conversation-id so the agent's context window is empty on the
+ * next turn. Memory and Knowledge-Graph entries are NOT touched.
+ */
+export async function resetChatSession(
+  sessionId: string,
+): Promise<ResetChatSessionResponse> {
+  return postJson<ResetChatSessionResponse>(
+    `/chat/sessions/${encodeURIComponent(sessionId)}/reset`,
+    {},
+  );
+}
