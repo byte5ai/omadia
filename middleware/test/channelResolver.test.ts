@@ -269,6 +269,91 @@ test('T029: ensureFallbackAgent is a no-op when agents exist with a fallback alr
   assert.equal(setFallbackCalls, 0);
 });
 
+test('B1: ensureFallbackAgent hydrates fresh fallback with every supplied plugin (skipping orchestrator id)', async () => {
+  const upserts: Array<{ agentId: string; pluginId: string }> = [];
+  let createCalls = 0;
+  const store = {
+    listAgents: () => Promise.resolve([]),
+    getPlatformSettings: () =>
+      Promise.resolve<PlatformSettingsRow>({
+        fallbackAgentId: null,
+        updatedAt: new Date(0),
+      }),
+    getAgentBySlug: () => Promise.resolve(undefined),
+    createAgent: (input: { slug: string }) => {
+      createCalls += 1;
+      return Promise.resolve(agent(input.slug, '00000000-0000-0000-0000-000000000099'));
+    },
+    setFallbackAgentId: (id: string | null) =>
+      Promise.resolve({ fallbackAgentId: id, updatedAt: new Date(0) }),
+    upsertAgentPlugin: (agentId: string, input: { pluginId: string }) => {
+      upserts.push({ agentId, pluginId: input.pluginId });
+      return Promise.resolve({
+        agentId,
+        pluginId: input.pluginId,
+        config: {},
+        enabled: true,
+        createdAt: new Date(0),
+      });
+    },
+  } as unknown as ConfigStore;
+
+  const slug = await ensureFallbackAgent(store, {
+    pluginIds: [
+      '@omadia/orchestrator', // must be filtered out (it IS the runtime)
+      '@omadia/memory',
+      'de.byte5.integration.microsoft365',
+      '@omadia/diagrams',
+    ],
+  });
+  assert.equal(slug, FALLBACK_AGENT_SLUG);
+  assert.equal(createCalls, 1);
+  assert.deepEqual(
+    upserts.map((u) => u.pluginId),
+    ['@omadia/memory', 'de.byte5.integration.microsoft365', '@omadia/diagrams'],
+  );
+  for (const u of upserts) {
+    assert.equal(u.agentId, '00000000-0000-0000-0000-000000000099');
+  }
+});
+
+test('B1: ensureFallbackAgent does NOT re-attach plugins when the fallback row already exists', async () => {
+  // Operator may have pruned the fallback's plugins on purpose; rehydrating
+  // without consent would silently re-grant capabilities. The reset path
+  // (B3d / attachAllPlugins) is the consent-bearing rehydration entry.
+  const upserts: string[] = [];
+  const store = {
+    listAgents: () => Promise.resolve([]),
+    getPlatformSettings: () =>
+      Promise.resolve<PlatformSettingsRow>({
+        fallbackAgentId: null,
+        updatedAt: new Date(0),
+      }),
+    getAgentBySlug: () => Promise.resolve(agent(FALLBACK_AGENT_SLUG, 'existing-id')),
+    createAgent: () => {
+      throw new Error('createAgent must NOT be called when fallback exists');
+    },
+    setFallbackAgentId: (id: string | null) =>
+      Promise.resolve({ fallbackAgentId: id, updatedAt: new Date(0) }),
+    upsertAgentPlugin: (agentId: string, input: { pluginId: string }) => {
+      upserts.push(input.pluginId);
+      return Promise.resolve({
+        agentId,
+        pluginId: input.pluginId,
+        config: {},
+        enabled: true,
+        createdAt: new Date(0),
+      });
+    },
+  } as unknown as ConfigStore;
+
+  const slug = await ensureFallbackAgent(store, {
+    pluginIds: ['@omadia/memory'],
+  });
+  assert.equal(slug, FALLBACK_AGENT_SLUG);
+  assert.deepEqual(upserts, []);
+});
+
 test('T029: ensureFallbackAgent refuses to invent a fallback when operator left it unset', async () => {
   let createCalls = 0;
   let setFallbackCalls = 0;

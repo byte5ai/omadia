@@ -76,6 +76,18 @@ export interface PluginCapabilityLookup {
    * blowing the boot path open.
    */
   getMemoryScope?(pluginId: string): readonly string[] | undefined;
+  /**
+   * Phase B (B1) — returns the plugin IDs currently installed on the
+   * platform. Used by `ensureFallbackAgent` to hydrate a fresh fallback
+   * Agent with every plugin so day-1 chat is useful out-of-the-box, and
+   * by the operator dashboard's "Reset fallback to all plugins" action
+   * (B3d) to re-hydrate after pruning.
+   *
+   * Returns `undefined` when the platform has no opinion (e.g. tests with
+   * no kernel-published catalog) — callers degrade to "do not attach any
+   * plugins" rather than failing the seed.
+   */
+  listInstalled?(): readonly string[] | undefined;
 }
 
 export interface OrchestratorRegistryOptions {

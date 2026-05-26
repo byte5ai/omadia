@@ -3,55 +3,225 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useTranslations } from 'next-intl';
+import { useEffect, useId, useRef, useState } from 'react';
 
-const TABS: Array<{ href: string; key: string }> = [
-  { href: '/', key: 'chat' },
-  { href: '/store', key: 'store' },
-  { href: '/store/builder', key: 'builder' },
-  { href: '/memory', key: 'memory' },
-  { href: '/memories', key: 'memories' },
-  { href: '/graph', key: 'graph' },
-  { href: '/routines', key: 'routines' },
-  { href: '/admin', key: 'admin' },
-  { href: '/system', key: 'system' },
-];
+/**
+ * Phase B (B2) — top nav with cluster dropdowns.
+ *
+ * The flat list grew unworkable after `/operator/agents` and the upcoming
+ * `/operator/privacy` surface — clusters group related surfaces and keep
+ * the bar scannable. Active-link detection still uses longest-prefix-match
+ * across every leaf href so nested routes (`/store/builder` over `/store`)
+ * keep working; the cluster header gets a subtle `contains-active` style
+ * when any of its children matches.
+ */
+
+type NavLeaf = { readonly kind: 'link'; readonly href: string; readonly key: string };
+type NavCluster = {
+  readonly kind: 'cluster';
+  readonly key: string;
+  readonly children: readonly NavLeaf[];
+};
+type NavItem = NavLeaf | NavCluster;
+
+const NAV: readonly NavItem[] = [
+  { kind: 'link', href: '/', key: 'chat' },
+  {
+    kind: 'cluster',
+    key: 'agentsCluster',
+    children: [
+      { kind: 'link', href: '/operator/agents', key: 'agentsOverview' },
+      { kind: 'link', href: '/memory', key: 'memory' },
+      { kind: 'link', href: '/memories', key: 'memories' },
+      { kind: 'link', href: '/graph', key: 'graph' },
+    ],
+  },
+  {
+    kind: 'cluster',
+    key: 'pluginsCluster',
+    children: [
+      { kind: 'link', href: '/store', key: 'store' },
+      { kind: 'link', href: '/store/builder', key: 'builder' },
+    ],
+  },
+  { kind: 'link', href: '/routines', key: 'routines' },
+  {
+    kind: 'cluster',
+    key: 'adminCluster',
+    children: [
+      { kind: 'link', href: '/admin', key: 'admin' },
+      { kind: 'link', href: '/system', key: 'system' },
+    ],
+  },
+] as const;
+
+function collectLeaves(items: readonly NavItem[]): readonly NavLeaf[] {
+  const out: NavLeaf[] = [];
+  for (const item of items) {
+    if (item.kind === 'link') out.push(item);
+    else out.push(...item.children);
+  }
+  return out;
+}
+
+const ALL_LEAVES = collectLeaves(NAV);
+
+function bestPrefixMatch(pathname: string | null): string {
+  if (!pathname) return '';
+  return ALL_LEAVES.reduce((acc, candidate) => {
+    const match =
+      candidate.href === '/'
+        ? pathname === '/'
+        : pathname.startsWith(candidate.href);
+    if (!match) return acc;
+    return candidate.href.length > acc.length ? candidate.href : acc;
+  }, '');
+}
 
 export function Nav(): React.ReactElement {
   const pathname = usePathname();
   const t = useTranslations('nav');
+  const activeHref = bestPrefixMatch(pathname);
   return (
     <nav className="flex items-center gap-5 text-[13px] uppercase tracking-[0.18em]">
-      {TABS.map((tab) => {
-        // Nested routes (/store/builder) must win over their parent (/store)
-        // when both are in the nav — otherwise `startsWith` picks the parent
-        // too. Matching the longest prefix resolves that.
-        const best = TABS.reduce((acc, candidate) => {
-          const match =
-            candidate.href === '/'
-              ? pathname === '/'
-              : pathname?.startsWith(candidate.href) ?? false;
-          if (!match) return acc;
-          return candidate.href.length > acc.length ? candidate.href : acc;
-        }, '');
-        const active = best === tab.href;
-        return (
-          <Link
-            key={tab.href}
-            href={tab.href}
-            className={[
-              'relative py-1 transition-colors',
-              active
-                ? 'text-[color:var(--ink)]'
-                : 'text-[color:var(--muted-ink)] hover:text-[color:var(--ink)]',
-            ].join(' ')}
-          >
-            {t(tab.key)}
-            {active ? (
-              <span className="absolute -bottom-1 left-0 h-0.5 w-full rounded-full bg-[color:var(--accent)]" />
-            ) : null}
-          </Link>
-        );
-      })}
+      {NAV.map((item) =>
+        item.kind === 'link' ? (
+          <LeafLink
+            key={item.href}
+            href={item.href}
+            label={t(item.key)}
+            active={activeHref === item.href}
+          />
+        ) : (
+          <ClusterDropdown
+            key={item.key}
+            cluster={item}
+            label={t(item.key)}
+            renderChildLabel={(child) => t(child.key)}
+            activeHref={activeHref}
+          />
+        ),
+      )}
     </nav>
+  );
+}
+
+function LeafLink({
+  href,
+  label,
+  active,
+}: {
+  readonly href: string;
+  readonly label: string;
+  readonly active: boolean;
+}): React.ReactElement {
+  return (
+    <Link
+      href={href}
+      className={[
+        'relative py-1 transition-colors',
+        active
+          ? 'text-[color:var(--ink)]'
+          : 'text-[color:var(--muted-ink)] hover:text-[color:var(--ink)]',
+      ].join(' ')}
+    >
+      {label}
+      {active ? (
+        <span className="absolute -bottom-1 left-0 h-0.5 w-full rounded-full bg-[color:var(--accent)]" />
+      ) : null}
+    </Link>
+  );
+}
+
+function ClusterDropdown({
+  cluster,
+  label,
+  renderChildLabel,
+  activeHref,
+}: {
+  readonly cluster: NavCluster;
+  readonly label: string;
+  readonly renderChildLabel: (child: NavLeaf) => string;
+  readonly activeHref: string;
+}): React.ReactElement {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const menuId = useId();
+  const containsActive = cluster.children.some(
+    (child) => child.href === activeHref,
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e: MouseEvent): void => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  return (
+    <div
+      ref={rootRef}
+      className="relative"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <button
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={menuId}
+        onClick={() => setOpen((v) => !v)}
+        className={[
+          'relative inline-flex items-center gap-1 py-1 transition-colors uppercase tracking-[0.18em]',
+          containsActive
+            ? 'text-[color:var(--ink)]'
+            : 'text-[color:var(--muted-ink)] hover:text-[color:var(--ink)]',
+        ].join(' ')}
+      >
+        {label}
+        <span aria-hidden="true" className="text-[10px]">
+          ▾
+        </span>
+        {containsActive ? (
+          <span className="absolute -bottom-1 left-0 h-0.5 w-[calc(100%-12px)] rounded-full bg-[color:var(--accent)]/60" />
+        ) : null}
+      </button>
+      {open ? (
+        <div
+          id={menuId}
+          role="menu"
+          className="absolute left-0 top-full z-50 mt-1 min-w-[180px] rounded border border-[color:var(--border)] bg-[color:var(--surface)] py-1 shadow-lg"
+        >
+          {cluster.children.map((child) => {
+            const active = child.href === activeHref;
+            return (
+              <Link
+                key={child.href}
+                href={child.href}
+                role="menuitem"
+                onClick={() => setOpen(false)}
+                className={[
+                  'block px-3 py-1.5 text-[12px] uppercase tracking-[0.16em] transition-colors',
+                  active
+                    ? 'text-[color:var(--ink)] bg-[color:var(--surface-hover)]'
+                    : 'text-[color:var(--muted-ink)] hover:text-[color:var(--ink)] hover:bg-[color:var(--surface-hover)]',
+                ].join(' ')}
+              >
+                {renderChildLabel(child)}
+              </Link>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
   );
 }

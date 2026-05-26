@@ -397,6 +397,46 @@ async function main(): Promise<void> {
   );
   await installedRegistry.load();
 
+  // Phase B (B1) — publish `pluginCapabilities@1` so the orchestrator's
+  // first-boot onboarding (`ensureFallbackAgent`) can hydrate the fallback
+  // Agent with every installed plugin, and so the registry's snapshot
+  // validation has manifest metadata (multi_instance / installed /
+  // memory-scope) to reject impossible configurations.
+  //
+  // Sourced from the freshly-loaded PluginCatalog + InstalledRegistry —
+  // published BEFORE `toolPluginRuntime.activateAllInstalled()` further
+  // down so the orchestrator plugin sees it at consume-time.
+  serviceRegistry.provide('pluginCapabilities', {
+    isMultiInstance(pluginId: string): boolean | undefined {
+      const entry = pluginCatalog.get(pluginId);
+      if (!entry) return undefined;
+      return entry.plugin.multi_instance !== false;
+    },
+    isInstalled(pluginId: string): boolean | undefined {
+      const entry = pluginCatalog.get(pluginId);
+      if (!entry) return undefined;
+      return installedRegistry.has(pluginId);
+    },
+    getMemoryScope(pluginId: string): readonly string[] | undefined {
+      const entry = pluginCatalog.get(pluginId);
+      if (!entry) return undefined;
+      const summary = entry.plugin.permissions_summary;
+      const reads = Array.isArray(summary?.memory_reads)
+        ? summary.memory_reads
+        : [];
+      const writes = Array.isArray(summary?.memory_writes)
+        ? summary.memory_writes
+        : [];
+      return Array.from(new Set([...reads, ...writes]));
+    },
+    listInstalled(): readonly string[] {
+      return installedRegistry
+        .list()
+        .filter((entry) => entry.status === 'active')
+        .map((entry) => entry.id);
+    },
+  });
+
   // Kernel-wide background-job scheduler. Plugin-contributed jobs (cron or
   // interval) register here via `ctx.jobs.register(...)`. Bulk teardown on
   // plugin deactivate is owned by each runtime, so a leaked dispose handle
@@ -1094,6 +1134,8 @@ async function main(): Promise<void> {
       getRegistry: () =>
         serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
       getChatSessionStore: () => chatSessionStore,
+      getPluginCatalog: () => pluginCatalog,
+      getInstalledRegistry: () => installedRegistry,
     }),
   );
   console.log(

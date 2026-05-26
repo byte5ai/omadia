@@ -216,3 +216,105 @@ export interface EnabledAgentsListDto {
 export async function listEnabledAgents(): Promise<EnabledAgentsListDto> {
   return callJson<EnabledAgentsListDto>('/v1/operator/agents/enabled');
 }
+
+// ── Phase B — operator dashboard support surfaces ───────────────────────
+
+export type PluginKind =
+  | 'agent'
+  | 'integration'
+  | 'channel'
+  | 'tool'
+  | 'extension';
+
+export type SetupFieldType =
+  | 'string'
+  | 'password'
+  | 'secret'
+  | 'url'
+  | 'oauth'
+  | 'enum'
+  | 'host_list'
+  | 'number'
+  | 'boolean';
+
+export interface PluginSetupFieldDto {
+  key: string;
+  label: string;
+  type: SetupFieldType;
+  help?: string;
+  default?: string | string[];
+  enum?: Array<{ value: string; label: string }>;
+}
+
+export interface PluginCatalogEntryDto {
+  id: string;
+  name: string;
+  kind: PluginKind;
+  version: string;
+  multi_instance: boolean;
+  multi_instance_justification?: string;
+  privacy_class: PrivacyProfile;
+  memory_reads: string[];
+  memory_writes: string[];
+  network_outbound: string[];
+  setup_fields: PluginSetupFieldDto[];
+}
+
+export interface PluginCatalogListDto {
+  items: PluginCatalogEntryDto[];
+}
+
+/**
+ * Installed-plugin metadata for the B3a multi-select / B3c config editor.
+ * Backed by `GET /api/v1/operator/agents/plugin-catalog`.
+ */
+export async function listAgentPluginCatalog(): Promise<PluginCatalogListDto> {
+  return callJson<PluginCatalogListDto>(
+    '/v1/operator/agents/plugin-catalog',
+  );
+}
+
+export interface ResolveChannelResponse {
+  matched: {
+    slug: string;
+    name: string;
+    privacy_profile: PrivacyProfile;
+  } | null;
+  via: 'binding' | 'fallback' | 'none';
+  message?: string;
+}
+
+/**
+ * B3b routing tester. Asks the server which Agent (if any) would handle
+ * an inbound webhook for `{channel_type, channel_key}`.
+ */
+export async function resolveAgentForChannel(
+  channelType: string,
+  channelKey: string,
+): Promise<ResolveChannelResponse> {
+  return callJson<ResolveChannelResponse>(
+    '/v1/operator/agents/resolve-channel',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        channel_type: channelType,
+        channel_key: channelKey,
+      }),
+    },
+  );
+}
+
+/**
+ * B3d — re-attach every installed plugin to the current fallback Agent.
+ * Idempotent on the server; returns the attached count.
+ */
+export async function rehydrateFallback(): Promise<{
+  ok: boolean;
+  slug: string;
+  attached: number;
+  requested: number;
+}> {
+  return callJson('/v1/operator/agents/fallback/rehydrate', {
+    method: 'POST',
+  });
+}

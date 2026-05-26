@@ -3,11 +3,43 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 
 import {
+  attachAllPlugins,
   ConfigValidationError,
   type ChatSessionStore,
   type ConfigStore,
   type OrchestratorRegistry,
 } from '@omadia/orchestrator';
+
+import type { Plugin, PluginSetupField } from '../api/admin-v1.js';
+import type { PluginCatalog } from '../plugins/manifestLoader.js';
+import type { InstalledRegistry } from '../plugins/installedRegistry.js';
+
+/**
+ * Phase B — minimal projection of a plugin's catalog entry surfaced to the
+ * operator dashboard so it can render the B3a plugin multi-select (badge
+ * + memory-scope + permissions overview) without a separate /store fetch.
+ *
+ * Filtered server-side to `install_state === 'installed'` so the UI does
+ * not have to know which plugins are actually live.
+ *
+ * Note: the manifest's `setup.fields[]` lands on `Plugin.required_secrets`
+ * (the field name is historical — pre-OB-29 every setup field was a
+ * secret). Surfaced here as `setup_fields` so the B3c editor reads from
+ * an intent-named property.
+ */
+interface AgentPluginCatalogEntry {
+  readonly id: string;
+  readonly name: string;
+  readonly kind: Plugin['kind'];
+  readonly version: string;
+  readonly multi_instance: boolean;
+  readonly multi_instance_justification?: string;
+  readonly privacy_class: 'strict' | 'default';
+  readonly memory_reads: readonly string[];
+  readonly memory_writes: readonly string[];
+  readonly network_outbound: readonly string[];
+  readonly setup_fields: readonly PluginSetupField[];
+}
 
 /**
  * Operator-UI backend for the multi-orchestrator runtime (US9 / T037).
@@ -72,6 +104,11 @@ const FallbackSchema = z.object({
   slug: z.string().min(1).max(64).nullable(),
 });
 
+const ResolveChannelSchema = z.object({
+  channel_type: z.string().min(1).max(64),
+  channel_key: z.string().min(1).max(500),
+});
+
 export interface OperatorAgentsRouterOptions {
   /** Late-bound lookups so the router survives orchestrator-plugin
    *  re-activation. Each returns undefined when the orchestratorRegistry
@@ -80,6 +117,13 @@ export interface OperatorAgentsRouterOptions {
   readonly getConfigStore: () => ConfigStore | undefined;
   readonly getRegistry: () => OrchestratorRegistry | undefined;
   readonly getChatSessionStore: () => ChatSessionStore | undefined;
+  /** Phase B — kernel-owned plugin catalog + installed-registry pair.
+   *  Used by `/plugin-catalog` (B3a multi-select), `/resolve-channel`
+   *  (B3b routing tester surfaces installed channel-kind ids), and
+   *  `/fallback/rehydrate` (B3d). Optional so the router stays usable
+   *  in tests that build it with a bare config store. */
+  readonly getPluginCatalog?: () => PluginCatalog | undefined;
+  readonly getInstalledRegistry?: () => InstalledRegistry | undefined;
 }
 
 export function createOperatorAgentsRouter(
@@ -450,6 +494,158 @@ export function createOperatorAgentsRouter(
         sessionStore,
       );
       res.json({ ok: true, affected });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  // ── plugin catalog (B3a multi-select source) ────────────────────────
+  // Returns the installed-plugin projection the dashboard needs to render
+  // the multi-select: id, name, kind, multi_instance, memory scope,
+  // network egress hosts, and the manifest `setup_fields` so B3c can
+  // render typed per-(Agent × plugin) config forms.
+  //
+  // 503s when the kernel did not wire the catalog/installed-registry
+  // getters (tests / minimal mounts). Filters reference-only plugins +
+  // restricts to entries actually in the installed registry — the
+  // operator can only attach what is live on the platform.
+  router.get('/plugin-catalog', async (_req: Request, res: Response) => {
+    const catalog = options.getPluginCatalog?.();
+    const installed = options.getInstalledRegistry?.();
+    if (!catalog || !installed) {
+      res.status(503).json({
+        error: 'plugin_catalog_unavailable',
+        message:
+          'pluginCatalog or installedRegistry not wired into the operator-agents router.',
+      });
+      return;
+    }
+    try {
+      const installedIds = new Set(installed.list().map((e) => e.id));
+      const entries: AgentPluginCatalogEntry[] = catalog
+        .list()
+        .filter((entry) => entry.plugin.is_reference_only !== true)
+        .filter((entry) => installedIds.has(entry.plugin.id))
+        .map((entry) => {
+          const p = entry.plugin;
+          const summary = p.permissions_summary;
+          return {
+            id: p.id,
+            name: p.name,
+            kind: p.kind,
+            version: p.version,
+            multi_instance: p.multi_instance !== false,
+            ...(p.multi_instance_justification
+              ? { multi_instance_justification: p.multi_instance_justification }
+              : {}),
+            privacy_class: p.privacy_class,
+            memory_reads: summary?.memory_reads ?? [],
+            memory_writes: summary?.memory_writes ?? [],
+            network_outbound: summary?.network_outbound ?? [],
+            setup_fields: p.required_secrets ?? [],
+          } satisfies AgentPluginCatalogEntry;
+        });
+      res.json({ items: entries });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  // ── routing tester (B3b) ────────────────────────────────────────────
+  // "Which Agent handles teams/<key>?" — returns the same decision the
+  // ChannelResolver would make for an inbound webhook, without invoking
+  // it. Hits an explicit binding first, then the platform fallback.
+  router.post('/resolve-channel', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const body = ResolveChannelSchema.parse(req.body);
+      const match = live.registry.resolveByChannel(
+        body.channel_type,
+        body.channel_key,
+      );
+      if (!match) {
+        res.json({
+          matched: null,
+          via: 'none',
+          message:
+            'no binding for this channel and no platform fallback is configured',
+        });
+        return;
+      }
+      const settings = await live.store.getPlatformSettings();
+      const via =
+        match.agent.id === settings.fallbackAgentId &&
+        !match.bindings.some(
+          (b) =>
+            b.channelType === body.channel_type &&
+            b.channelKey === body.channel_key,
+        )
+          ? 'fallback'
+          : 'binding';
+      res.json({
+        matched: {
+          slug: match.agent.slug,
+          name: match.agent.name,
+          privacy_profile: match.agent.privacyProfile,
+        },
+        via,
+      });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  // ── reset fallback to all installed plugins (B3d) ───────────────────
+  // Re-runs the B1 catalog-attach against the CURRENT fallback Agent.
+  // Consent-bearing — only invoked from an explicit operator button so
+  // an operator who pruned the fallback is not silently re-granted
+  // capabilities. Idempotent: upserts produce the same row shape.
+  router.post('/fallback/rehydrate', async (_req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    const installed = options.getInstalledRegistry?.();
+    if (!installed) {
+      res.status(503).json({
+        error: 'installed_registry_unavailable',
+        message:
+          'installedRegistry not wired into the operator-agents router.',
+      });
+      return;
+    }
+    try {
+      const settings = await live.store.getPlatformSettings();
+      if (!settings.fallbackAgentId) {
+        res.status(409).json({
+          error: 'no_fallback',
+          message:
+            'no fallback agent is currently configured — set one before rehydrating',
+        });
+        return;
+      }
+      const fallback = (await live.store.listAgents()).find(
+        (a) => a.id === settings.fallbackAgentId,
+      );
+      if (!fallback) {
+        res.status(404).json({ error: 'fallback_missing' });
+        return;
+      }
+      const pluginIds = installed
+        .list()
+        .filter((e) => e.status === 'active')
+        .map((e) => e.id);
+      const attached = await attachAllPlugins(
+        live.store,
+        fallback.id,
+        pluginIds,
+      );
+      await live.registry.reload();
+      res.json({
+        ok: true,
+        slug: fallback.slug,
+        attached,
+        requested: pluginIds.length,
+      });
     } catch (err) {
       badRequest(res, err);
     }

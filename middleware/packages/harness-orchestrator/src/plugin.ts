@@ -485,11 +485,20 @@ export async function activate(
       // US7 / T029 — first-boot fallback Agent seed. Runs before the
       // registry's `start()` so the very first boot already has a fallback
       // available for unbound channel keys.
+      //
+      // Phase B (B1) — when the kernel publishes `pluginCapabilities@1`
+      // with `listInstalled()`, the fallback Agent is hydrated with every
+      // installed plugin on first creation. Without the lookup (older
+      // kernel boot, tests) it falls back to the legacy zero-plugin seed.
+      const installedPluginIds = pluginLookup?.listInstalled?.();
       await ensureFallbackAgent(store, {
         log: (msg, fields) =>
           ctx.log(
             `[harness-orchestrator] ${msg}${fields ? ' ' + JSON.stringify(fields) : ''}`,
           ),
+        ...(installedPluginIds
+          ? { pluginIds: [...installedPluginIds] }
+          : {}),
       });
 
       registry = new OrchestratorRegistry(store, orchestratorDeps, {

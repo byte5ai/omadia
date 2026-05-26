@@ -45,7 +45,11 @@ export type {
   ResolveDecision,
   ResolveResult,
 } from './routing/channelResolver.js';
-export { ensureFallbackAgent, FALLBACK_AGENT_SLUG } from './registry/onboarding.js';
+export {
+  ensureFallbackAgent,
+  attachAllPlugins,
+  FALLBACK_AGENT_SLUG,
+} from './registry/onboarding.js';
 export type { OnboardingOptions } from './registry/onboarding.js';
 // US8 — per-Agent memory scope.
 export { computeMemoryScope } from './registry/index.js';
