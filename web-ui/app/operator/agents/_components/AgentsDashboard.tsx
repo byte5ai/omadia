@@ -185,6 +185,7 @@ export function AgentsDashboard({
               agent={agent}
               catalog={catalog}
               channelTypes={channelTypes}
+              isFallback={agent.id === initial.fallback_agent_id}
               disabled={pending || !!busy}
               onPatch={(patch) =>
                 run(`patch:${agent.slug}`, () =>
@@ -464,6 +465,7 @@ function AgentCard(props: {
   agent: OperatorAgentDto;
   catalog: PluginCatalogEntryDto[] | null;
   channelTypes: readonly string[];
+  isFallback: boolean;
   disabled: boolean;
   onPatch: (patch: {
     name?: string;
@@ -626,11 +628,17 @@ function AgentCard(props: {
             )}
           </div>
 
+          {props.isFallback && (
+            <div className="mb-3 rounded border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-900">
+              {t('fallbackStoreOnlyNotice')}
+            </div>
+          )}
           {props.catalog ? (
             <PluginsDnd
               key={pluginsRevisionKey(agent)}
               agent={agent}
               catalog={props.catalog}
+              isFallback={props.isFallback}
               disabled={props.disabled}
               onReplace={props.onReplacePlugins}
             />

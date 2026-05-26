@@ -370,7 +370,8 @@
     "enabledShort": "active",
     "dragHandle": "Drag to move between columns",
     "dependencyMissingBadge": "Parent missing",
-    "dependencyMissingTooltip": "This plugin depends on \"{parent}\" — parent is not attached in the same column."
+    "dependencyMissingTooltip": "This plugin depends on \"{parent}\" — parent is not attached in the same column.",
+    "fallbackStoreOnlyNotice": "The fallback Agent always runs plugins with the global store config. Per-Agent overrides are disabled here — create a dedicated Agent if you need them."
   },
   "streamToasts": {
     "phaseThinking": "Agent is thinking",

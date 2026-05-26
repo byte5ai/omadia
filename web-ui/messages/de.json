@@ -370,7 +370,8 @@
     "enabledShort": "aktiv",
     "dragHandle": "Ziehen, um zwischen den Spalten zu bewegen",
     "dependencyMissingBadge": "Parent fehlt",
-    "dependencyMissingTooltip": "Dieses Plugin hängt von „{parent}\" ab — Parent ist nicht in der gleichen Spalte angehängt."
+    "dependencyMissingTooltip": "Dieses Plugin hängt von „{parent}\" ab — Parent ist nicht in der gleichen Spalte angehängt.",
+    "fallbackStoreOnlyNotice": "Der Fallback-Agent läuft immer mit den Configs aus dem Store. Per-Agent Overrides sind hier deaktiviert — leg dafür einen eigenen Agent an."
   },
   "streamToasts": {
     "phaseThinking": "Agent denkt",

@@ -40,6 +40,14 @@ interface SelectedEntry {
 interface PluginsDndProps {
   readonly agent: OperatorAgentDto;
   readonly catalog: PluginCatalogEntryDto[];
+  /**
+   * Fallback Agents always run their plugins with the global store config
+   * (the one set during plugin install). The per-(Agent × plugin) config
+   * drawer is hidden + the saved config payload is wiped to `{}` before
+   * the PUT so the server-side contract stays consistent: only NON-fallback
+   * Agents may override.
+   */
+  readonly isFallback: boolean;
   readonly disabled: boolean;
   readonly onReplace: (
     plugins: Array<{
@@ -233,7 +241,11 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
       config?: Record<string, unknown>;
     }> = [];
     for (const [id, entry] of selected) {
-      out.push({ id, enabled: entry.enabled, config: entry.config });
+      // Fallback contract: per-Agent config is meaningless on the fallback
+      // — wipe to {} so the server never has to second-guess which copy
+      // wins. Non-fallback Agents persist whatever the operator entered.
+      const config = props.isFallback ? {} : entry.config;
+      out.push({ id, enabled: entry.enabled, config });
     }
     props.onReplace(out);
   }
@@ -276,6 +288,7 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
                   depth={row.depth}
                   parentSatisfied={row.parentSatisfied}
                   selection={null}
+                  storeConfigOnly={props.isFallback}
                   disabled={props.disabled}
                   onAttach={() => attach(row.id)}
                   expanded={false}
@@ -304,6 +317,7 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
                   depth={row.depth}
                   parentSatisfied={row.parentSatisfied}
                   selection={selection}
+                  storeConfigOnly={props.isFallback}
                   disabled={props.disabled}
                   onAttach={() => undefined}
                   expanded={expanded === row.id}
@@ -468,6 +482,9 @@ function DraggablePluginTile(props: {
   depth: number;
   parentSatisfied: boolean;
   selection: SelectedEntry | null;
+  /** Hide the per-plugin config drawer when the parent Agent is the
+   *  fallback — fallback always uses the store-config. */
+  storeConfigOnly: boolean;
   disabled: boolean;
   expanded: boolean;
   onAttach: () => void;
@@ -498,7 +515,7 @@ function DraggablePluginTile(props: {
   };
 
   const attached = props.selection !== null;
-  const hasFields = entry.setup_fields.length > 0;
+  const hasFields = entry.setup_fields.length > 0 && !props.storeConfigOnly;
   const isStrict = entry.privacy_class === 'strict';
 
   return (

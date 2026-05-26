@@ -946,6 +946,46 @@ async function main(): Promise<void> {
   for (const t of domainTools) orchestrator.registerDomainTool(t);
   // Hot-register pathway for future agent installs while the process runs.
   dynamicAgentRuntime.attachOrchestrator(orchestrator);
+
+  // Phase B fix — the multi-orchestrator registry built one Orchestrator per
+  // Agent earlier in boot (inside the orchestrator plugin's activate, during
+  // `toolPluginRuntime.activateAllInstalled`). At that point `domainTools`
+  // was still empty, so every per-Agent orchestrator started with
+  // `domainTools: []` — chat hitting the fallback Agent could not see
+  // `query_odoo_accounting`, `query_confluence`, etc. Push the populated
+  // list into every registry-built Orchestrator now. Skip duplicates so a
+  // hot-installed tool that already self-registered does not throw.
+  const registryForHydrate =
+    serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
+  if (registryForHydrate) {
+    let attached = 0;
+    for (const entry of registryForHydrate.list()) {
+      for (const t of domainTools) {
+        if (!entry.built.orchestrator.hasDomainTool(t.name)) {
+          entry.built.orchestrator.registerDomainTool(t);
+          attached += 1;
+        }
+      }
+    }
+    console.log(
+      `[middleware] registry orchestrators: hydrated with ${String(attached)} domain-tool registrations across ${String(registryForHydrate.list().length)} agent(s)`,
+    );
+    // Persist the wiring so a later `registry.reload()` that REBUILDS an
+    // Agent (privacy_profile flip, etc.) re-hydrates the new orchestrator.
+    // Without this, the rebuilt Agent goes back to `domainTools: []` and
+    // the operator's next chat turn cannot reach the sub-agents.
+    registryForHydrate.setOnAgentBuilt((slug, built) => {
+      for (const t of domainTools) {
+        if (!built.orchestrator.hasDomainTool(t.name)) {
+          built.orchestrator.registerDomainTool(t);
+        }
+      }
+      console.log(
+        `[middleware] registry: orchestrator for "${slug}" hydrated with ${String(domainTools.length)} domain-tool(s)`,
+      );
+    });
+  }
+
   console.log('[middleware] context retriever ready (tail + entity-anchor + FTS)');
 
   // Routines feature (OB-NEW): persistent user-created scheduled agent

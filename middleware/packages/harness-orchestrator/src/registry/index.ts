@@ -109,6 +109,25 @@ export interface OrchestratorRegistryOptions {
    * boot wires `console.log` here.
    */
   readonly log?: (msg: string, fields?: Record<string, unknown>) => void;
+  /**
+   * Phase B fix — fired immediately after the registry builds a fresh
+   * `BuiltOrchestrator` (initial `start()`, `applySnapshot`, `add` / `rebuild`
+   * diff actions). The kernel uses this to push its kernel-owned
+   * `DomainTool[]` set into the new Orchestrator so per-Agent chats see
+   * the same tool surface as the legacy `chatAgent@1` bundle. Without it
+   * each per-Agent orchestrator starts with `domainTools: []` and chat
+   * against the fallback Agent can not reach `query_odoo_*`, `query_*`,
+   * etc.
+   *
+   * Errors thrown here are caught + logged inside the registry — they
+   * never abort the diff action, so a misbehaving callback can not lock
+   * the registry into a half-applied state.
+   */
+  readonly onAgentBuilt?: (
+    slug: string,
+    built: BuiltOrchestrator,
+    reason: 'initial' | 'add' | 'rebuild',
+  ) => void;
 }
 
 export interface ActiveAgent {
@@ -139,7 +158,7 @@ export class OrchestratorRegistry {
   constructor(
     private readonly store: ConfigStore,
     private readonly deps: OrchestratorDeps,
-    private readonly options: OrchestratorRegistryOptions,
+    private options: OrchestratorRegistryOptions,
   ) {}
 
   /**
@@ -243,6 +262,7 @@ export class OrchestratorRegistry {
           built,
           memoryScope,
         });
+        this.notifyBuilt(action.agent.slug, built, 'add');
         this.log(`registry: agent added`, {
           slug: action.agent.slug,
           agentId: action.agent.id,
@@ -285,6 +305,7 @@ export class OrchestratorRegistry {
           built,
           memoryScope,
         });
+        this.notifyBuilt(action.agent.slug, built, 'rebuild');
         this.log(`registry: agent rebuilt`, {
           slug: action.agent.slug,
           agentId: action.agent.id,
@@ -367,6 +388,20 @@ export class OrchestratorRegistry {
   /** The currently-held snapshot. Useful for diffing in US5. */
   currentSnapshot(): ConfigSnapshot | undefined {
     return this.snapshot;
+  }
+
+  /**
+   * Attach (or replace) the post-build callback. The orchestrator plugin
+   * creates the registry before the kernel has finished collecting its
+   * `DomainTool[]` set, so the kernel can't hand the callback at
+   * construct time — it calls this method later, once the tool runtime
+   * has populated the list. Any subsequent `applySnapshot` / `reload` /
+   * `add` / `rebuild` action will fire the new callback.
+   */
+  setOnAgentBuilt(
+    cb: OrchestratorRegistryOptions['onAgentBuilt'],
+  ): void {
+    this.options = { ...this.options, onAgentBuilt: cb };
   }
 
   /**
@@ -471,6 +506,23 @@ export class OrchestratorRegistry {
 
   private log(msg: string, fields?: Record<string, unknown>): void {
     this.options.log?.(msg, fields);
+  }
+
+  private notifyBuilt(
+    slug: string,
+    built: BuiltOrchestrator,
+    reason: 'initial' | 'add' | 'rebuild',
+  ): void {
+    if (!this.options.onAgentBuilt) return;
+    try {
+      this.options.onAgentBuilt(slug, built, reason);
+    } catch (err) {
+      this.log(`registry: onAgentBuilt callback threw — continuing`, {
+        slug,
+        reason,
+        error: (err as Error).message,
+      });
+    }
   }
 }
 

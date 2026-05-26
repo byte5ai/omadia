@@ -343,6 +343,13 @@ export function createOperatorAgentsRouter(
         res.status(404).json({ error: 'not_found' });
         return;
       }
+      // Phase B contract: the fallback Agent always runs plugins with the
+      // global store config — per-Agent overrides are reserved for named
+      // Agents (Agent-A talks to Odoo prod, Agent-B to Odoo staging, etc).
+      // Enforce here so a client that ignored the UI restriction can not
+      // still smuggle a per-Agent config into the fallback row.
+      const settings = await live.store.getPlatformSettings();
+      const isFallback = settings.fallbackAgentId === existing.id;
       const current = await live.store.listAgentPlugins(existing.id);
       const desired = new Set(body.plugins.map((p) => p.id));
       for (const p of current) {
@@ -351,14 +358,15 @@ export function createOperatorAgentsRouter(
         }
       }
       for (const p of body.plugins) {
+        const config = isFallback ? {} : p.config;
         await live.store.upsertAgentPlugin(existing.id, {
           pluginId: p.id,
-          ...(p.config ? { config: p.config } : {}),
+          ...(config ? { config } : {}),
           ...(p.enabled !== undefined ? { enabled: p.enabled } : {}),
         });
       }
       await live.registry.reload();
-      res.json({ ok: true });
+      res.json({ ok: true, fallback: isFallback });
     } catch (err) {
       badRequest(res, err);
     }
