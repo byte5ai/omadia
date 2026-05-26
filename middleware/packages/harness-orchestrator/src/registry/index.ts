@@ -65,6 +65,17 @@ export interface PluginCapabilityLookup {
    * for the running deployment isn't installed yet.
    */
   isInstalled?(pluginId: string): boolean | undefined;
+  /**
+   * Returns the plugin's declared memory scope — the union of
+   * `permissions.memory.reads` and `permissions.memory.writes` from the
+   * manifest. Used by the registry (T033) to compute an Agent's effective
+   * memory scope as the union of its enabled plugins' scopes plus `core`.
+   *
+   * `undefined` is treated as "unknown — assume no scope" so a missing
+   * lookup degrades safely to "Agent has only `core` access" rather than
+   * blowing the boot path open.
+   */
+  getMemoryScope?(pluginId: string): readonly string[] | undefined;
 }
 
 export interface OrchestratorRegistryOptions {
@@ -93,6 +104,16 @@ export interface ActiveAgent {
   readonly plugins: readonly AgentPluginRow[];
   readonly bindings: readonly ChannelBindingRow[];
   readonly built: BuiltOrchestrator;
+  /**
+   * Memory scope = union of enabled plugins' `permissions.memory.{reads,
+   * writes}` plus `core` (US8 / T033). Computed from `pluginLookup` at
+   * snapshot-apply time; empty arrays when no `pluginLookup` is wired
+   * (legacy boot — no per-Agent enforcement).
+   *
+   * The `core` entry is always present and is the convention for shared
+   * agent-agnostic memory (sessions, run traces, system prompts).
+   */
+  readonly memoryScope: readonly string[];
 }
 
 export class OrchestratorRegistry {
@@ -199,16 +220,22 @@ export class OrchestratorRegistry {
         );
         const plugins = pluginsByAgent.get(action.agent.id) ?? [];
         const bindings = bindingsByAgent.get(action.agent.id) ?? [];
+        const memoryScope = computeMemoryScope(
+          plugins,
+          this.options.pluginLookup,
+        );
         this.active.set(action.agent.slug, {
           agent: action.agent,
           plugins,
           bindings,
           built,
+          memoryScope,
         });
         this.log(`registry: agent added`, {
           slug: action.agent.slug,
           agentId: action.agent.id,
           plugins: plugins.filter((p) => p.enabled).map((p) => p.pluginId),
+          memoryScope,
         });
         return;
       }
@@ -235,11 +262,16 @@ export class OrchestratorRegistry {
         );
         const plugins = pluginsByAgent.get(action.agent.id) ?? [];
         const bindings = bindingsByAgent.get(action.agent.id) ?? [];
+        const memoryScope = computeMemoryScope(
+          plugins,
+          this.options.pluginLookup,
+        );
         this.active.set(action.agent.slug, {
           agent: action.agent,
           plugins,
           bindings,
           built,
+          memoryScope,
         });
         this.log(`registry: agent rebuilt`, {
           slug: action.agent.slug,
@@ -254,16 +286,22 @@ export class OrchestratorRegistry {
         if (!before) return;
         const plugins = pluginsByAgent.get(action.agent.id) ?? [];
         const bindings = bindingsByAgent.get(action.agent.id) ?? [];
+        const memoryScope = computeMemoryScope(
+          plugins,
+          this.options.pluginLookup,
+        );
         this.active.set(action.agent.slug, {
           ...before,
           agent: action.agent,
           plugins,
           bindings,
+          memoryScope,
         });
         this.log(`registry: agent metadata updated`, {
           slug: action.agent.slug,
           agentId: action.agent.id,
           plugins: plugins.filter((p) => p.enabled).map((p) => p.pluginId),
+          memoryScope,
         });
         return;
       }
@@ -333,12 +371,12 @@ export class OrchestratorRegistry {
     return {
       agentSlug: entry.agent.slug,
       pluginIds: entry.plugins.filter((p) => p.enabled).map((p) => p.pluginId),
-      // Tool / memory enumeration is shared at the kernel level in US4. The
-      // snapshot records what the registry KNOWS about this Agent so US8
-      // can wire memory-scope enforcement against it. Empty arrays today
-      // means "no per-session restriction beyond what the kernel exposes."
+      // Tool enumeration is shared at the kernel level until per-Agent
+      // plugin activation lands — the empty array means "no per-session
+      // tool restriction beyond what the kernel exposes."
       toolIds: [],
-      memoryScope: [],
+      // US8 / T035 — populated from the Agent's computed memory scope.
+      memoryScope: [...entry.memoryScope],
       capturedAt: Date.now(),
     };
   }
@@ -468,6 +506,35 @@ export function validateSnapshot(
 
 function actionSlug(action: DiffAction): string {
   return action.kind === 'remove' ? action.slug : action.agent.slug;
+}
+
+/**
+ * Compute an Agent's effective memory scope (US8 / T033) as the union of:
+ *   - its enabled plugins' `permissions.memory.{reads, writes}` declarations
+ *     (looked up via the optional `PluginCapabilityLookup.getMemoryScope`)
+ *   - the constant `core` namespace (always present — shared agent-agnostic
+ *     memory: sessions, run traces, system prompts)
+ *
+ * `core` is a stable convention used by the `ScopedMemoryStore` wrapper to
+ * permit shared paths even for Agents with otherwise-empty plugin lists.
+ *
+ * When `lookup` is undefined OR the lookup returns undefined for every
+ * plugin, the scope degrades to `['core']` — no per-Agent enforcement
+ * beyond the shared namespace.
+ */
+export function computeMemoryScope(
+  plugins: readonly AgentPluginRow[],
+  lookup: PluginCapabilityLookup | undefined,
+): readonly string[] {
+  const out = new Set<string>(['core']);
+  if (!lookup?.getMemoryScope) return Array.from(out);
+  for (const p of plugins) {
+    if (!p.enabled) continue;
+    const scope = lookup.getMemoryScope(p.pluginId);
+    if (!scope) continue;
+    for (const s of scope) out.add(s);
+  }
+  return Array.from(out);
 }
 
 function groupBy<T, K>(

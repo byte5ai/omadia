@@ -49,7 +49,9 @@ import {
   type PluginCapabilityLookup,
 } from './registry/index.js';
 import { runMultiOrchestratorMigrations } from './registry/migrator.js';
+import { ensureFallbackAgent } from './registry/onboarding.js';
 import { ReloadBus } from './registry/reloadBus.js';
+import { ChannelResolver } from './routing/channelResolver.js';
 import type { SessionLogger } from './sessionLogger.js';
 import {
   EDIT_PROCESS_TOOL_NAME,
@@ -120,6 +122,7 @@ import {
 const CHAT_AGENT_SERVICE = 'chatAgent';
 const NATIVE_TOOL_REGISTRY_SERVICE = 'nativeToolRegistry';
 const ORCHESTRATOR_REGISTRY_SERVICE = 'orchestratorRegistry';
+const CHANNEL_RESOLVER_SERVICE = 'channelResolver';
 const GRAPH_POOL_SERVICE = 'graphPool';
 const PLUGIN_CAPABILITIES_SERVICE = 'pluginCapabilities';
 
@@ -413,6 +416,17 @@ export async function activate(
         PLUGIN_CAPABILITIES_SERVICE,
       );
       const store = new ConfigStore(graphPool);
+
+      // US7 / T029 — first-boot fallback Agent seed. Runs before the
+      // registry's `start()` so the very first boot already has a fallback
+      // available for unbound channel keys.
+      await ensureFallbackAgent(store, {
+        log: (msg, fields) =>
+          ctx.log(
+            `[harness-orchestrator] ${msg}${fields ? ' ' + JSON.stringify(fields) : ''}`,
+          ),
+      });
+
       registry = new OrchestratorRegistry(store, orchestratorDeps, {
         defaultRuntimeConfig: {
           model,
@@ -430,6 +444,19 @@ export async function activate(
       ctx.log(
         `[harness-orchestrator] orchestratorRegistry@1 published (agents=${String(registry.size())})`,
       );
+
+      // US7 / T028 — publish the channel resolver so channel plugins can
+      // route inbound webhooks per-binding. Opt-in: the legacy
+      // `chatAgent@1` keeps serving anything that does not consume it.
+      const resolver = new ChannelResolver({
+        registry,
+        log: (msg, fields) =>
+          ctx.log(
+            `[harness-orchestrator] ${msg}${fields ? ' ' + JSON.stringify(fields) : ''}`,
+          ),
+      });
+      ctx.services.provide(CHANNEL_RESOLVER_SERVICE, resolver);
+      ctx.log('[harness-orchestrator] channelResolver@1 published');
 
       // US5 / T021 — LISTEN/NOTIFY hot-reload bus. Bound to the same pool
       // so the bus reserves one connection from the kg pool for the LISTEN
