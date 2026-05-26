@@ -430,9 +430,13 @@ async function main(): Promise<void> {
       return Array.from(new Set([...reads, ...writes]));
     },
     listInstalled(): readonly string[] {
+      // Include `active` AND `inactive` plugins (the latter may simply
+      // not have activated yet on this boot). Drop `errored` only —
+      // validateSnapshot would reject those, and the operator should fix
+      // the underlying manifest before the platform re-attaches them.
       return installedRegistry
         .list()
-        .filter((entry) => entry.status === 'active')
+        .filter((entry) => entry.status !== 'errored')
         .map((entry) => entry.id);
     },
   });

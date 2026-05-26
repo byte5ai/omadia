@@ -6,6 +6,7 @@ import { useTranslations } from 'next-intl';
 
 import { ChevronDown, ChevronRight } from 'lucide-react';
 
+import { ApiError } from '../../../_lib/api';
 import {
   createOperatorAgent,
   deleteOperatorAgent,
@@ -98,7 +99,7 @@ export function AgentsDashboard({
         startTransition(() => router.refresh());
       })
       .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(humanizeApiError(err));
       })
       .finally(() => setBusy(null));
   }
@@ -627,7 +628,7 @@ function AgentCard(props: {
 
           {props.catalog ? (
             <PluginsDnd
-              key={`plugins:${agent.updated_at}`}
+              key={pluginsRevisionKey(agent)}
               agent={agent}
               catalog={props.catalog}
               disabled={props.disabled}
@@ -638,7 +639,7 @@ function AgentCard(props: {
           )}
 
           <BindingsEditor
-            key={`bindings:${agent.updated_at}`}
+            key={bindingsRevisionKey(agent)}
             agent={agent}
             channelTypes={props.channelTypes}
             disabled={props.disabled}
@@ -794,4 +795,59 @@ function Field(props: {
       {props.children}
     </label>
   );
+}
+
+/**
+ * `agents.updated_at` only bumps on the agents row, not on plugin / binding
+ * writes — so the prior `key={updated_at}` did not remount the editor after
+ * a save, leaving local state stale. Hash the actual payload instead so a
+ * `replaceAgentPlugins` write that produces new server state remounts the
+ * editor and reseeds local state from props.
+ */
+function pluginsRevisionKey(agent: OperatorAgentDto): string {
+  const sig = agent.plugins
+    .map(
+      (p) =>
+        `${p.id}|${p.enabled ? 1 : 0}|${JSON.stringify(p.config ?? {})}`,
+    )
+    .sort()
+    .join('::');
+  return `plugins:${agent.id}:${sig}`;
+}
+
+function bindingsRevisionKey(agent: OperatorAgentDto): string {
+  const sig = agent.bindings
+    .map((b) => `${b.channel_type}|${b.channel_key}`)
+    .sort()
+    .join('::');
+  return `bindings:${agent.id}:${sig}`;
+}
+
+/**
+ * Pull the operator-readable message out of a thrown error. `ApiError`
+ * carries the JSON body the route returned (e.g. the 409 from
+ * `validateSnapshot`); the bare `error.message` is just
+ * `"PUT /v1/... failed: 409"` which tells the operator nothing.
+ */
+export function humanizeApiError(err: unknown): string {
+  if (err instanceof ApiError) {
+    try {
+      const parsed = err.body ? JSON.parse(err.body) : null;
+      const m =
+        (parsed && typeof parsed === 'object' && 'message' in parsed
+          ? String((parsed as { message?: unknown }).message ?? '')
+          : '') || '';
+      const e =
+        (parsed && typeof parsed === 'object' && 'error' in parsed
+          ? String((parsed as { error?: unknown }).error ?? '')
+          : '') || '';
+      if (m && e) return `${e}: ${m} (HTTP ${err.status})`;
+      if (m) return `${m} (HTTP ${err.status})`;
+      if (e) return `${e} (HTTP ${err.status})`;
+    } catch {
+      // body wasn't JSON — fall through to status-only
+    }
+    return `${err.message}${err.body ? ` — ${err.body.slice(0, 200)}` : ''}`;
+  }
+  return err instanceof Error ? err.message : String(err);
 }

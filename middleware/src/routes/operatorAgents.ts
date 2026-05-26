@@ -635,9 +635,13 @@ export function createOperatorAgentsRouter(
         res.status(404).json({ error: 'fallback_missing' });
         return;
       }
+      // Skip `errored` entries (validateSnapshot would reject them anyway —
+      // installedRegistry treats `errored` as un-installable until the
+      // operator fixes the manifest). Include `inactive` so a plugin that
+      // briefly stopped activating still ends up attached.
       const pluginIds = installed
         .list()
-        .filter((e) => e.status === 'active')
+        .filter((e) => e.status !== 'errored')
         .map((e) => e.id);
       const attached = await attachAllPlugins(
         live.store,

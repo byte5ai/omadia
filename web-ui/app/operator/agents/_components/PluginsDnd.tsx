@@ -150,15 +150,11 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
     if (!fromContainer || !toContainer) return;
     if (fromContainer === toContainer) return; // intra-column reorder is cosmetic only
 
-    setSelected((prev) => {
-      const next = new Map(prev);
-      if (toContainer === ENABLED_ID && !next.has(activeId)) {
-        next.set(activeId, { enabled: true, config: {} });
-      } else if (toContainer === AVAILABLE_ID && next.has(activeId)) {
-        next.delete(activeId);
-      }
-      return next;
-    });
+    if (toContainer === ENABLED_ID) {
+      attach(activeId);
+    } else if (toContainer === AVAILABLE_ID) {
+      detach(activeId);
+    }
   }
 
   function toggleEnabled(id: string): void {
@@ -179,11 +175,36 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
     });
   }
 
+  /**
+   * Attaching a plugin transitively pulls in every `depends_on` parent.
+   * Without that, attaching a child fails at save time: the orchestrator
+   * crashloops the plugin because the parent's secrets/config it inherits
+   * from are unreachable. The user's feedback was explicit — "Child → Dep
+   * automatisch mit installieren."
+   *
+   * Walked breadth-first so a chain of grandparents is added one go.
+   * Already-attached parents are left as-is (no overwrite of their config).
+   * Parents outside the catalog (manifest-less plugin) are silently
+   * skipped so an orphan dependency cannot block the attach.
+   */
   function attach(id: string): void {
     setSelected((prev) => {
       if (prev.has(id)) return prev;
       const next = new Map(prev);
-      next.set(id, { enabled: true, config: {} });
+      const queue: string[] = [id];
+      const seen = new Set<string>();
+      while (queue.length > 0) {
+        const cur = queue.shift();
+        if (!cur || seen.has(cur)) continue;
+        seen.add(cur);
+        if (!next.has(cur)) {
+          next.set(cur, { enabled: true, config: {} });
+        }
+        const entry = catalogById.get(cur);
+        for (const dep of entry?.depends_on ?? []) {
+          if (!next.has(dep) && catalogById.has(dep)) queue.push(dep);
+        }
+      }
       return next;
     });
   }
