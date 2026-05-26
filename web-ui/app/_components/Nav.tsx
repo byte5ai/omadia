@@ -196,30 +196,37 @@ function ClusterDropdown({
         ) : null}
       </button>
       {open ? (
+        // Sits flush against the button (no mt-1) so the cursor never crosses
+        // a dead zone on its way down; pt-1 keeps the visual gap. The menu
+        // itself uses a solid surface (white in light mode, dark in dark mode)
+        // because the previous `bg-[color:var(--surface)]` resolved to the
+        // page background and showed page content through the menu.
         <div
           id={menuId}
           role="menu"
-          className="absolute left-0 top-full z-50 mt-1 min-w-[180px] rounded border border-[color:var(--border)] bg-[color:var(--surface)] py-1 shadow-lg"
+          className="absolute left-0 top-full z-50 min-w-[180px] pt-1"
         >
-          {cluster.children.map((child) => {
-            const active = child.href === activeHref;
-            return (
-              <Link
-                key={child.href}
-                href={child.href}
-                role="menuitem"
-                onClick={() => setOpen(false)}
-                className={[
-                  'block px-3 py-1.5 text-[12px] uppercase tracking-[0.16em] transition-colors',
-                  active
-                    ? 'text-[color:var(--ink)] bg-[color:var(--surface-hover)]'
-                    : 'text-[color:var(--muted-ink)] hover:text-[color:var(--ink)] hover:bg-[color:var(--surface-hover)]',
-                ].join(' ')}
-              >
-                {renderChildLabel(child)}
-              </Link>
-            );
-          })}
+          <div className="rounded border border-neutral-200 bg-white py-1 shadow-lg dark:border-neutral-800 dark:bg-neutral-900">
+            {cluster.children.map((child) => {
+              const active = child.href === activeHref;
+              return (
+                <Link
+                  key={child.href}
+                  href={child.href}
+                  role="menuitem"
+                  onClick={() => setOpen(false)}
+                  className={[
+                    'block px-3 py-1.5 text-[12px] uppercase tracking-[0.16em] transition-colors',
+                    active
+                      ? 'bg-neutral-100 text-[color:var(--ink)] dark:bg-neutral-800'
+                      : 'text-[color:var(--muted-ink)] hover:bg-neutral-100 hover:text-[color:var(--ink)] dark:hover:bg-neutral-800',
+                  ].join(' ')}
+                >
+                  {renderChildLabel(child)}
+                </Link>
+              );
+            })}
+          </div>
         </div>
       ) : null}
     </div>
