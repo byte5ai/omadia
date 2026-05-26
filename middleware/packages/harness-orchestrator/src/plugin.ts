@@ -291,6 +291,12 @@ export async function activate(
   const model =
     (ctx.config.get<string>('orchestrator_model') ?? '').trim() ||
     DEFAULT_MODEL;
+  // Operator persona. Empty → Orchestrator falls back to its generic,
+  // integration-agnostic `DEFAULT_ASSISTANT_IDENTITY`. Lets a deployment
+  // brand the bot without a hardcoded "byte5 / Odoo" identity in the harness.
+  const assistantIdentity = (
+    ctx.config.get<string>('assistant_identity') ?? ''
+  ).trim();
   const maxTokens = parseNumberOrDefault(
     ctx.config.get<unknown>('orchestrator_max_tokens'),
     DEFAULT_MAX_TOKENS,
@@ -401,6 +407,7 @@ export async function activate(
     autoPromoteThreshold,
     ...(graphPool ? { graphPool } : {}),
     graphTenantId,
+    ...(assistantIdentity ? { assistantIdentity } : {}),
     chatParticipantsTool,
     askUserChoiceTool,
     suggestFollowUpsTool,

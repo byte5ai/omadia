@@ -116,8 +116,13 @@ function extractEntityRefs(block: string): EntityRef[] {
     const system = rec['s'];
     const model = rec['m'];
     const id = rec['id'];
+    // `system` is an open-ended identifier — every integration plugin
+    // declares its own (`odoo`, `confluence`, `github`, …). Accept any
+    // non-empty string; only structurally broken refs (no model, no id)
+    // are dropped.
     if (
-      (system !== 'odoo' && system !== 'confluence') ||
+      typeof system !== 'string' ||
+      system.length === 0 ||
       typeof model !== 'string' ||
       (typeof id !== 'string' && typeof id !== 'number')
     ) {

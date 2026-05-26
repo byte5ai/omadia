@@ -108,18 +108,22 @@ describe('parseSessionTranscript', () => {
     assert.deepEqual(t.entityRefs, []);
   });
 
-  it('silently drops malformed entity entries', () => {
+  it('accepts any non-empty system, drops structurally malformed entries', () => {
     const md = `# Header\n\n---\n\n${renderTurn({
       time: '10:00:00', user: 'Q', assistant: 'A',
       entities: [
         { s: 'odoo', m: 'hr.employee', id: 1 },
-        { s: 'unknown-system', m: 'x', id: 2 }, // bad system → dropped
-        { m: 'only-model' },                    // missing id → dropped
+        { s: 'github', m: 'repo', id: 2 },   // plugin system → accepted
+        { s: '', m: 'x', id: 3 },            // empty system → dropped
+        { m: 'only-model' },                 // missing system + id → dropped
       ],
     })}`;
     const t = parseSessionTranscript('2026-04-18', md)[0];
     assert.ok(t);
-    assert.equal(t.entityRefs.length, 1);
-    assert.equal(t.entityRefs[0]?.id, 1);
+    assert.equal(t.entityRefs.length, 2);
+    assert.deepEqual(
+      t.entityRefs.map((r) => r.system).sort(),
+      ['github', 'odoo'],
+    );
   });
 });

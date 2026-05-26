@@ -54,7 +54,7 @@ const MAX_RATIONALE_LEN = 2000;
 const MAX_EXCERPTS = 5;
 const MAX_EXCERPT_LEN = 300;
 
-const SYSTEM_PROMPT = `You are a memory-curation assistant for a chat between a byte5 (German software studio running on Odoo) team member and an AI agent.
+const SYSTEM_PROMPT = `You are a memory-curation assistant for a chat between a team member and an AI agent.
 
 Given a single turn (user message + assistant answer), distil a SHORT save-as-memory suggestion the user could promote into a curated knowledge entry.
 

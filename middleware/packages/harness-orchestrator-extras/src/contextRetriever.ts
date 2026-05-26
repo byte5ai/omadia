@@ -268,8 +268,9 @@ export function extractCandidateTerms(message: string): string[] {
  * cacheable system block. Combines three signals with decreasing priority:
  *
  *  1. Verbatim tail — last N turns of the active chat (dialog coherence).
- *  2. Entity-anchored turns — turns that captured an OdooEntity or
- *     ConfluencePage whose label/id appears in the current user message.
+ *  2. Entity-anchored turns — turns that captured an entity node
+ *     (OdooEntity / ConfluencePage / PluginEntity) whose label/id appears
+ *     in the current user message.
  *  3. Full-text search hits — cross-chat, scoped to the same user.
  *
  * Dedupes by turn id. Honours a soft character budget: once the budget is
@@ -568,7 +569,17 @@ export class ContextRetriever {
           : turnNodeId(hit.scope, hit.time);
         const neighbours = await this.graph.getNeighbors(externalId);
         for (const n of neighbours) {
-          if (n.type !== 'OdooEntity' && n.type !== 'ConfluencePage') continue;
+          // Entity nodes the KG knows: the legacy Odoo/Confluence sync
+          // targets PLUS the generic `PluginEntity` written by every other
+          // integration plugin. Anything else (Turn/Session/Fact/…) is
+          // skipped — keep this in sync with the KG's entity node types.
+          if (
+            n.type !== 'OdooEntity' &&
+            n.type !== 'ConfluencePage' &&
+            n.type !== 'PluginEntity'
+          ) {
+            continue;
+          }
           if (seen.has(n.id)) continue;
           seen.set(n.id, n);
           if (seen.size >= 10) return [...seen.values()];

@@ -267,6 +267,15 @@ export interface OrchestratorOptions {
   autoPromoteThreshold?: number;
   graphPool?: Pool;
   graphTenantId?: string;
+  /**
+   * Operator-configurable assistant persona — the opening line(s) of the
+   * system prompt. Supplied via the `assistant_identity` setup field. When
+   * empty/undefined the orchestrator falls back to
+   * `DEFAULT_ASSISTANT_IDENTITY`, a generic integration-agnostic persona.
+   * This keeps the harness free of a hardcoded "byte5 / Odoo" identity —
+   * the concrete agent roster is still rendered live from `domainTools`.
+   */
+  assistantIdentity?: string;
 }
 
 // `ChatTurnInput` and `ChatTurnAttachment` were lifted to
@@ -411,7 +420,7 @@ Für diesen EINEN Turn: Ignoriere die Memory-Lese-Konvention aus dem stabilen Sy
 
 Stattdessen:
 - Beantworte die aktuelle User-Frage ausschließlich mit dem, was in ihrer Nachricht steht (inkl. eventuellem \`[attachments-info]\`-Block) + frischen Fach-Agent-Calls.
-- Wenn du Daten brauchst, die du sonst aus \`/memories/\` zögen würdest, MACH jetzt direkt den passenden Tool-Call (z.B. \`query_odoo_accounting\`, \`query_odoo_hr\`).
+- Wenn du Daten brauchst, die du sonst aus \`/memories/\` zögen würdest, MACH jetzt direkt den passenden Fach-Agent-Tool-Call.
 - Keine Referenz auf frühere Gespräche. Keine "wie eben erwähnt". Behandle den Turn als isoliert.
 
 Der Grund für diesen Modus: der User vermutet, dass dich ein früherer Memory-Eintrag oder ein FTS-Treffer auf eine falsche Antwort gelockt hat. Jetzt ist die Chance, unabhängig von diesem Altlast-Pfad zu antworten.`,
@@ -423,7 +432,17 @@ Der Grund für diesen Modus: der User vermutet, dass dich ein früherer Memory-E
   return parts.length > 0 ? parts.join('\n\n---\n\n') : undefined;
 }
 
+/**
+ * Generic, integration-agnostic fallback persona. Used when the operator
+ * has not set the `assistant_identity` setup field. Deliberately mentions
+ * no specific integration (Odoo, Confluence, …) — the concrete agent
+ * roster is rendered live from `domainTools` further down in the prompt.
+ */
+const DEFAULT_ASSISTANT_IDENTITY =
+  'Du bist ein KI-Assistent, der Anfragen beantwortet, indem er an spezialisierte Fach-Agenten delegiert und Lernpunkte über Sessions hinweg persistent merkt.';
+
 function buildSystemPrompt(
+  assistantIdentity: string,
   domainTools: DomainTool[],
   hasGraph: boolean,
   hasDiagramTool: boolean,
@@ -442,7 +461,7 @@ function buildSystemPrompt(
     ? '\n- `ask_user_choice`: Stellt dem User eine Rückfrage mit 2–4 vordefinierten Button-Optionen als Smart Card. Nur aufrufen, wenn die User-Eingabe **genuin mehrdeutig** ist UND es eine **endliche, kleine Menge plausibler Interpretationen** gibt (z.B. zwei Module tracken Umsatz, zwei Kunden haben ähnlichen Namen). **NICHT** nutzen für: offene "was meinst du?"-Fragen, Trivial-Bestätigungen, oder wenn der Kontext die Intention bereits eindeutig macht. Max 1× pro Turn — der Turn endet direkt nach dem Call; die Auswahl kommt im nächsten Turn als normale User-Nachricht.\n'
     : '';
   const calendarBlock = hasCalendar
-    ? '\n- `find_free_slots` + `book_meeting`: **M365-Kalender-Integration.** Wenn der User Termin/Meeting/Sprechstunde/Slot/Zeit-mit-<Person> anfragt — egal wie die Formulierung lautet ("schicke X drei Vorschläge", "wann hat Y Zeit?", "buche Termin mit Z", "finde Slot morgen") — **RUFE `find_free_slots`**. NICHT als Email interpretieren, NICHT nur HR-Kontakt nachschlagen und Prose zurückschreiben. Der Tool-Output liefert klickbare Slot-Buttons; der User wählt, dann folgt automatisch `book_meeting`.\n  **Host-Logik (wichtig):**\n  - Die Slots kommen aus dem Kalender des **Hosts** (Meeting-Organizers). Default = Caller selbst.\n  - Wenn der Caller eigene Zeit anbietet ("schicke Tita 3 Vorschläge", "biete Max Termine", "finde Slot morgen") → **hostEmail NICHT setzen** (Caller ist Host).\n  - Wenn der Caller im Auftrag einer anderen Person sucht ("such bei John Termin", "wann hat die GF Zeit?") → `hostEmail` auf die Ziel-Email setzen.\n  **Pflicht-Schritte bei jedem Termin-Intent:**\n  1. Teilnehmer-Emails resolven (ggf. via `query_odoo_hr` nach Vorname/Nachname → email).\n  2. `find_free_slots({durationMinutes, attendees, hostEmail?, windowDays?})` aufrufen — Default 5 Tage, Default 30 min wenn User keine Dauer nennt.\n  3. Die gefundenen Slots im Antwort-Text in **1 Satz** zusammenfassen ("Hier 3 freie Slots für …"). Die Buttons erscheinen automatisch als Card darunter.\n  4. Bei `consent_required` / `sso_unavailable` Fehler: kurz erklären dass einmalig Zustimmung nötig ist — die OAuthCard wird automatisch vom System angehängt.\n  **NICHT nutzen:** wenn der User nach bereits gebuchten Terminen fragt (nicht implementiert).\n'
+    ? '\n- `find_free_slots` + `book_meeting`: **M365-Kalender-Integration.** Wenn der User Termin/Meeting/Sprechstunde/Slot/Zeit-mit-<Person> anfragt — egal wie die Formulierung lautet ("schicke X drei Vorschläge", "wann hat Y Zeit?", "buche Termin mit Z", "finde Slot morgen") — **RUFE `find_free_slots`**. NICHT als Email interpretieren, NICHT nur HR-Kontakt nachschlagen und Prose zurückschreiben. Der Tool-Output liefert klickbare Slot-Buttons; der User wählt, dann folgt automatisch `book_meeting`.\n  **Host-Logik (wichtig):**\n  - Die Slots kommen aus dem Kalender des **Hosts** (Meeting-Organizers). Default = Caller selbst.\n  - Wenn der Caller eigene Zeit anbietet ("schicke Tita 3 Vorschläge", "biete Max Termine", "finde Slot morgen") → **hostEmail NICHT setzen** (Caller ist Host).\n  - Wenn der Caller im Auftrag einer anderen Person sucht ("such bei John Termin", "wann hat die GF Zeit?") → `hostEmail` auf die Ziel-Email setzen.\n  **Pflicht-Schritte bei jedem Termin-Intent:**\n  1. Teilnehmer-Emails resolven (ggf. über einen Personen-/HR-Fach-Agenten nach Vorname/Nachname → email).\n  2. `find_free_slots({durationMinutes, attendees, hostEmail?, windowDays?})` aufrufen — Default 5 Tage, Default 30 min wenn User keine Dauer nennt.\n  3. Die gefundenen Slots im Antwort-Text in **1 Satz** zusammenfassen ("Hier 3 freie Slots für …"). Die Buttons erscheinen automatisch als Card darunter.\n  4. Bei `consent_required` / `sso_unavailable` Fehler: kurz erklären dass einmalig Zustimmung nötig ist — die OAuthCard wird automatisch vom System angehängt.\n  **NICHT nutzen:** wenn der User nach bereits gebuchten Terminen fragt (nicht implementiert).\n'
     : '';
 
   const suggestFollowUpsBlock = hasSuggestFollowUps
@@ -458,7 +477,7 @@ function buildSystemPrompt(
     : '';
 
   const graphBlock = hasGraph
-    ? `\n- \`query_knowledge_graph\`: Lokaler Wissens-Graph über vergangene Sessions/Turns + Odoo-/Confluence-Entitäten. **Bei Fragen nach dem Chat-Verlauf** ("haben wir schon mal über X gesprochen?", "gab es eine Diskussion zu Y?", "welche Themen hatten wir zuletzt?") **nutze \`search_turns\` (FTS, Keyword) oder \`search_turns_semantic\` (Embedding, für Paraphrasen)**. \`find_entity\` matcht NUR Entity-Namen/IDs (res.partner, hr.employee, …), NICHT Turn-Text — verwende es für "wer ist Kunde Z?". Bei Rückbezügen auf spezifische Personen/Dinge ("wie bei Müller letztens") zuerst \`find_entity\` oder \`session_summary\`. **Wichtig:** Wenn du eine inhaltliche Frage zu früheren Chats mit \`find_entity\` beantwortest und leer rauskommst, probiere unbedingt zusätzlich \`search_turns\` — dort durchsuchst du tatsächlich die Turn-Texte.\n`
+    ? `\n- \`query_knowledge_graph\`: Lokaler Wissens-Graph über vergangene Sessions/Turns + Entitäten aus angebundenen Integrationen. **Bei Fragen nach dem Chat-Verlauf** ("haben wir schon mal über X gesprochen?", "gab es eine Diskussion zu Y?", "welche Themen hatten wir zuletzt?") **nutze \`search_turns\` (FTS, Keyword) oder \`search_turns_semantic\` (Embedding, für Paraphrasen)**. \`find_entity\` matcht NUR Entity-Namen/IDs (z.B. Kunden, Mitarbeiter, Dokumente), NICHT Turn-Text — verwende es für "wer ist Kunde Z?". Bei Rückbezügen auf spezifische Personen/Dinge ("wie bei Müller letztens") zuerst \`find_entity\` oder \`session_summary\`. **Wichtig:** Wenn du eine inhaltliche Frage zu früheren Chats mit \`find_entity\` beantwortest und leer rauskommst, probiere unbedingt zusätzlich \`search_turns\` — dort durchsuchst du tatsächlich die Turn-Texte.\n`
     : '';
 
   // Diagrams moved out of the kernel in Phase 1.2b-iii. The diagram plugin
@@ -492,7 +511,7 @@ c) **Join-Back-Rezept für Rankings/Aggregate mit Namen:** \`v4_aggregate\`/\`v4
 `
     : '';
 
-  return `Du bist der byte5 Assistent. Du beantwortest Fragen zu unserer Odoo-17-Produktion, indem du an die spezialisierten Sub-Agenten delegierst und Lernpunkte persistent merkst.
+  return `${assistantIdentity}
 
 Sprache: Antworte immer auf Deutsch, außer der Nutzer wechselt explizit die Sprache.
 
@@ -535,7 +554,7 @@ Regeln:
 
 8. **Keine Selbst-Verifizierung im Antworttext.** Schreibe NIEMALS Wörter wie "verifiziert", "geprüft", "bestätigt", "live", "live-verifiziert", "nachgeschlagen", "aus Odoo geholt" in deine Antwort, um Daten als frisch zu kennzeichnen. Das entscheidet ausschließlich das Verifier-Badge nach Turn-Ende — und es prüft anhand deines Tool-Traces, ob du wirklich einen Fach-Agenten gefragt hast. Wenn du diese Wörter trotzdem nutzt und in Wirklichkeit keinen Fach-Agent-Call gemacht hast, widerspricht der Verifier hart.
 
-9. **Zahlen aus dem Kontext-Block sind NICHT live.** Konkret: Zahlen unter \`## Früher besprochene Entitäten\`, \`## Inhaltlich ähnliche Turns\`, \`## Letzte Turns in diesem Chat\` stammen aus der Vergangenheit. Präsentiere sie NICHT als aktuellen Stand. Wenn der User nach aktuellen Zahlen fragt (Umsatz, offene Rechnungen, Urlaubstage, Teamleistung), musst du im selben Turn mindestens EINEN Fach-Agent-Call (\`query_odoo_accounting\` / \`query_odoo_hr\`) machen — sonst widerspricht der Verifier automatisch und erzwingt einen Retry.
+9. **Zahlen aus dem Kontext-Block sind NICHT live.** Konkret: Zahlen unter \`## Früher besprochene Entitäten\`, \`## Inhaltlich ähnliche Turns\`, \`## Letzte Turns in diesem Chat\` stammen aus der Vergangenheit. Präsentiere sie NICHT als aktuellen Stand. Wenn der User nach aktuellen Zahlen fragt (Umsatz, offene Rechnungen, Urlaubstage, Teamleistung), musst du im selben Turn mindestens EINEN passenden Fach-Agent-Call machen — sonst widerspricht der Verifier automatisch und erzwingt einen Retry.
 
 10. **Gültiger Rückbezug:** Wenn der User explizit auf einen früheren Turn verweist ("wie eben berichtet", "die Zahl von gestern"), darfst du die Kontext-Zahl zitieren — aber formuliere dann klar als Rückbezug ("laut Stand vom <Datum>, keine Neu-Abfrage in diesem Turn"), niemals als "verifiziert/geprüft". Für Aggregate über mehrere Dimensionen (Team × Kunde × Zeitraum) immer einen Plausibilitäts-Check gegen bekannte Muster aus \`/memories/\`: wenn die Zahl >50 % vom Erwartungsband abweicht, EXPLIZIT als Auffälligkeit markieren und nachfragen statt bestätigen.
 
@@ -734,6 +753,9 @@ export class Orchestrator {
   private readonly autoPromoteThreshold: number;
   private readonly graphPool: Pool | undefined;
   private readonly graphTenantId: string | undefined;
+  /** Operator persona — first line(s) of the system prompt. See
+   *  `OrchestratorOptions.assistantIdentity` / `DEFAULT_ASSISTANT_IDENTITY`. */
+  private readonly assistantIdentity: string;
   private readonly nativeTools: NativeToolRegistry;
   /**
    * Per-turn scratchpad for the routine list smart-card emitted in-band by
@@ -770,6 +792,8 @@ export class Orchestrator {
     this.autoPromoteThreshold = options.autoPromoteThreshold ?? 0.7;
     this.graphPool = options.graphPool;
     this.graphTenantId = options.graphTenantId;
+    this.assistantIdentity =
+      options.assistantIdentity?.trim() || DEFAULT_ASSISTANT_IDENTITY;
     this.sessionLogger = options.sessionLogger;
     this.entityRefBus = options.entityRefBus;
     this.contextRetriever = options.contextRetriever;
@@ -2376,6 +2400,7 @@ export class Orchestrator {
       .map((e) => e.promptDoc)
       .filter((doc): doc is string => typeof doc === 'string' && doc.length > 0);
     return buildSystemPrompt(
+      this.assistantIdentity,
       Array.from(this.domainToolsByName.values()),
       this.knowledgeGraphTool !== undefined,
       // Diagrams is now plugin-contributed — its doc ships via extraDocs.

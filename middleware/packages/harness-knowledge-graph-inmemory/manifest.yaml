@@ -45,7 +45,7 @@ setup:
   fields:
     - key: "graph_tenant_id"
       label: "Graph Tenant ID"
-      type: "text"
+      type: "string"
       required: false
       help: "Tenant-Schlüssel für die in-memory-Graph-Instanz (kosmetisch — bei in-memory gibt es nur einen Tenant pro Prozess). Default: 'default'."
 

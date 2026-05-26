@@ -81,14 +81,19 @@ setup:
       help: "Anthropic-Model-ID für die Orchestrator-Haupt-Loop. Als Dropdown gepflegt, damit keine ungültige Model-ID (→ 404 not_found_error) eingetragen werden kann. Migriert aus ORCHESTRATOR_MODEL."
     - key: "orchestrator_max_tokens"
       label: "Max Output Tokens"
-      type: "number"
+      type: "string"
       required: false
       help: "Maximum response-Tokens pro Turn. Default: 4096. Migriert aus ORCHESTRATOR_MAX_TOKENS."
     - key: "max_tool_iterations"
       label: "Max Tool-Loop Iterations"
-      type: "number"
+      type: "string"
       required: false
       help: "Hard cap auf den agentic tool-loop pro Turn. Aborts den Turn wenn überschritten. Default: 12. Migriert aus MAX_TOOL_ITERATIONS."
+    - key: "assistant_identity"
+      label: "Assistant-Persona"
+      type: "string"
+      required: false
+      help: "Eröffnungszeile(n) des System-Prompts — wer der Assistent ist und in welchem Kontext er arbeitet. Leer lassen für eine generische, integrationsneutrale Persona. Beispiel: 'Du bist der byte5-Assistent für die Odoo-17-Produktion. Du delegierst an spezialisierte Fach-Agenten und merkst dir Lernpunkte.' Die konkrete Fach-Agenten-Liste wird automatisch angehängt — hier nur Identität/Kontext beschreiben, keine Tool-Namen."
 
 playbook:
   when_to_use: |
