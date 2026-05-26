@@ -11,6 +11,7 @@ import type {
   KnowledgeGraph,
   NudgeProvider,
   NudgeStateStore,
+  PalaiaExcerptExtractor,
   ProcessMemoryService,
   ResponseGuardService,
   SessionBriefingService,
@@ -20,6 +21,7 @@ import {
   NUDGE_PROVIDERS_SERVICE_NAME,
   NUDGE_REGISTRY_SERVICE_NAME,
   NUDGE_STATE_SERVICE_NAME,
+  PALAIA_EXCERPT_SERVICE_NAME,
   PROCESS_MEMORY_SERVICE_NAME,
 } from '@omadia/plugin-api';
 import type {
@@ -127,7 +129,12 @@ const CONFIG_STORE_SERVICE = 'configStore';
 const GRAPH_POOL_SERVICE = 'graphPool';
 const PLUGIN_CAPABILITIES_SERVICE = 'pluginCapabilities';
 
-const DEFAULT_MODEL = 'claude-sonnet-4-5-20251022';
+// Fallback when the operator has not set `orchestrator_model` in the install
+// config. Must be a currently-served Anthropic model id — a stale/typo'd id
+// makes every turn fail with `404 not_found_error` (the orchestrator main
+// loop has no other model source). Kept in sync with the kernel default
+// `ORCHESTRATOR_MODEL` in middleware/src/config.ts.
+const DEFAULT_MODEL = 'claude-opus-4-7';
 const DEFAULT_MAX_TOKENS = 4096;
 const DEFAULT_MAX_ITERATIONS = 12;
 
@@ -159,6 +166,14 @@ function parseNumberOrDefault(raw: unknown, fallback: number): number {
     if (Number.isFinite(parsed)) return parsed;
   }
   return fallback;
+}
+
+/** Truthy values: '1', 'true', 'yes', 'on' (case-insensitive). Everything
+ *  else is false — including undefined/empty. */
+function parseBooleanEnv(raw: string | undefined): boolean {
+  if (!raw) return false;
+  const v = raw.trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
 }
 
 export async function activate(
@@ -250,6 +265,14 @@ export async function activate(
   const contextRetriever =
     ctx.services.get<ContextRetriever>('contextRetriever');
   const factExtractor = ctx.services.get<FactExtractor>('factExtractor');
+  // KG-ACL Slice 4a — Palaia-Excerpt-Extractor. Published by
+  // harness-orchestrator-extras when an Anthropic key is configured.
+  // Absent → orchestrator's `done` event ships without `palaiaExcerpt`
+  // and the chat-side save-as-memory modal falls back to its dumb
+  // 240-char prefix.
+  const excerptExtractor = ctx.services.get<PalaiaExcerptExtractor>(
+    PALAIA_EXCERPT_SERVICE_NAME,
+  );
   // OB-75 (Palaia Phase 6) — optional. Published by harness-orchestrator-extras
   // when an Anthropic key is configured. Absent → orchestrator skips the
   // briefing prepend, behaviour identical to pre-OB-75.
@@ -280,6 +303,12 @@ export async function activate(
   const model =
     (ctx.config.get<string>('orchestrator_model') ?? '').trim() ||
     DEFAULT_MODEL;
+  // Operator persona. Empty → Orchestrator falls back to its generic,
+  // integration-agnostic `DEFAULT_ASSISTANT_IDENTITY`. Lets a deployment
+  // brand the bot without a hardcoded "byte5 / Odoo" identity in the harness.
+  const assistantIdentity = (
+    ctx.config.get<string>('assistant_identity') ?? ''
+  ).trim();
   const maxTokens = parseNumberOrDefault(
     ctx.config.get<unknown>('orchestrator_max_tokens'),
     DEFAULT_MAX_TOKENS,
@@ -289,8 +318,29 @@ export async function activate(
     DEFAULT_MAX_ITERATIONS,
   );
 
+  // KG-ACL Slice 4b — env-var opt-in for auto-promotion at
+  // significance ≥ threshold. Read straight from process.env (these
+  // are operator-level feature flags, not per-plugin setup fields).
+  // Default OFF — no auto-saves without an explicit signal from
+  // both the capture-filter scorer AND the operator.
+  const autoPromote = parseBooleanEnv(process.env['KG_ACL_AUTO_PROMOTE']);
+  const autoPromoteThreshold = parseNumberOrDefault(
+    process.env['KG_ACL_AUTO_PROMOTE_THRESHOLD'],
+    0.7,
+  );
+  const graphPool = ctx.services.get<Pool>(GRAPH_POOL_SERVICE);
+  const graphTenantId =
+    process.env['GRAPH_TENANT_ID'] ??
+    ctx.config.get<string>('graph_tenant_id') ??
+    'default';
+
   // Anthropic client — shared across every Agent built from this plugin.
-  const client = new Anthropic({ apiKey });
+  //
+  // maxRetries: the Anthropic SDK auto-retries 408/409/429/500/529 with
+  // exponential backoff. The SDK default is 2; bumped to 5 so a transient
+  // `overloaded_error` (HTTP 529) burst is far more likely to ride out
+  // inside the SDK instead of surfacing as a failed turn. (Merged from main.)
+  const client = new Anthropic({ apiKey, maxRetries: 5 });
 
   // OB-77 (Palaia Phase 8) — Nudge-Pipeline. Publish a fresh in-memory
   // registry, then drain `nudgeProviders@1` (side-channel for plugins
@@ -323,7 +373,10 @@ export async function activate(
 
   // US3 — Orchestrator construction is the per-Agent factory
   // `buildOrchestratorForAgent`; invoked below, after the process-wide
-  // ProcessMemory tool registration.
+  // ProcessMemory tool registration. main's main-line `new Orchestrator()`
+  // call was replaced by the factory in US3; its new fields (autoPromote /
+  // autoPromoteThreshold / graphPool / graphTenantId / excerptExtractor /
+  // assistantIdentity) flow through via `OrchestratorDeps`.
 
   // OB-76: attach 4 ProcessMemory native tools via the nativeToolRegistry.
   // Full registration (handler + spec + promptDoc) — the
@@ -382,11 +435,17 @@ export async function activate(
     ...(contextRetriever ? { contextRetriever } : {}),
     ...(sessionBriefing ? { sessionBriefing } : {}),
     ...(factExtractor ? { factExtractor } : {}),
+    ...(excerptExtractor ? { excerptExtractor } : {}),
     ...(embeddingClient ? { embeddingClient } : {}),
     ...(microsoft365 ? { microsoft365 } : {}),
     ...(verifierBundle ? { verifierBundle } : {}),
     ...(nudgeStateStore ? { nudgeStateStore } : {}),
     ...(processMemory ? { processMemory } : {}),
+    autoPromote,
+    autoPromoteThreshold,
+    ...(graphPool ? { graphPool } : {}),
+    graphTenantId,
+    ...(assistantIdentity ? { assistantIdentity } : {}),
   };
   const built = buildOrchestratorForAgent(
     {
@@ -404,8 +463,8 @@ export async function activate(
   // migration, loads the config snapshot, and publishes itself as
   // `orchestratorRegistry@1` for US7 (channel routing) and US9 (operator UI).
   // The legacy `chatAgent@1` keeps serving the default boot path — the
-  // registry sits alongside it.
-  const graphPool = ctx.services.get<Pool>(GRAPH_POOL_SERVICE);
+  // registry sits alongside it. `graphPool` is already late-resolved at
+  // the top of activate() (merged from main 2026-05-26).
   let registry: OrchestratorRegistry | undefined;
   let reloadBus: ReloadBus | undefined;
   if (graphPool) {
@@ -489,7 +548,7 @@ export async function activate(
   }
 
   ctx.log(
-    `[harness-orchestrator] chatAgent@1 published (model=${model}, maxTokens=${String(maxTokens)}, maxIter=${String(maxIterations)}, verifier=${verifierBundle ? 'on' : 'off'}, calendar=${microsoft365 ? 'on' : 'off'}, contextRetriever=${contextRetriever ? 'on' : 'off'}, factExtractor=${factExtractor ? 'on' : 'off'}, embeddingClient=${embeddingClient ? 'on' : 'off'}, responseGuard=late-bound)`,
+    `[harness-orchestrator] chatAgent@1 published (model=${model}, maxTokens=${String(maxTokens)}, maxIter=${String(maxIterations)}, verifier=${verifierBundle ? 'on' : 'off'}, calendar=${microsoft365 ? 'on' : 'off'}, contextRetriever=${contextRetriever ? 'on' : 'off'}, factExtractor=${factExtractor ? 'on' : 'off'}, palaiaExcerpt=${excerptExtractor ? 'on' : 'off'}, autoPromote=${autoPromote ? `on@${autoPromoteThreshold.toFixed(2)}` : 'off'}, embeddingClient=${embeddingClient ? 'on' : 'off'}, responseGuard=late-bound)`,
   );
 
   return {

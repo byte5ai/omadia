@@ -435,40 +435,15 @@ export class LocalSubAgent {
     const tool = this.toolsByName.get(toolName);
     if (!tool) return `Error: unknown tool \`${toolName}\`.`;
 
-    // Slice 2.2 — privacy-proxy tool roundtrip for sub-agent inner calls.
-    //
-    // Same contract as orchestrator.dispatchTool: restore tokens in the
-    // input BEFORE the tool handler runs (so query_graph / odoo_execute
-    // see the actual employee name rather than `tok_<hex>_name`), and
-    // re-tokenise PII in the textual result AFTER the handler returns
-    // (so the next sub-agent LLM call doesn't see fresh plaintext PII
-    // it would otherwise have to be defensively cautious about).
-    //
-    // The privacy handle is threaded through `turnContext.privacyHandle`
-    // — sub-agents inherit it from the parent orchestrator's turn scope.
-    // Absent ⇒ no privacy provider installed; degrade to byte-identical
-    // pre-Slice-2.2 behaviour.
+    // Privacy Shield v4 — Data-Plane Boundary for sub-agent inner calls.
+    // The privacy handle is threaded through `turnContext.privacyHandle`;
+    // sub-agents inherit it from the parent orchestrator's turn scope.
+    // Absent ⇒ no privacy provider installed and the result flows through.
     const privacy = turnContext.current()?.privacyHandle;
-    let dispatchInput = input;
-    if (privacy !== undefined) {
-      try {
-        const restored = await privacy.processToolInput({
-          toolName,
-          input,
-        });
-        dispatchInput = restored.input;
-      } catch (err) {
-        console.warn(
-          `[sub-agent ${this.name}] privacy.processToolInput threw on '${toolName}' — proceeding with original input:`,
-          err,
-        );
-      }
-    }
-    const result = await tool.handle(dispatchInput);
+    const result = await tool.handle(input);
     // Phase C.2 — Raw tool-result capture (parallel to orchestrator.dispatchTool).
     // Sub-agent tool calls also feed routine templates, so the capture
-    // hook must fire here too. Same last-write-wins semantics; absent
-    // callback ⇒ no capture.
+    // hook must fire here too. Absent callback ⇒ no capture.
     const capture = turnContext.current()?.captureRawToolResult;
     if (capture !== undefined && typeof result === 'string') {
       try {
@@ -480,55 +455,29 @@ export class LocalSubAgent {
         );
       }
     }
-    // Privacy-Shield v3 (slice 1) — Stable-id tokenization pre-pass.
-    // When the dispatched tool declared `piiFields`, run the tool-aware
-    // pre-pass BEFORE the NER-based `processToolResult`. See the twin
-    // wiring in `Orchestrator.dispatchTool` for the design rationale.
-    let resultForPrivacy = result;
-    if (privacy !== undefined && typeof result === 'string' && result.length > 0) {
-      const piiFields = tool.piiFields;
-      if (piiFields !== undefined && piiFields.length > 0) {
-        try {
-          const prepass = await privacy.applyStableIdPrepass({
-            toolName,
-            text: result,
-            piiFields,
-          });
-          resultForPrivacy = prepass.text;
-          if (prepass.replaced > 0 || prepass.skipped > 0) {
-            console.log(
-              `[sub-agent ${this.name}] stable-id prepass on '${toolName}': replaced=${String(
-                prepass.replaced,
-              )} skipped=${String(prepass.skipped)} parsed=${String(prepass.parsed)}`,
-            );
-          }
-        } catch (err) {
-          console.warn(
-            `[sub-agent ${this.name}] privacy.applyStableIdPrepass threw on '${toolName}' — falling through to NER-only:`,
-            err,
-          );
-        }
-      }
-    }
-    if (
-      privacy !== undefined &&
-      typeof resultForPrivacy === 'string' &&
-      resultForPrivacy.length > 0
-    ) {
+    // Intern the raw result server-side and hand the LLM only the
+    // identity-free digest — the raw rows never reach the LLM wire.
+    if (privacy !== undefined && typeof result === 'string') {
       try {
-        const tokenised = await privacy.processToolResult({
+        const v4 = await privacy.internToolResultV4({
           toolName,
-          text: resultForPrivacy,
+          rawResult: result,
         });
-        return tokenised.text;
+        // Privacy Shield v4 — record the interned datasetId so the parent
+        // orchestrator can pass the REAL dataset up by reference instead of
+        // re-interning this sub-agent's `[masked]`-baked prose. The sink is
+        // installed by the parent's dispatchTool scope; absent ⇒ this
+        // sub-agent is not running under a domain-tool bridge.
+        turnContext.current()?.subAgentDatasetSink?.push(v4.datasetId);
+        return v4.digestText;
       } catch (err) {
         console.warn(
-          `[sub-agent ${this.name}] privacy.processToolResult threw on '${toolName}' — sending original result:`,
+          `[sub-agent ${this.name}] privacy.internToolResultV4 threw on '${toolName}' — sending raw result:`,
           err,
         );
       }
     }
-    return resultForPrivacy;
+    return result;
   }
 }
 

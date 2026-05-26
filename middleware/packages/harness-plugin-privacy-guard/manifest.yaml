@@ -3,10 +3,10 @@ schema_version: "1"
 identity:
   id: "@omadia/plugin-privacy-guard"
   name: "Privacy Guard"
-  version: "0.1.0"
+  version: "0.2.0"
   kind: "tool"
   domain: "privacy.redact"
-  description: "Privacy-Proxy core plugin. Publishes the `privacy.redact@1` capability with a regex-based PII detector and a per-turn tokenise-map for reversible redaction. Emits a PII-free PrivacyReceipt the channel renderers (Teams Adaptive-Card, Web inline disclosure) consume to surface what was protected on each turn."
+  description: "Privacy Shield v4 core plugin. Publishes the `privacy.redact@1` capability — a Data-Plane Boundary that interns raw tool results server-side and hands the LLM only an identity-free Digest. Identity-/order-critical work runs through a server-side Verb API; the final answer is materialized from ground truth. Emits a PII-free PrivacyReceipt the channel renderers (Teams Adaptive-Card, Web inline disclosure) consume to surface what was protected on each turn."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"
@@ -25,64 +25,32 @@ lifecycle:
   entry: "dist/plugin.js"
 
 # ---------------------------------------------------------------------------
-# Setup fields. Operator-tunable defaults that apply when a profile does not
-# carry an explicit `privacy:` frontmatter block. Slice 1b ships the regex
-# detector only; Presidio + Ollama detectors arrive in Slice 3 with the
-# `data-residency` policy mode.
+# No setup fields. The v4 Data-Plane Boundary is generic over JSON shape and
+# value statistics — there is no per-tenant policy, allowlist, or detector
+# configuration to tune.
 # ---------------------------------------------------------------------------
 setup:
-  fields:
-    - key: "policy_mode"
-      type: "enum"
-      label: "Default Policy Mode"
-      help: "`pii-shield` (Default) tokenisiert PII reversibel und routet weiter zum konfigurierten Public-LLM. `data-residency` blockt Public-LLM bei Tenant-Labels und routet zu einem lokalen Sidecar (Slice 3). Pro Profile/Tenant überschreibbar."
-      required: false
-      default: "pii-shield"
-      enum:
-        - value: "pii-shield"
-          label: "PII Shield — tokenisiert PII, Public-LLM"
-        - value: "data-residency"
-          label: "Data Residency — Tenant-Daten verlassen den Tenant nicht (Slice 3)"
-
-    - key: "fail_open"
-      type: "enum"
-      label: "Fail-Mode bei Detector-Ausfall"
-      help: "`closed` (Default): bei Detector-Ausfall wird der Request abgebrochen, damit kein PII unbemerkt rausgeht. `open`: Request läuft mit `X-Privacy-Degraded`-Flag im Receipt durch — nur für explizit freigegebene Low-Risk-Agents."
-      required: false
-      default: "closed"
-      enum:
-        - value: "closed"
-          label: "Fail-closed (sicher, Default)"
-        - value: "open"
-          label: "Fail-open (Low-Risk-Agents, mit Receipt-Warning)"
-
-    - key: "debug_show_values"
-      type: "enum"
-      label: "Debug-Modus: Rohwerte im Receipt anzeigen"
-      help: "WARNUNG: aktiviert PII-Sichtbarkeit im Receipt-Card. Nur für Self-Hosted Dev/Preview verwenden. Bei aktivem Debug-Mode landen erkannte tokenisierte Werte (Names/IBANs/etc.) im Klartext im Receipt — und damit potentiell in jedem Log oder Export, der das Receipt persistiert. Redacted/blocked-Aktionen zeigen weiterhin nur den Type. Default OFF: Receipt bleibt PII-frei by construction."
-      required: false
-      default: "off"
-      enum:
-        - value: "off"
-          label: "Aus (Production-Default, PII-frei)"
-        - value: "on"
-          label: "An (Debug — PII sichtbar im Receipt)"
+  fields: []
 
 playbook:
   when_to_use: |
-    Aktiviere dieses Plugin, wenn Anfragen an Public-LLMs (Anthropic, OpenAI)
-    auf PII-Leakage gefiltert werden sollen. Das Plugin published die
-    `privacy.redact@1`-Capability; der Orchestrator-Hook (Slice 2) ruft
-    `processOutbound` vor jedem `messages.create`-Call und erhält:
-      - die transformierte Payload (PII tokenisiert/redacted)
-      - eine PII-freie `PrivacyReceipt` für die UI-Disclosure
-      - eine Routing-Decision (public-llm / local-llm / blocked)
-    Die Receipt landet als Message-Metadata im Channel-Output (Teams +
-    Web) und kann dort als Collapsed-/Expanded-Card gerendert werden.
+    Aktiviere dieses Plugin, damit rohe Tool-Ergebnisse niemals im Klartext
+    an Public-LLMs (Anthropic, OpenAI) gelangen. Das Plugin published die
+    `privacy.redact@1`-Capability; der Orchestrator-Hook ruft sie am
+    Tool-Dispatch-Seam auf:
+      - `internToolResultV4` interniert das rohe Tool-Ergebnis server-seitig
+        hinter einer `datasetId` und gibt dem LLM nur einen identitätsfreien
+        Digest.
+      - `runV4Tool` führt vom LLM komponierte `v4_*`-Verben (sort, filter,
+        rank, …) und das `v4_render_answer`-Directive in vertrauenswürdigem
+        Server-Code aus.
+      - `finalizeTurn` verwirft die Turn-Datasets und liefert eine PII-freie
+        `PrivacyReceipt` für die UI-Disclosure.
+    Die Receipt landet als Message-Metadata im Channel-Output (Teams + Web)
+    und kann dort als Collapsed-/Expanded-Card gerendert werden.
 
 # ---------------------------------------------------------------------------
-# Permissions. Pure-string transform — no network, no graph, no memory.
-# Future Slice-3 detector (Ollama sidecar) will declare its own outbound.
+# Permissions. Pure server-side compute — no network, no graph, no memory.
 # ---------------------------------------------------------------------------
 permissions:
   memory:
@@ -95,12 +63,17 @@ permissions:
     outbound: []
   filesystem:
     scratch: false
+  # Slice 2 — schema-level PII classification. The plugin asks a cheap Haiku
+  # model which fields of an interned tool result carry personal identity
+  # data, given ONLY the schema (tool name + field names + types, never a
+  # value). Drives leak detection / the honest receipt; never the masking
+  # itself (deny-by-default stays the safety net). Host pays — no plugin key.
+  llm:
+    models_allowed:
+      - "claude-haiku-4-5"
+    calls_per_invocation: 1000
+    max_tokens_per_call: 512
 
 provides:
   - "privacy.redact@1"
-  # Slice 3.1: detector-registry surface. Add-on detector plugins
-  # (Slice 3.2 Ollama, Slice 3.4 Presidio) declare
-  # `requires: ['privacy.detector@1']` and resolve the registry via
-  # `ctx.services.get('privacyDetectorRegistry')` at activate time.
-  - "privacy.detector@1"
 requires: []

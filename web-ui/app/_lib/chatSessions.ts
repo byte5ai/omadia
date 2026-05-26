@@ -115,64 +115,32 @@ export interface CaptureDisclosure {
 }
 
 /**
- * Privacy-Proxy receipt (Slice 1a/5) — what the `privacy.redact@1`
- * provider did with the outbound payload of an assistant turn. Mirrors
- * the backend's `PrivacyReceipt` from `@omadia/plugin-api` one-to-one.
+ * Privacy Shield v4 receipt — the per-turn report from the `privacy.redact@1`
+ * provider's Data-Plane Boundary. Mirrors the backend `PrivacyReceipt` from
+ * `@omadia/plugin-api` one-to-one.
  *
  * Rendered as a collapsible row under the assistant answer by
- * `<PrivacyReceiptCard>`. The receipt is PII-free by construction: it carries
- * counts, types, detector ids and a forensic SHA-256, but never the raw
- * detected values, spans, or token bindings. Optional — turns from a build
- * without the privacy-guard plugin simply omit the field.
+ * `<PrivacyReceiptCard>`. PII-free by construction — counts and verb names
+ * only, never a value. Optional — turns from a build without the
+ * privacy-guard plugin, or turns that interned no tool result, omit it.
  */
 export interface PrivacyReceipt {
-  receiptId: string;
-  policyMode: 'pii-shield' | 'data-residency';
-  routing: 'public-llm' | 'local-llm' | 'blocked';
-  routingReason?: string;
-  detections: readonly PrivacyDetection[];
-  latencyMs: number;
-  auditHash: string;
+  /** Tool results interned behind the data-plane boundary this turn. */
+  datasetsInterned: number;
+  /** Fields classified `sensitive-masked` across interned datasets. */
+  fieldsMasked: number;
+  /** Fields classified `safe-cleartext` across interned datasets. */
+  fieldsCleartext: number;
+  /** Verb names the LLM composed and the server executed this turn. */
+  verbsExecuted: readonly string[];
+  /** Whether the gated pseudonym-projection layer was released this turn. */
+  pseudonymProjectionUsed: boolean;
   /**
-   * Slice 3.2.1 — per-detector run summary. One entry per detector
-   * registered with the privacy-guard plugin, even if it never fired.
-   * The card uses run-status to bump severity when a detector silently
-   * fail-opened (skipped/timeout/error), so the user sees the failure
-   * mode instead of a misleading "keine Erkennungen".
+   * Personal-identity values that reached the model because the requester
+   * named them in their own message. A transparency notice, not a leak.
+   * `0` / absent when the user named no one.
    */
-  detectorRuns?: readonly PrivacyDetectorRun[];
-  /**
-   * Slice 3.2.1 debug-mode flag. When true, `detections[*].values` may
-   * carry raw matched substrings — operator opted in via
-   * `debug_show_values=on` in the privacy-guard plugin setup.
-   */
-  debug?: boolean;
-}
-
-export interface PrivacyDetection {
-  type: string;
-  count: number;
-  action: 'redacted' | 'tokenized' | 'blocked' | 'passed';
-  detector: string;
-  confidenceMin: number;
-  /**
-   * Slice 3.2.1 — distinct raw matched substrings for this bucket.
-   * ONLY present when the receipt is in debug mode AND the action is
-   * `tokenized` (`redacted`/`blocked` are intentionally destructive).
-   * The card renders this verbatim under each detection row.
-   */
-  values?: readonly string[];
-}
-
-export type PrivacyDetectorStatus = 'ok' | 'skipped' | 'timeout' | 'error';
-
-export interface PrivacyDetectorRun {
-  detector: string;
-  status: PrivacyDetectorStatus;
-  callCount: number;
-  hitCount: number;
-  latencyMs: number;
-  reason?: string;
+  identityValuesOnWire?: number;
 }
 
 /**
@@ -194,10 +162,41 @@ export interface NudgeEvent {
   };
 }
 
+/**
+ * Slice 4a — Palaia-Excerpt suggestion. Mirrors `PalaiaExcerpt` in
+ * `@omadia/plugin-api` 1:1; declared locally so the web-ui bundle
+ * doesn't need to pull the backend type-graph in. Backend-side shape
+ * lives in `middleware/packages/plugin-api/src/palaiaExcerpt.ts`.
+ */
+export interface PalaiaExcerpt {
+  suggestedKind: 'decision' | 'insight' | 'preference' | 'reference';
+  suggestedSummary: string;
+  suggestedRationale?: string;
+  excerpts: readonly string[];
+  source: 'llm' | 'hint' | 'fallback';
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  /** KG-persisted Turn external_id (e.g. `turn:<sessionId>:<ts>`). Set
+   *  from the orchestrator's `done` event when session-logging succeeded.
+   *  Drives the save-as-memory affordance — without it there's no
+   *  DERIVED_FROM anchor for a new MemorableKnowledge. */
+  turnId?: string;
+  /** Slice 4a — pre-classified suggestion from the Palaia-Excerpt-
+   *  Extractor for this turn. Undefined when the extractor wasn't
+   *  installed, the Haiku call failed, or the JSON couldn't be parsed
+   *  — the save-as-memory modal then falls back to its 240-char
+   *  prefill on the cleaned assistant answer. */
+  palaiaExcerpt?: PalaiaExcerpt;
+  /** Slice 4c — when this turn was auto-promoted (significance gate
+   *  passed AND `KG_ACL_AUTO_PROMOTE=true`), carries the resulting MK
+   *  external_id. The UI then renders an inline "Saved by Palaia"
+   *  banner in place of the manual save-as-memory button. Cleared by
+   *  the user's Discard action to allow re-saving. */
+  autoPromotedMkId?: string;
   tools?: ToolEvent[];
   /** OB-77 — nudges emitted during this turn. Rendered after tools. */
   nudges?: NudgeEvent[];
@@ -230,6 +229,14 @@ export interface Message {
    * when no privacy-guard plugin is installed.
    */
   privacyReceipt?: PrivacyReceipt;
+  /**
+   * Privacy Shield v4 — real values in `content` that the LLM never saw,
+   * resolved server-side behind the data-plane boundary. `<Markdown>`
+   * highlights their occurrences in violet so the asker sees what was
+   * protected. Undefined when the turn produced no server-materialized
+   * answer or it exposed no masked field.
+   */
+  maskedValues?: readonly string[];
   error?: boolean;
   startedAt: number;
   finishedAt?: number;

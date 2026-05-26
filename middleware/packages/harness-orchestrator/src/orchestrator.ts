@@ -1,9 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type Anthropic from '@anthropic-ai/sdk';
+import type { Pool } from 'pg';
 import {
-  applyEgressReplacements,
-  buildBlockedResult,
-  collectEgressSlots,
   toSemanticAnswer,
   type ChatStreamEvent,
   type ChatTurnInput,
@@ -17,6 +15,7 @@ import type {
   ContextRetriever,
   FactExtractor,
 } from '@omadia/orchestrator-extras';
+import { promoteTurnIfSignificant } from '@omadia/orchestrator-extras';
 import type { AskObserver, DomainTool } from './tools/domainQueryTool.js';
 import {
   KnowledgeGraphTool,
@@ -59,8 +58,9 @@ import type {
   KnowledgeGraph,
   NudgeRegistry,
   NudgeStateStore,
+  PalaiaExcerpt,
+  PalaiaExcerptExtractor,
   PrivacyGuardService,
-  PrivacyOutputValidationResult,
   ProcessMemoryService,
   ResponseGuardService,
   SessionBriefingService,
@@ -71,23 +71,13 @@ import {
   type NudgeTurnCounter,
 } from './nudgePipeline.js';
 import {
-  applyPrivacyOutboundToParams,
   createPrivacyTurnHandle,
   ensureWellFormedParams,
-  restorePrivacyInResponse,
 } from './privacyHandle.js';
 import { RunTraceCollector, type InvocationHandle } from './runTraceCollector.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import type { SessionLogger } from './sessionLogger.js';
 import { streamMessageEvents } from './streaming.js';
-import {
-  appendOrphanPlaceholderFooter,
-  detectOrphanPlaceholders,
-} from './orphanPlaceholderCheck.js';
-import {
-  analyzeTokenSaturation,
-  bypassCannedAnswer,
-} from './tokenSaturationBypass.js';
 import { buildDateHeader, today, turnContext } from './turnContext.js';
 
 // S+10-2 back-compat re-exports: kernel-side callers that still
@@ -258,6 +248,40 @@ export interface OrchestratorOptions {
    * (`palaia.process-promote`) skips its canonical-hash dedup check.
    */
   nudgeProcessMemory?: ProcessMemoryService;
+  /**
+   * KG-ACL Slice 4a — Palaia-Excerpt-Extractor. When set, the
+   * orchestrator runs a single Haiku call inside `chatStreamInner`
+   * (between `sessionLogger.log()` and the `done` yield) to produce a
+   * {kind, summary, rationale?, excerpts[]} suggestion, then ships it
+   * to the chat UI via the `done` event so the save-as-memory modal
+   * can pre-fill. Absent → no enrichment, the modal falls back to its
+   * 240-char prefix and (Slice 4b) auto-promotion is a no-op.
+   */
+  excerptExtractor?: PalaiaExcerptExtractor;
+  /**
+   * KG-ACL Slice 4b — Auto-Promotion at significance ≥ threshold.
+   * When `autoPromote=true` AND `graphPool`+`graphTenantId` are set,
+   * the orchestrator fires `promoteTurnIfSignificant` after
+   * `sessionLogger.log()`. Requires `capture_level >= normal` so the
+   * scorer actually writes a significance value — otherwise every
+   * promotion attempt skips with reason='no-significance'.
+   *
+   * Default OFF. The `KG_ACL_AUTO_PROMOTE` env-var opts in;
+   * `KG_ACL_AUTO_PROMOTE_THRESHOLD` (default 0.7) tunes the gate.
+   */
+  autoPromote?: boolean;
+  autoPromoteThreshold?: number;
+  graphPool?: Pool;
+  graphTenantId?: string;
+  /**
+   * Operator-configurable assistant persona — the opening line(s) of the
+   * system prompt. Supplied via the `assistant_identity` setup field. When
+   * empty/undefined the orchestrator falls back to
+   * `DEFAULT_ASSISTANT_IDENTITY`, a generic integration-agnostic persona.
+   * This keeps the harness free of a hardcoded "byte5 / Odoo" identity —
+   * the concrete agent roster is still rendered live from `domainTools`.
+   */
+  assistantIdentity?: string;
 }
 
 // `ChatTurnInput` and `ChatTurnAttachment` were lifted to
@@ -402,7 +426,7 @@ Für diesen EINEN Turn: Ignoriere die Memory-Lese-Konvention aus dem stabilen Sy
 
 Stattdessen:
 - Beantworte die aktuelle User-Frage ausschließlich mit dem, was in ihrer Nachricht steht (inkl. eventuellem \`[attachments-info]\`-Block) + frischen Fach-Agent-Calls.
-- Wenn du Daten brauchst, die du sonst aus \`/memories/\` zögen würdest, MACH jetzt direkt den passenden Tool-Call (z.B. \`query_odoo_accounting\`, \`query_odoo_hr\`).
+- Wenn du Daten brauchst, die du sonst aus \`/memories/\` zögen würdest, MACH jetzt direkt den passenden Fach-Agent-Tool-Call.
 - Keine Referenz auf frühere Gespräche. Keine "wie eben erwähnt". Behandle den Turn als isoliert.
 
 Der Grund für diesen Modus: der User vermutet, dass dich ein früherer Memory-Eintrag oder ein FTS-Treffer auf eine falsche Antwort gelockt hat. Jetzt ist die Chance, unabhängig von diesem Altlast-Pfad zu antworten.`,
@@ -414,7 +438,17 @@ Der Grund für diesen Modus: der User vermutet, dass dich ein früherer Memory-E
   return parts.length > 0 ? parts.join('\n\n---\n\n') : undefined;
 }
 
+/**
+ * Generic, integration-agnostic fallback persona. Used when the operator
+ * has not set the `assistant_identity` setup field. Deliberately mentions
+ * no specific integration (Odoo, Confluence, …) — the concrete agent
+ * roster is rendered live from `domainTools` further down in the prompt.
+ */
+const DEFAULT_ASSISTANT_IDENTITY =
+  'Du bist ein KI-Assistent, der Anfragen beantwortet, indem er an spezialisierte Fach-Agenten delegiert und Lernpunkte über Sessions hinweg persistent merkt.';
+
 function buildSystemPrompt(
+  assistantIdentity: string,
   domainTools: DomainTool[],
   hasGraph: boolean,
   hasDiagramTool: boolean,
@@ -422,6 +456,7 @@ function buildSystemPrompt(
   hasAskUserChoice: boolean,
   hasSuggestFollowUps: boolean,
   hasCalendar: boolean,
+  hasPrivacyV4: boolean,
   extraToolDocs: readonly string[] = [],
 ): string {
   const domainList = domainTools.length
@@ -432,7 +467,7 @@ function buildSystemPrompt(
     ? '\n- `ask_user_choice`: Stellt dem User eine Rückfrage mit 2–4 vordefinierten Button-Optionen als Smart Card. Nur aufrufen, wenn die User-Eingabe **genuin mehrdeutig** ist UND es eine **endliche, kleine Menge plausibler Interpretationen** gibt (z.B. zwei Module tracken Umsatz, zwei Kunden haben ähnlichen Namen). **NICHT** nutzen für: offene "was meinst du?"-Fragen, Trivial-Bestätigungen, oder wenn der Kontext die Intention bereits eindeutig macht. Max 1× pro Turn — der Turn endet direkt nach dem Call; die Auswahl kommt im nächsten Turn als normale User-Nachricht.\n'
     : '';
   const calendarBlock = hasCalendar
-    ? '\n- `find_free_slots` + `book_meeting`: **M365-Kalender-Integration.** Wenn der User Termin/Meeting/Sprechstunde/Slot/Zeit-mit-<Person> anfragt — egal wie die Formulierung lautet ("schicke X drei Vorschläge", "wann hat Y Zeit?", "buche Termin mit Z", "finde Slot morgen") — **RUFE `find_free_slots`**. NICHT als Email interpretieren, NICHT nur HR-Kontakt nachschlagen und Prose zurückschreiben. Der Tool-Output liefert klickbare Slot-Buttons; der User wählt, dann folgt automatisch `book_meeting`.\n  **Host-Logik (wichtig):**\n  - Die Slots kommen aus dem Kalender des **Hosts** (Meeting-Organizers). Default = Caller selbst.\n  - Wenn der Caller eigene Zeit anbietet ("schicke Tita 3 Vorschläge", "biete Max Termine", "finde Slot morgen") → **hostEmail NICHT setzen** (Caller ist Host).\n  - Wenn der Caller im Auftrag einer anderen Person sucht ("such bei John Termin", "wann hat die GF Zeit?") → `hostEmail` auf die Ziel-Email setzen.\n  **Pflicht-Schritte bei jedem Termin-Intent:**\n  1. Teilnehmer-Emails resolven (ggf. via `query_odoo_hr` nach Vorname/Nachname → email).\n  2. `find_free_slots({durationMinutes, attendees, hostEmail?, windowDays?})` aufrufen — Default 5 Tage, Default 30 min wenn User keine Dauer nennt.\n  3. Die gefundenen Slots im Antwort-Text in **1 Satz** zusammenfassen ("Hier 3 freie Slots für …"). Die Buttons erscheinen automatisch als Card darunter.\n  4. Bei `consent_required` / `sso_unavailable` Fehler: kurz erklären dass einmalig Zustimmung nötig ist — die OAuthCard wird automatisch vom System angehängt.\n  **NICHT nutzen:** wenn der User nach bereits gebuchten Terminen fragt (nicht implementiert).\n'
+    ? '\n- `find_free_slots` + `book_meeting`: **M365-Kalender-Integration.** Wenn der User Termin/Meeting/Sprechstunde/Slot/Zeit-mit-<Person> anfragt — egal wie die Formulierung lautet ("schicke X drei Vorschläge", "wann hat Y Zeit?", "buche Termin mit Z", "finde Slot morgen") — **RUFE `find_free_slots`**. NICHT als Email interpretieren, NICHT nur HR-Kontakt nachschlagen und Prose zurückschreiben. Der Tool-Output liefert klickbare Slot-Buttons; der User wählt, dann folgt automatisch `book_meeting`.\n  **Host-Logik (wichtig):**\n  - Die Slots kommen aus dem Kalender des **Hosts** (Meeting-Organizers). Default = Caller selbst.\n  - Wenn der Caller eigene Zeit anbietet ("schicke Tita 3 Vorschläge", "biete Max Termine", "finde Slot morgen") → **hostEmail NICHT setzen** (Caller ist Host).\n  - Wenn der Caller im Auftrag einer anderen Person sucht ("such bei John Termin", "wann hat die GF Zeit?") → `hostEmail` auf die Ziel-Email setzen.\n  **Pflicht-Schritte bei jedem Termin-Intent:**\n  1. Teilnehmer-Emails resolven (ggf. über einen Personen-/HR-Fach-Agenten nach Vorname/Nachname → email).\n  2. `find_free_slots({durationMinutes, attendees, hostEmail?, windowDays?})` aufrufen — Default 5 Tage, Default 30 min wenn User keine Dauer nennt.\n  3. Die gefundenen Slots im Antwort-Text in **1 Satz** zusammenfassen ("Hier 3 freie Slots für …"). Die Buttons erscheinen automatisch als Card darunter.\n  4. Bei `consent_required` / `sso_unavailable` Fehler: kurz erklären dass einmalig Zustimmung nötig ist — die OAuthCard wird automatisch vom System angehängt.\n  **NICHT nutzen:** wenn der User nach bereits gebuchten Terminen fragt (nicht implementiert).\n'
     : '';
 
   const suggestFollowUpsBlock = hasSuggestFollowUps
@@ -448,7 +483,7 @@ function buildSystemPrompt(
     : '';
 
   const graphBlock = hasGraph
-    ? `\n- \`query_knowledge_graph\`: Lokaler Wissens-Graph über vergangene Sessions/Turns + Odoo-/Confluence-Entitäten. **Bei Fragen nach dem Chat-Verlauf** ("haben wir schon mal über X gesprochen?", "gab es eine Diskussion zu Y?", "welche Themen hatten wir zuletzt?") **nutze \`search_turns\` (FTS, Keyword) oder \`search_turns_semantic\` (Embedding, für Paraphrasen)**. \`find_entity\` matcht NUR Entity-Namen/IDs (res.partner, hr.employee, …), NICHT Turn-Text — verwende es für "wer ist Kunde Z?". Bei Rückbezügen auf spezifische Personen/Dinge ("wie bei Müller letztens") zuerst \`find_entity\` oder \`session_summary\`. **Wichtig:** Wenn du eine inhaltliche Frage zu früheren Chats mit \`find_entity\` beantwortest und leer rauskommst, probiere unbedingt zusätzlich \`search_turns\` — dort durchsuchst du tatsächlich die Turn-Texte.\n`
+    ? `\n- \`query_knowledge_graph\`: Lokaler Wissens-Graph über vergangene Sessions/Turns + Entitäten aus angebundenen Integrationen. **Bei Fragen nach dem Chat-Verlauf** ("haben wir schon mal über X gesprochen?", "gab es eine Diskussion zu Y?", "welche Themen hatten wir zuletzt?") **nutze \`search_turns\` (FTS, Keyword) oder \`search_turns_semantic\` (Embedding, für Paraphrasen)**. \`find_entity\` matcht NUR Entity-Namen/IDs (z.B. Kunden, Mitarbeiter, Dokumente), NICHT Turn-Text — verwende es für "wer ist Kunde Z?". Bei Rückbezügen auf spezifische Personen/Dinge ("wie bei Müller letztens") zuerst \`find_entity\` oder \`session_summary\`. **Wichtig:** Wenn du eine inhaltliche Frage zu früheren Chats mit \`find_entity\` beantwortest und leer rauskommst, probiere unbedingt zusätzlich \`search_turns\` — dort durchsuchst du tatsächlich die Turn-Texte.\n`
     : '';
 
   // Diagrams moved out of the kernel in Phase 1.2b-iii. The diagram plugin
@@ -457,7 +492,32 @@ function buildSystemPrompt(
   // caller signature stays stable during the transition.
   void hasDiagramTool;
 
-  return `Du bist der byte5 Assistent. Du beantwortest Fragen zu unserer Odoo-17-Produktion, indem du an die spezialisierten Sub-Agenten delegierst und Lernpunkte persistent merkst.
+  // Privacy Shield v4 — turn-start directive. The digest header + tool
+  // descriptions only reach the model AFTER it has already interned a tool
+  // result; by then it has finished planning which tools to fetch. This
+  // block puts the data-plane contract in front of the model before the
+  // first tool call so it knows to (a) always terminate a data answer with
+  // `v4_render_answer` and (b) fetch the entity directory it needs for the
+  // join-back that re-attaches a masked identity column to an aggregate.
+  const privacyV4Block = hasPrivacyV4
+    ? `
+**Datenschutz-Datenschicht (Privacy Shield v4) — PFLICHT bei jeder Datenfrage:**
+
+Fach-Agent-Ergebnisse durchlaufen eine Datenschutz-Grenze: statt der Rohdaten erhältst du einen **Digest** (identitätsfreie Strukturbeschreibung). Felder mit \`"classification":"sensitive-masked"\` zeigen dir nur den Platzhalter \`[masked]\` — **nicht weil der User sie nicht sehen darf, sondern nur weil DU sie nicht sehen sollst.** Der angemeldete User IST berechtigt, diese Werte (Namen, E-Mails, …) zu sehen.
+
+a) **Jede Datenantwort (Tabelle, Liste, Ranking, Einzelwert) endet zwingend mit einem \`v4_render_answer\`-Aufruf.** Schreibe die Daten-Tabelle/-Liste NIEMALS selbst in den Antworttext und kopiere NIEMALS \`[masked]\` in eine Antwort. Der Server füllt in \`v4_render_answer\` die echten Werte ein — auch die maskierten — und stellt sie dem User zu. Nimm die Identitäts-Spalte (\`employee\`, \`name\`, …) immer in \`columns\` mit auf.
+
+b) **Behaupte NIEMALS, Daten seien „gefiltert", „maskiert" oder „aus Datenschutzgründen nicht verfügbar".** Kein „⚠️ Datenschutzfilter aktiv", kein „wende dich an einen Administrator". Du siehst \`[masked]\` — der User bekommt den echten Wert. Erfinde maskierte Werte niemals selbst.
+
+c) **Join-Back-Rezept für Rankings/Aggregate mit Namen:** \`v4_aggregate\`/\`v4_group\`/\`v4_join\` arbeiten nur über **safe (nicht-maskierte)** Schlüssel — Gruppieren nach einem maskierten Namen ist nicht möglich, ein Aggregat verliert daher die Namens-Spalte. Um sie zurückzuholen:
+   1. Hole **beide** Datasets: die Transaktionsdaten (z.B. Urlaubsanträge) UND das Stammdaten-Directory (z.B. Mitarbeiterliste mit \`employee_id\` + Name) — das sind in der Regel zwei Fach-Agent-Aufrufe.
+   2. \`v4_aggregate\` die Transaktionen über den safe Schlüssel (z.B. \`employee_id\`).
+   3. \`v4_join\` das Aggregat mit dem Directory auf \`employee_id\` → jede Zeile trägt wieder den Namen.
+   4. \`v4_sort\`/\`v4_top_n\`, dann \`v4_render_answer\` mit \`columns: ["employee", …]\`.
+`
+    : '';
+
+  return `${assistantIdentity}
 
 Sprache: Antworte immer auf Deutsch, außer der Nutzer wechselt explizit die Sprache.
 
@@ -486,7 +546,7 @@ Wenn du nichts beizutragen hast, antworte mit dem **alleinigen, exakten** Token 
 - Reine FYI-Nachricht im Chat ohne Frage oder Aufforderung, auf die keine Reaktion erwartet wird.
 
 **Pflicht-Form**: \`NO_REPLY\` muss die **vollständige** Antwort sein — nichts davor, nichts danach, keine Anführungszeichen, keine Begründung. "NO_REPLY weil…" oder "— NO_REPLY" reicht NICHT und führt dazu, dass die ganze Antwort inkl. Begründung an den User rausgeht.
-
+${privacyV4Block}
 Regeln:
 1. Erfinde keine Daten. Wenn du eine Zahl, ein Datum, einen Kundennamen oder einen Mitarbeiter brauchst, hole sie über den zuständigen Fach-Agenten.
 2. Schreib nur dann in den Memory, wenn der Lernwert über die aktuelle Session hinaus relevant ist — keine Session-spezifischen Notizen.
@@ -500,7 +560,7 @@ Regeln:
 
 8. **Keine Selbst-Verifizierung im Antworttext.** Schreibe NIEMALS Wörter wie "verifiziert", "geprüft", "bestätigt", "live", "live-verifiziert", "nachgeschlagen", "aus Odoo geholt" in deine Antwort, um Daten als frisch zu kennzeichnen. Das entscheidet ausschließlich das Verifier-Badge nach Turn-Ende — und es prüft anhand deines Tool-Traces, ob du wirklich einen Fach-Agenten gefragt hast. Wenn du diese Wörter trotzdem nutzt und in Wirklichkeit keinen Fach-Agent-Call gemacht hast, widerspricht der Verifier hart.
 
-9. **Zahlen aus dem Kontext-Block sind NICHT live.** Konkret: Zahlen unter \`## Früher besprochene Entitäten\`, \`## Inhaltlich ähnliche Turns\`, \`## Letzte Turns in diesem Chat\` stammen aus der Vergangenheit. Präsentiere sie NICHT als aktuellen Stand. Wenn der User nach aktuellen Zahlen fragt (Umsatz, offene Rechnungen, Urlaubstage, Teamleistung), musst du im selben Turn mindestens EINEN Fach-Agent-Call (\`query_odoo_accounting\` / \`query_odoo_hr\`) machen — sonst widerspricht der Verifier automatisch und erzwingt einen Retry.
+9. **Zahlen aus dem Kontext-Block sind NICHT live.** Konkret: Zahlen unter \`## Früher besprochene Entitäten\`, \`## Inhaltlich ähnliche Turns\`, \`## Letzte Turns in diesem Chat\` stammen aus der Vergangenheit. Präsentiere sie NICHT als aktuellen Stand. Wenn der User nach aktuellen Zahlen fragt (Umsatz, offene Rechnungen, Urlaubstage, Teamleistung), musst du im selben Turn mindestens EINEN passenden Fach-Agent-Call machen — sonst widerspricht der Verifier automatisch und erzwingt einen Retry.
 
 10. **Gültiger Rückbezug:** Wenn der User explizit auf einen früheren Turn verweist ("wie eben berichtet", "die Zahl von gestern"), darfst du die Kontext-Zahl zitieren — aber formuliere dann klar als Rückbezug ("laut Stand vom <Datum>, keine Neu-Abfrage in diesem Turn"), niemals als "verifiziert/geprüft". Für Aggregate über mehrere Dimensionen (Team × Kunde × Zeitraum) immer einen Plausibilitäts-Check gegen bekannte Muster aus \`/memories/\`: wenn die Zahl >50 % vom Erwartungsband abweicht, EXPLIZIT als Auffälligkeit markieren und nachfragen statt bestätigen.
 
@@ -691,6 +751,19 @@ export class Orchestrator {
   private readonly nudgeRegistry: NudgeRegistry | undefined;
   private readonly nudgeStateStore: NudgeStateStore | undefined;
   private readonly nudgeProcessMemory: ProcessMemoryService | undefined;
+  private readonly excerptExtractor: PalaiaExcerptExtractor | undefined;
+  /** Raw KnowledgeGraph handle — kept for Slice 4b auto-promotion to
+   *  call `createMemorableKnowledge` directly. The wrapped
+   *  `knowledgeGraphTool` is a different abstraction (tool-spec adapter)
+   *  that doesn't expose the underlying create-write path. */
+  private readonly knowledgeGraph: KnowledgeGraph | undefined;
+  private readonly autoPromote: boolean;
+  private readonly autoPromoteThreshold: number;
+  private readonly graphPool: Pool | undefined;
+  private readonly graphTenantId: string | undefined;
+  /** Operator persona — first line(s) of the system prompt. See
+   *  `OrchestratorOptions.assistantIdentity` / `DEFAULT_ASSISTANT_IDENTITY`. */
+  private readonly assistantIdentity: string;
   private readonly nativeTools: NativeToolRegistry;
   /**
    * Per-turn scratchpad for the routine list smart-card emitted in-band by
@@ -708,6 +781,7 @@ export class Orchestrator {
     this.maxTokens = options.maxTokens;
     this.maxIterations = options.maxToolIterations;
     this.domainToolsByName = new Map(options.domainTools.map((t) => [t.name, t]));
+    this.knowledgeGraph = options.knowledgeGraph;
     this.knowledgeGraphTool = options.knowledgeGraph
       ? new KnowledgeGraphTool(options.knowledgeGraph, options.embeddingClient)
       : undefined;
@@ -722,6 +796,13 @@ export class Orchestrator {
     this.nudgeRegistry = options.nudgeRegistry;
     this.nudgeStateStore = options.nudgeStateStore;
     this.nudgeProcessMemory = options.nudgeProcessMemory;
+    this.excerptExtractor = options.excerptExtractor;
+    this.autoPromote = options.autoPromote ?? false;
+    this.autoPromoteThreshold = options.autoPromoteThreshold ?? 0.7;
+    this.graphPool = options.graphPool;
+    this.graphTenantId = options.graphTenantId;
+    this.assistantIdentity =
+      options.assistantIdentity?.trim() || DEFAULT_ASSISTANT_IDENTITY;
     this.sessionLogger = options.sessionLogger;
     this.entityRefBus = options.entityRefBus;
     this.contextRetriever = options.contextRetriever;
@@ -732,6 +813,89 @@ export class Orchestrator {
       if (!this.nativeTools.has(name)) {
         this.nativeTools.register(name);
       }
+    }
+  }
+
+  /**
+   * Slice 4b/4c — auto-promotion call. Awaited (not fire-and-forget)
+   * since 4c so the chat-side `done` event can carry the resulting
+   * `autoPromotedMkId` and the UI can render an inline banner with
+   * Edit/Discard affordances immediately.
+   *
+   * No-op when `autoPromote=false` (default) or the required handles
+   * are absent — returns undefined in microseconds, no DB touch.
+   *
+   * Significance lives on `graph_nodes.significance` (column). At
+   * `capture_level=minimal` the scorer is off and significance stays
+   * null — the helper then skips with reason='no-significance' and the
+   * orchestrator returns undefined. That's intentional: auto-saves
+   * require an explicit signal — operator opts into BOTH
+   * `capture_level>=normal` AND `KG_ACL_AUTO_PROMOTE=true`.
+   *
+   * Never throws. Failures inside promoteTurnIfSignificant are caught
+   * and logged there; we still defend against unexpected throws with
+   * a try/catch so the `done` yield always fires.
+   */
+  private async maybePromoteTurn(opts: {
+    turnId: string | undefined;
+    userId: string | undefined;
+    palaiaExcerpt: PalaiaExcerpt | undefined;
+    fallbackAssistantAnswer: string;
+  }): Promise<string | undefined> {
+    if (!this.autoPromote) return undefined;
+    if (!this.graphPool || !this.graphTenantId) return undefined;
+    if (!opts.turnId || !opts.userId) return undefined;
+    if (!this.knowledgeGraph) return undefined;
+    const promotionInput = {
+      pool: this.graphPool,
+      tenantId: this.graphTenantId,
+      kg: this.knowledgeGraph,
+      turnId: opts.turnId,
+      userId: opts.userId,
+      threshold: this.autoPromoteThreshold,
+      fallbackAssistantAnswer: opts.fallbackAssistantAnswer,
+      ...(opts.palaiaExcerpt ? { palaiaExcerpt: opts.palaiaExcerpt } : {}),
+    };
+    try {
+      const result = await promoteTurnIfSignificant(promotionInput);
+      return result.mkId;
+    } catch (err) {
+      console.error(
+        '[orchestrator] auto-promote unexpected throw (continuing):',
+        err instanceof Error ? err.message : err,
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * Slice 4a — fetch a Palaia-Excerpt for the save-as-memory modal. No-op
+   * when the extractor isn't installed. All failure paths return
+   * `undefined` so the `done` yield never throws on an enrichment miss.
+   *
+   * Note: we currently pass the raw user message + assistant answer
+   * directly. Hint precedence (`<palaia-hint type=…>`) is supported by
+   * the extractor API but not yet wired here — that requires surfacing
+   * the capture-filter's parseHints output, which is hidden behind the
+   * sessionLogger.log pipeline today. Slice 4c can revisit when the
+   * decision becomes reachable from this scope.
+   */
+  private async maybeExtractExcerpt(
+    userMessage: string,
+    answer: string,
+  ): Promise<PalaiaExcerpt | undefined> {
+    if (!this.excerptExtractor) return undefined;
+    try {
+      return await this.excerptExtractor.extract({
+        cleanedUserMessage: userMessage,
+        cleanedAssistantAnswer: answer,
+      });
+    } catch (err) {
+      console.error(
+        '[orchestrator] palaia-excerpt extraction failed (continuing without enrichment):',
+        err instanceof Error ? err.message : err,
+      );
+      return undefined;
     }
   }
 
@@ -1175,87 +1339,24 @@ export class Orchestrator {
       },
       async () => {
         let result = await this.chatInContext(input, turnId);
-        // Privacy-Shield v2 (D-2) — Output Validator + Retry-Loop.
-        // The validator decides whether the LLM's answer kept the
-        // privacy tokens verbatim AND whether it produced any
-        // spontaneous PII; on `retry` we re-run `chatInContext`
-        // ONCE with a stricter directive correction; on `block`
-        // we swap the entire payload for the placeholder. Runs
-        // BEFORE the egress filter so a retry generates a fresh
-        // answer that the egress filter then double-checks as
-        // defence-in-depth. Same `turnId` → same privacyHandle +
-        // receipt accumulator across both attempts.
-        if (privacyService && privacyHandle) {
-          result = await this.applyOutputValidator(
-            input,
-            result,
-            turnId,
-            privacyService,
-            privacyHandle,
-          );
-        }
-        // Privacy-Shield v2 (Phase A, post-deploy 2026-05-14) —
-        // mechanical restoration of LLM self-anonymization patterns
-        // ("Mitarbeiter 1/2/3", "Employee N", "Person N", …) that
-        // the directive cannot reliably suppress. Runs AFTER the
-        // validator's retry decision (so the second-attempt answer is
-        // what gets repaired) and BEFORE the egress filter (so the
-        // spontaneous-PII scan sees a clean restored text). The
-        // operation is conservative — when count of labels doesn't
-        // fit the captured positional token list, the text is left
-        // unchanged and the gap surfaces via the receipt.
+        // Privacy Shield v4 — when a v4_render_answer call produced the
+        // answer this turn it is final and already safe (real values
+        // materialized server-side from ground truth). Swap it in.
         if (privacyHandle) {
-          result = await this.applyAntiSelfAnonymization(result, privacyHandle);
-        }
-        // Privacy-Shield v2 (Slice S-6) — Egress Filter. Last gate
-        // before the receipt drains; re-scans every user-facing text
-        // slot with the full detector pool and reacts to spontaneous
-        // PII per the operator-configured mode. `mask` rewrites the
-        // span inline (default); `block` swaps the entire payload
-        // for the configured placeholder. The egress receipt block
-        // lands in the same `finalize()` aggregation below.
-        if (privacyService && privacyHandle) {
-          result = await this.applyEgressFilter(result, privacyService, privacyHandle);
-        }
-        // Privacy-Shield v2 (Phase A.2, post-deploy 2026-05-14 third
-        // iteration) — final-scrub pass. The egress filter's `mask`
-        // mode replaces spontaneous PII with FRESH `«TYPE_N»` tokens.
-        // Those tokens otherwise flow through to the user as
-        // token-shape cruft (HR-routine Zusammenfassung v152). This
-        // pass scrubs every remaining token via positional
-        // restoration + per-type German placeholder fallback,
-        // guaranteeing the channel-bound text contains no token
-        // shapes.
-        if (privacyHandle) {
-          result = await this.applyPostEgressScrub(result, privacyHandle);
-        }
-        // Privacy-Engine Hardening Slice #4 — Orphan-Placeholder
-        // explainer footer. Phase A.2's scrub may leave the answer
-        // with `[Name]` / `[Adresse]` / … strings when positional
-        // restoration was uncertain. Without a hint the user has no
-        // way to interpret them. Append a brief diagnostic so they
-        // know what happened and how to rephrase. No retry — that's
-        // expensive and rarely helpful since the LLM would likely
-        // produce the same names; revisit when receipt-persistence
-        // (S-7.5) lets us measure prevalence.
-        if (privacyHandle) {
-          const orphanAnalysis = detectOrphanPlaceholders(result.answer);
-          if (orphanAnalysis.count > 0) {
-            console.warn(
-              `[orchestrator.orphanPlaceholders] turn=${turnId} count=${String(orphanAnalysis.count)} types=${orphanAnalysis.types.join(',')}`,
-            );
+          const v4Rendered = await privacyHandle.takeRenderedAnswerV4();
+          if (v4Rendered !== undefined) {
             result = {
               ...result,
-              answer: appendOrphanPlaceholderFooter(
-                result.answer,
-                orphanAnalysis,
-              ),
+              answer: v4Rendered.text,
+              ...(v4Rendered.maskedValues.length > 0
+                ? { maskedValues: v4Rendered.maskedValues }
+                : {}),
             };
           }
         }
         if (privacyHandle) {
           try {
-            const receipt = await privacyHandle.finalize();
+            const receipt = await privacyHandle.finalize(input.userMessage);
             if (receipt) {
               return { ...result, privacyReceipt: receipt };
             }
@@ -1269,220 +1370,6 @@ export class Orchestrator {
         return result;
       },
     );
-  }
-
-  /**
-   * Privacy-Shield v2 (D-2) — apply the Output Validator and act on
-   * its recommendation:
-   *
-   *   - `pass`:  ship the result unchanged.
-   *   - `retry`: re-run `chatInContext` with an `extraSystemHint` that
-   *              calls out the failure mode (token-loss → emit tokens
-   *              verbatim; spontaneous PII → ask for clarification).
-   *              Caps at ONE retry; a third attempt is not started even
-   *              if the validator still says `retry`.
-   *   - `block`: replace the payload with the operator-configured
-   *              egress block placeholder (same helper as S-6).
-   *
-   * The retry path re-enters `chatInContext` under the SAME `turnId`,
-   * so the privacy handle's accumulator and tokenise-map are reused —
-   * the receipt at finalize covers both attempts in one row.
-   */
-  private async applyOutputValidator(
-    input: ChatTurnInput,
-    result: ChatTurnResult,
-    turnId: string,
-    privacyService: PrivacyGuardService,
-    privacyHandle: ReturnType<typeof createPrivacyTurnHandle>,
-  ): Promise<ChatTurnResult> {
-    if (result.pendingUserChoice) {
-      // Clarification turns have no fact content — same short-circuit
-      // the verifier uses. The validator's spontaneous-PII detector
-      // would only see the question text, never the user's data.
-      return result;
-    }
-    let verdict;
-    try {
-      verdict = await privacyHandle.validateOutput({ assistantText: result.answer });
-    } catch (err) {
-      console.warn(
-        '[orchestrator] privacyGuard.validateOutput threw — shipping un-validated:',
-        err,
-      );
-      return result;
-    }
-    if (verdict.recommendation === 'pass') return result;
-    // D-2.1 hotfix: both `retry` and `block` recommendations get one
-    // retry attempt with the appropriate anti-paraphrase / anti-
-    // hallucination directive. Originally `block` short-circuited
-    // straight to the placeholder, but in practice that turns a
-    // paraphrased HR-routine answer into a "filter withheld this"
-    // notice instead of giving the LLM a chance to re-emit the
-    // restored values verbatim. Now: try ONCE more for both; only
-    // the second-pass `block` actually ships the placeholder.
-    // recommendation === 'retry' OR 'block'
-    const correction = buildValidatorCorrectionPrompt(verdict);
-    const retryInput: ChatTurnInput = {
-      ...input,
-      extraSystemHint: composeRetryHint(input.extraSystemHint, correction),
-    };
-    let retried: ChatTurnResult;
-    try {
-      retried = await this.chatInContext(retryInput, turnId);
-    } catch (err) {
-      console.warn('[orchestrator] privacyGuard.validateOutput retry FAIL — keeping first answer:', err);
-      return result;
-    }
-    // D-2.2: after the retry, ALWAYS ship the retried answer. The
-    // downstream egress filter (S-6) is the safety net for any
-    // remaining spontaneous PII — with `egress_filter_mode=mask`
-    // (default) those spans are replaced inline with `«PERSON_N»`
-    // tokens, so the user sees a usable answer with masked
-    // hallucinations rather than a "filter withheld this" placeholder.
-    // The placeholder path only fires when the operator has set
-    // `egress_filter_mode=block` AND the egress filter detects
-    // spontaneous PII — i.e. when the operator explicitly opted into
-    // hard-block-on-residual-PII semantics. Re-validating the
-    // retried text here would only re-discover what the egress
-    // filter is about to act on.
-    return retried;
-  }
-
-  /**
-   * Privacy-Shield v2 (Slice S-6) — apply the egress filter to a
-   * `ChatTurnResult` before the receipt is finalised. The filter
-   * walks every user-facing text slot via `collectEgressSlots`,
-   * calls the privacy-guard service for spontaneous-PII detection
-   * + replacement, and merges the transformed texts back via
-   * `applyEgressReplacements`. On `routing: 'blocked'` the entire
-   * payload is replaced with the configured placeholder via
-   * `buildBlockedResult` so the channel never sees the original
-   * potentially-PII-bearing content.
-   *
-   * Safe to call when egress is disabled in operator config (`enabled
-   * === false`) or no text slots exist (the result has empty
-   * `answer` and no interactive payload). Errors are caught and
-   * surfaced as warnings — egress is best-effort defence-in-depth,
-   * not a hard gate.
-   */
-  private async applyEgressFilter(
-    result: ChatTurnResult,
-    privacyService: PrivacyGuardService,
-    privacyHandle: ReturnType<typeof createPrivacyTurnHandle>,
-  ): Promise<ChatTurnResult> {
-    let config;
-    try {
-      config = privacyService.getEgressConfig();
-    } catch (err) {
-      console.warn('[orchestrator] privacyGuard.getEgressConfig threw — skipping egress:', err);
-      return result;
-    }
-    if (!config.enabled) return result;
-    const slots = collectEgressSlots(result);
-    if (slots.length === 0) return result;
-    let egress;
-    try {
-      egress = await privacyHandle.egressFilter({ texts: slots });
-    } catch (err) {
-      console.warn('[orchestrator] privacyGuard.egressFilter threw — shipping un-filtered:', err);
-      return result;
-    }
-    if (egress.routing === 'blocked') {
-      return buildBlockedResult(result, config.blockPlaceholderText);
-    }
-    if (egress.routing === 'allow') return result;
-    const replacements = new Map<string, string>();
-    for (const slot of egress.texts) {
-      replacements.set(slot.id, slot.text);
-    }
-    return applyEgressReplacements(result, replacements);
-  }
-
-  /**
-   * Privacy-Shield v2 (Phase A, post-deploy 2026-05-14) — apply the
-   * self-anonymization label restorer to every channel-bound text
-   * slot before the egress filter runs.
-   *
-   * The restorer is **strictly additive**: it rewrites recognised
-   * label patterns to real names from the turn-map's most recent
-   * tool-result capture, and conservatively skips when the positional
-   * mapping is ambiguous. It cannot widen the set of values reaching
-   * the channel — every substitution comes from a real value the
-   * shield already chose to tokenise on inbound, so the user receives
-   * data the system already had authorisation to surface. Errors are
-   * caught and surfaced as warnings; on failure the un-restored text
-   * is shipped (egress filter is the second line of defence).
-   */
-  private async applyAntiSelfAnonymization(
-    result: ChatTurnResult,
-    privacyHandle: ReturnType<typeof createPrivacyTurnHandle>,
-  ): Promise<ChatTurnResult> {
-    const slots = collectEgressSlots(result);
-    if (slots.length === 0) return result;
-    const replacements = new Map<string, string>();
-    let changed = false;
-    for (const slot of slots) {
-      let outcome;
-      try {
-        outcome = await privacyHandle.restoreSelfAnonymizationLabels({
-          text: slot.text,
-        });
-      } catch (err) {
-        console.warn(
-          '[orchestrator] privacyGuard.restoreSelfAnonymizationLabels threw — keeping original slot:',
-          err,
-        );
-        continue;
-      }
-      if (outcome.text !== slot.text) {
-        replacements.set(slot.id, outcome.text);
-        changed = true;
-      }
-    }
-    if (!changed) return result;
-    return applyEgressReplacements(result, replacements);
-  }
-
-  /**
-   * Privacy-Shield v2 (Phase A.2, post-deploy 2026-05-14 third
-   * iteration) — final-scrub pass that runs AFTER the egress filter.
-   * Guarantees the channel-bound text contains no `«TYPE_N»` token
-   * shapes by attempting positional restoration against unaccounted
-   * tool-result names first, then falling back to per-type German
-   * placeholders for the remainder.
-   *
-   * Strictly additive: errors are caught and surfaced as warnings;
-   * on failure the slot ships with whatever tokens egress left in
-   * place. The post-condition is a guarantee on the happy path.
-   */
-  private async applyPostEgressScrub(
-    result: ChatTurnResult,
-    privacyHandle: ReturnType<typeof createPrivacyTurnHandle>,
-  ): Promise<ChatTurnResult> {
-    const slots = collectEgressSlots(result);
-    if (slots.length === 0) return result;
-    const replacements = new Map<string, string>();
-    let changed = false;
-    for (const slot of slots) {
-      let outcome;
-      try {
-        outcome = await privacyHandle.restoreOrScrubRemainingTokens({
-          text: slot.text,
-        });
-      } catch (err) {
-        console.warn(
-          '[orchestrator] privacyGuard.restoreOrScrubRemainingTokens threw — keeping original slot:',
-          err,
-        );
-        continue;
-      }
-      if (outcome.text !== slot.text) {
-        replacements.set(slot.id, outcome.text);
-        changed = true;
-      }
-    }
-    if (!changed) return result;
-    return applyEgressReplacements(result, replacements);
   }
 
   private async chatInContext(
@@ -1564,41 +1451,8 @@ export class Orchestrator {
     // `responseGuard@1` provider is installed; identical cache shape then.
     const prependRules = await this.resolvePrependRules(messages);
 
-    // Privacy-Engine Hardening — Single-Token-Bypass.
-    // When the user's input message tokenises to mostly PII tokens
-    // (≥70% non-whitespace chars replaced), the LLM has no semantic
-    // content to reason about and tends to rationalise the leftover
-    // tokens as "unfilled template variables" — producing polite
-    // hallucinations like "you forgot to fill in [Name]". Short-circuit
-    // here and ship a clear refusal answer so the user can re-phrase.
-    // The bypass detection itself goes through `privacy.processOutbound`,
-    // so the receipt accumulator records the detections — operators
-    // see what fired in the per-turn receipt.
-    const privacyForBypass = turnContext.current()?.privacyHandle;
-    if (privacyForBypass && input.userMessage.trim().length > 0) {
-      const saturation = await analyzeTokenSaturation(
-        input.userMessage,
-        privacyForBypass,
-      );
-      if (saturation.triggered) {
-        console.warn(
-          `[orchestrator.privacyBypass] turn=${turnId} ratio=${saturation.coverageRatio.toFixed(2)} tokens=${String(saturation.tokenCount)} originalChars=${String(saturation.originalChars)} survived=${String(saturation.survivedChars)} — skipping LLM call`,
-        );
-        entityCollection?.drain();
-        return {
-          answer: bypassCannedAnswer(saturation),
-          toolCalls: 0,
-          iterations: 0,
-        };
-      }
-    }
-
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
-        // Privacy-Proxy Slice 2.1: tokenise outbound payload + restore
-        // inbound text blocks. Pulls the per-turn handle off
-        // `turnContext.current()`. No-op when no provider is registered.
-        const privacy = turnContext.current()?.privacyHandle;
         const baseParams = {
           model: this.model,
           max_tokens: this.maxTokens,
@@ -1610,22 +1464,15 @@ export class Orchestrator {
           tools: this.buildToolsList(),
           messages,
         };
-        const outboundParams = privacy
-          ? await applyPrivacyOutboundToParams(baseParams, privacy, 'orchestrator')
-          : baseParams;
         // Last-resort guard: repair any lone UTF-16 surrogate before the
         // SDK serialises the body — the Anthropic API rejects it as
         // invalid JSON. See ensureWellFormedParams.
-        const safeParams = ensureWellFormedParams(outboundParams);
+        const safeParams = ensureWellFormedParams(baseParams);
 
         const response: Message = await this.client.messages.create(
           safeParams,
           { headers: { 'anthropic-beta': MEMORY_BETA_HEADER } },
         );
-
-        if (privacy) {
-          await restorePrivacyInResponse(response, privacy);
-        }
 
         messages.push({ role: 'assistant', content: response.content });
         textParts.push(...collectTextBlocks(response.content));
@@ -1638,6 +1485,10 @@ export class Orchestrator {
             status: 'success',
           });
           const attachments = this.drainAttachments();
+          // Hoisted so the return payload can carry the KG turn id back to
+          // the chat UI (powers the save-as-memory affordance). Stays
+          // undefined when session-logging is disabled or threw.
+          let persistedTurnId: string | undefined;
           if (this.sessionLogger && input.sessionScope) {
             // Await the log write: previous fire-and-forget let follow-ups
             // race ahead of the session persisting their prior turn, so the
@@ -1646,7 +1497,6 @@ export class Orchestrator {
             // the latency cost is worth the retrieval guarantee.
             const entityRefs = entityCollection?.drain() ?? [];
             const answerForGraph = appendToolDigest(answer, attachments);
-            let persistedTurnId: string | undefined;
             try {
               const logged = await this.sessionLogger.log({
                 scope: input.sessionScope,
@@ -1686,6 +1536,7 @@ export class Orchestrator {
             answer,
             toolCalls,
             iterations,
+            ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
             ...(runTrace ? { runTrace } : {}),
             ...(attachments ? { attachments } : {}),
             ...(followUpOptions ? { followUpOptions } : {}),
@@ -1791,13 +1642,14 @@ export class Orchestrator {
             iterations,
             status: 'success',
           });
+          let persistedTurnId: string | undefined;
           if (this.sessionLogger && input.sessionScope) {
             const entityRefs = entityCollection?.drain() ?? [];
             const loggedAnswer = answer.length > 0
               ? `${answer}\n\n[Rückfrage] ${pendingUserChoice.question}`
               : `[Rückfrage] ${pendingUserChoice.question}`;
             try {
-              await this.sessionLogger.log({
+              const logged = await this.sessionLogger.log({
                 scope: input.sessionScope,
                 userMessage: input.userMessage,
                 assistantAnswer: loggedAnswer,
@@ -1807,6 +1659,7 @@ export class Orchestrator {
                 ...(input.userId ? { userId: input.userId } : {}),
                 ...(runTrace ? { runTrace } : {}),
               });
+              persistedTurnId = logged.turnExternalId;
             } catch (err) {
               console.error(
                 '[orchestrator] session log failed (continuing with choice card):',
@@ -1819,6 +1672,7 @@ export class Orchestrator {
             toolCalls,
             iterations,
             pendingUserChoice,
+            ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
             ...(runTrace ? { runTrace } : {}),
           };
         }
@@ -1884,11 +1738,24 @@ export class Orchestrator {
     try {
       for await (const event of this.chatStreamInner(input, turnId, observer)) {
         if (event.type === 'done' && privacyHandle) {
+          // Privacy-Shield v4 — swap in the server-materialized answer
+          // (real values, never round-tripped through the LLM) before the
+          // turn's privacy state is finalized.
+          const v4Rendered = await privacyHandle.takeRenderedAnswerV4();
+          let doneEvent =
+            v4Rendered !== undefined
+              ? {
+                  ...event,
+                  answer: v4Rendered.text,
+                  ...(v4Rendered.maskedValues.length > 0
+                    ? { maskedValues: v4Rendered.maskedValues }
+                    : {}),
+                }
+              : event;
           try {
-            const receipt = await privacyHandle.finalize();
+            const receipt = await privacyHandle.finalize(input.userMessage);
             if (receipt) {
-              yield { ...event, privacyReceipt: receipt };
-              continue;
+              doneEvent = { ...doneEvent, privacyReceipt: receipt };
             }
           } catch (err) {
             console.warn(
@@ -1896,6 +1763,8 @@ export class Orchestrator {
               err,
             );
           }
+          yield doneEvent;
+          continue;
         }
         yield event;
       }
@@ -2014,6 +1883,7 @@ export class Orchestrator {
             iterations,
             status: 'success',
           });
+          let persistedTurnId: string | undefined;
           if (this.sessionLogger && input.sessionScope) {
             const entityRefs = entityCollection?.drain() ?? [];
             // See chat(): we await the session log so the next turn's
@@ -2022,7 +1892,7 @@ export class Orchestrator {
             // so the extra ~sub-second is paid by the client already.
             const answerForGraph = appendToolDigest(answer, attachments);
             try {
-              await this.sessionLogger.log({
+              const logged = await this.sessionLogger.log({
                 scope: input.sessionScope,
                 userMessage: input.userMessage,
                 assistantAnswer: answerForGraph,
@@ -2032,6 +1902,7 @@ export class Orchestrator {
                 ...(input.userId ? { userId: input.userId } : {}),
                 ...(runTrace ? { runTrace } : {}),
               });
+              persistedTurnId = logged.turnExternalId;
             } catch (err) {
               console.error(
                 '[orchestrator] session log failed (continuing with answer):',
@@ -2043,11 +1914,34 @@ export class Orchestrator {
           const pendingSlotCard = this.drainPendingSlotCard();
           const pendingRoutineList = this.drainPendingRoutineList();
           const pendingOAuthConsent = this.drainConsentRequired();
+          // Slice 4a — Haiku-backed enrichment for the save-as-memory
+          // modal. Inline because the `done` event is the natural
+          // carrier and the chat UI wants the suggestion immediately;
+          // accept the 300-800ms latency cost. Failure → undefined,
+          // modal falls back to its 240-char prefill.
+          const palaiaExcerpt = await this.maybeExtractExcerpt(
+            input.userMessage,
+            answer,
+          );
+          // Slice 4b/4c — auto-promotion. Awaited so the resulting
+          // mkId rides the same `done` event and the UI can render an
+          // inline banner immediately. No-op (returns undefined fast)
+          // when autoPromote is off / capture-scorer disabled /
+          // threshold not met / required handles missing.
+          const autoPromotedMkId = await this.maybePromoteTurn({
+            turnId: persistedTurnId,
+            userId: input.userId,
+            palaiaExcerpt,
+            fallbackAssistantAnswer: answer,
+          });
           yield {
             type: 'done',
             answer,
             toolCalls,
             iterations,
+            ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
+            ...(palaiaExcerpt ? { palaiaExcerpt } : {}),
+            ...(autoPromotedMkId ? { autoPromotedMkId } : {}),
             ...(attachments ? { attachments } : {}),
             ...(runTrace ? { runTrace } : {}),
             ...(followUpOptions ? { followUpOptions } : {}),
@@ -2207,13 +2101,14 @@ export class Orchestrator {
             iterations,
             status: 'success',
           });
+          let persistedTurnId: string | undefined;
           if (this.sessionLogger && input.sessionScope) {
             const entityRefs = entityCollection?.drain() ?? [];
             const loggedAnswer = answer.length > 0
               ? `${answer}\n\n[Rückfrage] ${pendingUserChoice.question}`
               : `[Rückfrage] ${pendingUserChoice.question}`;
             try {
-              await this.sessionLogger.log({
+              const logged = await this.sessionLogger.log({
                 scope: input.sessionScope,
                 userMessage: input.userMessage,
                 assistantAnswer: loggedAnswer,
@@ -2223,6 +2118,7 @@ export class Orchestrator {
                 ...(input.userId ? { userId: input.userId } : {}),
                 ...(runTrace ? { runTrace } : {}),
               });
+              persistedTurnId = logged.turnExternalId;
             } catch (err) {
               console.error(
                 '[orchestrator] session log failed (continuing with choice card):',
@@ -2236,6 +2132,7 @@ export class Orchestrator {
             toolCalls,
             iterations,
             pendingUserChoice,
+            ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
             ...(runTrace ? { runTrace } : {}),
           };
           return;
@@ -2247,6 +2144,15 @@ export class Orchestrator {
         message: `Orchestrator exceeded maxToolIterations (${String(this.maxIterations)}) without reaching a final answer.`,
       };
     } catch (err) {
+      // This catch did not log before — a turn failing on a transient
+      // provider error (e.g. Anthropic `overloaded_error` / HTTP 529) was
+      // invisible in the server logs. Log the technical detail here. The
+      // user-facing error-message wording is handled separately (Privacy
+      // Shield v4).
+      console.error(
+        '[orchestrator] turn failed:',
+        err instanceof Error ? (err.stack ?? err.message) : err,
+      );
       yield {
         type: 'error',
         message: err instanceof Error ? err.message : String(err),
@@ -2367,41 +2273,44 @@ export class Orchestrator {
     input: unknown,
     observer?: AskObserver,
   ): Promise<string> {
-    // Slice 2.2 — privacy-proxy tool roundtrip.
-    //
-    // Restore tokens in the input BEFORE the handler runs so domain tools
-    // (Odoo, Calendar, KG) see real user data instead of `tok_<hex>`
-    // placeholders that the downstream system would not be able to
-    // resolve. Re-scan the result text AFTER the handler returns so any
-    // fresh PII the tool surfaced (e.g. "John Doe" from query_odoo_hr)
-    // is tokenised before it flows back to the LLM as a `tool_result`
-    // block — the public LLM never sees the plaintext.
-    //
-    // The privacy handle is threaded through `turnContext.privacyHandle`
-    // (Slice 2.1). Absent ⇒ no privacy provider installed; we degrade
-    // to pre-Slice-2.2 byte-identical behaviour.
-    const privacy = turnContext.current()?.privacyHandle;
-    let dispatchInput = input;
-    if (privacy !== undefined) {
-      try {
-        const restored = await privacy.processToolInput({
-          toolName: name,
-          input,
-        });
-        dispatchInput = restored.input;
-      } catch (err) {
-        console.warn(
-          `[orchestrator.dispatchTool:${name}] privacy.processToolInput threw — proceeding with original input:`,
-          err,
-        );
-      }
+    // Privacy Shield v4 — Data-Plane Boundary. The privacy handle is
+    // threaded through `turnContext.privacyHandle`; absent ⇒ no privacy
+    // provider installed and the tool result flows through unchanged.
+    const ctx = turnContext.current();
+    const privacy = ctx?.privacyHandle;
+    // Verb tools + the terminal render tool are served by the privacy
+    // provider's per-turn data-plane engine, not by a tool handler.
+    if (privacy !== undefined && name.startsWith('v4_')) {
+      const v4Tool = await privacy.runV4Tool({ toolName: name, input });
+      return v4Tool.resultText;
     }
-    const result = await this.dispatchToolInner(name, dispatchInput, observer);
+    // Privacy Shield v4 — sub-agent data-plane bridge. A domain tool wraps a
+    // LocalSubAgent that runs its own LLM loop behind the SAME v4 boundary:
+    // every result it fetches is interned, so its LLM only ever sees
+    // `[masked]` and the prose answer it returns has `[masked]` baked in.
+    // Re-interning that prose would destroy the real values for good. So for
+    // a domain tool we run the dispatch in a nested scope carrying a fresh
+    // `subAgentDatasetSink`; the sub-agent pushes every datasetId it interns
+    // into it, and below we hand the parent agent the digests of those REAL
+    // datasets by reference instead of re-interning the prose.
+    const subAgentSink: string[] = [];
+    let result: string;
+    if (
+      privacy !== undefined &&
+      ctx !== undefined &&
+      this.domainToolsByName.has(name)
+    ) {
+      result = await turnContext.run(
+        { ...ctx, subAgentDatasetSink: subAgentSink },
+        () => this.dispatchToolInner(name, input, observer),
+      );
+    } else {
+      result = await this.dispatchToolInner(name, input, observer);
+    }
     // Phase C.2 — Raw tool-result capture. Outer scope (routine runner)
-    // may install a callback that stashes the pre-tokenisation result
-    // keyed by tool name; later template rendering uses it as the source
-    // of truth for data sections so the LLM never authors data rows.
-    // Absent callback ⇒ no capture (chat + non-templated routines).
+    // may install a callback that stashes the raw result keyed by tool
+    // name; later template rendering uses it as the source of truth for
+    // data sections. Absent callback ⇒ no capture.
     const capture = turnContext.current()?.captureRawToolResult;
     if (capture !== undefined && typeof result === 'string') {
       try {
@@ -2413,60 +2322,40 @@ export class Orchestrator {
         );
       }
     }
-    // Privacy-Shield v3 (slice 1) — Stable-id tokenization pre-pass.
-    // When the dispatched tool is a DomainTool that declared
-    // `piiFields`, run the tool-aware pre-pass BEFORE the NER-based
-    // `processToolResult`. The pre-pass parses the JSON result,
-    // rewrites annotated leaves into stable tokens, and re-serialises;
-    // NER then runs on top as defense-in-depth for unannotated free
-    // text. Strictly additive — annotations missing / parse failure /
-    // empty piiFields all degrade to the slice-2.2 byte-identical
-    // behaviour.
-    let resultForPrivacy = result;
-    if (privacy !== undefined && typeof result === 'string' && result.length > 0) {
-      const piiFields = this.domainToolsByName.get(name)?.piiFields;
-      if (piiFields !== undefined && piiFields.length > 0) {
+    if (privacy !== undefined && typeof result === 'string') {
+      // Sub-agent bridge: the sub-agent interned ≥1 dataset this dispatch —
+      // pass those REAL datasets up by reference so the parent agent's
+      // `v4_render_answer` resolves ground truth, not the `[masked]` prose.
+      if (subAgentSink.length > 0) {
         try {
-          const prepass = await privacy.applyStableIdPrepass({
-            toolName: name,
-            text: result,
-            piiFields,
+          const bridged = await privacy.subAgentResultV4({
+            narration: result,
+            datasetIds: subAgentSink,
           });
-          resultForPrivacy = prepass.text;
-          if (prepass.replaced > 0 || prepass.skipped > 0) {
-            console.log(
-              `[orchestrator.dispatchTool:${name}] stable-id prepass: replaced=${String(
-                prepass.replaced,
-              )} skipped=${String(prepass.skipped)} parsed=${String(prepass.parsed)}`,
-            );
-          }
+          return bridged.resultText;
         } catch (err) {
           console.warn(
-            `[orchestrator.dispatchTool:${name}] privacy.applyStableIdPrepass threw — falling through to NER-only:`,
+            `[orchestrator.dispatchTool:${name}] privacy.subAgentResultV4 threw — interning prose instead:`,
             err,
           );
         }
       }
-    }
-    if (
-      privacy !== undefined &&
-      typeof resultForPrivacy === 'string' &&
-      resultForPrivacy.length > 0
-    ) {
+      // Intern the raw result server-side and hand the LLM only the
+      // identity-free digest — the raw rows never reach the LLM wire.
       try {
-        const tokenised = await privacy.processToolResult({
+        const v4 = await privacy.internToolResultV4({
           toolName: name,
-          text: resultForPrivacy,
+          rawResult: result,
         });
-        return tokenised.text;
+        return v4.digestText;
       } catch (err) {
         console.warn(
-          `[orchestrator.dispatchTool:${name}] privacy.processToolResult threw — sending original result:`,
+          `[orchestrator.dispatchTool:${name}] privacy.internToolResultV4 threw — sending raw result:`,
           err,
         );
       }
     }
-    return resultForPrivacy;
+    return result;
   }
 
   private async dispatchToolInner(
@@ -2520,6 +2409,7 @@ export class Orchestrator {
       .map((e) => e.promptDoc)
       .filter((doc): doc is string => typeof doc === 'string' && doc.length > 0);
     return buildSystemPrompt(
+      this.assistantIdentity,
       Array.from(this.domainToolsByName.values()),
       this.knowledgeGraphTool !== undefined,
       // Diagrams is now plugin-contributed — its doc ships via extraDocs.
@@ -2528,6 +2418,7 @@ export class Orchestrator {
       this.askUserChoiceTool !== undefined,
       this.suggestFollowUpsTool !== undefined,
       this.findFreeSlotsTool !== undefined && this.bookMeetingTool !== undefined,
+      this.privacyGuard?.() !== undefined,
       extraDocs,
     );
   }
@@ -2646,6 +2537,12 @@ export class Orchestrator {
     for (const tool of this.domainToolsByName.values()) {
       tools.push(tool.spec);
     }
+    // Privacy-Shield v4 — verb + render tools, offered only when the v4
+    // data-plane boundary is active for this turn.
+    const v4ToolSpecs = turnContext.current()?.privacyHandle?.v4ToolSpecs();
+    if (v4ToolSpecs) {
+      for (const spec of v4ToolSpecs) tools.push(spec);
+    }
     // Prompt-cache the full tool-spec block. Anthropic caches every prior
     // content up to and including the tool that carries `cache_control` —
     // marking the final tool makes the whole list a single cacheable chunk.
@@ -2703,52 +2600,3 @@ function collectTextBlocks(content: ContentBlock[]): string[] {
 // It's imported at the top of this file and re-exported via the back-compat
 // barrel so `import { toSemanticAnswer } from '../orchestrator.js'` callers
 // (verifier wrapper today, channel adapters until S+11) keep working.
-
-// ---------------------------------------------------------------------------
-// Privacy-Shield v2 (D-2) — Output Validator retry-prompt helpers.
-// ---------------------------------------------------------------------------
-
-/**
- * Pick a correction prompt based on what the validator flagged. The
- * directive is appended to the system prompt for the retry attempt;
- * it does NOT carry PII (no values, no spans) so it is safe to log.
- */
-export function buildValidatorCorrectionPrompt(verdict: PrivacyOutputValidationResult): string {
-  const reason = verdict.recommendationReason ?? '';
-  // Spontaneous PII signal: the validator already routes spontaneous
-  // hits to recommendation=`block`, but `retry` can also be issued by
-  // a future validator extension. Branch on the reason prefix instead
-  // of recomputing from `verdict.spontaneousPiiHits`.
-  if (reason.startsWith('spontaneous PII') || verdict.spontaneousPiiHits.length > 0) {
-    return [
-      '<privacy-validator-retry>',
-      'Your previous answer contained PII values that were never supplied',
-      'via a tool result or user message. Do not invent identifiers (names,',
-      'emails, IBANs, phone numbers, addresses). If a required value is',
-      'missing, ask a single clarifying question instead of guessing.',
-      '</privacy-validator-retry>',
-    ].join('\n');
-  }
-  // Token-loss is the default failure mode (HR-routine regression).
-  return [
-    '<privacy-validator-retry>',
-    'Your previous answer dropped privacy tokens. Tokens look like',
-    '`«PERSON_1»`, `«EMAIL_2»`, etc. Re-emit the answer; every token from',
-    'tool results MUST appear verbatim where its value would go — in table',
-    'cells, list items, sentences, JSON. Do not paraphrase, summarise,',
-    'invent, or translate token values. The privacy shield restores them',
-    'to the real values after you finish.',
-    '</privacy-validator-retry>',
-  ].join('\n');
-}
-
-/**
- * Append the validator correction to an existing `extraSystemHint` so
- * a caller-supplied hint (e.g. the answer-verifier's contradiction
- * note) is preserved alongside the privacy directive. Both fire in
- * the same retry, double-budget for both signals.
- */
-export function composeRetryHint(existing: string | undefined, correction: string): string {
-  if (existing === undefined || existing.trim().length === 0) return correction;
-  return `${existing}\n\n${correction}`;
-}

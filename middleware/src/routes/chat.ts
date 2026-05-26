@@ -40,12 +40,24 @@ function resolveScope(parsed: z.infer<typeof ChatRequestSchema>): string {
 const USER_ID_RE = /^[A-Za-z0-9_.:@-]{1,128}$/;
 
 /**
- * Pulls a user identity from the request. Dev/HTTP callers pass `x-user-id`;
- * Teams sets it from the AAD object id at its own router layer. Invalid or
- * oversize values are ignored (treated as anonymous) rather than throwing —
- * identity is advisory metadata, not an auth claim.
+ * Pulls a user identity from the request. Resolution order:
+ *
+ *   1. `req.session.omadia_user_id` — set by `requireAuth` once the
+ *      session JWT was minted with the Slice 1b-channel-web cluster
+ *      resolver wired (browser flow via Admin UI login). This is the
+ *      cluster-root id `ingestRun` expects.
+ *   2. `x-user-id` header — legacy path for HTTP callers and channel
+ *      adapters (Teams sets the AAD object id; tests set arbitrary
+ *      strings). Treated as advisory metadata only — `ingestRun`
+ *      currently rejects unresolved ids, so without the cluster being
+ *      pre-created elsewhere this fall through ends up anonymous.
+ *
+ * Invalid or oversize values are ignored rather than thrown — identity
+ * is never an auth claim at this layer.
  */
 function resolveUserId(req: Request): string | undefined {
+  const sessionId = req.session?.omadia_user_id;
+  if (sessionId && USER_ID_RE.test(sessionId)) return sessionId;
   const raw = req.header('x-user-id');
   if (!raw) return undefined;
   return USER_ID_RE.test(raw) ? raw : undefined;

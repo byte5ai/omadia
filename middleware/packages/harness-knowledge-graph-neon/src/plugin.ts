@@ -197,10 +197,15 @@ export async function activate(
       intervalMs: intervalMinutes * 60 * 1000,
       batchSize,
       maxAttempts,
+      // Slice 7 — sweep all three embedded node types in a single
+      // worker. Turn was the original Slice-1 type; MK + PalaiaExcerpt
+      // join the rotation so curated memory becomes recall-ready
+      // automatically without a second sweep process.
+      nodeTypes: ['Turn', 'MemorableKnowledge', 'PalaiaExcerpt'],
       log: (msg) => { console.error(msg); },
     });
     console.error(
-      `[graph-embedding-backfill] scheduler armed interval=${String(intervalMinutes)}min batch=${String(batchSize)} maxAttempts=${String(maxAttempts)}`,
+      `[graph-embedding-backfill] scheduler armed interval=${String(intervalMinutes)}min batch=${String(batchSize)} maxAttempts=${String(maxAttempts)} types=[Turn,MemorableKnowledge,PalaiaExcerpt]`,
     );
   }
 

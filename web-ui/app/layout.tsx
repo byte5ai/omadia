@@ -12,6 +12,10 @@ import { AuthBadge } from './_components/AuthBadge';
 import { LocaleSwitcher } from './_components/LocaleSwitcher';
 import { Nav } from './_components/Nav';
 import { SessionWatcher } from './_components/SessionWatcher';
+import { StreamRunner } from './_components/StreamRunner';
+import { StreamToasts } from './_components/StreamToasts';
+import { ChatSessionsProvider } from './_lib/chatSessionsContext';
+import { StreamStoreProvider } from './_lib/streamStore';
 import './globals.css';
 
 /**
@@ -70,41 +74,51 @@ export default async function RootLayout({
     >
       <body className="flex h-full flex-col">
         <NextIntlClientProvider locale={locale} messages={messages}>
-          <header className="border-b border-[color:var(--border)] bg-[color:var(--bg)]/90 px-6 py-3 backdrop-blur">
-            <div className="mx-auto flex max-w-[1280px] items-center gap-4">
-              <Link
-                href="/"
-                className="flex items-center transition-opacity hover:opacity-90"
-                aria-label={t('logoAriaLabel')}
-              >
-                <span className="flex flex-col leading-none">
-                  <span className="font-display text-lg text-[color:var(--fg-strong)]">
-                    Omadia
+          <ChatSessionsProvider>
+            <StreamStoreProvider>
+              <header className="border-b border-[color:var(--border)] bg-[color:var(--bg)]/90 px-6 py-3 backdrop-blur">
+                <div className="mx-auto flex max-w-[1280px] items-center gap-4">
+                  <Link
+                    href="/"
+                    className="flex items-center transition-opacity hover:opacity-90"
+                    aria-label={t('logoAriaLabel')}
+                  >
+                    <span className="flex flex-col leading-none">
+                      <span className="font-display text-lg text-[color:var(--fg-strong)]">
+                        Omadia
+                      </span>
+                      <span className="mt-1 text-[10px] uppercase tracking-[0.14em] text-[color:var(--fg-muted)]">
+                        an Agentic OS
+                      </span>
+                    </span>
+                  </Link>
+                  <span className="text-xs text-[color:var(--fg-muted)]">
+                    <span className="text-[color:var(--highlight)] font-[900]">
+                      :
+                    </span>{' '}
+                    {t('subtitle')}
                   </span>
-                  <span className="mt-1 text-[10px] uppercase tracking-[0.14em] text-[color:var(--fg-muted)]">
-                    an Agentic OS
-                  </span>
-                </span>
-              </Link>
-              <span className="text-xs text-[color:var(--fg-muted)]">
-                <span className="text-[color:var(--highlight)] font-[900]">
-                  :
-                </span>{' '}
-                {t('subtitle')}
-              </span>
-              <div className="ml-auto flex items-center gap-5">
-                <Nav />
-                <span
-                  className="hidden h-5 w-px bg-[color:var(--border)] sm:block"
-                  aria-hidden
-                />
-                <LocaleSwitcher />
-                <AuthBadge />
-              </div>
-            </div>
-          </header>
-          <div className="min-h-0 flex-1">{children}</div>
-          <SessionWatcher />
+                  <div className="ml-auto flex items-center gap-5">
+                    <Nav />
+                    <span
+                      className="hidden h-5 w-px bg-[color:var(--border)] sm:block"
+                      aria-hidden
+                    />
+                    <LocaleSwitcher />
+                    <AuthBadge />
+                  </div>
+                </div>
+              </header>
+              <div className="min-h-0 flex-1">{children}</div>
+              {/* Background-stream toasts (only render for chats that
+                  aren't currently in view). The runner is headless — it
+                  owns the fetch + NDJSON-parse loop so that switching to
+                  another menu route doesn't kill an in-flight turn. */}
+              <StreamRunner />
+              <StreamToasts />
+              <SessionWatcher />
+            </StreamStoreProvider>
+          </ChatSessionsProvider>
         </NextIntlClientProvider>
       </body>
     </html>

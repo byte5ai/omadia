@@ -8,10 +8,13 @@ import {
   DEFAULT_FILTER,
   type GraphFilter,
   type GraphNode,
+  type IssueOverlay,
+  type MemoryView,
   type RunTraceView,
   type SessionSummary,
   type SessionView,
   type Stats,
+  type TopicOverlay,
   createLimiter,
   relativeTime,
 } from './_components/graphTypes';
@@ -28,9 +31,12 @@ const GraphCanvas = dynamic(() => import('./_components/GraphCanvas'), {
   ),
 });
 
-type ViewMode = 'graph' | 'list';
+type ViewMode = 'graph' | 'list' | 'memory';
 
 const ALL = '__ALL__';
+/** Pseudo scope value: sidebar entry "🧠 Alle Memories" → loads
+ *  `/memories?scope=__ALL__` and locks the view-mode to 'memory'. */
+const MEMORIES = '__MEMORIES__';
 
 export default function GraphPage(): React.ReactElement {
   const [mode, setMode] = useState<ViewMode>('graph');
@@ -47,6 +53,17 @@ export default function GraphPage(): React.ReactElement {
   const [neighborsByNode, setNeighborsByNode] = useState<
     Record<string, GraphNode[] | 'loading'>
   >({});
+  const [memoryViews, setMemoryViews] = useState<
+    Record<string, MemoryView | 'loading' | 'missing'>
+  >({});
+  // Slice 11.5 — Topic + Issue overlays. Single cached payload per
+  // overlay (tenant-wide, not scope-dependent). Refetched on toggle.
+  const [topicOverlay, setTopicOverlay] = useState<
+    TopicOverlay | 'loading' | 'missing' | null
+  >(null);
+  const [issueOverlay, setIssueOverlay] = useState<
+    IssueOverlay | 'loading' | 'missing' | null
+  >(null);
   const [error, setError] = useState<string | null>(null);
   const [dark, setDark] = useState(false);
   const [filter, setFilter] = useState('');
@@ -127,9 +144,11 @@ export default function GraphPage(): React.ReactElement {
     [sessionViews],
   );
 
-  // Load the active session's own view on demand.
+  // Load the active session's own view on demand. The pseudo scopes
+  // (`__ALL__`, `__MEMORIES__`) are not real sessions and would 404 on
+  // `/dev/graph/session/:scope`.
   useEffect(() => {
-    if (selected === ALL) return;
+    if (selected === ALL || selected === MEMORIES) return;
     // Load-on-selection: loadSessionView marks the scope 'loading' (one
     // intended render) before fetching — not a cascading-render anti-pattern.
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -183,6 +202,87 @@ export default function GraphPage(): React.ReactElement {
     }
   }, [mode, selected, sessionViews, runCache, loadRun]);
 
+  const loadTopicOverlay = useCallback(async (): Promise<void> => {
+    setTopicOverlay('loading');
+    try {
+      const res = await fetch('/bot-api/dev/graph/topics');
+      if (!res.ok) {
+        setTopicOverlay('missing');
+        return;
+      }
+      const body = (await res.json()) as TopicOverlay;
+      setTopicOverlay(body);
+    } catch {
+      setTopicOverlay('missing');
+    }
+  }, []);
+
+  const loadIssueOverlay = useCallback(async (): Promise<void> => {
+    setIssueOverlay('loading');
+    try {
+      const res = await fetch('/bot-api/dev/graph/issues');
+      if (!res.ok) {
+        setIssueOverlay('missing');
+        return;
+      }
+      const body = (await res.json()) as IssueOverlay;
+      setIssueOverlay(body);
+    } catch {
+      setIssueOverlay('missing');
+    }
+  }, []);
+
+  // Slice 11.5 — lazy-load on first filter activation. The overlays
+  // are tenant-wide, so one cached fetch per page lifetime is enough.
+  useEffect(() => {
+    if (graphFilter.showTopics && topicOverlay === null) {
+      // loadTopicOverlay marks the overlay 'loading' before fetching —
+      // one intended render, not a cascading-render anti-pattern.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      void loadTopicOverlay();
+    }
+  }, [graphFilter.showTopics, topicOverlay, loadTopicOverlay]);
+  useEffect(() => {
+    if (graphFilter.showIssues && issueOverlay === null) {
+      // loadIssueOverlay marks the overlay 'loading' before fetching —
+      // one intended render, not a cascading-render anti-pattern.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      void loadIssueOverlay();
+    }
+  }, [graphFilter.showIssues, issueOverlay, loadIssueOverlay]);
+
+  const activeTopicOverlay: TopicOverlay | null =
+    typeof topicOverlay === 'object' && topicOverlay !== null
+      ? topicOverlay
+      : null;
+  const activeIssueOverlay: IssueOverlay | null =
+    typeof issueOverlay === 'object' && issueOverlay !== null
+      ? issueOverlay
+      : null;
+
+  const loadMemoryView = useCallback(
+    async (scope: string): Promise<void> => {
+      const cached = memoryViews[scope];
+      if (cached && cached !== 'loading' && cached !== 'missing') return;
+      if (cached === 'loading') return;
+      setMemoryViews((p) => ({ ...p, [scope]: 'loading' }));
+      try {
+        const res = await fetch(
+          `/bot-api/dev/graph/memories?scope=${encodeURIComponent(scope)}`,
+        );
+        if (!res.ok) {
+          setMemoryViews((p) => ({ ...p, [scope]: 'missing' }));
+          return;
+        }
+        const body = (await res.json()) as MemoryView;
+        setMemoryViews((p) => ({ ...p, [scope]: body }));
+      } catch {
+        setMemoryViews((p) => ({ ...p, [scope]: 'missing' }));
+      }
+    },
+    [memoryViews],
+  );
+
   const loadNeighbors = useCallback(
     async (nodeId: string): Promise<void> => {
       if (neighborsByNode[nodeId] && neighborsByNode[nodeId] !== 'loading')
@@ -209,7 +309,13 @@ export default function GraphPage(): React.ReactElement {
   );
 
   const handleGraphNodeExpand = (nodeId: string): void => {
-    const node = findNodeInState(nodeId, sessionViews, runCache, neighborsByNode);
+    const node = findNodeInState(
+      nodeId,
+      sessionViews,
+      runCache,
+      neighborsByNode,
+      memoryViews,
+    );
     if (node?.type === 'Turn') void loadRun(nodeId);
     void loadNeighbors(nodeId);
   };
@@ -217,7 +323,13 @@ export default function GraphPage(): React.ReactElement {
   const handleEntityClickFromList = (id: string): void => {
     void loadNeighbors(id);
     setMode('graph');
-    const node = findNodeInState(id, sessionViews, runCache, neighborsByNode);
+    const node = findNodeInState(
+      id,
+      sessionViews,
+      runCache,
+      neighborsByNode,
+      memoryViews,
+    );
     if (node) setSelectedNode(node);
   };
 
@@ -241,11 +353,33 @@ export default function GraphPage(): React.ReactElement {
   }, [runCache]);
 
   const activeView: SessionView | null = useMemo(() => {
-    if (selected === ALL) return null;
+    if (selected === ALL || selected === MEMORIES) return null;
     const v = sessionViews[selected];
     if (!v || v === 'loading' || v === 'missing') return null;
     return v;
   }, [selected, sessionViews]);
+
+  const memoryScopeKey =
+    selected === MEMORIES ? ALL : selected === ALL ? null : selected;
+  const memoriesNeeded =
+    memoryScopeKey !== null &&
+    (selected === MEMORIES || mode === 'memory' || graphFilter.showMemories);
+  useEffect(() => {
+    if (!memoriesNeeded || memoryScopeKey === null) return;
+    // loadMemoryView marks the scope 'loading' (one intended render)
+    // before fetching — not a cascading-render anti-pattern; mirrors
+    // the loadSessionView effect above.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (!memoryViews[memoryScopeKey]) void loadMemoryView(memoryScopeKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [memoriesNeeded, memoryScopeKey]);
+
+  const activeMemoryView: MemoryView | null = useMemo(() => {
+    if (memoryScopeKey === null) return null;
+    const v = memoryViews[memoryScopeKey];
+    if (!v || v === 'loading' || v === 'missing') return null;
+    return v;
+  }, [memoryScopeKey, memoryViews]);
 
   const allViews: SessionView[] = useMemo(() => {
     if (selected !== ALL) return [];
@@ -281,15 +415,20 @@ export default function GraphPage(): React.ReactElement {
       ? neighborsByNode[selectedNode.id]
       : undefined;
 
+  const memoryCount = activeMemoryView?.memories.length ?? 0;
   const headerTitle =
-    selected === ALL
-      ? `🌐 Alle Sessions (${allLoadedCount}/${allTotal})`
-      : (activeView?.session.id ?? selected);
+    selected === MEMORIES
+      ? `🧠 Alle Memories (${memoryCount})`
+      : selected === ALL
+        ? `🌐 Alle Sessions (${allLoadedCount}/${allTotal})`
+        : (activeView?.session.id ?? selected);
 
   const turnSum =
-    selected === ALL
-      ? allViews.reduce((acc, v) => acc + v.turns.length, 0)
-      : (activeView?.turns.length ?? 0);
+    selected === MEMORIES
+      ? memoryCount
+      : selected === ALL
+        ? allViews.reduce((acc, v) => acc + v.turns.length, 0)
+        : (activeView?.turns.length ?? 0);
 
   return (
     <main className="flex h-full">
@@ -330,9 +469,10 @@ export default function GraphPage(): React.ReactElement {
           onClick={() => {
             setSelected(ALL);
             setSelectedNode(null);
+            if (mode === 'memory') setMode('graph');
           }}
           className={[
-            'mx-2 my-2 flex items-center gap-2 rounded-md border px-3 py-2 text-left text-xs transition',
+            'mx-2 mb-1 mt-2 flex items-center gap-2 rounded-md border px-3 py-2 text-left text-xs transition',
             selected === ALL
               ? 'border-purple-400 bg-purple-50 text-purple-900 dark:border-purple-700 dark:bg-purple-900/30 dark:text-purple-100'
               : 'border-neutral-200 hover:border-neutral-400 dark:border-neutral-700 dark:hover:border-neutral-500',
@@ -343,6 +483,29 @@ export default function GraphPage(): React.ReactElement {
             <span className="font-semibold">Alle Sessions</span>
             <span className="text-[10px] text-neutral-500">
               Gesamte Wolke · {allTotal} Sessions
+            </span>
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setSelected(MEMORIES);
+            setSelectedNode(null);
+            setMode('memory');
+          }}
+          className={[
+            'mx-2 mb-2 flex items-center gap-2 rounded-md border px-3 py-2 text-left text-xs transition',
+            selected === MEMORIES
+              ? 'border-fuchsia-400 bg-fuchsia-50 text-fuchsia-900 dark:border-fuchsia-700 dark:bg-fuchsia-900/30 dark:text-fuchsia-100'
+              : 'border-neutral-200 hover:border-neutral-400 dark:border-neutral-700 dark:hover:border-neutral-500',
+          ].join(' ')}
+        >
+          <span className="text-base">🧠</span>
+          <span className="flex flex-col">
+            <span className="font-semibold">Alle Memories</span>
+            <span className="text-[10px] text-neutral-500">
+              Palaia-Provenance · 2-Hops
             </span>
           </span>
         </button>
@@ -395,38 +558,68 @@ export default function GraphPage(): React.ReactElement {
             {headerTitle}
           </span>
           <span className="text-[11px] text-neutral-500">
-            {turnSum} Turn{turnSum === 1 ? '' : 's'}
+            {selected === MEMORIES
+              ? `${turnSum} Memor${turnSum === 1 ? 'y' : 'ies'}`
+              : `${turnSum} Turn${turnSum === 1 ? '' : 's'}`}
             {loadingAll ? ' · lade…' : ''}
           </span>
-          {mode === 'graph' && (
+          {mode !== 'list' && (
             <div className="ml-auto flex flex-wrap items-center gap-1">
+              {mode === 'graph' && (
+                <>
+                  <FilterChip
+                    label="Entitäten"
+                    hint="Odoo · Confluence"
+                    active={graphFilter.showEntities}
+                    onClick={() => toggleFilter('showEntities')}
+                    tone="emerald"
+                  />
+                  <FilterChip
+                    label="Cross-Refs"
+                    hint="RELATED · expandiert"
+                    active={graphFilter.showCrossRefs}
+                    onClick={() => toggleFilter('showCrossRefs')}
+                    tone="purple"
+                  />
+                  <FilterChip
+                    label="Mentions"
+                    hint="aggregiert pro Session"
+                    active={graphFilter.showMentions}
+                    onClick={() => toggleFilter('showMentions')}
+                    tone="slate"
+                  />
+                  <FilterChip
+                    label="Trace"
+                    hint="Turn · Run · Agent · Tool"
+                    active={graphFilter.showTrace}
+                    onClick={() => toggleFilter('showTrace')}
+                    tone="amber"
+                  />
+                  <FilterChip
+                    label="Memories"
+                    hint="MK + Excerpt + Provenance (2 Hops)"
+                    active={graphFilter.showMemories}
+                    onClick={() => toggleFilter('showMemories')}
+                    tone="fuchsia"
+                  />
+                </>
+              )}
+              {/* Topics + Issues sind in jedem Canvas-Mode nützlich —
+                  sowohl im graph-Modus als Overlay, als auch im
+                  memory-Modus als Cluster-Brücke zwischen MKs. */}
               <FilterChip
-                label="Entitäten"
-                hint="Odoo · Confluence"
-                active={graphFilter.showEntities}
-                onClick={() => toggleFilter('showEntities')}
-                tone="emerald"
+                label="Topics"
+                hint="Cluster-Knoten + HAS_TOPIC (Slice 11)"
+                active={graphFilter.showTopics}
+                onClick={() => toggleFilter('showTopics')}
+                tone="teal"
               />
               <FilterChip
-                label="Cross-Refs"
-                hint="RELATED · expandiert"
-                active={graphFilter.showCrossRefs}
-                onClick={() => toggleFilter('showCrossRefs')}
-                tone="purple"
-              />
-              <FilterChip
-                label="Mentions"
-                hint="aggregiert pro Session"
-                active={graphFilter.showMentions}
-                onClick={() => toggleFilter('showMentions')}
-                tone="slate"
-              />
-              <FilterChip
-                label="Trace"
-                hint="Turn · Run · Agent · Tool"
-                active={graphFilter.showTrace}
-                onClick={() => toggleFilter('showTrace')}
-                tone="amber"
+                label="Issues"
+                hint="Konflikte + Duplikat-Kandidaten"
+                active={graphFilter.showIssues}
+                onClick={() => toggleFilter('showIssues')}
+                tone="red"
               />
             </div>
           )}
@@ -440,23 +633,58 @@ export default function GraphPage(): React.ReactElement {
               active={mode === 'graph'}
               onClick={() => setMode('graph')}
               label="Graph"
+              disabled={selected === MEMORIES}
             />
             <ModeBtn
               active={mode === 'list'}
               onClick={() => setMode('list')}
               label="Liste"
-              disabled={selected === ALL}
+              disabled={selected === ALL || selected === MEMORIES}
+            />
+            <ModeBtn
+              active={mode === 'memory'}
+              onClick={() => setMode('memory')}
+              label="Memory"
             />
           </div>
         </div>
 
-        {selected === ALL ? (
+        {selected === MEMORIES ? (
+          <div className="min-h-0 flex-1">
+            {activeMemoryView ? (
+              <GraphCanvas
+                session={null}
+                extraSessions={[]}
+                runs={{}}
+                expansions={expansionList}
+                memoryView={activeMemoryView}
+                focusMemories
+                topicOverlay={graphFilter.showTopics ? activeTopicOverlay : null}
+                issueOverlay={graphFilter.showIssues ? activeIssueOverlay : null}
+                selectedId={selectedNode?.id ?? null}
+                filter={{ ...graphFilter, showMemories: true }}
+                onSelectNode={setSelectedNode}
+                onExpandNode={handleGraphNodeExpand}
+                dark={dark}
+              />
+            ) : (
+              <div className="flex h-full items-center justify-center text-sm text-neutral-500">
+                lade Memories…
+              </div>
+            )}
+          </div>
+        ) : selected === ALL ? (
           <div className="min-h-0 flex-1">
             <GraphCanvas
               session={null}
               extraSessions={allViews}
               runs={{}}
               expansions={expansionList}
+              memoryView={
+                graphFilter.showMemories ? activeMemoryView : null
+              }
+              topicOverlay={graphFilter.showTopics ? activeTopicOverlay : null}
+              issueOverlay={graphFilter.showIssues ? activeIssueOverlay : null}
               selectedId={selectedNode?.id ?? null}
               filter={graphFilter}
               onSelectNode={setSelectedNode}
@@ -468,12 +696,40 @@ export default function GraphPage(): React.ReactElement {
           <div className="flex h-full items-center justify-center text-sm text-neutral-500">
             lade Session…
           </div>
+        ) : mode === 'memory' ? (
+          <div className="min-h-0 flex-1">
+            {activeMemoryView ? (
+              <GraphCanvas
+                session={activeView}
+                runs={runsLoaded}
+                expansions={expansionList}
+                memoryView={activeMemoryView}
+                focusMemories
+                topicOverlay={graphFilter.showTopics ? activeTopicOverlay : null}
+                issueOverlay={graphFilter.showIssues ? activeIssueOverlay : null}
+                selectedId={selectedNode?.id ?? null}
+                filter={{ ...graphFilter, showMemories: true }}
+                onSelectNode={setSelectedNode}
+                onExpandNode={handleGraphNodeExpand}
+                dark={dark}
+              />
+            ) : (
+              <div className="flex h-full items-center justify-center text-sm text-neutral-500">
+                lade Memories…
+              </div>
+            )}
+          </div>
         ) : mode === 'graph' ? (
           <div className="min-h-0 flex-1">
             <GraphCanvas
               session={activeView}
               runs={runsLoaded}
               expansions={expansionList}
+              memoryView={
+                graphFilter.showMemories ? activeMemoryView : null
+              }
+              topicOverlay={graphFilter.showTopics ? activeTopicOverlay : null}
+              issueOverlay={graphFilter.showIssues ? activeIssueOverlay : null}
               selectedId={selectedNode?.id ?? null}
               filter={graphFilter}
               onSelectNode={setSelectedNode}
@@ -503,6 +759,13 @@ export default function GraphPage(): React.ReactElement {
           onSelect={(n) => setSelectedNode(n)}
           onExpand={(id) => void loadNeighbors(id)}
           onClose={() => setSelectedNode(null)}
+          provenance={
+            activeMemoryView
+              ? (activeMemoryView.memories.find(
+                  (m) => m.node.id === selectedNode.id,
+                ) ?? null)
+              : null
+          }
         />
       )}
     </main>
@@ -643,7 +906,7 @@ function FilterChip({
   hint: string;
   active: boolean;
   onClick: () => void;
-  tone: 'emerald' | 'purple' | 'slate' | 'amber';
+  tone: 'emerald' | 'purple' | 'slate' | 'amber' | 'fuchsia' | 'teal' | 'red';
 }): React.ReactElement {
   const activeTone: Record<typeof tone, string> = {
     emerald:
@@ -654,6 +917,12 @@ function FilterChip({
       'border-slate-400 bg-slate-100 text-slate-900 dark:border-slate-600 dark:bg-slate-800/60 dark:text-slate-100',
     amber:
       'border-amber-400 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-100',
+    fuchsia:
+      'border-fuchsia-400 bg-fuchsia-50 text-fuchsia-900 dark:border-fuchsia-700 dark:bg-fuchsia-900/30 dark:text-fuchsia-100',
+    teal:
+      'border-teal-400 bg-teal-50 text-teal-900 dark:border-teal-700 dark:bg-teal-900/30 dark:text-teal-100',
+    red:
+      'border-red-400 bg-red-50 text-red-900 dark:border-red-700 dark:bg-red-900/30 dark:text-red-100',
   };
   return (
     <button
@@ -677,6 +946,7 @@ function findNodeInState(
   sessionViews: Record<string, SessionView | 'loading' | 'missing'>,
   runCache: Record<string, RunTraceView | 'loading' | 'missing'>,
   neighborsByNode: Record<string, GraphNode[] | 'loading'>,
+  memoryViews: Record<string, MemoryView | 'loading' | 'missing'> = {},
 ): GraphNode | null {
   for (const v of Object.values(sessionViews)) {
     if (!v || v === 'loading' || v === 'missing') continue;
@@ -704,6 +974,14 @@ function findNodeInState(
   }
   for (const arr of Object.values(neighborsByNode)) {
     if (Array.isArray(arr)) for (const n of arr) if (n.id === id) return n;
+  }
+  for (const v of Object.values(memoryViews)) {
+    if (!v || v === 'loading' || v === 'missing') continue;
+    for (const m of v.memories) {
+      if (m.node.id === id) return m.node;
+      for (const n of m.level1) if (n.id === id) return n;
+      for (const n of m.level2) if (n.id === id) return n;
+    }
   }
   return null;
 }

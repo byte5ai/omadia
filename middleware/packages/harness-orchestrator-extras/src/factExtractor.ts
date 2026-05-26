@@ -130,7 +130,7 @@ export class FactExtractor {
       return [];
     }
 
-    const system = `You distill durable, reusable facts out of a single chat turn between a user and an AI assistant at byte5 (a German software studio running on Odoo).
+    const system = `You distill durable, reusable facts out of a single chat turn between a user and an AI assistant.
 
 Output a JSON array of objects: {"subject": string, "predicate": string, "object": string, "confidence": number}. Return ONLY the JSON, no prose, no markdown fences.
 

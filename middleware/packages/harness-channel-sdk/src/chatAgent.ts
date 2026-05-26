@@ -323,6 +323,13 @@ export interface ChatTurnResult {
    * ignore this field.
    */
   privacyReceipt?: PrivacyReceipt;
+  /**
+   * Privacy Shield v4 — real values rendered into `answer` that the LLM
+   * never saw (resolved server-side behind the data-plane boundary).
+   * `toSemanticAnswer` forwards this to `SemanticAnswer.maskedValues` for
+   * channels to highlight. Omitted when no server-materialized answer ran.
+   */
+  maskedValues?: readonly string[];
 }
 
 /**
@@ -490,6 +497,9 @@ export type ChatStreamEvent =
       /** Privacy-Proxy aggregate receipt for this turn. PII-free; clients
        *  render it as a collapsible disclosure under the answer. */
       privacyReceipt?: PrivacyReceipt;
+      /** Privacy Shield v4 — real values in `answer` the LLM never saw;
+       *  clients MAY highlight their occurrences. */
+      maskedValues?: readonly string[];
     }
   /**
    * Emitted after `done` by the verifier wrapper (only when enabled). The

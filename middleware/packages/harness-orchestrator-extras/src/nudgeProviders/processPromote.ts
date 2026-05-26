@@ -60,25 +60,6 @@ const TITLE_TEMPLATES: ReadonlyArray<{ pattern: RegExp; title: string }> = [
   },
 ];
 
-/**
- * Per-domain step renderer. The map is intentionally small + opinionated —
- * adding a new entry is a one-line change. Tools without a mapping render
- * as `"<verb> via {toolName}: {arg-summary}"` which is good enough for the
- * agent to recognise and edit later via `edit_process`.
- */
-const DOMAIN_STEP_TEMPLATES: Record<string, (entry: ReadonlyToolTraceEntry) => string> = {
-  confluence: () => 'Confluence-Playbook konsultieren',
-  'odoo.hr': () => 'Odoo HR-Daten abrufen',
-  'odoo.accounting': () => 'Odoo Accounting-Daten abrufen',
-  odoo: () => 'Odoo-Daten abrufen',
-  'm365.calendar': () => 'M365-Kalender abfragen',
-  'm365.sharepoint': () => 'M365-SharePoint abfragen',
-  m365: () => 'Microsoft-365-Daten abrufen',
-  'web.search': () => 'Web-Recherche durchführen',
-  github: () => 'GitHub-Daten abrufen',
-  seo: () => 'SEO-Audit durchführen',
-};
-
 /** Trace entries the multi-domain trigger ignores entirely. */
 function isCountableEntry(entry: ReadonlyToolTraceEntry): boolean {
   if (entry.status !== 'ok') return false;
@@ -115,15 +96,12 @@ function deriveSteps(trace: readonly ReadonlyToolTraceEntry[]): string[] {
   const steps: string[] = [];
   for (const entry of trace) {
     if (!isCountableEntry(entry)) continue;
-    const tpl = entry.domain ? DOMAIN_STEP_TEMPLATES[entry.domain] : undefined;
-    if (tpl) {
-      steps.push(tpl(entry));
-    } else {
-      // Generic fallback: `<domain>-Daten abrufen`. Drops kebab-case to
-      // a slightly readable form. Operator can edit_process to refine.
-      const domainLabel = entry.domain ?? 'externe Quelle';
-      steps.push(`${domainLabel}-Daten abrufen via ${entry.toolName}`);
-    }
+    // Domain-agnostic step label. The orchestrator no longer hardcodes
+    // per-agent phrasings (Odoo/Confluence/M365 used to get bespoke
+    // strings) — every domain renders the same generic shape and the
+    // operator refines any step later via `edit_process`.
+    const domainLabel = entry.domain ?? 'externe Quelle';
+    steps.push(`${domainLabel}-Daten abrufen via ${entry.toolName}`);
   }
   return steps;
 }

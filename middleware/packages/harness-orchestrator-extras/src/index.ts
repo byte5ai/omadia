@@ -78,3 +78,62 @@ export { createHaikuSignificanceScorer } from './significanceScorer.js';
 export type { HaikuSignificanceScorerOptions } from './significanceScorer.js';
 export { CaptureFilteringKnowledgeGraph } from './captureFilteringKnowledgeGraph.js';
 export type { CaptureFilteringKnowledgeGraphOptions } from './captureFilteringKnowledgeGraph.js';
+
+// KG-ACL Slice 4a — Palaia-Excerpt-Extractor for the save-as-memory
+// suggestion. Capability contract lives in @omadia/plugin-api
+// (PalaiaExcerpt + PalaiaExcerptExtractor); this Haiku-backed
+// implementation is what the orchestrator wires into its `done`
+// stream-event spread and what Slice 4b's auto-promotion pipeline
+// hands to createMemorableKnowledge.
+export { createHaikuPalaiaExcerptExtractor } from './excerptExtractor.js';
+export type { HaikuPalaiaExcerptExtractorOptions } from './excerptExtractor.js';
+
+// KG-ACL Slice 4b — Auto-Promotion at significance >= threshold.
+// One fire-and-forget call per persisted turn from the orchestrator's
+// chatStreamInner. Idempotent (DERIVED_FROM edge lookup) so a re-run
+// stays a no-op. Requires `capture_level >= normal` so the scorer
+// actually writes a significance value; below that the function
+// declines all promotions with reason='no-significance'.
+export { promoteTurnIfSignificant } from './promotion.js';
+export type { PromoteTurnInput, PromoteTurnResult } from './promotion.js';
+
+// KG-ACL Slice 8 — operator-triggered retrospective bulk score +
+// promotion. Two-phase pass over historical Turns: (1) Haiku-score
+// rows with significance=NULL, (2) promote rows with
+// significance>=threshold via the same `promoteTurnIfSignificant`
+// pipeline the live path uses. Idempotent in both phases.
+export { createBulkPromotionService } from './bulkPromotion.js';
+export type { BulkPromotionDeps } from './bulkPromotion.js';
+
+// KG-ACL Slice 9 — contradiction detector. Per MK create / update /
+// auto-promotion: cosine top-k → Haiku judgement-pass → persist
+// Inconsistency on disagreement. Idempotent on the (sorted) MK pair.
+export { createInconsistencyDetector } from './inconsistencyDetector.js';
+export type { InconsistencyDetectorDeps } from './inconsistencyDetector.js';
+
+// KG-ACL Slice 9.5 — operator-triggered bulk pass over MKs without a
+// `last_inconsistency_check_at` marker. Reuses the Slice-9 detector
+// for the judgement pass; idempotent via the marker.
+export { createBulkInconsistencyService } from './bulkInconsistency.js';
+export type { BulkInconsistencyDeps } from './bulkInconsistency.js';
+
+// KG-ACL Slice 10 — cosine-only near-duplicate detector (cosine ≥ 0.95),
+// MergeTriggering wrapper, and bulk pass with separate marker.
+export { createMergeCandidateDetector } from './mergeCandidateDetector.js';
+export type { MergeCandidateDetectorDeps } from './mergeCandidateDetector.js';
+export { MergeTriggeringKnowledgeGraph } from './mergeTriggeringKnowledgeGraph.js';
+export type { MergeTriggeringKnowledgeGraphOptions } from './mergeTriggeringKnowledgeGraph.js';
+export { createBulkMergeDetectService } from './bulkMergeDetect.js';
+export type { BulkMergeDetectDeps } from './bulkMergeDetect.js';
+
+// KG-ACL Slice 11 — operator-triggered Topic clustering. Connected-
+// components on cosine ≥ threshold; Haiku-generated names with
+// "Cluster N" fallback when no Anthropic key is configured.
+export { createTopicClusteringService } from './topicClustering.js';
+export type { TopicClusteringDeps } from './topicClustering.js';
+
+// KG-ACL Slice 12 — bulk pass over PalaiaExcerpts without a
+// `last_excerpt_merge_check_at` marker; complements the live trigger
+// in MergeTriggeringKnowledgeGraph's `updateExcerpt` decoration.
+export { createBulkExcerptMergeDetectService } from './bulkExcerptMergeDetect.js';
+export type { BulkExcerptMergeDetectDeps } from './bulkExcerptMergeDetect.js';

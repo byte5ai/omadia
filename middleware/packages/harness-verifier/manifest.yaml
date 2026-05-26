@@ -65,46 +65,46 @@ requires:
 
 setup:
   fields:
-    - id: "anthropic_api_key"
+    - key: "anthropic_api_key"
       label: "Anthropic API Key"
       type: "secret"
       required: false
-      description: "Erforderlich für ClaimExtractor + EvidenceJudge (Haiku-LLM-Calls). Ohne Key publiziert das Plugin KEIN `verifier@1` — der Kernel fällt auf den Orchestrator ohne Verifier-Wrapper zurück. Geteilt mit @omadia/orchestrator-extras (gleicher Anthropic-Account). Bootstrap migriert ANTHROPIC_API_KEY aus dem legacy .env in den Vault. (S+12.6: type: secret — Key wird im Vault gespeichert, nicht in installed.json config.)"
-    - id: "verifier_enabled"
+      help: "Erforderlich für ClaimExtractor + EvidenceJudge (Haiku-LLM-Calls). Ohne Key publiziert das Plugin KEIN `verifier@1` — der Kernel fällt auf den Orchestrator ohne Verifier-Wrapper zurück. Geteilt mit @omadia/orchestrator-extras (gleicher Anthropic-Account). Bootstrap migriert ANTHROPIC_API_KEY aus dem legacy .env in den Vault. (S+12.6: type: secret — Key wird im Vault gespeichert, nicht in installed.json config.)"
+    - key: "verifier_enabled"
       label: "Verifier Enabled"
-      type: "text"
+      type: "string"
       required: false
-      description: "'true' aktiviert die Verifier-Pipeline; jeder andere Wert (oder leer) lässt sie aus. Migriert aus VERIFIER_ENABLED. Default: 'false' (per env-default + Plugin-Default)."
-    - id: "verifier_mode"
+      help: "'true' aktiviert die Verifier-Pipeline; jeder andere Wert (oder leer) lässt sie aus. Migriert aus VERIFIER_ENABLED. Default: 'false' (per env-default + Plugin-Default)."
+    - key: "verifier_mode"
       label: "Verifier Mode"
-      type: "text"
+      type: "string"
       required: false
-      description: "'shadow' loggt nur (kein Block / kein Retry). 'enforce' triggert bei Contradictions einen einmaligen Retry mit Correction-Prompt. Default: 'shadow'."
-    - id: "verifier_model"
+      help: "'shadow' loggt nur (kein Block / kein Retry). 'enforce' triggert bei Contradictions einen einmaligen Retry mit Correction-Prompt. Default: 'shadow'."
+    - key: "verifier_model"
       label: "Verifier Model"
-      type: "text"
+      type: "string"
       required: false
-      description: "Anthropic-Model-ID für ClaimExtractor + EvidenceJudge. Default: claude-haiku-4-5-20251001."
-    - id: "verifier_max_claims"
+      help: "Anthropic-Model-ID für ClaimExtractor + EvidenceJudge. Default: claude-haiku-4-5-20251001."
+    - key: "verifier_max_claims"
       label: "Max Claims per Answer"
-      type: "number"
+      type: "string"
       required: false
-      description: "Hard cap auf die Anzahl extrahierter Claims pro Answer. Default: 20."
-    - id: "verifier_amount_tolerance"
+      help: "Hard cap auf die Anzahl extrahierter Claims pro Answer. Default: 20."
+    - key: "verifier_amount_tolerance"
       label: "Amount Tolerance"
-      type: "number"
+      type: "string"
       required: false
-      description: "Relative Toleranz für Betragsvergleiche im DeterministicChecker (0.01 = 1%). Default: 0.01."
-    - id: "verifier_max_retries"
+      help: "Relative Toleranz für Betragsvergleiche im DeterministicChecker (0.01 = 1%). Default: 0.01."
+    - key: "verifier_max_retries"
       label: "Max Retries (enforce mode)"
-      type: "number"
+      type: "string"
       required: false
-      description: "Maximale Retry-Anzahl im enforce-Mode bei detektierter Contradiction. Default: 1, Max: 2 (vom Kernel-Schema clamped)."
-    - id: "graph_tenant_id"
+      help: "Maximale Retry-Anzahl im enforce-Mode bei detektierter Contradiction. Default: 1, Max: 2 (vom Kernel-Schema clamped)."
+    - key: "graph_tenant_id"
       label: "Graph Tenant ID"
-      type: "text"
+      type: "string"
       required: false
-      description: "Tenant-Schlüssel für die VerifierStore-Persistenz (verifier_verdicts + verifier_contradictions Tabellen). Migriert aus GRAPH_TENANT_ID. Default: 'default'."
+      help: "Tenant-Schlüssel für die VerifierStore-Persistenz (verifier_verdicts + verifier_contradictions Tabellen). Migriert aus GRAPH_TENANT_ID. Default: 'default'."
 
 playbook:
   when_to_use: |

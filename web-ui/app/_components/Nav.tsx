@@ -9,10 +9,10 @@ const TABS: Array<{ href: string; key: string }> = [
   { href: '/store', key: 'store' },
   { href: '/store/builder', key: 'builder' },
   { href: '/memory', key: 'memory' },
+  { href: '/memories', key: 'memories' },
   { href: '/graph', key: 'graph' },
   { href: '/routines', key: 'routines' },
   { href: '/admin', key: 'admin' },
-  { href: '/operator/privacy', key: 'privacy' },
   { href: '/system', key: 'system' },
 ];
 

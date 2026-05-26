@@ -248,50 +248,6 @@ const ConfigSchema = z.object({
   // Ollama sidecar's 2 shared CPUs — bump if we upgrade the machine.
   GRAPH_EMBEDDING_MAX_CONCURRENT: z.coerce.number().int().min(0).max(32).default(2),
 
-  // NorthData Premium API. When NORTHDATA_ENABLED=true and an API key is set,
-  // the middleware exposes `enrich_company` (orchestrator) and the
-  // `query_northdata` sub-agent. Read-only ingest into the knowledge graph —
-  // never writes back to Odoo. Rate-limit defaults conservatively (2 RPS) to
-  // protect the Premium quota; bump after measuring.
-  NORTHDATA_ENABLED: z
-    .enum(['true', 'false'])
-    .transform((v) => v === 'true')
-    .default(false),
-  NORTHDATA_API_KEY: z.string().optional(),
-  NORTHDATA_BASE_URL: z.string().url().default('https://www.northdata.com/_api'),
-  NORTHDATA_RATE_LIMIT_RPS: z.coerce.number().positive().default(2),
-  NORTHDATA_CACHE_TTL_DAYS: z.coerce.number().int().positive().default(30),
-  NORTHDATA_MAX_BYTES: z.coerce.number().int().positive().default(500_000),
-  // Phase 5: change-monitoring watchlist. Off until the Watcher service lands.
-  NORTHDATA_WATCHLIST_ENABLED: z
-    .enum(['true', 'false'])
-    .transform((v) => v === 'true')
-    .default(false),
-  NORTHDATA_WATCHLIST_INTERVAL_HOURS: z.coerce.number().min(1).max(168).default(24),
-
-  // OpenRegister (https://openregister.de) — active enrichment provider. When
-  // enabled and an API key is set, the `enrich_company` tool talks to
-  // api.openregister.de. Takes precedence over NorthData if both are enabled.
-  // Free tier is 50 requests/month; each enrichment in `standard` fetch level
-  // costs 3 requests (base + owners + financials).
-  OPENREGISTER_ENABLED: z
-    .enum(['true', 'false'])
-    .transform((v) => v === 'true')
-    .default(false),
-  OPENREGISTER_API_KEY: z.string().optional(),
-  OPENREGISTER_BASE_URL: z.string().url().default('https://api.openregister.de'),
-  OPENREGISTER_RATE_LIMIT_RPS: z.coerce.number().positive().default(2),
-  OPENREGISTER_CACHE_TTL_DAYS: z.coerce.number().int().positive().default(30),
-  OPENREGISTER_MAX_BYTES: z.coerce.number().int().positive().default(500_000),
-  /** How much we fetch per enrichment.
-   *   minimal  = base only (1 credit, no GF/Finanzen)
-   *   standard = base + owners + financials (3 credits, recommended)
-   *   full     = base + owners + financials + ubo + historical-owners (5 credits)
-   */
-  OPENREGISTER_FETCH_LEVEL: z
-    .enum(['minimal', 'standard', 'full'])
-    .default('standard'),
-
   // Teams attachment persistence. When enabled, incoming Teams message
   // attachments (files + inline images) are downloaded, stored in Tigris
   // under the `TEAMS_ATTACHMENT_KEY_PREFIX` prefix, and indexed in Neon

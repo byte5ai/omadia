@@ -62,7 +62,7 @@ export interface Askable {
 
 /**
  * A domain-specific delegation tool. Each DomainTool wraps one sub-agent
- * (e.g. Odoo Accounting, Odoo HR, Confluence Playbook). The orchestrator
+ * (e.g. an accounting agent, an HR agent, a documentation agent). The orchestrator
  * exposes all configured DomainTools to Claude simultaneously and lets the
  * LLM pick by tool name + description.
  *
@@ -153,16 +153,19 @@ export function createDomainTool(options: DomainToolOptions): DomainTool {
       }
       const started = Date.now();
       const preview = question.replace(/\s+/g, ' ').slice(0, 140);
-      console.log(`[odoo] ${options.name} → START: ${preview}`);
+      // Log tag is the tool's own domain — not a hardcoded `[odoo]`, which
+      // mislabelled every non-Odoo sub-agent (flight-scout, github, …).
+      const logTag = `[domain:${options.domain}]`;
+      console.log(`${logTag} ${options.name} → START: ${preview}`);
       try {
         const answer = await options.agent.ask(question, observer);
         const elapsed = ((Date.now() - started) / 1000).toFixed(1);
-        console.log(`[odoo] ${options.name} → ok (${elapsed}s, ${answer.length} chars)`);
+        console.log(`${logTag} ${options.name} → ok (${elapsed}s, ${answer.length} chars)`);
         return answer;
       } catch (err) {
         const elapsed = ((Date.now() - started) / 1000).toFixed(1);
         const message = err instanceof Error ? err.message : String(err);
-        console.error(`[odoo] ${options.name} → ERROR (${elapsed}s): ${message}`);
+        console.error(`${logTag} ${options.name} → ERROR (${elapsed}s): ${message}`);
         return `Error while querying ${options.name}: ${message}`;
       }
     },

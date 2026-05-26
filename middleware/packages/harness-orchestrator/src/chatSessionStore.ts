@@ -204,6 +204,25 @@ export class ChatSessionStore {
     await this.save({ ...rest, updatedAt: Date.now() });
   }
 
+  /**
+   * Reset a session: keep id / title / createdAt, drop all messages, bump
+   * updatedAt. Returns the updated session, or null when the session was
+   * not found. KG / Memory are NOT touched — the agent simply enters its
+   * next turn with an empty context window.
+   */
+  async resetMessages(id: string): Promise<ChatSession | null> {
+    if (!ID_RE.test(id)) throw new InvalidSessionIdError(id);
+    const existing = await this.get(id);
+    if (!existing) return null;
+    const updated: ChatSession = {
+      ...existing,
+      messages: [],
+      updatedAt: Date.now(),
+    };
+    await this.save(updated);
+    return updated;
+  }
+
   async delete(id: string): Promise<void> {
     const virtualPath = this.pathFor(id);
     if (!(await this.store.fileExists(virtualPath))) return;

@@ -1,18 +1,35 @@
 import type { Pool } from 'pg';
 import type { EmbeddingClient } from '@omadia/embeddings';
 
+/**
+ * Slice 7 — node types the backfill knows how to embed. Adding a new
+ * type means: (a) include it here, (b) add a partial-index migration
+ * mirroring `idx_graph_nodes_turn_embedding_pending`, (c) extend
+ * `composeTextForType` below.
+ */
+export type BackfillableNodeType =
+  | 'Turn'
+  | 'MemorableKnowledge'
+  | 'PalaiaExcerpt';
+
 export interface EmbeddingBackfillOptions {
   pool: Pool;
   embeddingClient: EmbeddingClient;
   tenantId: string;
   /** Milliseconds between sweeps. */
   intervalMs: number;
-  /** Max Turns picked up per sweep. Keep small so one Ollama hiccup can't
-   *  drain the queue into a giant retry storm. */
+  /** Max nodes picked up per sweep across ALL configured types. Keep
+   *  small so one Ollama hiccup can't drain the queue into a giant
+   *  retry storm. */
   batchSize: number;
-  /** Hard cap on retries per Turn. Turns that keep failing past this stay
-   *  in the table but get skipped forever — investigate manually. */
+  /** Hard cap on retries per node. Nodes that keep failing past this
+   *  stay in the table but get skipped forever — investigate manually. */
   maxAttempts: number;
+  /** Slice 7 — node types to backfill. Default `['Turn']` for
+   *  backwards-compat with pre-Slice-7 callers. Pass
+   *  `['Turn', 'MemorableKnowledge', 'PalaiaExcerpt']` to opt into the
+   *  Slice-7 memory-recall pipeline. */
+  nodeTypes?: BackfillableNodeType[];
   log?: (msg: string) => void;
 }
 
@@ -28,11 +45,36 @@ export interface EmbeddingBackfillStats {
   failed: number;
 }
 
-interface PendingTurnRow {
+interface PendingNodeRow {
   id: string;
-  user_message: string | null;
-  assistant_answer: string | null;
+  type: BackfillableNodeType;
+  properties: Record<string, unknown>;
   embedding_attempts: number;
+}
+
+/**
+ * Per-type text composer. Returns the embedding input or `null` if
+ * the row carries no useful text (caller marks it as exhausted so the
+ * sweep skips it forever).
+ */
+function composeTextForType(row: PendingNodeRow): string | null {
+  const p = row.properties;
+  switch (row.type) {
+    case 'Turn': {
+      const text = `${String(p['userMessage'] ?? '')}\n\n${String(p['assistantAnswer'] ?? '')}`.trim();
+      return text.length > 0 ? text : null;
+    }
+    case 'MemorableKnowledge': {
+      const summary = String(p['summary'] ?? '');
+      const rationale = String(p['rationale'] ?? '');
+      const text = `${summary}\n\n${rationale}`.trim();
+      return text.length > 0 ? text : null;
+    }
+    case 'PalaiaExcerpt': {
+      const text = String(p['text'] ?? '').trim();
+      return text.length > 0 ? text : null;
+    }
+  }
 }
 
 function vectorLiteral(vec: number[]): string {
@@ -55,6 +97,7 @@ export function startEmbeddingBackfill(
   opts: EmbeddingBackfillOptions,
 ): EmbeddingBackfillHandle {
   const log = opts.log ?? ((msg: string) => { console.error(msg); });
+  const nodeTypes: BackfillableNodeType[] = opts.nodeTypes ?? ['Turn'];
   let running = false;
 
   const runSweep = async (): Promise<EmbeddingBackfillStats> => {
@@ -67,32 +110,38 @@ export function startEmbeddingBackfill(
     running = true;
     const stats: EmbeddingBackfillStats = { tried: 0, succeeded: 0, failed: 0 };
     try {
-      const result = await opts.pool.query<PendingTurnRow>(
+      // Slice 7 — fan in across configured node types. The ORDER BY
+      // (embedding_attempts, created_at) keeps freshly-failed rows at
+      // the back of the queue so a transient Ollama hiccup can't starve
+      // older rows. Cross-type ordering is intentionally arbitrary —
+      // batch size is small enough that fairness over a few sweeps
+      // converges naturally.
+      const result = await opts.pool.query<PendingNodeRow>(
         `
         SELECT id,
-               properties->>'userMessage'     AS user_message,
-               properties->>'assistantAnswer' AS assistant_answer,
+               type,
+               properties,
                embedding_attempts
           FROM graph_nodes
          WHERE tenant_id = $1
-           AND type = 'Turn'
+           AND type = ANY($2::text[])
            AND embedding IS NULL
-           AND embedding_attempts < $2
-         ORDER BY embedding_attempts ASC, (properties->>'time') ASC
-         LIMIT $3
+           AND embedding_attempts < $3
+         ORDER BY embedding_attempts ASC, created_at ASC
+         LIMIT $4
         `,
-        [opts.tenantId, opts.maxAttempts, opts.batchSize],
+        [opts.tenantId, nodeTypes, opts.maxAttempts, opts.batchSize],
       );
       if (result.rows.length === 0) return stats;
 
       log(
-        `[graph-embedding-backfill] sweep start pending=${String(result.rows.length)}`,
+        `[graph-embedding-backfill] sweep start pending=${String(result.rows.length)} types=[${nodeTypes.join(',')}]`,
       );
 
       for (const row of result.rows) {
         stats.tried++;
-        const text = `${row.user_message ?? ''}\n\n${row.assistant_answer ?? ''}`.trim();
-        if (text.length === 0) {
+        const text = composeTextForType(row);
+        if (text === null) {
           // Mark as exhausted so we don't keep picking it up. Bumping to
           // maxAttempts is cleaner than adding a second skip predicate.
           await opts.pool.query(

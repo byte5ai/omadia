@@ -87,6 +87,9 @@ export type {
 export { Orchestrator, parseToolEmittedChoice } from './orchestrator.js';
 export type { OrchestratorOptions } from './orchestrator.js';
 
+// Streaming retry predicate (exported for unit coverage)
+export { isRetryableStreamError } from './streaming.js';
+
 // Verifier wrapper (couples verifier@1 pipeline + Orchestrator + toSemanticAnswer)
 export { VerifierService } from './verifierService.js';
 

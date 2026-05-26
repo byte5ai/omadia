@@ -78,6 +78,15 @@ export interface SemanticAnswer {
    * is installed.
    */
   privacyReceipt?: PrivacyReceipt;
+
+  /**
+   * Privacy Shield v4 — real values rendered into `text` that the LLM never
+   * saw (resolved server-side from ground truth behind the data-plane
+   * boundary). Connectors MAY highlight their occurrences (e.g. a violet
+   * tint) so the asker sees which data was protected. Omitted when the turn
+   * produced no server-materialized answer or exposed no masked field.
+   */
+  maskedValues?: readonly string[];
 }
 
 /** Image/file side-channel. `url` must be reachable by the channel. */

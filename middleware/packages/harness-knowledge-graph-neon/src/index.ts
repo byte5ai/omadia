@@ -39,5 +39,24 @@ export type { NeonAgentPrioritiesStoreOptions } from './agentPrioritiesStore.js'
 export {
   GRAPH_NODE_TYPES,
   GRAPH_EDGE_TYPES,
+  CHANNEL_KINDS,
+  MEMORABLE_KINDS,
+  EXCERPT_SOURCES,
+  INCONSISTENCY_STATUSES,
+  INCONSISTENCY_RESOLUTIONS,
+  INCONSISTENCY_SEVERITIES,
+  MERGE_CANDIDATE_STATUSES,
+  MERGE_CANDIDATE_RESOLUTIONS,
+  EXCERPT_MERGE_STATUSES,
+  EXCERPT_MERGE_RESOLUTIONS,
+  TOPIC_NAMING_SOURCES,
+  GraphNodeTypeSchema,
+  GraphEdgeTypeSchema,
   validateNodeProps,
+} from './schema.js';
+export type {
+  ChannelKind,
+  GraphEdgeTypeName,
+  GraphNodeTypeName,
+  MemorableKind,
 } from './schema.js';
