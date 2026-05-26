@@ -36,6 +36,10 @@ export interface ReloadBusOptions {
   /** Reconnect back-off when the LISTEN client errors. Default 5s, capped
    *  at 30s by exponential growth. */
   readonly reconnectInitialMs?: number;
+  /** Enable the LISTEN/NOTIFY subscription. Default `false` — see `start()`
+   *  for why; flip to `true` only when the kg pool max is raised or a
+   *  dedicated DATABASE_URL is wired. */
+  readonly enableListen?: boolean;
   /** Structured log sink. */
   readonly log?: (msg: string, fields?: Record<string, unknown>) => void;
 }
@@ -59,10 +63,24 @@ export class ReloadBus {
       options.reconnectInitialMs ?? DEFAULT_RECONNECT_MS;
   }
 
-  /** Open the LISTEN connection and start the reconcile timer. */
+  /**
+   * Start the bus. By default the LISTEN subscription is DISABLED — the
+   * subscribed `pool.connect()` reserves a connection for the bus' lifetime
+   * and on the kg plugin's default `max: 5` pool that's enough to deadlock
+   * concurrent boot-time queries. The periodic reconcile (default 60s)
+   * keeps the registry caught up; set `enableListen: true` once the kg
+   * pool max is raised or a dedicated DATABASE_URL is wired through.
+   */
   async start(): Promise<void> {
     if (this.stopped) throw new Error('ReloadBus.start: already stopped');
-    await this.connect();
+    if (this.options.enableListen === true) {
+      await this.connect();
+    } else {
+      this.log(
+        `reloadBus: LISTEN disabled — relying on periodic reconcile only`,
+        { reconcileIntervalMs: this.options.reconcileIntervalMs ?? DEFAULT_RECONCILE_MS },
+      );
+    }
     this.scheduleReconcile();
   }
 
