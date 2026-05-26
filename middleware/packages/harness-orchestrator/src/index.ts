@@ -33,6 +33,11 @@ export type {
   OrchestratorRegistryOptions,
   PluginCapabilityLookup,
 } from './registry/index.js';
+// US5 — hot-reload diff + LISTEN/NOTIFY bus.
+export { diffSnapshots, buildForAgent } from './registry/applyDiff.js';
+export type { DiffAction, DiffPlan } from './registry/applyDiff.js';
+export { ReloadBus } from './registry/reloadBus.js';
+export type { ReloadBusOptions } from './registry/reloadBus.js';
 export {
   ConfigStore,
   ConfigValidationError,
@@ -110,6 +115,7 @@ export type {
   ChatMessage,
   ChatSession,
   ChatSessionSummary,
+  SessionConfigSnapshot,
 } from './chatSessionStore.js';
 
 // Per-turn AsyncLocalStorage context

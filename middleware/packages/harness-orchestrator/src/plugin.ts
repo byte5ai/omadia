@@ -49,6 +49,7 @@ import {
   type PluginCapabilityLookup,
 } from './registry/index.js';
 import { runMultiOrchestratorMigrations } from './registry/migrator.js';
+import { ReloadBus } from './registry/reloadBus.js';
 import type { SessionLogger } from './sessionLogger.js';
 import {
   EDIT_PROCESS_TOOL_NAME,
@@ -402,6 +403,7 @@ export async function activate(
   // registry sits alongside it.
   const graphPool = ctx.services.get<Pool>(GRAPH_POOL_SERVICE);
   let registry: OrchestratorRegistry | undefined;
+  let reloadBus: ReloadBus | undefined;
   if (graphPool) {
     try {
       await runMultiOrchestratorMigrations(graphPool, (m) =>
@@ -428,6 +430,20 @@ export async function activate(
       ctx.log(
         `[harness-orchestrator] orchestratorRegistry@1 published (agents=${String(registry.size())})`,
       );
+
+      // US5 / T021 — LISTEN/NOTIFY hot-reload bus. Bound to the same pool
+      // so the bus reserves one connection from the kg pool for the LISTEN
+      // lifetime; no second connection string needed. Periodic reconcile
+      // is the fallback for a dropped LISTEN connection (D3).
+      reloadBus = new ReloadBus({
+        pool: graphPool,
+        reload: () => registry!.reload(),
+        log: (msg, fields) =>
+          ctx.log(
+            `[harness-orchestrator] ${msg}${fields ? ' ' + JSON.stringify(fields) : ''}`,
+          ),
+      });
+      await reloadBus.start();
     } catch (err) {
       ctx.log(
         `[harness-orchestrator] orchestratorRegistry NOT published — ${(err as Error).message}`,
@@ -446,6 +462,13 @@ export async function activate(
   return {
     async close(): Promise<void> {
       ctx.log('[harness-orchestrator] deactivating');
+      if (reloadBus) {
+        try {
+          await reloadBus.stop();
+        } catch {
+          // best-effort
+        }
+      }
       try {
         disposeNudgeRegistry();
       } catch {

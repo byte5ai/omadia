@@ -61,12 +61,40 @@ export interface ChatMessage {
   finishedAt?: number;
 }
 
+/**
+ * Per-session config snapshot (US6 / T024).
+ *
+ * Captured at session start and pinned for the session's entire lifetime so
+ * a mid-flight reload (US5) cannot mutate the tool / plugin / memory-scope
+ * surface a turn is reasoning over. The session's `agentSlug` is the
+ * routing key — even if the registry rebuilds the Agent, the session keeps
+ * the snapshot's view until a `force-invalidate` (T026) flips it.
+ *
+ * The snapshot stores **ids only**, not live object references — sessions
+ * are serialised to JSON on disk, so the data must round-trip. The actual
+ * `Orchestrator` instance is resolved lazily from the registry on each
+ * turn using `agentSlug`; the snapshot's tool / plugin lists are the
+ * authoritative view of what the session is allowed to see (US8 will
+ * wire memory-scope enforcement against this list).
+ */
+export interface SessionConfigSnapshot {
+  agentSlug: string;
+  pluginIds: string[];
+  toolIds: string[];
+  memoryScope: string[];
+  capturedAt: number;
+}
+
 export interface ChatSession {
   id: string;
   title: string;
   createdAt: number;
   updatedAt: number;
   messages: ChatMessage[];
+  /** US6 — captured at session start; immutable until a force-invalidate
+   *  (drain or kill) replaces or clears it. Optional because legacy sessions
+   *  pre-date this field. */
+  snapshot?: SessionConfigSnapshot;
 }
 
 export interface ChatSessionSummary {
@@ -132,6 +160,48 @@ export class ChatSessionStore {
     if (!ID_RE.test(session.id)) throw new InvalidSessionIdError(session.id);
     const virtualPath = this.pathFor(session.id);
     await this.store.writeFile(virtualPath, JSON.stringify(session, null, 2));
+  }
+
+  /**
+   * Capture-on-first-use (US6 / T024). Returns the session's existing
+   * snapshot if one is set; otherwise asks `source()` for a fresh snapshot,
+   * persists it, and returns it. The session's other fields are unchanged.
+   *
+   * Returns `null` when the session does not exist — the caller decides
+   * whether to lazy-create or to refuse the turn.
+   *
+   * `source()` is async because most snapshot sources will read the live
+   * registry, which is in-memory but the wider tool/plugin enumeration may
+   * involve async lookups (US8 memory-scope resolution).
+   */
+  async captureSnapshot(
+    id: string,
+    source: () => Promise<SessionConfigSnapshot>,
+  ): Promise<SessionConfigSnapshot | null> {
+    const session = await this.get(id);
+    if (!session) return null;
+    if (session.snapshot) return session.snapshot;
+    const snap = await source();
+    const updated: ChatSession = {
+      ...session,
+      snapshot: snap,
+      updatedAt: Date.now(),
+    };
+    await this.save(updated);
+    return snap;
+  }
+
+  /**
+   * Drop the session's snapshot so the next turn re-captures from the
+   * registry (US6 `force-invalidate drain` semantics, T026 — keep history,
+   * re-bind to the current Agent config).
+   */
+  async clearSnapshot(id: string): Promise<void> {
+    const session = await this.get(id);
+    if (!session) return;
+    if (!session.snapshot) return;
+    const { snapshot: _snapshot, ...rest } = session;
+    await this.save({ ...rest, updatedAt: Date.now() });
   }
 
   async delete(id: string): Promise<void> {

@@ -1,10 +1,17 @@
-import {
-  buildOrchestratorForAgent,
-  type AgentRuntimeConfig,
-  type BuiltOrchestrator,
-  type OrchestratorDeps,
+import type {
+  AgentRuntimeConfig,
+  BuiltOrchestrator,
+  OrchestratorDeps,
 } from '../buildOrchestrator.js';
 
+import type { ChatSessionStore, SessionConfigSnapshot } from '../chatSessionStore.js';
+
+import {
+  buildForAgent,
+  diffSnapshots,
+  type DiffAction,
+  type DiffPlan,
+} from './applyDiff.js';
 import {
   ConfigValidationError,
   type AgentPluginRow,
@@ -112,57 +119,155 @@ export class OrchestratorRegistry {
   }
 
   /**
-   * Replace the in-memory state with a freshly-loaded snapshot. Used by
-   * `start()` and (in US5) by the LISTEN/NOTIFY reload bus. The current
-   * implementation rebuilds every Agent from scratch — diffing is US5/T020.
+   * Replace the in-memory state with a freshly-loaded snapshot. Boot path —
+   * computes a diff against the empty "no Agents" state so every Agent is an
+   * `add` action; reuses `applyDiffActions` so the build + isolation seam is
+   * identical to the hot-reload path.
    */
   applySnapshot(snap: ConfigSnapshot): void {
     validateSnapshot(snap, this.options.pluginLookup);
+    const plan = diffSnapshots(this.snapshot, snap);
+    this.applyDiffActions(plan, snap);
+  }
 
-    const next = new Map<string, ActiveAgent>();
+  /**
+   * Hot-reload entry point (US5 / T020). Loads a fresh snapshot, diffs it
+   * against the registry's current view, and applies only the actions
+   * needed to move state forward. Unchanged Agents are left alone — their
+   * `Orchestrator` instances keep serving in-flight turns (SC-001, SC-002).
+   *
+   * Idempotent: a `reload()` against an unchanged DB does zero rebuilds.
+   *
+   * Per-action isolation (T022): a throwing build / close is caught + logged
+   * and the diff continues with the next action.
+   */
+  async reload(): Promise<DiffPlan> {
+    const snap = await this.store.loadSnapshot();
+    validateSnapshot(snap, this.options.pluginLookup);
+    const plan = diffSnapshots(this.snapshot, snap);
+    if (plan.actions.length === 0 && !plan.platformChanged) {
+      this.snapshot = snap;
+      return plan;
+    }
+    this.applyDiffActions(plan, snap);
+    return plan;
+  }
+
+  /**
+   * Execute a `DiffPlan` against the live registry. Internal — both
+   * `applySnapshot` and `reload` route through it so the build/close seams
+   * + structured logging live in one place.
+   */
+  private applyDiffActions(plan: DiffPlan, snap: ConfigSnapshot): void {
     const pluginsByAgent = groupBy(snap.agentPlugins, (p) => p.agentId);
     const bindingsByAgent = groupBy(snap.channelBindings, (b) => b.agentId);
 
-    for (const agent of snap.agents) {
-      if (agent.status !== 'enabled') continue;
-      const plugins = pluginsByAgent.get(agent.id) ?? [];
-      const bindings = bindingsByAgent.get(agent.id) ?? [];
-      // FR-009 / SC-007 (T018): build each Agent in isolation. A throw here
-      // takes down only the failing Agent; the rest of the registry still
-      // comes up. The orchestrator plugin's per-turn `Promise.allSettled`
-      // dispatch handles tool throws separately — see orchestrator.ts.
-      let built;
+    for (const action of plan.actions) {
       try {
-        built = buildOrchestratorForAgent(
-          {
-            agentId: agent.slug,
-            model: this.options.defaultRuntimeConfig.model,
-            maxTokens: this.options.defaultRuntimeConfig.maxTokens,
-            maxToolIterations:
-              this.options.defaultRuntimeConfig.maxToolIterations,
-          },
-          this.deps,
-        );
+        this.runAction(action, pluginsByAgent, bindingsByAgent);
       } catch (err) {
-        this.log(`registry: agent build FAILED — skipping`, {
-          slug: agent.slug,
-          agentId: agent.id,
+        // T022 — isolate per-action failures so a throw on one Agent never
+        // aborts the rest of the diff.
+        this.log(`registry: diff action FAILED — skipping`, {
+          action: action.kind,
+          slug: actionSlug(action),
           error: (err as Error).message,
         });
-        continue;
       }
-      next.set(agent.slug, { agent, plugins, bindings, built });
-      this.log(`registry: built agent`, {
-        slug: agent.slug,
-        agentId: agent.id,
-        plugins: plugins.filter((p) => p.enabled).map((p) => p.pluginId),
-      });
     }
 
-    this.active.clear();
-    for (const [slug, entry] of next) this.active.set(slug, entry);
-    this.platformSettings = snap.platformSettings;
+    if (plan.platformChanged) {
+      this.platformSettings = snap.platformSettings;
+      this.log(`registry: platform settings updated`, {
+        fallbackAgentId: snap.platformSettings.fallbackAgentId,
+      });
+    }
     this.snapshot = snap;
+  }
+
+  private runAction(
+    action: DiffAction,
+    pluginsByAgent: Map<string, AgentPluginRow[]>,
+    bindingsByAgent: Map<string, ChannelBindingRow[]>,
+  ): void {
+    switch (action.kind) {
+      case 'add': {
+        const built = buildForAgent(
+          action.agent,
+          this.deps,
+          this.options.defaultRuntimeConfig,
+        );
+        const plugins = pluginsByAgent.get(action.agent.id) ?? [];
+        const bindings = bindingsByAgent.get(action.agent.id) ?? [];
+        this.active.set(action.agent.slug, {
+          agent: action.agent,
+          plugins,
+          bindings,
+          built,
+        });
+        this.log(`registry: agent added`, {
+          slug: action.agent.slug,
+          agentId: action.agent.id,
+          plugins: plugins.filter((p) => p.enabled).map((p) => p.pluginId),
+        });
+        return;
+      }
+      case 'remove': {
+        const before = this.active.get(action.slug);
+        if (!before) return;
+        // The plugin handle's `close()` is what kills per-Agent state —
+        // in US4 the orchestrator instance is fully in-memory + GC-owned,
+        // so dropping the map entry is enough. The per-(Agent × plugin)
+        // PluginContext lifecycle is US8 / future work.
+        this.active.delete(action.slug);
+        this.log(`registry: agent removed`, {
+          slug: action.slug,
+          agentId: before.agent.id,
+        });
+        return;
+      }
+      case 'rebuild': {
+        const before = this.active.get(action.agent.slug);
+        const built = buildForAgent(
+          action.agent,
+          this.deps,
+          this.options.defaultRuntimeConfig,
+        );
+        const plugins = pluginsByAgent.get(action.agent.id) ?? [];
+        const bindings = bindingsByAgent.get(action.agent.id) ?? [];
+        this.active.set(action.agent.slug, {
+          agent: action.agent,
+          plugins,
+          bindings,
+          built,
+        });
+        this.log(`registry: agent rebuilt`, {
+          slug: action.agent.slug,
+          agentId: action.agent.id,
+          reason: action.reason,
+          replaced: !!before,
+        });
+        return;
+      }
+      case 'update': {
+        const before = this.active.get(action.agent.slug);
+        if (!before) return;
+        const plugins = pluginsByAgent.get(action.agent.id) ?? [];
+        const bindings = bindingsByAgent.get(action.agent.id) ?? [];
+        this.active.set(action.agent.slug, {
+          ...before,
+          agent: action.agent,
+          plugins,
+          bindings,
+        });
+        this.log(`registry: agent metadata updated`, {
+          slug: action.agent.slug,
+          agentId: action.agent.id,
+          plugins: plugins.filter((p) => p.enabled).map((p) => p.pluginId),
+        });
+        return;
+      }
+    }
   }
 
   /** Number of enabled Agents currently held by the registry. */
@@ -212,6 +317,90 @@ export class OrchestratorRegistry {
   /** The currently-held snapshot. Useful for diffing in US5. */
   currentSnapshot(): ConfigSnapshot | undefined {
     return this.snapshot;
+  }
+
+  /**
+   * Build a per-session `SessionConfigSnapshot` (US6 / T024) from the
+   * registry's current view of the named Agent. The session captures this
+   * on first use and pins it until a `force-invalidate` clears it.
+   *
+   * Returns `undefined` when the Agent is not active — the caller decides
+   * whether to fall back to the legacy default `chatAgent` or refuse.
+   */
+  snapshotForAgent(slug: string): SessionConfigSnapshot | undefined {
+    const entry = this.active.get(slug);
+    if (!entry) return undefined;
+    return {
+      agentSlug: entry.agent.slug,
+      pluginIds: entry.plugins.filter((p) => p.enabled).map((p) => p.pluginId),
+      // Tool / memory enumeration is shared at the kernel level in US4. The
+      // snapshot records what the registry KNOWS about this Agent so US8
+      // can wire memory-scope enforcement against it. Empty arrays today
+      // means "no per-session restriction beyond what the kernel exposes."
+      toolIds: [],
+      memoryScope: [],
+      capturedAt: Date.now(),
+    };
+  }
+
+  /**
+   * Resolve the `BuiltOrchestrator` that should serve a given session
+   * (US6 / T025). The session's snapshot is the source of truth — the
+   * registry just looks up the snapshot's `agentSlug`. If the snapshot
+   * points at an Agent that no longer exists (e.g. it was deleted and the
+   * session was held open), returns `undefined` and the caller decides.
+   */
+  lookupForSession(snapshot: SessionConfigSnapshot) {
+    const entry = this.active.get(snapshot.agentSlug);
+    return entry?.built;
+  }
+
+  /**
+   * Force-invalidate the snapshot for every chat session whose snapshot
+   * binds them to the given Agent (US6 / T026).
+   *
+   * - `drain` — clear the snapshot. The session keeps its history; the
+   *   next turn will re-capture from the current registry state.
+   * - `kill`  — delete the session entry entirely.
+   *
+   * The lookup walks the chatSessionStore's session list; `chatSessionStore`
+   * is wired by the caller because the orchestrator plugin owns its
+   * lifetime. Returns the number of sessions affected. Best-effort — a
+   * per-session failure is logged and skipped.
+   */
+  async forceInvalidate(
+    slug: string,
+    mode: 'drain' | 'kill',
+    chatSessionStore: ChatSessionStore,
+  ): Promise<number> {
+    const summaries = await chatSessionStore.list();
+    let affected = 0;
+    for (const summary of summaries) {
+      const session = await chatSessionStore.get(summary.id);
+      if (!session?.snapshot) continue;
+      if (session.snapshot.agentSlug !== slug) continue;
+      try {
+        if (mode === 'drain') {
+          await chatSessionStore.clearSnapshot(session.id);
+        } else {
+          await chatSessionStore.delete(session.id);
+        }
+        affected += 1;
+        this.log(`registry: force-invalidate session`, {
+          sessionId: session.id,
+          slug,
+          mode,
+        });
+      } catch (err) {
+        this.log(`registry: force-invalidate session FAILED — skipping`, {
+          sessionId: session.id,
+          slug,
+          mode,
+          error: (err as Error).message,
+        });
+      }
+    }
+    return affected;
   }
 
   private log(msg: string, fields?: Record<string, unknown>): void {
@@ -275,6 +464,10 @@ export function validateSnapshot(
       }
     }
   }
+}
+
+function actionSlug(action: DiffAction): string {
+  return action.kind === 'remove' ? action.slug : action.agent.slug;
 }
 
 function groupBy<T, K>(
