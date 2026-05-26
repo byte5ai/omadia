@@ -841,15 +841,26 @@ async function main(): Promise<void> {
   // it inside activate() would flap the plugin into errored-state on every
   // boot. The function itself is plugin-owned (sessionTranscriptParser is
   // bundled with it).
-  try {
-    const backfill = await backfillGraph(memoryStore, knowledgeGraph);
+  //
+  // 2026-05-26: Default-OFF — the 500+ turn replay was the dominant boot
+  // delay (~10 min on prod), and the data it produces is already
+  // persistent in KG from the original turn ingestion. Set
+  // BACKFILL_AT_STARTUP=1 to re-enable for one-off corpus-import boots.
+  if (process.env['BACKFILL_AT_STARTUP'] === '1') {
+    try {
+      const backfill = await backfillGraph(memoryStore, knowledgeGraph);
+      console.log(
+        `[graph] backfill: scopes=${String(backfill.scopes)} files=${String(backfill.files)} turns=${String(backfill.turns)} skipped=${String(backfill.skippedFiles.length)}`,
+      );
+    } catch (err) {
+      console.error(
+        '[graph] backfill failed:',
+        err instanceof Error ? err.message : err,
+      );
+    }
+  } else {
     console.log(
-      `[graph] backfill: scopes=${String(backfill.scopes)} files=${String(backfill.files)} turns=${String(backfill.turns)} skipped=${String(backfill.skippedFiles.length)}`,
-    );
-  } catch (err) {
-    console.error(
-      '[graph] backfill failed:',
-      err instanceof Error ? err.message : err,
+      '[graph] backfill SKIPPED — set BACKFILL_AT_STARTUP=1 to enable (the 500-turn replay was the dominant boot delay; KG already holds the data)',
     );
   }
   // Dynamic agent activation: uploaded packages already marked `active` in
