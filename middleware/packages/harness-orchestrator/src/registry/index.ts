@@ -358,6 +358,22 @@ export class OrchestratorRegistry {
   }
 
   /**
+   * Phase A — chat-router fallback resolution. Returns the slug of the
+   * Agent currently bound to `platform_settings.fallback_agent_id`, or
+   * `undefined` when no fallback is set OR the referenced Agent no
+   * longer exists (deleted, disabled, never built). Callers use this
+   * as the no-pick default for inbound chat turns.
+   */
+  slugForFallback(): string | undefined {
+    const fallbackId = this.platformSettings.fallbackAgentId;
+    if (!fallbackId) return undefined;
+    for (const entry of this.active.values()) {
+      if (entry.agent.id === fallbackId) return entry.agent.slug;
+    }
+    return undefined;
+  }
+
+  /**
    * Build a per-session `SessionConfigSnapshot` (US6 / T024) from the
    * registry's current view of the named Agent. The session captures this
    * on first use and pins it until a `force-invalidate` clears it.

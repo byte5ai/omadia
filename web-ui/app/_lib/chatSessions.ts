@@ -268,12 +268,24 @@ export interface Message {
   };
 }
 
+/**
+ * Phase A — pinned Agent for the session. Mirrors the server-side
+ * `SessionConfigSnapshot` (US6) but only carries the routing key the
+ * picker needs. Backend persists the full snapshot; we read just the
+ * slug to drive the read-only label after pinning.
+ */
+export interface SessionAgentSnapshot {
+  agentSlug: string;
+  capturedAt: number;
+}
+
 export interface ChatSession {
   id: string;
   title: string;
   createdAt: number;
   updatedAt: number;
   messages: Message[];
+  snapshot?: SessionAgentSnapshot;
 }
 
 interface SessionSummary {

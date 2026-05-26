@@ -2,11 +2,16 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { isNoReply, logNoReplyDrop } from '@omadia/channel-sdk';
-import type { AskObserver, ChatAgent } from '@omadia/orchestrator';
+import type {
+  AskObserver,
+  ChatAgent,
+  ChatSessionStore,
+} from '@omadia/orchestrator';
 
 import type { AgentResolver } from '../agents/resolveAgentForTool.js';
 
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,80}$/;
+const AGENT_SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 
 /**
  * Heartbeat cadence for `/chat/stream`. Mirrors the builder route's 2s pulse
@@ -28,6 +33,15 @@ const ChatRequestSchema = z.object({
   sessionId: z
     .string()
     .regex(SESSION_ID_RE, 'sessionId must match [A-Za-z0-9_-]{1,80}')
+    .optional(),
+  /**
+   * Phase A — optional Agent slug. Only the FIRST turn of a session
+   * uses this; subsequent turns reuse the snapshotted slug. Sending a
+   * different slug than the pinned one ⇒ 409 agent_mismatch.
+   */
+  agentSlug: z
+    .string()
+    .regex(AGENT_SLUG_RE, 'agentSlug must be lowercase-kebab')
     .optional(),
 });
 
@@ -77,11 +91,79 @@ export interface CreateChatRouterOptions {
    *  carry agent pills for the UI. Optional — when absent (e.g. in tests),
    *  events are forwarded unchanged. */
   agentResolver?: AgentResolver;
+  /** Phase A — per-Agent lookup. Returns the `ChatAgent` registered
+   *  under `slug`, or `undefined` when the Agent is not active. */
+  resolveChatAgent: (slug: string) => ChatAgent | undefined;
+  /** Phase A — the no-pick default slug. Returns the platform fallback
+   *  Agent's slug, or `undefined` when no fallback is configured. */
+  getDefaultSlug: () => string | undefined;
+  /** Phase A — chat session store, for snapshot capture on the first
+   *  turn of a session. */
+  chatSessionStore?: ChatSessionStore;
+  /** Phase A — builds a SessionConfigSnapshot for a given Agent slug.
+   *  Same shape as `OrchestratorRegistry.snapshotForAgent`. */
+  snapshotForAgent?: (slug: string) =>
+    | {
+        agentSlug: string;
+        pluginIds: string[];
+        toolIds: string[];
+        memoryScope: string[];
+        capturedAt: number;
+      }
+    | undefined;
+}
+
+/**
+ * Phase A — per-request Agent resolution. Returns the effective slug +
+ * ChatAgent, or sends an HTTP error and returns `undefined`. The caller
+ * uses the returned slug to capture a snapshot on the first turn.
+ */
+async function resolveAgentForRequest(
+  req: Request,
+  res: Response,
+  requestSlug: string | undefined,
+  sessionId: string | undefined,
+  options: CreateChatRouterOptions,
+): Promise<{ chatAgent: ChatAgent; effectiveSlug: string } | undefined> {
+  // 1. If session has a pinned snapshot, use it (and reject mismatches).
+  let pinnedSlug: string | undefined;
+  if (sessionId && options.chatSessionStore) {
+    const session = await options.chatSessionStore.get(sessionId);
+    pinnedSlug = session?.snapshot?.agentSlug;
+    if (pinnedSlug && requestSlug && requestSlug !== pinnedSlug) {
+      res.status(409).json({
+        error: 'agent_mismatch',
+        message: `session ${sessionId} is pinned to "${pinnedSlug}" — request slug "${requestSlug}" rejected`,
+        pinned_slug: pinnedSlug,
+      });
+      return undefined;
+    }
+  }
+
+  const effectiveSlug = pinnedSlug ?? requestSlug ?? options.getDefaultSlug();
+  if (!effectiveSlug) {
+    res.status(412).json({
+      error: 'no_fallback',
+      message:
+        'no agent slug provided and no platform fallback_agent_id is configured',
+    });
+    return undefined;
+  }
+
+  const chatAgent = options.resolveChatAgent(effectiveSlug);
+  if (!chatAgent) {
+    res.status(503).json({
+      error: 'agent_unavailable',
+      message: `agent "${effectiveSlug}" is not currently active`,
+      slug: effectiveSlug,
+    });
+    return undefined;
+  }
+  return { chatAgent, effectiveSlug };
 }
 
 export function createChatRouter(
-  orchestrator: ChatAgent,
-  options: CreateChatRouterOptions = {},
+  options: CreateChatRouterOptions,
 ): Router {
   const router = Router();
   const { agentResolver } = options;
@@ -96,14 +178,47 @@ export function createChatRouter(
       return;
     }
 
+    const resolved = await resolveAgentForRequest(
+      req,
+      res,
+      parsed.data.agentSlug,
+      parsed.data.sessionId,
+      options,
+    );
+    if (!resolved) return;
+    const { chatAgent: chat, effectiveSlug } = resolved;
+
     try {
       const userId = resolveUserId(req);
       const sessionScope = resolveScope(parsed.data);
-      const result = await orchestrator.chat({
+      const result = await chat.chat({
         userMessage: parsed.data.message,
         sessionScope,
         ...(userId ? { userId } : {}),
       });
+      // Snapshot capture (Phase A) — first turn pins the session to the
+      // resolved Agent. Subsequent turns use the pinned snapshot via
+      // resolveAgentForRequest above; this is a no-op then.
+      if (parsed.data.sessionId && options.chatSessionStore) {
+        await options.chatSessionStore
+          .captureSnapshot(parsed.data.sessionId, () => {
+            const snap = options.snapshotForAgent?.(effectiveSlug);
+            return Promise.resolve(
+              snap ?? {
+                agentSlug: effectiveSlug,
+                pluginIds: [],
+                toolIds: [],
+                memoryScope: [],
+                capturedAt: Date.now(),
+              },
+            );
+          })
+          .catch((err) => {
+            console.warn(
+              `[chat] captureSnapshot failed for session ${parsed.data.sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          });
+      }
       if (isNoReply(result)) {
         logNoReplyDrop('http', { sessionScope, userId });
         res.json({ answer: '' });
@@ -114,6 +229,7 @@ export function createChatRouter(
       // agnostic SemanticAnswer shape now, no toolCalls/iterations exposed).
       res.json({
         answer: result.text,
+        agent_slug: effectiveSlug,
         ...(result.privacyReceipt
           ? { privacyReceipt: result.privacyReceipt }
           : {}),
@@ -134,6 +250,18 @@ export function createChatRouter(
       });
       return;
     }
+
+    // Resolve BEFORE setting NDJSON headers — error responses on the
+    // routing path want JSON status codes, not a streamed event.
+    const resolved = await resolveAgentForRequest(
+      req,
+      res,
+      parsed.data.agentSlug,
+      parsed.data.sessionId,
+      options,
+    );
+    if (!resolved) return;
+    const { chatAgent: chat, effectiveSlug } = resolved;
 
     // NDJSON streaming. `X-Accel-Buffering: no` disables nginx response
     // buffering if the middleware ever sits behind one; harmless locally.
@@ -230,7 +358,33 @@ export function createChatRouter(
 
     try {
       const userId = resolveUserId(req);
-      const iterator = orchestrator.chatStream(
+      // Snapshot capture on first turn (Phase A) — fire-and-forget; failure
+      // logged but does not block streaming.
+      if (parsed.data.sessionId && options.chatSessionStore) {
+        void options.chatSessionStore
+          .captureSnapshot(parsed.data.sessionId, () => {
+            const snap = options.snapshotForAgent?.(effectiveSlug);
+            return Promise.resolve(
+              snap ?? {
+                agentSlug: effectiveSlug,
+                pluginIds: [],
+                toolIds: [],
+                memoryScope: [],
+                capturedAt: Date.now(),
+              },
+            );
+          })
+          .catch((err) => {
+            console.warn(
+              `[chat] captureSnapshot failed for session ${parsed.data.sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          });
+      }
+      // Emit a header event so the UI can render the bound Agent slug
+      // before the first token lands.
+      safeWrite({ type: 'agent_bound', slug: effectiveSlug });
+
+      const iterator = chat.chatStream(
         {
           userMessage: parsed.data.message,
           sessionScope: resolveScope(parsed.data),

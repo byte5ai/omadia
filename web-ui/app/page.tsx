@@ -10,6 +10,8 @@ import {
 import { useTranslations } from 'next-intl';
 import { Eraser } from 'lucide-react';
 import { ChatTabs } from './_components/ChatTabs';
+import { AgentPicker } from './_components/AgentPicker';
+import { AgentUnavailableBanner } from './_components/AgentUnavailableBanner';
 import { AgentUsagePills } from './_components/chat/AgentUsagePills';
 import { AutoPromotedBanner } from './_components/chat/AutoPromotedBanner';
 import { CaptureDisclosure } from './_components/chat/CaptureDisclosure';
@@ -54,6 +56,9 @@ export default function ChatPage(): React.ReactElement {
   const [input, setInput] = useState('');
   const [resetPending, setResetPending] = useState(false);
   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
+  /** Phase A — selected Agent slug for the upcoming first turn.
+   *  Ignored after the session pins (server snapshots on first turn). */
+  const [selectedAgentSlug, setSelectedAgentSlug] = useState<string | undefined>(undefined);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -136,14 +141,29 @@ export default function ChatPage(): React.ReactElement {
       // owns the fetch + NDJSON-parse loop and writes deltas back into
       // ChatSessions via context, so a menu-switch or ChatTabs switch no
       // longer kills the stream.
+      // Phase A — only the FIRST turn ships agentSlug; subsequent turns
+      // use the session-pinned snapshot on the server side.
+      const isFirstTurn = activeSession.messages.length === 0;
       streamStore.startTurn({
         sessionId: targetSessionId,
         pendingMessageId: pendingId,
         message: trimmed,
+        ...(isFirstTurn && selectedAgentSlug
+          ? { agentSlug: selectedAgentSlug }
+          : {}),
       });
       inputRef.current?.focus();
     },
-    [input, sending, hydrating, activeId, mutateActive, streamStore],
+    [
+      input,
+      sending,
+      hydrating,
+      activeId,
+      mutateActive,
+      streamStore,
+      activeSession.messages.length,
+      selectedAgentSlug,
+    ],
   );
 
   const abort = (): void => {
@@ -245,12 +265,47 @@ export default function ChatPage(): React.ReactElement {
                   until `useChatSessions` finishes hydrating. */}
               scope={hydrating ? '…' : activeId}
             </span>
+            {/* Phase A — Agent picker. Read-only pinned label after the
+                first turn; dropdown before it. */}
+            <AgentPicker
+              pinnedSlug={activeSession.snapshot?.agentSlug}
+              selectedSlug={selectedAgentSlug}
+              onSelect={setSelectedAgentSlug}
+            />
           </div>
 
           {/* Row 2 — Agent-Usage-Pills (only when anything was invoked) */}
           <AgentUsagePills session={activeSession} />
         </div>
       </div>
+
+      {/* Phase A / TA08 — agent_unavailable recovery banner. Mounted
+          when the last stream finished with HTTP 503; clears on
+          re-snapshot or session delete. */}
+      {(() => {
+        const rec = streamStore.get(activeId);
+        if (!rec?.agentUnavailableSlug) return null;
+        return (
+          <AgentUnavailableBanner
+            sessionId={activeId}
+            unavailableSlug={rec.agentUnavailableSlug}
+            onRecovered={() => {
+              streamStore.patch(activeId, { agentUnavailableSlug: undefined });
+              // Drop the pinned snapshot in the local session so the
+              // header picker becomes available again for the next turn.
+              mutateActive((s) => {
+                if (s.id !== activeId) return s;
+                const { snapshot: _drop, ...rest } = s;
+                return rest;
+              });
+            }}
+            onDeleted={() => {
+              streamStore.patch(activeId, { agentUnavailableSlug: undefined });
+              void clearMessages(activeId);
+            }}
+          />
+        );
+      })()}
 
       <div
         ref={scrollRef}

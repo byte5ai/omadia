@@ -959,12 +959,42 @@ async function main(): Promise<void> {
   console.log('[middleware] harness admin-ui assets ready at /api/_harness/admin-ui.css');
 
   const agentResolver = createAgentResolver({ dynamicRuntime: dynamicAgentRuntime });
+  // Phase A — Chat router resolves per-Agent via the registry. Falls
+  // back to the legacy default `chatAgent@1` for two cases:
+  //   1. Boot with no registry (no DATABASE_URL) — only the default
+  //      bundle exists, gets reachable via slug "default".
+  //   2. Registry has Agents but the requested slug is "default" —
+  //      same shortcut for back-compat.
+  // Otherwise the slug must map to a registered Agent (registry.get).
+  const registry = serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
+  const resolveChatAgent = (slug: string): ChatAgent | undefined => {
+    const entry = registry?.get(slug);
+    if (entry) return entry.built.bundle.agent;
+    if (slug === 'default') return chatAgent;
+    return undefined;
+  };
+  const getDefaultSlug = (): string | undefined => {
+    const fallback = registry?.slugForFallback();
+    if (fallback) return fallback;
+    // Pre-Phase-A / no-DB boot: the legacy default is the only Agent.
+    return registry ? undefined : 'default';
+  };
   // OB-106: gate the chat-inference endpoints (`POST /api/chat`,
   // `POST /api/chat/stream`) behind `requireAuth`. Without this, anonymous
   // callers could trigger LLM inference (cost) and reach the tool surface
   // (KG-lookups, RAG, Memory-Reads). createChatRouter does not register
   // any public-by-design routes — every route is inference-tied.
-  app.use('/api', requireAuth, createChatRouter(chatAgent, { agentResolver }));
+  app.use(
+    '/api',
+    requireAuth,
+    createChatRouter({
+      agentResolver,
+      resolveChatAgent,
+      getDefaultSlug,
+      chatSessionStore,
+      snapshotForAgent: (slug) => registry?.snapshotForAgent(slug),
+    }),
+  );
 
   // Chat-sessions CRUD behind `requireAuth` — sessions may contain
   // PII / tool outputs / code snippets and must not be readable anonymously.

@@ -27,12 +27,14 @@ import type {
   MemoryStore,
   NudgeRegistry,
   NudgeStateStore,
+  PalaiaExcerptExtractor,
   PrivacyGuardService,
   ProcessMemoryService,
   ResponseGuardService,
   SessionBriefingService,
 } from '@omadia/plugin-api';
 import type { VerifierBundle } from '@omadia/verifier';
+import type { Pool } from 'pg';
 
 import { ChatSessionStore } from './chatSessionStore.js';
 import type { Microsoft365Accessor } from './microsoft365-shim.js';
@@ -79,11 +81,20 @@ export interface OrchestratorDeps {
   readonly contextRetriever?: ContextRetriever;
   readonly sessionBriefing?: SessionBriefingService;
   readonly factExtractor?: FactExtractor;
+  readonly excerptExtractor?: PalaiaExcerptExtractor;
   readonly embeddingClient?: EmbeddingClient;
   readonly microsoft365?: Microsoft365Accessor;
   readonly verifierBundle?: VerifierBundle;
   readonly nudgeStateStore?: NudgeStateStore;
   readonly processMemory?: ProcessMemoryService;
+  /** Merged from main 2026-05-26: KG-ACL auto-promotion env flags. */
+  readonly autoPromote?: boolean;
+  readonly autoPromoteThreshold?: number;
+  /** Shared Postgres pool the Orchestrator may use for direct KG writes. */
+  readonly graphPool?: Pool;
+  readonly graphTenantId?: string;
+  /** Operator-set assistant identity (overrides the built-in default). */
+  readonly assistantIdentity?: string;
 }
 
 /** What one `buildOrchestratorForAgent` call produces. */
@@ -147,6 +158,7 @@ export function buildOrchestratorForAgent(
       : {}),
     ...(deps.sessionBriefing ? { sessionBriefing: deps.sessionBriefing } : {}),
     ...(deps.factExtractor ? { factExtractor: deps.factExtractor } : {}),
+    ...(deps.excerptExtractor ? { excerptExtractor: deps.excerptExtractor } : {}),
     chatParticipantsTool,
     askUserChoiceTool,
     suggestFollowUpsTool,
@@ -158,6 +170,15 @@ export function buildOrchestratorForAgent(
     nudgeRegistry: deps.nudgeRegistry,
     ...(deps.nudgeStateStore ? { nudgeStateStore: deps.nudgeStateStore } : {}),
     ...(deps.processMemory ? { nudgeProcessMemory: deps.processMemory } : {}),
+    ...(deps.autoPromote !== undefined ? { autoPromote: deps.autoPromote } : {}),
+    ...(deps.autoPromoteThreshold !== undefined
+      ? { autoPromoteThreshold: deps.autoPromoteThreshold }
+      : {}),
+    ...(deps.graphPool ? { graphPool: deps.graphPool } : {}),
+    ...(deps.graphTenantId ? { graphTenantId: deps.graphTenantId } : {}),
+    ...(deps.assistantIdentity
+      ? { assistantIdentity: deps.assistantIdentity }
+      : {}),
   });
 
   // Verifier wrapper — only when the `verifier@1` capability is published.

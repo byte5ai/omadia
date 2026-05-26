@@ -75,7 +75,7 @@ interface DepsRef {
 
 async function runOneTurn(claim: ClaimedRequest, depsRef: DepsRef): Promise<void> {
   const { request, signal } = claim;
-  const { sessionId, pendingMessageId, message } = request;
+  const { sessionId, pendingMessageId, message, agentSlug } = request;
   const { store } = depsRef.current;
 
   // Per-turn accumulators. Kept local to the runner so the store stays
@@ -120,7 +120,11 @@ async function runOneTurn(claim: ClaimedRequest, depsRef: DepsRef): Promise<void
     const res = await fetch('/bot-api/chat/stream', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ message, sessionId }),
+      body: JSON.stringify({
+        message,
+        sessionId,
+        ...(agentSlug ? { agentSlug } : {}),
+      }),
       signal,
     });
 
@@ -139,8 +143,20 @@ async function runOneTurn(claim: ClaimedRequest, depsRef: DepsRef): Promise<void
             : t('errorProxyFailure', { status: String(res.status) });
       } else if (contentType.includes('application/json')) {
         try {
-          const parsed = JSON.parse(fallback) as { error?: string; message?: string };
+          const parsed = JSON.parse(fallback) as {
+            error?: string;
+            message?: string;
+            slug?: string;
+          };
           msg = parsed.message ?? parsed.error ?? `HTTP ${String(res.status)}`;
+          // Phase A / TA08 — flag the recovery banner.
+          if (
+            res.status === 503 &&
+            parsed.error === 'agent_unavailable' &&
+            parsed.slug
+          ) {
+            store.patch(sessionId, { agentUnavailableSlug: parsed.slug });
+          }
         } catch {
           msg = fallback || `HTTP ${String(res.status)}`;
         }

@@ -133,6 +133,37 @@ export function createOperatorAgentsRouter(
     res.status(500).json({ error: 'internal', message: (err as Error).message });
   }
 
+  // ── enabled list (chat-picker surface) ──────────────────────────────
+  // Phase A — minimal-metadata list of enabled Agents for the chat
+  // picker. Does NOT reveal plugin/binding internals; if a future role
+  // split lands, this endpoint stays available to authenticated
+  // operators while `GET /` becomes admin-only.
+  router.get('/enabled', async (_req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const [agents, settings] = await Promise.all([
+        live.store.listAgents(),
+        live.store.getPlatformSettings(),
+      ]);
+      res.json({
+        agents: agents
+          .filter((a) => a.status === 'enabled')
+          .map((a) => ({
+            slug: a.slug,
+            name: a.name,
+            description: a.description,
+            privacy_profile: a.privacyProfile,
+            is_fallback: a.id === settings.fallbackAgentId,
+          })),
+        fallback_slug:
+          agents.find((a) => a.id === settings.fallbackAgentId)?.slug ?? null,
+      });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
   // ── list ────────────────────────────────────────────────────────────
   router.get('/', async (_req: Request, res: Response) => {
     const live = svc();

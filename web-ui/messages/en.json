@@ -280,6 +280,18 @@
     "auditSubtitle": "Forensic timeline of receipts emitted across turns.",
     "auditDeferred": "Available in v0.2.x — requires receipt persistence."
   },
+  "agentPicker": {
+    "label": "Agent:",
+    "loading": "loading agents…",
+    "error": "agent list unavailable",
+    "fallbackMarker": "(fallback)",
+    "pinnedTooltip": "Session is pinned. Use Operator → Agents → Drain to reassign.",
+    "emptyCta": "No agents configured — open Operator → Agents",
+    "unavailableTitle": "This session's Agent is no longer available",
+    "unavailableBody": "The Agent \"{slug}\" was deleted or disabled. Pick how to recover this session.",
+    "actionReSnapshot": "Re-bind to fallback",
+    "actionDelete": "Delete session"
+  },
   "operatorAgents": {
     "title": "Agents",
     "subtitle": "Multi-orchestrator runtime — create, edit, disable, drain, or kill Agents and watch the registry react in real time via the LISTEN/NOTIFY hot-reload bus.",

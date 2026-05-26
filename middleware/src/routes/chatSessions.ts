@@ -179,6 +179,37 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
     }
   });
 
+  /**
+   * Phase A / TA08 — clear the session's pinned Agent snapshot. Next
+   * turn re-captures from the current registry state (typically the
+   * fallback). Idempotent; no-op when the session has no snapshot.
+   */
+  router.post(
+    '/sessions/:id/re-snapshot',
+    async (req: Request, res: Response) => {
+      const id = req.params['id'];
+      if (typeof id !== 'string' || !isValidSessionId(id)) {
+        res.status(400).json({ error: 'invalid_id' });
+        return;
+      }
+      try {
+        const existing = await store.get(id);
+        if (!existing) {
+          res.status(404).json({ error: 'not_found' });
+          return;
+        }
+        await store.clearSnapshot(id);
+        res.json({ ok: true, sessionId: id });
+      } catch (err) {
+        if (err instanceof InvalidSessionIdError) {
+          res.status(400).json({ error: 'invalid_id' });
+          return;
+        }
+        failure(res, err, '[chat-sessions] re-snapshot');
+      }
+    },
+  );
+
   return router;
 }
 

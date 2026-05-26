@@ -54,6 +54,10 @@ export interface StreamRecord {
   cacheTokens?: number;
   /** Wall-clock at which this terminal record may be GC'd. */
   expiresAt?: number;
+  /** Phase A / TA08 — set when the last turn failed with
+   *  HTTP 503 agent_unavailable. The recovery banner reads this
+   *  to decide whether to offer the re-snapshot / delete actions. */
+  agentUnavailableSlug?: string;
 }
 
 /** Payload the UI hands the store to ask <StreamRunner /> to do the work. */
@@ -61,6 +65,10 @@ export interface StreamRequest {
   sessionId: string;
   pendingMessageId: string;
   message: string;
+  /** Phase A — optional Agent slug. Used only on the first turn of a
+   *  session; the server pins the snapshot and ignores it thereafter.
+   *  `undefined` ⇒ server uses the platform fallback. */
+  agentSlug?: string;
 }
 
 /** What the runner pulls off the queue. */

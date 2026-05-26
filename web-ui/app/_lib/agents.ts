@@ -192,3 +192,27 @@ export async function triggerAgentReload(): Promise<{
 }> {
   return callJson('/v1/operator/agents/reload', { method: 'POST' });
 }
+
+// ── Phase A — chat-picker surface ──────────────────────────────────────
+
+export interface EnabledAgentDto {
+  slug: string;
+  name: string;
+  description: string | null;
+  privacy_profile: PrivacyProfile;
+  is_fallback: boolean;
+}
+
+export interface EnabledAgentsListDto {
+  agents: EnabledAgentDto[];
+  fallback_slug: string | null;
+}
+
+/**
+ * Minimal-metadata list of enabled Agents for the chat header picker
+ * (Phase A). Does NOT reveal plugin/binding internals. Backed by
+ * `GET /api/v1/operator/agents/enabled` in the middleware.
+ */
+export async function listEnabledAgents(): Promise<EnabledAgentsListDto> {
+  return callJson<EnabledAgentsListDto>('/v1/operator/agents/enabled');
+}
