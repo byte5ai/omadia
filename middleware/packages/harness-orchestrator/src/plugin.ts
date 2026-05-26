@@ -123,6 +123,7 @@ const CHAT_AGENT_SERVICE = 'chatAgent';
 const NATIVE_TOOL_REGISTRY_SERVICE = 'nativeToolRegistry';
 const ORCHESTRATOR_REGISTRY_SERVICE = 'orchestratorRegistry';
 const CHANNEL_RESOLVER_SERVICE = 'channelResolver';
+const CONFIG_STORE_SERVICE = 'configStore';
 const GRAPH_POOL_SERVICE = 'graphPool';
 const PLUGIN_CAPABILITIES_SERVICE = 'pluginCapabilities';
 
@@ -416,6 +417,11 @@ export async function activate(
         PLUGIN_CAPABILITIES_SERVICE,
       );
       const store = new ConfigStore(graphPool);
+      // US9 / T037 — publish the configStore so the operator REST router
+      // can perform writes without re-instantiating its own store
+      // (singleton; cheaper than reconnecting, and write events flow
+      // through the same trigger → reload-bus pipeline).
+      ctx.services.provide(CONFIG_STORE_SERVICE, store);
 
       // US7 / T029 — first-boot fallback Agent seed. Runs before the
       // registry's `start()` so the very first boot already has a fallback

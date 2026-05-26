@@ -10,6 +10,11 @@ import type { MemoryStore, PrivacyGuardService } from '@omadia/plugin-api';
 import { createAdminRouter } from './routes/admin.js';
 import { createChatRouter } from './routes/chat.js';
 import { createOperatorPrivacyRouter } from './routes/operatorPrivacy.js';
+import { createOperatorAgentsRouter } from './routes/operatorAgents.js';
+import type {
+  ConfigStore as MultiOrchestratorConfigStore,
+  OrchestratorRegistry as MultiOrchestratorRegistry,
+} from '@omadia/orchestrator';
 import { createAgentResolver } from './agents/resolveAgentForTool.js';
 // `/attachments/<signed-key>` is now mounted by the de.byte5.channel.teams
 // plugin via ctx.routes.register (see packages/harness-channel-teams/src/plugin.ts,
@@ -960,6 +965,26 @@ async function main(): Promise<void> {
   );
   console.log(
     '[middleware] operator-privacy endpoints ready at /api/v1/operator/privacy/* (auth-gated)',
+  );
+
+  // US9 / T037 — operator-facing Agents dashboard backend. Mounts at
+  // /api/v1/operator/agents/*. 503s when the orchestratorRegistry@1
+  // service is not published (no DATABASE_URL / orchestrator plugin not
+  // active). Writes route through ConfigStore → trigger → reload bus →
+  // registry.reload(), so the next request already sees the new config.
+  app.use(
+    '/api/v1/operator/agents',
+    requireAuth,
+    createOperatorAgentsRouter({
+      getConfigStore: () =>
+        serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
+      getRegistry: () =>
+        serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
+      getChatSessionStore: () => chatSessionStore,
+    }),
+  );
+  console.log(
+    '[middleware] operator-agents endpoints ready at /api/v1/operator/agents/* (auth-gated)',
   );
 
   // ── OB-49 — provider-aware auth bootstrap ────────────────────────────────
