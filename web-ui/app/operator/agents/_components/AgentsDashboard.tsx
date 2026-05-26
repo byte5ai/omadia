@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
+import { useTranslations } from 'next-intl';
 
 import {
   createOperatorAgent,
@@ -40,6 +41,7 @@ interface AgentsDashboardProps {
 export function AgentsDashboard({
   initial,
 }: AgentsDashboardProps): React.ReactElement {
+  const t = useTranslations('operatorAgents');
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -71,14 +73,14 @@ export function AgentsDashboard({
 
       <section className="rounded border border-neutral-200 bg-white p-5">
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-medium">Platform</h2>
+          <h2 className="text-lg font-medium">{t('platformHeading')}</h2>
           <button
             type="button"
             className="rounded border border-neutral-300 bg-neutral-50 px-3 py-1 text-xs hover:bg-neutral-100"
             disabled={pending || !!busy}
             onClick={() => run('reload', () => triggerAgentReload())}
           >
-            Force registry reload
+            {t('forceReload')}
           </button>
         </div>
         <FallbackPicker
@@ -100,14 +102,14 @@ export function AgentsDashboard({
 
       <section className="space-y-4">
         <h2 className="text-lg font-medium">
-          Agents{' '}
+          {t('agentsHeading')}{' '}
           <span className="text-sm font-normal text-neutral-500">
             ({initial.agents.length})
           </span>
         </h2>
         {initial.agents.length === 0 ? (
           <p className="text-sm text-neutral-500">
-            No agents yet. Create one above.
+            {t('agentsEmpty')}
           </p>
         ) : (
           initial.agents.map((agent) => (
@@ -159,9 +161,10 @@ function FallbackPicker(props: {
   disabled: boolean;
   onChange: (slug: string | null) => void;
 }): React.ReactElement {
+  const t = useTranslations('operatorAgents');
   return (
     <label className="flex items-center gap-3 text-sm">
-      <span className="text-neutral-600">Fallback agent:</span>
+      <span className="text-neutral-600">{t('fallbackLabel')}</span>
       <select
         className="rounded border border-neutral-300 bg-white px-2 py-1"
         value={props.currentSlug ?? ''}
@@ -170,7 +173,7 @@ function FallbackPicker(props: {
           props.onChange(e.target.value === '' ? null : e.target.value)
         }
       >
-        <option value="">(none — hard-reject unbound keys)</option>
+        <option value="">{t('fallbackNone')}</option>
         {props.agents
           .filter((a) => a.status === 'enabled')
           .map((a) => (
@@ -192,6 +195,7 @@ function CreateAgentForm(props: {
     privacy_profile?: PrivacyProfile;
   }) => void;
 }): React.ReactElement {
+  const t = useTranslations('operatorAgents');
   const [slug, setSlug] = useState('');
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -199,7 +203,7 @@ function CreateAgentForm(props: {
 
   return (
     <section className="rounded border border-neutral-200 bg-white p-5">
-      <h2 className="mb-4 text-lg font-medium">Create Agent</h2>
+      <h2 className="mb-4 text-lg font-medium">{t('createHeading')}</h2>
       <form
         className="grid gap-4 lg:grid-cols-4"
         onSubmit={(e) => {
@@ -217,7 +221,7 @@ function CreateAgentForm(props: {
           setPrivacy('default');
         }}
       >
-        <Field label="Slug">
+        <Field label={t('fieldSlug')}>
           <input
             type="text"
             value={slug}
@@ -228,17 +232,16 @@ function CreateAgentForm(props: {
             placeholder="public"
           />
         </Field>
-        <Field label="Name">
+        <Field label={t('fieldName')}>
           <input
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
             required
             className="w-full rounded border border-neutral-300 px-2 py-1 text-sm"
-            placeholder="Public Agent"
           />
         </Field>
-        <Field label="Description">
+        <Field label={t('fieldDescription')}>
           <input
             type="text"
             value={description}
@@ -246,7 +249,7 @@ function CreateAgentForm(props: {
             className="w-full rounded border border-neutral-300 px-2 py-1 text-sm"
           />
         </Field>
-        <Field label="Privacy profile">
+        <Field label={t('fieldPrivacy')}>
           <select
             value={privacy}
             onChange={(e) => setPrivacy(e.target.value as PrivacyProfile)}
@@ -262,7 +265,7 @@ function CreateAgentForm(props: {
             disabled={props.disabled || !slug || !name}
             className="rounded bg-neutral-900 px-4 py-1.5 text-sm text-white hover:bg-neutral-800 disabled:opacity-40"
           >
-            Create
+            {t('createSubmit')}
           </button>
         </div>
       </form>
@@ -289,6 +292,7 @@ function AgentCard(props: {
   onDrain: () => void;
   onKill: () => void;
 }): React.ReactElement {
+  const t = useTranslations('operatorAgents');
   const { agent } = props;
   const [pluginsText, setPluginsText] = useState(
     agent.plugins.map((p) => p.id).join('\n'),
@@ -331,25 +335,17 @@ function AgentCard(props: {
             </span>
           </h3>
           <p className="text-xs text-neutral-500">
-            id: {agent.id}
-            {' · '}
-            privacy: {agent.privacy_profile}
-            {' · '}
-            status:{' '}
-            <span
-              className={
+            {t('agentMeta', {
+              id: agent.id,
+              privacy: agent.privacy_profile,
+              status:
                 agent.status === 'enabled'
-                  ? 'text-green-700'
-                  : 'text-neutral-500'
-              }
-            >
-              {agent.status}
-            </span>
-            {' · '}
-            runtime:{' '}
-            <span className={agent.active ? 'text-green-700' : 'text-neutral-500'}>
-              {agent.active ? 'active' : 'inactive'}
-            </span>
+                  ? t('statusEnabled')
+                  : t('statusDisabled'),
+              runtime: agent.active
+                ? t('runtimeActive')
+                : t('runtimeInactive'),
+            })}
           </p>
           {agent.description && (
             <p className="mt-1 text-sm text-neutral-700">{agent.description}</p>
@@ -367,7 +363,9 @@ function AgentCard(props: {
                 })
               }
             >
-              {agent.status === 'enabled' ? 'Disable' : 'Enable'}
+              {agent.status === 'enabled'
+                ? t('actionDisable')
+                : t('actionEnable')}
             </button>
             <button
               type="button"
@@ -380,18 +378,18 @@ function AgentCard(props: {
                 })
               }
             >
-              Toggle privacy
+              {t('actionTogglePrivacy')}
             </button>
             <button
               type="button"
               className="rounded border border-red-300 bg-red-50 px-2 py-1 text-xs text-red-800 hover:bg-red-100"
               disabled={props.disabled}
               onClick={() => {
-                if (confirm(`Delete agent "${agent.slug}"?`))
+                if (confirm(t('deleteConfirm', { slug: agent.slug })))
                   props.onDelete();
               }}
             >
-              Delete
+              {t('actionDelete')}
             </button>
           </div>
           <div className="flex gap-2">
@@ -400,24 +398,20 @@ function AgentCard(props: {
               className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-800 hover:bg-amber-100"
               disabled={props.disabled}
               onClick={() => props.onDrain()}
-              title="Clear snapshot on every session bound to this Agent — next turn re-captures from current config"
+              title={t('drainTooltip')}
             >
-              Drain sessions
+              {t('actionDrain')}
             </button>
             <button
               type="button"
               className="rounded border border-red-300 bg-red-50 px-2 py-1 text-xs text-red-800 hover:bg-red-100"
               disabled={props.disabled}
               onClick={() => {
-                if (
-                  confirm(
-                    `Kill all sessions for "${agent.slug}"? History will be lost.`,
-                  )
-                )
+                if (confirm(t('killConfirm', { slug: agent.slug })))
                   props.onKill();
               }}
             >
-              Kill sessions
+              {t('actionKill')}
             </button>
           </div>
         </div>
@@ -425,11 +419,9 @@ function AgentCard(props: {
 
       <div className="grid gap-4 lg:grid-cols-3">
         <div>
-          <h4 className="mb-2 text-sm font-medium">Memory scope</h4>
+          <h4 className="mb-2 text-sm font-medium">{t('memoryScopeHeading')}</h4>
           {agent.memory_scope.length === 0 ? (
-            <p className="text-xs text-neutral-500">
-              No scope (runtime registry not active)
-            </p>
+            <p className="text-xs text-neutral-500">{t('memoryScopeEmpty')}</p>
           ) : (
             <ul className="space-y-1 font-mono text-xs">
               {agent.memory_scope.map((s) => (
@@ -445,14 +437,14 @@ function AgentCard(props: {
         </div>
         <div>
           <h4 className="mb-2 flex items-center justify-between text-sm font-medium">
-            Plugins
+            {t('pluginsHeading')}
             <button
               type="button"
               className="rounded border border-neutral-300 bg-white px-2 py-0.5 text-xs hover:bg-neutral-50"
               disabled={props.disabled}
               onClick={submitPlugins}
             >
-              Save
+              {t('save')}
             </button>
           </h4>
           <textarea
@@ -465,14 +457,14 @@ function AgentCard(props: {
         </div>
         <div>
           <h4 className="mb-2 flex items-center justify-between text-sm font-medium">
-            Channel bindings
+            {t('bindingsHeading')}
             <button
               type="button"
               className="rounded border border-neutral-300 bg-white px-2 py-0.5 text-xs hover:bg-neutral-50"
               disabled={props.disabled}
               onClick={submitBindings}
             >
-              Save
+              {t('save')}
             </button>
           </h4>
           <textarea
