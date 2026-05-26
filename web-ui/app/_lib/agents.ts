@@ -1,13 +1,40 @@
-'use server';
-
-import { botApi, forwardCookieHeader, ApiError } from './api';
+import { ApiError } from './api';
 
 /**
  * Typed client for the operator multi-orchestrator REST surface
  * (`/api/v1/operator/agents/*` — see `routes/operatorAgents.ts` in the
  * middleware). Used by `app/operator/agents/page.tsx` (RSC fetches) and
  * the client-side dashboard component (writes).
+ *
+ * `botApi` + `forwardCookieHeader` are inlined here because `_lib/api.ts`
+ * keeps them as file-private helpers (exporting them would mean touching
+ * an unrelated file and changing its public surface mid-feature). The
+ * logic is verbatim from api.ts; keep the two in sync if the cookie /
+ * URL conventions ever change.
  */
+
+function botApi(path: string): string {
+  if (typeof window !== 'undefined') {
+    return `/bot-api${path}`;
+  }
+  const base = process.env['MIDDLEWARE_URL'] ?? 'http://localhost:3979';
+  return `${base}/api${path}`;
+}
+
+async function forwardCookieHeader(): Promise<Record<string, string>> {
+  if (typeof window !== 'undefined') return {};
+  try {
+    const mod = await import('next/headers');
+    const jar = await mod.cookies();
+    const cookieHeader = jar
+      .getAll()
+      .map((c) => `${c.name}=${c.value}`)
+      .join('; ');
+    return cookieHeader ? { cookie: cookieHeader } : {};
+  } catch {
+    return {};
+  }
+}
 
 export type PrivacyProfile = 'strict' | 'default';
 export type AgentStatus = 'enabled' | 'disabled';
