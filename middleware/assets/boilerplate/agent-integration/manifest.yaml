@@ -27,6 +27,13 @@ compat:
   core: ">=1.0 <2.0"
   node: ">=20"
 
+# Multi-orchestrator runtime — may the plugin be activated for >1 Agent
+# in one process? Builder-generated plugins default to multi-instance.
+multi_instance: true
+
+# Plugin data-handling class. Builder-generated plugins default to strict.
+privacy_class: "strict"
+
 # Integrations this agent depends on. Auth/secrets are pulled via the
 # resolution chain (ctx.secret) from the integration. Codegen overwrites
 # this block directly in the YAML AST from `spec.depends_on` —

@@ -43,7 +43,9 @@ export type ViolationKind =
   | 'external_read_integration_missing'
   | 'ui_route_id_duplicate'
   | 'ui_route_path_duplicate'
-  | 'ui_route_tab_label_duplicate';
+  | 'ui_route_tab_label_duplicate'
+  | 'multi_instance_justification_missing'
+  | 'privacy_class_invalid';
 
 export interface ManifestViolation {
   kind: ViolationKind;
@@ -317,6 +319,37 @@ export function validateSpec(
           'Each field must have a unique key.',
       });
     }
+  }
+
+  // Multi-orchestrator runtime (US2) — manifest extension validation.
+  // Zod's schema enforces field types + the privacy_class enum + the
+  // multi_instance boolean at parse time; this linter adds the semantic
+  // rule that a `multi_instance: false` declaration requires a non-empty
+  // justification, and a defensive check on `privacy_class` for callers
+  // that hand a raw, pre-parse skeleton to validateSpec.
+  if (
+    s.multi_instance === false &&
+    (typeof s.multi_instance_justification !== 'string' ||
+      s.multi_instance_justification.trim().length === 0)
+  ) {
+    violations.push({
+      kind: 'multi_instance_justification_missing',
+      path: '/multi_instance_justification',
+      message:
+        'multi_instance is false but multi_instance_justification is missing or empty. ' +
+        'Add a non-empty reason — multi-instance is the default expectation.',
+    });
+  }
+  if (
+    s.privacy_class !== undefined &&
+    s.privacy_class !== 'strict' &&
+    s.privacy_class !== 'default'
+  ) {
+    violations.push({
+      kind: 'privacy_class_invalid',
+      path: '/privacy_class',
+      message: `privacy_class '${String(s.privacy_class)}' is not 'strict' or 'default'.`,
+    });
   }
 
   return { ok: violations.length === 0, violations };

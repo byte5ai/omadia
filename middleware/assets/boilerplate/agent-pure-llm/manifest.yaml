@@ -32,6 +32,13 @@ compat:
   core: ">=1.0 <2.0"
   node: ">=20"
 
+# Multi-orchestrator runtime — may the plugin be activated for >1 Agent
+# in one process? Builder-generated plugins default to multi-instance.
+multi_instance: true
+
+# Plugin data-handling class. Builder-generated plugins default to strict.
+privacy_class: "strict"
+
 # Pure-LLM agents have no integration dependency. The runtime still
 # resolves `ctx.secrets` along the (empty) chain — `require` would just
 # always reject, which is fine because we don't call it.

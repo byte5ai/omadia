@@ -131,6 +131,12 @@ export interface AgentSpecSkeleton {
     };
     custom_notes?: string;
   };
+  /** Multi-orchestrator runtime (US2) — manifest extension. Defaults are
+   *  filled by the Zod parser (`multi_instance: true`, `privacy_class:
+   *  'strict'`); codegen writes them into the generated `manifest.yaml`. */
+  multi_instance?: boolean;
+  multi_instance_justification?: string;
+  privacy_class?: 'strict' | 'default';
 }
 
 /**
@@ -232,5 +238,7 @@ export function emptyAgentSpec(): AgentSpecSkeleton {
     network: { outbound: [] },
     slots: {},
     builder_settings: { auto_fix_enabled: false },
+    multi_instance: true,
+    privacy_class: 'strict',
   };
 }

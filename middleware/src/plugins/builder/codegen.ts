@@ -387,6 +387,16 @@ function reproduceManifestCapabilities(
     doc.set('admin_ui_path', spec.admin_ui_path);
   }
 
+  // Multi-orchestrator runtime (US2) — manifest extension. Codegen writes
+  // these as top-level keys; the registry reads them at activation time.
+  // The boilerplate manifests also carry static defaults so a manually-
+  // built plugin is valid; codegen overwrites with the spec values.
+  doc.set('multi_instance', spec.multi_instance);
+  if (spec.multi_instance_justification) {
+    doc.set('multi_instance_justification', spec.multi_instance_justification);
+  }
+  doc.set('privacy_class', spec.privacy_class);
+
   // setup.fields overwrite (live-fix 2026-05-01) — previously the
   // boilerplate's `setup: { fields: [] }` shipped as-is, so a self-
   // contained agent that asks for github_org + github_token in the

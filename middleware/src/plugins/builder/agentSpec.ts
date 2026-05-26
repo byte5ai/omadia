@@ -548,6 +548,15 @@ export const AgentSpecSchema = z
     // conditional) will consume this field; Phase 3 only writes/reads
     // it via the Browser-View. Omitted in legacy drafts.
     persona: PersonaConfigSchema.optional(),
+
+    // Multi-orchestrator runtime (US2) — manifest extension. Codegen writes
+    // these into the generated manifest.yaml as top-level keys; the
+    // multi-orchestrator registry consumes them at activation time.
+    // The conditional `multi_instance: false ⇒ justification required` is
+    // enforced by `manifestLinter.validateSpec` (semantic rule), not Zod.
+    multi_instance: z.boolean().default(true),
+    multi_instance_justification: z.string().min(1).optional(),
+    privacy_class: z.enum(['strict', 'default']).default('strict'),
   })
   .strict();
 
