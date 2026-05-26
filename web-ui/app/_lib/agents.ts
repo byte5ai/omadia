@@ -258,6 +258,7 @@ export interface PluginCatalogEntryDto {
   memory_writes: string[];
   network_outbound: string[];
   setup_fields: PluginSetupFieldDto[];
+  depends_on: string[];
 }
 
 export interface PluginCatalogListDto {

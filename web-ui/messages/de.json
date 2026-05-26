@@ -357,7 +357,20 @@
     "routingTesterSubmit": "Routing prüfen",
     "routingTesterRunning": "Prüfe …",
     "routingTesterMatched": "→ Agent „{slug}\" (via {via})",
-    "routingTesterNoMatch": "Kein Match — und kein Fallback-Agent konfiguriert."
+    "routingTesterNoMatch": "Kein Match — und kein Fallback-Agent konfiguriert.",
+    "agentCardSummary": "privacy: {privacy} · status: {status} · runtime: {runtime} · plugins: {plugins} · bindings: {bindings}",
+    "sessionsLabel": "Sessions:",
+    "pluginsAvailable": "Verfügbar",
+    "pluginsAvailableEmpty": "Alle installierten Plugins sind bereits angehängt.",
+    "pluginsEnabled": "Angehängt",
+    "pluginsEnabledEmpty": "Drag-and-drop oder „Attach\" benutzen, um Plugins anzuhängen.",
+    "orphanPluginsHeading": "Veraltet",
+    "attach": "Attach",
+    "detach": "Lösen",
+    "enabledShort": "aktiv",
+    "dragHandle": "Ziehen, um zwischen den Spalten zu bewegen",
+    "dependencyMissingBadge": "Parent fehlt",
+    "dependencyMissingTooltip": "Dieses Plugin hängt von „{parent}\" ab — Parent ist nicht in der gleichen Spalte angehängt."
   },
   "streamToasts": {
     "phaseThinking": "Agent denkt",

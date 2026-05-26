@@ -39,6 +39,10 @@ interface AgentPluginCatalogEntry {
   readonly memory_writes: readonly string[];
   readonly network_outbound: readonly string[];
   readonly setup_fields: readonly PluginSetupField[];
+  /** Parent plugin ids this one inherits secrets/config from. Used by the
+   *  operator dashboard to indent dependants under their parent in the
+   *  plugin multi-select. */
+  readonly depends_on: readonly string[];
 }
 
 /**
@@ -543,6 +547,7 @@ export function createOperatorAgentsRouter(
             memory_writes: summary?.memory_writes ?? [],
             network_outbound: summary?.network_outbound ?? [],
             setup_fields: p.required_secrets ?? [],
+            depends_on: p.depends_on ?? [],
           } satisfies AgentPluginCatalogEntry;
         });
       res.json({ items: entries });

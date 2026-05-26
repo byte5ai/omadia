@@ -357,7 +357,20 @@
     "routingTesterSubmit": "Test routing",
     "routingTesterRunning": "Testing…",
     "routingTesterMatched": "→ Agent \"{slug}\" (via {via})",
-    "routingTesterNoMatch": "No match — and no platform fallback configured."
+    "routingTesterNoMatch": "No match — and no platform fallback configured.",
+    "agentCardSummary": "privacy: {privacy} · status: {status} · runtime: {runtime} · plugins: {plugins} · bindings: {bindings}",
+    "sessionsLabel": "Sessions:",
+    "pluginsAvailable": "Available",
+    "pluginsAvailableEmpty": "All installed plugins are already attached.",
+    "pluginsEnabled": "Attached",
+    "pluginsEnabledEmpty": "Drag-and-drop or click \"Attach\" to add plugins.",
+    "orphanPluginsHeading": "Stale",
+    "attach": "Attach",
+    "detach": "Detach",
+    "enabledShort": "active",
+    "dragHandle": "Drag to move between columns",
+    "dependencyMissingBadge": "Parent missing",
+    "dependencyMissingTooltip": "This plugin depends on \"{parent}\" — parent is not attached in the same column."
   },
   "streamToasts": {
     "phaseThinking": "Agent is thinking",

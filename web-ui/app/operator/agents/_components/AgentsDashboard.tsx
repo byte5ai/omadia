@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 
+import { ChevronDown, ChevronRight } from 'lucide-react';
+
 import {
   createOperatorAgent,
   deleteOperatorAgent,
@@ -20,10 +22,11 @@ import {
   type OperatorAgentDto,
   type OperatorAgentsListDto,
   type PluginCatalogEntryDto,
-  type PluginSetupFieldDto,
   type PrivacyProfile,
   type ResolveChannelResponse,
 } from '../../../_lib/agents';
+
+import { PluginsDnd } from './PluginsDnd';
 
 interface AgentsDashboardProps {
   initial: OperatorAgentsListDto;
@@ -483,34 +486,49 @@ function AgentCard(props: {
 }): React.ReactElement {
   const t = useTranslations('operatorAgents');
   const { agent } = props;
+  // Default-collapsed (per operator request): the page starts compact and
+  // expands per-Agent only when the operator clicks the chevron. Local
+  // state on each card; no global open-all (use the page's collapse-state
+  // muscle memory + key=updated_at to re-render after server writes).
+  const [expanded, setExpanded] = useState(false);
+
+  const enabledPluginCount = agent.plugins.filter((p) => p.enabled).length;
 
   return (
-    <article className="rounded border border-neutral-200 bg-white p-5">
-      <header className="mb-4 flex items-start justify-between gap-4">
-        <div>
-          <h3 className="text-base font-semibold">
-            {agent.name}{' '}
-            <span className="font-mono text-sm text-neutral-500">
-              ({agent.slug})
+    <article className="rounded border border-neutral-200 bg-white">
+      <header className="flex items-start justify-between gap-4 px-5 py-3">
+        <button
+          type="button"
+          className="flex flex-1 items-start gap-2 text-left"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+        >
+          <span className="mt-0.5 text-neutral-500">
+            {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+          </span>
+          <span className="flex-1">
+            <span className="block text-base font-semibold">
+              {agent.name}{' '}
+              <span className="font-mono text-sm text-neutral-500">
+                ({agent.slug})
+              </span>
             </span>
-          </h3>
-          <p className="text-xs text-neutral-500">
-            {t('agentMeta', {
-              id: agent.id,
-              privacy: agent.privacy_profile,
-              status:
-                agent.status === 'enabled'
-                  ? t('statusEnabled')
-                  : t('statusDisabled'),
-              runtime: agent.active
-                ? t('runtimeActive')
-                : t('runtimeInactive'),
-            })}
-          </p>
-          {agent.description && (
-            <p className="mt-1 text-sm text-neutral-700">{agent.description}</p>
-          )}
-        </div>
+            <span className="block text-xs text-neutral-500">
+              {t('agentCardSummary', {
+                privacy: agent.privacy_profile,
+                status:
+                  agent.status === 'enabled'
+                    ? t('statusEnabled')
+                    : t('statusDisabled'),
+                runtime: agent.active
+                  ? t('runtimeActive')
+                  : t('runtimeInactive'),
+                plugins: enabledPluginCount,
+                bindings: agent.bindings.length,
+              })}
+            </span>
+          </span>
+        </button>
         <div className="flex flex-col items-end gap-2">
           <div className="flex gap-2">
             <button
@@ -552,7 +570,17 @@ function AgentCard(props: {
               {t('actionDelete')}
             </button>
           </div>
-          <div className="flex gap-2">
+        </div>
+      </header>
+
+      {expanded && (
+        <div className="border-t border-neutral-200 px-5 py-4">
+          {agent.description && (
+            <p className="mb-4 text-sm text-neutral-700">{agent.description}</p>
+          )}
+
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            <span className="text-xs text-neutral-500">{t('sessionsLabel')}</span>
             <button
               type="button"
               className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-800 hover:bg-amber-100"
@@ -574,409 +602,54 @@ function AgentCard(props: {
               {t('actionKill')}
             </button>
           </div>
-        </div>
-      </header>
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <div>
-          <h4 className="mb-2 text-sm font-medium">{t('memoryScopeHeading')}</h4>
-          {agent.memory_scope.length === 0 ? (
-            <p className="text-xs text-neutral-500">{t('memoryScopeEmpty')}</p>
+          <div className="mb-6">
+            <h4 className="mb-2 text-sm font-medium">
+              {t('memoryScopeHeading')}
+            </h4>
+            {agent.memory_scope.length === 0 ? (
+              <p className="text-xs text-neutral-500">
+                {t('memoryScopeEmpty')}
+              </p>
+            ) : (
+              <ul className="flex flex-wrap gap-1 font-mono text-xs">
+                {agent.memory_scope.map((s) => (
+                  <li
+                    key={s}
+                    className="rounded bg-neutral-100 px-2 py-0.5 text-neutral-700"
+                  >
+                    {s}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          {props.catalog ? (
+            <PluginsDnd
+              key={`plugins:${agent.updated_at}`}
+              agent={agent}
+              catalog={props.catalog}
+              disabled={props.disabled}
+              onReplace={props.onReplacePlugins}
+            />
           ) : (
-            <ul className="flex flex-wrap gap-1 font-mono text-xs">
-              {agent.memory_scope.map((s) => (
-                <li
-                  key={s}
-                  className="rounded bg-neutral-100 px-2 py-0.5 text-neutral-700"
-                >
-                  {s}
-                </li>
-              ))}
-            </ul>
+            <p className="text-xs text-neutral-500">{t('catalogLoading')}</p>
           )}
-        </div>
-        <PluginsEditor
-          key={`plugins:${agent.updated_at}`}
-          agent={agent}
-          catalog={props.catalog}
-          disabled={props.disabled}
-          onReplace={props.onReplacePlugins}
-        />
-      </div>
 
-      <BindingsEditor
-        key={`bindings:${agent.updated_at}`}
-        agent={agent}
-        channelTypes={props.channelTypes}
-        disabled={props.disabled}
-        onReplace={props.onReplaceBindings}
-      />
+          <BindingsEditor
+            key={`bindings:${agent.updated_at}`}
+            agent={agent}
+            channelTypes={props.channelTypes}
+            disabled={props.disabled}
+            onReplace={props.onReplaceBindings}
+          />
+        </div>
+      )}
     </article>
   );
 }
 
-function PluginsEditor(props: {
-  agent: OperatorAgentDto;
-  catalog: PluginCatalogEntryDto[] | null;
-  disabled: boolean;
-  onReplace: (
-    plugins: Array<{
-      id: string;
-      enabled?: boolean;
-      config?: Record<string, unknown>;
-    }>,
-  ) => void;
-}): React.ReactElement {
-  const t = useTranslations('operatorAgents');
-  const initialMap = useMemo(() => {
-    const m = new Map<string, { enabled: boolean; config: Record<string, unknown> }>();
-    for (const p of props.agent.plugins) {
-      m.set(p.id, { enabled: p.enabled, config: p.config });
-    }
-    return m;
-  }, [props.agent.plugins]);
-
-  const [selected, setSelected] = useState<Map<string, { enabled: boolean; config: Record<string, unknown> }>>(
-    initialMap,
-  );
-  const [expanded, setExpanded] = useState<string | null>(null);
-
-  function toggle(id: string): void {
-    setSelected((prev) => {
-      const next = new Map(prev);
-      if (next.has(id)) next.delete(id);
-      else next.set(id, { enabled: true, config: {} });
-      return next;
-    });
-  }
-
-  function setConfigKey(
-    pluginId: string,
-    fieldKey: string,
-    value: string | boolean | number | string[],
-  ): void {
-    setSelected((prev) => {
-      const next = new Map(prev);
-      const cur = next.get(pluginId);
-      if (!cur) return prev;
-      next.set(pluginId, {
-        ...cur,
-        config: { ...cur.config, [fieldKey]: value },
-      });
-      return next;
-    });
-  }
-
-  function submit(): void {
-    const out: Array<{
-      id: string;
-      enabled?: boolean;
-      config?: Record<string, unknown>;
-    }> = [];
-    for (const [id, entry] of selected) {
-      out.push({ id, enabled: entry.enabled, config: entry.config });
-    }
-    props.onReplace(out);
-  }
-
-  const catalog = props.catalog;
-  if (!catalog) {
-    return (
-      <div>
-        <h4 className="mb-2 text-sm font-medium">{t('pluginsHeading')}</h4>
-        <p className="text-xs text-neutral-500">{t('catalogLoading')}</p>
-      </div>
-    );
-  }
-
-  // Always include orphan plugin ids (rows in agent_plugins that no longer
-  // map to a catalog entry — typically because the plugin was uninstalled).
-  // Surfacing them lets the operator un-attach them; hiding them would
-  // silently lose state on save.
-  const orphans = Array.from(selected.keys()).filter(
-    (id) => !catalog.some((c) => c.id === id),
-  );
-
-  return (
-    <div>
-      <h4 className="mb-2 flex items-center justify-between text-sm font-medium">
-        {t('pluginsHeading')}
-        <button
-          type="button"
-          className="rounded border border-neutral-300 bg-white px-2 py-0.5 text-xs hover:bg-neutral-50"
-          disabled={props.disabled}
-          onClick={submit}
-        >
-          {t('save')}
-        </button>
-      </h4>
-      <ul className="space-y-1.5">
-        {catalog.map((entry) => {
-          const attached = selected.has(entry.id);
-          const isExpanded = expanded === entry.id;
-          const hasFields = entry.setup_fields.length > 0;
-          return (
-            <li
-              key={entry.id}
-              className="rounded border border-neutral-200 bg-neutral-50/40"
-            >
-              <label className="flex cursor-pointer items-start gap-2 px-2 py-1.5">
-                <input
-                  type="checkbox"
-                  checked={attached}
-                  disabled={props.disabled}
-                  onChange={() => toggle(entry.id)}
-                  className="mt-0.5"
-                />
-                <div className="flex-1 text-xs">
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="font-medium text-neutral-800">
-                      {entry.name}
-                    </span>
-                    <code className="font-mono text-[10px] text-neutral-500">
-                      {entry.id}
-                    </code>
-                    <KindBadge kind={entry.kind} />
-                    {!entry.multi_instance && (
-                      <span
-                        title={
-                          entry.multi_instance_justification ??
-                          t('multiInstanceFalseBadge')
-                        }
-                        className="rounded bg-amber-100 px-1.5 py-0 text-[10px] uppercase tracking-wide text-amber-800"
-                      >
-                        {t('multiInstanceFalseShort')}
-                      </span>
-                    )}
-                    {entry.privacy_class === 'strict' && (
-                      <span className="rounded bg-violet-100 px-1.5 py-0 text-[10px] uppercase tracking-wide text-violet-800">
-                        {t('privacyStrictBadge')}
-                      </span>
-                    )}
-                    {hasFields && attached && (
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          setExpanded(isExpanded ? null : entry.id);
-                        }}
-                        className="ml-auto rounded border border-neutral-300 bg-white px-1.5 py-0 text-[10px] uppercase hover:bg-neutral-100"
-                      >
-                        {isExpanded ? t('configHide') : t('configShow')}
-                      </button>
-                    )}
-                  </div>
-                  {(entry.memory_reads.length > 0 ||
-                    entry.memory_writes.length > 0) && (
-                    <div className="mt-1 flex flex-wrap gap-1">
-                      {entry.memory_reads.map((s) => (
-                        <span
-                          key={`r-${s}`}
-                          title={t('memoryReadTooltip')}
-                          className="rounded bg-blue-50 px-1.5 py-0 text-[10px] text-blue-800"
-                        >
-                          r:{s}
-                        </span>
-                      ))}
-                      {entry.memory_writes.map((s) => (
-                        <span
-                          key={`w-${s}`}
-                          title={t('memoryWriteTooltip')}
-                          className="rounded bg-emerald-50 px-1.5 py-0 text-[10px] text-emerald-800"
-                        >
-                          w:{s}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  {entry.network_outbound.length > 0 && (
-                    <p className="mt-1 truncate text-[10px] text-neutral-500">
-                      {t('networkLabel')} {entry.network_outbound.join(', ')}
-                    </p>
-                  )}
-                </div>
-              </label>
-              {attached && isExpanded && hasFields && (
-                <PluginConfigForm
-                  fields={entry.setup_fields}
-                  values={selected.get(entry.id)?.config ?? {}}
-                  disabled={props.disabled}
-                  onChange={(key, value) =>
-                    setConfigKey(entry.id, key, value)
-                  }
-                />
-              )}
-            </li>
-          );
-        })}
-        {orphans.map((id) => (
-          <li
-            key={id}
-            className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs"
-          >
-            <label className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={true}
-                disabled={props.disabled}
-                onChange={() => toggle(id)}
-              />
-              <span className="font-mono text-amber-900">{id}</span>
-              <span className="text-[10px] uppercase text-amber-800">
-                {t('orphanPluginBadge')}
-              </span>
-            </label>
-          </li>
-        ))}
-        {catalog.length === 0 && orphans.length === 0 && (
-          <li className="text-xs text-neutral-500">{t('catalogEmpty')}</li>
-        )}
-      </ul>
-    </div>
-  );
-}
-
-function KindBadge({ kind }: { kind: string }): React.ReactElement {
-  const cls = {
-    agent: 'bg-sky-100 text-sky-800',
-    integration: 'bg-emerald-100 text-emerald-800',
-    channel: 'bg-fuchsia-100 text-fuchsia-800',
-    tool: 'bg-neutral-200 text-neutral-700',
-    extension: 'bg-orange-100 text-orange-800',
-  }[kind] ?? 'bg-neutral-200 text-neutral-700';
-  return (
-    <span
-      className={`rounded px-1.5 py-0 text-[10px] uppercase tracking-wide ${cls}`}
-    >
-      {kind}
-    </span>
-  );
-}
-
-function PluginConfigForm(props: {
-  fields: readonly PluginSetupFieldDto[];
-  values: Record<string, unknown>;
-  disabled: boolean;
-  onChange: (
-    key: string,
-    value: string | boolean | number | string[],
-  ) => void;
-}): React.ReactElement {
-  return (
-    <div className="border-t border-neutral-200 bg-white px-3 py-2">
-      <div className="grid gap-2 sm:grid-cols-2">
-        {props.fields.map((f) => (
-          <PluginConfigField
-            key={f.key}
-            field={f}
-            value={props.values[f.key]}
-            disabled={props.disabled}
-            onChange={(v) => props.onChange(f.key, v)}
-          />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function PluginConfigField(props: {
-  field: PluginSetupFieldDto;
-  value: unknown;
-  disabled: boolean;
-  onChange: (value: string | boolean | number | string[]) => void;
-}): React.ReactElement {
-  const { field, value, disabled, onChange } = props;
-  const isSecret = field.type === 'secret' || field.type === 'password';
-  const isHostList = field.type === 'host_list';
-  const isEnum = field.type === 'enum' && (field.enum?.length ?? 0) > 0;
-  const isBool = field.type === 'boolean';
-  const isNumber = field.type === 'number';
-
-  return (
-    <label className="flex flex-col gap-0.5">
-      <span className="text-[10px] uppercase tracking-wide text-neutral-500">
-        {field.label}
-        {field.help && (
-          <span className="ml-1 text-neutral-400">— {field.help}</span>
-        )}
-      </span>
-      {isSecret ? (
-        <input
-          type="password"
-          value={typeof value === 'string' ? value : ''}
-          disabled={disabled}
-          onChange={(e) => onChange(e.target.value)}
-          autoComplete="off"
-          className="rounded border border-neutral-300 px-2 py-1 text-xs"
-          placeholder={typeof field.default === 'string' ? field.default : ''}
-        />
-      ) : isEnum ? (
-        <select
-          value={typeof value === 'string' ? value : ''}
-          disabled={disabled}
-          onChange={(e) => onChange(e.target.value)}
-          className="rounded border border-neutral-300 px-2 py-1 text-xs"
-        >
-          <option value="">—</option>
-          {field.enum?.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
-      ) : isBool ? (
-        <input
-          type="checkbox"
-          checked={value === true || value === 'true'}
-          disabled={disabled}
-          onChange={(e) => onChange(e.target.checked)}
-          className="mt-1"
-        />
-      ) : isNumber ? (
-        <input
-          type="number"
-          value={typeof value === 'number' ? value : value === undefined ? '' : Number(value)}
-          disabled={disabled}
-          onChange={(e) =>
-            onChange(e.target.value === '' ? 0 : Number(e.target.value))
-          }
-          className="rounded border border-neutral-300 px-2 py-1 text-xs"
-        />
-      ) : isHostList ? (
-        <textarea
-          value={
-            Array.isArray(value)
-              ? value.join('\n')
-              : typeof value === 'string'
-                ? value
-                : ''
-          }
-          disabled={disabled}
-          onChange={(e) =>
-            onChange(
-              e.target.value
-                .split(/\n/)
-                .map((s) => s.trim())
-                .filter((s) => s.length > 0),
-            )
-          }
-          rows={3}
-          placeholder="hostname.example.com"
-          className="rounded border border-neutral-300 px-2 py-1 font-mono text-xs"
-        />
-      ) : (
-        <input
-          type={field.type === 'url' ? 'url' : 'text'}
-          value={typeof value === 'string' ? value : ''}
-          disabled={disabled}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={typeof field.default === 'string' ? field.default : ''}
-          className="rounded border border-neutral-300 px-2 py-1 text-xs"
-        />
-      )}
-    </label>
-  );
-}
 
 function BindingsEditor(props: {
   agent: OperatorAgentDto;
