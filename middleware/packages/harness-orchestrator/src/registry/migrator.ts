@@ -5,17 +5,24 @@ import { fileURLToPath } from 'node:url';
 import type { Pool } from 'pg';
 
 /**
- * Resolve the top-level `middleware/migrations/` directory from this file's
- * location. Built source lives under
- * `middleware/packages/harness-orchestrator/dist/registry/migrator.js`, so
- * five `..` steps land at `middleware/`. The `_TEST_OVERRIDE` env var lets
- * tests point at a fixture directory without symlinking.
+ * Resolve the `migrations/` directory from this file's location. The path
+ * converges on the right location in both layouts via four `..` steps:
+ *
+ *   - Local dev   `<repo>/middleware/packages/harness-orchestrator/src/registry/migrator.ts`
+ *                  → `<repo>/middleware/migrations/`
+ *   - Docker      `/app/packages/harness-orchestrator/dist/registry/migrator.js`
+ *                  → `/app/migrations/`
+ *
+ * The Docker layout has no `middleware/` segment (the runtime image makes
+ * the middleware dir the workdir root), so the Dockerfile must
+ * `COPY middleware/migrations ./migrations`. The `MULTI_ORCH_MIGRATIONS_DIR`
+ * env var overrides the default for tests that want a fixture dir.
  */
 function defaultMigrationsDir(): string {
   const override = process.env['MULTI_ORCH_MIGRATIONS_DIR'];
   if (override) return resolve(override);
   const here = dirname(fileURLToPath(import.meta.url));
-  return resolve(here, '..', '..', '..', '..', '..', 'migrations');
+  return resolve(here, '..', '..', '..', '..', 'migrations');
 }
 
 /**

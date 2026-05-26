@@ -89,6 +89,12 @@ COPY middleware/src/auth/migrations ./dist/auth/migrations
 COPY middleware/src/profileStorage/migrations ./dist/profileStorage/migrations
 # Profile-snapshots migrations — same pattern (palaia-phase profile snapshots).
 COPY middleware/src/profileSnapshots/migrations ./dist/profileSnapshots/migrations
+# Multi-orchestrator runtime migrations — runMultiOrchestratorMigrations
+# (in @omadia/orchestrator) scans this dir. Top-level location matches the
+# spec convention (specs/001-multi-orchestrator-runtime/data-model.md); the
+# runner's defaultMigrationsDir resolves ../../../../migrations relative to
+# the compiled migrator.js, which lands here in the Docker layout.
+COPY middleware/migrations ./migrations
 # Graph services migrations — same pattern (KG schema bootstrap helpers).
 # Graph migrations now live inside the @omadia/knowledge-graph-neon plugin
 # package (consolidated into a single ordered series). The plugin's
