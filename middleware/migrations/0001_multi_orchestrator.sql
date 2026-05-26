@@ -1,7 +1,7 @@
 -- 0001_multi_orchestrator.sql
 --
 -- Schema for the multi-orchestrator runtime (US4). Establishes the four
--- config tables (agents, agent_plugins, channel_bindings, platform_settings)
+-- config tables (agents, agent_plugins, channel_bindings, multi_orchestrator_settings)
 -- plus the notify_agents_changed trigger that drives the LISTEN/NOTIFY
 -- hot-reload bus introduced in US5.
 --
@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS channel_bindings (
 CREATE INDEX IF NOT EXISTS channel_bindings_agent_idx
   ON channel_bindings(agent_id);
 
-CREATE TABLE IF NOT EXISTS platform_settings (
+CREATE TABLE IF NOT EXISTS multi_orchestrator_settings (
   id                BOOLEAN PRIMARY KEY DEFAULT true CHECK (id),
   fallback_agent_id UUID REFERENCES agents(id) ON DELETE SET NULL,
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -49,17 +49,17 @@ CREATE TABLE IF NOT EXISTS platform_settings (
 
 -- Single-row guard: the row is created lazily by the registry, but seed
 -- one here so first-boot reads never see an empty result.
-INSERT INTO platform_settings (id) VALUES (true)
+INSERT INTO multi_orchestrator_settings (id) VALUES (true)
 ON CONFLICT (id) DO NOTHING;
 
 -- Change-notification trigger. Payload is the agent_id as text (or the
--- literal 'platform' for the single-row platform_settings table) so a
+-- literal 'platform' for the single-row multi_orchestrator_settings table) so a
 -- registry on every Fly machine can compute a minimal diff in US5.
 CREATE OR REPLACE FUNCTION notify_agents_changed() RETURNS trigger AS $$
 DECLARE
   payload TEXT;
 BEGIN
-  IF TG_TABLE_NAME = 'platform_settings' THEN
+  IF TG_TABLE_NAME = 'multi_orchestrator_settings' THEN
     payload := 'platform';
   ELSIF TG_OP = 'DELETE' THEN
     payload := COALESCE(OLD.agent_id::text, OLD.id::text);
@@ -86,7 +86,7 @@ CREATE TRIGGER channel_bindings_notify
   AFTER INSERT OR UPDATE OR DELETE ON channel_bindings
   FOR EACH ROW EXECUTE FUNCTION notify_agents_changed();
 
-DROP TRIGGER IF EXISTS platform_settings_notify ON platform_settings;
-CREATE TRIGGER platform_settings_notify
-  AFTER INSERT OR UPDATE OR DELETE ON platform_settings
+DROP TRIGGER IF EXISTS multi_orchestrator_settings_notify ON multi_orchestrator_settings;
+CREATE TRIGGER multi_orchestrator_settings_notify
+  AFTER INSERT OR UPDATE OR DELETE ON multi_orchestrator_settings
   FOR EACH ROW EXECUTE FUNCTION notify_agents_changed();

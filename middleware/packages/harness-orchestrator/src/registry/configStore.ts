@@ -371,22 +371,22 @@ export class ConfigStore {
     );
   }
 
-  // ── platform_settings ─────────────────────────────────────────────────
+  // ── multi_orchestrator_settings ─────────────────────────────────────────────────
   async getPlatformSettings(): Promise<PlatformSettingsRow> {
     const { rows } = await this.pool.query<PlatformSettingsDbRow>(
-      'SELECT fallback_agent_id, updated_at FROM platform_settings WHERE id = true',
+      'SELECT fallback_agent_id, updated_at FROM multi_orchestrator_settings WHERE id = true',
     );
     if (rows[0]) return mapPlatformSettings(rows[0]);
     // Migration seeds a row, but defensively upsert in case it was wiped.
     await this.pool.query(
-      'INSERT INTO platform_settings (id) VALUES (true) ON CONFLICT (id) DO NOTHING',
+      'INSERT INTO multi_orchestrator_settings (id) VALUES (true) ON CONFLICT (id) DO NOTHING',
     );
     return { fallbackAgentId: null, updatedAt: new Date() };
   }
 
   async setFallbackAgentId(agentId: string | null): Promise<PlatformSettingsRow> {
     const { rows } = await this.pool.query<PlatformSettingsDbRow>(
-      `INSERT INTO platform_settings (id, fallback_agent_id, updated_at)
+      `INSERT INTO multi_orchestrator_settings (id, fallback_agent_id, updated_at)
        VALUES (true, $1, now())
        ON CONFLICT (id) DO UPDATE SET
          fallback_agent_id = EXCLUDED.fallback_agent_id,
