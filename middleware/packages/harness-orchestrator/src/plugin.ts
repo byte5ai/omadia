@@ -34,10 +34,21 @@ import {
 } from '@omadia/plugin-api';
 import type { VerifierBundle } from '@omadia/verifier';
 
-import { buildOrchestratorForAgent } from './buildOrchestrator.js';
+import type { Pool } from 'pg';
+
+import {
+  buildOrchestratorForAgent,
+  type OrchestratorDeps,
+} from './buildOrchestrator.js';
 import type { ChatSessionStore } from './chatSessionStore.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import type { Orchestrator } from './orchestrator.js';
+import { ConfigStore } from './registry/configStore.js';
+import {
+  OrchestratorRegistry,
+  type PluginCapabilityLookup,
+} from './registry/index.js';
+import { runMultiOrchestratorMigrations } from './registry/migrator.js';
 import type { SessionLogger } from './sessionLogger.js';
 import {
   EDIT_PROCESS_TOOL_NAME,
@@ -107,6 +118,9 @@ import {
 
 const CHAT_AGENT_SERVICE = 'chatAgent';
 const NATIVE_TOOL_REGISTRY_SERVICE = 'nativeToolRegistry';
+const ORCHESTRATOR_REGISTRY_SERVICE = 'orchestratorRegistry';
+const GRAPH_POOL_SERVICE = 'graphPool';
+const PLUGIN_CAPABILITIES_SERVICE = 'pluginCapabilities';
 
 const DEFAULT_MODEL = 'claude-sonnet-4-5-20251022';
 const DEFAULT_MAX_TOKENS = 4096;
@@ -349,8 +363,26 @@ export async function activate(
 
   // US3 — per-Agent Orchestrator construction. The orchestrator plugin
   // builds the single "default" Agent; the multi-orchestrator registry
-  // (US4) will call the same factory once per configured Agent. The
-  // process-shared services resolved above are passed in via `deps`.
+  // (US4) calls the same factory once per configured Agent against the
+  // same `deps`.
+  const orchestratorDeps: OrchestratorDeps = {
+    client,
+    knowledgeGraph,
+    memoryStore,
+    entityRefBus,
+    nativeToolRegistry,
+    nudgeRegistry,
+    responseGuard: responseGuardGetter,
+    privacyGuard: privacyGuardGetter,
+    ...(contextRetriever ? { contextRetriever } : {}),
+    ...(sessionBriefing ? { sessionBriefing } : {}),
+    ...(factExtractor ? { factExtractor } : {}),
+    ...(embeddingClient ? { embeddingClient } : {}),
+    ...(microsoft365 ? { microsoft365 } : {}),
+    ...(verifierBundle ? { verifierBundle } : {}),
+    ...(nudgeStateStore ? { nudgeStateStore } : {}),
+    ...(processMemory ? { processMemory } : {}),
+  };
   const built = buildOrchestratorForAgent(
     {
       agentId: 'default',
@@ -358,26 +390,54 @@ export async function activate(
       maxTokens,
       maxToolIterations: maxIterations,
     },
-    {
-      client,
-      knowledgeGraph,
-      memoryStore,
-      entityRefBus,
-      nativeToolRegistry,
-      nudgeRegistry,
-      responseGuard: responseGuardGetter,
-      privacyGuard: privacyGuardGetter,
-      ...(contextRetriever ? { contextRetriever } : {}),
-      ...(sessionBriefing ? { sessionBriefing } : {}),
-      ...(factExtractor ? { factExtractor } : {}),
-      ...(embeddingClient ? { embeddingClient } : {}),
-      ...(microsoft365 ? { microsoft365 } : {}),
-      ...(verifierBundle ? { verifierBundle } : {}),
-      ...(nudgeStateStore ? { nudgeStateStore } : {}),
-      ...(processMemory ? { processMemory } : {}),
-    },
+    orchestratorDeps,
   );
   ctx.services.provide(CHAT_AGENT_SERVICE, built.bundle);
+
+  // US4 — multi-orchestrator registry. Optional: only when a Postgres pool
+  // is available (test/in-memory boots skip it). The registry runs its own
+  // migration, loads the config snapshot, and publishes itself as
+  // `orchestratorRegistry@1` for US7 (channel routing) and US9 (operator UI).
+  // The legacy `chatAgent@1` keeps serving the default boot path — the
+  // registry sits alongside it.
+  const graphPool = ctx.services.get<Pool>(GRAPH_POOL_SERVICE);
+  let registry: OrchestratorRegistry | undefined;
+  if (graphPool) {
+    try {
+      await runMultiOrchestratorMigrations(graphPool, (m) =>
+        ctx.log(`[harness-orchestrator] ${m}`),
+      );
+      const pluginLookup = ctx.services.get<PluginCapabilityLookup>(
+        PLUGIN_CAPABILITIES_SERVICE,
+      );
+      const store = new ConfigStore(graphPool);
+      registry = new OrchestratorRegistry(store, orchestratorDeps, {
+        defaultRuntimeConfig: {
+          model,
+          maxTokens,
+          maxToolIterations: maxIterations,
+        },
+        ...(pluginLookup ? { pluginLookup } : {}),
+        log: (msg, fields) =>
+          ctx.log(
+            `[harness-orchestrator] ${msg}${fields ? ' ' + JSON.stringify(fields) : ''}`,
+          ),
+      });
+      await registry.start();
+      ctx.services.provide(ORCHESTRATOR_REGISTRY_SERVICE, registry);
+      ctx.log(
+        `[harness-orchestrator] orchestratorRegistry@1 published (agents=${String(registry.size())})`,
+      );
+    } catch (err) {
+      ctx.log(
+        `[harness-orchestrator] orchestratorRegistry NOT published — ${(err as Error).message}`,
+      );
+    }
+  } else {
+    ctx.log(
+      '[harness-orchestrator] orchestratorRegistry SKIPPED — no graphPool (set DATABASE_URL to enable multi-orchestrator runtime)',
+    );
+  }
 
   ctx.log(
     `[harness-orchestrator] chatAgent@1 published (model=${model}, maxTokens=${String(maxTokens)}, maxIter=${String(maxIterations)}, verifier=${verifierBundle ? 'on' : 'off'}, calendar=${microsoft365 ? 'on' : 'off'}, contextRetriever=${contextRetriever ? 'on' : 'off'}, factExtractor=${factExtractor ? 'on' : 'off'}, embeddingClient=${embeddingClient ? 'on' : 'off'}, responseGuard=late-bound)`,
