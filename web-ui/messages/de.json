@@ -246,6 +246,9 @@
     "phaseError": "Fehler",
     "phaseAborted": "Abgebrochen",
     "elapsedSec": "{sec}s",
+    "tokensInTitle": "{n} Input-Tokens (kumuliert über Iterationen)",
+    "tokensOutTitle": "{n} Output-Tokens (kumuliert über Iterationen)",
+    "cacheHitTitle": "{n} Cache-Read-Tokens",
     "dismissAriaLabel": "Stream abbrechen",
     "dismissTitle": "Abbrechen"
   }

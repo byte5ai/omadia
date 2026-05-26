@@ -246,6 +246,9 @@
     "phaseError": "Error",
     "phaseAborted": "Aborted",
     "elapsedSec": "{sec}s",
+    "tokensInTitle": "{n} input tokens (cumulative across iterations)",
+    "tokensOutTitle": "{n} output tokens (cumulative across iterations)",
+    "cacheHitTitle": "{n} cache-read tokens",
     "dismissAriaLabel": "Cancel stream",
     "dismissTitle": "Cancel"
   }

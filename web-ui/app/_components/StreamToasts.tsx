@@ -64,7 +64,7 @@ export function StreamToasts(): React.ReactElement {
 
   return (
     <div
-      className="pointer-events-none fixed right-4 bottom-4 z-40 flex w-80 flex-col gap-2"
+      className="pointer-events-none fixed right-4 bottom-4 z-40 flex w-96 flex-col gap-2"
       aria-live="polite"
     >
       <AnimatePresence initial={false}>
@@ -169,12 +169,36 @@ function StreamToast({
             </button>
           </div>
           {record.previewTail && (
-            <div className="mt-1 line-clamp-2 text-[11px] text-neutral-600 dark:text-neutral-400">
+            <div className="mt-1 line-clamp-3 text-[11px] leading-snug text-neutral-600 dark:text-neutral-400">
               {record.previewTail}
             </div>
           )}
           <div className="mt-1 flex items-center gap-2 text-[10px] text-neutral-500 dark:text-neutral-500">
             <span>{t('elapsedSec', { sec: elapsedSec })}</span>
+            {typeof record.tokensIn === 'number' && record.tokensIn > 0 ? (
+              <span
+                className="font-mono"
+                title={t('tokensInTitle', { n: record.tokensIn })}
+              >
+                · ↓ {formatTokenCount(record.tokensIn)}
+              </span>
+            ) : null}
+            {typeof record.tokensOut === 'number' && record.tokensOut > 0 ? (
+              <span
+                className="font-mono"
+                title={t('tokensOutTitle', { n: record.tokensOut })}
+              >
+                ↑ {formatTokenCount(record.tokensOut)}
+              </span>
+            ) : null}
+            {typeof record.cacheTokens === 'number' && record.cacheTokens > 0 ? (
+              <span
+                className="font-mono text-emerald-600 dark:text-emerald-400"
+                title={t('cacheHitTitle', { n: record.cacheTokens })}
+              >
+                · 🟢 {formatTokenCount(record.cacheTokens)}
+              </span>
+            ) : null}
             {record.error ? (
               <span className="truncate text-red-600 dark:text-red-400">
                 · {record.error}
@@ -185,6 +209,14 @@ function StreamToast({
       </div>
     </div>
   );
+}
+
+/** "1.2k" / "340" / "1.45M" — keeps the toast row compact. */
+function formatTokenCount(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 10000) return (n / 1000).toFixed(2).replace(/\.?0+$/, '') + 'k';
+  if (n < 1000000) return Math.round(n / 1000) + 'k';
+  return (n / 1000000).toFixed(2).replace(/\.?0+$/, '') + 'M';
 }
 
 /** Re-renders the caller every second when `active` is true. Returns the

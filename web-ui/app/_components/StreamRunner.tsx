@@ -78,10 +78,41 @@ async function runOneTurn(claim: ClaimedRequest, depsRef: DepsRef): Promise<void
   const { sessionId, pendingMessageId, message } = request;
   const { store } = depsRef.current;
 
+  // Per-turn accumulators. Kept local to the runner so the store stays
+  // thin — it just receives the resulting patches. The content buffer
+  // powers a rolling preview tail that survives multiple `text_delta`
+  // chunks (otherwise the toast would only ever show the last delta).
+  let contentBuffer = '';
+  let tokensIn = 0;
+  let tokensOut = 0;
+  let cacheTokens = 0;
+
   const applyEvent = (event: ChatStreamEvent): void => {
     const { sessions: liveSessions } = depsRef.current;
     applyStreamEvent(liveSessions, sessionId, pendingMessageId, event);
-    const phasePatch = derivePhasePatch(event);
+
+    // Accumulate per-turn signals BEFORE deriving the patch so the
+    // patch has fresh numbers.
+    if (event.type === 'text_delta') {
+      contentBuffer += event.text;
+    } else if (event.type === 'iteration_usage') {
+      tokensIn += event.inputTokens;
+      tokensOut += event.outputTokens;
+      cacheTokens += event.cacheReadInputTokens;
+    } else if (event.type === 'done') {
+      // The `done` event carries the authoritative answer; the live
+      // text_delta buffer can legitimately be shorter than this (e.g.
+      // Privacy Shield v4 server-side materialization). Mirror it so
+      // toasts that linger after `done` show the real final text.
+      contentBuffer = event.answer;
+    }
+
+    const phasePatch = derivePhasePatch(event, {
+      contentBuffer,
+      tokensIn,
+      tokensOut,
+      cacheTokens,
+    });
     if (phasePatch) store.patch(sessionId, phasePatch);
   };
 
@@ -186,18 +217,47 @@ function finalizePending(
   });
 }
 
-function derivePhasePatch(event: ChatStreamEvent): {
+interface AccumulatorState {
+  contentBuffer: string;
+  tokensIn: number;
+  tokensOut: number;
+  cacheTokens: number;
+}
+
+function derivePhasePatch(
+  event: ChatStreamEvent,
+  acc: AccumulatorState,
+): {
   phase?: StreamPhase;
   previewTail?: string;
   toolName?: string;
+  tokensIn?: number;
+  tokensOut?: number;
+  cacheTokens?: number;
 } | null {
   switch (event.type) {
     case 'text_delta':
-      return { phase: 'streaming', previewTail: tailOf(event.text) };
+      return {
+        phase: 'streaming',
+        previewTail: tailOf(acc.contentBuffer),
+      };
     case 'tool_use':
       return { phase: 'tool_running', toolName: event.name };
     case 'tool_result':
       return { phase: 'thinking', toolName: undefined };
+    case 'iteration_usage':
+      return {
+        tokensIn: acc.tokensIn,
+        tokensOut: acc.tokensOut,
+        cacheTokens: acc.cacheTokens,
+      };
+    case 'done':
+      return {
+        previewTail: tailOf(acc.contentBuffer),
+        tokensIn: acc.tokensIn,
+        tokensOut: acc.tokensOut,
+        cacheTokens: acc.cacheTokens,
+      };
     case 'heartbeat':
       if (event.phase) return { phase: mapHeartbeatPhase(event.phase) };
       return null;
@@ -223,7 +283,18 @@ function mapHeartbeatPhase(
   }
 }
 
+/** Last ~160 chars of normalized text, sliced at a word boundary so the
+ *  toast never opens mid-word (otherwise we'd routinely see "ach den…"
+ *  when the buffer was cut from "nach den…"). Prefixes an ellipsis when
+ *  the original was actually trimmed. */
 function tailOf(text: string): string {
-  const single = text.replace(/\s+/g, ' ');
-  return single.length > 80 ? single.slice(-80) : single;
+  const single = text.replace(/\s+/g, ' ').trim();
+  const MAX = 160;
+  if (single.length <= MAX) return single;
+  const sliced = single.slice(-MAX);
+  // Drop everything up to (and including) the first space so the tail
+  // starts with a whole word.
+  const firstSpace = sliced.indexOf(' ');
+  const cleaned = firstSpace >= 0 ? sliced.slice(firstSpace + 1) : sliced;
+  return `…${cleaned}`;
 }

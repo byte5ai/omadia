@@ -45,6 +45,13 @@ export interface StreamRecord {
   previewTail: string;
   toolName?: string;
   error?: string;
+  /** Cumulative input tokens across all iterations of this turn
+   *  (anthropic.input_tokens sum). Updated on every `iteration_usage`. */
+  tokensIn?: number;
+  /** Cumulative output tokens across iterations. */
+  tokensOut?: number;
+  /** Cumulative cache-read tokens — shown as a 🟢 chip when > 0. */
+  cacheTokens?: number;
   /** Wall-clock at which this terminal record may be GC'd. */
   expiresAt?: number;
 }
