@@ -306,6 +306,78 @@ describe('codegen.generate', () => {
     assert.ok(!text.includes('{{DEPENDS_ON_YAML}}'));
   });
 
+  it('propagates spec.setup_fields[].label/placeholder/help to manifest.yaml', async () => {
+    // When the Builder LLM provides UI-hint fields, codegen must honour them
+    // rather than fall back to the auto-derived label / description-as-help.
+    const { slots } = loadFixture();
+    const spec = parseAgentSpec({
+      id: 'de.byte5.agent.github',
+      name: 'GitHub',
+      description: 'fixture',
+      category: 'other',
+      depends_on: [],
+      tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
+      skill: { role: 'x' },
+      playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
+      network: { outbound: ['api.github.com'] },
+      setup_fields: [
+        {
+          key: 'api_token',
+          type: 'secret',
+          required: true,
+          label: 'GitHub PAT',
+          placeholder: 'ghp_…',
+          help: 'Personal Access Token with repo:read scope',
+          // description is the legacy alias for help — when help is set it
+          // wins, so the manifest must carry the help value, not this one.
+          description: 'LEGACY-FALLBACK',
+        },
+      ],
+    });
+    const files = await generate({ spec, slots });
+    const manifest = files.get('manifest.yaml');
+    assert.ok(manifest);
+    const doc = yaml.parse(manifest.toString('utf-8')) as {
+      setup?: { fields?: Array<Record<string, unknown>> };
+    };
+    const field = doc.setup?.fields?.[0];
+    assert.ok(field, 'expected one setup field in manifest');
+    assert.equal(field['label'], 'GitHub PAT');
+    assert.equal(field['placeholder'], 'ghp_…');
+    assert.equal(field['help'], 'Personal Access Token with repo:read scope');
+  });
+
+  it('derives manifest setup_field.label from the key when spec.label is absent', async () => {
+    // Backwards-compat: existing drafts that only set `key`/`type` must
+    // still get a humanized label without changes from the agent.
+    const { slots } = loadFixture();
+    const spec = parseAgentSpec({
+      id: 'de.byte5.agent.github',
+      name: 'GitHub',
+      description: 'fixture',
+      category: 'other',
+      depends_on: [],
+      tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
+      skill: { role: 'x' },
+      playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
+      network: { outbound: ['api.github.com'] },
+      setup_fields: [
+        { key: 'api_token', type: 'secret', description: 'help-via-description' },
+      ],
+    });
+    const files = await generate({ spec, slots });
+    const manifest = files.get('manifest.yaml');
+    assert.ok(manifest);
+    const doc = yaml.parse(manifest.toString('utf-8')) as {
+      setup?: { fields?: Array<Record<string, unknown>> };
+    };
+    const field = doc.setup?.fields?.[0];
+    assert.ok(field);
+    assert.equal(field['label'], 'Api Token');
+    assert.equal(field['help'], 'help-via-description');
+    assert.equal(field['placeholder'], undefined);
+  });
+
   it('emits top-level admin_ui_path in manifest.yaml when spec sets it (S+7.7)', async () => {
     // Optional Operator-Admin-UI: when the spec carries `admin_ui_path`,
     // codegen must inject it as a top-level YAML field so manifestLoader

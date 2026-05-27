@@ -6,6 +6,7 @@ import {
   validateSpecForCodegen,
   registerAgentTemplate,
   getKnownAgentTemplates,
+  getAllowedKeysAtPath,
 } from '../../src/plugins/builder/agentSpec.js';
 
 const validBase = {
@@ -66,6 +67,31 @@ describe('agentSpec', () => {
         setup_fields: [{ key: 'api_key', type: 'secret', required: true }],
       });
       assert.equal(spec.setup_fields[0]?.type, 'secret');
+    });
+
+    it('accepts optional label/placeholder/help on setup_fields', () => {
+      // The Builder LLM reaches for label/placeholder/help by reflex —
+      // they are universal form-field conventions. Schema accepts them as
+      // optional UI hints so the agent does not loop on `unrecognized_keys`.
+      const spec = parseAgentSpec({
+        ...validBase,
+        setup_fields: [
+          {
+            key: 'api_token',
+            type: 'secret',
+            required: true,
+            label: 'API Token',
+            placeholder: 'ghp_…',
+            help: 'GitHub Personal Access Token with repo:read scope',
+          },
+        ],
+      });
+      assert.equal(spec.setup_fields[0]?.label, 'API Token');
+      assert.equal(spec.setup_fields[0]?.placeholder, 'ghp_…');
+      assert.equal(
+        spec.setup_fields[0]?.help,
+        'GitHub Personal Access Token with repo:read scope',
+      );
     });
 
     it('accepts #91 network.web_scanner + host_list setup field', () => {
@@ -442,6 +468,46 @@ describe('agentSpec', () => {
 
     it('rejects an empty template id at register-time', () => {
       assert.throws(() => registerAgentTemplate(''));
+    });
+  });
+
+  describe('getAllowedKeysAtPath', () => {
+    it('returns the SetupFieldSchema keys for /setup_fields/<i>', () => {
+      const keys = getAllowedKeysAtPath(['setup_fields', 0]);
+      assert.ok(keys, 'expected allowed-keys list');
+      // Must contain the LLM-friendly hints AND the canonical fields so
+      // patchSpec error messages teach the agent what to use.
+      for (const expected of [
+        'key',
+        'type',
+        'required',
+        'description',
+        'default',
+        'enum_values',
+        'label',
+        'placeholder',
+        'help',
+      ]) {
+        assert.ok(
+          keys.includes(expected),
+          `expected '${expected}' in allowed keys; got: ${keys.join(', ')}`,
+        );
+      }
+    });
+
+    it('returns top-level AgentSpec keys for an empty path', () => {
+      const keys = getAllowedKeysAtPath([]);
+      assert.ok(keys);
+      assert.ok(keys.includes('id'));
+      assert.ok(keys.includes('setup_fields'));
+      assert.ok(keys.includes('tools'));
+    });
+
+    it('returns null when the path does not resolve to an object', () => {
+      // /name is a string, not an object — no shape to list.
+      assert.equal(getAllowedKeysAtPath(['name']), null);
+      // /tools is an array; without an index we land on the array itself.
+      assert.equal(getAllowedKeysAtPath(['tools']), null);
     });
   });
 });

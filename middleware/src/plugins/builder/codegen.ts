@@ -533,23 +533,25 @@ function reproduceManifestCapabilities(
 /**
  * Maps an AgentSpec.setup_fields[] entry to the shape expected by the
  * platform manifest schema (`docs/harness-platform/manifest-schema.v1.yaml`):
- *   spec.description       → manifest.help
+ *   spec.label              → manifest.label (else: humanized spec.key)
+ *   spec.help|description   → manifest.help  (spec.help wins when both set)
+ *   spec.placeholder        → manifest.placeholder (passthrough)
  *   spec.enum_values        → manifest.enum: [{ value, label }]
- *   manifest.label          → derived from spec.key when not set in spec
- *                             (Title-Case, underscores → spaces)
  * Required-flag defaults to true (matches boilerplate convention).
  */
 function mapSetupFieldSpecToManifest(
   field: AgentSpec['setup_fields'][number],
 ): Record<string, unknown> {
-  const label = humanizeKey(field.key);
+  const label = field.label ?? humanizeKey(field.key);
   const out: Record<string, unknown> = {
     key: field.key,
     type: field.type,
     label,
     required: field.required ?? true,
   };
-  if (field.description) out['help'] = field.description;
+  const help = field.help ?? field.description;
+  if (help) out['help'] = help;
+  if (field.placeholder) out['placeholder'] = field.placeholder;
   if (field.default !== undefined) out['default'] = field.default;
   if (field.enum_values && field.enum_values.length > 0) {
     out['enum'] = field.enum_values.map((value) => ({ value, label: value }));
