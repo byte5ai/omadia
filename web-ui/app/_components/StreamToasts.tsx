@@ -1,7 +1,6 @@
 'use client';
 
-import { useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Loader2, X } from 'lucide-react';
@@ -28,23 +27,14 @@ export function StreamToasts(): React.ReactElement {
   const router = useRouter();
   const store = useStreamStore();
   const { activeId, setActive } = useChatSessionsCtx();
-  const [pathname, setPathname] = useState<string>('');
-
-  // Pull pathname client-side without forcing this component to suspend on
-  // an RSC fetch — we just need to know "is the user looking at the chat
-  // page right now?".
-  useEffect(() => {
-    const update = (): void => {
-      setPathname(window.location.pathname);
-    };
-    update();
-    window.addEventListener('popstate', update);
-    return () => {
-      window.removeEventListener('popstate', update);
-    };
-  }, []);
-
-  const onChatRoute = pathname === '' || pathname === '/';
+  // Next.js App Router does client-side navigation (router.push / Link)
+  // without firing `popstate`, so the previous `window.location.pathname
+  // + popstate` pattern locked this component to whatever route it first
+  // rendered on. `usePathname` re-renders on every client-side route
+  // change, so toasts correctly appear once the user leaves the chat
+  // page mid-stream and disappear when they return.
+  const pathname = usePathname();
+  const onChatRoute = !pathname || pathname === '/';
   const visibleRecords: StreamRecord[] = [];
   for (const rec of store.records.values()) {
     // Hide records that the user is currently viewing in-page: the user is
