@@ -290,7 +290,7 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
         {t('pluginsHeading')}
         <button
           type="button"
-          className="rounded border border-neutral-300 bg-white px-2 py-0.5 text-xs hover:bg-neutral-50"
+          className="rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-0.5 text-xs hover:bg-neutral-50 dark:hover:bg-neutral-700"
           disabled={props.disabled}
           onClick={submit}
         >
@@ -370,7 +370,7 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
                   </p>
                   <button
                     type="button"
-                    className="rounded border border-amber-300 bg-white px-1.5 py-0 text-[10px] text-amber-900 hover:bg-amber-100"
+                    className="rounded border border-amber-300 bg-white dark:bg-neutral-900 px-1.5 py-0 text-[10px] text-amber-900 hover:bg-amber-100"
                     disabled={props.disabled}
                     onClick={clearAllOrphans}
                     title={t('orphanDetachAllTooltip')}
@@ -401,7 +401,7 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
                     </span>
                     <button
                       type="button"
-                      className="ml-auto rounded border border-amber-300 bg-white px-1.5 py-0 text-[10px] hover:bg-amber-100"
+                      className="ml-auto rounded border border-amber-300 bg-white dark:bg-neutral-900 px-1.5 py-0 text-[10px] hover:bg-amber-100"
                       disabled={props.disabled}
                       onClick={() => detach(id)}
                     >
@@ -415,9 +415,9 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
         </div>
         <DragOverlay>
           {activeEntry ? (
-            <div className="rounded border border-neutral-300 bg-white px-2 py-1.5 text-xs shadow-lg">
+            <div className="rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-1.5 text-xs shadow-lg">
               <span className="font-medium">{activeEntry.name}</span>
-              <code className="ml-1 font-mono text-[10px] text-neutral-500">
+              <code className="ml-1 font-mono text-[10px] text-neutral-500 dark:text-neutral-400">
                 {activeEntry.id}
               </code>
             </div>
@@ -502,17 +502,17 @@ function Column(props: {
     <div
       ref={setNodeRef}
       className={[
-        'rounded border bg-neutral-50/40 p-2 transition-colors',
+        'rounded border bg-neutral-50/40 dark:bg-neutral-900/40 p-2 transition-colors',
         isOver
           ? 'border-sky-400 bg-sky-50/60'
-          : 'border-neutral-200',
+          : 'border-neutral-200 dark:border-neutral-800',
       ].join(' ')}
     >
       <div className="mb-2 flex items-center justify-between px-1">
         <span className="text-xs font-medium uppercase tracking-wide text-neutral-600">
           {props.title}
         </span>
-        <span className="text-[10px] text-neutral-500">{props.count}</span>
+        <span className="text-[10px] text-neutral-500 dark:text-neutral-400">{props.count}</span>
       </div>
       <SortableContext
         items={itemIds}
@@ -520,7 +520,7 @@ function Column(props: {
       >
         <div className="space-y-1.5">
           {props.count === 0 ? (
-            <p className="px-1 py-3 text-center text-xs text-neutral-400">
+            <p className="px-1 py-3 text-center text-xs text-neutral-400 dark:text-neutral-500 dark:text-neutral-400">
               {props.emptyLabel}
             </p>
           ) : (
@@ -575,13 +575,13 @@ function DraggablePluginTile(props: {
 
   return (
     <div ref={setNodeRef} style={style} className="select-none">
-      <div className="rounded border border-neutral-200 bg-white">
+      <div className="rounded border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900">
         <div className="flex items-start gap-1.5 px-2 py-1.5">
           <button
             type="button"
             {...attributes}
             {...listeners}
-            className="mt-0.5 cursor-grab text-neutral-400 hover:text-neutral-700 active:cursor-grabbing"
+            className="mt-0.5 cursor-grab text-neutral-400 dark:text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:text-neutral-200 active:cursor-grabbing"
             title={t('dragHandle')}
             disabled={props.disabled}
           >
@@ -589,10 +589,10 @@ function DraggablePluginTile(props: {
           </button>
           <div className="flex-1 text-xs">
             <div className="flex flex-wrap items-center gap-1.5">
-              <span className="font-medium text-neutral-800">
+              <span className="font-medium text-neutral-800 dark:text-neutral-100">
                 {entry.name}
               </span>
-              <code className="font-mono text-[10px] text-neutral-500">
+              <code className="font-mono text-[10px] text-neutral-500 dark:text-neutral-400">
                 {entry.id}
               </code>
               <KindBadge kind={entry.kind} />
@@ -658,7 +658,7 @@ function DraggablePluginTile(props: {
               </div>
             )}
             {entry.network_outbound.length > 0 && (
-              <p className="mt-1 truncate text-[10px] text-neutral-500">
+              <p className="mt-1 truncate text-[10px] text-neutral-500 dark:text-neutral-400">
                 {t('networkLabel')} {entry.network_outbound.join(', ')}
               </p>
             )}
@@ -667,7 +667,7 @@ function DraggablePluginTile(props: {
             {!attached ? (
               <button
                 type="button"
-                className="rounded border border-neutral-300 bg-white px-1.5 py-0.5 text-[10px] hover:bg-neutral-100"
+                className="rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-1.5 py-0.5 text-[10px] hover:bg-neutral-100 dark:hover:bg-neutral-700"
                 disabled={props.disabled}
                 onClick={props.onAttach}
               >
@@ -679,7 +679,7 @@ function DraggablePluginTile(props: {
                   <button
                     type="button"
                     onClick={props.onToggleExpanded}
-                    className="rounded border border-neutral-300 bg-white px-1.5 py-0.5 text-[10px] hover:bg-neutral-100"
+                    className="rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-1.5 py-0.5 text-[10px] hover:bg-neutral-100 dark:hover:bg-neutral-700"
                   >
                     {props.expanded ? t('configHide') : t('configShow')}
                   </button>
@@ -714,9 +714,9 @@ function KindBadge({ kind }: { kind: string }): React.ReactElement {
     agent: 'bg-sky-100 text-sky-800',
     integration: 'bg-emerald-100 text-emerald-800',
     channel: 'bg-fuchsia-100 text-fuchsia-800',
-    tool: 'bg-neutral-200 text-neutral-700',
+    tool: 'bg-neutral-200 text-neutral-700 dark:text-neutral-200',
     extension: 'bg-orange-100 text-orange-800',
-  }[kind] ?? 'bg-neutral-200 text-neutral-700';
+  }[kind] ?? 'bg-neutral-200 text-neutral-700 dark:text-neutral-200';
   return (
     <span
       className={`rounded px-1.5 py-0 text-[10px] uppercase tracking-wide ${cls}`}
@@ -736,7 +736,7 @@ function PluginConfigForm(props: {
   ) => void;
 }): React.ReactElement {
   return (
-    <div className="border-t border-neutral-200 bg-neutral-50/50 px-3 py-2">
+    <div className="border-t border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-900/40 px-3 py-2">
       <div className="grid gap-2 sm:grid-cols-2">
         {props.fields.map((f) => (
           <PluginConfigField
@@ -767,10 +767,10 @@ function PluginConfigField(props: {
 
   return (
     <label className="flex flex-col gap-0.5">
-      <span className="text-[10px] uppercase tracking-wide text-neutral-500">
+      <span className="text-[10px] uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
         {field.label}
         {field.help && (
-          <span className="ml-1 text-neutral-400">— {field.help}</span>
+          <span className="ml-1 text-neutral-400 dark:text-neutral-500 dark:text-neutral-400">— {field.help}</span>
         )}
       </span>
       {isSecret ? (
@@ -780,7 +780,7 @@ function PluginConfigField(props: {
           disabled={disabled}
           onChange={(e) => onChange(e.target.value)}
           autoComplete="off"
-          className="rounded border border-neutral-300 px-2 py-1 text-xs"
+          className="rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 text-xs"
           placeholder={typeof field.default === 'string' ? field.default : ''}
         />
       ) : isEnum ? (
@@ -788,7 +788,7 @@ function PluginConfigField(props: {
           value={typeof value === 'string' ? value : ''}
           disabled={disabled}
           onChange={(e) => onChange(e.target.value)}
-          className="rounded border border-neutral-300 px-2 py-1 text-xs"
+          className="rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 text-xs"
         >
           <option value="">—</option>
           {field.enum?.map((opt) => (
@@ -819,7 +819,7 @@ function PluginConfigField(props: {
           onChange={(e) =>
             onChange(e.target.value === '' ? 0 : Number(e.target.value))
           }
-          className="rounded border border-neutral-300 px-2 py-1 text-xs"
+          className="rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 text-xs"
         />
       ) : isHostList ? (
         <textarea
@@ -841,7 +841,7 @@ function PluginConfigField(props: {
           }
           rows={3}
           placeholder="hostname.example.com"
-          className="rounded border border-neutral-300 px-2 py-1 font-mono text-xs"
+          className="rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 font-mono text-xs"
         />
       ) : (
         <input
@@ -850,7 +850,7 @@ function PluginConfigField(props: {
           disabled={disabled}
           onChange={(e) => onChange(e.target.value)}
           placeholder={typeof field.default === 'string' ? field.default : ''}
-          className="rounded border border-neutral-300 px-2 py-1 text-xs"
+          className="rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 text-xs"
         />
       )}
     </label>
