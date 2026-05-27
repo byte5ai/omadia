@@ -31,6 +31,7 @@ const NAV: readonly NavItem[] = [
     key: 'agentsCluster',
     children: [
       { kind: 'link', href: '/operator/agents', key: 'agentsOverview' },
+      { kind: 'link', href: '/operator/channels', key: 'channels' },
       { kind: 'link', href: '/memory', key: 'memory' },
       { kind: 'link', href: '/memories', key: 'memories' },
       { kind: 'link', href: '/graph', key: 'graph' },

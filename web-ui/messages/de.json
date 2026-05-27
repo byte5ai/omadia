@@ -11,8 +11,24 @@
     "system": "System",
     "agentsCluster": "Agents",
     "agentsOverview": "Übersicht",
+    "channels": "Channels",
     "pluginsCluster": "Plugins",
     "adminCluster": "Admin"
+  },
+  "operatorChannels": {
+    "title": "Channels",
+    "subtitle": "Eingehende Webhooks pro Channel-Key auf einen Agent routen. Jeder Channel-Plugin meldet seine eigenen Keys — du wählst nur, welcher Agent sie beantwortet.",
+    "loadError": "Konnte Channels nicht laden",
+    "emptyHeading": "Noch keine Channels bekannt.",
+    "emptyExplain": "Channel-Plugins (Teams, Telegram, …) melden ihre Keys während der Plugin-Aktivierung. Sobald ein Channel-Plugin installiert + aktiv ist, erscheinen seine Keys hier.",
+    "emptyDirectoriesKnown": "Registrierte Channel-Typen: {types}",
+    "fallbackHint": "Channels ohne explizite Zuordnung landen beim Fallback-Agent ({fallback}).",
+    "fallbackHintNone": "kein Fallback gesetzt",
+    "originLabel": "via",
+    "staleBadge": "veraltet",
+    "routesTo": "→ Agent:",
+    "routesToFallback": "(Fallback · {fallback})",
+    "clearStale": "Binding entfernen"
   },
   "layout": {
     "logoAriaLabel": "Omadia · Startseite",

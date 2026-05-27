@@ -10,6 +10,7 @@ import type { MemoryStore } from '@omadia/plugin-api';
 import { createAdminRouter } from './routes/admin.js';
 import { createChatRouter } from './routes/chat.js';
 import { createOperatorAgentsRouter } from './routes/operatorAgents.js';
+import { createOperatorChannelsRouter } from './routes/operatorChannels.js';
 import type {
   ConfigStore as MultiOrchestratorConfigStore,
   OrchestratorRegistry as MultiOrchestratorRegistry,
@@ -165,6 +166,7 @@ import { ROUTINES_INTEGRATION_SERVICE_NAME } from '@omadia/plugin-api';
 import { createRoutinesRouter } from './routes/routines.js';
 import { ExpressRouteRegistry } from './channels/routeRegistry.js';
 import { createCoreApi } from './channels/coreApi.js';
+import { ChannelDirectoryRegistry } from './channels/channelDirectoryRegistry.js';
 import { DefaultChannelRegistry } from './channels/channelRegistry.js';
 import type { ChannelRegistry } from '@omadia/channel-sdk';
 import { DynamicChannelPluginResolver } from './channels/dynamicChannelResolver.js';
@@ -223,6 +225,14 @@ async function main(): Promise<void> {
   serviceRegistry.provide('nativeToolRegistry', nativeToolRegistry);
   const pluginRouteRegistry = new PluginRouteRegistry();
   const notificationRouter = new NotificationRouter();
+
+  // Phase B+ — directory aggregator for the /operator/channels dashboard.
+  // Channel-kind plugins register their ChannelKeyDirectory contributions
+  // during activate(); the kernel exposes the union over REST.
+  const channelDirectoryRegistry = new ChannelDirectoryRegistry((msg, fields) =>
+    console.log(`[middleware] ${msg}${fields ? ' ' + JSON.stringify(fields) : ''}`),
+  );
+  serviceRegistry.provide('channelDirectoryRegistry', channelDirectoryRegistry);
   const uiRouteCatalog = new UiRouteCatalog();
   // Publish the catalogue so plugin code (notably channel-teams' Hub +
   // Tab-Config) can read it via `ctx.services.get<UiRouteCatalog>(
@@ -1184,6 +1194,22 @@ async function main(): Promise<void> {
   );
   console.log(
     '[middleware] operator-agents endpoints ready at /api/v1/operator/agents/* (auth-gated)',
+  );
+
+  // Phase B+ — operator channels dashboard.
+  app.use(
+    '/api/v1/operator/channels',
+    requireAuth,
+    createOperatorChannelsRouter({
+      getConfigStore: () =>
+        serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
+      getRegistry: () =>
+        serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
+      getDirectoryRegistry: () => channelDirectoryRegistry,
+    }),
+  );
+  console.log(
+    '[middleware] operator-channels endpoints ready at /api/v1/operator/channels/* (auth-gated)',
   );
 
   // Slice 10 — near-duplicate MK workflow. Mirrors the Slice 9
