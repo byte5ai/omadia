@@ -371,7 +371,11 @@
     "dragHandle": "Ziehen, um zwischen den Spalten zu bewegen",
     "dependencyMissingBadge": "Parent fehlt",
     "dependencyMissingTooltip": "Dieses Plugin hängt von „{parent}\" ab — Parent ist nicht in der gleichen Spalte angehängt.",
-    "fallbackStoreOnlyNotice": "Der Fallback-Agent läuft immer mit den Configs aus dem Store. Per-Agent Overrides sind hier deaktiviert — leg dafür einen eigenen Agent an."
+    "fallbackStoreOnlyNotice": "Der Fallback-Agent läuft immer mit den Configs aus dem Store. Per-Agent Overrides sind hier deaktiviert — leg dafür einen eigenen Agent an.",
+    "orphanDetachAll": "Alle entfernen",
+    "orphanDetachAllTooltip": "Entfernt alle veralteten Plugin-Zuordnungen (alte IDs aus früheren Deployments) auf einmal.",
+    "orphanExplain": "Plugin-IDs aus früheren Seeds, die im aktuellen Katalog nicht mehr existieren (typisch: Umbenennung de.byte5.agent.* → @omadia/*). Werden beim nächsten „Speichern\" verworfen, außer du markierst sie als „Behalten\".",
+    "orphanKeep": "Behalten"
   },
   "streamToasts": {
     "phaseThinking": "Agent denkt",

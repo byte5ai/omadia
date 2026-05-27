@@ -92,6 +92,11 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
   );
   const [activeId, setActiveId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+  // Orphan ids the operator explicitly chose to KEEP across saves — used to
+  // override the "drop orphans on save" default for rows that are still
+  // meaningful (e.g. a plugin that is temporarily uninstalled but coming
+  // back). Default empty; operator opts in per orphan.
+  const [keptOrphans, setKeptOrphans] = useState<Set<string>>(new Set());
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -241,6 +246,13 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
       config?: Record<string, unknown>;
     }> = [];
     for (const [id, entry] of selected) {
+      // Drop orphan rows on save: an `agent_plugins` row whose id is not in
+      // the current installed-plugin catalog is almost always a leftover
+      // from a renamed/uninstalled plugin (de.byte5.agent.* → @omadia/*).
+      // Letting them stay around makes them re-upsert on every PUT, which
+      // is why "STALE" used to grow on each rehydrate. The operator can
+      // still toggle them back in via the "Keep" checkbox on each orphan.
+      if (!catalogById.has(id) && !keptOrphans.has(id)) continue;
       // Fallback contract: per-Agent config is meaningless on the fallback
       // — wipe to {} so the server never has to second-guess which copy
       // wins. Non-fallback Agents persist whatever the operator entered.
@@ -248,6 +260,26 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
       out.push({ id, enabled: entry.enabled, config });
     }
     props.onReplace(out);
+  }
+
+  function clearAllOrphans(): void {
+    setSelected((prev) => {
+      const next = new Map(prev);
+      for (const id of next.keys()) {
+        if (!catalogById.has(id)) next.delete(id);
+      }
+      return next;
+    });
+    setKeptOrphans(new Set());
+  }
+
+  function toggleKeepOrphan(id: string): void {
+    setKeptOrphans((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   }
 
   const activeEntry = activeId ? catalogById.get(activeId) : undefined;
@@ -332,14 +364,37 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
             })}
             {orphans.length > 0 && (
               <div className="mt-3 border-t border-amber-200 pt-2">
-                <p className="mb-1 text-[10px] uppercase tracking-wide text-amber-700">
-                  {t('orphanPluginsHeading')}
+                <div className="mb-1 flex items-center justify-between">
+                  <p className="text-[10px] uppercase tracking-wide text-amber-700">
+                    {t('orphanPluginsHeading')} ({orphans.length})
+                  </p>
+                  <button
+                    type="button"
+                    className="rounded border border-amber-300 bg-white px-1.5 py-0 text-[10px] text-amber-900 hover:bg-amber-100"
+                    disabled={props.disabled}
+                    onClick={clearAllOrphans}
+                    title={t('orphanDetachAllTooltip')}
+                  >
+                    {t('orphanDetachAll')}
+                  </button>
+                </div>
+                <p className="mb-2 text-[10px] text-amber-800">
+                  {t('orphanExplain')}
                 </p>
                 {orphans.map((id) => (
                   <div
                     key={id}
                     className="mb-1 flex items-center gap-2 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-xs"
                   >
+                    <label className="flex items-center gap-1 text-[10px] text-amber-900">
+                      <input
+                        type="checkbox"
+                        checked={keptOrphans.has(id)}
+                        disabled={props.disabled}
+                        onChange={() => toggleKeepOrphan(id)}
+                      />
+                      {t('orphanKeep')}
+                    </label>
                     <span className="font-mono text-amber-900">{id}</span>
                     <span className="text-[10px] uppercase text-amber-800">
                       {t('orphanPluginBadge')}

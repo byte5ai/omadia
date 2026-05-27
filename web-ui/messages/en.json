@@ -371,7 +371,11 @@
     "dragHandle": "Drag to move between columns",
     "dependencyMissingBadge": "Parent missing",
     "dependencyMissingTooltip": "This plugin depends on \"{parent}\" — parent is not attached in the same column.",
-    "fallbackStoreOnlyNotice": "The fallback Agent always runs plugins with the global store config. Per-Agent overrides are disabled here — create a dedicated Agent if you need them."
+    "fallbackStoreOnlyNotice": "The fallback Agent always runs plugins with the global store config. Per-Agent overrides are disabled here — create a dedicated Agent if you need them.",
+    "orphanDetachAll": "Remove all",
+    "orphanDetachAllTooltip": "Detach every stale plugin row (old ids from earlier deployments) at once.",
+    "orphanExplain": "Plugin ids from earlier seeds that no longer exist in the current catalog (typically a rename like de.byte5.agent.* → @omadia/*). Dropped on next Save unless you tick \"Keep\".",
+    "orphanKeep": "Keep"
   },
   "streamToasts": {
     "phaseThinking": "Agent is thinking",
