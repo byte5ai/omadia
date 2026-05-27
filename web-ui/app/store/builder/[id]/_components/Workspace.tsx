@@ -158,6 +158,19 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
     text: string;
     autoSubmit?: boolean;
   } | null>(null);
+  // Pending `ask_user_choice` smart-card. Fed by the SpecEventBus
+  // (`user_choice_required`) and cleared on `user_choice_resolved`
+  // (sibling-tab or own click). The BuilderChatPane reads this to
+  // render a ChoiceCard under the latest assistant turn.
+  const [pendingUserChoice, setPendingUserChoice] = useState<{
+    choiceId: string;
+    question: string;
+    options: ReadonlyArray<{
+      value: string;
+      label: string;
+      description?: string;
+    }>;
+  } | null>(null);
   // Pane collapse state — chat is the only pane that starts open. Editor +
   // Preview start collapsed so the user has the maximum width for the
   // initial conversation; expanding either is one click on the rail.
@@ -447,6 +460,22 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
           prev && prev.slotKey === ev.slotKey ? null : prev,
         );
       }
+      if (ev.type === 'user_choice_required') {
+        setPendingUserChoice({
+          choiceId: ev.choiceId,
+          question: ev.question,
+          options: ev.options,
+        });
+        // No re-fetch — the spec is unchanged, the agent is just blocked
+        // on operator input.
+        return;
+      }
+      if (ev.type === 'user_choice_resolved') {
+        setPendingUserChoice((prev) =>
+          prev && prev.choiceId === ev.choiceId ? null : prev,
+        );
+        return;
+      }
       scheduleRefetch();
     },
     { onStatus: setBusStatus },
@@ -631,6 +660,8 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
             initialTranscript={draft.transcript}
             pendingInput={pendingChatInput}
             onPendingInputConsumed={() => setPendingChatInput(null)}
+            pendingUserChoice={pendingUserChoice}
+            onUserChoiceResolved={() => setPendingUserChoice(null)}
           />
         );
         const editorPaneBody = (

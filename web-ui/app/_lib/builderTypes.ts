@@ -270,6 +270,34 @@ export type SpecBusEvent =
       kind: 'build_failed' | 'smoke_failed';
       buildN: number;
       identicalCount?: number;
+    }
+  | {
+      /**
+       * Builder-Agent invoked `ask_user_choice`. The UI renders a
+       * Smart-Card with 2-4 buttons; the operator's pick is POSTed to
+       * `/drafts/:id/user-choice/:choiceId` which resolves the pending
+       * tool call on the server. Mirror of `user_choice_required` in
+       * middleware/src/plugins/builder/specEventBus.ts.
+       */
+      type: 'user_choice_required';
+      choiceId: string;
+      question: string;
+      options: ReadonlyArray<{
+        value: string;
+        label: string;
+        description?: string;
+      }>;
+    }
+  | {
+      /**
+       * Companion to `user_choice_required` — emitted once the choice
+       * has resolved (operator clicked, dismissed, or timed out). The
+       * UI clears the Smart-Card on every open tab. `value` is `null`
+       * when the choice was cancelled or timed out.
+       */
+      type: 'user_choice_resolved';
+      choiceId: string;
+      value: string | null;
     };
 
 // -----------------------------------------------------------------------------

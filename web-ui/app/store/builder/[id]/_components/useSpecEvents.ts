@@ -81,6 +81,19 @@ export function useSpecEvents(
     // different event name so callers can route it to the build-status
     // surface without poking at the union discriminator twice.
     source.addEventListener('build_status', onSpecPatch as EventListener);
+    // Smart-Card clarification (ask_user_choice): the SpecEventBus
+    // emits `user_choice_required` when the builder agent needs a
+    // pick, and `user_choice_resolved` once any tab has answered (so
+    // multi-tab clients can dismiss the card everywhere). Both arrive
+    // as the same JSON envelope as every other bus event.
+    source.addEventListener(
+      'user_choice_required',
+      onSpecPatch as EventListener,
+    );
+    source.addEventListener(
+      'user_choice_resolved',
+      onSpecPatch as EventListener,
+    );
 
     return () => {
       source.removeEventListener('open', onOpen);
@@ -89,6 +102,14 @@ export function useSpecEvents(
       source.removeEventListener('slot_patch', onSlotPatch as EventListener);
       source.removeEventListener('lint_result', onLint as EventListener);
       source.removeEventListener('build_status', onSpecPatch as EventListener);
+      source.removeEventListener(
+        'user_choice_required',
+        onSpecPatch as EventListener,
+      );
+      source.removeEventListener(
+        'user_choice_resolved',
+        onSpecPatch as EventListener,
+      );
       source.close();
       onStatusRef.current?.('closed');
     };

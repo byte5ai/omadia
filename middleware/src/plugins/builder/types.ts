@@ -212,15 +212,13 @@ export interface DraftSummary {
 
 export function emptyAgentSpec(): AgentSpecSkeleton {
   return {
-    // Default to the pure-LLM template. The integration template hardcodes
+    // Default to the integration template: most fresh drafts call an
+    // external API and start from there. The boilerplate's
     // `ctx.secrets.require('API_TOKEN')` + `ctx.config.require('base_url')`
-    // in its boilerplate, so a fresh draft from that template fails to
-    // activate until the operator wires real API credentials — surprising
-    // for "I just want to build a pure-prompting agent". Pure-LLM has no
-    // such requirement; operators flip to `agent-integration` (via the
-    // Workspace header template-switcher) the moment they need an
-    // external API call.
-    template: 'agent-pure-llm',
+    // give the operator concrete setup-field anchors to fill in via the
+    // SecretsDrawer; pure-LLM remains one click away in the Workspace
+    // header template-switcher for prompting-only drafts.
+    template: 'agent-integration',
     id: '',
     name: '',
     version: '0.1.0',

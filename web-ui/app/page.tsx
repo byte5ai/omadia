@@ -29,12 +29,12 @@ import {
   type FollowUpOption,
   type Message,
   type NudgeEvent,
-  type PendingUserChoice,
   type SubAgentEvent,
   type ToolEvent,
 } from './_lib/chatSessions';
 import { useChatSessionsCtx } from './_lib/chatSessionsContext';
 import { useStreamStore } from './_lib/streamStore';
+import { ChoiceCard } from './_components/ChoiceCard';
 
 export default function ChatPage(): React.ReactElement {
   const t = useTranslations('chat');
@@ -968,63 +968,6 @@ function AttachmentGrid({
   );
 }
 
-/**
- * Renders a Smart-Card clarification-question with 2–4 option buttons.
- * Click fires a fresh user turn via `onChoose(value)` — identical to the
- * user typing the label. Disabled while another turn is streaming so the
- * user can't double-click through the card.
- *
- * In the web-ui UI a "card" is just a stacked box below the streamed
- * answer; the Teams adapter ships the same `pendingUserChoice` payload as
- * a real Adaptive Card.
- */
-function ChoiceCard({
-  choice,
-  disabled,
-  onChoose,
-}: {
-  choice: PendingUserChoice;
-  disabled: boolean;
-  onChoose: (value: string) => void;
-}): React.ReactElement {
-  const t = useTranslations('chat');
-  return (
-    <div className="mt-3 rounded border border-indigo-200 bg-indigo-50/60 p-3 dark:border-indigo-800 dark:bg-indigo-950/40">
-      <div className="mb-1 text-xs font-semibold text-indigo-700 dark:text-indigo-300">
-        {t('clarifyKicker')}
-      </div>
-      <div className="mb-2 text-sm text-neutral-900 dark:text-neutral-100">
-        {choice.question}
-      </div>
-      {choice.rationale && (
-        <div className="mb-2 text-xs text-neutral-500 italic dark:text-neutral-400">
-          {choice.rationale}
-        </div>
-      )}
-      <div className="flex flex-wrap gap-2">
-        {choice.options.map((opt, idx) => (
-          <button
-            key={`${opt.value}-${String(idx)}`}
-            type="button"
-            onClick={() => {
-              onChoose(opt.value);
-            }}
-            disabled={disabled}
-            className={[
-              'rounded border px-3 py-1.5 text-xs font-medium transition',
-              idx === 0
-                ? 'border-indigo-600 bg-indigo-600 text-white hover:bg-indigo-700 dark:border-indigo-500 dark:bg-indigo-500 dark:hover:bg-indigo-600'
-                : 'border-neutral-300 bg-white text-neutral-700 hover:border-neutral-500 dark:border-neutral-600 dark:bg-neutral-800 dark:text-neutral-200',
-              'disabled:cursor-not-allowed disabled:opacity-40',
-            ].join(' ')}
-          >
-            {opt.label}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 /**
  * Non-blocking 1-click refinement buttons rendered below the answer. The

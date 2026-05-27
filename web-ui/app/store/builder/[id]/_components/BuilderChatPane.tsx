@@ -18,7 +18,11 @@ import {
   Wrench,
 } from 'lucide-react';
 
-import { ApiError, streamBuilderTurn } from '../../../../_lib/api';
+import {
+  ApiError,
+  resolveBuilderUserChoice,
+  streamBuilderTurn,
+} from '../../../../_lib/api';
 import type {
   BuilderModelId,
   BuilderTurnEvent,
@@ -27,6 +31,7 @@ import type {
   TranscriptEntry,
 } from '../../../../_lib/builderTypes';
 import { cn } from '../../../../_lib/cn';
+import { ChoiceCard } from '../../../../_components/ChoiceCard';
 
 import { BuilderMarkdown } from './BuilderMarkdown';
 
@@ -85,6 +90,22 @@ interface BuilderChatPaneProps {
   /** Called once the pending input has been applied so the parent can
    *  reset its state and avoid re-applying the same value. */
   onPendingInputConsumed?: () => void;
+  /** Pending `ask_user_choice` smart-card, hoisted by Workspace from
+   *  the SpecEventBus. Rendered below the latest assistant message. */
+  pendingUserChoice?: {
+    choiceId: string;
+    question: string;
+    options: ReadonlyArray<{
+      value: string;
+      label: string;
+      description?: string;
+    }>;
+  } | null;
+  /** Called optimistically after the operator picks an option, so the
+   *  parent can clear the card without waiting for the bus echo. The
+   *  `user_choice_resolved` event still arrives later for sibling-tab
+   *  consistency, but the local pane reacts instantly. */
+  onUserChoiceResolved?: () => void;
 }
 
 /**
@@ -107,6 +128,8 @@ export function BuilderChatPane({
   onAgentMutation,
   pendingInput,
   onPendingInputConsumed,
+  pendingUserChoice,
+  onUserChoiceResolved,
 }: BuilderChatPaneProps): React.ReactElement {
   const [items, setItems] = useState<ChatItem[]>(() =>
     initialTranscript.map((entry, idx) => ({
@@ -442,6 +465,38 @@ export function BuilderChatPane({
 
   const empty = items.length === 0;
 
+  // ask_user_choice → operator pick. Lock the buttons while the POST is
+  // in flight so an antsy double-click doesn't fire the resolver twice
+  // (the second call returns 404 once the coordinator has cleared, but
+  // we still want a single source of UI feedback). The card is cleared
+  // optimistically; if the resolver errors out, the bus echo will
+  // re-instate it on the next `user_choice_required` and the operator
+  // can retry.
+  const [choiceSubmitting, setChoiceSubmitting] = useState(false);
+  const onChooseUserChoice = useCallback(
+    async (value: string) => {
+      if (!pendingUserChoice || choiceSubmitting) return;
+      const { choiceId } = pendingUserChoice;
+      setChoiceSubmitting(true);
+      setError(null);
+      onUserChoiceResolved?.();
+      try {
+        await resolveBuilderUserChoice({ draftId, choiceId, value });
+      } catch (err) {
+        if (err instanceof ApiError) {
+          setError(humanizeApiError(err));
+        } else if (err instanceof Error) {
+          setError(`Auswahl konnte nicht gespeichert werden: ${err.message}`);
+        } else {
+          setError('Auswahl konnte nicht gespeichert werden.');
+        }
+      } finally {
+        setChoiceSubmitting(false);
+      }
+    },
+    [pendingUserChoice, choiceSubmitting, draftId, onUserChoiceResolved],
+  );
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div
@@ -453,6 +508,21 @@ export function BuilderChatPane({
         ) : (
           items.map((item) => <ChatItemView key={item.key} item={item} />)
         )}
+        {pendingUserChoice ? (
+          <ChoiceCard
+            choice={{
+              question: pendingUserChoice.question,
+              options: pendingUserChoice.options.map((o) => ({
+                value: o.value,
+                label: o.label,
+              })),
+            }}
+            disabled={choiceSubmitting}
+            onChoose={(v) => {
+              void onChooseUserChoice(v);
+            }}
+          />
+        ) : null}
       </div>
 
       {error ? (
@@ -636,6 +706,10 @@ function ChatItemView({ item }: { item: ChatItem }): React.ReactElement | null {
   }
 
   if (item.kind === 'tool') {
+    // `ask_user_choice` is rendered as a Smart-Card (ChoiceCard) by the
+    // pane root — hide the raw JSON ToolCard so the operator does not
+    // see the same question twice (once as a card, once as a pre-block).
+    if (item.toolId === 'ask_user_choice') return null;
     return <ToolCard item={item} />;
   }
 

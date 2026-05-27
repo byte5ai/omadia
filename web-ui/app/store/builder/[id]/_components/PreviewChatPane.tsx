@@ -37,6 +37,10 @@ import type {
   TranscriptEntry,
 } from '../../../../_lib/builderTypes';
 import { cn } from '../../../../_lib/cn';
+import {
+  ChoiceCard,
+  type PendingUserChoice,
+} from '../../../../_components/ChoiceCard';
 
 import { BuilderMarkdown } from './BuilderMarkdown';
 import { SecretsDrawer } from './SecretsDrawer';
@@ -221,15 +225,15 @@ export function PreviewChatPane({
     };
   }, []);
 
-  const onSend = useCallback(async () => {
-    const trimmed = input.trim();
+  const onSend = useCallback(async (override?: string) => {
+    const trimmed = (override ?? input).trim();
     if (!trimmed || inflight) return;
     const controller = new AbortController();
     abortRef.current = controller;
     setError(null);
     setInflight(true);
     setTurnStartedAt(Date.now());
-    setInput('');
+    if (override === undefined) setInput('');
 
     try {
       for await (const ev of streamPreviewTurn(draftId, trimmed, {
@@ -485,7 +489,29 @@ export function PreviewChatPane({
         {items.length === 0 ? (
           <EmptyHint />
         ) : (
-          items.map((item) => <ChatItemView key={item.key} item={item} />)
+          items.map((item) => {
+            // Render an `ask_user_choice` tool_use as a real Smart-Card
+            // instead of the generic ToolCard's raw JSON dump. The
+            // preview-agent doesn't pause server-side — clicking just
+            // submits the chosen value as a fresh user turn (same as
+            // typing the option label).
+            if (item.kind === 'tool' && item.toolId === 'ask_user_choice') {
+              const parsed = parseAskUserChoiceInput(item.input);
+              if (parsed) {
+                return (
+                  <ChoiceCard
+                    key={item.key}
+                    choice={parsed}
+                    disabled={inflight}
+                    onChoose={(v) => {
+                      void onSend(v);
+                    }}
+                  />
+                );
+              }
+            }
+            return <ChatItemView key={item.key} item={item} />;
+          })
         )}
       </div>
 
@@ -824,6 +850,41 @@ function lastIndexWhere<T>(arr: T[], pred: (item: T) => boolean): number {
     if (item !== undefined && pred(item)) return i;
   }
   return -1;
+}
+
+/**
+ * Validate the JSON shape of an `ask_user_choice` tool_use input so we
+ * can render a Smart-Card instead of the raw JSON. Returns `null` when
+ * the payload does not match `{ question, options[{value,label}] }` —
+ * caller falls back to the generic ToolCard. `rationale` is optional
+ * and only forwarded when it is a non-empty string.
+ */
+function parseAskUserChoiceInput(input: unknown): PendingUserChoice | null {
+  if (typeof input !== 'object' || input === null) return null;
+  const obj = input as Record<string, unknown>;
+  if (typeof obj['question'] !== 'string' || obj['question'].length === 0) {
+    return null;
+  }
+  if (!Array.isArray(obj['options']) || obj['options'].length === 0) {
+    return null;
+  }
+  const options: Array<{ label: string; value: string }> = [];
+  for (const raw of obj['options']) {
+    if (typeof raw !== 'object' || raw === null) continue;
+    const o = raw as Record<string, unknown>;
+    if (typeof o['value'] !== 'string' || typeof o['label'] !== 'string') {
+      continue;
+    }
+    options.push({ value: o['value'], label: o['label'] });
+  }
+  if (options.length === 0) return null;
+  const rationale =
+    typeof obj['rationale'] === 'string' && obj['rationale'].length > 0
+      ? obj['rationale']
+      : undefined;
+  return rationale !== undefined
+    ? { question: obj['question'], rationale, options }
+    : { question: obj['question'], options };
 }
 
 function jsonPreview(input: unknown): string {
