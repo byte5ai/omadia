@@ -113,6 +113,13 @@ export type TestCase = z.infer<typeof TestCaseSchema>;
 
 // Mirrors PluginSetupField['type'] from manifestLoader.isSetupFieldType.
 // `password` is intentionally NOT a member — secrets use `type: 'secret'`.
+//
+// `label`, `placeholder`, `help` are accepted as optional UI hints (the LLM
+// reaches for these by reflex because they are universal form-field
+// conventions). Codegen prefers them over the derived/legacy fields:
+//   spec.label       → manifest.label   (else: humanized key)
+//   spec.help        → manifest.help    (else: spec.description)
+//   spec.placeholder → manifest.placeholder (passthrough; no fallback)
 const SetupFieldSchema = z
   .object({
     key: z.string().regex(/^[a-z][a-z0-9_]*$/),
@@ -130,6 +137,9 @@ const SetupFieldSchema = z
     description: z.string().optional(),
     default: z.unknown().optional(),
     enum_values: z.array(z.string()).optional(),
+    label: z.string().optional(),
+    placeholder: z.string().optional(),
+    help: z.string().optional(),
   })
   .strict();
 
@@ -601,6 +611,81 @@ export function safeParseAgentSpec(
   input: unknown,
 ): ReturnType<typeof AgentSpecSchema.safeParse> {
   return AgentSpecSchema.safeParse(migrateMissingDomain(input));
+}
+
+/**
+ * Walks `AgentSpecSchema` along a Zod issue path and, if the destination
+ * is a ZodObject, returns its declared keys. Used by `patch_spec` to
+ * enrich `unrecognized_keys` errors so the LLM sees what IS allowed
+ * instead of only what was rejected.
+ *
+ * Returns `null` when the path cannot be resolved to a ZodObject — e.g.
+ * the issue sits on an array element of a non-object schema, or zod's
+ * shape changed in a future major version. Caller treats `null` as "no
+ * hint available" and falls back to the bare message.
+ */
+export function getAllowedKeysAtPath(
+  path: ReadonlyArray<PropertyKey>,
+): readonly string[] | null {
+  let node: unknown = AgentSpecSchema;
+  for (const segment of path) {
+    node = unwrap(node);
+    if (node === null) return null;
+    if (isZodObject(node)) {
+      if (typeof segment !== 'string') return null;
+      const shape = node.shape;
+      const next = shape[segment];
+      if (next === undefined) return null;
+      node = next;
+      continue;
+    }
+    if (isZodArray(node)) {
+      if (typeof segment !== 'number') return null;
+      node = node.element;
+      continue;
+    }
+    return null;
+  }
+  node = unwrap(node);
+  if (isZodObject(node)) return Object.keys(node.shape);
+  return null;
+}
+
+function isZodObject(
+  node: unknown,
+): node is { shape: Record<string, unknown> } {
+  return (
+    typeof node === 'object' &&
+    node !== null &&
+    'shape' in node &&
+    typeof (node as { shape: unknown }).shape === 'object'
+  );
+}
+
+function isZodArray(node: unknown): node is { element: unknown } {
+  return (
+    typeof node === 'object' &&
+    node !== null &&
+    'element' in node &&
+    (node as { element: unknown }).element !== undefined &&
+    // ZodObject also has properties, but it doesn't have `element`.
+    !isZodObject(node)
+  );
+}
+
+function unwrap(node: unknown): unknown {
+  let current = node;
+  while (
+    current &&
+    typeof current === 'object' &&
+    'unwrap' in current &&
+    typeof (current as { unwrap: unknown }).unwrap === 'function' &&
+    !isZodObject(current) &&
+    !isZodArray(current)
+  ) {
+    current = (current as { unwrap: () => unknown }).unwrap();
+  }
+  return current;
 }
 
 // --- Higher-level validation (post-parse) ---------------------------------

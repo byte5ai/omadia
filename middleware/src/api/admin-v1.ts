@@ -52,6 +52,10 @@ export interface PluginSetupField {
   /** Manifest-defined help text. Surfaced on the post-install credentials
    *  editor so the operator sees the same hint as in the install wizard. */
   help?: string;
+  /** Manifest-defined input placeholder. Optional UI hint surfaced by the
+   *  install wizard and post-install editor; loader passes it through
+   *  unchanged. */
+  placeholder?: string;
   /** Manifest default. Forwarded so the post-install editor can pre-select
    *  the default option in an `enum` dropdown when no value is stored yet.
    *  A `string[]` for `type === 'host_list'`, a `string` otherwise. */

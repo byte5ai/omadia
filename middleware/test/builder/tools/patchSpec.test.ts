@@ -211,6 +211,47 @@ describe('patchSpecTool', () => {
       );
       assert.deepEqual(reloaded?.spec.network.outbound, ['api.openweather.org']);
     });
+
+    it('enriches unrecognized_keys errors with the allowed-keys list', async () => {
+      // Recurring Builder failure mode: the LLM writes `setup_fields` with
+      // `label`/`placeholder`/`help` keys that pre-existed only as UI-form
+      // conventions, then loops because the bare Zod message tells it what
+      // was rejected but not what would be accepted. The enriched error
+      // must list the allowed shape so the next iteration can correct.
+      // (`label`/`placeholder`/`help` are now accepted — `foo_bar` here is
+      // a stand-in for any genuinely unknown key.)
+      await seedValidSpec();
+      const result = await patchSpecTool.run(
+        {
+          patches: [
+            {
+              op: 'replace',
+              path: '/setup_fields',
+              value: [
+                {
+                  key: 'api_token',
+                  type: 'secret',
+                  required: true,
+                  foo_bar: 'unknown-key',
+                },
+              ],
+            },
+          ],
+        },
+        harness.context(),
+      );
+      assert.equal(result.ok, false);
+      if (result.ok) return;
+      assert.match(result.error, /strict-mode rejected/);
+      assert.match(result.error, /allowed keys at this path/);
+      // The hint must include both the canonical and the LLM-friendly aliases.
+      assert.match(result.error, /\bkey\b/);
+      assert.match(result.error, /\btype\b/);
+      assert.match(result.error, /\bdescription\b/);
+      assert.match(result.error, /\blabel\b/);
+      assert.match(result.error, /\bhelp\b/);
+      assert.match(result.error, /\bplaceholder\b/);
+    });
   });
 
   describe('B.7-3 content-guard (silent capability loss)', () => {

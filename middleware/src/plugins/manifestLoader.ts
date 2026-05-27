@@ -189,6 +189,8 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
     const entry: PluginSetupField = { key, label, type };
     const help = asString(f['help']);
     if (help) entry.help = help;
+    const placeholder = asString(f['placeholder']);
+    if (placeholder) entry.placeholder = placeholder;
     if (type === 'host_list') {
       // #91 Option B — the default for a host_list is an array of bare
       // hostnames, not a scalar string.
