@@ -128,7 +128,11 @@ export async function build(opts: BuildSandboxOptions): Promise<BuildResult> {
     return failure(result, durationMs, 'package_json_missing');
   }
 
-  const zipPath = path.join(stagingDir, 'out', `${pkg.name}-${pkg.version}.zip`);
+  // Match the sanitization performed by scripts/build-zip.mjs: strip the
+  // leading `@` and replace `/` with `-` so scoped names (`@omadia/agent-x`)
+  // resolve to the same flat filename the builder produces.
+  const safeName = pkg.name.replace(/^@/, '').replace(/\//g, '-');
+  const zipPath = path.join(stagingDir, 'out', `${safeName}-${pkg.version}.zip`);
   let zip: Buffer;
   try {
     zip = await fs.readFile(zipPath);

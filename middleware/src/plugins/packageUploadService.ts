@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { promises as fs } from 'node:fs';
+import { promises as fs, type Dirent } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -376,17 +376,38 @@ async function resolvePackageRoot(stagingRoot: string): Promise<string | null> {
   if (await fileExists(path.join(stagingRoot, 'manifest.yaml'))) {
     return stagingRoot;
   }
-  const entries = await fs.readdir(stagingRoot, { withFileTypes: true });
-  const dirs = entries.filter((e) => e.isDirectory());
-  if (dirs.length === 1) {
-    const sub = dirs[0];
+  const level1 = await readSubdirs(stagingRoot);
+  // Single-wrapper case is the npm-pack norm. We also tolerate one extra
+  // level so a hand-uploaded ZIP built by a producer that did not sanitize
+  // a scoped package name (`@scope/<wrapper>/manifest.yaml`) still ingests
+  // — at this depth there is no plausible legitimate alternative layout.
+  if (level1.length === 1) {
+    const sub = level1[0];
     if (!sub) return null;
     const candidate = path.join(stagingRoot, sub.name);
     if (await fileExists(path.join(candidate, 'manifest.yaml'))) {
       return candidate;
     }
+    const level2 = await readSubdirs(candidate);
+    if (level2.length === 1) {
+      const sub2 = level2[0];
+      if (!sub2) return null;
+      const nested = path.join(candidate, sub2.name);
+      if (await fileExists(path.join(nested, 'manifest.yaml'))) {
+        return nested;
+      }
+    }
   }
   return null;
+}
+
+async function readSubdirs(dir: string): Promise<Dirent[]> {
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    return entries.filter((e) => e.isDirectory());
+  } catch {
+    return [];
+  }
 }
 
 async function fileExists(p: string): Promise<boolean> {

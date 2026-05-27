@@ -257,7 +257,7 @@ export class PreviewRuntime {
     if (!packageRoot) {
       await fs.rm(previewDir, { recursive: true, force: true });
       throw new Error(
-        `preview: no package.json found in extracted zip (looked at ${previewDir} and one nested level)`,
+        `preview: no package.json found in extracted zip (looked at ${previewDir} and up to two nested levels)`,
       );
     }
 
@@ -425,38 +425,47 @@ function createStubContext(opts: {
 }
 
 /**
- * Walks one directory level deep to locate the directory that holds
- * `package.json`. The boilerplate's build-zip.mjs wraps the package in
- * `<id>-<version>-package/` so the extracted layout is one level deeper
- * than the preview dir; an old-style flat zip lives directly at the root.
+ * Walks the extracted preview directory to locate the directory that
+ * holds `package.json`. Producers should write a single-level wrapper
+ * (`<safe-name>-<version>-package/`, npm-pack style), but a stray
+ * unsanitized scoped name in an older builder leaves a two-level layout
+ * (`@scope/<wrapper>/package.json`). We probe up to two levels so a
+ * partially-fixed producer still surfaces here.
  *
- * Returns the resolved package root (== previewDir for flat zips), or
- * null when no package.json is found in either layout.
+ * Returns the resolved package root, or null when no package.json is
+ * found within the depth budget.
  */
 async function resolvePackageRoot(previewDir: string): Promise<string | null> {
-  try {
-    await fs.access(path.join(previewDir, 'package.json'));
-    return previewDir;
-  } catch {
-    /* fall through to wrapper-detection */
-  }
-  let entries: Dirent[];
-  try {
-    entries = await fs.readdir(previewDir, { withFileTypes: true });
-  } catch {
-    return null;
-  }
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const candidate = path.join(previewDir, entry.name);
-    try {
-      await fs.access(path.join(candidate, 'package.json'));
-      return candidate;
-    } catch {
-      /* keep scanning */
+  if (await hasPackageJson(previewDir)) return previewDir;
+  const level1 = await readSubdirs(previewDir);
+  for (const l1 of level1) {
+    const candidate = path.join(previewDir, l1.name);
+    if (await hasPackageJson(candidate)) return candidate;
+    const level2 = await readSubdirs(candidate);
+    for (const l2 of level2) {
+      const nested = path.join(candidate, l2.name);
+      if (await hasPackageJson(nested)) return nested;
     }
   }
   return null;
+}
+
+async function hasPackageJson(dir: string): Promise<boolean> {
+  try {
+    await fs.access(path.join(dir, 'package.json'));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readSubdirs(dir: string): Promise<Dirent[]> {
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    return entries.filter((e) => e.isDirectory());
+  } catch {
+    return [];
+  }
 }
 
 async function defaultExtractZip(zipBuffer: Buffer, destDir: string): Promise<void> {

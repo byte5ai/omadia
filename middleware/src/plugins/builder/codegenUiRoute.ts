@@ -138,7 +138,12 @@ export function buildUiRouteArtifacts(
       `// ui_route: ${route.id} (mode=${route.render_mode}, path=${route.path})`,
       `const __uiRoute_${camelize(route.id)} = ${factoryName}({ runTool: __runTool, pluginId: AGENT_ID });`,
       `__uiRouteDisposers.push(`,
-      `  ctx.routes.register('/p/' + AGENT_ID, __uiRoute_${camelize(route.id)}),`,
+      // Strip the `@scope/` prefix so the mount path matches the URL
+      // convention used by channel-teams' Hub + Tab-Config (uiRouter.ts:56,
+      // `pluginId.replace(/^@[^/]+\\//, '')`). Without this, scoped plugin
+      // ids like `@omadia/agent-foo` mount at `/p/@omadia/agent-foo/...`
+      // while consumers GET `/p/agent-foo/...` → 404.
+      `  ctx.routes.register('/p/' + AGENT_ID.replace(/^@[^/]+\\//, ''), __uiRoute_${camelize(route.id)}),`,
       `);`,
       `__uiRouteDisposers.push(`,
       `  ctx.uiRoutes.register({`,

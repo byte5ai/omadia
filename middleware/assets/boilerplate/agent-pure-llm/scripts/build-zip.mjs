@@ -53,7 +53,13 @@ if (!existsSync(entryAbs) || !statSync(entryAbs).isFile()) {
 }
 
 // --- 3) Stage runtime artefacts ----------------------------------------
-const stageName = `${pkg.name}-${pkg.version}-package`;
+// Sanitize the package name for filesystem use the same way `npm pack`
+// does: strip the leading `@` and replace `/` with `-`. Scoped names like
+// `@omadia/agent-foo` would otherwise produce a wrapper path with an
+// embedded slash, which makes the host extractor see TWO nested levels
+// instead of one and fail to locate package.json.
+const safeName = pkg.name.replace(/^@/, '').replace(/\//g, '-');
+const stageName = `${safeName}-${pkg.version}-package`;
 const stageDir = join(pkgRoot, 'out', stageName);
 rmSync(stageDir, { recursive: true, force: true });
 mkdirSync(stageDir, { recursive: true });
@@ -76,7 +82,7 @@ for (const entry of INCLUDE) {
 }
 
 // --- 4) Zip --------------------------------------------------------------
-const zipPath = join(pkgRoot, 'out', `${pkg.name}-${pkg.version}.zip`);
+const zipPath = join(pkgRoot, 'out', `${safeName}-${pkg.version}.zip`);
 rmSync(zipPath, { force: true });
 
 // Portable zip: bevorzugt `zip` CLI (macOS/Linux). Windows → 7z / PowerShell.
