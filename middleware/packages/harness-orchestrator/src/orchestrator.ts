@@ -2379,7 +2379,7 @@ export class Orchestrator {
     // #130 (native) — extract postcondition once; from here on we work with
     // a plain string through the privacy / capture pipelines (their inputs
     // are unchanged) and re-wrap the structured shape at every return.
-    let result: string = inner.output;
+    const result: string = inner.output;
     const postcondition = inner.postcondition;
     const wrap = (
       output: string,
