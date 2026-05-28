@@ -52,6 +52,26 @@ describe('agentSpec', () => {
       assert.throws(() => parseAgentSpec({ ...validBase, extra_field: 'x' }));
     });
 
+    it('enriches unrecognized_keys errors with the allowed-keys hint', () => {
+      // The LLM repeatedly tried `spec.permissions.memory.reads = [...]`
+      // (modelled after the boilerplate manifest.yaml), spec rejects it
+      // because PermissionsSchema only knows graph/subAgents/llm. The
+      // throw message must list what IS allowed so the next iteration
+      // converges — otherwise we get the Builder-loop the github-tracker
+      // session ran into.
+      try {
+        parseAgentSpec({
+          ...validBase,
+          permissions: { memory: { reads: ['session:*'] } },
+        });
+        assert.fail('expected parseAgentSpec to throw for permissions.memory');
+      } catch (err) {
+        const msg = (err as Error).message;
+        assert.match(msg, /\/permissions:/);
+        assert.match(msg, /allowed keys at this path: .*graph.*subAgents.*llm/);
+      }
+    });
+
     it('rejects setup_field type "password" (not in allowed enum)', () => {
       assert.throws(() =>
         parseAgentSpec({

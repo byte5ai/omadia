@@ -24,6 +24,16 @@ description: |
   capability resolution. Reference: middleware/packages/agent-seo-analyst/.
 
 slots:
+  - key: client-interface
+    target_file: client.ts
+    required: false
+    description: |
+      Optional override of the Client/SearchResult interface declarations.
+      Default exports `Client { ping; search; dispose }` + `SearchResult`.
+      Replace when the plugin needs custom methods (e.g. listIssues,
+      getIssue, postComment) so toolkit code can call them without `as`
+      casts. The interface name `Client` must remain because
+      `ToolkitOptions { client: Client }` references it across the file.
   - key: client-impl
     target_file: client.ts
     required: true
@@ -54,6 +64,38 @@ slots:
       and declared in manifest.yaml as the top-level admin_ui_path. When
       not set: the default placeholder explains to the operator that
       no admin UI is configured.
+  - key: toolkit-imports
+    target_file: toolkit.ts
+    required: false
+    description: |
+      Auto-managed by codegen — DO NOT fill via fill_slot. Codegen scans
+      the toolkit-impl slot content and decides which type names from
+      './client.js' are actually referenced (Client is always emitted —
+      it appears in ToolkitOptions outside the marker; SearchResult is
+      conditional). Prevents noUnusedLocals from breaking slot-fill for
+      plugins that replace the default search tool with custom logic.
+  - key: plugin-imports
+    target_file: plugin.ts
+    required: false
+    description: |
+      Auto-managed by codegen — DO NOT fill via fill_slot. Codegen scans
+      the activate-body slot content and decides which value imports
+      from './client.js' and './toolkit.js' are actually referenced.
+      `type Toolkit` is always emitted because it appears in the
+      AgentHandle interface outside any marker. createClient /
+      createToolkit are conditional and disappear from the import line
+      when a custom activate-body builds the client/toolkit inline.
+  - key: plugin-module-imports
+    target_file: plugin.ts
+    required: false
+    description: |
+      LLM-authored top-level imports for the activate-body. Use this to
+      add `import express from 'express'`, `import path from 'node:path'`,
+      `import { fileURLToPath } from 'node:url'` and similar when mounting
+      an admin-UI router or doing anything else that needs module-top
+      imports beyond the auto-managed ones. Third-party imports must be
+      backed by entries in package.json#peerDependencies — express, zod,
+      and @omadia/plugin-ui-helpers ship by default.
   - key: external-reads-imports
     target_file: plugin.ts
     required: false

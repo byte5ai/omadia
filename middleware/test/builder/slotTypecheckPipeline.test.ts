@@ -151,12 +151,15 @@ describe('SlotTypecheckPipeline', () => {
     assert.match(result.summary, /spec invalid/);
   });
 
-  it('returns reason=codegen_failed when codegen rejects (e.g., missing required slot)', async () => {
+  it('returns ok=true with reason=deferred_missing_slots when ONLY required slots are missing', async () => {
+    // Sequential fill_slot flow: the agent persists slot N, but slots
+    // N+1..M aren't written yet. Codegen sees the gap and used to throw
+    // codegen_failed — making the LLM think slot N itself failed. New
+    // behavior: persist OK, typecheck deferred, agent continues to the
+    // next slot.
     const userEmail = 'tester@example.com';
     const draft = await draftStore.create(userEmail, 'no slots');
     const { spec } = loadMinimalSpec();
-    // Persist the spec but drop ALL slots — the boilerplate has required slots
-    // that must be present, codegen will throw CodegenError.
     await draftStore.update(userEmail, draft.id, { spec, slots: {} });
 
     const pipeline = new SlotTypecheckPipeline({
@@ -176,9 +179,9 @@ describe('SlotTypecheckPipeline', () => {
     });
 
     const result = await pipeline.run({ userEmail, draftId: draft.id });
-    assert.equal(result.ok, false);
-    assert.equal(result.reason, 'codegen_failed');
-    assert.match(result.summary, /codegen failed/);
+    assert.equal(result.ok, true);
+    assert.equal(result.reason, 'deferred_missing_slots');
+    assert.match(result.summary, /typecheck deferred/);
   });
 
   it('returns reason=ok and ok=true when typecheck reports clean', async () => {
@@ -513,10 +516,15 @@ describe('SlotTypecheckPipeline', () => {
     });
 
     const result = await pipeline.run({ userEmail, draftId: draft.id });
-    assert.equal(result.reason, 'codegen_failed');
+    // Missing required slots now returns deferred_missing_slots (ok=true)
+    // instead of codegen_failed — slot persistence succeeded, typecheck is
+    // simply deferred. The staging cleanup invariant we're testing is the
+    // same in both code paths: codegen returns before any staging prep, so
+    // no dir leaks.
+    assert.equal(result.reason, 'deferred_missing_slots');
 
     const stagingAfter = readdirSync(stagingBaseDir).length;
-    // Codegen fails BEFORE staging prep → no new dir created.
+    // Codegen returns BEFORE staging prep → no new dir created.
     assert.equal(stagingAfter, stagingBefore);
   });
 

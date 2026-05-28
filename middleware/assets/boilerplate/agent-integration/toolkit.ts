@@ -1,5 +1,7 @@
 import { z } from 'zod';
+// #region builder:toolkit-imports
 import type { Client, SearchResult } from './client.js';
+// #endregion
 
 /**
  * Toolkit = capability → executable handler with a Zod input schema.

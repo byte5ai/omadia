@@ -598,7 +598,15 @@ function migrateMissingDomain(input: unknown): unknown {
 }
 
 export function parseAgentSpec(input: unknown): AgentSpec {
-  return AgentSpecSchema.parse(migrateMissingDomain(input));
+  const result = AgentSpecSchema.safeParse(migrateMissingDomain(input));
+  if (result.success) return result.data;
+  // Re-throw with the LLM-friendly enriched message (allowed-keys at path
+  // appended to bare `unrecognized_keys` issues). Without this, downstream
+  // catches that surface `err.message` to the agent show only the raw zod
+  // payload — the LLM then loops, e.g. trying spec.permissions.memory →
+  // strict-mode error → no hint about what IS allowed → tries again with
+  // permissions.scopes etc. The enriched form ends that loop in one turn.
+  throw new Error(formatZodErrors(result.error.issues));
 }
 
 /**
@@ -649,6 +657,47 @@ export function getAllowedKeysAtPath(
   node = unwrap(node);
   if (isZodObject(node)) return Object.keys(node.shape);
   return null;
+}
+
+/**
+ * Formats a Zod issues array into the compact `/pointer: message` form
+ * we surface to the LLM. `unrecognized_keys` issues are enriched with
+ * the schema's allowed-keys list (via `getAllowedKeysAtPath`) so the
+ * agent sees what IS valid at that path instead of only what was
+ * rejected. Caps at 5 issues so a multi-violation payload doesn't blow
+ * up the agent's context window.
+ *
+ * Used by both `parseAgentSpec` (every callsite that surfaces the throw
+ * to the agent) and `patch_spec` (which works against the underlying
+ * safeParse). Single source of truth — keep formatting in sync.
+ */
+export function formatZodErrors(
+  issues: ReadonlyArray<{
+    path: ReadonlyArray<PropertyKey>;
+    message: string;
+    code?: string;
+  }>,
+): string {
+  return issues
+    .slice(0, 5)
+    .map((i) => {
+      const pointer = i.path.length > 0 ? `/${i.path.map(String).join('/')}` : '/';
+      const enriched =
+        i.code === 'unrecognized_keys' ? enrichUnrecognizedKeys(i) : null;
+      const message = enriched ?? i.message;
+      return `${pointer}: ${message}`;
+    })
+    .join('; ');
+}
+
+function enrichUnrecognizedKeys(issue: {
+  path: ReadonlyArray<PropertyKey>;
+  message: string;
+}): string | null {
+  const allowed = getAllowedKeysAtPath(issue.path);
+  if (!allowed || allowed.length === 0) return null;
+  const list = allowed.join(', ');
+  return `${issue.message} — allowed keys at this path: ${list}`;
 }
 
 function isZodObject(

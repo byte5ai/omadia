@@ -56,7 +56,12 @@ export type SlotTypecheckReason =
   | 'timeout'
   | 'abort'
   | 'spawn'
-  | 'draft_not_found';
+  | 'draft_not_found'
+  /** Slot was persisted but typecheck was skipped because other required
+   *  slots aren't filled yet. Expected transient state during sequential
+   *  fill_slot calls; surfaced to keep ok=true so the LLM doesn't treat
+   *  the persist itself as a failure. */
+  | 'deferred_missing_slots';
 
 export interface SlotTypecheckResult {
   ok: boolean;
@@ -203,7 +208,34 @@ export class SlotTypecheckPipeline implements SlotTypecheckService {
       files = await generate({ spec, slots: draft.slots });
     } catch (err) {
       if (err instanceof CodegenError) {
-        const detail = err.issues.map((i) => i.detail).join('; ');
+        // Sequential fill_slot flow: the LLM writes one slot at a time
+        // and codegen runs after each persist. Until the LAST required
+        // slot lands, generate() throws `missing_required_slot` for the
+        // ones still to come — surfacing this as ok=false makes the
+        // agent see "fill_slot failed" on every intermediate write and
+        // confuses the next iteration ("did slot N fail? should I redo
+        // it?"). When the ONLY issues are missing_required_slot, return
+        // ok=true with reason=deferred_missing_slots: slot N persisted
+        // fine, typecheck is just deferred until N+1..M arrive. Real
+        // codegen errors (spec_validation, reserved_tool_id, …) still
+        // bubble up.
+        const issues = err.issues;
+        if (
+          issues.length > 0 &&
+          issues.every((i) => i.code === 'missing_required_slot')
+        ) {
+          const detail = issues.map((i) => i.detail).join('; ');
+          return {
+            ok: true,
+            errors: [],
+            reason: 'deferred_missing_slots',
+            summary:
+              'slot persisted; typecheck deferred until other required ' +
+              `slots are filled (${truncate(detail, 400)})`,
+            durationMs: Date.now() - start,
+          };
+        }
+        const detail = issues.map((i) => i.detail).join('; ');
         return {
           ok: false,
           errors: [],

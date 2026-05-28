@@ -12,6 +12,14 @@ export interface ClientOptions {
   log: (...args: unknown[]) => void;
 }
 
+// #region builder:client-interface
+// Replace this block when the plugin needs a different Client shape
+// (e.g. listIssues/getIssue/postComment for an issue tracker). Keep:
+//   - the `Client` interface name (ToolkitOptions references it),
+//   - any types referenced by createClient's return value.
+// The codegen's toolkit-imports synthesis only re-emits `SearchResult`
+// when the toolkit-impl slot actually references it, so removing
+// SearchResult here is safe for non-search plugins.
 export interface Client {
   ping(): Promise<void>;
   search(query: string): Promise<SearchResult[]>;
@@ -23,6 +31,7 @@ export interface SearchResult {
   title: string;
   url: string;
 }
+// #endregion
 
 export function createClient(opts: ClientOptions): Client {
   // #region builder:client-impl

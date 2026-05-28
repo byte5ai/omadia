@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { getAllowedKeysAtPath, safeParseAgentSpec } from '../agentSpec.js';
+import { formatZodErrors, safeParseAgentSpec } from '../agentSpec.js';
 import { BuilderAuditAction } from '../auditActions.js';
 import {
   checkSpecDelta,
@@ -144,38 +144,3 @@ export const patchSpecTool: BuilderTool<Input, Result> = {
   },
 };
 
-function formatZodErrors(
-  issues: ReadonlyArray<{
-    path: ReadonlyArray<PropertyKey>;
-    message: string;
-    code?: string;
-  }>,
-): string {
-  return issues
-    .slice(0, 5)
-    .map((i) => {
-      const pointer = i.path.length > 0 ? `/${i.path.map(String).join('/')}` : '/';
-      const enriched =
-        i.code === 'unrecognized_keys' ? enrichUnrecognizedKeys(i) : null;
-      const message = enriched ?? i.message;
-      return `${pointer}: ${message}`;
-    })
-    .join('; ');
-}
-
-/**
- * Appends the schema's allowed-keys list to the bare "Unrecognized keys: …"
- * Zod message so the next LLM iteration can correct the patch instead of
- * blindly guessing. The path always points at the *parent object* of the
- * unknown keys (one level above the offending field), so we can look up its
- * declared shape directly via `getAllowedKeysAtPath`.
- */
-function enrichUnrecognizedKeys(issue: {
-  path: ReadonlyArray<PropertyKey>;
-  message: string;
-}): string | null {
-  const allowed = getAllowedKeysAtPath(issue.path);
-  if (!allowed || allowed.length === 0) return null;
-  const list = allowed.join(', ');
-  return `${issue.message} — allowed keys at this path: ${list}`;
-}

@@ -138,6 +138,198 @@ describe('codegen.generate', () => {
     assert.equal(toolkitText.includes('{{CAPABILITY_ID}}'), false);
   });
 
+  it('synthesises toolkit-imports without SearchResult when slot does not reference it', async () => {
+    // The fixture's toolkit-impl does NOT mention SearchResult, so codegen
+    // must emit a minimal `import type { Client } …` line to keep
+    // noUnusedLocals happy. This is the regression that bricks every
+    // non-search plugin before the fix landed.
+    const { spec, slots } = loadFixture();
+    const out = await generate({ spec, slots });
+
+    const toolkitText = out.get('toolkit.ts')!.toString('utf-8');
+    assert.match(
+      toolkitText,
+      /import type \{ Client \} from '\.\/client\.js';/,
+    );
+    assert.equal(
+      /\bSearchResult\b/.test(toolkitText.split('// #endregion')[0] ?? ''),
+      false,
+      'SearchResult must NOT appear in the toolkit-imports region when the slot does not reference it',
+    );
+  });
+
+  it('keeps SearchResult in toolkit-imports when slot references it', async () => {
+    const { spec, slots } = loadFixture();
+    const enriched = {
+      ...slots,
+      'toolkit-impl':
+        'export function createToolkit(opts: ToolkitOptions): Toolkit {\n' +
+        '  return {\n' +
+        '    tools: [{\n' +
+        '      id: "search",\n' +
+        '      description: "search",\n' +
+        '      input: {} as never,\n' +
+        '      async run(): Promise<SearchResult[]> { return opts.client.search(""); },\n' +
+        '    }],\n' +
+        '    async close() { await opts.client.dispose(); },\n' +
+        '  };\n' +
+        '}',
+    };
+    const out = await generate({ spec, slots: enriched });
+
+    const toolkitText = out.get('toolkit.ts')!.toString('utf-8');
+    assert.match(
+      toolkitText,
+      /import type \{ Client, SearchResult \} from '\.\/client\.js';/,
+    );
+  });
+
+  it('emits both createClient + createToolkit value imports when activate-body slot is unset', async () => {
+    // The fixture doesn't fill activate-body, so the boilerplate default
+    // body remains in place — that body uses both createClient and
+    // createToolkit, so both must appear in the synthesised import block.
+    const { spec, slots } = loadFixture();
+    const out = await generate({ spec, slots });
+
+    const pluginText = out.get('plugin.ts')!.toString('utf-8');
+    const header = pluginText.split('export const AGENT_ID')[0] ?? '';
+    assert.match(
+      header,
+      /import \{ createClient \} from '\.\/client\.js';/,
+    );
+    assert.match(
+      header,
+      /import \{ createToolkit, type Toolkit \} from '\.\/toolkit\.js';/,
+    );
+  });
+
+  it('drops createClient from plugin-imports when activate-body builds the client inline', async () => {
+    // Custom activate-body skips the createClient helper — typical for
+    // plugins that construct the client inline with extra method bindings
+    // (the github-tracker pattern). The synthesised import must not
+    // include createClient or noUnusedLocals trips.
+    const { spec, slots } = loadFixture();
+    const enriched = {
+      ...slots,
+      'activate-body':
+        'const client = { ping: async () => {}, search: async () => [], dispose: async () => {} };\n' +
+        'const toolkit = createToolkit({ client, log: ctx.log });',
+    };
+    const out = await generate({ spec, slots: enriched });
+
+    const pluginText = out.get('plugin.ts')!.toString('utf-8');
+    const header = pluginText.split('export const AGENT_ID')[0] ?? '';
+    assert.equal(
+      /import \{ createClient \}/.test(header),
+      false,
+      'createClient value-import must be elided when the slot does not call it',
+    );
+    assert.match(
+      header,
+      /import \{ createToolkit, type Toolkit \} from '\.\/toolkit\.js';/,
+    );
+  });
+
+  it('injects the plugin-module-imports slot at module top, outside the function body', async () => {
+    // Admin-UI plugins need express/node:path/node:url at module top.
+    // The slot lives between the auto-managed plugin-imports and the
+    // codegen-managed external-reads/ui-routes import regions; LLM
+    // writes free-form import statements.
+    const { spec, slots } = loadFixture();
+    const enriched = {
+      ...slots,
+      'plugin-module-imports':
+        "import express from 'express';\n" +
+        "import path from 'node:path';\n" +
+        "import { fileURLToPath } from 'node:url';",
+    };
+    const out = await generate({ spec, slots: enriched });
+
+    const pluginText = out.get('plugin.ts')!.toString('utf-8');
+    // All three imports landed above the activate() function (i.e. at
+    // module top), not inside the activate-body marker region.
+    const beforeActivate = pluginText.split('export async function activate')[0] ?? '';
+    assert.match(beforeActivate, /import express from 'express';/);
+    assert.match(beforeActivate, /import path from 'node:path';/);
+    assert.match(beforeActivate, /import \{ fileURLToPath \} from 'node:url';/);
+  });
+
+  it('emits only `type Toolkit` when activate-body uses neither helper', async () => {
+    // Edge case: LLM rewrites the activate-body completely without any
+    // helper call. `Toolkit` type is still needed by AgentHandle outside
+    // the marker — emit the type-only import to keep the file compiling.
+    const { spec, slots } = loadFixture();
+    const enriched = {
+      ...slots,
+      'activate-body':
+        'const toolkit: Toolkit = { tools: [], close: async () => {} };',
+    };
+    const out = await generate({ spec, slots: enriched });
+
+    const pluginText = out.get('plugin.ts')!.toString('utf-8');
+    const header = pluginText.split('export const AGENT_ID')[0] ?? '';
+    assert.equal(/import \{ createClient \}/.test(header), false);
+    assert.equal(/import \{ createToolkit/.test(header), false);
+    assert.match(
+      header,
+      /import type \{ Toolkit \} from '\.\/toolkit\.js';/,
+    );
+  });
+
+  it('ignores SearchResult mentions inside comments when synthesising toolkit-imports', async () => {
+    const { spec, slots } = loadFixture();
+    const enriched = {
+      ...slots,
+      'toolkit-impl':
+        '// Future tools may return SearchResult[] — kept as a hint only.\n' +
+        '/* SearchResult is also documented in client.ts */\n' +
+        'export function createToolkit(opts: ToolkitOptions): Toolkit {\n' +
+        '  return { tools: [], async close() { await opts.client.dispose(); } };\n' +
+        '}',
+    };
+    const out = await generate({ spec, slots: enriched });
+
+    const toolkitText = out.get('toolkit.ts')!.toString('utf-8');
+    // Import line is the synthesised one (no SearchResult), but the slot
+    // body still carries the comments verbatim — so we assert on the
+    // header region above the toolkit-impl marker.
+    const header = toolkitText.split('// #region builder:toolkit-impl')[0] ?? '';
+    assert.match(
+      header,
+      /import type \{ Client \} from '\.\/client\.js';/,
+    );
+    assert.equal(
+      /\bSearchResult\b/.test(header),
+      false,
+      'comment-only SearchResult mentions must not force an unused import',
+    );
+  });
+
+  it('injects the client-interface slot, replacing the default Client + SearchResult declarations', async () => {
+    // Custom Client interface for plugins that need methods beyond
+    // ping/search/dispose — the github-tracker pattern that previously
+    // forced `(client as any).listIssues(...)` casts in the toolkit.
+    const { spec, slots } = loadFixture();
+    const enriched = {
+      ...slots,
+      'client-interface':
+        'export interface Issue { id: number; title: string; }\n' +
+        'export interface Client {\n' +
+        '  ping(): Promise<void>;\n' +
+        '  listIssues(): Promise<Issue[]>;\n' +
+        '  dispose(): Promise<void>;\n' +
+        '}',
+    };
+    const out = await generate({ spec, slots: enriched });
+
+    const clientText = out.get('client.ts')!.toString('utf-8');
+    assert.match(clientText, /listIssues\(\): Promise<Issue\[\]>/);
+    assert.match(clientText, /export interface Issue \{ id: number; title: string; \}/);
+    // Defaults that lived inside the marker region must be gone.
+    assert.equal(/search\(query: string\): Promise<SearchResult\[\]>/.test(clientText), false);
+    assert.equal(/export interface SearchResult \{/.test(clientText), false);
+  });
+
   it('injects the client-impl slot between markers', async () => {
     const { spec, slots } = loadFixture();
     const out = await generate({ spec, slots });

@@ -762,6 +762,92 @@ function buildExternalReadsArtifacts(spec: AgentSpec): ExternalReadsArtifacts {
 }
 
 /**
+ * Synthesises the `toolkit-imports` slot content based on which types
+ * from `./client.js` are referenced inside the toolkit-impl slot.
+ *
+ * The boilerplate declares `ToolkitOptions { client: Client }` OUTSIDE
+ * the marker region — `Client` is therefore always needed at module
+ * top. `SearchResult` is only used by the default search-tool body
+ * and becomes unused as soon as the plugin replaces the toolkit-impl
+ * slot with custom tools that don't return SearchResult[].
+ *
+ * Without this synthesis, `noUnusedLocals: true` in the plugin tsconfig
+ * trips the codegen build-budget every time a non-search plugin gets
+ * generated (LLM workarounds with `_Tribute = SearchResult` are
+ * themselves flagged as unused → 8-fail Slot-Loop).
+ *
+ * Comments inside the slot are stripped before scanning so a stray
+ * `// SearchResult` mention in a code-comment doesn't force an unused
+ * import.
+ */
+function buildToolkitImportsArtifact(
+  toolkitImplSlot: string | undefined,
+): string {
+  // `Client` is referenced outside the marker (ToolkitOptions) so it is
+  // always emitted. `SearchResult` is conditional. The slot-undefined
+  // branch keeps both types — preserves boilerplate-compile correctness
+  // when generate() is invoked with a partial spec (e.g. from lint_spec
+  // paths that bypass the required-slot check).
+  if (toolkitImplSlot === undefined) {
+    return "import type { Client, SearchResult } from './client.js';";
+  }
+  const stripped = toolkitImplSlot
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/.*$/gm, '');
+  const usesSearchResult = /\bSearchResult\b/.test(stripped);
+  return usesSearchResult
+    ? "import type { Client, SearchResult } from './client.js';"
+    : "import type { Client } from './client.js';";
+}
+
+/**
+ * Synthesises the `plugin-imports` slot content based on which value
+ * imports from `./client.js` and `./toolkit.js` are referenced in the
+ * activate-body slot.
+ *
+ * `Toolkit` (type) is always emitted because it appears in the
+ * AgentHandle interface outside any marker. `createClient` and
+ * `createToolkit` are conditional — when a custom activate-body
+ * inlines the client/toolkit construction (no helper call), the
+ * unused-value-import would trip noUnusedLocals.
+ *
+ * When the activate-body slot is undefined (LLM did not customise),
+ * the boilerplate's default activate body remains in place — that body
+ * uses both helpers, so we emit both imports.
+ *
+ * Same comment-stripping as buildToolkitImportsArtifact to avoid false
+ * positives from in-code-comment mentions.
+ */
+function buildPluginImportsArtifact(
+  activateBodySlot: string | undefined,
+): string {
+  if (activateBodySlot === undefined) {
+    return [
+      "import { createClient } from './client.js';",
+      "import { createToolkit, type Toolkit } from './toolkit.js';",
+    ].join('\n');
+  }
+  const stripped = activateBodySlot
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/.*$/gm, '');
+  const usesCreateClient = /\bcreateClient\b/.test(stripped);
+  const usesCreateToolkit = /\bcreateToolkit\b/.test(stripped);
+  const lines: string[] = [];
+  if (usesCreateClient) {
+    lines.push("import { createClient } from './client.js';");
+  }
+  // `Toolkit` (type) is always needed by AgentHandle, but the value
+  // export `createToolkit` is conditional. Combine when both are
+  // referenced to keep the import list compact.
+  lines.push(
+    usesCreateToolkit
+      ? "import { createToolkit, type Toolkit } from './toolkit.js';"
+      : "import type { Toolkit } from './toolkit.js';",
+  );
+  return lines.join('\n');
+}
+
+/**
  * Patches the plugin's tsconfig.json to enable JSX (react-jsx runtime)
  * when the spec carries ≥1 react-ssr ui_route. No-op when the flag is
  * off — the boilerplate tsconfig stays unchanged for tools-only and
@@ -833,6 +919,21 @@ export async function generate(
     }
   }
   if (issues.length > 0) throw new CodegenError(issues);
+
+  // 3a. Codegen-managed toolkit.ts + plugin.ts imports. The boilerplate
+  //     keeps top-level imports outside the editable marker regions; when
+  //     a slot replaces the default body with custom code that doesn't
+  //     reference one of those imports, noUnusedLocals breaks the build.
+  //     This synthesis scans the slot content and emits a minimal import
+  //     line. The `toolkit-imports` and `plugin-imports` keys are
+  //     reserved for codegen output (declared `auto-managed` in
+  //     template.yaml).
+  allSlots['toolkit-imports'] = buildToolkitImportsArtifact(
+    allSlots['toolkit-impl'],
+  );
+  allSlots['plugin-imports'] = buildPluginImportsArtifact(
+    allSlots['activate-body'],
+  );
 
   // 3b. Theme A — codegen-managed slots from spec.external_reads. These
   //     overwrite anything the LLM (or a clone-from-installed) might have
