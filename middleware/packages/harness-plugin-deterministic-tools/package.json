@@ -1,0 +1,21 @@
+{
+  "name": "@omadia/plugin-deterministic-tools",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "Deterministic calculator + logic-inference tools for the byte5 Harness. Addresses LLM-weakness #1 (PoT / code execution), #2 (token counting), #3 (formal logical inference) from the May 2026 audit. Math-Delegation rule (default-on) forces the orchestrator LLM to call calc_* tools instead of computing inline.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@omadia/plugin-api": "*",
+    "zod": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
