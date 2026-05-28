@@ -1,0 +1,34 @@
+schema_version: "1"
+
+identity:
+  id: "@omadia/plugin-deterministic-tools"
+  name: "Deterministic Tools"
+  version: "0.1.0"
+  kind: "tool"
+  domain: "quality.deterministic"
+  description: "Deterministic calculator + logic-inference tools that the orchestrator LLM delegates arithmetic and set/range/predicate evaluation to instead of computing inline. Tools declare Zod output schemas so the bridge can post-validate every return value and trigger the existing #130 correctionPrompt retry loop on mismatch. Math-Delegation rule (default-on) ships as a promptDoc fragment auto-spliced into every agent that has the plugin installed."
+  authors:
+    - name: "byte5 GmbH"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
+  license: "MIT"
+  categories:
+    - "quality"
+    - "tools"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+lifecycle:
+  entry: "dist/plugin.js"
+
+# No setup fields — the plugin is parameterless. Every tool is pure
+# arithmetic / set logic with no external state to configure.
+setup:
+  fields: []
+
+permissions:
+  memory:
+    reads: []
+    writes: []
