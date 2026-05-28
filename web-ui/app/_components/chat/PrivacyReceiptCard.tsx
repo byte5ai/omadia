@@ -35,11 +35,24 @@ export function PrivacyReceiptCard({
 }: PrivacyReceiptCardProps): React.ReactElement {
   const t = useTranslations('privacyReceipt');
   const verbs = receipt.verbsExecuted;
+  const bypassed = receipt.bypassedTools ?? [];
 
-  // A real identity value the requester named themselves reached the model
-  // → flip the whole card to the red palette.
+  // Palette precedence: identity-breach (red) wins over bypass-warning
+  // (amber) wins over default (emerald). Breach is a transparency notice
+  // the user MUST see; bypass is a conscious operator decision but still
+  // worth highlighting; default is the boring "boundary did its job".
   const breached = (receipt.identityValuesOnWire ?? 0) > 0;
-  const palette = breached ? PALETTE_BREACH : PALETTE_OK;
+  const hasBypass = bypassed.length > 0;
+  const palette = breached
+    ? PALETTE_BREACH
+    : hasBypass
+      ? PALETTE_BYPASS
+      : PALETTE_OK;
+
+  // Which explainer line to show under the facts grid. Bypass explainer
+  // is its own line BELOW the default/breach explainer because they can
+  // co-occur (a turn can both intern AND bypass).
+  const explainerKey = breached ? 'explainerBreach' : 'explainer';
 
   return (
     <details
@@ -96,9 +109,42 @@ export function PrivacyReceiptCard({
             />
           )}
         </dl>
+        {hasBypass && (
+          <div>
+            <div
+              className={[
+                'text-[10px] font-semibold uppercase tracking-wider',
+                palette.label,
+              ].join(' ')}
+            >
+              {t('factBypassed')}
+            </div>
+            <ul className="mt-1 space-y-0.5">
+              {bypassed.map((entry, i) => (
+                <li
+                  key={`${entry.pluginId}-${entry.toolName}-${String(i)}`}
+                  className="font-mono-num flex flex-wrap items-baseline gap-x-2"
+                >
+                  <span className="font-medium">{entry.toolName}</span>
+                  <span className={palette.label}>{entry.pluginId}</span>
+                  <span className={['text-[10px]', palette.label].join(' ')}>
+                    {t('bypassedBytes', {
+                      kb: (entry.bytes / 1024).toFixed(1),
+                    })}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         <div className={['text-[11px] italic', palette.muted].join(' ')}>
-          {t(breached ? 'explainerBreach' : 'explainer')}
+          {t(explainerKey)}
         </div>
+        {hasBypass && (
+          <div className={['text-[11px] italic', palette.muted].join(' ')}>
+            {t('explainerBypassed')}
+          </div>
+        )}
       </div>
     </details>
   );
@@ -127,6 +173,19 @@ const PALETTE_BREACH = {
   muted: 'text-red-900/80 dark:text-red-200/90',
 } as const;
 
+// Slice 2.5 — operator opted into bypass on at least one plugin this turn.
+// Amber sits between calm-emerald (boundary did its job) and loud-red (real
+// identity reached the model). Bypass is a conscious choice, but the user
+// should still see it loud enough to notice.
+const PALETTE_BYPASS = {
+  container:
+    'bg-amber-50/70 ring-amber-200 dark:bg-amber-950/30 dark:ring-amber-800/60',
+  summary: 'font-medium text-amber-800 dark:text-amber-200',
+  body: 'text-amber-900 dark:text-amber-100',
+  label: 'text-amber-700/80 dark:text-amber-300/80',
+  muted: 'text-amber-900/80 dark:text-amber-200/90',
+} as const;
+
 /**
  * Build the one-line summary shown in the collapsed card. Pure — pass a
  * translator so it stays unit-testable without React. `datasetsInterned` is
@@ -134,9 +193,12 @@ const PALETTE_BREACH = {
  * so the dataset clause always renders.
  */
 export function summarisePrivacyReceipt(r: PrivacyReceipt, t: TFn): string {
-  const parts: string[] = [
-    t('summaryDatasets', { count: r.datasetsInterned }),
-  ];
+  const parts: string[] = [];
+  // Slice 2.5: drop the dataset clause entirely when the turn interned
+  // nothing (pure-bypass turn) — the receipt now also surfaces for those.
+  if (r.datasetsInterned > 0) {
+    parts.push(t('summaryDatasets', { count: r.datasetsInterned }));
+  }
   if (r.fieldsMasked > 0) {
     parts.push(t('summaryMasked', { count: r.fieldsMasked }));
   }
@@ -145,6 +207,10 @@ export function summarisePrivacyReceipt(r: PrivacyReceipt, t: TFn): string {
   }
   if (r.pseudonymProjectionUsed) {
     parts.push(t('summaryPseudonyms'));
+  }
+  const bypassed = r.bypassedTools ?? [];
+  if (bypassed.length > 0) {
+    parts.push(t('summaryBypassed', { count: bypassed.length }));
   }
   const onWire = r.identityValuesOnWire ?? 0;
   if (onWire > 0) {

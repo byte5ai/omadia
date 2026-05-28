@@ -1,15 +1,17 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowRight, Check, Loader2, Lock, Trash2 } from 'lucide-react';
+import { ArrowRight, Check, Loader2, Lock, Shield, Trash2 } from 'lucide-react';
 
 import { cn } from '../../_lib/cn';
 import {
   configureInstallJob,
   createInstallJob,
   deleteUploadedPackage,
+  getInstalledPlugin,
   uninstallPlugin,
+  updateInstalledPluginConfig,
   ApiError,
 } from '../../_lib/api';
 import type {
@@ -345,6 +347,15 @@ function InstalledPanel({
         </span>
       </div>
 
+      {/* Slice 2.5 — Privacy-Mode quick-picker. Operator-owned per-plugin
+          setting that decides whether the orchestrator dispatch hook
+          interns raw tool results behind the Privacy Shield v4 boundary
+          (`guarded`, default) or passes them through unmasked (`bypass`).
+          Reconfiguration via the full install form is not yet wired for
+          installed plugins; this dedicated picker covers the single
+          most-actionable setting without a full reconfigure flow. */}
+      <PrivacyModePicker pluginId={pluginId} />
+
       {state.kind === 'idle' && (
         <button
           type="button"
@@ -627,4 +638,162 @@ function tryParseErrorBody(body: string): {
 function safeMessage(body: string): string | null {
   const parsed = tryParseErrorBody(body);
   return parsed?.message ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// PrivacyModePicker — Slice 2.5 quick-picker for the operator-owned
+// `_privacy_mode` setting on an installed plugin. Reads the current value
+// via GET /installed/:id and PATCHes back on change. Optimistic UI: the
+// dropdown reflects the new value immediately, error state rolls back.
+// ---------------------------------------------------------------------------
+
+type PrivacyMode = 'guarded' | 'bypass' | 'per_tool';
+
+const PRIVACY_MODE_LABELS: Record<PrivacyMode, string> = {
+  guarded: 'Geschützt (Privacy Shield)',
+  bypass: 'Bypass (roh durchlassen)',
+  per_tool: 'Per-Tool (Whitelist)',
+};
+
+function isPrivacyMode(v: unknown): v is PrivacyMode {
+  return v === 'guarded' || v === 'bypass' || v === 'per_tool';
+}
+
+function PrivacyModePicker({
+  pluginId,
+}: {
+  pluginId: string;
+}): React.ReactElement | null {
+  // `null` initial state → "loading". Once loaded we know what mode the
+  // backend currently has stored (default 'guarded' when unset).
+  const [mode, setMode] = useState<PrivacyMode | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Tracks whether the GET succeeded at all — without it we render
+  // nothing rather than a confusing dropdown over nothing.
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const entry = await getInstalledPlugin(pluginId);
+        if (cancelled) return;
+        const current = entry.config['_privacy_mode'];
+        setMode(isPrivacyMode(current) ? current : 'guarded');
+        setLoaded(true);
+      } catch (err) {
+        if (cancelled) return;
+        const msg =
+          err instanceof ApiError
+            ? safeMessage(err.body) ?? err.message
+            : err instanceof Error
+              ? err.message
+              : String(err);
+        setError(msg);
+        setLoaded(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [pluginId]);
+
+  async function handleChange(next: PrivacyMode): Promise<void> {
+    const previous = mode;
+    setMode(next);
+    setSaving(true);
+    setError(null);
+    try {
+      await updateInstalledPluginConfig(pluginId, { _privacy_mode: next });
+    } catch (err) {
+      // Roll back to the previous value so the dropdown reflects what
+      // the backend actually has stored.
+      setMode(previous);
+      const msg =
+        err instanceof ApiError
+          ? safeMessage(err.body) ?? err.message
+          : err instanceof Error
+            ? err.message
+            : String(err);
+      setError(msg);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!loaded) {
+    return (
+      <div className="rounded-[10px] border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-3 py-2.5">
+        <div className="flex items-center gap-2 text-[11px] text-[color:var(--fg-subtle)]">
+          <Loader2 className="size-3.5 animate-spin" aria-hidden />
+          Privacy-Mode wird geladen …
+        </div>
+      </div>
+    );
+  }
+  if (mode === null) {
+    return (
+      <div className="rounded-[10px] border border-[color:var(--danger,#b03030)]/40 bg-[color:var(--danger,#b03030)]/5 px-3 py-2">
+        <p className="text-[12px] text-[color:var(--danger,#b03030)]">
+          Privacy-Mode konnte nicht geladen werden{error ? `: ${error}` : '.'}
+        </p>
+      </div>
+    );
+  }
+
+  const tone =
+    mode === 'bypass'
+      ? 'border-amber-300 bg-amber-50/50 dark:border-amber-800/60 dark:bg-amber-950/20'
+      : 'border-[color:var(--border)] bg-[color:var(--bg-soft)]';
+
+  return (
+    <div className={cn('rounded-[10px] border px-3 py-2.5', tone)}>
+      <label
+        htmlFor={`privacy-mode-${pluginId}`}
+        className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]"
+      >
+        <Shield className="size-3.5" aria-hidden />
+        Privacy Mode
+      </label>
+      <select
+        id={`privacy-mode-${pluginId}`}
+        value={mode}
+        disabled={saving}
+        onChange={(e) => void handleChange(e.target.value as PrivacyMode)}
+        className={cn(
+          'mt-1.5 w-full rounded border px-2 py-1.5 text-[13px]',
+          'border-[color:var(--border)] bg-[color:var(--bg)]',
+          'focus:outline-none focus:ring-1 focus:ring-[color:var(--accent)]',
+          saving ? 'opacity-60' : '',
+        )}
+      >
+        {(Object.entries(PRIVACY_MODE_LABELS) as Array<[PrivacyMode, string]>).map(
+          ([value, label]) => (
+            <option key={value} value={value}>
+              {label}
+            </option>
+          ),
+        )}
+      </select>
+      <p className="mt-1.5 text-[11px] leading-relaxed text-[color:var(--fg-subtle)]">
+        {mode === 'guarded'
+          ? 'Tool-Ergebnisse werden serverseitig hinter dem Privacy Shield v4 maskiert; der LLM sieht nur identitätsfreie Digests.'
+          : mode === 'bypass'
+            ? 'Rohe Tool-Ergebnisse erreichen den LLM unmaskiert. Geeignet für vertrauenswürdige interne Quellen, deren Inhalte der Privacy Shield strukturell nicht digestieren kann (z. B. Confluence-Seiten-Bodies).'
+            : 'Per-Tool-Whitelist: nur explizit gelistete Tools werden bypassed. Liste über das Feld `_privacy_bypass_scopes` setzen (Komma-getrennt).'}
+      </p>
+      {saving && (
+        <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-[color:var(--fg-subtle)]">
+          <Loader2 className="size-3 animate-spin" aria-hidden />
+          Speichere …
+        </div>
+      )}
+      {error && (
+        <p className="font-mono-num mt-1.5 text-[11px] text-[color:var(--danger,#b03030)]">
+          {error}
+        </p>
+      )}
+    </div>
+  );
 }

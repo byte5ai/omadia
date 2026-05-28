@@ -451,6 +451,20 @@ async function main(): Promise<void> {
     },
   });
 
+  // Slice 2.5 — cross-plugin runtime-config reader. Published as a kernel
+  // service so the orchestrator plugin (which activates BEFORE most tool
+  // plugins) can resolve any other installed plugin's `_privacy_mode`
+  // setting at dispatch time without having to import the installed
+  // registry directly. Reads only the non-secret config bag; secrets are
+  // never exposed via this surface. Returns `undefined` for both unknown
+  // plugins and unknown keys — the caller treats both as "no override".
+  serviceRegistry.provide(
+    'installedPluginConfigReader',
+    (agentId: string, configKey: string): unknown => {
+      return installedRegistry.get(agentId)?.config?.[configKey];
+    },
+  );
+
   // Kernel-wide background-job scheduler. Plugin-contributed jobs (cron or
   // interval) register here via `ctx.jobs.register(...)`. Bulk teardown on
   // plugin deactivate is owned by each runtime, so a leaked dispose handle

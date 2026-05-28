@@ -141,6 +141,21 @@ export interface PrivacyReceipt {
    * `0` / absent when the user named no one.
    */
   identityValuesOnWire?: number;
+  /**
+   * Slice 2.5 — tools whose raw results bypassed the data-plane boundary
+   * this turn (operator set the originating plugin's `_privacy_mode` to
+   * `bypass`). Surfaced as a dedicated "not masked" section in the card.
+   * Absent / empty when no bypass fired. PII-free.
+   */
+  bypassedTools?: readonly BypassedToolEntry[];
+}
+
+/** Slice 2.5 — one entry in `PrivacyReceipt.bypassedTools`. */
+export interface BypassedToolEntry {
+  toolName: string;
+  pluginId: string;
+  reason: 'operator_setting';
+  bytes: number;
 }
 
 /**

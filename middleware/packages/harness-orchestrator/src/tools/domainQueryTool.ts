@@ -78,6 +78,15 @@ export interface DomainTool {
   spec: DomainToolSpec;
   /** OB-77 — see `PLUGIN_DOMAIN_REGEX` for the naming convention. */
   domain: string;
+  /**
+   * Slice 2.5 — originating agent plugin's id (manifest `identity.id`),
+   * e.g. `@omadia/agent-confluence`. Used by the orchestrator's privacy
+   * bypass resolver to look up the operator-set `_privacy_mode` on the
+   * agent that owns this domain tool — so `bypass` on the agent applies
+   * BOTH to the domain tool itself AND to every sub-agent inner tool
+   * call that runs within its dispatch.
+   */
+  agentId?: string;
   handle(input: unknown, observer?: AskObserver): Promise<string>;
   /**
    * Privacy-Shield v3 (stable-id tokenization, slice 1) — optional PII
@@ -120,6 +129,14 @@ interface DomainToolOptions {
    * Nudge-Pipeline can detect multi-domain workflows.
    */
   domain: string;
+  /**
+   * Slice 2.5 — owning agent plugin id (manifest `identity.id`).
+   * Optional for back-compat with existing callers; when present, the
+   * orchestrator's privacy bypass resolver consults the operator's
+   * `_privacy_mode` setting on this plugin for BOTH the domain tool
+   * dispatch AND every sub-agent inner tool call within it.
+   */
+  agentId?: string;
 }
 
 export function createDomainTool(options: DomainToolOptions): DomainTool {
@@ -143,6 +160,7 @@ export function createDomainTool(options: DomainToolOptions): DomainTool {
     name: options.name,
     spec,
     domain: options.domain,
+    ...(options.agentId !== undefined ? { agentId: options.agentId } : {}),
     async handle(input: unknown, observer?: AskObserver): Promise<string> {
       if (typeof input !== 'object' || input === null) {
         return 'Error: tool input must be an object.';

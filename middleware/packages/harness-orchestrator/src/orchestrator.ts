@@ -66,6 +66,11 @@ import type {
   SessionBriefingService,
 } from '@omadia/plugin-api';
 import {
+  PRIVACY_BYPASS_SCOPES_CONFIG_KEY,
+  PRIVACY_MODE_CONFIG_KEY,
+  resolveEffectivePrivacyMode,
+} from '@omadia/plugin-api';
+import {
   createNudgeTurnCounter,
   runNudgePipeline,
   type NudgeTurnCounter,
@@ -228,6 +233,26 @@ export interface OrchestratorOptions {
    * attached to the returned `ChatTurnResult.privacyReceipt`.
    */
   privacyGuard?: () => PrivacyGuardService | undefined;
+  /**
+   * Slice 2.5 — cross-plugin runtime-config lookup for the privacy
+   * dispatch hook. Given `(agentId, configKey)` returns the operator-set
+   * value stored on that installed plugin's registry entry. Used by the
+   * bypass resolver to look up `_privacy_mode` on:
+   *   - a domain tool's owning agent plugin (via DomainTool.agentId)
+   *   - a sub-agent's owning agent plugin (via
+   *     turnContext.subAgentOwnerPluginId)
+   * neither of which is reachable through the per-tool `readConfig`
+   * closure attached to NativeToolRegistry entries.
+   *
+   * Caller (the harness runtime) wires this as
+   * `(agentId, key) => installedRegistry.get(agentId)?.config?.[key]`.
+   * Absent ⇒ only kernel-tool bypass works (pre-Slice-2.5-extension
+   * behaviour), domain/sub-agent tools always run guarded.
+   */
+  pluginConfigGet?: (
+    agentId: string,
+    configKey: string,
+  ) => unknown | undefined;
   /**
    * Palaia Phase 8 (OB-77) — Nudge-Pipeline registry. Plugin-contributed
    * `NudgeProvider`s register against this registry; the orchestrator
@@ -748,6 +773,10 @@ export class Orchestrator {
   private readonly bookMeetingTool: BookMeetingTool | undefined;
   private readonly responseGuard: (() => ResponseGuardService | undefined) | undefined;
   private readonly privacyGuard: (() => PrivacyGuardService | undefined) | undefined;
+  /** Slice 2.5 — cross-plugin runtime-config lookup (see OrchestratorOptions). */
+  private readonly pluginConfigGet:
+    | ((agentId: string, configKey: string) => unknown | undefined)
+    | undefined;
   private readonly nudgeRegistry: NudgeRegistry | undefined;
   private readonly nudgeStateStore: NudgeStateStore | undefined;
   private readonly nudgeProcessMemory: ProcessMemoryService | undefined;
@@ -793,6 +822,7 @@ export class Orchestrator {
     this.bookMeetingTool = options.bookMeetingTool;
     this.responseGuard = options.responseGuard;
     this.privacyGuard = options.privacyGuard;
+    this.pluginConfigGet = options.pluginConfigGet;
     this.nudgeRegistry = options.nudgeRegistry;
     this.nudgeStateStore = options.nudgeStateStore;
     this.nudgeProcessMemory = options.nudgeProcessMemory;
@@ -1318,11 +1348,7 @@ export class Orchestrator {
     const sessionId = input.sessionScope ?? turnId;
     const privacyService = this.privacyGuard?.();
     const privacyHandle = privacyService
-      ? createPrivacyTurnHandle({
-          service: privacyService,
-          sessionId,
-          turnId,
-        })
+      ? this.buildPrivacyHandle(privacyService, sessionId, turnId)
       : undefined;
 
     return turnContext.run(
@@ -1715,11 +1741,7 @@ export class Orchestrator {
     const sessionId = input.sessionScope ?? turnId;
     const privacyService = this.privacyGuard?.();
     const privacyHandle = privacyService
-      ? createPrivacyTurnHandle({
-          service: privacyService,
-          sessionId,
-          turnId,
-        })
+      ? this.buildPrivacyHandle(privacyService, sessionId, turnId)
       : undefined;
 
     turnContext.enter({
@@ -2294,14 +2316,31 @@ export class Orchestrator {
     // into it, and below we hand the parent agent the digests of those REAL
     // datasets by reference instead of re-interning the prose.
     const subAgentSink: string[] = [];
+    // Slice 2.5 — mutable flag that captures whether any tool call inside
+    // a domain-tool dispatch honored the operator's per-plugin `bypass`
+    // setting. Read after the sub-agent loop returns so we can decide
+    // whether to pass the narration through raw (sub-agent already saw
+    // real values, its synthesis carries them) or intern as before.
+    const subAgentBypassFlag = { value: false };
     let result: string;
     if (
       privacy !== undefined &&
       ctx !== undefined &&
       this.domainToolsByName.has(name)
     ) {
+      // Slice 2.5 — stash the domain tool's owning agent plugin id so
+      // the sub-agent's inner tool calls can resolve bypass via the
+      // same plugin's `_privacy_mode` setting.
+      const domainToolAgentId = this.domainToolsByName.get(name)?.agentId;
       result = await turnContext.run(
-        { ...ctx, subAgentDatasetSink: subAgentSink },
+        {
+          ...ctx,
+          subAgentDatasetSink: subAgentSink,
+          subAgentBypassFlag,
+          ...(domainToolAgentId !== undefined
+            ? { subAgentOwnerPluginId: domainToolAgentId }
+            : {}),
+        },
         () => this.dispatchToolInner(name, input, observer),
       );
     } else {
@@ -2323,6 +2362,33 @@ export class Orchestrator {
       }
     }
     if (privacy !== undefined && typeof result === 'string') {
+      // Slice 2.5 — Operator-owned per-plugin bypass. If the originating
+      // plugin's `_privacy_mode` is `bypass` (or per-tool whitelist hits
+      // this name), pass the raw result through unmasked AND record an
+      // entry on the receipt for transparency. Org-policy override
+      // (`OMADIA_PRIVACY_FORCE_GUARDED=true`) clamps every plugin back
+      // to `guarded` inside the resolver.
+      const bypass = privacy.checkBypass(name);
+      if (bypass !== undefined) {
+        // Mark the enclosing sub-agent scope (if any) so the parent
+        // dispatch knows the sub-agent saw real values.
+        const flag = turnContext.current()?.subAgentBypassFlag;
+        if (flag) flag.value = true;
+        try {
+          await privacy.recordBypassedTool({
+            toolName: name,
+            pluginId: bypass.pluginId,
+            reason: 'operator_setting',
+            bytes: Buffer.byteLength(result, 'utf8'),
+          });
+        } catch (err) {
+          console.warn(
+            `[orchestrator.dispatchTool:${name}] privacy.recordBypassedTool threw — bypass still applied:`,
+            err,
+          );
+        }
+        return result;
+      }
       // Sub-agent bridge: the sub-agent interned ≥1 dataset this dispatch —
       // pass those REAL datasets up by reference so the parent agent's
       // `v4_render_answer` resolves ground truth, not the `[masked]` prose.
@@ -2340,6 +2406,13 @@ export class Orchestrator {
           );
         }
       }
+      // Slice 2.5 — sub-agent ran in bypass mode for at least one of its
+      // tool calls. Its narration already carries real values (the sub-
+      // agent's LLM read them directly), so re-interning the prose would
+      // mask the synthesis the user actually asked for. Pass raw.
+      if (subAgentBypassFlag.value && subAgentSink.length === 0) {
+        return result;
+      }
       // Intern the raw result server-side and hand the LLM only the
       // identity-free digest — the raw rows never reach the LLM wire.
       try {
@@ -2356,6 +2429,105 @@ export class Orchestrator {
       }
     }
     return result;
+  }
+
+  /**
+   * Slice 2.5 — build the per-turn `PrivacyTurnHandle` with the bypass
+   * resolver baked in. Shared by both `runTurn` and `chatStream` so the
+   * resolver wiring lives in one place.
+   *
+   * The resolver consults the native-tool registration for `(agentId,
+   * readConfig)` — both set by `ToolsAccessor.register` from the
+   * activating plugin's context. Marker-only kernel registrations carry
+   * neither, so they always go through `guarded`. The readConfig closure
+   * routes through the plugin's own ConfigAccessor chain, so an
+   * operator setting saved via the install UI is visible to the very
+   * next dispatch (no restart).
+   */
+  private buildPrivacyHandle(
+    service: PrivacyGuardService,
+    sessionId: string,
+    turnId: string,
+  ): ReturnType<typeof createPrivacyTurnHandle> {
+    const nativeTools = this.nativeTools;
+    const domainTools = this.domainToolsByName;
+    const pluginConfigGet = this.pluginConfigGet;
+
+    // Slice 2.5 — three-tier bypass lookup:
+    //   1. kernel tools (via `ctx.tools.register`) carry their own
+    //      `(agentId, readConfig)` closure on the NativeToolRegistry entry
+    //   2. domain tools (delegation wrappers for sub-agents) carry an
+    //      `agentId` set by `dynamicAgentRuntime` — resolved via
+    //      `pluginConfigGet(agentId, key)` against the kernel registry
+    //   3. sub-agent INNER tool calls (LocalSubAgentTools fetched from a
+    //      `*.toolkit` service) — the orchestrator stashes the owning
+    //      agent plugin id in turnContext before running the sub-agent;
+    //      the resolver reads it back via turnContext and looks up the
+    //      same `_privacy_mode` setting as path #2
+    //
+    // The org-policy override (`OMADIA_PRIVACY_FORCE_GUARDED=true`) is
+    // honoured inside `resolveEffectivePrivacyMode` for all three paths.
+    const lookupByAgentId = (
+      agentId: string,
+      toolName: string,
+    ): { pluginId: string } | undefined => {
+      if (pluginConfigGet === undefined) return undefined;
+      const storedMode = pluginConfigGet(agentId, PRIVACY_MODE_CONFIG_KEY);
+      const storedScopes = pluginConfigGet(
+        agentId,
+        PRIVACY_BYPASS_SCOPES_CONFIG_KEY,
+      );
+      const effective = resolveEffectivePrivacyMode({
+        storedMode,
+        storedScopes,
+        toolName,
+        env: process.env,
+      });
+      return effective === 'bypass' ? { pluginId: agentId } : undefined;
+    };
+
+    const resolveBypass = (
+      toolName: string,
+    ): { pluginId: string } | undefined => {
+      // Path 1 — kernel tool with attached config closure.
+      const reg = nativeTools.get(toolName);
+      if (reg?.agentId !== undefined && reg.readConfig !== undefined) {
+        const storedMode = reg.readConfig(PRIVACY_MODE_CONFIG_KEY);
+        const storedScopes = reg.readConfig(PRIVACY_BYPASS_SCOPES_CONFIG_KEY);
+        const effective = resolveEffectivePrivacyMode({
+          storedMode,
+          storedScopes,
+          toolName,
+          env: process.env,
+        });
+        if (effective === 'bypass') return { pluginId: reg.agentId };
+        // Kernel tool with explicit guarded — don't fall through to other
+        // paths (kernel registration is authoritative for kernel tools).
+        return undefined;
+      }
+      // Path 2 — domain tool with attached agent plugin id.
+      const domainTool = domainTools.get(toolName);
+      if (domainTool?.agentId !== undefined) {
+        const hit = lookupByAgentId(domainTool.agentId, toolName);
+        if (hit) return hit;
+      }
+      // Path 3 — sub-agent inner tool. The orchestrator's domain-tool
+      // dispatch installs `subAgentOwnerPluginId` in the nested turn
+      // scope before running the sub-agent loop; every inner tool call
+      // reads back here.
+      const subAgentOwner = turnContext.current()?.subAgentOwnerPluginId;
+      if (subAgentOwner !== undefined) {
+        const hit = lookupByAgentId(subAgentOwner, toolName);
+        if (hit) return hit;
+      }
+      return undefined;
+    };
+    return createPrivacyTurnHandle({
+      service,
+      sessionId,
+      turnId,
+      resolveBypass,
+    });
   }
 
   private async dispatchToolInner(

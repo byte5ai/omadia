@@ -52,6 +52,22 @@ export interface NativeToolRegistration {
    * count toward multi-domain triggers).
    */
   readonly domain?: string;
+  /**
+   * Slice 2.5 — originating plugin's agent-id (manifest `identity.id`).
+   * Set by the `ToolsAccessor.register` shim in pluginContext at
+   * registration time. Used by the orchestrator dispatch hook to attribute
+   * a bypass receipt entry. Absent for marker-only kernel registrations.
+   */
+  readonly agentId?: string;
+  /**
+   * Slice 2.5 — closure that reads the originating plugin's runtime
+   * config, scoped to the plugin's own ConfigAccessor chain (same one
+   * the plugin sees via `ctx.config.get(key)`). Used by the orchestrator
+   * dispatch hook to resolve `_privacy_mode` / `_privacy_bypass_scopes`
+   * at dispatch time so the operator's choice takes effect immediately
+   * without restart. Absent for marker-only kernel registrations.
+   */
+  readonly readConfig?: (key: string) => unknown | undefined;
 }
 
 export interface NativeToolRegistrationOptions {
@@ -62,6 +78,12 @@ export interface NativeToolRegistrationOptions {
   /** OB-77 — see `NativeToolRegistration.domain`. Resolved by the kernel
    *  before calling `register`. */
   domain?: string;
+  /** Slice 2.5 — see `NativeToolRegistration.agentId`. Set by
+   *  `ToolsAccessor.register` from the activating plugin's context. */
+  agentId?: string;
+  /** Slice 2.5 — see `NativeToolRegistration.readConfig`. Set by
+   *  `ToolsAccessor.register` as `(k) => config.get(k)`. */
+  readConfig?: (key: string) => unknown | undefined;
 }
 
 /**
@@ -110,6 +132,10 @@ export class NativeToolRegistry {
             ? { attachmentSink: options.attachmentSink }
             : {}),
           ...(options.domain !== undefined ? { domain: options.domain } : {}),
+          ...(options.agentId !== undefined ? { agentId: options.agentId } : {}),
+          ...(options.readConfig !== undefined
+            ? { readConfig: options.readConfig }
+            : {}),
         }
       : { name };
     this.entries.set(name, entry);
@@ -174,6 +200,16 @@ export class NativeToolRegistry {
    */
   getDomain(name: string): string | undefined {
     return this.entries.get(name)?.domain;
+  }
+
+  /**
+   * Slice 2.5 — originating-plugin lookup for the orchestrator's privacy
+   * dispatch hook. Returns the agent-id (manifest `identity.id`) of the
+   * plugin that contributed this tool, or `undefined` for marker-only
+   * kernel entries.
+   */
+  getAgentId(name: string): string | undefined {
+    return this.entries.get(name)?.agentId;
   }
 
   /** All entries, in registration order. */

@@ -380,6 +380,11 @@ export class DynamicAgentRuntime {
       description,
       agent: subAgent,
       domain: catalogEntry.plugin.domain,
+      // Slice 2.5 — owning agent plugin id. The orchestrator's privacy
+      // bypass resolver uses this to look up `_privacy_mode` on the
+      // agent for BOTH the domain tool dispatch AND every sub-agent
+      // inner tool call within it.
+      agentId,
     });
 
     // OB-29-1 — publish the DomainTool as a `subAgent:<agentId>` service

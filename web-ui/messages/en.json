@@ -256,7 +256,12 @@
     "pseudonymYes": "used",
     "pseudonymNo": "not used",
     "explainer": "Raw tool results stayed server-side behind the data-plane boundary — the model only ever saw an identity-free digest.",
-    "explainerBreach": "You named a person in your request — that name reached the model in cleartext. The data fetched from tools stayed server-side behind the boundary."
+    "explainerBreach": "You named a person in your request — that name reached the model in cleartext. The data fetched from tools stayed server-side behind the boundary.",
+    "summaryBypassed": "{count, plural, one {# tool not masked} other {# tools not masked}}",
+    "factBypassed": "Not masked (operator decision)",
+    "bypassedReasonOperatorSetting": "Operator setting: bypass",
+    "bypassedBytes": "{kb} KB raw",
+    "explainerBypassed": "The operator set Privacy Mode to »Bypass« for at least one plugin — its tool results reached the model unmasked. Used for trusted internal sources whose content the Privacy Shield cannot usefully digest structurally."
   },
   "privacyOperator": {
     "eyebrow": "Privacy Operator",
