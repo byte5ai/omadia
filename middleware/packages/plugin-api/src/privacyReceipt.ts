@@ -17,6 +17,32 @@ export const PRIVACY_REDACT_SERVICE_NAME = 'privacyRedact';
 export const PRIVACY_REDACT_CAPABILITY = 'privacy.redact@1';
 
 /**
+ * One tool whose raw result the orchestrator passed through UNINTERNED this
+ * turn — i.e. the LLM saw real values, not a `[masked]` digest — because
+ * the operator set the originating plugin's `_privacy_mode` to `bypass`
+ * (Slice 2.5). Surfaced in the receipt so the user sees a transparency
+ * notice for every bypass decision the operator made.
+ *
+ * MUST stay PII-free — tool name + plugin id + count of bytes only, never
+ * the raw value that crossed the boundary.
+ */
+export interface BypassedToolEntry {
+  /** The tool name as it appears in the LLM's `tool_use` block, e.g.
+   *  `confluence_get_page`. */
+  readonly toolName: string;
+  /** The originating plugin's agent-id (its manifest `identity.id`), e.g.
+   *  `@omadia/integration-confluence`. */
+  readonly pluginId: string;
+  /** Why the bypass fired this turn. `operator_setting` — the operator
+   *  picked `bypass` (or scoped this tool via per-tool override) on the
+   *  plugin's `_privacy_mode` setting. */
+  readonly reason: 'operator_setting';
+  /** Byte length of the raw result that bypassed the boundary — i.e.
+   *  the LLM-visible payload size. For UI transparency only. */
+  readonly bytes: number;
+}
+
+/**
  * The per-turn user-facing privacy report. Emitted by `finalizeTurn` and
  * attached to the assistant message metadata; channel renderers (Teams
  * card, Web disclosure) consume it to build their collapsible UI.
@@ -46,6 +72,14 @@ export interface PrivacyReceipt {
    * (status codes, model names) can never inflate it.
    */
   readonly identityValuesOnWire?: number;
+  /**
+   * Slice 2.5 — tools whose raw results bypassed the data-plane boundary
+   * this turn, per the operator's per-plugin `_privacy_mode` setting.
+   * Absent / empty when no bypass fired (the universal default is
+   * `guarded`). PII-free: entries carry tool name + plugin id + a byte
+   * count, never a raw value.
+   */
+  readonly bypassedTools?: readonly BypassedToolEntry[];
 }
 
 // ---------------------------------------------------------------------------
@@ -133,6 +167,21 @@ export interface PrivacyRenderedAnswer {
 }
 
 /**
+ * Slice 2.5 — record that a tool's raw result was passed through unmasked
+ * this turn because the operator set the originating plugin's
+ * `_privacy_mode` to `bypass`. The entry lands in the per-turn receipt
+ * verbatim — no transformation, no aggregation — so the user sees one
+ * line per bypass decision.
+ */
+export interface PrivacyBypassedToolRequest {
+  readonly turnId: string;
+  readonly toolName: string;
+  readonly pluginId: string;
+  readonly reason: 'operator_setting';
+  readonly bytes: number;
+}
+
+/**
  * Service surface published by the `privacy.redact@1` provider plugin.
  */
 export interface PrivacyGuardService {
@@ -144,6 +193,14 @@ export interface PrivacyGuardService {
   internToolResultV4(
     request: PrivacyToolResultV4Request,
   ): Promise<PrivacyToolResultV4Result>;
+  /**
+   * Slice 2.5 — record that the orchestrator passed a tool's raw result
+   * through unmasked this turn (operator opted into `bypass` for the
+   * originating plugin). The entry surfaces in the user-facing receipt
+   * emitted by `finalizeTurn`. Idempotent within a turn: the orchestrator
+   * may call this for every bypassed dispatch and every entry is kept.
+   */
+  recordBypassedTool(request: PrivacyBypassedToolRequest): Promise<void>;
   /**
    * Privacy Shield v4 — run a v4 verb tool or the terminal render tool the
    * LLM called. Returns the text to place in the `tool_result` block. A

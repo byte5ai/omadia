@@ -288,6 +288,74 @@ export async function cancelInstallJob(jobId: string): Promise<void> {
  * (DomainTool wird aus dem Orchestrator entfernt, handle.close() läuft),
  * purgt den Vault-Namespace und entfernt den Registry-Eintrag. 204 = OK.
  */
+/**
+ * Slice 2.5 — GET full installed-plugin entry including its non-secret
+ * config. Used by the Operator-UI's Privacy-Mode quick-picker on the
+ * plugin detail page to read the current `_privacy_mode` so the dropdown
+ * can initialise with the stored value.
+ */
+export interface InstalledPluginDetail {
+  id: string;
+  installed_version: string;
+  installed_at: string;
+  status: string;
+  config: Record<string, unknown>;
+  activation_failure_count: number;
+  last_activation_error: string | null;
+  last_activation_error_at: string | null;
+}
+
+export async function getInstalledPlugin(
+  pluginId: string,
+): Promise<InstalledPluginDetail> {
+  return getJson<InstalledPluginDetail>(
+    `/v1/admin/runtime/installed/${encodeURIComponent(pluginId)}`,
+  );
+}
+
+/**
+ * Slice 2.5 — PATCH the non-secret config of an installed plugin.
+ * Shallow-merges the patch into the existing config: only keys in `patch`
+ * are touched, `null` clears a key. Secrets stay in the vault. Used by
+ * the Privacy-Mode quick-picker to send `{ _privacy_mode: 'bypass' }`
+ * without round-tripping the entire setup_schema.
+ */
+export async function updateInstalledPluginConfig(
+  pluginId: string,
+  patch: Record<string, unknown>,
+): Promise<{
+  updated: { id: string; config: Record<string, unknown>; status: string } | null;
+}> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(
+    botApi(
+      `/v1/admin/runtime/installed/${encodeURIComponent(pluginId)}/config`,
+    ),
+    {
+      method: 'PATCH',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+        ...forwarded,
+      },
+      credentials: 'include',
+      cache: 'no-store',
+      body: JSON.stringify(patch),
+    },
+  );
+  if (res.ok) {
+    return (await res.json()) as {
+      updated: { id: string; config: Record<string, unknown>; status: string } | null;
+    };
+  }
+  const text = await res.text().catch(() => '');
+  throw new ApiError(
+    res.status,
+    `PATCH installed/${pluginId}/config failed: ${res.status}`,
+    text,
+  );
+}
+
 export async function uninstallPlugin(pluginId: string): Promise<void> {
   const forwarded = await forwardCookieHeader();
   const res = await fetch(

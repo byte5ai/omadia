@@ -455,9 +455,33 @@ export class LocalSubAgent {
         );
       }
     }
-    // Intern the raw result server-side and hand the LLM only the
-    // identity-free digest — the raw rows never reach the LLM wire.
     if (privacy !== undefined && typeof result === 'string') {
+      // Slice 2.5 — same operator-owned bypass check the orchestrator's
+      // outer dispatch consults. If the tool's plugin opted into `bypass`,
+      // the sub-agent's LLM sees real values (not `[masked]`), record a
+      // receipt entry, AND flip the parent scope's bypass flag so the
+      // parent doesn't re-intern this sub-agent's narration.
+      const bypass = privacy.checkBypass(toolName);
+      if (bypass !== undefined) {
+        const flag = turnContext.current()?.subAgentBypassFlag;
+        if (flag) flag.value = true;
+        try {
+          await privacy.recordBypassedTool({
+            toolName,
+            pluginId: bypass.pluginId,
+            reason: 'operator_setting',
+            bytes: Buffer.byteLength(result, 'utf8'),
+          });
+        } catch (err) {
+          console.warn(
+            `[sub-agent ${this.name}] privacy.recordBypassedTool threw on '${toolName}' — bypass still applied:`,
+            err,
+          );
+        }
+        return result;
+      }
+      // Intern the raw result server-side and hand the LLM only the
+      // identity-free digest — the raw rows never reach the LLM wire.
       try {
         const v4 = await privacy.internToolResultV4({
           toolName,

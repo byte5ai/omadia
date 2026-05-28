@@ -28,6 +28,29 @@ export interface PrivacyTurnHandle {
     readonly rawResult: string;
   }): Promise<{ readonly digestText: string; readonly datasetId: string }>;
   /**
+   * Slice 2.5 — record that a tool's raw result was passed through
+   * unmasked this turn (operator set the originating plugin's
+   * `_privacy_mode` to `bypass`). Drained into the user-facing receipt
+   * at turn end.
+   */
+  recordBypassedTool(input: {
+    readonly toolName: string;
+    readonly pluginId: string;
+    readonly reason: 'operator_setting';
+    readonly bytes: number;
+  }): Promise<void>;
+  /**
+   * Slice 2.5 — synchronous decision: should this tool's result bypass
+   * the data-plane boundary? Resolves the originating plugin's
+   * `_privacy_mode` (and `_privacy_bypass_scopes` in per-tool mode),
+   * honors the `OMADIA_PRIVACY_FORCE_GUARDED` org override. Returns the
+   * plugin's agent-id when bypass fires (caller attributes the receipt
+   * entry with it), `undefined` otherwise. Both the orchestrator's
+   * `dispatchTool` and `LocalSubAgent.dispatchToolToTool` consult this
+   * so a sub-agent's inner tool calls honor the same per-plugin setting.
+   */
+  checkBypass(toolName: string): { readonly pluginId: string } | undefined;
+  /**
    * Run a v4 verb tool or the terminal render tool the LLM called; returns
    * the `tool_result` text.
    */
@@ -68,6 +91,16 @@ export function createPrivacyTurnHandle(deps: {
   readonly service: PrivacyGuardService;
   readonly sessionId: string;
   readonly turnId: string;
+  /**
+   * Slice 2.5 — synchronous resolver that maps a tool name to the
+   * originating plugin's agent-id IF the operator selected `bypass` for
+   * that plugin (or whitelisted the tool in per-tool mode). `undefined`
+   * means "guard as usual". Wired by the orchestrator from
+   * `pluginConfigGet` + `nativeToolRegistry.getAgentId` +
+   * `resolveEffectivePrivacyMode`; absent in tests/legacy hosts ⇒ no
+   * tool ever bypasses (byte-identical pre-Slice-2.5 behaviour).
+   */
+  readonly resolveBypass?: (toolName: string) => { pluginId: string } | undefined;
 }): PrivacyTurnHandle {
   return {
     async internToolResultV4(input) {
@@ -77,6 +110,20 @@ export function createPrivacyTurnHandle(deps: {
         toolName: input.toolName,
         rawResult: input.rawResult,
       });
+    },
+
+    async recordBypassedTool(input) {
+      return deps.service.recordBypassedTool({
+        turnId: deps.turnId,
+        toolName: input.toolName,
+        pluginId: input.pluginId,
+        reason: input.reason,
+        bytes: input.bytes,
+      });
+    },
+
+    checkBypass(toolName) {
+      return deps.resolveBypass?.(toolName);
     },
 
     async runV4Tool(input) {

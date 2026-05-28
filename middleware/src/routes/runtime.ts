@@ -67,11 +67,51 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
     res.json({ items: rows, total: rows.length });
   });
 
-  // PATCH /installed/:id/config — replaces non-secret config values. Caller
-  // supplies the FULL next config as request body. Secrets stay in the vault
-  // and are not touched here. Some plugins cache config at activate-time; a
-  // restart/re-activate may be needed for those to see the change. The
-  // response echoes the updated entry so the UI can refresh inline.
+  // GET /installed/:id — full entry for ONE installed plugin including
+  // its non-secret `config`. Slice 2.5 — used by the Operator-UI's
+  // Privacy-Mode quick-picker to read the current `_privacy_mode` value
+  // so the dropdown can initialise with the stored selection.
+  router.get('/installed/:id', (req: Request, res: Response) => {
+    const rawId = req.params['id'];
+    const id = typeof rawId === 'string' ? rawId : undefined;
+    if (!id) {
+      res
+        .status(400)
+        .json({ code: 'runtime.invalid_id', message: 'missing id' });
+      return;
+    }
+    const entry = deps.installedRegistry.get(id);
+    if (!entry) {
+      res.status(404).json({
+        code: 'runtime.not_installed',
+        message: `agent '${id}' is not installed`,
+      });
+      return;
+    }
+    res.json({
+      id: entry.id,
+      installed_version: entry.installed_version,
+      installed_at: entry.installed_at,
+      status: entry.status,
+      config: entry.config,
+      activation_failure_count: entry.activation_failure_count ?? 0,
+      last_activation_error: entry.last_activation_error ?? null,
+      last_activation_error_at: entry.last_activation_error_at ?? null,
+    });
+  });
+
+  // PATCH /installed/:id/config — merges into non-secret config values.
+  // Caller supplies a PARTIAL config patch as request body; the patch is
+  // shallow-merged into the existing config (only the keys present in the
+  // body are touched). To explicitly clear a key, send it with `null`.
+  // Secrets stay in the vault and are not touched here. Some plugins cache
+  // config at activate-time; a restart/re-activate may be needed for those
+  // to see the change. The response echoes the updated entry so the UI can
+  // refresh inline.
+  //
+  // Slice 2.5 — Used by the Operator-UI's Privacy-Mode quick-picker on
+  // an installed plugin to send `{ _privacy_mode: 'bypass' }` without
+  // having to round-trip the entire setup_schema.
   router.patch(
     '/installed/:id/config',
     async (req: Request, res: Response) => {
@@ -91,18 +131,27 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
         });
         return;
       }
-      if (!deps.installedRegistry.has(id)) {
+      const installed = deps.installedRegistry.get(id);
+      if (!installed) {
         res.status(404).json({
           code: 'runtime.not_installed',
           message: `agent '${id}' is not installed`,
         });
         return;
       }
+      // Shallow merge: existing config + body patch. `null` values clear
+      // the key, anything else overwrites or adds.
+      const patch = body as Record<string, unknown>;
+      const nextConfig: Record<string, unknown> = { ...installed.config };
+      for (const [k, v] of Object.entries(patch)) {
+        if (v === null) {
+          delete nextConfig[k];
+        } else {
+          nextConfig[k] = v;
+        }
+      }
       try {
-        await deps.installedRegistry.updateConfig(
-          id,
-          body as Record<string, unknown>,
-        );
+        await deps.installedRegistry.updateConfig(id, nextConfig);
         if (deps.reactivate) {
           await deps.reactivate(id);
         }

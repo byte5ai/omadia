@@ -78,6 +78,16 @@ export interface OrchestratorDeps {
   readonly responseGuard: () => ResponseGuardService | undefined;
   /** Late-bound `privacy.redact@1` lookup (see `OrchestratorOptions`). */
   readonly privacyGuard: () => PrivacyGuardService | undefined;
+  /**
+   * Slice 2.5 — cross-plugin runtime-config lookup for the privacy bypass
+   * resolver (see `OrchestratorOptions.pluginConfigGet`). Wired from the
+   * harness runtime that owns the installed-plugin registry. Optional —
+   * when absent, only kernel-tool bypass works.
+   */
+  readonly pluginConfigGet?: (
+    agentId: string,
+    configKey: string,
+  ) => unknown | undefined;
   readonly contextRetriever?: ContextRetriever;
   readonly sessionBriefing?: SessionBriefingService;
   readonly factExtractor?: FactExtractor;
@@ -167,6 +177,9 @@ export function buildOrchestratorForAgent(
     ...(deps.embeddingClient ? { embeddingClient: deps.embeddingClient } : {}),
     responseGuard: deps.responseGuard,
     privacyGuard: deps.privacyGuard,
+    ...(deps.pluginConfigGet
+      ? { pluginConfigGet: deps.pluginConfigGet }
+      : {}),
     nudgeRegistry: deps.nudgeRegistry,
     ...(deps.nudgeStateStore ? { nudgeStateStore: deps.nudgeStateStore } : {}),
     ...(deps.processMemory ? { nudgeProcessMemory: deps.processMemory } : {}),

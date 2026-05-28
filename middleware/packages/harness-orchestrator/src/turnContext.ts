@@ -70,6 +70,37 @@ export interface TurnContextValue {
    * dispatch — sub-agent interning then behaves byte-identically to before.
    */
   subAgentDatasetSink?: string[];
+  /**
+   * Slice 2.5 — sub-agent bypass flag. Set by the orchestrator in a
+   * nested scope around a single domain-tool dispatch (alongside
+   * `subAgentDatasetSink`). Flipped to `true` by `dispatchTool` whenever
+   * a tool call inside that scope honors the operator's per-plugin
+   * `bypass` setting and returns raw. The parent dispatch reads this at
+   * the end of the sub-agent run: if set AND `subAgentDatasetSink` is
+   * empty, it passes the sub-agent's narration through raw (instead of
+   * interning it) — because the sub-agent already saw real values for
+   * the bypassed tools, its narration already carries real content and
+   * re-interning would mask the synthesis the user is asking for.
+   *
+   * Mutable holder so the inner scope's writes are visible to the outer
+   * scope's reader after `turnContext.run(...)` returns. Undefined
+   * outside a domain-tool dispatch.
+   */
+  subAgentBypassFlag?: { value: boolean };
+  /**
+   * Slice 2.5 — agent plugin id (manifest `identity.id`) of the
+   * currently-executing sub-agent's owning agent. Set by the
+   * orchestrator in the nested scope around a domain-tool dispatch
+   * (alongside `subAgentDatasetSink` and `subAgentBypassFlag`) BEFORE
+   * the sub-agent's tool loop runs. Read by the privacy bypass resolver
+   * inside `LocalSubAgent.dispatchToolToTool` to look up the operator's
+   * `_privacy_mode` on the OWNING agent — so a single bypass setting
+   * on (e.g.) `@omadia/agent-confluence` applies to every
+   * `confluence_search` / `confluence_get_page` call the sub-agent
+   * makes, regardless of which integration plugin contributed the
+   * underlying tool. Undefined outside a domain-tool dispatch.
+   */
+  subAgentOwnerPluginId?: string;
 }
 
 const storage = new AsyncLocalStorage<TurnContextValue>();

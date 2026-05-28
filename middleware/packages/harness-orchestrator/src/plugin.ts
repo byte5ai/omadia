@@ -299,6 +299,16 @@ export async function activate(
   const privacyGuardGetter = (): PrivacyGuardService | undefined =>
     ctx.services.get<PrivacyGuardService>(PRIVACY_REDACT_SERVICE_NAME);
 
+  // Slice 2.5 — cross-plugin runtime-config reader for the privacy
+  // bypass resolver. Published by the kernel at boot
+  // (`middleware/src/index.ts:installedPluginConfigReader`). When absent
+  // (legacy hosts, unit tests) the resolver falls back to kernel-tool
+  // bypass only — domain and sub-agent inner tools then always run
+  // guarded.
+  const pluginConfigGet = ctx.services.get<
+    (agentId: string, configKey: string) => unknown | undefined
+  >('installedPluginConfigReader');
+
   // Setup-field config (with defaults)
   const model =
     (ctx.config.get<string>('orchestrator_model') ?? '').trim() ||
@@ -432,6 +442,7 @@ export async function activate(
     nudgeRegistry,
     responseGuard: responseGuardGetter,
     privacyGuard: privacyGuardGetter,
+    ...(pluginConfigGet ? { pluginConfigGet } : {}),
     ...(contextRetriever ? { contextRetriever } : {}),
     ...(sessionBriefing ? { sessionBriefing } : {}),
     ...(factExtractor ? { factExtractor } : {}),

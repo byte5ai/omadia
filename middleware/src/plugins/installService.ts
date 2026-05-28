@@ -1,5 +1,12 @@
 import { randomUUID } from 'node:crypto';
 
+import {
+  PRIVACY_BYPASS_SCOPES_CONFIG_KEY,
+  PRIVACY_MODE_CONFIG_KEY,
+  PRIVACY_MODE_DEFAULT,
+  PRIVACY_MODE_VALUES,
+} from '@omadia/plugin-api';
+
 import type {
   ApiError,
   InstallJob,
@@ -477,7 +484,125 @@ export function extractSetupSchema(
     }
     fields.push(field);
   }
+  // Slice 2.5 — kernel-injected synthetic `_privacy_mode` field. Appears
+  // on every plugin's install form regardless of whether the manifest
+  // declares it. The operator picks how the orchestrator's dispatch hook
+  // should treat raw tool results from this plugin (`guarded` default,
+  // `bypass`, or `per_tool` for the advanced override). The chosen value
+  // lands in `installedRegistry.get(id).config['_privacy_mode']` via the
+  // standard `configure()` validation path and is read back at dispatch
+  // time by the orchestrator's `resolveBypass` resolver.
+  //
+  // Skipped for plugins that contribute no tools — they have nothing to
+  // privacy-route. We approximate "contributes tools" as "any catalog
+  // entry whose manifest has a non-empty `tools` block or whose `kind`
+  // is `tool` / `integration` / `agent`". Channels with kind `channel`
+  // do not contribute LLM-visible tools and skip the field.
+  if (pluginContributesTools(entry)) {
+    fields.push(privacyModeField(entry));
+    // Slice 2.5d — per-tool whitelist for advanced operators. Consulted
+    // by `resolveEffectivePrivacyMode` only when `_privacy_mode = 'per_tool'`;
+    // the resolver tolerates both comma-separated strings (manual entry)
+    // and arrays (programmatic API). Optional string field — operators
+    // using `guarded` or `bypass` simply leave it empty.
+    fields.push(privacyBypassScopesField());
+  }
   return { fields };
+}
+
+function pluginContributesTools(entry: PluginCatalogEntry): boolean {
+  const manifest = entry.manifest as Record<string, unknown> | undefined;
+  if (!manifest) return false;
+  const kind = typeof manifest['kind'] === 'string' ? manifest['kind'] : '';
+  // Channels never expose LLM-callable tools; everything else may. We
+  // err on the inclusive side — adding a guarded-by-default dropdown
+  // to a plugin without tools is harmless (the dispatch hook simply
+  // never consults it). Excluding channels keeps the install UI tidy
+  // for the most common no-tool case.
+  return kind !== 'channel';
+}
+
+function privacyModeField(entry: PluginCatalogEntry): InstallSetupField {
+  const baseHelp =
+    'Wie behandelt der Privacy Shield die Tool-Ergebnisse dieses Plugins? ' +
+    '"Geschützt" (Default) interniert jedes rohe Tool-Ergebnis hinter dem ' +
+    'Privacy Shield v4 — der LLM sieht nur einen identitätsfreien Digest. ' +
+    '"Bypass" reicht rohe Ergebnisse unmaskiert durch (für vertrauenswürdige ' +
+    'interne Quellen, deren Inhalte v4 strukturell nicht sinnvoll digestieren ' +
+    'kann — z.B. Confluence-Seiten-Bodies). "Per-Tool" erlaubt eine ' +
+    'Whitelist einzelner Tools (Advanced).';
+  // Slice 2.5c — Plugin-author recommendation. Optional block on the
+  // manifest (`privacy.recommendation: { mode, reason }`). When present
+  // and the mode is valid, prepend it as a 📌 hint to the help text so
+  // the operator sees the author's intent before choosing. NOT a
+  // constraint — the operator is always free to override.
+  const recommendation = readPrivacyRecommendation(entry);
+  const help = recommendation
+    ? `📌 Plugin-Autor empfiehlt: »${privacyModeLabel(recommendation.mode)}«` +
+      (recommendation.reason ? ` — ${recommendation.reason}` : '') +
+      `\n\n${baseHelp}`
+    : baseHelp;
+  return {
+    key: PRIVACY_MODE_CONFIG_KEY,
+    type: 'enum',
+    label: 'Privacy Mode',
+    required: false,
+    default: PRIVACY_MODE_DEFAULT,
+    help,
+    enum: PRIVACY_MODE_VALUES.map((value) => ({
+      value,
+      label: privacyModeLabel(value),
+    })),
+  };
+}
+
+function readPrivacyRecommendation(
+  entry: PluginCatalogEntry,
+): { mode: (typeof PRIVACY_MODE_VALUES)[number]; reason: string } | undefined {
+  const manifest = entry.manifest as Record<string, unknown> | undefined;
+  if (!manifest) return undefined;
+  const privacy = manifest['privacy'];
+  if (!privacy || typeof privacy !== 'object') return undefined;
+  const rec = (privacy as Record<string, unknown>)['recommendation'];
+  if (!rec || typeof rec !== 'object') return undefined;
+  const mode = (rec as Record<string, unknown>)['mode'];
+  const reason = (rec as Record<string, unknown>)['reason'];
+  if (typeof mode !== 'string') return undefined;
+  if (!(PRIVACY_MODE_VALUES as readonly string[]).includes(mode)) {
+    return undefined;
+  }
+  return {
+    mode: mode as (typeof PRIVACY_MODE_VALUES)[number],
+    reason: typeof reason === 'string' ? reason : '',
+  };
+}
+
+function privacyBypassScopesField(): InstallSetupField {
+  return {
+    key: PRIVACY_BYPASS_SCOPES_CONFIG_KEY,
+    type: 'string',
+    label: 'Bypass-Tool-Whitelist (nur bei Privacy Mode = Per-Tool)',
+    required: false,
+    help:
+      'Komma- oder Leerzeichen-getrennte Liste von Tool-Namen, die bei ' +
+      'Privacy Mode "Per-Tool" unmaskiert durchgelassen werden. Beispiel: ' +
+      '"confluence_get_page, confluence_get_page_by_title". Tools die hier ' +
+      'NICHT stehen bleiben "guarded". Wird ignoriert wenn Privacy Mode auf ' +
+      '"Geschützt" oder "Bypass" steht.',
+  };
+}
+
+function privacyModeLabel(value: string): string {
+  switch (value) {
+    case 'guarded':
+      return 'Geschützt (Default — Privacy Shield v4)';
+    case 'bypass':
+      return 'Bypass (Roh durchlassen — Operator übernimmt Verantwortung)';
+    case 'per_tool':
+      return 'Per-Tool (Advanced — Tool-Whitelist)';
+    default:
+      return value;
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -16,6 +16,8 @@
  */
 
 import type {
+  BypassedToolEntry,
+  PrivacyBypassedToolRequest,
   PrivacyGuardService,
   PrivacyReceipt,
   PrivacyRenderedAnswer,
@@ -98,6 +100,11 @@ export function createPrivacyGuardService(deps?: {
   // server-side; only the count of those the user named themselves reaches
   // the receipt (`identityValuesOnWire`). Dropped by `finalizeTurn`.
   const turnPiiValues = new Map<string, Set<string>>();
+  // Slice 2.5 — per-turn list of tools whose raw results bypassed the
+  // boundary (operator set `_privacy_mode=bypass` on the originating
+  // plugin). Drained into the receipt by `finalizeTurn`. Entries carry
+  // only tool/plugin names + a byte count (no values).
+  const bypassedTools = new Map<string, BypassedToolEntry[]>();
   // Slice 2 — cached, Haiku-backed schema PII classifier. Process-scoped
   // (its cache spans turns — schema verdicts are tool-shape-stable). Absent
   // when no host LLM is wired.
@@ -206,6 +213,27 @@ export function createPrivacyGuardService(deps?: {
         }
       }
       return result;
+    },
+
+    async recordBypassedTool(
+      request: PrivacyBypassedToolRequest,
+    ): Promise<void> {
+      let list = bypassedTools.get(request.turnId);
+      if (list === undefined) {
+        list = [];
+        bypassedTools.set(request.turnId, list);
+      }
+      list.push({
+        toolName: request.toolName,
+        pluginId: request.pluginId,
+        reason: request.reason,
+        bytes: request.bytes,
+      });
+      console.log(
+        `[privacy-guard v4] bypass turn=${request.turnId} ` +
+          `tool=${request.toolName} plugin=${request.pluginId} ` +
+          `bytes=${String(request.bytes)} reason=${request.reason}`,
+      );
     },
 
     async runV4Tool(
@@ -327,9 +355,14 @@ export function createPrivacyGuardService(deps?: {
       receipts.delete(turnId);
       const piiValues = turnPiiValues.get(turnId);
       turnPiiValues.delete(turnId);
-      // No receipt for a turn that interned nothing — there is nothing to
-      // report and a zero receipt is just noise in the channel UI.
-      if (accum === undefined || accum.datasetsInterned === 0) return undefined;
+      const bypassed = bypassedTools.get(turnId);
+      bypassedTools.delete(turnId);
+      // No receipt for a turn that touched neither the boundary nor a
+      // bypass — there is nothing to report and a zero receipt is just
+      // noise in the channel UI.
+      const hasInterned = accum !== undefined && accum.datasetsInterned > 0;
+      const hasBypassed = bypassed !== undefined && bypassed.length > 0;
+      if (!hasInterned && !hasBypassed) return undefined;
       // identityValuesOnWire — personal-identity values the requester named
       // in their own message text. A transparency notice (the user put a
       // real identity on the wire), NOT a leak of tool data.
@@ -341,19 +374,21 @@ export function createPrivacyGuardService(deps?: {
       }
       console.log(
         `[privacy-guard v4] finalize turn=${turnId} ` +
-          `datasets=${String(accum.datasetsInterned)} ` +
-          `masked=${String(accum.fieldsMasked)} ` +
-          `cleartext=${String(accum.fieldsCleartext)} ` +
-          `verbs=[${accum.verbsExecuted.join(',')}] ` +
+          `datasets=${String(accum?.datasetsInterned ?? 0)} ` +
+          `masked=${String(accum?.fieldsMasked ?? 0)} ` +
+          `cleartext=${String(accum?.fieldsCleartext ?? 0)} ` +
+          `verbs=[${(accum?.verbsExecuted ?? []).join(',')}] ` +
+          `bypassed=${String(bypassed?.length ?? 0)} ` +
           `identityOnWire=${String(identityValuesOnWire)}`,
       );
       return {
-        datasetsInterned: accum.datasetsInterned,
-        fieldsMasked: accum.fieldsMasked,
-        fieldsCleartext: accum.fieldsCleartext,
-        verbsExecuted: [...accum.verbsExecuted],
-        pseudonymProjectionUsed: accum.pseudonymProjectionUsed,
+        datasetsInterned: accum?.datasetsInterned ?? 0,
+        fieldsMasked: accum?.fieldsMasked ?? 0,
+        fieldsCleartext: accum?.fieldsCleartext ?? 0,
+        verbsExecuted: accum ? [...accum.verbsExecuted] : [],
+        pseudonymProjectionUsed: accum?.pseudonymProjectionUsed ?? false,
         identityValuesOnWire,
+        ...(hasBypassed ? { bypassedTools: [...bypassed] } : {}),
       };
     },
   };

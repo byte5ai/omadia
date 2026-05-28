@@ -298,6 +298,14 @@ export function createPluginContext(
         spec,
         handler,
         domain: resolvedDomain,
+        // Slice 2.5 — carry plugin ownership AND a config-reader closure
+        // into the registry so the orchestrator dispatch hook can resolve
+        // `_privacy_mode` / `_privacy_bypass_scopes` for this tool at
+        // dispatch time. `config.get(...)` resolves through the plugin's
+        // own ConfigAccessor chain, so an operator setting saved via the
+        // install UI takes effect on the very next dispatch.
+        agentId,
+        readConfig: (key: string) => config.get(key),
         ...(options?.promptDoc !== undefined
           ? { promptDoc: options.promptDoc }
           : {}),

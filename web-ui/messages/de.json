@@ -256,7 +256,12 @@
     "pseudonymYes": "verwendet",
     "pseudonymNo": "nicht verwendet",
     "explainer": "Rohe Tool-Ergebnisse blieben server-seitig hinter der Data-Plane-Boundary — das Modell sah nur einen identitätsfreien Digest.",
-    "explainerBreach": "Du hast eine Person namentlich genannt — dieser Name ging im Klartext an das Modell. Die aus den Tools geholten Daten blieben server-seitig hinter der Boundary."
+    "explainerBreach": "Du hast eine Person namentlich genannt — dieser Name ging im Klartext an das Modell. Die aus den Tools geholten Daten blieben server-seitig hinter der Boundary.",
+    "summaryBypassed": "{count, plural, one {# Tool nicht maskiert} other {# Tools nicht maskiert}}",
+    "factBypassed": "Nicht maskiert (Operator-Entscheidung)",
+    "bypassedReasonOperatorSetting": "Operator-Setting: Bypass",
+    "bypassedBytes": "{kb} KB roh",
+    "explainerBypassed": "Der Operator hat für mindestens ein Plugin den Privacy-Mode auf »Bypass« gestellt — dessen Tool-Ergebnisse erreichten das Modell unmaskiert. Eingesetzt für vertrauenswürdige interne Quellen, deren Inhalte der Privacy Shield strukturell nicht sinnvoll digestieren kann."
   },
   "privacyOperator": {
     "eyebrow": "Privacy Operator",

@@ -32,6 +32,12 @@ export * from './agentPriorities.js';
 export * from './privacyReceipt.js';
 export * from './privacyReceiptFixtures.js';
 
+// Slice 2.5 — operator-owned per-plugin Privacy Mode contract. Shared by
+// the orchestrator dispatch hook (resolves mode at dispatch time) and the
+// install service (injects synthetic `_privacy_mode` field into every
+// plugin's setup schema).
+export * from './privacyMode.js';
+
 // Palaia-Phase-6 (OB-75): Session-Continuity Briefings. Lazy summary
 // + open tasks for bootstrap system messages. Provider lives in
 // `harness-orchestrator-extras` (needs KG + ContextRetriever +
