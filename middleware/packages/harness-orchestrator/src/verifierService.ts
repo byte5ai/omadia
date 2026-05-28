@@ -228,12 +228,16 @@ export class VerifierService implements ChatAgent {
     runTrace: RunTracePayload | undefined,
   ): Promise<VerifierVerdict> {
     const domainToolsCalled = extractToolsCalled(runTrace);
+    const toolPostconditionViolations = extractPostconditionViolations(runTrace);
     try {
       return await this.pipeline.verify({
         runId,
         userMessage: input.userMessage,
         answer,
         ...(domainToolsCalled ? { domainToolsCalled } : {}),
+        ...(toolPostconditionViolations.length > 0
+          ? { toolPostconditionViolations }
+          : {}),
       });
     } catch (err) {
       this.log(`[verifier/service] pipeline FAIL: ${errMsg(err)}`);
@@ -358,4 +362,50 @@ function extractToolsCalled(
     names.add(call.toolName);
   }
   return [...names];
+}
+
+/**
+ * #130 — collect every postcondition violation the bridgeTool stamped onto
+ * the runTrace. The verifier turns each entry into a synthetic
+ * `tool_postcondition` ClaimVerdict (status='contradicted'), which flips the
+ * verdict to `blocked` and drives the existing correctionPrompt retry loop.
+ */
+function extractPostconditionViolations(
+  trace: RunTracePayload | undefined,
+): {
+  toolName: string;
+  callId: string;
+  agentContext: string;
+  issues: readonly string[];
+}[] {
+  if (!trace) return [];
+  const out: {
+    toolName: string;
+    callId: string;
+    agentContext: string;
+    issues: readonly string[];
+  }[] = [];
+  for (const invocation of trace.agentInvocations) {
+    for (const call of invocation.toolCalls) {
+      if (call.postcondition) {
+        out.push({
+          toolName: call.toolName,
+          callId: call.callId,
+          agentContext: call.agentContext,
+          issues: call.postcondition.issues,
+        });
+      }
+    }
+  }
+  for (const call of trace.orchestratorToolCalls) {
+    if (call.postcondition) {
+      out.push({
+        toolName: call.toolName,
+        callId: call.callId,
+        agentContext: call.agentContext,
+        issues: call.postcondition.issues,
+      });
+    }
+  }
+  return out;
 }

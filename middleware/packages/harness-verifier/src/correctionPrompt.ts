@@ -15,10 +15,28 @@ export function buildCorrectionPrompt(
 ): string | undefined {
   if (verdict.status !== 'blocked') return undefined;
 
-  const replayItems = verdict.contradictions.filter(isReplay);
-  const dataItems = verdict.contradictions.filter((v) => !isReplay(v));
+  const postconditionItems = verdict.contradictions.filter(isPostcondition);
+  const replayItems = verdict.contradictions.filter(
+    (v) => !isPostcondition(v) && isReplay(v),
+  );
+  const dataItems = verdict.contradictions.filter(
+    (v) => !isPostcondition(v) && !isReplay(v),
+  );
 
   const sections: string[] = ['# Verifier hat Widersprüche erkannt', ''];
+
+  if (postconditionItems.length > 0) {
+    sections.push(
+      '## Tool-Output nicht spec-konform',
+      '',
+      'Ein Tool-Call hat ein Ergebnis zurückgeliefert, das nicht seinem deklarierten Output-Schema entspricht. Die Antwort darf sich auf diesen Wert NICHT verlassen.',
+      '',
+      '**Jetzt bitte:** rufe das gleiche Tool mit korrigierten Argumenten erneut auf (z.B. fehlende Felder ergänzen, Filter präzisieren) ODER nutze ein anderes Tool, das die benötigten Daten liefern kann. Wenn das Tool strukturell broken ist und kein Re-Call hilft, sag dem User ehrlich: "Tool X liefert kein verwertbares Ergebnis für Y".',
+      '',
+      ...postconditionItems.map(formatPostcondition),
+      '',
+    );
+  }
 
   if (replayItems.length > 0) {
     sections.push(
@@ -48,9 +66,22 @@ export function buildCorrectionPrompt(
   return sections.join('\n');
 }
 
+function isPostcondition(v: ClaimVerdict): boolean {
+  if (v.status !== 'contradicted') return false;
+  return v.claim.type === 'tool_postcondition';
+}
+
 function isReplay(v: ClaimVerdict): boolean {
   if (v.status !== 'contradicted') return false;
   return v.source === 'unknown' || v.claim.id.startsWith('c_replay');
+}
+
+function formatPostcondition(v: ClaimVerdict): string {
+  if (v.status !== 'contradicted') return '';
+  // claim.id format: `c_postcond_<callId>` — strip the prefix for display.
+  const callId = v.claim.id.replace(/^c_postcond_/, '');
+  const detail = v.detail ? ` — Issues: ${v.detail}` : '';
+  return `- ${v.claim.text} (callId=${callId})${detail}`;
 }
 
 function formatContradiction(v: ClaimVerdict): string {

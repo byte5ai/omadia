@@ -99,7 +99,11 @@ export { VerifierService } from './verifierService.js';
 
 // Sub-agent runtime
 export { LocalSubAgent } from './localSubAgent.js';
-export type { LocalSubAgentTool, AskOptions } from './localSubAgent.js';
+export type {
+  LocalSubAgentTool,
+  LocalSubAgentToolResult,
+  AskOptions,
+} from './localSubAgent.js';
 
 // Knowledge-graph native tool (moved from harness-knowledge-graph in S+12.5-1)
 export {

@@ -331,4 +331,79 @@ describe('verifier/pipeline', () => {
     });
     assert.equal(verdict.status, 'approved');
   });
+
+  // #130 — postcondition violation flips the verdict to blocked even when
+  // the answer text has no claims of its own. The synthetic claim never
+  // hits the extractor; it is manufactured from the runTrace marker.
+  it('blocks on tool_postcondition violation without invoking extractor', async () => {
+    let extractorCalled = false;
+    const extractor = {
+      extract(): Promise<Claim[]> {
+        extractorCalled = true;
+        return Promise.resolve([]);
+      },
+    } as unknown as ClaimExtractor;
+    const pipeline = new VerifierPipeline({
+      extractor,
+      deterministic: stubDeterministic(() => ({
+        status: 'verified',
+        claim: hardClaim(),
+        source: 'odoo',
+      })),
+      judge: stubJudge(() => ({
+        status: 'verified',
+        claim: softClaim(),
+        source: 'graph',
+      })),
+      log: SILENT_LOG,
+    });
+    const verdict = await pipeline.verify({
+      runId: 'r7',
+      userMessage: 'List products',
+      answer: 'Hier sind sie: Foo, Bar.',
+      toolPostconditionViolations: [
+        {
+          toolName: 'list_products',
+          callId: 'call_xyz',
+          agentContext: 'agent-shop',
+          issues: ['<root>: expected array, received object'],
+        },
+      ],
+    });
+    assert.equal(verdict.status, 'blocked');
+    if (verdict.status === 'blocked') {
+      assert.equal(verdict.contradictions.length, 1);
+      assert.equal(verdict.contradictions[0]?.claim.type, 'tool_postcondition');
+      assert.equal(verdict.contradictions[0]?.claim.id, 'c_postcond_call_xyz');
+    }
+    // Verifier never asked the extractor — the synthetic claim doesn't need
+    // answer parsing. (Trigger router may also short-circuit if the answer
+    // doesn't look factual; either way extractor stays untouched.)
+    assert.equal(extractorCalled, false);
+  });
+
+  // Backwards-compat: no postcondition violations + clean claims → still
+  // approves. Guards against accidental tightening of the verdict-builder.
+  it('approves cleanly when toolPostconditionViolations is absent', async () => {
+    const pipeline = new VerifierPipeline({
+      extractor: stubExtractor([hardClaim()]),
+      deterministic: stubDeterministic((c) => ({
+        status: 'verified',
+        claim: c,
+        source: 'odoo',
+      })),
+      judge: stubJudge((c) => ({
+        status: 'verified',
+        claim: c,
+        source: 'graph',
+      })),
+      log: SILENT_LOG,
+    });
+    const verdict = await pipeline.verify({
+      runId: 'r8',
+      userMessage: 'was?',
+      answer: 'Die Rechnung beträgt 1.234,56 €.',
+    });
+    assert.equal(verdict.status, 'approved');
+  });
 });

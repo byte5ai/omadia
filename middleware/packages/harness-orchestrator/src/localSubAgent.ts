@@ -1,6 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import type {
   LocalSubAgentTool,
+  LocalSubAgentToolResult,
   LocalSubAgentToolSpec,
 } from '@omadia/plugin-api';
 import { streamMessageWithObserver } from './streaming.js';
@@ -13,7 +14,11 @@ import { buildDateHeader, turnContext } from './turnContext.js';
 // can produce values of those shapes without reaching back into kernel
 // source. Re-exported for kernel-internal consumers that previously
 // imported from `./localSubAgent.js`.
-export type { LocalSubAgentTool, LocalSubAgentToolSpec };
+export type {
+  LocalSubAgentTool,
+  LocalSubAgentToolResult,
+  LocalSubAgentToolSpec,
+};
 
 interface LocalSubAgentOptions {
   /** Label used in logs — typically the domain, e.g. `odoo-hr`. */
@@ -351,9 +356,12 @@ export class LocalSubAgent {
             console.warn(`[sub-agent ${this.name}] observer.onSubToolUse threw:`, err);
           }
           const started = Date.now();
-          const output = await this.dispatch(use.name, use.input);
+          const { output, postcondition } = await this.dispatch(
+            use.name,
+            use.input,
+          );
           const elapsed = Date.now() - started;
-          const isError = output.startsWith('Error:');
+          const isError = output.startsWith('Error:') || postcondition !== undefined;
           console.log(
             `[sub-agent ${this.name}] ${String(use.name)} ${isError ? '→ ERR' : '→ ok'} (${String(elapsed)}ms, ${String(output.length)} chars)`,
           );
@@ -363,6 +371,7 @@ export class LocalSubAgent {
               output,
               durationMs: elapsed,
               isError,
+              ...(postcondition ? { postcondition } : {}),
             });
           } catch (err) {
             console.warn(`[sub-agent ${this.name}] observer.onSubToolResult threw:`, err);
@@ -431,16 +440,25 @@ export class LocalSubAgent {
     }
   }
 
-  private async dispatch(toolName: string, input: unknown): Promise<string> {
+  private async dispatch(
+    toolName: string,
+    input: unknown,
+  ): Promise<{ output: string; postcondition?: { issues: readonly string[] } }> {
     const tool = this.toolsByName.get(toolName);
-    if (!tool) return `Error: unknown tool \`${toolName}\`.`;
+    if (!tool) return { output: `Error: unknown tool \`${toolName}\`.` };
 
     // Privacy Shield v4 — Data-Plane Boundary for sub-agent inner calls.
     // The privacy handle is threaded through `turnContext.privacyHandle`;
     // sub-agents inherit it from the parent orchestrator's turn scope.
     // Absent ⇒ no privacy provider installed and the result flows through.
     const privacy = turnContext.current()?.privacyHandle;
-    const result = await tool.handle(input);
+    // #130 — unwrap the structured tool-result union at the boundary so
+    // every privacy / capture path downstream keeps seeing a plain string,
+    // while we still surface the optional postcondition marker upward to
+    // the observer (which the RunTraceCollector copies onto the trace).
+    const raw = await tool.handle(input);
+    const result = typeof raw === 'string' ? raw : raw.output;
+    const postcondition = typeof raw === 'string' ? undefined : raw.postcondition;
     // Phase C.2 — Raw tool-result capture (parallel to orchestrator.dispatchTool).
     // Sub-agent tool calls also feed routine templates, so the capture
     // hook must fire here too. Absent callback ⇒ no capture.
@@ -478,7 +496,7 @@ export class LocalSubAgent {
             err,
           );
         }
-        return result;
+        return { output: result, ...(postcondition ? { postcondition } : {}) };
       }
       // Intern the raw result server-side and hand the LLM only the
       // identity-free digest — the raw rows never reach the LLM wire.
@@ -493,7 +511,10 @@ export class LocalSubAgent {
         // installed by the parent's dispatchTool scope; absent ⇒ this
         // sub-agent is not running under a domain-tool bridge.
         turnContext.current()?.subAgentDatasetSink?.push(v4.datasetId);
-        return v4.digestText;
+        return {
+          output: v4.digestText,
+          ...(postcondition ? { postcondition } : {}),
+        };
       } catch (err) {
         console.warn(
           `[sub-agent ${this.name}] privacy.internToolResultV4 threw on '${toolName}' — sending raw result:`,
@@ -501,7 +522,7 @@ export class LocalSubAgent {
         );
       }
     }
-    return result;
+    return { output: result, ...(postcondition ? { postcondition } : {}) };
   }
 }
 
