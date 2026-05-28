@@ -249,8 +249,16 @@ async function main(): Promise<void> {
   // exponential backoff. The SDK default is 2; bumped to 5 so a transient
   // `overloaded_error` (HTTP 529) burst is far more likely to ride out
   // inside the SDK instead of surfacing as a failed turn.
+  //
+  // OB-61: apiKey may be empty when the operator boots without ENV and
+  // hasn't completed /setup yet. The orchestrator + verifier + extras
+  // plugins each build their own per-plugin client from the vault, so
+  // the path that would actually hit this shared client (LocalSubAgent
+  // inner calls / Teams) is only reachable AFTER the orchestrator has
+  // activated — which in turn requires the key. Falling back to '' here
+  // keeps the SDK constructor happy on cold boots.
   const client = new Anthropic({
-    apiKey: config.ANTHROPIC_API_KEY,
+    apiKey: config.ANTHROPIC_API_KEY ?? '',
     maxRetries: 5,
   });
 
@@ -1358,6 +1366,17 @@ async function main(): Promise<void> {
         publicBaseUrl: config.PUBLIC_BASE_URL,
         defaultReturnPath: config.AUTH_DEFAULT_RETURN_PATH,
         setupAllowed: bootstrapResult.setupRequired,
+        // OB-61 — /setup wizard seeds the operator-supplied
+        // `anthropic_api_key` into each consumer plugin's vault and
+        // reactivates the plugin so the LLM-bound capabilities go live
+        // without a server restart.
+        vault: secretVault,
+        reactivate: (agentId) => installService.reactivate(agentId),
+        anthropicKeyConsumers: [
+          '@omadia/orchestrator',
+          '@omadia/orchestrator-extras',
+          '@omadia/verifier',
+        ],
         // Slice 1b-channel-web — on each login (local + entra), resolve
         // (or create) the KG User-Cluster + ChannelIdentity and cache
         // the omadiaUserId in the session JWT so chat ingest can skip

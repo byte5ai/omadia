@@ -755,6 +755,12 @@ export async function postAuthSetup(body: {
   email: string;
   password: string;
   display_name?: string;
+  /** OB-61 — operator-supplied Anthropic key, seeded into the
+   *  orchestrator/verifier/extras vault on first-user setup. Optional:
+   *  the wizard accepts an empty value (operator can add the key later
+   *  via /admin/runtime/secrets) but then the LLM-bound capabilities
+   *  stay unpublished until they do. */
+  anthropic_api_key?: string;
 }): Promise<AuthSetupSuccess> {
   return postJson<AuthSetupSuccess>('/v1/auth/setup', body);
 }

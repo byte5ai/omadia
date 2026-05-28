@@ -16,6 +16,7 @@ import type { ProviderRegistry } from '../auth/providerRegistry.js';
 import { SESSION_COOKIE } from '../auth/requireAuth.js';
 import { signSession } from '../auth/sessionJwt.js';
 import type { UserStore } from '../auth/userStore.js';
+import type { SecretVault } from '../secrets/vault.js';
 
 interface AuthDeps {
   registry: ProviderRegistry;
@@ -51,6 +52,32 @@ interface AuthDeps {
     email: string;
     displayName: string;
   }) => Promise<string | undefined>;
+  /**
+   * OB-61 — per-plugin secret vault. The /setup wizard writes the
+   * operator-supplied `anthropic_api_key` here for every plugin in
+   * `anthropicKeyConsumers` so the orchestrator/verifier/extras plugins
+   * pick it up on the next activate(). Optional so existing test wiring
+   * without a vault keeps compiling — the wizard then simply skips the
+   * key-seed step and behaves like before.
+   */
+  vault?: SecretVault;
+  /**
+   * OB-61 — plugin re-activation hook (wired to
+   * `installService.reactivate`). Called once per consumer after the
+   * vault write so the operator does NOT have to restart the server to
+   * pick up the freshly-seeded key. No-op when the plugin is not yet
+   * registered (e.g. catalog miss on cold boot).
+   */
+  reactivate?: (agentId: string) => Promise<void>;
+  /**
+   * OB-61 — list of plugin IDs that should receive the
+   * `anthropic_api_key` vault write on /setup. Kept as an explicit
+   * dependency rather than hardcoding bootstrap.ts constants so the
+   * wiring stays inspectable from this router file alone. Expected
+   * values: `@omadia/orchestrator`, `@omadia/orchestrator-extras`,
+   * `@omadia/verifier`.
+   */
+  anthropicKeyConsumers?: readonly string[];
 }
 
 const PKCE_COOKIE = 'harness_auth_pkce';
@@ -347,12 +374,17 @@ export function createAuthRouter(deps: AuthDeps): Router {
       email?: unknown;
       password?: unknown;
       display_name?: unknown;
+      anthropic_api_key?: unknown;
     };
     const email =
       typeof body.email === 'string' ? body.email.trim() : '';
     const password = typeof body.password === 'string' ? body.password : '';
     const displayName =
       typeof body.display_name === 'string' ? body.display_name.trim() : '';
+    const anthropicApiKey =
+      typeof body.anthropic_api_key === 'string'
+        ? body.anthropic_api_key.trim()
+        : '';
 
     if (email.length === 0 || !email.includes('@')) {
       res.status(400).json({ code: 'auth.setup_invalid_email' });
@@ -361,6 +393,30 @@ export function createAuthRouter(deps: AuthDeps): Router {
     if (password.length < 8) {
       res.status(400).json({ code: 'auth.setup_password_too_short' });
       return;
+    }
+
+    // OB-61: validate the Anthropic key *before* persisting any state.
+    // Skipping when empty keeps the wizard usable for operators who plan
+    // to add the key later through /admin/runtime/secrets — the
+    // orchestrator/verifier capabilities simply stay unpublished until
+    // they do.
+    if (anthropicApiKey.length > 0) {
+      if (!anthropicApiKey.startsWith('sk-ant-')) {
+        res.status(400).json({
+          code: 'auth.setup_invalid_anthropic_key',
+          message:
+            'Anthropic API keys start with "sk-ant-". Double-check the value from console.anthropic.com.',
+        });
+        return;
+      }
+      const pingError = await validateAnthropicKey(anthropicApiKey);
+      if (pingError) {
+        res.status(400).json({
+          code: 'auth.setup_anthropic_key_rejected',
+          message: pingError,
+        });
+        return;
+      }
     }
 
     const passwordHash = await hashPassword(password);
@@ -372,6 +428,30 @@ export function createAuthRouter(deps: AuthDeps): Router {
       displayName: displayName.length > 0 ? displayName : email,
       role: 'admin',
     });
+
+    // OB-61: seed the validated key into every consumer plugin's vault,
+    // then reactivate each so the plugin picks it up without a server
+    // restart. Failure to write/reactivate one plugin is logged but does
+    // NOT roll back the user creation — the operator can re-seed via
+    // /admin/runtime/secrets, but they MUST be able to log in afterwards.
+    if (anthropicApiKey.length > 0 && deps.vault) {
+      const consumers = deps.anthropicKeyConsumers ?? [];
+      for (const agentId of consumers) {
+        try {
+          await deps.vault.setMany(agentId, {
+            anthropic_api_key: anthropicApiKey,
+          });
+          if (deps.reactivate) {
+            await deps.reactivate(agentId);
+          }
+        } catch (err) {
+          console.error(
+            `[auth] /setup: failed to seed anthropic_api_key for ${agentId}:`,
+            err instanceof Error ? err.message : err,
+          );
+        }
+      }
+    }
 
     // Auto-login the freshly-created admin so the operator lands inside the
     // UI without a second round-trip. Mirrors the password-login cookie.
@@ -445,6 +525,43 @@ function sanitiseReturnPath(value: string | undefined): string | null {
   if (!value.startsWith('/') || value.startsWith('//')) return null;
   if (value.includes('\n') || value.includes('\r')) return null;
   return value;
+}
+
+/**
+ * OB-61 — minimal authenticity-check for an Anthropic API key. We hit
+ * GET /v1/models (free, no token cost) and treat a 200 as "key works".
+ * 401/403 → human-readable "rejected" error. Network failure → we let
+ * the wizard proceed but warn in the log; the operator can re-seed
+ * later. Returns null on success, otherwise a user-facing message.
+ */
+async function validateAnthropicKey(apiKey: string): Promise<string | null> {
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/models', {
+      method: 'GET',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (res.ok) return null;
+    if (res.status === 401 || res.status === 403) {
+      return 'Anthropic rejected this API key (401/403). Verify the value at console.anthropic.com → API keys.';
+    }
+    // Anything else (5xx, rate-limit, anthropic outage) is not the
+    // operator's fault — accept the key and let the orchestrator surface
+    // any later failure through its existing error path.
+    console.warn(
+      `[auth] /setup: anthropic key-ping returned ${res.status}, accepting key anyway`,
+    );
+    return null;
+  } catch (err) {
+    console.warn(
+      '[auth] /setup: anthropic key-ping network error, accepting key anyway:',
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  }
 }
 
 function httpForAuthErrorCode(code: string): number {

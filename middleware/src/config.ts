@@ -12,8 +12,13 @@ dotenv.config({ path: path.resolve(here, '..', '.env'), override: true });
 const ConfigSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3979),
 
-  // Anthropic SDK
-  ANTHROPIC_API_KEY: z.string().min(1, 'ANTHROPIC_API_KEY is required'),
+  // Anthropic SDK — optional since OB-61: the operator can supply the key
+  // through the /setup wizard on first boot (vault-stored per plugin), so
+  // an empty ENV is now a valid state. When unset AND the vault has no key
+  // either, the orchestrator + verifier + orchestrator-extras plugins
+  // register but their LLM-bound capabilities stay unpublished until the
+  // operator runs /setup or PATCHes a key via /api/v1/admin/runtime/secrets.
+  ANTHROPIC_API_KEY: z.string().optional(),
   ORCHESTRATOR_MODEL: z.string().min(1).default('claude-opus-4-7'),
   ORCHESTRATOR_MAX_TOKENS: z.coerce.number().int().positive().default(4096),
 
