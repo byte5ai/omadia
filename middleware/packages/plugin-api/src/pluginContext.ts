@@ -402,10 +402,32 @@ export function validatePluginDomain(
   return { ok: true, domain: trimmed };
 }
 
-/** Handler a plugin hands the kernel together with the tool spec. Must return
- *  a string — the tool-use reply sent back to Claude. Kernel wraps thrown
- *  errors into `Error: <message>` for symmetry with built-in tools. */
-export type NativeToolHandler = (input: unknown) => Promise<string>;
+/** Handler a plugin hands the kernel together with the tool spec.
+ *
+ *  Returns either:
+ *  - a bare string — the legacy contract; the kernel forwards the string as
+ *    the tool-use reply to Claude unchanged.
+ *  - a structured `{ output, postcondition? }` shape (#130) — the kernel uses
+ *    `output` as the reply but, when `postcondition` is set, stamps the
+ *    RunToolCall with the issue list so the verifier raises a
+ *    `tool_postcondition` claim and drives the correctionPrompt retry loop.
+ *
+ *  Kernel wraps thrown errors into `Error: <message>` for symmetry with
+ *  built-in tools. */
+export type NativeToolHandler = (
+  input: unknown,
+) => Promise<string | NativeToolResult>;
+
+/** Structured tool-result with optional postcondition-violation marker
+ *  (#130). Structural mirror of `@omadia/plugin-api`'s `LocalSubAgentToolResult`
+ *  — kept under a distinct name so consumers can be explicit about which
+ *  surface they target (top-level native tool vs. sub-agent tool). */
+export interface NativeToolResult {
+  readonly output: string;
+  readonly postcondition?: {
+    readonly issues: readonly string[];
+  };
+}
 
 /**
  * Optional per-turn attachment sink. Called once at the end of each orchestrator

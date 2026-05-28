@@ -615,13 +615,19 @@ interface ParallelSlot {
   readonly use: ContentBlock;
   readonly subEvents: ChatStreamEvent[];
   readonly invocation: InvocationHandle | undefined;
-  readonly promise: Promise<string>;
+  // #130 (native) — dispatchTool returns `{output, postcondition?}` so the
+  // postcondition (if any) propagates onto the RunToolCall in the trace.
+  readonly promise: Promise<{
+    output: string;
+    postcondition?: { issues: readonly string[] };
+  }>;
   readonly started: number;
   lastHeartbeat: number;
   settled: boolean;
   output?: string;
   isError?: boolean;
   durationMs?: number;
+  postcondition?: { issues: readonly string[] };
 }
 
 /**
@@ -1598,9 +1604,14 @@ export class Orchestrator {
           const r = settled[i]!;
           let output: string;
           let isError: boolean;
+          // #130 (native) — `dispatchTool` returns the structured shape now;
+          // unwrap output + propagate any postcondition into the trace so the
+          // verifier picks it up via `RunToolCall.postcondition`.
+          let postcondition: { issues: readonly string[] } | undefined;
           if (r.status === 'fulfilled') {
-            output = r.value;
-            isError = output.startsWith('Error:');
+            output = r.value.output;
+            postcondition = r.value.postcondition;
+            isError = output.startsWith('Error:') || postcondition !== undefined;
           } else {
             output = `Error: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`;
             isError = true;
@@ -1618,6 +1629,7 @@ export class Orchestrator {
               toolName: use.name,
               durationMs,
               isError,
+              ...(postcondition ? { postcondition } : {}),
             });
           }
           return {
@@ -2007,14 +2019,20 @@ export class Orchestrator {
           const racers = slots
             .filter((s: ParallelSlot) => !s.settled)
             .map((s: ParallelSlot) =>
-              s.promise.then((out: string) => ({
+              s.promise.then((out) => ({
                 kind: 'done' as const,
                 idx: s.idx,
-                output: out,
+                output: out.output,
+                postcondition: out.postcondition,
               })),
             );
           const winner = await Promise.race<
-            | { kind: 'done'; idx: number; output: string }
+            | {
+                kind: 'done';
+                idx: number;
+                output: string;
+                postcondition?: { issues: readonly string[] };
+              }
             | { kind: 'tick' }
           >([...racers, tickPromise]);
           if (tickTimer !== null) clearTimeout(tickTimer);
@@ -2036,8 +2054,13 @@ export class Orchestrator {
             if (!s || s.settled) continue;
             s.settled = true;
             s.output = winner.output;
-            s.isError = winner.output.startsWith('Error:');
+            // #130 (native) — a postcondition violation is an error from the
+            // tool-contract perspective even though the handler didn't throw.
+            s.isError =
+              winner.output.startsWith('Error:') ||
+              winner.postcondition !== undefined;
             s.durationMs = Date.now() - s.started;
+            if (winner.postcondition) s.postcondition = winner.postcondition;
             this.finishSlotInvocation(s, traceCollector);
             yield {
               type: 'tool_result',
@@ -2281,11 +2304,15 @@ export class Orchestrator {
         status: isError ? 'error' : 'success',
       });
     } else if (traceCollector) {
+      // #130 (native) — postcondition violation lives directly on the
+      // RunToolCall for top-level native tools so the verifier picks it up
+      // via the same path as sub-agent tools.
       traceCollector.recordOrchestratorToolCall({
         callId: slot.use.id,
         toolName: slot.use.name,
         durationMs,
         isError,
+        ...(slot.postcondition ? { postcondition: slot.postcondition } : {}),
       });
     }
   }
@@ -2294,7 +2321,7 @@ export class Orchestrator {
     name: string,
     input: unknown,
     observer?: AskObserver,
-  ): Promise<string> {
+  ): Promise<{ output: string; postcondition?: { issues: readonly string[] } }> {
     // Privacy Shield v4 — Data-Plane Boundary. The privacy handle is
     // threaded through `turnContext.privacyHandle`; absent ⇒ no privacy
     // provider installed and the tool result flows through unchanged.
@@ -2304,7 +2331,7 @@ export class Orchestrator {
     // provider's per-turn data-plane engine, not by a tool handler.
     if (privacy !== undefined && name.startsWith('v4_')) {
       const v4Tool = await privacy.runV4Tool({ toolName: name, input });
-      return v4Tool.resultText;
+      return { output: v4Tool.resultText };
     }
     // Privacy Shield v4 — sub-agent data-plane bridge. A domain tool wraps a
     // LocalSubAgent that runs its own LLM loop behind the SAME v4 boundary:
@@ -2322,7 +2349,10 @@ export class Orchestrator {
     // whether to pass the narration through raw (sub-agent already saw
     // real values, its synthesis carries them) or intern as before.
     const subAgentBypassFlag = { value: false };
-    let result: string;
+    let inner: {
+      output: string;
+      postcondition?: { issues: readonly string[] };
+    };
     if (
       privacy !== undefined &&
       ctx !== undefined &&
@@ -2332,7 +2362,7 @@ export class Orchestrator {
       // the sub-agent's inner tool calls can resolve bypass via the
       // same plugin's `_privacy_mode` setting.
       const domainToolAgentId = this.domainToolsByName.get(name)?.agentId;
-      result = await turnContext.run(
+      inner = await turnContext.run(
         {
           ...ctx,
           subAgentDatasetSink: subAgentSink,
@@ -2344,8 +2374,17 @@ export class Orchestrator {
         () => this.dispatchToolInner(name, input, observer),
       );
     } else {
-      result = await this.dispatchToolInner(name, input, observer);
+      inner = await this.dispatchToolInner(name, input, observer);
     }
+    // #130 (native) — extract postcondition once; from here on we work with
+    // a plain string through the privacy / capture pipelines (their inputs
+    // are unchanged) and re-wrap the structured shape at every return.
+    let result: string = inner.output;
+    const postcondition = inner.postcondition;
+    const wrap = (
+      output: string,
+    ): { output: string; postcondition?: { issues: readonly string[] } } =>
+      postcondition ? { output, postcondition } : { output };
     // Phase C.2 — Raw tool-result capture. Outer scope (routine runner)
     // may install a callback that stashes the raw result keyed by tool
     // name; later template rendering uses it as the source of truth for
@@ -2387,7 +2426,7 @@ export class Orchestrator {
             err,
           );
         }
-        return result;
+        return wrap(result);
       }
       // Sub-agent bridge: the sub-agent interned ≥1 dataset this dispatch —
       // pass those REAL datasets up by reference so the parent agent's
@@ -2398,7 +2437,7 @@ export class Orchestrator {
             narration: result,
             datasetIds: subAgentSink,
           });
-          return bridged.resultText;
+          return wrap(bridged.resultText);
         } catch (err) {
           console.warn(
             `[orchestrator.dispatchTool:${name}] privacy.subAgentResultV4 threw — interning prose instead:`,
@@ -2411,7 +2450,7 @@ export class Orchestrator {
       // agent's LLM read them directly), so re-interning the prose would
       // mask the synthesis the user actually asked for. Pass raw.
       if (subAgentBypassFlag.value && subAgentSink.length === 0) {
-        return result;
+        return wrap(result);
       }
       // Intern the raw result server-side and hand the LLM only the
       // identity-free digest — the raw rows never reach the LLM wire.
@@ -2420,7 +2459,7 @@ export class Orchestrator {
           toolName: name,
           rawResult: result,
         });
-        return v4.digestText;
+        return wrap(v4.digestText);
       } catch (err) {
         console.warn(
           `[orchestrator.dispatchTool:${name}] privacy.internToolResultV4 threw — sending raw result:`,
@@ -2428,7 +2467,7 @@ export class Orchestrator {
         );
       }
     }
-    return result;
+    return wrap(result);
   }
 
   /**
@@ -2534,36 +2573,49 @@ export class Orchestrator {
     name: string,
     input: unknown,
     observer?: AskObserver,
-  ): Promise<string> {
+  ): Promise<{ output: string; postcondition?: { issues: readonly string[] } }> {
     // Plugin-contributed handlers win first. Kernel branches below are the
     // legacy path for tools that have not yet been converted to
     // plugin-registration (memory, knowledge_graph, …). As each kernel tool
     // migrates, its hardcoded branch disappears.
+    //
+    // #130 (native tools) — the handler may return either a bare string
+    // (legacy contract — all built-in tools below do) or a structured
+    // `{output, postcondition?}` shape. We normalise to the structured
+    // shape before returning so `dispatchTool` sees one consistent type.
     const reg = this.nativeTools.get(name);
     if (reg?.handler) {
-      return reg.handler(input);
+      const raw = await reg.handler(input);
+      return typeof raw === 'string'
+        ? { output: raw }
+        : {
+            output: raw.output,
+            ...(raw.postcondition ? { postcondition: raw.postcondition } : {}),
+          };
     }
     if (name === KNOWLEDGE_GRAPH_TOOL_NAME && this.knowledgeGraphTool) {
-      return this.knowledgeGraphTool.handle(input);
+      return { output: await this.knowledgeGraphTool.handle(input) };
     }
     if (name === CHAT_PARTICIPANTS_TOOL_NAME && this.chatParticipantsTool) {
-      return this.chatParticipantsTool.handle();
+      return { output: await this.chatParticipantsTool.handle() };
     }
     if (name === ASK_USER_CHOICE_TOOL_NAME && this.askUserChoiceTool) {
-      return this.askUserChoiceTool.handle(input);
+      return { output: await this.askUserChoiceTool.handle(input) };
     }
     if (name === SUGGEST_FOLLOW_UPS_TOOL_NAME && this.suggestFollowUpsTool) {
-      return this.suggestFollowUpsTool.handle(input);
+      return { output: await this.suggestFollowUpsTool.handle(input) };
     }
     if (name === FIND_FREE_SLOTS_TOOL_NAME && this.findFreeSlotsTool) {
-      return this.findFreeSlotsTool.handle(input);
+      return { output: await this.findFreeSlotsTool.handle(input) };
     }
     if (name === BOOK_MEETING_TOOL_NAME && this.bookMeetingTool) {
-      return this.bookMeetingTool.handle(input);
+      return { output: await this.bookMeetingTool.handle(input) };
     }
     const domainTool = this.domainToolsByName.get(name);
-    if (domainTool) return domainTool.handle(input, observer);
-    return `Error: unknown tool \`${name}\`.`;
+    if (domainTool) {
+      return { output: await domainTool.handle(input, observer) };
+    }
+    return { output: `Error: unknown tool \`${name}\`.` };
   }
 
   /**
