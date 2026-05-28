@@ -96,6 +96,7 @@ export class RunTraceCollector {
           durationMs: ev.durationMs,
           isError: ev.isError,
           agentContext: agentName,
+          ...(ev.postcondition ? { postcondition: ev.postcondition } : {}),
         });
         toolCallStarts.delete(ev.id);
       },

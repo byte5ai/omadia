@@ -1204,6 +1204,13 @@ export interface RunToolCall {
   /** External ids of entities produced by this call (odoo://…, confluence://…).
    * Wired by the entity-ref bus, same source as TurnIngest.entityRefs. */
   producedEntityIds?: string[];
+  /** #130 — set when the bridge ran an optional output Zod schema on the
+   * tool's return value and it failed. The verifier converts this into a
+   * `tool_postcondition` claim which drives the existing correctionPrompt
+   * retry loop. Absent on every successful call. */
+  postcondition?: {
+    issues: readonly string[];
+  };
 }
 
 export interface RunAgentInvocation {

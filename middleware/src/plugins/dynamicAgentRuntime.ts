@@ -12,7 +12,11 @@ import type { UiRouteCatalog } from '../platform/uiRouteCatalog.js';
 import type { ServiceRegistry } from '../platform/serviceRegistry.js';
 import type { SecretVault } from '../secrets/vault.js';
 import type { NativeToolRegistry } from '@omadia/orchestrator';
-import { LocalSubAgent, type LocalSubAgentTool } from '@omadia/orchestrator';
+import {
+  LocalSubAgent,
+  type LocalSubAgentTool,
+  type LocalSubAgentToolResult,
+} from '@omadia/orchestrator';
 import type { Orchestrator } from '@omadia/orchestrator';
 import {
   createDomainTool,
@@ -67,6 +71,12 @@ interface UploadedToolkit {
         readonly id: string;
         readonly description: string;
         readonly input: z.ZodType<unknown>;
+        // Optional postcondition: when defined, bridgeTool validates the
+        // tool's return value against this schema before it lands in the
+        // conversation state. A mismatch surfaces as a structured marker
+        // the verifier turns into a `tool_postcondition` claim, which
+        // triggers the existing correctionPrompt retry loop.
+        readonly output?: z.ZodType<unknown>;
         run(input: unknown): Promise<unknown>;
       }
     | LocalSubAgentTool
@@ -526,10 +536,30 @@ function bridgeTool(
         required,
       },
     },
-    async handle(input: unknown): Promise<string> {
+    async handle(
+      input: unknown,
+    ): Promise<string | LocalSubAgentToolResult> {
       try {
         const parsed = td.input.parse(input);
         const result = await td.run(parsed);
+        if (td.output) {
+          const outCheck = td.output.safeParse(result);
+          if (!outCheck.success) {
+            // #130 — structured postcondition result. The output string is
+            // what the LLM sees as `tool_result` content; the `postcondition`
+            // field rides the AskObserver up to the RunTraceCollector, which
+            // stamps the `RunToolCall.postcondition` so the verifier raises
+            // a `tool_postcondition` claim and drives the existing
+            // correctionPrompt retry loop.
+            const issues = outCheck.error.issues.map(
+              (i) => `${i.path.join('.') || '<root>'}: ${i.message}`,
+            );
+            return {
+              output: `[POSTCONDITION_FAILED] tool=${td.id} issues=${issues.join('; ')}`,
+              postcondition: { issues },
+            };
+          }
+        }
         return typeof result === 'string'
           ? result
           : JSON.stringify(result, null, 2);

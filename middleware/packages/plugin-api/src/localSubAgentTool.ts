@@ -21,9 +21,24 @@ export interface LocalSubAgentToolSpec {
   };
 }
 
+/**
+ * Structured tool-result with optional postcondition-violation marker
+ * (#130). `handle` returns either a bare string (legacy contract — all
+ * existing plugins do this) or this shape when the bridge has run the
+ * optional `output` Zod schema and detected a mismatch. The verifier
+ * picks up `postcondition` and raises a `tool_postcondition` claim that
+ * drives the existing correctionPrompt retry loop.
+ */
+export interface LocalSubAgentToolResult {
+  readonly output: string;
+  readonly postcondition?: {
+    readonly issues: readonly string[];
+  };
+}
+
 export interface LocalSubAgentTool {
   spec: LocalSubAgentToolSpec;
-  handle(input: unknown): Promise<string>;
+  handle(input: unknown): Promise<string | LocalSubAgentToolResult>;
   /**
    * Privacy-Shield v3 (stable-id tokenization, slice 1) — optional PII
    * field annotations. When present, the harness runs a stable-id

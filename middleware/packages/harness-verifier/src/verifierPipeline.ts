@@ -63,10 +63,20 @@ export class VerifierPipeline {
     // contradiction.
     const replayVerdicts = detectFailureReplay(input);
 
+    // #130 — postcondition violations the bridgeTool detected on tool
+    // returns (output Zod schema mismatch). Same shape as replayVerdicts:
+    // synthetic contradicted verdicts that don't need answer extraction.
+    // The presence of any of these flips the aggregate to `blocked` and
+    // drives the existing correctionPrompt retry loop.
+    const postconditionVerdicts = buildPostconditionVerdicts(input);
+
     const trigger = shouldTriggerVerifier(input.answer);
     if (!trigger.shouldVerify) {
-      // Only the replay verdicts matter here.
-      return aggregate(replayVerdicts, started);
+      // Only the synthetic (no-extraction-needed) verdicts matter here.
+      return aggregate(
+        [...replayVerdicts, ...postconditionVerdicts],
+        started,
+      );
     }
 
     let claims: Claim[];
@@ -77,14 +87,20 @@ export class VerifierPipeline {
       });
     } catch (err) {
       this.log(`[verifier/pipeline] extractor FAIL: ${errMsg(err)}`);
-      return aggregate(replayVerdicts, started);
+      return aggregate(
+        [...replayVerdicts, ...postconditionVerdicts],
+        started,
+      );
     }
 
     if (claims.length === 0) {
       this.log(
         `[verifier/pipeline] no claims extracted (trigger=${trigger.reasons.join(',')})`,
       );
-      return aggregate(replayVerdicts, started);
+      return aggregate(
+        [...replayVerdicts, ...postconditionVerdicts],
+        started,
+      );
     }
 
     const { hard, soft } = classify(claims);
@@ -116,12 +132,39 @@ export class VerifierPipeline {
 
     const all: ClaimVerdict[] = [
       ...replayVerdicts,
+      ...postconditionVerdicts,
       ...traceVerdicts,
       ...hardVerdicts,
       ...softVerdicts,
     ];
     return aggregate(all, started);
   }
+}
+
+/**
+ * #130 — turn each postcondition violation reported on the runTrace into a
+ * synthetic contradicted ClaimVerdict. The verifier never asks the extractor
+ * about these (they don't live in the answer text) and the deterministic
+ * checker never sees them either; they go straight into the aggregate.
+ */
+function buildPostconditionVerdicts(input: VerifierInput): ClaimVerdict[] {
+  const violations = input.toolPostconditionViolations;
+  if (!violations || violations.length === 0) return [];
+  return violations.map(
+    (v): ClaimVerdict => ({
+      status: 'contradicted',
+      claim: {
+        id: `c_postcond_${v.callId}`,
+        text: `Tool '${v.toolName}' returned a value that did not conform to its declared output schema.`,
+        type: 'tool_postcondition',
+        expectedSource: 'unknown',
+        relatedEntities: [],
+      },
+      truth: { issues: v.issues },
+      source: 'unknown',
+      detail: v.issues.join('; '),
+    }),
+  );
 }
 
 // --- helpers --------------------------------------------------------------

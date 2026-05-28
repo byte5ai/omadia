@@ -125,6 +125,13 @@ export interface RunToolCall {
   /** External ids of entities produced by this call (odoo://…, confluence://…).
    *  Wired by the entity-ref bus, same source as `TurnIngest.entityRefs`. */
   producedEntityIds?: string[];
+  /** #130 — set when the bridge ran an optional output Zod schema on the
+   *  tool's return value and it failed. Structural copy of KG-side
+   *  `RunToolCall.postcondition`; the verifier reads this to raise a
+   *  `tool_postcondition` claim. */
+  postcondition?: {
+    issues: readonly string[];
+  };
 }
 
 /** Per-sub-agent invocation entry in a run trace. */

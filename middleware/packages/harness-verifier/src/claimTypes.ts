@@ -15,7 +15,12 @@ export type ClaimType =
   | 'date'        // concrete calendar date or period boundary
   | 'name'        // person / customer / vendor name with contextual assertion
   | 'aggregate'   // sum / count / avg over a set (especially HR leave)
-  | 'qualitative';// non-numeric statement about an entity ("X ist Kunde seit …")
+  | 'qualitative' // non-numeric statement about an entity ("X ist Kunde seit …")
+  | 'tool_postcondition'; // #130 — synthetic claim: a tool returned a value
+                          // that didn't match its declared output Zod schema.
+                          // Never produced by the LLM-side claim extractor;
+                          // verifierPipeline manufactures one per violation
+                          // it scans out of the runTrace before extraction.
 
 /** Which subsystem is authoritative for this claim. */
 export type ClaimSource = 'odoo' | 'graph' | 'confluence' | 'unknown';
@@ -111,6 +116,19 @@ export interface VerifierInput {
    * pipeline then falls back to deterministic re-query (the existing path).
    */
   domainToolsCalled?: readonly string[];
+  /**
+   * #130 — postcondition violations the bridge detected on tool returns
+   * (output Zod schema mismatch). Extracted from the runTrace before the
+   * pipeline runs; the pipeline manufactures a synthetic `tool_postcondition`
+   * ClaimVerdict with status='contradicted' for each entry. Drives the
+   * existing correctionPrompt retry loop.
+   */
+  toolPostconditionViolations?: readonly {
+    toolName: string;
+    callId: string;
+    agentContext: string;
+    issues: readonly string[];
+  }[];
 }
 
 /** Badge used by the Teams card to communicate verifier status. */

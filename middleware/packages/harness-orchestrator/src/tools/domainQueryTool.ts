@@ -15,6 +15,12 @@ export interface AskObserver {
     output: string;
     durationMs: number;
     isError: boolean;
+    /** #130 — present when the bridge ran an optional output Zod schema
+     * on the tool's return value and it failed. RunTraceCollector copies
+     * the issues onto the RunToolCall so the verifier can pick them up. */
+    postcondition?: {
+      issues: readonly string[];
+    };
   }): void;
   onIterationPhase?(ev: {
     iteration: number;
