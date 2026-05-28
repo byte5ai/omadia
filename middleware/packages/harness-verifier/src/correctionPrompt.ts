@@ -16,14 +16,27 @@ export function buildCorrectionPrompt(
   if (verdict.status !== 'blocked') return undefined;
 
   const postconditionItems = verdict.contradictions.filter(isPostcondition);
+  const citationItems = verdict.contradictions.filter(isCitationMissing);
   const replayItems = verdict.contradictions.filter(
-    (v) => !isPostcondition(v) && isReplay(v),
+    (v) => !isPostcondition(v) && !isCitationMissing(v) && isReplay(v),
   );
   const dataItems = verdict.contradictions.filter(
-    (v) => !isPostcondition(v) && !isReplay(v),
+    (v) =>
+      !isPostcondition(v) && !isCitationMissing(v) && !isReplay(v),
   );
 
   const sections: string[] = ['# Verifier hat Widersprüche erkannt', ''];
+
+  if (citationItems.length > 0) {
+    sections.push(
+      '## Fehlende Citations',
+      '',
+      'Du hast in diesem Turn die Wissens-Datenbank (knowledge graph) abgefragt, aber deine Antwort enthält keinen `[ref:nodeId]`-Marker. Jede Aussage, die du aus den Graph-Ergebnissen ableitest, muss mit der nodeId der Quelle versehen sein — sonst ist sie für den User nicht nachvollziehbar.',
+      '',
+      '**Jetzt bitte:** schreibe die Antwort neu und hänge nach jeder graph-basierten Aussage `[ref:<nodeId>]` an (die nodeIds findest du in den vorherigen `query_knowledge_graph`-Tool-Results). Wenn eine Aussage nicht aus dem Graph kommt (z.B. allgemeines Wissen oder eine direkte Tool-Antwort), brauchst du dort keine Citation. Der Channel-Layer entfernt die Marker vor der Anzeige — du musst dir um die Optik keine Sorgen machen, der Marker dient nur der Verifizierung.',
+      '',
+    );
+  }
 
   if (postconditionItems.length > 0) {
     sections.push(
@@ -69,6 +82,11 @@ export function buildCorrectionPrompt(
 function isPostcondition(v: ClaimVerdict): boolean {
   if (v.status !== 'contradicted') return false;
   return v.claim.type === 'tool_postcondition';
+}
+
+function isCitationMissing(v: ClaimVerdict): boolean {
+  if (v.status !== 'contradicted') return false;
+  return v.claim.type === 'citation_missing';
 }
 
 function isReplay(v: ClaimVerdict): boolean {

@@ -16,11 +16,17 @@ export type ClaimType =
   | 'name'        // person / customer / vendor name with contextual assertion
   | 'aggregate'   // sum / count / avg over a set (especially HR leave)
   | 'qualitative' // non-numeric statement about an entity ("X ist Kunde seit …")
-  | 'tool_postcondition'; // #130 — synthetic claim: a tool returned a value
+  | 'tool_postcondition' // #130 — synthetic claim: a tool returned a value
                           // that didn't match its declared output Zod schema.
                           // Never produced by the LLM-side claim extractor;
                           // verifierPipeline manufactures one per violation
                           // it scans out of the runTrace before extraction.
+  | 'citation_missing'; // #131 — synthetic claim: the turn called a
+                        // knowledge-graph tool but the answer contains no
+                        // `[ref:nodeId]` markers, so any KG-grounded
+                        // statement in the answer is structurally
+                        // unattributable. Drives the correctionPrompt
+                        // retry to force the model to add citations.
 
 /** Which subsystem is authoritative for this claim. */
 export type ClaimSource = 'odoo' | 'graph' | 'confluence' | 'unknown';
@@ -129,6 +135,18 @@ export interface VerifierInput {
     agentContext: string;
     issues: readonly string[];
   }[];
+  /**
+   * #131 — true when the turn called the knowledge-graph (or any KG-backed
+   * fetch tool). When set, the verifier scans the answer for
+   * `[ref:nodeId]` citation markers; an answer with KG evidence but no
+   * markers produces a synthetic `citation_missing` claim that drives the
+   * correctionPrompt retry loop.
+   *
+   * Extracted from the runTrace in `verifierService` alongside
+   * `domainToolsCalled`. Undefined ⇒ "no trace evidence" (dev CLI etc.);
+   * the pipeline skips the citation check in that case.
+   */
+  knowledgeGraphToolsCalled?: boolean;
 }
 
 /** Badge used by the Teams card to communicate verifier status. */
