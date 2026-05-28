@@ -476,7 +476,25 @@ export function BuilderChatPane({
   const onChooseUserChoice = useCallback(
     async (value: string) => {
       if (!pendingUserChoice || choiceSubmitting) return;
-      const { choiceId } = pendingUserChoice;
+      const { choiceId, options } = pendingUserChoice;
+      // Surface the operator's pick as a user chat-message so the
+      // transcript shows what they answered — the resolver does NOT fire
+      // a `chat_message` event back (the choice goes through the tool
+      // Promise, not a fresh turn), so the optimistic insert is the
+      // only way to keep the conversation readable. Prefer the option's
+      // label over the raw value so the transcript reads naturally.
+      const picked = options.find((o) => o.value === value);
+      const transcriptText = picked?.label ?? value;
+      setItems((prev) => [
+        ...prev,
+        {
+          kind: 'message',
+          key: nextKey('msg'),
+          role: 'user',
+          text: transcriptText,
+          ts: Date.now(),
+        },
+      ]);
       setChoiceSubmitting(true);
       setError(null);
       onUserChoiceResolved?.();
@@ -494,7 +512,13 @@ export function BuilderChatPane({
         setChoiceSubmitting(false);
       }
     },
-    [pendingUserChoice, choiceSubmitting, draftId, onUserChoiceResolved],
+    [
+      pendingUserChoice,
+      choiceSubmitting,
+      draftId,
+      nextKey,
+      onUserChoiceResolved,
+    ],
   );
 
   return (
