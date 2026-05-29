@@ -4,6 +4,8 @@ import { Children, isValidElement, type ReactElement, type ReactNode } from 'rea
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
+import { stripCitationMarkers } from '../../../../_lib/citations';
+
 /**
  * Workspace-Markdown.
  *
@@ -18,6 +20,9 @@ import remarkGfm from 'remark-gfm';
  * Markdown surface without auditing every other consumer first.
  */
 export function BuilderMarkdown({ source }: { source: string }): React.ReactElement {
+  // #131 — strip `[ref:nodeId]` citation markers before render. Same
+  // contract as the main-chat Markdown component.
+  const displayed = stripCitationMarkers(source);
   return (
     <div className="md-view">
       <ReactMarkdown
@@ -31,7 +36,7 @@ export function BuilderMarkdown({ source }: { source: string }): React.ReactElem
           },
         }}
       >
-        {source}
+        {displayed}
       </ReactMarkdown>
     </div>
   );

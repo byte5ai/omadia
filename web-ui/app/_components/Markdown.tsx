@@ -4,6 +4,8 @@ import { useMemo, type ComponentProps } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
+import { stripCitationMarkers } from '../_lib/citations';
+
 /**
  * Thin wrapper that renders GitHub-flavored markdown with our project-local
  * `.md-view` class. Global styles in globals.css handle typography. Keeping
@@ -110,10 +112,13 @@ export function Markdown({
         : undefined,
     [highlightTerms],
   );
+  // #131 — strip `[ref:nodeId]` citation markers before render. The verifier
+  // uses them to attribute KG-evidence claims; the user just sees the prose.
+  const displayed = useMemo(() => stripCitationMarkers(source), [source]);
   return (
     <div className="md-view">
       <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={rehypePlugins}>
-        {source}
+        {displayed}
       </ReactMarkdown>
     </div>
   );

@@ -229,6 +229,7 @@ export class VerifierService implements ChatAgent {
   ): Promise<VerifierVerdict> {
     const domainToolsCalled = extractToolsCalled(runTrace);
     const toolPostconditionViolations = extractPostconditionViolations(runTrace);
+    const knowledgeGraphToolsCalled = extractKnowledgeGraphToolsCalled(runTrace);
     try {
       return await this.pipeline.verify({
         runId,
@@ -237,6 +238,9 @@ export class VerifierService implements ChatAgent {
         ...(domainToolsCalled ? { domainToolsCalled } : {}),
         ...(toolPostconditionViolations.length > 0
           ? { toolPostconditionViolations }
+          : {}),
+        ...(knowledgeGraphToolsCalled !== undefined
+          ? { knowledgeGraphToolsCalled }
           : {}),
       });
     } catch (err) {
@@ -362,6 +366,28 @@ function extractToolsCalled(
     names.add(call.toolName);
   }
   return [...names];
+}
+
+/**
+ * #131 — true when this turn invoked the knowledge-graph (or any of the
+ * KG-backed sub-agent / orchestrator tools the verifier counts as
+ * "fetched evidence"). The pipeline uses this as the gate for the
+ * citation-missing check: no KG call ⇒ citations are irrelevant.
+ */
+function extractKnowledgeGraphToolsCalled(
+  trace: RunTracePayload | undefined,
+): boolean | undefined {
+  if (!trace) return undefined;
+  const KG_NAMES: ReadonlySet<string> = new Set(['query_knowledge_graph']);
+  for (const call of trace.orchestratorToolCalls) {
+    if (KG_NAMES.has(call.toolName)) return true;
+  }
+  for (const inv of trace.agentInvocations) {
+    for (const call of inv.toolCalls) {
+      if (KG_NAMES.has(call.toolName)) return true;
+    }
+  }
+  return false;
 }
 
 /**

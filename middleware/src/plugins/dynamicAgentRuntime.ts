@@ -31,6 +31,7 @@ import type { PluginCatalog, PluginCatalogEntry } from './manifestLoader.js';
 import { composePersonaSection } from './personaCompose.js';
 import type { PersonaModelFamily } from './personaDelta.js';
 import { compileBoundariesSection } from './builder/boundaryPresets.js';
+import { compileCitationGuard } from './citationGuard.js';
 import { compileSycophancyGuard } from './sycophancyGuard.js';
 import { topoSortByDependsOn } from './topoSort.js';
 import type { UploadedPackageStore } from './uploadedPackageStore.js';
@@ -648,12 +649,17 @@ async function loadSystemPrompt(
   const personaSection = await composePersonaFromAgentMd(packageRoot, modelId);
   const boundariesSection = await composeBoundariesFromAgentMd(packageRoot);
   const sycophancySection = await composeSycophancyFromAgentMd(packageRoot);
+  // #131 — Citation-Guard is always-on. It only changes the answer shape
+  // for turns that actually call `query_knowledge_graph`; the verifier
+  // ignores the citation check for turns that don't.
+  const citationSection = compileCitationGuard();
 
   const header = buildHeader(entry);
   const parts: string[] = [header];
   if (personaSection.length > 0) parts.push(personaSection);
   if (boundariesSection.length > 0) parts.push(boundariesSection);
   if (sycophancySection.length > 0) parts.push(sycophancySection);
+  if (citationSection.length > 0) parts.push(citationSection);
   if (skillParts.length > 0) parts.push(skillParts.join('\n\n---\n\n'));
   return parts.join('\n\n---\n\n');
 }

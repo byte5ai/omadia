@@ -70,13 +70,23 @@ export class VerifierPipeline {
     // drives the existing correctionPrompt retry loop.
     const postconditionVerdicts = buildPostconditionVerdicts(input);
 
+    // #131 — turn fetched knowledge-graph evidence but the answer carries
+    // no `[ref:nodeId]` citations. Synthetic contradicted verdict, same
+    // retry path. Skipped when `knowledgeGraphToolsCalled` is undefined
+    // (no trace evidence — e.g. dev CLI) or false (turn didn't touch the
+    // graph at all, so citations are irrelevant).
+    const citationVerdicts = buildCitationMissingVerdicts(input);
+
+    const synthetic = [
+      ...replayVerdicts,
+      ...postconditionVerdicts,
+      ...citationVerdicts,
+    ];
+
     const trigger = shouldTriggerVerifier(input.answer);
     if (!trigger.shouldVerify) {
       // Only the synthetic (no-extraction-needed) verdicts matter here.
-      return aggregate(
-        [...replayVerdicts, ...postconditionVerdicts],
-        started,
-      );
+      return aggregate(synthetic, started);
     }
 
     let claims: Claim[];
@@ -87,20 +97,14 @@ export class VerifierPipeline {
       });
     } catch (err) {
       this.log(`[verifier/pipeline] extractor FAIL: ${errMsg(err)}`);
-      return aggregate(
-        [...replayVerdicts, ...postconditionVerdicts],
-        started,
-      );
+      return aggregate(synthetic, started);
     }
 
     if (claims.length === 0) {
       this.log(
         `[verifier/pipeline] no claims extracted (trigger=${trigger.reasons.join(',')})`,
       );
-      return aggregate(
-        [...replayVerdicts, ...postconditionVerdicts],
-        started,
-      );
+      return aggregate(synthetic, started);
     }
 
     const { hard, soft } = classify(claims);
@@ -131,14 +135,47 @@ export class VerifierPipeline {
     ]);
 
     const all: ClaimVerdict[] = [
-      ...replayVerdicts,
-      ...postconditionVerdicts,
+      ...synthetic,
       ...traceVerdicts,
       ...hardVerdicts,
       ...softVerdicts,
     ];
     return aggregate(all, started);
   }
+}
+
+/**
+ * #131 — turn fetched knowledge-graph evidence but the answer carries no
+ * `[ref:nodeId]` citations. Same shape as the postcondition synthesiser:
+ * skip when no trace evidence, no KG calls, or citations are present;
+ * otherwise emit one contradicted ClaimVerdict that flips the aggregate
+ * to blocked and drives the correctionPrompt retry.
+ *
+ * Detector is a flat regex over the answer text — node-id-shape is loose
+ * on purpose so plugins that mint their own node-ids (Confluence /
+ * Odoo prefixes) don't need to update this file.
+ */
+const CITATION_MARKER_REGEX = /\[ref:[\w-]+\]/i;
+
+function buildCitationMissingVerdicts(input: VerifierInput): ClaimVerdict[] {
+  if (input.knowledgeGraphToolsCalled !== true) return [];
+  if (CITATION_MARKER_REGEX.test(input.answer)) return [];
+  return [
+    {
+      status: 'contradicted',
+      claim: {
+        id: 'c_citation_missing',
+        text: 'Answer pulled knowledge-graph evidence but contains no [ref:nodeId] citations.',
+        type: 'citation_missing',
+        expectedSource: 'graph',
+        relatedEntities: [],
+      },
+      truth: null,
+      source: 'graph',
+      detail:
+        'Add `[ref:<nodeId>]` after every assertion grounded in the knowledge graph so the verifier can attribute the claim to a source.',
+    },
+  ];
 }
 
 /**
