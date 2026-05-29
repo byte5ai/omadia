@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { PackageCheck, Store } from 'lucide-react';
+import { HardDrive, PackageCheck, Store } from 'lucide-react';
 
 import { listProfiles, listStorePlugins } from '../_lib/api';
 import { redirectIfUnauthorized } from '../_lib/authRedirect';
@@ -19,9 +19,10 @@ export const dynamic = 'force-dynamic';
 
 type CategoryFilter = 'all' | PluginKind;
 
-/** Top-level view switch: locally installed plugins vs. plugins available to
- *  install — both from the remote Hub registries and the local catalog. */
-type SourceFilter = 'installed' | 'hub';
+/** Top-level view switch by plugin origin: `hub` = advertised by a remote
+ *  registry, `local` = local catalog package (not installed), `installed` =
+ *  already in the runtime registry. */
+type SourceFilter = 'hub' | 'local' | 'installed';
 
 const FILTER_LABEL: Record<CategoryFilter, string> = {
   all: 'Alle',
@@ -66,25 +67,31 @@ export default async function StorePage({
     profiles = [];
   }
 
-  // "Installiert" is a filtered view of everything already in the runtime
-  // registry. "Hub" is the FULL catalog — every plugin available to browse,
-  // *including* ones already installed, which keep their green "Installiert"
-  // flag (StateBadge) so you can spot what you already have. Not-yet-installed
-  // entries sort first so newly discoverable plugins surface at the top;
-  // Array.sort is stable, so the catalog's name order is preserved per group.
+  // Three origins, partitioned so every plugin lands in exactly one bucket:
+  //   • Hub         — advertised by a remote registry (`plugin.source` set),
+  //                   available to fetch + install. An installed hub plugin
+  //                   becomes local and leaves this bucket (the store router's
+  //                   local-wins merge drops the remote entry on id collision).
+  //   • Lokal       — local catalog packages (examples / uploaded ZIPs) that
+  //                   are not yet installed.
+  //   • Installiert — anything already in the runtime registry.
+  const hubPlugins = plugins.filter((p) => p.source != null);
   const installedPlugins = plugins.filter(
     (p) => p.install_state === 'installed',
   );
-  const hubPlugins = [...plugins].sort(
-    (a, b) =>
-      Number(a.install_state === 'installed') -
-      Number(b.install_state === 'installed'),
+  const localPlugins = plugins.filter(
+    (p) => p.source == null && p.install_state !== 'installed',
   );
-  const installedCount = installedPlugins.length;
-  const notInstalledCount = plugins.length - installedCount;
   const hubCount = hubPlugins.length;
+  const localCount = localPlugins.length;
+  const installedCount = installedPlugins.length;
 
-  const scoped = source === 'installed' ? installedPlugins : hubPlugins;
+  const scoped =
+    source === 'installed'
+      ? installedPlugins
+      : source === 'local'
+        ? localPlugins
+        : hubPlugins;
   const countsByKind = countByKind(scoped);
   const visible =
     filter === 'all' ? scoped : scoped.filter((p) => p.kind === filter);
@@ -118,23 +125,23 @@ export default async function StorePage({
         {/* Stats strip — installed vs. hub split + total */}
         <dl className="mt-10 grid max-w-2xl grid-cols-4 gap-6 border-t border-[color:var(--divider)] pt-5 text-sm">
           <Stat label="Plugins" value={plugins.length} />
-          <Stat label="Installiert" value={installedCount} accent />
-          <Stat label="Verfügbar" value={notInstalledCount} />
-          <Stat label="Integrations" value={countByKind(plugins).integration} />
+          <Stat label="Hub" value={hubCount} accent />
+          <Stat label="Lokal" value={localCount} />
+          <Stat label="Installiert" value={installedCount} />
         </dl>
       </header>
 
-      {/* Source switch — the primary view toggle: installed runtime plugins vs.
-          the Hub catalog of plugins available to install. */}
+      {/* Source switch — the primary view selector by plugin origin. */}
       <SourceTabs
         source={source}
-        installedCount={installedCount}
         hubCount={hubCount}
+        localCount={localCount}
+        installedCount={installedCount}
       />
 
-      {/* Upload dropzone — only in the Hub view, where "add a plugin" belongs.
-          An uploaded package surfaces here as an installable catalog entry. */}
-      {source === 'hub' ? (
+      {/* Upload dropzone — only in the Lokal view: an uploaded ZIP becomes a
+          local catalog package, which is exactly what this view lists. */}
+      {source === 'local' ? (
         <div className="mt-6">
           <UploadDropzone />
         </div>
@@ -250,12 +257,14 @@ function Stat({
  */
 function SourceTabs({
   source,
-  installedCount,
   hubCount,
+  localCount,
+  installedCount,
 }: {
   source: SourceFilter;
-  installedCount: number;
   hubCount: number;
+  localCount: number;
+  installedCount: number;
 }): React.ReactElement {
   const tabs: Array<{
     key: SourceFilter;
@@ -268,6 +277,12 @@ function SourceTabs({
       label: 'Hub',
       count: hubCount,
       icon: <Store className="size-4" aria-hidden />,
+    },
+    {
+      key: 'local',
+      label: 'Lokal',
+      count: localCount,
+      icon: <HardDrive className="size-4" aria-hidden />,
     },
     {
       key: 'installed',
@@ -351,6 +366,13 @@ function EmptyState({
             className="font-semibold text-[color:var(--accent)] underline-offset-4 hover:underline"
           >
             Hub
+          </Link>{' '}
+          oder{' '}
+          <Link
+            href={buildHref('local', 'all')}
+            className="font-semibold text-[color:var(--accent)] underline-offset-4 hover:underline"
+          >
+            Lokal
           </Link>
           , um verfügbare Plugins zu durchsuchen und zu installieren.
         </p>
@@ -358,7 +380,23 @@ function EmptyState({
     );
   }
 
-  // source === 'hub' and empty — usually means no registry is reachable.
+  if (source === 'local') {
+    return (
+      <div className="rounded-[14px] border border-dashed border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] p-12 text-center">
+        <p className="font-display text-[22px] text-[color:var(--fg-strong)]">
+          Keine lokalen Pakete.
+        </p>
+        <p className="mt-3 text-sm leading-relaxed text-[color:var(--fg-muted)]">
+          Lade ein Plugin-Paket per Drag-&-Drop oben hoch — der Server validiert
+          das Manifest und registriert es im Katalog.
+        </p>
+      </div>
+    );
+  }
+
+  // source === 'hub' and empty — no remote registry advertises an installable
+  // (not-yet-local) plugin. Either no registry is reachable, or every hub
+  // entry is already installed locally (the merge drops those).
   return (
     <div className="rounded-[14px] border border-dashed border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] p-12 text-center">
       <p className="font-display text-[22px] text-[color:var(--fg-strong)]">
@@ -372,7 +410,14 @@ function EmptyState({
         >
           Admin · Registries
         </Link>{' '}
-        — oder lade ein Plugin-Paket per Drag-&-Drop oben hoch.
+        — oder lade ein eigenes Paket im{' '}
+        <Link
+          href={buildHref('local', 'all')}
+          className="font-semibold text-[color:var(--accent)] underline-offset-4 hover:underline"
+        >
+          Lokal
+        </Link>
+        -Tab hoch.
       </p>
     </div>
   );
@@ -411,7 +456,9 @@ function LoadErrorState({ message }: { message: string }): React.ReactElement {
 // ---------------------------------------------------------------------------
 
 function parseSource(raw: string | undefined): SourceFilter {
-  return raw === 'installed' ? 'installed' : 'hub';
+  if (raw === 'installed') return 'installed';
+  if (raw === 'local') return 'local';
+  return 'hub';
 }
 
 /** Build a `/store` href preserving the source/kind pair. `hub` + `all` are
