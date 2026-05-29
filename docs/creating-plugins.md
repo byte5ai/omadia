@@ -50,8 +50,8 @@ Zip-Flow, aber der Code-Contract ist verschieden:
 - **`integration`** — nur Secrets/Config-Container, von dem `agent`s via
   `depends_on` erben. Kein Toolkit.
 - **`channel`** — User-Surface. Empfängt native Events, übersetzt sie in den
-  `IncomingTurn`-Shape, ruft `core.handleTurnStream(turn)` und rendert die
-  Antwort zurück. **Keine** `capabilities`/`playbook`/`skills`. → §4b.
+  `IncomingTurn`-Shape, fährt einen Orchestrator-Turn und rendert die Antwort
+  zurück. **Keine** `capabilities`/`playbook`/`skills`. → §4b.
 
 ---
 
@@ -198,31 +198,51 @@ Es gibt **keinen** Konstruktor mit Deps — alles kommt über `ctx` (PluginConte
 und `core` (CoreApi):
 
 ```ts
-import type { CoreApi, ChannelHandle, IncomingTurn } from '@omadia/channel-sdk';
-import { isNoReply, logNoReplyDrop } from '@omadia/channel-sdk';
+import {
+  getChatAgent,                 // SDK-Helper: löst den Orchestrator auf
+  isNoReply,
+  type CoreApi, type ChannelHandle, type IncomingTurn,
+} from '@omadia/channel-sdk';
 import type { PluginContext } from '@omadia/plugin-api';
 
 export async function activate(ctx: PluginContext, core: CoreApi): Promise<ChannelHandle> {
   // 1. Transport öffnen (NICHT awaiten bis "verbunden" — activate-Budget = 10s).
-  // 2. Auf inbound Events: IncomingTurn bauen → core.handleTurnStream(turn)
-  //    → Stream zu `done` folden → rendern → zurücksenden.
+  // 2. Auf inbound Events: IncomingTurn bauen → Turn fahren → rendern → zurücksenden.
   // 3. Optionale Admin-/Status-UI via ctx.routes.register (siehe unten).
   return { async close() { /* Sockets/Timer freigeben (≤5s) */ } };
 }
 ```
 
-**`core` (CoreApi)** — was der Channel auf dem Kernel aufruft:
-- `handleTurnStream(turn): AsyncIterable<ChatStreamEvent>` — Turn fahren; das
-  `done`-Event trägt `answer` + Sidecars (`pendingUserChoice`, `followUpOptions`,
-  `attachments`, …). `toSemanticAnswer()`/`isNoReply()` helfen beim Rendern.
-- `registerRoute` / `registerRouter` — channel-scoped Express-Routen
-  (auto-503 bei deactivate).
+**Einen Turn fahren — zwei Wege:**
+
+```ts
+// (a) Gefaltete Antwort (ein await, kein Event-Loop) — am einfachsten:
+const agent = getChatAgent(ctx);              // ← SDK-Helper, Typ ChatAgent | undefined
+if (!agent) throw new Error('orchestrator unavailable');
+const answer = await agent.chat({ userMessage: turn.text, sessionScope, userId });
+// answer: SemanticAnswer { text, interactive?, attachments?, followUps?, disclaimer? }
+
+// (b) Live-Event-Stream (für Channels mit Tipp-/Tool-Trace-Anzeige):
+for await (const ev of core.handleTurnStream(turn)) { /* ev: ChatStreamEvent */ }
+```
+
+> `core.handleTurnStream(turn)` ist seit der Orchestrator-Verkabelung **real**
+> an den aktiven `chatAgent` gebunden (`middleware/src/index.ts` →
+> `orchestratorDispatcher`). Vorher war der Dispatcher ein Stub, der Turns
+> still verschluckte (Log `stub dispatcher: turn ignored`) — wer darüber fuhr,
+> bekam keine Antwort. Für simple Frage→Antwort genügt
+> `getChatAgent(ctx).chat(...)` (gibt direkt eine `SemanticAnswer`).
+
+**`core` (CoreApi)** — was der Channel sonst auf dem Kernel aufruft:
+- `handleTurnStream(turn): AsyncIterable<ChatStreamEvent>` (siehe oben),
+- `registerRoute` / `registerRouter` — channel-scoped Express-Routen (auto-503 bei deactivate),
 - `resolveIdentity(ref)`, `log(level, msg, ctx?)`.
 
 **Inbound → Turn.** `IncomingTurn = { channelId, conversationId, userRef:{ kind,
 id, displayName? }, text, attachments?, metadata?, rawEvent? }`. `userRef.kind`
 ist ein geschlossener Union — WhatsApp = `'whatsapp-phone'`, Telegram =
-`'telegram-chat'`, Teams = `'teams-aad'`, Slack/Discord/`custom`.
+`'telegram-chat'`, Teams = `'teams-aad'`, Slack/Discord/`custom`. `isNoReply()`
+filtert die `NO_REPLY`-Sentinel; `SemanticAnswer` rendert der Channel native.
 
 **Manifest-Besonderheiten (channel).** Keine `capabilities`/`playbook`/`skills`.
 Dafür der `channel:`-Block (Schema Section 14):
@@ -241,22 +261,24 @@ channel:
   adapters: ["text", "markdown"]   # text|markdown|adaptive_card|telegram_keyboard|…
 ```
 
-**Admin-UI / Auth-Surface (z.B. QR-Code).** Das generische Pattern: einen
-Express-Router mit `ctx.routes.register('/api/<slug>/admin', router)` mounten
-(static `index.html` + JSON-API), und im Manifest `admin_ui_path` auf
-`…/index.html` zeigen. web-ui rendert dann automatisch ein
-`<iframe src="/bot-api{admin_ui_path}">` auf der Store-Detail-Page — **ohne
-web-ui-Änderung**. Harte Regeln (siehe
+**Admin-UI / Auth-Surface (z.B. QR-Code).** Express-Router mit
+`ctx.routes.register('/api/<slug>/admin', router)` mounten (static `index.html`
++ JSON-API), im Manifest `admin_ui_path` auf `…/index.html` zeigen → web-ui
+rendert automatisch ein `<iframe src="/bot-api{admin_ui_path}">` auf der
+Store-Detail-Page. Harte Regeln (siehe
 `middleware/assets/boilerplate/agent-integration/assets/admin-ui/CLAUDE.md`):
-- `fetch()` im UI **relativ** (`api/status`, nicht `/api/...`) — sonst 404 hinter
-  dem `/bot-api`-Rewrite.
-- Jede Antwort `{ ok: true, … }` / `{ ok: false, error }`; das Frontend prüft `data.ok`.
-- Stylesheet `/bot-api/_harness/admin-ui.css`, nur `var(--*)`-Tokens, keine externen Scripts/Fonts, kein `position: fixed`.
+`fetch()` **relativ** (`api/status`), jede Antwort `{ ok, … }`, Stylesheet
+`/bot-api/_harness/admin-ui.css`, nur `var(--*)`-Tokens, keine externen Scripts/Fonts.
 
-`omadia-channel-whatsapp` nutzt genau das, um den WhatsApp-Pairing-QR (als
-data-URL-`<img>`) anzuzeigen; State (Status + QR) wird im RAM gehalten und über
-`api/status` gepollt. Auth-State persistiert es über `ctx.memory` (überlebt
-Restart) — daher `permissions.memory.{reads,writes}` deklarieren.
+**WhatsApp/Baileys-Lehren (aus `channel-whatsapp`, falls relevant):**
+- Auth-State über `ctx.memory` persistieren (überlebt Restart) →
+  `permissions.memory.{reads,writes}` deklarieren.
+- WhatsApp adressiert Chats teils per **LID** (`…@lid`), nicht per Telefonnummer.
+  Self-Chat-Erkennung gegen `sock.user.lid` (eigene LID) UND die PN matchen.
+  Allowlist gegen `senderPn`/`participantPn` (nicht die LID-Ziffern).
+- `fromMe:true`-Nachrichten NICHT pauschal droppen (sonst antwortet ein
+  same-account-Bot nie im Self-Chat) — nur die eigenen Replies via Sent-ID-Set
+  ausschließen, um Loops zu vermeiden.
 
 ---
 
@@ -381,6 +403,12 @@ curl -sS "$HUB/registry/index.json" | jq '.plugins[].id'
   (`schema_version: "1"`, `identity.*`, gültiger `kind`), rechnet sha256 über die
   **exakten** Upload-Bytes und legt/aktualisiert den Index-Eintrag.
 
+> **Prod-Token (CI/headless):** der echte `HUB_PUBLISH_TOKEN` liegt im
+> Vercel-Env des `omadia-hub`-Projekts (das `hub/.env.local` enthält nur den
+> **lokalen** Dev-Token für `localhost:3100`). Ziehen via
+> `cd hub && vercel env pull <tmp> --environment=production --yes`, Wert
+> rausgreifen, danach Tmp-File löschen — nie echoen.
+
 Artefakt-URL (host-gepinnt, wird beim Read auf `HUB_PUBLIC_URL` umgeschrieben):
 `$HUB/registry/<id>/<version>/plugin.zip`.
 
@@ -407,6 +435,7 @@ lokal und startet dann den normalen Install-Job.
 | Symptom | Ursache / Fix |
 |---|---|
 | Channel aktiviert nicht / `activate is not a function` | Falscher Export-Shape. `dist/plugin.js` muss `export async function activate(ctx, core)` (oder `export default {activate}`) liefern — siehe §4b. |
+| Channel ackt Nachrichten, antwortet aber nie | Turn wird ins Leere gefahren. Über `getChatAgent(ctx).chat(...)` ODER `core.handleTurnStream(turn)` fahren (beides an den aktiven Orchestrator gebunden) — und sicherstellen, dass das Orchestrator-Plugin aktiv ist (`anthropic_api_key` gesetzt). |
 | Plugin crasht zur Laufzeit mit `Cannot find package 'X'` | `X` ist nicht im Host-`node_modules` und wurde nicht gebundelt. Entweder `X` in `dist/` bundeln (esbuild, §5) oder — wenn host-bereitgestellt — als `peerDependencies` deklarieren. |
 | Ingest warnt `peers_missing` | Eine deklarierte Peer-Dep fehlt im Host. Host-Dep ergänzen, oder (für eigene Deps) auf `dependencies` + Bundle umstellen. |
 | `npm install` schlägt mit 404 auf `@omadia/*` fehl | Peers sind privat/nicht-npm. `.npmrc` mit `legacy-peer-deps=true`; `@omadia/*`-Typen via `tsconfig.paths` resolven. |
@@ -423,12 +452,11 @@ lokal und startet dann den normalen Install-Job.
 - Package-Contract Agent (10 Punkte): `middleware/assets/boilerplate/agent-pure-llm/CLAUDE.md`
 - Admin-UI-Constraints: `middleware/assets/boilerplate/agent-integration/assets/admin-ui/CLAUDE.md`
 - Kanonischer Agent: `middleware/packages/agent-seo-analyst/`
-- Channel-SDK: `middleware/packages/harness-channel-sdk/src/` (`@omadia/channel-sdk`)
+- Channel-SDK: `middleware/packages/harness-channel-sdk/src/` (`@omadia/channel-sdk`) — inkl. `getChatAgent(ctx)`
 - Öffentliches Channel-Referenz-Plugin: `byte5ai/omadia-channel-whatsapp`
 - Runtime-Contract: `middleware/packages/plugin-api/src/pluginContext.ts` (`@omadia/plugin-api`)
 - Manifest-Schema (inkl. `channel:`-Block §14): `docs/harness-platform/manifest-schema.v1.yaml`
 - Channel-Resolver (Export-Shapes): `middleware/src/channels/dynamicChannelResolver.ts`
+- Turn-Dispatcher (CoreApi → Orchestrator): `middleware/src/channels/coreApi.ts` + `middleware/src/index.ts`
 - Dep-Resolution / Symlink-Bridge: `middleware/src/plugins/{packageUploadService,uploadedPackageStore}.ts`
-- Store-/Install-Routen: `middleware/src/routes/{store,install,registryInstall}.ts`
-- Registry-Client (Hub-Konsum): `middleware/src/plugins/registryClient.ts`
 - Hub-Publish-Route (Service): `hub/app/api/publish/route.ts`

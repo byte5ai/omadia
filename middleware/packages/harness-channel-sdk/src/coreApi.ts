@@ -17,6 +17,10 @@ export interface CoreApi {
   /**
    * Drive an orchestrator turn with the user's message. Returns a stream of
    * events the channel adapter translates to native format.
+   *
+   * Backed by the currently-active orchestrator (the `chatAgent` service). For
+   * a folded {@link SemanticAnswer} (one `await`, no event loop) or richer
+   * control, resolve the agent directly via `getChatAgent(ctx)` instead.
    */
   handleTurnStream(turn: IncomingTurn): AsyncIterable<ChatStreamEvent>;
 

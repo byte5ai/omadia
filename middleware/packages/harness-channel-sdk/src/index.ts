@@ -9,6 +9,16 @@ export type {
 // What channels call on the core
 export type { CoreApi, HttpMethod, LogLevel } from './coreApi.js';
 
+// Orchestrator access — the typed, blessed way for a channel to resolve the
+// ChatAgent it drives turns with (alternative to CoreApi.handleTurnStream when
+// a folded SemanticAnswer / richer control is wanted).
+export {
+  CHAT_AGENT_SERVICE,
+  getChatAgent,
+  getChatAgentBundle,
+  type ChatAgentBundle,
+} from './chatAgentService.js';
+
 // Inbound message shape
 export type {
   IncomingTurn,

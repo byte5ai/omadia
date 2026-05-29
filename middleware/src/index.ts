@@ -2339,21 +2339,33 @@ async function main(): Promise<void> {
   // ────────────────────────────────────────────────────────────────────────
   const routeRegistry = new ExpressRouteRegistry(app);
 
-  // Placeholder TurnDispatcher: real wiring to orchestrator.chatStream lands
-  // when Teams gets ported (Slice 2.3). Until then the CoreApi is callable
-  // but yields nothing, so any premature channel activation is visible in
-  // logs without causing a crash.
-  const stubDispatcher: TurnDispatcher = {
-    // eslint-disable-next-line require-yield
+  // Real TurnDispatcher: drive the orchestrator's ChatAgent (published as a
+  // ChatAgentBundle under 'chatAgent') and stream its events straight back to
+  // the channel adapter. Resolved lazily per turn from the service registry so
+  // it always uses the currently-active orchestrator. This makes
+  // `CoreApi.handleTurnStream` real for EVERY channel — channels no longer have
+  // to reach into the service registry themselves to answer a turn.
+  const orchestratorDispatcher: TurnDispatcher = {
     async *streamTurn(input) {
-      console.warn(
-        `[channels] stub dispatcher: turn ignored (scope=${input.scope}, user=${input.userRef.kind}:${input.userRef.id})`,
-      );
+      const bundle = serviceRegistry.get<ChatAgentBundle>('chatAgent');
+      const agent = bundle?.agent;
+      if (!agent) {
+        console.warn(
+          `[channels] no chatAgent registered — turn ignored (scope=${input.scope})`,
+        );
+        yield { type: 'error', message: 'orchestrator unavailable' };
+        return;
+      }
+      yield* agent.chatStream({
+        userMessage: input.text,
+        sessionScope: input.scope,
+        userId: input.userRef.id,
+      });
     },
   };
 
   const channelCoreApi = createCoreApi({
-    dispatcher: stubDispatcher,
+    dispatcher: orchestratorDispatcher,
     routes: routeRegistry,
   });
 
