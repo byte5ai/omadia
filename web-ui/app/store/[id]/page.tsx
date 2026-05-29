@@ -265,6 +265,7 @@ export default async function PluginDetailPage({
             pluginName={plugin.name}
             installState={plugin.install_state}
             enabled={install_available}
+            remote={Boolean(plugin.source)}
             {...(blocking_reasons ? { blockingReasons: blocking_reasons } : {})}
           />
 

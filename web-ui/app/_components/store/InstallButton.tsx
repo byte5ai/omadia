@@ -10,6 +10,7 @@ import {
   createInstallJob,
   deleteUploadedPackage,
   getInstalledPlugin,
+  installFromRegistry,
   uninstallPlugin,
   updateInstalledPluginConfig,
   ApiError,
@@ -29,6 +30,10 @@ interface InstallButtonProps {
   installState: 'available' | 'installed' | 'update-available' | 'incompatible';
   enabled: boolean;
   blockingReasons?: string[];
+  /** When true the plugin lives on a remote registry and is not yet ingested
+   *  locally: install first fetches + ingests the ZIP (POST /install/registry),
+   *  then proceeds with the normal install job. */
+  remote?: boolean;
 }
 
 type Phase =
@@ -46,6 +51,7 @@ export function InstallButton({
   installState,
   enabled,
   blockingReasons,
+  remote = false,
 }: InstallButtonProps): React.ReactElement {
   const router = useRouter();
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
@@ -160,6 +166,12 @@ export function InstallButton({
     setPhase({ kind: 'creating' });
     setFieldErrors({});
     try {
+      // Remote plugin: pull + sha256-verify + ingest the ZIP locally first,
+      // then the install job runs against the now-local package. Idempotent
+      // after the first fetch (the package becomes a local catalog entry).
+      if (remote) {
+        await installFromRegistry(pluginId);
+      }
       const resp = await createInstallJob(pluginId);
       setPhase({ kind: 'form', job: resp.job });
     } catch (err) {

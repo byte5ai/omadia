@@ -137,6 +137,14 @@ export interface Plugin {
    * channel-SDK's `core.registerRouter`.
    */
   admin_ui_path?: string;
+  /** Present only for entries sourced from a remote registry that are not yet
+   *  ingested locally. Drives the remote-install flow (fetch-then-ingest
+   *  before the normal install job). Mirrors middleware admin-v1. */
+  source?: {
+    registry: string;
+    download_url: string;
+    sha256: string;
+  };
 }
 
 export interface StoreListResponse {

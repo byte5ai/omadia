@@ -3,15 +3,26 @@ import type { Request, Response } from 'express';
 
 import type {
   Plugin,
+  PluginPermissionsSummary,
+  PluginSetupField,
   StoreGetResponse,
   StoreListResponse,
 } from '../api/admin-v1.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
+import type {
+  RegistryClient,
+  ResolvedRegistryPlugin,
+} from '../plugins/registryClient.js';
 
 interface StoreDeps {
   catalog: PluginCatalog;
   registry: InstalledRegistry;
+  /** Optional remote registries. When present, their plugins are merged into
+   *  the list with `install_state: 'available'` + a `source` marker so the
+   *  operator can install from the hub. A local plugin of the same id wins;
+   *  a registry fetch failure never breaks the local listing. */
+  client?: RegistryClient;
 }
 
 /**
@@ -46,6 +57,35 @@ export function createStoreRouter(deps: StoreDeps): Router {
         .filter((plugin) => matchesSearch(plugin, search))
         .filter((plugin) => matchesCategory(plugin, category));
 
+      // Merge remote-registry plugins (the "store sources"). Local entries win
+      // on id collision; a registry hiccup degrades to local-only, never 500s.
+      if (deps.client?.hasRegistries()) {
+        const seen = new Set(items.map((p) => p.id));
+        try {
+          const { plugins, errors } = await deps.client.listAll();
+          for (const resolved of plugins) {
+            if (seen.has(resolved.entry.id)) continue;
+            const remote = registryEntryToPlugin(resolved);
+            if (
+              matchesSearch(remote, search) &&
+              matchesCategory(remote, category)
+            ) {
+              items.push(remote);
+              seen.add(remote.id);
+            }
+          }
+          for (const e of errors) {
+            console.warn(`[store] registry '${e.registry}' skipped: ${e.message}`);
+          }
+        } catch (err) {
+          console.warn(
+            `[store] remote registry merge skipped: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
+
       const body: StoreListResponse = {
         items,
         next_cursor: null,
@@ -69,6 +109,18 @@ export function createStoreRouter(deps: StoreDeps): Router {
 
       const entry = deps.catalog.get(id);
       if (!entry) {
+        // Not local — try the remote registries so a hub-only plugin's detail
+        // page resolves (otherwise the store list would link to a 404).
+        const remote = await resolveRemotePlugin(deps.client, id);
+        if (remote) {
+          const body: StoreGetResponse = {
+            plugin: remote,
+            manifest: remote.source ? { source: remote.source } : {},
+            install_available: true,
+          };
+          res.json(body);
+          return;
+        }
         res
           .status(404)
           .json({ code: 'store.plugin_not_found', message: `no plugin with id '${id}'` });
@@ -135,4 +187,78 @@ function matchesSearch(plugin: Plugin, search: string | undefined): boolean {
 function matchesCategory(plugin: Plugin, category: string | undefined): boolean {
   if (!category) return true;
   return plugin.categories.includes(category);
+}
+
+/** Resolve a single plugin id against the remote registries (for the detail
+ *  endpoint). Returns null if absent or any registry is unreachable. */
+async function resolveRemotePlugin(
+  client: RegistryClient | undefined,
+  id: string,
+): Promise<Plugin | null> {
+  if (!client?.hasRegistries()) return null;
+  try {
+    const { plugins } = await client.listAll();
+    const resolved = plugins.find((p) => p.entry.id === id);
+    return resolved ? registryEntryToPlugin(resolved) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Map a remote registry entry → the `Plugin` shape the store list returns.
+ *  Uses the latest advertised version. Permissions/integrations are left
+ *  minimal here — the registry's `manifest_summary` is a display teaser; the
+ *  authoritative summary is computed from the real manifest after the package
+ *  is fetched + ingested (the install wizard shows that). */
+function registryEntryToPlugin(resolved: ResolvedRegistryPlugin): Plugin {
+  const { registry, entry } = resolved;
+  const ver =
+    entry.versions.find((v) => v.version === entry.latest_version) ??
+    entry.versions[0]!;
+  const summary = ver.manifest_summary ?? {};
+  const setupFields = Array.isArray(summary.setup_fields)
+    ? (summary.setup_fields as unknown as PluginSetupField[])
+    : [];
+
+  return {
+    id: entry.id,
+    kind: entry.kind,
+    name: entry.name,
+    version: ver.version,
+    latest_version: entry.latest_version,
+    description: entry.description,
+    authors: entry.authors,
+    license: entry.license,
+    icon_url: entry.icon_url,
+    categories: entry.categories,
+    domain: entry.domain,
+    compat_core: ver.compat_core,
+    signed: false,
+    signed_by: null,
+    required_secrets: setupFields,
+    permissions_summary: emptyPermissionsSummary(),
+    integrations_summary: [],
+    install_state: 'available',
+    depends_on: Array.isArray(summary.depends_on) ? summary.depends_on : [],
+    jobs: [],
+    provides: Array.isArray(summary.provides) ? summary.provides : [],
+    requires: Array.isArray(summary.requires) ? summary.requires : [],
+    multi_instance: true,
+    privacy_class: 'default',
+    source: {
+      registry,
+      download_url: ver.download_url,
+      sha256: ver.sha256,
+    },
+  };
+}
+
+function emptyPermissionsSummary(): PluginPermissionsSummary {
+  return {
+    memory_reads: [],
+    memory_writes: [],
+    graph_reads: [],
+    graph_writes: [],
+    network_outbound: [],
+  };
 }

@@ -3,6 +3,8 @@ import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 import { z } from 'zod';
 
+import type { RegistryConfigEntry } from './api/registry-v1.js';
+
 // Resolve .env relative to this file so the server works from any CWD.
 const here = path.dirname(fileURLToPath(import.meta.url));
 // From src/ or dist/ the project root is always one directory up.
@@ -325,6 +327,21 @@ const ConfigSchema = z.object({
    *  author can shadow a built-in or uploaded plugin without packing/
    *  zipping/uploading every iteration. Default is unset (disabled). */
   PLUGIN_DEV_DIR: z.string().optional(),
+
+  // Remote plugin registries (the plugin "store"). JSON array of
+  // {url,name,token?} entries — Core fetches each registry's `index.json`,
+  // merges them (first-wins on id collision), and installs ZIPs through the
+  // EXISTING upload pipeline. Empty/unset → no remote registry: OSS instances
+  // run standalone and manual ZIP upload still works. `token`, when present,
+  // is sent as `Authorization: Bearer` (how a private byte5/customer hub is
+  // consumed). Example:
+  //   REGISTRY_URLS='[{"name":"omadia-public","url":"https://hub.omadia.ai"}]'
+  REGISTRY_URLS: z.string().optional(),
+  REGISTRY_FETCH_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(15_000),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -359,3 +376,62 @@ function loadConfig(): Config {
 }
 
 export const config: Config = loadConfig();
+
+/**
+ * Parse `REGISTRY_URLS` into a validated list of registry config entries.
+ * Defensive by design: malformed JSON or invalid entries are logged and
+ * dropped rather than crashing boot — a misconfigured registry must never
+ * take the whole middleware down, it just means "no remote store".
+ * Exported standalone so it is unit-testable without booting the server.
+ */
+export function parseRegistries(
+  raw: string | undefined,
+  log: (msg: string) => void = (m) => console.warn(m),
+): RegistryConfigEntry[] {
+  if (!raw || raw.trim() === '') return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    log(
+      `[config] REGISTRY_URLS is not valid JSON — ignoring (no remote registry): ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return [];
+  }
+  if (!Array.isArray(parsed)) {
+    log('[config] REGISTRY_URLS must be a JSON array — ignoring.');
+    return [];
+  }
+  const out: RegistryConfigEntry[] = [];
+  const seenNames = new Set<string>();
+  for (const item of parsed) {
+    if (typeof item !== 'object' || item === null) continue;
+    const rec = item as Record<string, unknown>;
+    const url = typeof rec['url'] === 'string' ? rec['url'].trim() : '';
+    const name = typeof rec['name'] === 'string' ? rec['name'].trim() : '';
+    if (!url || !name) {
+      log('[config] REGISTRY_URLS entry missing url/name — skipped.');
+      continue;
+    }
+    try {
+       
+      new URL(url);
+    } catch {
+      log(`[config] REGISTRY_URLS entry '${name}' has a malformed url — skipped.`);
+      continue;
+    }
+    if (seenNames.has(name)) {
+      log(`[config] REGISTRY_URLS duplicate name '${name}' — skipped.`);
+      continue;
+    }
+    seenNames.add(name);
+    const entry: RegistryConfigEntry = { url, name };
+    if (typeof rec['token'] === 'string' && rec['token']) {
+      entry.token = rec['token'];
+    }
+    out.push(entry);
+  }
+  return out;
+}

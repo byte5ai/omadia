@@ -588,6 +588,100 @@ export async function deleteUploadedPackage(id: string): Promise<void> {
 }
 
 // -----------------------------------------------------------------------------
+// Plugin registries (admin) + remote install
+// -----------------------------------------------------------------------------
+
+/** Non-secret view of a configured registry (the bearer token is write-only
+ *  and never returned — only `has_token` flags its presence). */
+export interface StoredRegistry {
+  name: string;
+  url: string;
+  has_token: boolean;
+}
+
+export interface RegistryListResponse {
+  registries: StoredRegistry[];
+}
+
+export async function listRegistries(): Promise<RegistryListResponse> {
+  return getJson<RegistryListResponse>('/v1/admin/registries');
+}
+
+export async function addRegistry(body: {
+  name: string;
+  url: string;
+  token?: string;
+}): Promise<void> {
+  await postJson<void>('/v1/admin/registries', body);
+}
+
+export async function updateRegistry(
+  name: string,
+  patch: { url?: string; token?: string | null },
+): Promise<void> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(
+    botApi(`/v1/admin/registries/${encodeURIComponent(name)}`),
+    {
+      method: 'PATCH',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+        ...forwarded,
+      },
+      body: JSON.stringify(patch),
+      credentials: 'include',
+      cache: 'no-store',
+    },
+  );
+  if (res.ok || res.status === 204) return;
+  const text = await res.text().catch(() => '');
+  maybeNavigateToLogin(res.status);
+  throw new ApiError(res.status, `PATCH registry failed: ${res.status}`, text);
+}
+
+export async function deleteRegistry(name: string): Promise<void> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(
+    botApi(`/v1/admin/registries/${encodeURIComponent(name)}`),
+    {
+      method: 'DELETE',
+      headers: { accept: 'application/json', ...forwarded },
+      credentials: 'include',
+      cache: 'no-store',
+    },
+  );
+  if (res.ok || res.status === 204) return;
+  const text = await res.text().catch(() => '');
+  maybeNavigateToLogin(res.status);
+  throw new ApiError(res.status, `DELETE registry failed: ${res.status}`, text);
+}
+
+export interface RegistryInstallResponse {
+  ok: true;
+  plugin_id: string;
+  version: string;
+  registry: string;
+  next: { install: string };
+}
+
+/**
+ * Fetch a plugin ZIP from a configured registry and ingest it locally (C2).
+ * Returns the ingested plugin id; the caller then drives the normal install
+ * job (`createInstallJob` → `configureInstallJob`) for setup + activation.
+ */
+export async function installFromRegistry(
+  id: string,
+  version?: string,
+): Promise<RegistryInstallResponse> {
+  const suffix = version ? `?version=${encodeURIComponent(version)}` : '';
+  return postJson<RegistryInstallResponse>(
+    `/v1/install/registry/${encodeURIComponent(id)}${suffix}`,
+    undefined,
+  );
+}
+
+// -----------------------------------------------------------------------------
 // System / vault-status
 // -----------------------------------------------------------------------------
 

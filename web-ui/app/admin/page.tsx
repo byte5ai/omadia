@@ -45,6 +45,11 @@ export default function AdminIndexPage(): React.ReactElement {
           description="Übersicht aller registrierten Plugins gruppiert nach Domain (z.B. odoo, m365.calendar, core.knowledge-graph). Read-only — Curation kommt mit Phase 9."
         />
         <AdminCard
+          href="/admin/registries"
+          title="Plugin-Registries"
+          description="Store-Quellen verwalten (Standard: hub.omadia.ai). Private Registries mit Token. Änderungen wirken ohne Neustart."
+        />
+        <AdminCard
           href="/admin/bulk-promote"
           title="Memory · Bulk-Promotion"
           description="Historische Turns nachträglich auf Significance scoren und bei hoher Bewertung als MemorableKnowledge promoten. Idempotent."

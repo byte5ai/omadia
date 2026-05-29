@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 import express from 'express';
 import cookieParser from 'cookie-parser';
-import { config } from './config.js';
+import { config, parseRegistries } from './config.js';
 import { createTigrisStore } from '@omadia/diagrams';
 import type { MemoryStore } from '@omadia/plugin-api';
 import { createAdminRouter } from './routes/admin.js';
@@ -43,8 +43,17 @@ import type {
 import { createHarnessAdminUiRouter } from './routes/harnessAdminUi.js';
 import { createStoreRouter } from './routes/store.js';
 import { createInstallRouter } from './routes/install.js';
+import { createAdminRegistriesRouter } from './routes/adminRegistries.js';
+import { RegistryClient } from './plugins/registryClient.js';
+import {
+  VaultBackedRegistryConfigStore,
+  InMemoryRegistrySettings,
+  seedRegistriesIfEmpty,
+  type RegistrySettingsKV,
+} from './plugins/registryConfigStore.js';
 import { createProfilesRouter } from './routes/profiles.js';
 import { createPackagesRouter } from './routes/packages.js';
+import { createRegistryInstallRouter } from './routes/registryInstall.js';
 import { createRuntimeRouter } from './routes/runtime.js';
 import { createVaultStatusRouter } from './routes/vaultStatus.js';
 import { createBuilderRouter } from './routes/builder.js';
@@ -1454,10 +1463,53 @@ async function main(): Promise<void> {
     });
   }
 
+  // ── Plugin registries (the "store sources") ───────────────────────────────
+  // Admin-managed, persistent: the non-secret list lives in platform_settings
+  // (Postgres) when a graphPool is present, else an in-memory KV (DB-less boot
+  // re-seeds the default each start). Bearer tokens live in the encrypted
+  // vault. Seeded on first boot from REGISTRY_URLS, else the public default
+  // hub.omadia.ai. The live RegistryClient is reloaded from the store here and
+  // again after every admin mutation, so changes apply without a restart.
+  const registrySettings: RegistrySettingsKV = graphPool
+    ? new PlatformSettingsStore(graphPool)
+    : new InMemoryRegistrySettings();
+  const registryConfigStore = new VaultBackedRegistryConfigStore({
+    settings: registrySettings,
+    vault: secretVault,
+  });
+  await seedRegistriesIfEmpty(
+    registryConfigStore,
+    parseRegistries(config.REGISTRY_URLS),
+    (m) => console.log(m),
+  );
+  const registryClient = new RegistryClient({
+    registries: await registryConfigStore.list(),
+    timeoutMs: config.REGISTRY_FETCH_TIMEOUT_MS,
+    log: (m) => console.log(m),
+  });
+  app.use(
+    '/api/v1/admin/registries',
+    requireAuth,
+    createAdminRegistriesRouter({
+      store: registryConfigStore,
+      client: registryClient,
+      log: (m) => console.log(m),
+    }),
+  );
+  console.log(
+    `[middleware] registry admin endpoints ready at /api/v1/admin/registries (auth: required, sources: ${
+      registryClient.registryNames().join(', ') || 'none'
+    })`,
+  );
+
   app.use(
     '/api/v1/store/plugins',
     requireAuth,
-    createStoreRouter({ catalog: pluginCatalog, registry: installedRegistry }),
+    createStoreRouter({
+      catalog: pluginCatalog,
+      registry: installedRegistry,
+      client: registryClient,
+    }),
   );
   console.log('[middleware] plugin store endpoints ready at /api/v1/store/plugins (auth: required)');
 
@@ -1633,6 +1685,22 @@ async function main(): Promise<void> {
     );
     console.log(
       `[middleware] package upload endpoints ready at /api/v1/install/packages (maxBytes=${config.PACKAGE_UPLOAD_MAX_BYTES}, auth: required)`,
+    );
+
+    // Remote-install: fetch a ZIP from a configured registry and feed it into
+    // the same ingest pipeline. Gated by PACKAGE_UPLOAD_ENABLED because it
+    // reuses packageUploadService.
+    app.use(
+      '/api/v1/install/registry',
+      requireAuth,
+      createRegistryInstallRouter({
+        client: registryClient,
+        packageUpload: packageUploadService,
+        log: (msg) => console.log(msg),
+      }),
+    );
+    console.log(
+      '[middleware] registry install endpoint ready at /api/v1/install/registry (auth: required)',
     );
   } else {
     console.log('[middleware] package upload DISABLED (PACKAGE_UPLOAD_ENABLED=false)');

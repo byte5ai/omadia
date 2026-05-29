@@ -80,6 +80,15 @@ tmp/
 # harness platform sources. See marketing-site/docs/00-isolation.md.
 marketing-site/
 
+# ─── Plugin hub / registry service (NEVER commit — separate repo) ─────────
+# hub.omadia.ai — the registry SERVICE (Blob + metadata + /api/publish) and
+# its human storefront UI. byte5-hosted, outside OSS-Core scope. Lives in its
+# own repo (byte5ai/omadia-hub), mirrored here as a gitignored folder exactly
+# like marketing-site. NOTE: the registry *client* (RegistryClient, remote
+# install, store merge) IS OSS-Core and lives in middleware/src/ — only the
+# hosted service is private.
+hub/
+
 # ─── byte5-specific agent + deployment configs (private) ──────────────────
 # These describe a specific byte5 deployment (Fly app, Neon project, kroki
 # sidecars, customer-specific agent configs) and must never land in public

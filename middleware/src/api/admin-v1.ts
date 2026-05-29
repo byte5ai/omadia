@@ -188,6 +188,16 @@ export interface Plugin {
   integrations_summary: string[];
   install_state: PluginInstallState;
   incompatibility_reasons?: string[];
+  /** Present only for entries sourced from a remote registry that are not yet
+   *  downloaded/ingested locally. Its presence is what tells the install flow
+   *  to fetch-then-ingest (POST /api/v1/install/registry/:id) before the
+   *  normal install-job. Structurally mirrors `RegistrySource` in
+   *  `api/registry-v1.ts`. */
+  source?: {
+    registry: string;
+    download_url: string;
+    sha256: string;
+  };
   /** Parent plugin identities this one inherits secrets/config from. */
   depends_on: AgentId[];
   /** Background jobs the plugin contributes via its manifest. Always
