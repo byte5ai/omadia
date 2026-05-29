@@ -1,5 +1,6 @@
 import type {
   AuditMode,
+  InstallChainResolution,
   InstallConfigureResponse,
   InstallCreateResponse,
   InstallJob,
@@ -662,6 +663,10 @@ export interface RegistryInstallResponse {
   plugin_id: string;
   version: string;
   registry: string;
+  /** C5 — missing `depends_on` parents (already fetched + ingested) the
+   *  operator must install before the target. Empty/absent → install the
+   *  target directly. Same shape the RequiresWizard consumes. */
+  chain?: InstallChainResolution;
   next: { install: string };
 }
 

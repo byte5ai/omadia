@@ -283,7 +283,12 @@ describe('registry install router (C2)', () => {
     app.use(express.json());
     app.use(
       '/install/registry',
-      createRegistryInstallRouter({ client: makeClient(), packageUpload: fakeUpload }),
+      createRegistryInstallRouter({
+        client: makeClient(),
+        packageUpload: fakeUpload,
+        catalog: fakeCatalog([]),
+        registry: fakeRegistry,
+      }),
     );
     server = app.listen(0);
     base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/install/registry`;
@@ -349,7 +354,15 @@ describe('registry install router · no registries configured', () => {
     const fakeUpload = { ingest: async () => ({ ok: true }) } as unknown as PackageUploadService;
     const app = express();
     app.use(express.json());
-    app.use('/install/registry', createRegistryInstallRouter({ client, packageUpload: fakeUpload }));
+    app.use(
+      '/install/registry',
+      createRegistryInstallRouter({
+        client,
+        packageUpload: fakeUpload,
+        catalog: fakeCatalog([]),
+        registry: fakeRegistry,
+      }),
+    );
     const server = app.listen(0);
     const base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/install/registry`;
     try {

@@ -1696,6 +1696,8 @@ async function main(): Promise<void> {
       createRegistryInstallRouter({
         client: registryClient,
         packageUpload: packageUploadService,
+        catalog: pluginCatalog,
+        registry: installedRegistry,
         log: (msg) => console.log(msg),
       }),
     );

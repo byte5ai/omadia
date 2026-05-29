@@ -166,11 +166,18 @@ export function InstallButton({
     setPhase({ kind: 'creating' });
     setFieldErrors({});
     try {
-      // Remote plugin: pull + sha256-verify + ingest the ZIP locally first,
-      // then the install job runs against the now-local package. Idempotent
-      // after the first fetch (the package becomes a local catalog entry).
+      // Remote plugin: pull + sha256-verify + ingest the ZIP locally first
+      // (C2). The server also resolves + ingests the target's depends_on
+      // parents (C5): when any are missing, it returns a `chain` and we open
+      // the chained wizard (parents → target) instead of installing the
+      // target directly — the install gate is strict on depends_on because the
+      // child inherits the parent's vault credentials.
       if (remote) {
-        await installFromRegistry(pluginId);
+        const reg = await installFromRegistry(pluginId);
+        if (reg.chain && reg.chain.available_providers.length > 0) {
+          setPhase({ kind: 'wizard', resolution: reg.chain });
+          return;
+        }
       }
       const resp = await createInstallJob(pluginId);
       setPhase({ kind: 'form', job: resp.job });

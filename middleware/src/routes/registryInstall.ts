@@ -4,11 +4,19 @@ import type { Request, Response } from 'express';
 import type { RegistryClient } from '../plugins/registryClient.js';
 import { RegistryError } from '../plugins/registryClient.js';
 import type { PackageUploadService } from '../plugins/packageUploadService.js';
+import type { PluginCatalog } from '../plugins/manifestLoader.js';
+import type { InstalledRegistry } from '../plugins/installedRegistry.js';
+import { resolveDependencyParents } from '../plugins/dependencyChainResolver.js';
 
 export interface RegistryInstallDeps {
   client: RegistryClient;
   /** Existing ZIP-ingest pipeline — remote install just feeds it a buffer. */
   packageUpload: PackageUploadService;
+  /** Catalog + installed-registry — needed to resolve the target's
+   *  `depends_on` parents (C5): remote-only parents get fetched + ingested so
+   *  the operator wizard can install "parents → target" in one chained flow. */
+  catalog: PluginCatalog;
+  registry: InstalledRegistry;
   log?: (msg: string) => void;
 }
 
@@ -89,11 +97,27 @@ export function createRegistryInstallRouter(deps: RegistryInstallDeps): Router {
       log(
         `[registry] installed ${result.plugin_id}@${result.version} from '${resolved.registry}'`,
       );
+
+      // C5 — resolve + ingest the target's transitive depends_on parents.
+      // `chain` lists the missing (not-yet-installed) parents so the operator
+      // wizard installs them before the target (the install gate is strict on
+      // depends_on because the child inherits the parent's vault credentials).
+      const { chain } = await resolveDependencyParents(result.plugin_id, {
+        catalog: deps.catalog,
+        registry: deps.registry,
+        client: deps.client,
+        packageUpload: deps.packageUpload,
+        log,
+      });
+
       res.status(201).json({
         ok: true,
         plugin_id: result.plugin_id,
         version: result.version,
         registry: resolved.registry,
+        // Missing depends_on parents to install first (empty → install target
+        // directly). Same shape as the capability-chain wizard consumes.
+        chain,
         // hint the next step in the install flow
         next: {
           install: `/api/v1/install/plugins/${encodeURIComponent(result.plugin_id)}`,
