@@ -198,6 +198,10 @@ export interface Plugin {
     download_url: string;
     sha256: string;
   };
+  /** C6 — set when `install_state === 'update-available'`: the newer version a
+   *  configured registry advertises vs the installed one. The `version` field
+   *  still reflects what is installed. */
+  available_version?: string;
   /** Parent plugin identities this one inherits secrets/config from. */
   depends_on: AgentId[];
   /** Background jobs the plugin contributes via its manifest. Always

@@ -2,7 +2,15 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowRight, Check, Loader2, Lock, Shield, Trash2 } from 'lucide-react';
+import {
+  ArrowRight,
+  Check,
+  Loader2,
+  Lock,
+  RefreshCw,
+  Shield,
+  Trash2,
+} from 'lucide-react';
 
 import { cn } from '../../_lib/cn';
 import {
@@ -34,6 +42,11 @@ interface InstallButtonProps {
    *  locally: install first fetches + ingests the ZIP (POST /install/registry),
    *  then proceeds with the normal install job. */
   remote?: boolean;
+  /** C6 — the installed version (shown in the update banner as "from"). */
+  installedVersion?: string;
+  /** C6 — the newer version a registry advertises, when
+   *  `installState === 'update-available'`. */
+  availableVersion?: string;
 }
 
 type Phase =
@@ -52,6 +65,8 @@ export function InstallButton({
   enabled,
   blockingReasons,
   remote = false,
+  installedVersion,
+  availableVersion,
 }: InstallButtonProps): React.ReactElement {
   const router = useRouter();
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
@@ -67,8 +82,16 @@ export function InstallButton({
 
   // --- visual dispatch -----------------------------------------------------
 
-  if (installState === 'installed') {
-    return <InstalledPanel pluginId={pluginId} pluginName={pluginName} />;
+  if (installState === 'installed' || installState === 'update-available') {
+    return (
+      <InstalledPanel
+        pluginId={pluginId}
+        pluginName={pluginName}
+        {...(installState === 'update-available' && availableVersion
+          ? { update: { from: installedVersion ?? '', to: availableVersion } }
+          : {})}
+      />
+    );
   }
 
   if (!enabled) {
@@ -298,9 +321,12 @@ export function InstallButton({
 function InstalledPanel({
   pluginId,
   pluginName,
+  update,
 }: {
   pluginId: string;
   pluginName: string;
+  /** C6 — present when a registry advertises a newer version. */
+  update?: { from: string; to: string };
 }): React.ReactElement {
   const router = useRouter();
   const [state, setState] = useState<
@@ -310,6 +336,32 @@ function InstalledPanel({
     | { kind: 'error'; message: string }
   >({ kind: 'idle' });
   const [alsoDeletePackage, setAlsoDeletePackage] = useState(false);
+
+  // C6 — in-place update: re-ingest the newer version from the registry. The
+  // upload pipeline's migrate/re-activate hooks swap the active version; a
+  // refresh re-reads the (now updated) install state.
+  const [updating, setUpdating] = useState(false);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+
+  async function doUpdate(): Promise<void> {
+    if (!update) return;
+    setUpdating(true);
+    setUpdateError(null);
+    try {
+      await installFromRegistry(pluginId, update.to);
+      router.refresh();
+    } catch (err) {
+      setUpdateError(
+        err instanceof ApiError
+          ? (safeMessage(err.body) ?? err.message)
+          : err instanceof Error
+            ? err.message
+            : String(err),
+      );
+    } finally {
+      setUpdating(false);
+    }
+  }
 
   const working = state.kind === 'working';
 
@@ -352,6 +404,33 @@ function InstalledPanel({
 
   return (
     <div className="space-y-3">
+      {update ? (
+        <div className="rounded-[10px] border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/5 px-4 py-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <span className="flex items-center gap-2 text-[13px] text-[color:var(--fg)]">
+              <RefreshCw className="size-4 text-[color:var(--accent)]" aria-hidden />
+              Update verfügbar
+              <span className="font-mono-num text-[color:var(--fg-muted)]">
+                {update.from ? `${update.from} → ${update.to}` : `→ ${update.to}`}
+              </span>
+            </span>
+            <button
+              type="button"
+              onClick={() => void doUpdate()}
+              disabled={updating}
+              className="inline-flex items-center gap-1.5 rounded-full bg-[color:var(--accent)] px-4 py-1.5 text-[12px] font-semibold text-[color:var(--accent-fg)] disabled:opacity-60"
+            >
+              {updating ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : null}
+              {updating ? 'Aktualisiere …' : 'Aktualisieren'}
+            </button>
+          </div>
+          {updateError ? (
+            <p className="font-mono-num mt-2 text-[11px] text-[color:var(--danger,#b03030)]">
+              {updateError}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
       <div
         className={cn(
           'flex w-full items-center gap-3 rounded-full px-6 py-3.5',

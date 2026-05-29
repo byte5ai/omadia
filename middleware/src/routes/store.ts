@@ -72,15 +72,15 @@ export function createStoreRouter(deps: StoreDeps): Router {
           for (const resolved of plugins) {
             const existingIdx = indexById.get(resolved.entry.id);
             if (existingIdx !== undefined) {
-              const existing = items[existingIdx]!;
-              if (!existing.source) {
-                // Replace with a copy — catalog plugin objects are shared
-                // across requests and must not be mutated.
-                items[existingIdx] = {
-                  ...existing,
-                  source: registrySource(resolved),
-                };
-              }
+              // Enrich the local entry with the hub `source` and, when the hub
+              // advertises a newer version than what's installed, flag it as
+              // `update-available` (C6). Replace with a copy — catalog plugin
+              // objects are shared across requests and must not be mutated.
+              items[existingIdx] = enrichWithRegistry(
+                items[existingIdx]!,
+                resolved,
+                deps.registry,
+              );
               continue;
             }
             const remote = registryEntryToPlugin(resolved);
@@ -154,7 +154,30 @@ export function createStoreRouter(deps: StoreDeps): Router {
         return;
       }
 
-      const plugin = applyInstallState(entry.plugin, deps.registry);
+      let plugin = applyInstallState(entry.plugin, deps.registry);
+      // C6 — update detection on the detail page: if this installed plugin is
+      // also advertised by a registry with a newer version, flag it (+ source).
+      if (plugin.install_state === 'installed' && deps.client?.hasRegistries()) {
+        try {
+          const remote = await resolveRemotePlugin(deps.client, id);
+          if (remote?.source) {
+            const installedVersion =
+              deps.registry.get(id)?.installed_version ?? plugin.version;
+            if (isNewerVersion(remote.version, installedVersion)) {
+              plugin = {
+                ...plugin,
+                install_state: 'update-available',
+                available_version: remote.version,
+                source: remote.source,
+              };
+            } else if (!plugin.source) {
+              plugin = { ...plugin, source: remote.source };
+            }
+          }
+        } catch {
+          // registry hiccup → keep the local 'installed' view, never 500
+        }
+      }
       const installAvailable = plugin.install_state === 'available';
       const body: StoreGetResponse = {
         plugin,
@@ -234,6 +257,61 @@ function registrySource(
     entry.versions.find((v) => v.version === entry.latest_version) ??
     entry.versions[0]!;
   return { registry, download_url: ver.download_url, sha256: ver.sha256 };
+}
+
+/** Enrich a local store entry with its hub `source`, and flag it as
+ *  `update-available` (C6) when the hub advertises a newer version than the
+ *  installed one. Only installed plugins are eligible — an `available` or
+ *  `incompatible` entry keeps its state. Returns a copy (catalog objects are
+ *  shared across requests and must not be mutated). */
+function enrichWithRegistry(
+  existing: Plugin,
+  resolved: ResolvedRegistryPlugin,
+  registry: InstalledRegistry,
+): Plugin {
+  const source = existing.source ?? registrySource(resolved);
+  if (existing.install_state === 'installed') {
+    const hubLatest = resolved.entry.latest_version;
+    const installedVersion =
+      registry.get(existing.id)?.installed_version ?? existing.version;
+    if (isNewerVersion(hubLatest, installedVersion)) {
+      return {
+        ...existing,
+        source,
+        install_state: 'update-available',
+        available_version: hubLatest,
+      };
+    }
+  }
+  return { ...existing, source };
+}
+
+/** Parse the numeric `X.Y.Z` core of a semver (pre-release/build stripped).
+ *  Returns null when any segment is non-numeric — callers treat that as
+ *  "can't compare" and never recommend an update. */
+function parseSemver(v: string): number[] | null {
+  const core = v.trim().split(/[-+]/)[0] ?? '';
+  const parts = core.split('.');
+  const nums = parts.map((p) => Number(p));
+  if (nums.length === 0 || nums.some((n) => !Number.isInteger(n) || n < 0)) {
+    return null;
+  }
+  return nums;
+}
+
+/** True iff `candidate` is a strictly newer version than `current`. Conservative:
+ *  unparseable inputs → false (no spurious update prompts). */
+function isNewerVersion(candidate: string, current: string): boolean {
+  const a = parseSemver(candidate);
+  const b = parseSemver(current);
+  if (!a || !b) return false;
+  const len = Math.max(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    const x = a[i] ?? 0;
+    const y = b[i] ?? 0;
+    if (x !== y) return x > y;
+  }
+  return false;
 }
 
 /** Map a remote registry entry → the `Plugin` shape the store list returns.

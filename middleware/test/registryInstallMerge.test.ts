@@ -108,7 +108,10 @@ function fakeCatalog(plugins: Plugin[]): PluginCatalog {
   } as unknown as PluginCatalog;
 }
 
-const fakeRegistry = { has: () => false } as unknown as InstalledRegistry;
+const fakeRegistry = {
+  has: () => false,
+  get: () => undefined,
+} as unknown as InstalledRegistry;
 
 // --- C3: store merge -------------------------------------------------------
 
@@ -135,14 +138,16 @@ describe('store router · remote registry merge (C3)', () => {
                 authors: [],
                 license: 'MIT',
                 icon_url: null,
-                latest_version: '2.0.0',
+                // same version as the local @x/dup → collision tags source but
+                // does NOT trigger C6 update-detection (that has its own tests)
+                latest_version: '1.0.0',
                 versions: [
                   {
-                    version: '2.0.0',
+                    version: '1.0.0',
                     compat_core: '>=1.0 <2.0',
                     sha256: ZIP_SHA,
                     size_bytes: 1,
-                    download_url: `${HUB}/registry/@x/dup/2.0.0/plugin.zip`,
+                    download_url: `${HUB}/registry/@x/dup/1.0.0/plugin.zip`,
                     published_at: '',
                     manifest_summary: {},
                   },
@@ -247,6 +252,127 @@ describe('store router · detail resolves a remote-only plugin (C3)', () => {
 
       const miss = await fetch(`${base}/${encodeURIComponent('@x/ghost')}`);
       assert.equal(miss.status, 404);
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+});
+
+// --- C6: update detection --------------------------------------------------
+
+function fakeInstalled(map: Record<string, string>): InstalledRegistry {
+  return {
+    has: (id: string) => id in map,
+    get: (id: string) =>
+      id in map ? { id, installed_version: map[id]! } : undefined,
+  } as unknown as InstalledRegistry;
+}
+
+function indexWith(id: string, latest: string): string {
+  return JSON.stringify({
+    schema_version: '1',
+    registry: { name: 'omadia-public', url: HUB },
+    generated_at: '2026-05-29T12:00:00Z',
+    plugins: [
+      {
+        id,
+        name: id,
+        kind: 'channel',
+        domain: 'x.y',
+        description: '',
+        categories: [],
+        authors: [],
+        license: 'Proprietary',
+        icon_url: null,
+        latest_version: latest,
+        versions: [
+          {
+            version: latest,
+            compat_core: '>=1.0 <2.0',
+            sha256: ZIP_SHA,
+            size_bytes: 1,
+            download_url: `${HUB}/registry/${id}/${latest}/plugin.zip`,
+            published_at: '',
+            manifest_summary: {},
+          },
+        ],
+      },
+    ],
+  });
+}
+
+const TEAMS = '@omadia/channel-teams';
+
+function storeServer(catalogPlugins: Plugin[], installed: Record<string, string>, hubLatest: string) {
+  const client = new RegistryClient({
+    registries: [{ name: 'omadia-public', url: HUB }],
+    log: () => {},
+    fetchImpl: mockFetch({
+      [`${HUB}/registry/index.json`]: () => new Response(indexWith(TEAMS, hubLatest)),
+    }),
+  });
+  const app = express();
+  app.use(
+    '/store',
+    createStoreRouter({
+      catalog: fakeCatalog(catalogPlugins),
+      registry: fakeInstalled(installed),
+      client,
+    }),
+  );
+  const server = app.listen(0);
+  const base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/store`;
+  return { server, base };
+}
+
+describe('store router · update detection (C6)', () => {
+  it('flags update-available + available_version when the hub is newer', async () => {
+    const { server, base } = storeServer(
+      [plugin(TEAMS, { version: '0.10.1', kind: 'channel' })],
+      { [TEAMS]: '0.10.1' },
+      '0.11.0',
+    );
+    try {
+      const body = (await (await fetch(base)).json()) as { items: Plugin[] };
+      const t = body.items.find((p) => p.id === TEAMS)!;
+      assert.equal(t.install_state, 'update-available');
+      assert.equal(t.available_version, '0.11.0');
+      assert.equal(t.source?.registry, 'omadia-public');
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  it('stays installed when the hub is NOT newer (numeric semver: 0.10.1 > 0.2.0)', async () => {
+    const { server, base } = storeServer(
+      [plugin(TEAMS, { version: '0.10.1', kind: 'channel' })],
+      { [TEAMS]: '0.10.1' },
+      '0.2.0',
+    );
+    try {
+      const body = (await (await fetch(base)).json()) as { items: Plugin[] };
+      const t = body.items.find((p) => p.id === TEAMS)!;
+      assert.equal(t.install_state, 'installed');
+      assert.equal(t.available_version, undefined);
+      assert.equal(t.source?.registry, 'omadia-public', 'still tagged with hub source');
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  it('detail endpoint flags update-available for an installed plugin', async () => {
+    const { server, base } = storeServer(
+      [plugin(TEAMS, { version: '0.10.1', kind: 'channel' })],
+      { [TEAMS]: '0.10.1' },
+      '0.11.0',
+    );
+    try {
+      const res = await fetch(`${base}/${encodeURIComponent(TEAMS)}`);
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as { plugin: Plugin; install_available: boolean };
+      assert.equal(body.plugin.install_state, 'update-available');
+      assert.equal(body.plugin.available_version, '0.11.0');
+      assert.equal(body.install_available, false);
     } finally {
       await new Promise<void>((r) => server.close(() => r()));
     }

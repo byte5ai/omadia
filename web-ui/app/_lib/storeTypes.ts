@@ -145,6 +145,9 @@ export interface Plugin {
     download_url: string;
     sha256: string;
   };
+  /** C6 — newer version a registry advertises when `install_state ===
+   *  'update-available'`. `version` still reflects what is installed. */
+  available_version?: string;
 }
 
 export interface StoreListResponse {
