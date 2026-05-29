@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/plugin-office"
   name: "Headless Office"
-  version: "0.1.0"
+  version: "0.1.1"
   kind: "tool"
   domain: "productivity.office"
   description: "Erzeugt .xlsx/.docx-Dokumente deterministisch aus JSON-Descriptoren, legt sie in Tigris ab und liefert signierte /documents-URLs, die Channels als Datei-Anhang rendern."
