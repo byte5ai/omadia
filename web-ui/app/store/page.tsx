@@ -66,15 +66,22 @@ export default async function StorePage({
     profiles = [];
   }
 
-  // Partition once: "installed" is everything already in the runtime registry,
-  // "hub" is everything available to install. The hub bucket holds both remote
-  // registry entries (`plugin.source` set) and any local-but-uninstalled
-  // catalog packages — the store router (routes/store.ts) merges both lists.
+  // "Installiert" is a filtered view of everything already in the runtime
+  // registry. "Hub" is the FULL catalog — every plugin available to browse,
+  // *including* ones already installed, which keep their green "Installiert"
+  // flag (StateBadge) so you can spot what you already have. Not-yet-installed
+  // entries sort first so newly discoverable plugins surface at the top;
+  // Array.sort is stable, so the catalog's name order is preserved per group.
   const installedPlugins = plugins.filter(
     (p) => p.install_state === 'installed',
   );
-  const hubPlugins = plugins.filter((p) => p.install_state !== 'installed');
+  const hubPlugins = [...plugins].sort(
+    (a, b) =>
+      Number(a.install_state === 'installed') -
+      Number(b.install_state === 'installed'),
+  );
   const installedCount = installedPlugins.length;
+  const notInstalledCount = plugins.length - installedCount;
   const hubCount = hubPlugins.length;
 
   const scoped = source === 'installed' ? installedPlugins : hubPlugins;
@@ -112,7 +119,7 @@ export default async function StorePage({
         <dl className="mt-10 grid max-w-2xl grid-cols-4 gap-6 border-t border-[color:var(--divider)] pt-5 text-sm">
           <Stat label="Plugins" value={plugins.length} />
           <Stat label="Installiert" value={installedCount} accent />
-          <Stat label="Im Hub" value={hubCount} />
+          <Stat label="Verfügbar" value={notInstalledCount} />
           <Stat label="Integrations" value={countByKind(plugins).integration} />
         </dl>
       </header>
