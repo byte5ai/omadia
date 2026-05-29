@@ -196,12 +196,8 @@ export default async function StorePage({
           <EmptyState source={source} filter={filter} />
         ) : (
           <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
-            {visible.map((plugin, idx) => (
-              <PluginCard
-                key={plugin.id}
-                plugin={plugin}
-                index={idx + 1}
-              />
+            {visible.map((plugin) => (
+              <PluginCard key={plugin.id} plugin={plugin} />
             ))}
           </div>
         )}
