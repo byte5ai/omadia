@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { ArrowUpRight } from 'lucide-react';
+import { ArrowUpRight, Store } from 'lucide-react';
 
 import type { Plugin } from '../../_lib/storeTypes';
 import { Chip } from './Chip';
@@ -57,6 +57,15 @@ export function PluginCard({
       {/* Metadata row */}
       <div className="mt-5 flex flex-wrap items-center gap-1.5">
         <StateBadge state={plugin.install_state} isLegacy={isLegacy} />
+        {/* Origin marker — present only on remote-registry (Hub) entries that
+            are not yet ingested locally. Lets the Hub view distinguish a
+            hub-sourced plugin from a local catalog package at a glance. */}
+        {plugin.source ? (
+          <Chip tone="accent">
+            <Store className="mr-1 size-3" aria-hidden />
+            Hub · {plugin.source.registry}
+          </Chip>
+        ) : null}
         {visibleCategories.map((cat) => (
           <Chip key={cat} tone="muted">
             {cat}
