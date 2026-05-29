@@ -13,6 +13,7 @@ import type { SecretVault } from '../secrets/vault.js';
 import type { UploadedPackageStore } from './uploadedPackageStore.js';
 
 const DIAGRAMS_TOOL_ID = '@omadia/diagrams';
+const OFFICE_TOOL_ID = '@omadia/plugin-office';
 const EMBEDDINGS_TOOL_ID = '@omadia/embeddings';
 const MEMORY_TOOL_ID = '@omadia/memory';
 const ORCHESTRATOR_TOOL_ID = '@omadia/orchestrator';
@@ -202,6 +203,7 @@ export async function runLegacyBootstrap(deps: BootstrapDeps): Promise<void> {
   await bootstrapMicrosoft365FromEnv(deps);
   await bootstrapTelegramFromEnv(deps);
   await bootstrapDiagramsFromEnv(deps);
+  await bootstrapOfficeFromEnv(deps);
   await bootstrapMemoryFromEnv(deps);
   await bootstrapEmbeddingsFromEnv(deps);
   await bootstrapKnowledgeGraphFromEnv(deps);
@@ -828,6 +830,80 @@ async function bootstrapDiagramsFromEnv(deps: BootstrapDeps): Promise<void> {
 
   log(
     `[bootstrap] ⚐ migrated ${DIAGRAMS_TOOL_ID} from .env — kroki/tigris config → registry, hmac + aws creds → vault`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Office (tool-kind built-in, needs secrets → can't auto-install)
+// ---------------------------------------------------------------------------
+
+/**
+ * Auto-installs @omadia/plugin-office from .env. Reuses the diagrams' Tigris
+ * bucket + AWS creds and its HMAC secret (DIAGRAM_URL_SECRET) so no new env
+ * var is required — wherever diagrams is configured, office comes along for
+ * free. The signing payload includes the route prefix, so sharing the secret
+ * across `/diagrams` and `/documents` carries no cross-route replay risk.
+ */
+async function bootstrapOfficeFromEnv(deps: BootstrapDeps): Promise<void> {
+  const log = deps.log ?? ((m) => console.log(m));
+
+  if (deps.registry.has(OFFICE_TOOL_ID)) return;
+
+  const {
+    DIAGRAM_URL_SECRET,
+    DIAGRAM_PUBLIC_BASE_URL,
+    BUCKET_NAME,
+    AWS_ENDPOINT_URL_S3,
+    AWS_ACCESS_KEY_ID,
+    AWS_SECRET_ACCESS_KEY,
+    GRAPH_TENANT_ID,
+    DIAGRAM_SIGNED_URL_TTL_SEC,
+  } = deps.config;
+
+  const envHasMinimum =
+    Boolean(DIAGRAM_URL_SECRET) &&
+    Boolean(DIAGRAM_PUBLIC_BASE_URL) &&
+    Boolean(BUCKET_NAME) &&
+    Boolean(AWS_ENDPOINT_URL_S3) &&
+    Boolean(AWS_ACCESS_KEY_ID) &&
+    Boolean(AWS_SECRET_ACCESS_KEY);
+  if (!envHasMinimum) {
+    log(
+      `[bootstrap] office tool: .env lacks one of DIAGRAM_URL_SECRET / DIAGRAM_PUBLIC_BASE_URL / BUCKET_NAME / AWS_* — skipping auto-install`,
+    );
+    return;
+  }
+
+  const catalogEntry = deps.catalog.get(OFFICE_TOOL_ID);
+  if (!catalogEntry) {
+    log(
+      `[bootstrap] cannot migrate ${OFFICE_TOOL_ID}: not in plugin catalog (built-in package not picked up?)`,
+    );
+    return;
+  }
+
+  await deps.vault.setMany(OFFICE_TOOL_ID, {
+    document_url_secret: DIAGRAM_URL_SECRET as string,
+    aws_access_key_id: AWS_ACCESS_KEY_ID as string,
+    aws_secret_access_key: AWS_SECRET_ACCESS_KEY as string,
+  });
+
+  await deps.registry.register({
+    id: OFFICE_TOOL_ID,
+    installed_version: catalogEntry.plugin.version,
+    installed_at: new Date().toISOString(),
+    status: 'active',
+    config: {
+      public_base_url: DIAGRAM_PUBLIC_BASE_URL as string,
+      tigris_endpoint: AWS_ENDPOINT_URL_S3 as string,
+      tigris_bucket: BUCKET_NAME as string,
+      ...(GRAPH_TENANT_ID ? { tenant_id: GRAPH_TENANT_ID } : {}),
+      signed_url_ttl_sec: DIAGRAM_SIGNED_URL_TTL_SEC,
+    },
+  });
+
+  log(
+    `[bootstrap] ⚐ migrated ${OFFICE_TOOL_ID} from .env — tigris config → registry, hmac (shared w/ diagrams) + aws creds → vault`,
   );
 }
 

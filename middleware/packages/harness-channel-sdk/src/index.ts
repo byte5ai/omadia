@@ -36,6 +36,7 @@ export type {
   RunToolCall,
   RunAgentInvocation,
   DiagramAttachment,
+  OutgoingFileAttachment,
   PendingUserChoice,
   PendingSlotCard,
   PendingRoutineList,

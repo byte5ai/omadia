@@ -79,6 +79,21 @@ export interface DiagramAttachment {
   cacheHit: boolean;
 }
 
+/** Downloadable file produced by a native tool during a turn (e.g.
+ *  `@omadia/plugin-office`'s `create_xlsx` / `create_docx`), surfaced as a
+ *  sidecar attachment. Distinct from {@link DiagramAttachment} (inline image)
+ *  — channels render this as a download link / file card. Structurally a
+ *  superset of `OutgoingAttachment`'s file fields so `toSemanticAnswer` maps
+ *  it 1:1. */
+export interface OutgoingFileAttachment {
+  kind: 'file';
+  url: string;
+  altText: string;
+  mediaType: string;
+  sizeBytes?: number;
+  producer?: string;
+}
+
 /** Pending Smart-Card clarification request — populated when the model
  *  invoked `ask_user_choice` and the orchestrator short-circuited the turn.
  *  Mirrors the kernel-side `PendingUserChoice` from
@@ -272,6 +287,14 @@ export interface ChatTurnResult {
    * diagram was rendered.
    */
   attachments?: DiagramAttachment[];
+  /**
+   * Downloadable files emitted by Orchestrator tools during this turn (e.g.
+   * `create_xlsx` / `create_docx`). Channel adapters render these as download
+   * links / file cards. Empty/undefined when no file was produced. Kept
+   * separate from `attachments` (inline images) so the diagram path stays
+   * byte-for-byte unchanged.
+   */
+  fileAttachments?: OutgoingFileAttachment[];
   /**
    * Answer-verifier summary. Populated only when the verifier is configured
    * AND ran for this turn (trigger router fired). Consumers like the Teams
@@ -483,6 +506,7 @@ export type ChatStreamEvent =
       toolCalls: number;
       iterations: number;
       attachments?: DiagramAttachment[];
+      fileAttachments?: OutgoingFileAttachment[];
       /**
        * Agentic run trace for this turn (same shape as ChatTurnResult.runTrace).
        * Consumed by the verifier's chatStream wrapper to run the trace-

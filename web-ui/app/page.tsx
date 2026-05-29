@@ -26,6 +26,7 @@ import {
   newSessionId,
   type ChatSession,
   type DiagramAttachment,
+  type OutgoingFileAttachment,
   type FollowUpOption,
   type Message,
   type NudgeEvent,
@@ -503,6 +504,9 @@ function MessageRow({
             {message.attachments && message.attachments.length > 0 && (
               <AttachmentGrid attachments={message.attachments} />
             )}
+            {message.fileAttachments && message.fileAttachments.length > 0 && (
+              <FileAttachmentList files={message.fileAttachments} />
+            )}
             {message.followUpOptions && message.followUpOptions.length > 0 && (
               <FollowUpButtons
                 options={message.followUpOptions}
@@ -966,6 +970,65 @@ function AttachmentGrid({
       ))}
     </div>
   );
+}
+
+/**
+ * Renders downloadable file attachments (e.g. `create_xlsx` / `create_docx`)
+ * as a list of download links. Like diagrams, the signed URL carries a TTL —
+ * old persisted messages may show expired links after it lapses (acceptable
+ * in dev). Labels are extension-derived so no i18n keys are needed.
+ */
+function FileAttachmentList({
+  files,
+}: {
+  files: OutgoingFileAttachment[];
+}): React.ReactElement {
+  return (
+    <div className="mt-3 flex flex-col gap-2">
+      {files.map((file, idx) => (
+        <a
+          key={`${file.url}-${String(idx)}`}
+          href={file.url}
+          download={file.altText}
+          target="_blank"
+          rel="noreferrer"
+          className="flex items-center gap-3 rounded border border-neutral-200 bg-white p-3 transition hover:border-neutral-400 dark:border-neutral-700 dark:bg-neutral-900"
+        >
+          <span aria-hidden className="text-xl">
+            {fileGlyph(file)}
+          </span>
+          <span className="flex min-w-0 flex-col">
+            <span className="truncate text-sm font-medium">{file.altText}</span>
+            <span className="text-[10px] uppercase text-neutral-500">
+              {fileExt(file.altText)}
+              {file.sizeBytes ? ` · ${formatFileSize(file.sizeBytes)}` : ''}
+            </span>
+          </span>
+          <span className="ml-auto text-sm text-neutral-400" aria-hidden>
+            ↓
+          </span>
+        </a>
+      ))}
+    </div>
+  );
+}
+
+function fileGlyph(file: OutgoingFileAttachment): string {
+  const name = file.altText.toLowerCase();
+  if (file.mediaType.includes('spreadsheet') || name.endsWith('.xlsx')) return '📊';
+  if (file.mediaType.includes('word') || name.endsWith('.docx')) return '📄';
+  return '📎';
+}
+
+function fileExt(name: string): string {
+  const dot = name.lastIndexOf('.');
+  return dot >= 0 ? name.slice(dot + 1) : 'file';
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${String(bytes)} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 

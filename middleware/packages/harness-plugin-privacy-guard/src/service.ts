@@ -317,7 +317,10 @@ export function createPrivacyGuardService(deps?: {
         'To answer the user, pick the relevant datasetId and call',
         'v4_render_answer (compose the verb tools first if you must filter /',
         'aggregate / join). Include identity / sensitive-masked columns — the',
-        'server fills in their real values. The sub-agent only ever saw',
+        'server fills in their real values. If the user instead wants a',
+        'downloadable FILE (Excel/.xlsx export, a report), call the file-export',
+        'tool (e.g. create_xlsx) with the datasetId rather than v4_render_answer',
+        '— the server materializes the real rows into the file. The sub-agent only ever saw',
         '"[masked]"; do NOT repeat any "cannot show" / "filtered" caveat from',
         'its notes — the user receives the real values.',
       ].join('\n');
@@ -334,6 +337,20 @@ export function createPrivacyGuardService(deps?: {
       const answer = renderedAnswers.get(turnId);
       renderedAnswers.delete(turnId);
       return answer;
+    },
+
+    resolveDatasetForRender(turnId, datasetId) {
+      const dataset = stores.get(turnId)?.get(datasetId);
+      if (dataset === undefined) return undefined;
+      console.log(
+        `[privacy-guard v4] resolve-for-render turn=${turnId} ` +
+          `datasetId=${datasetId} rows=${String(dataset.rows.length)}`,
+      );
+      return {
+        rowCount: dataset.rows.length,
+        columns: dataset.schema.fields.map((f) => ({ path: f.path, type: f.type })),
+        rows: dataset.rows as ReadonlyArray<Record<string, unknown>>,
+      };
     },
 
     v4ToolSpecs(): ReadonlyArray<PrivacyV4ToolSpec> {

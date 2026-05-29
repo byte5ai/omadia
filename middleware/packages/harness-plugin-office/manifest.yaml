@@ -1,0 +1,97 @@
+schema_version: "1"
+
+identity:
+  id: "@omadia/plugin-office"
+  name: "Headless Office"
+  version: "0.1.0"
+  kind: "tool"
+  domain: "productivity.office"
+  description: "Erzeugt .xlsx/.docx-Dokumente deterministisch aus JSON-Descriptoren, legt sie in Tigris ab und liefert signierte /documents-URLs, die Channels als Datei-Anhang rendern."
+  authors:
+    - name: "byte5 GmbH"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
+  license: "MIT"
+  categories:
+    - "productivity"
+    - "infrastructure"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+lifecycle:
+  entry: "dist/plugin.js"
+
+setup:
+  fields:
+    - key: "public_base_url"
+      type: "url"
+      label: "Öffentliche Middleware-Base-URL"
+      help: "Wird in signierten Datei-URLs verwendet, z.B. https://bot.omadia.ai"
+      required: true
+
+    - key: "tigris_endpoint"
+      type: "url"
+      label: "Tigris/S3 Endpoint"
+      required: true
+
+    - key: "tigris_bucket"
+      type: "string"
+      label: "Tigris/S3 Bucket-Name"
+      required: true
+
+    - key: "tenant_id"
+      type: "string"
+      label: "Tenant-Prefix für Keys"
+      required: false
+      default: "dev"
+
+    - key: "signed_url_ttl_sec"
+      type: "integer"
+      label: "Signed-URL-TTL (Sekunden)"
+      required: false
+      default: 3600
+
+    - key: "max_rows"
+      type: "integer"
+      label: "Max. Zeilen pro Dokument (Schutz gegen Runaways)"
+      required: false
+      default: 100000
+
+    - key: "document_url_secret"
+      type: "secret"
+      label: "HMAC-Secret für signierte Datei-URLs"
+      required: true
+
+    - key: "aws_access_key_id"
+      type: "secret"
+      label: "Tigris Access Key ID"
+      required: true
+
+    - key: "aws_secret_access_key"
+      type: "secret"
+      label: "Tigris Secret Access Key"
+      required: true
+
+playbook:
+  when_to_use: |
+    Datei-Erzeugung on-demand: Excel-Tabellen (.xlsx) und Word-Dokumente
+    (.docx) aus strukturierten Daten. Die Antwort enthält eine signierte
+    /documents-URL, die Web-UI/Telegram als Download bzw. Dokument anhängen.
+    Nutze es, wenn der User explizit eine Datei/Tabelle/Report als Download
+    will — nicht für reine Text-Antworten.
+
+permissions:
+  memory:
+    reads: []
+    writes: []
+  graph:
+    reads: []
+    writes: []
+  network:
+    outbound: []
+  filesystem:
+    scratch: false
+
+integrations: []

@@ -6,6 +6,7 @@ import type {
   FollowUpOption,
   Message,
   NudgeEvent,
+  OutgoingFileAttachment,
   PalaiaExcerpt,
   PendingUserChoice,
   PrivacyReceipt,
@@ -98,6 +99,7 @@ export type ChatStreamEvent =
       palaiaExcerpt?: PalaiaExcerpt;
       autoPromotedMkId?: string;
       attachments?: DiagramAttachment[];
+      fileAttachments?: OutgoingFileAttachment[];
       pendingUserChoice?: PendingUserChoice;
       followUpOptions?: FollowUpOption[];
       privacyReceipt?: PrivacyReceipt;
@@ -246,6 +248,9 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
           : {}),
         ...(event.attachments && event.attachments.length > 0
           ? { attachments: event.attachments }
+          : {}),
+        ...(event.fileAttachments && event.fileAttachments.length > 0
+          ? { fileAttachments: event.fileAttachments }
           : {}),
         ...(event.pendingUserChoice
           ? { pendingUserChoice: event.pendingUserChoice }

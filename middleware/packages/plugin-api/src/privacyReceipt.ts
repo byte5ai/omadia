@@ -182,6 +182,24 @@ export interface PrivacyBypassedToolRequest {
 }
 
 /**
+ * A datasetId resolved back to its real rows + column schema, for a
+ * server-side renderer that materializes a file the user downloads (e.g.
+ * `@omadia/plugin-office`'s `create_xlsx`). The rows are REAL values — the
+ * caller MUST keep them server-side and only emit a derived artifact (a file
+ * the authorized user receives), never echo them onto the LLM wire. Same
+ * privacy posture as `v4_render_answer`, which fills real values into the
+ * user-facing answer server-side.
+ */
+export interface PrivacyResolvedDataset {
+  /** Number of rows the dataset holds (the postcondition target). */
+  readonly rowCount: number;
+  /** Column schema — `path` is the row-object key, `type` the field type. */
+  readonly columns: ReadonlyArray<{ readonly path: string; readonly type: string }>;
+  /** The full real rows, keyed by column `path`. */
+  readonly rows: ReadonlyArray<Record<string, unknown>>;
+}
+
+/**
  * Service surface published by the `privacy.redact@1` provider plugin.
  */
 export interface PrivacyGuardService {
@@ -229,6 +247,21 @@ export interface PrivacyGuardService {
   takeRenderedAnswerV4(
     turnId: string,
   ): Promise<PrivacyRenderedAnswer | undefined>;
+  /**
+   * Privacy Shield v4 — resolve a datasetId interned earlier THIS TURN to its
+   * full real rows + column schema, for a server-side renderer that
+   * materializes a downloadable file (e.g. `create_xlsx`). The datasetId is an
+   * opaque handle the LLM may carry; the rows it returns are REAL and MUST
+   * stay server-side (the caller emits only the derived file). Returns
+   * `undefined` for an unknown/expired id or after the turn was finalized.
+   *
+   * Optional on the interface so alternative privacy providers (and test
+   * stubs) need not implement it; consumers feature-detect and degrade.
+   */
+  resolveDatasetForRender?(
+    turnId: string,
+    datasetId: string,
+  ): PrivacyResolvedDataset | undefined;
   /**
    * Privacy Shield v4 — the verb + render tool specs to offer the LLM.
    */

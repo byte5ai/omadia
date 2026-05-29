@@ -1,0 +1,28 @@
+{
+  "name": "@omadia/plugin-office",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "Headless Office: deterministic .xlsx/.docx generation from JSON descriptors, persisted to Tigris and delivered to channels via signed /documents URLs. Mirrors the @omadia/diagrams artifact pipeline.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "docx": "^9.5.1",
+    "exceljs": "^4.4.0"
+  },
+  "peerDependencies": {
+    "@omadia/diagrams": "*",
+    "@omadia/orchestrator": "*",
+    "@omadia/plugin-api": "*",
+    "express": "^5.1.0",
+    "zod": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -19,15 +19,31 @@ import type {
  * pulling in kernel-internal symbols.
  */
 export function toSemanticAnswer(r: ChatTurnResult): SemanticAnswer {
-  const attachments: OutgoingAttachment[] | undefined = r.attachments
-    ? r.attachments.map((a) => ({
-        kind: 'image',
-        url: a.url,
-        altText: a.altText,
-        producer: `diagram.${a.diagramKind}`,
-        cacheHit: a.cacheHit,
-      }))
-    : undefined;
+  // Inline images (diagrams) and downloadable files (office docs) flow into
+  // one channel-agnostic attachment array. Diagrams keep their `image` kind;
+  // file attachments carry `kind: 'file'` so connectors render a download.
+  const imageAttachments: OutgoingAttachment[] = (r.attachments ?? []).map(
+    (a) => ({
+      kind: 'image',
+      url: a.url,
+      altText: a.altText,
+      producer: `diagram.${a.diagramKind}`,
+      cacheHit: a.cacheHit,
+    }),
+  );
+  const fileAttachments: OutgoingAttachment[] = (r.fileAttachments ?? []).map(
+    (f) => ({
+      kind: 'file',
+      url: f.url,
+      altText: f.altText,
+      mediaType: f.mediaType,
+      ...(f.sizeBytes !== undefined ? { sizeBytes: f.sizeBytes } : {}),
+      ...(f.producer ? { producer: f.producer } : {}),
+    }),
+  );
+  const combined = [...imageAttachments, ...fileAttachments];
+  const attachments: OutgoingAttachment[] | undefined =
+    combined.length > 0 ? combined : undefined;
 
   let interactive: OutgoingInteractive | undefined;
   if (r.pendingUserChoice) {

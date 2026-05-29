@@ -69,6 +69,21 @@ export interface DiagramAttachment {
 }
 
 /**
+ * Downloadable file emitted by an orchestrator tool (e.g.
+ * `@omadia/plugin-office`'s `create_xlsx` / `create_docx`). Mirrors the
+ * backend's `OutgoingFileAttachment` so the `done` event stores as-is. The UI
+ * renders it as a download link rather than an inline image.
+ */
+export interface OutgoingFileAttachment {
+  kind: 'file';
+  url: string;
+  altText: string;
+  mediaType: string;
+  sizeBytes?: number;
+  producer?: string;
+}
+
+/**
  * Smart-Card clarification request emitted by the orchestrator when the
  * `ask_user_choice` tool fires. The UI renders this as buttons under the
  * message; a click submits a fresh user turn with the chosen `value`.
@@ -218,6 +233,8 @@ export interface Message {
   telemetry?: { tool_calls: number; iterations: number };
   /** Image URLs returned by orchestrator tools (e.g. render_diagram). */
   attachments?: DiagramAttachment[];
+  /** Downloadable files returned by orchestrator tools (e.g. create_xlsx). */
+  fileAttachments?: OutgoingFileAttachment[];
   /**
    * Set when the turn ended with an `ask_user_choice` Smart-Card request.
    * Cleared once the user clicks an option (or types a fresh message) so

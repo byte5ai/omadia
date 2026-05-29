@@ -20,7 +20,7 @@ const ConfigSchema = z.object({
   // operator runs /setup or PATCHes a key via /api/v1/admin/runtime/secrets.
   ANTHROPIC_API_KEY: z.string().optional(),
   ORCHESTRATOR_MODEL: z.string().min(1).default('claude-opus-4-7'),
-  ORCHESTRATOR_MAX_TOKENS: z.coerce.number().int().positive().default(4096),
+  ORCHESTRATOR_MAX_TOKENS: z.coerce.number().int().positive().default(8192),
 
   // Sub-agent runtime (Odoo Accounting, Odoo HR, Confluence Playbook). These
   // sub-agents run locally inside the middleware; skill markdown lives under

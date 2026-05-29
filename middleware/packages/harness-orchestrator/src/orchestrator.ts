@@ -7,6 +7,7 @@ import {
   type ChatTurnInput,
   type ChatTurnResult,
   type DiagramAttachment,
+  type OutgoingFileAttachment,
   type PendingRoutineList,
   type SemanticAnswer,
 } from '@omadia/channel-sdk';
@@ -600,7 +601,13 @@ Regeln:
     - **Graphviz**: \`node [image="brand://logo", label=""]\`
     - **PlantUML**: \`<img src="brand://logo" width="120">\` in Note/Header
     - **Mermaid**: eingeschränkt, im Zweifel ohne Logo rendern.
-    Tool-Call-Shape: \`render_diagram({kind: "vegalite", source: "<spec mit brand://logo>", brand_logo_storage_key: "<aus memory>"})\`. Ohne den Parameter bleibt \`brand://logo\` ungeändert — Kroki rendert das Bild-Feld dann leer.`;
+    Tool-Call-Shape: \`render_diagram({kind: "vegalite", source: "<spec mit brand://logo>", brand_logo_storage_key: "<aus memory>"})\`. Ohne den Parameter bleibt \`brand://logo\` ungeändert — Kroki rendert das Bild-Feld dann leer.
+
+**Datei-Erzeugung (Excel/Word) — höchste Priorität bei Datei-Anfragen:**
+
+14. **Datei statt Chat-Antwort.** Will der User Daten als **Datei/Download** (Excel/.xlsx, Word/.docx, "exportier", "als Excel", "schick mir eine Datei"), erzeuge sie mit \`create_xlsx\`/\`create_docx\` — bei Fach-Agent-Daten mit der \`datasetId\` aus dem Digest. **NICHT \`v4_render_answer\`** verwenden: die Datenschicht-Regel "Datenantwort endet mit v4_render_answer" gilt für Datei-Anfragen **ausdrücklich NICHT** (\`v4_render_answer\` erzeugt nur Chat-Text, keine Datei).
+
+15. **Ankündigen heißt ausführen — im selben Turn.** Sätze wie "ich baue jetzt die Excel…", "ich erstelle die Datei…", "jetzt generiere ich…" MÜSSEN im selben Turn vom \`create_xlsx\`/\`create_docx\`-Tool-Call begleitet sein. **Beende einen Turn NIEMALS mit einer bloßen Ankündigung** ohne den dazugehörigen Tool-Call — eine beschriebene, aber nicht gebaute Datei ist für den User wertlos. Wenn du sagst, du baust eine Datei, dann RUF das Tool im selben Turn auf. Gelingt der Build nicht (Tool gibt \`Error:\` zurück), behaupte KEINEN Erfolg und verspreche keinen Download — sag dem User knapp, dass und warum die Datei nicht erzeugt werden konnte.`;
 }
 
 /**
@@ -1074,25 +1081,66 @@ export class Orchestrator {
    * needs more), but the return type is an array so multi-diagram turns just
    * work once the tool starts returning multiple RenderOutputs.
    */
-  private drainAttachments(): DiagramAttachment[] | undefined {
-    const out: DiagramAttachment[] = [];
+  private drainAttachments(): {
+    diagrams: DiagramAttachment[];
+    files: OutgoingFileAttachment[];
+  } {
+    const diagrams: DiagramAttachment[] = [];
+    const files: OutgoingFileAttachment[] = [];
     // Plugin-contributed sinks. Each native tool returns its pending
     // attachments (if any) and resets its internal buffer; an empty or
-    // undefined return is the common case and cheap. The diagram plugin
-    // contributes its takeLastRender() output here via this pathway.
+    // undefined return is the common case and cheap. The sink can only be
+    // drained ONCE per turn (it clears on read), so we partition by kind in
+    // this single pass: `diagram` → inline image (render_diagram), `file` →
+    // downloadable document (@omadia/plugin-office).
     for (const entry of this.nativeTools.listWithHandler()) {
       if (!entry.attachmentSink) continue;
       const payloads = entry.attachmentSink();
       if (!payloads?.length) continue;
       for (const p of payloads) {
         if (p.kind === 'diagram') {
-          // Channel adapters recognise the diagram shape; anything else
-          // flows through as an opaque attachment for future adapters.
-          out.push(p.payload as DiagramAttachment);
+          diagrams.push(p.payload as DiagramAttachment);
+        } else if (p.kind === 'file') {
+          const f = p.payload as {
+            url: string;
+            altText: string;
+            mediaType: string;
+            sizeBytes?: number;
+            producer?: string;
+          };
+          files.push({
+            kind: 'file',
+            url: f.url,
+            altText: f.altText,
+            mediaType: f.mediaType,
+            ...(f.sizeBytes !== undefined ? { sizeBytes: f.sizeBytes } : {}),
+            ...(f.producer ? { producer: f.producer } : {}),
+          });
         }
+        // Unknown kinds flow nowhere today — a future adapter can add a branch.
       }
     }
-    return out.length > 0 ? out : undefined;
+    return { diagrams, files };
+  }
+
+  /**
+   * Deterministic guard for the "announced a file but never built it" failure.
+   * The model sometimes ends a turn saying "ich baue jetzt die Excel…" and
+   * stops, without ever calling create_xlsx/create_docx — leaving the user
+   * empty-handed (prompt rules alone don't reliably prevent it). True when the
+   * final answer announces a file build, an office file tool is registered, and
+   * NO file attachment was produced this turn. The caller then forces exactly
+   * one continuation so the model actually calls the tool (or declines).
+   */
+  private fileAnnouncedButNotBuilt(answer: string, filesProduced: number): boolean {
+    if (filesProduced > 0) return false;
+    if (
+      !this.nativeTools.has('create_xlsx') &&
+      !this.nativeTools.has('create_docx')
+    ) {
+      return false;
+    }
+    return FILE_ANNOUNCE_RE.test(answer);
   }
 
   /**
@@ -1465,6 +1513,8 @@ export class Orchestrator {
     // turn. We accumulate text across all turns so the final answer isn't truncated to
     // whatever happens to be in the last response alone.
     const textParts: string[] = [];
+    // One forced file-build retry per turn (see fileAnnouncedButNotBuilt).
+    let fileForceRetried = false;
 
     const traceCollector = input.sessionScope
       ? new RunTraceCollector({
@@ -1505,12 +1555,41 @@ export class Orchestrator {
 
         if (response.stop_reason !== 'tool_use') {
           const answer = textParts.join('\n\n').trim();
+          const drainedAttachments = this.drainAttachments();
+          // Only force a retry on a PURE-TEXT end (no tool_use block). A
+          // tool_use present with a non-'tool_use' stop_reason means the model
+          // was mid-call (e.g. max_tokens truncation) — injecting a user
+          // message after it orphans the tool_use and the API 400s the next
+          // request. In that case finalize normally instead.
+          const responseHasToolUse = response.content.some(
+            (b: ContentBlock) => b.type === 'tool_use',
+          );
+          if (
+            !fileForceRetried &&
+            !responseHasToolUse &&
+            this.fileAnnouncedButNotBuilt(answer, drainedAttachments.files.length)
+          ) {
+            fileForceRetried = true;
+            messages.push({ role: 'user', content: FILE_RETRY_NUDGE });
+            textParts.length = 0;
+            console.error(
+              '[orchestrator] file announced but not built — forcing one retry to call create_xlsx/create_docx',
+            );
+            continue;
+          }
           const iterations = iteration + 1;
           const runTrace = traceCollector?.finish({
             iterations,
             status: 'success',
           });
-          const attachments = this.drainAttachments();
+          const attachments =
+            drainedAttachments.diagrams.length > 0
+              ? drainedAttachments.diagrams
+              : undefined;
+          const fileAttachments =
+            drainedAttachments.files.length > 0
+              ? drainedAttachments.files
+              : undefined;
           // Hoisted so the return payload can carry the KG turn id back to
           // the chat UI (powers the save-as-memory affordance). Stays
           // undefined when session-logging is disabled or threw.
@@ -1522,7 +1601,11 @@ export class Orchestrator {
             // chart / answer. The write is fast (~sub-second against Neon);
             // the latency cost is worth the retrieval guarantee.
             const entityRefs = entityCollection?.drain() ?? [];
-            const answerForGraph = appendToolDigest(answer, attachments);
+            const answerForGraph = appendToolDigest(
+              answer,
+              attachments,
+              fileAttachments,
+            );
             try {
               const logged = await this.sessionLogger.log({
                 scope: input.sessionScope,
@@ -1565,6 +1648,7 @@ export class Orchestrator {
             ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
             ...(runTrace ? { runTrace } : {}),
             ...(attachments ? { attachments } : {}),
+            ...(fileAttachments ? { fileAttachments } : {}),
             ...(followUpOptions ? { followUpOptions } : {}),
             ...(pendingSlotCard ? { pendingSlotCard } : {}),
             ...(pendingRoutineList ? { pendingRoutineList } : {}),
@@ -1836,6 +1920,8 @@ export class Orchestrator {
     const entityCollection = this.entityRefBus?.beginCollection(turnId);
     let toolCalls = 0;
     const textParts: string[] = [];
+    // One forced file-build retry per turn (see fileAnnouncedButNotBuilt).
+    let fileForceRetried = false;
 
     const traceCollector = input.sessionScope
       ? new RunTraceCollector({
@@ -1896,8 +1982,34 @@ export class Orchestrator {
 
         if (finalMessage.stop_reason !== 'tool_use') {
           const answer = textParts.join('\n\n').trim();
+          const drainedAttachments = this.drainAttachments();
+          // See the non-streaming path: only force a retry on a pure-text end,
+          // never when a (possibly truncated) tool_use block is present.
+          const responseHasToolUse = finalMessage.content.some(
+            (b: ContentBlock) => b.type === 'tool_use',
+          );
+          if (
+            !fileForceRetried &&
+            !responseHasToolUse &&
+            this.fileAnnouncedButNotBuilt(answer, drainedAttachments.files.length)
+          ) {
+            fileForceRetried = true;
+            messages.push({ role: 'user', content: FILE_RETRY_NUDGE });
+            textParts.length = 0;
+            console.error(
+              '[orchestrator] file announced but not built — forcing one retry to call create_xlsx/create_docx',
+            );
+            continue;
+          }
           const iterations = iteration + 1;
-          const attachments = this.drainAttachments();
+          const attachments =
+            drainedAttachments.diagrams.length > 0
+              ? drainedAttachments.diagrams
+              : undefined;
+          const fileAttachments =
+            drainedAttachments.files.length > 0
+              ? drainedAttachments.files
+              : undefined;
           // Hoisted out of the sessionLogger branch so the verifier wrapper
           // can read the trace from the `done` event even when no session
           // logger is configured (dev calls, tests).
@@ -1912,7 +2024,11 @@ export class Orchestrator {
             // verbatim-tail retrieval can see this turn. Streaming callers
             // are already committed to waiting for the final `done` event,
             // so the extra ~sub-second is paid by the client already.
-            const answerForGraph = appendToolDigest(answer, attachments);
+            const answerForGraph = appendToolDigest(
+              answer,
+              attachments,
+              fileAttachments,
+            );
             try {
               const logged = await this.sessionLogger.log({
                 scope: input.sessionScope,
@@ -1965,6 +2081,7 @@ export class Orchestrator {
             ...(palaiaExcerpt ? { palaiaExcerpt } : {}),
             ...(autoPromotedMkId ? { autoPromotedMkId } : {}),
             ...(attachments ? { attachments } : {}),
+            ...(fileAttachments ? { fileAttachments } : {}),
             ...(runTrace ? { runTrace } : {}),
             ...(followUpOptions ? { followUpOptions } : {}),
             ...(pendingSlotCard ? { pendingSlotCard } : {}),
@@ -2742,17 +2859,36 @@ export class Orchestrator {
  * Never shown to end users — only persisted. The user-facing `answer`
  * returned to Teams / the web UI is unchanged.
  */
+/**
+ * Matches a future/present-tense announcement of building a FILE (not an inline
+ * table) — the signature of the "announced but didn't build" failure. Noun list
+ * is restricted to unambiguous file words so it does not fire on inline tables.
+ */
+const FILE_ANNOUNCE_RE =
+  /\b(baue|erstelle|erzeuge|generiere|exportiere)\b[^.!?\n]{0,100}\b(excel|xlsx|datei|word|docx|arbeitsmappe|workbook)\b/i;
+
+/** Injected as a user turn to force the model to actually call the file tool. */
+const FILE_RETRY_NUDGE =
+  'Du hast angekündigt, eine Datei (Excel/Word) zu bauen, aber das Tool `create_xlsx`/`create_docx` NICHT aufgerufen — der User hat dadurch nichts erhalten. Beschreibe den Plan NICHT erneut. Rufe JETZT in diesem Schritt das passende Tool auf und baue die Datei wirklich. Wenn du sie nicht bauen kannst, sag dem User in EINEM Satz klar, dass und warum nicht.';
+
 function appendToolDigest(
   answer: string,
   attachments: DiagramAttachment[] | undefined,
+  fileAttachments?: OutgoingFileAttachment[] | undefined,
 ): string {
-  if (!attachments || attachments.length === 0) return answer;
-  const lines = attachments
-    .filter((a) => a.kind === 'image')
-    .map(
-      (a) =>
+  const lines: string[] = [];
+  for (const a of attachments ?? []) {
+    if (a.kind === 'image') {
+      lines.push(
         `  - kind=${a.diagramKind} alt=${JSON.stringify(a.altText)} cached=${String(a.cacheHit)}`,
+      );
+    }
+  }
+  for (const f of fileAttachments ?? []) {
+    lines.push(
+      `  - kind=file producer=${f.producer ?? 'file'} name=${JSON.stringify(f.altText)} bytes=${String(f.sizeBytes ?? 0)}`,
     );
+  }
   if (lines.length === 0) return answer;
   const digest = ['', '<!-- orchestrator:rendered_attachments', ...lines, '-->'].join('\n');
   return `${answer}${digest}`;

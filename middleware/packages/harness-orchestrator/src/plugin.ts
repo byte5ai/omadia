@@ -135,7 +135,11 @@ const PLUGIN_CAPABILITIES_SERVICE = 'pluginCapabilities';
 // loop has no other model source). Kept in sync with the kernel default
 // `ORCHESTRATOR_MODEL` in middleware/src/config.ts.
 const DEFAULT_MODEL = 'claude-opus-4-7';
-const DEFAULT_MAX_TOKENS = 4096;
+// 8192, not 4096: a verbose preamble + a large structured tool call (e.g. a
+// multi-sheet create_xlsx with formulas) truncates at 4096 → `max_tokens`
+// mid-tool-call, so the file is never built. Also enforced as a floor below so
+// an already-installed registry config of 4096 gets bumped without reinstall.
+const DEFAULT_MAX_TOKENS = 8192;
 const DEFAULT_MAX_ITERATIONS = 12;
 
 /**
@@ -319,8 +323,13 @@ export async function activate(
   const assistantIdentity = (
     ctx.config.get<string>('assistant_identity') ?? ''
   ).trim();
-  const maxTokens = parseNumberOrDefault(
-    ctx.config.get<unknown>('orchestrator_max_tokens'),
+  // Floor at DEFAULT_MAX_TOKENS: a stale installed config (older deployments
+  // persisted 4096) would otherwise truncate large file-building tool calls.
+  const maxTokens = Math.max(
+    parseNumberOrDefault(
+      ctx.config.get<unknown>('orchestrator_max_tokens'),
+      DEFAULT_MAX_TOKENS,
+    ),
     DEFAULT_MAX_TOKENS,
   );
   const maxIterations = parseNumberOrDefault(
