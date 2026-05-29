@@ -18,6 +18,7 @@ Dieser Ordner ist das kollektive Gedächtnis des Omadia-Projekts. Mehrere Agents
 | [`middleware-agent-handoff.md`](middleware-agent-handoff.md) | Architektur, Layout, Commands, Config, Roadmap — der **primäre** Tech-Einstieg | Bei jeder strukturellen Änderung | Feature-Agents |
 | [`CHANGELOG.md`](CHANGELOG.md) | Rolling chronologische Chronik aller signifikanten Änderungen | Nach jeder Aufgabe | Der Agent, der die Änderung macht |
 | [`security-architecture.md`](security-architecture.md) | Security-Design-Patterns (Vault-Credentials, Proxy-Routes, Scope-Locked Sub-Agents, signed URLs) | Bei Security-Architektur-Änderungen | Security-Thread |
+| [`creating-plugins.md`](creating-plugins.md) | HowTo: Plugin bauen (Scaffold → Manifest → ZIP) + Publish auf den Hub | Bei Änderungen am Package-Contract / Publish-Flow | Plugin-/Registry-Thread |
 
 ## Lebende Docs (öffentliche Untermenge)
 
