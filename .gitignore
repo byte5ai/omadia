@@ -89,6 +89,14 @@ marketing-site/
 # hosted service is private.
 hub/
 
+# ─── WhatsApp channel plugin (separate PUBLIC repo) ───────────────────────
+# @omadia/channel-whatsapp — a standalone WhatsApp Web channel (Baileys +
+# QR-linked-device). Unlike hub/ and marketing-site/ this one is a PUBLIC
+# OSS repo (byte5ai/omadia-channel-whatsapp), but it is still developed in
+# its own git repo and shipped as a Hub ZIP, so it is mirrored here as a
+# gitignored folder exactly like the others — never committed into core.
+channel-whatsapp/
+
 # ─── byte5-specific agent + deployment configs (private) ──────────────────
 # These describe a specific byte5 deployment (Fly app, Neon project, kroki
 # sidecars, customer-specific agent configs) and must never land in public
