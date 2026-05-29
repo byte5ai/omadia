@@ -57,21 +57,39 @@ export function createStoreRouter(deps: StoreDeps): Router {
         .filter((plugin) => matchesSearch(plugin, search))
         .filter((plugin) => matchesCategory(plugin, category));
 
-      // Merge remote-registry plugins (the "store sources"). Local entries win
-      // on id collision; a registry hiccup degrades to local-only, never 500s.
+      // Merge remote-registry plugins (the "store sources"). On an id collision
+      // the LOCAL entry wins on content (version, install_state, permissions),
+      // but we tag it with the hub `source` so it still surfaces in the store's
+      // "Hub" view alongside its real install_state — an already-installed or
+      // built-in plugin that the hub also offers must not vanish from the Hub
+      // tab. A registry hiccup degrades to local-only, never 500s.
       if (deps.client?.hasRegistries()) {
-        const seen = new Set(items.map((p) => p.id));
+        // id → index into `items`, so a colliding remote entry can enrich the
+        // local plugin in place rather than being dropped.
+        const indexById = new Map(items.map((p, i) => [p.id, i]));
         try {
           const { plugins, errors } = await deps.client.listAll();
           for (const resolved of plugins) {
-            if (seen.has(resolved.entry.id)) continue;
+            const existingIdx = indexById.get(resolved.entry.id);
+            if (existingIdx !== undefined) {
+              const existing = items[existingIdx]!;
+              if (!existing.source) {
+                // Replace with a copy — catalog plugin objects are shared
+                // across requests and must not be mutated.
+                items[existingIdx] = {
+                  ...existing,
+                  source: registrySource(resolved),
+                };
+              }
+              continue;
+            }
             const remote = registryEntryToPlugin(resolved);
             if (
               matchesSearch(remote, search) &&
               matchesCategory(remote, category)
             ) {
+              indexById.set(remote.id, items.length);
               items.push(remote);
-              seen.add(remote.id);
             }
           }
           for (const e of errors) {
@@ -205,13 +223,26 @@ async function resolveRemotePlugin(
   }
 }
 
+/** The `source` marker for a remote registry entry: the download coordinates
+ *  of its latest advertised version. Reused to (a) build a fully-remote Plugin
+ *  and (b) tag a colliding local plugin with its hub origin. */
+function registrySource(
+  resolved: ResolvedRegistryPlugin,
+): NonNullable<Plugin['source']> {
+  const { registry, entry } = resolved;
+  const ver =
+    entry.versions.find((v) => v.version === entry.latest_version) ??
+    entry.versions[0]!;
+  return { registry, download_url: ver.download_url, sha256: ver.sha256 };
+}
+
 /** Map a remote registry entry → the `Plugin` shape the store list returns.
  *  Uses the latest advertised version. Permissions/integrations are left
  *  minimal here — the registry's `manifest_summary` is a display teaser; the
  *  authoritative summary is computed from the real manifest after the package
  *  is fetched + ingested (the install wizard shows that). */
 function registryEntryToPlugin(resolved: ResolvedRegistryPlugin): Plugin {
-  const { registry, entry } = resolved;
+  const { entry } = resolved;
   const ver =
     entry.versions.find((v) => v.version === entry.latest_version) ??
     entry.versions[0]!;
@@ -245,11 +276,7 @@ function registryEntryToPlugin(resolved: ResolvedRegistryPlugin): Plugin {
     requires: Array.isArray(summary.requires) ? summary.requires : [],
     multi_instance: true,
     privacy_class: 'default',
-    source: {
-      registry,
-      download_url: ver.download_url,
-      sha256: ver.sha256,
-    },
+    source: registrySource(resolved),
   };
 }
 

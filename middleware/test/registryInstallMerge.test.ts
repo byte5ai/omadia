@@ -168,7 +168,7 @@ describe('store router · remote registry merge (C3)', () => {
     await new Promise<void>((r) => server.close(() => r()));
   });
 
-  it('merges remote plugins, local wins on collision, marks source', async () => {
+  it('merges remote plugins, local wins on collision but is tagged with hub source', async () => {
     const body = (await (await fetch(base)).json()) as { items: Plugin[]; total: number };
     const byId = new Map(body.items.map((p) => [p.id, p]));
 
@@ -176,10 +176,12 @@ describe('store router · remote registry merge (C3)', () => {
     assert.equal(body.items.length, 3);
     assert.equal(byId.size, 3);
 
-    // collision: the LOCAL dup survived (name + state), remote dropped
+    // collision: the LOCAL dup wins on content (name + install_state), but is
+    // now tagged with the hub `source` so it still surfaces in the Hub view.
     assert.equal(byId.get('@x/dup')!.name, 'Dup Local');
     assert.equal(byId.get('@x/dup')!.install_state, 'installed');
-    assert.equal(byId.get('@x/dup')!.source, undefined);
+    assert.equal(byId.get('@x/dup')!.source?.registry, 'omadia-public');
+    assert.equal(byId.get('@x/dup')!.source?.sha256, ZIP_SHA);
 
     // remote-only office carries a source marker + available state
     const office = byId.get('@omadia/plugin-office')!;
