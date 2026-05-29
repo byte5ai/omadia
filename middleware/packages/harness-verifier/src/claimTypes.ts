@@ -160,6 +160,16 @@ export type VerifierBadge =
  * Narrow a generic Claim into a HardClaim when it qualifies for the
  * deterministic checker. Pure predicate; no I/O.
  */
+/**
+ * #132 — a verdict is "borderline" when the verifier produced no
+ * contradictions but at least one claim remained `unverified`. Today this
+ * is exactly `approved_with_disclaimer`. The gate keeps the predicate
+ * encapsulated so the VerifierService and tests share one definition.
+ */
+export function isBorderlineVerdict(verdict: VerifierVerdict): boolean {
+  return verdict.status === 'approved_with_disclaimer';
+}
+
 export function isHardClaim(claim: Claim): claim is HardClaim {
   if (claim.expectedSource !== 'odoo' && claim.expectedSource !== 'graph') {
     return false;

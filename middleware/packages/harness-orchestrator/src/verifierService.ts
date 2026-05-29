@@ -16,7 +16,7 @@ import type {
   VerifierStore,
   VerifierVerdict,
 } from '@omadia/verifier';
-import { buildCorrectionPrompt } from '@omadia/verifier';
+import { buildCorrectionPrompt, isBorderlineVerdict } from '@omadia/verifier';
 
 /**
  * End-to-end wrapper around the orchestrator that adds answer verification.
@@ -47,11 +47,26 @@ export interface VerifierServiceOptions {
   mode: 'shadow' | 'enforce';
   /** Hard cap on retries after a contradiction. Default 1. */
   maxRetries?: number;
+  /**
+   * #132 — when the first verdict is borderline (`approved_with_disclaimer`,
+   * i.e. no contradictions but at least one unverified claim), draw a
+   * second sample from the same orchestrator turn and merge the two
+   * verdicts. Default true.
+   *
+   * Cost note: each enabled re-sample doubles the LLM cost of a turn that
+   * already cleared verification with "almost". `maxResamples` caps the
+   * blast radius (hard 1 today). Disable for cost-sensitive deployments.
+   */
+  resampleOnBorderline?: boolean;
+  /** Hard cap on borderline re-samples per turn. Default 1. */
+  maxResamples?: number;
   log?: (msg: string) => void;
 }
 
 const DEFAULTS = {
   maxRetries: 1,
+  resampleOnBorderline: true,
+  maxResamples: 1,
 };
 
 export class VerifierService implements ChatAgent {
@@ -61,6 +76,8 @@ export class VerifierService implements ChatAgent {
   private readonly enabled: boolean;
   private readonly mode: 'shadow' | 'enforce';
   private readonly maxRetries: number;
+  private readonly resampleOnBorderline: boolean;
+  private readonly maxResamples: number;
   private readonly log: (msg: string) => void;
 
   constructor(opts: VerifierServiceOptions) {
@@ -70,6 +87,9 @@ export class VerifierService implements ChatAgent {
     this.enabled = opts.enabled;
     this.mode = opts.mode;
     this.maxRetries = opts.maxRetries ?? DEFAULTS.maxRetries;
+    this.resampleOnBorderline =
+      opts.resampleOnBorderline ?? DEFAULTS.resampleOnBorderline;
+    this.maxResamples = opts.maxResamples ?? DEFAULTS.maxResamples;
     this.log =
       opts.log ??
       ((msg: string): void => {
@@ -158,28 +178,54 @@ export class VerifierService implements ChatAgent {
       );
     }
 
+    // #132 — borderline gate: when the first verdict is
+    // `approved_with_disclaimer` (no contradictions but unverified claims),
+    // draw a second sample from the same orchestrator turn. Two independent
+    // samples landing on the same disclaimer ⇒ keep. Disagreement ⇒ take
+    // the more conservative reading (blocked wins). Bounded at
+    // `maxResamples` per turn (default 1) so cost stays predictable.
+    let effectiveResult = firstResult;
+    let effectiveVerdict = firstVerdict;
+    if (
+      this.resampleOnBorderline &&
+      this.maxResamples > 0 &&
+      isBorderlineVerdict(firstVerdict)
+    ) {
+      const merged = await this.tryResample(runId, input, firstVerdict);
+      if (merged) {
+        effectiveResult = merged.result ?? firstResult;
+        effectiveVerdict = merged.verdict;
+      }
+    }
+
     // Enforce mode: only contradictions trigger a retry. `unverified` flows
     // through with the disclaimer badge — the router already caught enough
     // to make the user aware.
-    if (firstVerdict.status !== 'blocked' || this.maxRetries <= 0) {
-      void this.persist(runId, input, firstVerdict, 0);
+    if (effectiveVerdict.status !== 'blocked' || this.maxRetries <= 0) {
+      void this.persist(runId, input, effectiveVerdict, 0);
       return toSemanticAnswer(
-        withVerifier(firstResult, summarise(firstVerdict, 0, this.mode)),
+        withVerifier(
+          effectiveResult,
+          summarise(effectiveVerdict, 0, this.mode),
+        ),
       );
     }
 
-    const correction = buildCorrectionPrompt(firstVerdict);
+    const correction = buildCorrectionPrompt(effectiveVerdict);
     if (!correction) {
       // Shouldn't happen for status=blocked, but be defensive.
-      void this.persist(runId, input, firstVerdict, 0);
+      void this.persist(runId, input, effectiveVerdict, 0);
       return toSemanticAnswer(
-        withVerifier(firstResult, summarise(firstVerdict, 0, this.mode)),
+        withVerifier(
+          effectiveResult,
+          summarise(effectiveVerdict, 0, this.mode),
+        ),
       );
     }
 
     this.log(
       `[verifier/service] retry run=${runId} contradictions=${String(
-        firstVerdict.contradictions.length,
+        effectiveVerdict.contradictions.length,
       )}`,
     );
     const retryInput: ChatTurnInput = {
@@ -191,9 +237,12 @@ export class VerifierService implements ChatAgent {
       secondResult = await this.orchestrator.runTurn(retryInput);
     } catch (err) {
       this.log(`[verifier/service] retry FAIL: ${errMsg(err)}`);
-      void this.persist(runId, input, firstVerdict, 0);
+      void this.persist(runId, input, effectiveVerdict, 0);
       return toSemanticAnswer(
-        withVerifier(firstResult, summarise(firstVerdict, 0, this.mode)),
+        withVerifier(
+          effectiveResult,
+          summarise(effectiveVerdict, 0, this.mode),
+        ),
       );
     }
 
@@ -210,13 +259,64 @@ export class VerifierService implements ChatAgent {
 
     // Compute the user-facing badge: `corrected` when retry fixed it,
     // `failed` when it did not.
-    const badge = mergeBadges(firstVerdict, secondVerdict);
+    const badge = mergeBadges(effectiveVerdict, secondVerdict);
     return toSemanticAnswer(
       withVerifier(secondResult, {
         ...summarise(secondVerdict, 1, this.mode),
         badge,
       }),
     );
+  }
+
+  /**
+   * #132 — borderline re-sample: re-run the same turn against the
+   * orchestrator and merge the two verdicts. Failure to re-run (anything
+   * thrown by the orchestrator, or a clarification-card result that has
+   * no fact claims) returns `undefined` and the caller keeps `firstVerdict`
+   * as the effective verdict — re-sampling is best-effort.
+   *
+   * Returns `{ verdict, result }` where `result` is the second sample's
+   * orchestrator result iff the merge decided to keep it; `undefined`
+   * means "keep firstResult". The caller plugs both straight into the
+   * existing persist + correction-retry path.
+   */
+  private async tryResample(
+    runId: string,
+    input: ChatTurnInput,
+    firstVerdict: VerifierVerdict,
+  ): Promise<{
+    verdict: VerifierVerdict;
+    result?: ChatTurnResult;
+  } | undefined> {
+    this.log(`[verifier/service] borderline resample run=${runId}`);
+    let secondResult: ChatTurnResult;
+    try {
+      secondResult = await this.orchestrator.runTurn(input);
+    } catch (err) {
+      this.log(`[verifier/service] resample FAIL: ${errMsg(err)}`);
+      return undefined;
+    }
+    if (secondResult.pendingUserChoice) {
+      // Second sample punted to a clarification card — keep the first
+      // verdict, the user-facing answer didn't change.
+      return undefined;
+    }
+    const secondVerdict = await this.safeVerify(
+      runId,
+      input,
+      secondResult.answer,
+      secondResult.runTrace,
+    );
+    const merged = mergeBorderlineVerdicts(firstVerdict, secondVerdict);
+    this.log(
+      `[verifier/service] resample merge run=${runId} first=${firstVerdict.status} second=${secondVerdict.status} → ${merged.verdict.status}${
+        merged.takeSecond ? ' (takeSecond)' : ''
+      }`,
+    );
+    return {
+      verdict: merged.verdict,
+      ...(merged.takeSecond ? { result: secondResult } : {}),
+    };
   }
 
   // ------------------------------------------------------------------
@@ -434,4 +534,37 @@ function extractPostconditionViolations(
     }
   }
   return out;
+}
+
+/**
+ * #132 — merge two verdicts when the first was borderline
+ * (`approved_with_disclaimer`) and the second one was drawn from a re-run
+ * of the same turn. Strategy:
+ *
+ * 1. Both agree on borderline → keep first (the two independent samples
+ *    confirmed the same level of uncertainty; treat the disclaimer as
+ *    earned signal, not noise).
+ * 2. Second sample escalated to `blocked` → flip to second so the
+ *    correctionPrompt retry can run on the contradictions the second
+ *    sample exposed. Conservative bias.
+ * 3. Second sample relaxed to `approved` → keep first. Two contradictory
+ *    samples + one finding stuff we didn't is exactly the noise signal
+ *    that the disclaimer exists to communicate; don't upgrade.
+ * 4. Second sample also borderline (fell back to safeVerify's
+ *    `approved` fallback after a pipeline error) → keep first.
+ *
+ * `takeSecond` is true only when we propagate the second sample's
+ * orchestrator result onward (its answer string is what the LLM
+ * generated for that verdict).
+ */
+export function mergeBorderlineVerdicts(
+  first: VerifierVerdict,
+  second: VerifierVerdict,
+): { verdict: VerifierVerdict; takeSecond: boolean } {
+  if (second.status === 'blocked') {
+    return { verdict: second, takeSecond: true };
+  }
+  // Anything else (approved, approved_with_disclaimer): trust the first
+  // sample's disclaimer signal.
+  return { verdict: first, takeSecond: false };
 }

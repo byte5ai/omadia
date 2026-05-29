@@ -41,6 +41,7 @@ export type {
 // claimTypes — shared vocabulary used by every other verifier file plus
 // the kernel-side `verifierService.ts` until sub-commit 2b moves it.
 export {
+  isBorderlineVerdict,
   isHardClaim,
   isSoftClaim,
 } from './claimTypes.js';
