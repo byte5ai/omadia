@@ -180,6 +180,7 @@ import { DefaultChannelRegistry } from './channels/channelRegistry.js';
 import type { ChannelRegistry } from '@omadia/channel-sdk';
 import { DynamicChannelPluginResolver } from './channels/dynamicChannelResolver.js';
 import type { TurnDispatcher } from './channels/coreApi.js';
+import { createOrchestratorDispatcher } from './channels/orchestratorDispatcher.js';
 import type { FactExtractor } from '@omadia/orchestrator-extras';
 import { backfillGraph } from '@omadia/orchestrator-extras';
 import { turnContext } from '@omadia/orchestrator';
@@ -2339,30 +2340,22 @@ async function main(): Promise<void> {
   // ────────────────────────────────────────────────────────────────────────
   const routeRegistry = new ExpressRouteRegistry(app);
 
-  // Real TurnDispatcher: drive the orchestrator's ChatAgent (published as a
-  // ChatAgentBundle under 'chatAgent') and stream its events straight back to
-  // the channel adapter. Resolved lazily per turn from the service registry so
-  // it always uses the currently-active orchestrator. This makes
+  // Real TurnDispatcher: drive a ChatAgent (published as a ChatAgentBundle)
+  // and stream its events straight back to the channel adapter. The orchestrator
+  // service is resolved lazily per turn from the service registry so it always
+  // uses the currently-active orchestrator. The service KEY is the channel's
+  // configured `dispatch_service` (Omadia UI) — classic channels declare none
+  // and resolve to the shared 'chatAgent', exactly as before. This makes
   // `CoreApi.handleTurnStream` real for EVERY channel — channels no longer have
   // to reach into the service registry themselves to answer a turn.
-  const orchestratorDispatcher: TurnDispatcher = {
-    async *streamTurn(input) {
-      const bundle = serviceRegistry.get<ChatAgentBundle>('chatAgent');
-      const agent = bundle?.agent;
-      if (!agent) {
-        console.warn(
-          `[channels] no chatAgent registered — turn ignored (scope=${input.scope})`,
-        );
-        yield { type: 'error', message: 'orchestrator unavailable' };
-        return;
-      }
-      yield* agent.chatStream({
-        userMessage: input.text,
-        sessionScope: input.scope,
-        userId: input.userRef.id,
-      });
-    },
-  };
+  // channelId == the channel plugin's catalog id; read its manifest `channel`
+  // block (loaded into pluginCatalog at boot) to pick the dispatch service.
+  const orchestratorDispatcher: TurnDispatcher = createOrchestratorDispatcher({
+    getChannelBlock: (channelId) =>
+      pluginCatalog.get(channelId)?.plugin.channel,
+    getAgentBundle: (service) =>
+      serviceRegistry.get<ChatAgentBundle>(service),
+  });
 
   const channelCoreApi = createCoreApi({
     dispatcher: orchestratorDispatcher,
