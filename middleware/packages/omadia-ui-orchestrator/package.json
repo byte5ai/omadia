@@ -1,0 +1,21 @@
+{
+  "name": "@omadia/ui-orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "Omadia UI Tier-2 orchestrator (skeleton). kind: extension; publishes canvasChatAgent@1 — the service a canvas channel dispatches to (channel.dispatch_service). v0 delegates to the base chatAgent; the canvas composition (UI Skill, surface_* synthesis, per-canvasSession mutex, cache) plus the deferred sentinel/writeCapabilities/structured wiring land in follow-ups.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@omadia/channel-sdk": "*",
+    "@omadia/plugin-api": "*"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

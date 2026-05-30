@@ -225,6 +225,23 @@ Manifest-Loader-Parsing von `writeCapabilities` + System-Prompt-Emission +
 das Threading von `structured` durch `localSubAgent.ts` kommen mit dem
 Canvas-Orchestrator (PR-9, erster Consumer).
 
+### omadia-ui-orchestrator (Tier-2, Skeleton, PR-9a)
+
+Neues Plugin-Package `packages/omadia-ui-orchestrator/` (`@omadia/ui-orchestrator`,
+`kind: extension`) — wird vom `builtInPackageStore` automatisch entdeckt (jeder
+`packages/*`-Ordner mit gültiger `manifest.yaml`), **kein Boot-Edit nötig**. Es
+publiziert `canvasChatAgent@1` (runtime bare-key `canvasChatAgent`) — den
+Service, an den ein Canvas-Channel via `channel.dispatch_service` (PR-6)
+dispatcht. **v0 ist ein dünnes Delegations-Skeleton:** `canvasChatAgent` leitet
+`chat`/`chatStream` an den Basis-`chatAgent` weiter (pro Call lazy aufgelöst),
+schließt damit die End-to-End-Plumbing, synthetisiert aber **noch keine
+Canvas-Surface**. `requires: chatAgent@^1` (nur Ordering; ohne Basis hält das
+Plugin zurück und degradiert sauber). CCM ist **kein** hartes `requires`. Die
+echte Canvas-Arbeit — UI Skill (Kompositions-Idiom-Bibliothek), `surface_*`-
+Synthese, per-`canvasSessionId`-Mutex, Cache — plus die aufgeschobenen Wirings
+(PR-7b Sentinel-Gating, `writeCapabilities`-Anbindung, `structured`-Threading)
+sind Folge-Slices.
+
 ---
 
 ## 4. Migration Managed Agents → Lokal

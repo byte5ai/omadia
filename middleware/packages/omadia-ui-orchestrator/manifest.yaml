@@ -1,0 +1,41 @@
+schema_version: "1"
+
+identity:
+  id: "@omadia/ui-orchestrator"
+  name: "Omadia UI Orchestrator"
+  version: "0.1.0"
+  kind: "extension"
+  domain: "omadia.ui"
+  description: "Omadia UI Tier-2 orchestrator (skeleton). Publishes canvasChatAgent@1 — the service a canvas channel dispatches to via channel.dispatch_service (PR-6). v0 delegates to the base chatAgent, resolved lazily per call; this is the seam where the canvas composition (UI Skill / surface_* synthesis / per-canvasSession mutex / cache) and the deferred sentinel-gating, writeCapabilities and structured-output wiring will land in follow-ups. CCM is intentionally NOT a hard requires (it has no provider on main) — it will be late-resolved with an in-memory fallback when the continuity feature lands."
+  authors:
+    - name: "byte5 GmbH"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
+  license: "MIT"
+  categories:
+    - "infrastructure"
+    - "orchestration"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+lifecycle:
+  entry: "dist/plugin.js"
+
+# Ordering only: matched against the base orchestrator's manifest
+# `provides: chatAgent@1`, so this plugin activates AFTER it (the provider
+# manifest is what the capability-resolver matches, regardless of runtime
+# config). At runtime the *published* chatAgent service may still be absent
+# (e.g. no ANTHROPIC_API_KEY) — the lazy per-call lookup in plugin.ts then
+# degrades to an "orchestrator unavailable" error rather than blocking
+# activation.
+requires:
+  - "chatAgent@^1"
+
+provides:
+  - "canvasChatAgent@1"
+
+permissions:
+  filesystem:
+    scratch: false
