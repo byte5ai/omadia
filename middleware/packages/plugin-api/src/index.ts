@@ -3,6 +3,11 @@ export * from './conversation.js';
 export * from './localSubAgentTool.js';
 export * from './piiAnnotation.js';
 
+// Omadia UI canvas: the shared `TargetRef` discriminated union (beam / mutation
+// / local-op / suggested-action targets) and its `TextRangeAnchor` / `BufferRegion`
+// helpers. Consumed by the channel-sdk (`IncomingTurn.target`, `surface_local_action`).
+export * from './targetRef.js';
+
 // S+11-1: Knowledge-graph capability contract (interface + DTOs + node-id
 // helpers) lives on the plugin-api surface. Both the in-memory and the Neon
 // `knowledgeGraph@1` provider plugins (S+11-2 split of @omadia/knowledge-graph)

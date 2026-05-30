@@ -440,6 +440,7 @@ const CHANNEL_CAPABILITIES: ReadonlySet<ChannelCapability> = new Set([
   'user_sso',
   'file_upload',
   'typing_indicator',
+  'canvas',
 ]);
 
 const CHANNEL_ADAPTERS: ReadonlySet<ChannelAdapter> = new Set([

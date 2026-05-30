@@ -132,7 +132,10 @@ export type ChannelCapability =
   | 'interactive_cards'
   | 'user_sso'
   | 'file_upload'
-  | 'typing_indicator';
+  | 'typing_indicator'
+  /** Omadia UI canvas surface — channel renders the live primitive tree and the
+   *  `surface_*` event family. Additive; classic channels never declare it. */
+  | 'canvas';
 
 export type ChannelAdapter =
   | 'text'
