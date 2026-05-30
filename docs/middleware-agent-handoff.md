@@ -165,6 +165,23 @@ User → Orchestrator.chatStream
                           └─ entityRefBus.publish (tagged mit turnId)
 ```
 
+### Canvas-Sentinels (Omadia UI, PR-7a)
+
+Canvas-aware Tier-3-Tools (und der Canvas-Client für `_pendingMutation`)
+emittieren strukturierte Payloads als **In-Band-JSON-Sentinels** im Tool-Result-
+String — dasselbe Muster wie `_pendingUserChoice` / `_pendingRoutineList`
+(`parseToolEmittedChoice` in `orchestrator.ts`). Neu in
+`harness-orchestrator/src/canvasSentinels.ts`: die reinen Parser
+`parseToolEmitted{StructuredPayload,CanvasTree,Mutation}` plus der
+**`canvas-output`-Gate** (`isCanvasOutputAuthorized`, **deny-by-default**) —
+ein Tool-Sentinel wird nur akzeptiert, wenn das Plugin die `canvas-output`-
+Capability deklariert. Parser sind tolerant (malformed JSON / Shape-Mismatch →
+`undefined`). **Noch nicht** in den Tool-Loop verdrahtet: das Enforcement plus
+das beim Boot aus dem `pluginCatalog` berechnete Allow-Set (welche Tools
+`canvas-output` führen) kommt mit dem Canvas-Orchestrator (PR-9), zusammen mit
+den Tools, die diese Sentinels überhaupt erst erzeugen. Bis dahin emittiert
+niemand sie — Wiring jetzt wäre spekulativ.
+
 ---
 
 ## 4. Migration Managed Agents → Lokal
