@@ -19,6 +19,12 @@ import type { ExpressRouteRegistry } from './routeRegistry.js';
 export interface TurnDispatcher {
   streamTurn(input: {
     scope: string;
+    /**
+     * Originating channel id (= the channel plugin's catalog id). The
+     * dispatcher uses it to resolve the channel's configured `dispatch_service`
+     * (Omadia UI); absent-from-manifest falls back to the shared 'chatAgent'.
+     */
+    channelId: string;
     userRef: ChannelUserRef;
     text: string;
     metadata?: Record<string, unknown>;
@@ -49,6 +55,7 @@ export function createCoreApi(opts: CreateCoreApiOptions): CoreApi {
       const scope = `${turn.channelId}::${turn.conversationId}`;
       return opts.dispatcher.streamTurn({
         scope,
+        channelId: turn.channelId,
         userRef: turn.userRef,
         text: turn.text,
         ...(turn.metadata ? { metadata: turn.metadata } : {}),

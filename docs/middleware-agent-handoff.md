@@ -165,6 +165,29 @@ User → Orchestrator.chatStream
                           └─ entityRefBus.publish (tagged mit turnId)
 ```
 
+### Channel → Orchestrator-Dispatch (per-Channel, Omadia UI)
+
+Ein Channel-Turn erreicht den Orchestrator über den **`orchestratorDispatcher`**
+(`TurnDispatcher` in `src/channels/coreApi.ts`, verdrahtet in `index.ts`).
+`CoreApi.handleTurnStream(turn)` reicht `channelId` durch; der Dispatcher löst
+**pro Turn lazy** den Ziel-Service aus der Service-Registry auf:
+
+```
+dispatchService = pluginCatalog.get(channelId)?.plugin.channel?.dispatch_service ?? 'chatAgent'
+agent           = serviceRegistry.get<ChatAgentBundle>(dispatchService)?.agent
+```
+
+`resolveDispatchService` (`src/channels/dispatchService.ts`) kapselt den
+Fallback. **Klassische Channels deklarieren kein `channel.dispatch_service`** und
+landen unverändert bei `'chatAgent'`. Omadia UI setzt im Channel-Manifest
+`dispatch_service: canvasChatAgent` (**bare Key, kein `@N`** — die Registry
+strippt keine Versionen) und routet so seine Turns an den
+`omadia-ui-orchestrator` (publiziert `canvasChatAgent@1`, runtime-Key
+`canvasChatAgent`). Annahme: `IncomingTurn.channelId` == Plugin-Catalog-Id des
+Channels; trifft das nicht zu, greift sicher der `'chatAgent'`-Default.
+Zusätzliches additives Manifest-Feld: `channel.canvas_protocol_version`
+(informativ; die echte Version wird im Boot-Handshake verhandelt).
+
 ---
 
 ## 4. Migration Managed Agents → Lokal
