@@ -204,6 +204,26 @@ das beim Boot aus dem `pluginCatalog` berechnete Allow-Set (welche Tools
 `canvas-output` führen) kommt mit dem Canvas-Orchestrator (PR-9), zusammen mit
 den Tools, die diese Sentinels überhaupt erst erzeugen. Bis dahin emittiert
 niemand sie — Wiring jetzt wäre spekulativ.
+### Write-Capabilities + `structured?`-Tool-Output (Omadia UI, PR-8)
+
+`plugin-api` additiv: `LocalSubAgentToolResult.structured?`
+(`StructuredToolOutput` — die **getypte Alternative** zum
+`_pendingStructuredPayload`-Sentinel-im-String) und der `WriteCapability`-
+Vertrag (ein Tool deklariert pro `dataClass`/`operation`, was es mutieren darf).
+**Wichtig:** `writeCapabilities` ist **kein** Feld auf `NativeToolSpec` — der
+Spec geht via `buildToolsList` verbatim in die Anthropic-Tool-Liste, und
+Anthropic lehnt unbekannte Felder ab (gleicher Grund, warum `piiFields` am
+LocalSubAgentTool-**Wrapper** hängt, nicht am Spec). Der Anbindungspunkt
+(Manifest-Annotation / Registration-Metadata, non-model-facing) wird mit dem
+ersten Consumer (PR-9) verdrahtet. `deriveMutabilityCapabilities(caps, dataClass)` in
+`plugin-api/src/writeCapabilities.ts` leitet daraus **deterministisch** (kein
+LLM-Call) `editable` / `canAddItems` / `canRemoveItems` / `canReorder` ab:
+`update`→editierbare Felder, `create`→`canAddItems` + Required-Fields,
+`delete`→`canRemoveItems`, `reorder`→`canReorder`. **Fehlende Annotation ⇒
+read-only** (strenger Default gegen Rollback-Hölle). Noch **nicht** verdrahtet:
+Manifest-Loader-Parsing von `writeCapabilities` + System-Prompt-Emission +
+das Threading von `structured` durch `localSubAgent.ts` kommen mit dem
+Canvas-Orchestrator (PR-9, erster Consumer).
 
 ---
 

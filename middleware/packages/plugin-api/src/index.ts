@@ -7,6 +7,9 @@ export * from './piiAnnotation.js';
 // / local-op / suggested-action targets) and its `TextRangeAnchor` / `BufferRegion`
 // helpers. Consumed by the channel-sdk (`IncomingTurn.target`, `surface_local_action`).
 export * from './targetRef.js';
+// Omadia UI — write-tool capability contract + the deterministic Tier-2
+// mutability derivation. Consumed by the canvas orchestrator (PR-9).
+export * from './writeCapabilities.js';
 
 // S+11-1: Knowledge-graph capability contract (interface + DTOs + node-id
 // helpers) lives on the plugin-api surface. Both the in-memory and the Neon

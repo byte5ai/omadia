@@ -34,6 +34,27 @@ export interface LocalSubAgentToolResult {
   readonly postcondition?: {
     readonly issues: readonly string[];
   };
+  /**
+   * Optional structured output (Omadia UI, additive). Ignored by the existing
+   * `string | LocalSubAgentToolResult` downcast in the sub-agent runner; the
+   * canvas orchestrator (PR-9) is the first consumer that threads it.
+   */
+  readonly structured?: StructuredToolOutput;
+}
+
+/**
+ * Optional structured-output envelope (Omadia UI, additive). The typed
+ * alternative to embedding a `_pendingStructuredPayload` JSON sentinel inside
+ * the `output` string: a canvas-aware tool can hand Tier 2 structured data
+ * directly. Classic consumers read `output`; canvas-aware consumers read
+ * `structured`. `kind` discriminates the payload so the consumer can narrow
+ * `data` (e.g. `'structuredPayload'`, `'canvasTree'`).
+ */
+export interface StructuredToolOutput {
+  readonly kind: string;
+  readonly data: unknown;
+  /** optional human-facing prose (rendered by non-canvas consumers). */
+  readonly prose?: string;
 }
 
 export interface LocalSubAgentTool {
