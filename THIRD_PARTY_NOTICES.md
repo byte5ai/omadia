@@ -26,7 +26,7 @@ dependency change see [Regenerating This File](#regenerating-this-file).
 
 The [`sharp`](https://github.com/lovell/sharp) image library bundles
 platform-specific [`libvips`](https://github.com/lovell/sharp-libvips)
-binaries under LGPL-3.0-or-later. Harness consumes `sharp` exclusively via
+binaries under LGPL-3.0-or-later. Omadia consumes `sharp` exclusively via
 its public Node.js API (dynamic linking), which does not trigger LGPL's
 source-distribution requirement. This notice satisfies the license's
 attribution clause.
@@ -46,14 +46,14 @@ web-ui (Next.js Image component runtime).
 [MPL-2.0](https://www.mozilla.org/MPL/2.0/) is a file-level weak copyleft
 license. Bundling unmodified upstream sources is permitted; only
 modifications to the MPL-licensed files themselves would trigger the
-source-disclosure obligation, which Harness does not perform.
+source-disclosure obligation, which Omadia does not perform.
 
 | Package | License | Project | Used in |
 |---|---|---|---|
 | `axe-core` | MPL-2.0 | <https://github.com/dequelabs/axe-core> | web-ui (a11y dev tooling) |
 | `lightningcss` | MPL-2.0 | <https://github.com/parcel-bundler/lightningcss> | web-ui (Next.js CSS pipeline) |
 | `lightningcss-darwin-arm64` *(platform-conditional)* | MPL-2.0 | <https://github.com/parcel-bundler/lightningcss> | web-ui |
-| `dompurify` | MPL-2.0 OR Apache-2.0 — Harness elects Apache-2.0 | <https://github.com/cure53/DOMPurify> | web-ui (HTML sanitisation) |
+| `dompurify` | MPL-2.0 OR Apache-2.0 — Omadia elects Apache-2.0 | <https://github.com/cure53/DOMPurify> | web-ui (HTML sanitisation) |
 
 ## Other Non-Standard Licenses
 
@@ -65,8 +65,8 @@ source-disclosure obligation, which Harness does not perform.
 | `language-subtag-registry` | CC0-1.0 (public domain) | <https://github.com/mattcg/language-subtag-registry> |
 | `@csstools/color-helpers` | MIT-0 (no-attribution MIT) | <https://github.com/csstools/postcss-plugins> |
 | `minimatch` | BlueOak-1.0.0 (permissive, OSI-approved) | <https://github.com/isaacs/minimatch> |
-| `expand-template` | MIT OR WTFPL — Harness elects MIT | <https://github.com/ralphtheninja/expand-template> |
-| `rc` | BSD-2-Clause OR MIT OR Apache-2.0 — Harness elects MIT | <https://github.com/dominictarr/rc> |
+| `expand-template` | MIT OR WTFPL — Omadia elects MIT | <https://github.com/ralphtheninja/expand-template> |
+| `rc` | BSD-2-Clause OR MIT OR Apache-2.0 — Omadia elects MIT | <https://github.com/dominictarr/rc> |
 
 ## Regenerating This File
 
