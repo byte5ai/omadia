@@ -1,5 +1,6 @@
 import type { PrivacyReceipt } from '@omadia/plugin-api';
 import type { FollowUpOption, SemanticAnswer } from './outgoing.js';
+import type { SurfaceStreamEvent, PendingCanvasSurface } from './surface.js';
 
 /**
  * Orchestrator surface contract — the duck-typed interface every chat-handling
@@ -360,6 +361,13 @@ export interface ChatTurnResult {
    * channels to highlight. Omitted when no server-materialized answer ran.
    */
   maskedValues?: readonly string[];
+  /**
+   * Omadia UI canvas surface payload (omadia-canvas-protocol/1.0). Present when a
+   * canvas-aware turn produced an initial primitive tree; `toSemanticAnswer`
+   * forwards it to `SemanticAnswer.surface`. Channels not declaring the
+   * `'canvas'` capability ignore it. Sidecar — does NOT short-circuit the turn.
+   */
+  surface?: PendingCanvasSurface;
 }
 
 /**
@@ -538,4 +546,9 @@ export type ChatStreamEvent =
    * event. Never emitted by the base orchestrator.
    */
   | { type: 'verifier'; summary: VerifierResultSummary }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string }
+  /**
+   * Omadia UI canvas surface events (omadia-canvas-protocol/1.0). Additive;
+   * channels not declaring the `'canvas'` capability default-ignore these.
+   */
+  | SurfaceStreamEvent;

@@ -440,6 +440,7 @@ const CHANNEL_CAPABILITIES: ReadonlySet<ChannelCapability> = new Set([
   'user_sso',
   'file_upload',
   'typing_indicator',
+  'canvas',
 ]);
 
 const CHANNEL_ADAPTERS: ReadonlySet<ChannelAdapter> = new Set([
@@ -497,6 +498,11 @@ function extractChannelBlock(
     }
   }
 
+  // Omadia UI (additive): optional canvas-channel fields. Classic channels
+  // omit both; absent `dispatch_service` falls back to 'chatAgent' at dispatch.
+  const dispatchService = asString(rec['dispatch_service']);
+  const canvasProtocolVersion = asString(rec['canvas_protocol_version']);
+
   return {
     transport: {
       kind: transportKind,
@@ -505,6 +511,10 @@ function extractChannelBlock(
     },
     capabilities,
     adapters,
+    ...(dispatchService ? { dispatch_service: dispatchService } : {}),
+    ...(canvasProtocolVersion
+      ? { canvas_protocol_version: canvasProtocolVersion }
+      : {}),
   };
 }
 
