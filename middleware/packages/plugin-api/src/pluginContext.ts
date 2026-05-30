@@ -363,6 +363,14 @@ export interface NativeToolSpec {
    */
   readonly domain?: string;
 }
+// NOTE (Omadia UI): a tool's `writeCapabilities` annotation is deliberately NOT
+// a field on `NativeToolSpec` — the whole spec is sent verbatim into the
+// Anthropic tools list (`buildToolsList`), and Anthropic's tool-spec contract
+// rejects unknown fields (same reason `piiFields` lives on the LocalSubAgentTool
+// wrapper, not on its spec). The `WriteCapability` contract + the deterministic
+// `deriveMutabilityCapabilities` derivation live in `./writeCapabilities.ts`;
+// their attachment to a non-model-facing carrier (manifest annotation /
+// registration metadata) is wired with the first consumer (PR-9).
 
 /**
  * OB-77 (Palaia Phase 8) — Naming-Convention für Plugin-Domains.

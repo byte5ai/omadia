@@ -3,6 +3,10 @@ export * from './conversation.js';
 export * from './localSubAgentTool.js';
 export * from './piiAnnotation.js';
 
+// Omadia UI — write-tool capability contract + the deterministic Tier-2
+// mutability derivation. Consumed by the canvas orchestrator (PR-9).
+export * from './writeCapabilities.js';
+
 // S+11-1: Knowledge-graph capability contract (interface + DTOs + node-id
 // helpers) lives on the plugin-api surface. Both the in-memory and the Neon
 // `knowledgeGraph@1` provider plugins (S+11-2 split of @omadia/knowledge-graph)
