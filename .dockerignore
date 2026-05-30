@@ -29,6 +29,13 @@ README.md
 # Dev frontend (separate deploy target)
 web-dev
 
+# Nested separate-repo folders — each is its own git repo, never part of the
+# middleware image, and each carries a large node_modules / .next that would
+# bloat the build context.
+channel-whatsapp
+hub
+marketing-site
+
 # Middleware local state / build artefacts
 middleware/node_modules
 middleware/dist
