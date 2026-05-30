@@ -1,6 +1,6 @@
 # Agent Boilerplate
 
-Standalone-Package-Template für neue Harness-Platform-Agenten (`kind: agent`).
+Standalone-Package-Template für neue Omadia-Agenten (`kind: agent`).
 Claude-Guide: [CLAUDE.md](./CLAUDE.md) — wird beim Scaffolden automatisch
 mitgelesen.
 
