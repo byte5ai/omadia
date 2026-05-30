@@ -242,6 +242,25 @@ Synthese, per-`canvasSessionId`-Mutex, Cache — plus die aufgeschobenen Wirings
 (PR-7b Sentinel-Gating, `writeCapabilities`-Anbindung, `structured`-Threading)
 sind Folge-Slices.
 
+### omadia-ui-channel (Tier-1 Server, Skeleton, PR-10a)
+
+Neues Channel-Plugin `packages/omadia-ui-channel/` (`@omadia/ui-channel`,
+`kind: channel`). Das Manifest deklariert die Canvas-Surface —
+`channel.capabilities: [text, canvas]` + `channel.dispatch_service:
+canvasChatAgent` —, sodass ein Turn an den `omadia-ui-orchestrator` routet
+(#168 + #171). **v0** registriert via `core.registerRoute` einen
+Discovery-Endpoint (`GET /omadia-ui/info`), der Protokoll-/Catalog-Versionen +
+Capabilities annonciert (was ein Client vor dem Connect liest).
+
+**Wichtiger Befund / aufgeschoben:** Der eigentliche **bidirektionale
+WebSocket-Transport** (Handshake `offer→select→ack`, `IncomingTurn`-Bildung,
+`surface_*`-Event-Fan-out) fehlt — die **`CoreApi` bietet nur Express-Route/
+Router-Registrierung, keinen WebSocket-Upgrade**. Um den Canvas-WebSocket zu
+hosten, braucht es eine **CoreApi-SDK-Erweiterung** (WS-/`upgrade`-Registrierung
+für Channel-Plugins), die in der Concept-„SDK changes"-Liste **fehlt** — als
+Plan-Feed-back vermerkt, eigene Folge-PR. Die Dispatch-Verdrahtung
+(`dispatch_service` → `canvasChatAgent`) ist bereits durch #168 validiert.
+
 ---
 
 ## 4. Migration Managed Agents → Lokal

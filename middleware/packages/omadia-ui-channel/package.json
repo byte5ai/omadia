@@ -1,0 +1,22 @@
+{
+  "name": "@omadia/ui-channel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "Omadia UI Tier-1 server-side channel (skeleton). kind: channel; capabilities [text, canvas]; dispatch_service canvasChatAgent. v0 advertises the canvas protocol via a discovery endpoint; the bidirectional WebSocket transport (handshake + surface_* fan-out + IncomingTurn forming) is deferred to a CoreApi WS-transport extension.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@omadia/channel-sdk": "*",
+    "@omadia/plugin-api": "*",
+    "express": "^5.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

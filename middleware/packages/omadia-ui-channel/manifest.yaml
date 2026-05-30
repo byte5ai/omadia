@@ -1,0 +1,45 @@
+schema_version: "1"
+
+identity:
+  id: "@omadia/ui-channel"
+  name: "Omadia UI Channel"
+  version: "0.1.0"
+  kind: "channel"
+  domain: "omadia.ui"
+  description: "Omadia UI Tier-1 server-side channel (skeleton). Declares the canvas surface — capabilities [text, canvas] and dispatch_service canvasChatAgent — so a turn routes to the omadia-ui-orchestrator (#168/#171). v0 registers a discovery endpoint advertising the omadia-canvas-protocol + ops-catalog versions and capabilities. The bidirectional WebSocket transport (handshake offer→select→ack, IncomingTurn forming, surface_* event fan-out) is DEFERRED: the CoreApi exposes only Express route/router registration, not a WebSocket upgrade, so hosting the canvas WebSocket needs a CoreApi SDK extension that the concept's SDK-changes list omitted."
+  authors:
+    - name: "byte5 GmbH"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
+  license: "MIT"
+  categories:
+    - "infrastructure"
+    - "channel"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+lifecycle:
+  entry: "dist/plugin.js"
+
+channel:
+  transport:
+    # Target transport. The WebSocket server itself is not yet wired (see
+    # description) — v0 mounts the discovery route below over plain HTTP.
+    kind: "websocket"
+    routes:
+      - path: "/omadia-ui/info"
+        method: "GET"
+    verify_signature: false
+  capabilities:
+    - "text"
+    - "canvas"
+  adapters:
+    - "text"
+  dispatch_service: "canvasChatAgent"
+  canvas_protocol_version: "1.0"
+
+permissions:
+  filesystem:
+    scratch: false
