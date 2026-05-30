@@ -570,6 +570,37 @@ aus `anthropic.messages.stream` (nicht `.create`). Tool-Use-Deltas werden
 nicht weitergeleitet — stattdessen emittiert das `tool_use`-Event einmal
 den vollen Input, sobald der Content-Block schließt.
 
+### 11.1 Omadia UI — Canvas-Surface-Events (additiv)
+
+Für die Omadia-UI-Canvas-Fläche (Spec: `byte5ai/omadia-ui` `CONCEPT.md` v0.15 /
+`docs/implementation-plan.md`) wurde die SDK-Typ-Fläche **rein additiv**
+erweitert. Bestehende Channels sind unberührt — sie deklarieren die neue
+`'canvas'`-Capability nie und ignorieren die `surface_*`-Arme per Default
+(kein exhaustiver `assertNever`-Consumer in der middleware). Konkret:
+
+- **`ChatStreamEvent`** (`harness-channel-sdk/src/chatAgent.ts`) bekommt die
+  `surface_*`-Familie via `| SurfaceStreamEvent` (`surface.ts`):
+  `surface_snapshot`, `surface_patch`, `surface_data_ref_created`,
+  `surface_data_ref_invalidated`, `surface_action_result`,
+  `surface_local_action`, `surface_error`, `surface_mutation_resolved`. Jedes
+  trägt `{ canvasSessionId, surfaceSeq }`; Revisions sind ein **opakes,
+  branded `RevisionId`** (nur Gleichheit, keine Arithmetik); Bulk-Daten via
+  `DataRef`.
+- **`IncomingTurn`** (`incoming.ts`): additive `tenantId?` /
+  `target?: TargetRef` / `viewState?: CanvasViewState` / `viewStateTruncated?`.
+- **`SemanticAnswer.surface?: OutgoingSurface`** (`outgoing.ts`) +
+  `ChatTurnResult.surface?` (`chatAgent.ts`), durchgereicht in
+  `toSemanticAnswer`.
+- **`TargetRef`** (neuer Shared-Typ in `@omadia/plugin-api`, `targetRef.ts`) —
+  die kanonische Ziel-Adressierung (10 Varianten, Stable-IDs statt Positionen).
+- Channel-Manifest-Enum **`ChannelCapability`** (`admin-v1.ts` +
+  `manifestLoader.ts` `CHANNEL_CAPABILITIES`) bekommt `'canvas'`.
+
+Noch **nicht** in diesem Schritt: Boot-Dispatch (`channel.dispatchService`),
+die Canvas-Sentinel-Extractoren (`_pendingCanvasTree` etc.), das
+`structured?`/`writeCapabilities`-Tool-Manifest und die zwei neuen Plugins
+(`omadia-ui-orchestrator`, `omadia-ui-channel`) — separate Folge-PRs.
+
 ---
 
 ## 12. Red-Line-Enforcement (HR)

@@ -26,10 +26,31 @@ export type {
   ChannelUserKind,
   IncomingAttachment,
   PlatformIdentity,
+  CanvasViewState,
+  CanvasSelection,
 } from './incoming.js';
 
 // Orchestrator → channel stream envelope (back-compat re-export)
 export type { ChatStreamEvent } from './streamEvent.js';
+
+// Omadia UI canvas surface contracts (omadia-canvas-protocol/1.0). Additive —
+// the `surface_*` family is folded into `ChatStreamEvent`; classic channels
+// default-ignore it.
+export type {
+  RevisionId,
+  DataRef,
+  OutgoingSurface,
+  PendingCanvasSurface,
+  SurfaceStreamEvent,
+  SurfaceSnapshotEvent,
+  SurfacePatchEvent,
+  SurfaceDataRefCreatedEvent,
+  SurfaceDataRefInvalidatedEvent,
+  SurfaceActionResultEvent,
+  SurfaceLocalActionEvent,
+  SurfaceErrorEvent,
+  SurfaceMutationResolvedEvent,
+} from './surface.js';
 
 // Orchestrator surface contract — lifted from the kernel in S+10-2 so
 // channel-plugins-final (S+11) and the orchestrator-plugin (S+10-3/4) can

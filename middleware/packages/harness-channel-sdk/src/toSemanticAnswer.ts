@@ -100,5 +100,8 @@ export function toSemanticAnswer(r: ChatTurnResult): SemanticAnswer {
     ...(r.maskedValues && r.maskedValues.length > 0
       ? { maskedValues: r.maskedValues }
       : {}),
+    // Omadia UI: forward the canvas surface payload so converter-based channels
+    // reach the initial primitive tree. Sidecar — ignored by non-canvas channels.
+    ...(r.surface ? { surface: r.surface } : {}),
   };
 }
