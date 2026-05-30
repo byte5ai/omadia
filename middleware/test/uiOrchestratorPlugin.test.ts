@@ -1,6 +1,8 @@
 import { strict as assert } from 'node:assert';
+import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 
+import { loadManifestFromPath } from '../src/plugins/manifestLoader.js';
 import {
   CHAT_AGENT_SERVICE,
   type ChatAgentBundle,
@@ -93,5 +95,22 @@ describe('omadia-ui-orchestrator skeleton', () => {
     assert.ok(reg.get('canvasChatAgent'));
     await handle.close();
     assert.equal(reg.get('canvasChatAgent'), undefined);
+  });
+});
+
+describe('omadia-ui-orchestrator manifest', () => {
+  // CI does not boot the app, so without this test the load-bearing manifest is
+  // unvalidated. Loading it through the real loader proves it is a valid
+  // schema-v1 plugin the builtInPackageStore will accept at boot.
+  it('is a valid schema-v1 extension manifest providing canvasChatAgent@1', async () => {
+    const manifestPath = fileURLToPath(
+      new URL('../packages/omadia-ui-orchestrator/manifest.yaml', import.meta.url),
+    );
+    const entry = await loadManifestFromPath(manifestPath);
+    assert.ok(entry, 'manifest loads as a valid schema-v1 document');
+    assert.equal(entry.plugin.kind, 'extension');
+    assert.equal(entry.plugin.id, '@omadia/ui-orchestrator');
+    assert.deepEqual(entry.plugin.provides, ['canvasChatAgent@1']);
+    assert.deepEqual(entry.plugin.requires, ['chatAgent@^1']);
   });
 });
