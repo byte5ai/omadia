@@ -3,6 +3,10 @@ export * from './conversation.js';
 export * from './localSubAgentTool.js';
 export * from './piiAnnotation.js';
 
+// Omadia UI canvas: the shared `TargetRef` discriminated union (beam / mutation
+// / local-op / suggested-action targets) and its `TextRangeAnchor` / `BufferRegion`
+// helpers. Consumed by the channel-sdk (`IncomingTurn.target`, `surface_local_action`).
+export * from './targetRef.js';
 // Omadia UI — write-tool capability contract + the deterministic Tier-2
 // mutability derivation. Consumed by the canvas orchestrator (PR-9).
 export * from './writeCapabilities.js';

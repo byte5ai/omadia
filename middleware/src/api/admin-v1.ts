@@ -132,7 +132,10 @@ export type ChannelCapability =
   | 'interactive_cards'
   | 'user_sso'
   | 'file_upload'
-  | 'typing_indicator';
+  | 'typing_indicator'
+  /** Omadia UI canvas surface — channel renders the live primitive tree and the
+   *  `surface_*` event family. Additive; classic channels never declare it. */
+  | 'canvas';
 
 export type ChannelAdapter =
   | 'text'
@@ -156,6 +159,20 @@ export interface ChannelManifestBlock {
   };
   capabilities: ChannelCapability[];
   adapters: ChannelAdapter[];
+  /**
+   * Omadia UI (additive): the bare service-registry key this channel's turns
+   * dispatch to. Absent → the shared 'chatAgent' orchestrator (classic
+   * behaviour). The canvas channel sets `canvasChatAgent`. NOTE: a bare key,
+   * not `name@N` — the service registry does not strip versions; `@N` lives
+   * only in the provider's `provides:`/`requires:` capability list.
+   */
+  dispatch_service?: string;
+  /**
+   * Omadia UI (additive): the omadia-canvas-protocol version this channel
+   * speaks (e.g. `"1.0"`). Informational at the manifest layer; the actual
+   * version is negotiated in the boot handshake.
+   */
+  canvas_protocol_version?: string;
 }
 
 export interface Plugin {

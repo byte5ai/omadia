@@ -11,6 +11,7 @@
  */
 
 import type { CaptureDisclosure, PrivacyReceipt } from '@omadia/plugin-api';
+import type { OutgoingSurface } from './surface.js';
 
 export type { CaptureDisclosure, PrivacyReceipt };
 
@@ -87,6 +88,14 @@ export interface SemanticAnswer {
    * produced no server-materialized answer or exposed no masked field.
    */
   maskedValues?: readonly string[];
+
+  /**
+   * Omadia UI canvas surface payload (omadia-canvas-protocol/1.0). Present when a
+   * canvas-aware turn produced an initial primitive tree. Channels not declaring
+   * the `'canvas'` capability ignore it. Additive optional field (see stability
+   * contract above) — sidecar, does NOT short-circuit the answer.
+   */
+  surface?: OutgoingSurface;
 }
 
 /** Image/file side-channel. `url` must be reachable by the channel. */

@@ -91,6 +91,21 @@ export type {
 export { Orchestrator, parseToolEmittedChoice } from './orchestrator.js';
 export type { OrchestratorOptions } from './orchestrator.js';
 
+// Omadia UI canvas sentinels (PR-7a) — pure parsers + the canvas-output gate.
+// Not yet wired into the tool loop; the canvas orchestrator (PR-9) consumes them.
+export {
+  CANVAS_OUTPUT_CAPABILITY,
+  isCanvasOutputAuthorized,
+  parseToolEmittedStructuredPayload,
+  parseToolEmittedCanvasTree,
+  parseToolEmittedMutation,
+} from './canvasSentinels.js';
+export type {
+  PendingStructuredPayload,
+  PendingCanvasTree,
+  PendingMutation,
+} from './canvasSentinels.js';
+
 // Streaming retry predicate (exported for unit coverage)
 export { isRetryableStreamError } from './streaming.js';
 
