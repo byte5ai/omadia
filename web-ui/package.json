@@ -43,7 +43,7 @@
     "@testing-library/user-event": "^14.6.1",
     "@types/cytoscape": "^3.31.0",
     "@types/node": "^22.10.5",
-    "@types/react": "^19.0.7",
+    "@types/react": "^19.2.15",
     "@types/react-dom": "^19.0.3",
     "@vitejs/plugin-react": "^4.7.0",
     "@vitest/ui": "^2.1.9",
