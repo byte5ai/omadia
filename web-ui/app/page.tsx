@@ -447,12 +447,6 @@ function MessageRow({
     message.finishedAt !== undefined
       ? ((message.finishedAt - message.startedAt) / 1000).toFixed(1)
       : null;
-  // #133 E8 — captured once at mount (not read during render) so the plan card
-  // only retries for a just-finished turn, where the PLAN_OF back-link lands a
-  // beat after the `done` event; history turns resolve in one fetch.
-  const [mountNow] = useState(() => Date.now());
-  const planRecent =
-    message.finishedAt === undefined || mountNow - message.finishedAt < 15000;
   // Show the Theme E0+E1 liveness row whenever the turn is in flight
   // (`streaming`) or a tool call is still pending. Read-only on completed
   // messages — even if persisted state happens to carry a stale liveness
@@ -482,11 +476,11 @@ function MessageRow({
           <div className="whitespace-pre-wrap text-sm">{message.content}</div>
         ) : (
           <>
-            {message.turnId !== undefined && (
+            {(message.streaming === true || message.turnId !== undefined) && (
               <PlanProgressCard
                 scope={scope}
                 turnId={message.turnId}
-                recent={planRecent}
+                streaming={message.streaming === true}
               />
             )}
             {(message.tools?.length ?? 0) > 0 && (
