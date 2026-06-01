@@ -7,6 +7,7 @@ import type {
   ElementDefinition,
   EventObject,
   LayoutOptions,
+  NodeCollection,
   NodeSingular,
 } from 'cytoscape';
 import fcose from 'cytoscape-fcose';
@@ -459,10 +460,35 @@ function nodeSize(type: NodeType, mentionCount: number): number {
   return b;
 }
 
-function buildLayout(nodeCount: number, sparse: boolean): LayoutOptions {
+function buildLayout(
+  nodeCount: number,
+  sparse: boolean,
+  planRoots?: NodeCollection,
+): LayoutOptions {
   const tiny = nodeCount < 50;
   const heavy = nodeCount > 200;
   const huge = nodeCount > 600;
+  // #133 — when the canvas is dominated by a plan DAG, lay it out
+  // hierarchically rooted at the Plan node(s) instead of fcose's force cloud:
+  // the Plan sits on top, its PlanSteps fan out below, and DEPENDS_ON
+  // sequencing reads top-down. `breadthfirst` is a cytoscape core layout, so
+  // this needs no extra dependency (important given the standalone-bundle
+  // fragility this stack has). `directed:false` keeps the layering robust to
+  // STEP_OF pointing step→plan (incoming to the root).
+  if (planRoots && planRoots.length > 0) {
+    return {
+      name: 'breadthfirst',
+      directed: false,
+      roots: planRoots,
+      spacingFactor: 1.4,
+      padding: 60,
+      avoidOverlap: true,
+      nodeDimensionsIncludeLabels: true,
+      animate: !heavy,
+      animationDuration: heavy ? 0 : 400,
+      fit: true,
+    } as unknown as LayoutOptions;
+  }
   // Sparse mode (entity-only default) → spread nodes further so cross-refs
   // and producer-anchors stay visually distinct.
   const repulsionBase = huge ? 6000 : tiny ? 24000 : 10000;
@@ -538,6 +564,18 @@ export default function GraphCanvas({
     nodesRef.current = nodes;
   });
   const sparse = !filter.showTrace;
+  // #133 — switch to the hierarchical plan-DAG layout only when the canvas is
+  // plan-dominated (overlay on + Plan/PlanStep nodes are at least half of all
+  // nodes). In mixed views (session + entities + a plan) fcose still wins, so
+  // breadthfirst never mangles a graph that isn't mostly a plan.
+  const planFocus = useMemo(() => {
+    if (!filter.showPlans || nodes.size === 0) return false;
+    let planCount = 0;
+    for (const n of nodes.values()) {
+      if (n.type === 'Plan' || n.type === 'PlanStep') planCount += 1;
+    }
+    return planCount > 0 && planCount >= nodes.size * 0.5;
+  }, [filter.showPlans, nodes]);
 
   useEffect(() => {
     ensureFcose();
@@ -713,6 +751,30 @@ export default function GraphCanvas({
             opacity: 0.85,
           },
         },
+        // #133 — Plan DAG edges. STEP_OF is structural membership
+        // (step → plan): faded + dotted so it recedes. DEPENDS_ON is the
+        // step-to-prerequisite sequencing the breadthfirst layout follows:
+        // solid indigo with a prominent arrow so the flow reads as primary.
+        {
+          selector: 'edge[label = "STEP_OF"]',
+          style: {
+            'line-color': '#a78bfa',
+            'target-arrow-color': '#a78bfa',
+            'line-style': 'dotted',
+            width: 1,
+            opacity: 0.45,
+          },
+        },
+        {
+          selector: 'edge[label = "DEPENDS_ON"]',
+          style: {
+            'line-color': '#6366f1',
+            'target-arrow-color': '#6366f1',
+            width: 1.8,
+            'arrow-scale': 1,
+            opacity: 0.9,
+          },
+        },
         {
           selector: 'edge.faded',
           style: { opacity: 0.08 },
@@ -787,7 +849,8 @@ export default function GraphCanvas({
     layoutTimer.current = setTimeout(() => {
       const count = cy.nodes().length;
       if (count === 0) return;
-      const layout = cy.layout(buildLayout(count, sparse));
+      const roots = planFocus ? cy.nodes('[type = "Plan"]') : undefined;
+      const layout = cy.layout(buildLayout(count, sparse, roots));
       layout.run();
       layoutedOnce.current = true;
     }, delay);
@@ -795,7 +858,7 @@ export default function GraphCanvas({
     return () => {
       if (layoutTimer.current) clearTimeout(layoutTimer.current);
     };
-  }, [elements, sparse]);
+  }, [elements, sparse, planFocus]);
 
   useEffect(() => {
     const cy = cyRef.current;
@@ -832,7 +895,8 @@ export default function GraphCanvas({
     if (!cy) return;
     const count = cy.nodes().length;
     if (count === 0) return;
-    cy.layout(buildLayout(count, sparse)).run();
+    const roots = planFocus ? cy.nodes('[type = "Plan"]') : undefined;
+    cy.layout(buildLayout(count, sparse, roots)).run();
   };
 
   return (
@@ -942,7 +1006,8 @@ function Legend({
     edgeRows.push(['#fb923c', 'DUPLICATE_EXCERPT_OF']);
   }
   if (filter.showPlans) {
-    edgeRows.push(['#cbd5e1', 'STEP_OF / DEPENDS_ON']);
+    edgeRows.push(['#a78bfa', 'STEP_OF']);
+    edgeRows.push(['#6366f1', 'DEPENDS_ON']);
   }
 
   return (
