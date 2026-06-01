@@ -1532,7 +1532,12 @@ export class Orchestrator {
         'onAfterTurn',
         turnId,
         input,
-        { assistantAnswer: result.answer },
+        {
+          assistantAnswer: result.answer,
+          // #133 (E8) — surface the persisted Turn node id so observers can
+          // link to the graph Turn (plan-runner PLAN_OF). Absent if the log failed.
+          ...(result.turnId ? { turnExternalId: result.turnId } : {}),
+        },
         2000,
       );
       return result;
@@ -1999,7 +2004,11 @@ export class Orchestrator {
             'onAfterTurn',
             turnId,
             input,
-            { assistantAnswer: doneEvent.answer },
+            {
+              assistantAnswer: doneEvent.answer,
+              // #133 (E8) — persisted Turn node id for graph-linking observers.
+              ...(doneEvent.turnId ? { turnExternalId: doneEvent.turnId } : {}),
+            },
             2000,
           );
           yield doneEvent;
@@ -2010,7 +2019,10 @@ export class Orchestrator {
             'onAfterTurn',
             turnId,
             input,
-            { assistantAnswer: event.answer },
+            {
+              assistantAnswer: event.answer,
+              ...(event.turnId ? { turnExternalId: event.turnId } : {}),
+            },
             2000,
           );
         }

@@ -255,6 +255,37 @@ describe('Orchestrator turn hooks (#133 E0)', () => {
     assert.equal(payloads[points.indexOf('onAfterTurn')].assistantAnswer, 'done');
   });
 
+  it('onAfterTurn forwards the persisted Turn node id as turnExternalId (#133 E8)', async () => {
+    const STUB_TURN = 'turn:sess-1:2026-06-01T00:00:00.000Z';
+    // Minimal SessionLogger stub: just hand back a persisted Turn id so the
+    // orchestrator's onAfterTurn can surface it to observers (plan-runner).
+    const sessionLogger = {
+      log: async (): Promise<{ turnExternalId: string }> => ({
+        turnExternalId: STUB_TURN,
+      }),
+    } as unknown as ConstructorParameters<typeof Orchestrator>[0]['sessionLogger'];
+
+    const registry = new NativeToolRegistry();
+    const client = fakeCreateClient([msgWithText('done')]);
+    const { runner, points, payloads } = recordingRunner();
+    const orch = new Orchestrator({
+      client,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [],
+      nativeToolRegistry: registry,
+      turnHookRegistry: runner,
+      sessionLogger,
+    });
+
+    const result = await orch.runTurn({ userMessage: 'go', sessionScope: 'sess-1' });
+
+    assert.equal(result.turnId, STUB_TURN);
+    const after = payloads[points.indexOf('onAfterTurn')];
+    assert.equal(after.turnExternalId, STUB_TURN);
+  });
+
   it('no registry: turn runs normally, no hooks fired', async () => {
     const registry = new NativeToolRegistry();
     const client = fakeCreateClient([msgWithText('hi')]);

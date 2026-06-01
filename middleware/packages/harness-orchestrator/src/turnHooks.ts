@@ -39,6 +39,15 @@ export interface TurnHookPayload {
   readonly toolResult?: string;
   /** #133 (E6) — verifier block reason, set on `onVerifierBlocked`. */
   readonly blockReason?: string;
+  /**
+   * #133 (E8) — the persisted Turn node external id (`turn:<scope>:<time>`),
+   * set on `onAfterTurn` once the session log has landed. The orchestrator
+   * turn id (`ctx.turnId`) is a per-turn UUID and is NOT the Turn node id, so
+   * a runner that wants to link its artefacts to the graph Turn (e.g. the
+   * plan-runner's `PLAN_OF` edge) needs this. Absent until the turn is
+   * persisted (so absent on the other hook points, and on a failed log).
+   */
+  readonly turnExternalId?: string;
 }
 
 /**

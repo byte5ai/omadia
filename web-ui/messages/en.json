@@ -1,4 +1,13 @@
 {
+  "planCard": {
+    "heading": "Plan",
+    "summary": "{done}/{total} steps",
+    "statusPending": "pending",
+    "statusInProgress": "in progress",
+    "statusDone": "done",
+    "statusFailed": "failed",
+    "statusSkipped": "skipped"
+  },
   "nav": {
     "chat": "Chat",
     "store": "Store",

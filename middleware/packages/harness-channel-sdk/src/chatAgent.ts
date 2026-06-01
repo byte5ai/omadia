@@ -368,6 +368,14 @@ export interface ChatTurnResult {
    * `'canvas'` capability ignore it. Sidecar — does NOT short-circuit the turn.
    */
   surface?: PendingCanvasSurface;
+  /**
+   * #133 — the persisted Turn node external id (`turn:<scope>:<time>`) for this
+   * turn. Present when a sessionScope was supplied and the session log landed;
+   * absent for scope-less dev calls or a failed log. Lets clients link a turn
+   * to its graph artefacts (e.g. resolving the turn's plan DAG, save-as-memory
+   * provenance) without re-deriving the id.
+   */
+  turnId?: string;
 }
 
 /**
@@ -539,6 +547,9 @@ export type ChatStreamEvent =
       /** Privacy Shield v4 — real values in `answer` the LLM never saw;
        *  clients MAY highlight their occurrences. */
       maskedValues?: readonly string[];
+      /** #133 — persisted Turn node external id (`turn:<scope>:<time>`); see
+       *  ChatTurnResult.turnId. Lets the UI resolve the turn's plan DAG. */
+      turnId?: string;
     }
   /**
    * Emitted after `done` by the verifier wrapper (only when enabled). The

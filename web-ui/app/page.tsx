@@ -17,6 +17,7 @@ import { AutoPromotedBanner } from './_components/chat/AutoPromotedBanner';
 import { CaptureDisclosure } from './_components/chat/CaptureDisclosure';
 import { ConfirmDialog } from './_components/ConfirmDialog';
 import { NudgeCard, parseNudgeBlock } from './_components/chat/NudgeCard';
+import { PlanProgressCard } from './_components/chat/PlanProgressCard';
 import { PrivacyReceiptCard } from './_components/chat/PrivacyReceiptCard';
 import { SaveMemoryButton } from './_components/chat/SaveMemoryButton';
 import { Markdown } from './_components/Markdown';
@@ -321,6 +322,7 @@ export default function ChatPage(): React.ReactElement {
             <MessageRow
               key={m.id}
               message={m}
+              scope={activeId}
               disabled={sending || hydrating}
               onChoose={(value) => {
                 send(value);
@@ -424,11 +426,14 @@ function EmptyState({
 
 function MessageRow({
   message,
+  scope,
   disabled,
   onChoose,
   onDiscardAutoPromoted,
 }: {
   message: Message;
+  /** Session scope — needed to resolve this turn's plan DAG (#133 E8). */
+  scope: string;
   disabled: boolean;
   onChoose: (value: string) => void;
   /** Slice 4c — called when the user successfully Discards an
@@ -442,6 +447,12 @@ function MessageRow({
     message.finishedAt !== undefined
       ? ((message.finishedAt - message.startedAt) / 1000).toFixed(1)
       : null;
+  // #133 E8 — captured once at mount (not read during render) so the plan card
+  // only retries for a just-finished turn, where the PLAN_OF back-link lands a
+  // beat after the `done` event; history turns resolve in one fetch.
+  const [mountNow] = useState(() => Date.now());
+  const planRecent =
+    message.finishedAt === undefined || mountNow - message.finishedAt < 15000;
   // Show the Theme E0+E1 liveness row whenever the turn is in flight
   // (`streaming`) or a tool call is still pending. Read-only on completed
   // messages — even if persisted state happens to carry a stale liveness
@@ -471,6 +482,13 @@ function MessageRow({
           <div className="whitespace-pre-wrap text-sm">{message.content}</div>
         ) : (
           <>
+            {message.turnId !== undefined && (
+              <PlanProgressCard
+                scope={scope}
+                turnId={message.turnId}
+                recent={planRecent}
+              />
+            )}
             {(message.tools?.length ?? 0) > 0 && (
               <ToolTrace tools={message.tools ?? []} />
             )}

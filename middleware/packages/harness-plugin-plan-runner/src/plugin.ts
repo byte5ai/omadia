@@ -44,6 +44,9 @@ interface TurnRecord {
   readonly planId: string;
   readonly scope: string;
   readonly userMessage: string;
+  /** ISO timestamp the plan was created with — reused on the onAfterTurn
+   *  re-ingest so the PLAN_OF back-link doesn't rewrite `createdAt` (E8). */
+  readonly createdAt: string;
   /** Replan counter — namespaces recovery step ids. */
   generation: number;
 }
@@ -96,11 +99,12 @@ export async function activate(
         if (!userMessage) return;
         if (!(await shouldPlan(userMessage, llm))) return;
         const scope = hookCtx.sessionScope ?? hookCtx.turnId;
+        const createdAt = new Date().toISOString();
         const result = await materializePlan({
           planId: hookCtx.turnId,
           scope,
           userMessage,
-          createdAt: new Date().toISOString(),
+          createdAt,
           llm,
           kg,
         });
@@ -111,6 +115,7 @@ export async function activate(
           planId: hookCtx.turnId,
           scope,
           userMessage,
+          createdAt,
           generation: 0,
         };
         turns.set(hookCtx.turnId, record);
@@ -177,9 +182,31 @@ export async function activate(
     registrar.register('onAfterTurn', {
       label: 'plan-runner:onAfterTurn',
       priority: 10,
-      hook: async (hookCtx): Promise<void> => {
+      hook: async (hookCtx, payload): Promise<void> => {
         const record = turns.get(hookCtx.turnId);
         if (!record) return;
+        // E8 — the Turn node only exists once the session log lands, which is
+        // after our onBeforeTurn plan creation. Now that the orchestrator hands
+        // us the persisted Turn id, re-ingest the (idempotent) Plan with it: this
+        // writes the PLAN_OF back-link + sets `plan.props.turnId`, so the plan is
+        // no longer a graph orphan and the chat UI can resolve it by turn id.
+        if (payload.turnExternalId) {
+          try {
+            await kg.ingestPlan({
+              planId: record.planId,
+              scope: record.scope,
+              turnExternalId: payload.turnExternalId,
+              createdBy: 'gate',
+              createdAt: record.createdAt,
+            });
+          } catch (err) {
+            ctx.log(
+              `[plan-runner] PLAN_OF link failed for ${record.planExternalId}: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
+        }
         await finishPlan(record.plan, kg);
         turns.delete(hookCtx.turnId);
       },

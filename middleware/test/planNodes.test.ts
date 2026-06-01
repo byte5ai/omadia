@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 
 import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
-import { planNodeId, planStepNodeId } from '@omadia/plugin-api';
+import { planNodeId, planStepNodeId, turnNodeId } from '@omadia/plugin-api';
 
 // #133 (plan-as-data) slice E1 — Plan / PlanStep persistence.
 // Exercises the in-memory backend (no DB). The Neon backend implements the
@@ -110,5 +110,96 @@ describe('#133 E1 — Plan / PlanStep persistence (in-memory)', () => {
   it('getPlanSteps returns [] for an unknown plan', async () => {
     const kg = new InMemoryKnowledgeGraph();
     assert.deepEqual(await kg.getPlanSteps(planNodeId('nope')), []);
+  });
+
+  // #133 (E8) — PLAN_OF back-link. onBeforeTurn materialises the plan before
+  // the Turn node exists, so the link is established on a later (idempotent)
+  // re-ingest once the orchestrator hands the plugin the persisted Turn id.
+  describe('PLAN_OF back-link', () => {
+    const ingestTurn = async (
+      kg: InMemoryKnowledgeGraph,
+      scope: string,
+      time: string,
+    ): Promise<string> => {
+      await kg.ingestTurn({
+        scope,
+        time,
+        userMessage: 'do a multi-step thing',
+        assistantAnswer: 'ok',
+        entityRefs: [],
+      });
+      return turnNodeId(scope, time);
+    };
+
+    it('links the Plan to an existing Turn and records props.turnId', async () => {
+      const kg = new InMemoryKnowledgeGraph();
+      const turnExternalId = await ingestTurn(kg, 'sess-1', NOW);
+      await kg.ingestPlan({
+        planId: 'p1',
+        scope: 'sess-1',
+        turnExternalId,
+        createdBy: 'gate',
+        createdAt: NOW,
+      });
+
+      const plan = await kg.getPlan(planNodeId('p1'));
+      assert.equal(plan!.props['turnId'], turnExternalId);
+
+      const neighbors = await kg.getNeighbors(planNodeId('p1'));
+      assert.ok(
+        neighbors.some((n) => n.id === turnExternalId && n.type === 'Turn'),
+        'PLAN_OF edge should connect the plan to its Turn',
+      );
+    });
+
+    it('tolerates a missing Turn — no edge, no throw, plan still created', async () => {
+      const kg = new InMemoryKnowledgeGraph();
+      await kg.ingestPlan({
+        planId: 'p1',
+        scope: 'sess-1',
+        turnExternalId: turnNodeId('sess-1', NOW), // Turn never ingested
+        createdBy: 'gate',
+        createdAt: NOW,
+      });
+      assert.ok(await kg.getPlan(planNodeId('p1')));
+      assert.deepEqual(await kg.getNeighbors(planNodeId('p1')), []);
+    });
+
+    it('re-ingest adds the link once the Turn exists (idempotent, no dup plan)', async () => {
+      const kg = new InMemoryKnowledgeGraph();
+      // onBeforeTurn: plan first, no Turn yet → orphan.
+      await kg.ingestPlan({
+        planId: 'p1',
+        scope: 'sess-1',
+        createdBy: 'gate',
+        createdAt: NOW,
+      });
+      await kg.upsertPlanStep({
+        stepId: 'p1-s0',
+        planId: 'p1',
+        scope: 'sess-1',
+        goal: 'gather',
+        order: 0,
+      });
+      // The step is a neighbor (STEP_OF), but there is no Turn link yet.
+      const before = await kg.getNeighbors(planNodeId('p1'));
+      assert.ok(!before.some((n) => n.type === 'Turn'), 'no Turn link yet');
+
+      // onAfterTurn: Turn now persisted → re-ingest with the turn id links it.
+      const turnExternalId = await ingestTurn(kg, 'sess-1', NOW);
+      await kg.ingestPlan({
+        planId: 'p1',
+        scope: 'sess-1',
+        turnExternalId,
+        createdBy: 'gate',
+        createdAt: NOW,
+      });
+
+      const neighbors = await kg.getNeighbors(planNodeId('p1'));
+      assert.ok(neighbors.some((n) => n.id === turnExternalId));
+      // The plan node is not duplicated and its steps survive the re-ingest.
+      const steps = await kg.getPlanSteps(planNodeId('p1'));
+      assert.equal(steps.length, 1);
+    });
   });
 });
