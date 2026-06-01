@@ -17,7 +17,14 @@
  * Hooks are observers, not gatekeepers.
  */
 
-export type TurnHookPoint = 'onBeforeTurn' | 'onAfterToolCall' | 'onAfterTurn';
+export type TurnHookPoint =
+  | 'onBeforeTurn'
+  | 'onAfterToolCall'
+  | 'onAfterTurn'
+  /** #133 (E6) — fired by VerifierService when a verdict is `blocked`. The
+   *  session scope is on ctx; the reason is in payload.blockReason. Observer:
+   *  the verifier runs its own retry regardless. */
+  | 'onVerifierBlocked';
 
 export interface TurnHookContext {
   readonly turnId: string;
@@ -30,6 +37,8 @@ export interface TurnHookPayload {
   readonly assistantAnswer?: string;
   readonly toolName?: string;
   readonly toolResult?: string;
+  /** #133 (E6) — verifier block reason, set on `onVerifierBlocked`. */
+  readonly blockReason?: string;
 }
 
 /**

@@ -25,6 +25,7 @@ export {
 export {
   exitConditionMet,
   isToolFailure,
+  markLatestPlanVerifierBlocked,
   replanRemainder,
   REPLAN_MODEL,
   type ReplanInput,

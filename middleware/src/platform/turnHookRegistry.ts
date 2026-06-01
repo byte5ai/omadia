@@ -21,7 +21,12 @@
  * the Orchestrator itself — hooks are side-channel observers, not gatekeepers.
  */
 
-export type TurnHookPoint = 'onBeforeTurn' | 'onAfterToolCall' | 'onAfterTurn';
+export type TurnHookPoint =
+  | 'onBeforeTurn'
+  | 'onAfterToolCall'
+  | 'onAfterTurn'
+  /** #133 (E6) — fired by VerifierService on a `blocked` verdict. */
+  | 'onVerifierBlocked';
 
 /** Opaque turn-context. Shape evolves with the registry's consumers; for v1
  *  we keep it narrow — `turnId` is enough for correlation, everything else
@@ -37,6 +42,8 @@ export interface TurnHookPayload {
   readonly assistantAnswer?: string;
   readonly toolName?: string;
   readonly toolResult?: string;
+  /** #133 (E6) — verifier block reason, set on `onVerifierBlocked`. */
+  readonly blockReason?: string;
 }
 
 export type TurnHook = (
@@ -109,6 +116,7 @@ export class TurnHookRegistry {
       onBeforeTurn: this.byPoint.get('onBeforeTurn')?.length ?? 0,
       onAfterToolCall: this.byPoint.get('onAfterToolCall')?.length ?? 0,
       onAfterTurn: this.byPoint.get('onAfterTurn')?.length ?? 0,
+      onVerifierBlocked: this.byPoint.get('onVerifierBlocked')?.length ?? 0,
     };
   }
 }

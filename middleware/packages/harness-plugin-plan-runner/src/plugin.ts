@@ -10,7 +10,11 @@ import {
   startFirstStep,
   type TurnPlanState,
 } from './progress.js';
-import { isToolFailure, replanRemainder } from './replanner.js';
+import {
+  isToolFailure,
+  markLatestPlanVerifierBlocked,
+  replanRemainder,
+} from './replanner.js';
 
 /**
  * `@omadia/plugin-plan-runner` — #133 (plan-as-data) slices E2–E4.
@@ -182,8 +186,30 @@ export async function activate(
     }),
   );
 
+  // #133 E6 — a verifier `blocked` verdict (fired by VerifierService, keyed by
+  // scope) marks the scope's latest plan as verifier-rejected. Advisory: the
+  // verifier runs its own retry; this surfaces the rejection on the plan.
+  disposers.push(
+    registrar.register('onVerifierBlocked', {
+      label: 'plan-runner:onVerifierBlocked',
+      priority: 10,
+      hook: async (hookCtx, payload): Promise<void> => {
+        const scope = hookCtx.sessionScope;
+        if (!scope) return;
+        const marked = await markLatestPlanVerifierBlocked(
+          scope,
+          payload.blockReason ?? 'contradiction',
+          kg,
+        );
+        if (marked) {
+          ctx.log(`[plan-runner] verifier block recorded on ${marked}`);
+        }
+      },
+    }),
+  );
+
   ctx.log(
-    '[plan-runner] ready (onBeforeTurn/onAfterToolCall/onAfterTurn hooks registered)',
+    '[plan-runner] ready (onBeforeTurn/onAfterToolCall/onAfterTurn/onVerifierBlocked hooks registered)',
   );
   return {
     async close(): Promise<void> {

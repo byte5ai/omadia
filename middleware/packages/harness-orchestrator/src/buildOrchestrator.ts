@@ -213,6 +213,9 @@ export function buildOrchestratorForAgent(
       enabled: true,
       mode: deps.verifierBundle.mode,
       maxRetries: deps.verifierBundle.maxRetries,
+      ...(deps.turnHookRegistry
+        ? { turnHookRegistry: deps.turnHookRegistry }
+        : {}),
     });
   }
 

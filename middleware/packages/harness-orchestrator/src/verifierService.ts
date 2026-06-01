@@ -17,6 +17,7 @@ import type {
   VerifierVerdict,
 } from '@omadia/verifier';
 import { buildCorrectionPrompt, isBorderlineVerdict } from '@omadia/verifier';
+import type { TurnHookRunner } from './turnHooks.js';
 
 /**
  * End-to-end wrapper around the orchestrator that adds answer verification.
@@ -61,6 +62,10 @@ export interface VerifierServiceOptions {
   /** Hard cap on borderline re-samples per turn. Default 1. */
   maxResamples?: number;
   log?: (msg: string) => void;
+  /** #133 (E6) — when set, a `blocked` verdict fires the `onVerifierBlocked`
+   *  turn-hook so the plan-runner can record the rejection on the turn's plan.
+   *  Fire-and-forget; never gates the response. */
+  turnHookRegistry?: TurnHookRunner;
 }
 
 const DEFAULTS = {
@@ -79,6 +84,7 @@ export class VerifierService implements ChatAgent {
   private readonly resampleOnBorderline: boolean;
   private readonly maxResamples: number;
   private readonly log: (msg: string) => void;
+  private readonly turnHookRegistry: TurnHookRunner | undefined;
 
   constructor(opts: VerifierServiceOptions) {
     this.orchestrator = opts.orchestrator;
@@ -95,6 +101,38 @@ export class VerifierService implements ChatAgent {
       ((msg: string): void => {
         console.error(msg);
       });
+    this.turnHookRegistry = opts.turnHookRegistry;
+  }
+
+  /**
+   * #133 (E6) — fire-and-forget signal that this turn's answer was
+   * verifier-blocked. Keyed by session scope (the plan-runner looks up the
+   * scope's latest plan). Never throws, never blocks the response.
+   */
+  private fireVerifierBlocked(
+    input: ChatTurnInput,
+    verdict: VerifierVerdict,
+  ): void {
+    const reg = this.turnHookRegistry;
+    const scope = input.sessionScope;
+    if (!reg || !scope) return;
+    const contradictions = (verdict as { contradictions?: unknown[] })
+      .contradictions;
+    const n = Array.isArray(contradictions) ? contradictions.length : 0;
+    const reason = `verifier blocked (${String(n)} contradiction${
+      n === 1 ? '' : 's'
+    })`;
+    void reg
+      .run(
+        'onVerifierBlocked',
+        {
+          turnId: scope,
+          sessionScope: scope,
+          ...(input.userId ? { userId: input.userId } : {}),
+        },
+        { blockReason: reason },
+      )
+      .catch(() => undefined);
   }
 
   /**
@@ -201,6 +239,9 @@ export class VerifierService implements ChatAgent {
     // Enforce mode: only contradictions trigger a retry. `unverified` flows
     // through with the disclaimer badge — the router already caught enough
     // to make the user aware.
+    if (effectiveVerdict.status === 'blocked') {
+      this.fireVerifierBlocked(input, effectiveVerdict);
+    }
     if (effectiveVerdict.status !== 'blocked' || this.maxRetries <= 0) {
       void this.persist(runId, input, effectiveVerdict, 0);
       return toSemanticAnswer(

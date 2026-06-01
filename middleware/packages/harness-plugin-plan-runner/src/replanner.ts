@@ -174,3 +174,30 @@ export async function replanRemainder(
   }
   return { newStepExternalIds: out };
 }
+
+/**
+ * #133 (E6) — record a verifier block on the scope's most-recent plan: mark
+ * its last executed (`done`) step `failed` with the block reason. Advisory —
+ * the verifier runs its own retry; this only surfaces the rejection on the
+ * plan (e.g. in the graph view). Returns the marked step's external id, or
+ * null when there is no plan/step to mark.
+ */
+export async function markLatestPlanVerifierBlocked(
+  scope: string,
+  reason: string,
+  kg: KnowledgeGraph,
+): Promise<string | null> {
+  const plans = await kg.listPlansForScope(scope);
+  const latest = plans[0];
+  if (!latest) return null;
+  const steps = await kg.getPlanSteps(latest.id);
+  const lastDone = [...steps]
+    .reverse()
+    .find((s) => s.props['status'] === 'done');
+  const target = lastDone ?? steps[steps.length - 1];
+  if (!target) return null;
+  await kg.setPlanStepStatus(target.id, 'failed', {
+    resultSummary: `verifier blocked: ${reason}`.slice(0, 200),
+  });
+  return target.id;
+}
