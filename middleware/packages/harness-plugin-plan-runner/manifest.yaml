@@ -35,12 +35,25 @@ setup:
           label: "Off — keine Plan-Materialisierung"
         - value: "on"
           label: "On — Plan-DAG auf mehrstufigen Turns materialisieren"
+    - key: "verifyExitConditions"
+      type: "enum"
+      label: "Exit-Conditions prüfen (E4b, experimentell)"
+      help: "Wenn aktiviert, prüft ein Haiku-Aufruf nach jedem Tool, ob das Ergebnis die Exit-Condition des aktuellen Schritts erfüllt; falls nicht, wird der Rest des Plans neu geplant. Kostet einen zusätzlichen Haiku-Call pro abgeschlossenem Schritt mit Exit-Condition (Turn-Hot-Path) — daher bewusst opt-in. Greift nur bei aktivem Plan-Runner (enabled=on). Standard: off."
+      required: false
+      default: "off"
+      enum:
+        - value: "off"
+          label: "Off — keine Exit-Condition-Prüfung"
+        - value: "on"
+          label: "On — Exit-Conditions nach jedem Tool prüfen"
 
 # ---------------------------------------------------------------------------
 # Permissions. The plugin writes `Plan` / `PlanStep` nodes via the
 # `knowledgeGraph` service (the graph allow-list below is declarative; the
-# service call itself is the write path). One Haiku gate call + one planning
-# call per plan-worthy turn.
+# service call itself is the write path). Base: one Haiku gate call + one
+# planning call per plan-worthy turn. With verifyExitConditions=on, one extra
+# Haiku call per completing step that declared an exit condition, plus a
+# planning call per replan — hence the higher per-invocation ceiling.
 # ---------------------------------------------------------------------------
 permissions:
   memory:
@@ -56,7 +69,7 @@ permissions:
   llm:
     models_allowed:
       - "claude-haiku-4-5"
-    calls_per_invocation: 5
+    calls_per_invocation: 30
     max_tokens_per_call: 2048
 
 playbook:

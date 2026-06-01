@@ -179,6 +179,13 @@ export class VerifierService implements ChatAgent {
       doneAnswer,
       doneRunTrace,
     );
+    // #133 (E6) — record a verifier block on this turn's plan, same as the
+    // non-streaming enforce path. The stream path still does NOT retry (see the
+    // method doc — the user already saw the tokens); this only surfaces the
+    // rejection on the plan DAG. Shadow mode never blocks, so it never records.
+    if (this.mode !== 'shadow' && verdict.status === 'blocked') {
+      this.fireVerifierBlocked(input, verdict);
+    }
     void this.persist(runId, input, verdict, 0);
     yield {
       type: 'verifier',

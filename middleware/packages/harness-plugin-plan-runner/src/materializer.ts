@@ -78,6 +78,10 @@ export interface MaterializeResult {
   /** External ids of the persisted steps, in order — for in-turn progress
    *  tracking (E3). */
   stepExternalIds: string[];
+  /** Per-step exit conditions, aligned 1:1 with {@link stepExternalIds}
+   *  (undefined where the step declared none). Powers the opt-in E4 trigger
+   *  (b) exit-condition check without a per-tool knowledge-graph read. */
+  exitConditions: Array<string | undefined>;
 }
 
 /** Materialise + persist a plan. Returns null when the model produced no
@@ -106,6 +110,7 @@ export async function materializePlan(
   // idempotent.
   const stepIds = steps.map((_, i) => `${input.planId}-s${String(i)}`);
   const stepExternalIds: string[] = [];
+  const exitConditions: Array<string | undefined> = [];
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i]!;
     const dependsOnStepIds = step.dependsOn
@@ -122,7 +127,8 @@ export async function materializePlan(
       ...(dependsOnStepIds.length > 0 ? { dependsOnStepIds } : {}),
     });
     stepExternalIds.push(stepExternalId);
+    exitConditions.push(step.exitCondition);
   }
 
-  return { planExternalId, stepCount: steps.length, stepExternalIds };
+  return { planExternalId, stepCount: steps.length, stepExternalIds, exitConditions };
 }

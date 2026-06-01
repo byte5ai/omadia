@@ -11,6 +11,7 @@ import {
   type TurnPlanState,
 } from './progress.js';
 import {
+  exitConditionMet,
   isToolFailure,
   markLatestPlanVerifierBlocked,
   replanRemainder,
@@ -47,8 +48,47 @@ interface TurnRecord {
   /** ISO timestamp the plan was created with — reused on the onAfterTurn
    *  re-ingest so the PLAN_OF back-link doesn't rewrite `createdAt` (E8). */
   readonly createdAt: string;
+  /** Wall-clock ms at creation — used to evict leaked records (an errored
+   *  turn never fires onAfterTurn, so its entry would otherwise live forever). */
+  readonly startedAtMs: number;
+  /** Step external id → its exit condition, for the opt-in E4 trigger (b)
+   *  check. Only initial-plan steps are tracked (replan steps aren't). */
+  readonly exitConditionByStep: ReadonlyMap<string, string>;
   /** Replan counter — namespaces recovery step ids. */
   generation: number;
+}
+
+/** Default eviction bounds for the per-turn state map. A turn that errors
+ *  before `onAfterTurn` leaves a stale entry; without this it would leak. */
+const TURN_TTL_MS = 30 * 60 * 1000; // 30 min — far longer than any real turn
+const TURN_MAX_ENTRIES = 1000;
+
+/**
+ * Evict stale + over-cap entries from the per-turn state map in place.
+ * Pure-ish (mutates the passed map only) and exported for unit testing.
+ * Called on each `onBeforeTurn` before inserting the new record, so a leaked
+ * entry (errored turn → no `onAfterTurn`) is cleaned up by later activity.
+ */
+export function pruneTurns<T extends { startedAtMs: number }>(
+  turns: Map<string, T>,
+  now: number,
+  opts: { ttlMs?: number; maxEntries?: number } = {},
+): void {
+  const ttlMs = opts.ttlMs ?? TURN_TTL_MS;
+  const maxEntries = opts.maxEntries ?? TURN_MAX_ENTRIES;
+  for (const [id, rec] of turns) {
+    if (now - rec.startedAtMs > ttlMs) turns.delete(id);
+  }
+  if (turns.size > maxEntries) {
+    // Map preserves insertion order → oldest-first. Drop the excess head.
+    const excess = turns.size - maxEntries;
+    let dropped = 0;
+    for (const id of turns.keys()) {
+      if (dropped >= excess) break;
+      turns.delete(id);
+      dropped += 1;
+    }
+  }
 }
 
 export interface PlanRunnerPluginHandle {
@@ -83,10 +123,17 @@ export async function activate(
     return NOOP;
   }
 
+  // Opt-in E4 trigger (b): after a tool completes a step that declared an exit
+  // condition, ask Haiku whether the result satisfies it; if not, replan the
+  // remainder. Off by default — it adds a Haiku call per completing step on the
+  // turn hot-path, so operators arm it deliberately.
+  const verifyExitConditions =
+    ctx.config.get<string>('verifyExitConditions') === 'on';
+
   // Per-turn plan state + replan context, keyed by orchestrator turn id.
   // Populated at onBeforeTurn (after materialisation) and drained at
-  // onAfterTurn. An errored turn (no onAfterTurn) leaves a small stale entry
-  // — acceptable for now; a TTL/cap is a later hardening.
+  // onAfterTurn. An errored turn never fires onAfterTurn, so we evict stale
+  // entries (TTL + hard cap) on each onBeforeTurn via pruneTurns().
   const turns = new Map<string, TurnRecord>();
   const disposers: Array<() => void> = [];
 
@@ -99,7 +146,8 @@ export async function activate(
         if (!userMessage) return;
         if (!(await shouldPlan(userMessage, llm))) return;
         const scope = hookCtx.sessionScope ?? hookCtx.turnId;
-        const createdAt = new Date().toISOString();
+        const nowMs = Date.now();
+        const createdAt = new Date(nowMs).toISOString();
         const result = await materializePlan({
           planId: hookCtx.turnId,
           scope,
@@ -109,6 +157,13 @@ export async function activate(
           kg,
         });
         if (!result) return;
+        // Evict any leaked records before adding this turn's.
+        pruneTurns(turns, nowMs);
+        const exitConditionByStep = new Map<string, string>();
+        result.stepExternalIds.forEach((stepId, i) => {
+          const cond = result.exitConditions[i];
+          if (cond) exitConditionByStep.set(stepId, cond);
+        });
         const record: TurnRecord = {
           plan: { stepExternalIds: result.stepExternalIds, cursor: 0 },
           planExternalId: result.planExternalId,
@@ -116,6 +171,8 @@ export async function activate(
           scope,
           userMessage,
           createdAt,
+          startedAtMs: nowMs,
+          exitConditionByStep,
           generation: 0,
         };
         turns.set(hookCtx.turnId, record);
@@ -162,6 +219,42 @@ export async function activate(
             );
           } else {
             // No recovery path — abandon the plan but don't loop.
+            record.plan.cursor += 1;
+          }
+          return;
+        }
+
+        // Trigger (b) — exit condition unmet → replan the remainder. Opt-in
+        // (verifyExitConditions), and only for a step that declared a condition
+        // with a real tool result. Defaults to "satisfied" on LLM error so a
+        // flaky check never causes a replan storm.
+        const exitCond = record.exitConditionByStep.get(currentId);
+        if (
+          verifyExitConditions &&
+          exitCond !== undefined &&
+          payload.toolResult !== undefined &&
+          !(await exitConditionMet(exitCond, payload.toolResult, llm))
+        ) {
+          record.generation += 1;
+          const { newStepExternalIds } = await replanRemainder({
+            planExternalId: record.planExternalId,
+            planId: record.planId,
+            scope: record.scope,
+            userMessage: record.userMessage,
+            failedStepExternalId: currentId,
+            failureReason: `exit condition not met: ${exitCond}`,
+            generation: record.generation,
+            llm,
+            kg,
+          });
+          if (newStepExternalIds.length > 0) {
+            await applyReplan(record.plan, newStepExternalIds, kg);
+            ctx.log(
+              `[plan-runner] replanned after unmet exit condition (+${String(
+                newStepExternalIds.length,
+              )} steps)`,
+            );
+          } else {
             record.plan.cursor += 1;
           }
           return;

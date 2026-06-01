@@ -5,7 +5,7 @@
  * `activate`). Re-exports here are for tests + programmatic consumers.
  */
 
-export { activate, type PlanRunnerPluginHandle } from './plugin.js';
+export { activate, pruneTurns, type PlanRunnerPluginHandle } from './plugin.js';
 export { shouldPlan, GATE_MODEL } from './gate.js';
 export {
   materializePlan,

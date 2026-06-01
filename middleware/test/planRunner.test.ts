@@ -6,6 +6,7 @@ import { planNodeId, type LlmCompleteResult } from '@omadia/plugin-api';
 import {
   materializePlan,
   parsePlanSteps,
+  pruneTurns,
   shouldPlan,
 } from '@omadia/plugin-plan-runner';
 
@@ -102,6 +103,9 @@ describe('#133 E2 — plan-runner gate + materializer', () => {
       assert.ok(result);
       assert.equal(result.stepCount, 2);
       assert.equal(result.planExternalId, planNodeId('turn-xyz'));
+      // E4(b) — exit conditions returned aligned with the steps (undefined
+      // where the model declared none).
+      assert.deepEqual(result.exitConditions, ['inputs ready', undefined]);
 
       const plan = await kg.getPlan(result.planExternalId);
       assert.ok(plan);
@@ -128,6 +132,41 @@ describe('#133 E2 — plan-runner gate + materializer', () => {
       });
       assert.equal(result, null);
       assert.equal(await kg.getPlan(planNodeId('turn-empty')), null);
+    });
+  });
+
+  // Hardening — the per-turn state map evicts leaked records (an errored turn
+  // never fires onAfterTurn, so its entry would otherwise live forever).
+  describe('pruneTurns', () => {
+    it('evicts entries older than the TTL, keeps fresh ones', () => {
+      const now = 1_000_000;
+      const turns = new Map<string, { startedAtMs: number }>([
+        ['fresh', { startedAtMs: now - 1000 }],
+        ['stale', { startedAtMs: now - 31 * 60 * 1000 }],
+      ]);
+      pruneTurns(turns, now, { ttlMs: 30 * 60 * 1000 });
+      assert.equal(turns.has('fresh'), true);
+      assert.equal(turns.has('stale'), false);
+    });
+
+    it('drops the oldest (insertion-order) entries over the cap', () => {
+      const now = 1000;
+      const turns = new Map<string, { startedAtMs: number }>();
+      for (let i = 0; i < 5; i++) turns.set(`t${String(i)}`, { startedAtMs: now });
+      pruneTurns(turns, now, { ttlMs: 10_000, maxEntries: 3 });
+      assert.equal(turns.size, 3);
+      assert.equal(turns.has('t0'), false);
+      assert.equal(turns.has('t1'), false);
+      assert.equal(turns.has('t4'), true);
+    });
+
+    it('is a no-op within bounds', () => {
+      const now = 1000;
+      const turns = new Map<string, { startedAtMs: number }>([
+        ['a', { startedAtMs: now }],
+      ]);
+      pruneTurns(turns, now);
+      assert.equal(turns.size, 1);
     });
   });
 });
