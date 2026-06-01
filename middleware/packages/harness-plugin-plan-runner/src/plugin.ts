@@ -5,17 +5,22 @@ import { shouldPlan } from './gate.js';
 import { materializePlan } from './materializer.js';
 import {
   advanceStep,
+  applyReplan,
   finishPlan,
   startFirstStep,
   type TurnPlanState,
 } from './progress.js';
+import { isToolFailure, replanRemainder } from './replanner.js';
 
 /**
- * `@omadia/plugin-plan-runner` — #133 (plan-as-data) slice E2.
+ * `@omadia/plugin-plan-runner` — #133 (plan-as-data) slices E2–E4.
  *
- * When enabled, subscribes to the orchestrator's `onBeforeTurn` hook (E0),
- * runs a Haiku gate to decide whether the turn warrants a plan, and — if so —
- * materialises a `Plan` + `PlanStep` DAG (E1) before the turn executes.
+ * When enabled, subscribes to the orchestrator turn hooks (E0):
+ *   - onBeforeTurn: Haiku gate (E2) → materialise a Plan + PlanStep DAG (E1)
+ *     before the turn executes.
+ *   - onAfterToolCall: advance step status / record evidence (E3); on a tool
+ *     failure, replan the remainder of the DAG (E4).
+ *   - onAfterTurn: finalise the in-progress step.
  *
  * Inert by default: the `enabled` setup field defaults to `off`, and the
  * plugin degrades to a no-op when any dependency (turn-hook registry,
@@ -26,6 +31,17 @@ import {
 function summarise(toolName: string | undefined, result: string): string {
   const head = result.length > 200 ? `${result.slice(0, 200)}…` : result;
   return toolName ? `${toolName}: ${head}` : head;
+}
+
+/** Per-turn plan state + replan context, keyed by orchestrator turn id. */
+interface TurnRecord {
+  readonly plan: TurnPlanState;
+  readonly planExternalId: string;
+  readonly planId: string;
+  readonly scope: string;
+  readonly userMessage: string;
+  /** Replan counter — namespaces recovery step ids. */
+  generation: number;
 }
 
 export interface PlanRunnerPluginHandle {
@@ -60,11 +76,11 @@ export async function activate(
     return NOOP;
   }
 
-  // Per-turn progress state, keyed by orchestrator turn id. Populated at
-  // onBeforeTurn (after materialisation) and drained at onAfterTurn. An
-  // errored turn (no onAfterTurn) leaves a small stale entry — acceptable
-  // for E3; a TTL/cap is a later hardening.
-  const planState = new Map<string, TurnPlanState>();
+  // Per-turn plan state + replan context, keyed by orchestrator turn id.
+  // Populated at onBeforeTurn (after materialisation) and drained at
+  // onAfterTurn. An errored turn (no onAfterTurn) leaves a small stale entry
+  // — acceptable for now; a TTL/cap is a later hardening.
+  const turns = new Map<string, TurnRecord>();
   const disposers: Array<() => void> = [];
 
   disposers.push(
@@ -75,21 +91,26 @@ export async function activate(
         const userMessage = payload.userMessage?.trim();
         if (!userMessage) return;
         if (!(await shouldPlan(userMessage, llm))) return;
+        const scope = hookCtx.sessionScope ?? hookCtx.turnId;
         const result = await materializePlan({
           planId: hookCtx.turnId,
-          scope: hookCtx.sessionScope ?? hookCtx.turnId,
+          scope,
           userMessage,
           createdAt: new Date().toISOString(),
           llm,
           kg,
         });
         if (!result) return;
-        const state: TurnPlanState = {
-          stepExternalIds: result.stepExternalIds,
-          cursor: 0,
+        const record: TurnRecord = {
+          plan: { stepExternalIds: result.stepExternalIds, cursor: 0 },
+          planExternalId: result.planExternalId,
+          planId: hookCtx.turnId,
+          scope,
+          userMessage,
+          generation: 0,
         };
-        planState.set(hookCtx.turnId, state);
-        await startFirstStep(state, kg);
+        turns.set(hookCtx.turnId, record);
+        await startFirstStep(record.plan, kg);
         ctx.log(
           `[plan-runner] materialised ${result.planExternalId} (${String(
             result.stepCount,
@@ -104,10 +125,41 @@ export async function activate(
       label: 'plan-runner:onAfterToolCall',
       priority: 10,
       hook: async (hookCtx, payload): Promise<void> => {
-        const state = planState.get(hookCtx.turnId);
-        if (!state) return;
+        const record = turns.get(hookCtx.turnId);
+        if (!record) return;
+        const currentId = record.plan.stepExternalIds[record.plan.cursor];
+        if (currentId === undefined) return;
+
+        // Trigger (a) — tool failure → replan the remainder of the DAG.
+        if (isToolFailure(payload.toolResult)) {
+          record.generation += 1;
+          const { newStepExternalIds } = await replanRemainder({
+            planExternalId: record.planExternalId,
+            planId: record.planId,
+            scope: record.scope,
+            userMessage: record.userMessage,
+            failedStepExternalId: currentId,
+            failureReason: payload.toolResult ?? 'tool failed',
+            generation: record.generation,
+            llm,
+            kg,
+          });
+          if (newStepExternalIds.length > 0) {
+            await applyReplan(record.plan, newStepExternalIds, kg);
+            ctx.log(
+              `[plan-runner] replanned after step failure (+${String(
+                newStepExternalIds.length,
+              )} steps)`,
+            );
+          } else {
+            // No recovery path — abandon the plan but don't loop.
+            record.plan.cursor += 1;
+          }
+          return;
+        }
+
         await advanceStep(
-          state,
+          record.plan,
           kg,
           payload.toolResult !== undefined
             ? { resultSummary: summarise(payload.toolName, payload.toolResult) }
@@ -122,10 +174,10 @@ export async function activate(
       label: 'plan-runner:onAfterTurn',
       priority: 10,
       hook: async (hookCtx): Promise<void> => {
-        const state = planState.get(hookCtx.turnId);
-        if (!state) return;
-        await finishPlan(state, kg);
-        planState.delete(hookCtx.turnId);
+        const record = turns.get(hookCtx.turnId);
+        if (!record) return;
+        await finishPlan(record.plan, kg);
+        turns.delete(hookCtx.turnId);
       },
     }),
   );
@@ -137,7 +189,7 @@ export async function activate(
     async close(): Promise<void> {
       ctx.log('[plan-runner] deactivating');
       for (const dispose of disposers) dispose();
-      planState.clear();
+      turns.clear();
     },
   };
 }

@@ -12,7 +12,8 @@ import type { KnowledgeGraph } from '@omadia/plugin-api';
  */
 
 export interface TurnPlanState {
-  readonly stepExternalIds: readonly string[];
+  /** Ordered step external ids; spliced by {@link applyReplan} on recovery. */
+  stepExternalIds: string[];
   /** Index of the step currently in progress. */
   cursor: number;
 }
@@ -62,5 +63,24 @@ export async function finishPlan(
   const current = state.stepExternalIds[state.cursor];
   if (current !== undefined) {
     await kg.setPlanStepStatus(current, 'done');
+  }
+}
+
+/** #133 (E4) — after a replan produced `newStepExternalIds`, splice them in:
+ *  keep the already-completed steps before the cursor, drop the failed +
+ *  superseded tail, append the new steps, and arm the first new step. The
+ *  KG-side status changes (failed / skipped) are done by the replanner; this
+ *  only rewires the in-turn cursor. */
+export async function applyReplan(
+  state: TurnPlanState,
+  newStepExternalIds: string[],
+  kg: KnowledgeGraph,
+): Promise<void> {
+  const kept = state.stepExternalIds.slice(0, state.cursor);
+  state.stepExternalIds = [...kept, ...newStepExternalIds];
+  state.cursor = kept.length;
+  const next = state.stepExternalIds[state.cursor];
+  if (next !== undefined) {
+    await kg.setPlanStepStatus(next, 'in_progress');
   }
 }

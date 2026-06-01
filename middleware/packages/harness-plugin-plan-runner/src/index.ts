@@ -17,7 +17,16 @@ export {
 } from './materializer.js';
 export {
   advanceStep,
+  applyReplan,
   finishPlan,
   startFirstStep,
   type TurnPlanState,
 } from './progress.js';
+export {
+  exitConditionMet,
+  isToolFailure,
+  replanRemainder,
+  REPLAN_MODEL,
+  type ReplanInput,
+  type ReplanResult,
+} from './replanner.js';
