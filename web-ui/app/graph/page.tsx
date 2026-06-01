@@ -10,6 +10,7 @@ import {
   type GraphNode,
   type IssueOverlay,
   type MemoryView,
+  type PlanOverlay,
   type RunTraceView,
   type SessionSummary,
   type SessionView,
@@ -64,6 +65,11 @@ export default function GraphPage(): React.ReactElement {
   const [issueOverlay, setIssueOverlay] = useState<
     IssueOverlay | 'loading' | 'missing' | null
   >(null);
+  // #133 — per-turn plan DAGs, scope-keyed (a session has one plan per
+  // plan-worthy turn). Loaded lazily when the Pläne filter is toggled.
+  const [planViews, setPlanViews] = useState<
+    Record<string, PlanOverlay | 'loading' | 'missing'>
+  >({});
   const [error, setError] = useState<string | null>(null);
   const [dark, setDark] = useState(false);
   const [filter, setFilter] = useState('');
@@ -259,6 +265,11 @@ export default function GraphPage(): React.ReactElement {
     typeof issueOverlay === 'object' && issueOverlay !== null
       ? issueOverlay
       : null;
+  const planForSelected = planViews[selected];
+  const activePlanOverlay: PlanOverlay | null =
+    typeof planForSelected === 'object' && planForSelected !== null
+      ? planForSelected
+      : null;
 
   const loadMemoryView = useCallback(
     async (scope: string): Promise<void> => {
@@ -282,6 +293,45 @@ export default function GraphPage(): React.ReactElement {
     },
     [memoryViews],
   );
+
+  const loadPlanView = useCallback(
+    async (scope: string): Promise<void> => {
+      const cached = planViews[scope];
+      if (cached === 'loading') return;
+      if (cached && cached !== 'missing') return;
+      setPlanViews((p) => ({ ...p, [scope]: 'loading' }));
+      try {
+        const res = await fetch(
+          `/bot-api/dev/graph/plans?scope=${encodeURIComponent(scope)}`,
+        );
+        if (!res.ok) {
+          setPlanViews((p) => ({ ...p, [scope]: 'missing' }));
+          return;
+        }
+        const body = (await res.json()) as PlanOverlay;
+        setPlanViews((p) => ({ ...p, [scope]: body }));
+      } catch {
+        setPlanViews((p) => ({ ...p, [scope]: 'missing' }));
+      }
+    },
+    [planViews],
+  );
+
+  // #133 — load the selected session's plan DAGs when Pläne is on. Plans are
+  // per-scope; the ALL / MEMORIES pseudo-scopes have none.
+  useEffect(() => {
+    if (
+      graphFilter.showPlans &&
+      selected !== ALL &&
+      selected !== MEMORIES &&
+      planViews[selected] === undefined
+    ) {
+      // loadPlanView marks the scope 'loading' before fetching — one
+      // intended render, not a cascading-render anti-pattern.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      void loadPlanView(selected);
+    }
+  }, [graphFilter.showPlans, selected, planViews, loadPlanView]);
 
   const loadNeighbors = useCallback(
     async (nodeId: string): Promise<void> => {
@@ -621,6 +671,13 @@ export default function GraphPage(): React.ReactElement {
                 onClick={() => toggleFilter('showIssues')}
                 tone="red"
               />
+              <FilterChip
+                label="Pläne"
+                hint="Plan-DAG der gewählten Session (#133)"
+                active={graphFilter.showPlans}
+                onClick={() => toggleFilter('showPlans')}
+                tone="fuchsia"
+              />
             </div>
           )}
           <div
@@ -730,6 +787,7 @@ export default function GraphPage(): React.ReactElement {
               }
               topicOverlay={graphFilter.showTopics ? activeTopicOverlay : null}
               issueOverlay={graphFilter.showIssues ? activeIssueOverlay : null}
+              planOverlay={graphFilter.showPlans ? activePlanOverlay : null}
               selectedId={selectedNode?.id ?? null}
               filter={graphFilter}
               onSelectNode={setSelectedNode}

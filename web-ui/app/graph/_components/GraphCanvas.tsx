@@ -18,11 +18,13 @@ import {
   type IssueOverlay,
   type MemoryView,
   type NodeType,
+  type PlanOverlay,
   type RunTraceView,
   type SessionView,
   type TopicOverlay,
   nodeColor,
   nodeLabel,
+  planStepColor,
 } from './graphTypes';
 
 let fcoseRegistered = false;
@@ -59,6 +61,9 @@ interface Props {
    *  CONFLICTS_WITH/DUPLICATE_OF edges). Rendered when
    *  `filter.showIssues=true`. */
   issueOverlay?: IssueOverlay | null;
+  /** #133 — per-turn plan DAG overlay (Plan + PlanStep nodes + STEP_OF /
+   *  DEPENDS_ON edges). Rendered when `filter.showPlans=true`. */
+  planOverlay?: PlanOverlay | null;
   selectedId: string | null;
   filter?: GraphFilter;
   onSelectNode: (node: GraphNode | null) => void;
@@ -87,6 +92,7 @@ function buildElements(
   focusMemories: boolean,
   topicOverlay: TopicOverlay | null,
   issueOverlay: IssueOverlay | null,
+  planOverlay: PlanOverlay | null,
 ): BuiltElements {
   const nodes = new Map<string, GraphNode>();
   const edges = new Map<string, ElementDefinition>();
@@ -342,6 +348,31 @@ function buildElements(
   // MergeCandidate nodes that the operator explicitly opted into via
   // `showTopics` / `showIssues` are kept (they're conceptually a
   // *member* of the memory neighbourhood, not noise).
+  // #133 — Plan overlay. Inject Plan + PlanStep nodes, STEP_OF edges to the
+  // plan, and DEPENDS_ON edges between steps (resolved via raw stepId).
+  if (planOverlay && filter.showPlans) {
+    for (const { plan, steps } of planOverlay.plans) {
+      addNode(plan);
+      const byRawId = new Map<string, string>();
+      for (const s of steps) {
+        const raw = s.props['stepId'];
+        if (typeof raw === 'string') byRawId.set(raw, s.id);
+      }
+      for (const s of steps) {
+        addNode(s);
+        addEdge(s.id, plan.id, 'STEP_OF');
+        const deps = s.props['dependsOn'];
+        if (Array.isArray(deps)) {
+          for (const dep of deps) {
+            const target =
+              typeof dep === 'string' ? byRawId.get(dep) : undefined;
+            if (target) addEdge(s.id, target, 'DEPENDS_ON');
+          }
+        }
+      }
+    }
+  }
+
   if (focusMemories && memoryView) {
     for (const [id, n] of [...nodes]) {
       if (memorySet.has(id)) continue;
@@ -365,7 +396,10 @@ function buildElements(
         id: n.id,
         type: n.type,
         label: nodeLabel(n),
-        color: nodeColor(n.type),
+        color:
+          n.type === 'PlanStep'
+            ? planStepColor(n.props['status'])
+            : nodeColor(n.type),
         mentionCount: mc,
       },
       group: 'nodes',
@@ -407,6 +441,10 @@ function baseSize(type: NodeType): number {
       return 26;
     case 'User':
       return 32;
+    case 'Plan':
+      return 46;
+    case 'PlanStep':
+      return 30;
     default:
       return 28;
   }
@@ -455,6 +493,7 @@ export default function GraphCanvas({
   focusMemories = false,
   topicOverlay = null,
   issueOverlay = null,
+  planOverlay = null,
   selectedId,
   filter = DEFAULT_FILTER,
   onSelectNode,
@@ -477,6 +516,7 @@ export default function GraphCanvas({
         focusMemories,
         topicOverlay,
         issueOverlay,
+        planOverlay,
       ),
     [
       session,
@@ -488,6 +528,7 @@ export default function GraphCanvas({
       focusMemories,
       topicOverlay,
       issueOverlay,
+      planOverlay,
     ],
   );
   // Synced via a post-render effect (never during render) to satisfy the
@@ -882,6 +923,9 @@ function Legend({
       ['ExcerptMergeCandidate', 'Excerpt-Duplikat'],
     );
   }
+  if (filter.showPlans) {
+    items.push(['Plan', 'Plan'], ['PlanStep', 'Plan-Schritt']);
+  }
   const edgeRows: Array<[string, string]> = [['#10b981', 'PRODUCED']];
   edgeRows.push(['#ec4899', 'TRIGGERED']);
   if (filter.showCrossRefs) edgeRows.push(['#a855f7', 'RELATED']);
@@ -896,6 +940,9 @@ function Legend({
     edgeRows.push(['#ef4444', 'CONFLICTS_WITH']);
     edgeRows.push(['#f97316', 'DUPLICATE_OF (MK)']);
     edgeRows.push(['#fb923c', 'DUPLICATE_EXCERPT_OF']);
+  }
+  if (filter.showPlans) {
+    edgeRows.push(['#cbd5e1', 'STEP_OF / DEPENDS_ON']);
   }
 
   return (

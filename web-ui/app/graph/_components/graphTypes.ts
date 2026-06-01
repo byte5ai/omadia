@@ -28,7 +28,13 @@ export type NodeType =
   | 'ExcerptMergeCandidate'
   /** Slice 11 — clustered group of MKs named by Haiku. Reachable via
    *  HAS_TOPIC edges. Loaded via /dev/graph/topics (showTopics filter). */
-  | 'Topic';
+  | 'Topic'
+  /** #133 plan-as-data — per-turn plan DAG root + its typed sub-goal steps.
+   *  Loaded via /dev/graph/plans (showPlans filter). PlanStep lifecycle is in
+   *  props.status (pending|in_progress|done|failed|skipped); steps link to the
+   *  Plan via STEP_OF and to each other via DEPENDS_ON. */
+  | 'Plan'
+  | 'PlanStep';
 
 /** Lifecycle bucket projected by the Neon backend (palaia Phase 4). */
 export type Tier = 'HOT' | 'WARM' | 'COLD';
@@ -147,6 +153,13 @@ export interface MemoryView {
   edges: MemoryProvenanceEdge[];
 }
 
+/** #133 — payload from `GET /bot-api/dev/graph/plans?scope=`. Each entry is a
+ *  per-turn Plan node plus its ordered PlanSteps (status/dependsOn in props). */
+export interface PlanOverlay {
+  scope: string;
+  plans: Array<{ plan: GraphNode; steps: GraphNode[] }>;
+}
+
 /**
  * Visibility filter for the Cytoscape canvas. The persistence layer is
  * unchanged — these toggles only control what is rendered.
@@ -173,6 +186,10 @@ export interface GraphFilter {
    *  MergeCandidate nodes + their CONFLICTS_WITH / DUPLICATE_OF edges,
    *  loaded via `/dev/graph/issues`. */
   showIssues: boolean;
+  /** #133 — when true, the canvas overlays the selected session's per-turn
+   *  plan DAGs (Plan + PlanStep nodes + STEP_OF / DEPENDS_ON edges), loaded
+   *  via `/dev/graph/plans?scope=`. Requires a concrete session selection. */
+  showPlans: boolean;
 }
 
 export const DEFAULT_FILTER: GraphFilter = {
@@ -183,6 +200,7 @@ export const DEFAULT_FILTER: GraphFilter = {
   showMemories: false,
   showTopics: false,
   showIssues: false,
+  showPlans: false,
 };
 
 export const TRACE_TYPES: ReadonlySet<NodeType> = new Set<NodeType>([
@@ -240,7 +258,38 @@ export function nodeLabel(n: GraphNode): string {
         : '?';
     return `excerpt-dup? cos=${cos}`;
   }
+  if (n.type === 'Plan') {
+    const strat = String(p['strategy'] ?? '');
+    return strat ? `Plan · ${strat}` : 'Plan';
+  }
+  if (n.type === 'PlanStep') {
+    const ord = p['order'];
+    const prefix = typeof ord === 'number' ? `${String(ord + 1)}. ` : '';
+    const goal = String(p['goal'] ?? '');
+    const g = goal.length > 36 ? `${goal.slice(0, 36)}…` : goal;
+    return `${prefix}${g}` || 'Step';
+  }
   return n.id;
+}
+
+/**
+ * #133 — PlanStep node colour by lifecycle status (`props.status`). Used by
+ * the canvas to colour steps as they progress; falls back to violet (pending).
+ */
+export function planStepColor(status: unknown): string {
+  switch (status) {
+    case 'done':
+      return '#22c55e'; // green
+    case 'in_progress':
+      return '#3b82f6'; // blue
+    case 'failed':
+      return '#ef4444'; // red
+    case 'skipped':
+      return '#94a3b8'; // grey
+    case 'pending':
+    default:
+      return '#a78bfa'; // violet
+  }
 }
 
 export function nodeColor(type: NodeType): string {
@@ -286,6 +335,12 @@ export function nodeColor(type: NodeType): string {
       // Excerpt-side marker at a glance without breaking the shared
       // "orange = duplicate" mental model.
       return '#fb923c';
+    case 'Plan':
+      return '#8b5cf6'; // violet — plan DAG root
+    case 'PlanStep':
+      // Default step colour; the canvas overrides per-step from props.status
+      // via planStepColor(). This is the fallback when status is absent.
+      return '#a78bfa';
     default:
       return '#94a3b8';
   }
@@ -386,6 +441,10 @@ export function nodeIcon(type: NodeType): string {
       return '⇄';
     case 'ExcerptMergeCandidate':
       return '⇄';
+    case 'Plan':
+      return '🗺';
+    case 'PlanStep':
+      return '◻';
     default:
       return '•';
   }
