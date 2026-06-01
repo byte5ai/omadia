@@ -75,6 +75,9 @@ export interface MaterializeInput {
 export interface MaterializeResult {
   planExternalId: string;
   stepCount: number;
+  /** External ids of the persisted steps, in order — for in-turn progress
+   *  tracking (E3). */
+  stepExternalIds: string[];
 }
 
 /** Materialise + persist a plan. Returns null when the model produced no
@@ -102,12 +105,13 @@ export async function materializePlan(
   // Stable per-step ids so DEPENDS_ON references resolve and re-runs are
   // idempotent.
   const stepIds = steps.map((_, i) => `${input.planId}-s${String(i)}`);
+  const stepExternalIds: string[] = [];
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i]!;
     const dependsOnStepIds = step.dependsOn
       .map((idx) => stepIds[idx])
       .filter((id): id is string => id !== undefined && id !== stepIds[i]);
-    await input.kg.upsertPlanStep({
+    const { stepExternalId } = await input.kg.upsertPlanStep({
       stepId: stepIds[i]!,
       planId: input.planId,
       scope: input.scope,
@@ -117,7 +121,8 @@ export async function materializePlan(
       ...(step.exitCondition ? { exitCondition: step.exitCondition } : {}),
       ...(dependsOnStepIds.length > 0 ? { dependsOnStepIds } : {}),
     });
+    stepExternalIds.push(stepExternalId);
   }
 
-  return { planExternalId, stepCount: steps.length };
+  return { planExternalId, stepCount: steps.length, stepExternalIds };
 }

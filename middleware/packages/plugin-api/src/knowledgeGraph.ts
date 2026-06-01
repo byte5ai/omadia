@@ -75,6 +75,15 @@ export interface KnowledgeGraph {
   /** #133 — read a Plan's steps, ordered by `props.order` ascending. */
   getPlanSteps(planExternalId: string): Promise<GraphNode[]>;
   /**
+   * #133 (E3) — patch a PlanStep's status (and optional resultSummary) in
+   * place, leaving its other props intact. No-op when the step id is unknown.
+   */
+  setPlanStepStatus(
+    stepExternalId: string,
+    status: PlanStepStatus,
+    opts?: { resultSummary?: string },
+  ): Promise<void>;
+  /**
    * Structured run-subgraph for a single Turn: Run node + AgentInvocations
    * with their ToolCalls + orchestrator-level ToolCalls + produced entities.
    * Returns `null` when no Run has been ingested yet for the given turn.

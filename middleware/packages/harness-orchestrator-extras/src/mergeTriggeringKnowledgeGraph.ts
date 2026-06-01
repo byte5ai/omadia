@@ -42,6 +42,7 @@ import type {
   PlanIngestResult,
   PlanStepIngest,
   PlanStepIngestResult,
+  PlanStepStatus,
   GraphStats,
   InconsistencyNode,
   InconsistencyResolution,
@@ -267,6 +268,14 @@ export class MergeTriggeringKnowledgeGraph implements KnowledgeGraph {
 
   getPlanSteps(planExternalId: string): Promise<GraphNode[]> {
     return this.inner.getPlanSteps(planExternalId);
+  }
+
+  setPlanStepStatus(
+    stepExternalId: string,
+    status: PlanStepStatus,
+    opts?: { resultSummary?: string },
+  ): Promise<void> {
+    return this.inner.setPlanStepStatus(stepExternalId, status, opts);
   }
   getRunForTurn(turnExternalId: string): Promise<RunTraceView | null> {
     return this.inner.getRunForTurn(turnExternalId);

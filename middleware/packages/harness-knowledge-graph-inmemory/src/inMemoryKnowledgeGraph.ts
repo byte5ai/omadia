@@ -76,6 +76,7 @@ import {
   type PlanIngestResult,
   type PlanStepIngest,
   type PlanStepIngestResult,
+  type PlanStepStatus,
   type RunTrace,
   type RunTraceView,
   type SearchTurnsByEmbeddingOptions,
@@ -2687,6 +2688,25 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       const an = typeof ao === 'number' ? ao : 0;
       const bn = typeof bo === 'number' ? bo : 0;
       return an - bn;
+    });
+  }
+
+  async setPlanStepStatus(
+    stepExternalId: string,
+    status: PlanStepStatus,
+    opts?: { resultSummary?: string },
+  ): Promise<void> {
+    const node = this.nodes.get(stepExternalId);
+    if (!node || node.type !== 'PlanStep') return;
+    this.upsertNode({
+      ...node,
+      props: {
+        ...node.props,
+        status,
+        ...(opts?.resultSummary !== undefined
+          ? { resultSummary: opts.resultSummary }
+          : {}),
+      },
     });
   }
 

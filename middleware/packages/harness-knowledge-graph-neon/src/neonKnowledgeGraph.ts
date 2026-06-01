@@ -77,6 +77,7 @@ import {
   type PlanIngestResult,
   type PlanStepIngest,
   type PlanStepIngestResult,
+  type PlanStepStatus,
   type RunTrace,
   type RunTraceView,
   type SearchTurnsByEmbeddingOptions,
@@ -1006,6 +1007,23 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       [this.tenantId, planRow.id],
     );
     return res.rows.map((r) => rowToNode(r));
+  }
+
+  async setPlanStepStatus(
+    stepExternalId: string,
+    status: PlanStepStatus,
+    opts?: { resultSummary?: string },
+  ): Promise<void> {
+    const patch: Record<string, unknown> = { status };
+    if (opts?.resultSummary !== undefined) {
+      patch['resultSummary'] = opts.resultSummary;
+    }
+    await this.pool.query(
+      `UPDATE graph_nodes
+          SET properties = properties || $3::jsonb
+        WHERE tenant_id = $1 AND external_id = $2 AND type = 'PlanStep'`,
+      [this.tenantId, stepExternalId, JSON.stringify(patch)],
+    );
   }
 
   async getRunForTurn(turnExternalId: string): Promise<RunTraceView | null> {
