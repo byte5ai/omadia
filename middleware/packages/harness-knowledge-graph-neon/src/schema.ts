@@ -42,6 +42,10 @@ export const GRAPH_NODE_TYPES = [
   // Slice 12 — near-duplicate marker between two PalaiaExcerpts
   // (cosine ≥ 0.97). Two DUPLICATE_EXCERPT_OF edges per node.
   'ExcerptMergeCandidate',
+  // #133 (plan-as-data) — per-turn plan DAG. `Plan` is the root; `PlanStep`
+  // nodes hang off it via STEP_OF and depend on each other via DEPENDS_ON.
+  'Plan',
+  'PlanStep',
 ] as const;
 
 export const GRAPH_EDGE_TYPES = [
@@ -76,6 +80,13 @@ export const GRAPH_EDGE_TYPES = [
   'HAS_TOPIC',
   // Slice 12 — ExcerptMergeCandidate → PalaiaExcerpt (two per node).
   'DUPLICATE_EXCERPT_OF',
+  // #133 (plan-as-data) — plan DAG edges.
+  //   PlanStep -[STEP_OF]-> Plan       membership
+  //   PlanStep -[DEPENDS_ON]-> PlanStep DAG dependency
+  //   Plan     -[PLAN_OF]-> Turn        provenance
+  'STEP_OF',
+  'DEPENDS_ON',
+  'PLAN_OF',
 ] as const;
 
 export const GraphNodeTypeSchema = z.enum(GRAPH_NODE_TYPES);
@@ -382,6 +393,43 @@ const ExcerptMergeCandidatePropsSchema = z
   })
   .passthrough();
 
+// #133 (plan-as-data) — PlanStep lifecycle status. Stored in `props.status`
+// (NOT the task_status column, whose type is the coarser 'open' | 'done').
+const PLAN_STEP_STATUSES = [
+  'pending',
+  'in_progress',
+  'done',
+  'failed',
+  'skipped',
+] as const;
+
+const PlanPropsSchema = z
+  .object({
+    planId: z.string().min(1),
+    scope: z.string().min(1),
+    turnId: z.string().optional(),
+    strategy: z.string().optional(),
+    createdBy: z.enum(['gate', 'manual']).optional(),
+    createdAt: z.string().datetime(),
+  })
+  .passthrough();
+
+const PlanStepPropsSchema = z
+  .object({
+    planId: z.string().min(1),
+    stepId: z.string().min(1),
+    scope: z.string().min(1),
+    goal: z.string().min(1),
+    order: z.number().int().nonnegative(),
+    status: z.enum(PLAN_STEP_STATUSES),
+    exitCondition: z.string().optional(),
+    toolHint: z.string().optional(),
+    dependsOn: z.array(z.string()).optional(),
+    sideEffecting: z.boolean().optional(),
+    resultSummary: z.string().optional(),
+  })
+  .passthrough();
+
 export const NodePropsSchemaByType: Record<
   GraphNodeTypeName,
   z.ZodType<Record<string, unknown>>
@@ -403,6 +451,8 @@ export const NodePropsSchemaByType: Record<
   MergeCandidate: MergeCandidatePropsSchema,
   Topic: TopicPropsSchema,
   ExcerptMergeCandidate: ExcerptMergeCandidatePropsSchema,
+  Plan: PlanPropsSchema,
+  PlanStep: PlanStepPropsSchema,
 };
 
 export function validateNodeProps(

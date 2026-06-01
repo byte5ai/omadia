@@ -9,6 +9,8 @@ import {
   memorableKnowledgeNodeId,
   mergeCandidateNodeId,
   palaiaExcerptNodeId,
+  planNodeId,
+  planStepNodeId,
   runNodeId,
   sessionNodeId,
   toolCallNodeId,
@@ -70,6 +72,10 @@ import {
   type RunAgentInvocationView,
   type RunIngestResult,
   type RunToolCallView,
+  type PlanIngest,
+  type PlanIngestResult,
+  type PlanStepIngest,
+  type PlanStepIngestResult,
   type RunTrace,
   type RunTraceView,
   type SearchTurnsByEmbeddingOptions,
@@ -357,6 +363,8 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       MergeCandidate: 0,
       Topic: 0,
       ExcerptMergeCandidate: 0,
+      Plan: 0,
+      PlanStep: 0,
     };
     for (const n of this.nodes.values()) byNodeType[n.type]++;
 
@@ -379,6 +387,9 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       DUPLICATE_OF: 0,
       HAS_TOPIC: 0,
       DUPLICATE_EXCERPT_OF: 0,
+      STEP_OF: 0,
+      DEPENDS_ON: 0,
+      PLAN_OF: 0,
     };
     for (const e of this.edges.values()) byEdgeType[e.type]++;
 
@@ -2590,6 +2601,94 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
   // ------------------------------------------------------------------------
   // Mutation helpers — private, only called from ingest paths.
   // ------------------------------------------------------------------------
+
+  // --- #133 (plan-as-data) — Plan / PlanStep persistence -------------------
+
+  async ingestPlan(input: PlanIngest): Promise<PlanIngestResult> {
+    const planExtId = planNodeId(input.planId);
+    this.upsertNode({
+      id: planExtId,
+      type: 'Plan',
+      props: {
+        planId: input.planId,
+        scope: input.scope,
+        ...(input.turnExternalId ? { turnId: input.turnExternalId } : {}),
+        ...(input.strategy ? { strategy: input.strategy } : {}),
+        ...(input.createdBy ? { createdBy: input.createdBy } : {}),
+        createdAt: input.createdAt,
+      },
+    });
+    if (input.turnExternalId && this.nodes.has(input.turnExternalId)) {
+      this.addEdge({
+        type: 'PLAN_OF',
+        from: planExtId,
+        to: input.turnExternalId,
+      });
+    }
+    return { planExternalId: planExtId };
+  }
+
+  async upsertPlanStep(
+    input: PlanStepIngest,
+  ): Promise<PlanStepIngestResult> {
+    const stepExtId = planStepNodeId(input.stepId);
+    const planExtId = planNodeId(input.planId);
+    if (!this.nodes.has(planExtId)) {
+      throw new Error(
+        `upsertPlanStep: Plan ${planExtId} not found — call ingestPlan first`,
+      );
+    }
+    this.upsertNode({
+      id: stepExtId,
+      type: 'PlanStep',
+      props: {
+        planId: input.planId,
+        stepId: input.stepId,
+        scope: input.scope,
+        goal: input.goal,
+        order: input.order,
+        status: input.status ?? 'pending',
+        ...(input.exitCondition ? { exitCondition: input.exitCondition } : {}),
+        ...(input.toolHint ? { toolHint: input.toolHint } : {}),
+        ...(input.dependsOnStepIds
+          ? { dependsOn: input.dependsOnStepIds }
+          : {}),
+        ...(input.sideEffecting !== undefined
+          ? { sideEffecting: input.sideEffecting }
+          : {}),
+        ...(input.resultSummary ? { resultSummary: input.resultSummary } : {}),
+      },
+    });
+    this.addEdge({ type: 'STEP_OF', from: stepExtId, to: planExtId });
+    for (const depId of input.dependsOnStepIds ?? []) {
+      const depExtId = planStepNodeId(depId);
+      if (this.nodes.has(depExtId)) {
+        this.addEdge({ type: 'DEPENDS_ON', from: stepExtId, to: depExtId });
+      }
+    }
+    return { stepExternalId: stepExtId };
+  }
+
+  async getPlan(planExternalId: string): Promise<GraphNode | null> {
+    const node = this.nodes.get(planExternalId);
+    return node && node.type === 'Plan' ? node : null;
+  }
+
+  async getPlanSteps(planExternalId: string): Promise<GraphNode[]> {
+    const steps = [...this.edges.values()]
+      .filter((e) => e.type === 'STEP_OF' && e.to === planExternalId)
+      .map((e) => this.nodes.get(e.from))
+      .filter(
+        (n): n is GraphNode => n !== undefined && n.type === 'PlanStep',
+      );
+    return steps.sort((a, b) => {
+      const ao = a.props['order'];
+      const bo = b.props['order'];
+      const an = typeof ao === 'number' ? ao : 0;
+      const bn = typeof bo === 'number' ? bo : 0;
+      return an - bn;
+    });
+  }
 
   private upsertNode(node: GraphNode): void {
     const existing = this.nodes.get(node.id);

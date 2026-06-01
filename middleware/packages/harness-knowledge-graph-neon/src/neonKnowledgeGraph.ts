@@ -11,6 +11,8 @@ import {
   memorableKnowledgeNodeId,
   mergeCandidateNodeId,
   palaiaExcerptNodeId,
+  planNodeId,
+  planStepNodeId,
   runNodeId,
   sessionNodeId,
   toolCallNodeId,
@@ -71,6 +73,10 @@ import {
   type RunAgentInvocationView,
   type RunIngestResult,
   type RunToolCallView,
+  type PlanIngest,
+  type PlanIngestResult,
+  type PlanStepIngest,
+  type PlanStepIngestResult,
   type RunTrace,
   type RunTraceView,
   type SearchTurnsByEmbeddingOptions,
@@ -850,6 +856,156 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     } finally {
       client.release();
     }
+  }
+
+  // --- #133 (plan-as-data) — Plan / PlanStep persistence -------------------
+
+  async ingestPlan(input: PlanIngest): Promise<PlanIngestResult> {
+    const planExtId = planNodeId(input.planId);
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const props = validateNodeProps('Plan', {
+        planId: input.planId,
+        scope: input.scope,
+        ...(input.turnExternalId ? { turnId: input.turnExternalId } : {}),
+        ...(input.strategy ? { strategy: input.strategy } : {}),
+        ...(input.createdBy ? { createdBy: input.createdBy } : {}),
+        createdAt: input.createdAt,
+      });
+      const planUuid = await this.upsertNode(client, {
+        externalId: planExtId,
+        type: 'Plan',
+        scope: input.scope,
+        userId: input.userId ?? null,
+        props,
+      });
+      // Link Plan -> Turn (PLAN_OF) when the Turn already exists. A missing
+      // Turn is tolerated — the plan stands on its own.
+      if (input.turnExternalId) {
+        const turnRow = await client.query<{ id: string }>(
+          `SELECT id FROM graph_nodes
+           WHERE tenant_id = $1 AND external_id = $2 AND type = 'Turn'`,
+          [this.tenantId, input.turnExternalId],
+        );
+        const turnUuid = turnRow.rows[0]?.id;
+        if (turnUuid) {
+          await this.upsertEdge(client, {
+            type: 'PLAN_OF',
+            fromUuid: planUuid,
+            toUuid: turnUuid,
+          });
+        }
+      }
+      await client.query('COMMIT');
+      return { planExternalId: planExtId };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async upsertPlanStep(
+    input: PlanStepIngest,
+  ): Promise<PlanStepIngestResult> {
+    const stepExtId = planStepNodeId(input.stepId);
+    const planExtId = planNodeId(input.planId);
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      // The Plan must exist — its UUID anchors the STEP_OF edge.
+      const planRow = await client.query<{ id: string }>(
+        `SELECT id FROM graph_nodes
+         WHERE tenant_id = $1 AND external_id = $2 AND type = 'Plan'`,
+        [this.tenantId, planExtId],
+      );
+      const planUuid = planRow.rows[0]?.id;
+      if (!planUuid) {
+        await client.query('ROLLBACK');
+        throw new Error(
+          `upsertPlanStep: Plan ${planExtId} not found — call ingestPlan first`,
+        );
+      }
+      const props = validateNodeProps('PlanStep', {
+        planId: input.planId,
+        stepId: input.stepId,
+        scope: input.scope,
+        goal: input.goal,
+        order: input.order,
+        status: input.status ?? 'pending',
+        ...(input.exitCondition ? { exitCondition: input.exitCondition } : {}),
+        ...(input.toolHint ? { toolHint: input.toolHint } : {}),
+        ...(input.dependsOnStepIds
+          ? { dependsOn: input.dependsOnStepIds }
+          : {}),
+        ...(input.sideEffecting !== undefined
+          ? { sideEffecting: input.sideEffecting }
+          : {}),
+        ...(input.resultSummary ? { resultSummary: input.resultSummary } : {}),
+      });
+      const stepUuid = await this.upsertNode(client, {
+        externalId: stepExtId,
+        type: 'PlanStep',
+        scope: input.scope,
+        props,
+      });
+      await this.upsertEdge(client, {
+        type: 'STEP_OF',
+        fromUuid: stepUuid,
+        toUuid: planUuid,
+      });
+      // DEPENDS_ON edges for prerequisite steps that already exist; unknown
+      // ids are skipped (the dependency may be ingested later).
+      for (const depId of input.dependsOnStepIds ?? []) {
+        const depExtId = planStepNodeId(depId);
+        const depRow = await client.query<{ id: string }>(
+          `SELECT id FROM graph_nodes
+           WHERE tenant_id = $1 AND external_id = $2 AND type = 'PlanStep'`,
+          [this.tenantId, depExtId],
+        );
+        const depUuid = depRow.rows[0]?.id;
+        if (depUuid) {
+          await this.upsertEdge(client, {
+            type: 'DEPENDS_ON',
+            fromUuid: stepUuid,
+            toUuid: depUuid,
+          });
+        }
+      }
+      await client.query('COMMIT');
+      return { stepExternalId: stepExtId };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async getPlan(planExternalId: string): Promise<GraphNode | null> {
+    const row = await this.findNodeByExternalId(planExternalId);
+    if (!row || row.type !== 'Plan') return null;
+    return rowToNode(row);
+  }
+
+  async getPlanSteps(planExternalId: string): Promise<GraphNode[]> {
+    const planRow = await this.findNodeByExternalId(planExternalId);
+    if (!planRow || planRow.type !== 'Plan') return [];
+    const res = await this.pool.query<NodeRow>(
+      `SELECT ${NODE_COLUMNS}
+         FROM graph_nodes
+        WHERE tenant_id = $1
+          AND type = 'PlanStep'
+          AND id IN (
+            SELECT from_node FROM graph_edges
+             WHERE tenant_id = $1 AND type = 'STEP_OF' AND to_node = $2
+          )
+        ORDER BY (properties->>'order')::int ASC`,
+      [this.tenantId, planRow.id],
+    );
+    return res.rows.map((r) => rowToNode(r));
   }
 
   async getRunForTurn(turnExternalId: string): Promise<RunTraceView | null> {

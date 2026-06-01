@@ -57,6 +57,24 @@ export interface KnowledgeGraph {
    */
   ingestRun(trace: RunTrace): Promise<RunIngestResult>;
   /**
+   * #133 (plan-as-data) — persist a per-turn Plan node. Optionally links the
+   * Plan to its Turn via a `PLAN_OF` edge when `turnExternalId` resolves to an
+   * existing Turn. Idempotent by (tenant, `plan:<planId>`).
+   */
+  ingestPlan(input: PlanIngest): Promise<PlanIngestResult>;
+  /**
+   * #133 — upsert a PlanStep node under a Plan. Writes a `STEP_OF` edge to the
+   * Plan (which must already exist) and `DEPENDS_ON` edges to any prerequisite
+   * steps that already exist. Idempotent by (tenant, `planstep:<stepId>`):
+   * re-calling refines the step's properties (e.g. status). Step status lives
+   * in `props.status` (pending|in_progress|done|failed|skipped).
+   */
+  upsertPlanStep(input: PlanStepIngest): Promise<PlanStepIngestResult>;
+  /** #133 — read a Plan node by its external id (`plan:<planId>`). */
+  getPlan(planExternalId: string): Promise<GraphNode | null>;
+  /** #133 — read a Plan's steps, ordered by `props.order` ascending. */
+  getPlanSteps(planExternalId: string): Promise<GraphNode[]>;
+  /**
    * Structured run-subgraph for a single Turn: Run node + AgentInvocations
    * with their ToolCalls + orchestrator-level ToolCalls + produced entities.
    * Returns `null` when no Run has been ingested yet for the given turn.
@@ -707,7 +725,11 @@ export type GraphNodeType =
   /** Slice 12 — near-duplicate marker between two PalaiaExcerpts
    *  (cosine ≥ 0.97). Mirror of Slice 10 MergeCandidate at the
    *  excerpt layer. Linked to BOTH excerpts via DUPLICATE_EXCERPT_OF. */
-  | 'ExcerptMergeCandidate';
+  | 'ExcerptMergeCandidate'
+  /** #133 (plan-as-data) — per-turn plan DAG root. */
+  | 'Plan'
+  /** #133 — typed sub-goal node under a Plan; status lives in `props.status`. */
+  | 'PlanStep';
 export type GraphEdgeType =
   | 'IN_SESSION'
   | 'NEXT_TURN'
@@ -743,7 +765,13 @@ export type GraphEdgeType =
   /** Slice 12 — ExcerptMergeCandidate → PalaiaExcerpt. Two edges per
    *  ExcerptMergeCandidate, one per near-duplicate excerpt. Same
    *  direction convention as DUPLICATE_OF. */
-  | 'DUPLICATE_EXCERPT_OF';
+  | 'DUPLICATE_EXCERPT_OF'
+  /** #133 (plan-as-data) — PlanStep → Plan membership. */
+  | 'STEP_OF'
+  /** #133 — PlanStep → PlanStep DAG dependency. */
+  | 'DEPENDS_ON'
+  /** #133 — Plan → Turn provenance. */
+  | 'PLAN_OF';
 
 export type FactSeverity = 'info' | 'warning' | 'critical';
 
@@ -1247,6 +1275,58 @@ export interface RunIngestResult {
   userNodeId?: string;
 }
 
+/** #133 (plan-as-data) — lifecycle status of a single PlanStep. */
+export type PlanStepStatus =
+  | 'pending'
+  | 'in_progress'
+  | 'done'
+  | 'failed'
+  | 'skipped';
+
+/** #133 — input to {@link KnowledgeGraph.ingestPlan}. */
+export interface PlanIngest {
+  /** Opaque plan id (stable per turn). Becomes `plan:<planId>`. */
+  planId: string;
+  scope: string;
+  /** Turn external id to link via `PLAN_OF`. Skipped silently if absent. */
+  turnExternalId?: string;
+  userId?: string;
+  /** Free-form planning strategy label (e.g. the gate's rationale). */
+  strategy?: string;
+  createdBy?: 'gate' | 'manual';
+  createdAt: string;
+}
+
+export interface PlanIngestResult {
+  planExternalId: string;
+}
+
+/** #133 — input to {@link KnowledgeGraph.upsertPlanStep}. */
+export interface PlanStepIngest {
+  /** Opaque step id (stable). Becomes `planstep:<stepId>`. */
+  stepId: string;
+  /** Raw plan id this step belongs to (the Plan must already exist). */
+  planId: string;
+  scope: string;
+  goal: string;
+  /** Execution order within the plan (ascending). */
+  order: number;
+  /** Defaults to `'pending'` when omitted. Stored in `props.status`. */
+  status?: PlanStepStatus;
+  exitCondition?: string;
+  toolHint?: string;
+  /** Raw step ids this step depends on; `DEPENDS_ON` edges are written for
+   *  the ones that already exist. */
+  dependsOnStepIds?: string[];
+  /** When true, the step is unsafe to replay on resume (write/send). */
+  sideEffecting?: boolean;
+  resultSummary?: string;
+}
+
+export interface PlanStepIngestResult {
+  stepExternalId: string;
+}
+
 export interface RunToolCallView {
   node: GraphNode;
   producedEntities: GraphNode[];
@@ -1435,6 +1515,16 @@ export function sessionNodeId(scope: string): string {
 
 export function turnNodeId(scope: string, time: string): string {
   return `turn:${scope}:${time}`;
+}
+
+/** #133 — external id for a per-turn Plan node. */
+export function planNodeId(planId: string): string {
+  return `plan:${planId}`;
+}
+
+/** #133 — external id for a PlanStep node. */
+export function planStepNodeId(stepId: string): string {
+  return `planstep:${stepId}`;
 }
 
 export function entityNodeId(ref: EntityRef): string {
