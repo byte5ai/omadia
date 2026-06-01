@@ -31,6 +31,15 @@ updates:
         applies-to: 'version-updates'
         dependency-type: 'production'
         update-types: ['patch']
+    ignore:
+      # react/react-dom are pinned to 18.3.1 — react-dom's peer range and the
+      # workspace UI packages (@omadia/plugin-ui-helpers, agent-reference-maximum)
+      # all require react@18.3.1, so a react major bump alone fails to resolve
+      # (ERESOLVE). Treat React majors as a coordinated upgrade, not a weekly bot PR.
+      - dependency-name: 'react'
+        update-types: ['version-update:semver-major']
+      - dependency-name: 'react-dom'
+        update-types: ['version-update:semver-major']
 
   # Web-dev (Next.js admin UI)
   - package-ecosystem: 'npm'
@@ -54,6 +63,12 @@ updates:
         applies-to: 'version-updates'
         dependency-type: 'production'
         update-types: ['patch']
+    ignore:
+      # eslint majors are gated by eslint-config-next@16, whose bundled plugins
+      # (eslint-plugin-import, eslint-plugin-jsx-a11y) cap their peer at eslint 9.
+      # Revisit once the Next.js lint stack supports eslint 10+.
+      - dependency-name: 'eslint'
+        update-types: ['version-update:semver-major']
 
   # GitHub Actions versions in workflow files
   - package-ecosystem: 'github-actions'
