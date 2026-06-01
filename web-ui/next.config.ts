@@ -19,6 +19,16 @@ const nextConfig: NextConfig = {
   // when inferring the workspace (common on macOS if ~/package-lock.json exists).
   outputFileTracingRoot: path.resolve(import.meta.dirname),
 
+  // #133/#178 — `@swc/helpers` is pinned via an `overrides` entry to stabilise
+  // dependabot lockfiles. That dedup makes Next's standalone file-trace copy
+  // ONLY the CJS build, but the server require-hook loads the ESM helper
+  // (`esm/_interop_require_default.js`) → "Cannot find module" crash at boot
+  // (the standalone server exits 1 in a loop). Force the whole package into
+  // the standalone bundle so both variants are present.
+  outputFileTracingIncludes: {
+    '/**': ['./node_modules/@swc/helpers/**'],
+  },
+
   // Rewrite /bot-api/* on this Next server to the middleware's /api/* so the
   // browser only ever sees same-origin requests. No CORS dance, no separate
   // API-route proxy. The prefix is /bot-api intentionally — /api/* is reserved
