@@ -1470,24 +1470,54 @@ export class Orchestrator {
     turnId: string,
     input: ChatTurnInput,
     payload: TurnHookPayload,
+    /**
+     * Optional cap (ms). The post-turn observer hooks (onAfterToolCall /
+     * onAfterTurn) MUST NOT gate the turn: a slow or hung consumer (e.g. a
+     * stalled KG write) would otherwise block the streamed answer forever.
+     * When set, we stop waiting after `timeoutMs` and let the turn proceed;
+     * the hook keeps running detached. `onBeforeTurn` is left UNBOUNDED — its
+     * plan must be materialised before the turn executes.
+     */
+    timeoutMs?: number,
   ): Promise<void> {
     const runner = this.turnHookRegistry;
     if (!runner) return;
-    try {
-      await runner.run(
-        point,
-        {
-          turnId,
-          ...(input.sessionScope ? { sessionScope: input.sessionScope } : {}),
-          ...(input.userId ? { userId: input.userId } : {}),
-        },
-        payload,
-      );
-    } catch (err) {
+    const onFail = (err: unknown): void => {
       console.error(
         `[orchestrator] turn-hook ${point} runner threw (continuing):`,
         err instanceof Error ? err.message : err,
       );
+    };
+    try {
+      // Self-catching so a rejecting hook can never surface as an unhandled
+      // rejection once we stop awaiting it on timeout.
+      const run = Promise.resolve(
+        runner.run(
+          point,
+          {
+            turnId,
+            ...(input.sessionScope ? { sessionScope: input.sessionScope } : {}),
+            ...(input.userId ? { userId: input.userId } : {}),
+          },
+          payload,
+        ),
+      ).catch(onFail);
+      if (timeoutMs && timeoutMs > 0) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const guard = new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, timeoutMs);
+        });
+        await Promise.race([
+          run.finally(() => {
+            if (timer) clearTimeout(timer);
+          }),
+          guard,
+        ]);
+      } else {
+        await run;
+      }
+    } catch (err) {
+      onFail(err);
     }
   }
 
@@ -1498,9 +1528,13 @@ export class Orchestrator {
     this.applyTurnAuthContext(input);
     try {
       const result = await this.chatInContextInner(input, turnId);
-      await this.fireTurnHook('onAfterTurn', turnId, input, {
-        assistantAnswer: result.answer,
-      });
+      await this.fireTurnHook(
+        'onAfterTurn',
+        turnId,
+        input,
+        { assistantAnswer: result.answer },
+        2000,
+      );
       return result;
     } finally {
       this.clearTurnAuthContext();
@@ -1768,12 +1802,18 @@ export class Orchestrator {
           const use = toolUses[i]!;
           const name = (use as { name?: unknown }).name;
           const resultBlock = toolResults[i] as { content?: unknown };
-          await this.fireTurnHook('onAfterToolCall', turnId, input, {
-            ...(typeof name === 'string' ? { toolName: name } : {}),
-            ...(typeof resultBlock.content === 'string'
-              ? { toolResult: resultBlock.content }
-              : {}),
-          });
+          await this.fireTurnHook(
+            'onAfterToolCall',
+            turnId,
+            input,
+            {
+              ...(typeof name === 'string' ? { toolName: name } : {}),
+              ...(typeof resultBlock.content === 'string'
+                ? { toolResult: resultBlock.content }
+                : {}),
+            },
+            2000,
+          );
         }
         await this.applyNudgePipeline(
           toolUses,
@@ -1918,10 +1958,16 @@ export class Orchestrator {
           toolNameById.set(event.id, event.name);
         } else if (event.type === 'tool_result') {
           const toolName = toolNameById.get(event.id);
-          await this.fireTurnHook('onAfterToolCall', turnId, input, {
-            ...(toolName ? { toolName } : {}),
-            toolResult: event.output,
-          });
+          await this.fireTurnHook(
+            'onAfterToolCall',
+            turnId,
+            input,
+            {
+              ...(toolName ? { toolName } : {}),
+              toolResult: event.output,
+            },
+            2000,
+          );
         }
         if (event.type === 'done' && privacyHandle) {
           // Privacy-Shield v4 — swap in the server-materialized answer
@@ -1949,16 +1995,24 @@ export class Orchestrator {
               err,
             );
           }
-          await this.fireTurnHook('onAfterTurn', turnId, input, {
-            assistantAnswer: doneEvent.answer,
-          });
+          await this.fireTurnHook(
+            'onAfterTurn',
+            turnId,
+            input,
+            { assistantAnswer: doneEvent.answer },
+            2000,
+          );
           yield doneEvent;
           continue;
         }
         if (event.type === 'done') {
-          await this.fireTurnHook('onAfterTurn', turnId, input, {
-            assistantAnswer: event.answer,
-          });
+          await this.fireTurnHook(
+            'onAfterTurn',
+            turnId,
+            input,
+            { assistantAnswer: event.answer },
+            2000,
+          );
         }
         yield event;
       }
