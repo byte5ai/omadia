@@ -80,6 +80,13 @@ updates:
     labels: ['deps', 'docker']
     commit-message:
       prefix: 'chore(deps,docker)'
+    ignore:
+      # Stay on Node 22 LTS: the middleware ABI guard (check-node-version.mjs)
+      # hard-pins NODE_MODULE_VERSION 127 for better-sqlite3, so a major Node
+      # bump silently breaks the native binary. Major Node moves are a
+      # deliberate migration, not a weekly bot PR — 22.x patch/minor still flow.
+      - dependency-name: 'node'
+        update-types: ['version-update:semver-major']
   - package-ecosystem: 'docker'
     directory: '/web-ui'
     schedule:
@@ -91,3 +98,8 @@ updates:
     labels: ['deps', 'docker', 'web-ui']
     commit-message:
       prefix: 'chore(deps,docker,web-ui)'
+    ignore:
+      # Keep web-ui on the same Node 22 line as the middleware image; major
+      # Node bumps go through a deliberate migration, not a weekly bot PR.
+      - dependency-name: 'node'
+        update-types: ['version-update:semver-major']
