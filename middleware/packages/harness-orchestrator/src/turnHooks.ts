@@ -43,3 +43,28 @@ export interface TurnHookRunner {
     payload: TurnHookPayload,
   ): Promise<void>;
 }
+
+/** A single hook callback. Thrown errors are swallowed by the runner. */
+export type TurnHook = (
+  ctx: TurnHookContext,
+  payload: TurnHookPayload,
+) => void | Promise<void>;
+
+export interface TurnHookRegistration {
+  readonly hook: TurnHook;
+  /** Lower priority runs first. Default 0. */
+  readonly priority?: number;
+  /** Diagnostic label shown when the hook throws. */
+  readonly label: string;
+}
+
+/**
+ * Register-capable view of the turn-hook registry, for plugins that want to
+ * SUBSCRIBE to hook points (e.g. the #133 plan-runner). The kernel's concrete
+ * `TurnHookRegistry` (app layer) satisfies this; plugins resolve it via
+ * `ctx.services.get<TurnHookRegistrar>('turnHookRegistry')`. `register`
+ * returns a dispose handle the plugin should call on deactivate.
+ */
+export interface TurnHookRegistrar extends TurnHookRunner {
+  register(point: TurnHookPoint, reg: TurnHookRegistration): () => void;
+}

@@ -168,9 +168,12 @@ export {
 } from './turnContext.js';
 export type { TurnContextValue } from './turnContext.js';
 export type {
+  TurnHook,
   TurnHookContext,
   TurnHookPayload,
   TurnHookPoint,
+  TurnHookRegistrar,
+  TurnHookRegistration,
   TurnHookRunner,
 } from './turnHooks.js';
 

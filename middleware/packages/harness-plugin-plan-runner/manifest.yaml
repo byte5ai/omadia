@@ -1,0 +1,71 @@
+schema_version: "1"
+
+identity:
+  id: "@omadia/plugin-plan-runner"
+  name: "Plan Runner"
+  version: "0.1.0"
+  kind: "extension"
+  domain: "orchestrator.plan-runner"
+  description: "#133 plan-as-data — materialises an explicit per-turn plan DAG (Plan + PlanStep nodes in the knowledge graph) on multi-step turns, so the orchestrator can check progress against named sub-goals instead of relying on the model to remember them. Subscribes to the onBeforeTurn hook; gated by a cheap Haiku classifier. Experimental, off by default."
+  authors:
+    - name: "byte5 GmbH"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
+  license: "MIT"
+  categories:
+    - "orchestration"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+lifecycle:
+  entry: "dist/plugin.js"
+
+setup:
+  fields:
+    - key: "enabled"
+      type: "enum"
+      label: "Plan-as-data (experimental)"
+      help: "Wenn aktiviert, materialisiert das Plugin auf mehrstufigen Turns einen expliziten Plan-DAG (Plan + PlanStep-Knoten im Knowledge-Graph). Einfache Q&A bleiben unberührt (ein billiger Haiku-Gate entscheidet pro Turn). Standard: off."
+      required: false
+      default: "off"
+      enum:
+        - value: "off"
+          label: "Off — keine Plan-Materialisierung"
+        - value: "on"
+          label: "On — Plan-DAG auf mehrstufigen Turns materialisieren"
+
+# ---------------------------------------------------------------------------
+# Permissions. The plugin writes `Plan` / `PlanStep` nodes via the
+# `knowledgeGraph` service (the graph allow-list below is declarative; the
+# service call itself is the write path). One Haiku gate call + one planning
+# call per plan-worthy turn.
+# ---------------------------------------------------------------------------
+permissions:
+  memory:
+    reads: []
+    writes: []
+  graph:
+    reads: []
+    writes: []
+  network:
+    outbound: []
+  filesystem:
+    scratch: false
+  llm:
+    models_allowed:
+      - "claude-haiku-4-5"
+    calls_per_invocation: 5
+    max_tokens_per_call: 2048
+
+playbook:
+  when_to_use: |
+    Aktiviere dieses Plugin (experimentell), wenn der Orchestrator bei
+    langen, mehrstufigen Turns frühere Sub-Goals strukturell festhalten soll,
+    statt sich auf das LLM-Gedächtnis zu verlassen. Es hängt sich an den
+    onBeforeTurn-Hook, klassifiziert per Haiku, ob ein Plan nötig ist, und
+    persistiert bei Bedarf einen Plan-DAG im Knowledge-Graph.
+
+provides: []
+requires: []
