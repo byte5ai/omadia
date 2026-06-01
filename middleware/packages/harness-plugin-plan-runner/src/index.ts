@@ -30,3 +30,8 @@ export {
   type ReplanInput,
   type ReplanResult,
 } from './replanner.js';
+export {
+  buildResumePlan,
+  type ResumePlan,
+  type ResumeStep,
+} from './resume.js';
