@@ -40,6 +40,7 @@ import { ChatSessionStore } from './chatSessionStore.js';
 import type { Microsoft365Accessor } from './microsoft365-shim.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import { Orchestrator } from './orchestrator.js';
+import type { TurnHookRunner } from './turnHooks.js';
 import type { ChatAgentBundle } from './plugin.js';
 import { SessionLogger } from './sessionLogger.js';
 import { AskUserChoiceTool } from './tools/askUserChoiceTool.js';
@@ -105,6 +106,8 @@ export interface OrchestratorDeps {
   readonly graphTenantId?: string;
   /** Operator-set assistant identity (overrides the built-in default). */
   readonly assistantIdentity?: string;
+  /** #133 E0 — side-channel turn-hook runner, fired during each turn. */
+  readonly turnHookRegistry?: TurnHookRunner;
 }
 
 /** What one `buildOrchestratorForAgent` call produces. */
@@ -191,6 +194,9 @@ export function buildOrchestratorForAgent(
     ...(deps.graphTenantId ? { graphTenantId: deps.graphTenantId } : {}),
     ...(deps.assistantIdentity
       ? { assistantIdentity: deps.assistantIdentity }
+      : {}),
+    ...(deps.turnHookRegistry
+      ? { turnHookRegistry: deps.turnHookRegistry }
       : {}),
   });
 

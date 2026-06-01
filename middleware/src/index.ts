@@ -233,6 +233,9 @@ async function main(): Promise<void> {
   // plugin would miss those registrations.
   const nativeToolRegistry = new NativeToolRegistry();
   serviceRegistry.provide('nativeToolRegistry', nativeToolRegistry);
+  // #133 E0 — expose the kernel turn-hook registry to the orchestrator plugin
+  // so it can fire onBeforeTurn / onAfterToolCall / onAfterTurn during turns.
+  serviceRegistry.provide('turnHookRegistry', turnHookRegistry);
   const pluginRouteRegistry = new PluginRouteRegistry();
   const notificationRouter = new NotificationRouter();
 

@@ -42,6 +42,7 @@ import {
   buildOrchestratorForAgent,
   type OrchestratorDeps,
 } from './buildOrchestrator.js';
+import type { TurnHookRunner } from './turnHooks.js';
 import type { ChatSessionStore } from './chatSessionStore.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import type { Orchestrator } from './orchestrator.js';
@@ -269,6 +270,9 @@ export async function activate(
   const contextRetriever =
     ctx.services.get<ContextRetriever>('contextRetriever');
   const factExtractor = ctx.services.get<FactExtractor>('factExtractor');
+  // #133 E0 — kernel-owned turn-hook runner (optional; graceful degrade).
+  const turnHookRegistry =
+    ctx.services.get<TurnHookRunner>('turnHookRegistry');
   // KG-ACL Slice 4a — Palaia-Excerpt-Extractor. Published by
   // harness-orchestrator-extras when an Anthropic key is configured.
   // Absent → orchestrator's `done` event ships without `palaiaExcerpt`
@@ -466,6 +470,7 @@ export async function activate(
     ...(graphPool ? { graphPool } : {}),
     graphTenantId,
     ...(assistantIdentity ? { assistantIdentity } : {}),
+    ...(turnHookRegistry ? { turnHookRegistry } : {}),
   };
   const built = buildOrchestratorForAgent(
     {
