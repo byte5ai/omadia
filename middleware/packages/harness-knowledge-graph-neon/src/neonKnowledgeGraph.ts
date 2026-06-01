@@ -1026,6 +1026,17 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     );
   }
 
+  async listPlansForScope(scope: string): Promise<GraphNode[]> {
+    const res = await this.pool.query<NodeRow>(
+      `SELECT ${NODE_COLUMNS}
+         FROM graph_nodes
+        WHERE tenant_id = $1 AND type = 'Plan' AND scope = $2
+        ORDER BY (properties->>'createdAt') DESC NULLS LAST`,
+      [this.tenantId, scope],
+    );
+    return res.rows.map((r) => rowToNode(r));
+  }
+
   async getRunForTurn(turnExternalId: string): Promise<RunTraceView | null> {
     const runExtId = runNodeId(turnExternalId);
 

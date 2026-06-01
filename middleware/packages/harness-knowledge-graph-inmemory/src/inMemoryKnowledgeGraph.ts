@@ -2710,6 +2710,16 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     });
   }
 
+  async listPlansForScope(scope: string): Promise<GraphNode[]> {
+    return [...this.nodes.values()]
+      .filter((n) => n.type === 'Plan' && n.props['scope'] === scope)
+      .sort((a, b) =>
+        String(b.props['createdAt'] ?? '').localeCompare(
+          String(a.props['createdAt'] ?? ''),
+        ),
+      );
+  }
+
   private upsertNode(node: GraphNode): void {
     const existing = this.nodes.get(node.id);
     if (!existing) {

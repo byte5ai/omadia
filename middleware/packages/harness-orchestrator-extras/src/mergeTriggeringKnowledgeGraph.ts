@@ -277,6 +277,10 @@ export class MergeTriggeringKnowledgeGraph implements KnowledgeGraph {
   ): Promise<void> {
     return this.inner.setPlanStepStatus(stepExternalId, status, opts);
   }
+
+  listPlansForScope(scope: string): Promise<GraphNode[]> {
+    return this.inner.listPlansForScope(scope);
+  }
   getRunForTurn(turnExternalId: string): Promise<RunTraceView | null> {
     return this.inner.getRunForTurn(turnExternalId);
   }

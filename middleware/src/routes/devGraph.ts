@@ -186,5 +186,32 @@ export function createDevGraphRouter(deps: DevGraphDeps): Router {
     }
   });
 
+  // #133 (E7) — Plan overlay. Returns every Plan node for a scope plus its
+  // ordered PlanSteps (status + dependsOn live in `props`) so the graph view
+  // can render the per-turn plan DAG. Plan nodes are otherwise orphans in the
+  // graph (the PLAN_OF→Turn edge is skipped — onBeforeTurn precedes Turn
+  // persistence), so this scope-keyed lookup is the only way to surface them.
+  router.get('/plans', async (req: Request, res: Response) => {
+    const scopeParam = req.query['scope'];
+    if (typeof scopeParam !== 'string' || scopeParam.length === 0) {
+      res.status(400).json({ error: 'scope query param required' });
+      return;
+    }
+    try {
+      const planNodes = await deps.graph.listPlansForScope(scopeParam);
+      const plans = await Promise.all(
+        planNodes.map(async (plan) => ({
+          plan,
+          steps: await deps.graph.getPlanSteps(plan.id),
+        })),
+      );
+      res.json({ scope: scopeParam, plans });
+    } catch (err) {
+      res
+        .status(500)
+        .json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   return router;
 }

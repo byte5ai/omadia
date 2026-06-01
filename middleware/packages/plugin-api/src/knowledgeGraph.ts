@@ -84,6 +84,12 @@ export interface KnowledgeGraph {
     opts?: { resultSummary?: string },
   ): Promise<void>;
   /**
+   * #133 (E6/E7) — list `Plan` nodes for a scope, most-recent first. Powers
+   * the graph-view plan overlay and the verifier-replan lookup (a verifier
+   * retry is a fresh turn, so the prior turn's plan is found by scope, not id).
+   */
+  listPlansForScope(scope: string): Promise<GraphNode[]>;
+  /**
    * Structured run-subgraph for a single Turn: Run node + AgentInvocations
    * with their ToolCalls + orchestrator-level ToolCalls + produced entities.
    * Returns `null` when no Run has been ingested yet for the given turn.
