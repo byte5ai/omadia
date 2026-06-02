@@ -1,122 +1,39 @@
 'use client';
 
-import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 
-import {
-  type PlanOverlay,
-  planStepColor,
-} from '../../graph/_components/graphTypes';
+import type { PlanSnapshot } from '../../_lib/chatSessions';
+import { planStepColor } from '../../graph/_components/graphTypes';
 
 /**
- * #133 (E8) — inline plan-DAG progress for a single chat turn, LIVE.
+ * #133 (E9) — inline plan-DAG progress for a chat turn, rendered straight from
+ * the turn stream.
  *
- * The orchestrator drives the turn; the plan-runner plugin persists a parallel
- * Plan + PlanStep DAG and updates step status in real time as tools complete.
- *
- * Resolving "this turn's plan":
- *  - WHILE STREAMING the chat has no Turn id yet, but it has the scope. The
- *    current turn's plan is the newest plan in the scope that the plugin has
- *    NOT yet back-linked to a Turn — `props.turnId` is written only at
- *    `onAfterTurn`, so an unlinked plan is the one still in flight. We poll it
- *    so step status (pending → in_progress → done) and any replan adapt live.
- *  - AFTER the turn finishes the chat has `message.turnId` (the persisted Turn
- *    node id); we resolve precisely by `props.turnId === turnId` and stop.
- *
- * Renders nothing until a plan exists (most turns produce none — only the ones
- * the Haiku gate flags). Shown uncollapsed at the top of the assistant turn.
+ * The plan-runner emits a `turn_annotation` (channel `plan`) carrying a
+ * {@link PlanSnapshot}: the orchestrator yields it as the FIRST stream event
+ * (before any answer tokens) and re-emits it on every step change + replan.
+ * The chat store folds it onto `message.plan`, so this component is a pure
+ * render of the latest snapshot — no fetch, no poll, no dev-endpoint, no auth
+ * dependency. Shown uncollapsed at the top of the assistant turn.
  */
 
-type PlanEntry = PlanOverlay['plans'][number];
-
 interface Props {
-  /** Session scope (== chat tab id == orchestrator scope). */
-  scope: string;
-  /** Persisted Turn node id (`turn:<scope>:<time>`); absent while streaming. */
-  turnId?: string;
-  /** True while the turn is still streaming → poll + show the in-flight plan. */
+  plan: PlanSnapshot;
+  /** True while the turn is still streaming → pulse the live affordance. */
   streaming: boolean;
 }
 
-async function fetchPlansForScope(scope: string): Promise<PlanEntry[]> {
-  try {
-    const res = await fetch(
-      `/bot-api/dev/graph/plans?scope=${encodeURIComponent(scope)}`,
-    );
-    if (!res.ok) return [];
-    const body = (await res.json()) as PlanOverlay;
-    return body.plans ?? [];
-  } catch {
-    return [];
-  }
-}
-
-const POLL_MS = 1500;
-// After the turn ends, the PLAN_OF back-link lands a beat later — retry a few
-// times so the card transitions cleanly from the in-flight to the linked plan.
-const POST_DONE_RETRIES = 4;
-
 export function PlanProgressCard({
-  scope,
-  turnId,
+  plan,
   streaming,
 }: Props): React.ReactElement | null {
   const t = useTranslations('planCard');
-  const [entry, setEntry] = useState<PlanEntry | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let retries = 0;
-
-    const pick = (plans: PlanEntry[]): PlanEntry | null => {
-      if (streaming) {
-        // Newest-first; the first not-yet-linked plan is this turn's.
-        return plans.find((p) => !p.plan.props['turnId']) ?? null;
-      }
-      if (turnId) {
-        return (
-          plans.find((p) => String(p.plan.props['turnId'] ?? '') === turnId) ??
-          null
-        );
-      }
-      return null;
-    };
-
-    const tick = async (): Promise<void> => {
-      const plans = await fetchPlansForScope(scope);
-      if (cancelled) return;
-      const found = pick(plans);
-      if (found) setEntry(found);
-      if (streaming) {
-        timer = setTimeout(() => void tick(), POLL_MS);
-      } else if (!found && turnId && retries < POST_DONE_RETRIES) {
-        retries += 1;
-        timer = setTimeout(() => void tick(), POLL_MS);
-      } else if (!found && turnId) {
-        // Terminal: this finished turn has no plan of its own — make sure a
-        // plan briefly shown during streaming (e.g. a leaked unlinked plan)
-        // doesn't linger on a plan-less turn.
-        setEntry(null);
-      }
-    };
-    void tick();
-
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, [scope, turnId, streaming]);
-
-  if (!entry) return null;
-
-  const steps = [...entry.steps].sort(
-    (a, b) => Number(a.props['order'] ?? 0) - Number(b.props['order'] ?? 0),
-  );
+  const steps = [...plan.steps].sort((a, b) => a.order - b.order);
   if (steps.length === 0) return null;
-  const doneCount = steps.filter((s) => s.props['status'] === 'done').length;
+  const doneCount = steps.filter((s) => s.status === 'done').length;
 
-  const statusLabel = (status: unknown): string => {
+  const statusLabel = (status: string): string => {
     switch (status) {
       case 'done':
         return t('statusDone');
@@ -152,22 +69,20 @@ export function PlanProgressCard({
       </summary>
       <ol className="flex flex-col gap-1 px-2.5 pb-2 pt-0.5">
         {steps.map((s, i) => {
-          const status = s.props['status'];
-          const goal = String(s.props['goal'] ?? '');
-          const active = status === 'in_progress';
+          const active = s.status === 'in_progress';
           return (
-            <li key={s.id} className="flex items-start gap-2">
+            <li key={s.stepExternalId} className="flex items-start gap-2">
               <span
                 className={`mt-[3px] h-2 w-2 flex-shrink-0 rounded-full${
                   active ? ' animate-pulse' : ''
                 }`}
-                style={{ backgroundColor: planStepColor(status) }}
-                title={statusLabel(status)}
+                style={{ backgroundColor: planStepColor(s.status) }}
+                title={statusLabel(s.status)}
                 aria-hidden
               />
               <span
                 className={
-                  status === 'skipped'
+                  s.status === 'skipped'
                     ? 'text-neutral-400 line-through dark:text-neutral-500'
                     : 'text-neutral-700 dark:text-neutral-300'
                 }
@@ -175,9 +90,9 @@ export function PlanProgressCard({
                 <span className="text-neutral-400 dark:text-neutral-500">
                   {i + 1}.
                 </span>{' '}
-                {goal}
+                {s.goal}
                 <span className="ml-1.5 text-[10px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500">
-                  {statusLabel(status)}
+                  {statusLabel(s.status)}
                 </span>
               </span>
             </li>

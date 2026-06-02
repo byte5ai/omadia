@@ -206,10 +206,30 @@ export interface PalaiaExcerpt {
   source: 'llm' | 'hint' | 'fallback';
 }
 
+/** #133 (E9) — one PlanStep in the live plan snapshot streamed via a
+ *  `turn_annotation` (channel `plan`) event. Mirrors the middleware's
+ *  PlanSnapshot shape (the stream payload crosses the boundary as `unknown`). */
+export interface PlanStepSnapshot {
+  stepExternalId: string;
+  order: number;
+  goal: string;
+  /** pending | in_progress | done | failed | skipped */
+  status: string;
+}
+
+export interface PlanSnapshot {
+  planExternalId: string;
+  steps: PlanStepSnapshot[];
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  /** #133 (E9) — live plan DAG for this turn, streamed in as a `plan`
+   *  annotation: present from the first event and re-emitted on every step
+   *  change + replan. Persisted, so a reloaded session keeps the plan. */
+  plan?: PlanSnapshot;
   /** KG-persisted Turn external_id (e.g. `turn:<sessionId>:<ts>`). Set
    *  from the orchestrator's `done` event when session-logging succeeded.
    *  Drives the save-as-memory affordance — without it there's no

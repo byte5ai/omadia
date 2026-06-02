@@ -1,7 +1,8 @@
 import type { KnowledgeGraph, PluginContext } from '@omadia/plugin-api';
-import type { TurnHookRegistrar } from '@omadia/orchestrator';
+import type { TurnAnnotation, TurnHookRegistrar } from '@omadia/orchestrator';
 
 import { shouldPlan } from './gate.js';
+import { buildPlanSnapshot } from './snapshot.js';
 import { materializePlan } from './materializer.js';
 import {
   advanceStep,
@@ -137,11 +138,24 @@ export async function activate(
   const turns = new Map<string, TurnRecord>();
   const disposers: Array<() => void> = [];
 
+  // #133 (E9) — build the `plan` annotation the orchestrator streams to the UI.
+  // Reads the current step state from the graph so the snapshot reflects live
+  // status. Never throws (a failed snapshot just means no UI update this tick).
+  const planAnnotation = async (
+    planExternalId: string,
+  ): Promise<TurnAnnotation[]> => {
+    try {
+      return [{ channel: 'plan', payload: await buildPlanSnapshot(planExternalId, kg) }];
+    } catch {
+      return [];
+    }
+  };
+
   disposers.push(
     registrar.register('onBeforeTurn', {
       label: 'plan-runner:onBeforeTurn',
       priority: 10,
-      hook: async (hookCtx, payload): Promise<void> => {
+      hook: async (hookCtx, payload): Promise<void | TurnAnnotation[]> => {
         const userMessage = payload.userMessage?.trim();
         if (!userMessage) return;
         if (!(await shouldPlan(userMessage, llm))) return;
@@ -182,6 +196,8 @@ export async function activate(
             result.stepCount,
           )} steps)`,
         );
+        // E9 — stream the freshly-materialised plan as the turn's first event.
+        return await planAnnotation(result.planExternalId);
       },
     }),
   );
@@ -190,7 +206,7 @@ export async function activate(
     registrar.register('onAfterToolCall', {
       label: 'plan-runner:onAfterToolCall',
       priority: 10,
-      hook: async (hookCtx, payload): Promise<void> => {
+      hook: async (hookCtx, payload): Promise<void | TurnAnnotation[]> => {
         const record = turns.get(hookCtx.turnId);
         if (!record) return;
         const currentId = record.plan.stepExternalIds[record.plan.cursor];
@@ -221,7 +237,7 @@ export async function activate(
             // No recovery path — abandon the plan but don't loop.
             record.plan.cursor += 1;
           }
-          return;
+          return await planAnnotation(record.planExternalId);
         }
 
         // Trigger (b) — exit condition unmet → replan the remainder. Opt-in
@@ -257,7 +273,7 @@ export async function activate(
           } else {
             record.plan.cursor += 1;
           }
-          return;
+          return await planAnnotation(record.planExternalId);
         }
 
         await advanceStep(
@@ -267,6 +283,8 @@ export async function activate(
             ? { resultSummary: summarise(payload.toolName, payload.toolResult) }
             : undefined,
         );
+        // E9 — emit the refreshed plan snapshot so the UI advances the step live.
+        return await planAnnotation(record.planExternalId);
       },
     }),
   );
@@ -275,7 +293,7 @@ export async function activate(
     registrar.register('onAfterTurn', {
       label: 'plan-runner:onAfterTurn',
       priority: 10,
-      hook: async (hookCtx, payload): Promise<void> => {
+      hook: async (hookCtx, payload): Promise<void | TurnAnnotation[]> => {
         const record = turns.get(hookCtx.turnId);
         if (!record) return;
         // E8 — the Turn node only exists once the session log lands, which is
@@ -301,7 +319,11 @@ export async function activate(
           }
         }
         await finishPlan(record.plan, kg);
+        // E9 — emit the final plan snapshot (all reached steps done) before the
+        // turn's `done` event, then drop the per-turn state.
+        const annotation = await planAnnotation(record.planExternalId);
         turns.delete(hookCtx.turnId);
+        return annotation;
       },
     }),
   );

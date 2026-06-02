@@ -9,6 +9,7 @@ import type {
   OutgoingFileAttachment,
   PalaiaExcerpt,
   PendingUserChoice,
+  PlanSnapshot,
   PrivacyReceipt,
   SubAgentEvent,
   ToolEvent,
@@ -105,6 +106,9 @@ export type ChatStreamEvent =
       privacyReceipt?: PrivacyReceipt;
       maskedValues?: readonly string[];
     }
+  /** #133 (E9) — opaque turn annotation the orchestrator forwarded from a
+   *  turn-hook. `channel: 'plan'` carries a live PlanSnapshot. */
+  | { type: 'turn_annotation'; channel: string; payload: unknown }
   | { type: 'error'; message: string };
 
 /**
@@ -147,6 +151,13 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
   switch (event.type) {
     case 'text_delta':
       return { ...m, content: m.content + event.text };
+    case 'turn_annotation':
+      // #133 (E9) — the live plan snapshot. Re-emitted on every step change;
+      // we just replace, so the card reflects the latest state.
+      if (event.channel === 'plan' && event.payload) {
+        return { ...m, plan: event.payload as PlanSnapshot };
+      }
+      return m;
     case 'tool_use': {
       const tool: ToolEvent = {
         id: event.id,

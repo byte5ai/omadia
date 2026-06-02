@@ -322,7 +322,6 @@ export default function ChatPage(): React.ReactElement {
             <MessageRow
               key={m.id}
               message={m}
-              scope={activeId}
               disabled={sending || hydrating}
               onChoose={(value) => {
                 send(value);
@@ -426,14 +425,11 @@ function EmptyState({
 
 function MessageRow({
   message,
-  scope,
   disabled,
   onChoose,
   onDiscardAutoPromoted,
 }: {
   message: Message;
-  /** Session scope — needed to resolve this turn's plan DAG (#133 E8). */
-  scope: string;
   disabled: boolean;
   onChoose: (value: string) => void;
   /** Slice 4c — called when the user successfully Discards an
@@ -476,10 +472,9 @@ function MessageRow({
           <div className="whitespace-pre-wrap text-sm">{message.content}</div>
         ) : (
           <>
-            {(message.streaming === true || message.turnId !== undefined) && (
+            {message.plan && (
               <PlanProgressCard
-                scope={scope}
-                turnId={message.turnId}
+                plan={message.plan}
                 streaming={message.streaming === true}
               />
             )}

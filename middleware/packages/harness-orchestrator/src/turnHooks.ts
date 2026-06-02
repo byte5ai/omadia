@@ -32,6 +32,18 @@ export interface TurnHookContext {
   readonly userId?: string;
 }
 
+/**
+ * #133 (E9) — a serialisable annotation a hook returns for the orchestrator to
+ * emit into the turn's event stream. The orchestrator forwards it OPAQUELY (it
+ * stays plan-agnostic — it never inspects `payload`); the `channel` string lets
+ * clients route it (e.g. the plan-runner emits `channel: 'plan'`). Only the
+ * streaming path emits these; non-streaming turns ignore them.
+ */
+export interface TurnAnnotation {
+  readonly channel: string;
+  readonly payload: unknown;
+}
+
 export interface TurnHookPayload {
   readonly userMessage?: string;
   readonly assistantAnswer?: string;
@@ -55,18 +67,21 @@ export interface TurnHookPayload {
  * `TurnHookRegistry` implements this (plus `register()` / `counts()`).
  */
 export interface TurnHookRunner {
+  /** Runs every hook at `point`; returns the annotations they emitted (E9),
+   *  flattened across hooks in priority order. Empty when none emit. */
   run(
     point: TurnHookPoint,
     ctx: TurnHookContext,
     payload: TurnHookPayload,
-  ): Promise<void>;
+  ): Promise<TurnAnnotation[]>;
 }
 
-/** A single hook callback. Thrown errors are swallowed by the runner. */
+/** A single hook callback. May return annotations for the orchestrator to emit
+ *  into the stream (E9). Thrown errors are swallowed by the runner. */
 export type TurnHook = (
   ctx: TurnHookContext,
   payload: TurnHookPayload,
-) => void | Promise<void>;
+) => void | TurnAnnotation[] | Promise<void | TurnAnnotation[]>;
 
 export interface TurnHookRegistration {
   readonly hook: TurnHook;

@@ -36,3 +36,8 @@ export {
   type ResumePlan,
   type ResumeStep,
 } from './resume.js';
+export {
+  buildPlanSnapshot,
+  type PlanSnapshot,
+  type PlanStepSnapshot,
+} from './snapshot.js';

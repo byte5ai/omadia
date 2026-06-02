@@ -5,6 +5,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 import {
   NativeToolRegistry,
   Orchestrator,
+  type TurnAnnotation,
   type TurnHookPoint,
   type TurnHookRunner,
 } from '@omadia/orchestrator';
@@ -32,9 +33,10 @@ function recordingRunner(): Recorder {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const payloads: any[] = [];
   const runner: TurnHookRunner = {
-    async run(point, _ctx, payload): Promise<void> {
+    async run(point, _ctx, payload): Promise<TurnAnnotation[]> {
       points.push(point);
       payloads.push(payload);
+      return [];
     },
   };
   return { runner, points, payloads };
@@ -229,6 +231,30 @@ describe('Orchestrator turn hooks (#133 E0)', () => {
     assert.equal(afterTool.toolName, 'only_tool');
     assert.equal(afterTool.toolResult, 'only-output');
     assert.equal(payloads[points.indexOf('onAfterTurn')].assistantAnswer, 'done');
+  });
+
+  it('streaming: emits a turn_annotation event (first) for a hook annotation (#133 E9)', async () => {
+    const registry = new NativeToolRegistry();
+    const client = fakeStreamClient([finalTextStream]);
+    const runner: TurnHookRunner = {
+      async run(point): Promise<TurnAnnotation[]> {
+        return point === 'onBeforeTurn'
+          ? [{ channel: 'plan', payload: { hi: 1 } }]
+          : [];
+      },
+    };
+    const orch = buildOrchestrator(client, registry, runner);
+
+    const events: AnyEvent[] = [];
+    for await (const e of orch.chatStream({ userMessage: 'go' })) events.push(e);
+
+    const annIdx = events.findIndex((e) => e.type === 'turn_annotation');
+    const doneIdx = events.findIndex((e) => e.type === 'done');
+    assert.ok(annIdx >= 0, 'a turn_annotation event should be emitted');
+    assert.equal(events[annIdx].channel, 'plan');
+    assert.deepEqual(events[annIdx].payload, { hi: 1 });
+    // onBeforeTurn is unbounded → the annotation precedes the done event.
+    assert.ok(annIdx < doneIdx, 'annotation should arrive before done');
   });
 
   it('non-streaming runTurn: fires onBeforeTurn → onAfterToolCall → onAfterTurn', async () => {

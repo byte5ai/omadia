@@ -46,10 +46,17 @@ export interface TurnHookPayload {
   readonly blockReason?: string;
 }
 
+/** #133 (E9) — opaque annotation a hook returns for the orchestrator to emit
+ *  into the turn's event stream. Mirrors `@omadia/orchestrator`'s contract. */
+export interface TurnAnnotation {
+  readonly channel: string;
+  readonly payload: unknown;
+}
+
 export type TurnHook = (
   ctx: TurnHookContext,
   payload: TurnHookPayload,
-) => void | Promise<void>;
+) => void | TurnAnnotation[] | Promise<void | TurnAnnotation[]>;
 
 interface HookEntry {
   readonly hook: TurnHook;
@@ -97,16 +104,19 @@ export class TurnHookRegistry {
     point: TurnHookPoint,
     ctx: TurnHookContext,
     payload: TurnHookPayload,
-  ): Promise<void> {
+  ): Promise<TurnAnnotation[]> {
     const list = this.byPoint.get(point);
-    if (!list || list.length === 0) return;
+    if (!list || list.length === 0) return [];
+    const annotations: TurnAnnotation[] = [];
     for (const entry of list) {
       try {
-        await entry.hook(ctx, payload);
+        const result = await entry.hook(ctx, payload);
+        if (Array.isArray(result)) annotations.push(...result);
       } catch (err) {
         this.log(`[turn-hook] ${point}/${entry.label} threw`, err);
       }
     }
+    return annotations;
   }
 
   /** Diagnostic: how many hooks at each point. Used by the introspection route

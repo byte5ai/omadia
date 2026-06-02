@@ -4,6 +4,7 @@ import { strict as assert } from 'node:assert';
 import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
 import { planNodeId, type LlmCompleteResult } from '@omadia/plugin-api';
 import {
+  buildPlanSnapshot,
   materializePlan,
   parsePlanSteps,
   pruneTurns,
@@ -167,6 +168,40 @@ describe('#133 E2 — plan-runner gate + materializer', () => {
       ]);
       pruneTurns(turns, now);
       assert.equal(turns.size, 1);
+    });
+  });
+
+  // E9 — the plan snapshot streamed to the UI as a `turn_annotation`.
+  describe('buildPlanSnapshot', () => {
+    it('projects the plan steps ordered, with live status', async () => {
+      const kg = new InMemoryKnowledgeGraph();
+      await kg.ingestPlan({ planId: 'p1', scope: 'sess', createdAt: NOW });
+      await kg.upsertPlanStep({
+        stepId: 's1',
+        planId: 'p1',
+        scope: 'sess',
+        goal: 'second',
+        order: 1,
+        status: 'in_progress',
+      });
+      await kg.upsertPlanStep({
+        stepId: 's0',
+        planId: 'p1',
+        scope: 'sess',
+        goal: 'first',
+        order: 0,
+        status: 'done',
+      });
+
+      const snap = await buildPlanSnapshot(planNodeId('p1'), kg);
+      assert.equal(snap.planExternalId, planNodeId('p1'));
+      assert.deepEqual(
+        snap.steps.map((s) => [s.order, s.goal, s.status]),
+        [
+          [0, 'first', 'done'],
+          [1, 'second', 'in_progress'],
+        ],
+      );
     });
   });
 });

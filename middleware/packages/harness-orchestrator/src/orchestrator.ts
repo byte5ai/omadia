@@ -19,6 +19,7 @@ import type {
 import { promoteTurnIfSignificant } from '@omadia/orchestrator-extras';
 import type { AskObserver, DomainTool } from './tools/domainQueryTool.js';
 import type {
+  TurnAnnotation,
   TurnHookPayload,
   TurnHookPoint,
   TurnHookRunner,
@@ -1479,14 +1480,15 @@ export class Orchestrator {
      * plan must be materialised before the turn executes.
      */
     timeoutMs?: number,
-  ): Promise<void> {
+  ): Promise<TurnAnnotation[]> {
     const runner = this.turnHookRegistry;
-    if (!runner) return;
-    const onFail = (err: unknown): void => {
+    if (!runner) return [];
+    const onFail = (err: unknown): TurnAnnotation[] => {
       console.error(
         `[orchestrator] turn-hook ${point} runner threw (continuing):`,
         err instanceof Error ? err.message : err,
       );
+      return [];
     };
     try {
       // Self-catching so a rejecting hook can never surface as an unhandled
@@ -1503,22 +1505,33 @@ export class Orchestrator {
         ),
       ).catch(onFail);
       if (timeoutMs && timeoutMs > 0) {
+        // Bounded: a slow observer must not gate the stream. If it times out we
+        // return no annotations (this emit is skipped; a later one catches up).
         let timer: ReturnType<typeof setTimeout> | undefined;
-        const guard = new Promise<void>((resolve) => {
-          timer = setTimeout(resolve, timeoutMs);
+        const guard = new Promise<TurnAnnotation[]>((resolve) => {
+          timer = setTimeout(() => resolve([]), timeoutMs);
         });
-        await Promise.race([
+        return await Promise.race([
           run.finally(() => {
             if (timer) clearTimeout(timer);
           }),
           guard,
         ]);
-      } else {
-        await run;
       }
+      return await run;
     } catch (err) {
-      onFail(err);
+      return onFail(err);
     }
+  }
+
+  /** #133 (E9) — map turn-hook annotations to `turn_annotation` stream events.
+   *  The orchestrator forwards them opaquely; only the streaming path emits. */
+  private toAnnotationEvents(annotations: TurnAnnotation[]): ChatStreamEvent[] {
+    return annotations.map((a) => ({
+      type: 'turn_annotation' as const,
+      channel: a.channel,
+      payload: a.payload,
+    }));
   }
 
   private async chatInContext(
@@ -1954,24 +1967,31 @@ export class Orchestrator {
     // tool-use id, so track id→name from tool_use events to label
     // onAfterToolCall.
     const toolNameById = new Map<string, string>();
-    await this.fireTurnHook('onBeforeTurn', turnId, input, {
-      userMessage: input.userMessage,
-    });
+    // #133 (E9) — onBeforeTurn is unbounded, so the plan-runner's plan snapshot
+    // is emitted as the FIRST stream event, before any answer tokens.
+    yield* this.toAnnotationEvents(
+      await this.fireTurnHook('onBeforeTurn', turnId, input, {
+        userMessage: input.userMessage,
+      }),
+    );
     try {
       for await (const event of this.chatStreamInner(input, turnId, observer)) {
         if (event.type === 'tool_use') {
           toolNameById.set(event.id, event.name);
         } else if (event.type === 'tool_result') {
           const toolName = toolNameById.get(event.id);
-          await this.fireTurnHook(
-            'onAfterToolCall',
-            turnId,
-            input,
-            {
-              ...(toolName ? { toolName } : {}),
-              toolResult: event.output,
-            },
-            2000,
+          // Live step updates: emit the refreshed plan snapshot after each tool.
+          yield* this.toAnnotationEvents(
+            await this.fireTurnHook(
+              'onAfterToolCall',
+              turnId,
+              input,
+              {
+                ...(toolName ? { toolName } : {}),
+                toolResult: event.output,
+              },
+              2000,
+            ),
           );
         }
         if (event.type === 'done' && privacyHandle) {
@@ -2000,30 +2020,34 @@ export class Orchestrator {
               err,
             );
           }
-          await this.fireTurnHook(
-            'onAfterTurn',
-            turnId,
-            input,
-            {
-              assistantAnswer: doneEvent.answer,
-              // #133 (E8) — persisted Turn node id for graph-linking observers.
-              ...(doneEvent.turnId ? { turnExternalId: doneEvent.turnId } : {}),
-            },
-            2000,
+          yield* this.toAnnotationEvents(
+            await this.fireTurnHook(
+              'onAfterTurn',
+              turnId,
+              input,
+              {
+                assistantAnswer: doneEvent.answer,
+                // #133 (E8) — persisted Turn node id for graph-linking observers.
+                ...(doneEvent.turnId ? { turnExternalId: doneEvent.turnId } : {}),
+              },
+              2000,
+            ),
           );
           yield doneEvent;
           continue;
         }
         if (event.type === 'done') {
-          await this.fireTurnHook(
-            'onAfterTurn',
-            turnId,
-            input,
-            {
-              assistantAnswer: event.answer,
-              ...(event.turnId ? { turnExternalId: event.turnId } : {}),
-            },
-            2000,
+          yield* this.toAnnotationEvents(
+            await this.fireTurnHook(
+              'onAfterTurn',
+              turnId,
+              input,
+              {
+                assistantAnswer: event.answer,
+                ...(event.turnId ? { turnExternalId: event.turnId } : {}),
+              },
+              2000,
+            ),
           );
         }
         yield event;

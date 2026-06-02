@@ -557,6 +557,15 @@ export type ChatStreamEvent =
    * event. Never emitted by the base orchestrator.
    */
   | { type: 'verifier'; summary: VerifierResultSummary }
+  /**
+   * #133 (E9) — opaque turn annotation a turn-hook emitted, forwarded by the
+   * orchestrator without inspecting it (it stays plan-agnostic). `channel`
+   * routes it client-side (e.g. the plan-runner emits `channel: 'plan'` with a
+   * plan-DAG snapshot at turn start + on every step change, so the UI renders
+   * the live plan from the stream instead of polling). Additive; clients that
+   * don't recognise a channel ignore the event.
+   */
+  | { type: 'turn_annotation'; channel: string; payload: unknown }
   | { type: 'error'; message: string }
   /**
    * Omadia UI canvas surface events (omadia-canvas-protocol/1.0). Additive;
