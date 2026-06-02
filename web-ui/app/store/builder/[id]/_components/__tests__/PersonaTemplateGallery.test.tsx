@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ComponentProps } from 'react';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import * as api from '../../../../../_lib/api';
 import { PersonaTemplateGallery } from '../PersonaTemplateGallery';
@@ -22,8 +23,11 @@ describe('<PersonaTemplateGallery />', () => {
   let setPersonaConfigSpy: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let patchBuilderSpecSpy: any;
-  let onClose: ReturnType<typeof vi.fn>;
-  let onApplied: ReturnType<typeof vi.fn>;
+  type GalleryProps = ComponentProps<typeof PersonaTemplateGallery>;
+  // vitest 4 narrowed `Mock` so a bare `vi.fn()` no longer matches a concrete
+  // `() => void` prop — type the mocks against the component's prop signatures.
+  let onClose: Mock<NonNullable<GalleryProps['onClose']>>;
+  let onApplied: Mock<NonNullable<GalleryProps['onApplied']>>;
 
   beforeEach(() => {
     setPersonaConfigSpy = vi
@@ -32,8 +36,8 @@ describe('<PersonaTemplateGallery />', () => {
     patchBuilderSpecSpy = vi
       .spyOn(api, 'patchBuilderSpec')
       .mockResolvedValue({} as Awaited<ReturnType<typeof api.patchBuilderSpec>>);
-    onClose = vi.fn();
-    onApplied = vi.fn();
+    onClose = vi.fn<NonNullable<GalleryProps['onClose']>>();
+    onApplied = vi.fn<NonNullable<GalleryProps['onApplied']>>();
   });
 
   afterEach(() => {
