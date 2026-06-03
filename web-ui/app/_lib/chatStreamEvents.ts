@@ -11,6 +11,7 @@ import type {
   PendingUserChoice,
   PlanSnapshot,
   PrivacyReceipt,
+  RecalledContextSnapshot,
   SubAgentEvent,
   ToolEvent,
   UseChatSessionsResult,
@@ -156,6 +157,14 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
       // we just replace, so the card reflects the latest state.
       if (event.channel === 'plan' && event.payload) {
         return { ...m, plan: event.payload as PlanSnapshot };
+      }
+      // Cross-session recall probe — what the per-turn probe pulled from
+      // prior sessions. Emitted once, before the answer.
+      if (event.channel === 'kg_recall' && event.payload) {
+        return {
+          ...m,
+          recalledContext: event.payload as RecalledContextSnapshot,
+        };
       }
       return m;
     case 'tool_use': {

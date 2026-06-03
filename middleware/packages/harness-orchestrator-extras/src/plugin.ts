@@ -212,6 +212,43 @@ export async function activate(
     1.2,
   );
 
+  // Cross-session recall probe — Plan + Process recall + team-scoped
+  // insights. `teamVisibility` defaults ON (operator-chosen team scope):
+  // the memory-recall leg then admits `team`/`public` MemorableKnowledge
+  // tenant-wide, not just rows the viewer owns. Set
+  // kg_recall_team_visibility=false (or env KG_RECALL_TEAM_VISIBILITY=false)
+  // to revert to owner-only. Plan + process legs default ON; disable with
+  // kg_recall_plan_enabled=false / kg_recall_process_enabled=false.
+  const teamVisibilityRaw =
+    ctx.config.get<unknown>('kg_recall_team_visibility') ??
+    process.env['KG_RECALL_TEAM_VISIBILITY'];
+  const teamVisibility =
+    typeof teamVisibilityRaw === 'string'
+      ? teamVisibilityRaw.toLowerCase() !== 'false'
+      : teamVisibilityRaw !== false;
+  const planRecallEnabledRaw =
+    ctx.config.get<unknown>('kg_recall_plan_enabled') ??
+    process.env['KG_RECALL_PLAN_ENABLED'];
+  const planRecallDisabled =
+    typeof planRecallEnabledRaw === 'string'
+      ? planRecallEnabledRaw.toLowerCase() === 'false'
+      : planRecallEnabledRaw === false;
+  const planLimit = parseNumberOrDefault(
+    ctx.config.get<unknown>('kg_recall_plan_limit'),
+    3,
+  );
+  const processRecallEnabledRaw =
+    ctx.config.get<unknown>('kg_recall_process_enabled') ??
+    process.env['KG_RECALL_PROCESS_ENABLED'];
+  const processRecallDisabled =
+    typeof processRecallEnabledRaw === 'string'
+      ? processRecallEnabledRaw.toLowerCase() === 'false'
+      : processRecallEnabledRaw === false;
+  const processLimit = parseNumberOrDefault(
+    ctx.config.get<unknown>('kg_recall_process_limit'),
+    3,
+  );
+
   let anthropic: Anthropic | undefined;
   if (apiKey) {
     anthropic = new Anthropic({ apiKey });
@@ -325,6 +362,15 @@ export async function activate(
     `[harness-orchestrator-extras] capture-filter activated (level=${captureLevel}, threshold=${captureSignificanceThreshold.toFixed(2)}, visibility=${captureDefaultVisibility}, scorer=${captureLevel === 'minimal' || captureLevel === 'off' ? 'disabled-by-level' : anthropic ? 'haiku' : 'unavailable-no-key'})`,
   );
 
+  // OB-76 — Process-Memory handle, resolved once and reused below (the
+  // nudge side-channel at the bottom of this activate() reuses the same
+  // const). Optional capability: absent when the KG provider has no
+  // `processes` table (in-memory / no database_url) → the process-recall
+  // leg is skipped, plan + memory legs still run.
+  const processMemory = ctx.services.get<ProcessMemoryService>(
+    PROCESS_MEMORY_SERVICE_NAME,
+  );
+
   // Downstream consumers inside this package use the wrapped KG too — keeps
   // ContextRetriever's reads consistent with the swapped registry entry.
   const contextRetriever = new ContextRetriever(
@@ -342,12 +388,19 @@ export async function activate(
       excerptsPerMemory: memoryExcerptsPerMemory,
       memoryMinSimilarity,
       memoryBoostFactor,
+      // Cross-session recall probe.
+      teamVisibility,
+      planRecallDisabled,
+      planLimit,
+      processRecallDisabled,
+      processLimit,
     },
     embeddingClient,
     agentPriorities,
+    processMemory,
   );
   ctx.log(
-    `[harness-orchestrator-extras] context-assembler ready (budget=${String(contextDefaultBudgetTokens)}tk, chars/tk=${String(contextCharsPerToken)}, manual-boost=${contextManualBoostFactor.toFixed(2)}, compact>${String(contextCompactModeThreshold)}, agentPriorities=${agentPriorities ? 'on' : 'off'}, memoryRecall=${embeddingClient && !memoryRecallDisabled ? `on(limit=${String(memoryLimit)},excerpts=${String(memoryExcerptsPerMemory)},minSim=${memoryMinSimilarity.toFixed(2)})` : 'off'})`,
+    `[harness-orchestrator-extras] context-assembler ready (budget=${String(contextDefaultBudgetTokens)}tk, chars/tk=${String(contextCharsPerToken)}, manual-boost=${contextManualBoostFactor.toFixed(2)}, compact>${String(contextCompactModeThreshold)}, agentPriorities=${agentPriorities ? 'on' : 'off'}, memoryRecall=${embeddingClient && !memoryRecallDisabled ? `on(limit=${String(memoryLimit)},excerpts=${String(memoryExcerptsPerMemory)},minSim=${memoryMinSimilarity.toFixed(2)})` : 'off'}, teamVisibility=${teamVisibility ? 'on' : 'off'}, planRecall=${planRecallDisabled ? 'off' : `on(limit=${String(planLimit)})`}, processRecall=${processMemory && !processRecallDisabled ? `on(limit=${String(processLimit)})` : 'off'})`,
   );
   const disposeContext = ctx.services.provide(
     CONTEXT_RETRIEVER_SERVICE,
@@ -541,10 +594,8 @@ export async function activate(
   // Side-channel design solves the activation-order problem: this plugin
   // activates BEFORE `harness-orchestrator` (orchestrator depends on
   // `contextRetriever@1` published here), so a direct registry.register
-  // would race against an empty registry.
-  const processMemory = ctx.services.get<ProcessMemoryService>(
-    PROCESS_MEMORY_SERVICE_NAME,
-  );
+  // would race against an empty registry. (`processMemory` was resolved
+  // once above for the context-retriever and is reused here.)
   const processPromoteProvider = new ProcessPromoteProvider({
     ...(processMemory ? { processMemory } : {}),
     log: (msg) => { console.error(msg); },

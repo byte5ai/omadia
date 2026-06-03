@@ -15,6 +15,7 @@ import type { EmbeddingClient } from '@omadia/embeddings';
 import type {
   ContextRetriever,
   FactExtractor,
+  RecalledContext,
 } from '@omadia/orchestrator-extras';
 import { promoteTurnIfSignificant } from '@omadia/orchestrator-extras';
 import type { AskObserver, DomainTool } from './tools/domainQueryTool.js';
@@ -1303,21 +1304,21 @@ export class Orchestrator {
    */
   private async retrievePriorContext(
     input: ChatTurnInput,
-  ): Promise<string | undefined> {
+  ): Promise<{ text: string | undefined; recalled: RecalledContext | undefined }> {
     // Use console.error so the trace lands on stderr — Fly's log aggregator
     // has been observed to drop some stdout INFO lines under load, and this
     // is the one pathway we cannot afford to lose visibility on.
     if (input.freshCheck) {
       console.error('[context] SKIP fresh-check');
-      return undefined;
+      return { text: undefined, recalled: undefined };
     }
     if (!this.contextRetriever) {
       console.error('[context] SKIP no-retriever');
-      return undefined;
+      return { text: undefined, recalled: undefined };
     }
     if (!input.sessionScope && !input.userId) {
       console.error('[context] SKIP no-scope-no-user');
-      return undefined;
+      return { text: undefined, recalled: undefined };
     }
     try {
       // OB-74 (Palaia Phase 5) — switch to the token-budget assembler. The
@@ -1372,14 +1373,40 @@ export class Orchestrator {
           : briefingText.length > 0
             ? briefingText
             : result.text;
-      return merged.length > 0 ? merged : undefined;
+      return {
+        text: merged.length > 0 ? merged : undefined,
+        recalled: result.recalled,
+      };
     } catch (err) {
       console.error(
         '[context] retrieval FAILED — continuing without:',
         err instanceof Error ? err.message : err,
       );
-      return undefined;
+      return { text: undefined, recalled: undefined };
     }
+  }
+
+  /** Cross-session recall probe — map the assembled `recalled` payload to a
+   *  `kg_recall` turn-annotation event when it carries anything. Returns []
+   *  (no event) when every leg was empty so cold-start turns stay quiet. */
+  private toRecallAnnotationEvents(
+    recalled: RecalledContext | undefined,
+  ): ChatStreamEvent[] {
+    if (
+      !recalled ||
+      (recalled.plans.length === 0 &&
+        recalled.processes.length === 0 &&
+        recalled.insights.length === 0)
+    ) {
+      return [];
+    }
+    return [
+      {
+        type: 'turn_annotation' as const,
+        channel: 'kg_recall',
+        payload: recalled,
+      },
+    ];
   }
 
   /**
@@ -1566,7 +1593,9 @@ export class Orchestrator {
     await this.fireTurnHook('onBeforeTurn', turnId, input, {
       userMessage: input.userMessage,
     });
-    const priorContext = await this.retrievePriorContext(input);
+    // Non-streaming path: only the prompt-injected text is consumed; the
+    // structured `recalled` payload has no annotation channel here.
+    const { text: priorContext } = await this.retrievePriorContext(input);
     const effectiveExtraSystemHint = composeExtraSystemHint(input);
     // Palaia Phase 8 (OB-77) — per-turn nudge counter (shared across all
     // tool-call iterations of this turn so NUDGE_MAX_PER_TURN is enforced).
@@ -2062,7 +2091,12 @@ export class Orchestrator {
     turnId: string,
     observer: AskObserver | undefined,
   ): AsyncGenerator<ChatStreamEvent> {
-    const priorContext = await this.retrievePriorContext(input);
+    const { text: priorContext, recalled } =
+      await this.retrievePriorContext(input);
+    // Cross-session recall probe — surface plans/processes/insights pulled
+    // from prior sessions as a visible `kg_recall` card before the answer
+    // streams in. No-op when every recall leg was empty.
+    yield* this.toRecallAnnotationEvents(recalled);
     const effectiveExtraSystemHint = composeExtraSystemHint(input);
     // Palaia Phase 8 (OB-77) — see chatInContextInner for rationale.
     const nudgeCounter = createNudgeTurnCounter();

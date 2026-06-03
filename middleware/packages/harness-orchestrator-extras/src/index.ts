@@ -25,6 +25,10 @@ export type {
   AssembledHit,
   AssembledHitReason,
   AssembledExclusion,
+  RecalledContext,
+  RecalledPlan,
+  RecalledProcess,
+  RecalledInsight,
 } from './contextRetriever.js';
 
 // OB-75 — palaia Phase 6 Session-Continuity (Briefings + Summaries).

@@ -1322,7 +1322,14 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       const owners = Array.isArray(node.props['acl_owners'])
         ? (node.props['acl_owners'] as string[])
         : [];
-      if (!owners.includes(opts.viewerOmadiaUserId)) continue;
+      const ownerMatch = owners.includes(opts.viewerOmadiaUserId);
+      // Mirror neon's `COALESCE(visibility, 'team')`: an MK with no explicit
+      // visibility is team-visible by default; `private` is never admitted
+      // by the team branch.
+      const teamMatch =
+        opts.teamVisibility === true &&
+        ['team', 'public'].includes(node.visibility ?? 'team');
+      if (!ownerMatch && !teamMatch) continue;
       const vector = this.embeddings.get(node.id);
       if (!vector) continue;
       const sim = cosine(opts.queryEmbedding, vector);
@@ -1358,7 +1365,12 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       const owners = Array.isArray(parent.props['acl_owners'])
         ? (parent.props['acl_owners'] as string[])
         : [];
-      if (!owners.includes(opts.viewerOmadiaUserId)) continue;
+      const ownerMatch = owners.includes(opts.viewerOmadiaUserId);
+      // Excerpts inherit the parent MK's ACL + visibility.
+      const teamMatch =
+        opts.teamVisibility === true &&
+        ['team', 'public'].includes(parent.visibility ?? 'team');
+      if (!ownerMatch && !teamMatch) continue;
       const sim = cosine(opts.queryEmbedding, vector);
       if (!Number.isFinite(sim) || sim < minSimilarity) continue;
       hits.push({
@@ -2613,6 +2625,11 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       props: {
         planId: input.planId,
         scope: input.scope,
+        // Neon stores userId in the `user_id` column; the in-memory backend
+        // has no such column, so it rides in props to keep `listRecentPlans`
+        // userId-filtering at parity. Conditional so plans ingested without a
+        // userId keep their existing prop shape.
+        ...(input.userId ? { userId: input.userId } : {}),
         ...(input.turnExternalId ? { turnId: input.turnExternalId } : {}),
         ...(input.strategy ? { strategy: input.strategy } : {}),
         ...(input.createdBy ? { createdBy: input.createdBy } : {}),
@@ -2718,6 +2735,39 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
           String(a.props['createdAt'] ?? ''),
         ),
       );
+  }
+
+  async listRecentPlans(opts: {
+    userId?: string;
+    limit?: number;
+    openOnly?: boolean;
+  }): Promise<GraphNode[]> {
+    const limit = Math.max(1, Math.min(opts.limit ?? 5, 50));
+    let plans = [...this.nodes.values()].filter((n) => n.type === 'Plan');
+    if (opts.userId !== undefined) {
+      plans = plans.filter((n) => n.props['userId'] === opts.userId);
+    }
+    if (opts.openOnly === true) {
+      plans = plans.filter((p) => {
+        const steps = [...this.edges.values()]
+          .filter((e) => e.type === 'STEP_OF' && e.to === p.id)
+          .map((e) => this.nodes.get(e.from))
+          .filter(
+            (n): n is GraphNode => n !== undefined && n.type === 'PlanStep',
+          );
+        return steps.some((s) => {
+          const st = s.props['status'];
+          return st === 'pending' || st === 'in_progress';
+        });
+      });
+    }
+    return plans
+      .sort((a, b) =>
+        String(b.props['createdAt'] ?? '').localeCompare(
+          String(a.props['createdAt'] ?? ''),
+        ),
+      )
+      .slice(0, limit);
   }
 
   private upsertNode(node: GraphNode): void {

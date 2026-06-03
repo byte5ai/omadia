@@ -8,6 +8,16 @@
     "statusFailed": "failed",
     "statusSkipped": "skipped"
   },
+  "recalledContext": {
+    "heading": "From earlier sessions",
+    "summary": "{plans} plans · {processes} processes · {insights} insights",
+    "plansHeading": "Open plans",
+    "processesHeading": "Saved processes",
+    "insightsHeading": "Related insights",
+    "stepsProgress": "{done}/{total} steps done",
+    "stepCount": "{count} steps",
+    "openLabel": "open"
+  },
   "nav": {
     "chat": "Chat",
     "store": "Store",

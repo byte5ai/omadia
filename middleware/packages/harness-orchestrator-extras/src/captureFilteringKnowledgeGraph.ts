@@ -193,6 +193,14 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
     return this.inner.listPlansForScope(scope);
   }
 
+  listRecentPlans(opts: {
+    userId?: string;
+    limit?: number;
+    openOnly?: boolean;
+  }): Promise<GraphNode[]> {
+    return this.inner.listRecentPlans(opts);
+  }
+
   getRunForTurn(turnExternalId: string): Promise<RunTraceView | null> {
     return this.inner.getRunForTurn(turnExternalId);
   }

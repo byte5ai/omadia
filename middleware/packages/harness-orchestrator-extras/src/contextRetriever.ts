@@ -10,6 +10,7 @@ import {
   type MemorableKnowledgeHit,
   type PalaiaExcerptHit,
   type PalaiaExcerptNode,
+  type ProcessMemoryService,
   type TurnSearchHit,
 } from '@omadia/plugin-api';
 
@@ -60,6 +61,28 @@ export interface ContextRetrieverOptions {
   /** Score multiplier for memory-origin hits in the assembler. Default
    *  1.2 — curated memory ranks above raw FTS hits at similar cosine. */
   memoryBoostFactor?: number;
+
+  // Cross-session recall probe — Plan + Process + team-scoped insights.
+  /**
+   * Opt-in team-scope recall. When true, the curated-memory leg admits
+   * `team`/`public` MemorableKnowledge across the tenant (not just rows the
+   * viewer owns). `private` stays owner-only. Default false. Forwarded to
+   * `searchMemorableKnowledgeByEmbedding` / `searchExcerptsByEmbedding`.
+   */
+  teamVisibility?: boolean;
+  /** Disable the cross-session plan-recall leg. Default false. */
+  planRecallDisabled?: boolean;
+  /** Max prior-session plans surfaced per turn. Default 3. */
+  planLimit?: number;
+  /** Only surface plans with ≥1 pending/in_progress step. Default true. */
+  planOpenOnly?: boolean;
+  /** Disable the process-memory recall leg. Default false (= enabled
+   *  whenever a ProcessMemoryService is wired). */
+  processRecallDisabled?: boolean;
+  /** Max stored processes surfaced per turn. Default 3. */
+  processLimit?: number;
+  /** Min hybrid score for a process to be surfaced. Default 0.3. */
+  processMinScore?: number;
 }
 
 export interface ContextBuildInput {
@@ -161,12 +184,61 @@ export interface AssembledExclusion {
   reason: 'budget-exceeded' | 'agent-blocked';
 }
 
+/**
+ * Cross-session recall probe — one resumable plan from a PRIOR session.
+ * `openStepGoals` are the goals of its still-pending/in-progress steps.
+ */
+export interface RecalledPlan {
+  /** External id `plan:<planId>`. */
+  planId: string;
+  scope: string;
+  strategy?: string;
+  createdAt?: string;
+  openStepGoals: string[];
+  doneCount: number;
+  totalCount: number;
+}
+
+/** Cross-session recall probe — one stored process matching the message. */
+export interface RecalledProcess {
+  /** External id `process:<scope>:<slug>`. */
+  id: string;
+  title: string;
+  scope: string;
+  stepCount: number;
+  score: number;
+}
+
+/** Cross-session recall probe — one curated insight (MemorableKnowledge). */
+export interface RecalledInsight {
+  mkId: string;
+  kind: string;
+  summary: string;
+  score: number;
+}
+
+/**
+ * Structured payload of what the cross-session probe surfaced this turn.
+ * Powers both the prompt-injected recall blocks and the visible
+ * `kg_recall` annotation card. Empty arrays when a leg found nothing or
+ * was disabled.
+ */
+export interface RecalledContext {
+  plans: RecalledPlan[];
+  processes: RecalledProcess[];
+  insights: RecalledInsight[];
+}
+
 export interface AssembledContext {
   /** Final-rendered prose, ≤ budget tokens (best-effort, based on
    *  `chars/charsPerToken`). Empty string when nothing fit. */
   text: string;
   included: AssembledHit[];
   excluded: AssembledExclusion[];
+  /** Cross-session probe payload — plans/processes/insights from prior
+   *  sessions. Same content as the rendered recall blocks, structured for
+   *  the visible recall card. */
+  recalled: RecalledContext;
   stats: {
     /** Size of the candidate pool BEFORE the greedy-fill. */
     candidatePool: number;
@@ -212,6 +284,14 @@ const DEFAULTS: Required<
   excerptsPerMemory: 2,
   memoryMinSimilarity: 0.5,
   memoryBoostFactor: 1.2,
+  // Cross-session recall probe defaults.
+  teamVisibility: false,
+  planRecallDisabled: false,
+  planLimit: 3,
+  planOpenOnly: true,
+  processRecallDisabled: false,
+  processLimit: 3,
+  processMinScore: 0.3,
 };
 
 // Tiny, language-agnostic stopword list. We keep it short because the real
@@ -288,6 +368,10 @@ export class ContextRetriever {
      *  publish the `agentPriorities@1` capability, the assembler runs
      *  without Block/Boost (manual_authored × 1.3 stays active). */
     private readonly agentPriorities?: AgentPrioritiesStore,
+    /** Cross-session recall probe — optional. When wired, the assembler adds
+     *  a stored-process recall leg (semantic query over the `processes`
+     *  store). Absent → the leg is skipped, plan + memory legs still run. */
+    private readonly processMemory?: ProcessMemoryService,
   ) {
     this.opts = { ...DEFAULTS, ...opts };
   }
@@ -382,11 +466,22 @@ export class ContextRetriever {
       ...(input.currentTurnId ? { currentTurnId: input.currentTurnId } : {}),
     };
 
-    const [tail, entityHits, ftsHits, prioritiesIndex] = await Promise.all([
+    const [
+      tail,
+      entityHits,
+      ftsHits,
+      prioritiesIndex,
+      planHits,
+      processHits,
+      memoryHits,
+    ] = await Promise.all([
       this.loadTail(buildInput),
       this.loadEntityHits(buildInput, extractedTerms),
       this.loadFtsHits(buildInput),
       this.loadAgentPriorities(input.agentId),
+      this.loadPlanHits(buildInput),
+      this.loadProcessHits(buildInput),
+      this.loadMemoryHits(buildInput),
     ]);
 
     // Build candidate pool. Tail first (chronological → fills first).
@@ -487,17 +582,43 @@ export class ContextRetriever {
       });
     const fillOrder = [...tailTurns, ...nonTail];
 
+    // Cross-session recall blocks (plans / processes / insights) are NOT
+    // turn-shaped, so they render outside the turn greedy-fill as their own
+    // prepended section. They are the headline of the recall probe → they
+    // get first claim on up to half the budget; the turn pool fills the
+    // remainder. When every recall leg is empty the blocks render to '' and
+    // the turn budget is untouched (byte-identical to pre-probe behaviour).
+    const insights: RecalledInsight[] = memoryHits.map((h) => ({
+      mkId: h.mk.id,
+      kind: String(h.mk.props['kind'] ?? 'memory'),
+      summary: truncate(String(h.mk.props['summary'] ?? ''), 300),
+      score: h.score,
+    }));
+    const recalled: RecalledContext = {
+      plans: planHits,
+      processes: processHits,
+      insights,
+    };
+    const recallBudgetChars = Math.floor(budgetChars * 0.5);
+    const recallBlocksText = renderRecallBlocks(recalled, recallBudgetChars);
+    const recallTokens =
+      recallBlocksText.length > 0
+        ? Math.ceil(recallBlocksText.length / charsPerToken)
+        : 0;
+    const turnBudgetTokens = Math.max(0, budgetTokens - recallTokens);
+    const turnBudgetChars = turnBudgetTokens * charsPerToken;
+
     const included: AssembledHit[] = [];
-    let tokensUsed = 0;
+    let turnTokensUsed = 0;
     for (const c of fillOrder) {
       const chunk = renderHitChunk(c, compactMode);
       const chunkChars = chunk.length;
       const chunkTokens = Math.ceil(chunkChars / charsPerToken);
-      if (tokensUsed + chunkTokens > budgetTokens) {
+      if (turnTokensUsed + chunkTokens > turnBudgetTokens) {
         excluded.push({ turnId: c.turnId, reason: 'budget-exceeded' });
         continue;
       }
-      tokensUsed += chunkTokens;
+      turnTokensUsed += chunkTokens;
       included.push({
         turnId: c.turnId,
         score: c.rawScore,
@@ -506,20 +627,28 @@ export class ContextRetriever {
       });
       // Defensive: budget check on chars too (rounding can edge out the
       // token estimate by 1-2 tokens; chars cap is the hard ceiling).
-      if (chunkChars > budgetChars) break;
+      if (chunkChars > turnBudgetChars) break;
     }
 
-    const text = renderAssembled(fillOrder, included, compactMode);
+    const turnText = renderAssembled(fillOrder, included, compactMode);
+    const text =
+      recallBlocksText.length > 0
+        ? turnText.length > 0
+          ? `${recallBlocksText}\n\n${turnText}`
+          : recallBlocksText
+        : turnText;
+    const tokensUsed = turnTokensUsed + recallTokens;
 
     const scope = input.sessionScope ?? '<no-scope>';
     console.error(
-      `[context:assembled] scope=${scope} agent=${input.agentId} pool=${String(filtered.length)} included=${String(included.length)} excluded=${String(excluded.length)} compact=${String(compactMode)} tokens=${String(tokensUsed)}/${String(budgetTokens)}`,
+      `[context:assembled] scope=${scope} agent=${input.agentId} pool=${String(filtered.length)} included=${String(included.length)} excluded=${String(excluded.length)} compact=${String(compactMode)} plans=${String(recalled.plans.length)} processes=${String(recalled.processes.length)} insights=${String(recalled.insights.length)} tokens=${String(tokensUsed)}/${String(budgetTokens)}`,
     );
 
     return {
       text,
       included,
       excluded,
+      recalled,
       stats: {
         candidatePool: filtered.length,
         compactMode,
@@ -630,6 +759,99 @@ export class ContextRetriever {
   }
 
   /**
+   * Cross-session recall probe — resumable plans from PRIOR sessions.
+   * Tenant-wide (the team scope) recency-ordered; the current session's own
+   * plan is excluded (the tail already covers it). Plans carry no embedding,
+   * so this leg is recency/open-based rather than semantic. On any error
+   * returns [] — a degraded recall path must not kill the turn.
+   */
+  private async loadPlanHits(
+    input: ContextBuildInput,
+  ): Promise<RecalledPlan[]> {
+    if (this.opts.planRecallDisabled) return [];
+    const limit = Math.max(1, this.opts.planLimit);
+    try {
+      // Over-fetch a little so dropping the current-session plan still leaves
+      // a full page of cross-session plans.
+      const plans = await this.graph.listRecentPlans({
+        limit: limit + 2,
+        openOnly: this.opts.planOpenOnly,
+      });
+      const crossSession = plans.filter(
+        (p) => p.props['scope'] !== input.sessionScope,
+      );
+      const out: RecalledPlan[] = [];
+      for (const p of crossSession.slice(0, limit)) {
+        const steps = await this.graph.getPlanSteps(p.id);
+        const openStepGoals: string[] = [];
+        let doneCount = 0;
+        for (const s of steps) {
+          const status = s.props['status'];
+          if (status === 'done') doneCount += 1;
+          else if (status === 'pending' || status === 'in_progress') {
+            openStepGoals.push(String(s.props['goal'] ?? ''));
+          }
+        }
+        out.push({
+          planId: p.id,
+          scope: String(p.props['scope'] ?? ''),
+          ...(typeof p.props['strategy'] === 'string'
+            ? { strategy: p.props['strategy'] }
+            : {}),
+          ...(typeof p.props['createdAt'] === 'string'
+            ? { createdAt: p.props['createdAt'] }
+            : {}),
+          openStepGoals: openStepGoals.filter((g) => g.length > 0),
+          doneCount,
+          totalCount: steps.length,
+        });
+      }
+      return out;
+    } catch (err) {
+      console.error(
+        '[context:plan] plan recall failed — continuing without:',
+        err instanceof Error ? err.message : err,
+      );
+      return [];
+    }
+  }
+
+  /**
+   * Cross-session recall probe — stored processes semantically matching the
+   * user message (`processMemory@1` hybrid query, tenant-wide = team). Skipped
+   * when no ProcessMemoryService is wired or the leg is disabled. `private`
+   * processes are dropped (the store does not filter visibility itself). On
+   * any error returns [].
+   */
+  private async loadProcessHits(
+    input: ContextBuildInput,
+  ): Promise<RecalledProcess[]> {
+    if (this.opts.processRecallDisabled || !this.processMemory) return [];
+    try {
+      const hits = await this.processMemory.query({
+        query: input.userMessage,
+        limit: this.opts.processLimit,
+      });
+      return hits
+        .filter((h) => h.score >= this.opts.processMinScore)
+        .filter((h) => (h.record.visibility || 'team') !== 'private')
+        .map((h) => ({
+          id: h.record.id,
+          title: h.record.title,
+          scope: h.record.scope,
+          stepCount: h.record.steps.length,
+          score: h.score,
+        }));
+    } catch (err) {
+      console.error(
+        '[context:process] process recall failed — continuing without:',
+        err instanceof Error ? err.message : err,
+      );
+      return [];
+    }
+  }
+
+  /**
    * Slice 7 — semantic recall over curated memories + their verbatim
    * excerpts. Skipped when:
    *   - no embeddingClient is wired (the legs need a query vector)
@@ -680,12 +902,14 @@ export class ContextRetriever {
           viewerOmadiaUserId: input.userId,
           limit: overshoot,
           minSimilarity: this.opts.memoryMinSimilarity,
+          teamVisibility: this.opts.teamVisibility,
         }),
         this.graph.searchExcerptsByEmbedding({
           queryEmbedding: queryVector,
           viewerOmadiaUserId: input.userId,
           limit: excerptOvershoot,
           minSimilarity: this.opts.memoryMinSimilarity,
+          teamVisibility: this.opts.teamVisibility,
         }),
       ]);
     } catch (err) {
@@ -907,6 +1131,65 @@ function renderMemoryChunk(hit: MemoryRecallHit): string {
 function truncate(s: string, max: number): string {
   if (s.length <= max) return s;
   return `${s.slice(0, max - 1)}…`;
+}
+
+/**
+ * Cross-session recall probe — render the plan / process / insight blocks
+ * that precede the turn context in the assembled prompt. Budget-aware via a
+ * char cap; returns '' when nothing was recalled so the turn budget stays
+ * untouched (byte-identical to pre-probe behaviour).
+ */
+function renderRecallBlocks(
+  recalled: RecalledContext,
+  maxChars: number,
+): string {
+  if (
+    recalled.plans.length === 0 &&
+    recalled.processes.length === 0 &&
+    recalled.insights.length === 0
+  ) {
+    return '';
+  }
+  const parts: string[] = [];
+  let budget = maxChars;
+  const push = (s: string): boolean => {
+    if (s.length + 1 > budget) return false;
+    parts.push(s);
+    budget -= s.length + 1;
+    return true;
+  };
+
+  if (recalled.plans.length > 0) {
+    push('## Aus früheren Sessions — offene Pläne');
+    for (const p of recalled.plans) {
+      const label = p.strategy ? truncate(p.strategy, 120) : 'Plan';
+      const open =
+        p.openStepGoals.length > 0
+          ? ` · offen: ${truncate(p.openStepGoals.join('; '), 300)}`
+          : '';
+      const when = p.createdAt ? ` · ${p.createdAt}` : '';
+      const chunk = `- ${label} (${p.doneCount}/${p.totalCount} Schritte erledigt)${open}${when}`;
+      if (!push(chunk)) break;
+    }
+  }
+
+  if (recalled.processes.length > 0 && budget > 200) {
+    push('\n## Aus früheren Sessions — gespeicherte Prozesse');
+    for (const pr of recalled.processes) {
+      const chunk = `- ${truncate(pr.title, 160)} (${String(pr.stepCount)} Schritte, score ${pr.score.toFixed(2)})`;
+      if (!push(chunk)) break;
+    }
+  }
+
+  if (recalled.insights.length > 0 && budget > 200) {
+    push('\n## Aus früheren Sessions — verwandte Erkenntnisse');
+    for (const ins of recalled.insights) {
+      const chunk = `- ${ins.kind}: ${truncate(ins.summary, 300)} (score ${ins.score.toFixed(2)})`;
+      if (!push(chunk)) break;
+    }
+  }
+
+  return parts.join('\n');
 }
 
 // ---------------------------------------------------------------------------

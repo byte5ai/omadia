@@ -18,6 +18,7 @@ import { CaptureDisclosure } from './_components/chat/CaptureDisclosure';
 import { ConfirmDialog } from './_components/ConfirmDialog';
 import { NudgeCard, parseNudgeBlock } from './_components/chat/NudgeCard';
 import { PlanProgressCard } from './_components/chat/PlanProgressCard';
+import { RecalledContextCard } from './_components/chat/RecalledContextCard';
 import { PrivacyReceiptCard } from './_components/chat/PrivacyReceiptCard';
 import { SaveMemoryButton } from './_components/chat/SaveMemoryButton';
 import { Markdown } from './_components/Markdown';
@@ -472,6 +473,9 @@ function MessageRow({
           <div className="whitespace-pre-wrap text-sm">{message.content}</div>
         ) : (
           <>
+            {message.recalledContext && (
+              <RecalledContextCard recalled={message.recalledContext} />
+            )}
             {message.plan && (
               <PlanProgressCard
                 plan={message.plan}

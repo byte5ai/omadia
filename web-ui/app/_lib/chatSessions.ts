@@ -222,6 +222,40 @@ export interface PlanSnapshot {
   steps: PlanStepSnapshot[];
 }
 
+/** Cross-session recall probe — payload of the `kg_recall` turn_annotation.
+ *  Mirrors the middleware's `RecalledContext` (crosses the boundary as
+ *  `unknown`). Surfaces what the per-turn probe pulled from PRIOR sessions. */
+export interface RecalledPlanSnapshot {
+  planId: string;
+  scope: string;
+  strategy?: string;
+  createdAt?: string;
+  openStepGoals: string[];
+  doneCount: number;
+  totalCount: number;
+}
+
+export interface RecalledProcessSnapshot {
+  id: string;
+  title: string;
+  scope: string;
+  stepCount: number;
+  score: number;
+}
+
+export interface RecalledInsightSnapshot {
+  mkId: string;
+  kind: string;
+  summary: string;
+  score: number;
+}
+
+export interface RecalledContextSnapshot {
+  plans: RecalledPlanSnapshot[];
+  processes: RecalledProcessSnapshot[];
+  insights: RecalledInsightSnapshot[];
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant';
@@ -230,6 +264,10 @@ export interface Message {
    *  annotation: present from the first event and re-emitted on every step
    *  change + replan. Persisted, so a reloaded session keeps the plan. */
   plan?: PlanSnapshot;
+  /** Cross-session recall probe — plans/processes/insights the per-turn probe
+   *  pulled from PRIOR sessions, streamed in as a `kg_recall` annotation
+   *  before the answer. Persisted with the turn. */
+  recalledContext?: RecalledContextSnapshot;
   /** KG-persisted Turn external_id (e.g. `turn:<sessionId>:<ts>`). Set
    *  from the orchestrator's `done` event when session-logging succeeded.
    *  Drives the save-as-memory affordance — without it there's no

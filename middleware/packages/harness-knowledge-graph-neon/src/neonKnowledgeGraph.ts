@@ -1037,6 +1037,39 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     return res.rows.map((r) => rowToNode(r));
   }
 
+  async listRecentPlans(opts: {
+    userId?: string;
+    limit?: number;
+    openOnly?: boolean;
+  }): Promise<GraphNode[]> {
+    const limit = Math.max(1, Math.min(opts.limit ?? 5, 50));
+    // `user_id` lives in its own column (set on ingest), not in props.
+    // `openOnly` rolls up step state: a plan counts as "open" when it owns
+    // at least one PlanStep still pending/in_progress (failed/skipped are
+    // historical — superseded by replan — and don't keep a plan open).
+    const res = await this.pool.query<NodeRow>(
+      `SELECT ${NODE_COLUMNS}
+         FROM graph_nodes p
+        WHERE p.tenant_id = $1
+          AND p.type = 'Plan'
+          AND ($2::text IS NULL OR p.user_id = $2)
+          AND ($3::boolean = false OR EXISTS (
+            SELECT 1
+              FROM graph_nodes s
+              JOIN graph_edges e ON e.from_node = s.id
+             WHERE e.tenant_id = $1
+               AND e.type = 'STEP_OF'
+               AND e.to_node = p.id
+               AND s.type = 'PlanStep'
+               AND s.properties->>'status' IN ('pending', 'in_progress')
+          ))
+        ORDER BY (p.properties->>'createdAt') DESC NULLS LAST
+        LIMIT $4`,
+      [this.tenantId, opts.userId ?? null, opts.openOnly === true, limit],
+    );
+    return res.rows.map((r) => rowToNode(r));
+  }
+
   async getRunForTurn(turnExternalId: string): Promise<RunTraceView | null> {
     const runExtId = runNodeId(turnExternalId);
 
@@ -2332,6 +2365,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     const minSimilarity = opts.minSimilarity ?? 0.3;
     const queryLit = vectorLiteral(opts.queryEmbedding);
 
+    // ACL: owner-list containment OR (opt-in) team/public visibility within
+    // the tenant. `private` is never admitted by the team branch.
     const sql = `
       SELECT ${NODE_COLUMNS},
              CASE
@@ -2343,7 +2378,10 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       WHERE tenant_id = $2
         AND type = 'MemorableKnowledge'
         AND embedding IS NOT NULL
-        AND properties->'acl_owners' @> jsonb_build_array($3::text)
+        AND (
+          properties->'acl_owners' @> jsonb_build_array($3::text)
+          OR ($5::boolean AND COALESCE(visibility, 'team') IN ('team', 'public'))
+        )
       ORDER BY cosine_sim DESC
       LIMIT $4
     `;
@@ -2352,6 +2390,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       this.tenantId,
       opts.viewerOmadiaUserId,
       limit,
+      opts.teamVisibility === true,
     ]);
     return rows.rows
       .filter((r) => Number(r.cosine_sim) >= minSimilarity)
@@ -2387,7 +2426,10 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         AND ex.type = 'PalaiaExcerpt'
         AND ex.embedding IS NOT NULL
         AND mk.tenant_id = $2
-        AND mk.properties->'acl_owners' @> jsonb_build_array($3::text)
+        AND (
+          mk.properties->'acl_owners' @> jsonb_build_array($3::text)
+          OR ($5::boolean AND COALESCE(mk.visibility, 'team') IN ('team', 'public'))
+        )
       ORDER BY cosine_sim DESC
       LIMIT $4
     `;
@@ -2401,7 +2443,13 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       };
       mk_external_id: string;
       cosine_sim: number;
-    }>(sql, [queryLit, this.tenantId, opts.viewerOmadiaUserId, limit]);
+    }>(sql, [
+      queryLit,
+      this.tenantId,
+      opts.viewerOmadiaUserId,
+      limit,
+      opts.teamVisibility === true,
+    ]);
 
     return rows.rows
       .filter((r) => Number(r.cosine_sim) >= minSimilarity)
