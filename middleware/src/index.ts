@@ -21,6 +21,7 @@ import { createInconsistenciesRouter } from './routes/inconsistencies.js';
 import { createDuplicatesRouter } from './routes/duplicates.js';
 import { createTopicsRouter } from './routes/topics.js';
 import { createAgentResolver } from './agents/resolveAgentForTool.js';
+import { scopeDomainToolsToPlugins } from './agents/scopeDomainTools.js';
 // `/attachments/<signed-key>` is now mounted by the de.byte5.channel.teams
 // plugin via ctx.routes.register (see packages/harness-channel-teams/src/plugin.ts,
 // phase-3.1-4). No kernel-side attachment router import needed anymore.
@@ -1065,9 +1066,20 @@ async function main(): Promise<void> {
   const registryForHydrate =
     serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
   if (registryForHydrate) {
+    // Per-Agent tool isolation. A domain tool's `agentId` is the id of the
+    // agent-plugin that exposes it (set by `createDomainTool` /
+    // `dynamicAgentRuntime`), e.g. `query_odoo_accounting` →
+    // `de.byte5.agent.odoo-accounting`. An Agent may only reach a sub-agent
+    // query tool when that backing plugin is ENABLED on it; a tool with no
+    // `agentId` is a core helper available to everyone. The fallback Agent
+    // has every plugin enabled, so it still receives the full set
+    // (preserving the original Phase-B hydration intent) — but a scoped
+    // Agent (e.g. "marketing", which only enables the X plugin) no longer
+    // inherits `query_odoo_accounting` et al. it was never granted.
+    // See `scopeDomainToolsToPlugins` for the rule.
     let attached = 0;
     for (const entry of registryForHydrate.list()) {
-      for (const t of domainTools) {
+      for (const t of scopeDomainToolsToPlugins(domainTools, entry.plugins)) {
         if (!entry.built.orchestrator.hasDomainTool(t.name)) {
           entry.built.orchestrator.registerDomainTool(t);
           attached += 1;
@@ -1075,20 +1087,26 @@ async function main(): Promise<void> {
       }
     }
     console.log(
-      `[middleware] registry orchestrators: hydrated with ${String(attached)} domain-tool registrations across ${String(registryForHydrate.list().length)} agent(s)`,
+      `[middleware] registry orchestrators: hydrated with ${String(attached)} domain-tool registrations across ${String(registryForHydrate.list().length)} agent(s) (per-Agent plugin-scoped)`,
     );
     // Persist the wiring so a later `registry.reload()` that REBUILDS an
-    // Agent (privacy_profile flip, etc.) re-hydrates the new orchestrator.
-    // Without this, the rebuilt Agent goes back to `domainTools: []` and
-    // the operator's next chat turn cannot reach the sub-agents.
+    // Agent (privacy_profile flip, plugin enable/disable, etc.) re-hydrates
+    // the new orchestrator — still scoped to the Agent's enabled plugins.
+    // The entry is in the registry map before `onAgentBuilt` fires (both the
+    // `add` and `rebuild` actions set it first), so the plugin lookup is
+    // available here. Without this, the rebuilt Agent goes back to
+    // `domainTools: []` and the operator's next chat turn cannot reach its
+    // sub-agents.
     registryForHydrate.setOnAgentBuilt((slug, built) => {
-      for (const t of domainTools) {
+      const entry = registryForHydrate.get(slug);
+      const tools = entry ? scopeDomainToolsToPlugins(domainTools, entry.plugins) : [];
+      for (const t of tools) {
         if (!built.orchestrator.hasDomainTool(t.name)) {
           built.orchestrator.registerDomainTool(t);
         }
       }
       console.log(
-        `[middleware] registry: orchestrator for "${slug}" hydrated with ${String(domainTools.length)} domain-tool(s)`,
+        `[middleware] registry: orchestrator for "${slug}" hydrated with ${String(tools.length)} domain-tool(s) (per-Agent plugin-scoped)`,
       );
     });
   }
