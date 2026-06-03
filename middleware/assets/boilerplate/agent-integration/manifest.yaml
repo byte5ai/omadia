@@ -133,8 +133,11 @@ permissions:
     reads: []
     writes: []
   network:
-    outbound:
-      - "{{OUTBOUND_HOST}}"              # z.B. graph.microsoft.com
+    # Static default — codegen overwrites this from spec.network.outbound via
+    # the YAML AST. Stays `[]` for integration-backed agents that egress only
+    # through a depended-on service (e.g. odoo.client); self-contained agents
+    # that call an external API directly get their host(s) written here.
+    outbound: []
   filesystem:
     scratch: false
 

@@ -485,6 +485,30 @@ function reproduceManifestCapabilities(
     }
   }
 
+  // network.outbound overwrite — write spec.network.outbound into
+  // permissions.network.outbound at the AST level (mirroring the depends_on
+  // overwrite above), instead of the boilerplate carrying a mandatory
+  // `{{OUTBOUND_HOST}}` placeholder. An integration-backed agent reaches
+  // external systems THROUGH a depended-on integration's service (e.g.
+  // `ctx.services.get('odoo.client')`) and makes no direct egress of its own,
+  // so spec.network.outbound is legitimately empty — the old placeholder
+  // failed the residue check for exactly those agents. Empty list →
+  // `outbound: []`; self-contained agents that DO call out get their hosts.
+  {
+    const permsNode = doc.get('permissions', true);
+    if (yaml.isMap(permsNode)) {
+      const netNode = permsNode.get('network', true);
+      if (yaml.isMap(netNode)) {
+        netNode.set('outbound', doc.createNode(spec.network.outbound));
+      } else {
+        permsNode.set(
+          'network',
+          doc.createNode({ outbound: spec.network.outbound }),
+        );
+      }
+    }
+  }
+
   // #91 — web_scanner lives on spec.network (not spec.permissions); emit it
   // as permissions.network.web_scanner so the runtime egress filter can
   // widen the allow-list for this audit/scanner plugin.
