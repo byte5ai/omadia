@@ -168,6 +168,14 @@ export interface ChannelManifestBlock {
    */
   dispatch_service?: string;
   /**
+   * US7 per-binding routing (additive): the short `channel_bindings.channel_type`
+   * selector this channel's turns route under (`"teams"`, `"telegram"`, …).
+   * Absent → the core derives it from the last dotted segment of the plugin id
+   * (`de.byte5.channel.teams` → `teams`). Declare it only when the id does not
+   * follow the `*.channel.<type>` convention. See `deriveChannelType`.
+   */
+  channel_type?: string;
+  /**
    * Omadia UI (additive): the omadia-canvas-protocol version this channel
    * speaks (e.g. `"1.0"`). Informational at the manifest layer; the actual
    * version is negotiated in the boot handshake.

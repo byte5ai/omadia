@@ -25,6 +25,17 @@ export interface TurnDispatcher {
      * (Omadia UI); absent-from-manifest falls back to the shared 'chatAgent'.
      */
     channelId: string;
+    /**
+     * US7 per-binding routing — the `channel_bindings.channel_type` selector
+     * for this turn. Absent → the dispatcher derives it from `channelId`.
+     */
+    channelType?: string;
+    /**
+     * US7 per-binding routing — the `channel_bindings.channel_key` for this
+     * turn (defaulted to the conversation id by the core). Paired with
+     * `channelType` to look up the bound Agent's scoped orchestrator.
+     */
+    channelKey?: string;
     userRef: ChannelUserRef;
     text: string;
     metadata?: Record<string, unknown>;
@@ -53,9 +64,16 @@ export function createCoreApi(opts: CreateCoreApiOptions): CoreApi {
       // chat thread per channel, survives restarts (same mapping yields the
       // same scope, so memory/graph continue to accumulate context).
       const scope = `${turn.channelId}::${turn.conversationId}`;
+      // US7 per-binding routing selectors. The adapter MAY set channelType /
+      // channelKey explicitly; otherwise the dispatcher derives the type from
+      // channelId and the key defaults to the conversation id (the value an
+      // operator binds for conversation-scoped channels like Teams).
+      const channelKey = turn.channelKey ?? turn.conversationId;
       return opts.dispatcher.streamTurn({
         scope,
         channelId: turn.channelId,
+        channelKey,
+        ...(turn.channelType ? { channelType: turn.channelType } : {}),
         userRef: turn.userRef,
         text: turn.text,
         ...(turn.metadata ? { metadata: turn.metadata } : {}),

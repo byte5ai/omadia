@@ -185,10 +185,11 @@ import { ExpressRouteRegistry } from './channels/routeRegistry.js';
 import { createCoreApi } from './channels/coreApi.js';
 import { ChannelDirectoryRegistry } from './channels/channelDirectoryRegistry.js';
 import { DefaultChannelRegistry } from './channels/channelRegistry.js';
-import type { ChannelRegistry } from '@omadia/channel-sdk';
+import type { ChannelRegistry, ChannelBindingResolver } from '@omadia/channel-sdk';
 import { DynamicChannelPluginResolver } from './channels/dynamicChannelResolver.js';
 import type { TurnDispatcher } from './channels/coreApi.js';
 import { createOrchestratorDispatcher } from './channels/orchestratorDispatcher.js';
+import { deriveChannelType } from './channels/channelType.js';
 import type { FactExtractor } from '@omadia/orchestrator-extras';
 import { backfillGraph } from '@omadia/orchestrator-extras';
 import { turnContext } from '@omadia/orchestrator';
@@ -2480,6 +2481,25 @@ async function main(): Promise<void> {
       pluginCatalog.get(channelId)?.plugin.channel,
     getAgentBundle: (service) =>
       serviceRegistry.get<ChatAgentBundle>(service),
+    // US7 — channelType autodiscovery: prefer the manifest's declared
+    // channel_type, else derive it from the channel id's last dotted segment
+    // (de.byte5.channel.teams → teams), the convention operators bind under.
+    channelTypeFor: (channelId) =>
+      deriveChannelType(channelId, {
+        manifest: pluginCatalog.get(channelId)?.plugin.channel,
+      }),
+    // US7 — per-binding routing: resolve the scoped ChatAgent the operator
+    // bound to (channelType, channelKey) via the multi-orchestrator
+    // channelResolver. Resolved lazily so hot config reloads take effect and
+    // so a Postgres-less deployment (no resolver published) degrades to the
+    // shared chatAgent via the static dispatch_service path.
+    resolveBinding: (channelType, channelKey) => {
+      const resolver =
+        serviceRegistry.get<ChannelBindingResolver>('channelResolver');
+      if (!resolver) return undefined;
+      const result = resolver.resolve(channelType, channelKey);
+      return result.decision !== 'reject' ? result.chatAgent : undefined;
+    },
   });
 
   const channelCoreApi = createCoreApi({

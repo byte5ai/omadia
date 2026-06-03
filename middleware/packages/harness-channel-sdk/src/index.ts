@@ -19,6 +19,18 @@ export {
   type ChatAgentBundle,
 } from './chatAgentService.js';
 
+// US7 per-binding routing — resolve the *scoped* ChatAgent bound to a turn's
+// (channelType, channelKey) via the platform channelResolver. Direct-agent
+// channels (Teams, Telegram) MUST call this per turn instead of caching
+// getChatAgent(ctx), so each conversation reaches the Agent it was bound to.
+export {
+  CHANNEL_RESOLVER_SERVICE,
+  resolveChatAgentForChannel,
+  type ChannelBindingResolver,
+  type ChannelResolveResult,
+  type ChannelResolveDecision,
+} from './channelRouting.js';
+
 // Inbound message shape
 export type {
   IncomingTurn,
