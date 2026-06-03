@@ -14,6 +14,7 @@ import { z } from 'zod';
 import {
   PreviewRuntime,
   type PreviewAgentHandle,
+  type PreviewHostServices,
   type PreviewPluginContext,
 } from '../../src/plugins/builder/previewRuntime.js';
 import { PreviewStore } from '../../src/plugins/builder/previewStore.js';
@@ -44,10 +45,12 @@ describe('PreviewRuntime', () => {
     handle?: PreviewAgentHandle;
     onActivate?: (ctx: PreviewPluginContext) => void;
     activateThrows?: Error;
+    serviceRegistry?: PreviewHostServices;
   }): PreviewRuntime {
     return new PreviewRuntime({
       previewsRoot: opts.previewsRoot,
       logger: () => {},
+      ...(opts.serviceRegistry ? { serviceRegistry: opts.serviceRegistry } : {}),
       extractZip: async (_zipBuf, destDir) => {
         mkdirSync(destDir, { recursive: true });
         writeFileSync(
@@ -204,7 +207,7 @@ describe('PreviewRuntime', () => {
       assert.equal(typeof captured!.routes.register, 'function');
     });
 
-    it('exposes ctx.services as a no-op ServicesAccessor stub so external_reads plugins activate to a clean throw, not TypeError', async () => {
+    it('falls back to undefined lookups when no host ServiceRegistry is wired (legacy stub behaviour)', async () => {
       // Theme A regression: previewRuntime previously had no `services`
       // field on its stub context, so codegen-emitted
       // `ctx.services.get<…>('odoo.client')` calls in plugins using
@@ -237,6 +240,49 @@ describe('PreviewRuntime', () => {
       // Calling the dispose handle is a no-op — must not throw even
       // though no real registration ever happened.
       dispose();
+    });
+
+    it('reads through to the host ServiceRegistry so integration-backed agents resolve real services (solution B)', async () => {
+      // The blocker: an integration-backed agent does
+      // `ctx.services.get('odoo.client')`; with the old stub that always
+      // returned undefined, the preview hit the agent's null-guard and could
+      // never go green → never installable. Wiring the live registry lets the
+      // previewed agent resolve the real service its depends_on integration
+      // provides.
+      const odooClient = { execute: () => 'ok' };
+      const host: PreviewHostServices = {
+        get: <T,>(name: string): T | undefined =>
+          name === 'odoo.client' ? (odooClient as T) : undefined,
+        has: (name: string): boolean => name === 'odoo.client',
+      };
+      const root = freshRoot('services-readthrough');
+      let captured: PreviewPluginContext | undefined;
+      const runtime = buildRuntime({
+        previewsRoot: root,
+        serviceRegistry: host,
+        onActivate: (ctx) => {
+          captured = ctx;
+        },
+      });
+      await runtime.activate({
+        zipBuffer: Buffer.alloc(0),
+        draftId: 'd1',
+        rev: 1,
+        configValues: {},
+        secretValues: {},
+      });
+      assert.ok(captured);
+      // Read-through to the host registry.
+      assert.equal(captured!.services.get('odoo.client'), odooClient);
+      assert.equal(captured!.services.has('odoo.client'), true);
+      assert.equal(captured!.services.get('not.there'), undefined);
+      // Agent-provided services stay preview-local and do NOT mutate the host
+      // registry; local entries are checked before the host.
+      const dispose = captured!.services.provide('local.only', { y: 2 });
+      assert.deepEqual(captured!.services.get('local.only'), { y: 2 });
+      assert.equal(host.has('local.only'), false);
+      dispose();
+      assert.equal(captured!.services.get('local.only'), undefined);
     });
 
     it('throws when secrets.require is called for a missing key', async () => {

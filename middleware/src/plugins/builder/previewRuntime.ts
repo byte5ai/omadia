@@ -99,13 +99,15 @@ export interface PreviewPluginContext {
   readonly uiRoutes: {
     register(descriptor: PreviewUiRouteDescriptorInput): () => void;
   };
-  /** Theme A: stub-only ServicesAccessor. Preview wires no real
-   *  ServiceRegistry, so every lookup returns `undefined`. Agents using
-   *  `spec.external_reads` will hit their codegen-emitted
-   *  `if (!svc) throw …` guard, which is the correct failure mode for
-   *  preview — real services land at install-time when the host kernel
-   *  wires up `dynamicAgentRuntime`'s ServiceRegistry. Solving B (real
-   *  preview registry) is its own theme; see
+  /** ServicesAccessor (solution B). When the runtime is wired with the live
+   *  kernel ServiceRegistry (`PreviewRuntimeDeps.serviceRegistry`), `get`/`has`
+   *  read through to it, so an integration-backed agent under test resolves
+   *  the real services its `depends_on` integrations provide (e.g.
+   *  `odoo.client`) and runs against the live integration. Without a wired
+   *  registry, `get` returns `undefined` and `spec.external_reads`/service
+   *  consumers hit their codegen-emitted `if (!svc) throw …` guard (the legacy
+   *  stub fallback). Services the previewed agent itself `provide`s stay
+   *  preview-local and never mutate the kernel registry. Background:
    *  `docs/harness-platform/HANDOFF-2026-05-04-preview-services-undefined.md`. */
   readonly services: {
     get<T>(name: string): T | undefined;
@@ -158,12 +160,37 @@ export interface PreviewHandle {
   close(): Promise<void>;
 }
 
+/**
+ * Read-through host service surface. Structural subset of the kernel's
+ * `ServiceRegistry` — only the lookups the preview needs. Kept structural so
+ * previewRuntime stays decoupled from the platform ServiceRegistry type.
+ */
+export interface PreviewHostServices {
+  get<T>(name: string): T | undefined;
+  has(name: string): boolean;
+}
+
 export interface PreviewRuntimeDeps {
   /** Absolute path to `data/builder/.previews/`. */
   previewsRoot: string;
   /** Default: 10s — same budget as activate() in dynamicAgentRuntime. */
   activateTimeoutMs?: number;
   logger?: (...args: unknown[]) => void;
+  /**
+   * Live kernel ServiceRegistry. When set, the preview's `ctx.services.get/has`
+   * read through to it, so an integration-backed agent under test resolves the
+   * real services its `depends_on` integrations provide (e.g. `odoo.client`) —
+   * the previewed agent runs against the live, already-configured integration
+   * instead of hitting its own `if (!svc) throw` guard. Without it, lookups
+   * return undefined (legacy stub behaviour). Services the previewed agent
+   * itself `provide`s stay preview-local and never mutate the kernel registry.
+   *
+   * Note: the agent then makes REAL calls through those services during a
+   * preview test (e.g. live Odoo reads with the installed integration's
+   * credentials) — which is the point of "test the agent", and safe for the
+   * read-only integrations this targets.
+   */
+  serviceRegistry?: PreviewHostServices;
   /** Absolute path to the shared build-template's `node_modules`. When set,
    *  the runtime symlinks it into the extracted package root before activate
    *  so dynamic-import calls resolve `zod` etc. The build-zip step ships the
@@ -186,6 +213,7 @@ export class PreviewRuntime {
   private readonly activateTimeoutMs: number;
   private readonly log: (...args: unknown[]) => void;
   private readonly templateNodeModulesPath: string | undefined;
+  private readonly hostServices: PreviewHostServices | undefined;
   private readonly extractZip: (zipBuffer: Buffer, destDir: string) => Promise<void>;
   private readonly activateModule: (
     entryAbs: string,
@@ -197,6 +225,7 @@ export class PreviewRuntime {
     this.activateTimeoutMs = deps.activateTimeoutMs ?? DEFAULT_ACTIVATE_TIMEOUT_MS;
     this.log = deps.logger ?? ((...args) => console.log('[preview]', ...args));
     this.templateNodeModulesPath = deps.templateNodeModulesPath;
+    this.hostServices = deps.serviceRegistry;
     this.extractZip = deps.extractZip ?? defaultExtractZip;
     this.activateModule = deps.activateModule ?? defaultActivateModule;
   }
@@ -307,6 +336,7 @@ export class PreviewRuntime {
       secretValues: opts.secretValues,
       smokeMode: opts.smokeMode === true,
       routeCaptures,
+      hostServices: this.hostServices,
       logger: (...args) => this.log(`[${agentId}]`, ...args),
     });
 
@@ -351,8 +381,16 @@ function createStubContext(opts: {
   secretValues: Readonly<Record<string, string>>;
   smokeMode: boolean;
   routeCaptures: PreviewRouteCapture[];
+  hostServices?: PreviewHostServices;
   logger: (...args: unknown[]) => void;
 }): PreviewPluginContext {
+  // Services the previewed agent provides itself stay isolated to this
+  // preview activation — they never leak into the live kernel ServiceRegistry.
+  // Lookups check this local layer first, then read through to the host
+  // registry (when wired) so cross-plugin services from `depends_on`
+  // integrations resolve.
+  const localServices = new Map<string, unknown>();
+  const host = opts.hostServices;
   return {
     agentId: opts.agentId,
     secrets: {
@@ -407,17 +445,33 @@ function createStubContext(opts: {
     uiRoutes: {
       register: (_descriptor) => () => {},
     },
-    // Theme A: no-op ServicesAccessor stub. Preview never wires a real
-    // ServiceRegistry, so external_reads-driven `ctx.services.get(...)`
-    // calls return undefined, the codegen-emitted null-guard throws
-    // a descriptive `service '<name>' is not registered` error, and the
-    // operator sees a real failure message instead of a TypeError. See
-    // `HANDOFF-2026-05-04-preview-services-undefined.md` (solution A).
+    // ServicesAccessor (solution B): read through to the live kernel
+    // ServiceRegistry when one is wired, so an integration-backed agent under
+    // test resolves the real services its `depends_on` integrations provide
+    // (e.g. `odoo.client`). When no host registry is wired (legacy / unit
+    // tests), `get` returns undefined and the agent hits its own
+    // `if (!svc) throw` guard — the previous stub behaviour. Provides made by
+    // the previewed agent stay in `localServices` and are checked first, so
+    // they neither leak into the kernel registry nor get shadowed by it.
     services: {
-      get: <T,>(_name: string): T | undefined => undefined,
-      has: (_name: string): boolean => false,
-      provide: <T,>(_name: string, _impl: T): (() => void) => () => {},
-      replace: <T,>(_name: string, _impl: T): (() => void) => () => {},
+      get: <T,>(name: string): T | undefined => {
+        if (localServices.has(name)) return localServices.get(name) as T;
+        return host ? host.get<T>(name) : undefined;
+      },
+      has: (name: string): boolean =>
+        localServices.has(name) || (host ? host.has(name) : false),
+      provide: <T,>(name: string, impl: T): (() => void) => {
+        localServices.set(name, impl);
+        return () => {
+          localServices.delete(name);
+        };
+      },
+      replace: <T,>(name: string, impl: T): (() => void) => {
+        localServices.set(name, impl);
+        return () => {
+          localServices.delete(name);
+        };
+      },
     },
     smokeMode: opts.smokeMode,
     log: opts.logger,

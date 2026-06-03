@@ -1861,6 +1861,11 @@ async function main(): Promise<void> {
   const previewRuntime = new PreviewRuntime({
     previewsRoot: BUILDER_PREVIEWS_DIR,
     templateNodeModulesPath: path.join(BUILDER_BUILD_TEMPLATE_DIR, 'node_modules'),
+    // Solution B: read through to the live kernel ServiceRegistry so an
+    // integration-backed agent under test resolves the real services its
+    // depends_on integrations provide (e.g. odoo.client) — preview goes green
+    // and the agent is testable before install, no middleware restart.
+    serviceRegistry,
     logger: () => {},
   });
   const orphanResult = await previewRuntime
