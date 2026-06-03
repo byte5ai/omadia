@@ -189,6 +189,18 @@ export async function loadBuildTemplateConfig(
   // workspace deps win on conflict. Tests opt out via
   // `includeServiceTypeRegistryDeps: false` since their tmpdir fixtures
   // don't ship the integration package directories.
+  //
+  // Service-type auto-discovery (no-restart): the registry is now populated
+  // live at plugin-activation time, so it can name packages that do NOT live
+  // under `middleware/packages/<folder>` — uploaded/hot-installed
+  // integrations, or first-party ones whose on-disk folder drifts from the
+  // package name (e.g. `harness-integration-odoo` vs `@omadia/integration-
+  // odoo`). Those resolve by their REAL path via the activation hook's
+  // `linkWorkspacePackageIntoTemplate` + the boot reconciliation in
+  // index.ts. So a name we can't resolve to a workspace folder here is no
+  // longer fatal — warn + skip and let the hook path handle it. We still
+  // pre-resolve the ones that DO live in `middleware/packages/` so they land
+  // in the template hash and survive a `node_modules` rebuild.
   if (includeRegistryDeps) {
     for (const pkgName of getKnownServicePackages()) {
       // Phase 5B: accept any scoped package (@omadia/x, @byte5/x,
@@ -202,11 +214,12 @@ export async function loadBuildTemplateConfig(
       try {
         await fs.access(abs);
       } catch {
-        throw new Error(
-          `loadBuildTemplateConfig: serviceTypeRegistry references '${pkgName}' but ` +
-            `'${abs}' does not exist — drop the entry from serviceTypeRegistry or ` +
-            'install the integration package.',
+        console.warn(
+          `loadBuildTemplateConfig: serviceTypeRegistry references '${pkgName}' ` +
+            `which is not a '${workspaceRoot}' workspace package — relying on the ` +
+            'activation-time build-template link for it.',
         );
+        continue;
       }
       workspaceDeps[pkgName] = abs;
     }

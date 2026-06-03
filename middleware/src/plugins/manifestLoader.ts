@@ -20,6 +20,7 @@ import type {
   PluginKind,
   PluginPermissionsSummary,
   PluginSetupField,
+  ServiceTypeDecl,
 } from '../api/admin-v1.js';
 
 /**
@@ -236,6 +237,7 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
   const jobs = extractJobs(doc['jobs']);
   const provides = extractCapabilityList(doc['provides'], id, 'provides');
   const requires = extractCapabilityList(doc['requires'], id, 'requires');
+  const serviceTypes = extractServiceTypes(doc['service_types'], id);
   const channel =
     kind === 'channel' ? extractChannelBlock(doc['channel']) : undefined;
   // S+7.7 — plugins can ship their own operator-admin UI and announce
@@ -333,6 +335,9 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
     privacy_class: privacyClass,
   };
   let result: Plugin = base;
+  if (serviceTypes.length > 0) {
+    result = { ...result, service_types: serviceTypes };
+  }
   if (setupGuide) result = { ...result, setup_guide: setupGuide };
   if (channel) result = { ...result, channel };
   if (adminUiPath) result = { ...result, admin_ui_path: adminUiPath };
@@ -372,6 +377,43 @@ function extractCapabilityList(
         `[catalog] plugin '${pluginId}' ${field}: ${msg} (entry dropped)`,
       );
     }
+  }
+  return out;
+}
+
+/**
+ * Parses the `service_types:` array from an integration manifest. Each entry
+ * is `{service: string, type: {from: string, name: string}}`. These map a
+ * plugin-published `ctx.services.provide(...)` surface to the TypeScript type
+ * a consuming agent imports — the kernel registers them into the agent-
+ * builder's `serviceTypeRegistry` on activation (see index.ts wiring).
+ *
+ * Malformed entries (missing/empty `service`, `type.from`, or `type.name`)
+ * are dropped with a `console.warn`, matching this loader's graceful-
+ * degradation contract: one bad entry must not break catalog-load for the
+ * rest of the manifest. A wholly-absent block yields `[]`.
+ */
+function extractServiceTypes(
+  raw: unknown,
+  pluginId: string,
+): ServiceTypeDecl[] {
+  const arr = asArray(raw);
+  const out: ServiceTypeDecl[] = [];
+  for (const item of arr) {
+    const r = asRecord(item);
+    if (!r) continue;
+    const service = asString(r['service'])?.trim();
+    const type = asRecord(r['type']);
+    const from = asString(type?.['from'])?.trim();
+    const name = asString(type?.['name'])?.trim();
+    if (!service || !from || !name) {
+      console.warn(
+        `[catalog] plugin '${pluginId}' service_types: entry must have ` +
+          `non-empty 'service', 'type.from', and 'type.name' (entry dropped)`,
+      );
+      continue;
+    }
+    out.push({ service, type: { from, name } });
   }
   return out;
 }
