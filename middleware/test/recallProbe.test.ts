@@ -315,6 +315,108 @@ describe('R2 · ContextRetriever cross-session recall legs', () => {
   });
 });
 
+describe('R6 · relevance-filtered plan recall', () => {
+  async function seedVacationPlan(kg: InMemoryKnowledgeGraph): Promise<void> {
+    // A prior-session plan about VACATION RULES with an open mermaid step.
+    await kg.ingestPlan({
+      planId: 'vacation',
+      scope: 'sess-vacation',
+      strategy: 'Urlaubsregeln zusammenfassen',
+      createdAt: '2026-06-01T10:00:00.000Z',
+    });
+    await kg.upsertPlanStep({
+      stepId: 'vac-s1',
+      planId: 'vacation',
+      scope: 'sess-vacation',
+      goal: 'Die drei wichtigsten Punkte herausarbeiten',
+      order: 0,
+      status: 'done',
+    });
+    await kg.upsertPlanStep({
+      stepId: 'vac-s2',
+      planId: 'vacation',
+      scope: 'sess-vacation',
+      goal: 'Erstelle ein Mermaid-Diagramm der drei wichtigsten Punkte',
+      order: 1,
+      status: 'pending',
+    });
+  }
+
+  it('does NOT surface a topically-unrelated open plan (the reported bug)', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    await seedVacationPlan(kg);
+    const retriever = new ContextRetriever(kg, { teamVisibility: true });
+    const result = await retriever.assembleForBudget({
+      userMessage: 'Wo waren wir beim Mitarbeiter-Onboarding in Odoo?',
+      agentId: 'test-agent',
+      sessionScope: 'sess-now',
+      userId: 'alice',
+    });
+    assert.equal(result.recalled.plans.length, 0);
+  });
+
+  it('surfaces an open plan when the query shares a term with it', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    await seedVacationPlan(kg);
+    const retriever = new ContextRetriever(kg, { teamVisibility: true });
+    const result = await retriever.assembleForBudget({
+      userMessage: 'Wie waren nochmal die Urlaubsregeln?',
+      agentId: 'test-agent',
+      sessionScope: 'sess-now',
+      userId: 'alice',
+    });
+    assert.equal(result.recalled.plans.length, 1);
+    assert.equal(result.recalled.plans[0]!.planId, 'plan:vacation');
+  });
+
+  it('ranks the more-relevant plan first (term-overlap count)', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    // Two plans; the query "Rechnung Odoo buchen" overlaps 1 vs 2 terms.
+    await kg.ingestPlan({
+      planId: 'one',
+      scope: 'sess-a',
+      strategy: 'Rechnung erfassen',
+      createdAt: '2026-06-01T12:00:00.000Z',
+    });
+    await kg.upsertPlanStep({
+      stepId: 'one-s1', planId: 'one', scope: 'sess-a',
+      goal: 'Rechnung anlegen', order: 0, status: 'pending',
+    });
+    await kg.ingestPlan({
+      planId: 'two',
+      scope: 'sess-b',
+      strategy: 'Rechnung in Odoo buchen',
+      createdAt: '2026-06-01T11:00:00.000Z', // older, but more relevant
+    });
+    await kg.upsertPlanStep({
+      stepId: 'two-s1', planId: 'two', scope: 'sess-b',
+      goal: 'Buchung in Odoo durchführen', order: 0, status: 'pending',
+    });
+    const retriever = new ContextRetriever(kg, { teamVisibility: true });
+    const result = await retriever.assembleForBudget({
+      userMessage: 'Rechnung in Odoo buchen — wo standen wir?',
+      agentId: 'test-agent',
+      sessionScope: 'sess-now',
+      userId: 'alice',
+    });
+    assert.equal(result.recalled.plans[0]!.planId, 'plan:two'); // 3 terms > 1
+  });
+
+  it('falls back to recency when the message has no candidate terms', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    await seedVacationPlan(kg);
+    const retriever = new ContextRetriever(kg, { teamVisibility: true });
+    // "ok" / punctuation only → no extractable terms → recency fallback.
+    const result = await retriever.assembleForBudget({
+      userMessage: 'ok?',
+      agentId: 'test-agent',
+      sessionScope: 'sess-now',
+      userId: 'alice',
+    });
+    assert.equal(result.recalled.plans.length, 1);
+  });
+});
+
 describe('T1 · toSemanticAnswer forwards recalled (non-stream / Teams path)', () => {
   const recalled: RecalledContext = {
     plans: [

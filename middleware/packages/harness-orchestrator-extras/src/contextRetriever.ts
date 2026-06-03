@@ -723,54 +723,81 @@ export class ContextRetriever {
   }
 
   /**
-   * Cross-session recall probe — resumable plans from PRIOR sessions.
-   * Tenant-wide (the team scope) recency-ordered; the current session's own
-   * plan is excluded (the tail already covers it). Plans carry no embedding,
-   * so this leg is recency/open-based rather than semantic. On any error
-   * returns [] — a degraded recall path must not kill the turn.
+   * Cross-session recall probe — resumable plans from PRIOR sessions,
+   * **relevance-filtered** against the current message. Tenant-wide (the team
+   * scope); the current session's own plan is excluded (the tail covers it).
+   *
+   * Plans carry no embedding, so relevance is lexical: a plan only surfaces
+   * when its text (strategy + step goals) shares a candidate term with the
+   * user message — the same term extractor the entity leg uses. Recency alone
+   * is wrong (a question about onboarding must not resurface last week's
+   * diagram plan); ranked by term-overlap, recency as the tiebreak. When the
+   * message yields no candidate terms (a bare "weiter") we fall back to
+   * recency so a contentless continuation still resumes recent open work.
+   * On any error returns [] — a degraded recall path must not kill the turn.
    */
   private async loadPlanHits(
     input: ContextBuildInput,
   ): Promise<RecalledPlan[]> {
     if (this.opts.planRecallDisabled) return [];
     const limit = Math.max(1, this.opts.planLimit);
+    const terms = extractCandidateTerms(input.userMessage).map((t) =>
+      t.toLowerCase(),
+    );
     try {
-      // Over-fetch a little so dropping the current-session plan still leaves
-      // a full page of cross-session plans.
+      // Over-fetch a wider candidate window so the relevance filter has
+      // something to choose from (recency-only would pick the latest N).
       const plans = await this.graph.listRecentPlans({
-        limit: limit + 2,
+        limit: Math.max(limit * 4, 12),
         openOnly: this.opts.planOpenOnly,
       });
-      const crossSession = plans.filter(
-        (p) => p.props['scope'] !== input.sessionScope,
-      );
-      const out: RecalledPlan[] = [];
-      for (const p of crossSession.slice(0, limit)) {
+      const scored: Array<{ hit: RecalledPlan; score: number }> = [];
+      for (const p of plans) {
+        if (p.props['scope'] === input.sessionScope) continue; // cross-session only
         const steps = await this.graph.getPlanSteps(p.id);
         const openStepGoals: string[] = [];
+        const goalTexts: string[] = [];
         let doneCount = 0;
         for (const s of steps) {
           const status = s.props['status'];
+          const goal = String(s.props['goal'] ?? '');
+          if (goal.length > 0) goalTexts.push(goal);
           if (status === 'done') doneCount += 1;
           else if (status === 'pending' || status === 'in_progress') {
-            openStepGoals.push(String(s.props['goal'] ?? ''));
+            if (goal.length > 0) openStepGoals.push(goal);
           }
         }
-        out.push({
-          planId: p.id,
-          scope: String(p.props['scope'] ?? ''),
-          ...(typeof p.props['strategy'] === 'string'
-            ? { strategy: p.props['strategy'] }
-            : {}),
-          ...(typeof p.props['createdAt'] === 'string'
-            ? { createdAt: p.props['createdAt'] }
-            : {}),
-          openStepGoals: openStepGoals.filter((g) => g.length > 0),
-          doneCount,
-          totalCount: steps.length,
+        // Relevance = how many query terms appear in strategy + step goals.
+        const haystack =
+          `${String(p.props['strategy'] ?? '')} ${goalTexts.join(' ')}`.toLowerCase();
+        const score =
+          terms.length === 0
+            ? 0
+            : terms.filter((t) => haystack.includes(t)).length;
+        // Drop topically-unrelated plans. With no query terms (bare
+        // continuation) every plan scores 0 → keep the recency fallback.
+        if (terms.length > 0 && score === 0) continue;
+        scored.push({
+          hit: {
+            planId: p.id,
+            scope: String(p.props['scope'] ?? ''),
+            ...(typeof p.props['strategy'] === 'string'
+              ? { strategy: p.props['strategy'] }
+              : {}),
+            ...(typeof p.props['createdAt'] === 'string'
+              ? { createdAt: p.props['createdAt'] }
+              : {}),
+            openStepGoals,
+            doneCount,
+            totalCount: steps.length,
+          },
+          score,
         });
       }
-      return out;
+      // Rank by term-overlap DESC; `listRecentPlans` already returned
+      // createdAt-desc, so a stable sort keeps recency as the tiebreak.
+      scored.sort((a, b) => b.score - a.score);
+      return scored.slice(0, limit).map((s) => s.hit);
     } catch (err) {
       console.error(
         '[context:plan] plan recall failed — continuing without:',
