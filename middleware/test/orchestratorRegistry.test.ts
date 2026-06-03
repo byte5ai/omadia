@@ -296,6 +296,55 @@ test('US4-4c: validateSnapshot rejects a snapshot with an uninstalled plugin', (
   );
 });
 
+test('US4-4d: registry.start() quarantines an uninstalled plugin instead of aborting the whole boot', async () => {
+  // Regression: the fallback Agent had `de.byte5.agent.github-prs` enabled
+  // after that plugin was unbundled from the deployment. `validateSnapshot`
+  // threw on the missing plugin, which aborted `registry.start()` and left
+  // the orchestratorRegistry / configStore / channelResolver unpublished —
+  // every `/operator/*` route then returned `multi_orchestrator_unavailable`
+  // (503). The registry must instead disable just the offending binding and
+  // come up with the rest.
+  const logged: Array<{ msg: string; fields?: Record<string, unknown> }> = [];
+  const lookup: PluginCapabilityLookup = {
+    isMultiInstance: () => true,
+    // The `general` Agent's only plugin is no longer installed.
+    isInstalled: (id) => (id === '@omadia/agent-odoo-hr' ? false : true),
+  };
+  const registry = new OrchestratorRegistry(
+    fakeStore(twoAgentSnapshot),
+    deps(),
+    {
+      defaultRuntimeConfig: { model: 'm', maxTokens: 100, maxToolIterations: 4 },
+      pluginLookup: lookup,
+      log: (msg, fields) => logged.push({ msg, ...(fields ? { fields } : {}) }),
+    },
+  );
+
+  // Boot does NOT throw — the snapshot is sanitised before validation.
+  await registry.start();
+
+  // Both Agents come up; the offending binding is dropped, not the Agent.
+  assert.equal(registry.size(), 2);
+  assert.ok(registry.get('public'), 'public agent present');
+  const general = registry.get('general');
+  assert.ok(general, 'general agent still present despite its missing plugin');
+  assert.deepEqual(
+    general.plugins.filter((p) => p.enabled).map((p) => p.pluginId),
+    [],
+    'the uninstalled plugin is quarantined off the general Agent',
+  );
+
+  // The quarantine is surfaced loudly so an operator can fix the manifest.
+  assert.ok(
+    logged.some(
+      (l) =>
+        l.msg.includes('plugin not installed') &&
+        l.fields?.['pluginId'] === '@omadia/agent-odoo-hr',
+    ),
+    'a per-binding warning is logged',
+  );
+});
+
 test('SC-007 / T018: a build-time failure for Agent B does NOT prevent Agent A', async () => {
   // Inject a faulty `nativeToolRegistry` that throws once — Orchestrator
   // construction calls `register` for each native-tool name; failing one of

@@ -177,9 +177,10 @@ export class OrchestratorRegistry {
    * identical to the hot-reload path.
    */
   applySnapshot(snap: ConfigSnapshot): void {
-    validateSnapshot(snap, this.options.pluginLookup);
-    const plan = diffSnapshots(this.snapshot, snap);
-    this.applyDiffActions(plan, snap);
+    const safe = this.quarantineUnsatisfiablePlugins(snap);
+    validateSnapshot(safe, this.options.pluginLookup);
+    const plan = diffSnapshots(this.snapshot, safe);
+    this.applyDiffActions(plan, safe);
   }
 
   /**
@@ -195,14 +196,61 @@ export class OrchestratorRegistry {
    */
   async reload(): Promise<DiffPlan> {
     const snap = await this.store.loadSnapshot();
-    validateSnapshot(snap, this.options.pluginLookup);
-    const plan = diffSnapshots(this.snapshot, snap);
+    const safe = this.quarantineUnsatisfiablePlugins(snap);
+    validateSnapshot(safe, this.options.pluginLookup);
+    const plan = diffSnapshots(this.snapshot, safe);
     if (plan.actions.length === 0 && !plan.platformChanged) {
-      this.snapshot = snap;
+      this.snapshot = safe;
       return plan;
     }
-    this.applyDiffActions(plan, snap);
+    this.applyDiffActions(plan, safe);
     return plan;
+  }
+
+  /**
+   * Graceful degradation for plugins that disappeared from the platform
+   * (uninstalled / unbundled between boots). Without this, a single Agent
+   * with a still-enabled binding to a now-uninstalled plugin makes
+   * `validateSnapshot` throw and aborts the ENTIRE registry boot — taking
+   * every other Agent (including the fallback) and the operator dashboards
+   * (`multi_orchestrator_unavailable` 503) down with it.
+   *
+   * Instead we demote only the offending binding to `enabled: false` and log
+   * it loudly; the rest of the snapshot validates and publishes, and the
+   * Agent keeps all of its still-installed plugins. This mirrors the
+   * per-Agent build isolation (T022) one layer earlier — at the validation
+   * gate that runs before the diff.
+   *
+   * Only a definite `isInstalled === false` is quarantined. `undefined`
+   * ("the platform has no opinion") and a missing `pluginLookup` are left
+   * untouched, so test / legacy boots without a catalog behave exactly as
+   * before. `validateSnapshot` itself stays strict — direct callers that
+   * want to reject an impossible config still get the throw.
+   */
+  private quarantineUnsatisfiablePlugins(
+    snap: ConfigSnapshot,
+  ): ConfigSnapshot {
+    const lookup = this.options.pluginLookup;
+    const isInstalled = lookup?.isInstalled?.bind(lookup);
+    if (!isInstalled) return snap;
+
+    let demoted = 0;
+    const agentPlugins = snap.agentPlugins.map((row) => {
+      if (!row.enabled) return row;
+      if (isInstalled(row.pluginId) !== false) return row;
+      demoted += 1;
+      this.log(`registry: plugin not installed — disabling binding`, {
+        agentId: row.agentId,
+        pluginId: row.pluginId,
+      });
+      return { ...row, enabled: false };
+    });
+
+    if (demoted === 0) return snap;
+    this.log(`registry: quarantined unsatisfiable plugin binding(s)`, {
+      count: demoted,
+    });
+    return { ...snap, agentPlugins };
   }
 
   /**
