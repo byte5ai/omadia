@@ -19,6 +19,15 @@ export interface EntityRef {
   id: string | number;
   /** Human-friendly label if the response carried one (`name`, `title`, …). */
   displayName?: string;
-  /** Always `read` for now — proxy only exposes read operations. */
-  op: 'read';
+  /**
+   * The operation that produced this reference.
+   *
+   * `'read'` for every observed entity (the common case — proxy reads,
+   * search hits, page fetches). `'write'` for entities a plugin created or
+   * mutated, e.g. the gated Confluence write tools
+   * (`@omadia/integration-confluence` >= 0.3.0: create page / update page /
+   * add comment). Consumers that don't care about the distinction can ignore
+   * the field; the EntityRefBus forwards refs without inspecting `op`.
+   */
+  op: 'read' | 'write';
 }
