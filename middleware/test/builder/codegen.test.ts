@@ -412,19 +412,24 @@ describe('codegen.generate', () => {
     // token appeared in (manifest.yaml + README.md + …), burying the
     // signal. The fix collapses to a single actionable issue per missing
     // manifest source. depends_on used to be the regression case; with
-    // B.6-9.1 (DEPENDS_ON_YAML derived placeholder) it no longer fails,
-    // so we exercise the same path via OUTBOUND_HOST (network.outbound[0]).
+    // B.6-9.1 (DEPENDS_ON_YAML derived placeholder) it no longer fails, and
+    // OUTBOUND_HOST (network.outbound[0]) is likewise now AST-written from
+    // spec.network.outbound (integration-backed agents legitimately have an
+    // empty outbound) — so we exercise the fail-fast path via EXAMPLE_PROMPT_2
+    // (playbook.example_prompts[1]) with only one prompt supplied.
     const { slots } = loadFixture();
     const spec = parseAgentSpec({
       id: 'de.byte5.agent.lonely',
       name: 'Lonely',
-      description: 'no outbound',
+      description: 'one prompt only',
       category: 'other',
       depends_on: [],
       tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
       skill: { role: 'x' },
-      playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
-      network: { outbound: [] }, // <-- OUTBOUND_HOST resolves to undefined
+      // Only one example prompt → EXAMPLE_PROMPT_2 (example_prompts[1]) is
+      // unresolved; everything else resolves.
+      playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x'] },
+      network: { outbound: [] }, // now AST-written as `outbound: []`, no residue
     });
     await assert.rejects(
       () => generate({ spec, slots }),
@@ -433,15 +438,59 @@ describe('codegen.generate', () => {
         const residues = err.issues.filter(
           (i) => i.code === 'placeholder_residue',
         );
-        // Exactly one residue per missing source (here: network.outbound[0] →
-        // OUTBOUND_HOST), not one per file the placeholder appears in.
+        // Exactly one residue per missing source (here: example_prompts[1] →
+        // EXAMPLE_PROMPT_2), not one per file the placeholder appears in.
         assert.equal(residues.length, 1);
         const detail = residues[0]!.detail;
-        assert.match(detail, /\{\{OUTBOUND_HOST\}\}/);
-        assert.match(detail, /network\.outbound\[0\]/);
+        assert.match(detail, /\{\{EXAMPLE_PROMPT_2\}\}/);
+        assert.match(detail, /playbook\.example_prompts\[1\]/);
         return true;
       },
     );
+  });
+
+  it('renders network.outbound: [] for an integration-backed agent (empty outbound)', async () => {
+    // Regression for the builder.codegen_failed blocker: an agent that reaches
+    // an external system THROUGH a depended-on integration service (e.g.
+    // ctx.services.get('odoo.client')) has an empty spec.network.outbound.
+    // The old `{{OUTBOUND_HOST}}` placeholder failed the residue check; codegen
+    // now AST-writes spec.network.outbound, so an empty list is valid.
+    const { slots } = loadFixture();
+    const spec = parseAgentSpec({
+      id: 'de.byte5.agent.odoo-consumer',
+      name: 'Odoo Consumer',
+      description: 'reads odoo via the odoo.client service, no direct egress',
+      category: 'other',
+      depends_on: ['@omadia/integration-odoo'],
+      tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
+      skill: { role: 'x' },
+      playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
+      network: { outbound: [] },
+    });
+    const out = await generate({ spec, slots });
+    const manifest = out.get('manifest.yaml')!.toString('utf-8');
+    assert.doesNotMatch(manifest, /\{\{OUTBOUND_HOST\}\}/);
+    assert.match(manifest, /outbound:\s*\[\s*\]/);
+  });
+
+  it('AST-writes spec.network.outbound hosts into the manifest', async () => {
+    // A self-contained agent that calls an external API directly still gets
+    // its host(s) written into permissions.network.outbound.
+    const { slots } = loadFixture();
+    const spec = parseAgentSpec({
+      id: 'de.byte5.agent.direct',
+      name: 'Direct Caller',
+      description: 'calls an external API directly',
+      category: 'other',
+      depends_on: [],
+      tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
+      skill: { role: 'x' },
+      playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
+      network: { outbound: ['api.example.com'] },
+    });
+    const out = await generate({ spec, slots });
+    const manifest = out.get('manifest.yaml')!.toString('utf-8');
+    assert.match(manifest, /outbound:[\s\S]*api\.example\.com/);
   });
 
   it('renders depends_on: [] when spec.depends_on is empty (B.6-9.1)', async () => {

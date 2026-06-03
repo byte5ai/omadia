@@ -150,7 +150,13 @@ placeholders:
   NOT_FOR_CASE_1: playbook.not_for[0]
   EXAMPLE_PROMPT_1: playbook.example_prompts[0]
   EXAMPLE_PROMPT_2: playbook.example_prompts[1]
-  OUTBOUND_HOST: network.outbound[0]
+  # Removed OUTBOUND_HOST (network.outbound[0]). Codegen now writes
+  # spec.network.outbound directly into permissions.network.outbound via the
+  # YAML AST (same pattern as depends_on above), so an integration-backed
+  # agent that reaches external systems THROUGH a depended-on service (e.g.
+  # ctx.services.get('odoo.client')) and has an empty network.outbound builds
+  # without a placeholder-residue error. See `reproduceManifestCapabilities`
+  # in codegen.ts for the AST-level outbound overwrite.
 
 skip_files:
   - CLAUDE.md
