@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readlinkSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -15,6 +16,7 @@ import path from 'node:path';
 import {
   cleanupStagingDir,
   ensureBuildTemplate,
+  linkWorkspacePackageIntoTemplate,
   prepareStagingDir,
 } from '../../src/plugins/builder/buildTemplate.js';
 
@@ -201,6 +203,101 @@ describe('buildTemplate', () => {
       });
       assert.equal(second.reused, false);
       assert.equal(second.ready, true);
+    });
+  });
+
+  describe('linkWorkspacePackageIntoTemplate', () => {
+    it('links a package into an existing template node_modules', async () => {
+      const templateRoot = freshTemplateRoot('link-1');
+      await ensureBuildTemplate({
+        templateRoot,
+        npmDeps: {},
+        workspaceDeps: {},
+        skipNpmInstall: true,
+      });
+      const pkg = fakeWorkspacePkg('@omadia/integration-odoo', '-link-1');
+
+      const res = await linkWorkspacePackageIntoTemplate(
+        templateRoot,
+        '@omadia/integration-odoo',
+        pkg,
+      );
+
+      assert.equal(res.linked, true);
+      const linkPath = path.join(
+        templateRoot,
+        'node_modules',
+        '@omadia',
+        'integration-odoo',
+      );
+      assert.ok(lstatSync(linkPath).isSymbolicLink());
+      const linked = JSON.parse(
+        readFileSync(path.join(linkPath, 'package.json'), 'utf-8'),
+      ) as { name: string };
+      assert.equal(linked.name, '@omadia/integration-odoo');
+    });
+
+    it('is idempotent — re-linking replaces the stale symlink', async () => {
+      const templateRoot = freshTemplateRoot('link-2');
+      await ensureBuildTemplate({
+        templateRoot,
+        npmDeps: {},
+        workspaceDeps: {},
+        skipNpmInstall: true,
+      });
+      const old = fakeWorkspacePkg('@omadia/integration-odoo', '-link-2a');
+      const fresh = fakeWorkspacePkg('@omadia/integration-odoo', '-link-2b');
+
+      await linkWorkspacePackageIntoTemplate(templateRoot, '@omadia/integration-odoo', old);
+      const second = await linkWorkspacePackageIntoTemplate(
+        templateRoot,
+        '@omadia/integration-odoo',
+        fresh,
+      );
+
+      assert.equal(second.linked, true);
+      const linkPath = path.join(
+        templateRoot,
+        'node_modules',
+        '@omadia',
+        'integration-odoo',
+      );
+      // Resolves through `fresh`, not `old`.
+      assert.ok(lstatSync(linkPath).isSymbolicLink());
+      assert.equal(path.resolve(readlinkSync(linkPath)), path.resolve(fresh));
+    });
+
+    it('no-ops (linked=false) when the template node_modules does not exist yet', async () => {
+      const templateRoot = freshTemplateRoot('link-3-missing');
+      const pkg = fakeWorkspacePkg('@omadia/integration-odoo', '-link-3');
+
+      const res = await linkWorkspacePackageIntoTemplate(
+        templateRoot,
+        '@omadia/integration-odoo',
+        pkg,
+      );
+
+      assert.equal(res.linked, false);
+      assert.ok(res.reason);
+      assert.equal(
+        existsSync(path.join(templateRoot, 'node_modules', '@omadia', 'integration-odoo')),
+        false,
+      );
+    });
+
+    it('throws with requireTemplate when node_modules is missing', async () => {
+      const templateRoot = freshTemplateRoot('link-4-require');
+      const pkg = fakeWorkspacePkg('@omadia/integration-odoo', '-link-4');
+      await assert.rejects(
+        () =>
+          linkWorkspacePackageIntoTemplate(
+            templateRoot,
+            '@omadia/integration-odoo',
+            pkg,
+            { requireTemplate: true },
+          ),
+        /template node_modules missing/,
+      );
     });
   });
 

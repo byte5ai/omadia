@@ -243,6 +243,18 @@ export interface Plugin {
    *  to empty array). The kernel rejects boot if any `requires` has no
    *  matching `provides` across the installed plugin set. */
   requires: string[];
+  /**
+   * Builder service-type declarations (OB — service-type auto-discovery).
+   * Integration plugins list every `ctx.services.provide(...)` surface they
+   * expose, mapped to the TypeScript type a consuming agent imports. When
+   * such a plugin activates, the kernel registers each entry into the
+   * agent-builder's runtime `serviceTypeRegistry` so a generated agent that
+   * declares `external_reads` against this service typechecks + resolves at
+   * activate-time — and unregisters on deactivation. Empty/absent for
+   * plugins that expose no builder-consumable services. Distinct from
+   * `provides` (capability-refs like `graph@1`): these carry the concrete
+   * `import type` target codegen needs. */
+  service_types?: ServiceTypeDecl[];
   /** Channel-specific block. Present iff kind === 'channel'. */
   channel?: ChannelManifestBlock;
   /**
@@ -284,6 +296,30 @@ export interface Plugin {
    * never parsed for behaviour.
    */
   setup_guide?: LocalizedMarkdown;
+}
+
+/**
+ * A single builder service-type declaration from a plugin's manifest
+ * `service_types:` block. Mirrors `ServiceTypeRegistration` in the
+ * agent-builder's `serviceTypeRegistry.ts` (kept inline here so `admin-v1.ts`
+ * stays import-free, consistent with the rest of this module). The kernel
+ * translates each entry into a `registerServiceType(service, { providedBy,
+ * typeImport })` call when the providing plugin activates.
+ */
+export interface ServiceTypeDecl {
+  /** Service-registry key the plugin publishes via `ctx.services.provide`,
+   *  e.g. `"odoo.client"`. This is what a consuming agent passes to
+   *  `ctx.services.get(...)` and lists in `spec.external_reads[].service`. */
+  service: string;
+  /** The TypeScript type a consumer imports for this service. */
+  type: {
+    /** npm/workspace package id the type is imported `from`, e.g.
+     *  `"@omadia/integration-odoo"`. Codegen also emits this as the
+     *  generated agent's `peerDependencies` entry. */
+    from: string;
+    /** Exported type name, e.g. `"OdooClient"`. */
+    name: string;
+  };
 }
 
 /**

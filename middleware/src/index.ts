@@ -76,8 +76,15 @@ import {
 import { WorkaroundStateStore } from './plugins/builder/workaroundStateStore.js';
 import { SpecEventBus } from './plugins/builder/specEventBus.js';
 import { BuilderTurnRingBuffer } from './plugins/builder/turnRingBuffer.js';
-import { ensureBuildTemplate } from './plugins/builder/buildTemplate.js';
+import {
+  ensureBuildTemplate,
+  linkWorkspacePackageIntoTemplate,
+} from './plugins/builder/buildTemplate.js';
 import { loadBuildTemplateConfig } from './plugins/builder/buildTemplateConfig.js';
+import {
+  registerServiceType,
+  unregisterServiceType,
+} from './plugins/builder/serviceTypeRegistry.js';
 import { BuildPipeline } from './plugins/builder/buildPipeline.js';
 import { RuntimeSmokeOrchestrator } from './plugins/builder/runtimeSmokeOrchestrator.js';
 import { AutoFixOrchestrator } from './plugins/builder/autoFixOrchestrator.js';
@@ -520,6 +527,11 @@ async function main(): Promise<void> {
   // a toolkit like agent plugins — their activate() registers directly into
   // the kernel's native-tool / route registries. Same package sources as
   // DynamicAgentRuntime; the two runtimes coordinate by kind-filtering.
+  // Service-type auto-discovery (no-restart): tracks which `serviceTypeRegistry`
+  // names each plugin registered at activation, so deactivation can
+  // unregister EXACTLY those — independent of whether the catalog entry still
+  // exists (uninstall may have reloaded the catalog and dropped it first).
+  const registeredServiceTypesByPlugin = new Map<string, string[]>();
   const toolPluginRuntime = new ToolPluginRuntime({
     catalog: pluginCatalog,
     registry: installedRegistry,
@@ -532,6 +544,56 @@ async function main(): Promise<void> {
     notificationRouter,
     uiRouteCatalog,
     jobScheduler,
+    // When an integration plugin activates — at boot OR via a live hot-
+    // install — register every `manifest.service_types` entry into the
+    // agent-builder's `serviceTypeRegistry`, and link its package into the
+    // shared build template so generated agents that `external_reads`
+    // against it typecheck. `lookupServiceType()` is read live by the
+    // manifest-linter and codegen, so a newly-online platform becomes
+    // buildable immediately, with no middleware restart.
+    onActivated: async (entry, packagePath) => {
+      const serviceTypes = entry.plugin.service_types ?? [];
+      if (serviceTypes.length === 0) return;
+      for (const st of serviceTypes) {
+        registerServiceType(st.service, {
+          providedBy: entry.plugin.id,
+          typeImport: { from: st.type.from, name: st.type.name },
+        });
+      }
+      registeredServiceTypesByPlugin.set(
+        entry.plugin.id,
+        serviceTypes.map((st) => st.service),
+      );
+      // The type packages a consumer imports `from` are — by the manifest
+      // convention — exported by the activating plugin's own package, whose
+      // on-disk root is `packagePath`. Link each unique `from` so tsc
+      // resolves `import type { X } from '<from>'`. A no-op before the build
+      // template exists (boot ordering) — the boot reconciliation below then
+      // links it once node_modules is provisioned.
+      const uniqueFroms = new Set(serviceTypes.map((st) => st.type.from));
+      for (const from of uniqueFroms) {
+        const res = await linkWorkspacePackageIntoTemplate(
+          BUILDER_BUILD_TEMPLATE_DIR,
+          from,
+          packagePath,
+        );
+        if (!res.linked) {
+          console.log(
+            `[builder] service-type package '${from}' not linked into build ` +
+              `template (${res.reason ?? 'unknown'}); boot pass will cover it.`,
+          );
+        }
+      }
+      console.log(
+        `[builder] registered ${serviceTypes.length} service-type(s) from ${entry.plugin.id}`,
+      );
+    },
+    onDeactivated: (agentId) => {
+      const names = registeredServiceTypesByPlugin.get(agentId);
+      if (!names) return;
+      for (const service of names) unregisterServiceType(service);
+      registeredServiceTypesByPlugin.delete(agentId);
+    },
     log: (msg) => console.log(msg),
   });
 
@@ -1824,7 +1886,7 @@ async function main(): Promise<void> {
     npmDeps: buildTemplateConfig.npmDeps,
     workspaceDeps: buildTemplateConfig.workspaceDeps,
   })
-    .then((result) => {
+    .then(async (result) => {
       if (!result.ready) {
         throw new Error(
           `[builder] build template not ready: ${result.reason ?? 'unknown reason'}`,
@@ -1833,6 +1895,38 @@ async function main(): Promise<void> {
       console.log(
         `[builder] build template ready (reused=${String(result.reused)}, took ${String(result.durationMs)}ms, npmDeps=${String(Object.keys(buildTemplateConfig.npmDeps).length)}, workspaceDeps=${String(Object.keys(buildTemplateConfig.workspaceDeps).length)})`,
       );
+      // Service-type auto-discovery — boot reconciliation. The activation
+      // hook (toolPluginRuntime.onActivated) ran during
+      // `activateAllInstalled()` ABOVE, before this template existed, so its
+      // per-package link was a no-op. Now that node_modules is provisioned,
+      // link every active integration's service-type packages by their REAL
+      // on-disk path (path.dirname(source_path)) — this covers uploaded /
+      // hot-installed integrations and name↔folder drift that
+      // `loadBuildTemplateConfig`'s workspace-folder heuristic can't resolve.
+      // Post-boot hot-installs are handled live by the activation hook
+      // itself (template exists by then). Idempotent; failures are logged,
+      // not fatal — a build that needs a missing link fails loudly at tsc.
+      for (const entry of pluginCatalog.list()) {
+        const serviceTypes = entry.plugin.service_types ?? [];
+        if (serviceTypes.length === 0) continue;
+        if (!toolPluginRuntime.isActive(entry.plugin.id)) continue;
+        const packageRoot = path.dirname(entry.source_path);
+        const uniqueFroms = new Set(serviceTypes.map((st) => st.type.from));
+        for (const from of uniqueFroms) {
+          try {
+            await linkWorkspacePackageIntoTemplate(
+              BUILDER_BUILD_TEMPLATE_DIR,
+              from,
+              packageRoot,
+              { requireTemplate: true },
+            );
+          } catch (err) {
+            console.error(
+              `[builder] boot-reconcile: failed to link '${from}' (${entry.plugin.id}): ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
+      }
     })
     .catch((err: unknown) => {
       // Re-raise lazily — BuildPipeline.run awaits templateReady and any
@@ -2126,7 +2220,12 @@ async function main(): Promise<void> {
     // installed integration plugin auto-registers under
     // `integration-<tail>`. The LLM reads each one's `INTEGRATION.md` for
     // the canonical service surface — no more drift on integration patches.
-    referenceCatalog: resolveBuilderReferenceCatalog(pluginCatalog),
+    //
+    // Passed as a per-turn thunk (not a boot snapshot) so an integration
+    // hot-installed mid-session — the catalog is reloaded on upload — shows
+    // up in `read_reference`/`list_references` immediately, retiring the old
+    // "not visible until next restart" caveat.
+    referenceCatalog: () => resolveBuilderReferenceCatalog(pluginCatalog),
     templateRoot: BUILDER_BUILD_TEMPLATE_DIR,
     // OB-31 follow-up: a single fill_slot routinely generates whole TS
     // slot bodies (5–15k tokens). The 4096 LocalSubAgent default hit

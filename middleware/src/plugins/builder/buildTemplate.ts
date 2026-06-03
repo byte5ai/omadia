@@ -101,14 +101,9 @@ export async function ensureBuildTemplate(
   // means we make it ourselves).
   await fs.mkdir(nodeModulesPath, { recursive: true });
   for (const [name, srcPath] of Object.entries(workspaceDeps)) {
-    const linkPath = path.join(nodeModulesPath, name);
-    await fs.mkdir(path.dirname(linkPath), { recursive: true });
-    try {
-      await fs.rm(linkPath, { recursive: true, force: true });
-    } catch {
-      /* ignore — may not exist */
-    }
-    await fs.symlink(path.resolve(srcPath), linkPath, 'dir');
+    await linkWorkspacePackageIntoTemplate(templateRoot, name, srcPath, {
+      requireTemplate: true,
+    });
   }
 
   await fs.writeFile(hashPath, newHash, 'utf-8');
@@ -119,6 +114,61 @@ export async function ensureBuildTemplate(
     durationMs: Date.now() - start,
     installedAt: new Date().toISOString(),
   };
+}
+
+export interface LinkWorkspacePackageResult {
+  linked: boolean;
+  /** Populated when `linked` is false — why the link was skipped. */
+  reason?: string;
+}
+
+/**
+ * Symlink a single workspace/integration package into the build template's
+ * shared `node_modules`, idempotently. This is the per-package primitive
+ * `ensureBuildTemplate` uses for its boot-time pass, AND the live hook the
+ * service-type auto-discovery wiring calls when an integration plugin
+ * activates AFTER boot — so a generated agent that `import type`s the
+ * integration's surface typechecks at the tsc gate without rebuilding the
+ * whole template or running `npm install` again.
+ *
+ * No npm work, no hash bump: just `rm -f` the stale link + recreate it. The
+ * `dir` symlink resolves `import type { OdooClient } from '@omadia/
+ * integration-odoo'` against the package's own `types` field.
+ *
+ * When the template's `node_modules` does not exist yet (the boot ordering
+ * where integration activation runs BEFORE `ensureBuildTemplate`), the call
+ * is a no-op returning `linked: false` — the boot pass then picks the package
+ * up via `serviceTypeRegistry` → `getKnownServicePackages()`. Pass
+ * `requireTemplate: true` to turn that into a thrown error instead (used by
+ * `ensureBuildTemplate` itself, which has just created the directory).
+ */
+export async function linkWorkspacePackageIntoTemplate(
+  templateRoot: string,
+  name: string,
+  srcPath: string,
+  opts: { requireTemplate?: boolean } = {},
+): Promise<LinkWorkspacePackageResult> {
+  const nodeModulesPath = path.join(templateRoot, 'node_modules');
+  if (!existsSync(nodeModulesPath)) {
+    if (opts.requireTemplate) {
+      throw new Error(
+        `linkWorkspacePackageIntoTemplate: template node_modules missing at ${nodeModulesPath}`,
+      );
+    }
+    return {
+      linked: false,
+      reason: 'build template node_modules not provisioned yet',
+    };
+  }
+  const linkPath = path.join(nodeModulesPath, name);
+  await fs.mkdir(path.dirname(linkPath), { recursive: true });
+  try {
+    await fs.rm(linkPath, { recursive: true, force: true });
+  } catch {
+    /* ignore — may not exist */
+  }
+  await fs.symlink(path.resolve(srcPath), linkPath, 'dir');
+  return { linked: true };
 }
 
 function renderPackageJson(npmDeps: Readonly<Record<string, string>>): string {

@@ -62,6 +62,23 @@ export interface ToolPluginRuntimeDeps {
   notificationRouter: NotificationRouter;
   uiRouteCatalog: UiRouteCatalog;
   jobScheduler: JobScheduler;
+  /**
+   * Fired after a plugin's activate() succeeds and it is recorded active.
+   * Used to register the plugin's manifest-declared `service_types` into the
+   * agent-builder's `serviceTypeRegistry` (and link its package into the
+   * build template) without a middleware restart — see the wiring in
+   * index.ts. Receives the catalog entry plus the resolved on-disk package
+   * root (symlink target for the build-template node_modules). Hook failures
+   * are logged, never propagated: a builder-registry hiccup must not flip a
+   * healthy plugin to errored.
+   */
+  onActivated?: (
+    entry: PluginCatalogEntry,
+    packagePath: string,
+  ) => void | Promise<void>;
+  /** Counterpart to `onActivated`: fired after a plugin is removed from the
+   *  active set, so the wiring can `unregisterServiceType` its entries. */
+  onDeactivated?: (agentId: string) => void | Promise<void>;
   log?: (msg: string) => void;
 }
 
@@ -218,6 +235,16 @@ export class ToolPluginRuntime {
         `[tool-runtime] registry markActivationSucceeded FAILED for ${agentId}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+
+    if (this.deps.onActivated) {
+      try {
+        await this.deps.onActivated(catalogEntry, packagePath);
+      } catch (err) {
+        log(
+          `[tool-runtime] onActivated hook FAILED for ${agentId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
     log(
       `[tool-runtime] ACTIVATED ${agentId} (${catalogEntry.plugin.kind}, entry=${entryRel})`,
     );
@@ -245,6 +272,16 @@ export class ToolPluginRuntime {
     this.deps.jobScheduler.stopForPlugin(agentId);
     this.deps.uiRouteCatalog.disposeBySource(agentId);
     this.active.delete(agentId);
+
+    if (this.deps.onDeactivated) {
+      try {
+        await this.deps.onDeactivated(agentId);
+      } catch (err) {
+        log(
+          `[tool-runtime] onDeactivated hook FAILED for ${agentId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
     log(`[tool-runtime] DEACTIVATED ${agentId}`);
     return true;
   }

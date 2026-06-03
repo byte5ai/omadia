@@ -192,6 +192,15 @@ export interface BuilderSubAgentBuildOptions {
   tools: LocalSubAgentTool[];
 }
 
+/**
+ * Reference-implementation catalog shape: short-name → on-disk package root
+ * + human description, served by the `read_reference` / `list_references`
+ * builder tools. Matches the return type of `resolveBuilderReferenceCatalog`.
+ */
+export type BuilderReferenceCatalog = Readonly<
+  Record<string, { root: string; description: string }>
+>;
+
 export interface BuilderAgentDeps {
   anthropic: Anthropic;
   draftStore: DraftStore;
@@ -213,8 +222,15 @@ export interface BuilderAgentDeps {
    * `list_references` can serve multiple agents (SEO-analyst,
    * integration-confluence, integration-odoo, …) plus the boilerplate
    * template, instead of a single hard-coded path.
+   *
+   * Accepts either a static map OR a provider thunk. Pass a thunk
+   * (`() => resolveBuilderReferenceCatalog(catalog)`) so an integration
+   * installed mid-session is readable via `read_reference` immediately —
+   * the catalog is re-resolved per turn against the live PluginCatalog,
+   * with no middleware restart. A plain object is treated as a constant
+   * (kept for tests + callers that don't need live discovery).
    */
-  referenceCatalog: Readonly<Record<string, { root: string; description: string }>>;
+  referenceCatalog: BuilderReferenceCatalog | (() => BuilderReferenceCatalog);
   /**
    * Override the system-prompt seed (test-only). Default reads
    * `prompts/builder-system.md` next to this file plus the boilerplate
@@ -293,9 +309,7 @@ export class BuilderAgent {
   private readonly knownPluginIds: KnownPluginIdsProvider;
   private readonly slotTypechecker: SlotTypecheckService;
   private readonly audit: AuditLogger;
-  private readonly referenceCatalog: Readonly<
-    Record<string, { root: string; description: string }>
-  >;
+  private readonly resolveReferenceCatalog: () => BuilderReferenceCatalog;
   private readonly systemPromptSeed: () => Promise<string>;
   private readonly buildSubAgent: (opts: BuilderSubAgentBuildOptions) => Askable;
   private readonly tools: ReadonlyArray<BuilderTool<unknown, unknown>>;
@@ -323,7 +337,10 @@ export class BuilderAgent {
     this.catalogToolNames = deps.catalogToolNames;
     this.knownPluginIds = deps.knownPluginIds;
     this.slotTypechecker = deps.slotTypechecker;
-    this.referenceCatalog = deps.referenceCatalog;
+    this.resolveReferenceCatalog =
+      typeof deps.referenceCatalog === 'function'
+        ? deps.referenceCatalog
+        : () => deps.referenceCatalog as BuilderReferenceCatalog;
     this.audit = deps.audit ?? createAuditLogger(deps.draftStore);
     this.systemPromptSeed = deps.systemPromptSeed ?? defaultSystemPromptSeed;
     this.buildSubAgent = deps.buildSubAgent ?? defaultBuildSubAgent;
@@ -427,7 +444,7 @@ export class BuilderAgent {
       rebuildScheduler: this.rebuildScheduler,
       catalogToolNames: this.catalogToolNames,
       knownPluginIds: this.knownPluginIds,
-      referenceCatalog: this.referenceCatalog,
+      referenceCatalog: this.resolveReferenceCatalog(),
       slotTypechecker: this.slotTypechecker,
       slotRetryTracker,
       buildFailureBudget,
