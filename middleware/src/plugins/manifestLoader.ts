@@ -304,6 +304,8 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
   const privacyClass: 'strict' | 'default' =
     privacyClassRaw === 'strict' ? 'strict' : 'default';
 
+  const setupGuide = asLocalizedGuide(setup?.['guide']);
+
   const base: Plugin = {
     id,
     kind,
@@ -331,6 +333,7 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
     privacy_class: privacyClass,
   };
   let result: Plugin = base;
+  if (setupGuide) result = { ...result, setup_guide: setupGuide };
   if (channel) result = { ...result, channel };
   if (adminUiPath) result = { ...result, admin_ui_path: adminUiPath };
   if (isReferenceOnly) result = { ...result, is_reference_only: true };
@@ -610,6 +613,26 @@ function asArray(value: unknown): unknown[] {
 
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+/**
+ * Normalise a manifest `setup.guide` into a `{ <locale>: markdown }` map.
+ * Accepts the canonical object form (`{ en: "…", de: "…" }`) and tolerates a
+ * bare string (treated as English). Empty strings and non-string values are
+ * dropped; returns undefined when nothing usable remains.
+ */
+function asLocalizedGuide(value: unknown): Record<string, string> | undefined {
+  if (typeof value === 'string') {
+    const s = value.trim();
+    return s.length > 0 ? { en: value } : undefined;
+  }
+  const rec = asRecord(value);
+  if (!rec) return undefined;
+  const out: Record<string, string> = {};
+  for (const [locale, text] of Object.entries(rec)) {
+    if (typeof text === 'string' && text.trim().length > 0) out[locale] = text;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function extractStringArray(value: unknown): string[] {

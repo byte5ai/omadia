@@ -14,7 +14,7 @@
 // `GET /registry/index.json` implementation.
 // ===========================================================================
 
-import type { ISO8601, PluginKind } from './admin-v1.js';
+import type { ISO8601, LocalizedMarkdown, PluginKind } from './admin-v1.js';
 
 /** A single installable version of a plugin, as advertised by a registry. */
 export interface RegistryVersionEntry {
@@ -43,6 +43,12 @@ export interface RegistryManifestSummary {
   /** Setup fields the operator must fill at install-time. Mirrors
    *  `PluginSetupField` but kept loose here to avoid a hard schema coupling. */
   setup_fields?: Array<Record<string, unknown>>;
+  /** Localized markdown installation guide for the plugin's third-party system
+   *  (e.g. "how to create a Discord bot", "how to get Microsoft 365
+   *  credentials"). A `{ <locale>: markdown }` map from the manifest's
+   *  `setup.guide`. Display-only — rendered on the hub detail page and the
+   *  Omadia store; never parsed for behaviour. */
+  setup_guide?: LocalizedMarkdown;
   permissions?: Record<string, unknown>;
 }
 

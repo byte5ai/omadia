@@ -4,6 +4,7 @@ import { notFound } from 'next/navigation';
 import {
   ArrowLeft,
   BookCheck,
+  BookOpen,
   Database,
   Globe,
   KeyRound,
@@ -12,6 +13,11 @@ import {
   ShieldAlert,
   ShieldCheck,
 } from 'lucide-react';
+
+import { getLocale } from 'next-intl/server';
+
+import { Markdown } from '../../_components/Markdown';
+import { pickLocalized } from '../../_lib/localized';
 
 import { ApiError, getStorePlugin } from '../../_lib/api';
 import { redirectIfUnauthorized } from '../../_lib/authRedirect';
@@ -65,6 +71,11 @@ export default async function PluginDetailPage({
   const { plugin, install_available, blocking_reasons } = detail;
   const isLegacy = plugin.categories.includes('legacy');
   const visibleCategories = plugin.categories.filter((c) => c !== 'legacy');
+
+  // Localized setup guide — pick the active UI locale, fall back to another
+  // language so a single-language guide still renders.
+  const locale = await getLocale();
+  const setupGuideText = pickLocalized(plugin.setup_guide, locale);
 
   // S+7.7 / 2026-05-04 — admin-ui mount path. Conditional on the manifest
   // declaring `admin_ui_path` AND the plugin being installed (or having an
@@ -149,6 +160,20 @@ export default async function PluginDetailPage({
               )}
             </p>
           </Section>
+
+          {/* Installationsanleitung — Markdown-Guide aus dem Manifest
+              (`setup.guide`). Erklärt das Aufsetzen des Drittsystems: Discord-
+              Bot anlegen, Microsoft-365-Credentials beschaffen, Slack-App
+              registrieren, … Display-only. */}
+          {setupGuideText ? (
+            <Section
+              label="Installationsanleitung"
+              numeral="I.b"
+              icon={<BookOpen className="size-4" aria-hidden />}
+            >
+              <Markdown source={setupGuideText} />
+            </Section>
+          ) : null}
 
           {plugin.required_secrets.length > 0 ? (
             <Section
@@ -267,6 +292,7 @@ export default async function PluginDetailPage({
             enabled={install_available}
             remote={Boolean(plugin.source)}
             installedVersion={plugin.version}
+            {...(plugin.setup_guide ? { setupGuide: plugin.setup_guide } : {})}
             {...(plugin.available_version
               ? { availableVersion: plugin.available_version }
               : {})}

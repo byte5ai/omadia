@@ -175,6 +175,13 @@ export interface ChannelManifestBlock {
   canvas_protocol_version?: string;
 }
 
+/**
+ * A short piece of UI text available in several languages, keyed by locale
+ * (`en`, `de`, …). Used for the manifest-declared `setup.guide`. The renderer
+ * picks the active locale and falls back to another when it is missing.
+ */
+export type LocalizedMarkdown = Record<string, string>;
+
 export interface Plugin {
   id: AgentId;
   kind: PluginKind;
@@ -267,6 +274,16 @@ export interface Plugin {
    * a later privacy workstream; not enforced today. Defaults to `default`.
    */
   privacy_class: 'strict' | 'default';
+  /**
+   * Localized markdown installation guide for the plugin's third-party system,
+   * declared in the manifest's `setup.guide` as a `{ <locale>: markdown }` map
+   * (e.g. `{ en, de }`). Answers "how do I get this running" questions (create
+   * a Discord bot, register an Azure AD app, …). Optional; the UI picks the
+   * active-locale string (falling back to another locale) and renders it as
+   * markdown on the store detail page and in the install drawer. Display-only —
+   * never parsed for behaviour.
+   */
+  setup_guide?: LocalizedMarkdown;
 }
 
 /**

@@ -148,7 +148,17 @@ export interface Plugin {
   /** C6 — newer version a registry advertises when `install_state ===
    *  'update-available'`. `version` still reflects what is installed. */
   available_version?: string;
+  /** Localized markdown installation guide for the plugin's third-party system,
+   *  from the manifest's `setup.guide` as a `{ <locale>: markdown }` map. The
+   *  UI picks the active locale (with fallback) and renders it on the detail
+   *  page and in the install drawer ("how to create a Discord bot", "how to get
+   *  M365 credentials"). Mirrors middleware admin-v1. */
+  setup_guide?: LocalizedMarkdown;
 }
+
+/** UI text available in several languages, keyed by locale (`en`, `de`, …).
+ *  Mirrors `LocalizedMarkdown` in middleware admin-v1. */
+export type LocalizedMarkdown = Record<string, string>;
 
 export interface StoreListResponse {
   items: Plugin[];

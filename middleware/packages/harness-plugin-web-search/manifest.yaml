@@ -31,6 +31,49 @@ lifecycle:
 # filling the new key, and re-installing.
 # ---------------------------------------------------------------------------
 setup:
+  guide:
+    en: |
+      ## Get a web-search API key
+
+      This plugin needs an API key from **one** search provider. Pick the
+      provider below and fill in **only** its key.
+
+      ### Option A — Tavily (default, built for AI)
+      1. Create an account at [tavily.com](https://tavily.com).
+      2. **Dashboard → API Keys → Create** → copy the key.
+      3. Keep **Search provider** = *Tavily* below, paste the key into **Tavily API key**.
+
+      Tavily returns structured snippets and optionally extracted full text —
+      ideal for agents. A free tier is available to get started.
+
+      ### Option B — Brave Search (independent crawler)
+      1. Register at [api-dashboard.search.brave.com](https://api-dashboard.search.brave.com).
+      2. Subscribe to a plan (free tier available) → copy the **Subscription Token**.
+      3. Set **Search provider** = *Brave Search* below, paste the token into **Brave Search API key**.
+
+      > The key is stored encrypted in the vault. Use **Cache TTL** to protect
+      > your request quota: higher values = fewer API calls.
+    de: |
+      ## Web-Search-API-Key besorgen
+
+      Dieses Plugin braucht einen API-Key **eines** Such-Providers. Wähle unten
+      den Provider und fülle **nur** den dazugehörigen Key aus.
+
+      ### Option A — Tavily (Standard, für KI gebaut)
+      1. Konto erstellen auf [tavily.com](https://tavily.com).
+      2. **Dashboard → API Keys → Create** → Key kopieren.
+      3. Unten **Search-Provider** = *Tavily* lassen, Key in **Tavily API-Key** einsetzen.
+
+      Tavily liefert strukturierte Snippets und optional extrahierten Volltext —
+      ideal für Agenten. Kostenloses Kontingent für den Einstieg vorhanden.
+
+      ### Option B — Brave Search (unabhängiger Crawler)
+      1. Registrieren auf [api-dashboard.search.brave.com](https://api-dashboard.search.brave.com).
+      2. Einen Plan abonnieren (Free-Tier verfügbar) → **Subscription Token** kopieren.
+      3. Unten **Search-Provider** = *Brave Search* wählen, Token in **Brave Search API-Key** einsetzen.
+
+      > Der Key wird verschlüsselt im Vault gespeichert. Über **Cache-TTL** schonst
+      > du dein Anfrage-Kontingent: höhere Werte = weniger API-Calls.
   fields:
     - key: "provider"
       type: "enum"

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useLocale } from 'next-intl';
 import {
   ArrowRight,
   Check,
@@ -28,9 +29,12 @@ import type {
   InstallJob,
   InstallSetupField,
   InstallValidationError,
+  LocalizedMarkdown,
 } from '../../_lib/storeTypes';
+import { pickLocalized } from '../../_lib/localized';
 import { RequiresWizard } from './RequiresWizard';
 import { FieldRow, extractValues } from './setupForm';
+import { Markdown } from '../Markdown';
 
 interface InstallButtonProps {
   pluginId: string;
@@ -47,6 +51,11 @@ interface InstallButtonProps {
   /** C6 — the newer version a registry advertises, when
    *  `installState === 'update-available'`. */
   availableVersion?: string;
+  /** Localized markdown setup guide from the manifest (`setup.guide`). When
+   *  present, the active-locale string is rendered at the top of the install
+   *  drawer, above the credential fields, so the operator sees how to obtain
+   *  those values before filling them in. */
+  setupGuide?: LocalizedMarkdown;
 }
 
 type Phase =
@@ -67,8 +76,11 @@ export function InstallButton({
   remote = false,
   installedVersion,
   availableVersion,
+  setupGuide,
 }: InstallButtonProps): React.ReactElement {
   const router = useRouter();
+  const locale = useLocale();
+  const setupGuideText = pickLocalized(setupGuide, locale);
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
   const [fieldErrors, setFieldErrors] = useState<
     Record<string, string>
@@ -171,6 +183,7 @@ export function InstallButton({
           fieldErrors={fieldErrors}
           onClose={handleClose}
           onSubmit={handleSubmit}
+          {...(setupGuideText ? { setupGuide: setupGuideText } : {})}
         />
       ) : null}
 
@@ -550,6 +563,8 @@ interface InstallDrawerProps {
   fieldErrors: Record<string, string>;
   onClose: () => void;
   onSubmit: (values: Record<string, unknown>) => void | Promise<void>;
+  /** Markdown setup guide rendered above the fields. */
+  setupGuide?: string;
 }
 
 function InstallDrawer({
@@ -558,6 +573,7 @@ function InstallDrawer({
   fieldErrors,
   onClose,
   onSubmit,
+  setupGuide,
 }: InstallDrawerProps): React.ReactElement {
   const jobFromPhase =
     phase.kind === 'form'
@@ -639,6 +655,15 @@ function InstallDrawer({
             }}
           >
             <div className="flex-1 overflow-y-auto px-8 py-6">
+              {setupGuide ? (
+                <div className="mb-6 border-b border-[color:var(--rule)] pb-6">
+                  <div className="mb-3 text-[11px] uppercase tracking-[0.22em] text-[color:var(--faint-ink)]">
+                    Installationsanleitung
+                  </div>
+                  <Markdown source={setupGuide} />
+                </div>
+              ) : null}
+
               {fields.length === 0 ? (
                 <p className="text-sm italic text-[color:var(--muted-ink)]">
                   Dieses Plugin erfordert keine Konfiguration — bestätige die
