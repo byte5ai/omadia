@@ -328,6 +328,10 @@ function registryEntryToPlugin(resolved: ResolvedRegistryPlugin): Plugin {
   const setupFields = Array.isArray(summary.setup_fields)
     ? (summary.setup_fields as unknown as PluginSetupField[])
     : [];
+  const setupGuide =
+    summary.setup_guide && Object.keys(summary.setup_guide).length > 0
+      ? summary.setup_guide
+      : undefined;
 
   return {
     id: entry.id,
@@ -354,6 +358,7 @@ function registryEntryToPlugin(resolved: ResolvedRegistryPlugin): Plugin {
     requires: Array.isArray(summary.requires) ? summary.requires : [],
     multi_instance: true,
     privacy_class: 'default',
+    ...(setupGuide ? { setup_guide: setupGuide } : {}),
     source: registrySource(resolved),
   };
 }

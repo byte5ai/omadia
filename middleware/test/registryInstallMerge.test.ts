@@ -258,6 +258,96 @@ describe('store router · detail resolves a remote-only plugin (C3)', () => {
   });
 });
 
+describe('store router · setup_guide flows from the registry manifest_summary', () => {
+  const GUIDE = {
+    en: '## Create a Discord bot\n1. Open the Developer Portal …',
+    de: '## Discord-Bot anlegen\n1. Developer Portal öffnen …',
+  };
+
+  function indexWithGuide(): string {
+    return JSON.stringify({
+      schema_version: '1',
+      registry: { name: 'omadia-public', url: HUB },
+      generated_at: '2026-06-03T12:00:00Z',
+      plugins: [
+        {
+          id: '@omadia/channel-discord',
+          name: 'Discord',
+          kind: 'channel',
+          domain: 'discord',
+          description: 'Discord channel',
+          categories: ['communication'],
+          authors: [{ name: 'byte5' }],
+          license: 'MIT',
+          icon_url: null,
+          latest_version: '0.1.0',
+          versions: [
+            {
+              version: '0.1.0',
+              compat_core: '>=1.0 <2.0',
+              sha256: ZIP_SHA,
+              size_bytes: 1,
+              download_url: `${HUB}/registry/@omadia/channel-discord/0.1.0/plugin.zip`,
+              published_at: '2026-06-03T11:00:00Z',
+              manifest_summary: {
+                setup_fields: [
+                  { key: 'discord_bot_token', type: 'secret', label: 'Token', required: true },
+                ],
+                setup_guide: GUIDE,
+              },
+            },
+          ],
+        },
+      ],
+    });
+  }
+
+  it('GET /:id surfaces plugin.setup_guide for a hub-only plugin', async () => {
+    const client = new RegistryClient({
+      registries: [{ name: 'omadia-public', url: HUB }],
+      log: () => {},
+      fetchImpl: mockFetch({
+        [`${HUB}/registry/index.json`]: () => new Response(indexWithGuide()),
+      }),
+    });
+    const app = express();
+    app.use('/store', createStoreRouter({ catalog: fakeCatalog([]), registry: fakeRegistry, client }));
+    const server = app.listen(0);
+    const base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/store`;
+    try {
+      const res = await fetch(`${base}/${encodeURIComponent('@omadia/channel-discord')}`);
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as { plugin: Plugin };
+      assert.deepEqual(body.plugin.setup_guide, GUIDE);
+      assert.equal(body.plugin.required_secrets.length, 1);
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  it('omits setup_guide when the registry advertises none', async () => {
+    const client = new RegistryClient({
+      registries: [{ name: 'omadia-public', url: HUB }],
+      log: () => {},
+      fetchImpl: mockFetch({
+        [`${HUB}/registry/index.json`]: () => new Response(indexJson()),
+      }),
+    });
+    const app = express();
+    app.use('/store', createStoreRouter({ catalog: fakeCatalog([]), registry: fakeRegistry, client }));
+    const server = app.listen(0);
+    const base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/store`;
+    try {
+      const res = await fetch(`${base}/${encodeURIComponent('@omadia/plugin-office')}`);
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as { plugin: Plugin };
+      assert.equal(body.plugin.setup_guide, undefined);
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+});
+
 // --- C6: update detection --------------------------------------------------
 
 function fakeInstalled(map: Record<string, string>): InstalledRegistry {
