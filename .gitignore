@@ -97,6 +97,29 @@ hub/
 # gitignored folder exactly like the others — never committed into core.
 channel-whatsapp/
 
+# ─── Slack channel plugin (separate PUBLIC repo) ──────────────────────────
+# @omadia/channel-slack — a standalone Slack Socket Mode channel. Like
+# channel-whatsapp it is a PUBLIC OSS repo (byte5ai/omadia-channel-slack)
+# developed in its own git repo and shipped as a Hub ZIP, so it is mirrored
+# here as a gitignored folder — never committed into core.
+channel-slack/
+
+# ─── Discord channel plugin (separate PUBLIC repo) ────────────────────────
+# @omadia/channel-discord — a standalone Discord Gateway channel (discord.js,
+# bot-token auth). Like channel-whatsapp it is a PUBLIC OSS repo
+# (byte5ai/omadia-channel-discord) developed in its own git repo and shipped
+# as a Hub ZIP, so it is mirrored here as a gitignored folder — never
+# committed into core.
+channel-discord/
+
+# ─── Plugin/channel starter template (separate PUBLIC repo) ───────────────
+# omadia-plugin-starter — a fork-ready template for third parties to build
+# their own Omadia plugins/channels, with a one-command ZIP build. Like the
+# channel repos above it is a PUBLIC OSS repo (byte5ai/omadia-plugin-starter)
+# developed in its own git repo, so it is mirrored here as a gitignored
+# folder — never committed into core.
+omadia-plugin-starter/
+
 # ─── byte5-specific agent + deployment configs (private) ──────────────────
 # These describe a specific byte5 deployment (Fly app, Neon project, kroki
 # sidecars, customer-specific agent configs) and must never land in public
