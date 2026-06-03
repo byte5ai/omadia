@@ -41,6 +41,7 @@ import {
   type ToolsAccessor,
 } from '@omadia/plugin-api';
 import type { DomainTool } from '@omadia/orchestrator';
+import { turnContext } from '@omadia/orchestrator';
 
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { JobScheduler } from '../plugins/jobScheduler.js';
@@ -221,16 +222,20 @@ export function createPluginContext(
       : undefined;
 
   // Memory accessor: present when the manifest declares memory permissions
-  // AND the memory provider plugin (`@omadia/memory`) has published
-  // its store into the service registry. The accessor is scoped to
-  // /memories/agents/<agentId>/ — plugins cannot see each other's memory.
-  // The manifest's permissions.memory.reads/writes fields are parsed but
-  // not currently used for intra-scope ACL enforcement — scope isolation
-  // itself is the primary boundary.
+  // AND the memory provider plugin (`@omadia/memory`) has published its store
+  // into the service registry. The accessor is scoped per-plugin AND
+  // per-orchestrator to /memories/orchestrators/<agentSlug>/plugins/<pluginId>/
+  // — the active Agent slug is resolved from the turn context at call time, so
+  // the same plugin invoked under two Agents writes to two disjoint trees.
+  // Plugins cannot see each other's — or another orchestrator's — memory.
   const memoryStoreService = serviceRegistry.get<MemoryStore>('memoryStore');
   const memory: MemoryAccessor | undefined =
     memoryStoreService && memoryDeclared(agentId, catalog)
-      ? createMemoryAccessor({ agentId, store: memoryStoreService })
+      ? createMemoryAccessor({
+          pluginId: agentId,
+          store: memoryStoreService,
+          resolveAgentSlug: () => turnContext.currentAgentSlug(),
+        })
       : undefined;
 
   const secrets: SecretsAccessor = {

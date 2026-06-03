@@ -30,6 +30,16 @@ export interface TurnHookContext {
   readonly turnId: string;
   readonly sessionScope?: string;
   readonly userId?: string;
+  /**
+   * Per-orchestrator isolation — the Agent (orchestrator) slug handling this
+   * turn (= the orchestrator's `agentId`). Hooks that persist scope-keyed KG
+   * artefacts (e.g. the plan-runner's Plan nodes) MUST qualify their scope
+   * with it (`<agentSlug>::<sessionScope>`, via `qualifyScope`) so recall
+   * stays per-Agent — matching what `SessionLogger` writes for Turns.
+   * Undefined on legacy / single-agent boots → callers fall back to the raw
+   * scope (the `default::` dual-clause keeps it reachable).
+   */
+  readonly agentSlug?: string;
 }
 
 /**

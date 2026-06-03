@@ -1,5 +1,6 @@
 import type { KnowledgeGraph, PluginContext } from '@omadia/plugin-api';
 import type { TurnAnnotation, TurnHookRegistrar } from '@omadia/orchestrator';
+import { graphScopeFor } from '@omadia/orchestrator';
 
 import { shouldPlan } from './gate.js';
 import { buildPlanSnapshot } from './snapshot.js';
@@ -159,7 +160,14 @@ export async function activate(
         const userMessage = payload.userMessage?.trim();
         if (!userMessage) return;
         if (!(await shouldPlan(userMessage, llm))) return;
-        const scope = hookCtx.sessionScope ?? hookCtx.turnId;
+        // Per-orchestrator isolation: qualify the plan scope with the Agent
+        // slug (same `graphScopeFor` formula SessionLogger uses for Turns) so
+        // `listRecentPlans` recall stays per-Agent. `agentSlug` is undefined
+        // on legacy boots → raw scope (the `default::` dual-clause covers it).
+        const scope = graphScopeFor(
+          hookCtx.agentSlug,
+          hookCtx.sessionScope ?? hookCtx.turnId,
+        );
         const nowMs = Date.now();
         const createdAt = new Date(nowMs).toISOString();
         const result = await materializePlan({
@@ -336,8 +344,9 @@ export async function activate(
       label: 'plan-runner:onVerifierBlocked',
       priority: 10,
       hook: async (hookCtx, payload): Promise<void> => {
-        const scope = hookCtx.sessionScope;
-        if (!scope) return;
+        if (!hookCtx.sessionScope) return;
+        // Qualify identically to the write side so the plan is found.
+        const scope = graphScopeFor(hookCtx.agentSlug, hookCtx.sessionScope);
         const marked = await markLatestPlanVerifierBlocked(
           scope,
           payload.blockReason ?? 'contradiction',

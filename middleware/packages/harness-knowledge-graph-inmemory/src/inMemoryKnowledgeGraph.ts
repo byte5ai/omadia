@@ -90,6 +90,24 @@ import {
 } from '@omadia/plugin-api';
 
 /**
+ * Per-orchestrator KG isolation parity with the Neon backend's
+ * `scope LIKE $prefix || '%' OR ($prefix='default::' AND scope NOT LIKE '%::%')`
+ * clause. Returns true when the scope belongs to the Agent identified by
+ * `prefix` (`<agentSlug>::`). `undefined` prefix = legacy cross-agent view
+ * (matches everything). The `default::` branch admits legacy unqualified
+ * scopes (no `::` separator) so pre-isolation data stays reachable.
+ */
+function matchesAgentScopePrefix(
+  scope: string,
+  prefix: string | undefined,
+): boolean {
+  if (!prefix) return true;
+  if (scope.startsWith(prefix)) return true;
+  if (prefix === 'default::' && !scope.includes('::')) return true;
+  return false;
+}
+
+/**
  * In-memory knowledge graph. Lives in the middleware process, lost on
  * restart — the session transcripts on disk remain the source of truth, a
  * backfill job can rebuild the graph on demand. Good enough for local dev,
@@ -540,6 +558,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       if (excludeTurnIds.has(node.id)) continue;
       const scope = String(node.props['scope'] ?? '');
       if (opts.excludeScope && scope === opts.excludeScope) continue;
+      if (!matchesAgentScopePrefix(scope, opts.agentScopePrefix)) continue;
       if (opts.userId && node.props['userId'] !== opts.userId) continue;
 
       const haystack = (
@@ -609,6 +628,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       if (excludeTurnIds.has(node.id)) continue;
       const scope = String(node.props['scope'] ?? '');
       if (opts.excludeScope && scope === opts.excludeScope) continue;
+      if (!matchesAgentScopePrefix(scope, opts.agentScopePrefix)) continue;
       if (opts.userId && node.props['userId'] !== opts.userId) continue;
 
       const entryType = (node.entryType ?? 'memory') as 'memory' | 'process' | 'task';
@@ -835,6 +855,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         ...(input.significance !== undefined
           ? { significance: input.significance }
           : {}),
+        ...(input.originAgent ? { origin_agent: input.originAgent } : {}),
         acl_owners: initialOwners,
         created_at: now,
         created_by: input.createdBy,
@@ -1322,7 +1343,16 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       const owners = Array.isArray(node.props['acl_owners'])
         ? (node.props['acl_owners'] as string[])
         : [];
-      const ownerMatch = owners.includes(opts.viewerOmadiaUserId);
+      // Per-orchestrator isolation: owner-gated MK is additionally constrained
+      // to the viewing Agent. Legacy MK with no origin_agent stays visible to
+      // the owner; team/public bypasses (cross-agent sharing preserved).
+      const originAgent = node.props['origin_agent'];
+      const agentMatch =
+        opts.viewerAgentSlug === undefined ||
+        !originAgent ||
+        originAgent === opts.viewerAgentSlug;
+      const ownerMatch =
+        owners.includes(opts.viewerOmadiaUserId) && agentMatch;
       // Mirror neon's `COALESCE(visibility, 'team')`: an MK with no explicit
       // visibility is team-visible by default; `private` is never admitted
       // by the team branch.
@@ -1365,7 +1395,14 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       const owners = Array.isArray(parent.props['acl_owners'])
         ? (parent.props['acl_owners'] as string[])
         : [];
-      const ownerMatch = owners.includes(opts.viewerOmadiaUserId);
+      // Per-orchestrator isolation against the parent MK's origin_agent.
+      const originAgent = parent.props['origin_agent'];
+      const agentMatch =
+        opts.viewerAgentSlug === undefined ||
+        !originAgent ||
+        originAgent === opts.viewerAgentSlug;
+      const ownerMatch =
+        owners.includes(opts.viewerOmadiaUserId) && agentMatch;
       // Excerpts inherit the parent MK's ACL + visibility.
       const teamMatch =
         opts.teamVisibility === true &&
@@ -2588,6 +2625,14 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
           if (!turnNode || turnNode.type !== 'Turn') continue;
           if (opts.userId && turnNode.props['userId'] !== opts.userId) continue;
           if (opts.excludeScope && turnNode.props['scope'] === opts.excludeScope) continue;
+          // Entity node stays global; entity-anchored recall is agent-isolated.
+          if (
+            !matchesAgentScopePrefix(
+              String(turnNode.props['scope'] ?? ''),
+              opts.agentScopePrefix,
+            )
+          )
+            continue;
           capturingTurns.push(turnNode);
         }
       }
@@ -2741,11 +2786,20 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     userId?: string;
     limit?: number;
     openOnly?: boolean;
+    agentScopePrefix?: string;
   }): Promise<GraphNode[]> {
     const limit = Math.max(1, Math.min(opts.limit ?? 5, 50));
     let plans = [...this.nodes.values()].filter((n) => n.type === 'Plan');
     if (opts.userId !== undefined) {
       plans = plans.filter((n) => n.props['userId'] === opts.userId);
+    }
+    if (opts.agentScopePrefix !== undefined) {
+      plans = plans.filter((n) =>
+        matchesAgentScopePrefix(
+          String(n.props['scope'] ?? ''),
+          opts.agentScopePrefix,
+        ),
+      );
     }
     if (opts.openOnly === true) {
       plans = plans.filter((p) => {

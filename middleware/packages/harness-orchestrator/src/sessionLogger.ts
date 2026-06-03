@@ -1,5 +1,10 @@
 import type { MemoryStore } from '@omadia/plugin-api';
-import { turnNodeId, type EntityRef, type KnowledgeGraph } from '@omadia/plugin-api';
+import {
+  qualifyScope,
+  turnNodeId,
+  type EntityRef,
+  type KnowledgeGraph,
+} from '@omadia/plugin-api';
 import { isValidSessionId, type ChatSessionStore } from './chatSessionStore.js';
 import type { RunTracePayload } from './runTraceCollector.js';
 
@@ -56,6 +61,19 @@ export class SessionLogger {
      * is mirrored into the store so a mid-stream reload still recovers the
      * assistant answer without needing the client to PUT. */
     private readonly chatSessionStore?: ChatSessionStore,
+    /**
+     * Per-orchestrator KG isolation — the Agent (orchestrator) slug owning
+     * this logger (= `config.agentId`). When set, every Turn is ingested
+     * under the qualified graph scope `<agentSlug>::<scope>` so recall can
+     * constrain to this Agent's own turns. The MARKDOWN transcript path is
+     * left on the raw (sanitized) scope — it is a shared, conversation-keyed
+     * human/recovery artifact (decision A3a). When undefined (legacy
+     * single-agent boot / tests), the graph scope stays unqualified exactly
+     * as before. MUST match the qualification the orchestrator applies to the
+     * retriever's `sessionScope` (same `qualifyScope(agentSlug, rawScope)`),
+     * so `turnNodeId` agrees on both the write and the recall side.
+     */
+    private readonly agentSlug?: string,
   ) {}
 
   async log(entry: SessionLogEntry): Promise<{ turnExternalId: string }> {
@@ -65,9 +83,14 @@ export class SessionLogger {
     // Millisecond-precision time so back-to-back turns have unique ids. Trade
     // a few characters of header noise for collision-free graph backfill.
     const time = iso.slice(11, 23);
+    // Markdown path: raw (sanitized) conversation scope — shared, human/
+    // recovery artifact (decision A3a). Graph: agent-qualified so recall is
+    // per-orchestrator. `graphScopeFor` is the single source of truth the
+    // orchestrator also uses for the retriever's sessionScope/excludeScope.
     const scope = sanitizeScope(entry.scope);
+    const gScope = graphScopeFor(this.agentSlug, entry.scope);
     const entityRefs = dedupeEntityRefs(entry.entityRefs ?? []);
-    const earlyTurnId = turnNodeId(scope, iso);
+    const earlyTurnId = turnNodeId(gScope, iso);
 
     const startedAt = now.getTime();
 
@@ -126,10 +149,10 @@ export class SessionLogger {
     }
 
     if (this.graph) {
-      const turnExternalId = turnNodeId(scope, iso);
+      const turnExternalId = turnNodeId(gScope, iso);
       try {
         await this.graph.ingestTurn({
-          scope,
+          scope: gScope,
           time: iso,
           userMessage: entry.userMessage,
           assistantAnswer: entry.assistantAnswer,
@@ -163,8 +186,24 @@ export class SessionLogger {
       }
       return { turnExternalId };
     }
-    return { turnExternalId: turnNodeId(scope, iso) };
+    return { turnExternalId: turnNodeId(gScope, iso) };
   }
+}
+
+/**
+ * The canonical graph scope for a turn — `sanitizeScope`d conversation id,
+ * agent-qualified when an Agent slug is supplied. Exported so the orchestrator
+ * computes the retriever's `sessionScope`/`excludeScope` with the EXACT same
+ * formula the logger writes, keeping `turnNodeId` consistent across the
+ * write (ingest) and read (recall) sides. `undefined` slug = legacy
+ * unqualified scope (single-agent boot / tests), byte-identical to pre-isolation.
+ */
+export function graphScopeFor(
+  agentSlug: string | undefined,
+  rawScope: string,
+): string {
+  const base = sanitizeScope(rawScope);
+  return agentSlug !== undefined ? qualifyScope(agentSlug, base) : base;
 }
 
 function sanitizeScope(scope: string): string {

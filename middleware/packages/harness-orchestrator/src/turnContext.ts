@@ -34,6 +34,16 @@ import type { PrivacyTurnHandle } from './privacyHandle.js';
 export interface TurnContextValue {
   turnId: string;
   turnDate: string;
+  /**
+   * Per-orchestrator isolation — slug of the Agent (orchestrator) handling
+   * this turn. Set by the orchestrator at turn start (= `this.agentId`).
+   * Read by the per-call MemoryAccessor so a plugin's notes land under the
+   * active orchestrator's namespace, and available to any other turn-scoped
+   * consumer that needs the Agent identity. Undefined outside a turn (ad-hoc
+   * invocations, activate-time plugin writes) → callers fall back to
+   * `'default'`.
+   */
+  agentSlug?: string;
   chatParticipants?: ChatParticipantsProvider;
   /**
    * Privacy-Proxy Slice 2.1: per-turn privacy handle threaded through the
@@ -135,6 +145,7 @@ export const turnContext = {
       {
         turnId: prev?.turnId ?? '',
         turnDate: prev?.turnDate ?? today(),
+        ...(prev?.agentSlug ? { agentSlug: prev.agentSlug } : {}),
         chatParticipants,
         ...(prev?.privacyHandle ? { privacyHandle: prev.privacyHandle } : {}),
         ...(prev?.captureRawToolResult
@@ -151,6 +162,13 @@ export const turnContext = {
   /** Convenience accessor. Undefined outside any turn context. */
   currentTurnId(): string | undefined {
     return storage.getStore()?.turnId;
+  },
+  /**
+   * The Agent (orchestrator) slug handling the active turn, or undefined
+   * outside any turn context. Used for per-orchestrator memory/KG isolation.
+   */
+  currentAgentSlug(): string | undefined {
+    return storage.getStore()?.agentSlug;
   },
   /**
    * The turn's frozen date as `YYYY-MM-DD`. Falls back to a fresh

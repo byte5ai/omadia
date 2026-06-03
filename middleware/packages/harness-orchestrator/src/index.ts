@@ -144,7 +144,7 @@ export type {
 export type { RunTracePayload } from '@omadia/channel-sdk';
 
 // Session logger + chat-session store
-export { SessionLogger } from './sessionLogger.js';
+export { SessionLogger, graphScopeFor } from './sessionLogger.js';
 export type { SessionLogEntry } from './sessionLogger.js';
 export {
   ChatSessionStore,

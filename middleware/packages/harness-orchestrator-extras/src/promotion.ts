@@ -59,6 +59,13 @@ export interface PromoteTurnInput {
   /** Fallback summary source — typically the cleaned assistant answer.
    *  Only used when `palaiaExcerpt` is absent. */
   fallbackAssistantAnswer: string;
+  /**
+   * Per-orchestrator KG isolation — the Agent (orchestrator) slug that
+   * produced this turn. Stamped as `origin_agent` on the resulting MK so
+   * recall default-isolates it to this Agent (team/public promotion stays
+   * cross-agent). Omit on legacy / single-agent boots.
+   */
+  originAgent?: string;
   /** Optional log sink. Defaults to `console.error`. */
   log?: (msg: string) => void;
 }
@@ -167,6 +174,7 @@ export async function promoteTurnIfSignificant(
       createdBy: `auto:${input.userId}`,
       involvedOmadiaUserIds: [input.userId],
       aclOwners: [input.userId],
+      ...(input.originAgent ? { originAgent: input.originAgent } : {}),
       derivedFromTurnIds: [input.turnId],
       // Slice 6.5 — symmetric to manual save: persist the verbatim
       // source-snippets so the auto-promoted MK has the same

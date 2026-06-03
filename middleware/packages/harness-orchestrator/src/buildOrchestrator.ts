@@ -36,10 +36,17 @@ import type {
 import type { VerifierBundle } from '@omadia/verifier';
 import type { Pool } from 'pg';
 
+import { MemoryToolHandler } from '@omadia/memory';
+
 import { ChatSessionStore } from './chatSessionStore.js';
 import type { Microsoft365Accessor } from './microsoft365-shim.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import { Orchestrator } from './orchestrator.js';
+import { OrchestratorMemoryNamespacer } from './orchestratorMemoryNamespacer.js';
+import {
+  ScopedMemoryStore,
+  orchestratorMemoryScope,
+} from './registry/scopedMemoryStore.js';
 import type { TurnHookRunner } from './turnHooks.js';
 import type { ChatAgentBundle } from './plugin.js';
 import { SessionLogger } from './sessionLogger.js';
@@ -126,11 +133,29 @@ export function buildOrchestratorForAgent(
   config: AgentRuntimeConfig,
   deps: OrchestratorDeps,
 ): BuiltOrchestrator {
-  const chatSessionStore = new ChatSessionStore(deps.memoryStore);
+  // Per-orchestrator memory isolation. The shared kernel `MemoryStore` is
+  // wrapped so this Agent can only touch its own tree (`orchestrator:<slug>:*`)
+  // plus the shared `core` namespace — enforced by `ScopedMemoryStore`.
+  //   - ChatSessionStore + SessionLogger write to the shared `core`
+  //     `sessions`/`chat-sessions` paths (session transcripts stay common,
+  //     decision A3a), so they use the scoped store directly.
+  //   - The model-facing `memory` tool additionally goes through the
+  //     namespacer, which rewrites its arbitrary `/memories/<x>` notes into
+  //     the Agent-private `/memories/orchestrators/<slug>/<x>` tree.
+  const scopedStore = new ScopedMemoryStore({
+    agentSlug: config.agentId,
+    scope: orchestratorMemoryScope(config.agentId),
+    inner: deps.memoryStore,
+  });
+  const chatSessionStore = new ChatSessionStore(scopedStore);
   const sessionLogger = new SessionLogger(
-    deps.memoryStore,
+    scopedStore,
     deps.knowledgeGraph,
     chatSessionStore,
+    config.agentId,
+  );
+  const memoryToolHandler = new MemoryToolHandler(
+    new OrchestratorMemoryNamespacer(config.agentId, scopedStore),
   );
 
   // Native-tool instances (channel-coupled UI cards + calendar). The calendar
@@ -163,6 +188,7 @@ export function buildOrchestratorForAgent(
     maxToolIterations: config.maxToolIterations,
     domainTools: [],
     nativeToolRegistry: deps.nativeToolRegistry,
+    memoryToolHandler,
     sessionLogger,
     entityRefBus: deps.entityRefBus,
     knowledgeGraph: deps.knowledgeGraph,

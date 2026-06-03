@@ -21,6 +21,7 @@ import {
   type ConfigStore,
   type PlatformSettingsRow,
 } from './configStore.js';
+import { orchestratorMemoryScope } from './scopedMemoryStore.js';
 
 /**
  * OrchestratorRegistry (US4 / T015).
@@ -136,13 +137,12 @@ export interface ActiveAgent {
   readonly bindings: readonly ChannelBindingRow[];
   readonly built: BuiltOrchestrator;
   /**
-   * Memory scope = union of enabled plugins' `permissions.memory.{reads,
-   * writes}` plus `core` (US8 / T033). Computed from `pluginLookup` at
-   * snapshot-apply time; empty arrays when no `pluginLookup` is wired
-   * (legacy boot — no per-Agent enforcement).
-   *
-   * The `core` entry is always present and is the convention for shared
-   * agent-agnostic memory (sessions, run traces, system prompts).
+   * Strict per-orchestrator memory scope: `['core', 'orchestrator:<slug>:*']`
+   * (see {@link computeMemoryScope}). The Agent may touch only its own
+   * orchestrator tree plus the shared `core` namespace — never another
+   * Agent's, and never a shared per-plugin namespace. Enforced at runtime by
+   * the `ScopedMemoryStore` that `buildOrchestratorForAgent` wraps around the
+   * shared `MemoryStore`.
    */
   readonly memoryScope: readonly string[];
 }
@@ -299,10 +299,7 @@ export class OrchestratorRegistry {
         );
         const plugins = pluginsByAgent.get(action.agent.id) ?? [];
         const bindings = bindingsByAgent.get(action.agent.id) ?? [];
-        const memoryScope = computeMemoryScope(
-          plugins,
-          this.options.pluginLookup,
-        );
+        const memoryScope = computeMemoryScope(action.agent.slug);
         this.active.set(action.agent.slug, {
           agent: action.agent,
           plugins,
@@ -342,10 +339,7 @@ export class OrchestratorRegistry {
         );
         const plugins = pluginsByAgent.get(action.agent.id) ?? [];
         const bindings = bindingsByAgent.get(action.agent.id) ?? [];
-        const memoryScope = computeMemoryScope(
-          plugins,
-          this.options.pluginLookup,
-        );
+        const memoryScope = computeMemoryScope(action.agent.slug);
         this.active.set(action.agent.slug, {
           agent: action.agent,
           plugins,
@@ -367,10 +361,7 @@ export class OrchestratorRegistry {
         if (!before) return;
         const plugins = pluginsByAgent.get(action.agent.id) ?? [];
         const bindings = bindingsByAgent.get(action.agent.id) ?? [];
-        const memoryScope = computeMemoryScope(
-          plugins,
-          this.options.pluginLookup,
-        );
+        const memoryScope = computeMemoryScope(action.agent.slug);
         this.active.set(action.agent.slug, {
           ...before,
           agent: action.agent,
@@ -637,32 +628,28 @@ function actionSlug(action: DiffAction): string {
 }
 
 /**
- * Compute an Agent's effective memory scope (US8 / T033) as the union of:
- *   - its enabled plugins' `permissions.memory.{reads, writes}` declarations
- *     (looked up via the optional `PluginCapabilityLookup.getMemoryScope`)
- *   - the constant `core` namespace (always present — shared agent-agnostic
- *     memory: sessions, run traces, system prompts)
+ * Compute an Agent's effective memory scope.
  *
- * `core` is a stable convention used by the `ScopedMemoryStore` wrapper to
- * permit shared paths even for Agents with otherwise-empty plugin lists.
+ * STRICT per-orchestrator isolation (supersedes the original US8/T033
+ * plugin-union model): an Agent may touch only its own orchestrator tree
+ * plus the shared `core` namespace — never another Agent's, and never a
+ * shared per-plugin namespace (`agent:<pluginId>:*`). Two Agents that both
+ * enable the same plugin therefore do NOT share that plugin's memory; each
+ * plugin's notes live under the Agent-private
+ * `/memories/orchestrators/<slug>/plugins/<pluginId>/` sub-tree, all covered
+ * by the single `orchestrator:<slug>:*` pattern.
  *
- * When `lookup` is undefined OR the lookup returns undefined for every
- * plugin, the scope degrades to `['core']` — no per-Agent enforcement
- * beyond the shared namespace.
+ *  - `core`                 — shared agent-agnostic memory (sessions, run
+ *                             traces, brand `_*` files, system prompts).
+ *  - `orchestrator:<slug>:*` — the Agent's entire private tree.
+ *
+ * Plugin manifest `permissions.memory` declarations no longer widen an
+ * Agent's scope; cross-agent knowledge sharing now flows exclusively through
+ * the KG ACL model (team/public-promoted MemorableKnowledge), not the
+ * filesystem memory store.
  */
-export function computeMemoryScope(
-  plugins: readonly AgentPluginRow[],
-  lookup: PluginCapabilityLookup | undefined,
-): readonly string[] {
-  const out = new Set<string>(['core']);
-  if (!lookup?.getMemoryScope) return Array.from(out);
-  for (const p of plugins) {
-    if (!p.enabled) continue;
-    const scope = lookup.getMemoryScope(p.pluginId);
-    if (!scope) continue;
-    for (const s of scope) out.add(s);
-  }
-  return Array.from(out);
+export function computeMemoryScope(agentSlug: string): readonly string[] {
+  return orchestratorMemoryScope(agentSlug);
 }
 
 function groupBy<T, K>(

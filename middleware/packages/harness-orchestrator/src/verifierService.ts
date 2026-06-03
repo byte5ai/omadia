@@ -129,6 +129,10 @@ export class VerifierService implements ChatAgent {
           turnId: scope,
           sessionScope: scope,
           ...(input.userId ? { userId: input.userId } : {}),
+          // Per-orchestrator isolation: same Agent slug the orchestrator
+          // stamps on its hooks, so the plan-runner qualifies the scope
+          // identically and finds this Agent's plan.
+          agentSlug: this.orchestrator.agentId,
         },
         { blockReason: reason },
       )

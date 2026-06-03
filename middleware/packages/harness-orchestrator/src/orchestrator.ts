@@ -30,6 +30,7 @@ import {
   KNOWLEDGE_GRAPH_TOOL_NAME,
   knowledgeGraphToolSpec,
 } from './knowledgeGraphTool.js';
+import type { MemoryToolHandler } from '@omadia/memory';
 import type { ChatParticipantsTool } from './tools/chatParticipantsTool.js';
 import {
   CHAT_PARTICIPANTS_TOOL_NAME,
@@ -74,6 +75,7 @@ import type {
   SessionBriefingService,
 } from '@omadia/plugin-api';
 import {
+  agentScopePrefix,
   PRIVACY_BYPASS_SCOPES_CONFIG_KEY,
   PRIVACY_MODE_CONFIG_KEY,
   resolveEffectivePrivacyMode,
@@ -89,7 +91,7 @@ import {
 } from './privacyHandle.js';
 import { RunTraceCollector, type InvocationHandle } from './runTraceCollector.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
-import type { SessionLogger } from './sessionLogger.js';
+import { graphScopeFor, type SessionLogger } from './sessionLogger.js';
 import { streamMessageEvents } from './streaming.js';
 import { buildDateHeader, today, turnContext } from './turnContext.js';
 
@@ -160,6 +162,16 @@ export interface OrchestratorOptions {
   /** Optional. When set, exposes the `query_knowledge_graph` tool so Claude
    * can look up prior turns and entity context before delegating. */
   knowledgeGraph?: KnowledgeGraph;
+  /**
+   * Per-orchestrator memory isolation — a `MemoryToolHandler` bound to THIS
+   * Agent's scoped (+ namespaced) MemoryStore. When set, the orchestrator
+   * dispatches the model-facing `memory` tool through it INSTEAD of the
+   * globally-registered handler, so every `view`/`create`/`str_replace`/…
+   * lands under `/memories/orchestrators/<slug>/` and can never read or write
+   * another Agent's memory. Absent (legacy direct construction) → the global
+   * handler is used exactly as before. Wired by `buildOrchestratorForAgent`.
+   */
+  memoryToolHandler?: MemoryToolHandler;
   /**
    * Optional. When set, retrieves conversational context (verbatim tail of
    * the active chat + entity-anchored and full-text hits from other chats of
@@ -774,6 +786,8 @@ export class Orchestrator {
   private readonly model: string;
   private readonly maxTokens: number;
   private readonly maxIterations: number;
+  /** Per-Agent scoped memory-tool handler; overrides the global one. */
+  private readonly memoryToolHandler: MemoryToolHandler | undefined;
   private readonly domainToolsByName: Map<string, DomainTool>;
   // systemPrompt is rebuilt live per turn from `buildSystemPrompt()` —
   // so hot-registered DomainTools show up in the preamble. Prompt caching
@@ -831,6 +845,7 @@ export class Orchestrator {
     this.model = options.model;
     this.maxTokens = options.maxTokens;
     this.maxIterations = options.maxToolIterations;
+    this.memoryToolHandler = options.memoryToolHandler;
     this.domainToolsByName = new Map(options.domainTools.map((t) => [t.name, t]));
     this.knowledgeGraph = options.knowledgeGraph;
     this.knowledgeGraphTool = options.knowledgeGraph
@@ -907,6 +922,9 @@ export class Orchestrator {
       userId: opts.userId,
       threshold: this.autoPromoteThreshold,
       fallbackAssistantAnswer: opts.fallbackAssistantAnswer,
+      // Per-orchestrator isolation: stamp the producing Agent so auto-promoted
+      // MK default-isolates to it (team/public promotion stays cross-agent).
+      originAgent: this.agentId,
       ...(opts.palaiaExcerpt ? { palaiaExcerpt: opts.palaiaExcerpt } : {}),
     };
     try {
@@ -1331,8 +1349,16 @@ export class Orchestrator {
       // priorities apply.
       const result = await this.contextRetriever.assembleForBudget({
         userMessage: input.userMessage,
-        agentId: 'orchestrator-default',
-        ...(input.sessionScope ? { sessionScope: input.sessionScope } : {}),
+        // Per-orchestrator isolation: the real Agent identity drives the KG
+        // scope-prefix filter (and agent_priorities). The retriever expects
+        // the sessionScope already agent-qualified — `graphScopeFor` is the
+        // SAME formula SessionLogger writes with, so `turnNodeId`/`getSession`
+        // agree on both the ingest and recall sides.
+        agentId: this.agentId,
+        agentScopePrefix: agentScopePrefix(this.agentId),
+        ...(input.sessionScope
+          ? { sessionScope: graphScopeFor(this.agentId, input.sessionScope) }
+          : {}),
         ...(input.userId ? { userId: input.userId } : {}),
       });
       console.error(
@@ -1348,8 +1374,9 @@ export class Orchestrator {
       if (this.sessionBriefing && input.sessionScope) {
         try {
           const briefing = await this.sessionBriefing.loadSessionBriefing({
-            scope: input.sessionScope,
-            agentId: 'orchestrator-default',
+            // Qualified scope so the briefing reads THIS Agent's turns only.
+            scope: graphScopeFor(this.agentId, input.sessionScope),
+            agentId: this.agentId,
             ...(input.userId ? { userId: input.userId } : {}),
           });
           if (briefing.mode === 'briefing' && briefing.text.length > 0) {
@@ -1445,6 +1472,9 @@ export class Orchestrator {
       {
         turnId,
         turnDate: today(),
+        // Per-orchestrator isolation: expose THIS Agent's identity to the
+        // per-call MemoryAccessor (plugin/sub-agent memory namespacing).
+        agentSlug: this.agentId,
         ...(parent?.chatParticipants
           ? { chatParticipants: parent.chatParticipants }
           : {}),
@@ -1527,6 +1557,9 @@ export class Orchestrator {
             turnId,
             ...(input.sessionScope ? { sessionScope: input.sessionScope } : {}),
             ...(input.userId ? { userId: input.userId } : {}),
+            // Per-orchestrator isolation: hooks that persist scope-keyed KG
+            // artefacts (plan-runner) qualify their scope with this.
+            agentSlug: this.agentId,
           },
           payload,
         ),
@@ -1987,6 +2020,8 @@ export class Orchestrator {
     turnContext.enter({
       turnId,
       turnDate: today(),
+      // Per-orchestrator isolation: see the matching `turnContext.run` above.
+      agentSlug: this.agentId,
       ...(parent?.chatParticipants
         ? { chatParticipants: parent.chatParticipants }
         : {}),
@@ -2869,6 +2904,14 @@ export class Orchestrator {
     input: unknown,
     observer?: AskObserver,
   ): Promise<string> {
+    // Per-orchestrator memory isolation: when this Agent has a scoped
+    // memory-tool handler, it MUST shadow the globally-registered `memory`
+    // handler (which wraps the unscoped FilesystemMemoryStore). Checked
+    // before the generic `reg?.handler` dispatch below, since `memory` is a
+    // plugin-registered native tool and would otherwise win here unscoped.
+    if (name === MEMORY_TOOL_NAME && this.memoryToolHandler) {
+      return this.memoryToolHandler.handle(input);
+    }
     // Plugin-contributed handlers win first. Kernel branches below are the
     // legacy path for tools that have not yet been converted to
     // plugin-registration (memory, knowledge_graph, …). As each kernel tool

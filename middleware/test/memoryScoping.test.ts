@@ -103,28 +103,47 @@ const lookup: PluginCapabilityLookup = {
   getMemoryScope: (id) => PLUGIN_SCOPES[id],
 };
 
-test('T033: computeMemoryScope unions enabled plugin scopes + core', () => {
-  const scope = computeMemoryScope(
-    [
-      plugin('a-id', '@omadia/agent-confluence'),
-      plugin('a-id', '@omadia/agent-odoo-hr', /* enabled */ false),
-      plugin('a-id', '@omadia/agent-shared'),
-    ],
-    lookup,
-  );
-  assert.deepEqual([...scope].sort(), [
-    'agent:@omadia/agent-confluence:*',
-    'agent:@omadia/agent-shared:*',
+test('strict: computeMemoryScope is core + the Agent\'s own orchestrator tree', () => {
+  // Per-orchestrator isolation supersedes the old plugin-union model: the
+  // scope is fully determined by the Agent slug and never widens with plugins.
+  assert.deepEqual([...computeMemoryScope('public')].sort(), [
     'core',
+    'orchestrator:public:*',
+  ]);
+  assert.deepEqual([...computeMemoryScope('marketing')].sort(), [
+    'core',
+    'orchestrator:marketing:*',
   ]);
 });
 
-test('T033: computeMemoryScope without a lookup degrades to [core]', () => {
-  const scope = computeMemoryScope(
-    [plugin('a-id', '@omadia/agent-confluence')],
-    undefined,
+test('strict: orchestrator:<slug>:* grants the Agent its own tree, denies another\'s', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'omadia-mem-'));
+  const inner = new FilesystemMemoryStore(dir);
+  await inner.writeFile('/memories/orchestrators/public/plugins/p/n.md', 'mine');
+  await inner.writeFile('/memories/orchestrators/marketing/plugins/p/n.md', 'theirs');
+
+  const pub = new ScopedMemoryStore({
+    agentSlug: 'public',
+    scope: computeMemoryScope('public'),
+    inner,
+  });
+  assert.equal(
+    await pub.readFile('/memories/orchestrators/public/plugins/p/n.md'),
+    'mine',
   );
-  assert.deepEqual([...scope], ['core']);
+  // Another orchestrator's tree is invisible (soft-deny read) + write-denied.
+  assert.equal(
+    await pub.fileExists('/memories/orchestrators/marketing/plugins/p/n.md'),
+    false,
+  );
+  await assert.rejects(
+    () => pub.readFile('/memories/orchestrators/marketing/plugins/p/n.md'),
+    MemoryScopeViolation,
+  );
+  await assert.rejects(
+    () => pub.writeFile('/memories/orchestrators/marketing/leak.md', 'no'),
+    MemoryScopeViolation,
+  );
 });
 
 test('SC-003: a Public Agent reads Confluence memory but NOT Odoo-HR memory', async () => {
@@ -280,14 +299,14 @@ test('T035: SessionConfigSnapshot.memoryScope matches the Agent\'s computed scop
   const active = registry.get('public');
   assert.ok(active);
   assert.deepEqual([...active.memoryScope].sort(), [
-    'agent:@omadia/agent-confluence:*',
     'core',
+    'orchestrator:public:*',
   ]);
 
   const sessionSnap = registry.snapshotForAgent('public');
   assert.deepEqual([...sessionSnap!.memoryScope].sort(), [
-    'agent:@omadia/agent-confluence:*',
     'core',
+    'orchestrator:public:*',
   ]);
 
   // Capture-on-first-use carries the scope through to the persisted session.
@@ -302,7 +321,7 @@ test('T035: SessionConfigSnapshot.memoryScope matches the Agent\'s computed scop
     Promise.resolve(sessionSnap!),
   );
   assert.deepEqual([...captured!.memoryScope].sort(), [
-    'agent:@omadia/agent-confluence:*',
     'core',
+    'orchestrator:public:*',
   ]);
 });

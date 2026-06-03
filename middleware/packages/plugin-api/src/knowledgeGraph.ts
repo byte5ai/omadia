@@ -102,6 +102,12 @@ export interface KnowledgeGraph {
     userId?: string;
     limit?: number;
     openOnly?: boolean;
+    /**
+     * Restrict recall to plans whose `scope` begins with this agent prefix
+     * (`<agentSlug>::`). Omit for the legacy global view. See
+     * {@link agentScopePrefix} — per-orchestrator KG isolation.
+     */
+    agentScopePrefix?: string;
   }): Promise<GraphNode[]>;
   /**
    * Structured run-subgraph for a single Turn: Run node + AgentInvocations
@@ -677,6 +683,15 @@ export interface MemorableKnowledgeSearchOptions {
    * historical owner-only behaviour).
    */
   teamVisibility?: boolean;
+  /**
+   * Per-orchestrator isolation — the recalling Agent's slug. When set,
+   * owner-gated MK is additionally constrained to rows the viewing Agent
+   * produced (`origin_agent = viewerAgentSlug`); MK with no `origin_agent`
+   * (legacy / single-agent) stays visible to the owner. team/public rows
+   * bypass this constraint (cross-agent sharing preserved). Omit on legacy
+   * callers → no agent constraint.
+   */
+  viewerAgentSlug?: string;
 }
 
 /** Slice 7 — single MK hit from semantic search. */
@@ -698,6 +713,12 @@ export interface ExcerptSearchOptions {
    * against the parent MK's `visibility`. Default false.
    */
   teamVisibility?: boolean;
+  /**
+   * Per-orchestrator isolation — mirrors
+   * {@link MemorableKnowledgeSearchOptions.viewerAgentSlug}. Constrains the
+   * owner branch to the parent MK's `origin_agent`. Omit on legacy callers.
+   */
+  viewerAgentSlug?: string;
 }
 
 /** Slice 7 — single excerpt hit, carries the parent-MK external_id
@@ -1050,6 +1071,15 @@ export interface MemorableKnowledgeIngest {
    * regardless of whether owners are set.
    */
   aclOwners?: string[];
+  /**
+   * Per-orchestrator isolation — the Agent slug that produced this MK,
+   * stamped as the `origin_agent` property. Recall default-isolates by
+   * origin agent (an Agent only sees its own MK) while team/public-promoted
+   * MK stays shareable across Agents. Omit on legacy / single-agent boots →
+   * the MK has no origin agent and is matched only via the team/public or
+   * user-ACL branches.
+   */
+  originAgent?: string;
   /**
    * Slice 3 — cluster-root that triggered the create. Audited as the
    * `actor_omadia_user_id` of the `create` row. Falls back to
@@ -1476,6 +1506,12 @@ export interface SearchTurnsOptions {
   excludeScope?: string;
   /** Drop specific Turn external ids (usually the current turn). */
   excludeTurnIds?: readonly string[];
+  /**
+   * Restrict to turns whose `scope` begins with this agent prefix
+   * (`<agentSlug>::`). Omit for the legacy cross-agent view. See
+   * {@link agentScopePrefix} — per-orchestrator KG isolation.
+   */
+  agentScopePrefix?: string;
   /** Hard cap on returned hits. Defaults to 5. */
   limit?: number;
 }
@@ -1506,6 +1542,12 @@ export interface SearchTurnsByEmbeddingOptions {
   excludeScope?: string;
   /** Drop specific Turn external ids. */
   excludeTurnIds?: readonly string[];
+  /**
+   * Restrict to turns whose `scope` begins with this agent prefix
+   * (`<agentSlug>::`). Omit for the legacy cross-agent view. See
+   * {@link agentScopePrefix} — per-orchestrator KG isolation.
+   */
+  agentScopePrefix?: string;
   /** Hard cap on returned hits. Defaults to 5. */
   limit?: number;
   /** Drop matches with cosine similarity below this threshold. Default 0.3. */
@@ -1569,6 +1611,13 @@ export interface EntityCapturedTurnsOptions {
   userId?: string;
   /** Drop capturing turns from this scope. */
   excludeScope?: string;
+  /**
+   * Restrict the capturing turns to those whose `scope` begins with this
+   * agent prefix (`<agentSlug>::`). Entity NODES stay global (shared
+   * vocabulary); only the CAPTURED→Turn recall is agent-isolated. Omit for
+   * the legacy cross-agent view. See {@link agentScopePrefix}.
+   */
+  agentScopePrefix?: string;
   /** Max turns to return per matched entity. Default 2. */
   perEntityLimit?: number;
   /** Hard cap on distinct entities to return. Default 5. */
@@ -1593,6 +1642,35 @@ export interface EntityCapturedTurnsHit {
     userMessage: string;
     assistantAnswer: string;
   }>;
+}
+
+// ---------------------------------------------------------------------------
+// Per-orchestrator KG scope qualification.
+//
+// Each Agent (orchestrator) owns a slice of the single-tenant graph. We carry
+// the Agent identity inside the existing free-string `scope` (reusing the
+// `(tenant_id, scope, type)` index — no schema migration) by prefixing the
+// conversation scope with `<agentSlug>::`. Reads then constrain to
+// `scope LIKE '<agentSlug>::%'`, so Orchestrator A never recalls Orchestrator
+// B's turns/plans while WITHIN-agent cross-conversation recall still works
+// (the current conversation is dropped via `excludeScope`).
+//
+// CRITICAL: qualify exactly ONCE, at the orchestrator boundary. `turnNodeId`
+// / `sessionNodeId` derive node ids FROM the scope, so an unqualified scope at
+// any write/read site silently breaks recall (no error, just misses).
+// ---------------------------------------------------------------------------
+
+/** Separator between the agent slug and the conversation scope. */
+export const AGENT_SCOPE_SEP = '::';
+
+/** Build the graph scope an Agent writes: `<agentSlug>::<conversationScope>`. */
+export function qualifyScope(agentSlug: string, conversationScope: string): string {
+  return `${agentSlug}${AGENT_SCOPE_SEP}${conversationScope}`;
+}
+
+/** The `LIKE` prefix (`<agentSlug>::`) that selects one Agent's scopes. */
+export function agentScopePrefix(agentSlug: string): string {
+  return `${agentSlug}${AGENT_SCOPE_SEP}`;
 }
 
 // ---------------------------------------------------------------------------

@@ -95,6 +95,22 @@ export interface ContextBuildInput {
   userId?: string;
   /** External id of the turn currently being answered — excluded from hits. */
   currentTurnId?: string;
+  /**
+   * Per-orchestrator KG isolation — the `<agentSlug>::` prefix that selects
+   * the recalling Agent's own turns/plans. Forwarded to every scope-filtered
+   * KG read (`searchTurns`, `searchTurnsByEmbedding`, `findEntityCapturedTurns`,
+   * `listRecentPlans`). Undefined → legacy cross-agent recall (no regression
+   * for callers that don't set it).
+   */
+  agentScopePrefix?: string;
+  /**
+   * Per-orchestrator KG isolation — the recalling Agent's slug, forwarded to
+   * curated-memory reads (`searchMemorableKnowledgeByEmbedding` /
+   * `searchExcerptsByEmbedding`) as `viewerAgentSlug` so owner-gated MK is
+   * constrained to this Agent's `origin_agent`. team/public-promoted MK still
+   * crosses Agents. Undefined → no agent constraint.
+   */
+  agentSlug?: string;
 }
 
 export interface ContextBuildResult {
@@ -160,6 +176,15 @@ export interface AssembleForBudgetInput {
   currentTurnId?: string;
   /** Who is asking — driver for agent_priorities lookup. */
   agentId: string;
+  /**
+   * Per-orchestrator KG isolation (opt-in). When set (the orchestrator passes
+   * `<agentSlug>::`), every recall leg is constrained to this Agent's own
+   * turns/plans, and curated-memory recall is constrained to its `origin_agent`
+   * (`agentId` becomes the `viewerAgentSlug`). The orchestrator also passes an
+   * already-qualified `sessionScope`. Omitted → legacy cross-scope recall
+   * (direct-retriever callers and sub-agents are unaffected).
+   */
+  agentScopePrefix?: string;
   /** Optional override; otherwise `defaultBudgetTokens` from ContextRetriever-Opts. */
   budget?: { tokens: number };
 }
@@ -428,6 +453,16 @@ export class ContextRetriever {
       ...(input.sessionScope ? { sessionScope: input.sessionScope } : {}),
       ...(input.userId ? { userId: input.userId } : {}),
       ...(input.currentTurnId ? { currentTurnId: input.currentTurnId } : {}),
+      // Per-orchestrator KG isolation is OPT-IN: only when the caller (the
+      // orchestrator) passes an agent prefix do we constrain recall to that
+      // Agent. Its `sessionScope` then already arrives qualified, so
+      // getSession / turnNodeId stay consistent with the ingest side.
+      ...(input.agentScopePrefix
+        ? {
+            agentScopePrefix: input.agentScopePrefix,
+            agentSlug: input.agentId,
+          }
+        : {}),
     };
 
     const [
@@ -717,6 +752,9 @@ export class ContextRetriever {
       terms,
       ...(input.userId ? { userId: input.userId } : {}),
       ...(input.sessionScope ? { excludeScope: input.sessionScope } : {}),
+      ...(input.agentScopePrefix
+        ? { agentScopePrefix: input.agentScopePrefix }
+        : {}),
       perEntityLimit: 2,
       entityLimit: this.opts.entityLimit,
     });
@@ -750,6 +788,9 @@ export class ContextRetriever {
       const plans = await this.graph.listRecentPlans({
         limit: Math.max(limit * 4, 12),
         openOnly: this.opts.planOpenOnly,
+        ...(input.agentScopePrefix
+          ? { agentScopePrefix: input.agentScopePrefix }
+          : {}),
       });
       const scored: Array<{ hit: RecalledPlan; score: number }> = [];
       for (const p of plans) {
@@ -894,6 +935,7 @@ export class ContextRetriever {
           limit: overshoot,
           minSimilarity: this.opts.memoryMinSimilarity,
           teamVisibility: this.opts.teamVisibility,
+          ...(input.agentSlug ? { viewerAgentSlug: input.agentSlug } : {}),
         }),
         this.graph.searchExcerptsByEmbedding({
           queryEmbedding: queryVector,
@@ -901,6 +943,7 @@ export class ContextRetriever {
           limit: excerptOvershoot,
           minSimilarity: this.opts.memoryMinSimilarity,
           teamVisibility: this.opts.teamVisibility,
+          ...(input.agentSlug ? { viewerAgentSlug: input.agentSlug } : {}),
         }),
       ]);
     } catch (err) {
@@ -987,6 +1030,9 @@ export class ContextRetriever {
             ...(input.currentTurnId
               ? { excludeTurnIds: [input.currentTurnId] }
               : {}),
+            ...(input.agentScopePrefix
+              ? { agentScopePrefix: input.agentScopePrefix }
+              : {}),
             limit: this.opts.ftsLimit,
             recallMinScore: this.opts.recallMinScore,
             recallRecencyBoost: this.opts.recallRecencyBoost,
@@ -1006,6 +1052,9 @@ export class ContextRetriever {
       ...(input.userId ? { userId: input.userId } : {}),
       ...(input.sessionScope ? { excludeScope: input.sessionScope } : {}),
       ...(input.currentTurnId ? { excludeTurnIds: [input.currentTurnId] } : {}),
+      ...(input.agentScopePrefix
+        ? { agentScopePrefix: input.agentScopePrefix }
+        : {}),
       limit: this.opts.ftsLimit,
     });
   }

@@ -23,6 +23,10 @@ import type { MemoryEntry, MemoryStore } from '@omadia/plugin-api';
  *                              `/memories/chat-sessions/...`, `/memories/_*\/...`
  *                              (the shared kernel namespaces).
  *   - `agent:<id>:*`         — matches `/memories/agents/<id>/...`.
+ *   - `orchestrator:<slug>:*` — matches `/memories/orchestrators/<slug>/...`
+ *                              (strict per-orchestrator isolation: the
+ *                              Agent's own model-notes + its per-plugin
+ *                              sub-trees under `.../plugins/<pluginId>/`).
  *   - `session:*`            — matches `/memories/sessions/...`.
  *   - `/memories/foo`        — exact path match.
  *   - `/memories/foo/*`      — prefix match (everything under `/memories/foo/`).
@@ -31,6 +35,18 @@ import type { MemoryEntry, MemoryStore } from '@omadia/plugin-api';
  * and the constructor surfaces them as a warning so a typo in a manifest
  * shows up in the log without breaking the boot.
  */
+
+/**
+ * The strict per-orchestrator memory scope for an Agent: its own private
+ * orchestrator tree plus the shared `core` namespace. Single source of truth
+ * used both by the registry (metadata / snapshot) and by
+ * `buildOrchestratorForAgent` (the store that actually enforces it). Lives in
+ * this leaf module so `buildOrchestrator` can import it without a cycle
+ * through `registry/index`.
+ */
+export function orchestratorMemoryScope(agentSlug: string): readonly string[] {
+  return ['core', `orchestrator:${agentSlug}:*`];
+}
 
 export class MemoryScopeViolation extends Error {
   readonly agentSlug: string;
@@ -77,6 +93,18 @@ function compilePattern(pattern: string): CompiledPattern | undefined {
   if (agentMatch) {
     const id = agentMatch[1]!;
     const prefix = `/memories/agents/${id}/`;
+    return {
+      source: pattern,
+      match: (p) => p === prefix.slice(0, -1) || p.startsWith(prefix),
+    };
+  }
+  // Per-orchestrator isolation (strict): an Agent's own private tree —
+  // `/memories/orchestrators/<slug>/...` — covering both its model-level
+  // notes and its per-plugin sub-trees (`.../plugins/<pluginId>/...`).
+  const orchMatch = /^orchestrator:([^:]+):\*$/.exec(pattern);
+  if (orchMatch) {
+    const slug = orchMatch[1]!;
+    const prefix = `/memories/orchestrators/${slug}/`;
     return {
       source: pattern,
       match: (p) => p === prefix.slice(0, -1) || p.startsWith(prefix),

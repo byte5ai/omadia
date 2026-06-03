@@ -1041,6 +1041,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     userId?: string;
     limit?: number;
     openOnly?: boolean;
+    agentScopePrefix?: string;
   }): Promise<GraphNode[]> {
     const limit = Math.max(1, Math.min(opts.limit ?? 5, 50));
     // `user_id` lives in its own column (set on ingest), not in props.
@@ -1053,6 +1054,12 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         WHERE p.tenant_id = $1
           AND p.type = 'Plan'
           AND ($2::text IS NULL OR p.user_id = $2)
+          -- Per-orchestrator isolation: Plan.scope is the qualified
+          -- agentSlug::conversation (top-level column). Restrict to the
+          -- active Agent; the 'default::' branch keeps legacy plans reachable.
+          AND ($5::text IS NULL
+            OR p.scope LIKE $5 || '%'
+            OR ($5 = 'default::' AND p.scope NOT LIKE '%::%'))
           AND ($3::boolean = false OR EXISTS (
             SELECT 1
               FROM graph_nodes s
@@ -1065,7 +1072,13 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           ))
         ORDER BY (p.properties->>'createdAt') DESC NULLS LAST
         LIMIT $4`,
-      [this.tenantId, opts.userId ?? null, opts.openOnly === true, limit],
+      [
+        this.tenantId,
+        opts.userId ?? null,
+        opts.openOnly === true,
+        limit,
+        opts.agentScopePrefix ?? null,
+      ],
     );
     return res.rows.map((r) => rowToNode(r));
   }
@@ -1169,6 +1182,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     const limit = Math.max(1, Math.min(opts.limit ?? 5, 50));
     const userIdFilter = opts.userId ?? null;
     const excludeScope = opts.excludeScope ?? null;
+    const agentScopePrefix = opts.agentScopePrefix ?? null;
     const excludeTurnIds = opts.excludeTurnIds?.length
       ? Array.from(opts.excludeTurnIds)
       : null;
@@ -1205,6 +1219,13 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         AND ($2::text IS NULL OR user_id = $2)
         AND ($4::text IS NULL OR scope <> $4)
         AND ($5::text[] IS NULL OR external_id <> ALL($5::text[]))
+        -- Per-orchestrator isolation: when a prefix is given, restrict to the
+        -- Agent's own scopes. The 'default::' branch also admits legacy
+        -- unqualified rows (no '::' separator) so pre-isolation data stays
+        -- reachable for the default Agent without a migration.
+        AND ($7::text IS NULL
+          OR scope LIKE $7 || '%'
+          OR ($7 = 'default::' AND scope NOT LIKE '%::%'))
         AND to_tsvector(
           'simple',
           coalesce(properties->>'userMessage', '') || ' ' ||
@@ -1213,7 +1234,15 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       ORDER BY rank DESC, (properties->>'time') DESC
       LIMIT $6
       `,
-      [this.tenantId, userIdFilter, query, excludeScope, excludeTurnIds, limit],
+      [
+        this.tenantId,
+        userIdFilter,
+        query,
+        excludeScope,
+        excludeTurnIds,
+        limit,
+        agentScopePrefix,
+      ],
     );
 
     // ts_rank_cd is unbounded; normalise via rank / (rank + 1) so callers get
@@ -1245,6 +1274,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     const minSimilarity = opts.minSimilarity ?? 0.3;
     const userIdFilter = opts.userId ?? null;
     const excludeScope = opts.excludeScope ?? null;
+    const agentScopePrefix = opts.agentScopePrefix ?? null;
     const excludeTurnIds = opts.excludeTurnIds?.length
       ? Array.from(opts.excludeTurnIds)
       : null;
@@ -1289,6 +1319,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     //   $11 weight process
     //   $12 weight task
     //   $13 LIMIT (overshoot)
+    //   $14 agentScopePrefix (nullable) — per-orchestrator isolation
     const sql = `
       WITH scored AS (
         SELECT
@@ -1329,6 +1360,11 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           AND ($3::text IS NULL OR user_id = $3)
           AND ($4::text IS NULL OR scope <> $4)
           AND ($5::text[] IS NULL OR external_id <> ALL($5::text[]))
+          -- Per-orchestrator isolation (see searchTurns): own prefix, plus
+          -- legacy unqualified rows for the default Agent.
+          AND ($14::text IS NULL
+            OR scope LIKE $14 || '%'
+            OR ($14 = 'default::' AND scope NOT LIKE '%::%'))
           AND ($7::text[] IS NULL OR entry_type = ANY($7::text[]))
           AND ($8::boolean = TRUE OR tier IN ('HOT', 'WARM'))
           AND (
@@ -1412,6 +1448,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       weightProcess,
       weightTask,
       overshoot,
+      agentScopePrefix,
     ]);
 
     return result.rows
@@ -1667,6 +1704,9 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         ...(input.significance !== undefined
           ? { significance: input.significance }
           : {}),
+        // Per-orchestrator isolation: stamp the producing Agent so recall can
+        // default-isolate by origin (team/public visibility still shares).
+        ...(input.originAgent ? { origin_agent: input.originAgent } : {}),
         acl_owners: initialOwners,
         created_at: now,
         created_by: input.createdBy,
@@ -2379,8 +2419,19 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         AND type = 'MemorableKnowledge'
         AND embedding IS NOT NULL
         AND (
-          properties->'acl_owners' @> jsonb_build_array($3::text)
-          OR ($5::boolean AND COALESCE(visibility, 'team') IN ('team', 'public'))
+          -- team/public-promoted MK stays shareable across Agents.
+          ($5::boolean AND COALESCE(visibility, 'team') IN ('team', 'public'))
+          OR (
+            properties->'acl_owners' @> jsonb_build_array($3::text)
+            -- Per-orchestrator isolation: owner-gated MK is additionally
+            -- constrained to the viewing Agent. Legacy MK without an
+            -- origin_agent stays visible to the owner.
+            AND (
+              $6::text IS NULL
+              OR COALESCE(properties->>'origin_agent', '') = ''
+              OR properties->>'origin_agent' = $6
+            )
+          )
         )
       ORDER BY cosine_sim DESC
       LIMIT $4
@@ -2391,6 +2442,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       opts.viewerOmadiaUserId,
       limit,
       opts.teamVisibility === true,
+      opts.viewerAgentSlug ?? null,
     ]);
     return rows.rows
       .filter((r) => Number(r.cosine_sim) >= minSimilarity)
@@ -2427,8 +2479,17 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         AND ex.embedding IS NOT NULL
         AND mk.tenant_id = $2
         AND (
-          mk.properties->'acl_owners' @> jsonb_build_array($3::text)
-          OR ($5::boolean AND COALESCE(mk.visibility, 'team') IN ('team', 'public'))
+          -- team/public-promoted parent MK stays shareable across Agents.
+          ($5::boolean AND COALESCE(mk.visibility, 'team') IN ('team', 'public'))
+          OR (
+            mk.properties->'acl_owners' @> jsonb_build_array($3::text)
+            -- Per-orchestrator isolation against the parent MK's origin_agent.
+            AND (
+              $6::text IS NULL
+              OR COALESCE(mk.properties->>'origin_agent', '') = ''
+              OR mk.properties->>'origin_agent' = $6
+            )
+          )
         )
       ORDER BY cosine_sim DESC
       LIMIT $4
@@ -2449,6 +2510,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       opts.viewerOmadiaUserId,
       limit,
       opts.teamVisibility === true,
+      opts.viewerAgentSlug ?? null,
     ]);
 
     return rows.rows
@@ -4143,6 +4205,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     const entityLimit = Math.max(1, Math.min(opts.entityLimit ?? 5, 25));
     const userIdFilter = opts.userId ?? null;
     const excludeScope = opts.excludeScope ?? null;
+    const agentScopePrefix = opts.agentScopePrefix ?? null;
     const likeTerms = terms.map((t) => `%${t}%`);
     const exactTerms = terms;
 
@@ -4183,10 +4246,23 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           AND t.type = 'Turn'
           AND ($3::text IS NULL OR t.user_id = $3)
           AND ($4::text IS NULL OR t.scope <> $4)
+          -- Per-orchestrator isolation: the entity NODE stays global (shared
+          -- vocabulary), but entity-anchored recall only surfaces turns of
+          -- the active Agent. Closes the cross-agent entity-recall leak.
+          AND ($6::text IS NULL
+            OR t.scope LIKE $6 || '%'
+            OR ($6 = 'default::' AND t.scope NOT LIKE '%::%'))
         ORDER BY (t.properties->>'time') DESC
         LIMIT $5
         `,
-        [this.tenantId, row.id, userIdFilter, excludeScope, perEntityLimit],
+        [
+          this.tenantId,
+          row.id,
+          userIdFilter,
+          excludeScope,
+          perEntityLimit,
+          agentScopePrefix,
+        ],
       );
 
       if (turnRows.rows.length === 0) continue;
