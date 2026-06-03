@@ -1,12 +1,15 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
+import { toSemanticAnswer } from '@omadia/channel-sdk';
+import type { ChatTurnResult } from '@omadia/channel-sdk';
 import type { EmbeddingClient } from '@omadia/embeddings';
 import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
 import { ContextRetriever } from '@omadia/orchestrator-extras';
 import type {
   ProcessMemoryService,
   ProcessQueryHit,
+  RecalledContext,
 } from '@omadia/plugin-api';
 
 // Cross-session KG-recall probe — R0 (listRecentPlans), R1 (team-visibility
@@ -309,5 +312,47 @@ describe('R2 · ContextRetriever cross-session recall legs', () => {
       insights: [],
     });
     assert.doesNotMatch(result.text, /Aus früheren Sessions/);
+  });
+});
+
+describe('T1 · toSemanticAnswer forwards recalled (non-stream / Teams path)', () => {
+  const recalled: RecalledContext = {
+    plans: [
+      {
+        planId: 'plan:prior',
+        scope: 'sess-prior',
+        openStepGoals: ['ship it'],
+        doneCount: 1,
+        totalCount: 2,
+      },
+    ],
+    processes: [],
+    insights: [],
+  };
+
+  it('carries recalled onto the SemanticAnswer when non-empty', () => {
+    const result: ChatTurnResult = {
+      answer: 'hi',
+      toolCalls: 0,
+      iterations: 1,
+      recalled,
+    };
+    const answer = toSemanticAnswer(result);
+    assert.deepEqual(answer.recalled, recalled);
+  });
+
+  it('omits recalled when all legs are empty', () => {
+    const result: ChatTurnResult = {
+      answer: 'hi',
+      toolCalls: 0,
+      iterations: 1,
+      recalled: { plans: [], processes: [], insights: [] },
+    };
+    assert.equal(toSemanticAnswer(result).recalled, undefined);
+  });
+
+  it('omits recalled when absent', () => {
+    const result: ChatTurnResult = { answer: 'hi', toolCalls: 0, iterations: 1 };
+    assert.equal(toSemanticAnswer(result).recalled, undefined);
   });
 });

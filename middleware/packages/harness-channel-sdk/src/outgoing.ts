@@ -10,10 +10,14 @@
  * a coordinated update across all connector packages.
  */
 
-import type { CaptureDisclosure, PrivacyReceipt } from '@omadia/plugin-api';
+import type {
+  CaptureDisclosure,
+  PrivacyReceipt,
+  RecalledContext,
+} from '@omadia/plugin-api';
 import type { OutgoingSurface } from './surface.js';
 
-export type { CaptureDisclosure, PrivacyReceipt };
+export type { CaptureDisclosure, PrivacyReceipt, RecalledContext };
 
 /**
  * The top-level shape the orchestrator hands to a connector for rendering.
@@ -96,6 +100,15 @@ export interface SemanticAnswer {
    * contract above) — sidecar, does NOT short-circuit the answer.
    */
   surface?: OutgoingSurface;
+
+  /**
+   * Cross-session recall probe — plans/processes/insights the per-turn probe
+   * surfaced from PRIOR sessions. Connectors that can render rich UI show it
+   * as a collapsible "from earlier sessions" card (web-ui RecalledContextCard,
+   * Teams Adaptive Card); others MAY ignore it. Omitted when nothing was
+   * recalled. Sidecar — does NOT short-circuit the answer.
+   */
+  recalled?: RecalledContext;
 }
 
 /** Image/file side-channel. `url` must be reachable by the channel. */

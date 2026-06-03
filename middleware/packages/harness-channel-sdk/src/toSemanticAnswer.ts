@@ -103,5 +103,13 @@ export function toSemanticAnswer(r: ChatTurnResult): SemanticAnswer {
     // Omadia UI: forward the canvas surface payload so converter-based channels
     // reach the initial primitive tree. Sidecar — ignored by non-canvas channels.
     ...(r.surface ? { surface: r.surface } : {}),
+    // Cross-session recall probe — forward to connectors that render a recall
+    // card (web-ui, Teams). Only when at least one leg surfaced something.
+    ...(r.recalled &&
+    (r.recalled.plans.length > 0 ||
+      r.recalled.processes.length > 0 ||
+      r.recalled.insights.length > 0)
+      ? { recalled: r.recalled }
+      : {}),
   };
 }

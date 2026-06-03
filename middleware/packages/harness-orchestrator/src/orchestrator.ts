@@ -1593,9 +1593,12 @@ export class Orchestrator {
     await this.fireTurnHook('onBeforeTurn', turnId, input, {
       userMessage: input.userMessage,
     });
-    // Non-streaming path: only the prompt-injected text is consumed; the
-    // structured `recalled` payload has no annotation channel here.
-    const { text: priorContext } = await this.retrievePriorContext(input);
+    // Non-streaming path: `priorContext` is injected into the prompt; the
+    // structured `recalled` payload rides out on the ChatTurnResult so
+    // non-streaming channels (Teams) can render a recall card (the streaming
+    // path emits it as a `kg_recall` annotation instead).
+    const { text: priorContext, recalled } =
+      await this.retrievePriorContext(input);
     const effectiveExtraSystemHint = composeExtraSystemHint(input);
     // Palaia Phase 8 (OB-77) — per-turn nudge counter (shared across all
     // tool-call iterations of this turn so NUDGE_MAX_PER_TURN is enforced).
@@ -1786,6 +1789,7 @@ export class Orchestrator {
             ...(pendingSlotCard ? { pendingSlotCard } : {}),
             ...(pendingRoutineList ? { pendingRoutineList } : {}),
             ...(pendingOAuthConsent ? { pendingOAuthConsent: true } : {}),
+            ...(recalled ? { recalled } : {}),
           };
         }
 
@@ -1935,6 +1939,7 @@ export class Orchestrator {
             pendingUserChoice,
             ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
             ...(runTrace ? { runTrace } : {}),
+            ...(recalled ? { recalled } : {}),
           };
         }
       }

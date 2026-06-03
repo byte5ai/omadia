@@ -1,4 +1,4 @@
-import type { PrivacyReceipt } from '@omadia/plugin-api';
+import type { PrivacyReceipt, RecalledContext } from '@omadia/plugin-api';
 import type { FollowUpOption, SemanticAnswer } from './outgoing.js';
 import type { SurfaceStreamEvent, PendingCanvasSurface } from './surface.js';
 
@@ -376,6 +376,14 @@ export interface ChatTurnResult {
    * provenance) without re-deriving the id.
    */
   turnId?: string;
+  /**
+   * Cross-session recall probe — plans/processes/insights surfaced from PRIOR
+   * sessions for this turn. `toSemanticAnswer` forwards it to
+   * `SemanticAnswer.recalled` so non-streaming channels (Teams) can render a
+   * recall card; the streaming path also emits it as a `kg_recall` annotation.
+   * Omitted when nothing was recalled.
+   */
+  recalled?: RecalledContext;
 }
 
 /**

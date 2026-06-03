@@ -708,6 +708,54 @@ export interface PalaiaExcerptHit {
   cosineSim: number;
 }
 
+// ---------------------------------------------------------------------------
+// Cross-session recall probe — structured payload of what the per-turn probe
+// surfaced from PRIOR sessions. Defined here (the lowest common type package)
+// so both the recall producer (@omadia/orchestrator-extras) and the
+// channel-facing answer contract (@omadia/channel-sdk · SemanticAnswer /
+// ChatTurnResult) can reference it without a circular dependency.
+// ---------------------------------------------------------------------------
+
+/** One resumable plan from a PRIOR session. `openStepGoals` are the goals of
+ *  its still-pending/in-progress steps. */
+export interface RecalledPlan {
+  /** External id `plan:<planId>`. */
+  planId: string;
+  scope: string;
+  strategy?: string;
+  createdAt?: string;
+  openStepGoals: string[];
+  doneCount: number;
+  totalCount: number;
+}
+
+/** One stored process matching the current message. */
+export interface RecalledProcess {
+  /** External id `process:<scope>:<slug>`. */
+  id: string;
+  title: string;
+  scope: string;
+  stepCount: number;
+  score: number;
+}
+
+/** One curated insight (MemorableKnowledge) recalled cross-session. */
+export interface RecalledInsight {
+  mkId: string;
+  kind: string;
+  summary: string;
+  score: number;
+}
+
+/** What the cross-session probe surfaced this turn. Empty arrays when a leg
+ *  found nothing or was disabled. Powers both the prompt-injected recall
+ *  blocks and the visible recall card / Teams Adaptive Card. */
+export interface RecalledContext {
+  plans: RecalledPlan[];
+  processes: RecalledProcess[];
+  insights: RecalledInsight[];
+}
+
 /** Slice 5 — partial content-patch on a MemorableKnowledge. All fields
  *  optional; `rationale: null` removes the field. */
 export interface MemorableKnowledgeUpdate {

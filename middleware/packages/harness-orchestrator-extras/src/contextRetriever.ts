@@ -11,6 +11,10 @@ import {
   type PalaiaExcerptHit,
   type PalaiaExcerptNode,
   type ProcessMemoryService,
+  type RecalledContext,
+  type RecalledInsight,
+  type RecalledPlan,
+  type RecalledProcess,
   type TurnSearchHit,
 } from '@omadia/plugin-api';
 
@@ -184,50 +188,10 @@ export interface AssembledExclusion {
   reason: 'budget-exceeded' | 'agent-blocked';
 }
 
-/**
- * Cross-session recall probe — one resumable plan from a PRIOR session.
- * `openStepGoals` are the goals of its still-pending/in-progress steps.
- */
-export interface RecalledPlan {
-  /** External id `plan:<planId>`. */
-  planId: string;
-  scope: string;
-  strategy?: string;
-  createdAt?: string;
-  openStepGoals: string[];
-  doneCount: number;
-  totalCount: number;
-}
-
-/** Cross-session recall probe — one stored process matching the message. */
-export interface RecalledProcess {
-  /** External id `process:<scope>:<slug>`. */
-  id: string;
-  title: string;
-  scope: string;
-  stepCount: number;
-  score: number;
-}
-
-/** Cross-session recall probe — one curated insight (MemorableKnowledge). */
-export interface RecalledInsight {
-  mkId: string;
-  kind: string;
-  summary: string;
-  score: number;
-}
-
-/**
- * Structured payload of what the cross-session probe surfaced this turn.
- * Powers both the prompt-injected recall blocks and the visible
- * `kg_recall` annotation card. Empty arrays when a leg found nothing or
- * was disabled.
- */
-export interface RecalledContext {
-  plans: RecalledPlan[];
-  processes: RecalledProcess[];
-  insights: RecalledInsight[];
-}
+// Cross-session recall payload types (RecalledContext / RecalledPlan /
+// RecalledProcess / RecalledInsight) live in @omadia/plugin-api so the
+// channel-facing answer contract can reference them without a circular
+// dependency. Imported at the top of this file and re-exported via index.ts.
 
 export interface AssembledContext {
   /** Final-rendered prose, ≤ budget tokens (best-effort, based on
