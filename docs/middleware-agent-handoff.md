@@ -260,6 +260,52 @@ hosten, braucht es eine **CoreApi-SDK-Erweiterung** (WS-/`upgrade`-Registrierung
 für Channel-Plugins), die in der Concept-„SDK changes"-Liste **fehlt** — als
 Plan-Feed-back vermerkt, eigene Folge-PR. Die Dispatch-Verdrahtung
 (`dispatch_service` → `canvasChatAgent`) ist bereits durch #168 validiert.
+**Aufgelöst durch PR-11** (unten).
+
+### Canvas WebSocket-Transport (Omadia UI, PR-11)
+
+Schließt die in PR-10a benannte CoreApi-Lücke: additive WebSocket-Registrierung
+für Channel-Plugins — das Gegenstück zu `registerRoute`, eine Ebene höher.
+
+- **SDK** (`@omadia/channel-sdk`, additiv): `ChannelSocket` (transport-agnostisch,
+  Text-Frames; **kein `ws`-Import im SDK**), `ChannelSocketHandler`,
+  `ChannelSessionClaims` und die optionale Methode
+  `CoreApi.registerWebSocket?(channelId, path, handler)`. Optional (`?`), damit
+  bestehende Channels und Nicht-WS-`createCoreApi`-Wirings unberührt bleiben —
+  Channels feature-detecten (`typeof core.registerWebSocket === 'function'`).
+- **Kernel** `src/channels/webSocketRegistry.ts`: spiegelt `ExpressRouteRegistry`
+  (per-Channel-`active`-Flag; `deactivateChannel` lehnt neue Upgrades ab **und**
+  schließt Live-Sockets). Ein einzelner `ws.Server` im `noServer`-Modus;
+  `attach(server)` hängt sich an `server.on('upgrade')`. Pfad-/Active-Match →
+  Auth → `handleUpgrade`. **Single-Owner-Invariante:** die Registry ist der
+  einzige `upgrade`-Consumer des Prozesses (heute kein anderer); unbekannter
+  Pfad → `404` + `destroy`. Ein künftiger zweiter WS-Consumer müsste das zu
+  einer Delegations-Kette machen statt unmatched Sockets zu zerstören.
+- **Auth — vor dem Upgrade, nicht danach.** Der `upgrade`-Request trägt das
+  Session-Cookie (`omadia_session`) in `req.headers.cookie`. Die Registry parst
+  es selbst (beim rohen `upgrade` läuft **kein** `cookie-parser` davor) und ruft
+  `verifySession(token, sessionSigningKey)` — **derselbe Key wie `requireAuth`**.
+  Fehlt/ungültig → rohes `401` + `socket.destroy()` **vor** dem `101`; für einen
+  unauthentifizierten Peer wird kein WebSocket allokiert. Nur authentifizierte
+  Upgrades werden zu `ChannelSocket`s; die verifizierten `ChannelSessionClaims`
+  (`subject`/`email`/`displayName`/`provider`/`omadiaUserId?`) gehen an den
+  Handler. Zusätzlich der **gleiche Entra-Whitelist-Gate** wie `requireAuth`:
+  eine OIDC-(`entra`)-Session mit nicht (mehr) whitelisteter E-Mail → `403`
+  (Auth-Parität zu den HTTP-Routes; der `EmailWhitelist` wird mitinjiziert).
+  (Hinweis: `CoreApi.resolveIdentity` ist channel-natives User-Mapping,
+  **nicht** Session-Auth — daher direkt `verifySession`.)
+- **Wiring** (`index.ts`): `new WebSocketRegistry({ signingKey: sessionSigningKey })`
+  vor `createCoreApi({ … webSockets })` (≈2505), zusätzlich an die
+  `DefaultChannelRegistry` gereicht (Lifecycle-Spiegel zu `routes`), und
+  `attach(server)` nach `const server = app.listen(PORT, '::')` (≈2592) —
+  dasselbe `http.Server`, der Dual-Stack-`::`-Bind serviert WS mit.
+- **Dependency:** `ws` + `@types/ws` nur im Kernel, nicht im SDK.
+
+Test: `test/webSocketRegistry.test.ts` fährt einen echten `http.Server` + echten
+`ws`-Client (authentifizierter Upgrade → Claims + Echo-Frame; ohne Cookie →
+`401`; unbekannter Pfad → `404`; deaktivierter Channel → `503`). Damit ist der
+Transport bereit für **PR-10b** (echter Canvas-Channel: Handshake-`offer→select→
+ack`, `IncomingTurn`-Bildung, `surface_*`-Fan-out).
 
 ---
 

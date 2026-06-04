@@ -182,6 +182,7 @@ import {
 import { ROUTINES_INTEGRATION_SERVICE_NAME } from '@omadia/plugin-api';
 import { createRoutinesRouter } from './routes/routines.js';
 import { ExpressRouteRegistry } from './channels/routeRegistry.js';
+import { WebSocketRegistry } from './channels/webSocketRegistry.js';
 import { createCoreApi } from './channels/coreApi.js';
 import { ChannelDirectoryRegistry } from './channels/channelDirectoryRegistry.js';
 import { DefaultChannelRegistry } from './channels/channelRegistry.js';
@@ -2502,9 +2503,20 @@ async function main(): Promise<void> {
     },
   });
 
+  // Omadia UI canvas transport: a kernel-owned WebSocket registry mirroring
+  // ExpressRouteRegistry. It authenticates each upgrade with the session
+  // cookie BEFORE the handshake (same signing key as requireAuth) and backs
+  // `CoreApi.registerWebSocket`. Inert for every non-WS channel; attached to
+  // the http.Server once it exists (after app.listen, below).
+  const webSocketRegistry = new WebSocketRegistry({
+    signingKey: sessionSigningKey,
+    whitelist: emailWhitelist,
+  });
+
   const channelCoreApi = createCoreApi({
     dispatcher: orchestratorDispatcher,
     routes: routeRegistry,
+    webSockets: webSocketRegistry,
   });
 
   // Phase 5B: channel discovery flips to plugin-store-flow. The
@@ -2537,6 +2549,7 @@ async function main(): Promise<void> {
     resolver: channelPluginResolver,
     coreApi: channelCoreApi,
     routes: routeRegistry,
+    webSockets: webSocketRegistry,
   });
   channelRegistryRef = channelRegistry;
   await channelRegistry.activateAllInstalled();
@@ -2597,6 +2610,11 @@ async function main(): Promise<void> {
     console.log(`[middleware] sub-agent model:   ${config.SUB_AGENT_MODEL}`);
     console.log(`[middleware] domain tools: ${domainTools.map((t) => t.name).join(', ')}`);
   });
+
+  // Attach the canvas WebSocket transport to the same http.Server, so the
+  // dual-stack '::' bind serves WS upgrades too. Idempotent; inert until a
+  // channel registers a socket path via CoreApi.registerWebSocket.
+  webSocketRegistry.attach(server);
 
   // Fast-fail on EADDRINUSE: without this, hot-reload or a stale `npm run dev`
   // boots the whole stack silently while the port is held by a zombie tsx
