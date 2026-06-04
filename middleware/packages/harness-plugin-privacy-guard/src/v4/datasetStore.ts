@@ -63,6 +63,64 @@ function rowHasNested(row: Record<string, unknown>): boolean {
   return Object.values(row).some((v) => Array.isArray(v) || isPlainObject(v));
 }
 
+/** A non-empty array whose every element is a plain object — i.e. detail rows
+ *  hiding inside a wrapper object's field. */
+function isRecordArray(v: unknown): v is Record<string, unknown>[] {
+  return Array.isArray(v) && v.length > 0 && v.every(isPlainObject);
+}
+
+/**
+ * Is `v` a scalar safe to broadcast as a summary column onto every promoted
+ * detail row? Primitives, plus the Odoo many2one `[id, "label"]` tuple, which
+ * is a scalar-equivalent reference (the materializer already flattens it to
+ * the label). Genuine nested values are NOT broadcast — they would only
+ * reintroduce the per-cell JSON dump the expansion exists to remove.
+ */
+function isBroadcastable(v: unknown): boolean {
+  if (v === null) return true;
+  const t = typeof v;
+  if (t === 'string' || t === 'number' || t === 'boolean') return true;
+  return (
+    Array.isArray(v) &&
+    v.length === 2 &&
+    typeof v[0] === 'number' &&
+    typeof v[1] === 'string'
+  );
+}
+
+/**
+ * Recognize the "summary + detail" object shape and promote its detail rows.
+ *
+ * Tools often return a single object that wraps the real per-record table in
+ * one field alongside scalar summary fields — e.g. a timesheet result
+ * `{ jahr, kw, …, abweichungen_pro_ma: [ {employee…}, … ] }`. Left as one
+ * `nested` row, the detail array stays one opaque field: the materializer can
+ * only render its real value (for the authorised user) by JSON-stringifying
+ * the whole array into a single cell — the unreadable blob from the timesheet
+ * view. (The array never reaches the LLM — it is masked in the digest — so
+ * this is a rendering defect, not a data leak.) Here we promote the detail
+ * array to BE the dataset rows so every record is classified and rendered
+ * individually, broadcasting the scalar summary fields onto each row (a
+ * record's own field always wins a key collision).
+ *
+ * Conservative by design: only fires when the object has EXACTLY ONE
+ * record-array field. Zero record-arrays is an ordinary object; more than one
+ * is ambiguous (which is the detail table?) — both are left untouched.
+ */
+function expandSummaryDetail(
+  obj: Record<string, unknown>,
+): Record<string, unknown>[] | undefined {
+  const detailKeys = Object.keys(obj).filter((k) => isRecordArray(obj[k]));
+  if (detailKeys.length !== 1) return undefined;
+  const detailKey = detailKeys[0] as string;
+  const detail = obj[detailKey] as Record<string, unknown>[];
+  const summary: Record<string, unknown> = {};
+  for (const [k, val] of Object.entries(obj)) {
+    if (k !== detailKey && isBroadcastable(val)) summary[k] = val;
+  }
+  return detail.map((rec) => ({ ...summary, ...rec }));
+}
+
 /** Normalize an arbitrary JS value into a uniform row array + a shape tag.
  *  Non-tabular values are wrapped so the store and the Verb API always
  *  operate on `Record<string, unknown>[]`. */
@@ -80,6 +138,14 @@ function normalizeValue(v: unknown): {
     return { rows: v.map((e) => ({ value: e })), shape: 'rows' };
   }
   if (isPlainObject(v)) {
+    // "Summary + detail" wrapper → promote the detail rows (timesheet etc.).
+    const expanded = expandSummaryDetail(v);
+    if (expanded !== undefined) {
+      return {
+        rows: expanded,
+        shape: expanded.some(rowHasNested) ? 'nested' : 'rows',
+      };
+    }
     return { rows: [v], shape: rowHasNested(v) ? 'nested' : 'object' };
   }
   return { rows: [{ value: v }], shape: 'scalar' };

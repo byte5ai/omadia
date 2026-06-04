@@ -192,6 +192,66 @@ describe('Materializer — display polish', () => {
     assert.ok(maskedValues.includes('Sophie Neumann'));
   });
 
+  it('never dumps a nested record array as raw JSON into a cell', () => {
+    const { store } = harness();
+    // Two record-arrays => the store does NOT expand (ambiguous), so a nested
+    // array can still reach the cell renderer. It must render a compact marker
+    // rather than a raw JSON blob (the unreadable timesheet rendering).
+    const { datasetId } = store.internToolResult('x', [
+      { id: 1, a: [{ inner: 'x1' }], b: [{ inner: 'x2' }] },
+    ]);
+    const { text } = materialize(store, {
+      datasetId,
+      columns: cols('id', 'a'),
+      format: 'table',
+    });
+    assert.ok(!text.includes('"inner"'), 'no raw JSON keys are emitted');
+    assert.ok(!text.includes('x1'), 'nested record values are not dumped raw');
+    assert.ok(text.includes('[1 records]'), 'shows a compact structure-only marker');
+  });
+
+  it('joins a scalar array into a readable cell', () => {
+    const { store } = harness();
+    const { datasetId } = store.internToolResult('x', [
+      { id: 1, tags: ['urgent', 'hr', 'q2'] },
+    ]);
+    const { text } = materialize(store, {
+      datasetId,
+      columns: cols('tags'),
+      format: 'table',
+    });
+    assert.ok(text.includes('urgent, hr, q2'));
+  });
+
+  it('renders a "summary + detail" tool result as a per-record table', () => {
+    const { store } = harness();
+    // The real timesheet shape: one summary object wrapping the per-employee
+    // detail array. The store promotes it to one row per employee.
+    const { datasetId, digest } = store.internToolResult(
+      'query_odoo_timesheet_analyzer',
+      {
+        jahr: 2026,
+        kw: 22,
+        abweichungen_pro_ma: [
+          { employee_name: 'Alexandra Hochhaus', delta_hours: -40 },
+          { employee_name: 'Christian Köhler', delta_hours: -39.87 },
+        ],
+      },
+    );
+    // The names are masked from the LLM's digest...
+    assert.ok(!JSON.stringify(digest).includes('Hochhaus'));
+    // ...but rendered as real values for the authorised user, as a real table.
+    const { text, rowCount } = materialize(store, {
+      datasetId,
+      columns: cols('employee_name', 'delta_hours', 'kw'),
+      format: 'table',
+    });
+    assert.equal(rowCount, 2);
+    assert.ok(text.includes('Alexandra Hochhaus'));
+    assert.ok(text.includes('Christian Köhler'));
+    assert.ok(!text.includes('"employee_name"'), 'no raw JSON blob');
+  });
+
   it('uses each column label as the table header', () => {
     const { store } = harness();
     const { datasetId } = store.internToolResult('hr.leave', HR_LEAVE);
