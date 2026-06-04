@@ -76,7 +76,7 @@ export function SimpleWorkspace({
   const hasBeenBuilt = Boolean(spec.description) || toolCount > 0;
 
   return (
-    <div className="mx-auto flex w-full max-w-[1180px] flex-col gap-6 pb-8">
+    <div className="flex w-full flex-col gap-6 pb-8">
       {/* Warm intro band — sets a welcoming, non-technical tone. */}
       <motion.div
         initial={{ opacity: 0, y: 12 }}
