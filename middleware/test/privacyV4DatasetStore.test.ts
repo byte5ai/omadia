@@ -79,9 +79,58 @@ describe('parseToolResult', () => {
     assert.equal(r.rows.length, 1);
   });
 
-  it('treats an object with nested values as shape "nested"', () => {
-    const r = parseToolResult({ employee: 'X', history: [{ y: 1 }] }, 100_000);
+  it('treats an object with a nested object value as shape "nested"', () => {
+    // A nested *object* (not a record-array) is not a summary+detail wrapper,
+    // so it stays a single nested row.
+    const r = parseToolResult({ employee: 'X', meta: { y: 1 } }, 100_000);
     assert.equal(r.shape, 'nested');
+    assert.equal(r.rows.length, 1);
+  });
+
+  it('promotes a "summary + detail" wrapper to the detail rows', () => {
+    // A single object wrapping exactly one array-of-records is the common
+    // "summary + detail" shape (e.g. a timesheet result). The detail array
+    // becomes the dataset rows so each record is classified + rendered
+    // individually instead of dumped as one masked JSON blob.
+    const r = parseToolResult(
+      {
+        jahr: 2026,
+        kw: 22,
+        abweichungen_pro_ma: [
+          { employee: 'Alexandra Hochhaus', delta_hours: -40 },
+          { employee: 'Christian Köhler', delta_hours: -39.87 },
+        ],
+      },
+      100_000,
+    );
+    assert.equal(r.shape, 'rows');
+    assert.equal(r.rows.length, 2);
+    // Detail fields are present...
+    assert.equal(r.rows[0]?.employee, 'Alexandra Hochhaus');
+    assert.equal(r.rows[0]?.delta_hours, -40);
+    // ...and the scalar summary fields are broadcast onto every row.
+    assert.equal(r.rows[0]?.jahr, 2026);
+    assert.equal(r.rows[1]?.kw, 22);
+    // The detail array key itself is never broadcast as a column.
+    assert.equal('abweichungen_pro_ma' in (r.rows[0] ?? {}), false);
+  });
+
+  it('leaves an object with two record-arrays untouched (ambiguous)', () => {
+    // More than one array-of-records is ambiguous — which is the detail
+    // table? — so the object is kept as a single nested row.
+    const r = parseToolResult({ a: [{ x: 1 }], b: [{ y: 2 }] }, 100_000);
+    assert.equal(r.shape, 'nested');
+    assert.equal(r.rows.length, 1);
+  });
+
+  it('a record in the detail wins a key collision over the summary', () => {
+    const r = parseToolResult(
+      { name: 'Report', rows: [{ name: 'Anna', n: 1 }] },
+      100_000,
+    );
+    assert.equal(r.rows.length, 1);
+    // The detail record's own `name` is kept, not the summary's "Report".
+    assert.equal(r.rows[0]?.name, 'Anna');
   });
 
   it('interns an empty array as zero rows', () => {

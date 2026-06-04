@@ -70,7 +70,28 @@ function cell(value: unknown): string {
   ) {
     return value[1];
   }
-  return JSON.stringify(value);
+  // A remaining array of scalars is safe to join (e.g. tags/codes).
+  if (
+    Array.isArray(value) &&
+    value.every(
+      (e) =>
+        e === null ||
+        typeof e === 'string' ||
+        typeof e === 'number' ||
+        typeof e === 'boolean',
+    )
+  ) {
+    return value.map((e) => cell(e)).join(', ');
+  }
+  // Any other nested structure (array of records, plain object) is NEVER
+  // dumped as raw JSON: that produced the unreadable blob in the timesheet
+  // view (a rendering defect — the data is masked from the LLM and only
+  // materialized here for the authorised user). The Dataset Store promotes the
+  // common "summary + detail" shape to real rows; anything that still reaches
+  // here (e.g. two competing record-arrays) gets a compact, structure-only
+  // marker instead.
+  if (Array.isArray(value)) return `[${String(value.length)} records]`;
+  return '[nested]';
 }
 
 /** Escape a value for a Markdown table cell. */
