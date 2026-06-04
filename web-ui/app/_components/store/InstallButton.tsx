@@ -603,7 +603,7 @@ function InstallDrawer({
 
       <aside
         className={cn(
-          'relative z-10 flex w-full max-w-xl flex-col',
+          'relative z-10 flex h-full max-h-screen w-full max-w-xl flex-col',
           'border-l border-[color:var(--rule-strong)] bg-[color:var(--paper)]',
           'shadow-[-20px_0_60px_-20px_rgba(0,0,0,0.3)]',
         )}
@@ -640,12 +640,12 @@ function InstallDrawer({
             <span className="text-sm">Job wird erstellt …</span>
           </div>
         ) : phase.kind === 'error' && !jobFromPhase ? (
-          <div className="flex-1 p-10">
+          <div className="min-h-0 flex-1 overflow-y-auto p-10">
             <InstallErrorBlock message={phase.message} />
           </div>
         ) : (
           <form
-            className="flex flex-1 flex-col"
+            className="flex min-h-0 flex-1 flex-col"
             onSubmit={(e) => {
               e.preventDefault();
               if (submitting) return;
@@ -654,7 +654,7 @@ function InstallDrawer({
               void onSubmit(values);
             }}
           >
-            <div className="flex-1 overflow-y-auto px-8 py-6">
+            <div className="min-h-0 flex-1 overflow-y-auto px-8 py-6">
               {setupGuide ? (
                 <div className="mb-6 border-b border-[color:var(--rule)] pb-6">
                   <div className="mb-3 text-[11px] uppercase tracking-[0.22em] text-[color:var(--faint-ink)]">
