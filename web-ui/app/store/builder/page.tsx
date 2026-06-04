@@ -23,7 +23,7 @@ type ScopeFilter = 'draft' | 'published' | 'deleted';
 
 const SCOPE_LABEL: Record<ScopeFilter, string> = {
   draft: 'Entwurf',
-  published: 'Veröffentlicht',
+  published: 'Bereitgestellt',
   deleted: 'Gelöscht',
 };
 
@@ -114,7 +114,7 @@ export default async function BuilderDashboardPage({
 
         <dl className="mt-10 grid max-w-2xl grid-cols-4 gap-6 border-t border-[color:var(--divider)] pt-5 text-sm">
           <Stat label="Entwürfe" value={counts.draft} />
-          <Stat label="Veröffentlicht" value={counts.published} />
+          <Stat label="Bereitgestellt" value={counts.published} />
           <Stat label="Gelöscht" value={counts.deleted} />
           <Stat label="Limit" value={quota.cap} />
         </dl>
@@ -214,13 +214,13 @@ function EmptyState({ scope }: { scope: ScopeFilter }): React.ReactElement {
     scope === 'draft'
       ? 'Noch keine Entwürfe.'
       : scope === 'published'
-        ? 'Noch nichts veröffentlicht.'
+        ? 'Noch nichts bereitgestellt.'
         : 'Papierkorb ist leer.';
   const hint =
     scope === 'draft'
       ? 'Klicke rechts oben auf „Neuer Agent" um deinen ersten Entwurf anzulegen.'
       : scope === 'published'
-        ? 'Veröffentlichte Agents erscheinen hier, sobald du einen Entwurf über den Workspace in die Plattform gepackt hast.'
+        ? 'Bereitgestellte Agents erscheinen hier, sobald du einen Entwurf in die Plattform-Registry deiner Instanz übernommen hast.'
         : 'Gelöschte Entwürfe tauchen hier auf und können wiederhergestellt werden, bis du sie endgültig löschst.';
   return (
     <div className="rounded-[14px] border border-dashed border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] p-12 text-center">

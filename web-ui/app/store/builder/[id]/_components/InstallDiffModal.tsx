@@ -137,7 +137,7 @@ export function InstallDiffModal({
       className="fixed inset-0 z-50 flex items-center justify-center px-4 py-6"
       role="dialog"
       aria-modal="true"
-      aria-label="Plugin veröffentlichen"
+      aria-label="Plugin bereitstellen"
     >
       <button
         type="button"
@@ -159,15 +159,15 @@ export function InstallDiffModal({
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.22em] text-[color:var(--accent)]">
               <ShieldCheck className="size-3.5" aria-hidden />
-              Veröffentlichungs-Diff-Gate
+              Bereitstellungs-Diff-Gate
             </div>
             <h2 className="font-display mt-1 text-2xl font-medium leading-tight text-[color:var(--ink)]">
-              Plugin veröffentlichen
+              Plugin bereitstellen
             </h2>
             <p className="mt-2 text-[12px] leading-relaxed text-[color:var(--muted-ink)]">
-              Diese Surface wird in den Plugin-Store geschrieben. Nach „Veröffentlichen&ldquo;
-              ist <span className="font-mono-num">{draft.spec.id}</span> v
-              {draft.spec.version} für alle Agents im Tenant verfügbar.
+              Diese Surface wird in die Plugin-Registry deiner Instanz geschrieben.
+              Nach „Bereitstellen&ldquo; ist <span className="font-mono-num">{draft.spec.id}</span> v
+              {draft.spec.version} für alle Agents in deinem Tenant verfügbar — nicht öffentlich.
             </p>
           </div>
           <button
@@ -266,7 +266,7 @@ export function InstallDiffModal({
             {busy ? (
               <>
                 <Loader2 className="size-3.5 animate-spin" aria-hidden />
-                Veröffentliche …
+                Stelle bereit …
               </>
             ) : phase.kind === 'succeeded' ? (
               <>
@@ -274,7 +274,7 @@ export function InstallDiffModal({
                 Erfolgreich
               </>
             ) : (
-              'Veröffentlichen'
+              'Bereitstellen'
             )}
           </button>
         </footer>
@@ -501,7 +501,7 @@ function FailureBanner({
   currentVersion: string;
   onBumpAndRetry: () => void | Promise<void>;
 }): React.ReactElement {
-  const heading = HEADINGS[failure.reason] ?? 'Veröffentlichung fehlgeschlagen';
+  const heading = HEADINGS[failure.reason] ?? 'Bereitstellung fehlgeschlagen';
   const hint = HINTS[failure.reason];
   // Theme C: only the duplicate_version sub-case of `conflict` is fixable
   // by bumping. We can't reliably distinguish from `id` collisions on
@@ -545,7 +545,7 @@ function FailureBanner({
                 onClick={() => void onBumpAndRetry()}
                 className="inline-flex items-center gap-2 rounded-md bg-[color:var(--accent)] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-white shadow-sm transition-opacity hover:opacity-90"
               >
-                Version anheben ({currentVersion} → {bumped}) + Veröffentlichen
+                Version anheben ({currentVersion} → {bumped}) + Bereitstellen
               </button>
             ) : null}
             <button
@@ -662,11 +662,11 @@ function SuccessBanner({
         />
         <div className="min-w-0 flex-1">
           <p className="font-display text-[13px] font-semibold text-[color:var(--success)]">
-            Plugin veröffentlicht
+            Plugin bereitgestellt
           </p>
           <p className="mt-1 text-[12px] text-[color:var(--fg-strong)]">
             <span className="font-mono-num">{publishedAgentId}</span> v{version}{' '}
-            ist im Store sichtbar. Weiterleitung läuft …
+            ist in deiner Instanz verfügbar. Weiterleitung läuft …
           </p>
         </div>
       </div>

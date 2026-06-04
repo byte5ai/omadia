@@ -84,7 +84,7 @@ const MODEL_LABEL: Record<BuilderModelId, string> = {
 
 const STATUS_LABEL: Record<Draft['status'], string> = {
   draft: 'Entwurf',
-  published: 'Veröffentlicht',
+  published: 'Bereitgestellt',
   archived: 'Archiviert',
 };
 
@@ -1227,7 +1227,7 @@ function WorkspaceHeader({
         )}
       >
         <Rocket className="size-3.5" aria-hidden />
-        Veröffentlichen
+        Bereitstellen
       </button>
     </header>
   );

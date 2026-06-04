@@ -31,7 +31,7 @@ const MODEL_LABEL: Record<BuilderModelId, string> = {
 
 const STATUS_LABEL: Record<DraftSummary['status'], string> = {
   draft: 'Entwurf',
-  published: 'Veröffentlicht',
+  published: 'Bereitgestellt',
   archived: 'Archiviert',
 };
 
