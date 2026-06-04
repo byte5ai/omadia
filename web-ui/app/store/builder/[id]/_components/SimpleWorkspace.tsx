@@ -76,7 +76,7 @@ export function SimpleWorkspace({
   const hasBeenBuilt = Boolean(spec.description) || toolCount > 0;
 
   return (
-    <div className="mx-auto flex w-full max-w-[760px] flex-col gap-6 pb-8">
+    <div className="mx-auto flex w-full max-w-[1180px] flex-col gap-6 pb-8">
       {/* Warm intro band — sets a welcoming, non-technical tone. */}
       <motion.div
         initial={{ opacity: 0, y: 12 }}
@@ -101,32 +101,55 @@ export function SimpleWorkspace({
         </p>
       </motion.div>
 
-      {/* 1 — Intake */}
-      <SimpleStepCard
-        step={1}
-        icon={<Sparkles className="size-4" aria-hidden />}
-        title={t('step1.title')}
-        subtitle={t('step1.subtitle')}
-        delay={0.08}
-      >
-        <div className="h-[460px]">
-          <SimpleIntakePane
-            draftId={draft.id}
-            model={model}
-            initialTranscript={draft.transcript}
-            pendingUserChoice={pendingUserChoice}
-            onUserChoiceResolved={onUserChoiceResolved}
-          />
-        </div>
-      </SimpleStepCard>
+      {/* The two interactive panes sit side by side on wide screens
+          (describe on the left, try it out on the right) and stack on
+          narrow ones. */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        {/* 1 — Intake */}
+        <SimpleStepCard
+          step={1}
+          icon={<Sparkles className="size-4" aria-hidden />}
+          title={t('step1.title')}
+          subtitle={t('step1.subtitle')}
+          delay={0.08}
+        >
+          <div className="h-[520px]">
+            <SimpleIntakePane
+              draftId={draft.id}
+              model={model}
+              initialTranscript={draft.transcript}
+              pendingUserChoice={pendingUserChoice}
+              onUserChoiceResolved={onUserChoiceResolved}
+            />
+          </div>
+        </SimpleStepCard>
 
-      {/* 2 — Reduced overview + persona */}
+        {/* 2 — Reduced preview */}
+        <SimpleStepCard
+          step={2}
+          icon={<MessageCircleHeart className="size-4" aria-hidden />}
+          title={t('step3.title')}
+          subtitle={t('step3.subtitle')}
+          delay={0.16}
+        >
+          <div className="h-[520px]">
+            <PreviewChatPane
+              draftId={draft.id}
+              initialTranscript={draft.previewTranscript}
+              setupFields={spec.setup_fields ?? []}
+              onBuildStatus={onBuildStatus}
+            />
+          </div>
+        </SimpleStepCard>
+      </div>
+
+      {/* 3 — Reduced overview + persona, full width beneath the panes */}
       <SimpleStepCard
-        step={2}
-        icon={<MessageCircleHeart className="size-4" aria-hidden />}
+        step={3}
+        icon={<Sparkles className="size-4" aria-hidden />}
         title={t('step2.title')}
         subtitle={t('step2.subtitle')}
-        delay={0.16}
+        delay={0.24}
       >
         <div className="flex flex-col gap-5 px-7 py-6">
           <OverviewField label={t('overview.nameLabel')}>
@@ -200,24 +223,6 @@ export function SimpleWorkspace({
               </div>
             ) : null}
           </div>
-        </div>
-      </SimpleStepCard>
-
-      {/* 3 — Reduced preview */}
-      <SimpleStepCard
-        step={3}
-        icon={<MessageCircleHeart className="size-4" aria-hidden />}
-        title={t('step3.title')}
-        subtitle={t('step3.subtitle')}
-        delay={0.24}
-      >
-        <div className="h-[460px]">
-          <PreviewChatPane
-            draftId={draft.id}
-            initialTranscript={draft.previewTranscript}
-            setupFields={spec.setup_fields ?? []}
-            onBuildStatus={onBuildStatus}
-          />
         </div>
       </SimpleStepCard>
     </div>
