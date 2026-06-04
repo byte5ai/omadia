@@ -22,10 +22,9 @@ import type { InstalledRegistry } from '../plugins/installedRegistry.js';
  * Filtered server-side to `install_state === 'installed'` so the UI does
  * not have to know which plugins are actually live.
  *
- * Note: the manifest's `setup.fields[]` lands on `Plugin.required_secrets`
- * (the field name is historical — pre-OB-29 every setup field was a
- * secret). Surfaced here as `setup_fields` so the B3c editor reads from
- * an intent-named property.
+ * Note: the manifest's `setup.fields[]` lands on `Plugin.setup_fields`,
+ * carrying secret AND non-secret config alike. Surfaced here under the
+ * same `setup_fields` key for the B3c editor.
  */
 interface AgentPluginCatalogEntry {
   readonly id: string;
@@ -554,7 +553,7 @@ export function createOperatorAgentsRouter(
             memory_reads: summary?.memory_reads ?? [],
             memory_writes: summary?.memory_writes ?? [],
             network_outbound: summary?.network_outbound ?? [],
-            setup_fields: p.required_secrets ?? [],
+            setup_fields: p.setup_fields ?? [],
             depends_on: p.depends_on ?? [],
           } satisfies AgentPluginCatalogEntry;
         });

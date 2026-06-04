@@ -169,11 +169,12 @@ export function CredentialsEditor({
   return (
     <div className="space-y-4">
       <div className="text-[12px] leading-relaxed text-[color:var(--muted-ink)]">
-        Secrets (Passwörter, OAuth-Tokens) werden verschlüsselt im Vault
-        gespeichert und nur als „gespeichert&ldquo; angezeigt — niemals der
-        eigentliche Wert. Nicht-sensitive Setup-Werte (Enum, URL, Flags) zeigen
-        die aktuelle Auswahl. Tippe oder wähle einen neuen Wert um zu
-        überschreiben, oder klicke auf <Trash2 className="inline size-3 align-text-bottom" aria-hidden /> um eine Credential zu löschen.
+        Felder mit <span className="font-semibold text-[color:var(--accent)]">Secret · Vault</span> (Passwörter,
+        OAuth-Tokens) werden verschlüsselt im Vault gespeichert und nur als
+        „gespeichert&ldquo; angezeigt — niemals der eigentliche Wert. Felder mit
+        <span className="font-semibold"> Config</span> (Enum, URL, Flags) sind
+        nicht-sensitiv und zeigen die aktuelle Auswahl. Tippe oder wähle einen
+        neuen Wert um zu überschreiben, oder klicke auf <Trash2 className="inline size-3 align-text-bottom" aria-hidden /> um den Wert zu löschen.
       </div>
 
       <ul className="divide-y divide-[color:var(--rule)] border-y border-[color:var(--rule)]">
@@ -206,6 +207,24 @@ export function CredentialsEditor({
                   </span>
                   <span className="text-[11px] uppercase tracking-[0.18em] text-[color:var(--faint-ink)]">
                     {field.type}
+                  </span>
+                  {/* Storage classification — makes the Secret-vs-Config split
+                      explicit so plain config fields aren't read as
+                      "credentials". Secrets/OAuth land in the encrypted vault;
+                      everything else is instance config. */}
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] ${
+                      isSecret
+                        ? 'bg-[color:var(--accent)]/12 text-[color:var(--accent)]'
+                        : 'bg-[color:var(--rule)]/50 text-[color:var(--muted-ink)]'
+                    }`}
+                    title={
+                      isSecret
+                        ? 'Secret — verschlüsselt im per-Agent-Vault'
+                        : 'Config — nicht-sensitiver Wert in der Instanz-Konfiguration'
+                    }
+                  >
+                    {isSecret ? 'Secret · Vault' : 'Config'}
                   </span>
                 </div>
                 {field.label ? (
@@ -315,7 +334,9 @@ export function CredentialsEditor({
                     title={
                       state.pendingDelete
                         ? 'Löschung abbrechen'
-                        : 'Credential beim nächsten Speichern löschen'
+                        : isSecret
+                          ? 'Secret beim nächsten Speichern löschen'
+                          : 'Config-Wert beim nächsten Speichern löschen'
                     }
                     className={`inline-flex size-7 shrink-0 items-center justify-center rounded-md border transition-colors disabled:opacity-50 ${
                       state.pendingDelete

@@ -27,7 +27,7 @@ function makePlugin(id: string, overrides: Partial<Plugin> = {}): Plugin {
     compat_core: '>=1.0 <2.0',
     signed: false,
     signed_by: null,
-    required_secrets: [],
+    setup_fields: [],
     permissions_summary: {
       memory: { reads: [], writes: [] },
       graph: { reads: [], writes: [] },

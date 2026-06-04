@@ -348,7 +348,7 @@ function registryEntryToPlugin(resolved: ResolvedRegistryPlugin): Plugin {
     compat_core: ver.compat_core,
     signed: false,
     signed_by: null,
-    required_secrets: setupFields,
+    setup_fields: setupFields,
     permissions_summary: emptyPermissionsSummary(),
     integrations_summary: [],
     install_state: 'available',
