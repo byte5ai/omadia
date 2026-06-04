@@ -23,6 +23,7 @@ import {
   Plus,
   Trash2,
 } from 'lucide-react';
+import { useTranslations } from 'next-intl';
 import { useCallback, useMemo, useState } from 'react';
 
 import type { JsonPatch, ToolSpec, UiRoute } from '../../../../_lib/builderTypes';
@@ -57,6 +58,7 @@ export function PagesList({
   slots,
   onPatch,
 }: PagesListProps): React.ReactElement {
+  const t = useTranslations('builder.uiSurfaces.pagesList');
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const sensors = useSensors(
@@ -129,11 +131,12 @@ export function PagesList({
     return (
       <div className="rounded-md border border-dashed border-[color:var(--border)] bg-[color:var(--bg)] p-4">
         <p className="text-[12px] text-[color:var(--fg-strong)]">
-          Noch keine Dashboard-Pages definiert.
+          {t('emptyTitle')}
         </p>
         <p className="mt-1 text-[11px] text-[color:var(--fg-muted)]">
-          Eine Page wird zu einem <code>/p/&lt;plugin&gt;/&lt;pfad&gt;</code>-Endpoint
-          und einer Hub-Karte für Teams.
+          {t.rich('emptyHint', {
+            code: (chunks) => <code>{chunks}</code>,
+          })}
         </p>
         <button
           type="button"
@@ -141,7 +144,7 @@ export function PagesList({
           className="mt-3 inline-flex items-center gap-1 rounded-md bg-[color:var(--accent)] px-2.5 py-1.5 text-[11px] font-semibold text-white shadow-[var(--shadow-cta)]"
         >
           <Plus className="size-3" aria-hidden />
-          Erste Page hinzufügen
+          {t('addFirstPage')}
         </button>
       </div>
     );
@@ -171,7 +174,13 @@ export function PagesList({
                     setExpandedId((prev) => (prev === route.id ? null : route.id))
                   }
                   onRemove={() => {
-                    if (confirm(`Page "${route.tab_label || route.id}" löschen?`)) {
+                    if (
+                      confirm(
+                        t('deleteConfirm', {
+                          name: route.tab_label || route.id,
+                        }),
+                      )
+                    ) {
                       onRemove(index);
                     }
                   }}
@@ -188,7 +197,7 @@ export function PagesList({
         className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2.5 py-1.5 text-[11px] font-semibold text-[color:var(--fg-strong)] hover:border-[color:var(--accent)]"
       >
         <Plus className="size-3" aria-hidden />
-        Page hinzufügen
+        {t('addPage')}
       </button>
     </div>
   );
@@ -217,6 +226,7 @@ function SortableRow({
   onRemove,
   onPatchRoute,
 }: SortableRowProps): React.ReactElement {
+  const t = useTranslations('builder.uiSurfaces.pagesList');
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: route.id });
   const style: React.CSSProperties = {
@@ -237,7 +247,7 @@ function SortableRow({
           type="button"
           {...attributes}
           {...listeners}
-          aria-label="Reorder"
+          aria-label={t('reorderAriaLabel')}
           className="cursor-grab text-[color:var(--fg-muted)] hover:text-[color:var(--fg-strong)] active:cursor-grabbing"
         >
           <GripVertical className="size-3" />
@@ -262,7 +272,7 @@ function SortableRow({
           type="button"
           onClick={onRemove}
           className="rounded p-1 text-[color:var(--fg-muted)] hover:bg-rose-50 hover:text-rose-700"
-          aria-label="Page löschen"
+          aria-label={t('deleteAriaLabel')}
         >
           <Trash2 className="size-3" />
         </button>

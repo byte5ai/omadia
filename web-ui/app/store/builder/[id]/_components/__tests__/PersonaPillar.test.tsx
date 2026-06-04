@@ -1,8 +1,12 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, screen } from '@testing-library/react';
+import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as api from '../../../../../_lib/api';
 import { PersonaPillar } from '../PersonaPillar';
+import { renderWithIntl } from './personaIntlHelper';
+
+const render = (ui: ReactElement) => renderWithIntl(ui, { locale: 'de' });
 
 /**
  * Phase 3 / OB-67 Slice 4 — PersonaPillar integration tests.

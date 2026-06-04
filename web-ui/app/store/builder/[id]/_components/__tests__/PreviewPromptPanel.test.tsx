@@ -1,7 +1,8 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as api from '../../../../../_lib/api';
+import { renderWithIntl } from '../../../../../_lib/test-utils';
 import { PreviewPromptPanel } from '../PreviewPromptPanel';
 
 /**
@@ -37,7 +38,7 @@ describe('<PreviewPromptPanel />', () => {
         { label: 'Sycophancy Guard', content: '## Critical Thinking', kind: 'sycophancy' },
       ],
     });
-    render(<PreviewPromptPanel draftId="draft-1" />);
+    renderWithIntl(<PreviewPromptPanel draftId="draft-1" />, { locale: 'de' });
     await waitFor(() => {
       expect(screen.getByTestId('preview-prompt-section-header')).toBeInTheDocument();
     });
@@ -52,7 +53,7 @@ describe('<PreviewPromptPanel />', () => {
       tokens: 1,
       sections: [{ label: 'Header', content: '# Hi', kind: 'header' }],
     });
-    render(<PreviewPromptPanel draftId="draft-1" />);
+    renderWithIntl(<PreviewPromptPanel draftId="draft-1" />, { locale: 'de' });
     await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByTestId('preview-prompt-refresh'));
     await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2));
@@ -66,7 +67,7 @@ describe('<PreviewPromptPanel />', () => {
         tokens: 1,
         sections: [{ label: 'Header', content: '# Hi', kind: 'header' }],
       });
-      const { rerender } = render(<PreviewPromptPanel draftId="draft-1" refetchKey={0} />);
+      const { rerender } = renderWithIntl(<PreviewPromptPanel draftId="draft-1" refetchKey={0} />, { locale: 'de' });
       // Initial mount fetches immediately
       await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
       rerender(<PreviewPromptPanel draftId="draft-1" refetchKey={1} />);
@@ -89,7 +90,7 @@ describe('<PreviewPromptPanel />', () => {
         tokens: 1,
         sections: [{ label: 'Header', content: '# Hi', kind: 'header' }],
       });
-      const { rerender } = render(<PreviewPromptPanel draftId="draft-1" refetchKey={0} />);
+      const { rerender } = renderWithIntl(<PreviewPromptPanel draftId="draft-1" refetchKey={0} />, { locale: 'de' });
       await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
       // Three rapid bumps within 250ms each — only the last one survives
       // the debounce
@@ -109,7 +110,7 @@ describe('<PreviewPromptPanel />', () => {
 
   it('renders inline alert when fetch fails', async () => {
     fetchSpy.mockRejectedValueOnce(new Error('boom'));
-    render(<PreviewPromptPanel draftId="draft-1" />);
+    renderWithIntl(<PreviewPromptPanel draftId="draft-1" />, { locale: 'de' });
     await waitFor(() => {
       expect(screen.getByTestId('preview-prompt-error')).toHaveTextContent('boom');
     });
@@ -121,7 +122,7 @@ describe('<PreviewPromptPanel />', () => {
       tokens: 1500,
       sections: [{ label: 'Header', content: '# Hi', kind: 'header' }],
     });
-    render(<PreviewPromptPanel draftId="draft-1" />);
+    renderWithIntl(<PreviewPromptPanel draftId="draft-1" />, { locale: 'de' });
     await waitFor(() => {
       expect(screen.getByTestId('preview-prompt-tokens')).toHaveTextContent('gut');
     });

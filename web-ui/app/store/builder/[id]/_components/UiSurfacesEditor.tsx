@@ -1,6 +1,7 @@
 'use client';
 
 import { LayoutDashboard, ShieldCheck } from 'lucide-react';
+import { useTranslations } from 'next-intl';
 import { useCallback } from 'react';
 
 import type { JsonPatch, ToolSpec, UiRoute } from '../../../../_lib/builderTypes';
@@ -52,6 +53,7 @@ export function UiSurfacesEditor({
   slots,
   onPatch,
 }: UiSurfacesEditorProps): React.ReactElement {
+  const t = useTranslations('builder.uiSurfaces.editor');
   const adminUiEnabled = typeof adminUiPath === 'string' && adminUiPath.length > 0;
 
   const toggleAdminUi = useCallback(() => {
@@ -87,8 +89,8 @@ export function UiSurfacesEditor({
       {/* ─── Admin UI Sub-Card ─── */}
       <SurfaceCard
         icon={<ShieldCheck className="size-4 text-slate-500" />}
-        title="Admin UI"
-        subtitle="Ein iframe in der Store-Detail, operator-only. Für Daten-Pflege die nicht aus der API kommt."
+        title={t('adminUi.title')}
+        subtitle={t('adminUi.subtitle')}
       >
         <label className="flex items-start gap-2 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-[12px] hover:border-[color:var(--accent)]">
           <input
@@ -99,12 +101,12 @@ export function UiSurfacesEditor({
           />
           <span className="flex-1">
             <span className="font-medium text-[color:var(--fg-strong)]">
-              Admin UI bereitstellen
+              {t('adminUi.toggleLabel')}
             </span>
             <span className="ml-2 text-[color:var(--fg-muted)]">
-              Plugin mountet eine HTML-Page unter <code>admin_ui_path</code>.
-              Web-UI embed sie als <code>&lt;iframe&gt;</code> auf der
-              Store-Detail-Seite nach Install.
+              {t.rich('adminUi.toggleHelp', {
+                code: (chunks) => <code>{chunks}</code>,
+              })}
             </span>
           </span>
         </label>
@@ -113,7 +115,9 @@ export function UiSurfacesEditor({
           <div className="mt-3 space-y-3">
             <label className="block text-[12px]">
               <span className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-[color:var(--fg-muted)]">
-                Pfad (absolut, endet auf <code>index.html</code>)
+                {t.rich('adminUi.pathLabel', {
+                  code: (chunks) => <code>{chunks}</code>,
+                })}
               </span>
               <input
                 type="text"
@@ -128,25 +132,23 @@ export function UiSurfacesEditor({
               draftId={draftId}
               slotKey={ADMIN_UI_BODY_SLOT}
               initialValue={slots[ADMIN_UI_BODY_SLOT] ?? defaultAdminUiStub()}
-              label="Admin UI Body (HTML)"
-              hint="Inhalt zwischen den Marker-Regions. inline <style> + <script> erlaubt."
+              label={t('adminUi.bodyLabel')}
+              hint={t('adminUi.bodyHint')}
               heightPx={280}
             />
 
             <p className="rounded-md border border-amber-200 bg-amber-50/40 px-3 py-2 text-[11px] text-amber-900">
-              <strong>Operator-Contract:</strong> Frontend-Fetches müssen{' '}
-              <strong>relative URLs</strong> nutzen (
-              <code>fetch(&apos;api/devices&apos;)</code>, nicht{' '}
-              <code>fetch(&apos;/api/...&apos;)</code>) — die UI läuft hinter
-              einem <code>/bot-api/*</code>-Rewrite. JSON-Responses brauchen das{' '}
-              <code>{'{ ok: boolean, ... }'}</code>-Schema, sonst flagged der
-              RuntimeSmoke sie als kaputt.
+              {t.rich('adminUi.operatorContract', {
+                strong: (chunks) => <strong>{chunks}</strong>,
+                code: (chunks) => <code>{chunks}</code>,
+              })}
             </p>
           </div>
         ) : (
           <p className="mt-2 text-[11px] text-[color:var(--fg-muted)]">
-            Aus. Plugins ohne <code>admin_ui_path</code> haben keine Admin-Tile in
-            der Store-Detail-Seite — das ist der Default.
+            {t.rich('adminUi.disabledHint', {
+              code: (chunks) => <code>{chunks}</code>,
+            })}
           </p>
         )}
       </SurfaceCard>
@@ -154,8 +156,8 @@ export function UiSurfacesEditor({
       {/* ─── Dashboard Pages Sub-Card ─── */}
       <SurfaceCard
         icon={<LayoutDashboard className="size-4 text-slate-500" />}
-        title="Dashboard Pages"
-        subtitle="Browser-/Teams-Tab-rendernde Routes. Für end-user-facing Anzeigen (PR-Inbox, KPIs, Listen)."
+        title={t('dashboardPages.title')}
+        subtitle={t('dashboardPages.subtitle')}
       >
         <PagesList
           uiRoutes={uiRoutes}

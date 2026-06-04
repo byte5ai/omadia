@@ -1,12 +1,13 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ToolSpec } from '../../../../../_lib/builderTypes';
+import { renderWithIntl } from '../../../../../_lib/test-utils';
 import { ToolList } from '../ToolList';
 
 describe('<ToolList />', () => {
   it('shows the empty state when there are no tools', () => {
-    render(<ToolList tools={[]} onPatch={vi.fn()} />);
+    renderWithIntl(<ToolList tools={[]} onPatch={vi.fn()} />, { locale: 'de' });
     expect(
       screen.getByText(/Noch keine Tools definiert/),
     ).toBeInTheDocument();
@@ -20,7 +21,9 @@ describe('<ToolList />', () => {
       { id: 'first_tool', description: 'first description' },
       { id: 'second_tool', description: 'second description' },
     ];
-    render(<ToolList tools={tools} onPatch={vi.fn()} />);
+    renderWithIntl(<ToolList tools={tools} onPatch={vi.fn()} />, {
+      locale: 'de',
+    });
     expect(screen.getByText('first_tool')).toBeInTheDocument();
     expect(screen.getByText('second_tool')).toBeInTheDocument();
   });
@@ -28,7 +31,9 @@ describe('<ToolList />', () => {
   it('emits an /tools/- add patch when the add button is clicked', () => {
     const onPatch = vi.fn();
     const tools: ToolSpec[] = [{ id: 'existing', description: 'desc' }];
-    render(<ToolList tools={tools} onPatch={onPatch} />);
+    renderWithIntl(<ToolList tools={tools} onPatch={onPatch} />, {
+      locale: 'de',
+    });
     fireEvent.click(screen.getByRole('button', { name: /Tool hinzufügen/ }));
     expect(onPatch).toHaveBeenCalledTimes(1);
     const firstCall = onPatch.mock.calls[0]?.[0] as Array<{
@@ -42,7 +47,9 @@ describe('<ToolList />', () => {
   it('emits a remove patch when the X button is clicked', () => {
     const onPatch = vi.fn();
     const tools: ToolSpec[] = [{ id: 'doomed', description: 'will go away' }];
-    render(<ToolList tools={tools} onPatch={onPatch} />);
+    renderWithIntl(<ToolList tools={tools} onPatch={onPatch} />, {
+      locale: 'de',
+    });
     fireEvent.click(
       screen.getByRole('button', { name: /Tool doomed entfernen/ }),
     );
@@ -59,7 +66,7 @@ describe('<ToolList />', () => {
       { id: 'foo', description: 'fine' },
       { id: 'broken_tool', description: 'a tool' },
     ];
-    render(
+    renderWithIntl(
       <ToolList
         tools={tools}
         agentStuck={{
@@ -71,6 +78,7 @@ describe('<ToolList />', () => {
         }}
         onPatch={vi.fn()}
       />,
+      { locale: 'de' },
     );
     // The badge surfaces a title attribute starting with the German
     // marker phrase. Find any element whose title attribute matches.

@@ -434,5 +434,855 @@
     "cacheHitTitle": "{n} cache-read tokens",
     "dismissAriaLabel": "Cancel stream",
     "dismissTitle": "Cancel"
+  },
+  "builder": {
+    "simple": {
+      "intro": {
+        "badge": "No-Code",
+        "title": "Let's build your assistant",
+        "subtitle": "In three calm steps — describe it, review it, try it out. The technical side takes care of itself."
+      },
+      "step1": {
+        "title": "Describe your assistant",
+        "subtitle": "Say in your own words what it should do for you."
+      },
+      "step2": {
+        "title": "Your assistant",
+        "subtitle": "An overview in plain language — no jargon."
+      },
+      "step3": {
+        "title": "Try it out",
+        "subtitle": "Ask a question and see how your assistant replies."
+      },
+      "overview": {
+        "nameLabel": "Name",
+        "namePlaceholder": "Not named yet",
+        "whatLabel": "What it does",
+        "whatPlaceholder": "Once you've described above what your assistant should do, a short summary will appear here.",
+        "readyTools": "Ready. Can carry out {count, plural, one {# action} other {# actions}} for you.",
+        "readyChat": "Ready. Answers your questions in the chat."
+      },
+      "persona": {
+        "title": "Adjust personality",
+        "subtitle": "How should your assistant sound? Friendly, factual, casual …",
+        "optional": "optional"
+      },
+      "intake": {
+        "heroTitle": "What should your assistant be able to do?",
+        "heroSubtitle": "Just describe it in your own words. We'll handle the rest — you don't need to know anything technical.",
+        "examplesLabel": "For example",
+        "example1": "An assistant that answers questions about our Confluence pages.",
+        "example2": "A helper that summarizes incoming emails.",
+        "example3": "An assistant for questions about our vacation policy.",
+        "inputLabel": "Describe your assistant",
+        "placeholderIdle": "Describe in your own words what your assistant should do.",
+        "placeholderBusy": "Your assistant is being built …",
+        "send": "Send",
+        "stop": "Stop",
+        "statusDefault": "Getting your assistant ready …",
+        "statusReading": "Reading your request …",
+        "statusConfiguring": "Setting up your assistant …",
+        "statusTeaching": "Teaching your assistant its skills …",
+        "statusWaitingChoice": "Waiting for your decision …",
+        "statusWorking": "Working on the details …",
+        "statusChecking": "Checking the result …",
+        "statusThinking": "Thinking …",
+        "statusFormulating": "Writing the reply …",
+        "statusBusy": "Working …",
+        "errorLostConnection": "Connection lost: {message}",
+        "errorUnknown": "Unknown error — please try again.",
+        "errorChoiceFailed": "Your choice could not be saved.",
+        "errorChoiceFailedMessage": "Your choice could not be saved: {message}"
+      }
+    },
+    "workspace": {
+      "backToDrafts": "Drafts",
+      "publish": "Publish",
+      "viewModeAriaLabel": "Choose view",
+      "viewModeSimple": "Simple",
+      "viewModeExtended": "Advanced",
+      "viewModeSimpleTitle": "Guided no-code view — describe, review, try out",
+      "viewModeExtendedTitle": "Full builder — spec, slots, source code, build status",
+      "statusDraft": "Draft",
+      "statusPublished": "Published",
+      "statusArchived": "Archived",
+      "tabOverview": "Overview",
+      "tabSpec": "Spec",
+      "tabSlots": "Slots",
+      "tabPersona": "Persona",
+      "tabVersions": "Versions",
+      "paneChat": "Builder Chat",
+      "paneEditor": "Editor",
+      "panePreview": "Preview",
+      "paneUiSurfaces": "UI Surfaces",
+      "editorTabMissingAria": "{count} missing",
+      "mobilePaneAriaLabel": "Choose workspace pane",
+      "mobilePaneChat": "Chat",
+      "mobilePaneEditor": "Editor",
+      "mobilePanePreview": "Preview",
+      "mobilePaneUi": "UI",
+      "mobilePaneMissingAria": "{count} required fields missing",
+      "installBuildMustSucceed": "Last build must succeed",
+      "installEditorWarnings": "{count, plural, one {# editor warning} other {# editor warnings}}",
+      "installMissingCredentials": "{count, plural, one {# missing test credential} other {# missing test credentials}}",
+      "templateLabel": "Template",
+      "templateUnknown": "(unknown template)",
+      "templateTooltipEnabled": "Switch template (lossless — only slots / tools / depends_on are template-specific)",
+      "templateTooltipDisabled": "Template switch disabled — the draft already has slots, tools or `depends_on` entries that would be lost on switch. Create a new draft or clear those fields first.",
+      "modelSwitchAria": "Switch {label} model",
+      "autoFixLabel": "Auto-Fix",
+      "autoFixOn": "on",
+      "autoFixOff": "off",
+      "autoFixTitleOn": "Auto-Fix active: build/smoke failures automatically trigger a builder turn",
+      "autoFixTitleOff": "Auto-Fix off: failures only show the \"Fix with Builder\" button",
+      "autoFixKindBuild": "Build",
+      "autoFixKindSmoke": "Smoke",
+      "autoFixRunning": "Auto-Fix running (#{buildN} · {kind})",
+      "autoFixStoppedTitle": "Auto-Fix stopped after {count} identical {kind} errors",
+      "autoFixStoppedBody": "The builder agent can't get past the same class of error. Auto-Fix was switched off automatically — review the code manually or turn the toggle back on once you've intervened.",
+      "autoFixDismissAria": "Hide notice",
+      "buildStatusLabel": "Build status",
+      "buildBusLive": "live",
+      "buildBusReconnecting": "reconnecting",
+      "buildBusIdle": "idle",
+      "buildSse": "SSE {status}",
+      "buildErrorsHeading": "{count} TypeScript errors",
+      "buildErrorsHeadingWithBuild": "{count} TypeScript errors · build #{buildN}",
+      "buildErrorsCloseAria": "Close error list",
+      "buildErrorsShowTitle": "Show error list",
+      "buildErrorsHideTitle": "Hide error list",
+      "fixWithBuilder": "Fix with Builder"
+    },
+    "tools": {
+      "form": {
+        "idLabel": "Tool ID",
+        "idPlaceholder": "e.g. fetch_metrics",
+        "idTaken": "Tool ID is already taken",
+        "descriptionLabel": "Description",
+        "descriptionPlaceholder": "What does this tool do? Read by the agent as the description.",
+        "inputSchema": "Input schema",
+        "schemaModeLabel": "Schema mode",
+        "tabForm": "Form",
+        "tabRawJson": "Raw JSON",
+        "saveAsTemplate": "Save as template",
+        "saved": "saved",
+        "templateNamePrompt": "Template name",
+        "templateNameDefault": "My template"
+      },
+      "list": {
+        "emptyState": "No tools defined yet.",
+        "addFirstTool": "Add first tool",
+        "fromTemplate": "From template",
+        "addTool": "Add tool",
+        "import": "Import",
+        "reorderHandle": "Reorder tool",
+        "unnamed": "unnamed",
+        "noDescription": "no description",
+        "testTool": "Test tool {id}",
+        "testToolTitle": "Run directly against preview",
+        "removeTool": "Remove tool {id}",
+        "formPlaceholder": "Tool form coming in B.11-2.",
+        "stuckTitle": "Builder agent got stuck on this tool/slot — check manually",
+        "stuckBadge": "stuck"
+      },
+      "bulkImport": {
+        "dialogLabel": "Tools bulk import",
+        "title": "Import tools",
+        "closeModal": "Close modal",
+        "inputLabel": "Input",
+        "preview": "Preview",
+        "previewEmpty": "Paste input to see the preview.",
+        "invalidJson": "Input is not valid JSON. YAML support is coming in the B.11+ cleanup.",
+        "collisionNote": "Collisions are skipped — existing tools stay unchanged.",
+        "confirmImport": "Confirm import",
+        "collisionBadge": "Collision",
+        "toolsDetected": "{count} tools detected",
+        "collisionsSuffix": ", {count} collisions",
+        "errorsSuffix": ", {count} errors"
+      },
+      "test": {
+        "dialogLabel": "Test {id}",
+        "titlePrefix": "Test",
+        "subtitle": "Direct call against the current preview instance.",
+        "closeModal": "Close modal",
+        "inputHeading": "Input",
+        "resultHeading": "Result",
+        "dismissHint": "Esc or a click outside closes the modal.",
+        "saveTestCase": "Save as test case",
+        "run": "Run",
+        "unknownError": "Unknown error",
+        "emptyInput": "Tool accepts empty input — press Run.",
+        "selectPlaceholder": "— select —",
+        "arrayJsonHint": "Array — JSON syntax, commits on blur.",
+        "objectJsonHint": "Object — JSON syntax, commits on blur."
+      },
+      "templates": {
+        "dialogLabel": "Tool templates",
+        "title": "Choose a tool template",
+        "closeModal": "Close modal",
+        "empty": "No templates available.",
+        "personalBadge": "Mine",
+        "deleteTemplate": "Delete template {label}"
+      },
+      "schema": {
+        "collapseConstraints": "Collapse constraints",
+        "expandConstraints": "Expand constraints",
+        "propertyKey": "Property key",
+        "propertyType": "Property type",
+        "removeProperty": "Remove property {key}",
+        "propertyKeyInvalid": "Property key must be [a-zA-Z_][a-zA-Z0-9_]*",
+        "propertyKeyTaken": "Property key already taken",
+        "description": "Description",
+        "descriptionPlaceholder": "Hint read by the LLM",
+        "entityTitle": "Entity {name} (v{version})",
+        "booleanNoConstraints": "Boolean — no additional constraints.",
+        "objectNestedHint": "Object — edit nested properties below.",
+        "allowedValues": "Allowed values",
+        "removeValue": "Remove value {value}",
+        "valueEnterPlaceholder": "Value + Enter",
+        "itemType": "Item type",
+        "itemPropertiesHint": "Item properties are edited in the nested builder below (depth {depth}).",
+        "topLevelMustBeObject": "Top level must be an object.",
+        "jsonParseError": "JSON parse error",
+        "jsonModeHint": "Direct JSON-schema mode. When switching to the form view, unsupported patterns (oneOf, $ref, polymorphic) become read-only.",
+        "noProperties": "No properties — tool accepts an empty input object.",
+        "addProperty": "Property"
+      },
+      "testResult": {
+        "error": "Error",
+        "success": "Success"
+      }
+    },
+    "chat": {
+      "error": {
+        "connectionLost": "Connection lost: {message}",
+        "unknownTurn": "Unknown error during builder turn",
+        "choiceSaveFailedDetail": "Could not save selection: {message}",
+        "choiceSaveFailed": "Could not save selection."
+      },
+      "inputLabel": "Builder message",
+      "placeholder": {
+        "thinking": "Builder is thinking …",
+        "idle": "Describe what the agent should do. Enter to send, Shift+Enter for a line break."
+      },
+      "button": {
+        "stop": "Stop",
+        "send": "Send"
+      },
+      "liveness": {
+        "likelyStuck": "likely stuck — press Stop?"
+      },
+      "turnStats": {
+        "live": "Turn live",
+        "last": "Last turn"
+      },
+      "empty": {
+        "title": "Tell the builder what you want to start with.",
+        "example": "e.g. „Build a Confluence reader agent with the tools page_read and page_search.“"
+      }
+    },
+    "preview": {
+      "prompt": {
+        "title": "Preview Prompt",
+        "tokens": "{count} tokens ({health})",
+        "health": {
+          "good": "good",
+          "medium": "medium",
+          "high": "high",
+          "critical": "critical"
+        },
+        "loading": "Loading…",
+        "refresh": "Refresh",
+        "copied": "Copied ✓",
+        "copy": "Copy"
+      },
+      "chat": {
+        "agentLabel": "Preview agent",
+        "credentials": "Credentials",
+        "credentialsTooltip": "Manage test credentials for the preview",
+        "rebuild": "Rebuild",
+        "rebuildSuccess": "Rebuild #{buildN} ✓ — preview is ready",
+        "inputLabel": "Preview message",
+        "placeholder": {
+          "inflight": "Preview agent is responding …",
+          "idle": "Test the agent. Press Enter to send."
+        },
+        "stop": "Stop",
+        "send": "Send",
+        "streamLive": "Stream live",
+        "error": {
+          "connectionLost": "Connection lost: {message}",
+          "unknownTurn": "Unknown error during the preview turn"
+        },
+        "externalReadsHint": "Preview does not run cross-integration lookups (<code>spec.external_reads</code>) — the agent correctly detects the missing service and throws. Publish the agent to the platform store to test the real data path.",
+        "agentStuck": {
+          "title": "Builder agent is stuck on slot {slot} ({attempts, plural, one {# attempt} other {# attempts}})",
+          "body": "{summary}. Open the slot editor, review the errors manually and fix the code — the agent won't retry on its own.",
+          "dismiss": "Dismiss",
+          "dismissTooltip": "Dismiss banner"
+        },
+        "empty": {
+          "title": "Test the preview agent.",
+          "body": "Spec + slots are recompiled before each turn if anything changed."
+        },
+        "smoke": {
+          "running": "smoke #{buildN} running …",
+          "okNoTools": "smoke #{buildN} ✓ (no tools declared)",
+          "okTools": "smoke #{buildN} ✓ ({count} {count, plural, one {tool} other {tools}} ok)",
+          "activateFailed": "smoke #{buildN} ✗ — preview activate failed{detail}",
+          "toolsFailed": "smoke #{buildN} ✗ — {failed}/{count} {count, plural, one {tool} other {tools}} failed",
+          "fixWithBuilder": "Fix with builder"
+        }
+      },
+      "secrets": {
+        "title": "Test credentials",
+        "closeDrawer": "Close drawer",
+        "persistence": {
+          "persistent": "Values are stored encrypted in the vault and survive a restart. Clicking «Clear all» wipes them permanently.",
+          "ephemeral": "Values live only in the server's memory and are gone on logout/restart.",
+          "unknown": "Values are stored server-side in the PreviewSecretBuffer.",
+          "notForProduction": "Not for production — installed plugins pull their credentials from the vault via RequiresWizard."
+        },
+        "noFields": "No <code>setup_fields</code> declared. Add some in the spec tab to test credentials.",
+        "clearConfirm": "Clear all test credentials?",
+        "clearAll": "Clear all",
+        "apply": "Apply",
+        "set": "set",
+        "placeholder": {
+          "buffered": "set — leave empty to keep the value",
+          "empty": "Enter value"
+        }
+      }
+    },
+    "spec": {
+      "editor": {
+        "groups": {
+          "identity": "Identity",
+          "description": "Description",
+          "skill": "Skill",
+          "dependencies": "Dependencies & Network",
+          "setupFields": "Setup Fields (Credentials & Config)"
+        },
+        "fields": {
+          "agentId": "Agent ID",
+          "name": "Name",
+          "version": "Version",
+          "category": "Category",
+          "role": "Role",
+          "tonality": "Tonality (optional)"
+        },
+        "placeholders": {
+          "name": "e.g. SEO Analyst",
+          "role": "e.g. Sales Analyst",
+          "tonality": "e.g. precise, factual",
+          "notFor": "Enter anti-pattern",
+          "examplePrompt": "Example prompt",
+          "dependsOn": "e.g. @omadia/knowledge-graph-neon",
+          "networkOutbound": "e.g. api.example.com"
+        },
+        "array": {
+          "add": "Add",
+          "removeAria": "Remove {label}",
+          "malformedTooltip": "Entry is not a string — shown as best-effort"
+        },
+        "save": {
+          "saving": "Saving …",
+          "saved": "Saved"
+        }
+      },
+      "overview": {
+        "fields": {
+          "agentId": "Agent ID",
+          "name": "Name",
+          "version": "Version",
+          "template": "Template",
+          "category": "Category",
+          "domain": "Domain",
+          "skillRole": "Skill Role",
+          "tools": "Tools",
+          "slots": "Slots",
+          "setupFields": "Setup Fields",
+          "outbound": "Outbound",
+          "description": "Description"
+        },
+        "values": {
+          "none": "none",
+          "hosts": "{count, plural, one {# host} other {# hosts}}"
+        },
+        "slotKeys": "Slot Keys"
+      },
+      "setupFields": {
+        "emptyState": "No setup fields yet. Add e.g. <example>api_key (secret, required)</example> so the preview agent can read test credentials.",
+        "required": {
+          "on": "required",
+          "off": "optional"
+        },
+        "removeAria": "Remove setup field {key}",
+        "descriptionPlaceholder": "What does the agent need this field for?",
+        "newKey": "new key",
+        "newKeyPlaceholder": "e.g. api_key",
+        "add": "Add",
+        "validation": {
+          "keyExists": "Key already exists.",
+          "keyFormat": "Key must be snake_case (a-z, 0-9, _; start with a letter)."
+        }
+      }
+    },
+    "slots": {
+      "empty": {
+        "title": "No slots filled yet.",
+        "hint": "Let the Builder fill the slots, or write them yourself."
+      },
+      "slotLabel": "Slot",
+      "save": "Save",
+      "templateRequired": {
+        "heading": "Required by template",
+        "allFilled": "all filled",
+        "missing": "{count, plural, one {# missing} other {# missing}}"
+      },
+      "required": "required",
+      "askAgent": "Ask the agent",
+      "askAgentTooltip": "Sends the prompt straight to the Builder chat — the agent gets started right away.",
+      "status": {
+        "saving": "Saving …",
+        "saved": "Saved",
+        "dirty": "Unsaved"
+      },
+      "inline": {
+        "status": {
+          "dirty": "unsaved",
+          "saving": "saving…",
+          "saved": "saved",
+          "error": "error"
+        }
+      }
+    },
+    "persona": {
+      "pillar": {
+        "accentLabel": "Persona",
+        "heading": "Shape character",
+        "description": "12 axes, each individually optional. Values are mirrored in the AGENT.md frontmatter — Phase 4 compiles them into a persona section in the system prompt.",
+        "templateBadge": "Template: {template}",
+        "templateBadgeAdjusted": "Template: {template} — adjusted",
+        "templateBadgeNone": "No template",
+        "applyTemplate": "Apply template",
+        "templateLabel": "Template (optional)",
+        "templatePlaceholder": "e.g. software-engineer (templates arrive in Phase 4)",
+        "coreHeading": "Core (8)",
+        "extendedHeading": "Extended (4)",
+        "customNotesLabel": "Custom Notes (optional)",
+        "customNotesPlaceholder": "e.g. \"Reply in German when the user writes in German.\"",
+        "saved": "Saved.",
+        "unsavedChanges": "Unsaved changes.",
+        "reset": "Reset",
+        "save": "Save",
+        "saving": "Saving…"
+      },
+      "gallery": {
+        "title": "Choose a persona template",
+        "close": "Close",
+        "role": "Role: {role}",
+        "customLabel": "Custom",
+        "customDescription": "Apply no template — use your own axes.",
+        "prefillSkill": "Also prefill skill fields ({role})",
+        "cancel": "Cancel",
+        "apply": "Apply",
+        "applying": "Applying…"
+      },
+      "boundaries": {
+        "heading": "Boundaries",
+        "selectedCount": "{count} selected",
+        "unknownPresets": "Unknown preset IDs: {ids}",
+        "customLabel": "Custom boundaries (one per line)",
+        "save": "Save boundaries",
+        "saving": "Saving boundaries…",
+        "saved": "Saved"
+      },
+      "culture": {
+        "label": "Industry / Culture",
+        "noSelection": "— No selection —",
+        "modalLabel": "Apply culture preset",
+        "overwriteNotice": "These axes would be overwritten:",
+        "unset": "unset",
+        "noChange": "No change — all values already match.",
+        "apply": "Apply",
+        "applying": "Applying…",
+        "cancel": "Cancel"
+      },
+      "dimension": {
+        "valueLabel": "{axis} value",
+        "rangeLabel": "{axis}: {labelLeft} to {labelRight}",
+        "modelDefault": "Model default: {value}",
+        "conflictHint": "Conflict — see banner."
+      },
+      "radar": {
+        "title": "Persona Radar",
+        "comparisonPrefix": "Persona vs.",
+        "comparisonNeutral": "Neutral (50)"
+      },
+      "quality": {
+        "heading": "Quality",
+        "tokensPrefix": "Tokens:",
+        "loading": "Loading…",
+        "refresh": "Refresh",
+        "dimensions": {
+          "completeness": "Completeness",
+          "tokenEfficiency": "Token efficiency",
+          "ruleQuality": "Rule quality",
+          "specificity": "Specificity"
+        },
+        "sweetspot": {
+          "under": "under-provisioned",
+          "over": "overloaded",
+          "sweet": "Sweet spot"
+        },
+        "tokenHealth": {
+          "warning": "Warning",
+          "critical": "critical",
+          "ok": "OK"
+        }
+      }
+    },
+    "uiSurfaces": {
+      "editor": {
+        "adminUi": {
+          "title": "Admin UI",
+          "subtitle": "An iframe in the store detail, operator-only. For maintaining data that does not come from the API.",
+          "toggleLabel": "Provide Admin UI",
+          "toggleHelp": "Plugin mounts an HTML page at <code>admin_ui_path</code>. The Web UI embeds it as an <code>&lt;iframe&gt;</code> on the store detail page after install.",
+          "pathLabel": "Path (absolute, ends with <code>index.html</code>)",
+          "bodyLabel": "Admin UI Body (HTML)",
+          "bodyHint": "Content between the marker regions. Inline style + script allowed.",
+          "operatorContract": "<strong>Operator contract:</strong> Frontend fetches must use <strong>relative URLs</strong> (<code>fetch('api/devices')</code>, not <code>fetch('/api/...')</code>) — the UI runs behind a <code>/bot-api/*</code> rewrite. JSON responses need the <code>{ ok: boolean, ... }</code> schema, otherwise the RuntimeSmoke flags them as broken.",
+          "disabledHint": "Off. Plugins without <code>admin_ui_path</code> have no admin tile on the store detail page — that is the default."
+        },
+        "dashboardPages": {
+          "title": "Dashboard Pages",
+          "subtitle": "Routes rendered as browser/Teams tabs. For end-user-facing displays (PR inbox, KPIs, lists)."
+        }
+      },
+      "tab": {
+        "heading": "UI Surfaces",
+        "description": "Expose plugin UI outward: one admin iframe for operator-maintained data (single), and 0–N dashboard pages for end-user-facing browser/Teams tab displays.",
+        "saving": "Saving…",
+        "saved": "Saved",
+        "error": "Error: {message}"
+      },
+      "pageForm": {
+        "fields": {
+          "routeIdLabel": "Route ID (slug)",
+          "routeIdHelp": "Lowercase, hyphens allowed. Determines slot keys + filename.",
+          "pathLabel": "Path",
+          "pathHelp": "Relative to the plugin mount. Final: /p/<id><path>.",
+          "tabLabelLabel": "Tab Label (Teams Hub)",
+          "tabLabelHelp": "Max 24 characters. Shown in the Teams tab + hub card.",
+          "pageTitleLabel": "Page Title (title)",
+          "pageTitleHelp": "Full page title in the HTML doc. Max 80 characters.",
+          "refreshLabel": "Refresh (s)",
+          "refreshHelp": "Meta refresh interval. 0 = no auto-reload."
+        },
+        "renderMode": {
+          "heading": "Render Mode",
+          "libraryDesc": "Curated Tailwind templates (list-card / kpi-tiles). Fast, no build step.",
+          "reactSsrDesc": "TSX component (server-rendered). Full React DX, server-rendered, Tailwind via CDN.",
+          "freeFormHtmlDesc": "Free html`…` slot. You write the Express route body yourself."
+        },
+        "uiTemplate": {
+          "heading": "UI Template",
+          "listCardDesc": "List of cards (title + subtitle + url). Default for \"show me X items\".",
+          "kpiTilesDesc": "1–4 number tiles (label + value + optional hint). For counts/KPIs."
+        },
+        "dataBinding": {
+          "heading": "Data Source",
+          "toolLabel": "Tool:",
+          "noToolOption": "— No tool bound —",
+          "help": "The selected tool is called with empty input on every page request; its output flows as props into the render function."
+        },
+        "interactive": {
+          "label": "Interactive (Hydration)",
+          "help": "SSR + client-side hydration via esm.sh import map. Set to true when your component uses <code>useState</code>, <code>onClick</code>, etc. The root element MUST carry <code>data-omadia-page=\"{routeId}\"</code>."
+        },
+        "componentSlot": {
+          "label": "Component (TSX, default-export)",
+          "hint": "Props: { data: unknown; fetchError: string | null }"
+        },
+        "renderSlot": {
+          "label": "Render Slot (renderRoute callback body)",
+          "hint": "Return: HtmlFragment (e.g. htmlDoc({ title, body }))"
+        },
+        "itemTemplate": {
+          "heading": "Item Template (path interpolation: <code>item.fieldname</code>)",
+          "titleLabel": "Title (required)",
+          "subtitleLabel": "Subtitle (optional)",
+          "metaLabel": "Meta (optional)",
+          "urlLabel": "URL (optional — makes the item clickable)",
+          "suffixHelp": "Whitelisted suffixes: <code>.join(\", \")</code> for arrays, <code>.toLocaleString()</code> for numbers. Other function calls are ignored."
+        }
+      },
+      "pagesList": {
+        "emptyTitle": "No dashboard pages defined yet.",
+        "emptyHint": "A page becomes a <code>/p/&lt;plugin&gt;/&lt;path&gt;</code> endpoint and a hub card for Teams.",
+        "addFirstPage": "Add first page",
+        "addPage": "Add page",
+        "deleteConfirm": "Delete page \"{name}\"?",
+        "reorderAriaLabel": "Reorder",
+        "deleteAriaLabel": "Delete page"
+      },
+      "preview": {
+        "title": "Live Preview",
+        "loading": "Loading…",
+        "refreshAriaLabel": "Refresh preview",
+        "refreshTitle": "Reload preview",
+        "openInNewTabAriaLabel": "Open preview in new tab",
+        "openInNewTabTitle": "Open in new tab",
+        "iframeTitle": "Preview: {label}",
+        "unavailableTitle": "Preview not available",
+        "hintLine": "<strong>Hint:</strong> {hint}",
+        "hints": {
+          "previewCold": "Click \"Build\" or send a chat message — once the preview is warm (green build status), the iframe loads automatically.",
+          "uiRouteNotFound": "The routeId does not exist in the current spec. Save your page first (same form), then try the reload again.",
+          "previewCaptureMissing": "The warm preview was built from a spec without ui_routes. Trigger a build (chat or \"Rebuild\") after creating the page.",
+          "previewProxyFailed": "The temporary probe server could not load the plugin route. Check the console: the component probably throws during SSR.",
+          "fetchFailed": "Network error while loading the preview. Try refresh."
+        }
+      }
+    },
+    "versions": {
+      "historyHeading": "History",
+      "countOfTotal": "{count} of {total}",
+      "empty": "No changes recorded yet.",
+      "loadMore": "Load more",
+      "loading": "Loading…",
+      "actionPersonaUpdated": "Persona changed",
+      "actionQualityUpdated": "Quality / boundaries changed",
+      "actionSpecPatched": "Spec patched",
+      "actionSlotFilled": "Slot filled",
+      "relSecondsAgo": "a few seconds ago",
+      "relMinutesAgo": "{count} min ago",
+      "relHoursAgo": "{count} h ago",
+      "relDaysAgo": "{count, plural, one {# day} other {# days}} ago",
+      "detailTemplate": "Template: {template}",
+      "detailAxes": "{count, plural, one {# axis} other {# axes}}",
+      "detailCustomNotes": "Custom notes",
+      "detailSycophancy": "Sycophancy: {value}",
+      "detailPresets": "{count, plural, one {# preset} other {# presets}}",
+      "detailCustom": "{count} custom",
+      "detailOperations": "{count, plural, one {# operation} other {# operations}}",
+      "detailSlotBytes": "{slot} — {bytes} bytes",
+      "createSnapshot": "Create snapshot",
+      "refresh": "Refresh",
+      "loadFailed": "Could not load snapshots: {message}",
+      "emptyStateHint": "No snapshots yet. “Create snapshot” pins the current state so you can roll back to it later.",
+      "colCreated": "Created",
+      "colHash": "Hash",
+      "colBy": "By",
+      "colNote": "Note",
+      "colStatus": "Status",
+      "diffVsLive": "Diff vs. live",
+      "deployReady": "Deploy-ready",
+      "rollback": "Rollback",
+      "downloadPlugin": "Plugin",
+      "downloadPluginTitle": "Plugin ZIP — directly installable via /install/packages/upload (incl. AGENT.md with persona/quality)",
+      "downloadBundle": "Bundle",
+      "downloadBundleTitle": "Profile bundle — for cross-instance migration via /api/v1/profiles/import-bundle",
+      "toastMarkedDeployReady": "Marked deploy-ready",
+      "toastNoDiff": "No difference since last snapshot",
+      "toastSnapshotCreated": "Snapshot created ({hash})",
+      "toastRollbackDone": "Rollback complete · {count, plural, one {# file} other {# files}} restored",
+      "noteOptional": "Note (optional)",
+      "notePlaceholder": "Why this state?",
+      "vendorBundleLabel": "Pack plugin ZIPs into the bundle (air-gap export)",
+      "cancel": "Cancel",
+      "create": "Create",
+      "diffModalTitle": "Diff: snapshot vs. live",
+      "diffModalSubtitlePrefix": "Snapshot",
+      "diffModalSubtitleSuffix": "vs. current builder state",
+      "noDifferences": "No differences.",
+      "colPath": "Path",
+      "colSnapshot": "Snapshot",
+      "colLive": "Live",
+      "rollbackConfirmTitle": "Confirm rollback",
+      "rollbackBodyPrefix": "Live ",
+      "rollbackBodySuffix": " + knowledge files are reset to the snapshot state. Plugin pins stay unchanged.",
+      "rollbackTypeHint": "Type the first 12 characters of the bundle hash to confirm.",
+      "rollbackExpected": "Expected:",
+      "rollbackExecute": "Perform rollback",
+      "closeAria": "Close"
+    },
+    "install": {
+      "publishTitle": "Publish plugin",
+      "closeModalAria": "Close modal",
+      "closeAria": "Close",
+      "diffGateEyebrow": "Publish diff gate",
+      "publishLeadPrefix": "This surface will be written to the plugin store. After “Publish”,",
+      "publishLeadSuffix": "is available to every agent in the tenant.",
+      "back": "Back",
+      "publishing": "Publishing …",
+      "succeeded": "Succeeded",
+      "publish": "Publish",
+      "sectionIdentity": "Identity",
+      "kvId": "ID",
+      "kvName": "Name",
+      "kvVersion": "Version",
+      "kvCategory": "Category",
+      "kvDomain": "Domain",
+      "kvTemplate": "Template",
+      "kvDescription": "Description",
+      "sectionSkill": "Skill / system prompt",
+      "kvRole": "Role",
+      "kvTonality": "Tonality",
+      "skillPromptSlotSummary": "skill-prompt slot ({count} characters)",
+      "noSkillPromptSlot": "No dedicated skill-prompt slot — the agent runs with the boilerplate default instruction.",
+      "sectionTools": "Tools",
+      "toolsCount": "{count, plural, one {# tool} other {# tools}}",
+      "noToolsDefined": "No tools defined.",
+      "sectionDependencies": "Dependencies",
+      "sectionDependenciesSubtitle": "depends_on (grants vault scopes)",
+      "noDependencies": "No plugin dependencies.",
+      "sectionNetwork": "Network",
+      "noOutboundHosts": "No outbound hosts declared.",
+      "sectionSetupFields": "Setup fields",
+      "sectionSetupFieldsSubtitle": "to be filled in by the operator on activation",
+      "noSetupNeeded": "No setup needed.",
+      "required": "required",
+      "failureGenericHeading": "Publish failed",
+      "headingConflict": "Plugin ID conflict",
+      "headingBuildFailed": "Build failed (tsc)",
+      "headingCodegenFailed": "Codegen failed",
+      "headingSpecInvalid": "Spec validation failed",
+      "headingManifestInvalid": "manifest.yaml invalid",
+      "headingTooLarge": "Package too large",
+      "headingPipelineFailed": "Build pipeline error",
+      "headingIngestFailed": "Ingest error",
+      "headingDraftNotFound": "Draft not found",
+      "hintConflict": "Delete the existing plugin in the store or change `id` / `version` in the spec.",
+      "hintBuildFailed": "Go back to the slot editor and fix the spots the compiler flags.",
+      "hintCodegenFailed": "The spec has missing required fields or unresolved placeholders — see the issue list.",
+      "hintSpecInvalid": "The spec has a schema problem. Check required fields in the spec editor.",
+      "hintTooLarge": "Reduce slot content or asset sizes — the server limit has been reached.",
+      "bumpInvalidSemver": "Version '{version}' is not semver — adjust it manually in the spec editor.",
+      "bumpAndPublish": "Bump version ({current} → {next}) + publish",
+      "retry": "Try again",
+      "typescriptErrors": "{count, plural, one {# TypeScript error} other {# TypeScript errors}}",
+      "codegenIssues": "{count, plural, one {# codegen issue} other {# codegen issues}}",
+      "successHeading": "Plugin published",
+      "successBody": "is visible in the store. Redirecting …",
+      "conflictLabel": "Conflict",
+      "dismissConflictAria": "Dismiss conflict notice",
+      "manifestPreviewOpenAria": "Open manifest preview",
+      "manifestPreviewRefreshAria": "Refresh manifest preview",
+      "manifestPreviewCloseAria": "Close manifest preview",
+      "manifestPreviewLoading": "# (preview loading)",
+      "previewError": "Preview error"
+    },
+    "common": {
+      "missingCountAria": "{count} missing",
+      "missingCountChip": "{count} missing",
+      "missingRequiredFields": "{count, plural, one {# required field missing} other {# required fields missing}}",
+      "maximizeAria": "Maximize {title}",
+      "restoreFromFullscreenAria": "Restore {title} from fullscreen",
+      "maximizePaneTitle": "Maximize this pane",
+      "restorePanesTitle": "Show the other panes again",
+      "collapseAria": "Collapse {title}"
+    },
+    "drafts": {
+      "list": {
+        "eyebrow": "Agent Builder",
+        "headline": "Build new agents.",
+        "lede": "Create drafts, iterate on several agents in parallel and install them into the platform with one click. Every draft lives in your personal workspace — nobody sees your drafts but you.",
+        "scope": {
+          "draft": "Draft",
+          "published": "Published",
+          "deleted": "Deleted"
+        },
+        "scopeFilterLabel": "Scope filter",
+        "stats": {
+          "drafts": "Drafts",
+          "published": "Published",
+          "deleted": "Deleted",
+          "limit": "Limit"
+        },
+        "empty": {
+          "draft": {
+            "headline": "No drafts yet.",
+            "hint": "Click “New agent” in the top right to create your first draft."
+          },
+          "published": {
+            "headline": "Nothing published yet.",
+            "hint": "Published agents appear here once you have pushed a draft into the platform via the workspace."
+          },
+          "deleted": {
+            "headline": "Trash is empty.",
+            "hint": "Deleted drafts show up here and can be restored until you delete them permanently."
+          }
+        },
+        "error": {
+          "label": "Error",
+          "loadFailed": "Drafts could not be loaded."
+        },
+        "footer": {
+          "phaseLabel": "Phase"
+        }
+      },
+      "detail": {
+        "error": {
+          "label": "Error",
+          "loadFailed": "Workspace could not be loaded.",
+          "unknown": "Unknown error",
+          "draftPrefix": "Draft",
+          "backToList": "Back to draft list"
+        }
+      },
+      "row": {
+        "status": {
+          "draft": "Draft",
+          "published": "Published",
+          "archived": "Archived"
+        },
+        "save": "Save",
+        "cancel": "Cancel",
+        "rename": "Rename",
+        "delete": "Delete",
+        "workspace": "Workspace",
+        "restore": "Restore",
+        "confirmDelete": "Delete draft \"{name}\"?",
+        "lastUpdated": "Last {relative}",
+        "relative": {
+          "justNow": "just now",
+          "minutes": "{count} min ago",
+          "hours": "{count} h ago",
+          "days": "{count} d ago"
+        }
+      },
+      "create": {
+        "label": "New agent",
+        "pending": "Creating…",
+        "quotaReachedTooltip": "Draft quota reached — delete an existing one before creating a new draft."
+      },
+      "import": {
+        "button": "Import bundle",
+        "modal": {
+          "title": "Import bundle",
+          "close": "Close",
+          "description": "Drop a profile bundle ZIP (export from the Versions tab via <code>?format=bundle</code>) here — we automatically create a new draft.",
+          "dropzone": "Drag a ZIP here or click",
+          "maxSize": "max. 50 MB",
+          "overwriteLabel": "Overwrite existing live content (only meaningful for profile targets — builder drafts are always fresh).",
+          "cancel": "Cancel",
+          "import": "Import",
+          "importing": "Importing…"
+        },
+        "errors": {
+          "notZip": "Bundle must be a .zip file.",
+          "conflict": "Profile already has diverging live content ({assets}). Enable “Overwrite” to replace it."
+        }
+      },
+      "quota": {
+        "label": "Drafts",
+        "almostFull": "almost full",
+        "limitReached": "limit reached",
+        "tooltip": "{used} of {cap} active drafts, warning from {warnAt}"
+      }
+    }
   }
 }

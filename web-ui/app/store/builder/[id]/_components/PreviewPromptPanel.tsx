@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslations } from 'next-intl';
 
 import {
   fetchBuilderPreviewPrompt,
@@ -38,11 +39,13 @@ const KIND_LABEL: Record<PreviewPromptSection['kind'], string> = {
   skill: 'Skill',
 };
 
-function tokenHealth(tokens: number): { color: string; label: string } {
-  if (tokens < 2000) return { color: 'text-emerald-600', label: 'gut' };
-  if (tokens < 3500) return { color: 'text-amber-600', label: 'mittel' };
-  if (tokens < 5000) return { color: 'text-orange-600', label: 'hoch' };
-  return { color: 'text-red-600', label: 'kritisch' };
+type TokenHealthLevel = 'good' | 'medium' | 'high' | 'critical';
+
+function tokenHealth(tokens: number): { color: string; level: TokenHealthLevel } {
+  if (tokens < 2000) return { color: 'text-emerald-600', level: 'good' };
+  if (tokens < 3500) return { color: 'text-amber-600', level: 'medium' };
+  if (tokens < 5000) return { color: 'text-orange-600', level: 'high' };
+  return { color: 'text-red-600', level: 'critical' };
 }
 
 export interface PreviewPromptPanelProps {
@@ -55,6 +58,7 @@ export function PreviewPromptPanel({
   draftId,
   refetchKey,
 }: PreviewPromptPanelProps): React.ReactElement {
+  const t = useTranslations('builder.preview.prompt');
   const [data, setData] = useState<BuilderPreviewPrompt | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -118,12 +122,15 @@ export function PreviewPromptPanel({
     >
       <header className="flex items-baseline justify-between">
         <h3 className="text-sm font-semibold text-[color:var(--fg-strong)]">
-          Preview Prompt
+          {t('title')}
         </h3>
         <div className="flex items-center gap-2 text-xs">
           {data && (
             <span data-testid="preview-prompt-tokens" className={health!.color}>
-              {data.tokens} Tokens ({health!.label})
+              {t('tokens', {
+                count: data.tokens,
+                health: t(`health.${health!.level}`),
+              })}
             </span>
           )}
           <button
@@ -135,7 +142,7 @@ export function PreviewPromptPanel({
             disabled={loading}
             className="rounded border border-[color:var(--border)] px-2 py-1"
           >
-            {loading ? 'Lade…' : 'Aktualisieren'}
+            {loading ? t('loading') : t('refresh')}
           </button>
           <button
             type="button"
@@ -144,7 +151,7 @@ export function PreviewPromptPanel({
             disabled={!data || loading}
             className="rounded border border-[color:var(--border)] px-2 py-1"
           >
-            {copied ? 'Kopiert ✓' : 'Kopieren'}
+            {copied ? t('copied') : t('copy')}
           </button>
         </div>
       </header>

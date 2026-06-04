@@ -1,8 +1,12 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
+import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as api from '../../../../../_lib/api';
 import { QualityPanel } from '../QualityPanel';
+import { renderWithIntl } from './personaIntlHelper';
+
+const render = (ui: ReactElement) => renderWithIntl(ui, { locale: 'de' });
 
 /**
  * Issue #52 — QualityPanel vitest cases.

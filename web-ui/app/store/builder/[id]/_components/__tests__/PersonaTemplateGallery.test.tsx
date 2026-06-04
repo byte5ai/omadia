@@ -1,9 +1,12 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { ComponentProps } from 'react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
+import type { ComponentProps, ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import * as api from '../../../../../_lib/api';
 import { PersonaTemplateGallery } from '../PersonaTemplateGallery';
+import { renderWithIntl } from './personaIntlHelper';
+
+const render = (ui: ReactElement) => renderWithIntl(ui, { locale: 'de' });
 
 /**
  * Issue #53 — PersonaTemplateGallery vitest cases.

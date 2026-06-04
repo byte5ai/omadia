@@ -1,3 +1,7 @@
+'use client';
+
+import { useTranslations } from 'next-intl';
+
 import type { AgentSpecSkeleton } from '../../../../_lib/builderTypes';
 
 interface SpecOverviewProps {
@@ -12,6 +16,7 @@ interface SpecOverviewProps {
  * spec form and B.5-6 the Monaco slot editor.
  */
 export function SpecOverview({ spec, slots }: SpecOverviewProps): React.ReactElement {
+  const t = useTranslations('builder.spec.overview');
   const toolCount = spec.tools?.length ?? 0;
   const dependsOnCount = spec.depends_on?.length ?? 0;
   const setupFieldCount = spec.setup_fields?.length ?? 0;
@@ -21,42 +26,42 @@ export function SpecOverview({ spec, slots }: SpecOverviewProps): React.ReactEle
 
   return (
     <div className="grid grid-cols-1 gap-4 p-5 md:grid-cols-2">
-      <Field label="Agent-ID" value={spec.id || '—'} mono />
-      <Field label="Name" value={spec.name || '—'} />
-      <Field label="Version" value={spec.version || '—'} mono />
-      <Field label="Template" value={spec.template ?? 'agent-integration'} mono />
-      <Field label="Kategorie" value={spec.category || '—'} />
+      <Field label={t('fields.agentId')} value={spec.id || '—'} mono />
+      <Field label={t('fields.name')} value={spec.name || '—'} />
+      <Field label={t('fields.version')} value={spec.version || '—'} mono />
+      <Field label={t('fields.template')} value={spec.template ?? 'agent-integration'} mono />
+      <Field label={t('fields.category')} value={spec.category || '—'} />
       <Field
-        label="Domain"
+        label={t('fields.domain')}
         value={spec.domain || '—'}
         mono
       />
       <Field
-        label="Skill-Rolle"
+        label={t('fields.skillRole')}
         value={spec.skill?.role || '—'}
       />
       <Field
-        label="Tools"
-        value={toolCount === 0 ? 'keine' : `${toolCount}`}
+        label={t('fields.tools')}
+        value={toolCount === 0 ? t('values.none') : `${toolCount}`}
       />
       <Field
-        label="Slots"
-        value={slotCount === 0 ? 'keine' : `${slotCount}`}
+        label={t('fields.slots')}
+        value={slotCount === 0 ? t('values.none') : `${slotCount}`}
       />
       <Field
         label="depends_on"
         value={dependsOnCount === 0 ? '—' : `${dependsOnCount}`}
       />
       <Field
-        label="Setup-Felder"
-        value={setupFieldCount === 0 ? 'keine' : `${setupFieldCount}`}
+        label={t('fields.setupFields')}
+        value={setupFieldCount === 0 ? t('values.none') : `${setupFieldCount}`}
       />
       <Field
-        label="Outbound"
-        value={networkCount === 0 ? '—' : `${networkCount} Hosts`}
+        label={t('fields.outbound')}
+        value={networkCount === 0 ? '—' : t('values.hosts', { count: networkCount })}
       />
       <Field
-        label="Beschreibung"
+        label={t('fields.description')}
         value={spec.description || '—'}
         wide
       />
@@ -70,7 +75,7 @@ export function SpecOverview({ spec, slots }: SpecOverviewProps): React.ReactEle
       {slotCount > 0 ? (
         <div className="md:col-span-2">
           <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[color:var(--fg-subtle)]">
-            Slot-Keys
+            {t('slotKeys')}
           </p>
           <ul className="mt-2 flex flex-wrap gap-1.5">
             {slotKeys.map((key) => (
