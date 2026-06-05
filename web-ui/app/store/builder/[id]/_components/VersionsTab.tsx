@@ -1,5 +1,6 @@
 'use client';
 
+import { useTranslations } from 'next-intl';
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 
 import {
@@ -44,7 +45,10 @@ type LoadState =
   | { kind: 'ready'; snapshots: SnapshotSummary[] }
   | { kind: 'error'; message: string };
 
+type VersionsT = ReturnType<typeof useTranslations<'builder.versions'>>;
+
 export function VersionsTab({ draftId }: VersionsTabProps): React.ReactElement {
+  const t = useTranslations('builder.versions');
   const [state, setState] = useState<LoadState>({ kind: 'idle' });
   const [toast, setToast] = useState<{ kind: 'info' | 'error'; text: string } | null>(null);
   const [captureOpen, setCaptureOpen] = useState(false);
@@ -80,13 +84,13 @@ export function VersionsTab({ draftId }: VersionsTabProps): React.ReactElement {
     async (snap: SnapshotSummary) => {
       try {
         await markSnapshotDeployReady(draftId, snap.snapshot_id);
-        showToast('info', 'Marked deploy-ready');
+        showToast('info', t('toastMarkedDeployReady'));
         await refresh();
       } catch (err) {
         showToast('error', err instanceof Error ? err.message : String(err));
       }
     },
-    [draftId, refresh, showToast],
+    [draftId, refresh, showToast, t],
   );
 
   return (
@@ -97,25 +101,25 @@ export function VersionsTab({ draftId }: VersionsTabProps): React.ReactElement {
           onClick={() => setCaptureOpen(true)}
           className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-white hover:opacity-90"
         >
-          Snapshot erstellen
+          {t('createSnapshot')}
         </button>
         <button
           type="button"
           onClick={() => void refresh()}
           className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm hover:border-current"
         >
-          Aktualisieren
+          {t('refresh')}
         </button>
       </div>
 
-      {state.kind === 'loading' && <p className="text-sm opacity-70">Lädt…</p>}
+      {state.kind === 'loading' && <p className="text-sm opacity-70">{t('loading')}</p>}
       {state.kind === 'error' && (
         <p className="text-sm text-[var(--danger)]">
-          Konnte Snapshots nicht laden: {state.message}
+          {t('loadFailed', { message: state.message })}
         </p>
       )}
       {state.kind === 'ready' && state.snapshots.length === 0 && (
-        <EmptyState />
+        <EmptyState t={t} />
       )}
       {state.kind === 'ready' && state.snapshots.length > 0 && (
         <SnapshotTable
@@ -124,6 +128,7 @@ export function VersionsTab({ draftId }: VersionsTabProps): React.ReactElement {
           onDiff={setDiffSnapshot}
           onMark={onMarkDeployReady}
           onRollback={setRollbackTarget}
+          t={t}
         />
       )}
 
@@ -137,6 +142,7 @@ export function VersionsTab({ draftId }: VersionsTabProps): React.ReactElement {
             await refresh();
           }}
           onError={(msg) => showToast('error', msg)}
+          t={t}
         />
       )}
 
@@ -145,6 +151,7 @@ export function VersionsTab({ draftId }: VersionsTabProps): React.ReactElement {
           draftId={draftId}
           snapshot={diffSnapshot}
           onClose={() => setDiffSnapshot(null)}
+          t={t}
         />
       )}
 
@@ -159,6 +166,7 @@ export function VersionsTab({ draftId }: VersionsTabProps): React.ReactElement {
             await refresh();
           }}
           onError={(msg) => showToast('error', msg)}
+          t={t}
         />
       )}
 
@@ -178,11 +186,10 @@ export function VersionsTab({ draftId }: VersionsTabProps): React.ReactElement {
   );
 }
 
-function EmptyState(): React.ReactElement {
+function EmptyState({ t }: { t: VersionsT }): React.ReactElement {
   return (
     <div className="rounded-lg border border-dashed border-[var(--border)] p-6 text-center text-sm opacity-70">
-      Noch keine Snapshots. &bdquo;Snapshot erstellen&ldquo; hält den aktuellen
-      Stand fest, damit du später dorthin zurückrollen kannst.
+      {t('emptyStateHint')}
     </div>
   );
 }
@@ -193,6 +200,7 @@ interface SnapshotTableProps {
   onDiff: (s: SnapshotSummary) => void;
   onMark: (s: SnapshotSummary) => void;
   onRollback: (s: SnapshotSummary) => void;
+  t: VersionsT;
 }
 
 function SnapshotTable({
@@ -201,17 +209,18 @@ function SnapshotTable({
   onDiff,
   onMark,
   onRollback,
+  t,
 }: SnapshotTableProps): React.ReactElement {
   return (
     <div className="overflow-x-auto rounded-lg border border-[var(--border)]">
       <table className="w-full text-sm">
         <thead className="bg-[var(--bg-soft)] text-xs uppercase tracking-wide opacity-70">
           <tr>
-            <th className="px-3 py-2 text-left">Erstellt</th>
-            <th className="px-3 py-2 text-left">Hash</th>
-            <th className="px-3 py-2 text-left">Von</th>
-            <th className="px-3 py-2 text-left">Notiz</th>
-            <th className="px-3 py-2 text-left">Status</th>
+            <th className="px-3 py-2 text-left">{t('colCreated')}</th>
+            <th className="px-3 py-2 text-left">{t('colHash')}</th>
+            <th className="px-3 py-2 text-left">{t('colBy')}</th>
+            <th className="px-3 py-2 text-left">{t('colNote')}</th>
+            <th className="px-3 py-2 text-left">{t('colStatus')}</th>
           </tr>
         </thead>
         <tbody>
@@ -238,32 +247,32 @@ function SnapshotTable({
                 <td colSpan={5} className="px-3 pb-3 pt-1">
                   <div className="flex flex-wrap items-center gap-1.5">
                     <SmallButton onClick={() => onDiff(s)}>
-                      Diff vs. Live
+                      {t('diffVsLive')}
                     </SmallButton>
                     <SmallButton
                       onClick={() => onMark(s)}
                       disabled={s.is_deploy_ready}
                     >
-                      Deploy-ready
+                      {t('deployReady')}
                     </SmallButton>
                     <SmallButton danger onClick={() => onRollback(s)}>
-                      Rollback
+                      {t('rollback')}
                     </SmallButton>
                     <a
                       href={snapshotDownloadUrl(draftId, s.snapshot_id)}
                       className="rounded-md border border-[var(--border)] px-2 py-1 text-xs hover:border-current"
                       download
-                      title="Plugin-ZIP — direkt installierbar via /install/packages/upload (inkl. AGENT.md mit persona/quality)"
+                      title={t('downloadPluginTitle')}
                     >
-                      Plugin
+                      {t('downloadPlugin')}
                     </a>
                     <a
                       href={`${snapshotDownloadUrl(draftId, s.snapshot_id)}?format=bundle`}
                       className="rounded-md border border-[var(--border)] px-2 py-1 text-xs hover:border-current"
                       download
-                      title="Profile-Bundle — für cross-instance-Migration via /api/v1/profiles/import-bundle"
+                      title={t('downloadBundleTitle')}
                     >
-                      Bundle
+                      {t('downloadBundle')}
                     </a>
                   </div>
                 </td>
@@ -318,6 +327,7 @@ interface CaptureModalProps {
   onClose: () => void;
   onCaptured: (msg: string) => void | Promise<void>;
   onError: (msg: string) => void;
+  t: VersionsT;
 }
 
 function CaptureModal({
@@ -325,6 +335,7 @@ function CaptureModal({
   onClose,
   onCaptured,
   onError,
+  t,
 }: CaptureModalProps): React.ReactElement {
   const [notes, setNotes] = useState('');
   const [vendor, setVendor] = useState(false);
@@ -339,8 +350,8 @@ function CaptureModal({
       const res = await captureSnapshot(draftId, body);
       await onCaptured(
         res.was_existing
-          ? 'Kein Unterschied seit letztem Snapshot'
-          : `Snapshot erstellt (${res.bundle_hash.slice(0, 12)})`,
+          ? t('toastNoDiff')
+          : t('toastSnapshotCreated', { hash: res.bundle_hash.slice(0, 12) }),
       );
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
@@ -350,16 +361,16 @@ function CaptureModal({
   };
 
   return (
-    <ModalShell title="Snapshot erstellen" onClose={onClose}>
+    <ModalShell title={t('createSnapshot')} onClose={onClose}>
       <label className="block text-xs uppercase tracking-wide opacity-70">
-        Notiz (optional)
+        {t('noteOptional')}
       </label>
       <textarea
         className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg)] p-2 text-sm text-[var(--fg)] placeholder:text-[var(--fg-subtle)]"
         rows={3}
         value={notes}
         onChange={(e) => setNotes(e.target.value)}
-        placeholder="Warum dieser Stand?"
+        placeholder={t('notePlaceholder')}
       />
       <label className="mt-3 flex items-center gap-2 text-sm">
         <input
@@ -367,7 +378,7 @@ function CaptureModal({
           checked={vendor}
           onChange={(e) => setVendor(e.target.checked)}
         />
-        Plugin-ZIPs ins Bundle packen (Air-Gap-Export)
+        {t('vendorBundleLabel')}
       </label>
       <div className="mt-4 flex justify-end gap-2">
         <button
@@ -375,7 +386,7 @@ function CaptureModal({
           onClick={onClose}
           className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm"
         >
-          Abbrechen
+          {t('cancel')}
         </button>
         <button
           type="button"
@@ -383,7 +394,7 @@ function CaptureModal({
           disabled={busy}
           className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
         >
-          Erstellen
+          {t('create')}
         </button>
       </div>
     </ModalShell>
@@ -394,12 +405,14 @@ interface DiffModalProps {
   draftId: string;
   snapshot: SnapshotSummary;
   onClose: () => void;
+  t: VersionsT;
 }
 
 function DiffModal({
   draftId,
   snapshot,
   onClose,
+  t,
 }: DiffModalProps): React.ReactElement {
   const [state, setState] = useState<
     | { kind: 'loading' }
@@ -428,14 +441,14 @@ function DiffModal({
   }, [draftId, snapshot.snapshot_id]);
 
   return (
-    <ModalShell title={`Diff: Snapshot vs. Live`} onClose={onClose} wide>
+    <ModalShell title={t('diffModalTitle')} onClose={onClose} wide>
       <p className="text-xs opacity-70">
-        Snapshot{' '}
+        {t('diffModalSubtitlePrefix')}{' '}
         <span className="font-mono">{snapshot.bundle_hash.slice(0, 12)}</span>{' '}
-        vs. aktueller Builder-Stand
+        {t('diffModalSubtitleSuffix')}
       </p>
       {state.kind === 'loading' && (
-        <p className="mt-3 text-sm opacity-70">Lädt…</p>
+        <p className="mt-3 text-sm opacity-70">{t('loading')}</p>
       )}
       {state.kind === 'error' && (
         <p className="mt-3 text-sm text-[var(--danger)]">
@@ -443,16 +456,16 @@ function DiffModal({
         </p>
       )}
       {state.kind === 'ready' && state.diffs.length === 0 && (
-        <p className="mt-3 text-sm opacity-70">Keine Unterschiede.</p>
+        <p className="mt-3 text-sm opacity-70">{t('noDifferences')}</p>
       )}
       {state.kind === 'ready' && state.diffs.length > 0 && (
         <table className="mt-3 w-full text-sm">
           <thead className="text-xs uppercase tracking-wide opacity-70">
             <tr>
-              <th className="px-2 py-1 text-left">Pfad</th>
-              <th className="px-2 py-1 text-left">Status</th>
-              <th className="px-2 py-1 text-left">Snapshot</th>
-              <th className="px-2 py-1 text-left">Live</th>
+              <th className="px-2 py-1 text-left">{t('colPath')}</th>
+              <th className="px-2 py-1 text-left">{t('colStatus')}</th>
+              <th className="px-2 py-1 text-left">{t('colSnapshot')}</th>
+              <th className="px-2 py-1 text-left">{t('colLive')}</th>
             </tr>
           </thead>
           <tbody>
@@ -502,6 +515,7 @@ interface RollbackModalProps {
   onClose: () => void;
   onRolledBack: (msg: string) => void | Promise<void>;
   onError: (msg: string) => void;
+  t: VersionsT;
 }
 
 function RollbackModal({
@@ -510,6 +524,7 @@ function RollbackModal({
   onClose,
   onRolledBack,
   onError,
+  t,
 }: RollbackModalProps): React.ReactElement {
   const expectedPrefix = useMemo(
     () => snapshot.bundle_hash.slice(0, 12),
@@ -525,7 +540,7 @@ function RollbackModal({
     try {
       const res = await rollbackSnapshot(draftId, snapshot.snapshot_id);
       await onRolledBack(
-        `Rollback abgeschlossen · ${res.diverged_assets.length} Datei(en) wiederhergestellt`,
+        t('toastRollbackDone', { count: res.diverged_assets.length }),
       );
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
@@ -535,14 +550,13 @@ function RollbackModal({
   };
 
   return (
-    <ModalShell title="Rollback bestätigen" onClose={onClose}>
+    <ModalShell title={t('rollbackConfirmTitle')} onClose={onClose}>
       <p className="text-sm">
-        Live-<code>agent.md</code> + Knowledge-Dateien werden auf den
-        Snapshot-Stand zurückgesetzt. Plugin-Pins bleiben unverändert.
+        {t('rollbackBodyPrefix')}<code>agent.md</code>{t('rollbackBodySuffix')}
       </p>
       <p className="mt-3 text-xs opacity-70">
-        Tippe die ersten 12 Zeichen des Bundle-Hashes ein, um zu bestätigen.
-        Erwartet: <span className="font-mono">{expectedPrefix}</span>
+        {t('rollbackTypeHint')}{' '}
+        {t('rollbackExpected')} <span className="font-mono">{expectedPrefix}</span>
       </p>
       <input
         type="text"
@@ -562,7 +576,7 @@ function RollbackModal({
           onClick={onClose}
           className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm"
         >
-          Abbrechen
+          {t('cancel')}
         </button>
         <button
           type="button"
@@ -570,7 +584,7 @@ function RollbackModal({
           disabled={!matches || busy}
           className="rounded-md bg-[var(--danger)] px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
         >
-          Rollback durchführen
+          {t('rollbackExecute')}
         </button>
       </div>
     </ModalShell>
@@ -590,6 +604,7 @@ function ModalShell({
   onClose,
   wide,
 }: ModalShellProps): React.ReactElement {
+  const t = useTranslations('builder.versions');
   return (
     <div
       className="fixed inset-0 z-40 flex items-center justify-center bg-black/55 p-6"
@@ -610,7 +625,7 @@ function ModalShell({
             type="button"
             onClick={onClose}
             className="text-xl leading-none opacity-60 hover:opacity-100"
-            aria-label="Schließen"
+            aria-label={t('closeAria')}
           >
             ×
           </button>

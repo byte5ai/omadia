@@ -1,5 +1,6 @@
 'use client';
 
+import { useTranslations } from 'next-intl';
 import { useCallback } from 'react';
 
 import type {
@@ -29,15 +30,18 @@ interface PageFormProps {
   onPatch: (patches: JsonPatch[]) => Promise<void> | void;
 }
 
-const RENDER_MODE_DESCRIPTIONS: Record<UiRouteRenderMode, string> = {
-  library: 'Kuratierte Tailwind-Templates (list-card / kpi-tiles). Schnell, kein Build-Step.',
-  'react-ssr': 'TSX-Component (server-rendered). Volle React-DX, server-rendered, Tailwind via CDN.',
-  'free-form-html': 'Freies html`…`-Slot. Du schreibst Express-Route-Body selbst.',
+// Maps the technical render-mode / ui-template tokens to translation-key
+// suffixes under `builder.uiSurfaces.pageForm.*`. The tokens themselves are
+// spec values and stay verbatim.
+const RENDER_MODE_DESC_KEYS: Record<UiRouteRenderMode, string> = {
+  library: 'renderMode.libraryDesc',
+  'react-ssr': 'renderMode.reactSsrDesc',
+  'free-form-html': 'renderMode.freeFormHtmlDesc',
 };
 
-const UI_TEMPLATE_DESCRIPTIONS: Record<UiRouteUiTemplate, string> = {
-  'list-card': 'Liste von Cards (title + subtitle + url). Standard für „zeig mir X-Items".',
-  'kpi-tiles': '1–4 Zahlen-Kacheln (label + value + optional hint). Für Counts/KPIs.',
+const UI_TEMPLATE_DESC_KEYS: Record<UiRouteUiTemplate, string> = {
+  'list-card': 'uiTemplate.listCardDesc',
+  'kpi-tiles': 'uiTemplate.kpiTilesDesc',
 };
 
 /**
@@ -58,6 +62,7 @@ export function PageForm({
   slots,
   onPatch,
 }: PageFormProps): React.ReactElement {
+  const t = useTranslations('builder.uiSurfaces.pageForm');
   const patchField = useCallback(
     (path: string, value: unknown) => {
       void onPatch([{ op: 'replace', path, value }]);
@@ -102,21 +107,21 @@ export function PageForm({
       {/* Identity row */}
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
         <Field
-          label="Route-ID (slug)"
+          label={t('fields.routeIdLabel')}
           value={route.id}
-          help="Lowercase, Bindestriche erlaubt. Bestimmt Slot-Keys + Filename."
+          help={t('fields.routeIdHelp')}
           onChange={(v) => patchField('/id', v)}
         />
         <Field
-          label="Path"
+          label={t('fields.pathLabel')}
           value={route.path}
-          help="Relativ zum Plugin-Mount. Endgültig: /p/<id><path>."
+          help={t('fields.pathHelp')}
           onChange={(v) => patchField('/path', v)}
         />
         <Field
-          label="Tab-Label (Teams Hub)"
+          label={t('fields.tabLabelLabel')}
           value={route.tab_label}
-          help="Max 24 Zeichen. Wird in Teams-Tab + Hub-Card angezeigt."
+          help={t('fields.tabLabelHelp')}
           maxLength={24}
           onChange={(v) => patchField('/tab_label', v)}
         />
@@ -124,17 +129,17 @@ export function PageForm({
 
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
         <Field
-          label="Page-Title (<title>)"
+          label={t('fields.pageTitleLabel')}
           value={route.page_title}
-          help="Voller Page-Title im HTML-Doc. Max 80 Zeichen."
+          help={t('fields.pageTitleHelp')}
           maxLength={80}
           onChange={(v) => patchField('/page_title', v)}
         />
         <Field
-          label="Refresh (s)"
+          label={t('fields.refreshLabel')}
           type="number"
           value={String(route.refresh_seconds)}
-          help="Meta-Refresh-Intervall. 0 = kein Auto-Reload."
+          help={t('fields.refreshHelp')}
           onChange={(v) => {
             const n = Number(v);
             if (Number.isFinite(n) && n >= 0 && n <= 3600 && Number.isInteger(n)) {
@@ -147,7 +152,7 @@ export function PageForm({
       {/* Render mode */}
       <div>
         <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-[color:var(--fg-muted)]">
-          Render-Mode
+          {t('renderMode.heading')}
         </div>
         <div className="space-y-1">
           {(['library', 'react-ssr', 'free-form-html'] as const).map((mode) => (
@@ -171,7 +176,7 @@ export function PageForm({
                       : 'Free-form HTML'}
                 </span>
                 <span className="ml-2 text-[color:var(--fg-muted)]">
-                  {RENDER_MODE_DESCRIPTIONS[mode]}
+                  {t(RENDER_MODE_DESC_KEYS[mode])}
                 </span>
               </span>
             </label>
@@ -184,25 +189,25 @@ export function PageForm({
         <div className="space-y-3 rounded-md border border-emerald-200 bg-emerald-50/40 p-3">
           <div>
             <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-emerald-800">
-              UI-Template
+              {t('uiTemplate.heading')}
             </div>
             <div className="space-y-1">
-              {(['list-card', 'kpi-tiles'] as const).map((t) => (
+              {(['list-card', 'kpi-tiles'] as const).map((ut) => (
                 <label
-                  key={t}
+                  key={ut}
                   className="flex cursor-pointer items-start gap-2 rounded-md border border-emerald-200/60 bg-white px-2.5 py-1.5 hover:border-emerald-400"
                 >
                   <input
                     type="radio"
                     name={`ui_template-${route.id}`}
-                    checked={route.ui_template === t}
-                    onChange={() => patchField('/ui_template', t)}
+                    checked={route.ui_template === ut}
+                    onChange={() => patchField('/ui_template', ut)}
                     className="mt-0.5"
                   />
                   <span className="flex-1">
-                    <span className="font-medium">{t}</span>
+                    <span className="font-medium">{ut}</span>
                     <span className="ml-2 text-[color:var(--fg-muted)]">
-                      {UI_TEMPLATE_DESCRIPTIONS[t]}
+                      {t(UI_TEMPLATE_DESC_KEYS[ut])}
                     </span>
                   </span>
                 </label>
@@ -231,10 +236,12 @@ export function PageForm({
       {/* Data binding (all modes) */}
       <div className="space-y-2 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] p-3">
         <div className="text-[11px] font-medium uppercase tracking-wide text-[color:var(--fg-muted)]">
-          Datenquelle
+          {t('dataBinding.heading')}
         </div>
         <label className="flex items-center gap-2">
-          <span className="w-24 shrink-0 text-[color:var(--fg-muted)]">Tool:</span>
+          <span className="w-24 shrink-0 text-[color:var(--fg-muted)]">
+            {t('dataBinding.toolLabel')}
+          </span>
           <select
             value={route.data_binding?.tool_id ?? ''}
             onChange={(e) => {
@@ -259,7 +266,7 @@ export function PageForm({
             }}
             className="flex-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1.5 text-[12px]"
           >
-            <option value="">— Kein Tool gebunden —</option>
+            <option value="">{t('dataBinding.noToolOption')}</option>
             {tools.map((t) => (
               <option key={t.id} value={t.id}>
                 {t.id}
@@ -268,8 +275,7 @@ export function PageForm({
           </select>
         </label>
         <p className="text-[11px] text-[color:var(--fg-muted)]">
-          Das gewählte Tool wird bei jedem Page-Request mit leerem Input aufgerufen; Output
-          fließt als Props in die Render-Funktion.
+          {t('dataBinding.help')}
         </p>
       </div>
 
@@ -285,12 +291,14 @@ export function PageForm({
             className="mt-0.5"
           />
           <span className="flex-1 text-[12px]">
-            <span className="font-medium text-sky-900">Interactive (Hydration)</span>
+            <span className="font-medium text-sky-900">
+              {t('interactive.label')}
+            </span>
             <span className="ml-2 text-[color:var(--fg-muted)]">
-              SSR + Client-Side-Hydration via esm.sh-Importmap. Setze auf true
-              wenn dein Component <code>useState</code>, <code>onClick</code>{' '}
-              o.ä. nutzt. Root-Element MUSS{' '}
-              <code>data-omadia-page=&quot;{route.id}&quot;</code> tragen.
+              {t.rich('interactive.help', {
+                code: (chunks) => <code>{chunks}</code>,
+                routeId: route.id,
+              })}
             </span>
           </span>
         </label>
@@ -304,8 +312,8 @@ export function PageForm({
           draftId={draftId}
           slotKey={componentSlotKey}
           initialValue={slots[componentSlotKey] ?? defaultReactSsrStub(route.id)}
-          label="Component (TSX, default-export)"
-          hint="Props: { data: unknown; fetchError: string | null }"
+          label={t('componentSlot.label')}
+          hint={t('componentSlot.hint')}
         />
       ) : null}
 
@@ -316,8 +324,8 @@ export function PageForm({
           initialValue={
             slots[renderSlotKey] ?? defaultFreeFormStub(route.page_title)
           }
-          label="Render-Slot (renderRoute-Callback-Body)"
-          hint="Return: HtmlFragment (e.g. htmlDoc({ title, body }))"
+          label={t('renderSlot.label')}
+          hint={t('renderSlot.hint')}
         />
       ) : null}
 
@@ -436,6 +444,7 @@ function ItemTemplateEditor({
   itemTemplate,
   onPatch,
 }: ItemTemplateEditorProps): React.ReactElement {
+  const t = useTranslations('builder.uiSurfaces.pageForm');
   const update = (field: 'title' | 'subtitle' | 'meta' | 'url', value: string) => {
     const path = `/item_template/${field}`;
     if (value === '') {
@@ -453,31 +462,34 @@ function ItemTemplateEditor({
   return (
     <div className="space-y-2">
       <div className="text-[11px] font-medium uppercase tracking-wide text-emerald-800">
-        Item-Template (Path-Interpolation: <code>{'${item.feldname}'}</code>)
+        {t.rich('itemTemplate.heading', {
+          code: (chunks) => <code>{chunks}</code>,
+        })}
       </div>
       <Field
-        label="Title (required)"
+        label={t('itemTemplate.titleLabel')}
         value={itemTemplate?.title ?? '${item.title}'}
         onChange={(v) => update('title', v)}
       />
       <Field
-        label="Subtitle (optional)"
+        label={t('itemTemplate.subtitleLabel')}
         value={itemTemplate?.subtitle ?? ''}
         onChange={(v) => update('subtitle', v)}
       />
       <Field
-        label="Meta (optional)"
+        label={t('itemTemplate.metaLabel')}
         value={itemTemplate?.meta ?? ''}
         onChange={(v) => update('meta', v)}
       />
       <Field
-        label="URL (optional — macht das Item klickbar)"
+        label={t('itemTemplate.urlLabel')}
         value={itemTemplate?.url ?? ''}
         onChange={(v) => update('url', v)}
       />
       <p className="text-[11px] text-[color:var(--fg-muted)]">
-        Whitelisted Suffixe: <code>{'.join(", ")'}</code> für Arrays,{' '}
-        <code>.toLocaleString()</code> für Zahlen. Sonstige Function-Calls werden ignoriert.
+        {t.rich('itemTemplate.suffixHelp', {
+          code: (chunks) => <code>{chunks}</code>,
+        })}
       </p>
     </div>
   );

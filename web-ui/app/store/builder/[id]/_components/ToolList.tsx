@@ -28,6 +28,7 @@ import {
   Upload,
   X,
 } from 'lucide-react';
+import { useTranslations } from 'next-intl';
 import { useCallback, useMemo, useState } from 'react';
 
 import type { JsonPatch, ToolSpec } from '../../../../_lib/builderTypes';
@@ -78,6 +79,7 @@ export function ToolList({
   renderExpandedBody,
   onRequestTest,
 }: ToolListProps): React.ReactElement {
+  const t = useTranslations('builder.tools.list');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [templatesOpen, setTemplatesOpen] = useState<boolean>(false);
   const [importOpen, setImportOpen] = useState<boolean>(false);
@@ -144,7 +146,7 @@ export function ToolList({
       <>
         <div className="rounded-md border border-dashed border-[color:var(--border)] bg-[color:var(--bg)] px-4 py-6 text-center">
           <p className="text-[12px] text-[color:var(--fg-muted)]">
-            Noch keine Tools definiert.
+            {t('emptyState')}
           </p>
           <div className="mt-3 flex items-center justify-center gap-2">
             <button
@@ -153,7 +155,7 @@ export function ToolList({
               className="inline-flex items-center gap-1 rounded-md bg-[color:var(--accent)] px-2.5 py-1.5 text-[11px] font-semibold text-white shadow-[var(--shadow-cta)]"
             >
               <Plus className="size-3" aria-hidden />
-              Erstes Tool hinzufügen
+              {t('addFirstTool')}
             </button>
             <button
               type="button"
@@ -161,7 +163,7 @@ export function ToolList({
               className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2.5 py-1.5 text-[11px] font-semibold text-[color:var(--fg-strong)] hover:border-[color:var(--accent)]"
             >
               <Layers className="size-3" aria-hidden />
-              Aus Template
+              {t('fromTemplate')}
             </button>
           </div>
         </div>
@@ -215,7 +217,7 @@ export function ToolList({
           className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2.5 py-1.5 text-[11px] font-semibold text-[color:var(--fg-strong)] hover:border-[color:var(--accent)]"
         >
           <Plus className="size-3" aria-hidden />
-          Tool hinzufügen
+          {t('addTool')}
         </button>
         <button
           type="button"
@@ -223,7 +225,7 @@ export function ToolList({
           className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2.5 py-1.5 text-[11px] font-semibold text-[color:var(--fg-strong)] hover:border-[color:var(--accent)]"
         >
           <Layers className="size-3" aria-hidden />
-          Aus Template
+          {t('fromTemplate')}
         </button>
         <button
           type="button"
@@ -231,7 +233,7 @@ export function ToolList({
           className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2.5 py-1.5 text-[11px] font-semibold text-[color:var(--fg-strong)] hover:border-[color:var(--accent)]"
         >
           <Upload className="size-3" aria-hidden />
-          Import
+          {t('import')}
         </button>
       </div>
       {templatesOpen ? (
@@ -273,6 +275,7 @@ function SortableRow({
   onTest,
   renderExpandedBody,
 }: SortableRowProps): React.ReactElement {
+  const t = useTranslations('builder.tools.list');
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: tool.id });
   const style: React.CSSProperties = {
@@ -292,7 +295,7 @@ function SortableRow({
       <div className="flex items-center gap-1.5 px-2 py-1.5">
         <button
           type="button"
-          aria-label="Tool reorder handle"
+          aria-label={t('reorderHandle')}
           className="cursor-grab touch-none rounded p-1 text-[color:var(--fg-subtle)] hover:bg-[color:var(--bg-soft)] hover:text-[color:var(--fg-strong)] active:cursor-grabbing"
           {...attributes}
           {...listeners}
@@ -311,7 +314,7 @@ function SortableRow({
             <ChevronRight className="size-3 text-[color:var(--fg-subtle)]" aria-hidden />
           )}
           <span className="font-mono-num text-[12px] text-[color:var(--fg-strong)]">
-            {tool.id || <span className="italic text-[color:var(--fg-subtle)]">unnamed</span>}
+            {tool.id || <span className="italic text-[color:var(--fg-subtle)]">{t('unnamed')}</span>}
           </span>
           {tool.description ? (
             <span className="truncate text-[11px] text-[color:var(--fg-muted)]">
@@ -319,7 +322,7 @@ function SortableRow({
             </span>
           ) : (
             <span className="truncate text-[11px] italic text-[color:var(--fg-subtle)]">
-              keine Beschreibung
+              {t('noDescription')}
             </span>
           )}
           {stuck ? (
@@ -330,8 +333,8 @@ function SortableRow({
           <button
             type="button"
             onClick={onTest}
-            aria-label={`Tool ${tool.id} testen`}
-            title="Direkt gegen Preview ausführen"
+            aria-label={t('testTool', { id: tool.id })}
+            title={t('testToolTitle')}
             className="rounded p-1 text-[color:var(--fg-subtle)] hover:bg-[color:var(--bg-soft)] hover:text-[color:var(--accent)]"
           >
             <Play className="size-3" aria-hidden />
@@ -340,7 +343,7 @@ function SortableRow({
         <button
           type="button"
           onClick={onRemove}
-          aria-label={`Tool ${tool.id} entfernen`}
+          aria-label={t('removeTool', { id: tool.id })}
           className="rounded p-1 text-[color:var(--fg-subtle)] hover:bg-[color:var(--danger)]/10 hover:text-[color:var(--danger)]"
         >
           <X className="size-3" aria-hidden />
@@ -352,7 +355,7 @@ function SortableRow({
             renderExpandedBody(tool, index)
           ) : (
             <p className="text-[11px] italic text-[color:var(--fg-muted)]">
-              Tool-Form folgt in B.11-2.
+              {t('formPlaceholder')}
             </p>
           )}
         </div>
@@ -362,13 +365,14 @@ function SortableRow({
 }
 
 function AgentStuckMarker(): React.ReactElement {
+  const t = useTranslations('builder.tools.list');
   return (
     <span
-      title="Builder-Agent ist auf diesem Tool/Slot stecken geblieben — manuell prüfen"
+      title={t('stuckTitle')}
       className="ml-1 inline-flex shrink-0 items-center gap-1 rounded-full border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/10 px-1.5 py-0.5 text-[10px] font-semibold text-[color:var(--warning)]"
     >
       <AlertTriangle className="size-2.5" aria-hidden />
-      stuck
+      {t('stuckBadge')}
     </span>
   );
 }

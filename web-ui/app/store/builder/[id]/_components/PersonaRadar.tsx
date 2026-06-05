@@ -1,5 +1,6 @@
 'use client';
 
+import { useTranslations } from 'next-intl';
 import { useId } from 'react';
 
 import { cn } from '../../../../_lib/cn';
@@ -51,6 +52,7 @@ export function PersonaRadar({
   size = DEFAULT_SIZE,
   className,
 }: PersonaRadarProps): React.ReactElement {
+  const t = useTranslations('builder.persona.radar');
   const id = useId();
   const titleId = `${id}-title`;
   const cx = size / 2;
@@ -94,7 +96,7 @@ export function PersonaRadar({
         role="img"
         aria-labelledby={titleId}
       >
-        <title id={titleId}>Persona Radar</title>
+        <title id={titleId}>{t('title')}</title>
 
         {/* Concentric grid rings */}
         {RING_FRACTIONS.map((f, i) => (
@@ -199,8 +201,8 @@ export function PersonaRadar({
         })}
       </svg>
       <p className="font-mono-num text-[10px] text-[color:var(--fg-subtle)]">
-        Persona vs.{' '}
-        <span className="opacity-70">Neutral (50)</span>
+        {t('comparisonPrefix')}{' '}
+        <span className="opacity-70">{t('comparisonNeutral')}</span>
       </p>
     </div>
   );

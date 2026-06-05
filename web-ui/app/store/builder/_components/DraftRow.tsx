@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useRef, useState, useTransition } from 'react';
+import { useTranslations } from 'next-intl';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { ArrowRight, Check, Pencil, Trash2, Undo2, X } from 'lucide-react';
@@ -29,14 +30,14 @@ const MODEL_LABEL: Record<BuilderModelId, string> = {
   opus: 'Opus',
 };
 
-const STATUS_LABEL: Record<DraftSummary['status'], string> = {
-  draft: 'Entwurf',
-  published: 'Veröffentlicht',
-  archived: 'Archiviert',
-};
-
 export function DraftRow({ draft, deleted = false }: DraftRowProps): React.ReactElement {
+  const t = useTranslations('builder.drafts.row');
   const router = useRouter();
+  const statusLabel: Record<DraftSummary['status'], string> = {
+    draft: t('status.draft'),
+    published: t('status.published'),
+    archived: t('status.archived'),
+  };
   const [pending, startTransition] = useTransition();
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(draft.name);
@@ -64,7 +65,7 @@ export function DraftRow({ draft, deleted = false }: DraftRowProps): React.React
   }, [draft.id, draft.name, name, router]);
 
   const onDelete = useCallback(() => {
-    if (!confirm(`Draft "${draft.name}" löschen?`)) return;
+    if (!confirm(t('confirmDelete', { name: draft.name }))) return;
     setError(null);
     startTransition(async () => {
       try {
@@ -74,7 +75,7 @@ export function DraftRow({ draft, deleted = false }: DraftRowProps): React.React
         setError(humanizeError(err));
       }
     });
-  }, [draft.id, draft.name, router]);
+  }, [draft.id, draft.name, router, t]);
 
   const onRestore = useCallback(() => {
     setError(null);
@@ -121,7 +122,7 @@ export function DraftRow({ draft, deleted = false }: DraftRowProps): React.React
             />
             <button
               type="submit"
-              aria-label="Speichern"
+              aria-label={t('save')}
               className="rounded-md p-1.5 text-[color:var(--accent)] hover:bg-[color:var(--bg-soft)]"
               disabled={pending}
             >
@@ -129,7 +130,7 @@ export function DraftRow({ draft, deleted = false }: DraftRowProps): React.React
             </button>
             <button
               type="button"
-              aria-label="Abbrechen"
+              aria-label={t('cancel')}
               onClick={() => {
                 setEditing(false);
                 setName(draft.name);
@@ -148,7 +149,7 @@ export function DraftRow({ draft, deleted = false }: DraftRowProps): React.React
             {!deleted && (
               <button
                 type="button"
-                aria-label="Umbenennen"
+                aria-label={t('rename')}
                 onClick={() => setEditing(true)}
                 className="rounded-md p-1 text-[color:var(--fg-subtle)] opacity-0 transition-opacity group-hover:opacity-100 hover:bg-[color:var(--bg-soft)] hover:text-[color:var(--fg-strong)]"
               >
@@ -171,14 +172,14 @@ export function DraftRow({ draft, deleted = false }: DraftRowProps): React.React
               )}
             />
             <span className="uppercase tracking-[0.14em]">
-              {STATUS_LABEL[draft.status]}
+              {statusLabel[draft.status]}
             </span>
           </span>
           <span className="font-mono-num">
             {MODEL_LABEL[draft.codegenModel]}
           </span>
           <span className="font-mono-num">
-            Zuletzt {formatRelative(draft.updatedAt)}
+            {t('lastUpdated', { relative: formatRelative(draft.updatedAt, t) })}
           </span>
           {draft.publishedAgentId ? (
             <span className="font-mono-num text-[color:var(--fg-subtle)]">
@@ -201,7 +202,7 @@ export function DraftRow({ draft, deleted = false }: DraftRowProps): React.React
             className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-semibold text-[color:var(--fg-muted)] hover:bg-[color:var(--bg-soft)] hover:text-[color:var(--fg-strong)] disabled:opacity-50"
           >
             <Undo2 className="size-3.5" aria-hidden />
-            Wiederherstellen
+            {t('restore')}
           </button>
         ) : (
           <>
@@ -209,14 +210,14 @@ export function DraftRow({ draft, deleted = false }: DraftRowProps): React.React
               href={`/store/builder/${encodeURIComponent(draft.id)}`}
               className="inline-flex items-center gap-1.5 rounded-md bg-[color:var(--accent)]/10 px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-[color:var(--accent)] transition-colors hover:bg-[color:var(--accent)] hover:text-white"
             >
-              Workspace
+              {t('workspace')}
               <ArrowRight className="size-3.5" aria-hidden />
             </Link>
             <button
               type="button"
               onClick={onDelete}
               disabled={pending}
-              aria-label="Löschen"
+              aria-label={t('delete')}
               className="rounded-md p-1.5 text-[color:var(--fg-muted)] hover:bg-[color:var(--danger)]/10 hover:text-[color:var(--danger)] disabled:opacity-50"
             >
               <Trash2 className="size-4" aria-hidden />
@@ -240,15 +241,18 @@ function humanizeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function formatRelative(timestamp: number): string {
+function formatRelative(
+  timestamp: number,
+  t: ReturnType<typeof useTranslations<'builder.drafts.row'>>,
+): string {
   const diffMs = Date.now() - timestamp;
   const mins = Math.floor(diffMs / 60_000);
-  if (mins < 1) return 'gerade eben';
-  if (mins < 60) return `vor ${String(mins)} Min`;
+  if (mins < 1) return t('relative.justNow');
+  if (mins < 60) return t('relative.minutes', { count: mins });
   const hours = Math.floor(mins / 60);
-  if (hours < 24) return `vor ${String(hours)} Std`;
+  if (hours < 24) return t('relative.hours', { count: hours });
   const days = Math.floor(hours / 24);
-  if (days < 7) return `vor ${String(days)} Tg`;
+  if (days < 7) return t('relative.days', { count: days });
   return new Date(timestamp).toLocaleDateString('de-DE', {
     day: '2-digit',
     month: 'short',

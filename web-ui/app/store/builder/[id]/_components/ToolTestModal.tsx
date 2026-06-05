@@ -1,6 +1,7 @@
 'use client';
 
 import { Loader2, Play, Save, X } from 'lucide-react';
+import { useTranslations } from 'next-intl';
 import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 
 import { ApiError, runBuilderPreviewToolCall } from '../../../../_lib/api';
@@ -48,6 +49,7 @@ export function ToolTestModal({
   onClose,
   onSaveTestCase,
 }: ToolTestModalProps): React.ReactElement {
+  const t = useTranslations('builder.tools.test');
   const schema = useMemo(() => ensureTopLevelObject(tool.input), [tool.input]);
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [pending, setPending] = useState<boolean>(false);
@@ -78,12 +80,12 @@ export function ToolTestModal({
           ? `${String(err.status)}: ${err.message}`
           : err instanceof Error
             ? err.message
-            : 'Unbekannter Fehler';
+            : t('unknownError');
       setRunError(msg);
     } finally {
       setPending(false);
     }
-  }, [draftId, tool.id, values]);
+  }, [draftId, tool.id, values, t]);
 
   const onSave = useCallback(async () => {
     if (!outcome || outcome.isError || !onSaveTestCase) return;
@@ -103,7 +105,7 @@ export function ToolTestModal({
     <div
       role="dialog"
       aria-modal="true"
-      aria-label={`Test ${tool.id}`}
+      aria-label={t('dialogLabel', { id: tool.id })}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-10"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
@@ -113,16 +115,16 @@ export function ToolTestModal({
         <header className="flex items-center justify-between border-b border-[color:var(--border)] bg-[color:var(--bg-soft)] px-4 py-2">
           <div>
             <h2 className="text-[13px] font-semibold text-[color:var(--fg-strong)]">
-              Test <span className="font-mono-num">{tool.id}</span>
+              {t('titlePrefix')} <span className="font-mono-num">{tool.id}</span>
             </h2>
             <p className="text-[11px] text-[color:var(--fg-muted)]">
-              Direkter Aufruf gegen die aktuelle Preview-Instanz.
+              {t('subtitle')}
             </p>
           </div>
           <button
             type="button"
             onClick={onClose}
-            aria-label="Modal schließen"
+            aria-label={t('closeModal')}
             className="rounded p-1 text-[color:var(--fg-subtle)] hover:bg-[color:var(--bg)] hover:text-[color:var(--fg-strong)]"
           >
             <X className="size-4" aria-hidden />
@@ -132,7 +134,7 @@ export function ToolTestModal({
         <div className="flex-1 overflow-y-auto px-4 py-3">
           <div className="mb-3">
             <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
-              Input
+              {t('inputHeading')}
             </h3>
             <SchemaInputForm
               schema={schema}
@@ -150,7 +152,7 @@ export function ToolTestModal({
           {outcome ? (
             <div className="mt-3">
               <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
-                Ergebnis
+                {t('resultHeading')}
               </h3>
               <ToolTestResultPane
                 result={outcome.result}
@@ -163,7 +165,7 @@ export function ToolTestModal({
 
         <footer className="flex items-center justify-between gap-2 border-t border-[color:var(--border)] bg-[color:var(--bg-soft)] px-4 py-2">
           <div className="text-[11px] text-[color:var(--fg-muted)]">
-            Esc oder Klick außerhalb schließt das Modal.
+            {t('dismissHint')}
           </div>
           <div className="flex items-center gap-2">
             {onSaveTestCase && outcome && !outcome.isError ? (
@@ -178,7 +180,7 @@ export function ToolTestModal({
                 ) : (
                   <Save className="size-3" aria-hidden />
                 )}
-                Als Test-Case speichern
+                {t('saveTestCase')}
               </button>
             ) : null}
             <button
@@ -192,7 +194,7 @@ export function ToolTestModal({
               ) : (
                 <Play className="size-3" aria-hidden />
               )}
-              Run
+              {t('run')}
             </button>
           </div>
         </footer>
@@ -218,6 +220,7 @@ function SchemaInputForm({
   values: Record<string, unknown>;
   onChange: (next: Record<string, unknown>) => void;
 }): React.ReactElement {
+  const t = useTranslations('builder.tools.test');
   const props = (schema.properties as Record<string, JsonSchemaNode>) ?? {};
   const required = schema.required ?? [];
   const keys = Object.keys(props);
@@ -225,7 +228,7 @@ function SchemaInputForm({
   if (keys.length === 0) {
     return (
       <p className="rounded border border-dashed border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-[11px] italic text-[color:var(--fg-muted)]">
-        Tool akzeptiert leeres Input — Run drücken.
+        {t('emptyInput')}
       </p>
     );
   }
@@ -277,6 +280,7 @@ function FieldByType({
   value: unknown;
   onChange: (v: unknown) => void;
 }): React.ReactElement {
+  const t = useTranslations('builder.tools.test');
   const id = useId();
   const fallbackText = useMemo(() => {
     if (value === undefined) return '';
@@ -373,7 +377,7 @@ function FieldByType({
             'w-full rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1 font-mono-num text-[11px] text-[color:var(--fg-strong)] focus:border-[color:var(--accent)] focus:outline-none',
           )}
         >
-          <option value="">— wählen —</option>
+          <option value="">{t('selectPlaceholder')}</option>
           {options.map((o) => (
             <option key={o} value={o}>
               {o}
@@ -410,9 +414,7 @@ function FieldByType({
         className="w-full resize-y rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1 font-mono-num text-[11px] text-[color:var(--fg-strong)] focus:border-[color:var(--accent)] focus:outline-none"
       />
       <p className="mt-0.5 text-[10px] italic text-[color:var(--fg-muted)]">
-        {type === 'array'
-          ? 'Array — JSON-Syntax, blur committet.'
-          : 'Object — JSON-Syntax, blur committet.'}
+        {type === 'array' ? t('arrayJsonHint') : t('objectJsonHint')}
       </p>
     </div>
   );

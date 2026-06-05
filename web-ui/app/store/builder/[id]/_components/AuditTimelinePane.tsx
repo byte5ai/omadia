@@ -1,5 +1,6 @@
 'use client';
 
+import { useTranslations } from 'next-intl';
 import { useCallback, useEffect, useState } from 'react';
 
 import { listBuilderAudit, type BuilderAuditEvent } from '../../../../_lib/api';
@@ -15,11 +16,13 @@ import { listBuilderAudit, type BuilderAuditEvent } from '../../../../_lib/api';
 
 const PAGE_SIZE = 30;
 
-const ACTION_LABEL_DE: Readonly<Record<string, string>> = {
-  persona_updated: 'Persona geändert',
-  quality_updated: 'Quality / Boundaries geändert',
-  spec_patched: 'Spec gepatcht',
-  slot_filled: 'Slot befüllt',
+type AuditT = ReturnType<typeof useTranslations<'builder.versions'>>;
+
+const ACTION_LABEL_KEY: Readonly<Record<string, string>> = {
+  persona_updated: 'actionPersonaUpdated',
+  quality_updated: 'actionQualityUpdated',
+  spec_patched: 'actionSpecPatched',
+  slot_filled: 'actionSlotFilled',
 };
 
 const ACTION_ICON: Readonly<Record<string, string>> = {
@@ -29,15 +32,15 @@ const ACTION_ICON: Readonly<Record<string, string>> = {
   slot_filled: '📝',
 };
 
-function relTime(ts: number): string {
+function relTime(ts: number, t: AuditT): string {
   const diff = Date.now() - ts;
-  if (diff < 60_000) return 'vor wenigen Sekunden';
-  if (diff < 3_600_000) return `vor ${Math.floor(diff / 60_000)} min`;
-  if (diff < 86_400_000) return `vor ${Math.floor(diff / 3_600_000)} h`;
-  return `vor ${Math.floor(diff / 86_400_000)} Tagen`;
+  if (diff < 60_000) return t('relSecondsAgo');
+  if (diff < 3_600_000) return t('relMinutesAgo', { count: Math.floor(diff / 60_000) });
+  if (diff < 86_400_000) return t('relHoursAgo', { count: Math.floor(diff / 3_600_000) });
+  return t('relDaysAgo', { count: Math.floor(diff / 86_400_000) });
 }
 
-function detailSummary(ev: BuilderAuditEvent): string {
+function detailSummary(ev: BuilderAuditEvent, t: AuditT): string {
   const d = ev.details ?? {};
   switch (ev.action) {
     case 'persona_updated': {
@@ -45,28 +48,29 @@ function detailSummary(ev: BuilderAuditEvent): string {
       const template =
         typeof d['template'] === 'string' && d['template'] ? d['template'] : null;
       const parts: string[] = [];
-      if (template) parts.push(`Template: ${template}`);
-      if (axes.length > 0) parts.push(`${axes.length} Achsen`);
-      if (d['hasCustomNotes']) parts.push('Custom notes');
+      if (template) parts.push(t('detailTemplate', { template }));
+      if (axes.length > 0) parts.push(t('detailAxes', { count: axes.length }));
+      if (d['hasCustomNotes']) parts.push(t('detailCustomNotes'));
       return parts.join(' • ') || '—';
     }
     case 'quality_updated': {
       const parts: string[] = [];
-      if (d['sycophancy']) parts.push(`Sycophancy: ${String(d['sycophancy'])}`);
+      if (d['sycophancy'])
+        parts.push(t('detailSycophancy', { value: String(d['sycophancy']) }));
       const presets = Array.isArray(d['presets']) ? (d['presets'] as string[]) : [];
-      if (presets.length > 0) parts.push(`${presets.length} Presets`);
+      if (presets.length > 0) parts.push(t('detailPresets', { count: presets.length }));
       const c = typeof d['customCount'] === 'number' ? d['customCount'] : 0;
-      if (c > 0) parts.push(`${c} Custom`);
+      if (c > 0) parts.push(t('detailCustom', { count: c }));
       return parts.join(' • ') || '—';
     }
     case 'spec_patched': {
       const ops = Array.isArray(d['ops']) ? d['ops'] : [];
-      return `${ops.length} Operation${ops.length === 1 ? '' : 'en'}`;
+      return t('detailOperations', { count: ops.length });
     }
     case 'slot_filled': {
       const slot = typeof d['slotKey'] === 'string' ? d['slotKey'] : '?';
       const bytes = typeof d['bytes'] === 'number' ? d['bytes'] : 0;
-      return `${slot} — ${bytes} bytes`;
+      return t('detailSlotBytes', { slot, bytes });
     }
     default:
       return '—';
@@ -78,6 +82,7 @@ export interface AuditTimelinePaneProps {
 }
 
 export function AuditTimelinePane({ draftId }: AuditTimelinePaneProps): React.ReactElement {
+  const t = useTranslations('builder.versions');
   const [events, setEvents] = useState<BuilderAuditEvent[]>([]);
   const [total, setTotal] = useState<number>(0);
   const [offset, setOffset] = useState<number>(0);
@@ -114,9 +119,11 @@ export function AuditTimelinePane({ draftId }: AuditTimelinePaneProps): React.Re
   return (
     <section data-testid="audit-timeline" className="space-y-2 p-3">
       <header className="flex items-baseline justify-between">
-        <h3 className="text-sm font-semibold text-[color:var(--fg-strong)]">Verlauf</h3>
+        <h3 className="text-sm font-semibold text-[color:var(--fg-strong)]">
+          {t('historyHeading')}
+        </h3>
         <span className="text-xs text-[color:var(--fg-muted)]">
-          {events.length} von {total}
+          {t('countOfTotal', { count: events.length, total })}
         </span>
       </header>
 
@@ -128,12 +135,14 @@ export function AuditTimelinePane({ draftId }: AuditTimelinePaneProps): React.Re
 
       {events.length === 0 && !loading && (
         <div className="text-xs text-[color:var(--fg-muted)]" data-testid="audit-empty">
-          Noch keine Änderungen verzeichnet.
+          {t('empty')}
         </div>
       )}
 
       <ul className="space-y-1" data-testid="audit-list">
-        {events.map((ev) => (
+        {events.map((ev) => {
+          const labelKey = ACTION_LABEL_KEY[ev.action];
+          return (
           <li
             key={ev.id}
             data-testid={`audit-event-${String(ev.id)}`}
@@ -141,16 +150,17 @@ export function AuditTimelinePane({ draftId }: AuditTimelinePaneProps): React.Re
           >
             <span aria-hidden>{ACTION_ICON[ev.action] ?? '•'}</span>
             <span className="font-medium">
-              {ACTION_LABEL_DE[ev.action] ?? ev.action}
+              {labelKey ? t(labelKey) : ev.action}
             </span>
             <span className="text-xs text-[color:var(--fg-muted)]">
-              {detailSummary(ev)}
+              {detailSummary(ev, t)}
             </span>
             <span className="ml-auto text-xs text-[color:var(--fg-subtle)]">
-              {relTime(ev.createdAt)}
+              {relTime(ev.createdAt, t)}
             </span>
           </li>
-        ))}
+          );
+        })}
       </ul>
 
       {hasMore && (
@@ -163,7 +173,7 @@ export function AuditTimelinePane({ draftId }: AuditTimelinePaneProps): React.Re
           disabled={loading}
           className="rounded border border-[color:var(--border)] px-3 py-1 text-xs"
         >
-          {loading ? 'Lade…' : 'Mehr laden'}
+          {loading ? t('loading') : t('loadMore')}
         </button>
       )}
     </section>

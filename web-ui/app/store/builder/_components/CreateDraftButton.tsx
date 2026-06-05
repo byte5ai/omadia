@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useState, useTransition } from 'react';
+import { useTranslations } from 'next-intl';
 import { useRouter } from 'next/navigation';
 import { Plus } from 'lucide-react';
 
@@ -19,6 +20,7 @@ export function CreateDraftButton({
 }: {
   quota: DraftQuotaSnapshot;
 }): React.ReactElement {
+  const t = useTranslations('builder.drafts.create');
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -59,14 +61,10 @@ export function CreateDraftButton({
           'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--accent)]',
           'disabled:translate-y-0 disabled:opacity-50 disabled:hover:translate-y-0',
         )}
-        title={
-          quota.exceeded
-            ? 'Draft-Quota erreicht — lösche bestehende, bevor du einen neuen anlegst.'
-            : undefined
-        }
+        title={quota.exceeded ? t('quotaReachedTooltip') : undefined}
       >
         <Plus className="size-4" aria-hidden />
-        {pending ? 'Wird angelegt…' : 'Neuer Agent'}
+        {pending ? t('pending') : t('label')}
       </button>
       {error ? (
         <p className="max-w-xs text-right text-[11px] text-[color:var(--danger)]">

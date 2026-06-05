@@ -1,5 +1,6 @@
 'use client';
 
+import { useTranslations } from 'next-intl';
 import { useCallback, useState, useTransition } from 'react';
 
 import { patchBuilderSpec, setPersonaConfig } from '../../../../_lib/api';
@@ -40,6 +41,7 @@ export function PersonaTemplateGallery({
   onClose,
   onApplied,
 }: PersonaTemplateGalleryProps): React.ReactElement {
+  const t = useTranslations('builder.persona.gallery');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [prefillSkill, setPrefillSkill] = useState<boolean>(false);
   const [pending, startTransition] = useTransition();
@@ -89,13 +91,13 @@ export function PersonaTemplateGallery({
       data-testid="persona-template-gallery"
       role="dialog"
       aria-modal="true"
-      aria-label="Persona-Vorlage auswählen"
+      aria-label={t('title')}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
     >
       <div className="max-h-full w-full max-w-3xl overflow-y-auto rounded-lg border border-[color:var(--border)] bg-[color:var(--bg-elevated,var(--bg))] p-4 text-[color:var(--fg)] shadow-xl">
         <header className="mb-3 flex items-baseline justify-between">
           <h2 className="text-lg font-semibold text-[color:var(--fg-strong)]">
-            Persona-Vorlage auswählen
+            {t('title')}
           </h2>
           <button
             type="button"
@@ -104,7 +106,7 @@ export function PersonaTemplateGallery({
             disabled={pending}
             className="rounded border border-[color:var(--border)] px-2 py-1 text-sm text-[color:var(--fg-muted)] hover:bg-[color:var(--accent-bg)]"
           >
-            Schließen
+            {t('close')}
           </button>
         </header>
 
@@ -134,7 +136,7 @@ export function PersonaTemplateGallery({
                 )}
                 {tpl.suggested_skill && (
                   <div className="text-xs text-[color:var(--fg-subtle)]">
-                    Rolle: {tpl.suggested_skill.role}
+                    {t('role', { role: tpl.suggested_skill.role })}
                   </div>
                 )}
               </button>
@@ -152,9 +154,9 @@ export function PersonaTemplateGallery({
                 : 'border-[color:var(--border)]'
             }`}
           >
-            <div className="font-medium text-[color:var(--fg-strong)]">Custom</div>
+            <div className="font-medium text-[color:var(--fg-strong)]">{t('customLabel')}</div>
             <div className="text-xs text-[color:var(--fg-muted)]">
-              Keine Vorlage anwenden — eigene Achsen verwenden.
+              {t('customDescription')}
             </div>
           </button>
         </div>
@@ -169,7 +171,7 @@ export function PersonaTemplateGallery({
               disabled={pending}
             />
             <span>
-              Skill-Felder ebenfalls vorbefüllen ({selected.suggested_skill.role})
+              {t('prefillSkill', { role: selected.suggested_skill.role })}
             </span>
           </label>
         )}
@@ -188,7 +190,7 @@ export function PersonaTemplateGallery({
             disabled={pending}
             className="rounded border border-[color:var(--border)] px-3 py-1 text-sm"
           >
-            Abbrechen
+            {t('cancel')}
           </button>
           <button
             type="button"
@@ -197,7 +199,7 @@ export function PersonaTemplateGallery({
             disabled={disabled || pending || !selected}
             className="rounded bg-[color:var(--accent)] px-3 py-1 text-sm font-medium text-white disabled:opacity-50"
           >
-            {pending ? 'Anwenden…' : 'Anwenden'}
+            {pending ? t('applying') : t('apply')}
           </button>
         </div>
       </div>

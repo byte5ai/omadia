@@ -1,6 +1,7 @@
 'use client';
 
 import { Save } from 'lucide-react';
+import { useTranslations } from 'next-intl';
 import { useEffect, useId, useRef, useState } from 'react';
 
 import type { JsonPatch, ToolSpec } from '../../../../_lib/builderTypes';
@@ -49,6 +50,7 @@ export function ToolForm({
   otherToolIds,
   onPatch,
 }: ToolFormProps): React.ReactElement {
+  const t = useTranslations('builder.tools.form');
   const idFieldId = useId();
   const descFieldId = useId();
   const [draftId, setDraftId] = useState<string>(tool.id);
@@ -94,7 +96,7 @@ export function ToolForm({
       return;
     }
     if (otherToolIds.includes(nextId)) {
-      setErrors((e) => ({ ...e, id: 'Tool-ID ist bereits vergeben' }));
+      setErrors((e) => ({ ...e, id: t('idTaken') }));
       return;
     }
     setErrors((e) => ({ ...e, id: undefined }));
@@ -166,7 +168,7 @@ export function ToolForm({
           htmlFor={idFieldId}
           className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]"
         >
-          Tool-ID
+          {t('idLabel')}
         </label>
         <input
           id={idFieldId}
@@ -187,7 +189,7 @@ export function ToolForm({
               ? 'border-[color:var(--danger)] focus:border-[color:var(--danger)]'
               : 'border-[color:var(--border)] focus:border-[color:var(--accent)]',
           )}
-          placeholder="z.B. fetch_metrics"
+          placeholder={t('idPlaceholder')}
           spellCheck={false}
         />
         {errors.id ? (
@@ -200,7 +202,7 @@ export function ToolForm({
           htmlFor={descFieldId}
           className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]"
         >
-          Beschreibung
+          {t('descriptionLabel')}
         </label>
         <textarea
           id={descFieldId}
@@ -221,7 +223,7 @@ export function ToolForm({
               ? 'border-[color:var(--danger)] focus:border-[color:var(--danger)]'
               : 'border-[color:var(--border)] focus:border-[color:var(--accent)]',
           )}
-          placeholder="Was tut dieses Tool? Wird vom Agent als description gelesen."
+          placeholder={t('descriptionPlaceholder')}
         />
         {errors.description ? (
           <p className="mt-1 text-[11px] text-[color:var(--danger)]">
@@ -249,6 +251,7 @@ function SavePersonalTemplateButton({
 }: {
   tool: ToolSpec;
 }): React.ReactElement {
+  const t = useTranslations('builder.tools.form');
   const [stamp, setStamp] = useState<'idle' | 'saved'>('idle');
   return (
     <div className="border-t border-[color:var(--border)] pt-2">
@@ -256,8 +259,8 @@ function SavePersonalTemplateButton({
         type="button"
         onClick={() => {
           const label = window.prompt(
-            'Template-Name',
-            tool.id || 'Mein Template',
+            t('templateNamePrompt'),
+            tool.id || t('templateNameDefault'),
           );
           if (!label || label.trim().length === 0) return;
           savePersonalTemplate({ label: label.trim(), tool });
@@ -267,11 +270,11 @@ function SavePersonalTemplateButton({
         className="inline-flex items-center gap-1 rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1 text-[11px] font-semibold text-[color:var(--fg-strong)] hover:border-[color:var(--accent)]"
       >
         <Save className="size-3" aria-hidden />
-        Als Template speichern
+        {t('saveAsTemplate')}
       </button>
       {stamp === 'saved' ? (
         <span className="ml-2 text-[10px] text-[color:var(--fg-muted)]">
-          gespeichert
+          {t('saved')}
         </span>
       ) : null}
     </div>
@@ -285,16 +288,17 @@ function InputSchemaSection({
   value: Record<string, unknown> | undefined;
   onChange: (next: Record<string, unknown>) => void;
 }): React.ReactElement {
+  const t = useTranslations('builder.tools.form');
   const [tab, setTab] = useState<'form' | 'json'>('form');
   return (
     <div>
       <div className="mb-1 flex items-center justify-between">
         <span className="block text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
-          Input-Schema
+          {t('inputSchema')}
         </span>
         <div
           role="tablist"
-          aria-label="Schema-Modus"
+          aria-label={t('schemaModeLabel')}
           className="inline-flex overflow-hidden rounded border border-[color:var(--border)]"
         >
           <button
@@ -309,7 +313,7 @@ function InputSchemaSection({
                 : 'bg-[color:var(--bg)] text-[color:var(--fg-subtle)] hover:text-[color:var(--fg-strong)]',
             )}
           >
-            Formular
+            {t('tabForm')}
           </button>
           <button
             role="tab"
@@ -323,7 +327,7 @@ function InputSchemaSection({
                 : 'bg-[color:var(--bg)] text-[color:var(--fg-subtle)] hover:text-[color:var(--fg-strong)]',
             )}
           >
-            Raw JSON
+            {t('tabRawJson')}
           </button>
         </div>
       </div>

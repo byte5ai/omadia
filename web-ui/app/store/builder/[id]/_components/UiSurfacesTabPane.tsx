@@ -1,5 +1,6 @@
 'use client';
 
+import { useTranslations } from 'next-intl';
 import { useCallback, useState } from 'react';
 
 import { ApiError, patchBuilderSpec } from '../../../../_lib/api';
@@ -57,6 +58,7 @@ export function UiSurfacesTabPane({
     ...(spec.slots ?? {}),
     ...draftSlots,
   };
+  const t = useTranslations('builder.uiSurfaces.tab');
   const [status, setStatus] = useState<SaveStatus>({ kind: 'idle' });
 
   const sendPatch = useCallback(
@@ -81,12 +83,10 @@ export function UiSurfacesTabPane({
       <div className="flex-1 space-y-6 overflow-y-auto px-5 py-5">
         <header className="space-y-1">
           <h2 className="text-[14px] font-semibold text-[color:var(--fg-strong)]">
-            UI-Surfaces
+            {t('heading')}
           </h2>
           <p className="text-[11px] text-[color:var(--fg-muted)]">
-            Plugin-UI nach außen exposen: ein Admin-iframe für Operator-pflegte
-            Daten (single), und 0–N Dashboard-Pages für end-user-facing
-            Browser-/Teams-Tab-Anzeigen.
+            {t('description')}
           </p>
         </header>
 
@@ -105,6 +105,7 @@ export function UiSurfacesTabPane({
 }
 
 function SaveBadge({ status }: { status: SaveStatus }): React.ReactElement | null {
+  const t = useTranslations('builder.uiSurfaces.tab');
   if (status.kind === 'idle') return null;
   const cls =
     status.kind === 'error'
@@ -114,10 +115,10 @@ function SaveBadge({ status }: { status: SaveStatus }): React.ReactElement | nul
         : 'bg-slate-50 text-slate-700 border-slate-200';
   const label =
     status.kind === 'pending'
-      ? 'Speichert…'
+      ? t('saving')
       : status.kind === 'saved'
-        ? 'Gespeichert'
-        : `Fehler: ${status.message}`;
+        ? t('saved')
+        : t('error', { message: status.message });
   return (
     <div
       className={`mx-5 mb-3 rounded-md border px-3 py-1.5 text-[11px] ${cls}`}
