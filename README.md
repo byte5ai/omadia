@@ -8,6 +8,10 @@ omadia is a self-hostable **agentic OS**: compose multi-agent teams from signed
 plugins, run them on one machine, and get an auditable trail for everything they do.
 Your LLM key. Your data. Your compliance story.
 
+<img src="docs/media/omadia-demo.gif" alt="omadia no-code builder — describe an agent in plain words, the builder generates it, then try it out" width="860">
+
+<sub>Describe an agent in plain words → the builder generates it → try it out. No code.</sub>
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-black.svg)](LICENSE)
 [![Status: public preview](https://img.shields.io/badge/status-public%20preview-orange.svg)](#status--roadmap)
 [![Self-hosted](https://img.shields.io/badge/self--hosted-docker%20compose-2496ED.svg?logo=docker&logoColor=white)](#-60-second-quickstart)
