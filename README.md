@@ -1,64 +1,98 @@
-# Omadia
+<div align="center">
 
-> An Agentic OS — a self-hostable platform for plugin-based AI agents.
+<img src="logo-concepts/omadia-logo-concept.svg" alt="omadia" width="120">
 
-Omadia is a runtime that lets you compose multi-agent systems out of plugins:
-channels (Teams, Telegram, web chat), integrations (Microsoft 365, Odoo,
-Confluence, …), capability providers (knowledge graph, embeddings, image
-generation, web search), and reference agents you can fork as starting points.
+# omadia
 
-The platform is designed around a **single-tenant, self-hostable** deployment
-model. You bring your own LLM API key, run the stack on a single machine
-(Docker Compose) or fly.io app, and own all data.
+### Spin up a team of AI agents that does the work — on your own server, with a receipt for every action.
 
-> **Status — pre-1.0.** Public preview. APIs and database schemas may break
-> between minor versions until `1.0.0`. Production use of the OSS distribution
-> is supported but the upgrade path is hand-rolled today; an automated
-> migration runner is on the v1.0 roadmap.
+omadia is a self-hostable **agentic OS**: compose multi-agent teams from signed
+plugins, run them on one machine, and get an auditable trail for everything they do.
+Your LLM key. Your data. Your compliance story.
 
-## Quickstart (~60 seconds after the first image pull)
+<!-- TODO(media): replace the line below with the demo GIF once captured — see docs/media/README.md
+<img src="docs/media/omadia-demo.gif" alt="omadia — prompt in, agent team works, audit receipt out" width="820">
+-->
+> 🎬 **Demo GIF lands here** — _prompt in → agent team works → audit receipt out._ Capture guide: [`docs/media/README.md`](docs/media/README.md)
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-black.svg)](LICENSE)
+[![Status: public preview](https://img.shields.io/badge/status-public%20preview-orange.svg)](#status--roadmap)
+[![Self-hosted](https://img.shields.io/badge/self--hosted-docker%20compose-2496ED.svg?logo=docker&logoColor=white)](#-60-second-quickstart)
+[![TypeScript](https://img.shields.io/badge/built%20with-TypeScript-3178C6.svg?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![GitHub stars](https://img.shields.io/github/stars/byte5ai/omadia?style=social)](https://github.com/byte5ai/omadia/stargazers)
+
+[**Website**](https://omadia.ai) · [**Quickstart**](#-60-second-quickstart) · [**Why omadia?**](#why-omadia) · [**Docs**](docs/) · [**Contributing**](CONTRIBUTING.md)
+
+</div>
+
+---
+
+## Why you'll want to ⭐ this
+
+- 🔒 **Self-hosted and yours.** Bring your own LLM key, run on a single machine
+  (Docker Compose or fly.io), and own 100% of the data. No SaaS lock-in,
+  EU/GDPR-ready by design.
+- 🤖 **Agent *teams*, not one chatbot.** An orchestrator routes each turn to the
+  right specialized plugin agent — channels, integrations, tools, and capability
+  providers all snap together behind one stable API.
+- 🧾 **Every action leaves a receipt.** Full per-run trace and call-stack viewer
+  for each agent run, so you can audit, debug, and prove what happened — built in,
+  not bolted on.
+
+## ⚡ 60-second quickstart
 
 ```bash
-git clone https://github.com/byte5ai/omadia.git
-cd omadia
+git clone https://github.com/byte5ai/omadia.git && cd omadia
 
-# 1. Provide an Anthropic API key. Other env vars have sane local defaults.
+# 1. Provide an LLM key — every other env var has a sane local default.
 cp middleware/.env.example middleware/.env
-$EDITOR middleware/.env                              # set ANTHROPIC_API_KEY=...
+$EDITOR middleware/.env            # set ANTHROPIC_API_KEY=...
 
-# 2. Bring up the stack (postgres + middleware + admin UI).
-#    Compose auto-discovers docker-compose.yaml and loads middleware/.env.
+# 2. Bring up the whole stack (postgres + middleware + admin UI).
 docker compose up -d
 
-# 3. Open the management UI and complete the first-admin wizard.
-open http://localhost:3333                           # /setup walks you through
-
-# 4. (Optional) Enable diagram rendering: generate a secret and add it to
-#    middleware/.env as DIAGRAM_URL_SECRET — only needed alongside
-#    KROKI_BASE_URL + BUCKET_NAME.
-openssl rand -hex 32                                 # paste output into middleware/.env
+# 3. Open the admin UI and complete the first-admin wizard.
+open http://localhost:3333         # /setup walks you through it
 ```
 
-The first user-creation flow lands on `/setup`. Once an administrator exists,
-`/setup` self-locks (returns `410 Gone`) and the regular `/login` page takes
-over.
+That's it — `docker compose up -d`, open the UI, run your first agent team.
+The next section is the 90-second "wow moment".
 
-### Optional Compose profiles
+## 🚀 First run: from prompt to audit receipt
 
-```bash
-# Mermaid / PlantUML / Vega rendering for the diagrams plugin
-docker compose -f infra/docker-compose.yml --profile diagrams up -d
+The point of omadia clicks the moment you watch a team of agents do real work and
+hand you a receipt for it:
 
-# In-tenant embeddings via Ollama (no external API required)
-docker compose -f infra/docker-compose.yml --profile embeddings up -d
+1. **`docker compose up -d`** — postgres, middleware, and the admin UI come up together.
+2. **Open `http://localhost:3333`** and finish the first-admin `/setup` wizard.
+3. **Start a demo agent team** from a single prompt in the web chat.
+4. **Watch it work** — the orchestrator streams turns and dispatches tools across
+   the agents in the team.
+5. **Open the run's trace** — the per-run **call-stack viewer** is your audit
+   receipt: every step, every tool call, every decision, replayable.
 
-# Presidio NER sidecar for the privacy-proxy detector plugin
-docker compose -f infra/docker-compose.yml --profile privacy-presidio up -d
+> 🎬 The 20–30s GIF of exactly this flow belongs at the top of this README —
+> see [`docs/media/README.md`](docs/media/README.md) to capture it.
 
-# All optional profiles in one command
-docker compose -f infra/docker-compose.yml \
-  --profile diagrams --profile embeddings --profile privacy-presidio up -d
-```
+## Why omadia?
+
+omadia optimizes for the things that matter once an agent system leaves a laptop:
+ownership, auditability, and dropping into a real enterprise stack — not just
+"how many demos can it run."
+
+| Outcome you care about        | **omadia** | OpenClaw | Paperclip | LangGraph / AutoGen |
+|-------------------------------|:----------:|:--------:|:---------:|:-------------------:|
+| Self-hosting, single machine  |     ✅     |    🟡    |    🟡     |   library (DIY)     |
+| Own your data (no SaaS)       |     ✅     |    🟡    |    ❌     |        ✅           |
+| Built-in audit trail / receipts |   ✅     |    ❌    |    🟡     |      DIY            |
+| Signed plugin distribution    |     ✅     |    ❌    |    ❌     |        ❌           |
+| EU / GDPR-ready posture       |     ✅     |    🟡    |    ❌     |      DIY            |
+| Multi-agent coordination      |     ✅     |    ✅    |    🟡     |        ✅           |
+| Enterprise integrations (M365, Odoo, Confluence) | ✅ | 🟡 | ❌ |   DIY        |
+| Bring-your-own LLM key        |     ✅     |    🟡    |    🟡     |        ✅           |
+
+<sub>✅ first-class · 🟡 partial / paid / add-on · ❌ not supported · DIY = you build it yourself on the framework. Comparison reflects self-hostable-platform positioning; corrections via PR welcome.</sub>
 
 ## What's in the box
 
@@ -106,9 +140,30 @@ A more detailed walk-through of the plugin loading sequence, capability
 registry, and the multi-provider authentication layer lives under
 [`docs/`](docs/).
 
+### Optional Compose profiles
+
+```bash
+# Mermaid / PlantUML / Vega rendering for the diagrams plugin
+docker compose -f infra/docker-compose.yml --profile diagrams up -d
+
+# In-tenant embeddings via Ollama (no external API required)
+docker compose -f infra/docker-compose.yml --profile embeddings up -d
+
+# Presidio NER sidecar for the privacy-proxy detector plugin
+docker compose -f infra/docker-compose.yml --profile privacy-presidio up -d
+
+# All optional profiles in one command
+docker compose -f infra/docker-compose.yml \
+  --profile diagrams --profile embeddings --profile privacy-presidio up -d
+```
+
+> **Enable diagram rendering** by generating a secret and adding it to
+> `middleware/.env` as `DIAGRAM_URL_SECRET` (only needed alongside
+> `KROKI_BASE_URL` + `BUCKET_NAME`): `openssl rand -hex 32`.
+
 ## Plugin development
 
-Omadia plugins are self-contained ZIP files that the operator uploads through
+omadia plugins are self-contained ZIP files that the operator uploads through
 the admin UI. The platform never trusts external npm registries at runtime —
 plugins ship `node_modules` baked in (or use the platform's standard library
 via `@omadia/plugin-api`). Two reference plugins are shipped in-tree as
@@ -143,9 +198,14 @@ the differentiating logic, and verifying with the smoke runner before install.
 
 ## Status & Roadmap
 
-This is the public preview release. Stability promises are **scoped to the
-documented plugin API only**; everything else (database schema, internal
-service surfaces, admin-UI routes) may evolve without notice until `1.0.0`.
+> **Status — pre-1.0.** Public preview. APIs and database schemas may break
+> between minor versions until `1.0.0`. Production use of the OSS distribution
+> is supported but the upgrade path is hand-rolled today; an automated
+> migration runner is on the v1.0 roadmap.
+
+Stability promises are **scoped to the documented plugin API only**; everything
+else (database schema, internal service surfaces, admin-UI routes) may evolve
+without notice until `1.0.0`.
 
 Active development tracks:
 
@@ -179,6 +239,6 @@ private contact channel.
 
 ## Maintainership
 
-Omadia is maintained by [byte5 GmbH](https://byte5.de) under the GitHub
+omadia is maintained by [byte5 GmbH](https://byte5.de) under the GitHub
 organisation [`byte5ai`](https://github.com/byte5ai). Outside contributions
 are welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md).
