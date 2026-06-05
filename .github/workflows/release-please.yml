@@ -1,0 +1,48 @@
+# Automated releases on merge to main (conventional-commit driven).
+#
+# How it works
+#   - On every push to `main` (i.e. each merged PR), release-please inspects the
+#     conventional-commit messages since the last tag and maintains a single
+#     "release PR" that bumps the version + updates docs/CHANGELOG.md:
+#         fix:      -> patch   (0.2.0 -> 0.2.1)
+#         feat:     -> minor   (0.2.0 -> 0.3.0)
+#         feat!: / BREAKING CHANGE -> minor while < 1.0 (bump-minor-pre-major)
+#         docs/chore/refactor/test/ci -> no release
+#   - Merging that release PR creates the git tag `vX.Y.Z` and a GitHub Release
+#     with generated notes. The bump lands in middleware/ + web-ui/ package.json
+#     via `extra-files` (see release-please-config.json).
+#
+# Branch protection note
+#   `main` requires PRs + status checks (strict). A PR opened by the default
+#   GITHUB_TOKEN does NOT trigger the `pull_request` CI workflows, so its required
+#   checks would never run and the release PR couldn't merge. To fix that, add a
+#   repo secret `RELEASE_PLEASE_TOKEN` (a fine-grained PAT or GitHub App token
+#   with contents:write + pull-requests:write). The step below uses it when
+#   present and falls back to GITHUB_TOKEN otherwise.
+#
+# This is intentionally scoped to versioning + GitHub Release only. npm publish
+# and GHCR image push stay in release.yml (gated on the OB-30 Block 2 decisions).
+
+name: release-please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
