@@ -6,7 +6,7 @@ identity:
   version: "0.1.0"
   kind: "channel"
   domain: "omadia.ui"
-  description: "Omadia UI Tier-1 server-side channel (skeleton). Declares the canvas surface — capabilities [text, canvas] and dispatch_service canvasChatAgent — so a turn routes to the omadia-ui-orchestrator (#168/#171). v0 registers a discovery endpoint advertising the omadia-canvas-protocol + ops-catalog versions and capabilities. The bidirectional WebSocket transport (handshake offer→select→ack, IncomingTurn forming, surface_* event fan-out) is DEFERRED: the CoreApi exposes only Express route/router registration, not a WebSocket upgrade, so hosting the canvas WebSocket needs a CoreApi SDK extension that the concept's SDK-changes list omitted."
+  description: "Omadia UI Tier-1 server-side channel. Declares the canvas surface — capabilities [text, canvas] and dispatch_service canvasChatAgent — so a turn routes to the omadia-ui-orchestrator (#168/#171). Mounts a pre-connect discovery endpoint (GET /omadia-ui/info) advertising the omadia-canvas-protocol + ops-catalog versions and capabilities, plus the bidirectional canvas WebSocket (/omadia-ui/canvas) over PR-11's CoreApi.registerWebSocket: server-initiated handshake (offer→select→ack), IncomingTurn forming per client turn, and 1:1 surface_* fan-out of the orchestrator stream. The WebSocket is feature-detected — degrades to discovery-only when no WS registry is wired into the CoreApi."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"
@@ -25,8 +25,9 @@ lifecycle:
 
 channel:
   transport:
-    # Target transport. The WebSocket server itself is not yet wired (see
-    # description) — v0 mounts the discovery route below over plain HTTP.
+    # Canvas transport is a WebSocket at /omadia-ui/canvas (registered via
+    # CoreApi.registerWebSocket — kernel-authenticated upgrade). The HTTP route
+    # below is the pre-connect discovery endpoint a client reads first.
     kind: "websocket"
     routes:
       - path: "/omadia-ui/info"

@@ -1,3 +1,5 @@
+import { getTranslations } from 'next-intl/server';
+
 import type { DraftQuotaSnapshot } from '../../../_lib/builderTypes';
 import { cn } from '../../../_lib/cn';
 
@@ -9,11 +11,12 @@ import { cn } from '../../../_lib/cn';
  *   amber  warnAt..cap-1    "42 / 50 — bald voll"
  *   red    cap               "50 / 50 — Limit erreicht"
  */
-export function QuotaBadge({
+export async function QuotaBadge({
   quota,
 }: {
   quota: DraftQuotaSnapshot;
-}): React.ReactElement {
+}): Promise<React.ReactElement> {
+  const t = await getTranslations('builder.drafts.quota');
   const tone: 'ok' | 'warn' | 'full' = quota.exceeded
     ? 'full'
     : quota.warning
@@ -21,10 +24,10 @@ export function QuotaBadge({
       : 'ok';
 
   const label = quota.exceeded
-    ? 'Limit erreicht'
+    ? t('limitReached')
     : quota.warning
-      ? 'bald voll'
-      : 'Drafts';
+      ? t('almostFull')
+      : t('label');
 
   return (
     <div
@@ -37,7 +40,11 @@ export function QuotaBadge({
         tone === 'full' &&
           'border-[color:var(--danger)]/40 bg-[color:var(--danger)]/10 text-[color:var(--danger)]',
       )}
-      title={`${String(quota.used)} von ${String(quota.cap)} aktiven Drafts, Warnung ab ${String(quota.warnAt)}`}
+      title={t('tooltip', {
+        used: quota.used,
+        cap: quota.cap,
+        warnAt: quota.warnAt,
+      })}
     >
       <span className="font-mono-num tabular-nums">
         {String(quota.used)} / {String(quota.cap)}

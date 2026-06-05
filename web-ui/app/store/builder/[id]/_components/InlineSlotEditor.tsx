@@ -1,6 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
+import { useTranslations } from 'next-intl';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { patchBuilderSlot } from '../../../../_lib/api';
@@ -139,19 +140,24 @@ export function InlineSlotEditor({
 }
 
 function StatusBadge({ status }: { status: SaveStatus }): React.ReactElement | null {
+  const t = useTranslations('builder.slots');
   switch (status.kind) {
     case 'idle':
       return null;
     case 'dirty':
-      return <span className="text-amber-700">unsaved</span>;
+      return <span className="text-amber-700">{t('inline.status.dirty')}</span>;
     case 'saving':
-      return <span className="text-[color:var(--fg-muted)]">saving…</span>;
+      return (
+        <span className="text-[color:var(--fg-muted)]">
+          {t('inline.status.saving')}
+        </span>
+      );
     case 'saved':
-      return <span className="text-emerald-700">saved</span>;
+      return <span className="text-emerald-700">{t('inline.status.saved')}</span>;
     case 'error':
       return (
         <span className="text-rose-700" title={status.message}>
-          error
+          {t('inline.status.error')}
         </span>
       );
   }

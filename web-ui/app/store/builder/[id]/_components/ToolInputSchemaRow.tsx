@@ -1,6 +1,7 @@
 'use client';
 
 import { ChevronDown, ChevronRight, X } from 'lucide-react';
+import { useTranslations } from 'next-intl';
 import { useEffect, useId, useState } from 'react';
 
 import { cn } from '../../../../_lib/cn';
@@ -54,9 +55,10 @@ export function ToolInputSchemaRow({
   onRemove,
   onToggleRequired,
 }: ToolInputSchemaRowProps): React.ReactElement {
+  const t = useTranslations('builder.tools.schema');
   const [expanded, setExpanded] = useState<boolean>(depth === 0);
   const keyId = useId();
-  const t = detectType(node);
+  const nodeType = detectType(node);
   const collisions = siblingKeys.filter((k) => k === fieldKey);
   const keyInvalid = !isValidPropertyKey(fieldKey);
   const keyDup = collisions.length > 1;
@@ -80,7 +82,7 @@ export function ToolInputSchemaRow({
           type="button"
           onClick={() => setExpanded((p) => !p)}
           aria-expanded={expanded}
-          aria-label={expanded ? 'Constraints einklappen' : 'Constraints aufklappen'}
+          aria-label={expanded ? t('collapseConstraints') : t('expandConstraints')}
           className="rounded p-0.5 text-[color:var(--fg-subtle)] hover:bg-[color:var(--bg-soft)]"
         >
           {expanded ? (
@@ -91,7 +93,7 @@ export function ToolInputSchemaRow({
         </button>
         <input
           id={keyId}
-          aria-label="Property-Key"
+          aria-label={t('propertyKey')}
           type="text"
           value={fieldKey}
           onChange={(e) => onRename(e.target.value)}
@@ -105,8 +107,8 @@ export function ToolInputSchemaRow({
           spellCheck={false}
         />
         <select
-          aria-label="Property-Typ"
-          value={t}
+          aria-label={t('propertyType')}
+          value={nodeType}
           onChange={(e) => changeType(e.target.value as SupportedType)}
           className="rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-1.5 py-1 text-[11px] font-mono-num text-[color:var(--fg-strong)] focus:border-[color:var(--accent)] focus:outline-none"
         >
@@ -130,7 +132,7 @@ export function ToolInputSchemaRow({
         <button
           type="button"
           onClick={onRemove}
-          aria-label={`Property ${fieldKey} entfernen`}
+          aria-label={t('removeProperty', { key: fieldKey })}
           className="rounded p-0.5 text-[color:var(--fg-subtle)] hover:bg-[color:var(--danger)]/10 hover:text-[color:var(--danger)]"
         >
           <X className="size-3" aria-hidden />
@@ -138,9 +140,7 @@ export function ToolInputSchemaRow({
       </div>
       {keyInvalid || keyDup ? (
         <p className="px-2 pb-1 text-[10px] text-[color:var(--danger)]">
-          {keyInvalid
-            ? 'Property-Key muss [a-zA-Z_][a-zA-Z0-9_]* sein'
-            : 'Property-Key bereits vergeben'}
+          {keyInvalid ? t('propertyKeyInvalid') : t('propertyKeyTaken')}
         </p>
       ) : null}
 
@@ -166,6 +166,7 @@ function DescriptionInput({
   value: string;
   onChange: (v: string) => void;
 }): React.ReactElement {
+  const t = useTranslations('builder.tools.schema');
   const id = useId();
   const [vocab, setVocab] = useState<ReadonlyArray<VocabularyEntry>>([]);
   const [focused, setFocused] = useState<boolean>(false);
@@ -196,7 +197,7 @@ function DescriptionInput({
         htmlFor={id}
         className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]"
       >
-        Beschreibung
+        {t('description')}
       </label>
       <input
         id={id}
@@ -209,7 +210,7 @@ function DescriptionInput({
           window.setTimeout(() => setFocused(false), 120);
         }}
         className="w-full rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1 text-[11px] text-[color:var(--fg-strong)] focus:border-[color:var(--accent)] focus:outline-none"
-        placeholder="Vom LLM gelesener Hint"
+        placeholder={t('descriptionPlaceholder')}
       />
       {matches.length > 0 ? (
         <ul className="mt-1 flex flex-wrap gap-1">
@@ -224,7 +225,7 @@ function DescriptionInput({
                   const head = value.slice(0, value.length - lastWord.length);
                   onChange(`${head}\`${m.$id}\``);
                 }}
-                title={m.summary ?? `Entity ${m.name} (v${m.version})`}
+                title={m.summary ?? t('entityTitle', { name: m.name, version: m.version })}
                 className="inline-flex items-center gap-1 rounded border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/8 px-1.5 py-0.5 font-mono-num text-[10px] text-[color:var(--accent)] hover:bg-[color:var(--accent)]/15"
               >
                 {m.$id}
@@ -246,8 +247,9 @@ function TypeConstraintsEditor({
   onChange: (next: JsonSchemaNode) => void;
   depth: number;
 }): React.ReactElement | null {
-  const t = detectType(node);
-  if (t === 'string') {
+  const t = useTranslations('builder.tools.schema');
+  const nodeType = detectType(node);
+  if (nodeType === 'string') {
     return (
       <div className="grid grid-cols-2 gap-2">
         <NumberConstraint
@@ -276,7 +278,7 @@ function TypeConstraintsEditor({
       </div>
     );
   }
-  if (t === 'number' || t === 'integer') {
+  if (nodeType === 'number' || nodeType === 'integer') {
     return (
       <div className="grid grid-cols-2 gap-2">
         <NumberConstraint
@@ -292,14 +294,14 @@ function TypeConstraintsEditor({
       </div>
     );
   }
-  if (t === 'boolean') {
+  if (nodeType === 'boolean') {
     return (
       <p className="text-[11px] italic text-[color:var(--fg-muted)]">
-        Boolean — keine zusätzlichen Constraints.
+        {t('booleanNoConstraints')}
       </p>
     );
   }
-  if (t === 'enum') {
+  if (nodeType === 'enum') {
     const values = (node.enum ?? []).map((v) => String(v));
     return (
       <EnumValuesEditor
@@ -308,7 +310,7 @@ function TypeConstraintsEditor({
       />
     );
   }
-  if (t === 'array') {
+  if (nodeType === 'array') {
     return (
       <ArrayItemsEditor
         node={node}
@@ -317,12 +319,12 @@ function TypeConstraintsEditor({
       />
     );
   }
-  if (t === 'object') {
+  if (nodeType === 'object') {
     // Objects are recursively rendered by the parent ToolInputSchemaBuilder
     // — this editor only surfaces a hint so the row stays self-explanatory.
     return (
       <p className="text-[11px] italic text-[color:var(--fg-muted)]">
-        Object — verschachtelte Properties unten editieren.
+        {t('objectNestedHint')}
       </p>
     );
   }
@@ -410,11 +412,12 @@ function EnumValuesEditor({
   values: ReadonlyArray<string>;
   onChange: (next: string[]) => void;
 }): React.ReactElement {
+  const t = useTranslations('builder.tools.schema');
   const [draft, setDraft] = useState<string>('');
   return (
     <div>
       <span className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
-        Erlaubte Werte
+        {t('allowedValues')}
       </span>
       {values.length > 0 ? (
         <ul className="mb-1 flex flex-wrap gap-1">
@@ -427,7 +430,7 @@ function EnumValuesEditor({
               <button
                 type="button"
                 onClick={() => onChange(values.filter((_, j) => j !== i))}
-                aria-label={`Wert ${v} entfernen`}
+                aria-label={t('removeValue', { value: v })}
                 className="rounded p-0.5 text-[color:var(--fg-subtle)] hover:text-[color:var(--danger)]"
               >
                 <X className="size-2.5" aria-hidden />
@@ -448,7 +451,7 @@ function EnumValuesEditor({
               setDraft('');
             }
           }}
-          placeholder="Wert + Enter"
+          placeholder={t('valueEnterPlaceholder')}
           className="flex-1 rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1 font-mono-num text-[11px] text-[color:var(--fg-strong)] focus:border-[color:var(--accent)] focus:outline-none"
         />
         <button
@@ -477,13 +480,14 @@ function ArrayItemsEditor({
   depth: number;
   onChange: (next: JsonSchemaNode) => void;
 }): React.ReactElement {
+  const t = useTranslations('builder.tools.schema');
   const items = (node.items as JsonSchemaNode | undefined) ?? { type: 'string' };
   const itemType = detectType(items);
   return (
     <div className="space-y-1.5">
       <div className="flex items-center gap-2">
         <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
-          Item-Typ
+          {t('itemType')}
         </span>
         <select
           value={itemType}
@@ -502,8 +506,7 @@ function ArrayItemsEditor({
       </div>
       {itemType === 'object' ? (
         <p className="text-[10px] italic text-[color:var(--fg-muted)]">
-          Item-Properties werden im verschachtelten Builder unten editiert
-          (Tiefe {String(depth + 1)}).
+          {t('itemPropertiesHint', { depth: depth + 1 })}
         </p>
       ) : null}
     </div>

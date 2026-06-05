@@ -1,6 +1,7 @@
 'use client';
 
 import { AlertCircle, CheckCircle2 } from 'lucide-react';
+import { useTranslations } from 'next-intl';
 
 interface ToolTestResultPaneProps {
   result: unknown;
@@ -21,6 +22,7 @@ export function ToolTestResultPane({
   isError,
   durationMs,
 }: ToolTestResultPaneProps): React.ReactElement {
+  const t = useTranslations('builder.tools.testResult');
   const stringResult = typeof result === 'string' ? result : null;
   const display =
     stringResult ?? safeStringifyJson(result);
@@ -34,14 +36,14 @@ export function ToolTestResultPane({
             <>
               <AlertCircle className="size-3.5 text-[color:var(--danger)]" aria-hidden />
               <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[color:var(--danger)]">
-                Fehler
+                {t('error')}
               </span>
             </>
           ) : (
             <>
               <CheckCircle2 className="size-3.5 text-[color:var(--success,#16a34a)]" aria-hidden />
               <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg-strong)]">
-                Erfolg
+                {t('success')}
               </span>
             </>
           )}

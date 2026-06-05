@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { useTranslations } from 'next-intl';
 import {
   AlertCircle,
   CheckCircle2,
@@ -148,6 +149,7 @@ export function PreviewChatPane({
   onFixSmokeWithBuilder,
   onBufferedSecretKeysChange,
 }: PreviewChatPaneProps): React.ReactElement {
+  const t = useTranslations('builder.preview.chat');
   const [items, setItems] = useState<ChatItem[]>(() =>
     initialTranscript.map((entry, i) => ({
       kind: 'message' as const,
@@ -252,9 +254,9 @@ export function PreviewChatPane({
       } else if (err instanceof ApiError) {
         setError(humanizeApiError(err));
       } else if (err instanceof Error) {
-        setError(`Verbindung verloren: ${err.message}`);
+        setError(t('error.connectionLost', { message: err.message }));
       } else {
-        setError('Unbekannter Fehler beim Preview-Turn');
+        setError(t('error.unknownTurn'));
       }
     } finally {
       setInflight(false);
@@ -346,7 +348,7 @@ export function PreviewChatPane({
         });
       }
     }
-  }, [draftId, inflight, input, nextKey]);
+  }, [draftId, inflight, input, nextKey, t]);
 
   const onStop = useCallback(() => {
     abortRef.current?.abort();
@@ -397,7 +399,7 @@ export function PreviewChatPane({
           className="size-3 text-[color:var(--fg-subtle)]"
           aria-hidden
         />
-        <span>Preview-Agent</span>
+        <span>{t('agentLabel')}</span>
         <button
           type="button"
           onClick={() => setSecretsOpen(true)}
@@ -407,10 +409,10 @@ export function PreviewChatPane({
               ? 'bg-[color:var(--warning)]/15 text-[color:var(--warning)] hover:bg-[color:var(--warning)]/25'
               : 'bg-[color:var(--bg-soft)] text-[color:var(--fg-muted)] hover:bg-[color:var(--gray-100)] hover:text-[color:var(--fg-strong)]',
           )}
-          title="Test-Credentials für die Preview verwalten"
+          title={t('credentialsTooltip')}
         >
           <KeyRound className="size-3" aria-hidden />
-          Credentials{' '}
+          {t('credentials')}{' '}
           {setupFields.length > 0
             ? `(${String(bufferedSecretKeys.length)}/${String(setupFields.length)})`
             : ''}
@@ -426,7 +428,7 @@ export function PreviewChatPane({
           ) : (
             <RefreshCw className="size-3" aria-hidden />
           )}
-          Rebuild
+          {t('rebuild')}
         </button>
       </div>
 
@@ -442,7 +444,7 @@ export function PreviewChatPane({
         <div className="mx-5 mt-3 flex items-center gap-2 rounded-md border border-[color:var(--success)]/30 bg-[color:var(--success)]/8 px-3 py-2 text-[12px] text-[color:var(--success)]">
           <CheckCircle2 className="size-3.5 shrink-0" aria-hidden />
           <span className="font-mono-num text-[11px]">
-            Rebuild #{String(rebuildSuccess.buildN)} ✓ — Preview ist bereit
+            {t('rebuildSuccess', { buildN: rebuildSuccess.buildN })}
           </span>
         </div>
       ) : null}
@@ -459,14 +461,17 @@ export function PreviewChatPane({
           <AlertCircle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
           <div className="min-w-0 flex-1 break-words">
             <div className="font-semibold">
-              Builder-Agent kommt bei Slot{' '}
-              <code className="font-mono text-[11px]">{agentStuck.slotKey}</code>{' '}
-              nicht weiter ({String(agentStuck.attempts)} Versuche)
+              {t.rich('agentStuck.title', {
+                attempts: agentStuck.attempts,
+                slot: () => (
+                  <code className="font-mono text-[11px]">
+                    {agentStuck.slotKey}
+                  </code>
+                ),
+              })}
             </div>
             <div className="mt-1 text-[11px] text-[color:var(--fg-muted)]">
-              {agentStuck.lastSummary}. Öffne den Slot-Editor, prüf die
-              Errors manuell und korrigier den Code — der Agent versucht
-              es nicht von alleine erneut.
+              {t('agentStuck.body', { summary: agentStuck.lastSummary })}
             </div>
           </div>
           {onClearAgentStuck ? (
@@ -474,9 +479,9 @@ export function PreviewChatPane({
               type="button"
               onClick={onClearAgentStuck}
               className="rounded-sm px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)] hover:bg-[color:var(--gray-100)] hover:text-[color:var(--fg-strong)]"
-              title="Banner schließen"
+              title={t('agentStuck.dismissTooltip')}
             >
-              Schließen
+              {t('agentStuck.dismiss')}
             </button>
           ) : null}
         </div>
@@ -528,10 +533,9 @@ export function PreviewChatPane({
             <div className="min-w-0 flex-1 break-words">
               <div>{error}</div>
               <div className="mt-1 text-[11px] text-[color:var(--fg-muted)]">
-                Preview führt Cross-Integration-Lookups (<code>spec.external_reads</code>)
-                nicht aus — der Agent erkennt den fehlenden Service korrekt
-                und wirft. Veröffentliche den Agent in den Plattform-Store, um
-                den echten Datenpfad zu testen.
+                {t.rich('externalReadsHint', {
+                  code: () => <code>spec.external_reads</code>,
+                })}
               </div>
             </div>
           </div>
@@ -545,7 +549,7 @@ export function PreviewChatPane({
 
       <div className="border-t border-[color:var(--divider)] px-5 py-3">
         <label className="sr-only" htmlFor={inputId}>
-          Preview-Nachricht
+          {t('inputLabel')}
         </label>
         <div className="flex items-end gap-2">
           <textarea
@@ -556,9 +560,7 @@ export function PreviewChatPane({
             onKeyDown={onKeyDown}
             rows={2}
             placeholder={
-              inflight
-                ? 'Preview-Agent antwortet …'
-                : 'Teste den Agent. Enter zum Senden.'
+              inflight ? t('placeholder.inflight') : t('placeholder.idle')
             }
             className="min-h-[44px] flex-1 resize-none rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-[13px] leading-snug text-[color:var(--fg-strong)] placeholder:text-[color:var(--fg-subtle)] focus:border-[color:var(--accent)] focus:outline-none disabled:opacity-60"
           />
@@ -569,7 +571,7 @@ export function PreviewChatPane({
               className="inline-flex h-[44px] shrink-0 items-center gap-1.5 rounded-md border border-[color:var(--danger)]/40 px-3 py-2 text-[12px] font-semibold text-[color:var(--danger)] transition-colors hover:bg-[color:var(--danger)]/10"
             >
               <StopCircle className="size-4" aria-hidden />
-              Stop
+              {t('stop')}
             </button>
           ) : (
             <button
@@ -579,14 +581,14 @@ export function PreviewChatPane({
               className="inline-flex h-[44px] shrink-0 items-center gap-1.5 rounded-md bg-[color:var(--accent)] px-3 py-2 text-[12px] font-semibold text-white shadow-[var(--shadow-cta)] disabled:opacity-40"
             >
               <Send className="size-4" aria-hidden />
-              Senden
+              {t('send')}
             </button>
           )}
         </div>
         {inflight ? (
           <p className="font-mono-num mt-2 inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
             <Loader2 className="size-3 animate-spin" aria-hidden />
-            Stream live · {formatElapsed(turnStartedAt, elapsedNow)}
+            {t('streamLive')} · {formatElapsed(turnStartedAt, elapsedNow)}
           </p>
         ) : null}
       </div>
@@ -603,6 +605,7 @@ function RuntimeSmokeStrip({
   snap: RuntimeSmokeSnapshot;
   onFixWithBuilder?: () => void;
 }): React.ReactElement | null {
+  const t = useTranslations('builder.preview.chat.smoke');
   const total = snap.results?.length ?? 0;
   const failed = snap.results?.filter(
     (r) => r.status === 'threw' || r.status === 'timeout',
@@ -616,24 +619,31 @@ function RuntimeSmokeStrip({
     icon = <Loader2 className="size-3 animate-spin" aria-hidden />;
     toneClass =
       'border-[color:var(--divider)] bg-[color:var(--bg-soft)] text-[color:var(--fg-muted)]';
-    label = `smoke #${String(snap.buildN)} läuft …`;
+    label = t('running', { buildN: snap.buildN });
   } else if (snap.phase === 'ok') {
     icon = <CheckCircle2 className="size-3" aria-hidden />;
     toneClass =
       'border-[color:var(--success)]/30 bg-[color:var(--success)]/8 text-[color:var(--success)]';
     if (snap.reason === 'no_tools') {
-      label = `smoke #${String(snap.buildN)} ✓ (keine Tools deklariert)`;
+      label = t('okNoTools', { buildN: snap.buildN });
     } else {
-      label = `smoke #${String(snap.buildN)} ✓ (${String(total)} tool${total === 1 ? '' : 's'} ok)`;
+      label = t('okTools', { buildN: snap.buildN, count: total });
     }
   } else {
     icon = <XCircle className="size-3" aria-hidden />;
     toneClass =
       'border-[color:var(--danger)]/40 bg-[color:var(--danger)]/8 text-[color:var(--danger)]';
     if (snap.reason === 'activate_failed') {
-      label = `smoke #${String(snap.buildN)} ✗ — preview activate failed${snap.activateError ? `: ${snap.activateError}` : ''}`;
+      label = t('activateFailed', {
+        buildN: snap.buildN,
+        detail: snap.activateError ? `: ${snap.activateError}` : '',
+      });
     } else {
-      label = `smoke #${String(snap.buildN)} ✗ — ${String(failed)}/${String(total)} tool${total === 1 ? '' : 's'} failed`;
+      label = t('toolsFailed', {
+        buildN: snap.buildN,
+        failed,
+        count: total,
+      });
     }
   }
 
@@ -667,7 +677,7 @@ function RuntimeSmokeStrip({
             className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/10 px-2 py-1 text-[11px] font-mono-num uppercase tracking-[0.18em] text-[color:var(--danger)] transition-colors hover:bg-[color:var(--danger)]/15"
           >
             <Wrench className="size-3" aria-hidden />
-            Fix mit Builder
+            {t('fixWithBuilder')}
           </button>
         ) : null}
       </div>
@@ -676,15 +686,15 @@ function RuntimeSmokeStrip({
 }
 
 function EmptyHint(): React.ReactElement {
+  const t = useTranslations('builder.preview.chat.empty');
   return (
     <div className="flex flex-col items-center justify-center gap-2 py-12 text-center">
       <Eye className="size-5 text-[color:var(--fg-subtle)]" aria-hidden />
       <p className="font-display text-[16px] text-[color:var(--fg-muted)]">
-        Teste den Preview-Agent.
+        {t('title')}
       </p>
       <p className="font-mono-num text-[11px] text-[color:var(--fg-subtle)]">
-        Spec + Slots werden vor jedem Turn neu kompiliert, falls etwas
-        geändert wurde.
+        {t('body')}
       </p>
     </div>
   );

@@ -1,7 +1,8 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as api from '../../../../../_lib/api';
+import { renderWithIntl } from '../../../../../_lib/test-utils';
 import { AuditTimelinePane } from '../AuditTimelinePane';
 
 /**
@@ -51,7 +52,7 @@ describe('<AuditTimelinePane />', () => {
       offset: 0,
       events: [],
     });
-    render(<AuditTimelinePane draftId="draft-1" />);
+    renderWithIntl(<AuditTimelinePane draftId="draft-1" />, { locale: 'de' });
     await waitFor(() => {
       expect(screen.getByTestId('audit-empty')).toBeInTheDocument();
     });
@@ -76,7 +77,7 @@ describe('<AuditTimelinePane />', () => {
         }),
       ],
     });
-    render(<AuditTimelinePane draftId="draft-1" />);
+    renderWithIntl(<AuditTimelinePane draftId="draft-1" />, { locale: 'de' });
     await waitFor(() => {
       expect(screen.getByTestId('audit-event-1')).toBeInTheDocument();
     });
@@ -106,7 +107,7 @@ describe('<AuditTimelinePane />', () => {
         offset: 2,
         events: [makeEvent(2, 'slot_filled', { slotKey: 's', bytes: 10, typecheckMs: 1 }), makeEvent(1, 'quality_updated')],
       });
-    render(<AuditTimelinePane draftId="draft-1" />);
+    renderWithIntl(<AuditTimelinePane draftId="draft-1" />, { locale: 'de' });
     await waitFor(() => {
       expect(screen.getByTestId('audit-event-3')).toBeInTheDocument();
     });
@@ -125,7 +126,7 @@ describe('<AuditTimelinePane />', () => {
 
   it('renders an inline alert when the API call fails', async () => {
     listAuditSpy.mockRejectedValueOnce(new Error('boom'));
-    render(<AuditTimelinePane draftId="draft-1" />);
+    renderWithIntl(<AuditTimelinePane draftId="draft-1" />, { locale: 'de' });
     await waitFor(() => {
       expect(screen.getByTestId('audit-error')).toHaveTextContent('boom');
     });

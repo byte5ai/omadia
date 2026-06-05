@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { getTranslations } from 'next-intl/server';
 import Link from 'next/link';
 
 import { listBuilderDrafts } from '../../_lib/api';
@@ -21,19 +22,20 @@ export const dynamic = 'force-dynamic';
 
 type ScopeFilter = 'draft' | 'published' | 'deleted';
 
-const SCOPE_LABEL: Record<ScopeFilter, string> = {
-  draft: 'Entwurf',
-  published: 'Veröffentlicht',
-  deleted: 'Gelöscht',
-};
-
 export default async function BuilderDashboardPage({
   searchParams,
 }: {
   searchParams: Promise<{ scope?: string }>;
 }): Promise<React.ReactElement> {
+  const t = await getTranslations('builder.drafts.list');
   const params = await searchParams;
   const scope = parseScope(params.scope);
+
+  const scopeLabel: Record<ScopeFilter, string> = {
+    draft: t('scope.draft'),
+    published: t('scope.published'),
+    deleted: t('scope.deleted'),
+  };
 
   // Two parallel calls: the active list (drives draft+published counts and
   // most-of-the-time the visible rows) plus the deleted list (drives the
@@ -47,7 +49,7 @@ export default async function BuilderDashboardPage({
     activeResponse = await listBuilderDrafts({ scope: 'active' });
   } catch (err) {
     await redirectIfUnauthorized(err);
-    activeError = err instanceof Error ? err.message : 'Drafts konnten nicht geladen werden.';
+    activeError = err instanceof Error ? err.message : t('error.loadFailed');
   }
 
   let deletedResponse: ListDraftsResponse | null = null;
@@ -86,20 +88,17 @@ export default async function BuilderDashboardPage({
         <div className="flex items-baseline gap-3 text-[12px] font-semibold uppercase tracking-[0.24em] text-[color:var(--accent)]">
           <span className="font-mono-num text-[color:var(--fg-subtle)]">02</span>
           <span className="h-px flex-1 bg-[color:var(--border)]" />
-          <span>Agent-Builder</span>
+          <span>{t('eyebrow')}</span>
         </div>
 
         <div className="mt-6 flex items-start justify-between gap-6">
           <div className="max-w-2xl">
             <h1 className="font-display text-[clamp(2.25rem,4.5vw,3.75rem)] leading-[1.05] text-[color:var(--fg-strong)]">
-              Neue Agents bauen.
+              {t('headline')}
             </h1>
             <p className="mt-6 text-[18px] font-semibold leading-[1.55] text-[color:var(--fg)]">
               <span className="b5-colon">:</span>
-              Lege Drafts an, iteriere parallel an mehreren Agents und
-              installiere sie per Klick in die Plattform. Jeder Draft lebt in
-              deinem persönlichen Arbeitsbereich — keiner sieht deine
-              Entwürfe außer dir.
+              {t('lede')}
             </p>
           </div>
 
@@ -113,16 +112,16 @@ export default async function BuilderDashboardPage({
         </div>
 
         <dl className="mt-10 grid max-w-2xl grid-cols-4 gap-6 border-t border-[color:var(--divider)] pt-5 text-sm">
-          <Stat label="Entwürfe" value={counts.draft} />
-          <Stat label="Veröffentlicht" value={counts.published} />
-          <Stat label="Gelöscht" value={counts.deleted} />
-          <Stat label="Limit" value={quota.cap} />
+          <Stat label={t('stats.drafts')} value={counts.draft} />
+          <Stat label={t('stats.published')} value={counts.published} />
+          <Stat label={t('stats.deleted')} value={counts.deleted} />
+          <Stat label={t('stats.limit')} value={quota.cap} />
         </dl>
       </header>
 
       <nav
         className="mt-10 flex flex-wrap items-center gap-2"
-        aria-label="Scope filter"
+        aria-label={t('scopeFilterLabel')}
       >
         {(['draft', 'published', 'deleted'] as ScopeFilter[]).map((s) => {
           const active = s === scope;
@@ -141,7 +140,7 @@ export default async function BuilderDashboardPage({
               )}
               aria-current={active ? 'page' : undefined}
             >
-              <span>{SCOPE_LABEL[s]}</span>
+              <span>{scopeLabel[s]}</span>
               <span
                 className={cn(
                   'font-mono-num tabular-nums rounded-full px-1.5 text-[10px]',
@@ -177,7 +176,7 @@ export default async function BuilderDashboardPage({
 
       <footer className="mt-20 flex items-center justify-between border-t border-[color:var(--divider)] pt-5 text-[11px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
         <span>
-          Phase{' '}
+          {t('footer.phaseLabel')}{' '}
           <span className="font-mono-num normal-case tracking-normal text-[color:var(--fg-muted)]">
             B.0 Draft-Store
           </span>
@@ -209,19 +208,20 @@ function Stat({
   );
 }
 
-function EmptyState({ scope }: { scope: ScopeFilter }): React.ReactElement {
+async function EmptyState({ scope }: { scope: ScopeFilter }): Promise<React.ReactElement> {
+  const t = await getTranslations('builder.drafts.list');
   const headline =
     scope === 'draft'
-      ? 'Noch keine Entwürfe.'
+      ? t('empty.draft.headline')
       : scope === 'published'
-        ? 'Noch nichts veröffentlicht.'
-        : 'Papierkorb ist leer.';
+        ? t('empty.published.headline')
+        : t('empty.deleted.headline');
   const hint =
     scope === 'draft'
-      ? 'Klicke rechts oben auf „Neuer Agent" um deinen ersten Entwurf anzulegen.'
+      ? t('empty.draft.hint')
       : scope === 'published'
-        ? 'Veröffentlichte Agents erscheinen hier, sobald du einen Entwurf über den Workspace in die Plattform gepackt hast.'
-        : 'Gelöschte Entwürfe tauchen hier auf und können wiederhergestellt werden, bis du sie endgültig löschst.';
+        ? t('empty.published.hint')
+        : t('empty.deleted.hint');
   return (
     <div className="rounded-[14px] border border-dashed border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] p-12 text-center">
       <p className="font-display text-[22px] text-[color:var(--fg-strong)]">{headline}</p>
@@ -230,15 +230,16 @@ function EmptyState({ scope }: { scope: ScopeFilter }): React.ReactElement {
   );
 }
 
-function LoadErrorState({ message }: { message: string }): React.ReactElement {
+async function LoadErrorState({ message }: { message: string }): Promise<React.ReactElement> {
+  const t = await getTranslations('builder.drafts.list');
   return (
     <div className="rounded-[14px] border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/6 p-8">
       <div className="flex items-baseline gap-3 text-[11px] font-semibold uppercase tracking-[0.2em] text-[color:var(--danger)]">
-        <span>Fehler</span>
+        <span>{t('error.label')}</span>
         <span className="h-px flex-1 bg-[color:var(--danger)]/30" />
       </div>
       <p className="font-display mt-4 text-[26px] text-[color:var(--danger)]">
-        Drafts konnten nicht geladen werden.
+        {t('error.loadFailed')}
       </p>
       <p className="mt-3 font-mono-num text-sm text-[color:var(--fg-muted)]">{message}</p>
     </div>

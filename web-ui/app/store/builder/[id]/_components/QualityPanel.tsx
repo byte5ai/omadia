@@ -1,5 +1,6 @@
 'use client';
 
+import { useTranslations } from 'next-intl';
 import { useCallback, useEffect, useState } from 'react';
 
 import {
@@ -16,29 +17,10 @@ import {
  * badge, and the suggestion list. Refresh button + auto-fetch on mount.
  */
 
-const DIMENSION_LABEL_DE: Record<keyof BuilderQualityResult['dimensions'], string> = {
-  completeness: 'Vollständigkeit',
-  tokenEfficiency: 'Token-Effizienz',
-  ruleQuality: 'Regel-Qualität',
-  specificity: 'Spezifität',
-};
-
 function scoreColor(score: number): string {
   if (score >= 70) return 'bg-emerald-500';
   if (score >= 40) return 'bg-amber-500';
   return 'bg-red-500';
-}
-
-function sweetspotLabelDe(s: BuilderQualityResult['sweetspot']): string {
-  if (s === 'under') return 'unterversorgt';
-  if (s === 'over') return 'überfrachtet';
-  return 'Sweet Spot';
-}
-
-function tokenHealthLabelDe(t: BuilderQualityResult['tokenHealth']): string {
-  if (t === 'warning') return 'Warnung';
-  if (t === 'critical') return 'kritisch';
-  return 'OK';
 }
 
 export interface QualityPanelProps {
@@ -48,6 +30,14 @@ export interface QualityPanelProps {
 }
 
 export function QualityPanel({ draftId, refetchKey }: QualityPanelProps): React.ReactElement {
+  const t = useTranslations('builder.persona.quality');
+  const dimensionLabel = (
+    key: keyof BuilderQualityResult['dimensions'],
+  ): string => t(`dimensions.${key}`);
+  const sweetspotLabel = (s: BuilderQualityResult['sweetspot']): string =>
+    t(`sweetspot.${s}`);
+  const tokenHealthLabel = (tk: BuilderQualityResult['tokenHealth']): string =>
+    t(`tokenHealth.${tk}`);
   const [data, setData] = useState<BuilderQualityResult | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -86,7 +76,7 @@ export function QualityPanel({ draftId, refetchKey }: QualityPanelProps): React.
           className="text-sm font-semibold text-[color:var(--fg-strong)]"
           aria-expanded={expanded}
         >
-          Quality {data ? `· ${data.score}/100` : ''} {expanded ? '▾' : '▸'}
+          {t('heading')} {data ? `· ${data.score}/100` : ''} {expanded ? '▾' : '▸'}
         </button>
         <div className="flex items-center gap-2 text-xs">
           {data && (
@@ -94,7 +84,7 @@ export function QualityPanel({ draftId, refetchKey }: QualityPanelProps): React.
               data-testid="quality-sweetspot"
               className="rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-0.5 text-[color:var(--fg)]"
             >
-              {sweetspotLabelDe(data.sweetspot)}
+              {sweetspotLabel(data.sweetspot)}
             </span>
           )}
           {data && (
@@ -102,7 +92,7 @@ export function QualityPanel({ draftId, refetchKey }: QualityPanelProps): React.
               data-testid="quality-token-health"
               className="rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-0.5 text-[color:var(--fg)]"
             >
-              Tokens: {tokenHealthLabelDe(data.tokenHealth)}
+              {t('tokensPrefix')} {tokenHealthLabel(data.tokenHealth)}
             </span>
           )}
           <button
@@ -114,7 +104,7 @@ export function QualityPanel({ draftId, refetchKey }: QualityPanelProps): React.
             disabled={loading}
             className="rounded border border-[color:var(--border)] px-2 py-1"
           >
-            {loading ? 'Lade…' : 'Aktualisieren'}
+            {loading ? t('loading') : t('refresh')}
           </button>
         </div>
       </header>
@@ -134,7 +124,7 @@ export function QualityPanel({ draftId, refetchKey }: QualityPanelProps): React.
                 return (
                   <div key={key} className="text-xs">
                     <div className="flex justify-between">
-                      <span>{DIMENSION_LABEL_DE[key]}</span>
+                      <span>{dimensionLabel(key)}</span>
                       <span>{v}/100</span>
                     </div>
                     <div className="h-1.5 w-full rounded bg-[color:var(--border)]">

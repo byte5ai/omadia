@@ -1,5 +1,6 @@
 'use client';
 
+import { useTranslations } from 'next-intl';
 import { useState } from 'react';
 import { AlertOctagon, AlertTriangle, X } from 'lucide-react';
 
@@ -25,6 +26,7 @@ export interface ConflictBannerProps {
 export function ConflictBanner({
   warnings,
 }: ConflictBannerProps): React.ReactElement | null {
+  const t = useTranslations('builder.install');
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
   if (warnings.length === 0) return null;
 
@@ -53,7 +55,7 @@ export function ConflictBanner({
           />
           <div className="min-w-0 flex-1">
             <p className="font-medium text-[color:var(--danger)]">
-              Konflikt
+              {t('conflictLabel')}
             </p>
             <p className="mt-0.5 text-[color:var(--fg)]">{w.message}</p>
             <p className="mt-1 font-mono-num text-[10px] text-[color:var(--fg-subtle)]">
@@ -70,7 +72,7 @@ export function ConflictBanner({
               })
             }
             className="text-[color:var(--fg-muted)] hover:text-[color:var(--fg-strong)]"
-            aria-label="Konflikt-Hinweis ausblenden"
+            aria-label={t('dismissConflictAria')}
           >
             <X className="size-4" aria-hidden />
           </button>

@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useTranslations } from 'next-intl';
 import { AlertCircle, Check, Loader2, Plus, X } from 'lucide-react';
 
 import { ApiError, patchBuilderSpec } from '../../../../_lib/api';
@@ -51,6 +52,7 @@ type SaveStatus =
  * editing surfaces that fit better in dedicated panes (B.5-6 territory).
  */
 export function SpecEditor({ draftId, spec, agentStuck }: SpecEditorProps): React.ReactElement {
+  const t = useTranslations('builder.spec.editor');
   const [dirty, setDirty] = useState<Partial<Record<string, string>>>({});
   const [status, setStatus] = useState<SaveStatus>({ kind: 'idle' });
   const debounceTimers = useRef<Map<string, number>>(new Map());
@@ -193,9 +195,9 @@ export function SpecEditor({ draftId, spec, agentStuck }: SpecEditorProps): Reac
     <div className="flex h-full min-h-0">
       <div className="flex h-full min-h-0 flex-1 flex-col">
       <div className="flex-1 space-y-6 overflow-y-auto px-5 py-5">
-        <FieldGroup title="Identität">
+        <FieldGroup title={t('groups.identity')}>
           <ScalarField
-            label="Agent-ID"
+            label={t('fields.agentId')}
             placeholder="com.example.agent.demo"
             value={valueOf('/id')}
             onChange={(v) => onScalarChange('/id', v)}
@@ -203,14 +205,14 @@ export function SpecEditor({ draftId, spec, agentStuck }: SpecEditorProps): Reac
             mono
           />
           <ScalarField
-            label="Name"
-            placeholder="z.B. SEO-Analyst"
+            label={t('fields.name')}
+            placeholder={t('placeholders.name')}
             value={valueOf('/name')}
             onChange={(v) => onScalarChange('/name', v)}
             onBlur={() => onScalarCommit('/name')}
           />
           <ScalarField
-            label="Version"
+            label={t('fields.version')}
             placeholder="0.1.0"
             value={valueOf('/version')}
             onChange={(v) => onScalarChange('/version', v)}
@@ -218,7 +220,7 @@ export function SpecEditor({ draftId, spec, agentStuck }: SpecEditorProps): Reac
             mono
           />
           <ScalarField
-            label="Kategorie"
+            label={t('fields.category')}
             placeholder="other"
             value={valueOf('/category')}
             onChange={(v) => onScalarChange('/category', v)}
@@ -226,7 +228,7 @@ export function SpecEditor({ draftId, spec, agentStuck }: SpecEditorProps): Reac
           />
         </FieldGroup>
 
-        <FieldGroup title="Beschreibung">
+        <FieldGroup title={t('groups.description')}>
           <TextareaField
             label="Description"
             value={valueOf('/description')}
@@ -238,17 +240,17 @@ export function SpecEditor({ draftId, spec, agentStuck }: SpecEditorProps): Reac
           />
         </FieldGroup>
 
-        <FieldGroup title="Skill">
+        <FieldGroup title={t('groups.skill')}>
           <ScalarField
-            label="Rolle"
-            placeholder="z.B. Vertriebs-Analyst"
+            label={t('fields.role')}
+            placeholder={t('placeholders.role')}
             value={valueOf('/skill/role')}
             onChange={(v) => onScalarChange('/skill/role', v)}
             onBlur={() => onScalarCommit('/skill/role')}
           />
           <ScalarField
-            label="Tonalität (optional)"
-            placeholder="z.B. präzise, sachlich"
+            label={t('fields.tonality')}
+            placeholder={t('placeholders.tonality')}
             value={valueOf('/skill/tonality')}
             onChange={(v) => onScalarChange('/skill/tonality', v)}
             onBlur={() => onScalarCommit('/skill/tonality')}
@@ -267,24 +269,24 @@ export function SpecEditor({ draftId, spec, agentStuck }: SpecEditorProps): Reac
           />
           <ArrayField
             label="not_for"
-            placeholder="Anti-Pattern eingeben"
+            placeholder={t('placeholders.notFor')}
             items={spec.playbook?.not_for ?? []}
             onAdd={(v) => onArrayAdd('/playbook/not_for', v)}
             onRemove={(i) => onArrayRemove('/playbook/not_for', i)}
           />
           <ArrayField
             label="example_prompts"
-            placeholder="Beispiel-Prompt"
+            placeholder={t('placeholders.examplePrompt')}
             items={spec.playbook?.example_prompts ?? []}
             onAdd={(v) => onArrayAdd('/playbook/example_prompts', v)}
             onRemove={(i) => onArrayRemove('/playbook/example_prompts', i)}
           />
         </FieldGroup>
 
-        <FieldGroup title="Abhängigkeiten & Netzwerk">
+        <FieldGroup title={t('groups.dependencies')}>
           <ArrayField
             label="depends_on"
-            placeholder="z.B. @omadia/knowledge-graph-neon"
+            placeholder={t('placeholders.dependsOn')}
             items={spec.depends_on ?? []}
             onAdd={(v) => onArrayAdd('/depends_on', v)}
             onRemove={(i) => onArrayRemove('/depends_on', i)}
@@ -292,7 +294,7 @@ export function SpecEditor({ draftId, spec, agentStuck }: SpecEditorProps): Reac
           />
           <ArrayField
             label="network.outbound"
-            placeholder="z.B. api.example.com"
+            placeholder={t('placeholders.networkOutbound')}
             items={spec.network?.outbound ?? []}
             onAdd={(v) => onArrayAdd('/network/outbound', v)}
             onRemove={(i) => onArrayRemove('/network/outbound', i)}
@@ -300,7 +302,7 @@ export function SpecEditor({ draftId, spec, agentStuck }: SpecEditorProps): Reac
           />
         </FieldGroup>
 
-        <FieldGroup title="Setup-Felder (Credentials & Config)">
+        <FieldGroup title={t('groups.setupFields')}>
           <SetupFieldsEditor draftId={draftId} fields={spec.setup_fields ?? []} />
         </FieldGroup>
 
@@ -473,6 +475,7 @@ function ArrayField({
   onRemove,
   mono = false,
 }: ArrayFieldProps): React.ReactElement {
+  const t = useTranslations('builder.spec.editor');
   const [draft, setDraft] = useState('');
   const inputId = useId();
   const submit = useCallback(() => {
@@ -502,13 +505,13 @@ function ArrayField({
                   malformed &&
                     'border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/8 text-[color:var(--warning)]',
                 )}
-                title={malformed ? 'Eintrag ist kein String — wird angezeigt als Best-Effort' : undefined}
+                title={malformed ? t('array.malformedTooltip') : undefined}
               >
                 <span className="break-all">{labelText}</span>
                 <button
                   type="button"
                   onClick={() => onRemove(i)}
-                  aria-label={`${label} entfernen`}
+                  aria-label={t('array.removeAria', { label })}
                   className="rounded p-0.5 text-[color:var(--fg-subtle)] hover:bg-[color:var(--danger)]/10 hover:text-[color:var(--danger)]"
                 >
                   <X className="size-3" aria-hidden />
@@ -544,7 +547,7 @@ function ArrayField({
           className="inline-flex items-center gap-1 rounded-md bg-[color:var(--accent)] px-2.5 py-1.5 text-[11px] font-semibold text-white shadow-[var(--shadow-cta)] disabled:opacity-40"
         >
           <Plus className="size-3" aria-hidden />
-          Add
+          {t('array.add')}
         </button>
       </div>
     </div>
@@ -552,12 +555,13 @@ function ArrayField({
 }
 
 function SaveBadge({ status }: { status: SaveStatus }): React.ReactElement {
+  const t = useTranslations('builder.spec.editor');
   const content = useMemo(() => {
     if (status.kind === 'pending') {
       return (
         <>
           <Loader2 className="size-3 animate-spin" aria-hidden />
-          <span>Speichern …</span>
+          <span>{t('save.saving')}</span>
         </>
       );
     }
@@ -565,7 +569,7 @@ function SaveBadge({ status }: { status: SaveStatus }): React.ReactElement {
       return (
         <>
           <Check className="size-3" aria-hidden />
-          <span>Gespeichert</span>
+          <span>{t('save.saved')}</span>
         </>
       );
     }
@@ -580,7 +584,7 @@ function SaveBadge({ status }: { status: SaveStatus }): React.ReactElement {
       );
     }
     return null;
-  }, [status]);
+  }, [status, t]);
   if (status.kind === 'idle') return <></>;
   return (
     <div className="border-t border-[color:var(--divider)] px-5 py-2">
