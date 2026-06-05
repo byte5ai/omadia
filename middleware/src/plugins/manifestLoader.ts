@@ -177,9 +177,9 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
   const permissions = asRecord(doc['permissions']);
   const integrations = asArray(doc['integrations']);
 
-  const requiredSecrets: PluginSetupField[] = [];
-  const setupFields = asArray(setup?.['fields']);
-  for (const field of setupFields) {
+  const setupFields: PluginSetupField[] = [];
+  const setupFieldsRaw = asArray(setup?.['fields']);
+  for (const field of setupFieldsRaw) {
     const f = asRecord(field);
     if (!f) continue;
     const key = asString(f['key']);
@@ -219,7 +219,7 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
         if (options.length > 0) entry.enum = options;
       }
     }
-    requiredSecrets.push(entry);
+    setupFields.push(entry);
   }
 
   const rawKind = asString(identity['kind']);
@@ -323,7 +323,7 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
     compat_core: asString(compat?.['core']) ?? '>=1.0 <2.0',
     signed: false,
     signed_by: null,
-    required_secrets: requiredSecrets,
+    setup_fields: setupFields,
     permissions_summary: extractPermissions(permissions),
     integrations_summary: extractIntegrationTargets(integrations),
     install_state: 'available',

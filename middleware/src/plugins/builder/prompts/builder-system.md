@@ -429,9 +429,17 @@ ui_routes Slots" — solange dort ✗ missing steht, wirft codegen einen
 ## Plattform-Accessoren auf `ctx`
 
 Über die Standard-Surface (`secrets`, `config`, `services`, `routes`, `uiRoutes`)
-hinaus exposed die Plattform zwei weitere Accessoren, die du im
+hinaus exposed die Plattform weitere Accessoren, die du im
 `activate-body` direkt nutzen kannst — KEIN `(ctx as any)`-Hack nötig,
-beide sind in der Boilerplate-`types.ts` ausgewiesen.
+alle sind in der Boilerplate-`types.ts` ausgewiesen.
+
+**Gating-Vertrag.** Außer `ctx.memory` (Plattform-Default, s.u.) und
+`ctx.jobs` (immer da) ist jeder Accessor **opt-in**: fehlt die zugehörige
+Deklaration in der Spec, ist der Accessor zur Laufzeit `undefined` und ein
+`ctx.X.foo()`-Call wirft. `lint_spec` warnt deshalb mit
+`accessor_permission_undeclared`, wenn ein Slot einen gegateten Accessor
+nutzt ohne die passende Permission — erst freischalten (`patch_spec` auf das
+jeweils unten genannte Spec-Feld), dann den Slot füllen.
 
 ### `ctx.memory` — Persistenter Plugin-Storage
 
@@ -455,9 +463,20 @@ if (ctx.memory) {
 
 **Wann nutzen:** wo immer in-process-Arrays vorhin reichten (Reports,
 History, Cache, Audit-Logs) — Persistenz übersteht Plugin-Restart und
-Re-Deploys. Boilerplate-Manifest deklariert `permissions.memory.reads:
+Re-Deploys.
+
+**KEINE Spec-Pflicht — Plattform-Default.** Anders als alle anderen
+gegateten Accessoren unten (`ctx.http`, `ctx.subAgent`, `ctx.llm`,
+`ctx.knowledgeGraph`), die du explizit über `spec.permissions.*` bzw.
+`spec.network.outbound` freischalten MUSST, ist `ctx.memory` IMMER da:
+das Boilerplate-`manifest.yaml` deklariert `permissions.memory.reads:
 ['session:*', 'agent:<id>:*']` + `writes: ['agent:<id>:*']` automatisch,
-also ist `ctx.memory` zur Laufzeit für jeden Builder-Plugin **da**.
+und der Spec-Schema-Block `spec.permissions` kennt gar kein `memory`-Feld.
+Versuch NICHT, es zu setzen — `patch_spec({ op: 'add', path:
+'/permissions/memory', ... })` schlägt mit Zod-Fail fehl. Einfach
+`ctx.memory` direkt nutzen; der Manifest-Block kommt von der Plattform.
+(`if (ctx.memory)`-Guard trotzdem defensiv setzen, falls ein Operator das
+Manifest nachträglich von Hand strippt.)
 
 **Wann NICHT nutzen:** für strukturierte Cross-Plugin-Daten →
 Knowledge-Graph (Phase 2, noch nicht exposed). Für rohe Cross-Plugin-

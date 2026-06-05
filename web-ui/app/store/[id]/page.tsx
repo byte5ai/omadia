@@ -175,17 +175,17 @@ export default async function PluginDetailPage({
             </Section>
           ) : null}
 
-          {plugin.required_secrets.length > 0 ? (
+          {plugin.setup_fields.length > 0 ? (
             <Section
-              label="Benötigte Secrets"
+              label="Setup-Felder"
               numeral="II"
-              meta={`${plugin.required_secrets.length} Feld${
-                plugin.required_secrets.length === 1 ? '' : 'er'
+              meta={`${plugin.setup_fields.length} Feld${
+                plugin.setup_fields.length === 1 ? '' : 'er'
               }`}
               icon={<KeyRound className="size-4" aria-hidden />}
             >
               <div className="divide-y divide-[color:var(--rule)] border-y border-[color:var(--rule)]">
-                {plugin.required_secrets.map((field) => (
+                {plugin.setup_fields.map((field) => (
                   <SecretRow key={field.key} field={field} />
                 ))}
               </div>
@@ -200,15 +200,15 @@ export default async function PluginDetailPage({
               provider post-registration). */}
           {(plugin.install_state === 'installed' ||
             plugin.install_state === 'update-available') &&
-          plugin.required_secrets.length > 0 ? (
+          plugin.setup_fields.length > 0 ? (
             <Section
-              label="Credentials editieren"
+              label="Setup-Felder editieren"
               numeral="II.b"
               icon={<KeyRound className="size-4" aria-hidden />}
             >
               <CredentialsEditor
                 pluginId={plugin.id}
-                setupFields={plugin.required_secrets}
+                setupFields={plugin.setup_fields}
               />
             </Section>
           ) : null}

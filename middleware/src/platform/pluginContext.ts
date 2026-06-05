@@ -770,7 +770,7 @@ function extractAuditConfig(
 ): { auditMode?: AuditMode; extraHosts: string[] } {
   const config = registry.get(agentId)?.config ?? {};
   const extraHosts: string[] = [];
-  const fields = catalog.get(agentId)?.plugin.required_secrets ?? [];
+  const fields = catalog.get(agentId)?.plugin.setup_fields ?? [];
   for (const field of fields) {
     if (field.type !== 'host_list') continue;
     const value = config[field.key];
