@@ -520,6 +520,7 @@
       "viewModeExtended": "Advanced",
       "viewModeSimpleTitle": "Guided no-code view — describe, review, try out",
       "viewModeExtendedTitle": "Full builder — spec, slots, source code, build status",
+      "viewModeLockedTitle": "Please wait for the current reply to finish before switching views",
       "statusDraft": "Draft",
       "statusPublished": "Published",
       "statusArchived": "Archived",
