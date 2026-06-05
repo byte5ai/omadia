@@ -1,7 +1,5 @@
 <div align="center">
 
-<img src="logo-concepts/omadia-logo-concept.svg" alt="omadia" width="120">
-
 # omadia
 
 ### Spin up a team of AI agents that does the work — on your own server, with a receipt for every action.
@@ -9,11 +7,6 @@
 omadia is a self-hostable **agentic OS**: compose multi-agent teams from signed
 plugins, run them on one machine, and get an auditable trail for everything they do.
 Your LLM key. Your data. Your compliance story.
-
-<!-- TODO(media): replace the line below with the demo GIF once captured — see docs/media/README.md
-<img src="docs/media/omadia-demo.gif" alt="omadia — prompt in, agent team works, audit receipt out" width="820">
--->
-> 🎬 **Demo GIF lands here** — _prompt in → agent team works → audit receipt out._ Capture guide: [`docs/media/README.md`](docs/media/README.md)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-black.svg)](LICENSE)
 [![Status: public preview](https://img.shields.io/badge/status-public%20preview-orange.svg)](#status--roadmap)
@@ -31,7 +24,7 @@ Your LLM key. Your data. Your compliance story.
 ## Why you'll want to ⭐ this
 
 - 🔒 **Self-hosted and yours.** Bring your own LLM key, run on a single machine
-  (Docker Compose or fly.io), and own 100% of the data. No SaaS lock-in,
+  with Docker Compose, and own 100% of the data. No SaaS lock-in,
   EU/GDPR-ready by design.
 - 🤖 **Agent *teams*, not one chatbot.** An orchestrator routes each turn to the
   right specialized plugin agent — channels, integrations, tools, and capability
@@ -45,19 +38,17 @@ Your LLM key. Your data. Your compliance story.
 ```bash
 git clone https://github.com/byte5ai/omadia.git && cd omadia
 
-# 1. Provide an LLM key — every other env var has a sane local default.
-cp middleware/.env.example middleware/.env
-$EDITOR middleware/.env            # set ANTHROPIC_API_KEY=...
-
-# 2. Bring up the whole stack (postgres + middleware + admin UI).
+# 1. Bring up the whole stack (postgres + middleware + admin UI).
+#    Every env var has a sane local default — no config needed to start.
 docker compose up -d
 
-# 3. Open the admin UI and complete the first-admin wizard.
-open http://localhost:3333         # /setup walks you through it
+# 2. Open the admin UI and complete the first-admin wizard.
+#    The /setup wizard collects your LLM key and stores it encrypted in the vault.
+open http://localhost:3333
 ```
 
-That's it — `docker compose up -d`, open the UI, run your first agent team.
-The next section is the 90-second "wow moment".
+That's it — `docker compose up -d`, open the UI, set your LLM key in the wizard,
+and run your first agent team. The next section is the 90-second "wow moment".
 
 ## 🚀 First run: from prompt to audit receipt
 
@@ -71,9 +62,6 @@ hand you a receipt for it:
    the agents in the team.
 5. **Open the run's trace** — the per-run **call-stack viewer** is your audit
    receipt: every step, every tool call, every decision, replayable.
-
-> 🎬 The 20–30s GIF of exactly this flow belongs at the top of this README —
-> see [`docs/media/README.md`](docs/media/README.md) to capture it.
 
 ## Why omadia?
 
@@ -163,10 +151,14 @@ docker compose -f infra/docker-compose.yml \
 
 ## Plugin development
 
+**Start here → [`byte5ai/omadia-plugin-starter`](https://github.com/byte5ai/omadia-plugin-starter)** —
+a ready-to-fork template for building your own omadia plugin. Clone it, fill in
+your logic against [`@omadia/plugin-api`](middleware/packages/plugin-api), and ship.
+
 omadia plugins are self-contained ZIP files that the operator uploads through
 the admin UI. The platform never trusts external npm registries at runtime —
 plugins ship `node_modules` baked in (or use the platform's standard library
-via `@omadia/plugin-api`). Two reference plugins are shipped in-tree as
+via `@omadia/plugin-api`). Two reference plugins are also shipped in-tree as
 starting points:
 
 - [`agent-reference-maximum`](middleware/packages/agent-reference-maximum) —
@@ -180,8 +172,6 @@ the differentiating logic, and verifying with the smoke runner before install.
 ## Deployment
 
 - **Local / single-tenant** — `docker compose up`, see Quickstart above
-- **Fly.io** — single-app deployment, multi-region supported. The compose
-  stack and the Fly image are baked from the same `Dockerfile`.
 - **Bring-your-own** — the runtime is a stock Node + Postgres app; any host
   capable of running both works (Kubernetes, ECS, plain VM).
 
