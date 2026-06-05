@@ -100,6 +100,11 @@ export interface CreateChatRouterOptions {
   /** Phase A — chat session store, for snapshot capture on the first
    *  turn of a session. */
   chatSessionStore?: ChatSessionStore;
+  /** Live resolver for the chat session store. Preferred over the static
+   *  `chatSessionStore` so the store is picked up when the orchestrator
+   *  plugin publishes it post-boot (Setup-Wizard key entry) without a
+   *  restart. Falls back to `chatSessionStore` when absent. */
+  getChatSessionStore?: () => ChatSessionStore | undefined;
   /** Phase A — builds a SessionConfigSnapshot for a given Agent slug.
    *  Same shape as `OrchestratorRegistry.snapshotForAgent`. */
   snapshotForAgent?: (slug: string) =>
@@ -127,8 +132,9 @@ async function resolveAgentForRequest(
 ): Promise<{ chatAgent: ChatAgent; effectiveSlug: string } | undefined> {
   // 1. If session has a pinned snapshot, use it (and reject mismatches).
   let pinnedSlug: string | undefined;
-  if (sessionId && options.chatSessionStore) {
-    const session = await options.chatSessionStore.get(sessionId);
+  const sessionStore = options.getChatSessionStore?.() ?? options.chatSessionStore;
+  if (sessionId && sessionStore) {
+    const session = await sessionStore.get(sessionId);
     pinnedSlug = session?.snapshot?.agentSlug;
     if (pinnedSlug && requestSlug && requestSlug !== pinnedSlug) {
       res.status(409).json({
@@ -199,8 +205,9 @@ export function createChatRouter(
       // Snapshot capture (Phase A) — first turn pins the session to the
       // resolved Agent. Subsequent turns use the pinned snapshot via
       // resolveAgentForRequest above; this is a no-op then.
-      if (parsed.data.sessionId && options.chatSessionStore) {
-        await options.chatSessionStore
+      const snapStore = options.getChatSessionStore?.() ?? options.chatSessionStore;
+      if (parsed.data.sessionId && snapStore) {
+        await snapStore
           .captureSnapshot(parsed.data.sessionId, () => {
             const snap = options.snapshotForAgent?.(effectiveSlug);
             return Promise.resolve(
@@ -360,8 +367,9 @@ export function createChatRouter(
       const userId = resolveUserId(req);
       // Snapshot capture on first turn (Phase A) — fire-and-forget; failure
       // logged but does not block streaming.
-      if (parsed.data.sessionId && options.chatSessionStore) {
-        void options.chatSessionStore
+      const snapStore = options.getChatSessionStore?.() ?? options.chatSessionStore;
+      if (parsed.data.sessionId && snapStore) {
+        void snapStore
           .captureSnapshot(parsed.data.sessionId, () => {
             const snap = options.snapshotForAgent?.(effectiveSlug);
             return Promise.resolve(

@@ -444,22 +444,84 @@ function readLocalSessions(): ChatSession[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isSession);
+    // Coerce rather than just filter: sessions persisted by an OLDER schema
+    // (e.g. a message without `content`) used to pass the top-level guard yet
+    // crash the render on `message.content.length`. Normalising on read keeps
+    // stale localStorage from taking the whole app down with the browser's
+    // cryptic "This page couldn't load" page (there's no SSR error to log).
+    return parsed
+      .map(coerceSession)
+      .filter((s): s is ChatSession => s !== null);
   } catch {
     return [];
   }
 }
 
-function isSession(v: unknown): v is ChatSession {
-  if (typeof v !== 'object' || v === null) return false;
+/**
+ * Coerce an untrusted value (old localStorage, a backend response from a
+ * different build) into a render-safe ChatSession, or null when it lacks the
+ * identity fields. Every field the UI reads with `.length` / `.map` / `for…of`
+ * is guaranteed present with a safe default. The complement of the optimistic
+ * `as ChatSession` casts that previously trusted these inputs blindly.
+ */
+export function coerceSession(v: unknown): ChatSession | null {
+  if (typeof v !== 'object' || v === null) return null;
   const s = v as Record<string, unknown>;
-  return (
-    typeof s['id'] === 'string' &&
-    typeof s['title'] === 'string' &&
-    typeof s['createdAt'] === 'number' &&
-    typeof s['updatedAt'] === 'number' &&
-    Array.isArray(s['messages'])
-  );
+  if (typeof s['id'] !== 'string') return null;
+  const now = Date.now();
+  const messages = Array.isArray(s['messages'])
+    ? (s['messages'] as unknown[])
+        .map(coerceMessage)
+        .filter((m): m is Message => m !== null)
+    : [];
+  const session: ChatSession = {
+    id: s['id'],
+    title: typeof s['title'] === 'string' ? s['title'] : 'Neuer Chat',
+    createdAt: typeof s['createdAt'] === 'number' ? s['createdAt'] : now,
+    updatedAt: typeof s['updatedAt'] === 'number' ? s['updatedAt'] : now,
+    messages,
+  };
+  const snapshot = s['snapshot'];
+  if (
+    typeof snapshot === 'object' &&
+    snapshot !== null &&
+    typeof (snapshot as Record<string, unknown>)['agentSlug'] === 'string'
+  ) {
+    session.snapshot = snapshot as SessionAgentSnapshot;
+  }
+  return session;
+}
+
+/**
+ * Coerce an untrusted message into a render-safe shape. Drops entries without
+ * an id; defaults `content` to '' and the array-typed fields the UI iterates
+ * (`tools`, `nudges`, …) to [] when a stale/foreign payload carries a non-array
+ * there. Unknown extra fields are preserved.
+ */
+function coerceMessage(v: unknown): Message | null {
+  if (typeof v !== 'object' || v === null) return null;
+  const m = v as Record<string, unknown>;
+  if (typeof m['id'] !== 'string') return null;
+  const arrayFields = [
+    'tools',
+    'nudges',
+    'attachments',
+    'fileAttachments',
+    'followUpOptions',
+    'maskedValues',
+  ] as const;
+  const arrayDefaults: Record<string, unknown[]> = {};
+  for (const key of arrayFields) {
+    if (m[key] !== undefined && !Array.isArray(m[key])) arrayDefaults[key] = [];
+  }
+  return {
+    ...(m as unknown as Message),
+    id: m['id'],
+    role: m['role'] === 'assistant' ? 'assistant' : 'user',
+    content: typeof m['content'] === 'string' ? m['content'] : '',
+    startedAt: typeof m['startedAt'] === 'number' ? m['startedAt'] : Date.now(),
+    ...arrayDefaults,
+  };
 }
 
 function writeLocalSessions(sessions: ChatSession[]): void {
@@ -484,7 +546,9 @@ async function fetchRemoteSession(id: string): Promise<ChatSession | null> {
   const res = await fetch(`/bot-api/chat/sessions/${encodeURIComponent(id)}`);
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`GET session: HTTP ${String(res.status)}`);
-  return (await res.json()) as ChatSession;
+  // Coerce: a session persisted by a different build can arrive with a
+  // drifted message shape; normalising here keeps it from crashing the render.
+  return coerceSession(await res.json());
 }
 
 async function putRemoteSession(session: ChatSession): Promise<void> {

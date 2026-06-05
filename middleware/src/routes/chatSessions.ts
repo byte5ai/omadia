@@ -72,14 +72,34 @@ const SessionSchema = z.object({
 });
 
 interface ChatSessionDeps {
-  store: ChatSessionStore;
+  /** Live resolver for the chat session store. Returns `undefined` while the
+   *  orchestrator plugin has not published it yet (no ANTHROPIC_API_KEY) — the
+   *  handlers then 503 instead of the kernel hard-failing at boot. Set via the
+   *  Setup Wizard reactivates the plugin and makes this resolve non-null. */
+  getStore: () => ChatSessionStore | undefined;
 }
 
 export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
   const router = Router();
-  const { store } = deps;
+  const { getStore } = deps;
+
+  /** Resolve the store or emit a 503; handlers `return` when it's undefined. */
+  const resolveStore = (res: Response): ChatSessionStore | undefined => {
+    const store = getStore();
+    if (!store) {
+      res.status(503).json({
+        error: 'chat_unavailable',
+        message:
+          'chat is not configured — set ANTHROPIC_API_KEY on @omadia/orchestrator via the Setup Wizard',
+      });
+      return undefined;
+    }
+    return store;
+  };
 
   router.get('/sessions', async (_req: Request, res: Response) => {
+    const store = resolveStore(res);
+    if (!store) return;
     try {
       const sessions = await store.list();
       res.json({ sessions });
@@ -94,6 +114,8 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
       res.status(400).json({ error: 'invalid_id' });
       return;
     }
+    const store = resolveStore(res);
+    if (!store) return;
     try {
       const session = await store.get(id);
       if (!session) {
@@ -121,6 +143,8 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
       res.status(400).json({ error: 'id_mismatch' });
       return;
     }
+    const store = resolveStore(res);
+    if (!store) return;
     try {
       await store.save(parsed.data);
       res.json({ ok: true, session: parsed.data });
@@ -139,6 +163,8 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
       res.status(400).json({ error: 'invalid_id' });
       return;
     }
+    const store = resolveStore(res);
+    if (!store) return;
     try {
       await store.delete(id);
       res.json({ ok: true });
@@ -159,6 +185,8 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
       res.status(400).json({ error: 'invalid_id' });
       return;
     }
+    const store = resolveStore(res);
+    if (!store) return;
     try {
       const updated = await store.resetMessages(id);
       if (!updated) {
@@ -192,6 +220,8 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
         res.status(400).json({ error: 'invalid_id' });
         return;
       }
+      const store = resolveStore(res);
+      if (!store) return;
       try {
         const existing = await store.get(id);
         if (!existing) {
