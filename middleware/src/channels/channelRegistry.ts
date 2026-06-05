@@ -17,6 +17,7 @@ import type {
   CoreApi,
 } from '@omadia/channel-sdk';
 import type { ExpressRouteRegistry } from './routeRegistry.js';
+import type { WebSocketRegistry } from './webSocketRegistry.js';
 
 /**
  * Runtime registry for installed channel packages. At middleware startup it
@@ -41,6 +42,8 @@ export interface ChannelRegistryDeps {
   resolver: ChannelPluginResolver;
   coreApi: CoreApi;
   routes: ExpressRouteRegistry;
+  /** Optional — WebSocket lifecycle mirror of `routes` (Omadia UI canvas). */
+  webSockets?: WebSocketRegistry;
 }
 
 export class DefaultChannelRegistry implements ChannelRegistry {
@@ -103,12 +106,14 @@ export class DefaultChannelRegistry implements ChannelRegistry {
     const handle = await impl.activate(ctx, this.deps.coreApi);
     this.handles.set(agentId, handle);
     this.deps.routes.setActive(agentId, true);
+    this.deps.webSockets?.setActive(agentId, true);
     console.log(`[channels] ✓ activated ${agentId}`);
   }
 
   async deactivate(agentId: string): Promise<void> {
     const handle = this.handles.get(agentId);
     this.deps.routes.deactivateChannel(agentId);
+    this.deps.webSockets?.deactivateChannel(agentId);
     // Drop the cached ChannelPlugin implementation BEFORE the rest of
     // teardown so an immediately-following re-activate (upgrade flow)
     // can never observe the stale module. Without this, the resolver's

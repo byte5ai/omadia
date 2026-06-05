@@ -7,7 +7,14 @@ export type {
 } from './plugin.js';
 
 // What channels call on the core
-export type { CoreApi, HttpMethod, LogLevel } from './coreApi.js';
+export type {
+  CoreApi,
+  HttpMethod,
+  LogLevel,
+  ChannelSocket,
+  ChannelSocketHandler,
+  ChannelSessionClaims,
+} from './coreApi.js';
 
 // Orchestrator access — the typed, blessed way for a channel to resolve the
 // ChatAgent it drives turns with (alternative to CoreApi.handleTurnStream when

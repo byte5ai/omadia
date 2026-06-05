@@ -5,7 +5,7 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "description": "Omadia UI Tier-1 server-side channel (skeleton). kind: channel; capabilities [text, canvas]; dispatch_service canvasChatAgent. v0 advertises the canvas protocol via a discovery endpoint; the bidirectional WebSocket transport (handshake + surface_* fan-out + IncomingTurn forming) is deferred to a CoreApi WS-transport extension.",
+  "description": "Omadia UI Tier-1 server-side channel. kind: channel; capabilities [text, canvas]; dispatch_service canvasChatAgent. Advertises the canvas protocol via a discovery endpoint and hosts the bidirectional canvas WebSocket (handshake offer→select→ack, IncomingTurn forming, surface_* fan-out) over CoreApi.registerWebSocket; feature-detected, degrades to discovery-only when no WS registry is wired.",
   "license": "MIT",
   "scripts": {
     "build": "tsc",
