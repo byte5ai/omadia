@@ -6,7 +6,7 @@ identity:
   version: "0.1.0"
   kind: "extension"
   domain: "orchestrator.plan-runner"
-  description: "#133 plan-as-data — materialises an explicit per-turn plan DAG (Plan + PlanStep nodes in the knowledge graph) on multi-step turns, so the orchestrator can check progress against named sub-goals instead of relying on the model to remember them. Subscribes to the onBeforeTurn hook; gated by a cheap Haiku classifier. Experimental, off by default."
+  description: "#133 plan-as-data — materialises an explicit per-turn plan DAG (Plan + PlanStep nodes in the knowledge graph) on multi-step turns, so the orchestrator can check progress against named sub-goals instead of relying on the model to remember them. Subscribes to the onBeforeTurn hook; gated by a cheap Haiku classifier. On by default (a cheap Haiku gate keeps simple Q&A neutral); set enabled=off to disarm."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"
@@ -27,9 +27,9 @@ setup:
     - key: "enabled"
       type: "enum"
       label: "Plan-as-data (experimental)"
-      help: "Wenn aktiviert, materialisiert das Plugin auf mehrstufigen Turns einen expliziten Plan-DAG (Plan + PlanStep-Knoten im Knowledge-Graph). Einfache Q&A bleiben unberührt (ein billiger Haiku-Gate entscheidet pro Turn). Standard: off."
+      help: "Wenn aktiviert, materialisiert das Plugin auf mehrstufigen Turns einen expliziten Plan-DAG (Plan + PlanStep-Knoten im Knowledge-Graph). Einfache Q&A bleiben unberührt (ein billiger Haiku-Gate entscheidet pro Turn). Standard: on."
       required: false
-      default: "off"
+      default: "on"
       enum:
         - value: "off"
           label: "Off — keine Plan-Materialisierung"

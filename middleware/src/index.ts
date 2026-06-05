@@ -671,6 +671,67 @@ async function main(): Promise<void> {
     `[middleware] plugin runtime wired (installed registry + secret vault, persistent) — ${installedRegistry.list().length} installed`,
   );
 
+  // OB-61 fix — the shared `llm` + `anthropicClient` ServiceRegistry providers
+  // are registered ONCE at boot (above) from `config.ANTHROPIC_API_KEY`. On a
+  // cold boot without that env var the key is '' and those providers capture an
+  // unauthenticated Anthropic client for the whole process lifetime. The /setup
+  // wizard and the admin-secrets editor seed the real key into each consumer
+  // plugin's vault and reactivate the plugin — but those plugins build their
+  // OWN clients, so the SHARED providers stayed broken. Any plugin that reaches
+  // the host LLM via `ctx.llm` (e.g. plan-runner's Haiku planning gate, which
+  // swallows the resulting 401 and silently skips planning) then never worked
+  // after a wizard key-entry.
+  //
+  // Fix: funnel every reactivation through `reactivateAgent`. When the
+  // reactivated agent is the canonical host-key holder (@omadia/orchestrator),
+  // re-read its freshly-seeded vault key and hot-swap the shared providers via
+  // ServiceRegistry.replace(). Covers /setup, /admin/runtime/secrets, and any
+  // future reactivate path. Idempotent: replacing with an equivalent client is
+  // harmless when the key was already present via env. `ctx.llm` resolves the
+  // 'llm' provider at call time, so already-active plugins pick up the swap on
+  // their next call without re-activation.
+  const ANTHROPIC_SHARED_CLIENT_SOURCE = '@omadia/orchestrator';
+  // The key currently baked into the shared `llm`/`anthropicClient` providers.
+  // Seeded with the boot-time ENV key (line ~288). Updated whenever we swap the
+  // providers, so we only churn the Anthropic client when the key truly changes.
+  let sharedAnthropicKeyApplied = config.ANTHROPIC_API_KEY ?? '';
+  const refreshSharedAnthropicClientFromVault = async (
+    sourceAgentId: string = ANTHROPIC_SHARED_CLIENT_SOURCE,
+  ): Promise<void> => {
+    try {
+      const key = await secretVault.get(sourceAgentId, 'anthropic_api_key');
+      if (!key || key === sharedAnthropicKeyApplied) return;
+      const refreshed = new Anthropic({ apiKey: key, maxRetries: 5 });
+      serviceRegistry.replace('anthropicClient', refreshed);
+      serviceRegistry.replace(
+        'llm',
+        createAnthropicLlmProvider({
+          client: refreshed,
+          log: (...args) => console.log('[llm]', ...args),
+        }),
+      );
+      sharedAnthropicKeyApplied = key;
+      console.log(
+        `[middleware] shared llm/anthropicClient sourced from ${sourceAgentId} vault key — host-LLM plugins (plan-runner gate, LocalSubAgent inner calls, Teams) now armed`,
+      );
+    } catch (err) {
+      console.error(
+        '[middleware] failed to refresh shared anthropic client from vault:',
+        err instanceof Error ? err.message : err,
+      );
+    }
+  };
+  const reactivateAgent = async (agentId: string): Promise<void> => {
+    await installService.reactivate(agentId);
+    // Live key-entry path (/setup wizard, /admin/runtime/secrets): the consumer
+    // plugin's vault was just (re)seeded. Re-source the shared providers so any
+    // plugin reaching the host LLM via `ctx.llm` picks up the real key without
+    // a restart.
+    if (agentId === ANTHROPIC_SHARED_CLIENT_SOURCE) {
+      await refreshSharedAnthropicClientFromVault(agentId);
+    }
+  };
+
   // ── Vault off-site backup ─────────────────────────────────────────────────
   // Only starts when VAULT_BACKUP_ENABLED=true AND Tigris/MinIO credentials
   // are present. Uploads ciphertext only; the master key never leaves the
@@ -889,6 +950,15 @@ async function main(): Promise<void> {
   console.log(
     `[middleware] tool plugin runtime: ${toolPluginRuntime.activeIds().length} tool/extension/integration package(s) active`,
   );
+
+  // OB-61 fix (boot path) — when the operator completed /setup in a PRIOR
+  // session, the anthropic key lives in the orchestrator's VAULT, not in ENV.
+  // On this boot the shared `llm`/`anthropicClient` providers were built from
+  // the (empty) ENV key at line ~288, so host-LLM plugins (plan-runner's Haiku
+  // gate, LocalSubAgent inner calls) would be broken until the next live
+  // reactivate. Re-source them from the vault now. No-op when ENV already
+  // carried the key (key === sharedAnthropicKeyApplied) or no key is stored.
+  await refreshSharedAnthropicClientFromVault();
 
   // S+8 sub-commit 2b: late-resolve services published by
   // @omadia/knowledge-graph's activate(). The plugin owns Pool +
@@ -1503,7 +1573,7 @@ async function main(): Promise<void> {
         // reactivates the plugin so the LLM-bound capabilities go live
         // without a server restart.
         vault: secretVault,
-        reactivate: (agentId) => installService.reactivate(agentId),
+        reactivate: reactivateAgent,
         anthropicKeyConsumers: [
           '@omadia/orchestrator',
           '@omadia/orchestrator-extras',
@@ -1860,7 +1930,7 @@ async function main(): Promise<void> {
       promptContributionRegistry,
       vault: secretVault,
       catalog: pluginCatalog,
-      reactivate: (agentId) => installService.reactivate(agentId),
+      reactivate: reactivateAgent,
     }),
   );
   console.log('[middleware] runtime introspection endpoint ready at /api/v1/admin/runtime (auth: required)');
