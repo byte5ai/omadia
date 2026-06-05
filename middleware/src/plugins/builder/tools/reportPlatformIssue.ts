@@ -41,8 +41,18 @@ const InputSchema = z
     title: z.string().min(8).max(180),
     body: z.string().min(1).max(200_000),
     fingerprint: z.string().min(8).max(64),
-    /** Human-readable one-liner ("Workaround removed double-encoding"). */
-    summary: z.string().min(1).max(280),
+    /**
+     * Human-readable headline ("Workaround removed double-encoding").
+     * Internal triage-log label only — not the GitHub issue title (that
+     * is `title`). Capped at 500 chars so a full sentence fits without
+     * hard-failing the report; the `.describe()` surfaces the cap into
+     * the tool's JSON schema so the agent generates a compliant value.
+     */
+    summary: z
+      .string()
+      .min(1)
+      .max(500)
+      .describe('One-line headline for the triage log (≤500 chars, keep it concise).'),
     severity: z.enum(['bug', 'gap', 'inconsistency']),
   })
   .strict();
