@@ -78,7 +78,7 @@ function plugin(id: string, over: Partial<Plugin> = {}): Plugin {
     compat_core: '>=1.0 <2.0',
     signed: false,
     signed_by: null,
-    required_secrets: [],
+    setup_fields: [],
     permissions_summary: {
       memory_reads: [],
       memory_writes: [],
@@ -319,7 +319,7 @@ describe('store router · setup_guide flows from the registry manifest_summary',
       assert.equal(res.status, 200);
       const body = (await res.json()) as { plugin: Plugin };
       assert.deepEqual(body.plugin.setup_guide, GUIDE);
-      assert.equal(body.plugin.required_secrets.length, 1);
+      assert.equal(body.plugin.setup_fields.length, 1);
     } finally {
       await new Promise<void>((r) => server.close(() => r()));
     }

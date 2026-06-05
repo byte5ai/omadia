@@ -952,7 +952,7 @@ async function bootstrapBuiltInPackages(deps: BootstrapDeps): Promise<void> {
     // If the package declares required secrets, we cannot auto-install — the
     // user must run the setup flow first. Leave it uninstalled; the UI shows
     // it as "available" and the install endpoint handles it normally.
-    const hasRequiredSecret = catalogEntry.plugin.required_secrets.some(
+    const hasRequiredSecret = catalogEntry.plugin.setup_fields.some(
       (f) => f.type === 'secret' || f.type === 'oauth',
     );
     if (hasRequiredSecret) {
@@ -971,7 +971,7 @@ async function bootstrapBuiltInPackages(deps: BootstrapDeps): Promise<void> {
     // them here. Operators can override any of these later via the
     // post-install editor.
     const defaultConfig: Record<string, unknown> = {};
-    for (const field of catalogEntry.plugin.required_secrets) {
+    for (const field of catalogEntry.plugin.setup_fields) {
       if (field.type === 'secret' || field.type === 'oauth') continue;
       if (field.default !== undefined) {
         defaultConfig[field.key] = field.default;

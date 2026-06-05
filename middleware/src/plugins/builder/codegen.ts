@@ -413,7 +413,7 @@ function reproduceManifestCapabilities(
     setupNode.set('fields', doc.createNode(fieldsForManifest));
   } else {
     // No setup block in template — create one so the install path can
-    // still surface required_secrets.
+    // still surface the plugin's setup_fields.
     doc.set(
       'setup',
       doc.createNode({
