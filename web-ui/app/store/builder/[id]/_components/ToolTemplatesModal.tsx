@@ -1,6 +1,7 @@
 'use client';
 
 import { Layers, Trash2, X } from 'lucide-react';
+import { useTranslations } from 'next-intl';
 import { useEffect, useState } from 'react';
 
 import type { ToolSpec } from '../../../../_lib/builderTypes';
@@ -28,6 +29,7 @@ export function ToolTemplatesModal({
   onClose,
   onInsert,
 }: ToolTemplatesModalProps): React.ReactElement {
+  const t = useTranslations('builder.tools.templates');
   const [personal, setPersonal] = useState<ReadonlyArray<ToolTemplate>>([]);
   const curated = listCuratedTemplates();
 
@@ -63,7 +65,7 @@ export function ToolTemplatesModal({
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Tool-Templates"
+      aria-label={t('dialogLabel')}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-10"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
@@ -74,13 +76,13 @@ export function ToolTemplatesModal({
           <div className="flex items-center gap-2">
             <Layers className="size-4 text-[color:var(--accent)]" aria-hidden />
             <h2 className="text-[13px] font-semibold text-[color:var(--fg-strong)]">
-              Tool-Template wählen
+              {t('title')}
             </h2>
           </div>
           <button
             type="button"
             onClick={onClose}
-            aria-label="Modal schließen"
+            aria-label={t('closeModal')}
             className="rounded p-1 text-[color:var(--fg-subtle)] hover:bg-[color:var(--bg)] hover:text-[color:var(--fg-strong)]"
           >
             <X className="size-4" aria-hidden />
@@ -90,47 +92,47 @@ export function ToolTemplatesModal({
         <div className="flex-1 space-y-1.5 overflow-y-auto px-4 py-3">
           {all.length === 0 ? (
             <p className="rounded border border-dashed border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-4 text-center text-[12px] text-[color:var(--fg-muted)]">
-              Keine Templates verfügbar.
+              {t('empty')}
             </p>
           ) : null}
-          {all.map((t) => (
+          {all.map((tpl) => (
             <div
-              key={t.id}
+              key={tpl.id}
               className="flex items-center justify-between gap-2 rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 hover:border-[color:var(--accent)]"
             >
               <button
                 type="button"
                 onClick={() => {
-                  onInsert(dedupedTool(t.tool));
+                  onInsert(dedupedTool(tpl.tool));
                   onClose();
                 }}
                 className="flex flex-1 flex-col items-start gap-0.5 text-left"
               >
                 <div className="flex items-center gap-2">
                   <span className="text-[12px] font-semibold text-[color:var(--fg-strong)]">
-                    {t.label}
+                    {tpl.label}
                   </span>
-                  {t.source === 'personal' ? (
+                  {tpl.source === 'personal' ? (
                     <span className="rounded bg-[color:var(--accent)]/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.18em] text-[color:var(--accent)]">
-                      Mein
+                      {t('personalBadge')}
                     </span>
                   ) : null}
                 </div>
                 <span className="text-[11px] text-[color:var(--fg-muted)]">
-                  {t.blurb}
+                  {tpl.blurb}
                 </span>
                 <span className="font-mono-num text-[10px] text-[color:var(--fg-subtle)]">
-                  {t.tool.id}
+                  {tpl.tool.id}
                 </span>
               </button>
-              {t.source === 'personal' ? (
+              {tpl.source === 'personal' ? (
                 <button
                   type="button"
                   onClick={() => {
-                    deletePersonalTemplate(t.id);
+                    deletePersonalTemplate(tpl.id);
                     setPersonal(listPersonalTemplates());
                   }}
-                  aria-label={`Template ${t.label} löschen`}
+                  aria-label={t('deleteTemplate', { label: tpl.label })}
                   className="rounded p-1 text-[color:var(--fg-subtle)] hover:bg-[color:var(--danger)]/10 hover:text-[color:var(--danger)]"
                 >
                   <Trash2 className="size-3" aria-hidden />

@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslations } from 'next-intl';
 import { AnimatePresence, motion } from 'framer-motion';
 import { CheckCircle2, KeyRound, Loader2, Trash2, X } from 'lucide-react';
 
@@ -48,6 +49,7 @@ export function SecretsDrawer({
   onClose,
   onStatusChange,
 }: SecretsDrawerProps): React.ReactElement {
+  const t = useTranslations('builder.preview.secrets');
   const [draftValues, setDraftValues] = useState<Record<string, string>>({});
   const [bufferedKeys, setBufferedKeys] = useState<string[]>([]);
   const [persistent, setPersistent] = useState<boolean | null>(null);
@@ -107,7 +109,7 @@ export function SecretsDrawer({
   }, [draftId, draftValues, onClose, onStatusChange]);
 
   const onClearAll = useCallback(async () => {
-    if (!confirm('Alle Test-Credentials löschen?')) return;
+    if (!confirm(t('clearConfirm'))) return;
     setPending(true);
     setError(null);
     try {
@@ -120,7 +122,7 @@ export function SecretsDrawer({
     } finally {
       setPending(false);
     }
-  }, [draftId, onStatusChange]);
+  }, [draftId, onStatusChange, t]);
 
   return (
     <AnimatePresence>
@@ -143,7 +145,7 @@ export function SecretsDrawer({
             transition={{ type: 'spring', stiffness: 280, damping: 32 }}
             className="fixed right-0 top-0 z-50 flex h-full w-full max-w-md flex-col border-l border-[color:var(--divider)] bg-[color:var(--bg-elevated)] shadow-[0_-4px_24px_rgba(0,0,0,0.12)]"
             role="dialog"
-            aria-label="Test-Credentials"
+            aria-label={t('title')}
           >
             <header className="flex items-baseline gap-3 border-b border-[color:var(--divider)] px-5 py-4">
               <KeyRound
@@ -151,12 +153,12 @@ export function SecretsDrawer({
                 aria-hidden
               />
               <h2 className="font-display text-[18px] leading-none text-[color:var(--fg-strong)]">
-                Test-Credentials
+                {t('title')}
               </h2>
               <button
                 type="button"
                 onClick={onClose}
-                aria-label="Drawer schließen"
+                aria-label={t('closeDrawer')}
                 className="ml-auto rounded-md p-1 text-[color:var(--fg-subtle)] hover:bg-[color:var(--bg-soft)] hover:text-[color:var(--fg-strong)]"
               >
                 <X className="size-4" aria-hidden />
@@ -166,19 +168,21 @@ export function SecretsDrawer({
             <div className="space-y-4 overflow-y-auto px-5 py-4 text-[13px]">
               <p className="text-[12px] text-[color:var(--fg-muted)]">
                 {persistent === true
-                  ? 'Werte werden verschlüsselt im Vault gespeichert und überleben einen Restart. Klick auf «Alle löschen» wischt sie endgültig.'
+                  ? t('persistence.persistent')
                   : persistent === false
-                    ? 'Werte leben nur im Speicher des Servers und sind beim Logout/Restart weg.'
-                    : 'Werte werden serverseitig im PreviewSecretBuffer gespeichert.'}
-                {' '}Nicht für Production — installierte Plugins beziehen ihre Credentials aus dem Vault per RequiresWizard.
+                    ? t('persistence.ephemeral')
+                    : t('persistence.unknown')}
+                {' '}
+                {t('persistence.notForProduction')}
               </p>
 
               {fields.length === 0 ? (
                 <div className="rounded-[10px] border border-dashed border-[color:var(--divider)] p-4 text-center text-[12px] text-[color:var(--fg-muted)]">
-                  Keine{' '}
-                  <span className="font-mono-num">setup_fields</span>{' '}
-                  deklariert. Lege welche im Spec-Tab an, um Credentials zu
-                  testen.
+                  {t.rich('noFields', {
+                    code: () => (
+                      <span className="font-mono-num">setup_fields</span>
+                    ),
+                  })}
                 </div>
               ) : (
                 <ul className="space-y-3">
@@ -209,7 +213,7 @@ export function SecretsDrawer({
                 className="inline-flex items-center gap-1.5 rounded-md border border-[color:var(--danger)]/40 px-2.5 py-1.5 text-[11px] font-semibold text-[color:var(--danger)] transition-colors hover:bg-[color:var(--danger)]/10 disabled:opacity-40"
               >
                 <Trash2 className="size-3" aria-hidden />
-                Alle löschen
+                {t('clearAll')}
               </button>
               <button
                 type="button"
@@ -222,7 +226,7 @@ export function SecretsDrawer({
                 ) : (
                   <CheckCircle2 className="size-3.5" aria-hidden />
                 )}
-                Übernehmen
+                {t('apply')}
               </button>
             </footer>
           </motion.aside>
@@ -245,6 +249,7 @@ function SecretFieldRow({
   value: string;
   onChange: (v: string) => void;
 }): React.ReactElement {
+  const t = useTranslations('builder.preview.secrets');
   const inputType = field.type === 'secret' ? 'password' : field.type === 'number' ? 'number' : 'text';
   return (
     <li>
@@ -270,7 +275,7 @@ function SecretFieldRow({
           {buffered ? (
             <span className="ml-1 inline-flex items-center gap-0.5 rounded-full bg-[color:var(--success)]/15 px-1.5 py-0.5 text-[color:var(--success)]">
               <CheckCircle2 className="size-2.5" aria-hidden />
-              gesetzt
+              {t('set')}
             </span>
           ) : null}
         </span>
@@ -300,9 +305,7 @@ function SecretFieldRow({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder={
-            buffered
-              ? 'gesetzt — leer lassen um Wert beizubehalten'
-              : 'Wert eingeben'
+            buffered ? t('placeholder.buffered') : t('placeholder.empty')
           }
           autoComplete="off"
           className="mt-1 w-full rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1.5 text-[12px] text-[color:var(--fg-strong)] placeholder:text-[color:var(--fg-subtle)] focus:border-[color:var(--accent)] focus:outline-none"

@@ -1,6 +1,7 @@
 'use client';
 
 import type { ReactNode } from 'react';
+import { useTranslations } from 'next-intl';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   AlertTriangle,
@@ -81,6 +82,7 @@ export function PaneCard({
   isMaximized = false,
   className,
 }: PaneCardProps): React.ReactElement {
+  const t = useTranslations('builder.common');
   const hasWarning = warningCount > 0;
   return (
     <motion.section
@@ -130,8 +132,8 @@ export function PaneCard({
             {hasWarning ? (
               <span
                 className="font-mono-num inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-[color:var(--danger)] px-1 text-[10px] font-semibold text-white"
-                aria-label={`${String(warningCount)} fehlt`}
-                title={`${String(warningCount)} Pflicht-Felder fehlen`}
+                aria-label={t('missingCountAria', { count: warningCount })}
+                title={t('missingRequiredFields', { count: warningCount })}
               >
                 {warningCount}
               </span>
@@ -179,10 +181,10 @@ export function PaneCard({
               {hasWarning ? (
                 <span
                   className="font-mono-num inline-flex items-center gap-1 rounded-full bg-[color:var(--danger)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-white"
-                  title={`${String(warningCount)} Pflicht-Felder fehlen`}
+                  title={t('missingRequiredFields', { count: warningCount })}
                 >
                   <AlertTriangle className="size-2.5" aria-hidden />
-                  {warningCount} fehlt
+                  {t('missingCountChip', { count: warningCount })}
                 </span>
               ) : null}
               <div className="ml-auto flex shrink-0 items-center gap-2 text-[11px] text-[color:var(--fg-muted)]">
@@ -193,13 +195,13 @@ export function PaneCard({
                     onClick={onMaximize}
                     aria-label={
                       isMaximized
-                        ? `${title} aus Vollbild zurückholen`
-                        : `${title} maximieren`
+                        ? t('restoreFromFullscreenAria', { title })
+                        : t('maximizeAria', { title })
                     }
                     title={
                       isMaximized
-                        ? 'Andere Panes wieder einblenden'
-                        : 'Diese Pane maximieren'
+                        ? t('restorePanesTitle')
+                        : t('maximizePaneTitle')
                     }
                     className="rounded-md p-1 text-[color:var(--fg-subtle)] transition-colors hover:bg-[color:var(--bg-soft)] hover:text-[color:var(--fg-strong)]"
                   >
@@ -213,7 +215,7 @@ export function PaneCard({
                 <button
                   type="button"
                   onClick={onToggleCollapsed}
-                  aria-label={`${title} einklappen`}
+                  aria-label={t('collapseAria', { title })}
                   className="rounded-md p-1 text-[color:var(--fg-subtle)] transition-colors hover:bg-[color:var(--bg-soft)] hover:text-[color:var(--fg-strong)]"
                 >
                   <PanelLeftClose className="size-3.5" aria-hidden />

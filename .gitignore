@@ -172,3 +172,7 @@ middleware/packages/harness-channel-telegram/
 middleware/packages/harness-integration-confluence/
 middleware/packages/harness-integration-microsoft365/
 middleware/packages/harness-integration-odoo/
+
+# Local-only screencast pipeline (Playwright recorder + GIF conversion).
+# Tooling for the README demo GIF; not part of the repo.
+/screencast/

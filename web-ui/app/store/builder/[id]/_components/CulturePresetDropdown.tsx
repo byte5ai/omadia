@@ -1,5 +1,6 @@
 'use client';
 
+import { useTranslations } from 'next-intl';
 import { useCallback, useMemo, useState, useTransition } from 'react';
 
 import { setPersonaConfig } from '../../../../_lib/api';
@@ -36,6 +37,7 @@ export function CulturePresetDropdown({
   disabled,
   onApplied,
 }: CulturePresetDropdownProps): React.ReactElement {
+  const t = useTranslations('builder.persona.culture');
   const [selectedId, setSelectedId] = useState<string>('');
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -76,7 +78,7 @@ export function CulturePresetDropdown({
       className="space-y-2 rounded border border-[color:var(--border)] p-3"
     >
       <label className="text-xs font-medium uppercase tracking-wider text-[color:var(--fg-muted)]">
-        Branche / Kultur
+        {t('label')}
       </label>
       <select
         data-testid="culture-preset-select"
@@ -85,7 +87,7 @@ export function CulturePresetDropdown({
         disabled={disabled || pending}
         className="w-full rounded border border-[color:var(--border)] bg-transparent p-2 text-sm"
       >
-        <option value="">— Keine Auswahl —</option>
+        <option value="">{t('noSelection')}</option>
         {CULTURE_PRESETS.map((p) => (
           <option key={p.id} value={p.id}>
             {p.labelDe} — {p.descriptionDe}
@@ -97,20 +99,20 @@ export function CulturePresetDropdown({
         <div
           data-testid="culture-confirm-modal"
           role="dialog"
-          aria-label="Kultur-Preset anwenden"
+          aria-label={t('modalLabel')}
           className="space-y-2 rounded border border-amber-400 bg-amber-50 p-3"
         >
           <div className="text-sm font-medium text-amber-900">
-            Diese Achsen würden überschrieben:
+            {t('overwriteNotice')}
           </div>
           <ul className="space-y-0.5 text-xs text-amber-900" data-testid="culture-diff-list">
             {diff.map((d) => (
               <li key={d.axis} data-testid={`culture-diff-${d.axis}`}>
-                <code>{d.axis}</code>: {d.before ?? 'unset'} → {d.after}
+                <code>{d.axis}</code>: {d.before ?? t('unset')} → {d.after}
               </li>
             ))}
             {diff.length === 0 && (
-              <li>Keine Änderung — alle Werte stimmen bereits überein.</li>
+              <li>{t('noChange')}</li>
             )}
           </ul>
           {error && (
@@ -126,7 +128,7 @@ export function CulturePresetDropdown({
               disabled={disabled || pending || diff.length === 0}
               className="rounded bg-[color:var(--accent)] px-3 py-1 text-sm font-medium text-white disabled:opacity-50"
             >
-              {pending ? 'Anwenden…' : 'Anwenden'}
+              {pending ? t('applying') : t('apply')}
             </button>
             <button
               type="button"
@@ -135,7 +137,7 @@ export function CulturePresetDropdown({
               disabled={pending}
               className="rounded border border-[color:var(--border)] px-3 py-1 text-sm"
             >
-              Abbrechen
+              {t('cancel')}
             </button>
           </div>
         </div>

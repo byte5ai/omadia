@@ -434,5 +434,855 @@
     "cacheHitTitle": "{n} Cache-Read-Tokens",
     "dismissAriaLabel": "Stream abbrechen",
     "dismissTitle": "Abbrechen"
+  },
+  "builder": {
+    "simple": {
+      "intro": {
+        "badge": "No-Code",
+        "title": "Lass uns deinen Assistenten bauen",
+        "subtitle": "In drei ruhigen Schritten — beschreiben, ansehen, ausprobieren. Die Technik dahinter kümmert sich von selbst."
+      },
+      "step1": {
+        "title": "Beschreibe deinen Assistenten",
+        "subtitle": "Sag in eigenen Worten, was er für dich tun soll."
+      },
+      "step2": {
+        "title": "Dein Assistent",
+        "subtitle": "Ein Überblick in Klartext — ganz ohne Fachbegriffe."
+      },
+      "step3": {
+        "title": "Ausprobieren",
+        "subtitle": "Stell eine Frage und sieh, wie dein Assistent antwortet."
+      },
+      "overview": {
+        "nameLabel": "Name",
+        "namePlaceholder": "Noch ohne Namen",
+        "whatLabel": "Was er tut",
+        "whatPlaceholder": "Sobald du oben beschrieben hast, was dein Assistent können soll, erscheint hier eine kurze Zusammenfassung.",
+        "readyTools": "Bereit. Kann {count, plural, one {# Aktion} other {# Aktionen}} für dich ausführen.",
+        "readyChat": "Bereit. Antwortet auf deine Fragen im Chat."
+      },
+      "persona": {
+        "title": "Persönlichkeit anpassen",
+        "subtitle": "Wie soll dein Assistent klingen? Freundlich, sachlich, locker …",
+        "optional": "optional"
+      },
+      "intake": {
+        "heroTitle": "Was soll dein Assistent können?",
+        "heroSubtitle": "Beschreib es einfach in eigenen Worten. Den Rest übernehmen wir — du musst nichts Technisches wissen.",
+        "examplesLabel": "Zum Beispiel",
+        "example1": "Ein Assistent, der Fragen zu unseren Confluence-Seiten beantwortet.",
+        "example2": "Ein Helfer, der eingehende E-Mails zusammenfasst.",
+        "example3": "Ein Assistent für Fragen rund um unsere Urlaubsregeln.",
+        "inputLabel": "Beschreibe deinen Assistenten",
+        "placeholderIdle": "Beschreibe in eigenen Worten, was dein Assistent können soll.",
+        "placeholderBusy": "Dein Assistent wird gebaut …",
+        "send": "Senden",
+        "stop": "Stopp",
+        "statusDefault": "Dein Assistent wird vorbereitet …",
+        "statusReading": "Liest deine Anforderung …",
+        "statusConfiguring": "Richtet deinen Assistenten ein …",
+        "statusTeaching": "Bringt deinem Assistenten seine Fähigkeiten bei …",
+        "statusWaitingChoice": "Wartet auf deine Entscheidung …",
+        "statusWorking": "Arbeitet an den Details …",
+        "statusChecking": "Prüft das Ergebnis …",
+        "statusThinking": "Überlegt …",
+        "statusFormulating": "Formuliert die Antwort …",
+        "statusBusy": "Arbeitet …",
+        "errorLostConnection": "Verbindung verloren: {message}",
+        "errorUnknown": "Unbekannter Fehler — bitte erneut versuchen.",
+        "errorChoiceFailed": "Auswahl konnte nicht gespeichert werden.",
+        "errorChoiceFailedMessage": "Auswahl konnte nicht gespeichert werden: {message}"
+      }
+    },
+    "workspace": {
+      "backToDrafts": "Drafts",
+      "publish": "Veröffentlichen",
+      "viewModeAriaLabel": "Ansicht wählen",
+      "viewModeSimple": "Einfach",
+      "viewModeExtended": "Erweitert",
+      "viewModeSimpleTitle": "Geführte No-Code-Ansicht — beschreiben, ansehen, ausprobieren",
+      "viewModeExtendedTitle": "Voller Builder — Spec, Slots, Quellcode, Build-Status",
+      "statusDraft": "Entwurf",
+      "statusPublished": "Veröffentlicht",
+      "statusArchived": "Archiviert",
+      "tabOverview": "Übersicht",
+      "tabSpec": "Spec",
+      "tabSlots": "Slots",
+      "tabPersona": "Persona",
+      "tabVersions": "Versionen",
+      "paneChat": "Builder-Chat",
+      "paneEditor": "Editor",
+      "panePreview": "Preview",
+      "paneUiSurfaces": "UI-Surfaces",
+      "editorTabMissingAria": "{count} fehlt",
+      "mobilePaneAriaLabel": "Workspace-Pane wählen",
+      "mobilePaneChat": "Chat",
+      "mobilePaneEditor": "Editor",
+      "mobilePanePreview": "Preview",
+      "mobilePaneUi": "UI",
+      "mobilePaneMissingAria": "{count} Pflicht-Felder fehlen",
+      "installBuildMustSucceed": "Letzter Build muss erfolgreich sein",
+      "installEditorWarnings": "{count, plural, one {# Editor-Warnung} other {# Editor-Warnungen}}",
+      "installMissingCredentials": "{count, plural, one {# fehlende Test-Credential} other {# fehlende Test-Credentials}}",
+      "templateLabel": "Template",
+      "templateUnknown": "(unbekanntes Template)",
+      "templateTooltipEnabled": "Template wechseln (verlustfrei — nur Slots / Tools / depends_on sind template-spezifisch)",
+      "templateTooltipDisabled": "Template-Wechsel deaktiviert — der Draft hat bereits Slots, Tools oder `depends_on`-Einträge, die beim Switch verloren gingen. Lege einen neuen Draft an oder lösche die betreffenden Felder zuerst.",
+      "modelSwitchAria": "{label}-Modell wechseln",
+      "autoFixLabel": "Auto-Fix",
+      "autoFixOn": "on",
+      "autoFixOff": "off",
+      "autoFixTitleOn": "Auto-Fix aktiv: Build/Smoke-Failures triggern automatisch einen Builder-Turn",
+      "autoFixTitleOff": "Auto-Fix aus: Failures zeigen nur den \"Fix mit Builder\"-Button",
+      "autoFixKindBuild": "Build",
+      "autoFixKindSmoke": "Smoke",
+      "autoFixRunning": "Auto-Fix läuft (#{buildN} · {kind})",
+      "autoFixStoppedTitle": "Auto-Fix nach {count} identischen {kind}-Fehlern gestoppt",
+      "autoFixStoppedBody": "Der Builder-Agent kommt mit derselben Fehlerklasse nicht weiter. Auto-Fix wurde automatisch ausgeschaltet — prüf den Code manuell oder schalte den Toggle wieder ein, sobald du eingegriffen hast.",
+      "autoFixDismissAria": "Hinweis ausblenden",
+      "buildStatusLabel": "Build-Status",
+      "buildBusLive": "live",
+      "buildBusReconnecting": "reconnecting",
+      "buildBusIdle": "idle",
+      "buildSse": "SSE {status}",
+      "buildErrorsHeading": "{count} TypeScript-Fehler",
+      "buildErrorsHeadingWithBuild": "{count} TypeScript-Fehler · build #{buildN}",
+      "buildErrorsCloseAria": "Fehlerliste schließen",
+      "buildErrorsShowTitle": "Fehlerliste anzeigen",
+      "buildErrorsHideTitle": "Fehlerliste ausblenden",
+      "fixWithBuilder": "Fix mit Builder"
+    },
+    "tools": {
+      "form": {
+        "idLabel": "Tool-ID",
+        "idPlaceholder": "z.B. fetch_metrics",
+        "idTaken": "Tool-ID ist bereits vergeben",
+        "descriptionLabel": "Beschreibung",
+        "descriptionPlaceholder": "Was tut dieses Tool? Wird vom Agent als description gelesen.",
+        "inputSchema": "Input-Schema",
+        "schemaModeLabel": "Schema-Modus",
+        "tabForm": "Formular",
+        "tabRawJson": "Raw JSON",
+        "saveAsTemplate": "Als Template speichern",
+        "saved": "gespeichert",
+        "templateNamePrompt": "Template-Name",
+        "templateNameDefault": "Mein Template"
+      },
+      "list": {
+        "emptyState": "Noch keine Tools definiert.",
+        "addFirstTool": "Erstes Tool hinzufügen",
+        "fromTemplate": "Aus Template",
+        "addTool": "Tool hinzufügen",
+        "import": "Import",
+        "reorderHandle": "Tool-Reihenfolge ändern",
+        "unnamed": "unbenannt",
+        "noDescription": "keine Beschreibung",
+        "testTool": "Tool {id} testen",
+        "testToolTitle": "Direkt gegen Preview ausführen",
+        "removeTool": "Tool {id} entfernen",
+        "formPlaceholder": "Tool-Form folgt in B.11-2.",
+        "stuckTitle": "Builder-Agent ist auf diesem Tool/Slot stecken geblieben — manuell prüfen",
+        "stuckBadge": "stuck"
+      },
+      "bulkImport": {
+        "dialogLabel": "Tools-Bulk-Import",
+        "title": "Tools importieren",
+        "closeModal": "Modal schließen",
+        "inputLabel": "Eingabe",
+        "preview": "Vorschau",
+        "previewEmpty": "Eingabe einfügen, um die Vorschau zu sehen.",
+        "invalidJson": "Eingabe ist kein gültiges JSON. YAML wird im B.11+ Cleanup unterstützt.",
+        "collisionNote": "Kollisionen werden übersprungen — bestehende Tools bleiben unverändert.",
+        "confirmImport": "Import bestätigen",
+        "collisionBadge": "Kollision",
+        "toolsDetected": "{count} Tools erkannt",
+        "collisionsSuffix": ", {count} Kollisionen",
+        "errorsSuffix": ", {count} Fehler"
+      },
+      "test": {
+        "dialogLabel": "Test {id}",
+        "titlePrefix": "Test",
+        "subtitle": "Direkter Aufruf gegen die aktuelle Preview-Instanz.",
+        "closeModal": "Modal schließen",
+        "inputHeading": "Input",
+        "resultHeading": "Ergebnis",
+        "dismissHint": "Esc oder Klick außerhalb schließt das Modal.",
+        "saveTestCase": "Als Test-Case speichern",
+        "run": "Run",
+        "unknownError": "Unbekannter Fehler",
+        "emptyInput": "Tool akzeptiert leeres Input — Run drücken.",
+        "selectPlaceholder": "— wählen —",
+        "arrayJsonHint": "Array — JSON-Syntax, blur committet.",
+        "objectJsonHint": "Object — JSON-Syntax, blur committet."
+      },
+      "templates": {
+        "dialogLabel": "Tool-Templates",
+        "title": "Tool-Template wählen",
+        "closeModal": "Modal schließen",
+        "empty": "Keine Templates verfügbar.",
+        "personalBadge": "Mein",
+        "deleteTemplate": "Template {label} löschen"
+      },
+      "schema": {
+        "collapseConstraints": "Constraints einklappen",
+        "expandConstraints": "Constraints aufklappen",
+        "propertyKey": "Property-Key",
+        "propertyType": "Property-Typ",
+        "removeProperty": "Property {key} entfernen",
+        "propertyKeyInvalid": "Property-Key muss [a-zA-Z_][a-zA-Z0-9_]* sein",
+        "propertyKeyTaken": "Property-Key bereits vergeben",
+        "description": "Beschreibung",
+        "descriptionPlaceholder": "Vom LLM gelesener Hint",
+        "entityTitle": "Entity {name} (v{version})",
+        "booleanNoConstraints": "Boolean — keine zusätzlichen Constraints.",
+        "objectNestedHint": "Object — verschachtelte Properties unten editieren.",
+        "allowedValues": "Erlaubte Werte",
+        "removeValue": "Wert {value} entfernen",
+        "valueEnterPlaceholder": "Wert + Enter",
+        "itemType": "Item-Typ",
+        "itemPropertiesHint": "Item-Properties werden im verschachtelten Builder unten editiert (Tiefe {depth}).",
+        "topLevelMustBeObject": "Top-level muss ein Objekt sein.",
+        "jsonParseError": "JSON-Parse-Fehler",
+        "jsonModeHint": "Direkter JSON-Schema-Modus. Beim Wechsel zur Formular-Ansicht werden nicht-unterstützte Patterns (oneOf, $ref, polymorphic) read-only.",
+        "noProperties": "Keine Properties — Tool akzeptiert leeres Input-Objekt.",
+        "addProperty": "Property"
+      },
+      "testResult": {
+        "error": "Fehler",
+        "success": "Erfolg"
+      }
+    },
+    "chat": {
+      "error": {
+        "connectionLost": "Verbindung verloren: {message}",
+        "unknownTurn": "Unbekannter Fehler beim Builder-Turn",
+        "choiceSaveFailedDetail": "Auswahl konnte nicht gespeichert werden: {message}",
+        "choiceSaveFailed": "Auswahl konnte nicht gespeichert werden."
+      },
+      "inputLabel": "Builder-Nachricht",
+      "placeholder": {
+        "thinking": "Builder denkt nach …",
+        "idle": "Beschreibe was der Agent tun soll. Enter zum Senden, Shift+Enter für Zeilenumbruch."
+      },
+      "button": {
+        "stop": "Stop",
+        "send": "Senden"
+      },
+      "liveness": {
+        "likelyStuck": "vermutlich hängt — Stop drücken?"
+      },
+      "turnStats": {
+        "live": "Turn live",
+        "last": "Letzter Turn"
+      },
+      "empty": {
+        "title": "Sag dem Builder, womit du anfangen willst.",
+        "example": "z.B. „Bau einen Confluence-Reader-Agent mit Tools page_read und page_search.“"
+      }
+    },
+    "preview": {
+      "prompt": {
+        "title": "Preview Prompt",
+        "tokens": "{count} Tokens ({health})",
+        "health": {
+          "good": "gut",
+          "medium": "mittel",
+          "high": "hoch",
+          "critical": "kritisch"
+        },
+        "loading": "Lade…",
+        "refresh": "Aktualisieren",
+        "copied": "Kopiert ✓",
+        "copy": "Kopieren"
+      },
+      "chat": {
+        "agentLabel": "Preview-Agent",
+        "credentials": "Credentials",
+        "credentialsTooltip": "Test-Credentials für die Preview verwalten",
+        "rebuild": "Rebuild",
+        "rebuildSuccess": "Rebuild #{buildN} ✓ — Preview ist bereit",
+        "inputLabel": "Preview-Nachricht",
+        "placeholder": {
+          "inflight": "Preview-Agent antwortet …",
+          "idle": "Teste den Agent. Enter zum Senden."
+        },
+        "stop": "Stop",
+        "send": "Senden",
+        "streamLive": "Stream live",
+        "error": {
+          "connectionLost": "Verbindung verloren: {message}",
+          "unknownTurn": "Unbekannter Fehler beim Preview-Turn"
+        },
+        "externalReadsHint": "Preview führt Cross-Integration-Lookups (<code>spec.external_reads</code>) nicht aus — der Agent erkennt den fehlenden Service korrekt und wirft. Veröffentliche den Agent in den Plattform-Store, um den echten Datenpfad zu testen.",
+        "agentStuck": {
+          "title": "Builder-Agent kommt bei Slot {slot} nicht weiter ({attempts, plural, one {# Versuch} other {# Versuche}})",
+          "body": "{summary}. Öffne den Slot-Editor, prüf die Errors manuell und korrigier den Code — der Agent versucht es nicht von alleine erneut.",
+          "dismiss": "Schließen",
+          "dismissTooltip": "Banner schließen"
+        },
+        "empty": {
+          "title": "Teste den Preview-Agent.",
+          "body": "Spec + Slots werden vor jedem Turn neu kompiliert, falls etwas geändert wurde."
+        },
+        "smoke": {
+          "running": "smoke #{buildN} läuft …",
+          "okNoTools": "smoke #{buildN} ✓ (keine Tools deklariert)",
+          "okTools": "smoke #{buildN} ✓ ({count} {count, plural, one {tool} other {tools}} ok)",
+          "activateFailed": "smoke #{buildN} ✗ — preview activate failed{detail}",
+          "toolsFailed": "smoke #{buildN} ✗ — {failed}/{count} {count, plural, one {tool} other {tools}} failed",
+          "fixWithBuilder": "Fix mit Builder"
+        }
+      },
+      "secrets": {
+        "title": "Test-Credentials",
+        "closeDrawer": "Drawer schließen",
+        "persistence": {
+          "persistent": "Werte werden verschlüsselt im Vault gespeichert und überleben einen Restart. Klick auf «Alle löschen» wischt sie endgültig.",
+          "ephemeral": "Werte leben nur im Speicher des Servers und sind beim Logout/Restart weg.",
+          "unknown": "Werte werden serverseitig im PreviewSecretBuffer gespeichert.",
+          "notForProduction": "Nicht für Production — installierte Plugins beziehen ihre Credentials aus dem Vault per RequiresWizard."
+        },
+        "noFields": "Keine <code>setup_fields</code> deklariert. Lege welche im Spec-Tab an, um Credentials zu testen.",
+        "clearConfirm": "Alle Test-Credentials löschen?",
+        "clearAll": "Alle löschen",
+        "apply": "Übernehmen",
+        "set": "gesetzt",
+        "placeholder": {
+          "buffered": "gesetzt — leer lassen um Wert beizubehalten",
+          "empty": "Wert eingeben"
+        }
+      }
+    },
+    "spec": {
+      "editor": {
+        "groups": {
+          "identity": "Identität",
+          "description": "Beschreibung",
+          "skill": "Skill",
+          "dependencies": "Abhängigkeiten & Netzwerk",
+          "setupFields": "Setup-Felder (Credentials & Config)"
+        },
+        "fields": {
+          "agentId": "Agent-ID",
+          "name": "Name",
+          "version": "Version",
+          "category": "Kategorie",
+          "role": "Rolle",
+          "tonality": "Tonalität (optional)"
+        },
+        "placeholders": {
+          "name": "z.B. SEO-Analyst",
+          "role": "z.B. Vertriebs-Analyst",
+          "tonality": "z.B. präzise, sachlich",
+          "notFor": "Anti-Pattern eingeben",
+          "examplePrompt": "Beispiel-Prompt",
+          "dependsOn": "z.B. @omadia/knowledge-graph-neon",
+          "networkOutbound": "z.B. api.example.com"
+        },
+        "array": {
+          "add": "Hinzufügen",
+          "removeAria": "{label} entfernen",
+          "malformedTooltip": "Eintrag ist kein String — wird angezeigt als Best-Effort"
+        },
+        "save": {
+          "saving": "Speichern …",
+          "saved": "Gespeichert"
+        }
+      },
+      "overview": {
+        "fields": {
+          "agentId": "Agent-ID",
+          "name": "Name",
+          "version": "Version",
+          "template": "Template",
+          "category": "Kategorie",
+          "domain": "Domain",
+          "skillRole": "Skill-Rolle",
+          "tools": "Tools",
+          "slots": "Slots",
+          "setupFields": "Setup-Felder",
+          "outbound": "Outbound",
+          "description": "Beschreibung"
+        },
+        "values": {
+          "none": "keine",
+          "hosts": "{count, plural, one {# Host} other {# Hosts}}"
+        },
+        "slotKeys": "Slot-Keys"
+      },
+      "setupFields": {
+        "emptyState": "Noch keine Setup-Felder. Lege z.B. <example>api_key (secret, required)</example> an, damit der Preview-Agent Test-Credentials lesen kann.",
+        "required": {
+          "on": "pflicht",
+          "off": "optional"
+        },
+        "removeAria": "Setup-Feld {key} entfernen",
+        "descriptionPlaceholder": "Wofür braucht der Agent dieses Feld?",
+        "newKey": "neuer key",
+        "newKeyPlaceholder": "z.B. api_key",
+        "add": "Hinzufügen",
+        "validation": {
+          "keyExists": "Key existiert bereits.",
+          "keyFormat": "Key muss snake_case sein (a-z, 0-9, _; mit Buchstaben starten)."
+        }
+      }
+    },
+    "slots": {
+      "empty": {
+        "title": "Noch keine Slots gefüllt.",
+        "hint": "Lass den Builder die Slots füllen oder schreib sie selbst."
+      },
+      "slotLabel": "Slot",
+      "save": "Speichern",
+      "templateRequired": {
+        "heading": "Vom Template gefordert",
+        "allFilled": "alle gefüllt",
+        "missing": "{count, plural, one {# fehlt} other {# fehlen}}"
+      },
+      "required": "pflicht",
+      "askAgent": "Frag den Agent",
+      "askAgentTooltip": "Schickt den Prompt direkt an den Builder-Chat — der Agent legt sofort los.",
+      "status": {
+        "saving": "Speichern …",
+        "saved": "Gespeichert",
+        "dirty": "Ungespeichert"
+      },
+      "inline": {
+        "status": {
+          "dirty": "ungespeichert",
+          "saving": "speichern…",
+          "saved": "gespeichert",
+          "error": "Fehler"
+        }
+      }
+    },
+    "persona": {
+      "pillar": {
+        "accentLabel": "Persona",
+        "heading": "Charakter prägen",
+        "description": "12 Achsen, jede einzeln optional. Werte werden im Frontmatter der AGENT.md gespiegelt — Phase 4 kompiliert daraus eine Persona-Section in den System-Prompt.",
+        "templateBadge": "Vorlage: {template}",
+        "templateBadgeAdjusted": "Vorlage: {template} — angepasst",
+        "templateBadgeNone": "Keine Vorlage",
+        "applyTemplate": "Vorlage anwenden",
+        "templateLabel": "Template (optional)",
+        "templatePlaceholder": "z.B. software-engineer (Templates kommen in Phase 4)",
+        "coreHeading": "Core (8)",
+        "extendedHeading": "Extended (4)",
+        "customNotesLabel": "Custom Notes (optional)",
+        "customNotesPlaceholder": "z.B. „Antworte auf Deutsch wenn der User auf Deutsch schreibt.\"",
+        "saved": "Gespeichert.",
+        "unsavedChanges": "Änderungen nicht gespeichert.",
+        "reset": "Zurücksetzen",
+        "save": "Speichern",
+        "saving": "Speichere…"
+      },
+      "gallery": {
+        "title": "Persona-Vorlage auswählen",
+        "close": "Schließen",
+        "role": "Rolle: {role}",
+        "customLabel": "Custom",
+        "customDescription": "Keine Vorlage anwenden — eigene Achsen verwenden.",
+        "prefillSkill": "Skill-Felder ebenfalls vorbefüllen ({role})",
+        "cancel": "Abbrechen",
+        "apply": "Anwenden",
+        "applying": "Anwenden…"
+      },
+      "boundaries": {
+        "heading": "Boundaries",
+        "selectedCount": "{count} ausgewählt",
+        "unknownPresets": "Unbekannte Preset-IDs: {ids}",
+        "customLabel": "Eigene Boundaries (eine pro Zeile)",
+        "save": "Boundaries speichern",
+        "saving": "Boundaries speichern…",
+        "saved": "Gespeichert"
+      },
+      "culture": {
+        "label": "Branche / Kultur",
+        "noSelection": "— Keine Auswahl —",
+        "modalLabel": "Kultur-Preset anwenden",
+        "overwriteNotice": "Diese Achsen würden überschrieben:",
+        "unset": "unset",
+        "noChange": "Keine Änderung — alle Werte stimmen bereits überein.",
+        "apply": "Anwenden",
+        "applying": "Anwenden…",
+        "cancel": "Abbrechen"
+      },
+      "dimension": {
+        "valueLabel": "{axis} Wert",
+        "rangeLabel": "{axis}: {labelLeft} bis {labelRight}",
+        "modelDefault": "Modell-Default: {value}",
+        "conflictHint": "Konflikt — siehe Banner."
+      },
+      "radar": {
+        "title": "Persona Radar",
+        "comparisonPrefix": "Persona vs.",
+        "comparisonNeutral": "Neutral (50)"
+      },
+      "quality": {
+        "heading": "Quality",
+        "tokensPrefix": "Tokens:",
+        "loading": "Lade…",
+        "refresh": "Aktualisieren",
+        "dimensions": {
+          "completeness": "Vollständigkeit",
+          "tokenEfficiency": "Token-Effizienz",
+          "ruleQuality": "Regel-Qualität",
+          "specificity": "Spezifität"
+        },
+        "sweetspot": {
+          "under": "unterversorgt",
+          "over": "überfrachtet",
+          "sweet": "Sweet Spot"
+        },
+        "tokenHealth": {
+          "warning": "Warnung",
+          "critical": "kritisch",
+          "ok": "OK"
+        }
+      }
+    },
+    "uiSurfaces": {
+      "editor": {
+        "adminUi": {
+          "title": "Admin UI",
+          "subtitle": "Ein iframe in der Store-Detail, operator-only. Für Daten-Pflege die nicht aus der API kommt.",
+          "toggleLabel": "Admin UI bereitstellen",
+          "toggleHelp": "Plugin mountet eine HTML-Page unter <code>admin_ui_path</code>. Web-UI embed sie als <code>&lt;iframe&gt;</code> auf der Store-Detail-Seite nach Install.",
+          "pathLabel": "Pfad (absolut, endet auf <code>index.html</code>)",
+          "bodyLabel": "Admin UI Body (HTML)",
+          "bodyHint": "Inhalt zwischen den Marker-Regions. inline style + script erlaubt.",
+          "operatorContract": "<strong>Operator-Contract:</strong> Frontend-Fetches müssen <strong>relative URLs</strong> nutzen (<code>fetch('api/devices')</code>, nicht <code>fetch('/api/...')</code>) — die UI läuft hinter einem <code>/bot-api/*</code>-Rewrite. JSON-Responses brauchen das <code>{ ok: boolean, ... }</code>-Schema, sonst flagged der RuntimeSmoke sie als kaputt.",
+          "disabledHint": "Aus. Plugins ohne <code>admin_ui_path</code> haben keine Admin-Tile in der Store-Detail-Seite — das ist der Default."
+        },
+        "dashboardPages": {
+          "title": "Dashboard Pages",
+          "subtitle": "Browser-/Teams-Tab-rendernde Routes. Für end-user-facing Anzeigen (PR-Inbox, KPIs, Listen)."
+        }
+      },
+      "tab": {
+        "heading": "UI-Surfaces",
+        "description": "Plugin-UI nach außen exposen: ein Admin-iframe für Operator-pflegte Daten (single), und 0–N Dashboard-Pages für end-user-facing Browser-/Teams-Tab-Anzeigen.",
+        "saving": "Speichert…",
+        "saved": "Gespeichert",
+        "error": "Fehler: {message}"
+      },
+      "pageForm": {
+        "fields": {
+          "routeIdLabel": "Route-ID (slug)",
+          "routeIdHelp": "Lowercase, Bindestriche erlaubt. Bestimmt Slot-Keys + Filename.",
+          "pathLabel": "Path",
+          "pathHelp": "Relativ zum Plugin-Mount. Endgültig: /p/<id><path>.",
+          "tabLabelLabel": "Tab-Label (Teams Hub)",
+          "tabLabelHelp": "Max 24 Zeichen. Wird in Teams-Tab + Hub-Card angezeigt.",
+          "pageTitleLabel": "Page-Title (title)",
+          "pageTitleHelp": "Voller Page-Title im HTML-Doc. Max 80 Zeichen.",
+          "refreshLabel": "Refresh (s)",
+          "refreshHelp": "Meta-Refresh-Intervall. 0 = kein Auto-Reload."
+        },
+        "renderMode": {
+          "heading": "Render-Mode",
+          "libraryDesc": "Kuratierte Tailwind-Templates (list-card / kpi-tiles). Schnell, kein Build-Step.",
+          "reactSsrDesc": "TSX-Component (server-rendered). Volle React-DX, server-rendered, Tailwind via CDN.",
+          "freeFormHtmlDesc": "Freies html`…`-Slot. Du schreibst Express-Route-Body selbst."
+        },
+        "uiTemplate": {
+          "heading": "UI-Template",
+          "listCardDesc": "Liste von Cards (title + subtitle + url). Standard für „zeig mir X-Items\".",
+          "kpiTilesDesc": "1–4 Zahlen-Kacheln (label + value + optional hint). Für Counts/KPIs."
+        },
+        "dataBinding": {
+          "heading": "Datenquelle",
+          "toolLabel": "Tool:",
+          "noToolOption": "— Kein Tool gebunden —",
+          "help": "Das gewählte Tool wird bei jedem Page-Request mit leerem Input aufgerufen; Output fließt als Props in die Render-Funktion."
+        },
+        "interactive": {
+          "label": "Interactive (Hydration)",
+          "help": "SSR + Client-Side-Hydration via esm.sh-Importmap. Setze auf true wenn dein Component <code>useState</code>, <code>onClick</code> o.ä. nutzt. Root-Element MUSS <code>data-omadia-page=\"{routeId}\"</code> tragen."
+        },
+        "componentSlot": {
+          "label": "Component (TSX, default-export)",
+          "hint": "Props: { data: unknown; fetchError: string | null }"
+        },
+        "renderSlot": {
+          "label": "Render-Slot (renderRoute-Callback-Body)",
+          "hint": "Return: HtmlFragment (e.g. htmlDoc({ title, body }))"
+        },
+        "itemTemplate": {
+          "heading": "Item-Template (Path-Interpolation: <code>item.feldname</code>)",
+          "titleLabel": "Title (required)",
+          "subtitleLabel": "Subtitle (optional)",
+          "metaLabel": "Meta (optional)",
+          "urlLabel": "URL (optional — macht das Item klickbar)",
+          "suffixHelp": "Whitelisted Suffixe: <code>.join(\", \")</code> für Arrays, <code>.toLocaleString()</code> für Zahlen. Sonstige Function-Calls werden ignoriert."
+        }
+      },
+      "pagesList": {
+        "emptyTitle": "Noch keine Dashboard-Pages definiert.",
+        "emptyHint": "Eine Page wird zu einem <code>/p/&lt;plugin&gt;/&lt;pfad&gt;</code>-Endpoint und einer Hub-Karte für Teams.",
+        "addFirstPage": "Erste Page hinzufügen",
+        "addPage": "Page hinzufügen",
+        "deleteConfirm": "Page \"{name}\" löschen?",
+        "reorderAriaLabel": "Reihenfolge ändern",
+        "deleteAriaLabel": "Page löschen"
+      },
+      "preview": {
+        "title": "Live-Preview",
+        "loading": "Lade…",
+        "refreshAriaLabel": "Preview aktualisieren",
+        "refreshTitle": "Preview neu laden",
+        "openInNewTabAriaLabel": "Preview in neuem Tab öffnen",
+        "openInNewTabTitle": "In neuem Tab öffnen",
+        "iframeTitle": "Preview: {label}",
+        "unavailableTitle": "Preview nicht verfügbar",
+        "hintLine": "<strong>Hinweis:</strong> {hint}",
+        "hints": {
+          "previewCold": "Klicke „Build\" oder schick eine Chat-Message — sobald die Preview warm ist (grüner Build-Status), lädt die iframe automatisch.",
+          "uiRouteNotFound": "Die routeId existiert nicht im aktuellen Spec. Speichere deine Page erst (gleicher Form), dann probier den Reload nochmal.",
+          "previewCaptureMissing": "Die warme Preview wurde aus einem Spec ohne ui_routes gebaut. Trigger einen Build (Chat oder „Rebuild\") nach dem Anlegen der Page.",
+          "previewProxyFailed": "Der temporäre Probe-Server konnte die Plugin-Route nicht laden. Schau in die Console: vermutlich wirft die Component beim SSR.",
+          "fetchFailed": "Netzwerk-Fehler beim Laden der Preview. Versuch Refresh."
+        }
+      }
+    },
+    "versions": {
+      "historyHeading": "Verlauf",
+      "countOfTotal": "{count} von {total}",
+      "empty": "Noch keine Änderungen verzeichnet.",
+      "loadMore": "Mehr laden",
+      "loading": "Lädt…",
+      "actionPersonaUpdated": "Persona geändert",
+      "actionQualityUpdated": "Quality / Boundaries geändert",
+      "actionSpecPatched": "Spec gepatcht",
+      "actionSlotFilled": "Slot befüllt",
+      "relSecondsAgo": "vor wenigen Sekunden",
+      "relMinutesAgo": "vor {count} min",
+      "relHoursAgo": "vor {count} h",
+      "relDaysAgo": "vor {count, plural, one {# Tag} other {# Tagen}}",
+      "detailTemplate": "Template: {template}",
+      "detailAxes": "{count, plural, one {# Achse} other {# Achsen}}",
+      "detailCustomNotes": "Custom notes",
+      "detailSycophancy": "Sycophancy: {value}",
+      "detailPresets": "{count, plural, one {# Preset} other {# Presets}}",
+      "detailCustom": "{count} Custom",
+      "detailOperations": "{count, plural, one {# Operation} other {# Operationen}}",
+      "detailSlotBytes": "{slot} — {bytes} bytes",
+      "createSnapshot": "Snapshot erstellen",
+      "refresh": "Aktualisieren",
+      "loadFailed": "Konnte Snapshots nicht laden: {message}",
+      "emptyStateHint": "Noch keine Snapshots. „Snapshot erstellen“ hält den aktuellen Stand fest, damit du später dorthin zurückrollen kannst.",
+      "colCreated": "Erstellt",
+      "colHash": "Hash",
+      "colBy": "Von",
+      "colNote": "Notiz",
+      "colStatus": "Status",
+      "diffVsLive": "Diff vs. Live",
+      "deployReady": "Deploy-ready",
+      "rollback": "Rollback",
+      "downloadPlugin": "Plugin",
+      "downloadPluginTitle": "Plugin-ZIP — direkt installierbar via /install/packages/upload (inkl. AGENT.md mit persona/quality)",
+      "downloadBundle": "Bundle",
+      "downloadBundleTitle": "Profile-Bundle — für cross-instance-Migration via /api/v1/profiles/import-bundle",
+      "toastMarkedDeployReady": "Als deploy-ready markiert",
+      "toastNoDiff": "Kein Unterschied seit letztem Snapshot",
+      "toastSnapshotCreated": "Snapshot erstellt ({hash})",
+      "toastRollbackDone": "Rollback abgeschlossen · {count, plural, one {# Datei} other {# Dateien}} wiederhergestellt",
+      "noteOptional": "Notiz (optional)",
+      "notePlaceholder": "Warum dieser Stand?",
+      "vendorBundleLabel": "Plugin-ZIPs ins Bundle packen (Air-Gap-Export)",
+      "cancel": "Abbrechen",
+      "create": "Erstellen",
+      "diffModalTitle": "Diff: Snapshot vs. Live",
+      "diffModalSubtitlePrefix": "Snapshot",
+      "diffModalSubtitleSuffix": "vs. aktueller Builder-Stand",
+      "noDifferences": "Keine Unterschiede.",
+      "colPath": "Pfad",
+      "colSnapshot": "Snapshot",
+      "colLive": "Live",
+      "rollbackConfirmTitle": "Rollback bestätigen",
+      "rollbackBodyPrefix": "Live-",
+      "rollbackBodySuffix": " + Knowledge-Dateien werden auf den Snapshot-Stand zurückgesetzt. Plugin-Pins bleiben unverändert.",
+      "rollbackTypeHint": "Tippe die ersten 12 Zeichen des Bundle-Hashes ein, um zu bestätigen.",
+      "rollbackExpected": "Erwartet:",
+      "rollbackExecute": "Rollback durchführen",
+      "closeAria": "Schließen"
+    },
+    "install": {
+      "publishTitle": "Plugin veröffentlichen",
+      "closeModalAria": "Modal schließen",
+      "closeAria": "Schließen",
+      "diffGateEyebrow": "Veröffentlichungs-Diff-Gate",
+      "publishLeadPrefix": "Diese Surface wird in den Plugin-Store geschrieben. Nach „Veröffentlichen“ ist",
+      "publishLeadSuffix": "für alle Agents im Tenant verfügbar.",
+      "back": "Zurück",
+      "publishing": "Veröffentliche …",
+      "succeeded": "Erfolgreich",
+      "publish": "Veröffentlichen",
+      "sectionIdentity": "Identität",
+      "kvId": "ID",
+      "kvName": "Name",
+      "kvVersion": "Version",
+      "kvCategory": "Kategorie",
+      "kvDomain": "Domain",
+      "kvTemplate": "Template",
+      "kvDescription": "Beschreibung",
+      "sectionSkill": "Skill / System-Prompt",
+      "kvRole": "Rolle",
+      "kvTonality": "Tonalität",
+      "skillPromptSlotSummary": "skill-prompt slot ({count} Zeichen)",
+      "noSkillPromptSlot": "Kein dediziertes skill-prompt-Slot — der Agent läuft mit der Boilerplate-Default-Anweisung.",
+      "sectionTools": "Tools",
+      "toolsCount": "{count, plural, one {# Tool} other {# Tools}}",
+      "noToolsDefined": "Keine Tools definiert.",
+      "sectionDependencies": "Abhängigkeiten",
+      "sectionDependenciesSubtitle": "depends_on (gewährt Vault-Scopes)",
+      "noDependencies": "Keine Plugin-Abhängigkeiten.",
+      "sectionNetwork": "Netzwerk",
+      "noOutboundHosts": "Keine ausgehenden Hosts deklariert.",
+      "sectionSetupFields": "Setup-Felder",
+      "sectionSetupFieldsSubtitle": "vom Operator beim Aktivieren auszufüllen",
+      "noSetupNeeded": "Kein Setup nötig.",
+      "required": "required",
+      "failureGenericHeading": "Veröffentlichung fehlgeschlagen",
+      "headingConflict": "Plugin-ID-Konflikt",
+      "headingBuildFailed": "Build fehlgeschlagen (tsc)",
+      "headingCodegenFailed": "Codegen fehlgeschlagen",
+      "headingSpecInvalid": "Spec-Validierung fehlgeschlagen",
+      "headingManifestInvalid": "manifest.yaml ungültig",
+      "headingTooLarge": "Package zu groß",
+      "headingPipelineFailed": "Build-Pipeline-Fehler",
+      "headingIngestFailed": "Ingest-Fehler",
+      "headingDraftNotFound": "Draft nicht gefunden",
+      "hintConflict": "Lösch das existierende Plugin im Store oder ändere `id` / `version` in der Spec.",
+      "hintBuildFailed": "Geh zurück in den Slot-Editor und korrigiere die Stellen, die der Compiler markiert.",
+      "hintCodegenFailed": "Die Spec hat fehlende Pflichtfelder oder unaufgelöste Platzhalter — siehe Issue-Liste.",
+      "hintSpecInvalid": "Die Spec hat ein Schema-Problem. Prüfe Pflichtfelder im Spec-Editor.",
+      "hintTooLarge": "Reduziere Slot-Inhalte oder Asset-Größen — der Server-Limit ist erreicht.",
+      "bumpInvalidSemver": "Version '{version}' ist kein Semver — manuell anpassen im Spec-Editor.",
+      "bumpAndPublish": "Version anheben ({current} → {next}) + Veröffentlichen",
+      "retry": "Erneut versuchen",
+      "typescriptErrors": "{count, plural, one {# TypeScript-Fehler} other {# TypeScript-Fehler}}",
+      "codegenIssues": "{count, plural, one {# Codegen-Issue} other {# Codegen-Issues}}",
+      "successHeading": "Plugin veröffentlicht",
+      "successBody": "ist im Store sichtbar. Weiterleitung läuft …",
+      "conflictLabel": "Konflikt",
+      "dismissConflictAria": "Konflikt-Hinweis ausblenden",
+      "manifestPreviewOpenAria": "Manifest-Vorschau öffnen",
+      "manifestPreviewRefreshAria": "Manifest-Vorschau aktualisieren",
+      "manifestPreviewCloseAria": "Manifest-Vorschau schließen",
+      "manifestPreviewLoading": "# (Vorschau wird geladen)",
+      "previewError": "Preview-Fehler"
+    },
+    "common": {
+      "missingCountAria": "{count} fehlt",
+      "missingCountChip": "{count} fehlt",
+      "missingRequiredFields": "{count, plural, one {# Pflicht-Feld fehlt} other {# Pflicht-Felder fehlen}}",
+      "maximizeAria": "{title} maximieren",
+      "restoreFromFullscreenAria": "{title} aus Vollbild zurückholen",
+      "maximizePaneTitle": "Diese Pane maximieren",
+      "restorePanesTitle": "Andere Panes wieder einblenden",
+      "collapseAria": "{title} einklappen"
+    },
+    "drafts": {
+      "list": {
+        "eyebrow": "Agent-Builder",
+        "headline": "Neue Agents bauen.",
+        "lede": "Lege Drafts an, iteriere parallel an mehreren Agents und installiere sie per Klick in die Plattform. Jeder Draft lebt in deinem persönlichen Arbeitsbereich — keiner sieht deine Entwürfe außer dir.",
+        "scope": {
+          "draft": "Entwurf",
+          "published": "Veröffentlicht",
+          "deleted": "Gelöscht"
+        },
+        "scopeFilterLabel": "Bereichsfilter",
+        "stats": {
+          "drafts": "Entwürfe",
+          "published": "Veröffentlicht",
+          "deleted": "Gelöscht",
+          "limit": "Limit"
+        },
+        "empty": {
+          "draft": {
+            "headline": "Noch keine Entwürfe.",
+            "hint": "Klicke rechts oben auf „Neuer Agent\" um deinen ersten Entwurf anzulegen."
+          },
+          "published": {
+            "headline": "Noch nichts veröffentlicht.",
+            "hint": "Veröffentlichte Agents erscheinen hier, sobald du einen Entwurf über den Workspace in die Plattform gepackt hast."
+          },
+          "deleted": {
+            "headline": "Papierkorb ist leer.",
+            "hint": "Gelöschte Entwürfe tauchen hier auf und können wiederhergestellt werden, bis du sie endgültig löschst."
+          }
+        },
+        "error": {
+          "label": "Fehler",
+          "loadFailed": "Drafts konnten nicht geladen werden."
+        },
+        "footer": {
+          "phaseLabel": "Phase"
+        }
+      },
+      "detail": {
+        "error": {
+          "label": "Fehler",
+          "loadFailed": "Workspace konnte nicht geladen werden.",
+          "unknown": "Unbekannter Fehler",
+          "draftPrefix": "Draft",
+          "backToList": "Zurück zur Draft-Liste"
+        }
+      },
+      "row": {
+        "status": {
+          "draft": "Entwurf",
+          "published": "Veröffentlicht",
+          "archived": "Archiviert"
+        },
+        "save": "Speichern",
+        "cancel": "Abbrechen",
+        "rename": "Umbenennen",
+        "delete": "Löschen",
+        "workspace": "Workspace",
+        "restore": "Wiederherstellen",
+        "confirmDelete": "Draft \"{name}\" löschen?",
+        "lastUpdated": "Zuletzt {relative}",
+        "relative": {
+          "justNow": "gerade eben",
+          "minutes": "vor {count} Min",
+          "hours": "vor {count} Std",
+          "days": "vor {count} Tg"
+        }
+      },
+      "create": {
+        "label": "Neuer Agent",
+        "pending": "Wird angelegt…",
+        "quotaReachedTooltip": "Draft-Quota erreicht — lösche bestehende, bevor du einen neuen anlegst."
+      },
+      "import": {
+        "button": "Bundle importieren",
+        "modal": {
+          "title": "Bundle importieren",
+          "close": "Schließen",
+          "description": "Drop eine Profile-Bundle-ZIP (Export aus dem Versionen-Tab via <code>?format=bundle</code>) hier rein — wir legen automatisch einen neuen Draft an.",
+          "dropzone": "ZIP hierher ziehen oder klicken",
+          "maxSize": "max. 50 MB",
+          "overwriteLabel": "Vorhandene Live-Inhalte überschreiben (nur sinnvoll bei Profile-Targets — Builder-Drafts sind immer fresh).",
+          "cancel": "Abbrechen",
+          "import": "Importieren",
+          "importing": "Importiere…"
+        },
+        "errors": {
+          "notZip": "Bundle muss eine .zip-Datei sein.",
+          "conflict": "Profile hat bereits abweichenden Live-Content ({assets}). Aktiviere „Überschreiben\" um zu ersetzen."
+        }
+      },
+      "quota": {
+        "label": "Drafts",
+        "almostFull": "bald voll",
+        "limitReached": "Limit erreicht",
+        "tooltip": "{used} von {cap} aktiven Drafts, Warnung ab {warnAt}"
+      }
+    }
   }
 }

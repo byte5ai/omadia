@@ -1,7 +1,11 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, screen } from '@testing-library/react';
+import type { ReactElement } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { DimensionSlider } from '../DimensionSlider';
+import { renderWithIntl } from './personaIntlHelper';
+
+const render = (ui: ReactElement) => renderWithIntl(ui, { locale: 'de' });
 
 /**
  * Phase 3 / OB-67 Slice 3 — DimensionSlider behaviour tests.
@@ -42,7 +46,7 @@ describe('<DimensionSlider />', () => {
       />,
     );
     const input = screen.getByLabelText(
-      /directness: DIPLOMATIC to DIRECT/,
+      /directness: DIPLOMATIC bis DIRECT/,
     ) as HTMLInputElement;
     fireEvent.change(input, { target: { value: '80' } });
     expect(onChange).toHaveBeenCalledWith(80);
@@ -139,7 +143,7 @@ describe('<DimensionSlider />', () => {
       />,
     );
     const input = screen.getByLabelText(
-      /directness: L to R/,
+      /directness: L bis R/,
     ) as HTMLInputElement;
     expect(input.disabled).toBe(true);
   });
@@ -154,6 +158,6 @@ describe('<DimensionSlider />', () => {
         onChange={vi.fn()}
       />,
     );
-    expect(screen.getByLabelText('warmth: COOL to WARM')).toBeInTheDocument();
+    expect(screen.getByLabelText('warmth: COOL bis WARM')).toBeInTheDocument();
   });
 });

@@ -1,6 +1,7 @@
 'use client';
 
 import { AlertTriangle, Check, Loader2, Upload, X } from 'lucide-react';
+import { useTranslations } from 'next-intl';
 import { useMemo, useState } from 'react';
 
 import type { JsonPatch, ToolSpec } from '../../../../_lib/builderTypes';
@@ -29,6 +30,7 @@ export function ToolBulkImportModal({
   onClose,
   onImport,
 }: ToolBulkImportModalProps): React.ReactElement {
+  const t = useTranslations('builder.tools.bulkImport');
   const [tab, setTab] = useState<'openapi' | 'jsonschema'>('openapi');
   const [text, setText] = useState<string>('');
   const [pending, setPending] = useState<boolean>(false);
@@ -47,13 +49,13 @@ export function ToolBulkImportModal({
         errors: [
           {
             path: '<root>',
-            reason: 'Eingabe ist kein gültiges JSON. YAML wird im B.11+ Cleanup unterstützt.',
+            reason: t('invalidJson'),
           },
         ],
       };
     }
     return tab === 'openapi' ? mapOpenAPI(parsed) : mapJsonSchemaArray(parsed);
-  }, [tab, text]);
+  }, [tab, text, t]);
 
   const collisions: ReadonlyArray<string> = useMemo(() => {
     if (!result) return [];
@@ -85,7 +87,7 @@ export function ToolBulkImportModal({
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Tools-Bulk-Import"
+      aria-label={t('dialogLabel')}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-10"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
@@ -96,13 +98,13 @@ export function ToolBulkImportModal({
           <div className="flex items-center gap-2">
             <Upload className="size-4 text-[color:var(--accent)]" aria-hidden />
             <h2 className="text-[13px] font-semibold text-[color:var(--fg-strong)]">
-              Tools importieren
+              {t('title')}
             </h2>
           </div>
           <button
             type="button"
             onClick={onClose}
-            aria-label="Modal schließen"
+            aria-label={t('closeModal')}
             className="rounded p-1 text-[color:var(--fg-subtle)] hover:bg-[color:var(--bg)] hover:text-[color:var(--fg-strong)]"
           >
             <X className="size-4" aria-hidden />
@@ -124,7 +126,7 @@ export function ToolBulkImportModal({
         <div className="grid flex-1 grid-cols-2 gap-3 overflow-hidden px-4 py-3">
           <div className="flex min-h-0 flex-col">
             <label className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
-              Eingabe
+              {t('inputLabel')}
             </label>
             <textarea
               value={text}
@@ -140,7 +142,7 @@ export function ToolBulkImportModal({
           </div>
           <div className="flex min-h-0 flex-col">
             <span className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
-              Vorschau
+              {t('preview')}
             </span>
             <div className="flex-1 overflow-y-auto rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)] p-2">
               <PreviewPane
@@ -154,7 +156,7 @@ export function ToolBulkImportModal({
 
         <footer className="flex items-center justify-between gap-2 border-t border-[color:var(--border)] bg-[color:var(--bg-soft)] px-4 py-2">
           <p className="text-[11px] text-[color:var(--fg-muted)]">
-            Kollisionen werden übersprungen — bestehende Tools bleiben unverändert.
+            {t('collisionNote')}
           </p>
           <button
             type="button"
@@ -172,7 +174,7 @@ export function ToolBulkImportModal({
             ) : (
               <Check className="size-3" aria-hidden />
             )}
-            Import bestätigen
+            {t('confirmImport')}
           </button>
         </footer>
       </div>
@@ -214,32 +216,33 @@ function PreviewPane({
   collisions: ReadonlyArray<string>;
   existingToolIds: ReadonlyArray<string>;
 }): React.ReactElement {
+  const t = useTranslations('builder.tools.bulkImport');
   if (!result) {
     return (
       <p className="text-[11px] italic text-[color:var(--fg-muted)]">
-        Eingabe einfügen, um die Vorschau zu sehen.
+        {t('previewEmpty')}
       </p>
     );
   }
   return (
     <div className="space-y-2">
       <p className="text-[11px] text-[color:var(--fg-strong)]">
-        {String(result.tools.length)} Tools erkannt
+        {t('toolsDetected', { count: result.tools.length })}
         {collisions.length > 0
-          ? `, ${String(collisions.length)} Kollisionen`
+          ? t('collisionsSuffix', { count: collisions.length })
           : ''}
         {result.errors.length > 0
-          ? `, ${String(result.errors.length)} Fehler`
+          ? t('errorsSuffix', { count: result.errors.length })
           : ''}
         .
       </p>
       {result.tools.length > 0 ? (
         <ul className="space-y-1">
-          {result.tools.map((t: ToolSpec) => {
-            const collide = existingToolIds.includes(t.id);
+          {result.tools.map((tool: ToolSpec) => {
+            const collide = existingToolIds.includes(tool.id);
             return (
               <li
-                key={t.id}
+                key={tool.id}
                 className={cn(
                   'rounded border px-2 py-1',
                   collide
@@ -249,16 +252,16 @@ function PreviewPane({
               >
                 <div className="flex items-center justify-between gap-2">
                   <span className="font-mono-num text-[11px] text-[color:var(--fg-strong)]">
-                    {t.id}
+                    {tool.id}
                   </span>
                   {collide ? (
                     <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--warning)]">
-                      Kollision
+                      {t('collisionBadge')}
                     </span>
                   ) : null}
                 </div>
                 <p className="truncate text-[10px] text-[color:var(--fg-muted)]">
-                  {t.description}
+                  {tool.description}
                 </p>
               </li>
             );

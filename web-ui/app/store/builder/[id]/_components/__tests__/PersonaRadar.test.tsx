@@ -1,7 +1,11 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, screen } from '@testing-library/react';
+import type { ReactElement } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { PersonaRadar, personaAxisToSliderTestId } from '../PersonaRadar';
+import { renderWithIntl } from './personaIntlHelper';
+
+const render = (ui: ReactElement) => renderWithIntl(ui, { locale: 'de' });
 
 /**
  * Phase 3 / OB-67 Slice 5 — PersonaRadar SVG view-only tests.

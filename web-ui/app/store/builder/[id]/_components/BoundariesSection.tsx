@@ -1,5 +1,6 @@
 'use client';
 
+import { useTranslations } from 'next-intl';
 import { useCallback, useMemo, useState, useTransition } from 'react';
 
 import { setQualityConfig } from '../../../../_lib/api';
@@ -45,6 +46,7 @@ export function BoundariesSection({
   disabled,
   onPersisted,
 }: BoundariesSectionProps): React.ReactElement {
+  const t = useTranslations('builder.persona.boundaries');
   const [selectedIds, setSelectedIds] = useState<readonly string[]>(
     () => initialQuality?.boundaries?.presets ?? [],
   );
@@ -106,10 +108,10 @@ export function BoundariesSection({
     >
       <header className="flex items-baseline justify-between">
         <h3 className="text-sm font-semibold text-[color:var(--fg-strong)]">
-          Boundaries
+          {t('heading')}
         </h3>
         <span className="text-xs text-[color:var(--fg-muted)]">
-          {selectedIds.length} ausgewählt
+          {t('selectedCount', { count: selectedIds.length })}
         </span>
       </header>
 
@@ -119,7 +121,7 @@ export function BoundariesSection({
           role="alert"
           className="rounded border border-amber-400 bg-amber-50 px-2 py-1 text-xs text-amber-900"
         >
-          Unbekannte Preset-IDs: {unknownIds.join(', ')}
+          {t('unknownPresets', { ids: unknownIds.join(', ') })}
         </div>
       )}
 
@@ -156,7 +158,7 @@ export function BoundariesSection({
           htmlFor={`boundaries-custom-${draftId}`}
           className="text-xs font-medium uppercase tracking-wider text-[color:var(--fg-muted)]"
         >
-          Eigene Boundaries (eine pro Zeile)
+          {t('customLabel')}
         </label>
         <textarea
           id={`boundaries-custom-${draftId}`}
@@ -183,11 +185,11 @@ export function BoundariesSection({
           className="rounded bg-[color:var(--accent)] px-3 py-1 text-sm font-medium text-white disabled:opacity-50"
           data-testid="boundaries-save"
         >
-          {pending ? 'Boundaries speichern…' : 'Boundaries speichern'}
+          {pending ? t('saving') : t('save')}
         </button>
         {savedAt && (
           <span className="text-xs text-[color:var(--fg-muted)]">
-            Gespeichert
+            {t('saved')}
           </span>
         )}
       </div>
