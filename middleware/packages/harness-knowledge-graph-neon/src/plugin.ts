@@ -3,7 +3,11 @@ import { EntityRefBus } from '@omadia/plugin-api';
 import type { EmbeddingClient } from '@omadia/embeddings';
 import type { Pool } from 'pg';
 
-import { NeonKnowledgeGraph, createNeonPool } from './neonKnowledgeGraph.js';
+import {
+  NeonKnowledgeGraph,
+  createNeonPool,
+  waitForPostgres,
+} from './neonKnowledgeGraph.js';
 import { runGraphMigrations } from './migrator.js';
 import {
   startEmbeddingBackfill,
@@ -136,6 +140,13 @@ export async function activate(
     'default';
 
   const graphPool: Pool = createNeonPool(databaseUrl);
+  // Ride out the first-boot Postgres-startup race (e.g. `docker compose up`,
+  // where the DNS alias for the `postgres` service can lag the middleware's
+  // first connection by a second or two). Without this a transient
+  // `getaddrinfo ENOTFOUND` would fail activate(), and since the kernel
+  // treats knowledgeGraph as a required service the whole middleware
+  // crash-loops. Bounded to stay inside the 10s activate() timeout.
+  await waitForPostgres(graphPool, { log: (msg) => { ctx.log(msg); } });
   await runGraphMigrations(graphPool, (msg) => { console.log(msg); });
 
   // OB-73 (Phase 4 / Slice B) — read-path access tracker. Reads queue

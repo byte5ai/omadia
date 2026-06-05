@@ -118,6 +118,9 @@ export async function retryErroredPlugins(
     const capReason = maybeCapResolutionReason(deps, entry);
     if (capReason) reasons.push(capReason);
 
+    const transientReason = maybeTransientErrorReason(entry);
+    if (transientReason) reasons.push(transientReason);
+
     if (reasons.length === 0) continue;
 
     try {
@@ -150,6 +153,30 @@ async function maybeMtimeReason(
   } catch {
     // Missing manifest — stay stuck. Operator may have removed the
     // package entirely; unrelated cleanup will surface that.
+  }
+  return null;
+}
+
+// Connection-level failure fingerprints. A plugin that errored because an
+// infra dependency (Postgres, Ollama, …) was momentarily unreachable is
+// self-healing: once the dependency is up, the next boot should re-attempt
+// activation rather than leave the entry latched in `errored`. This matters
+// most for REQUIRED built-ins like the knowledge-graph provider — the kernel
+// hard-fatals when its service is missing, so a permanently-errored KG turns
+// a transient `docker compose up` race into an unrecoverable crash-loop.
+//
+// Worst case (a non-transient error that happens to match): the entry is
+// reset and re-attempted once per boot, re-tripping the circuit breaker —
+// no worse than the pre-existing crash-loop, and it recovers the instant the
+// dependency comes back.
+const TRANSIENT_ACTIVATION_ERROR_RE =
+  /ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|getaddrinfo|Connection terminated|connection refused|the database system is starting up|timed out/i;
+
+function maybeTransientErrorReason(entry: InstalledAgent): string | null {
+  const err = entry.last_activation_error;
+  if (!err) return null;
+  if (TRANSIENT_ACTIVATION_ERROR_RE.test(err)) {
+    return `last_activation_error looks transient (infra dependency unreachable): "${err}"`;
   }
   return null;
 }

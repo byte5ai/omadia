@@ -163,6 +163,90 @@ export function createNeonPool(connectionString: string, poolMax = 5): Pool {
 }
 
 /**
+ * Connection-level failures that mean Postgres is *not yet reachable* — as
+ * opposed to a permanent misconfiguration (bad credentials, missing
+ * database). During a `docker compose up` the middleware regularly wins the
+ * start race against Postgres' DNS-alias registration on the shared network,
+ * so the very first connection surfaces a transient
+ * `getaddrinfo ENOTFOUND postgres` even though the service is healthy a
+ * moment later. These are worth retrying; auth/db-existence errors are not.
+ */
+const TRANSIENT_DB_ERROR_CODES = new Set<string>([
+  'ENOTFOUND', // DNS name not yet resolvable
+  'EAI_AGAIN', // DNS temporary failure
+  'ECONNREFUSED', // server not yet accepting connections
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  '57P03', // cannot_connect_now — server is starting up
+]);
+
+function isTransientDbError(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (typeof code === 'string' && TRANSIENT_DB_ERROR_CODES.has(code)) {
+    return true;
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  return /ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|getaddrinfo|Connection terminated|the database system is starting up/i.test(
+    msg,
+  );
+}
+
+/**
+ * Pings the pool until it answers `SELECT 1`, retrying transient connection
+ * failures with capped exponential backoff. Bounded by `budgetMs` so the
+ * whole wait stays well within the tool-runtime's 10s `activate()` timeout —
+ * leaving headroom for the migrations that run right after.
+ *
+ * Why this exists: without it, the first-boot Postgres-startup race latches
+ * the knowledge-graph plugin into a permanent `errored` state (the kernel
+ * treats the KG service as required and hard-fatals when it is missing,
+ * producing an unrecoverable crash-loop). A short readiness wait rides out
+ * the race so the common case never errors. Genuinely unreachable Postgres
+ * still throws after the budget — the registry circuit-breaker + the
+ * transient-error auto-reset in `retryErroredPlugins` then handle recovery
+ * on subsequent boots.
+ */
+export async function waitForPostgres(
+  pool: Pool,
+  opts: { budgetMs?: number; log?: (msg: string) => void } = {},
+): Promise<void> {
+  const budgetMs = opts.budgetMs ?? 6_000;
+  const log = opts.log ?? (() => {});
+  const deadline = Date.now() + budgetMs;
+  let delayMs = 250;
+  let attempt = 0;
+
+  for (;;) {
+    attempt += 1;
+    try {
+      const client = await pool.connect();
+      try {
+        await client.query('SELECT 1');
+      } finally {
+        client.release();
+      }
+      if (attempt > 1) {
+        log(
+          `[harness-knowledge-graph-neon] postgres reachable after ${String(attempt)} attempt(s)`,
+        );
+      }
+      return;
+    } catch (err) {
+      const remaining = deadline - Date.now();
+      if (!isTransientDbError(err) || remaining <= 0) throw err;
+      const wait = Math.min(delayMs, remaining);
+      log(
+        `[harness-knowledge-graph-neon] postgres not ready (${err instanceof Error ? err.message : String(err)}) — retry in ${String(wait)}ms`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, wait));
+      delayMs = Math.min(delayMs * 2, 2_000);
+    }
+  }
+}
+
+/**
  * Postgres-backed knowledge graph (Neon serverless).
  *
  * Identity model: every node has a stable `external_id` (session:<scope>,

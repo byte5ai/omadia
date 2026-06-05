@@ -323,6 +323,75 @@ describe('retryErroredPlugins — capability-resolution path', () => {
   });
 });
 
+describe('retryErroredPlugins — transient-error path', () => {
+  function erroredWithMessage(id: string, message: string): InstalledAgent {
+    return {
+      id,
+      installed_version: '0.1.0',
+      installed_at: '2026-04-20T00:00:00Z',
+      status: 'errored',
+      config: {},
+      activation_failure_count: 3,
+      last_activation_error: message,
+      last_activation_error_at: '2026-04-29T05:00:00Z',
+    };
+  }
+
+  it('resets when last_activation_error is a transient DNS failure (KG provider crash-loop recovery)', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await reg.register(
+      erroredWithMessage(
+        '@omadia/knowledge-graph-neon',
+        'getaddrinfo ENOTFOUND postgres',
+      ),
+    );
+    const cat = makeCatalog([
+      {
+        id: '@omadia/knowledge-graph-neon',
+        provides: [],
+        requires: [],
+        depends_on: [],
+      },
+    ]);
+
+    await retryErroredPlugins({ catalog: cat, registry: reg, log: () => {} });
+
+    const got = reg.get('@omadia/knowledge-graph-neon');
+    assert.equal(got?.status, 'active');
+    assert.equal(got?.last_activation_error, undefined);
+    assert.equal(got?.activation_failure_count, undefined);
+  });
+
+  it('resets on ECONNREFUSED / "Connection terminated" as well', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await reg.register(erroredWithMessage('a', 'connect ECONNREFUSED 10.0.0.5:5432'));
+    await reg.register(erroredWithMessage('b', 'Connection terminated unexpectedly'));
+    const cat = makeCatalog([
+      { id: 'a', provides: [], requires: [], depends_on: [] },
+      { id: 'b', provides: [], requires: [], depends_on: [] },
+    ]);
+
+    await retryErroredPlugins({ catalog: cat, registry: reg, log: () => {} });
+
+    assert.equal(reg.get('a')?.status, 'active');
+    assert.equal(reg.get('b')?.status, 'active');
+  });
+
+  it('does NOT reset a non-transient (code/config) error', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await reg.register(
+      erroredWithMessage('p1', 'TypeError: cannot read properties of undefined'),
+    );
+    const cat = makeCatalog([
+      { id: 'p1', provides: [], requires: [], depends_on: [] },
+    ]);
+
+    await retryErroredPlugins({ catalog: cat, registry: reg, log: () => {} });
+
+    assert.equal(reg.get('p1')?.status, 'errored');
+  });
+});
+
 describe('bootstrapMemoryFromEnv — env→config reconcile', () => {
   // The `bootstrap` flow originally wrote `dev_memory_endpoints_enabled`
   // into the @omadia/memory plugin's config exactly once (on first ever
