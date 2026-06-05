@@ -33,6 +33,12 @@ interface SimpleWorkspaceProps {
     }>;
   } | null;
   onUserChoiceResolved?: () => void;
+  /** Issue #224 — lifts the intake pane's in-flight flag so the Workspace
+   *  can lock the view toggle while a build reply streams. */
+  onIntakeStreamingChange?: (streaming: boolean) => void;
+  /** Issue #224 — lifts the reduced preview pane's in-flight flag so the
+   *  Workspace can lock the view toggle while a test reply streams. */
+  onPreviewStreamingChange?: (streaming: boolean) => void;
 }
 
 // byte5 ease-out curve (mirrors --ease-out token) for entrance motion.
@@ -67,6 +73,8 @@ export function SimpleWorkspace({
   onPersonaPersisted,
   pendingUserChoice,
   onUserChoiceResolved,
+  onIntakeStreamingChange,
+  onPreviewStreamingChange,
 }: SimpleWorkspaceProps): React.ReactElement {
   const t = useTranslations('builder.simple');
   const [personaOpen, setPersonaOpen] = useState(false);
@@ -120,6 +128,9 @@ export function SimpleWorkspace({
               initialTranscript={draft.transcript}
               pendingUserChoice={pendingUserChoice}
               onUserChoiceResolved={onUserChoiceResolved}
+              {...(onIntakeStreamingChange
+                ? { onStreamingChange: onIntakeStreamingChange }
+                : {})}
             />
           </div>
         </SimpleStepCard>
@@ -138,6 +149,9 @@ export function SimpleWorkspace({
               initialTranscript={draft.previewTranscript}
               setupFields={spec.setup_fields ?? []}
               onBuildStatus={onBuildStatus}
+              {...(onPreviewStreamingChange
+                ? { onStreamingChange: onPreviewStreamingChange }
+                : {})}
             />
           </div>
         </SimpleStepCard>
