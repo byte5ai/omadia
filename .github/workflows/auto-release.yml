@@ -1,0 +1,75 @@
+name: auto-release
+
+# Tag-only automated releases. On each merge to `main`, inspect conventional
+# commits since the last tag; if there's a feat/fix, create the next semver tag
+# + a GitHub Release with generated notes. Uses only GITHUB_TOKEN (contents:
+# write) — no release PR, no PAT, no repo-settings change.
+#
+#   fix:                      -> patch  (0.2.0 -> 0.2.1)
+#   feat:                     -> minor  (0.2.0 -> 0.3.0)
+#   feat!: / BREAKING CHANGE  -> minor while < 1.0 (pre-major)
+#   anything else             -> no release
+#
+# Note: the tag is the version of record. package.json files are not auto-bumped
+# (bump them in a normal PR when you want them to match a release).
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute bump, tag, and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          latest=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
+          if [ -z "$latest" ]; then latest="v0.0.0"; range="HEAD"; else range="${latest}..HEAD"; fi
+          echo "latest tag: $latest (range: $range)"
+
+          msgs=$(git log --no-merges --pretty=format:'%s%n%b' $range)
+
+          bump=""
+          if printf '%s\n' "$msgs" | grep -qE 'BREAKING CHANGE' \
+             || printf '%s\n' "$msgs" | grep -qE '^[a-z]+(\(.+\))?!:'; then
+            bump="minor"                       # pre-1.0: breaking -> minor
+          elif printf '%s\n' "$msgs" | grep -qE '^feat(\(.+\))?:'; then
+            bump="minor"
+          elif printf '%s\n' "$msgs" | grep -qE '^fix(\(.+\))?:'; then
+            bump="patch"
+          fi
+
+          if [ -z "$bump" ]; then
+            echo "No feat/fix commits since $latest — skipping release."
+            exit 0
+          fi
+
+          ver="${latest#v}"
+          MA="${ver%%.*}"; rest="${ver#*.}"; MI="${rest%%.*}"; PA="${rest#*.}"
+          if [ "$bump" = "minor" ]; then MI=$((MI + 1)); PA=0; else PA=$((PA + 1)); fi
+          new="v${MA}.${MI}.${PA}"
+
+          if git rev-parse "$new" >/dev/null 2>&1 || gh release view "$new" >/dev/null 2>&1; then
+            echo "$new already exists — skipping."
+            exit 0
+          fi
+
+          echo "Releasing $new (bump=$bump)"
+          git tag -a "$new" -m "omadia $new"
+          git push origin "$new"
+          gh release create "$new" --generate-notes --title "omadia $new" --latest
