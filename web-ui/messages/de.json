@@ -132,6 +132,13 @@
     "signedInAs": "Angemeldet als",
     "signOut": "Abmelden"
   },
+  "error": {
+    "title": "Etwas ist schiefgelaufen",
+    "description": "Diese Seite hat einen unerwarteten Fehler ausgelöst und konnte nicht vollständig geladen werden.",
+    "reload": "Neu laden",
+    "resetData": "Lokale Chat-Daten zurücksetzen",
+    "resetDataHint": "Löscht die lokal in diesem Browser gespeicherten Chats und lädt neu. Deine serverseitigen Daten bleiben unberührt — nutze dies, wenn ein Neu-Laden allein nicht hilft."
+  },
   "session": {
     "expiresAtLabel": "Sitzung gültig bis",
     "warningTitle": "Sitzung läuft bald ab",
