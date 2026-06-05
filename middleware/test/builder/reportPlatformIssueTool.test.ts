@@ -166,6 +166,28 @@ describe('reportPlatformIssueTool', () => {
     assert.match(result.sanitizedBody ?? '', /\[REDACTED:internal-url\]/);
   });
 
+  it('input schema accepts a summary longer than the old 280-char cap (regression)', () => {
+    // The agent realistically generates a full-sentence summary. The
+    // previous max(280) rejected anything longer with a Zod too_big,
+    // which crashed the report tool (see omadia_report_core_bug).
+    const longSummary = 'Builder-Surface: '.padEnd(300, 'x');
+    assert.ok(longSummary.length > 280 && longSummary.length <= 500);
+    const input = {
+      title: 'Builder surface lacks codegen observability',
+      body: 'Repro details.',
+      fingerprint: 'observ1234',
+      summary: longSummary,
+      severity: 'gap' as const,
+    };
+    // Parses cleanly now; would have thrown a too_big ZodError before.
+    const parsed = reportPlatformIssueTool.input.parse(input);
+    assert.equal(parsed.summary, longSummary);
+    // Still enforces an upper bound — 501 chars is rejected.
+    assert.throws(() =>
+      reportPlatformIssueTool.input.parse({ ...input, summary: 'x'.repeat(501) }),
+    );
+  });
+
   it('returns mode=created-pending (sanitized, no GitHub URL) and emits issue_report_pending', async () => {
     const fetch: CacheFetch = () =>
       Promise.resolve(mockResponse({ status: 200, body: { items: [] } }));
