@@ -1,6 +1,7 @@
 'use client';
 
 import { ChevronLeft, ChevronRight, Loader2, RefreshCcw } from 'lucide-react';
+import { useTranslations } from 'next-intl';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { fetchBuilderManifestPreview } from '../../../../_lib/api';
@@ -34,6 +35,7 @@ export function ManifestDiffSidebar({
   collapsed,
   onToggle,
 }: ManifestDiffSidebarProps): React.ReactElement {
+  const t = useTranslations('builder.install');
   const [yamlText, setYamlText] = useState<string>('');
   const [pending, setPending] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -46,11 +48,11 @@ export function ManifestDiffSidebar({
       const { manifest } = await fetchBuilderManifestPreview(draftId);
       setYamlText(manifest);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Preview-Fehler');
+      setError(err instanceof Error ? err.message : t('previewError'));
     } finally {
       setPending(false);
     }
-  }, [draftId]);
+  }, [draftId, t]);
 
   // Refetch when the sidebar is open and a new spec_patch ticks the
   // refreshKey (or on first open). Skipping while collapsed keeps the
@@ -67,7 +69,7 @@ export function ManifestDiffSidebar({
       <button
         type="button"
         onClick={() => onToggle(false)}
-        aria-label="Manifest-Vorschau öffnen"
+        aria-label={t('manifestPreviewOpenAria')}
         className="flex h-full w-6 flex-col items-center justify-center gap-1 border-l border-[color:var(--border)] bg-[color:var(--bg-soft)] text-[color:var(--fg-subtle)] hover:text-[color:var(--fg-strong)]"
       >
         <ChevronLeft className="size-3" aria-hidden />
@@ -93,7 +95,7 @@ export function ManifestDiffSidebar({
           <button
             type="button"
             onClick={() => void refresh()}
-            aria-label="Manifest-Vorschau aktualisieren"
+            aria-label={t('manifestPreviewRefreshAria')}
             className="rounded p-1 text-[color:var(--fg-subtle)] hover:bg-[color:var(--bg)] hover:text-[color:var(--fg-strong)]"
           >
             <RefreshCcw className="size-3" aria-hidden />
@@ -101,7 +103,7 @@ export function ManifestDiffSidebar({
           <button
             type="button"
             onClick={() => onToggle(true)}
-            aria-label="Manifest-Vorschau schließen"
+            aria-label={t('manifestPreviewCloseAria')}
             className="rounded p-1 text-[color:var(--fg-subtle)] hover:bg-[color:var(--bg)] hover:text-[color:var(--fg-strong)]"
           >
             <ChevronRight className="size-3" aria-hidden />
@@ -119,7 +121,7 @@ export function ManifestDiffSidebar({
           pending && 'opacity-60',
         )}
       >
-        {yamlText || '# (Vorschau wird geladen)'}
+        {yamlText || t('manifestPreviewLoading')}
       </pre>
     </aside>
   );

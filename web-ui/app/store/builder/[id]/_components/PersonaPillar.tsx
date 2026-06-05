@@ -1,5 +1,6 @@
 'use client';
 
+import { useTranslations } from 'next-intl';
 import { useCallback, useMemo, useState, useTransition } from 'react';
 import { ChevronDown, ChevronRight, Sparkles } from 'lucide-react';
 
@@ -69,6 +70,7 @@ export function PersonaPillar({
   onPersisted,
   disabled,
 }: PersonaPillarProps): React.ReactElement {
+  const t = useTranslations('builder.persona.pillar');
   const [persona, setPersona] = useState<PersonaConfig>(
     () => initialPersona ?? {},
   );
@@ -163,7 +165,7 @@ export function PersonaPillar({
     >
       <header className="flex items-baseline gap-3">
         <span className="text-[12px] font-semibold uppercase tracking-[0.2em] text-[color:var(--accent)]">
-          Persona
+          {t('accentLabel')}
         </span>
         <span className="h-px flex-1 bg-[color:var(--border)]" />
         <Sparkles
@@ -176,12 +178,10 @@ export function PersonaPillar({
         id="persona-pillar-heading"
         className="font-display text-[22px] leading-tight text-[color:var(--fg-strong)]"
       >
-        Charakter prägen
+        {t('heading')}
       </h2>
       <p className="text-sm leading-relaxed text-[color:var(--fg-muted)]">
-        12 Achsen, jede einzeln optional. Werte werden im Frontmatter der
-        AGENT.md gespiegelt — Phase&nbsp;4 kompiliert daraus eine
-        Persona-Section in den System-Prompt.
+        {t('description')}
       </p>
 
       <ConflictBanner warnings={warnings} />
@@ -196,8 +196,10 @@ export function PersonaPillar({
       <div className="flex items-center justify-between gap-3">
         <span className="text-xs text-[color:var(--fg-muted)]" data-testid="persona-template-badge">
           {persona.template
-            ? `Vorlage: ${persona.template}${(persona.axes && Object.keys(persona.axes).length > 0) ? ' — angepasst' : ''}`
-            : 'Keine Vorlage'}
+            ? persona.axes && Object.keys(persona.axes).length > 0
+              ? t('templateBadgeAdjusted', { template: persona.template })
+              : t('templateBadge', { template: persona.template })
+            : t('templateBadgeNone')}
         </span>
         <button
           type="button"
@@ -206,7 +208,7 @@ export function PersonaPillar({
           disabled={disabled || pending}
           className="rounded border border-[color:var(--border)] px-2 py-1 text-xs"
         >
-          Vorlage anwenden
+          {t('applyTemplate')}
         </button>
       </div>
       {galleryOpen && (
@@ -264,7 +266,7 @@ export function PersonaPillar({
           className="block text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]"
           htmlFor="persona-template"
         >
-          Template (optional)
+          {t('templateLabel')}
         </label>
         <input
           id="persona-template"
@@ -276,7 +278,7 @@ export function PersonaPillar({
               template: e.target.value.length > 0 ? e.target.value : undefined,
             }))
           }
-          placeholder="z.B. software-engineer (Templates kommen in Phase 4)"
+          placeholder={t('templatePlaceholder')}
           disabled={disabled}
           className={cn(
             'w-full rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2',
@@ -290,7 +292,7 @@ export function PersonaPillar({
       {/* Core axes */}
       <div className="space-y-4" data-testid="persona-core-axes">
         <h3 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg)]">
-          Core (8)
+          {t('coreHeading')}
         </h3>
         {CORE_PERSONA_AXES.map((axis) => (
           <DimensionSlider
@@ -323,7 +325,7 @@ export function PersonaPillar({
           ) : (
             <ChevronRight className="size-3.5" aria-hidden />
           )}
-          Extended (4)
+          {t('extendedHeading')}
         </button>
         {extendedOpen ? (
           <div id="persona-extended-axes-list" className="space-y-4 pt-1">
@@ -352,7 +354,7 @@ export function PersonaPillar({
           htmlFor="persona-custom-notes"
           className="block text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]"
         >
-          Custom Notes (optional)
+          {t('customNotesLabel')}
         </label>
         <textarea
           id="persona-custom-notes"
@@ -366,7 +368,7 @@ export function PersonaPillar({
                 e.target.value.length > 0 ? e.target.value : undefined,
             }))
           }
-          placeholder={'z.B. „Antworte auf Deutsch wenn der User auf Deutsch schreibt."'}
+          placeholder={t('customNotesPlaceholder')}
           disabled={disabled}
           className={cn(
             'w-full rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2',
@@ -396,9 +398,9 @@ export function PersonaPillar({
           {error ? (
             <span className="text-[color:var(--danger)]">{error}</span>
           ) : savedAt ? (
-            <span className="text-[color:var(--success)]">Gespeichert.</span>
+            <span className="text-[color:var(--success)]">{t('saved')}</span>
           ) : dirty ? (
-            <span>Änderungen nicht gespeichert.</span>
+            <span>{t('unsavedChanges')}</span>
           ) : null}
         </div>
         <div className="flex items-center gap-2">
@@ -411,7 +413,7 @@ export function PersonaPillar({
               'text-[color:var(--fg)] disabled:opacity-50',
             )}
           >
-            Zurücksetzen
+            {t('reset')}
           </button>
           <button
             type="button"
@@ -422,7 +424,7 @@ export function PersonaPillar({
               'shadow-[var(--shadow-cta)] disabled:opacity-50',
             )}
           >
-            {pending ? 'Speichere…' : 'Speichern'}
+            {pending ? t('saving') : t('save')}
           </button>
         </div>
       </div>
