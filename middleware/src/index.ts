@@ -202,6 +202,7 @@ import type { Pool } from 'pg';
 import type {
   ChatAgent,
   ChatAgentBundle,
+  ChatSessionStore,
   DomainTool,
 } from '@omadia/orchestrator';
 
@@ -1039,81 +1040,104 @@ async function main(): Promise<void> {
   // Without `anthropic_api_key` set in the orchestrator-plugin's setup,
   // the plugin returns a no-op handle and chatAgent@1 is NOT published —
   // boot fails fast with a clear error so the operator wires up the key.
+  // Graceful degradation: chatAgent@1 is published by @omadia/orchestrator
+  // only once `anthropic_api_key` is set. That key is entered post-boot via
+  // the Setup Wizard, so a missing key must NOT fail the boot — otherwise the
+  // very admin UI that captures the key never comes up. We boot
+  // "chat-disabled": the admin UI, Setup Wizard and every non-chat endpoint
+  // run; the chat route returns 503 until the key is configured. Saving the
+  // key via the wizard reactivates the orchestrator plugin (PATCH
+  // /installed/:id/secrets → reactivate → activate()), which publishes
+  // chatAgent@1 + orchestratorRegistry@1. The chat / session / operator
+  // routes below resolve those services LIVE from the registry per request,
+  // so chat goes live the moment the key is saved — no restart needed.
+  //
+  // The boot-only wiring guarded on `orchestrator` below (domain-tool
+  // hydration of per-Agent orchestrators, the routines feature) re-applies on
+  // the next restart for advanced stacks (sub-agents / routines). The default
+  // out-of-the-box stack has no domain tools, so chat is fully functional hot.
   const chatAgentBundle = serviceRegistry.get<ChatAgentBundle>('chatAgent');
+  const orchestrator = chatAgentBundle?.raw;
   if (!chatAgentBundle) {
-    throw new Error(
-      '[middleware] chatAgent@1 capability not published — @omadia/orchestrator plugin must be active and `anthropic_api_key` must be set (via .env ANTHROPIC_API_KEY → bootstrapped, or via admin UI on the orchestrator plugin)',
+    console.warn(
+      '[middleware] ⚠ chat DISABLED — chatAgent@1 not published. Set ANTHROPIC_API_KEY on @omadia/orchestrator via the Setup Wizard; chat goes live on save. Admin UI + all other endpoints are up.',
     );
   }
-  const orchestrator = chatAgentBundle.raw;
-  const chatAgent = chatAgentBundle.agent;
-  const chatSessionStore = chatAgentBundle.chatSessionStore;
+  // Live resolver for the plugin-published chat bundle. Every chat/session
+  // consumer reads through this so a post-boot reactivation (Setup Wizard key
+  // entry) is picked up without a restart.
+  const getChatAgentBundle = (): ChatAgentBundle | undefined =>
+    serviceRegistry.get<ChatAgentBundle>('chatAgent');
+  const getChatSessionStore = (): ChatSessionStore | undefined =>
+    getChatAgentBundle()?.chatSessionStore;
   // sessionLogger is exposed on the bundle for future channel/route
   // consumers but no longer threaded through the kernel — graphBackfill
   // doesn't need it (uses memoryStore + KG directly), and the chat-API
-  // route consumes orchestrator (the bundle.agent) only.
-  // Push all kernel-collected DomainTools (native sub-agents + uploaded
-  // dynamic agents) into the plugin-built Orchestrator. Plugin construction
-  // happens BEFORE these are accumulated, so the registerDomainTool calls
-  // here finish the wiring.
-  for (const t of domainTools) orchestrator.registerDomainTool(t);
-  // Hot-register pathway for future agent installs while the process runs.
-  dynamicAgentRuntime.attachOrchestrator(orchestrator);
+  // route resolves the orchestrator live from the registry.
+  if (orchestrator) {
+    // Push all kernel-collected DomainTools (native sub-agents + uploaded
+    // dynamic agents) into the plugin-built Orchestrator. Plugin construction
+    // happens BEFORE these are accumulated, so the registerDomainTool calls
+    // here finish the wiring.
+    for (const t of domainTools) orchestrator.registerDomainTool(t);
+    // Hot-register pathway for future agent installs while the process runs.
+    dynamicAgentRuntime.attachOrchestrator(orchestrator);
 
-  // Phase B fix — the multi-orchestrator registry built one Orchestrator per
-  // Agent earlier in boot (inside the orchestrator plugin's activate, during
-  // `toolPluginRuntime.activateAllInstalled`). At that point `domainTools`
-  // was still empty, so every per-Agent orchestrator started with
-  // `domainTools: []` — chat hitting the fallback Agent could not see
-  // `query_odoo_accounting`, `query_confluence`, etc. Push the populated
-  // list into every registry-built Orchestrator now. Skip duplicates so a
-  // hot-installed tool that already self-registered does not throw.
-  const registryForHydrate =
-    serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
-  if (registryForHydrate) {
-    // Per-Agent tool isolation. A domain tool's `agentId` is the id of the
-    // agent-plugin that exposes it (set by `createDomainTool` /
-    // `dynamicAgentRuntime`), e.g. `query_odoo_accounting` →
-    // `de.byte5.agent.odoo-accounting`. An Agent may only reach a sub-agent
-    // query tool when that backing plugin is ENABLED on it; a tool with no
-    // `agentId` is a core helper available to everyone. The fallback Agent
-    // has every plugin enabled, so it still receives the full set
-    // (preserving the original Phase-B hydration intent) — but a scoped
-    // Agent (e.g. "marketing", which only enables the X plugin) no longer
-    // inherits `query_odoo_accounting` et al. it was never granted.
-    // See `scopeDomainToolsToPlugins` for the rule.
-    let attached = 0;
-    for (const entry of registryForHydrate.list()) {
-      for (const t of scopeDomainToolsToPlugins(domainTools, entry.plugins)) {
-        if (!entry.built.orchestrator.hasDomainTool(t.name)) {
-          entry.built.orchestrator.registerDomainTool(t);
-          attached += 1;
-        }
-      }
-    }
-    console.log(
-      `[middleware] registry orchestrators: hydrated with ${String(attached)} domain-tool registrations across ${String(registryForHydrate.list().length)} agent(s) (per-Agent plugin-scoped)`,
-    );
-    // Persist the wiring so a later `registry.reload()` that REBUILDS an
-    // Agent (privacy_profile flip, plugin enable/disable, etc.) re-hydrates
-    // the new orchestrator — still scoped to the Agent's enabled plugins.
-    // The entry is in the registry map before `onAgentBuilt` fires (both the
-    // `add` and `rebuild` actions set it first), so the plugin lookup is
-    // available here. Without this, the rebuilt Agent goes back to
-    // `domainTools: []` and the operator's next chat turn cannot reach its
-    // sub-agents.
-    registryForHydrate.setOnAgentBuilt((slug, built) => {
-      const entry = registryForHydrate.get(slug);
-      const tools = entry ? scopeDomainToolsToPlugins(domainTools, entry.plugins) : [];
-      for (const t of tools) {
-        if (!built.orchestrator.hasDomainTool(t.name)) {
-          built.orchestrator.registerDomainTool(t);
+    // Phase B fix — the multi-orchestrator registry built one Orchestrator per
+    // Agent earlier in boot (inside the orchestrator plugin's activate, during
+    // `toolPluginRuntime.activateAllInstalled`). At that point `domainTools`
+    // was still empty, so every per-Agent orchestrator started with
+    // `domainTools: []` — chat hitting the fallback Agent could not see
+    // `query_odoo_accounting`, `query_confluence`, etc. Push the populated
+    // list into every registry-built Orchestrator now. Skip duplicates so a
+    // hot-installed tool that already self-registered does not throw.
+    const registryForHydrate =
+      serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
+    if (registryForHydrate) {
+      // Per-Agent tool isolation. A domain tool's `agentId` is the id of the
+      // agent-plugin that exposes it (set by `createDomainTool` /
+      // `dynamicAgentRuntime`), e.g. `query_odoo_accounting` →
+      // `de.byte5.agent.odoo-accounting`. An Agent may only reach a sub-agent
+      // query tool when that backing plugin is ENABLED on it; a tool with no
+      // `agentId` is a core helper available to everyone. The fallback Agent
+      // has every plugin enabled, so it still receives the full set
+      // (preserving the original Phase-B hydration intent) — but a scoped
+      // Agent (e.g. "marketing", which only enables the X plugin) no longer
+      // inherits `query_odoo_accounting` et al. it was never granted.
+      // See `scopeDomainToolsToPlugins` for the rule.
+      let attached = 0;
+      for (const entry of registryForHydrate.list()) {
+        for (const t of scopeDomainToolsToPlugins(domainTools, entry.plugins)) {
+          if (!entry.built.orchestrator.hasDomainTool(t.name)) {
+            entry.built.orchestrator.registerDomainTool(t);
+            attached += 1;
+          }
         }
       }
       console.log(
-        `[middleware] registry: orchestrator for "${slug}" hydrated with ${String(tools.length)} domain-tool(s) (per-Agent plugin-scoped)`,
+        `[middleware] registry orchestrators: hydrated with ${String(attached)} domain-tool registrations across ${String(registryForHydrate.list().length)} agent(s) (per-Agent plugin-scoped)`,
       );
-    });
+      // Persist the wiring so a later `registry.reload()` that REBUILDS an
+      // Agent (privacy_profile flip, plugin enable/disable, etc.) re-hydrates
+      // the new orchestrator — still scoped to the Agent's enabled plugins.
+      // The entry is in the registry map before `onAgentBuilt` fires (both the
+      // `add` and `rebuild` actions set it first), so the plugin lookup is
+      // available here. Without this, the rebuilt Agent goes back to
+      // `domainTools: []` and the operator's next chat turn cannot reach its
+      // sub-agents.
+      registryForHydrate.setOnAgentBuilt((slug, built) => {
+        const entry = registryForHydrate.get(slug);
+        const tools = entry ? scopeDomainToolsToPlugins(domainTools, entry.plugins) : [];
+        for (const t of tools) {
+          if (!built.orchestrator.hasDomainTool(t.name)) {
+            built.orchestrator.registerDomainTool(t);
+          }
+        }
+        console.log(
+          `[middleware] registry: orchestrator for "${slug}" hydrated with ${String(tools.length)} domain-tool(s) (per-Agent plugin-scoped)`,
+        );
+      });
+    }
   }
 
   console.log('[middleware] context retriever ready (tail + entity-anchor + FTS)');
@@ -1130,7 +1154,7 @@ async function main(): Promise<void> {
   // `manage_routine` tool's `create`/`list` actions return a
   // model-friendly error string and the model degrades gracefully.
   let routinesHandle: RoutinesHandle | undefined;
-  if (graphPool) {
+  if (graphPool && orchestrator) {
     routinesHandle = await initRoutines({
       pool: graphPool,
       scheduler: jobScheduler,
@@ -1156,9 +1180,13 @@ async function main(): Promise<void> {
     console.log(
       '[middleware] routines feature ready (manage_routine tool registered, routinesIntegration published)',
     );
-  } else {
+  } else if (!graphPool) {
     console.log(
       '[middleware] routines feature SKIPPED — no graphPool (in-memory KG backend; set DATABASE_URL to enable)',
+    );
+  } else {
+    console.log(
+      '[middleware] routines feature SKIPPED — chatAgent not active (set ANTHROPIC_API_KEY via the Setup Wizard, then restart to enable routines)',
     );
   }
 
@@ -1191,18 +1219,24 @@ async function main(): Promise<void> {
   //   2. Registry has Agents but the requested slug is "default" —
   //      same shortcut for back-compat.
   // Otherwise the slug must map to a registered Agent (registry.get).
-  const registry = serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
+  // Resolve orchestratorRegistry@1 + chatAgent@1 LIVE per request. Both are
+  // published by the orchestrator plugin's activate(); after a Setup-Wizard
+  // key entry the plugin reactivates and (re)publishes them, so capturing a
+  // boot-time value would pin the chat-disabled state forever.
+  const getRegistry = (): MultiOrchestratorRegistry | undefined =>
+    serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
   const resolveChatAgent = (slug: string): ChatAgent | undefined => {
-    const entry = registry?.get(slug);
+    const entry = getRegistry()?.get(slug);
     if (entry) return entry.built.bundle.agent;
-    if (slug === 'default') return chatAgent;
+    if (slug === 'default') return getChatAgentBundle()?.agent;
     return undefined;
   };
   const getDefaultSlug = (): string | undefined => {
-    const fallback = registry?.slugForFallback();
+    const reg = getRegistry();
+    const fallback = reg?.slugForFallback();
     if (fallback) return fallback;
     // Pre-Phase-A / no-DB boot: the legacy default is the only Agent.
-    return registry ? undefined : 'default';
+    return reg ? undefined : 'default';
   };
   // OB-106: gate the chat-inference endpoints (`POST /api/chat`,
   // `POST /api/chat/stream`) behind `requireAuth`. Without this, anonymous
@@ -1216,8 +1250,8 @@ async function main(): Promise<void> {
       agentResolver,
       resolveChatAgent,
       getDefaultSlug,
-      chatSessionStore,
-      snapshotForAgent: (slug) => registry?.snapshotForAgent(slug),
+      getChatSessionStore,
+      snapshotForAgent: (slug) => getRegistry()?.snapshotForAgent(slug),
     }),
   );
 
@@ -1227,7 +1261,7 @@ async function main(): Promise<void> {
   // here is defence-in-depth: if a future refactor splits mounts or moves
   // the sessions router to a different base path, the auth guarantee
   // travels with it.
-  app.use('/api/chat', requireAuth, createChatSessionsRouter({ store: chatSessionStore }));
+  app.use('/api/chat', requireAuth, createChatSessionsRouter({ getStore: getChatSessionStore }));
   console.log('[middleware] chat-sessions endpoint ready at /api/chat/sessions (auth-gated)');
 
   // Slice 3b — MemorableKnowledge REST surface. `requireAuth` gates the
@@ -1307,7 +1341,7 @@ async function main(): Promise<void> {
         serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
       getRegistry: () =>
         serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
-      getChatSessionStore: () => chatSessionStore,
+      getChatSessionStore,
       getPluginCatalog: () => pluginCatalog,
       getInstalledRegistry: () => installedRegistry,
     }),
