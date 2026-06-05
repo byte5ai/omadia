@@ -70,6 +70,10 @@ jobs:
           fi
 
           echo "Releasing $new (bump=$bump)"
+          # Annotated tags need a committer identity; the runner has none.
+          # Use the GitHub Actions bot so the tagger is attributable.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$new" -m "omadia $new"
           git push origin "$new"
           gh release create "$new" --generate-notes --title "omadia $new" --latest
