@@ -91,6 +91,7 @@ import {
 } from './privacyHandle.js';
 import { RunTraceCollector, type InvocationHandle } from './runTraceCollector.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
+import { isInternExemptTool } from './privacyInternPolicy.js';
 import { graphScopeFor, type SessionLogger } from './sessionLogger.js';
 import { streamMessageEvents } from './streaming.js';
 import { buildDateHeader, today, turnContext } from './turnContext.js';
@@ -2731,6 +2732,14 @@ export class Orchestrator {
       }
     }
     if (privacy !== undefined && typeof result === 'string') {
+      // Interning-exemption: the agent's own infrastructure/self tools
+      // (memory, stored-process CRUD, self-produced meta output) are never
+      // interned — masking them blinds the agent to its own operational
+      // state. See `privacyInternPolicy.ts` for the auditable allowlist and
+      // rationale. Checked first so it wins over every other branch.
+      if (isInternExemptTool(name)) {
+        return result;
+      }
       // Slice 2.5 — Operator-owned per-plugin bypass. If the originating
       // plugin's `_privacy_mode` is `bypass` (or per-tool whitelist hits
       // this name), pass the raw result through unmasked AND record an
