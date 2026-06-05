@@ -59,6 +59,12 @@ export default function AdminIndexPage(): React.ReactElement {
           title="Memory · Widersprüche"
           description="Semantisch ähnliche Memories mit widersprüchlichen Aussagen — Operator entscheidet welche korrekt ist (oder ob beide gelten)."
         />
+        <AdminCard
+          href="/admin/danger-zone"
+          title="Danger Zone · Memory-Purge"
+          description="Memory unwiderruflich entlang einer Achse löschen (Alles / Agent / User / Team / Channel). Vorschau-gated, mit Confirm-Phrase. Kein Undo."
+          danger
+        />
       </ul>
     </main>
   );
@@ -68,18 +74,30 @@ function AdminCard({
   href,
   title,
   description,
+  danger = false,
 }: {
   href: string;
   title: string;
   description: string;
+  danger?: boolean;
 }): React.ReactElement {
   return (
     <li>
       <Link
         href={href}
-        className="block rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5 transition-colors hover:border-[color:var(--accent)]"
+        className={
+          danger
+            ? 'block rounded-[14px] border border-red-500/40 bg-red-500/5 p-5 transition-colors hover:border-red-500'
+            : 'block rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5 transition-colors hover:border-[color:var(--accent)]'
+        }
       >
-        <div className="text-[15px] font-semibold text-[color:var(--fg-strong)]">
+        <div
+          className={
+            danger
+              ? 'text-[15px] font-semibold text-red-500'
+              : 'text-[15px] font-semibold text-[color:var(--fg-strong)]'
+          }
+        >
           {title}
         </div>
         <p className="mt-1.5 text-sm text-[color:var(--fg-muted)]">

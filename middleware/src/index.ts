@@ -8,6 +8,7 @@ import { config, parseRegistries } from './config.js';
 import { createTigrisStore } from '@omadia/diagrams';
 import type { MemoryStore } from '@omadia/plugin-api';
 import { createAdminRouter } from './routes/admin.js';
+import { createMemoryPurgeRouter } from './routes/memoryPurge.js';
 import { createChatRouter } from './routes/chat.js';
 import { createOperatorAgentsRouter } from './routes/operatorAgents.js';
 import { createOperatorChannelsRouter } from './routes/operatorChannels.js';
@@ -1289,6 +1290,24 @@ async function main(): Promise<void> {
     `[middleware] inconsistencies endpoint ready at /api/v1/admin/inconsistencies (detector=${inconsistencyDetectorSvc ? 'on' : 'off'}, bulk=${bulkInconsistencyService ? 'on' : 'off'})`,
   );
 
+  // Danger Zone — bulk memory purge (scratch + KG). Cookie-auth admin
+  // surface, consistent with the other /api/v1/admin/* routers the admin
+  // UI calls (NOT the machine ADMIN_TOKEN surface). `requireAuth` gates
+  // the router; type-to-confirm is enforced per-route.
+  app.use(
+    '/api/v1/admin/memory/purge',
+    requireAuth,
+    createMemoryPurgeRouter({
+      store: memoryStore,
+      ...(knowledgeGraph ? { knowledgeGraph } : {}),
+      ...(graphPool ? { graphPool } : {}),
+      tenantId: graphTenantId,
+    }),
+  );
+  console.log(
+    '[middleware] memory-purge endpoint ready at /api/v1/admin/memory/purge',
+  );
+
   // US9 / T037 — operator-facing Agents dashboard backend. Mounts at
   // /api/v1/operator/agents/*. 503s when the orchestratorRegistry@1
   // service is not published (no DATABASE_URL / orchestrator plugin not
@@ -2391,9 +2410,6 @@ async function main(): Promise<void> {
       createAdminRouter({
         store: memoryStore,
         token: config.ADMIN_TOKEN,
-        knowledgeGraph,
-        ...(graphPool ? { graphPool } : {}),
-        tenantId: graphTenantId,
       }),
     );
     console.log('[middleware] admin endpoints enabled at /api/admin');
