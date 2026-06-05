@@ -131,6 +131,10 @@ export interface AgentSpecSkeleton {
   version: string;
   description: string;
   category: string;
+  /** #225 — operator-entered author/publisher. Optional in the type
+   *  because legacy drafts predate the field; codegen maps it to
+   *  `identity.authors[0].name`. Empty → no author on the store page. */
+  author?: string;
   /** OB-77 (Palaia Phase 8) — first-class plugin Domain. Required at the
    *  manifest level; the spec form surfaces it next to category. Same
    *  PLUGIN_DOMAIN_REGEX validation as middleware. */

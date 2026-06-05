@@ -101,6 +101,27 @@ describe('codegen.generate', () => {
     assert.match(pluginText, /AGENT_ID = 'de\.byte5\.agent\.weather'/);
   });
 
+  // #225 — author must come from spec.author, NOT the old hardcoded
+  // "byte5 GmbH" boilerplate value. Empty author → empty manifest name
+  // (filtered out at load time by extractAuthors so no false attribution).
+  it('maps spec.author to manifest authors[].name and never emits "byte5 GmbH"', async () => {
+    const { spec: base, slots } = loadFixture();
+
+    const authored = await generate({
+      spec: { ...base, author: 'Acme Corp' },
+      slots,
+    });
+    const authoredManifest = authored.get('manifest.yaml')!.toString('utf-8');
+    assert.match(authoredManifest, /name:\s*"Acme Corp"/);
+    assert.doesNotMatch(authoredManifest, /byte5 GmbH/);
+
+    // Default (empty) author → `name: ""`, no hardcoded fallback.
+    const anon = await generate({ spec: base, slots });
+    const anonManifest = anon.get('manifest.yaml')!.toString('utf-8');
+    assert.match(anonManifest, /authors:\s*\n\s*-\s*name:\s*""/);
+    assert.doesNotMatch(anonManifest, /byte5 GmbH/);
+  });
+
   it('generates a valid package for an npm-scoped agent id (`@omadia/agent-*`)', async () => {
     const { spec: base, slots } = loadFixture();
     const spec = parseAgentSpec({
