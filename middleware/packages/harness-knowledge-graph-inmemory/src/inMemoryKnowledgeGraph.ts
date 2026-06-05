@@ -52,6 +52,7 @@ import {
   type MemoryWithAncestors,
   type MemorableKnowledgeIngest,
   type MemorableKnowledgeIngestResult,
+  type MemorableKnowledgePurgeFilter,
   type MemorableKnowledgeSearchOptions,
   type MemorableKnowledgeUpdate,
   type MergeCandidateNode,
@@ -1119,6 +1120,70 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     // deleted excerpts so cosine-search can never resurrect a tombstoned
     // memory by keeping its vector around.
     for (const id of droppedIds) this.embeddings.delete(id);
+  }
+
+  /**
+   * True when an MK node matches a Danger-Zone purge filter. The
+   * in-memory store is single-tenant, so `filter.tenantId` is accepted
+   * for interface parity but not matched against (every node is in the
+   * one implicit tenant).
+   */
+  private matchesMkPurgeFilter(
+    node: GraphNode,
+    filter: MemorableKnowledgePurgeFilter,
+  ): boolean {
+    if (node.type !== 'MemorableKnowledge') return false;
+    if (
+      filter.originAgent !== undefined &&
+      node.props['origin_agent'] !== filter.originAgent
+    ) {
+      return false;
+    }
+    if (filter.aclOwner !== undefined) {
+      const owners = Array.isArray(node.props['acl_owners'])
+        ? (node.props['acl_owners'] as string[])
+        : [];
+      if (!owners.includes(filter.aclOwner)) return false;
+    }
+    return true;
+  }
+
+  async countMemorableKnowledge(
+    filter: MemorableKnowledgePurgeFilter,
+  ): Promise<{ count: number }> {
+    let count = 0;
+    for (const node of this.nodes.values()) {
+      if (this.matchesMkPurgeFilter(node, filter)) count++;
+    }
+    return { count };
+  }
+
+  async purgeMemorableKnowledge(
+    filter: MemorableKnowledgePurgeFilter,
+  ): Promise<{ deletedNodes: number }> {
+    const mkIds: string[] = [];
+    for (const node of this.nodes.values()) {
+      if (this.matchesMkPurgeFilter(node, filter)) mkIds.push(node.id);
+    }
+    if (mkIds.length === 0) return { deletedNodes: 0 };
+    const mkIdSet = new Set(mkIds);
+    // Cascade-delete attached PalaiaExcerpt nodes BEFORE dropping parents
+    // + their edges (mirrors deleteMemory's Slice 6.5 cascade).
+    const excerptIds: string[] = [];
+    for (const edge of this.edges.values()) {
+      if (edge.type === 'EXCERPT_OF' && mkIdSet.has(edge.to)) {
+        excerptIds.push(edge.from);
+      }
+    }
+    const droppedIds = new Set<string>([...mkIds, ...excerptIds]);
+    for (const id of droppedIds) this.nodes.delete(id);
+    for (const [key, edge] of this.edges.entries()) {
+      if (droppedIds.has(edge.from) || droppedIds.has(edge.to)) {
+        this.edges.delete(key);
+      }
+    }
+    for (const id of droppedIds) this.embeddings.delete(id);
+    return { deletedNodes: mkIds.length };
   }
 
   async updateMemorableKnowledge(

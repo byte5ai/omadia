@@ -2386,7 +2386,16 @@ async function main(): Promise<void> {
   );
 
   if (config.ADMIN_TOKEN && config.ADMIN_TOKEN.length > 0) {
-    app.use('/api/admin', createAdminRouter({ store: memoryStore, token: config.ADMIN_TOKEN }));
+    app.use(
+      '/api/admin',
+      createAdminRouter({
+        store: memoryStore,
+        token: config.ADMIN_TOKEN,
+        knowledgeGraph,
+        ...(graphPool ? { graphPool } : {}),
+        tenantId: graphTenantId,
+      }),
+    );
     console.log('[middleware] admin endpoints enabled at /api/admin');
     // S+7.7 — Telegram admin endpoints are now self-contained inside the
     // plugin (mounted via core.registerRouter at /api/telegram/admin/*).

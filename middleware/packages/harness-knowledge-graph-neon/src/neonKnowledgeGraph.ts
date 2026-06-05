@@ -53,6 +53,7 @@ import {
   type MemoryWithAncestors,
   type MemorableKnowledgeIngest,
   type MemorableKnowledgeIngestResult,
+  type MemorableKnowledgePurgeFilter,
   type MemorableKnowledgeSearchOptions,
   type MemorableKnowledgeUpdate,
   type MergeCandidateNode,
@@ -2095,6 +2096,104 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       // CASCADE on graph_edges FK removes inbound/outbound edges.
       await client.query(`DELETE FROM graph_nodes WHERE id = $1`, [uuid]);
       await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Build the shared `WHERE` predicate + bound params for the Danger-Zone
+   * purge/count queries. `$1` is always `this.tenantId`. `originAgent` and
+   * `aclOwner` append `$2`/`$N` AND-clauses. The filter is pinned to this
+   * instance's tenant — a mismatching `filter.tenantId` is rejected so an
+   * admin caller cannot accidentally purge a tenant the graph is not bound to.
+   */
+  private buildMemorableKnowledgePurgeWhere(filter: MemorableKnowledgePurgeFilter): {
+    where: string;
+    params: unknown[];
+  } {
+    if (filter.tenantId !== this.tenantId) {
+      throw Object.assign(
+        new Error('tenant_mismatch'),
+        { code: 'tenant_mismatch' },
+      );
+    }
+    const params: unknown[] = [this.tenantId];
+    let where = `tenant_id = $1 AND type = 'MemorableKnowledge'`;
+    if (filter.originAgent !== undefined) {
+      params.push(filter.originAgent);
+      where += ` AND properties->>'origin_agent' = $${params.length}`;
+    }
+    if (filter.aclOwner !== undefined) {
+      params.push(JSON.stringify([filter.aclOwner]));
+      where += ` AND properties->'acl_owners' @> $${params.length}::jsonb`;
+    }
+    return { where, params };
+  }
+
+  async countMemorableKnowledge(
+    filter: MemorableKnowledgePurgeFilter,
+  ): Promise<{ count: number }> {
+    const { where, params } = this.buildMemorableKnowledgePurgeWhere(filter);
+    const res = await this.pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM graph_nodes WHERE ${where}`,
+      params,
+    );
+    return { count: Number(res.rows[0]?.count ?? '0') };
+  }
+
+  async purgeMemorableKnowledge(
+    filter: MemorableKnowledgePurgeFilter,
+  ): Promise<{ deletedNodes: number }> {
+    const { where, params } = this.buildMemorableKnowledgePurgeWhere(filter);
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      // Resolve the internal uuids of the MK rows in scope first; both the
+      // excerpt cascade and the edge sweep key off these.
+      const uuidRows = await client.query<{ id: string }>(
+        `SELECT id FROM graph_nodes WHERE ${where}`,
+        params,
+      );
+      const uuids = uuidRows.rows.map((r) => r.id);
+      if (uuids.length === 0) {
+        await client.query('COMMIT');
+        return { deletedNodes: 0 };
+      }
+      // Cascade-delete attached PalaiaExcerpt nodes (mirrors deleteMemory):
+      // their EXCERPT_OF edges FK-cascade, but the Excerpt rows are
+      // standalone and would orphan otherwise.
+      await client.query(
+        `DELETE FROM graph_nodes
+         WHERE tenant_id = $1
+           AND type = 'PalaiaExcerpt'
+           AND id IN (
+             SELECT from_node FROM graph_edges
+             WHERE tenant_id = $1
+               AND type = 'EXCERPT_OF'
+               AND to_node = ANY($2::uuid[])
+           )`,
+        [this.tenantId, uuids],
+      );
+      // Explicitly remove all incident edges (graph_edges FK CASCADEs on
+      // graph_nodes delete, but we delete both halves in-transaction to be
+      // robust against schemas without the cascade and to make the intent
+      // obvious).
+      await client.query(
+        `DELETE FROM graph_edges
+         WHERE tenant_id = $1
+           AND (from_node = ANY($2::uuid[]) OR to_node = ANY($2::uuid[]))`,
+        [this.tenantId, uuids],
+      );
+      const deleted = await client.query(
+        `DELETE FROM graph_nodes WHERE id = ANY($1::uuid[])`,
+        [uuids],
+      );
+      await client.query('COMMIT');
+      return { deletedNodes: deleted.rowCount ?? 0 };
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;

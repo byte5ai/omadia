@@ -18,6 +18,7 @@ import type {
   AclAuditEntry,
   AclMutationOptions,
   ChannelIdentityIngest,
+  MemorableKnowledgePurgeFilter,
   CreateInconsistencyInput,
   CreateExcerptMergeCandidateInput,
   CreateMergeCandidateInput,
@@ -271,6 +272,18 @@ export class InconsistencyTriggeringKnowledgeGraph implements KnowledgeGraph {
     actor: AclMutationOptions,
   ): Promise<void> {
     return this.inner.deleteMemory(memorableKnowledgeNodeId, actor);
+  }
+
+  countMemorableKnowledge(
+    filter: MemorableKnowledgePurgeFilter,
+  ): Promise<{ count: number }> {
+    return this.inner.countMemorableKnowledge(filter);
+  }
+
+  purgeMemorableKnowledge(
+    filter: MemorableKnowledgePurgeFilter,
+  ): Promise<{ deletedNodes: number }> {
+    return this.inner.purgeMemorableKnowledge(filter);
   }
   listMemoryAclAudit(
     memorableKnowledgeNodeId: string,

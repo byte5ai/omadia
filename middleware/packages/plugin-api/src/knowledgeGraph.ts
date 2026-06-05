@@ -243,6 +243,34 @@ export interface KnowledgeGraph {
     actor: AclMutationOptions,
   ): Promise<void>;
   /**
+   * Danger-Zone purge — count the MemorableKnowledge nodes that
+   * {@link purgeMemorableKnowledge} WOULD delete for the same filter.
+   * Read-only; used by the admin dry-run preview. Never throws on an
+   * empty match — returns `{ deletedNodes: 0 }`-shaped `{ count: 0 }`.
+   */
+  countMemorableKnowledge(
+    filter: MemorableKnowledgePurgeFilter,
+  ): Promise<{ count: number }>;
+  /**
+   * Danger-Zone purge — hard-delete every MemorableKnowledge node
+   * matching `filter` (and its incident edges) in ONE transaction.
+   *
+   *   - No filter beyond `tenantId` ⇒ ALL MemorableKnowledge for the
+   *     tenant.
+   *   - `originAgent` matches the `properties->>'origin_agent'` prop.
+   *   - `aclOwner` matches membership in `properties->'acl_owners'`.
+   *
+   * Only `type = 'MemorableKnowledge'` rows are removed — other node
+   * types are never touched. Attached `PalaiaExcerpt` nodes are cascaded
+   * (mirrors {@link deleteMemory}). Unlike `deleteMemory`, this is an
+   * operator-level bulk action: it does NOT enforce per-MK ownership and
+   * does NOT write per-MK ACL audit rows (the admin layer writes a single
+   * `memory_purge_audit` row for the whole operation).
+   */
+  purgeMemorableKnowledge(
+    filter: MemorableKnowledgePurgeFilter,
+  ): Promise<{ deletedNodes: number }>;
+  /**
    * Slice 3 — read the ACL audit-log for a single MemorableKnowledge.
    * Returns newest-first. Survives delete of the MK.
    */
@@ -1203,6 +1231,22 @@ export interface AclMutationOptions {
   actorChannelIdentityId?: string;
   /** Optional rationale shown in the audit trail. */
   reason?: string;
+}
+
+/**
+ * Danger-Zone bulk-purge selector for MemorableKnowledge. `tenantId` is
+ * always required (purge is never cross-tenant). `originAgent` and
+ * `aclOwner` are additive AND-narrowing filters; omitting both means
+ * "all MemorableKnowledge for the tenant". Used by
+ * `countMemorableKnowledge` (preview) and `purgeMemorableKnowledge`.
+ */
+export interface MemorableKnowledgePurgeFilter {
+  /** Tenant whose MemorableKnowledge is in scope. Required. */
+  tenantId: string;
+  /** Restrict to MK whose `properties->>'origin_agent'` equals this slug. */
+  originAgent?: string;
+  /** Restrict to MK whose `properties->'acl_owners'` contains this user id. */
+  aclOwner?: string;
 }
 
 /**

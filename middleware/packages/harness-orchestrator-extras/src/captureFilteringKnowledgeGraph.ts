@@ -59,6 +59,7 @@ import type {
   ListMemorableKnowledgeOptions,
   AclAuditEntry,
   AclMutationOptions,
+  MemorableKnowledgePurgeFilter,
   PalaiaExcerptNode,
   PalaiaExcerptUpdate,
   MemorableKnowledgeSearchOptions,
@@ -299,6 +300,18 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
     actor: AclMutationOptions,
   ): Promise<void> {
     return this.inner.deleteMemory(memorableKnowledgeNodeId, actor);
+  }
+
+  countMemorableKnowledge(
+    filter: MemorableKnowledgePurgeFilter,
+  ): Promise<{ count: number }> {
+    return this.inner.countMemorableKnowledge(filter);
+  }
+
+  purgeMemorableKnowledge(
+    filter: MemorableKnowledgePurgeFilter,
+  ): Promise<{ deletedNodes: number }> {
+    return this.inner.purgeMemorableKnowledge(filter);
   }
 
   listMemoryAclAudit(
