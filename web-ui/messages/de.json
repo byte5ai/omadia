@@ -436,6 +436,23 @@
     "dismissTitle": "Abbrechen"
   },
   "builder": {
+    "issueReport": {
+      "kicker": "Core-Bug an omadia melden",
+      "publicWarning": "Dieser Text geht in das <strong>öffentliche</strong> Repo. Secrets und personenbezogene Daten wurden automatisch entfernt — bitte vor dem Anlegen prüfen.",
+      "filed": "Issue <issueLink>#{number}</issueLink> angelegt — Workaround verknüpft.",
+      "confirmCreate": "Bestätigen & anlegen",
+      "creating": "Wird angelegt…",
+      "openGithub": "GitHub-Tab öffnen",
+      "issueNumberPlaceholder": "Issue-Nr.",
+      "confirmNumber": "Issue-Nummer bestätigen",
+      "linking": "Wird verknüpft…",
+      "dismiss": "Verwerfen",
+      "errorNoApp": "Direkt-Anlegen ist auf dieser Instanz nicht konfiguriert. Bitte über den GitHub-Tab manuell melden.",
+      "errorInvalidNumber": "Bitte eine gültige Issue-Nummer eingeben.",
+      "errorCreateFailed": "Anlegen fehlgeschlagen.",
+      "errorConfirm": "Bestätigen fehlgeschlagen: {message}",
+      "errorConfirmFailed": "Bestätigen fehlgeschlagen."
+    },
     "simple": {
       "intro": {
         "badge": "No-Code",

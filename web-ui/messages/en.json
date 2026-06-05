@@ -436,6 +436,23 @@
     "dismissTitle": "Cancel"
   },
   "builder": {
+    "issueReport": {
+      "kicker": "Report core bug to omadia",
+      "publicWarning": "This text goes into the <strong>public</strong> repo. Secrets and personal data were removed automatically — please review before filing.",
+      "filed": "Issue <issueLink>#{number}</issueLink> created — workaround linked.",
+      "confirmCreate": "Confirm & file",
+      "creating": "Filing…",
+      "openGithub": "Open GitHub tab",
+      "issueNumberPlaceholder": "Issue no.",
+      "confirmNumber": "Confirm issue number",
+      "linking": "Linking…",
+      "dismiss": "Dismiss",
+      "errorNoApp": "Direct filing is not configured on this instance. Please report manually via the GitHub tab.",
+      "errorInvalidNumber": "Please enter a valid issue number.",
+      "errorCreateFailed": "Filing failed.",
+      "errorConfirm": "Confirming failed: {message}",
+      "errorConfirmFailed": "Confirming failed."
+    },
     "simple": {
       "intro": {
         "badge": "No-Code",

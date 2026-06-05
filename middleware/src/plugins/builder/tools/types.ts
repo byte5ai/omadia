@@ -163,6 +163,16 @@ export interface BuilderToolContext {
     labels: readonly string[];
   };
   /**
+   * Issue #206 (v1.2) — true when the server has a GitHub-App issue
+   * creator wired AND the upstream is allowlisted, so the operator can
+   * file the bug directly (after confirming the sanitized body) instead
+   * of the browser-submit handoff. The `report_*` tool only uses this to
+   * pick the UX mode it returns; the actual POST stays server-side in the
+   * create-issue route. When false/undefined the tool falls back to
+   * browser-submit.
+   */
+  readonly directIssueCreateAvailable?: boolean;
+  /**
    * Issue #56 — fire-and-forget audit logger. Mutating tools (`set_persona_config`,
    * `set_quality_config`, `patch_spec`, `fill_slot`) call `ctx.audit.log(...)`
    * to append a row to the `builder_audit` table. Read-only tools (`lint_spec`,

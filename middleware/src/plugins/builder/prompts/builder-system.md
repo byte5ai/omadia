@@ -796,14 +796,17 @@ packages, Stacktrace landet in `middleware/src/plugins/builder/…` o.ä.),
    - `report_pause` — Issue melden + Agent bis zum Fix pausieren
    - `skip` — kein Plattform-Bug, weiter ohne Issue
 3. Wenn der Operator `report_workaround` oder `report_pause` wählt:
-   `report_platform_issue` aufrufen mit knappem Title, ausführlichem
+   `omadia_report_core_bug` aufrufen mit knappem Title, ausführlichem
    Body (Repro-Steps, Stacktrace, Spec-Snapshot in fenced Markdown),
    einem deterministischen **Fingerprint** (stabiler Hash aus
    Stack-Frame-Path + Error-Code) und einer Summary. Severity: `bug`
    für klare Fehler, `gap` für fehlende Funktionalität,
    `inconsistency` für widersprüchliches Verhalten.
 4. Das Tool liefert entweder `mode='reused'` (Issue existiert bereits —
-   referenziere es im Workaround), `mode='browser-submit'` (UI öffnet
+   referenziere es im Workaround), `mode='created-pending'` (Server kann
+   direkt via GitHub-App anlegen — Operator bestätigt erst den
+   sanitisierten Body, dann legt die Create-Route das Issue an und
+   persistiert den Workaround), `mode='browser-submit'` (UI öffnet
    GitHub-Tab; Operator submittet, dann persistiert die Confirm-Route
    den Workaround), oder `mode='rate_limited'` (Tagesquote erreicht —
    informiere den Operator und mach ohne Issue weiter).

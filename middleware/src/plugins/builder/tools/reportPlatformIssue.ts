@@ -49,7 +49,12 @@ const InputSchema = z
 
 type Input = z.infer<typeof InputSchema>;
 
-export type ReportMode = 'reused' | 'browser-submit' | 'rate_limited' | 'unavailable';
+export type ReportMode =
+  | 'reused'
+  | 'created-pending'
+  | 'browser-submit'
+  | 'rate_limited'
+  | 'unavailable';
 
 export interface ReportPlatformIssueResult {
   ok: boolean;
@@ -68,6 +73,17 @@ export interface ReportPlatformIssueResult {
     pendingId: string;
     fingerprintMarker: string;
   };
+  /**
+   * Set when `mode === 'created-pending'`: the server can file the issue
+   * directly via the GitHub App, but only after the operator confirms the
+   * sanitized body. The UI shows `sanitizedBody`, and on confirm POSTs to
+   * the `workarounds/create-issue` route (which performs the actual,
+   * irreversible create server-side). No GitHub tab is opened.
+   */
+  directSubmit?: {
+    pendingId: string;
+    fingerprintMarker: string;
+  };
   /** Sanitized issue body. Empty for `reused` / `rate_limited`. */
   sanitizedBody?: string;
   redactions?: Array<{ kind: string; index: number; length: number }>;
@@ -81,18 +97,24 @@ const DEFAULT_RATE_LIMIT_CAP = 3;
 const RATE_LIMIT_WINDOW_HOURS = 24;
 
 export const reportPlatformIssueTool: BuilderTool<Input, ReportPlatformIssueResult> = {
-  id: 'report_platform_issue',
+  // Renamed off `report_platform_issue` (Issue #206): that id collided
+  // with the Anthropic platform-injected tool of the same name, which
+  // shadowed this native tool so the agent's call went to Anthropic
+  // instead of the omadia repo. `omadia_`-prefixed ids cannot be
+  // shadowed by provider-side tools.
+  id: 'omadia_report_core_bug',
   description:
-    'Open a pre-populated GitHub issue tab for the operator to submit. ' +
+    'File an omadia CORE bug into the upstream repo. ' +
     'Use only after `ask_user_choice` returned `report_workaround` or ' +
     '`report_pause` for a platform-classified triage. The tool first ' +
     'checks for a duplicate via fingerprint, then enforces the per-' +
-    'operator daily rate limit, then sanitizes the body. The operator ' +
-    'submits the issue under their own GitHub account; v1 does NOT ' +
-    'support PAT-backed direct creation. After the operator submits, ' +
-    'the UI confirms the resulting issue number via the confirm-issue ' +
-    'route — that round-trip validates the bot-label + fingerprint ' +
-    'marker before the workaround is persisted.',
+    'operator daily rate limit, then sanitizes the body. When the server ' +
+    'has a GitHub App wired (mode=created-pending) the operator confirms ' +
+    'the sanitized body and the issue is filed directly by the bot; ' +
+    'otherwise (mode=browser-submit) a pre-populated GitHub tab opens and ' +
+    'the operator submits under their own account. Either way the round-' +
+    'trip validates the bot-label + fingerprint marker before the ' +
+    'workaround is persisted — nothing reaches the public repo unconfirmed.',
   input: InputSchema,
   async run(input, ctx): Promise<ReportPlatformIssueResult> {
     if (!ctx.upstreamIssueConfig || !ctx.githubIssueCache || !ctx.triageLog) {
@@ -145,14 +167,54 @@ export const reportPlatformIssueTool: BuilderTool<Input, ReportPlatformIssueResu
     const enrichedBody = `${input.body.trim()}\n\n${fingerprintMarker}\n`;
     const sanitized = sanitizeIssueBody(enrichedBody);
 
-    // 4. Build browser-submit URL.
     const pendingId = randomUUID();
+
+    // 4a. Direct-create available (GitHub App wired + allowlisted upstream):
+    //     hand the operator a confirm step on the *sanitized* body. The
+    //     actual irreversible POST happens server-side in the create-issue
+    //     route only after that confirm — never autonomously here.
+    if (ctx.directIssueCreateAvailable) {
+      // Surface a confirm card on every open tab. The actual filing happens
+      // only when the operator confirms via the create-issue route.
+      ctx.bus.emit(ctx.draftId, {
+        type: 'issue_report_pending',
+        pendingId,
+        mode: 'created-pending',
+        title: input.title,
+        summary: input.summary,
+        fingerprint: input.fingerprint,
+        fingerprintMarker,
+        sanitizedBody: sanitized.body,
+      });
+      return {
+        ok: true,
+        mode: 'created-pending',
+        directSubmit: { pendingId, fingerprintMarker },
+        sanitizedBody: sanitized.body,
+        redactions: sanitized.redactions,
+      };
+    }
+
+    // 4b. Fallback: browser-submit URL the operator opens + submits under
+    //     their own GitHub account.
     const params = new URLSearchParams({
       title: input.title,
       body: sanitized.body,
       labels: labels.join(','),
     });
     const githubNewUrl = `https://github.com/${owner}/${repo}/issues/new?${params.toString()}`;
+
+    ctx.bus.emit(ctx.draftId, {
+      type: 'issue_report_pending',
+      pendingId,
+      mode: 'browser-submit',
+      title: input.title,
+      summary: input.summary,
+      fingerprint: input.fingerprint,
+      fingerprintMarker,
+      sanitizedBody: sanitized.body,
+      githubNewUrl,
+    });
 
     return {
       ok: true,

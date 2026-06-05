@@ -45,6 +45,10 @@ import type {
   TemplateSlotDef,
 } from '../../../../_lib/builderTypes';
 
+import {
+  IssueReportCard,
+  type PendingIssueReport,
+} from '../../../../_components/IssueReportCard';
 import { BuilderChatPane } from './BuilderChatPane';
 import { InstallDiffModal } from './InstallDiffModal';
 import { PaneCard } from './PaneCard';
@@ -205,6 +209,11 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
       description?: string;
     }>;
   } | null>(null);
+  // Issue #206 — pending core-bug report. Fed by the SpecEventBus
+  // (`issue_report_pending`); the chat panes render an IssueReportCard so the
+  // operator confirms the sanitized body before anything is filed.
+  const [pendingIssueReport, setPendingIssueReport] =
+    useState<PendingIssueReport | null>(null);
   // Pane collapse state — chat is the only pane that starts open. Editor +
   // Preview start collapsed so the user has the maximum width for the
   // initial conversation; expanding either is one click on the rail.
@@ -510,6 +519,20 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
         );
         return;
       }
+      if (ev.type === 'issue_report_pending') {
+        setPendingIssueReport({
+          pendingId: ev.pendingId,
+          mode: ev.mode,
+          title: ev.title,
+          summary: ev.summary,
+          fingerprint: ev.fingerprint,
+          fingerprintMarker: ev.fingerprintMarker,
+          sanitizedBody: ev.sanitizedBody,
+          ...(ev.githubNewUrl ? { githubNewUrl: ev.githubNewUrl } : {}),
+        });
+        // The spec is unchanged — the agent handed reporting to the operator.
+        return;
+      }
       scheduleRefetch();
     },
     { onStatus: setBusStatus },
@@ -674,6 +697,14 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
         open={installModalOpen}
         onClose={() => setInstallModalOpen(false)}
       />
+
+      {pendingIssueReport && (
+        <IssueReportCard
+          draftId={draft.id}
+          report={pendingIssueReport}
+          onResolved={() => setPendingIssueReport(null)}
+        />
+      )}
 
       {viewMode === 'simple' ? (
         <SimpleWorkspace

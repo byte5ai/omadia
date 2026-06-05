@@ -298,6 +298,29 @@ export type SpecBusEvent =
       type: 'user_choice_resolved';
       choiceId: string;
       value: string | null;
+    }
+  | {
+      /**
+       * Issue #206 (v1.2): the builder agent called `omadia_report_core_bug`.
+       * The UI renders an IssueReportCard showing the `sanitizedBody` and
+       * requires an explicit operator confirm before anything is filed into
+       * the public repo. Mirror of `issue_report_pending` in
+       * middleware/src/plugins/builder/specEventBus.ts.
+       *
+       *   - `created-pending` → confirm POSTs `workarounds/create-issue`
+       *     (server files via the GitHub App).
+       *   - `browser-submit` → UI opens `githubNewUrl`, then POSTs
+       *     `workarounds/confirm-issue` with the resulting issue number.
+       */
+      type: 'issue_report_pending';
+      pendingId: string;
+      mode: 'created-pending' | 'browser-submit';
+      title: string;
+      summary: string;
+      fingerprint: string;
+      fingerprintMarker: string;
+      sanitizedBody: string;
+      githubNewUrl?: string;
     };
 
 // -----------------------------------------------------------------------------

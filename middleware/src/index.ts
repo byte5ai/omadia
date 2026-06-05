@@ -69,9 +69,12 @@ import { PreviewChatService } from './plugins/builder/previewChatService.js';
 import { BuilderAgent } from './plugins/builder/builderAgent.js';
 import { BuilderTriageLog } from './plugins/builder/builderTriageLog.js';
 import { GithubIssueCache } from './plugins/builder/githubIssueCache.js';
+import { GithubIssueCreator } from './plugins/builder/githubIssueCreator.js';
+import { GitHubAppTokenProvider } from './plugins/builder/githubAppAuth.js';
 import { UserChoiceCoordinator } from './plugins/builder/userChoiceCoordinator.js';
 import {
   isUpstreamAllowlisted,
+  loadGitHubAppConfig,
   loadUpstreamIssueConfig,
 } from './plugins/builder/upstreamIssueConfig.js';
 import { WorkaroundStateStore } from './plugins/builder/workaroundStateStore.js';
@@ -2229,6 +2232,30 @@ async function main(): Promise<void> {
     );
   }
 
+  // Issue #206 (v1.2) — optional GitHub-App direct-create path. Built only
+  // when (a) App credentials are present in the environment AND (b) the
+  // upstream is allowlisted. Both gates matter: the credentials are a
+  // deployment secret, and the allowlist prevents a mis-pointed fork from
+  // auto-filing into an arbitrary repo under the bot identity. When unbuilt
+  // the agent transparently falls back to browser-submit.
+  const githubAppConfig = loadGitHubAppConfig();
+  let builderIssueCreator: GithubIssueCreator | undefined;
+  if (githubAppConfig && isUpstreamAllowlisted(upstreamIssueConfig)) {
+    builderIssueCreator = new GithubIssueCreator({
+      tokenProvider: new GitHubAppTokenProvider({ config: githubAppConfig }),
+    });
+    console.log(
+      `[builder/issue-reporting] direct-create enabled via GitHub App ` +
+        `(app id ${githubAppConfig.appId}) → ${upstreamIssueConfig.owner}/${upstreamIssueConfig.repo}`,
+    );
+  } else if (githubAppConfig) {
+    console.warn(
+      `[builder/issue-reporting] GitHub App configured but upstream ` +
+        `${upstreamIssueConfig.owner}/${upstreamIssueConfig.repo} is not allowlisted — ` +
+        `direct-create stays OFF, falling back to browser-submit.`,
+    );
+  }
+
   const builderAgent = new BuilderAgent({
     anthropic: client,
     draftStore,
@@ -2263,6 +2290,7 @@ async function main(): Promise<void> {
     triageLog: builderTriageLog,
     githubIssueCache: builderGithubIssueCache,
     upstreamIssueConfig,
+    directIssueCreateAvailable: builderIssueCreator !== undefined,
     logger: (...args: unknown[]) => {
       console.log('[builder]', ...args);
     },
@@ -2371,6 +2399,7 @@ async function main(): Promise<void> {
         store: draftStore,
         userChoice: builderUserChoice,
         githubIssueCache: builderGithubIssueCache,
+        ...(builderIssueCreator ? { issueCreator: builderIssueCreator } : {}),
         bus: builderSpecBus,
         upstream: {
           owner: upstreamIssueConfig.owner,
