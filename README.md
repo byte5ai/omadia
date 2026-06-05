@@ -65,22 +65,18 @@ hand you a receipt for it:
 
 ## Why omadia?
 
-omadia optimizes for the things that matter once an agent system leaves a laptop:
-ownership, auditability, and dropping into a real enterprise stack — not just
-"how many demos can it run."
+omadia optimizes for what matters once an agent system leaves a laptop —
+ownership, auditability, and dropping into a real enterprise stack, not just
+"how many demos can it run." What you get, first-class:
 
-| Outcome you care about        | **omadia** | OpenClaw | Paperclip | LangGraph / AutoGen |
-|-------------------------------|:----------:|:--------:|:---------:|:-------------------:|
-| Self-hosting, single machine  |     ✅     |    🟡    |    🟡     |   library (DIY)     |
-| Own your data (no SaaS)       |     ✅     |    🟡    |    ❌     |        ✅           |
-| Built-in audit trail / receipts |   ✅     |    ❌    |    🟡     |      DIY            |
-| Signed plugin distribution    |     ✅     |    ❌    |    ❌     |        ❌           |
-| EU / GDPR-ready posture       |     ✅     |    🟡    |    ❌     |      DIY            |
-| Multi-agent coordination      |     ✅     |    ✅    |    🟡     |        ✅           |
-| Enterprise integrations (M365, Odoo, Confluence) | ✅ | 🟡 | ❌ |   DIY        |
-| Bring-your-own LLM key        |     ✅     |    🟡    |    🟡     |        ✅           |
-
-<sub>✅ first-class · 🟡 partial / paid / add-on · ❌ not supported · DIY = you build it yourself on the framework. Comparison reflects self-hostable-platform positioning; corrections via PR welcome.</sub>
+- ✅ **Self-hosting on a single machine** — `docker compose up`, no SaaS dependency
+- ✅ **Own your data** — your Postgres, your LLM key; nothing leaves your box
+- ✅ **Built-in audit trail / receipts** — per-run trace + call-stack viewer for every agent run
+- ✅ **Signed plugin distribution** — verifiable plugin packages, not arbitrary npm at runtime
+- ✅ **EU / GDPR-ready posture** — single-tenant and self-hosted, data-resident by design
+- ✅ **Multi-agent coordination** — an orchestrator routes each turn across specialized agents
+- ✅ **Enterprise integrations** — Microsoft 365, Odoo, Confluence, Teams, Telegram
+- ✅ **Bring-your-own LLM key** — provider-pluggable
 
 ## What's in the box
 
