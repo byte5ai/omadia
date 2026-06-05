@@ -716,7 +716,7 @@
         },
         "externalReadsHint": "Preview führt Cross-Integration-Lookups (<code>spec.external_reads</code>) nicht aus — der Agent erkennt den fehlenden Service korrekt und wirft. Veröffentliche den Agent in den Plattform-Store, um den echten Datenpfad zu testen.",
         "agentStuck": {
-          "title": "Builder-Agent kommt bei Slot {slot} nicht weiter ({attempts} Versuche)",
+          "title": "Builder-Agent kommt bei Slot {slot} nicht weiter ({attempts, plural, one {# Versuch} other {# Versuche}})",
           "body": "{summary}. Öffne den Slot-Editor, prüf die Errors manuell und korrigier den Code — der Agent versucht es nicht von alleine erneut.",
           "dismiss": "Schließen",
           "dismissTooltip": "Banner schließen"
