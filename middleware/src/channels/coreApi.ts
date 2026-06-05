@@ -2,6 +2,7 @@ import type { RequestHandler, Router } from 'express';
 
 import type {
   ChatStreamEvent,
+  ChannelSocketHandler,
   ChannelUserRef,
   CoreApi,
   HttpMethod,
@@ -10,6 +11,7 @@ import type {
   PlatformIdentity,
 } from '@omadia/channel-sdk';
 import type { ExpressRouteRegistry } from './routeRegistry.js';
+import type { WebSocketRegistry } from './webSocketRegistry.js';
 
 /**
  * Orchestrator adapter the CoreApi delegates to. Intentionally narrow — we
@@ -45,6 +47,12 @@ export interface TurnDispatcher {
 export interface CreateCoreApiOptions {
   dispatcher: TurnDispatcher;
   routes: ExpressRouteRegistry;
+  /**
+   * Optional WebSocket registry. When present, the returned CoreApi exposes
+   * `registerWebSocket`; when absent, that method is simply not defined so
+   * channels feature-detect and non-WS wirings stay untouched.
+   */
+  webSockets?: WebSocketRegistry;
   log?: (level: LogLevel, message: string, context?: Record<string, unknown>) => void;
 }
 
@@ -57,7 +65,7 @@ export interface CreateCoreApiOptions {
 export function createCoreApi(opts: CreateCoreApiOptions): CoreApi {
   const log = opts.log ?? defaultLog;
 
-  return {
+  const api: CoreApi = {
     handleTurnStream(turn: IncomingTurn): AsyncIterable<ChatStreamEvent> {
       // Scope the orchestrator turn by the channel-specific conversation id.
       // v1 strategy: `${channelId}::${conversationId}` — stable, unique per
@@ -111,6 +119,19 @@ export function createCoreApi(opts: CreateCoreApiOptions): CoreApi {
 
     log,
   };
+
+  if (opts.webSockets) {
+    const webSockets = opts.webSockets;
+    api.registerWebSocket = (
+      channelId: string,
+      path: string,
+      handler: ChannelSocketHandler,
+    ): void => {
+      webSockets.register(channelId, path, handler);
+    };
+  }
+
+  return api;
 }
 
 function defaultLog(
