@@ -132,6 +132,13 @@
     "signedInAs": "Signed in as",
     "signOut": "Sign out"
   },
+  "error": {
+    "title": "Something went wrong",
+    "description": "This page hit an unexpected error and couldn't finish loading.",
+    "reload": "Reload",
+    "resetData": "Reset local chat data",
+    "resetDataHint": "Clears chats stored locally in this browser, then reloads. Your server-side data is untouched — use this if reloading alone doesn't help."
+  },
   "session": {
     "expiresAtLabel": "Session valid until",
     "warningTitle": "Session expiring soon",
