@@ -1,4 +1,4 @@
-import { describe, it, before, after, beforeEach, afterEach } from 'node:test';
+import { describe, it, before, after, afterEach } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -164,6 +164,67 @@ describe('reportPlatformIssueTool', () => {
     assert.match(result.browserSubmit?.fingerprintMarker ?? '', /omadia-fingerprint/);
     assert.match(result.sanitizedBody ?? '', /\[REDACTED:email\]/);
     assert.match(result.sanitizedBody ?? '', /\[REDACTED:internal-url\]/);
+  });
+
+  it('input schema accepts a summary longer than the old 280-char cap (regression)', () => {
+    // The agent realistically generates a full-sentence summary. The
+    // previous max(280) rejected anything longer with a Zod too_big,
+    // which crashed the report tool (see omadia_report_core_bug).
+    const longSummary = 'Builder-Surface: '.padEnd(300, 'x');
+    assert.ok(longSummary.length > 280 && longSummary.length <= 500);
+    const input = {
+      title: 'Builder surface lacks codegen observability',
+      body: 'Repro details.',
+      fingerprint: 'observ1234',
+      summary: longSummary,
+      severity: 'gap' as const,
+    };
+    // Parses cleanly now; would have thrown a too_big ZodError before.
+    const parsed = reportPlatformIssueTool.input.parse(input);
+    assert.equal(parsed.summary, longSummary);
+    // Still enforces an upper bound — 501 chars is rejected.
+    assert.throws(() =>
+      reportPlatformIssueTool.input.parse({ ...input, summary: 'x'.repeat(501) }),
+    );
+  });
+
+  it('returns mode=created-pending (sanitized, no GitHub URL) and emits issue_report_pending', async () => {
+    const fetch: CacheFetch = () =>
+      Promise.resolve(mockResponse({ status: 200, body: { items: [] } }));
+    await freshSetup(fetch);
+    const bus = new SpecEventBus();
+    const events: Array<{ type: string; mode?: string; sanitizedBody?: string }> = [];
+    bus.subscribe(draftId, (ev) => {
+      events.push(ev as { type: string; mode?: string; sanitizedBody?: string });
+    });
+    const ctx: BuilderToolContext = {
+      ...buildContextStub({ draftStore: store, userEmail, draftId, triageLog, githubIssueCache: cache }),
+      bus,
+      directIssueCreateAvailable: true,
+    };
+    const result = await reportPlatformIssueTool.run(
+      {
+        title: 'Codegen rejects valid local import',
+        body: 'Repro contains alice@byte5.de and http://app.staging.internal/x',
+        fingerprint: 'beadfeed1234',
+        summary: 'gate false positive',
+        severity: 'bug',
+      },
+      ctx,
+    );
+    assert.equal(result.mode, 'created-pending');
+    assert.ok(result.directSubmit);
+    assert.match(result.directSubmit?.fingerprintMarker ?? '', /omadia-fingerprint/);
+    // No GitHub tab is opened on the direct path.
+    assert.equal(result.browserSubmit, undefined);
+    // The operator still confirms a *sanitized* body.
+    assert.match(result.sanitizedBody ?? '', /\[REDACTED:email\]/);
+    assert.match(result.sanitizedBody ?? '', /\[REDACTED:internal-url\]/);
+    // The UI is driven by a cross-tab spec event carrying the sanitized body.
+    const pending = events.find((e) => e.type === 'issue_report_pending');
+    assert.ok(pending, 'issue_report_pending must be emitted');
+    assert.equal(pending?.mode, 'created-pending');
+    assert.match(pending?.sanitizedBody ?? '', /\[REDACTED:email\]/);
   });
 
   it('returns mode=rate_limited after 3 platform submissions in the window', async () => {

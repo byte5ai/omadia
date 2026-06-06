@@ -132,6 +132,13 @@
     "signedInAs": "Signed in as",
     "signOut": "Sign out"
   },
+  "error": {
+    "title": "Something went wrong",
+    "description": "This page hit an unexpected error and couldn't finish loading.",
+    "reload": "Reload",
+    "resetData": "Reset local chat data",
+    "resetDataHint": "Clears chats stored locally in this browser, then reloads. Your server-side data is untouched — use this if reloading alone doesn't help."
+  },
   "session": {
     "expiresAtLabel": "Session valid until",
     "warningTitle": "Session expiring soon",
@@ -436,6 +443,23 @@
     "dismissTitle": "Cancel"
   },
   "builder": {
+    "issueReport": {
+      "kicker": "Report core bug to omadia",
+      "publicWarning": "This text goes into the <strong>public</strong> repo. Secrets and personal data were removed automatically — please review before filing.",
+      "filed": "Issue <issueLink>#{number}</issueLink> created — workaround linked.",
+      "confirmCreate": "Confirm & file",
+      "creating": "Filing…",
+      "openGithub": "Open GitHub tab",
+      "issueNumberPlaceholder": "Issue no.",
+      "confirmNumber": "Confirm issue number",
+      "linking": "Linking…",
+      "dismiss": "Dismiss",
+      "errorNoApp": "Direct filing is not configured on this instance. Please report manually via the GitHub tab.",
+      "errorInvalidNumber": "Please enter a valid issue number.",
+      "errorCreateFailed": "Filing failed.",
+      "errorConfirm": "Confirming failed: {message}",
+      "errorConfirmFailed": "Confirming failed."
+    },
     "simple": {
       "intro": {
         "badge": "No-Code",
@@ -503,6 +527,7 @@
       "viewModeExtended": "Advanced",
       "viewModeSimpleTitle": "Guided no-code view — describe, review, try out",
       "viewModeExtendedTitle": "Full builder — spec, slots, source code, build status",
+      "viewModeLockedTitle": "Please wait for the current reply to finish before switching views",
       "statusDraft": "Draft",
       "statusPublished": "Published",
       "statusArchived": "Archived",
@@ -794,6 +819,7 @@
         "fields": {
           "agentId": "Agent ID",
           "name": "Name",
+          "author": "Author",
           "version": "Version",
           "template": "Template",
           "category": "Category",

@@ -1,5 +1,7 @@
 import { askUserChoiceTool } from './askUserChoice.js';
 import { fillSlotTool } from './fillSlot.js';
+import { getBuildStatusTool } from './getBuildStatus.js';
+import { inspectGeneratedArtifactTool } from './inspectGeneratedArtifact.js';
 import { lintSpecTool } from './lintSpec.js';
 import { listCatalogToolsTool } from './listCatalogTools.js';
 import { listPackageTypesTool } from './listPackageTypes.js';
@@ -9,6 +11,7 @@ import { readPackageTypesTool } from './readPackageTypes.js';
 import { readReferenceTool } from './readReference.js';
 import { readSlotTool } from './readSlot.js';
 import { reportPlatformIssueTool } from './reportPlatformIssue.js';
+import { runtimeSmokeStatusTool } from './runtimeSmokeStatus.js';
 import { setPersonaConfigTool } from './setPersonaConfig.js';
 import { setQualityConfigTool } from './setQualityConfig.js';
 import { suggestDependsOnTool } from './suggestDependsOn.js';
@@ -28,6 +31,8 @@ export type { LintIssue, LintSeverity } from './lintSpec.js';
 export {
   askUserChoiceTool,
   fillSlotTool,
+  getBuildStatusTool,
+  inspectGeneratedArtifactTool,
   lintSpecTool,
   listCatalogToolsTool,
   listPackageTypesTool,
@@ -37,6 +42,7 @@ export {
   readReferenceTool,
   readSlotTool,
   reportPlatformIssueTool,
+  runtimeSmokeStatusTool,
   setPersonaConfigTool,
   setQualityConfigTool,
   suggestDependsOnTool,
@@ -57,6 +63,10 @@ export function builderTools(): ReadonlyArray<BuilderTool<unknown, unknown>> {
     readReferenceTool as unknown as BuilderTool<unknown, unknown>,
     listPackageTypesTool as unknown as BuilderTool<unknown, unknown>,
     readPackageTypesTool as unknown as BuilderTool<unknown, unknown>,
+    // Issue #227 — codegen / build / runtime observability (read-only).
+    inspectGeneratedArtifactTool as unknown as BuilderTool<unknown, unknown>,
+    getBuildStatusTool as unknown as BuilderTool<unknown, unknown>,
+    runtimeSmokeStatusTool as unknown as BuilderTool<unknown, unknown>,
     setQualityConfigTool as unknown as BuilderTool<unknown, unknown>,
     setPersonaConfigTool as unknown as BuilderTool<unknown, unknown>,
     suggestDependsOnTool as unknown as BuilderTool<unknown, unknown>,

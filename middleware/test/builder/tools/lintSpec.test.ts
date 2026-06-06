@@ -161,6 +161,91 @@ describe('lintSpecTool', () => {
     assert.ok(result.issues.some((i) => i.code === 'inline_system_prompt'));
   });
 
+  it('warns when a slot uses a gated accessor without granting the permission', async () => {
+    await patchSpecTool.run({ patches: validBaseline }, harness.context());
+    await fillSlotTool.run(
+      {
+        slotKey: 'activate-body',
+        source:
+          "const answer = await ctx.subAgent.ask('@omadia/agent-seo-analyst', 'q');",
+      },
+      harness.context(),
+    );
+    const result = await lintSpecTool.run({}, harness.context());
+    const warns = result.issues.filter(
+      (i) => i.code === 'accessor_permission_undeclared',
+    );
+    assert.equal(warns.length, 1);
+    assert.equal(warns[0].severity, 'warning');
+    assert.match(warns[0].message, /ctx\.subAgent/);
+    assert.match(warns[0].message, /permissions\.subAgents\.calls/);
+    // It's a smell, not a build-breaker.
+    assert.equal(result.ok, true);
+  });
+
+  it('does not warn when the gated accessor permission IS granted', async () => {
+    await patchSpecTool.run(
+      {
+        patches: [
+          ...validBaseline,
+          {
+            op: 'add',
+            path: '/permissions',
+            value: { subAgents: { calls: ['@omadia/agent-seo-analyst'] } },
+          },
+        ],
+      },
+      harness.context(),
+    );
+    await fillSlotTool.run(
+      {
+        slotKey: 'activate-body',
+        source:
+          "const answer = await ctx.subAgent.ask('@omadia/agent-seo-analyst', 'q');",
+      },
+      harness.context(),
+    );
+    const result = await lintSpecTool.run({}, harness.context());
+    assert.ok(
+      !result.issues.some((i) => i.code === 'accessor_permission_undeclared'),
+      'permission is declared, so no accessor warning should fire',
+    );
+  });
+
+  it('does not warn on ctx.memory usage — memory is a platform default, not spec-gated', async () => {
+    await patchSpecTool.run({ patches: validBaseline }, harness.context());
+    await fillSlotTool.run(
+      {
+        slotKey: 'activate-body',
+        source:
+          "if (ctx.memory) { await ctx.memory.writeFile('state.json', '{}'); }",
+      },
+      harness.context(),
+    );
+    const result = await lintSpecTool.run({}, harness.context());
+    assert.ok(
+      !result.issues.some((i) => i.code === 'accessor_permission_undeclared'),
+      'ctx.memory is always available — referencing it must never be flagged',
+    );
+  });
+
+  it('does not match a bare boolean guard like `if (ctx.subAgent)` without a member access', async () => {
+    await patchSpecTool.run({ patches: validBaseline }, harness.context());
+    await fillSlotTool.run(
+      {
+        slotKey: 'activate-body',
+        source:
+          'const hasDelegation = Boolean(ctx.subAgent); // capability probe only',
+      },
+      harness.context(),
+    );
+    const result = await lintSpecTool.run({}, harness.context());
+    assert.ok(
+      !result.issues.some((i) => i.code === 'accessor_permission_undeclared'),
+      'a bare reference without a `.member` access is not real usage',
+    );
+  });
+
   it('flags empty slot source', async () => {
     await patchSpecTool.run({ patches: validBaseline }, harness.context());
     // fillSlot won't accept empty, so go through DraftStore directly to seed

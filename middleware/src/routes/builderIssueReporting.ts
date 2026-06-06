@@ -2,8 +2,10 @@ import { randomUUID } from 'node:crypto';
 
 import type { Router, Request, Response } from 'express';
 
+import { sanitizeIssueBody } from '../plugins/builder/issueBodySanitizer.js';
 import type { DraftStore } from '../plugins/builder/draftStore.js';
 import type { GithubIssueCache } from '../plugins/builder/githubIssueCache.js';
+import type { GithubIssueCreator } from '../plugins/builder/githubIssueCreator.js';
 import type { SpecEventBus } from '../plugins/builder/specEventBus.js';
 import type { UserChoiceCoordinator } from '../plugins/builder/userChoiceCoordinator.js';
 import type {
@@ -35,6 +37,13 @@ export interface BuilderIssueReportingDeps {
   store: DraftStore;
   userChoice: UserChoiceCoordinator;
   githubIssueCache: GithubIssueCache;
+  /**
+   * Issue #206 (v1.2) — GitHub-App-backed direct issue creator. Wired
+   * only when App credentials are present AND the upstream is allowlisted.
+   * When absent the `create-issue` route returns 409 and the agent stays
+   * on browser-submit. This is the single server-side WRITE surface.
+   */
+  issueCreator?: GithubIssueCreator;
   /** Optional bus reference for emitting `auto_resume_available`
    *  when the resume route fires. Without it, the route still works
    *  but loses the multi-tab notification. */
@@ -171,6 +180,139 @@ export function registerBuilderIssueReportingRoutes(
   );
 
   router.post(
+    '/drafts/:id/workarounds/create-issue',
+    async (req: Request, res: Response) => {
+      const email = readEmail(req);
+      if (!email) return sendJson(res, 401, { code: 'auth.missing' });
+      const draftId = readParam(req, 'id');
+      if (!draftId) return sendJson(res, 400, { code: 'builder.invalid_id' });
+
+      // Direct-create is opt-in: without a wired GitHub App the operator
+      // must use browser-submit. Never silently no-op.
+      if (!deps.issueCreator) {
+        return sendJson(res, 409, {
+          code: 'builder.direct_create_unavailable',
+          message:
+            'Direct issue creation is not configured on this instance — use the browser-submit flow.',
+        });
+      }
+
+      const body = (req.body ?? {}) as {
+        title?: unknown;
+        body?: unknown;
+        fingerprint?: unknown;
+        summary?: unknown;
+      };
+      const title = toNonEmptyString(body.title);
+      const rawBody = toNonEmptyString(body.body);
+      const fingerprint = toNonEmptyString(body.fingerprint);
+      const summary = toNonEmptyString(body.summary);
+      if (!title || !rawBody || !fingerprint || !summary) {
+        return sendJson(res, 400, {
+          code: 'builder.create_issue_invalid_payload',
+          message: 'title, body, fingerprint, and summary are required',
+        });
+      }
+
+      // Owner-scoped load — a foreign user cannot file against another
+      // operator's draft.
+      const draft = await deps.store.load(email, draftId);
+      if (!draft) return sendJson(res, 404, { code: 'builder.draft_not_found' });
+
+      const { owner, repo, requiredLabels } = deps.upstream;
+
+      // Defense in depth: re-sanitize server-side even though the tool
+      // already did. The client-supplied body is untrusted, and a public
+      // issue is irreversible — so the secret/PII scrub runs again here.
+      const marker = `<!-- omadia-fingerprint: ${fingerprint} -->`;
+      const withMarker = rawBody.includes(marker)
+        ? rawBody
+        : `${rawBody.trim()}\n\n${marker}\n`;
+      const sanitized = sanitizeIssueBody(withMarker);
+
+      // Dedup against an existing builder-bot issue before creating — a
+      // concurrent operator (or a retry) must not open a second copy.
+      const existing = await deps.githubIssueCache.searchByFingerprint(
+        owner,
+        repo,
+        fingerprint,
+        requiredLabels,
+      );
+      if (existing) {
+        const reusedRef: IssueRef = {
+          owner,
+          repo,
+          number: existing.number,
+          url: existing.url,
+        };
+        const reusedResult = await persistWorkaround(
+          deps,
+          email,
+          draftId,
+          draft.spec,
+          reusedRef,
+          fingerprint,
+          summary,
+        );
+        if (!reusedResult.ok) {
+          return sendJson(res, 500, { code: 'builder.create_issue_persist_failed' });
+        }
+        return sendJson(res, 200, {
+          ok: true,
+          mode: 'reused',
+          workaround: reusedResult.workaround,
+          issueState: existing.state,
+        });
+      }
+
+      const created = await deps.issueCreator.createIssue({
+        owner,
+        repo,
+        title,
+        body: sanitized.body,
+        labels: requiredLabels,
+      });
+      if (!created.ok) {
+        const status = created.reason === 'rate_limited' ? 429 : 502;
+        return sendJson(res, status, {
+          code: `builder.create_issue_${created.reason}`,
+          message: createFailureMessage(created.reason),
+        });
+      }
+
+      const issueRef: IssueRef = {
+        owner,
+        repo,
+        number: created.number,
+        url: created.url,
+      };
+      const persisted = await persistWorkaround(
+        deps,
+        email,
+        draftId,
+        draft.spec,
+        issueRef,
+        fingerprint,
+        summary,
+      );
+      if (!persisted.ok) {
+        // The issue exists upstream but we could not record the workaround.
+        // Surface the issue ref so the operator is not left guessing.
+        return sendJson(res, 500, {
+          code: 'builder.create_issue_persist_failed',
+          issueRef,
+        });
+      }
+      return sendJson(res, 201, {
+        ok: true,
+        mode: 'created',
+        workaround: persisted.workaround,
+        issueRef,
+      });
+    },
+  );
+
+  router.post(
     '/drafts/:id/resume-from-issue',
     async (req: Request, res: Response) => {
       const email = readEmail(req);
@@ -269,6 +411,50 @@ function appendWorkaround(
       workarounds: [...filtered, workaround],
     },
   };
+}
+
+/**
+ * Builds + persists a workaround for `issueRef` onto the draft spec.
+ * Shared by the confirm-issue (browser-submit) and create-issue
+ * (direct-create) paths so both record workarounds identically.
+ */
+async function persistWorkaround(
+  deps: BuilderIssueReportingDeps,
+  email: string,
+  draftId: string,
+  spec: AgentSpecSkeleton,
+  issueRef: IssueRef,
+  fingerprint: string,
+  summary: string,
+): Promise<{ ok: true; workaround: Workaround } | { ok: false }> {
+  const newWorkaround: Workaround = {
+    id: randomUUID(),
+    issueRef,
+    fingerprint,
+    summary,
+    createdAt: Date.now(),
+  };
+  const nextSpec = appendWorkaround(spec, newWorkaround);
+  const updated = await deps.store.update(email, draftId, { spec: nextSpec });
+  if (!updated) return { ok: false };
+  return { ok: true, workaround: newWorkaround };
+}
+
+function createFailureMessage(reason: string): string {
+  switch (reason) {
+    case 'rate_limited':
+      return 'GitHub rate-limited the create request — try again later.';
+    case 'auth':
+      return 'GitHub App authentication failed — check the App credentials.';
+    case 'forbidden':
+      return 'The GitHub App lacks issues:write on the upstream repo, or the repo does not exist.';
+    case 'validation':
+      return 'GitHub rejected the issue payload (labels or fields invalid).';
+    case 'network':
+      return 'Could not reach GitHub to create the issue.';
+    default:
+      return 'Issue creation failed for an unknown reason.';
+  }
 }
 
 function clearPauseOnIssue(spec: AgentSpecSkeleton): AgentSpecSkeleton {

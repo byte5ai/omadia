@@ -113,7 +113,10 @@ export interface Plugin {
   compat_core: string;
   signed: boolean;
   signed_by: string | null;
-  required_secrets: PluginSetupField[];
+  /** All declared setup fields (secret AND non-secret config) from the
+   *  manifest's `setup.fields`. Not secrets-only — split by each field's
+   *  `type` (secret/oauth → vault, everything else → instance config). */
+  setup_fields: PluginSetupField[];
   permissions_summary: PluginPermissionsSummary;
   integrations_summary: string[];
   install_state: PluginInstallState;

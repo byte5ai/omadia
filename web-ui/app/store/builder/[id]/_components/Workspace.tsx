@@ -45,6 +45,10 @@ import type {
   TemplateSlotDef,
 } from '../../../../_lib/builderTypes';
 
+import {
+  IssueReportCard,
+  type PendingIssueReport,
+} from '../../../../_components/IssueReportCard';
 import { BuilderChatPane } from './BuilderChatPane';
 import { InstallDiffModal } from './InstallDiffModal';
 import { PaneCard } from './PaneCard';
@@ -133,14 +137,67 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
       // localStorage unavailable (private mode / SSR) — keep the default.
     }
   }, []);
-  const handleViewModeChange = useCallback((next: 'simple' | 'extended') => {
-    setViewMode(next);
-    try {
-      window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, next);
-    } catch {
-      // Non-fatal — the preference just won't persist across reloads.
-    }
-  }, []);
+  // Issue #224 — the simple and extended views are separate React subtrees
+  // (SimpleWorkspace's SimpleIntakePane vs the extended BuilderChatPane; each
+  // view also mounts its own PreviewChatPane). Toggling unmounts the active
+  // pane, which aborts any in-flight NDJSON turn and drops the live message
+  // that only lived in that pane's local state. Each chat pane lifts its
+  // in-flight flag up here; while either a build OR a test reply streams we
+  // lock the toggle so a half-streamed turn can never be lost.
+  const [builderChatStreaming, setBuilderChatStreaming] = useState(false);
+  const [previewChatStreaming, setPreviewChatStreaming] = useState(false);
+  const chatStreaming = builderChatStreaming || previewChatStreaming;
+  // Brief refetch-in-progress flag — also disables the toggle so a fast
+  // double-click can't fire a second switch mid-refetch.
+  const [viewSwitching, setViewSwitching] = useState(false);
+  // Read the freshest values inside the async handler without widening the
+  // callback's dep array (which would rebuild it on every keystroke-driven
+  // re-render of the workspace). Synced in an effect — mutating a ref during
+  // render is disallowed by react-hooks/refs.
+  const chatStreamingRef = useRef(chatStreaming);
+  const viewModeRef = useRef(viewMode);
+  useEffect(() => {
+    chatStreamingRef.current = chatStreaming;
+    viewModeRef.current = viewMode;
+  }, [chatStreaming, viewMode]);
+  const handleViewModeChange = useCallback(
+    async (next: 'simple' | 'extended'): Promise<void> => {
+      if (next === viewModeRef.current) return;
+      // Never switch mid-stream — the unmount would abort the turn and the
+      // live message would be lost. The UI disables the toggle while
+      // streaming; this guard defends against a click that races a
+      // just-started turn.
+      if (chatStreamingRef.current) return;
+      // The target pane seeds its transcript from `draft` exactly once, on
+      // mount. Refetch the persisted draft FIRST so the freshly-mounted pane
+      // shows every turn that completed in the view we're leaving — including
+      // one whose SSE-debounced refetch (250ms) may not have landed yet.
+      // Both `transcript` and `previewTranscript` are persisted per turn
+      // server-side, so this recovers build- and test-chat messages alike.
+      setViewSwitching(true);
+      try {
+        const env = await getBuilderDraft(initialDraft.id);
+        setDraft(env.draft);
+      } catch {
+        // Refetch failed — switch anyway. The new pane seeds from the current
+        // (possibly slightly stale) draft; the stream-lock already prevented
+        // the unrecoverable mid-stream loss.
+      } finally {
+        setViewSwitching(false);
+      }
+      // A turn may have started in the still-mounted current pane during the
+      // refetch window — re-check before committing the switch so we never
+      // unmount mid-stream.
+      if (chatStreamingRef.current) return;
+      setViewMode(next);
+      try {
+        window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, next);
+      } catch {
+        // Non-fatal — the preference just won't persist across reloads.
+      }
+    },
+    [initialDraft.id],
+  );
   const tw = useTranslations('builder.workspace');
   const [busStatus, setBusStatus] = useState<'open' | 'closed' | 'error'>(
     'closed',
@@ -205,6 +262,11 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
       description?: string;
     }>;
   } | null>(null);
+  // Issue #206 — pending core-bug report. Fed by the SpecEventBus
+  // (`issue_report_pending`); the chat panes render an IssueReportCard so the
+  // operator confirms the sanitized body before anything is filed.
+  const [pendingIssueReport, setPendingIssueReport] =
+    useState<PendingIssueReport | null>(null);
   // Pane collapse state — chat is the only pane that starts open. Editor +
   // Preview start collapsed so the user has the maximum width for the
   // initial conversation; expanding either is one click on the rail.
@@ -510,6 +572,20 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
         );
         return;
       }
+      if (ev.type === 'issue_report_pending') {
+        setPendingIssueReport({
+          pendingId: ev.pendingId,
+          mode: ev.mode,
+          title: ev.title,
+          summary: ev.summary,
+          fingerprint: ev.fingerprint,
+          fingerprintMarker: ev.fingerprintMarker,
+          sanitizedBody: ev.sanitizedBody,
+          ...(ev.githubNewUrl ? { githubNewUrl: ev.githubNewUrl } : {}),
+        });
+        // The spec is unchanged — the agent handed reporting to the operator.
+        return;
+      }
       scheduleRefetch();
     },
     { onStatus: setBusStatus },
@@ -602,6 +678,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
         draft={draft}
         viewMode={viewMode}
         onViewModeChange={handleViewModeChange}
+        viewToggleDisabled={chatStreaming || viewSwitching}
         installEnabled={installEnabled}
         installDisabledReason={
           buildStatus.phase !== 'ok'
@@ -675,6 +752,14 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
         onClose={() => setInstallModalOpen(false)}
       />
 
+      {pendingIssueReport && (
+        <IssueReportCard
+          draftId={draft.id}
+          report={pendingIssueReport}
+          onResolved={() => setPendingIssueReport(null)}
+        />
+      )}
+
       {viewMode === 'simple' ? (
         <SimpleWorkspace
           draft={draft}
@@ -688,6 +773,8 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
           }
           pendingUserChoice={pendingUserChoice}
           onUserChoiceResolved={() => setPendingUserChoice(null)}
+          onIntakeStreamingChange={setBuilderChatStreaming}
+          onPreviewStreamingChange={setPreviewChatStreaming}
         />
       ) : (
         <>
@@ -712,6 +799,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
             onPendingInputConsumed={() => setPendingChatInput(null)}
             pendingUserChoice={pendingUserChoice}
             onUserChoiceResolved={() => setPendingUserChoice(null)}
+            onStreamingChange={setBuilderChatStreaming}
           />
         );
         const editorPaneBody = (
@@ -800,6 +888,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
                 : undefined
             }
             onBufferedSecretKeysChange={handleBufferedSecretKeysChange}
+            onStreamingChange={setPreviewChatStreaming}
           />
         );
 
@@ -1228,6 +1317,7 @@ function WorkspaceHeader({
   draft,
   viewMode,
   onViewModeChange,
+  viewToggleDisabled,
   installEnabled,
   installDisabledReason,
   onInstallClick,
@@ -1242,7 +1332,11 @@ function WorkspaceHeader({
 }: {
   draft: Draft;
   viewMode: ViewMode;
-  onViewModeChange: (next: ViewMode) => void;
+  onViewModeChange: (next: ViewMode) => void | Promise<void>;
+  /** Issue #224 — true while a chat reply streams or the post-toggle
+   *  refetch is in flight; the segmented control is locked so switching
+   *  views can't abort a turn or seed a pane from a stale transcript. */
+  viewToggleDisabled: boolean;
   installEnabled: boolean;
   installDisabledReason: string | null;
   onInstallClick: () => void;
@@ -1307,7 +1401,11 @@ function WorkspaceHeader({
         </dl>
       ) : null}
 
-      <ViewModeToggle value={viewMode} onChange={onViewModeChange} />
+      <ViewModeToggle
+        value={viewMode}
+        onChange={onViewModeChange}
+        disabled={viewToggleDisabled}
+      />
 
       <button
         type="button"
@@ -1336,9 +1434,13 @@ function WorkspaceHeader({
 function ViewModeToggle({
   value,
   onChange,
+  disabled = false,
 }: {
   value: ViewMode;
-  onChange: (next: ViewMode) => void;
+  onChange: (next: ViewMode) => void | Promise<void>;
+  /** Issue #224 — locks the control while a chat reply streams (or the
+   *  post-toggle refetch runs) so switching can't lose in-flight messages. */
+  disabled?: boolean;
 }): React.ReactElement {
   const tw = useTranslations('builder.workspace');
   const items: Array<{ id: ViewMode; label: string; title: string }> = [
@@ -1357,23 +1459,37 @@ function ViewModeToggle({
     <div
       role="tablist"
       aria-label={tw('viewModeAriaLabel')}
-      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-[color:var(--divider)] bg-[color:var(--bg-soft)] p-1"
+      aria-busy={disabled || undefined}
+      className={cn(
+        'inline-flex shrink-0 items-center gap-1 rounded-full border border-[color:var(--divider)] bg-[color:var(--bg-soft)] p-1',
+        disabled && 'opacity-60',
+      )}
     >
       {items.map((it) => {
         const active = it.id === value;
+        // While locked, only the inactive tab is truly disabled — keeping the
+        // active tab clickable would be a no-op anyway, but a uniform locked
+        // look reads clearer, so we disable both and surface the reason via
+        // the tooltip on the inactive one.
+        const lockedTitle = disabled ? tw('viewModeLockedTitle') : it.title;
         return (
           <button
             key={it.id}
             type="button"
             role="tab"
             aria-selected={active}
-            title={it.title}
-            onClick={() => onChange(it.id)}
+            disabled={disabled && !active}
+            title={lockedTitle}
+            onClick={() => {
+              if (disabled) return;
+              void onChange(it.id);
+            }}
             className={cn(
               'rounded-full px-3 py-1 text-[12px] font-semibold transition-colors',
               active
                 ? 'bg-[color:var(--accent)] text-white shadow-[var(--shadow-cta)]'
                 : 'text-[color:var(--fg-muted)] hover:text-[color:var(--fg-strong)]',
+              disabled && !active && 'cursor-not-allowed',
             )}
           >
             {it.label}

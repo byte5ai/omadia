@@ -240,7 +240,43 @@ Plugin zurück und degradiert sauber). CCM ist **kein** hartes `requires`. Die
 echte Canvas-Arbeit — UI Skill (Kompositions-Idiom-Bibliothek), `surface_*`-
 Synthese, per-`canvasSessionId`-Mutex, Cache — plus die aufgeschobenen Wirings
 (PR-7b Sentinel-Gating, `writeCapabilities`-Anbindung, `structured`-Threading)
-sind Folge-Slices.
+sind Folge-Slices. **Surface-Synthese aufgelöst durch PR-9b-1 (unten).**
+
+### Tier-2 Surface-Synthese (Omadia UI, PR-9b-1)
+
+Macht `canvasChatAgent` zum echten Stream-Transformer — **ohne den geteilten
+Base-Orchestrator-Tool-Loop anzufassen**. Für einen **Canvas-Turn** (einen, der
+`input.canvasSessionId` trägt) wickelt `canvasChatAgent` den `base.chatStream`-
+Event-Stream in `synthesizeSurfaceEvents` (`packages/omadia-ui-orchestrator/src/
+surfaceSynthesis.ts`): pro `tool_result` eines **autorisierten** Tools wird die
+Ausgabe mit `parseToolEmittedCanvasTree` (#169) gescannt; bei einem
+`_pendingCanvasTree`-Sentinel wird ein `surface_snapshot` synthetisiert und in
+den Stream injiziert (per-Stream monotone `surfaceSeq` + Revision, gestempelt mit
+`canvasSessionId`). Alle anderen Events passieren unverändert; Nicht-Canvas-Turns
+und der `chat()`-Pfad gehen byte-genau durch.
+
+- **Gate (deny-by-default):** nur Tools in `authorizedToolNames` werden gescannt.
+  Das Set ist **heute leer** — die boot-berechnete canvas-output-Allow-Liste wird
+  mit dem ersten Producer-Tool (PR-9b-2) verdrahtet; bis dahin ist der
+  Synthesizer in Produktion korrekt inert (secure-by-construction). Der
+  Gate-Mechanismus selbst ist live + getestet.
+- **`canvasSessionId`-Threading** (2 geteilte Dateien, additiv): `ChatTurnInput`
+  bekommt ein optionales `canvasSessionId`; der `orchestratorDispatcher` liest es
+  aus den Turn-Metadaten (vom Canvas-Channel gesetzt, PR-10b) und reicht es in
+  `chatStream` durch. Klassische Channels setzen es nie → unverändert.
+- **Dependency:** `@omadia/orchestrator` als peerDep des ui-orchestrator (für die
+  #169-Parser).
+
+**Noch offen (spätere 9b-Slices):** der **Producer** (canvas-output-Tool / UI
+Skill, das `_pendingCanvasTree` tatsächlich emittiert — bis dahin läuft die
+Synthese nur in Tests) + das Allow-Set-Boot-Wiring (9b-2);
+`_pendingStructuredPayload` → `surface_data_ref_created` (braucht DataRef-HMAC);
+per-`canvasSessionId`-Mutex + cross-turn-`surfaceSeq`-Kontinuität + Cache (9b-3).
+
+Test: `test/uiOrchestratorSurface.test.ts` treibt `synthesizeSurfaceEvents` mit
+einem Fake-Base-Stream (autorisierter Sentinel → `surface_snapshot`; leeres
+Allow-Set → nichts; kein Sentinel → nichts; Nicht-Tool-Events unverändert;
+monotone `surfaceSeq`/Revision).
 
 ### omadia-ui-channel (Tier-1 Server, Skeleton, PR-10a)
 

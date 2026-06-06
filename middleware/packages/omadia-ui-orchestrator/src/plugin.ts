@@ -6,20 +6,27 @@ import {
   type ChatStreamEvent,
 } from '@omadia/channel-sdk';
 
+import { synthesizeSurfaceEvents } from './surfaceSynthesis.js';
+
 /**
- * @omadia/ui-orchestrator — Omadia UI Tier-2 orchestrator, skeleton (PR-9a).
+ * @omadia/ui-orchestrator — Omadia UI Tier-2 orchestrator (PR-9b-1).
  *
  * `kind: extension`. On activate it publishes the `canvasChatAgent` service —
  * the bundle a canvas channel reaches via `channel.dispatch_service` (PR-6).
  *
- * v0 is a thin DELEGATING skeleton: `canvasChatAgent` forwards `chat` /
- * `chatStream` to the base `chatAgent`, resolved lazily per call so a
- * hot-reloaded orchestrator is always used. This is the integration seam where
- * the real canvas work lands in follow-ups — the UI Skill (composition-idiom
- * library), `surface_*` synthesis, the per-`canvasSessionId` mutex, the data
- * cache, and the deferred wiring (PR-7b sentinel gating, `writeCapabilities`
- * attachment, `structured` threading). It does NOT yet synthesise any canvas
- * surface; routing a canvas channel to it today yields plain chat behaviour.
+ * `canvasChatAgent` resolves the base `chatAgent` lazily per call (so a
+ * hot-reloaded orchestrator is always used) and, for a **canvas turn** (one that
+ * carries `input.canvasSessionId`), wraps the base event stream in
+ * {@link synthesizeSurfaceEvents}: an authorised tool's `_pendingCanvasTree`
+ * sentinel becomes an injected `surface_snapshot`. Non-canvas turns (and the
+ * `chat()` path) pass straight through. The base orchestrator tool loop is
+ * untouched.
+ *
+ * Still to land (later 9b slices): the producer (a canvas-output tool / UI Skill
+ * that actually emits the sentinel — until then the synthesiser is inert in
+ * production), the boot-computed canvas-output allow-set wiring,
+ * `_pendingStructuredPayload` → `surface_data_ref_created`, and the
+ * per-`canvasSessionId` write mutex + cross-turn `surfaceSeq` continuity.
  */
 
 /**
@@ -29,6 +36,17 @@ import {
  * `dispatch_service` must carry this exact bare string.
  */
 export const CANVAS_CHAT_AGENT_SERVICE = 'canvasChatAgent';
+
+const CANVAS_PROTOCOL_VERSION = '1.0';
+const OPS_CATALOG_VERSION = '1.0';
+
+/**
+ * Deny-by-default canvas-output allow-set. EMPTY until the boot-computed set of
+ * canvas-output-authorised tools is wired alongside the first producer tool
+ * (PR-9b-2); until then no tool is trusted to emit canvas sentinels, so the
+ * synthesiser is correctly inert in production. The gate mechanism is live.
+ */
+const CANVAS_OUTPUT_TOOLS: ReadonlySet<string> = new Set<string>();
 
 export interface UiOrchestratorPluginHandle {
   close(): Promise<void>;
@@ -51,7 +69,16 @@ export async function activate(
     chatStream(input, observer) {
       const base = resolveBase();
       if (!base) return errorStream();
-      return base.chatStream(input, observer);
+      const stream = base.chatStream(input, observer);
+      // Only a canvas turn (channel-threaded canvasSessionId) gets surface
+      // synthesis; classic turns pass straight through, byte-for-byte.
+      if (!input.canvasSessionId) return stream;
+      return synthesizeSurfaceEvents(stream, {
+        canvasSessionId: input.canvasSessionId,
+        authorizedToolNames: CANVAS_OUTPUT_TOOLS,
+        protocolVersion: CANVAS_PROTOCOL_VERSION,
+        opsCatalogVersion: OPS_CATALOG_VERSION,
+      });
     },
   };
 

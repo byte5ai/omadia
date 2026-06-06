@@ -46,6 +46,11 @@ interface SimpleIntakePaneProps {
   /** Called optimistically after the operator picks an option so the
    *  parent can clear the card without waiting for the bus echo. */
   onUserChoiceResolved?: () => void;
+  /** Issue #224 — lifts the in-flight turn flag to the Workspace so it can
+   *  lock the simple/extended view toggle while a reply streams (toggling
+   *  unmounts this pane and would abort the stream + drop the live message).
+   *  Fires `false` on unmount so a stale `true` never wedges the toggle. */
+  onStreamingChange?: (streaming: boolean) => void;
 }
 
 const EASE_OUT = [0.22, 0.61, 0.36, 1] as const;
@@ -73,6 +78,7 @@ export function SimpleIntakePane({
   initialTranscript,
   pendingUserChoice,
   onUserChoiceResolved,
+  onStreamingChange,
 }: SimpleIntakePaneProps): React.ReactElement {
   const t = useTranslations('builder.simple.intake');
   const [messages, setMessages] = useState<SimpleMessage[]>(() =>
@@ -85,6 +91,12 @@ export function SimpleIntakePane({
   const [input, setInput] = useState('');
   const [inflight, setInflight] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Issue #224 — mirror the in-flight flag up to the Workspace, and force it
+  // back to `false` on unmount so the view toggle never stays locked.
+  useEffect(() => {
+    onStreamingChange?.(inflight);
+    return () => onStreamingChange?.(false);
+  }, [inflight, onStreamingChange]);
   // Single human-readable status line shown under the breathing dots while
   // the agent works. Replaced (never appended) as events arrive so the
   // operator always sees one calm "what's happening now" sentence.

@@ -1,8 +1,23 @@
 import type { DraftStore } from './draftStore.js';
 import type { PreviewHandle } from './previewRuntime.js';
 import { invokeToolsOnHandle, type RuntimeSmokeResult } from './runtimeSmoke.js';
-import type { SpecEventBus } from './specEventBus.js';
+import type { SpecBusEvent, SpecEventBus } from './specEventBus.js';
 import { parseAgentSpec } from './agentSpec.js';
+
+/** The `runtime_smoke_status` variant of the spec-bus event union. */
+type RuntimeSmokeEvent = Extract<SpecBusEvent, { type: 'runtime_smoke_status' }>;
+
+/**
+ * Issue #227 — last runtime-smoke outcome for a draft, retained in-memory so
+ * the Builder agent's `runtime_smoke_status` tool can pull it (ctx.memory /
+ * ctx.http availability, per-tool + route smoke) without an operator-driven
+ * preview round-trip. Mirrors the emitted bus event minus its `type` tag,
+ * plus a record timestamp.
+ */
+export interface SmokeStatusSnapshot extends Omit<RuntimeSmokeEvent, 'type'> {
+  /** ISO-8601 timestamp of when this snapshot was recorded. */
+  smokedAt: string;
+}
 
 /**
  * RuntimeSmokeOrchestrator (B.9-3) — kicks off the runtime-smoke pass
@@ -38,6 +53,10 @@ export class RuntimeSmokeOrchestrator {
    *  rev hasn't advanced since the previous attempt. */
   private readonly lastSmokedRev = new Map<string, number>();
 
+  /** Issue #227 — per-draft last smoke outcome (in-memory), surfaced to the
+   *  Builder via the `runtime_smoke_status` tool. */
+  private readonly lastStatus = new Map<string, SmokeStatusSnapshot>();
+
   constructor(deps: RuntimeSmokeOrchestratorDeps) {
     this.draftStore = deps.draftStore;
     this.bus = deps.bus;
@@ -66,13 +85,32 @@ export class RuntimeSmokeOrchestrator {
     // returns don't race-fire two smoke runs for the same build.
     this.lastSmokedRev.set(draftId, handle.rev);
 
-    this.bus.emit(draftId, {
+    this.emitSmoke(draftId, {
       type: 'runtime_smoke_status',
       phase: 'running',
       buildN: handle.rev,
     });
 
     void this.runDetached({ handle, userEmail, draftId });
+  }
+
+  /**
+   * Issue #227 — last recorded smoke outcome for a draft, or `undefined` when
+   * no smoke has run for it in the current process.
+   */
+  getLastSmokeStatus(draftId: string): SmokeStatusSnapshot | undefined {
+    return this.lastStatus.get(draftId);
+  }
+
+  /**
+   * Emit a `runtime_smoke_status` event on the bus AND retain it as the
+   * draft's last-known snapshot (Issue #227). All smoke emits funnel through
+   * here so the pull-tool and the SSE stream never drift.
+   */
+  private emitSmoke(draftId: string, event: RuntimeSmokeEvent): void {
+    this.bus.emit(draftId, event);
+    const { type: _type, ...rest } = event;
+    this.lastStatus.set(draftId, { ...rest, smokedAt: new Date().toISOString() });
   }
 
   private async runDetached(opts: {
@@ -85,7 +123,7 @@ export class RuntimeSmokeOrchestrator {
     try {
       const draft = await this.draftStore.load(userEmail, draftId);
       if (!draft) {
-        this.bus.emit(draftId, {
+        this.emitSmoke(draftId, {
           type: 'runtime_smoke_status',
           phase: 'failed',
           buildN: handle.rev,
@@ -98,7 +136,7 @@ export class RuntimeSmokeOrchestrator {
       try {
         spec = parseAgentSpec(draft.spec);
       } catch (err) {
-        this.bus.emit(draftId, {
+        this.emitSmoke(draftId, {
           type: 'runtime_smoke_status',
           phase: 'failed',
           buildN: handle.rev,
@@ -116,7 +154,7 @@ export class RuntimeSmokeOrchestrator {
       // invokeToolsOnHandle itself shouldn't throw — but if the
       // handle.toolkit access blows up (cached handle was closed by
       // a concurrent invalidate), surface as activate_failed for UI.
-      this.bus.emit(draftId, {
+      this.emitSmoke(draftId, {
         type: 'runtime_smoke_status',
         phase: 'failed',
         buildN: handle.rev,
@@ -130,7 +168,7 @@ export class RuntimeSmokeOrchestrator {
       `[smoke] draft=${draftId} rev=${String(handle.rev)} ok=${String(result.ok)} reason=${result.reason} tools=${String(result.results.length)} duration_ms=${String(result.durationMs)}`,
     );
 
-    this.bus.emit(draftId, {
+    this.emitSmoke(draftId, {
       type: 'runtime_smoke_status',
       phase: result.ok ? 'ok' : 'failed',
       buildN: handle.rev,

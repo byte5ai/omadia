@@ -126,6 +126,12 @@ interface PreviewChatPaneProps {
   /** Live-fix: lifted from local state so the Workspace can also derive
    *  its missingRequiredCredentials counter from the same source. */
   onBufferedSecretKeysChange?: (keys: readonly string[]) => void;
+  /** Issue #224 — lifts the in-flight turn flag to the Workspace so it can
+   *  lock the simple/extended view toggle while a test reply streams
+   *  (toggling unmounts this pane and would abort the stream + drop the live
+   *  message). Fires `false` on unmount so a stale `true` never wedges the
+   *  toggle. */
+  onStreamingChange?: (streaming: boolean) => void;
 }
 
 /**
@@ -148,6 +154,7 @@ export function PreviewChatPane({
   runtimeSmoke,
   onFixSmokeWithBuilder,
   onBufferedSecretKeysChange,
+  onStreamingChange,
 }: PreviewChatPaneProps): React.ReactElement {
   const t = useTranslations('builder.preview.chat');
   const [items, setItems] = useState<ChatItem[]>(() =>
@@ -226,6 +233,13 @@ export function PreviewChatPane({
       abortRef.current?.abort();
     };
   }, []);
+
+  // Issue #224 — mirror the in-flight flag up to the Workspace, and force it
+  // back to `false` on unmount so the view toggle never stays locked.
+  useEffect(() => {
+    onStreamingChange?.(inflight);
+    return () => onStreamingChange?.(false);
+  }, [inflight, onStreamingChange]);
 
   const onSend = useCallback(async (override?: string) => {
     const trimmed = (override ?? input).trim();

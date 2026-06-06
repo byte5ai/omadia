@@ -87,10 +87,19 @@ export function createOrchestratorDispatcher(
         yield { type: 'error', message: 'orchestrator unavailable' };
         return;
       }
+      // Omadia UI: thread the canvas session id (set by the canvas channel in
+      // the turn metadata) into ChatTurnInput so a canvas-aware orchestrator can
+      // stamp it onto the surface_* events it synthesises. Classic channels set
+      // no such metadata — the field stays undefined and nothing changes.
+      const canvasSessionId =
+        typeof input.metadata?.['canvasSessionId'] === 'string'
+          ? (input.metadata['canvasSessionId'] as string)
+          : undefined;
       yield* agent.chatStream({
         userMessage: input.text,
         sessionScope: input.scope,
         userId: input.userRef.id,
+        ...(canvasSessionId ? { canvasSessionId } : {}),
       });
     },
   };
