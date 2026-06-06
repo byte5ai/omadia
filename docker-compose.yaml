@@ -79,12 +79,12 @@ services:
       # To enable for local inspection, uncomment `DEV_ENDPOINTS_ENABLED=true`
       # in `middleware/.env` (already picked up via `env_file` below).
       # **NEVER set this on a public deployment.**
-      # Redirect kernel persistent state (vault, installed.json, memory
-      # store, builder drafts.db, uploaded plugin packages) to the volume
-      # mount below. Without this, the kernel writes under /app/data which
-      # lives in the image layer and gets wiped on every `--build` — all
-      # builder drafts disappear, every plugin re-auto-installs from
-      # scratch, etc. Path must match the volume target.
+      # Redirect kernel persistent state (vault, installed.json, builder
+      # drafts.db, uploaded plugin packages) to the volume mount below.
+      # Without this, the kernel writes under /app/data which lives in the
+      # image layer and gets wiped on every `--build` — all builder drafts
+      # disappear, uploaded plugins vanish, etc. Path must match the volume
+      # target. (Memory itself is Postgres- or RAM-backed — no on-disk store.)
       PLATFORM_DATA_DIR: /data
     depends_on:
       postgres:
