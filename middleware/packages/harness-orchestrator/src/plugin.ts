@@ -141,7 +141,7 @@ const DEFAULT_MODEL = 'claude-opus-4-7';
 // mid-tool-call, so the file is never built. Also enforced as a floor below so
 // an already-installed registry config of 4096 gets bumped without reinstall.
 const DEFAULT_MAX_TOKENS = 8192;
-const DEFAULT_MAX_ITERATIONS = 12;
+const DEFAULT_MAX_ITERATIONS = 25;
 
 /**
  * Public shape of the `chatAgent@1` capability. Channel-plugins (Teams,
@@ -336,8 +336,14 @@ export async function activate(
     ),
     DEFAULT_MAX_TOKENS,
   );
-  const maxIterations = parseNumberOrDefault(
-    ctx.config.get<unknown>('max_tool_iterations'),
+  // Floor at DEFAULT_MAX_ITERATIONS: a stale installed config (older
+  // deployments persisted 12) would otherwise abort multi-step tasks early
+  // with "exceeded maxToolIterations" before reaching a final answer.
+  const maxIterations = Math.max(
+    parseNumberOrDefault(
+      ctx.config.get<unknown>('max_tool_iterations'),
+      DEFAULT_MAX_ITERATIONS,
+    ),
     DEFAULT_MAX_ITERATIONS,
   );
 
