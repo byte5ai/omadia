@@ -90,6 +90,14 @@ export interface KnowledgeGraph {
    */
   listPlansForScope(scope: string): Promise<GraphNode[]>;
   /**
+   * #237 (plan GC) — hard-delete a Plan node, all its PlanStep nodes, and every
+   * edge touching them (`STEP_OF` / `DEPENDS_ON` / `PLAN_OF`). Idempotent:
+   * deleting a missing or non-Plan node is a no-op (`deleted: false`). Used by
+   * the plan-runner to garbage-collect prior semantic-duplicate plans for a
+   * scope, keeping only the latest. Callers MUST NOT pass an in-flight plan.
+   */
+  deletePlan(planExternalId: string): Promise<PlanDeleteResult>;
+  /**
    * Cross-session plan recall — list `Plan` nodes tenant-wide (the team
    * scope), optionally narrowed to a single `userId`, most-recent first
    * (by `props.createdAt`). When `openOnly` is set, only plans that still
@@ -1416,10 +1424,26 @@ export interface PlanIngest {
   strategy?: string;
   createdBy?: 'gate' | 'manual';
   createdAt: string;
+  /**
+   * #237 (plan GC) — a short summary of the originating user request, stored on
+   * the Plan node so the plan-GC pass can compare plans for semantic
+   * equivalence (same task, re-planned) without re-reading turn text. The
+   * caller caps the length. Absent on legacy plans → those are skipped by the
+   * semantic GC comparison.
+   */
+  requestSummary?: string;
 }
 
 export interface PlanIngestResult {
   planExternalId: string;
+}
+
+/** #237 — result of {@link KnowledgeGraph.deletePlan}. */
+export interface PlanDeleteResult {
+  /** True when a Plan node was found and removed. */
+  deleted: boolean;
+  /** Number of PlanStep nodes removed alongside the plan. */
+  deletedSteps: number;
 }
 
 /** #133 — input to {@link KnowledgeGraph.upsertPlanStep}. */

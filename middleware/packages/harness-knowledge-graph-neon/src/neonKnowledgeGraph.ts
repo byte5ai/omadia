@@ -75,6 +75,7 @@ import {
   type RunToolCallView,
   type PlanIngest,
   type PlanIngestResult,
+  type PlanDeleteResult,
   type PlanStepIngest,
   type PlanStepIngestResult,
   type PlanStepStatus,
@@ -956,6 +957,9 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         ...(input.turnExternalId ? { turnId: input.turnExternalId } : {}),
         ...(input.strategy ? { strategy: input.strategy } : {}),
         ...(input.createdBy ? { createdBy: input.createdBy } : {}),
+        ...(input.requestSummary
+          ? { requestSummary: input.requestSummary }
+          : {}),
         createdAt: input.createdAt,
       });
       const planUuid = await this.upsertNode(client, {
@@ -1119,6 +1123,56 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       [this.tenantId, scope],
     );
     return res.rows.map((r) => rowToNode(r));
+  }
+
+  async deletePlan(planExternalId: string): Promise<PlanDeleteResult> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      // Resolve the Plan UUID; a missing/non-Plan node is an idempotent no-op.
+      const planRow = await client.query<{ id: string }>(
+        `SELECT id FROM graph_nodes
+          WHERE tenant_id = $1 AND external_id = $2 AND type = 'Plan'`,
+        [this.tenantId, planExternalId],
+      );
+      const planUuid = planRow.rows[0]?.id;
+      if (!planUuid) {
+        await client.query('COMMIT');
+        return { deleted: false, deletedSteps: 0 };
+      }
+      // Steps link Plan-ward via STEP_OF (from = step, to = plan).
+      const stepRows = await client.query<{ id: string }>(
+        `SELECT id FROM graph_nodes
+          WHERE tenant_id = $1 AND type = 'PlanStep'
+            AND id IN (
+              SELECT from_node FROM graph_edges
+               WHERE tenant_id = $1 AND type = 'STEP_OF' AND to_node = $2
+            )`,
+        [this.tenantId, planUuid],
+      );
+      const stepUuids = stepRows.rows.map((r) => r.id);
+      const doomed = [planUuid, ...stepUuids];
+      // Drop every edge touching the plan or its steps on either endpoint
+      // (STEP_OF, DEPENDS_ON, PLAN_OF), then the nodes themselves.
+      await client.query(
+        `DELETE FROM graph_edges
+          WHERE tenant_id = $1
+            AND (from_node = ANY($2::uuid[]) OR to_node = ANY($2::uuid[]))`,
+        [this.tenantId, doomed],
+      );
+      await client.query(
+        `DELETE FROM graph_nodes
+          WHERE tenant_id = $1 AND id = ANY($2::uuid[])`,
+        [this.tenantId, doomed],
+      );
+      await client.query('COMMIT');
+      return { deleted: true, deletedSteps: stepUuids.length };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   async listRecentPlans(opts: {
