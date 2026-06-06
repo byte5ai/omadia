@@ -42,7 +42,15 @@ const ConfigSchema = z.object({
   BUILDER_AGENT_MAX_TOKENS: z.coerce.number().int().positive().default(16384),
   SKILLS_DIR: z.string().min(1).default('../skills'),
 
-  // Memory persistence (filesystem backend for now)
+  // Memory persistence backend selection.
+  //   filesystem → @omadia/memory (FilesystemMemoryStore, default)
+  //   postgres   → @omadia/memory-postgres (PostgresMemoryStore) — requires
+  //                DATABASE_URL (the Neon KG provides the shared graphPool the
+  //                Postgres store consumes). Without DATABASE_URL the bootstrap
+  //                falls back to filesystem.
+  // This is the declarative env default; a persisted operator choice (UI)
+  // takes precedence over it (see bootstrapMemoryFromEnv).
+  MEMORY_BACKEND: z.enum(['filesystem', 'postgres']).default('filesystem'),
   MEMORY_DIR: z.string().min(1).default('./.memory'),
   MEMORY_SEED_DIR: z.string().min(1).default('./seed/memory'),
   MEMORY_SEED_MODE: z.enum(['missing', 'overwrite', 'skip']).default('missing'),

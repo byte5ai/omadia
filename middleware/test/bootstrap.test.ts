@@ -614,13 +614,10 @@ describe('retryErroredPlugins — guards', () => {
   });
 });
 
-describe('bootstrapBuiltInPackages — memoryStore mutual exclusion', () => {
+describe('memoryStore provider selection', () => {
   const MEMORY_ID = '@omadia/memory';
   const MEMORY_PG_ID = '@omadia/memory-postgres';
 
-  // bootstrapBuiltInPackages reads only log/builtInStore/registry/catalog;
-  // config + vault are required by the type but unused, so minimal stubs.
-  const stubConfig = {} as unknown as Config;
   const stubVault = {
     get: async () => undefined,
     set: async () => {},
@@ -629,27 +626,125 @@ describe('bootstrapBuiltInPackages — memoryStore mutual exclusion', () => {
     list: async () => [],
   } as unknown as SecretVault;
 
-  function makeDeps(reg: InMemoryInstalledRegistry) {
+  function memCfg(opts: {
+    backend?: 'filesystem' | 'postgres';
+    databaseUrl?: string;
+  }): Config {
     return {
-      config: stubConfig,
+      DEV_ENDPOINTS_ENABLED: false,
+      MEMORY_BACKEND: opts.backend ?? 'filesystem',
+      MEMORY_DIR: '/test/.memory',
+      MEMORY_SEED_DIR: '/test/seed/memory',
+      MEMORY_SEED_MODE: 'missing',
+      ...(opts.databaseUrl ? { DATABASE_URL: opts.databaseUrl } : {}),
+    } as unknown as Config;
+  }
+
+  const memCatalog = makeCatalog([
+    {
+      id: MEMORY_ID,
+      kind: 'extension',
+      provides: ['memoryStore@1'],
+      requires: [],
+      depends_on: [],
+    },
+    {
+      id: MEMORY_PG_ID,
+      kind: 'extension',
+      provides: ['memoryStore@1'],
+      requires: ['graphPool@^1'],
+      depends_on: [],
+    },
+  ]);
+
+  function memDeps(reg: InMemoryInstalledRegistry, cfg: Config) {
+    return {
+      config: cfg,
       vault: stubVault,
       registry: reg,
-      catalog: makeCatalog([
-        {
-          id: MEMORY_ID,
-          kind: 'extension',
-          provides: ['memoryStore@1'],
-          requires: [],
-          depends_on: [],
-        },
-        {
-          id: MEMORY_PG_ID,
-          kind: 'extension',
-          provides: ['memoryStore@1'],
-          requires: ['graphPool@^1'],
-          depends_on: [],
-        },
-      ]),
+      catalog: memCatalog,
+      log: () => {},
+    };
+  }
+
+  async function seedActive(
+    reg: InMemoryInstalledRegistry,
+    id: string,
+    config: Record<string, unknown> = {},
+  ) {
+    await reg.register({
+      id,
+      installed_version: '0.1.0',
+      installed_at: '2026-04-29T00:00:00Z',
+      status: 'active',
+      config,
+    });
+  }
+
+  it('filesystem (default) installs @omadia/memory, not the Postgres provider', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await bootstrapMemoryFromEnv(memDeps(reg, memCfg({})));
+    assert.equal(reg.get(MEMORY_ID)?.status, 'active');
+    assert.equal(reg.get(MEMORY_PG_ID), undefined);
+  });
+
+  it('postgres + DATABASE_URL installs memory-postgres and removes the filesystem provider', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await seedActive(reg, MEMORY_ID);
+    await bootstrapMemoryFromEnv(
+      memDeps(reg, memCfg({ backend: 'postgres', databaseUrl: 'postgres://x' })),
+    );
+    assert.equal(reg.get(MEMORY_PG_ID)?.status, 'active');
+    assert.equal(
+      reg.get(MEMORY_ID),
+      undefined,
+      'filesystem provider removed (memoryStore@1 mutual exclusion)',
+    );
+  });
+
+  it('postgres WITHOUT DATABASE_URL falls back to filesystem', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await bootstrapMemoryFromEnv(memDeps(reg, memCfg({ backend: 'postgres' })));
+    assert.equal(reg.get(MEMORY_ID)?.status, 'active', 'fell back to filesystem');
+    assert.equal(reg.get(MEMORY_PG_ID), undefined);
+  });
+
+  it('a persisted both-active state self-heals to the selected backend', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await seedActive(reg, MEMORY_ID);
+    await seedActive(reg, MEMORY_PG_ID);
+    await bootstrapMemoryFromEnv(memDeps(reg, memCfg({}))); // filesystem default
+    assert.equal(reg.get(MEMORY_ID)?.status, 'active');
+    assert.equal(
+      reg.get(MEMORY_PG_ID),
+      undefined,
+      'non-selected provider removed',
+    );
+  });
+
+  it('persisted memory_backend=postgres (UI choice) overrides the filesystem env default', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    // Operator switched to postgres via UI — choice persisted on the entry.
+    await seedActive(reg, MEMORY_PG_ID, { memory_backend: 'postgres' });
+    await bootstrapMemoryFromEnv(
+      memDeps(reg, memCfg({ backend: 'filesystem', databaseUrl: 'postgres://x' })),
+    );
+    assert.equal(
+      reg.get(MEMORY_PG_ID)?.status,
+      'active',
+      'UI choice honoured over env default',
+    );
+    assert.equal(reg.get(MEMORY_ID), undefined);
+  });
+
+  it('catch-all never auto-installs the opt-in memory-postgres', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await seedActive(reg, MEMORY_ID);
+    await bootstrapBuiltInPackages({
+      config: memCfg({}),
+      vault: stubVault,
+      registry: reg,
+      catalog: memCatalog,
       builtInStore: makeBuiltInStore([
         { id: MEMORY_ID, path: '/x/memory' },
         { id: MEMORY_PG_ID, path: '/x/memory-postgres' },
@@ -657,48 +752,11 @@ describe('bootstrapBuiltInPackages — memoryStore mutual exclusion', () => {
         typeof bootstrapBuiltInPackages
       >[0]['builtInStore'],
       log: () => {},
-    };
-  }
-
-  it('does NOT auto-install the opt-in memory-postgres when default memory is active', async () => {
-    const reg = new InMemoryInstalledRegistry();
-    await reg.register({
-      id: MEMORY_ID,
-      installed_version: '0.1.0',
-      installed_at: '2026-04-29T00:00:00Z',
-      status: 'active',
-      config: {},
     });
-
-    await bootstrapBuiltInPackages(makeDeps(reg));
-
-    assert.equal(reg.get(MEMORY_ID)?.status, 'active');
     assert.equal(
       reg.get(MEMORY_PG_ID),
       undefined,
-      'memory-postgres must stay opt-in (not auto-installed)',
-    );
-  });
-
-  it('self-heals a persisted both-active state by removing memory-postgres', async () => {
-    const reg = new InMemoryInstalledRegistry();
-    for (const id of [MEMORY_ID, MEMORY_PG_ID]) {
-      await reg.register({
-        id,
-        installed_version: '0.1.0',
-        installed_at: '2026-04-29T00:00:00Z',
-        status: 'active',
-        config: {},
-      });
-    }
-
-    await bootstrapBuiltInPackages(makeDeps(reg));
-
-    assert.equal(reg.get(MEMORY_ID)?.status, 'active', 'default stays active');
-    assert.equal(
-      reg.get(MEMORY_PG_ID),
-      undefined,
-      'memory-postgres removed by self-heal',
+      'memory-postgres stays opt-in',
     );
   });
 });
