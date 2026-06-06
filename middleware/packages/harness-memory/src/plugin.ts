@@ -1,7 +1,7 @@
 import type { PluginContext } from '@omadia/plugin-api';
 
 import { createDevMemoryRouter } from './devMemoryRouter.js';
-import { FilesystemMemoryStore } from './filesystem.js';
+import { InMemoryMemoryStore } from './inMemoryMemoryStore.js';
 import { MemoryToolHandler } from './memoryTool.js';
 import { MemorySeeder, type MemorySeedMode } from './seeder.js';
 
@@ -11,7 +11,10 @@ import { MemorySeeder, type MemorySeedMode } from './seeder.js';
  * `kind: extension`. Provides three things to the kernel on activate():
  *   1. The `memoryStore` service (root-level MemoryStore the kernel and
  *      cross-scope consumers read/write against — admin router, chat-session
- *      store, graph backfill, the Diagrams brand-logo auto-lookup, …).
+ *      store, graph backfill, the Diagrams brand-logo auto-lookup, …). This
+ *      is the DB-less, RAM-backed `InMemoryMemoryStore` — the default
+ *      provider when no Postgres-backed store (@omadia/memory-postgres) is
+ *      installed.
  *   2. The Anthropic-native `memory` tool HANDLER — kernel keeps the
  *      `{type: 'memory_20250818', name: 'memory'}` wire-spec push itself
  *      (buildToolsList). Dispatch routes through this handler.
@@ -19,10 +22,7 @@ import { MemorySeeder, type MemorySeedMode } from './seeder.js';
  *      `dev_memory_endpoints_enabled` config resolves truthy. MUST stay
  *      disabled in production (the router has no auth).
  *
- * Required config (via ctx.config):
- *   - memory_dir                 absolute path for `/memories` on disk
- *
- * Optional config:
+ * Config (via ctx.config) — all optional:
  *   - seed_dir                   default `memory-seed` relative to cwd
  *   - seed_mode                  'missing' | 'overwrite' | 'skip' (default 'missing')
  *   - dev_memory_endpoints_enabled  'true' mounts /api/dev/memory
@@ -30,7 +30,7 @@ import { MemorySeeder, type MemorySeedMode } from './seeder.js';
  * The plugin performs the seeder run during activate(), which blocks boot
  * until the seed directory has been walked. This keeps the pre-extraction
  * behaviour identical: index.ts used to run the seeder synchronously right
- * after `memoryStore.init()`.
+ * after the store was constructed.
  */
 
 const DEV_MEMORY_PREFIX = '/api/dev/memory';
@@ -42,7 +42,6 @@ export interface MemoryPluginHandle {
 export async function activate(ctx: PluginContext): Promise<MemoryPluginHandle> {
   ctx.log('activating memory plugin');
 
-  const memoryDir = ctx.config.require<string>('memory_dir');
   const seedDir = ctx.config.get<string>('seed_dir') ?? 'memory-seed';
   const seedMode = normaliseSeedMode(ctx.config.get<string>('seed_mode'));
   const devEndpointsEnabled =
@@ -50,8 +49,7 @@ export async function activate(ctx: PluginContext): Promise<MemoryPluginHandle> 
       .trim()
       .toLowerCase() === 'true';
 
-  const store = new FilesystemMemoryStore(memoryDir);
-  await store.init();
+  const store = new InMemoryMemoryStore();
 
   const disposeService = ctx.services.provide('memoryStore', store);
 
@@ -81,7 +79,7 @@ export async function activate(ctx: PluginContext): Promise<MemoryPluginHandle> 
     ctx.log(`[memory] mounted dev browser at ${DEV_MEMORY_PREFIX}`);
   }
 
-  ctx.log(`[memory] ready (dir=${memoryDir}, seed=${seedDir}, mode=${seedMode})`);
+  ctx.log(`[memory] ready (backend=in-memory, seed=${seedDir}, mode=${seedMode})`);
 
   return {
     async close(): Promise<void> {

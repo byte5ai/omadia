@@ -6,7 +6,7 @@ identity:
   version: "0.1.0"
   kind: "extension"
   domain: "core.memory"
-  description: "Stellt persistenten /memories-Dateispeicher, den Anthropic-nativen memory-Tool-Handler und einen Dev-Memory-Browser bereit. Provider des Kernel-Service 'memoryStore'."
+  description: "Stellt einen DB-losen, RAM-basierten /memories-Speicher (InMemoryMemoryStore), den Anthropic-nativen memory-Tool-Handler und einen Dev-Memory-Browser bereit. Default-Provider des Kernel-Service 'memoryStore' (Drop-in-Alternative: @omadia/memory-postgres)."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"
@@ -25,13 +25,6 @@ lifecycle:
 
 setup:
   fields:
-    - key: "memory_dir"
-      type: "string"
-      label: "Memory-Verzeichnis"
-      help: "Absoluter Pfad, unter dem /memories auf Disk landet. Muss für den Service-User lesbar+schreibbar sein."
-      required: true
-      default: "./memory-data"
-
     - key: "seed_dir"
       type: "string"
       label: "Seed-Verzeichnis"
