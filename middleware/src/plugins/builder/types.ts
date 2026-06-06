@@ -42,6 +42,11 @@ export interface AgentSpecSkeleton {
   version: string;
   description: string;
   category: string;
+  /** #225 — operator-entered author/publisher. Optional in the skeleton
+   *  because legacy drafts predate the field; Zod parse fills the default
+   *  ''. Codegen maps it to `identity.authors[0].name` (AGENT_AUTHOR
+   *  placeholder); empty → no author rendered on the store-detail page. */
+  author?: string;
   /** OB-77 (Palaia Phase 8) — first-class plugin Domain. Optional in the
    *  skeleton because legacy drafts predate the field; parseAgentSpec
    *  injects an `unknown.<id>` fallback at parse-time before the Zod
@@ -223,6 +228,9 @@ export function emptyAgentSpec(): AgentSpecSkeleton {
     name: '',
     version: '0.1.0',
     description: '',
+    // #225 — empty until the operator sets an author; replaces the old
+    // hardcoded "byte5 GmbH" boilerplate attribution.
+    author: '',
     category: 'other',
     // OB-77 — placeholder, the Builder agent is required to elicit a real
     // domain via patch_spec before fill_slot runs. Validated on save via

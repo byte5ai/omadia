@@ -76,7 +76,7 @@ export default async function RootLayout({
         <NextIntlClientProvider locale={locale} messages={messages}>
           <ChatSessionsProvider>
             <StreamStoreProvider>
-              <header className="relative z-50 border-b border-[color:var(--border)] bg-[color:var(--bg)]/90 px-6 py-3 backdrop-blur">
+              <header className="relative z-40 border-b border-[color:var(--border)] bg-[color:var(--bg)]/90 px-6 py-3 backdrop-blur">
                 <div className="mx-auto flex max-w-[1280px] items-center gap-4">
                   <Link
                     href="/"

@@ -1,5 +1,11 @@
 # Translations (`messages/`)
 
+> ## ⛔ HARD RULE
+> **omadia does NOT use i18nexus / Crowdin / any external translation service.**
+> Add new strings **directly** to `en.json` + `de.json` and commit them. Any
+> inherited rule claiming the JSON "gets overridden by i18nexus" is wrong here —
+> ignore it. Never hardcode user-facing strings in components.
+
 This directory holds plain-JSON translations for the web-ui UI. **No external service** (no i18nexus, no Crowdin) — translations are reviewed and merged via normal pull-request flow.
 
 ## Reference locale

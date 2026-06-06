@@ -94,6 +94,12 @@ export function useSpecEvents(
       'user_choice_resolved',
       onSpecPatch as EventListener,
     );
+    // Issue #206 — native core-bug reporting. `issue_report_pending` asks the
+    // operator to confirm a (sanitized) issue body before it is filed.
+    source.addEventListener(
+      'issue_report_pending',
+      onSpecPatch as EventListener,
+    );
 
     return () => {
       source.removeEventListener('open', onOpen);
@@ -108,6 +114,10 @@ export function useSpecEvents(
       );
       source.removeEventListener(
         'user_choice_resolved',
+        onSpecPatch as EventListener,
+      );
+      source.removeEventListener(
+        'issue_report_pending',
         onSpecPatch as EventListener,
       );
       source.close();

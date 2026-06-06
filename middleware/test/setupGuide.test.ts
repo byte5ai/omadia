@@ -40,7 +40,7 @@ describe('adaptManifestV1 · setup.guide', () => {
     assert.ok(plugin);
     assert.deepEqual(plugin.setup_guide, guide);
     // Coexists with the existing per-field hints.
-    assert.equal(plugin.required_secrets.length, 1);
+    assert.equal(plugin.setup_fields.length, 1);
   });
 
   it('drops empty-string locales and keeps the rest', () => {

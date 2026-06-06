@@ -440,6 +440,13 @@ export const AgentSpecSchema = z
     name: z.string().min(1),
     version: SemverSchema.default('0.1.0'),
     description: z.string().min(1),
+    // #225 — operator-entered author/publisher attribution. Codegen maps
+    // this to `identity.authors[0].name` in the generated manifest via the
+    // AGENT_AUTHOR placeholder. Default '' (no attribution) replaces the
+    // old hardcoded "byte5 GmbH" boilerplate author — an empty name is
+    // filtered out by manifestLoader.extractAuthors, so the store-detail
+    // page shows no author until the operator sets one.
+    author: z.string().default(''),
     category: z.enum([
       'productivity',
       'crm',

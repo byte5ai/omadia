@@ -137,6 +137,7 @@ placeholders:
   AGENT_NAME: name
   AGENT_SLUG: __derived__/agentSlug
   AGENT_DESCRIPTION_DE: description
+  AGENT_AUTHOR: author
   AGENT_VERSION: version
   AGENT_DOMAIN: domain
   CATEGORY: category

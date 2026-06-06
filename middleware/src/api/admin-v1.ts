@@ -215,7 +215,12 @@ export interface Plugin {
   compat_core: string;
   signed: boolean;
   signed_by: string | null;
-  required_secrets: PluginSetupField[];
+  /** All declared setup fields (secret AND non-secret config) from the
+   *  manifest's `setup.fields`. Named `setup_fields` because the list is not
+   *  secrets-only — it carries `string`/`url`/`enum`/`boolean`/`integer`
+   *  config alongside `secret`/`oauth` credentials. Consumers split the two
+   *  by each field's `type`. */
+  setup_fields: PluginSetupField[];
   permissions_summary: PluginPermissionsSummary;
   integrations_summary: string[];
   install_state: PluginInstallState;

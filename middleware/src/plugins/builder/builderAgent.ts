@@ -17,6 +17,8 @@ import { zodToJsonSchema } from '../zodToJsonSchema.js';
 import { type AuditLogger, createAuditLogger } from './audit.js';
 import { loadBoilerplate, type SlotDef } from './boilerplateSource.js';
 import type { DraftStore } from './draftStore.js';
+import type { BuildStatusSnapshot } from './buildPipeline.js';
+import type { SmokeStatusSnapshot } from './runtimeSmokeOrchestrator.js';
 import type { SlotTypecheckService } from './slotTypecheckPipeline.js';
 import type { SpecEventBus } from './specEventBus.js';
 import type { UserChoiceCoordinator } from './userChoiceCoordinator.js';
@@ -276,12 +278,41 @@ export interface BuilderAgentDeps {
     labels: readonly string[];
   };
   /**
+   * Issue #206 (v1.2) — true when a GitHub-App issue creator is wired and
+   * the upstream is allowlisted, enabling the direct-create (operator-
+   * confirmed) path instead of browser-submit. Threaded into the tool ctx.
+   */
+  directIssueCreateAvailable?: boolean;
+  /**
    * Issue #56 — optional audit logger override. When omitted, the
    * default `createAuditLogger(draftStore)` is wired so every mutating
    * tool call lands in `builder_audit`. Tests can pass a spy to
    * observe calls without touching SQLite.
    */
   audit?: AuditLogger;
+  /**
+   * Issue #227 — pull-accessor for the last codegen→tsc build outcome of a
+   * draft, threaded into `BuilderToolContext.lastBuildStatus` so the
+   * `get_build_status` tool can surface it. Wired by `index.ts` to
+   * `BuildPipeline.getLastBuildStatus`. Omitted in tests → tool reports the
+   * surface unavailable.
+   */
+  lastBuildStatus?: (draftId: string) => BuildStatusSnapshot | undefined;
+  /**
+   * Issue #227 — pull-accessor for the last runtime-smoke result of a draft,
+   * threaded into `BuilderToolContext.lastSmokeStatus` for the
+   * `runtime_smoke_status` tool. Wired to
+   * `RuntimeSmokeOrchestrator.getLastSmokeStatus`.
+   */
+  lastSmokeStatus?: (draftId: string) => SmokeStatusSnapshot | undefined;
+  /**
+   * Issue #227 — one-line platform-version banner prepended to the system
+   * prompt (e.g. `omadia platform: omadia-middleware 0.2.0 (process booted
+   * 2026-06-05T…Z)`). Lets the Builder notice the platform changed between
+   * turns (a redeploy bumps the boot timestamp) and proactively re-verify
+   * earlier bug hypotheses. Wired by `index.ts`; omitted in tests → no banner.
+   */
+  platformBanner?: string;
   logger?: (...args: unknown[]) => void;
 }
 
@@ -320,11 +351,19 @@ export class BuilderAgent {
   private readonly userChoice?: UserChoiceCoordinator;
   private readonly triageLog?: BuilderTriageLog;
   private readonly githubIssueCache?: GithubIssueCache;
+  private readonly directIssueCreateAvailable: boolean;
   private readonly upstreamIssueConfig?: {
     owner: string;
     repo: string;
     labels: readonly string[];
   };
+  private readonly lastBuildStatus?: (
+    draftId: string,
+  ) => BuildStatusSnapshot | undefined;
+  private readonly lastSmokeStatus?: (
+    draftId: string,
+  ) => SmokeStatusSnapshot | undefined;
+  private readonly platformBanner?: string;
   private readonly log: (...args: unknown[]) => void;
 
   private cachedSystemPromptSeed: string | null = null;
@@ -353,7 +392,11 @@ export class BuilderAgent {
     this.userChoice = deps.userChoice;
     this.triageLog = deps.triageLog;
     this.githubIssueCache = deps.githubIssueCache;
+    this.directIssueCreateAvailable = deps.directIssueCreateAvailable ?? false;
     this.upstreamIssueConfig = deps.upstreamIssueConfig;
+    this.lastBuildStatus = deps.lastBuildStatus;
+    this.lastSmokeStatus = deps.lastSmokeStatus;
+    this.platformBanner = deps.platformBanner;
     this.log = deps.logger ?? (() => {});
   }
 
@@ -456,7 +499,10 @@ export class BuilderAgent {
       ...(this.upstreamIssueConfig
         ? { upstreamIssueConfig: this.upstreamIssueConfig }
         : {}),
+      directIssueCreateAvailable: this.directIssueCreateAvailable,
       audit: this.audit,
+      ...(this.lastBuildStatus ? { lastBuildStatus: this.lastBuildStatus } : {}),
+      ...(this.lastSmokeStatus ? { lastSmokeStatus: this.lastSmokeStatus } : {}),
     };
 
     const subAgentTools = this.tools.map((tool) => bridgeBuilderTool(tool, toolCtx));
@@ -731,7 +777,15 @@ export class BuilderAgent {
       }
     }
     const header = buildSpecHeader(spec, slotManifest, draftSlots);
-    return `${header}\n\n---\n\n${this.cachedSystemPromptSeed}`;
+    // Issue #227 — lead with the platform-version banner (when wired) so the
+    // Builder can spot a platform change between turns and re-verify earlier
+    // bug hypotheses (via inspect_generated_artifact / get_build_status /
+    // runtime_smoke_status) instead of asking the operator to drive a preview.
+    const banner =
+      this.platformBanner && this.platformBanner.trim().length > 0
+        ? `${this.platformBanner.trim()}\n\n`
+        : '';
+    return `${banner}${header}\n\n---\n\n${this.cachedSystemPromptSeed}`;
   }
 }
 
