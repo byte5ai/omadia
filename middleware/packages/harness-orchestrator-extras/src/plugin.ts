@@ -90,7 +90,12 @@ const CAPTURE_FILTER_SERVICE = 'captureFilter';
 const DEFAULT_HAIKU_MODEL = 'claude-haiku-4-5-20251001';
 const DEFAULT_TOPIC_UPPER = 0.55;
 const DEFAULT_TOPIC_LOWER = 0.15;
-const DEFAULT_CAPTURE_LEVEL: CaptureLevel = 'minimal';
+// Default `normal`: the capture-filter scores each turn's significance so
+// auto-promotion (now on by default) has a signal to gate on. Costs a Haiku
+// call per captured turn — set `capture_level=minimal` (scorer off) to avoid
+// that spend. Requires an Anthropic key; without one the scorer stays
+// disabled regardless of level.
+const DEFAULT_CAPTURE_LEVEL: CaptureLevel = 'normal';
 const DEFAULT_CAPTURE_VISIBILITY: Visibility = 'team';
 
 export interface OrchestratorExtrasPluginHandle {

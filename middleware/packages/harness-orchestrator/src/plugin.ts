@@ -350,9 +350,16 @@ export async function activate(
   // KG-ACL Slice 4b — env-var opt-in for auto-promotion at
   // significance ≥ threshold. Read straight from process.env (these
   // are operator-level feature flags, not per-plugin setup fields).
-  // Default OFF — no auto-saves without an explicit signal from
-  // both the capture-filter scorer AND the operator.
-  const autoPromote = parseBooleanEnv(process.env['KG_ACL_AUTO_PROMOTE']);
+  // Default ON — significant turns auto-promote to the Knowledge-Graph
+  // out of the box. Still gated at runtime by the capture-filter scorer
+  // (needs `capture_level >= normal`, now the default) and the presence of
+  // a Postgres KG + Anthropic key; without those the promote is a no-op.
+  // Set `KG_ACL_AUTO_PROMOTE=false` to opt out. NOTE: this means a Haiku
+  // significance call per captured turn — real Anthropic spend + latency.
+  const autoPromote =
+    process.env['KG_ACL_AUTO_PROMOTE'] === undefined
+      ? true
+      : parseBooleanEnv(process.env['KG_ACL_AUTO_PROMOTE']);
   const autoPromoteThreshold = parseNumberOrDefault(
     process.env['KG_ACL_AUTO_PROMOTE_THRESHOLD'],
     0.7,
