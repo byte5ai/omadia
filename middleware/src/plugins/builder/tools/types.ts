@@ -1,7 +1,9 @@
 import type { z } from 'zod';
 
 import type { AuditLogger } from '../audit.js';
+import type { BuildStatusSnapshot } from '../buildPipeline.js';
 import type { DraftStore } from '../draftStore.js';
+import type { SmokeStatusSnapshot } from '../runtimeSmokeOrchestrator.js';
 import type { SlotTypecheckService } from '../slotTypecheckPipeline.js';
 import type { SpecEventBus } from '../specEventBus.js';
 import type { UserChoiceCoordinator } from '../userChoiceCoordinator.js';
@@ -179,6 +181,22 @@ export interface BuilderToolContext {
    * `read_reference`, …) leave it untouched.
    */
   readonly audit: AuditLogger;
+  /**
+   * Issue #227 — pull-accessor for the last codegen→tsc build outcome of this
+   * draft, surfaced by the `get_build_status` tool so the Builder can verify a
+   * build/tsc fix after a platform update without an operator preview
+   * round-trip. Backed by `BuildPipeline.getLastBuildStatus`. Optional: tests
+   * (and environments without a pipeline) omit it and the tool reports the
+   * surface as unavailable.
+   */
+  readonly lastBuildStatus?: (draftId: string) => BuildStatusSnapshot | undefined;
+  /**
+   * Issue #227 — pull-accessor for the last runtime-smoke result of this draft
+   * (activate success + ctx.memory/http availability + route smoke), surfaced
+   * by the `runtime_smoke_status` tool. Backed by
+   * `RuntimeSmokeOrchestrator.getLastSmokeStatus`. Optional.
+   */
+  readonly lastSmokeStatus?: (draftId: string) => SmokeStatusSnapshot | undefined;
 }
 
 /**

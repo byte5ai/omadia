@@ -261,6 +261,14 @@ export interface ChatTurnInput {
    * (Telegram); otherwise the orchestrator fetches `url` itself.
    */
   attachments?: ChatTurnAttachment[];
+  /**
+   * Omadia UI canvas session id for this turn. Set only by the canvas channel
+   * (threaded from the channel's `IncomingTurn` metadata through the dispatcher);
+   * classic channels leave it unset. A canvas-aware orchestrator
+   * (`canvasChatAgent`) stamps it onto the `surface_*` events it synthesises so
+   * Tier 1 can correlate them to the right canvas. Never reaches the model prompt.
+   */
+  canvasSessionId?: string;
 }
 
 /**
