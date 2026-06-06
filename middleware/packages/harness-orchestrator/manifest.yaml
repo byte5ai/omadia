@@ -88,7 +88,22 @@ setup:
       label: "Max Tool-Loop Iterations"
       type: "string"
       required: false
-      help: "Hard cap auf den agentic tool-loop pro Turn. Aborts den Turn wenn überschritten. Default: 25 (auch Floor — niedrigere installierte Werte werden hochgesetzt). Migriert aus MAX_TOOL_ITERATIONS."
+      help: "Hard cap auf den agentic tool-loop pro Turn. Bei Erschöpfung wird KEIN roher Fehler mehr geworfen — der Orchestrator erzwingt eine letzte tool-freie Iteration und gibt eine Best-Effort-Antwort. Default: 100 (auch Floor — niedrigere installierte Werte werden hochgesetzt). Round-Loops werden separat vom Loop-Guard abgefangen. Migriert aus MAX_TOOL_ITERATIONS."
+    - key: "max_turn_seconds"
+      label: "Max Turn-Dauer (Sekunden)"
+      type: "string"
+      required: false
+      help: "Optionales Wall-Clock-Budget pro Turn. Wird es überschritten, finalisiert der Orchestrator an der nächsten Iterations-Grenze mit einer Best-Effort-Antwort. 0 oder leer = aus (Default — der Iteration-Cap und der Loop-Guard sind die Schranken; lange Multi-Step-Turns werden nicht abgeschnitten)."
+    - key: "loop_repeat_soft"
+      label: "Loop-Guard: Soft-Schwelle"
+      type: "string"
+      required: false
+      help: "Wie oft ein identischer Tool-Aufruf (gleiche Argumente UND gleiches Ergebnis) wiederholt werden darf, bevor der Loop-Guard das Modell mit einem Steer-Hinweis zur Kurskorrektur anstößt. Leer/0 = Default (3)."
+    - key: "loop_repeat_hard"
+      label: "Loop-Guard: Hard-Schwelle"
+      type: "string"
+      required: false
+      help: "Wie oft ein identischer Tool-Aufruf wiederholt werden darf, bevor der Turn zwangsweise mit einer Best-Effort-Antwort finalisiert wird (statt das ganze Iterations-Budget zu verbrennen). Leer/0 = Default (5). Muss > Soft-Schwelle sein."
     - key: "assistant_identity"
       label: "Assistant-Persona"
       type: "string"

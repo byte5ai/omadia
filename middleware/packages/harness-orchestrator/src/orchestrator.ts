@@ -85,6 +85,7 @@ import {
   runNudgePipeline,
   type NudgeTurnCounter,
 } from './nudgePipeline.js';
+import { LoopGuard } from './loopGuard.js';
 import {
   createPrivacyTurnHandle,
   ensureWellFormedParams,
@@ -144,6 +145,23 @@ export interface OrchestratorOptions {
   model: string;
   maxTokens: number;
   maxToolIterations: number;
+  /**
+   * Round-loop guard thresholds (see {@link LoopGuard}). When the model
+   * re-emits an identical tool batch with identical results `loopRepeatSoft`
+   * times it is nudged; at `loopRepeatHard` the turn force-finalises with a
+   * best-effort answer instead of burning the full iteration budget. Both
+   * default to LoopGuard's own defaults (3 / 5) when omitted.
+   */
+  loopRepeatSoft?: number;
+  loopRepeatHard?: number;
+  /**
+   * Optional wall-clock budget per turn, in seconds. When > 0 the tool loop
+   * stops at the next iteration boundary once exceeded and force-finalises a
+   * best-effort answer. `0` / omitted → no time budget (iteration cap and the
+   * loop guard are the only bounds). Default off so genuinely long multi-step
+   * turns are not truncated.
+   */
+  maxTurnSeconds?: number;
   /** One delegation tool per Managed Agent domain (accounting, hr, …). */
   domainTools: DomainTool[];
   /** Kernel-shared native-tool registry. Created once at boot and shared
@@ -628,6 +646,8 @@ Regeln:
     - **Mermaid**: eingeschränkt, im Zweifel ohne Logo rendern.
     Tool-Call-Shape: \`render_diagram({kind: "vegalite", source: "<spec mit brand://logo>", brand_logo_storage_key: "<aus memory>"})\`. Ohne den Parameter bleibt \`brand://logo\` ungeändert — Kroki rendert das Bild-Feld dann leer.
 
+**Konvergenz — keine Tool-Schleifen:** Rufe denselben Tool **nicht** wiederholt mit identischen Argumenten auf, wenn das Ergebnis sich nicht ändert. Bringt ein Tool-Aufruf keinen neuen Erkenntnisgewinn, wechsle die Strategie (andere Argumente, anderer Tool) oder gib mit den vorhandenen Informationen die bestmögliche Endantwort. Du hast pro Turn ein begrenztes Tool-Budget — arbeite zielgerichtet darauf hin, die Frage zu beantworten, statt im Kreis zu laufen.
+
 **Datei-Erzeugung (Excel/Word) — höchste Priorität bei Datei-Anfragen:**
 
 14. **Datei statt Chat-Antwort.** Will der User Daten als **Datei/Download** (Excel/.xlsx, Word/.docx, "exportier", "als Excel", "schick mir eine Datei"), erzeuge sie mit \`create_xlsx\`/\`create_docx\` — bei Fach-Agent-Daten mit der \`datasetId\` aus dem Digest. **NICHT \`v4_render_answer\`** verwenden: die Datenschicht-Regel "Datenantwort endet mit v4_render_answer" gilt für Datei-Anfragen **ausdrücklich NICHT** (\`v4_render_answer\` erzeugt nur Chat-Text, keine Datei).
@@ -786,6 +806,11 @@ export class Orchestrator {
   private readonly model: string;
   private readonly maxTokens: number;
   private readonly maxIterations: number;
+  /** Round-loop guard thresholds (see {@link LoopGuard}). */
+  private readonly loopRepeatSoft: number | undefined;
+  private readonly loopRepeatHard: number | undefined;
+  /** Per-turn wall-clock budget in ms; 0 = disabled. */
+  private readonly maxTurnMs: number;
   /** Per-Agent scoped memory-tool handler; overrides the global one. */
   private readonly memoryToolHandler: MemoryToolHandler | undefined;
   private readonly domainToolsByName: Map<string, DomainTool>;
@@ -845,6 +870,12 @@ export class Orchestrator {
     this.model = options.model;
     this.maxTokens = options.maxTokens;
     this.maxIterations = options.maxToolIterations;
+    this.loopRepeatSoft = options.loopRepeatSoft;
+    this.loopRepeatHard = options.loopRepeatHard;
+    this.maxTurnMs =
+      options.maxTurnSeconds && options.maxTurnSeconds > 0
+        ? Math.trunc(options.maxTurnSeconds * 1000)
+        : 0;
     this.memoryToolHandler = options.memoryToolHandler;
     this.domainToolsByName = new Map(options.domainTools.map((t) => [t.name, t]));
     this.knowledgeGraph = options.knowledgeGraph;
@@ -882,6 +913,23 @@ export class Orchestrator {
         this.nativeTools.register(name);
       }
     }
+  }
+
+  /** Fresh {@link LoopGuard} for one turn, wired to this Agent's thresholds. */
+  private newLoopGuard(): LoopGuard {
+    return new LoopGuard({
+      ...(this.loopRepeatSoft !== undefined
+        ? { softRepeat: this.loopRepeatSoft }
+        : {}),
+      ...(this.loopRepeatHard !== undefined
+        ? { hardRepeat: this.loopRepeatHard }
+        : {}),
+    });
+  }
+
+  /** True once the optional per-turn wall-clock budget is spent (0 = off). */
+  private turnBudgetExceeded(startedAtMs: number): boolean {
+    return this.maxTurnMs > 0 && Date.now() - startedAtMs >= this.maxTurnMs;
   }
 
   /**
@@ -1696,17 +1744,32 @@ export class Orchestrator {
     // `responseGuard@1` provider is installed; identical cache shape then.
     const prependRules = await this.resolvePrependRules(messages);
 
+    // Round-loop guard + optional wall-clock budget. `forceFinalize` latches
+    // once the guard (or the time budget) decides the turn must wrap up; the
+    // next iteration then runs tools-disabled and produces a best-effort
+    // answer instead of throwing the raw "exceeded maxToolIterations" error.
+    const loopGuard = this.newLoopGuard();
+    const turnStartedAt = Date.now();
+    let forceFinalize = false;
+
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
+        // Final pass: the loop guard stopped, the wall-clock budget is spent,
+        // or this is the last allowed iteration. Disable tools so the model
+        // MUST answer in text, and append the finalize directive.
+        const finalizeThisIter =
+          forceFinalize ||
+          iteration === this.maxIterations - 1 ||
+          this.turnBudgetExceeded(turnStartedAt);
         const baseParams = {
           model: this.model,
           max_tokens: this.maxTokens,
           system: buildSystemBlocks(
             this.composeStableSystemPrompt(prependRules),
             priorContext,
-            effectiveExtraSystemHint,
+            withFinalizeHint(effectiveExtraSystemHint, finalizeThisIter),
           ),
-          tools: this.buildToolsList(),
+          tools: finalizeThisIter ? [] : this.buildToolsList(),
           messages,
         };
         // Last-resort guard: repair any lone UTF-16 surrogate before the
@@ -1734,6 +1797,7 @@ export class Orchestrator {
             (b: ContentBlock) => b.type === 'tool_use',
           );
           if (
+            !finalizeThisIter &&
             !fileForceRetried &&
             !responseHasToolUse &&
             this.fileAnnouncedButNotBuilt(answer, drainedAttachments.files.length)
@@ -1907,7 +1971,19 @@ export class Orchestrator {
           input,
           turnId,
         );
-        messages.push({ role: 'user', content: toolResults });
+        // Round-loop guard. A `nudge` steer is appended to THIS iteration's
+        // tool-result user message (keeping a single well-formed user turn);
+        // a `stop` latches finalize so the next pass answers tools-disabled.
+        const loopDecision = loopGuard.record(toolUses, toolResults);
+        const userContent: ContentBlock[] = [...toolResults];
+        if (loopDecision.action === 'nudge' && loopDecision.nudge) {
+          userContent.push({ type: 'text', text: loopDecision.nudge });
+          console.error(`[orchestrator] loop guard nudge: ${loopDecision.reason}`);
+        } else if (loopDecision.action === 'stop') {
+          forceFinalize = true;
+          console.error(`[orchestrator] loop guard stop: ${loopDecision.reason}`);
+        }
+        messages.push({ role: 'user', content: userContent });
 
         // Short-circuit after ask_user_choice. The turn ends here so the
         // channel adapter can render a Smart-Card; the button click fires a
@@ -2185,6 +2261,11 @@ export class Orchestrator {
     // Phase-1 Kemia hook — see chatInContextInner for rationale.
     const prependRules = await this.resolvePrependRules(messages);
 
+    // Round-loop guard + optional wall-clock budget — see chatInContextInner.
+    const loopGuard = this.newLoopGuard();
+    const turnStartedAt = Date.now();
+    let forceFinalize = false;
+
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
         yield { type: 'iteration_start', iteration };
@@ -2197,6 +2278,13 @@ export class Orchestrator {
           console.warn('[orchestrator] observer.onIteration threw:', err);
         }
 
+        // Final pass: loop guard stopped, wall-clock budget spent, or last
+        // allowed iteration → answer tools-disabled (best-effort finalize).
+        const finalizeThisIter =
+          forceFinalize ||
+          iteration === this.maxIterations - 1 ||
+          this.turnBudgetExceeded(turnStartedAt);
+
         let finalMessage: Message | undefined;
         for await (const ev of streamMessageEvents({
           client: this.client,
@@ -2206,9 +2294,9 @@ export class Orchestrator {
             system: buildSystemBlocks(
               this.composeStableSystemPrompt(prependRules),
               priorContext,
-              effectiveExtraSystemHint,
+              withFinalizeHint(effectiveExtraSystemHint, finalizeThisIter),
             ),
-            tools: this.buildToolsList(),
+            tools: finalizeThisIter ? [] : this.buildToolsList(),
             messages,
           },
           observer,
@@ -2241,6 +2329,7 @@ export class Orchestrator {
             (b: ContentBlock) => b.type === 'tool_use',
           );
           if (
+            !finalizeThisIter &&
             !fileForceRetried &&
             !responseHasToolUse &&
             this.fileAnnouncedButNotBuilt(answer, drainedAttachments.files.length)
@@ -2465,7 +2554,31 @@ export class Orchestrator {
         for (const ev of stagedNudgeEvents) {
           yield ev;
         }
-        messages.push({ role: 'user', content: toolResults });
+        // Round-loop guard — mirror of chatInContextInner. On `nudge` the steer
+        // is appended to this iteration's tool-result user message AND surfaced
+        // to the UI as a `nudge` event; on `stop` finalize latches.
+        const loopDecision = loopGuard.record(
+          slots.map((s: ParallelSlot) => s.use),
+          toolResults,
+        );
+        const userContent: ContentBlock[] = [...toolResults];
+        if (loopDecision.action === 'nudge' && loopDecision.nudge) {
+          userContent.push({ type: 'text', text: loopDecision.nudge });
+          const anchorId = slots[0]?.use.id;
+          if (anchorId) {
+            yield {
+              type: 'nudge',
+              id: anchorId,
+              nudgeId: 'loop-guard',
+              text: loopDecision.nudge,
+            };
+          }
+          console.error(`[orchestrator] loop guard nudge: ${loopDecision.reason}`);
+        } else if (loopDecision.action === 'stop') {
+          forceFinalize = true;
+          console.error(`[orchestrator] loop guard stop: ${loopDecision.reason}`);
+        }
+        messages.push({ role: 'user', content: userContent });
 
         // Short-circuit after ask_user_choice. Mirror of chatInContext: the
         // turn ends here so the channel adapter can render a Smart-Card;
@@ -3130,6 +3243,25 @@ const FILE_ANNOUNCE_RE =
 /** Injected as a user turn to force the model to actually call the file tool. */
 const FILE_RETRY_NUDGE =
   'Du hast angekündigt, eine Datei (Excel/Word) zu bauen, aber das Tool `create_xlsx`/`create_docx` NICHT aufgerufen — der User hat dadurch nichts erhalten. Beschreibe den Plan NICHT erneut. Rufe JETZT in diesem Schritt das passende Tool auf und baue die Datei wirklich. Wenn du sie nicht bauen kannst, sag dem User in EINEM Satz klar, dass und warum nicht.';
+
+/**
+ * Appended to the per-turn system hint on the FINAL, tools-disabled iteration
+ * (iteration cap reached, loop guard stopped, or wall-clock budget exceeded).
+ * With no tools offered the model must produce text, so this turns what used to
+ * be a raw "exceeded maxToolIterations" error into a best-effort answer.
+ */
+const FINALIZE_DIRECTIVE =
+  'Du hast das Tool-Budget für diesen Turn aufgebraucht und kannst KEINE weiteren Tools aufrufen. Fasse zusammen, was du bereits herausgefunden hast, und gib JETZT die bestmögliche Antwort mit den vorhandenen Informationen. Wenn etwas unklar oder unvollständig bleibt, sag dem User in einem Satz klar, was noch offen ist. Beschreibe keine weiteren geplanten Tool-Aufrufe.';
+
+/** Compose the per-iteration system hint, appending the finalize directive on
+ *  the final tools-disabled pass. Kept as a free function so both tool loops
+ *  build the hint identically. */
+function withFinalizeHint(baseHint: string | undefined, finalize: boolean): string | undefined {
+  if (!finalize) return baseHint;
+  return baseHint && baseHint.trim().length > 0
+    ? `${baseHint}\n\n${FINALIZE_DIRECTIVE}`
+    : FINALIZE_DIRECTIVE;
+}
 
 function appendToolDigest(
   answer: string,
