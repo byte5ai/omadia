@@ -43,15 +43,18 @@ const KNOWLEDGE_GRAPH_PROVIDER_IDS_SKIP_AUTO_INSTALL = new Set<string>([
 ]);
 
 /**
- * `@omadia/memory-postgres` is the OPT-IN Postgres-backed alternative to the
- * default `@omadia/memory` (FilesystemMemoryStore). Both declare
- * `provides: memoryStore@1` (mutual exclusion). The memory provider is
- * selected by `bootstrapMemoryFromEnv` (env `MEMORY_BACKEND` + operator
- * choice); the built-in catch-all must NOT auto-install the Postgres provider
- * on its own, or — when the filesystem backend is selected — the capability
- * resolver would throw a duplicate-provider error at activate time.
+ * Both memoryStore providers — `@omadia/memory` (filesystem default) and
+ * `@omadia/memory-postgres` (opt-in Postgres) — declare `provides:
+ * memoryStore@1` (mutual exclusion). `bootstrapMemoryFromEnv` is the SOLE
+ * authoritative installer for them: it selects the backend, installs the
+ * chosen provider, and removes the other. The built-in catch-all must skip
+ * BOTH — otherwise, when Postgres is selected, the catch-all would re-install
+ * the just-removed `@omadia/memory` (it sees it as "not registered"), leaving
+ * both active and crashing capability resolution with a duplicate-provider
+ * error at activate time.
  */
 const MEMORY_STORE_PROVIDER_IDS_SKIP_AUTO_INSTALL = new Set<string>([
+  MEMORY_TOOL_ID,
   MEMORY_POSTGRES_ID,
 ]);
 

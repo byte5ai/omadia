@@ -759,4 +759,37 @@ describe('memoryStore provider selection', () => {
       'memory-postgres stays opt-in',
     );
   });
+
+  it('postgres backend: full boot order leaves ONLY memory-postgres (catch-all does not re-install the removed filesystem provider)', async () => {
+    // Reproduces the boot crash: bootstrapMemoryFromEnv removes
+    // @omadia/memory for the postgres backend, then the built-in catch-all
+    // must NOT re-install it (or capability resolution throws "memoryStore@1
+    // provided by both").
+    const reg = new InMemoryInstalledRegistry();
+    await seedActive(reg, MEMORY_ID);
+    await seedActive(reg, MEMORY_PG_ID);
+    const cfg = memCfg({ backend: 'postgres', databaseUrl: 'postgres://x' });
+
+    await bootstrapMemoryFromEnv(memDeps(reg, cfg));
+    await bootstrapBuiltInPackages({
+      config: cfg,
+      vault: stubVault,
+      registry: reg,
+      catalog: memCatalog,
+      builtInStore: makeBuiltInStore([
+        { id: MEMORY_ID, path: '/x/memory' },
+        { id: MEMORY_PG_ID, path: '/x/memory-postgres' },
+      ]) as unknown as Parameters<
+        typeof bootstrapBuiltInPackages
+      >[0]['builtInStore'],
+      log: () => {},
+    });
+
+    assert.equal(reg.get(MEMORY_PG_ID)?.status, 'active', 'postgres active');
+    assert.equal(
+      reg.get(MEMORY_ID),
+      undefined,
+      'filesystem provider NOT re-installed by the catch-all',
+    );
+  });
 });
