@@ -135,13 +135,23 @@ const PLUGIN_CAPABILITIES_SERVICE = 'pluginCapabilities';
 // makes every turn fail with `404 not_found_error` (the orchestrator main
 // loop has no other model source). Kept in sync with the kernel default
 // `ORCHESTRATOR_MODEL` in middleware/src/config.ts.
-const DEFAULT_MODEL = 'claude-opus-4-7';
+const DEFAULT_MODEL = 'claude-opus-4-8';
 // 8192, not 4096: a verbose preamble + a large structured tool call (e.g. a
 // multi-sheet create_xlsx with formulas) truncates at 4096 → `max_tokens`
 // mid-tool-call, so the file is never built. Also enforced as a floor below so
 // an already-installed registry config of 4096 gets bumped without reinstall.
 const DEFAULT_MAX_TOKENS = 8192;
-const DEFAULT_MAX_ITERATIONS = 25;
+// Raised 25 → 100 so genuinely multi-step turns (e.g. a price-list comparison
+// across many lookups) reach a final answer. The high cap is made safe by the
+// orchestrator's round-loop guard (nudges then force-finalises a repeating
+// tool batch ~iteration 5) and the best-effort finalize on exhaustion — so a
+// runaway loop no longer burns the full budget, and the user never sees the
+// raw "exceeded maxToolIterations" error. Also a floor (see below).
+const DEFAULT_MAX_ITERATIONS = 100;
+// Optional per-turn wall-clock budget, seconds. 0 = disabled (the default —
+// the iteration cap + loop guard are the bounds; we do NOT truncate honest
+// long turns by default). Operators can opt in via `max_turn_seconds`.
+const DEFAULT_MAX_TURN_SECONDS = 0;
 
 /**
  * Public shape of the `chatAgent@1` capability. Channel-plugins (Teams,
@@ -346,6 +356,22 @@ export async function activate(
     ),
     DEFAULT_MAX_ITERATIONS,
   );
+  // Optional per-turn wall-clock budget (seconds). Default 0 = off; a stale
+  // config is not floored (operators may legitimately want no budget).
+  const maxTurnSeconds = parseNumberOrDefault(
+    ctx.config.get<unknown>('max_turn_seconds'),
+    DEFAULT_MAX_TURN_SECONDS,
+  );
+  // Round-loop guard thresholds (omit → LoopGuard defaults 3 / 5). `0` or an
+  // unparseable value falls back to the default rather than disabling the guard.
+  const loopRepeatSoft = parseNumberOrDefault(
+    ctx.config.get<unknown>('loop_repeat_soft'),
+    0,
+  );
+  const loopRepeatHard = parseNumberOrDefault(
+    ctx.config.get<unknown>('loop_repeat_hard'),
+    0,
+  );
 
   // KG-ACL Slice 4b — env-var opt-in for auto-promotion at
   // significance ≥ threshold. Read straight from process.env (these
@@ -484,6 +510,9 @@ export async function activate(
       model,
       maxTokens,
       maxToolIterations: maxIterations,
+      ...(maxTurnSeconds > 0 ? { maxTurnSeconds } : {}),
+      ...(loopRepeatSoft > 0 ? { loopRepeatSoft } : {}),
+      ...(loopRepeatHard > 0 ? { loopRepeatHard } : {}),
     },
     orchestratorDeps,
   );
@@ -537,6 +566,9 @@ export async function activate(
           model,
           maxTokens,
           maxToolIterations: maxIterations,
+          ...(maxTurnSeconds > 0 ? { maxTurnSeconds } : {}),
+          ...(loopRepeatSoft > 0 ? { loopRepeatSoft } : {}),
+          ...(loopRepeatHard > 0 ? { loopRepeatHard } : {}),
         },
         ...(pluginLookup ? { pluginLookup } : {}),
         log: (msg, fields) =>

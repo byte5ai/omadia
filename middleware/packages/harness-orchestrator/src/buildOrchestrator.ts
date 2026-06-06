@@ -67,6 +67,11 @@ export interface AgentRuntimeConfig {
   readonly model: string;
   readonly maxTokens: number;
   readonly maxToolIterations: number;
+  /** Optional round-loop guard thresholds (see {@link OrchestratorOptions}). */
+  readonly loopRepeatSoft?: number;
+  readonly loopRepeatHard?: number;
+  /** Optional per-turn wall-clock budget in seconds (0 / omitted = off). */
+  readonly maxTurnSeconds?: number;
 }
 
 /**
@@ -186,6 +191,15 @@ export function buildOrchestratorForAgent(
     model: config.model,
     maxTokens: config.maxTokens,
     maxToolIterations: config.maxToolIterations,
+    ...(config.loopRepeatSoft !== undefined
+      ? { loopRepeatSoft: config.loopRepeatSoft }
+      : {}),
+    ...(config.loopRepeatHard !== undefined
+      ? { loopRepeatHard: config.loopRepeatHard }
+      : {}),
+    ...(config.maxTurnSeconds !== undefined
+      ? { maxTurnSeconds: config.maxTurnSeconds }
+      : {}),
     domainTools: [],
     nativeToolRegistry: deps.nativeToolRegistry,
     memoryToolHandler,
