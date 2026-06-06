@@ -11,12 +11,9 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 
 import Anthropic from '@anthropic-ai/sdk';
-import { FilesystemMemoryStore } from '@omadia/memory';
+import { InMemoryMemoryStore } from '@omadia/memory';
 import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
 import { InMemoryNudgeRegistry } from '@omadia/plugin-api';
 import type { EntityRefBus, KnowledgeGraph } from '@omadia/plugin-api';
@@ -49,7 +46,7 @@ function fakeNativeToolRegistry(): NativeToolRegistry {
 }
 
 function deps(
-  memoryStore: FilesystemMemoryStore,
+  memoryStore: InMemoryMemoryStore,
   knowledgeGraph: KnowledgeGraph,
 ): OrchestratorDeps {
   return {
@@ -93,8 +90,7 @@ async function harness(): Promise<{
   resolver: ChannelResolver;
   graph: InMemoryKnowledgeGraph;
 }> {
-  const store = new FilesystemMemoryStore(mkdtempSync(join(tmpdir(), 'cb-ns-')));
-  await store.init();
+  const store = new InMemoryMemoryStore();
   const graph = new InMemoryKnowledgeGraph();
   const registry = new OrchestratorRegistry(
     { loadSnapshot: () => Promise.resolve(snapshot) } as unknown as ConfigStore,

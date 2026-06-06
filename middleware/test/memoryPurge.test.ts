@@ -1,33 +1,24 @@
 import { strict as assert } from 'node:assert';
-import { afterEach, beforeEach, describe, it } from 'node:test';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { beforeEach, describe, it } from 'node:test';
 
-import { FilesystemMemoryStore } from '@omadia/memory/dist/filesystem.js';
+import { InMemoryMemoryStore } from '@omadia/memory';
 
 import { previewMemoryPurge, purgeMemory } from '../src/services/memoryPurge.js';
 
 // ---------------------------------------------------------------------------
-// WS3 — Danger-Zone scratch purge helpers. Exercised against a real
-// FilesystemMemoryStore in a mkdtemp so the list/delete semantics (recursive
-// delete, two-levels-deep list) match production behaviour.
+// WS3 — Danger-Zone scratch purge helpers. Exercised against an
+// InMemoryMemoryStore so the list/delete semantics (recursive delete,
+// two-levels-deep list) match production behaviour.
 // ---------------------------------------------------------------------------
 
 describe('memoryPurge (scratch helpers)', () => {
-  let dir: string;
-  let store: FilesystemMemoryStore;
+  let store: InMemoryMemoryStore;
 
   beforeEach(async () => {
-    dir = await mkdtemp(join(tmpdir(), 'ws3-purge-'));
-    store = new FilesystemMemoryStore(dir);
+    store = new InMemoryMemoryStore();
     await store.createFile('/memories/orchestrators/a/x.md', 'a-content');
     await store.createFile('/memories/orchestrators/b/y.md', 'b-content');
     await store.createFile('/memories/_rules/r.md', 'rule-content');
-  });
-
-  afterEach(async () => {
-    await rm(dir, { recursive: true, force: true });
   });
 
   it("axis 'agent' selector 'a' removes only a's subtree", async () => {

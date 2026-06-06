@@ -1,6 +1,5 @@
 export { activate } from './plugin.js';
 export type { MemoryPluginHandle } from './plugin.js';
-export { FilesystemMemoryStore } from './filesystem.js';
 export { InMemoryMemoryStore } from './inMemoryMemoryStore.js';
 export {
   MemoryAlreadyExistsError,

@@ -1,15 +1,12 @@
 import { strict as assert } from 'node:assert';
-import { promises as fs } from 'node:fs';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 
 import express from 'express';
 import { Pool } from 'pg';
 
-import { FilesystemMemoryStore } from '@omadia/memory';
+import { InMemoryMemoryStore } from '@omadia/memory';
 import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
 import type {
   GraphNode,
@@ -93,10 +90,11 @@ function withPurgePrimitives(
  * HTTP integration test for the Danger-Zone memory-purge router
  * (`createMemoryPurgeRouter`, mounted in prod at
  * `/api/v1/admin/memory/purge`). Drives the REAL router end-to-end over an
- * express `listen(0)` server with a real `FilesystemMemoryStore` (scratch),
+ * express `listen(0)` server with a real `InMemoryMemoryStore` (scratch),
  * a real `InMemoryKnowledgeGraph` (KG MemorableKnowledge), and — when a
  * throwaway Postgres is reachable — a real pg Pool for the
- * `memory_purge_audit` row.
+ * `memory_purge_audit` row. The scratch store is an in-memory
+ * `InMemoryMemoryStore` (same MemoryStore contract).
  *
  * No auth is exercised here: `requireAuth` is applied at MOUNT time in prod,
  * not inside the router, so the test calls the router directly.
@@ -108,14 +106,14 @@ type PurgeKg = ReturnType<typeof withPurgePrimitives>;
 
 interface Harness {
   baseUrl: string;
-  store: FilesystemMemoryStore;
+  store: InMemoryMemoryStore;
   kg: PurgeKg;
   close: () => Promise<void>;
 }
 
 const MOUNT = '/api/v1/admin/memory/purge';
 
-async function seedScratch(store: FilesystemMemoryStore): Promise<void> {
+async function seedScratch(store: InMemoryMemoryStore): Promise<void> {
   await store.createFile('/memories/orchestrators/a/x.md', 'ax');
   await store.createFile('/memories/orchestrators/a/notes/deep.md', 'deep');
   await store.createFile('/memories/orchestrators/b/y.md', 'by');
@@ -149,9 +147,7 @@ async function seedKg(kg: InMemoryKnowledgeGraph): Promise<void> {
 /** Stand up a fresh server + freshly-seeded scratch store + KG. Optionally
  *  wire a pg Pool as `graphPool` so the audit row is written. */
 async function makeHarness(graphPool?: Pool): Promise<Harness> {
-  const root = await fs.mkdtemp(join(tmpdir(), 'mem-purge-route-'));
-  const store = new FilesystemMemoryStore(root);
-  await store.init();
+  const store = new InMemoryMemoryStore();
   await seedScratch(store);
 
   const kg = withPurgePrimitives(new InMemoryKnowledgeGraph());
@@ -178,7 +174,6 @@ async function makeHarness(graphPool?: Pool): Promise<Harness> {
     kg,
     close: async () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
-      await fs.rm(root, { recursive: true, force: true }).catch(() => undefined);
     },
   };
 }

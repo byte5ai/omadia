@@ -7,12 +7,8 @@ import {
   ApiError,
   getMemoryBackend,
   setMemoryBackend,
-  previewMemoryMigration,
-  runMemoryMigration,
   type MemoryBackend,
   type MemoryBackendState,
-  type MemoryMigrationPreview,
-  type MemoryMigrationResult,
 } from '../../_lib/api';
 
 /**
@@ -117,43 +113,6 @@ export default function MemoryBackendPage(): React.ReactElement {
       setSaving(false);
     }
   }, [choice, load]);
-
-  // --- One-time memory migration (on-disk /memories → active backend) -------
-  const [migPreview, setMigPreview] = useState<MemoryMigrationPreview | null>(
-    null,
-  );
-  const [migResult, setMigResult] = useState<MemoryMigrationResult | null>(null);
-  const [migBusy, setMigBusy] = useState(false);
-  const [migError, setMigError] = useState<string | null>(null);
-
-  const onPreviewMigration = useCallback(async (): Promise<void> => {
-    setMigBusy(true);
-    setMigError(null);
-    setMigResult(null);
-    try {
-      setMigPreview(await previewMemoryMigration());
-    } catch (err) {
-      setMigError(err instanceof Error ? err.message : String(err));
-      setMigPreview(null);
-    } finally {
-      setMigBusy(false);
-    }
-  }, []);
-
-  const onRunMigration = useCallback(async (): Promise<void> => {
-    setMigBusy(true);
-    setMigError(null);
-    try {
-      const r = await runMemoryMigration();
-      setMigResult(r);
-      // Refresh the preview so a follow-up shows everything now present.
-      setMigPreview(await previewMemoryMigration());
-    } catch (err) {
-      setMigError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setMigBusy(false);
-    }
-  }, []);
 
   return (
     <main className="mx-auto max-w-[800px] px-6 py-12 lg:px-10 lg:py-16">
@@ -283,79 +242,6 @@ export default function MemoryBackendPage(): React.ReactElement {
             </section>
           )}
 
-          <section className="mt-8 rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
-            <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
-              Bestehende Dateien migrieren
-            </h2>
-            <p className="mb-4 text-sm leading-[1.55] text-[color:var(--fg-muted)]">
-              Kopiert alle vorhandenen <code className="font-mono">/memories</code>
-              -Dateien vom Dateisystem (<code className="font-mono">MEMORY_DIR</code>)
-              in das aktuell aktive Speicher-Backend. <strong>Nach dem Umschalten
-              auf Postgres einmalig ausführen, solange die alte Datei-Volume noch
-              gemountet ist</strong> — sonst bleiben die bisherigen Memory-Daten
-              verwaist. Solange das aktive Backend noch das Dateisystem ist, sind
-              alle Pfade bereits vorhanden und werden übersprungen (No-op).
-            </p>
-
-            <div className="flex flex-wrap items-center gap-3">
-              <button
-                type="button"
-                onClick={() => void onPreviewMigration()}
-                disabled={migBusy}
-                className="rounded border border-[color:var(--border)] px-4 py-1.5 text-xs font-semibold text-[color:var(--fg-strong)] hover:bg-[color:var(--card)] disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {migBusy ? 'lädt…' : 'Vorschau'}
-              </button>
-              <button
-                type="button"
-                onClick={() => void onRunMigration()}
-                disabled={migBusy}
-                className="rounded bg-[color:var(--accent)] px-4 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {migBusy ? 'läuft…' : 'Migrieren'}
-              </button>
-            </div>
-
-            {migError !== null && (
-              <div className="mt-4 rounded-[12px] border border-red-400 bg-red-50 p-4 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300">
-                Migration fehlgeschlagen: {migError}
-              </div>
-            )}
-
-            {migPreview !== null && migResult === null && migError === null && (
-              <dl className="mt-4 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
-                <dt className="text-neutral-500">Dateien gesamt</dt>
-                <dd className="font-mono">{migPreview.totalFiles}</dd>
-                <dt className="text-neutral-500">Würde kopieren</dt>
-                <dd className="font-mono">{migPreview.wouldCopy}</dd>
-                <dt className="text-neutral-500">Bereits vorhanden</dt>
-                <dd className="font-mono">{migPreview.alreadyPresent}</dd>
-              </dl>
-            )}
-
-            {migResult !== null && migError === null && (
-              <div className="mt-4 rounded-[12px] border border-emerald-500/50 bg-emerald-500/10 p-4 text-sm text-emerald-700 dark:text-emerald-300">
-                <p className="font-semibold">Migration abgeschlossen.</p>
-                <dl className="mt-2 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1">
-                  <dt className="opacity-80">Kopiert</dt>
-                  <dd className="font-mono">{migResult.copied}</dd>
-                  <dt className="opacity-80">Übersprungen</dt>
-                  <dd className="font-mono">{migResult.skipped}</dd>
-                  <dt className="opacity-80">Fehlgeschlagen</dt>
-                  <dd className="font-mono">{migResult.failed}</dd>
-                </dl>
-                {migResult.failed > 0 && (
-                  <ul className="mt-2 list-disc pl-5 text-xs">
-                    {migResult.errors.slice(0, 10).map((e) => (
-                      <li key={e.path}>
-                        <code className="font-mono">{e.path}</code>: {e.error}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            )}
-          </section>
         </>
       )}
     </main>
