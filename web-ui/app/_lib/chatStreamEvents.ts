@@ -110,6 +110,9 @@ export type ChatStreamEvent =
   /** #133 (E9) — opaque turn annotation the orchestrator forwarded from a
    *  turn-hook. `channel: 'plan'` carries a live PlanSnapshot. */
   | { type: 'turn_annotation'; channel: string; payload: unknown }
+  /** Mid-turn steering — a user message injected via `/chat/steer` was folded
+   *  into the running turn at iteration `iteration`. */
+  | { type: 'steer_applied'; iteration: number; message: string }
   | { type: 'error'; message: string };
 
 /**
@@ -293,6 +296,12 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
         finishedAt: Date.now(),
         streaming: false,
       };
+    case 'steer_applied': {
+      // Record the steer so the trace can render an inline "↳ steered" chip
+      // under the assistant turn it landed in.
+      const steers = [...(m.steers ?? []), event.message];
+      return { ...m, steers };
+    }
     case 'iteration_start':
     default:
       return m;

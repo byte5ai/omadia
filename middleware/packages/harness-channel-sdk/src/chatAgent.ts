@@ -582,6 +582,13 @@ export type ChatStreamEvent =
    * don't recognise a channel ignore the event.
    */
   | { type: 'turn_annotation'; channel: string; payload: unknown }
+  /**
+   * Mid-turn steering — emitted when a user message injected out-of-band via
+   * `POST /chat/steer` was folded into the running conversation at an iteration
+   * boundary. Lets the UI confirm the steer landed and on which iteration.
+   * Additive; clients that don't recognise it ignore it.
+   */
+  | { type: 'steer_applied'; iteration: number; message: string }
   | { type: 'error'; message: string }
   /**
    * Omadia UI canvas surface events (omadia-canvas-protocol/1.0). Additive;

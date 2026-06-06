@@ -72,10 +72,12 @@ setup:
       label: "Orchestrator Model"
       type: "enum"
       required: false
-      default: "claude-opus-4-7"
+      default: "claude-opus-4-8"
       enum:
+        - value: "claude-opus-4-8"
+          label: "Claude Opus 4.8 (Default — höchste Reasoning-Tiefe)"
         - value: "claude-opus-4-7"
-          label: "Claude Opus 4.7 (Default — höchste Reasoning-Tiefe)"
+          label: "Claude Opus 4.7 (vorherige Generation)"
         - value: "claude-sonnet-4-6"
           label: "Claude Sonnet 4.6 (schneller, günstiger)"
       help: "Anthropic-Model-ID für die Orchestrator-Haupt-Loop. Als Dropdown gepflegt, damit keine ungültige Model-ID (→ 404 not_found_error) eingetragen werden kann. Migriert aus ORCHESTRATOR_MODEL."

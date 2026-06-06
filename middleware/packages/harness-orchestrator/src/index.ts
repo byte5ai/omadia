@@ -154,6 +154,10 @@ export type {
 } from './runTraceCollector.js';
 export type { RunTracePayload } from '@omadia/channel-sdk';
 
+// Mid-turn steering bus — out-of-band user-message injection into a live turn.
+export { SteeringBus, steeringBus, MAX_STEER_LENGTH } from './steeringBus.js';
+export type { SteerEnqueueResult } from './steeringBus.js';
+
 // Session logger + chat-session store
 export { SessionLogger, graphScopeFor } from './sessionLogger.js';
 export type { SessionLogEntry } from './sessionLogger.js';
