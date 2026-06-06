@@ -60,6 +60,11 @@ export default function AdminIndexPage(): React.ReactElement {
           description="Semantisch ähnliche Memories mit widersprüchlichen Aussagen — Operator entscheidet welche korrekt ist (oder ob beide gelten)."
         />
         <AdminCard
+          href="/admin/memory-backend"
+          title="Memory · Speicher-Backend"
+          description="Memory-Storage zwischen Dateisystem und Postgres umschalten. Postgres benötigt DATABASE_URL (Neon-KG/graphPool). Der Wechsel greift erst nach einem Neustart."
+        />
+        <AdminCard
           href="/admin/danger-zone"
           title="Danger Zone · Memory-Purge"
           description="Memory unwiderruflich entlang einer Achse löschen (Alles / Agent / User / Team / Channel). Vorschau-gated, mit Confirm-Phrase. Kein Undo."

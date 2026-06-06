@@ -9,6 +9,7 @@ import { createTigrisStore } from '@omadia/diagrams';
 import type { MemoryStore } from '@omadia/plugin-api';
 import { createAdminRouter } from './routes/admin.js';
 import { createMemoryPurgeRouter } from './routes/memoryPurge.js';
+import { createMemoryBackendRouter } from './routes/memoryBackend.js';
 import { createChatRouter } from './routes/chat.js';
 import { createOperatorAgentsRouter } from './routes/operatorAgents.js';
 import { createOperatorChannelsRouter } from './routes/operatorChannels.js';
@@ -1415,6 +1416,23 @@ async function main(): Promise<void> {
   );
   console.log(
     '[middleware] memory-purge endpoint ready at /api/v1/admin/memory/purge',
+  );
+
+  // Memory-storage backend switch (filesystem ↔ postgres). Cookie-auth admin
+  // surface, consistent with the memory-purge router above. Reads/writes the
+  // persisted `memory_backend` choice on the active memoryStore provider's
+  // registry entry; the swap is applied by bootstrapMemoryFromEnv on the NEXT
+  // restart (no live hot-swap).
+  app.use(
+    '/api/v1/admin/memory/backend',
+    requireAuth,
+    createMemoryBackendRouter({
+      registry: installedRegistry,
+      config,
+    }),
+  );
+  console.log(
+    '[middleware] memory-backend endpoint ready at /api/v1/admin/memory/backend',
   );
 
   // US9 / T037 — operator-facing Agents dashboard backend. Mounts at

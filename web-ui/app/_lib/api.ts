@@ -3121,3 +3121,65 @@ export async function purgeMemory(body: {
   }
   return JSON.parse(text) as MemoryPurgeResult;
 }
+
+// -----------------------------------------------------------------------------
+// Memory storage backend switch (filesystem ↔ postgres). Backed by the admin
+// router at /api/v1/admin/memory/backend, surfaced to the browser as
+// /bot-api/v1/admin/memory/backend. The PUT only PERSISTS the choice — the
+// provider swap is applied by the middleware's bootstrap on the NEXT restart.
+//   - GET /  → current state + whether a restart is pending
+//   - PUT /  → persist a backend choice (postgres requires DATABASE_URL)
+// -----------------------------------------------------------------------------
+
+export type MemoryBackend = 'filesystem' | 'postgres';
+
+export interface MemoryBackendState {
+  current: MemoryBackend;
+  envDefault: string;
+  databaseUrlPresent: boolean;
+  activeProviderId: string | null;
+  restartRequiredToApply: boolean;
+}
+
+export interface SetMemoryBackendResult {
+  ok: true;
+  backend: MemoryBackend;
+  restartRequired: true;
+}
+
+/** Read the current memory-storage backend and pending-restart state. */
+export async function getMemoryBackend(): Promise<MemoryBackendState> {
+  return getJson<MemoryBackendState>('/v1/admin/memory/backend');
+}
+
+/**
+ * Persist the operator's backend choice. Throws `ApiError` (status 400,
+ * `body` = `{"error":"database_url_required",...}`) when `postgres` is
+ * requested without `DATABASE_URL`; callers surface that inline.
+ */
+export async function setMemoryBackend(
+  backend: MemoryBackend,
+): Promise<SetMemoryBackendResult> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(botApi('/v1/admin/memory/backend'), {
+    method: 'PUT',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      ...forwarded,
+    },
+    body: JSON.stringify({ backend }),
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    maybeNavigateToLogin(res.status);
+    throw new ApiError(
+      res.status,
+      `PUT memory/backend failed: ${res.status}`,
+      text,
+    );
+  }
+  return JSON.parse(text) as SetMemoryBackendResult;
+}
