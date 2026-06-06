@@ -28,6 +28,7 @@ export function SpecOverview({ spec, slots }: SpecOverviewProps): React.ReactEle
     <div className="grid grid-cols-1 gap-4 p-5 md:grid-cols-2">
       <Field label={t('fields.agentId')} value={spec.id || '—'} mono />
       <Field label={t('fields.name')} value={spec.name || '—'} />
+      <Field label={t('fields.author')} value={spec.author || '—'} />
       <Field label={t('fields.version')} value={spec.version || '—'} mono />
       <Field label={t('fields.template')} value={spec.template ?? 'agent-integration'} mono />
       <Field label={t('fields.category')} value={spec.category || '—'} />

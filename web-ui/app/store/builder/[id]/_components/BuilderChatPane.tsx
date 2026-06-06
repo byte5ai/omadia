@@ -107,6 +107,11 @@ interface BuilderChatPaneProps {
    *  `user_choice_resolved` event still arrives later for sibling-tab
    *  consistency, but the local pane reacts instantly. */
   onUserChoiceResolved?: () => void;
+  /** Issue #224 — lifts the in-flight turn flag to the Workspace so it can
+   *  lock the simple/extended view toggle while a reply streams (toggling
+   *  unmounts this pane and would abort the stream + drop the live message).
+   *  Fires `false` on unmount so a stale `true` never wedges the toggle. */
+  onStreamingChange?: (streaming: boolean) => void;
 }
 
 /**
@@ -131,6 +136,7 @@ export function BuilderChatPane({
   onPendingInputConsumed,
   pendingUserChoice,
   onUserChoiceResolved,
+  onStreamingChange,
 }: BuilderChatPaneProps): React.ReactElement {
   const t = useTranslations('builder.chat');
   const [items, setItems] = useState<ChatItem[]>(() =>
@@ -214,6 +220,13 @@ export function BuilderChatPane({
       abortRef.current?.abort();
     };
   }, []);
+
+  // Issue #224 — mirror the in-flight flag up to the Workspace, and force it
+  // back to `false` on unmount so the view toggle never stays locked.
+  useEffect(() => {
+    onStreamingChange?.(inflight);
+    return () => onStreamingChange?.(false);
+  }, [inflight, onStreamingChange]);
 
   const onSend = useCallback(async (messageOverride?: string) => {
     const source = messageOverride ?? input;
