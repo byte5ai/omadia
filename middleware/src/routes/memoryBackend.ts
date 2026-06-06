@@ -14,10 +14,11 @@ import type { InstalledRegistry } from '../plugins/installedRegistry.js';
  *
  * The backend is selected at boot by `bootstrapMemoryFromEnv`: a PERSISTED
  * operator choice — the `memory_backend` config key on the active
- * `memoryStore` provider's installed-registry entry — wins over the
- * `MEMORY_BACKEND` env default. Postgres REQUIRES `DATABASE_URL` (it consumes
- * the Neon KG's shared graphPool); without it the bootstrap falls back to
- * filesystem.
+ * `memoryStore` provider's installed-registry entry — wins over the explicit
+ * `MEMORY_BACKEND` env value, which in turn wins over the derived default
+ * (`DATABASE_URL ? postgres : inmemory`). Postgres REQUIRES `DATABASE_URL`
+ * (it consumes the Neon KG's shared graphPool); without it the bootstrap
+ * falls back to inmemory.
  *
  * This router only PERSISTS the choice. The actual provider swap happens on
  * the NEXT restart, when `bootstrapMemoryFromEnv` reconciles install-state to
@@ -30,10 +31,10 @@ import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 const MEMORY_TOOL_ID = '@omadia/memory';
 const MEMORY_POSTGRES_ID = '@omadia/memory-postgres';
 
-type Backend = 'filesystem' | 'postgres';
+type Backend = 'postgres' | 'inmemory';
 
 const PutBodySchema = z.object({
-  backend: z.enum(['filesystem', 'postgres']),
+  backend: z.enum(['postgres', 'inmemory']),
 });
 
 export interface MemoryBackendDeps {
@@ -51,10 +52,12 @@ function activeProviderId(registry: InstalledRegistry): string | null {
   return null;
 }
 
-/** Resolve the DESIRED backend: the persisted operator choice (read from
- *  whichever provider entry carries `memory_backend`) wins over the
- *  `MEMORY_BACKEND` env default; then apply the postgres→filesystem fallback
- *  when DATABASE_URL is unset. Mirrors `resolveMemoryBackend` in bootstrap.ts. */
+/** Resolve the DESIRED backend, mirroring `resolveMemoryBackend` in
+ *  bootstrap.ts: the persisted operator choice (read from whichever provider
+ *  entry carries `memory_backend`) wins over an explicit `MEMORY_BACKEND` env
+ *  value, which wins over the derived default (`DATABASE_URL ? postgres :
+ *  inmemory`); then apply the postgres→inmemory fallback when DATABASE_URL is
+ *  unset. */
 function resolveDesiredBackend(deps: MemoryBackendDeps): Backend {
   const persisted =
     (deps.registry.get(MEMORY_POSTGRES_ID)?.config?.['memory_backend'] as
@@ -63,12 +66,15 @@ function resolveDesiredBackend(deps: MemoryBackendDeps): Backend {
     (deps.registry.get(MEMORY_TOOL_ID)?.config?.['memory_backend'] as
       | string
       | undefined);
+  const derivedDefault: Backend = deps.config.DATABASE_URL
+    ? 'postgres'
+    : 'inmemory';
   let backend: Backend =
-    persisted === 'postgres' || persisted === 'filesystem'
+    persisted === 'postgres' || persisted === 'inmemory'
       ? persisted
-      : deps.config.MEMORY_BACKEND;
+      : (deps.config.MEMORY_BACKEND ?? derivedDefault);
   if (backend === 'postgres' && !deps.config.DATABASE_URL) {
-    backend = 'filesystem';
+    backend = 'inmemory';
   }
   return backend;
 }
@@ -78,7 +84,7 @@ function resolveDesiredBackend(deps: MemoryBackendDeps): Backend {
 function runningBackend(registry: InstalledRegistry): Backend | null {
   const active = activeProviderId(registry);
   if (active === MEMORY_POSTGRES_ID) return 'postgres';
-  if (active === MEMORY_TOOL_ID) return 'filesystem';
+  if (active === MEMORY_TOOL_ID) return 'inmemory';
   return null;
 }
 
@@ -94,9 +100,14 @@ export function createMemoryBackendRouter(deps: MemoryBackendDeps): Router {
     // provider that is actually active right now. When no provider is
     // registered yet (cold boot edge), there is nothing to reconcile.
     const restartRequiredToApply = running !== null && running !== desired;
+    // When MEMORY_BACKEND is unset the bootstrap derives the default from
+    // DATABASE_URL — surface that derivation rather than `undefined`.
+    const envDefault: Backend =
+      deps.config.MEMORY_BACKEND ??
+      (databaseUrlPresent ? 'postgres' : 'inmemory');
     res.json({
       current: desired,
-      envDefault: deps.config.MEMORY_BACKEND,
+      envDefault,
       databaseUrlPresent,
       activeProviderId: activeProviderId(deps.registry),
       restartRequiredToApply,

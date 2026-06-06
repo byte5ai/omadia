@@ -14,11 +14,12 @@ import {
 /**
  * Admin → Memory · Speicher-Backend.
  *
- * Read/write the persisted memory-storage backend choice (filesystem ↔
- * postgres). The backend is selected at boot by the middleware's
+ * Read/write the persisted memory-storage backend choice (postgres ↔
+ * inmemory). The backend is selected at boot by the middleware's
  * `bootstrapMemoryFromEnv`; a persisted operator choice wins over the
- * `MEMORY_BACKEND` env default. Postgres REQUIRES `DATABASE_URL` (it consumes
- * the Neon KG's shared graphPool).
+ * `MEMORY_BACKEND` env value, which wins over the derived default
+ * (`DATABASE_URL ? postgres : inmemory`). Postgres REQUIRES `DATABASE_URL`
+ * (it consumes the Neon KG's shared graphPool).
  *
  * This page only PERSISTS the choice. The provider swap happens on the NEXT
  * restart — so on a successful save the operator is told a restart is
@@ -27,8 +28,8 @@ import {
  */
 
 const BACKENDS: ReadonlyArray<{ value: MemoryBackend; label: string }> = [
-  { value: 'filesystem', label: 'Dateisystem (filesystem)' },
   { value: 'postgres', label: 'Postgres (postgres)' },
+  { value: 'inmemory', label: 'In-Memory (flüchtig, ohne Datenbank)' },
 ];
 
 /** Surface the inline 400 `database_url_required` payload from an ApiError. */
@@ -47,7 +48,7 @@ export default function MemoryBackendPage(): React.ReactElement {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const [choice, setChoice] = useState<MemoryBackend>('filesystem');
+  const [choice, setChoice] = useState<MemoryBackend>('inmemory');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState<MemoryBackend | null>(null);
@@ -127,8 +128,9 @@ export default function MemoryBackendPage(): React.ReactElement {
           Memory · Speicher-Backend
         </h1>
         <p className="mt-3 max-w-2xl text-[16px] leading-[1.55] text-[color:var(--fg-muted)]">
-          Schaltet das Memory-Storage zwischen <strong>Dateisystem</strong> und{' '}
-          <strong>Postgres</strong> um. Postgres benötigt{' '}
+          Schaltet das Memory-Storage zwischen <strong>Postgres</strong> und{' '}
+          <strong>In-Memory</strong> (flüchtig, ohne Datenbank) um. Postgres
+          benötigt{' '}
           <code className="font-mono">DATABASE_URL</code> (Neon-KG/graphPool).
           Die Auswahl wird gespeichert, der Wechsel greift erst nach einem
           Neustart.

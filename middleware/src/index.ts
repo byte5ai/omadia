@@ -1418,7 +1418,7 @@ async function main(): Promise<void> {
     '[middleware] memory-purge endpoint ready at /api/v1/admin/memory/purge',
   );
 
-  // Memory-storage backend switch (filesystem ↔ postgres). Cookie-auth admin
+  // Memory-storage backend switch (postgres ↔ inmemory). Cookie-auth admin
   // surface, consistent with the memory-purge router above. Reads/writes the
   // persisted `memory_backend` choice on the active memoryStore provider's
   // registry entry; the swap is applied by bootstrapMemoryFromEnv on the NEXT
@@ -2799,7 +2799,6 @@ async function main(): Promise<void> {
   // memory/feedback-fly-operational.
   const server = app.listen(config.PORT, '::', () => {
     console.log(`[middleware] listening on [::]:${config.PORT}`);
-    console.log(`[middleware] memory dir: ${config.MEMORY_DIR}`);
     console.log(`[middleware] skills dir: ${config.SKILLS_DIR}`);
     console.log(`[middleware] orchestrator model: ${config.ORCHESTRATOR_MODEL}`);
     console.log(`[middleware] sub-agent model:   ${config.SUB_AGENT_MODEL}`);

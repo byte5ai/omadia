@@ -407,7 +407,6 @@ describe('bootstrapMemoryFromEnv — env→config reconcile', () => {
   function makeConfig(devEnabled: boolean): Config {
     return {
       DEV_ENDPOINTS_ENABLED: devEnabled,
-      MEMORY_DIR: '/test/.memory',
       MEMORY_SEED_DIR: '/test/seed/memory',
       MEMORY_SEED_MODE: 'missing',
     } as unknown as Config;
@@ -442,6 +441,8 @@ describe('bootstrapMemoryFromEnv — env→config reconcile', () => {
     assert.ok(entry, 'memory plugin should be auto-installed');
     assert.equal(entry.status, 'active');
     assert.equal(entry.config?.['dev_memory_endpoints_enabled'], 'true');
+    // The inmemory store needs no directory — memory_dir must NOT be written.
+    assert.equal(entry.config?.['memory_dir'], undefined);
   });
 
   it('reconciles dev_memory_endpoints_enabled from false→true on subsequent boots when env flips on', async () => {
@@ -452,7 +453,6 @@ describe('bootstrapMemoryFromEnv — env→config reconcile', () => {
       installed_at: '2026-04-29T00:00:00Z',
       status: 'active',
       config: {
-        memory_dir: '/test/.memory',
         seed_dir: '/test/seed/memory',
         seed_mode: 'missing',
         dev_memory_endpoints_enabled: 'false',
@@ -484,7 +484,6 @@ describe('bootstrapMemoryFromEnv — env→config reconcile', () => {
       installed_at: '2026-04-29T00:00:00Z',
       status: 'active',
       config: {
-        memory_dir: '/test/.memory',
         seed_dir: '/test/seed/memory',
         seed_mode: 'missing',
         dev_memory_endpoints_enabled: 'true',
@@ -508,7 +507,7 @@ describe('bootstrapMemoryFromEnv — env→config reconcile', () => {
     );
   });
 
-  it('preserves operator-owned config keys (memory_dir, seed_dir, seed_mode) during reconcile', async () => {
+  it('preserves operator-owned config keys (seed_dir, seed_mode) during reconcile', async () => {
     // The reconcile path may NOT clobber non-env-derived config. Only
     // `dev_memory_endpoints_enabled` is the env-driven flag; other
     // values are operator-managed after first boot.
@@ -519,7 +518,6 @@ describe('bootstrapMemoryFromEnv — env→config reconcile', () => {
       installed_at: '2026-04-29T00:00:00Z',
       status: 'active',
       config: {
-        memory_dir: '/operator/picked/.memory',
         seed_dir: '/operator/picked/seed',
         seed_mode: 'always',
         dev_memory_endpoints_enabled: 'false',
@@ -538,7 +536,6 @@ describe('bootstrapMemoryFromEnv — env→config reconcile', () => {
     });
 
     const entry = reg.get(MEMORY_ID);
-    assert.equal(entry?.config?.['memory_dir'], '/operator/picked/.memory');
     assert.equal(entry?.config?.['seed_dir'], '/operator/picked/seed');
     assert.equal(entry?.config?.['seed_mode'], 'always');
     assert.equal(entry?.config?.['dev_memory_endpoints_enabled'], 'true');
@@ -557,7 +554,6 @@ describe('bootstrapMemoryFromEnv — env→config reconcile', () => {
       installed_at: installedAt,
       status: 'active',
       config: {
-        memory_dir: '/test/.memory',
         seed_dir: '/test/seed/memory',
         seed_mode: 'missing',
         dev_memory_endpoints_enabled: 'true',
@@ -627,13 +623,13 @@ describe('memoryStore provider selection', () => {
   } as unknown as SecretVault;
 
   function memCfg(opts: {
-    backend?: 'filesystem' | 'postgres';
+    backend?: 'inmemory' | 'postgres';
     databaseUrl?: string;
   }): Config {
     return {
       DEV_ENDPOINTS_ENABLED: false,
-      MEMORY_BACKEND: opts.backend ?? 'filesystem',
-      MEMORY_DIR: '/test/.memory',
+      // MEMORY_BACKEND is optional now — only set it when the test pins it.
+      ...(opts.backend ? { MEMORY_BACKEND: opts.backend } : {}),
       MEMORY_SEED_DIR: '/test/seed/memory',
       MEMORY_SEED_MODE: 'missing',
       ...(opts.databaseUrl ? { DATABASE_URL: opts.databaseUrl } : {}),
@@ -681,14 +677,38 @@ describe('memoryStore provider selection', () => {
     });
   }
 
-  it('filesystem (default) installs @omadia/memory, not the Postgres provider', async () => {
+  it('inmemory (explicit) installs @omadia/memory, not the Postgres provider', async () => {
     const reg = new InMemoryInstalledRegistry();
-    await bootstrapMemoryFromEnv(memDeps(reg, memCfg({})));
+    await bootstrapMemoryFromEnv(memDeps(reg, memCfg({ backend: 'inmemory' })));
     assert.equal(reg.get(MEMORY_ID)?.status, 'active');
     assert.equal(reg.get(MEMORY_PG_ID), undefined);
   });
 
-  it('postgres + DATABASE_URL installs memory-postgres and removes the filesystem provider', async () => {
+  it('unset MEMORY_BACKEND + no DATABASE_URL → installs @omadia/memory (inmemory derived default)', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await bootstrapMemoryFromEnv(memDeps(reg, memCfg({})));
+    assert.equal(
+      reg.get(MEMORY_ID)?.status,
+      'active',
+      'inmemory is the derived default without a DB',
+    );
+    assert.equal(reg.get(MEMORY_PG_ID), undefined);
+  });
+
+  it('unset MEMORY_BACKEND + DATABASE_URL set → installs @omadia/memory-postgres (postgres is the sharp default)', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await bootstrapMemoryFromEnv(
+      memDeps(reg, memCfg({ databaseUrl: 'postgres://x' })),
+    );
+    assert.equal(
+      reg.get(MEMORY_PG_ID)?.status,
+      'active',
+      'postgres is the sharp default whenever DATABASE_URL is configured',
+    );
+    assert.equal(reg.get(MEMORY_ID), undefined);
+  });
+
+  it('postgres + DATABASE_URL installs memory-postgres and removes the inmemory provider', async () => {
     const reg = new InMemoryInstalledRegistry();
     await seedActive(reg, MEMORY_ID);
     await bootstrapMemoryFromEnv(
@@ -698,14 +718,14 @@ describe('memoryStore provider selection', () => {
     assert.equal(
       reg.get(MEMORY_ID),
       undefined,
-      'filesystem provider removed (memoryStore@1 mutual exclusion)',
+      'inmemory provider removed (memoryStore@1 mutual exclusion)',
     );
   });
 
-  it('postgres WITHOUT DATABASE_URL falls back to filesystem', async () => {
+  it('postgres WITHOUT DATABASE_URL falls back to inmemory', async () => {
     const reg = new InMemoryInstalledRegistry();
     await bootstrapMemoryFromEnv(memDeps(reg, memCfg({ backend: 'postgres' })));
-    assert.equal(reg.get(MEMORY_ID)?.status, 'active', 'fell back to filesystem');
+    assert.equal(reg.get(MEMORY_ID)?.status, 'active', 'fell back to inmemory');
     assert.equal(reg.get(MEMORY_PG_ID), undefined);
   });
 
@@ -713,7 +733,7 @@ describe('memoryStore provider selection', () => {
     const reg = new InMemoryInstalledRegistry();
     await seedActive(reg, MEMORY_ID);
     await seedActive(reg, MEMORY_PG_ID);
-    await bootstrapMemoryFromEnv(memDeps(reg, memCfg({}))); // filesystem default
+    await bootstrapMemoryFromEnv(memDeps(reg, memCfg({ backend: 'inmemory' })));
     assert.equal(reg.get(MEMORY_ID)?.status, 'active');
     assert.equal(
       reg.get(MEMORY_PG_ID),
@@ -722,17 +742,17 @@ describe('memoryStore provider selection', () => {
     );
   });
 
-  it('persisted memory_backend=postgres (UI choice) overrides the filesystem env default', async () => {
+  it('persisted memory_backend=postgres (UI choice) overrides the inmemory env value', async () => {
     const reg = new InMemoryInstalledRegistry();
     // Operator switched to postgres via UI — choice persisted on the entry.
     await seedActive(reg, MEMORY_PG_ID, { memory_backend: 'postgres' });
     await bootstrapMemoryFromEnv(
-      memDeps(reg, memCfg({ backend: 'filesystem', databaseUrl: 'postgres://x' })),
+      memDeps(reg, memCfg({ backend: 'inmemory', databaseUrl: 'postgres://x' })),
     );
     assert.equal(
       reg.get(MEMORY_PG_ID)?.status,
       'active',
-      'UI choice honoured over env default',
+      'UI choice honoured over env value',
     );
     assert.equal(reg.get(MEMORY_ID), undefined);
   });

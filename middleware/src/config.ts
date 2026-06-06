@@ -59,15 +59,16 @@ const ConfigSchema = z.object({
   SKILLS_DIR: z.string().min(1).default('../skills'),
 
   // Memory persistence backend selection.
-  //   filesystem → @omadia/memory (FilesystemMemoryStore, default)
-  //   postgres   → @omadia/memory-postgres (PostgresMemoryStore) — requires
-  //                DATABASE_URL (the Neon KG provides the shared graphPool the
-  //                Postgres store consumes). Without DATABASE_URL the bootstrap
-  //                falls back to filesystem.
-  // This is the declarative env default; a persisted operator choice (UI)
-  // takes precedence over it (see bootstrapMemoryFromEnv).
-  MEMORY_BACKEND: z.enum(['filesystem', 'postgres']).default('filesystem'),
-  MEMORY_DIR: z.string().min(1).default('./.memory'),
+  //   postgres → @omadia/memory-postgres (PostgresMemoryStore) — requires
+  //              DATABASE_URL (the Neon KG provides the shared graphPool the
+  //              Postgres store consumes). Without DATABASE_URL the bootstrap
+  //              falls back to inmemory.
+  //   inmemory → @omadia/memory (InMemoryMemoryStore, RAM-only, DB-less).
+  // NO default: when unset the bootstrap derives the default from DATABASE_URL
+  // (DATABASE_URL ? postgres : inmemory) — so Postgres is sharp by default
+  // whenever a DB is configured. A persisted operator choice (UI) takes
+  // precedence over this env value (see bootstrapMemoryFromEnv).
+  MEMORY_BACKEND: z.enum(['postgres', 'inmemory']).optional(),
   MEMORY_SEED_DIR: z.string().min(1).default('./seed/memory'),
   MEMORY_SEED_MODE: z.enum(['missing', 'overwrite', 'skip']).default('missing'),
 
@@ -415,7 +416,6 @@ function loadConfig(): Config {
   }
   return {
     ...parsed.data,
-    MEMORY_DIR: resolveStateDir('MEMORY_DIR', parsed.data.MEMORY_DIR, '.memory'),
     MEMORY_SEED_DIR: resolvePath(parsed.data.MEMORY_SEED_DIR),
     SKILLS_DIR: resolvePath(parsed.data.SKILLS_DIR),
     UPLOADED_PACKAGES_DIR: resolveStateDir(

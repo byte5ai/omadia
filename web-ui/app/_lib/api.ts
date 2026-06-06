@@ -3123,7 +3123,7 @@ export async function purgeMemory(body: {
 }
 
 // -----------------------------------------------------------------------------
-// Memory storage backend switch (filesystem ↔ postgres). Backed by the admin
+// Memory storage backend switch (postgres ↔ inmemory). Backed by the admin
 // router at /api/v1/admin/memory/backend, surfaced to the browser as
 // /bot-api/v1/admin/memory/backend. The PUT only PERSISTS the choice — the
 // provider swap is applied by the middleware's bootstrap on the NEXT restart.
@@ -3131,7 +3131,7 @@ export async function purgeMemory(body: {
 //   - PUT /  → persist a backend choice (postgres requires DATABASE_URL)
 // -----------------------------------------------------------------------------
 
-export type MemoryBackend = 'filesystem' | 'postgres';
+export type MemoryBackend = 'postgres' | 'inmemory';
 
 export interface MemoryBackendState {
   current: MemoryBackend;

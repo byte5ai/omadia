@@ -43,8 +43,9 @@ const KNOWLEDGE_GRAPH_PROVIDER_IDS_SKIP_AUTO_INSTALL = new Set<string>([
 ]);
 
 /**
- * Both memoryStore providers — `@omadia/memory` (filesystem default) and
- * `@omadia/memory-postgres` (opt-in Postgres) — declare `provides:
+ * Both memoryStore providers — `@omadia/memory` (inmemory, DB-less fallback)
+ * and `@omadia/memory-postgres` (Postgres, sharp default when DATABASE_URL is
+ * set) — declare `provides:
  * memoryStore@1` (mutual exclusion). `bootstrapMemoryFromEnv` is the SOLE
  * authoritative installer for them: it selects the backend, installs the
  * chosen provider, and removes the other. The built-in catch-all must skip
@@ -304,14 +305,14 @@ async function migrateAnthropicKeyToVault(
 // ---------------------------------------------------------------------------
 
 /**
- * Seeds `@omadia/memory` into the registry on first boot, migrating
- * the legacy MEMORY_DIR / MEMORY_SEED_DIR / MEMORY_SEED_MODE env vars into
+ * Seeds the selected memoryStore provider into the registry on first boot,
+ * migrating the legacy MEMORY_SEED_DIR / MEMORY_SEED_MODE env vars into
  * per-plugin config. Runs before `bootstrapBuiltInPackages` so the memory
  * plugin lands with the proper config instead of the empty auto-install
  * default that would miss the env-provided paths.
  *
  * Idempotent: once the registry entry exists, operator-owned settings
- * (memory_dir, seed_dir, seed_mode) are never overwritten. The single
+ * (seed_dir, seed_mode) are never overwritten. The single
  * exception is `dev_memory_endpoints_enabled`, which is reconciled from
  * `DEV_ENDPOINTS_ENABLED` on every boot so a container-env flip takes
  * effect on restart (see the reconcile path below).
@@ -319,17 +320,21 @@ async function migrateAnthropicKeyToVault(
 /**
  * Resolve the effective memory backend for this boot.
  *
- * Precedence: a persisted operator choice (set via the admin UI, stored as
- * `memory_backend` config on the active provider's registry entry) wins over
- * the declarative `MEMORY_BACKEND` env default — so a UI switch survives a
- * restart even when the container env still says `filesystem`.
+ * Precedence:
+ *   1. Persisted operator choice (set via the admin UI, stored as
+ *      `memory_backend` config on the active provider's registry entry) wins —
+ *      so a UI switch survives a restart even when the container env disagrees.
+ *   2. else, an explicit `MEMORY_BACKEND` env value, when set.
+ *   3. else, the derived default: `DATABASE_URL ? 'postgres' : 'inmemory'`.
+ *      This makes Postgres sharp by default whenever a DB is configured —
+ *      mirroring the KG neon/inmemory selection.
  *
  * Hard guard: the Postgres store consumes the shared `graphPool` that only
  * the Neon KG publishes (i.e. `DATABASE_URL` must be set). When Postgres is
- * requested without it, we fall back to `filesystem` rather than boot into a
+ * requested without it, we fall back to `inmemory` rather than boot into a
  * provider whose `requires: graphPool@^1` can never resolve.
  */
-function resolveMemoryBackend(deps: BootstrapDeps): 'filesystem' | 'postgres' {
+function resolveMemoryBackend(deps: BootstrapDeps): 'postgres' | 'inmemory' {
   const log = deps.log ?? ((m) => console.log(m));
   // Persisted operator choice (UI): read from whichever provider is active.
   const persisted =
@@ -339,16 +344,19 @@ function resolveMemoryBackend(deps: BootstrapDeps): 'filesystem' | 'postgres' {
     (deps.registry.get(MEMORY_TOOL_ID)?.config?.['memory_backend'] as
       | string
       | undefined);
-  let backend: 'filesystem' | 'postgres' =
-    persisted === 'postgres' || persisted === 'filesystem'
+  const derivedDefault: 'postgres' | 'inmemory' = deps.config.DATABASE_URL
+    ? 'postgres'
+    : 'inmemory';
+  let backend: 'postgres' | 'inmemory' =
+    persisted === 'postgres' || persisted === 'inmemory'
       ? persisted
-      : deps.config.MEMORY_BACKEND;
+      : (deps.config.MEMORY_BACKEND ?? derivedDefault);
 
   if (backend === 'postgres' && !deps.config.DATABASE_URL) {
     log(
-      `[bootstrap] memory backend 'postgres' requested but DATABASE_URL is unset — the Postgres store needs the Neon graphPool; falling back to 'filesystem'`,
+      `[bootstrap] memory backend 'postgres' requested but DATABASE_URL is unset — the Postgres store needs the Neon graphPool; falling back to 'inmemory'`,
     );
-    backend = 'filesystem';
+    backend = 'inmemory';
   }
   return backend;
 }
@@ -368,7 +376,7 @@ export async function bootstrapMemoryFromEnv(deps: BootstrapDeps): Promise<void>
 
   // Mutual exclusion: only one `memoryStore@1` provider may be active (the
   // capability resolver rejects two). Remove the non-selected provider — this
-  // performs the FS↔Postgres swap when the backend flips AND self-heals a
+  // performs the inmemory↔Postgres swap when the backend flips AND self-heals a
   // prior both-active state. Runs BEFORE the built-in catch-all.
   if (deps.registry.has(otherId)) {
     await deps.registry.remove(otherId);
@@ -378,7 +386,7 @@ export async function bootstrapMemoryFromEnv(deps: BootstrapDeps): Promise<void>
   }
 
   // Idempotent: target already installed → reconcile only the env-driven
-  // dev-endpoints flag (operator-owned keys like memory_dir stay untouched).
+  // dev-endpoints flag (operator-owned keys like seed_dir stay untouched).
   if (deps.registry.has(targetId)) {
     const entry = deps.registry.get(targetId);
     if (
@@ -416,10 +424,6 @@ export async function bootstrapMemoryFromEnv(deps: BootstrapDeps): Promise<void>
       seed_dir: deps.config.MEMORY_SEED_DIR,
       seed_mode: deps.config.MEMORY_SEED_MODE,
       dev_memory_endpoints_enabled: desiredDevEndpoints,
-      // memory_dir is meaningful only for the filesystem backend.
-      ...(targetId === MEMORY_TOOL_ID
-        ? { memory_dir: deps.config.MEMORY_DIR }
-        : {}),
     },
   });
 
@@ -1044,12 +1048,12 @@ export async function bootstrapBuiltInPackages(
       );
       continue;
     }
-    // Opt-in memoryStore alternative: @omadia/memory (default) is already
-    // installed by bootstrapMemoryFromEnv; auto-installing the Postgres
-    // provider too would collide on memoryStore@1. Operator opts in via UI.
+    // Opt-in memoryStore alternative: the selected provider is already
+    // installed by bootstrapMemoryFromEnv; auto-installing the other one
+    // too would collide on memoryStore@1. Operator opts in via UI.
     if (MEMORY_STORE_PROVIDER_IDS_SKIP_AUTO_INSTALL.has(pkg.id)) {
       log(
-        `[bootstrap] built-in ${pkg.id} skipped — opt-in memoryStore alternative (operator installs via UI for the FS→Postgres cutover)`,
+        `[bootstrap] built-in ${pkg.id} skipped — opt-in memoryStore alternative (operator installs via UI for the inmemory→Postgres cutover)`,
       );
       continue;
     }
