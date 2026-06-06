@@ -10,6 +10,7 @@ import type { MemoryStore } from '@omadia/plugin-api';
 import { createAdminRouter } from './routes/admin.js';
 import { createMemoryPurgeRouter } from './routes/memoryPurge.js';
 import { createMemoryBackendRouter } from './routes/memoryBackend.js';
+import { createMemoryMigrationRouter } from './routes/memoryMigration.js';
 import { createChatRouter } from './routes/chat.js';
 import { createOperatorAgentsRouter } from './routes/operatorAgents.js';
 import { createOperatorChannelsRouter } from './routes/operatorChannels.js';
@@ -1433,6 +1434,24 @@ async function main(): Promise<void> {
   );
   console.log(
     '[middleware] memory-backend endpoint ready at /api/v1/admin/memory/backend',
+  );
+
+  // One-time memory migration (on-disk /memories → active memoryStore).
+  // Cookie-auth admin surface, consistent with the memory-purge/backend
+  // routers above. The SOURCE is always a fresh FilesystemMemoryStore over
+  // MEMORY_DIR (reads on-disk files regardless of the active backend); the
+  // TARGET is the active memoryStore provider. Run once after switching
+  // MEMORY_BACKEND to postgres so existing filesystem data is not orphaned.
+  app.use(
+    '/api/v1/admin/memory/migrate',
+    requireAuth,
+    createMemoryMigrationRouter({
+      targetStore: memoryStore,
+      config,
+    }),
+  );
+  console.log(
+    '[middleware] memory-migrate endpoint ready at /api/v1/admin/memory/migrate',
   );
 
   // US9 / T037 — operator-facing Agents dashboard backend. Mounts at

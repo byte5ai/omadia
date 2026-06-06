@@ -3183,3 +3183,45 @@ export async function setMemoryBackend(
   }
   return JSON.parse(text) as SetMemoryBackendResult;
 }
+
+// -----------------------------------------------------------------------------
+// One-time memory migration (on-disk /memories → active memoryStore). Backed by
+// the admin router at /api/v1/admin/memory/migrate, surfaced to the browser as
+// /bot-api/v1/admin/memory/migrate. The SOURCE is always the on-disk
+// FilesystemMemoryStore over MEMORY_DIR; the TARGET is the active backend.
+// Run once after switching MEMORY_BACKEND to postgres so existing filesystem
+// data is not orphaned.
+//   - GET /preview → dry-run counts (no writes)
+//   - POST /       → execute the copy
+// -----------------------------------------------------------------------------
+
+export interface MemoryMigrationPreview {
+  totalFiles: number;
+  wouldCopy: number;
+  alreadyPresent: number;
+  note: string;
+}
+
+export interface MemoryMigrationResult {
+  totalFiles: number;
+  copied: number;
+  skipped: number;
+  failed: number;
+  errors: Array<{ path: string; error: string }>;
+  note: string;
+}
+
+/** Dry-run: count how many on-disk files would be copied into the active store. */
+export async function previewMemoryMigration(): Promise<MemoryMigrationPreview> {
+  return getJson<MemoryMigrationPreview>('/v1/admin/memory/migrate/preview');
+}
+
+/** Execute the migration. `overwrite` re-copies files already present in the target. */
+export async function runMemoryMigration(
+  overwrite?: boolean,
+): Promise<MemoryMigrationResult> {
+  return postJson<MemoryMigrationResult>(
+    '/v1/admin/memory/migrate',
+    overwrite === undefined ? {} : { overwrite },
+  );
+}
