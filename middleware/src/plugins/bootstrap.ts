@@ -965,7 +965,9 @@ async function bootstrapOfficeFromEnv(deps: BootstrapDeps): Promise<void> {
  * cases leave the entry in the registry, so `has(id)` returns true and the
  * seeder skips it.
  */
-async function bootstrapBuiltInPackages(deps: BootstrapDeps): Promise<void> {
+export async function bootstrapBuiltInPackages(
+  deps: BootstrapDeps,
+): Promise<void> {
   const log = deps.log ?? ((m) => console.log(m));
   const store = deps.builtInStore;
   if (!store) return;
