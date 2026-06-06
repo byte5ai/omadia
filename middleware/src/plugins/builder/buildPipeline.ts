@@ -86,6 +86,34 @@ export interface PipelineRunResult {
   buildN: number;
 }
 
+/**
+ * Issue #227 — last-known build outcome for a draft, retained in-memory so
+ * the Builder agent's `get_build_status` tool can pull it without an SSE
+ * round-trip. BuildPipeline is the single chokepoint every preview / install
+ * build flows through (both the rebuild-scheduler and the chat-preview route
+ * call `run()`), so retaining the outcome here captures all builds from one
+ * place instead of the ~6 scattered `build_status` emit sites.
+ */
+export interface BuildStatusSnapshot {
+  status: 'ok' | 'failed';
+  /**
+   * `complete` on success; the failure stage otherwise. For build-produced
+   * failures this is the `BuildFailureReason` (`tsc` | `timeout` | …); for
+   * pre-build throws it is the `BuildPipelineError` code (`codegen_failed` |
+   * `staging_failed` | `spec_invalid` | `draft_not_found`) or `unknown`.
+   */
+  phase: string;
+  /** Monotonic build counter for the build this snapshot describes; absent
+   *  when the build failed before a counter was assigned (spec / codegen). */
+  buildN?: number;
+  /** Number of tsc errors on a `tsc`-phase failure. */
+  errorCount?: number;
+  /** Short failure reason / message. Absent on success. */
+  reason?: string;
+  /** ISO-8601 timestamp of when this outcome was recorded. */
+  builtAt: string;
+}
+
 export class BuildPipelineError extends Error {
   readonly code:
     | 'draft_not_found'
@@ -116,6 +144,9 @@ export class BuildPipeline {
   private readonly templateReady: Promise<void> | undefined;
   private readonly log: (...args: unknown[]) => void;
 
+  /** Issue #227 — last recorded build outcome per draft (in-memory). */
+  private readonly lastStatus = new Map<string, BuildStatusSnapshot>();
+
   constructor(deps: BuildPipelineDeps) {
     this.draftStore = deps.draftStore;
     this.buildQueue = deps.buildQueue;
@@ -127,7 +158,55 @@ export class BuildPipeline {
     this.log = deps.logger ?? (() => {});
   }
 
+  /**
+   * Public entry point. Delegates to `executeRun` and records the outcome
+   * (Issue #227) so the `get_build_status` tool can surface it. Recording
+   * covers the success path — including build-produced `tsc` failures, which
+   * `executeRun` returns rather than throws — and the typed
+   * `BuildPipelineError` throw paths.
+   */
   async run(opts: PipelineRunOptions): Promise<PipelineRunResult> {
+    try {
+      const result = await this.executeRun(opts);
+      this.lastStatus.set(
+        opts.draftId,
+        result.buildResult.ok
+          ? {
+              status: 'ok',
+              phase: 'complete',
+              buildN: result.buildN,
+              builtAt: new Date().toISOString(),
+            }
+          : {
+              status: 'failed',
+              phase: result.buildResult.reason,
+              buildN: result.buildN,
+              errorCount: result.buildResult.errors.length,
+              reason: result.buildResult.reason,
+              builtAt: new Date().toISOString(),
+            },
+      );
+      return result;
+    } catch (err) {
+      this.lastStatus.set(opts.draftId, {
+        status: 'failed',
+        phase: err instanceof BuildPipelineError ? err.code : 'unknown',
+        reason: err instanceof Error ? err.message : String(err),
+        builtAt: new Date().toISOString(),
+      });
+      throw err;
+    }
+  }
+
+  /**
+   * Issue #227 — last recorded build outcome for a draft, or `undefined` when
+   * no build has run for it in the current process.
+   */
+  getLastBuildStatus(draftId: string): BuildStatusSnapshot | undefined {
+    return this.lastStatus.get(draftId);
+  }
+
+  private async executeRun(opts: PipelineRunOptions): Promise<PipelineRunResult> {
     const draft = await this.draftStore.load(opts.userEmail, opts.draftId);
     if (!draft) {
       throw new BuildPipelineError(

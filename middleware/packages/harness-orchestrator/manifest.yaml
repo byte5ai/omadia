@@ -88,7 +88,7 @@ setup:
       label: "Max Tool-Loop Iterations"
       type: "string"
       required: false
-      help: "Hard cap auf den agentic tool-loop pro Turn. Aborts den Turn wenn überschritten. Default: 12. Migriert aus MAX_TOOL_ITERATIONS."
+      help: "Hard cap auf den agentic tool-loop pro Turn. Aborts den Turn wenn überschritten. Default: 25 (auch Floor — niedrigere installierte Werte werden hochgesetzt). Migriert aus MAX_TOOL_ITERATIONS."
     - key: "assistant_identity"
       label: "Assistant-Persona"
       type: "string"
