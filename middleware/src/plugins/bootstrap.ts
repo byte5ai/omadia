@@ -42,6 +42,20 @@ const KNOWLEDGE_GRAPH_PROVIDER_IDS_SKIP_AUTO_INSTALL = new Set<string>([
 ]);
 
 /**
+ * `@omadia/memory-postgres` is the OPT-IN Postgres-backed alternative to the
+ * default `@omadia/memory` (FilesystemMemoryStore). Both declare
+ * `provides: memoryStore@1` (mutual exclusion). `@omadia/memory` is the
+ * auto-installed default (see `bootstrapMemoryFromEnv`); the built-in
+ * catch-all must NOT also auto-install the Postgres provider, or the
+ * capability resolver throws a duplicate-provider error at activate time.
+ * The operator opts into the FS→Postgres cutover explicitly via the install
+ * UI / RequiresWizard.
+ */
+const MEMORY_STORE_PROVIDER_IDS_SKIP_AUTO_INSTALL = new Set<string>([
+  '@omadia/memory-postgres',
+]);
+
+/**
  * One-time migrations from the legacy `.env`-driven world into the new
  * per-agent vault + installed-registry. Runs at middleware startup, before
  * any sub-agent is constructed.
@@ -956,6 +970,25 @@ async function bootstrapBuiltInPackages(deps: BootstrapDeps): Promise<void> {
   const store = deps.builtInStore;
   if (!store) return;
 
+  // Self-heal: a boot BEFORE the skip below existed may have auto-installed
+  // the opt-in @omadia/memory-postgres alongside the default @omadia/memory,
+  // persisting BOTH as `active` in installed.json — the invalid both-active
+  // state that crashes capability resolution (duplicate memoryStore@1). The
+  // `registry.has` short-circuit below would never revisit it, so clear it
+  // here: if the default memory provider is active, drop any active opt-in
+  // alternative. The operator re-installs it deliberately for the
+  // FS→Postgres cutover (which also uninstalls @omadia/memory).
+  if (deps.registry.get(MEMORY_TOOL_ID)?.status === 'active') {
+    for (const altId of MEMORY_STORE_PROVIDER_IDS_SKIP_AUTO_INSTALL) {
+      if (deps.registry.get(altId)?.status === 'active') {
+        await deps.registry.remove(altId);
+        log(
+          `[bootstrap] ⚐ self-heal: removed auto-installed ${altId} — conflicts with active default ${MEMORY_TOOL_ID} (memoryStore@1)`,
+        );
+      }
+    }
+  }
+
   for (const pkg of store.list()) {
     if (deps.registry.has(pkg.id)) continue;
     // S+11-2b: KG providers are operator-managed (mutual exclusion + Wizard);
@@ -965,6 +998,15 @@ async function bootstrapBuiltInPackages(deps: BootstrapDeps): Promise<void> {
     if (KNOWLEDGE_GRAPH_PROVIDER_IDS_SKIP_AUTO_INSTALL.has(pkg.id)) {
       log(
         `[bootstrap] built-in ${pkg.id} skipped — KG-Provider sind operator-managed (siehe bootstrapKnowledgeGraphFromEnv + RequiresWizard)`,
+      );
+      continue;
+    }
+    // Opt-in memoryStore alternative: @omadia/memory (default) is already
+    // installed by bootstrapMemoryFromEnv; auto-installing the Postgres
+    // provider too would collide on memoryStore@1. Operator opts in via UI.
+    if (MEMORY_STORE_PROVIDER_IDS_SKIP_AUTO_INSTALL.has(pkg.id)) {
+      log(
+        `[bootstrap] built-in ${pkg.id} skipped — opt-in memoryStore alternative (operator installs via UI for the FS→Postgres cutover)`,
       );
       continue;
     }
