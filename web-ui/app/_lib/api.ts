@@ -3046,3 +3046,39 @@ export async function resetChatSession(
     {},
   );
 }
+
+// -----------------------------------------------------------------------------
+// Mid-turn steering (2026-06-06).
+// -----------------------------------------------------------------------------
+
+/** Result of attempting to steer a live turn. */
+export type SteerOutcome =
+  /** Buffered for the live turn; the orchestrator applies it at the next
+   *  iteration boundary. */
+  | 'applied'
+  /** No turn was in flight for this session — the caller should send the
+   *  message as a normal new turn instead. */
+  | 'no_active_turn';
+
+/**
+ * Inject a user message into the turn currently streaming for `sessionId`. The
+ * orchestrator folds it into the running conversation at the next iteration
+ * boundary. Returns `'no_active_turn'` (HTTP 409) when the turn already ended
+ * between the keystroke and this request — the composer then falls back to a
+ * normal turn so the message is never silently lost.
+ */
+export async function steerActiveTurn(
+  sessionId: string,
+  message: string,
+): Promise<SteerOutcome> {
+  try {
+    await postJson<{ accepted: boolean; queued: number }>('/chat/steer', {
+      sessionId,
+      message,
+    });
+    return 'applied';
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 409) return 'no_active_turn';
+    throw err;
+  }
+}

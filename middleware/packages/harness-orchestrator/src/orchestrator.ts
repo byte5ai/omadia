@@ -93,6 +93,7 @@ import { RunTraceCollector, type InvocationHandle } from './runTraceCollector.js
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import { graphScopeFor, type SessionLogger } from './sessionLogger.js';
 import { streamMessageEvents } from './streaming.js';
+import { steeringBus } from './steeringBus.js';
 import { buildDateHeader, today, turnContext } from './turnContext.js';
 
 // S+10-2 back-compat re-exports: kernel-side callers that still
@@ -2043,6 +2044,10 @@ export class Orchestrator {
         userMessage: input.userMessage,
       }),
     );
+    // Mid-turn steering — register this turn as live so `/chat/steer` can
+    // inject extra user messages keyed by the same session scope. The inner
+    // loop drains them at each iteration boundary; `endTurn` clears the buffer.
+    steeringBus.beginTurn(sessionId);
     try {
       for await (const event of this.chatStreamInner(input, turnId, observer)) {
         if (event.type === 'tool_use') {
@@ -2122,6 +2127,7 @@ export class Orchestrator {
         yield event;
       }
     } finally {
+      steeringBus.endTurn(sessionId);
       this.clearTurnAuthContext();
     }
   }
@@ -2185,6 +2191,9 @@ export class Orchestrator {
     // Phase-1 Kemia hook — see chatInContextInner for rationale.
     const prependRules = await this.resolvePrependRules(messages);
 
+    // Mid-turn steering — same key the route enqueues under (see chatStream:
+    // `sessionId`). Drained at the top of every iteration below.
+    const steerKey = input.sessionScope ?? turnId;
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
         yield { type: 'iteration_start', iteration };
@@ -2195,6 +2204,28 @@ export class Orchestrator {
           observer?.onIteration?.({ iteration });
         } catch (err) {
           console.warn('[orchestrator] observer.onIteration threw:', err);
+        }
+
+        // Fold any messages the user injected via `/chat/steer` since the
+        // previous iteration into the conversation, so the model sees them on
+        // this iteration's call. Merging into the trailing user message (when
+        // present — at iteration ≥1 it's the tool_results turn) keeps roles
+        // strictly alternating; otherwise we append a fresh user turn.
+        for (const steerText of steeringBus.drain(steerKey)) {
+          const steerBlock = {
+            type: 'text' as const,
+            text: `[Live user steering — added mid-turn]: ${steerText}`,
+          };
+          const last = messages[messages.length - 1];
+          if (last && last.role === 'user') {
+            last.content =
+              typeof last.content === 'string'
+                ? `${last.content}\n\n${steerBlock.text}`
+                : [...last.content, steerBlock];
+          } else {
+            messages.push({ role: 'user', content: [steerBlock] });
+          }
+          yield { type: 'steer_applied', iteration, message: steerText };
         }
 
         let finalMessage: Message | undefined;

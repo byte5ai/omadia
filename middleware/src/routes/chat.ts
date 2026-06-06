@@ -2,6 +2,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { isNoReply, logNoReplyDrop } from '@omadia/channel-sdk';
+import { MAX_STEER_LENGTH, steeringBus } from '@omadia/orchestrator';
 import type {
   AskObserver,
   ChatAgent,
@@ -50,6 +51,20 @@ function resolveScope(parsed: z.infer<typeof ChatRequestSchema>): string {
   if (parsed.sessionId) return parsed.sessionId;
   return 'http-default';
 }
+
+/**
+ * Mid-turn steering request. Same `scope`/`sessionId` correlation fields as a
+ * chat turn (so it resolves to the identical session scope via `resolveScope`),
+ * plus the message to inject into the live turn.
+ */
+const SteerRequestSchema = z.object({
+  message: z.string().min(1, 'message must be a non-empty string').max(MAX_STEER_LENGTH),
+  scope: z.string().min(1).max(120).optional(),
+  sessionId: z
+    .string()
+    .regex(SESSION_ID_RE, 'sessionId must match [A-Za-z0-9_-]{1,80}')
+    .optional(),
+});
 
 const USER_ID_RE = /^[A-Za-z0-9_.:@-]{1,128}$/;
 
@@ -440,6 +455,36 @@ export function createChatRouter(
       clearInterval(heartbeatTimer);
       res.end();
     }
+  });
+
+  /**
+   * Mid-turn steering — inject a user message into a turn that is currently
+   * streaming. The orchestrator's iteration loop drains it at the next
+   * iteration boundary and folds it into the conversation (see
+   * `steeringBus`). Returns 202 when buffered for a live turn, or 409 when no
+   * turn is in flight for the session (the caller should then send the message
+   * as a normal new turn via `/chat/stream`).
+   */
+  router.post('/chat/steer', (req: Request, res: Response) => {
+    const parsed = SteerRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({
+        error: 'invalid_request',
+        issues: parsed.error.issues,
+      });
+      return;
+    }
+    const sessionScope = resolveScope(parsed.data);
+    const result = steeringBus.enqueue(sessionScope, parsed.data.message);
+    if (!result.live) {
+      res.status(409).json({
+        error: 'no_active_turn',
+        message:
+          'no in-flight turn for this session — send the message as a new turn instead',
+      });
+      return;
+    }
+    res.status(202).json({ accepted: true, queued: result.queued });
   });
 
   return router;
