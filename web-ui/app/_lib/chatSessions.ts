@@ -288,6 +288,11 @@ export interface Message {
   tools?: ToolEvent[];
   /** OB-77 — nudges emitted during this turn. Rendered after tools. */
   nudges?: NudgeEvent[];
+  /** Mid-turn steering — user messages injected via `/chat/steer` while this
+   *  turn was streaming, in arrival order. Rendered as inline "steered" chips
+   *  so the trace shows where live input was folded in. Persisted with the
+   *  turn. */
+  steers?: string[];
   telemetry?: { tool_calls: number; iterations: number };
   /** Image URLs returned by orchestrator tools (e.g. render_diagram). */
   attachments?: DiagramAttachment[];
