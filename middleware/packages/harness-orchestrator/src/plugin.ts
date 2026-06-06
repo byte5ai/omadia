@@ -135,7 +135,7 @@ const PLUGIN_CAPABILITIES_SERVICE = 'pluginCapabilities';
 // makes every turn fail with `404 not_found_error` (the orchestrator main
 // loop has no other model source). Kept in sync with the kernel default
 // `ORCHESTRATOR_MODEL` in middleware/src/config.ts.
-const DEFAULT_MODEL = 'claude-opus-4-7';
+const DEFAULT_MODEL = 'claude-opus-4-8';
 // 8192, not 4096: a verbose preamble + a large structured tool call (e.g. a
 // multi-sheet create_xlsx with formulas) truncates at 4096 → `max_tokens`
 // mid-tool-call, so the file is never built. Also enforced as a floor below so

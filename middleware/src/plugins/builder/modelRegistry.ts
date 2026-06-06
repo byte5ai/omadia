@@ -27,8 +27,8 @@ const MODELS: Record<BuilderModelId, BuilderModel> = {
   },
   opus: {
     id: 'opus',
-    label: 'Opus 4.7',
-    anthropicModelId: 'claude-opus-4-7',
+    label: 'Opus 4.8',
+    anthropicModelId: 'claude-opus-4-8',
     maxTokens: 16_384,
     description: 'Am kräftigsten. Für komplexe Tools und schwierige Lints.',
   },
