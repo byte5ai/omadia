@@ -105,6 +105,28 @@ describe('RuntimeSmokeOrchestrator.attemptSmoke', () => {
     }
   });
 
+  it('retains the last smoke outcome for get_build_status pull (Issue #227)', async () => {
+    const orchestrator = new RuntimeSmokeOrchestrator({ draftStore: store, bus });
+    // No smoke yet → no snapshot.
+    assert.equal(orchestrator.getLastSmokeStatus(draftId), undefined);
+
+    const handle = makeHandle(3, [makeTool('noop', async () => 'done')]);
+    orchestrator.attemptSmoke({ handle, userEmail, draftId });
+
+    // `running` is retained synchronously (mirrors the sync emit).
+    const running = orchestrator.getLastSmokeStatus(draftId);
+    assert.equal(running?.phase, 'running');
+    assert.equal(running?.buildN, 3);
+
+    await new Promise((r) => setTimeout(r, 30));
+
+    const terminal = orchestrator.getLastSmokeStatus(draftId);
+    assert.equal(terminal?.phase, 'ok');
+    assert.equal(terminal?.reason, 'ok');
+    assert.equal(terminal?.results?.length, 1);
+    assert.ok(terminal?.smokedAt);
+  });
+
   it('dedups by (draftId, rev) — second attempt at same rev is a no-op', async () => {
     const orchestrator = new RuntimeSmokeOrchestrator({ draftStore: store, bus });
     const handle = makeHandle(7, [makeTool('noop', async () => 'done')]);
