@@ -11,6 +11,22 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 // `override: true` so .env wins over any pre-set (possibly empty) shell vars.
 dotenv.config({ path: path.resolve(here, '..', '.env'), override: true });
 
+/**
+ * Optional env var whose *empty* value must be treated as unset rather than
+ * validated. Operators (and `compose` `environment:` interpolation of an
+ * unset shell var) routinely export `FOO=` to mean "not configured". A plain
+ * `z.string().url().optional()` / `.min(32).optional()` crashes boot on `FOO=`
+ * because an empty string is a *present* value that still runs the inner
+ * constraint. `z.preprocess` runs the empty→undefined coercion BEFORE the
+ * inner schema, so `.optional()` short-circuits for blanks while real values
+ * are still format-checked. Mirrors the inline DATABASE_URL transform below.
+ */
+const optionalNonEmpty = <T extends z.ZodTypeAny>(inner: T) =>
+  z.preprocess(
+    (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+    inner.optional(),
+  );
+
 const ConfigSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3979),
 
@@ -176,9 +192,9 @@ const ConfigSchema = z.object({
   // present, the orchestrator exposes `render_diagram` and the middleware
   // mounts the HMAC-signed image-proxy at /diagrams/<key>. Missing values
   // disable the feature cleanly — the rest of the middleware is unaffected.
-  KROKI_BASE_URL: z.string().url().optional(),
-  DIAGRAM_URL_SECRET: z.string().min(32).optional(),
-  DIAGRAM_PUBLIC_BASE_URL: z.string().url().optional(),
+  KROKI_BASE_URL: optionalNonEmpty(z.string().url()),
+  DIAGRAM_URL_SECRET: optionalNonEmpty(z.string().min(32)),
+  DIAGRAM_PUBLIC_BASE_URL: optionalNonEmpty(z.string().url()),
   DIAGRAM_SIGNED_URL_TTL_SEC: z.coerce.number().int().positive().default(900),
   // Source-spec cap. Must accommodate base64-inlined brand assets (a 150 kB
   // PNG becomes ~200 kB base64), plus the normal Vega-Lite / Graphviz body.
@@ -190,7 +206,7 @@ const ConfigSchema = z.object({
   // Object-storage (S3-compatible). Locally: MinIO from compose.yml. On Fly:
   // auto-populated by `fly storage create` (Tigris).
   BUCKET_NAME: z.string().optional(),
-  AWS_ENDPOINT_URL_S3: z.string().url().optional(),
+  AWS_ENDPOINT_URL_S3: optionalNonEmpty(z.string().url()),
   AWS_ACCESS_KEY_ID: z.string().optional(),
   AWS_SECRET_ACCESS_KEY: z.string().optional(),
 
