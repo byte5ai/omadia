@@ -114,6 +114,21 @@ export type { PromoteTurnInput, PromoteTurnResult } from './promotion.js';
 export { createBulkPromotionService } from './bulkPromotion.js';
 export type { BulkPromotionDeps } from './bulkPromotion.js';
 
+// WS5 — Scratchpad-Promotion Reaper. Periodic background job that
+// consolidates significant, aged agent-scratch memory (the
+// PostgresMemoryStore `memory_files` tree under
+// `/memories/orchestrators/<slug>/…`) into the KG as owner-less,
+// agent-scoped MemorableKnowledge. Delete-after-create → idempotent.
+export {
+  createScratchPromotionReaper,
+  deriveAgentSlug,
+} from './scratchPromotionReaper.js';
+export type {
+  ScratchPromotionReaper,
+  ScratchPromotionReaperDeps,
+  ScratchReapRunResult,
+} from './scratchPromotionReaper.js';
+
 // KG-ACL Slice 9 — contradiction detector. Per MK create / update /
 // auto-promotion: cosine top-k → Haiku judgement-pass → persist
 // Inconsistency on disagreement. Idempotent on the (sorted) MK pair.

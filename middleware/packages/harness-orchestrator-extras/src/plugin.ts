@@ -44,6 +44,7 @@ import { FactExtractor } from './factExtractor.js';
 import { createHaikuSessionSummaryGenerator } from './sessionSummaryGenerator.js';
 import { createSessionBriefingService } from './sessionBriefing.js';
 import { createHaikuSignificanceScorer } from './significanceScorer.js';
+import { createScratchPromotionReaper } from './scratchPromotionReaper.js';
 import { TopicDetector } from './topicDetector.js';
 import { ProcessPromoteProvider } from './nudgeProviders/processPromote.js';
 
@@ -444,6 +445,75 @@ export async function activate(
     );
   }
 
+  // WS5 — Scratchpad-Promotion Reaper. Periodically consolidates
+  // significant, aged agent-scratch memory (PostgresMemoryStore
+  // `memory_files` under `/memories/orchestrators/<slug>/…`) into the KG
+  // as owner-less, agent-scoped MemorableKnowledge. Starts ONLY when:
+  // enabled AND graphPool present AND a SignificanceScorer is available
+  // (needs an Anthropic key) — mirrors turn-promotion's no-DB / no-key
+  // no-op. The first scan is NOT run synchronously at activate (don't
+  // block boot); a short-delayed kick fires the first pass, then the
+  // interval takes over.
+  let stopScratchReaper: (() => void) | undefined;
+  const scratchPromotionEnabled = parseBoolDefaultTrue(
+    ctx.config.get<unknown>('scratch_promotion_enabled'),
+  );
+  const scratchPromotionIntervalMinutes = parseNumberOrDefault(
+    ctx.config.get<unknown>('scratch_promotion_interval_minutes'),
+    60,
+  );
+  const scratchPromotionAgeHours = parseNumberOrDefault(
+    ctx.config.get<unknown>('scratch_promotion_age_hours'),
+    24,
+  );
+  const scratchPromotionThreshold = parseNumberOrDefault(
+    ctx.config.get<unknown>('scratch_promotion_threshold'),
+    captureSignificanceThreshold,
+  );
+  {
+    let disabledReason: string | undefined;
+    if (!scratchPromotionEnabled) {
+      disabledReason = 'config scratch_promotion_enabled=false';
+    } else if (!bulkPromotionPool) {
+      disabledReason = 'graphPool capability not published';
+    } else if (!significanceScorer) {
+      disabledReason = 'no significance scorer (Anthropic key missing)';
+    }
+
+    if (disabledReason) {
+      ctx.log(
+        `[harness-orchestrator-extras] scratch-promotion reaper disabled: ${disabledReason}`,
+      );
+    } else if (bulkPromotionPool && significanceScorer) {
+      // Re-narrowed for the type-checker (the guards above already
+      // guarantee both are present when disabledReason is undefined).
+      const reaperPool = bulkPromotionPool;
+      const reaperScorer = significanceScorer;
+      const intervalMs = Math.max(1, scratchPromotionIntervalMinutes) * 60_000;
+      const ageMs = Math.max(0, scratchPromotionAgeHours) * 3_600_000;
+      const reaper = createScratchPromotionReaper({
+        pool: reaperPool,
+        tenantId: bulkPromotionTenantId,
+        kg: wrappedKg,
+        scorer: reaperScorer,
+        threshold: scratchPromotionThreshold,
+        ageMs,
+        intervalMs,
+        defaultVisibility: captureDefaultVisibility,
+        log: (msg) => { console.error(msg); },
+      });
+      reaper.start();
+      stopScratchReaper = () => { reaper.stop(); };
+      // Kick a first pass off the boot critical-path (don't await in
+      // activate). Errors are swallowed inside runOnce.
+      const kick = setTimeout(() => { void reaper.runOnce(); }, 30_000);
+      if (typeof kick.unref === 'function') kick.unref();
+      ctx.log(
+        `[harness-orchestrator-extras] scratch-promotion reaper on every ${String(scratchPromotionIntervalMinutes)}min, age=${String(scratchPromotionAgeHours)}h, threshold=${scratchPromotionThreshold.toFixed(2)}`,
+      );
+    }
+  }
+
   // Slice 9.5 — operator-triggered bulk inconsistency-detect pass.
   // Reuses the Slice-9 detector (already constructed above) and the
   // wrapped KG. Always publishes — `preview()` reflects whether the
@@ -636,6 +706,7 @@ export async function activate(
       disposeBulkMergeDetect();
       disposeBulkInconsistency();
       disposeBulkPromotion?.();
+      stopScratchReaper?.();
       disposeContext();
       // Tear down KG wrappers FIRST (restores original provider), THEN
       // the captureFilter capability — symmetric with the activate order.
@@ -657,6 +728,14 @@ function parseNumberOrDefault(value: unknown, fallback: number): number {
     if (Number.isFinite(parsed)) return parsed;
   }
   return fallback;
+}
+
+/** Parse a tri-state config boolean that defaults to TRUE when unset.
+ *  Only an explicit `false` / `'false'` (case-insensitive) disables. */
+function parseBoolDefaultTrue(value: unknown): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') return value.trim().toLowerCase() !== 'false';
+  return true;
 }
 
 function parseCaptureLevel(
