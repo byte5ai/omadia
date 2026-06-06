@@ -135,6 +135,50 @@ describe('BuildPipeline', () => {
     assert.equal(existsSync(observedStaging), false, 'staging dir cleaned');
   });
 
+  it('retains the last build outcome for get_build_status pull (Issue #227)', async () => {
+    const { spec, slots } = loadFixtureSpec();
+    const draft = await store.create('alice@example.com', 'Weather');
+    await store.update('alice@example.com', draft.id, { spec, slots });
+
+    const queue = new BuildQueue({ concurrency: 1 });
+    let outcome: BuildResult = makeBuildSuccess();
+    const pipeline = new BuildPipeline({
+      draftStore: store,
+      buildQueue: queue,
+      templateRoot,
+      stagingBaseDir,
+      buildSandbox: async () => outcome,
+      logger: () => {},
+    });
+
+    // No build yet → no snapshot.
+    assert.equal(pipeline.getLastBuildStatus(draft.id), undefined);
+
+    // Success path → status ok / phase complete.
+    await pipeline.run({ userEmail: 'alice@example.com', draftId: draft.id });
+    const okSnap = pipeline.getLastBuildStatus(draft.id);
+    assert.equal(okSnap?.status, 'ok');
+    assert.equal(okSnap?.phase, 'complete');
+    assert.equal(okSnap?.buildN, 1);
+    assert.ok(okSnap?.builtAt);
+
+    // Build-produced tsc failure → status failed / phase tsc / errorCount.
+    outcome = makeBuildFailure();
+    await pipeline.run({ userEmail: 'alice@example.com', draftId: draft.id });
+    const failSnap = pipeline.getLastBuildStatus(draft.id);
+    assert.equal(failSnap?.status, 'failed');
+    assert.equal(failSnap?.phase, 'tsc');
+    assert.equal(failSnap?.errorCount, 1);
+
+    // Pre-build throw (missing draft) → status failed / phase draft_not_found.
+    await assert.rejects(
+      pipeline.run({ userEmail: 'alice@example.com', draftId: 'ghost' }),
+    );
+    const throwSnap = pipeline.getLastBuildStatus('ghost');
+    assert.equal(throwSnap?.status, 'failed');
+    assert.equal(throwSnap?.phase, 'draft_not_found');
+  });
+
   it('writes AGENT.md (with persona/quality frontmatter) into the staging dir (Phase 3 / OB-67)', async () => {
     const { spec, slots } = loadFixtureSpec();
     const draft = await store.create('alice@example.com', 'Weather');

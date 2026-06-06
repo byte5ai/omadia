@@ -2360,6 +2360,18 @@ async function main(): Promise<void> {
     );
   }
 
+  // Issue #227 — platform-version banner for the Builder system prompt. The
+  // boot timestamp is captured once here (server start); a redeploy bumps it,
+  // letting the Builder notice the platform changed between turns and re-verify
+  // earlier bug hypotheses (inspect_generated_artifact / get_build_status /
+  // runtime_smoke_status) instead of asking the operator to drive a preview.
+  const builderPlatformPkg = await import('../package.json', {
+    with: { type: 'json' },
+  }).then((m) => m.default as { name?: string; version?: string });
+  const builderPlatformBanner =
+    `omadia platform: ${builderPlatformPkg.name ?? 'omadia-middleware'} ` +
+    `${builderPlatformPkg.version ?? '0.0.0'} (process booted ${new Date().toISOString()})`;
+
   const builderAgent = new BuilderAgent({
     anthropic: client,
     draftStore,
@@ -2395,6 +2407,13 @@ async function main(): Promise<void> {
     githubIssueCache: builderGithubIssueCache,
     upstreamIssueConfig,
     directIssueCreateAvailable: builderIssueCreator !== undefined,
+    // Issue #227 — codegen / build / runtime observability accessors for the
+    // get_build_status + runtime_smoke_status tools, plus the version banner.
+    lastBuildStatus: (draftId: string) =>
+      builderBuildPipeline.getLastBuildStatus(draftId),
+    lastSmokeStatus: (draftId: string) =>
+      builderRuntimeSmokeOrchestrator.getLastSmokeStatus(draftId),
+    platformBanner: builderPlatformBanner,
     logger: (...args: unknown[]) => {
       console.log('[builder]', ...args);
     },
