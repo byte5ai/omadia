@@ -2,6 +2,20 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { MemoryEntry, MemoryStore } from '@omadia/plugin-api';
 
+import {
+  MemoryAlreadyExistsError,
+  MemoryInvalidPathError,
+  MemoryIsDirectoryError,
+  MemoryPathNotFoundError,
+} from './errors.js';
+
+export {
+  MemoryAlreadyExistsError,
+  MemoryInvalidPathError,
+  MemoryIsDirectoryError,
+  MemoryPathNotFoundError,
+} from './errors.js';
+
 /**
  * Filesystem-backed memory store. Maps the virtual /memories namespace onto a real
  * directory on disk, with strict path-traversal protection.
@@ -160,33 +174,5 @@ export class FilesystemMemoryStore implements MemoryStore {
       }
     }
     return entries;
-  }
-}
-
-export class MemoryPathNotFoundError extends Error {
-  constructor(virtualPath: string) {
-    super(`Path not found: ${virtualPath}`);
-    this.name = 'MemoryPathNotFoundError';
-  }
-}
-
-export class MemoryAlreadyExistsError extends Error {
-  constructor(virtualPath: string) {
-    super(`Path already exists: ${virtualPath}`);
-    this.name = 'MemoryAlreadyExistsError';
-  }
-}
-
-export class MemoryIsDirectoryError extends Error {
-  constructor(virtualPath: string) {
-    super(`Path is a directory, not a file: ${virtualPath}`);
-    this.name = 'MemoryIsDirectoryError';
-  }
-}
-
-export class MemoryInvalidPathError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'MemoryInvalidPathError';
   }
 }
