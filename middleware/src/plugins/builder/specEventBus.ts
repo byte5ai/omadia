@@ -216,6 +216,30 @@ export type SpecBusEvent =
         url: string;
       };
       closedAt: number | null;
+    }
+  | {
+      /**
+       * Issue #206 (v1.2): the builder agent called `omadia_report_core_bug`
+       * and the operator must now confirm before anything goes to the public
+       * repo. The UI renders an issue-report card showing the `sanitizedBody`.
+       *
+       *   - `created-pending` → the server can file directly via the GitHub
+       *     App; on confirm the UI POSTs `workarounds/create-issue`.
+       *   - `browser-submit` → no App wired; the UI opens `githubNewUrl`, then
+       *     POSTs `workarounds/confirm-issue` with the resulting issue number.
+       *
+       * Emitted cross-tab so any open builder tab can present the card.
+       */
+      type: 'issue_report_pending';
+      pendingId: string;
+      mode: 'created-pending' | 'browser-submit';
+      title: string;
+      summary: string;
+      fingerprint: string;
+      fingerprintMarker: string;
+      sanitizedBody: string;
+      /** Set only when `mode === 'browser-submit'`. */
+      githubNewUrl?: string;
     };
 
 export type SpecBusListener = (event: SpecBusEvent) => void;

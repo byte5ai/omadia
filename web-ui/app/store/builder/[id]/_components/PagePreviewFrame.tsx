@@ -1,6 +1,7 @@
 'use client';
 
 import { ExternalLink, RefreshCw } from 'lucide-react';
+import { useTranslations } from 'next-intl';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 interface PagePreviewFrameProps {
@@ -29,6 +30,7 @@ export function PagePreviewFrame({
   routeId,
   label,
 }: PagePreviewFrameProps): React.ReactElement {
+  const t = useTranslations('builder.uiSurfaces.preview');
   const [iframeKey, setIframeKey] = useState(0);
   const [error, setError] = useState<{ code: string; message: string } | null>(
     null,
@@ -89,21 +91,21 @@ export function PagePreviewFrame({
     <div className="rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] overflow-hidden">
       <div className="flex items-center gap-2 border-b border-[color:var(--border)] bg-[color:var(--bg-subtle)] px-3 py-2 text-[11px]">
         <span className="font-medium text-[color:var(--fg-strong)]">
-          Live-Preview
+          {t('title')}
         </span>
         <span className="text-[color:var(--fg-muted)]">
           {label ?? routeId}
         </span>
         <span className="ml-auto inline-flex items-center gap-1">
           {loading ? (
-            <span className="text-[color:var(--fg-muted)]">Lade…</span>
+            <span className="text-[color:var(--fg-muted)]">{t('loading')}</span>
           ) : null}
           <button
             type="button"
             onClick={onRefresh}
             className="inline-flex items-center gap-1 rounded p-1 text-[color:var(--fg-muted)] hover:bg-[color:var(--bg-hover)] hover:text-[color:var(--fg-strong)]"
-            aria-label="Preview aktualisieren"
-            title="Preview neu laden"
+            aria-label={t('refreshAriaLabel')}
+            title={t('refreshTitle')}
           >
             <RefreshCw className="size-3" />
           </button>
@@ -112,8 +114,8 @@ export function PagePreviewFrame({
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-1 rounded p-1 text-[color:var(--fg-muted)] hover:bg-[color:var(--bg-hover)] hover:text-[color:var(--fg-strong)]"
-            aria-label="Preview in neuem Tab öffnen"
-            title="In neuem Tab öffnen"
+            aria-label={t('openInNewTabAriaLabel')}
+            title={t('openInNewTabTitle')}
           >
             <ExternalLink className="size-3" />
           </a>
@@ -125,7 +127,7 @@ export function PagePreviewFrame({
         <iframe
           key={iframeKey}
           src={previewUrl}
-          title={`Preview: ${label ?? routeId}`}
+          title={t('iframeTitle', { label: label ?? routeId })}
           className="h-[480px] w-full border-0 bg-white"
           sandbox="allow-scripts allow-same-origin"
         />
@@ -141,30 +143,34 @@ function PreviewErrorBanner({
   code: string;
   message: string;
 }): React.ReactElement {
-  const hint = HINTS[code];
+  const t = useTranslations('builder.uiSurfaces.preview');
+  const hintKey = HINT_KEYS[code];
+  const hint = hintKey ? t(hintKey) : undefined;
   return (
     <div className="bg-amber-50 px-4 py-6 text-[12px] text-amber-900">
-      <div className="mb-1 font-semibold">Preview nicht verfügbar</div>
+      <div className="mb-1 font-semibold">{t('unavailableTitle')}</div>
       <code className="block break-words text-[11px] text-amber-900/80">
         {code}: {message}
       </code>
       {hint ? (
         <p className="mt-2 text-[11px] text-amber-800/90">
-          <strong>Hinweis:</strong> {hint}
+          {t.rich('hintLine', {
+            strong: (chunks) => <strong>{chunks}</strong>,
+            hint,
+          })}
         </p>
       ) : null}
     </div>
   );
 }
 
-const HINTS: Record<string, string> = {
-  'builder.preview_cold':
-    'Klicke „Build" oder schick eine Chat-Message — sobald die Preview warm ist (grüner Build-Status), lädt die iframe automatisch.',
-  'builder.ui_route_not_found':
-    'Die routeId existiert nicht im aktuellen Spec. Speichere deine Page erst (gleicher Form), dann probier den Reload nochmal.',
-  'builder.preview_capture_missing':
-    'Die warme Preview wurde aus einem Spec ohne ui_routes gebaut. Trigger einen Build (Chat oder „Rebuild") nach dem Anlegen der Page.',
-  'builder.preview_proxy_failed':
-    'Der temporäre Probe-Server konnte die Plugin-Route nicht laden. Schau in die Console: vermutlich wirft die Component beim SSR.',
-  fetch_failed: 'Netzwerk-Fehler beim Laden der Preview. Versuch Refresh.',
+// Maps server-side error codes to translation keys under
+// `builder.uiSurfaces.preview.hints.*`. Codes themselves are technical
+// tokens and stay verbatim.
+const HINT_KEYS: Record<string, string> = {
+  'builder.preview_cold': 'hints.previewCold',
+  'builder.ui_route_not_found': 'hints.uiRouteNotFound',
+  'builder.preview_capture_missing': 'hints.previewCaptureMissing',
+  'builder.preview_proxy_failed': 'hints.previewProxyFailed',
+  fetch_failed: 'hints.fetchFailed',
 };

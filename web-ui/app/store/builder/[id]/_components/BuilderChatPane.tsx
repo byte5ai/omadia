@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { useTranslations } from 'next-intl';
 import {
   AlertCircle,
   ChevronDown,
@@ -106,6 +107,11 @@ interface BuilderChatPaneProps {
    *  `user_choice_resolved` event still arrives later for sibling-tab
    *  consistency, but the local pane reacts instantly. */
   onUserChoiceResolved?: () => void;
+  /** Issue #224 — lifts the in-flight turn flag to the Workspace so it can
+   *  lock the simple/extended view toggle while a reply streams (toggling
+   *  unmounts this pane and would abort the stream + drop the live message).
+   *  Fires `false` on unmount so a stale `true` never wedges the toggle. */
+  onStreamingChange?: (streaming: boolean) => void;
 }
 
 /**
@@ -130,7 +136,9 @@ export function BuilderChatPane({
   onPendingInputConsumed,
   pendingUserChoice,
   onUserChoiceResolved,
+  onStreamingChange,
 }: BuilderChatPaneProps): React.ReactElement {
+  const t = useTranslations('builder.chat');
   const [items, setItems] = useState<ChatItem[]>(() =>
     initialTranscript.map((entry, idx) => ({
       kind: 'message' as const,
@@ -213,6 +221,13 @@ export function BuilderChatPane({
     };
   }, []);
 
+  // Issue #224 — mirror the in-flight flag up to the Workspace, and force it
+  // back to `false` on unmount so the view toggle never stays locked.
+  useEffect(() => {
+    onStreamingChange?.(inflight);
+    return () => onStreamingChange?.(false);
+  }, [inflight, onStreamingChange]);
+
   const onSend = useCallback(async (messageOverride?: string) => {
     const source = messageOverride ?? input;
     const trimmed = source.trim();
@@ -250,9 +265,9 @@ export function BuilderChatPane({
       } else if (err instanceof ApiError) {
         setError(humanizeApiError(err));
       } else if (err instanceof Error) {
-        setError(`Verbindung verloren: ${err.message}`);
+        setError(t('error.connectionLost', { message: err.message }));
       } else {
-        setError('Unbekannter Fehler beim Builder-Turn');
+        setError(t('error.unknownTurn'));
       }
     } finally {
       setInflight(false);
@@ -410,7 +425,7 @@ export function BuilderChatPane({
         ]);
       }
     }
-  }, [draftId, inflight, input, model, nextKey, onAgentMutation]);
+  }, [draftId, inflight, input, model, nextKey, onAgentMutation, t]);
 
   const onStop = useCallback(() => {
     abortRef.current?.abort();
@@ -504,9 +519,9 @@ export function BuilderChatPane({
         if (err instanceof ApiError) {
           setError(humanizeApiError(err));
         } else if (err instanceof Error) {
-          setError(`Auswahl konnte nicht gespeichert werden: ${err.message}`);
+          setError(t('error.choiceSaveFailedDetail', { message: err.message }));
         } else {
-          setError('Auswahl konnte nicht gespeichert werden.');
+          setError(t('error.choiceSaveFailed'));
         }
       } finally {
         setChoiceSubmitting(false);
@@ -518,6 +533,7 @@ export function BuilderChatPane({
       draftId,
       nextKey,
       onUserChoiceResolved,
+      t,
     ],
   );
 
@@ -560,7 +576,7 @@ export function BuilderChatPane({
 
       <div className="border-t border-[color:var(--divider)] px-5 py-3">
         <label className="sr-only" htmlFor={inputId}>
-          Builder-Nachricht
+          {t('inputLabel')}
         </label>
         <div className="flex items-end gap-2">
           <textarea
@@ -572,8 +588,8 @@ export function BuilderChatPane({
             rows={2}
             placeholder={
               inflight
-                ? 'Builder denkt nach …'
-                : 'Beschreibe was der Agent tun soll. Enter zum Senden, Shift+Enter für Zeilenumbruch.'
+                ? t('placeholder.thinking')
+                : t('placeholder.idle')
             }
             className="min-h-[44px] flex-1 resize-none rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-[13px] leading-snug text-[color:var(--fg-strong)] placeholder:text-[color:var(--fg-subtle)] focus:border-[color:var(--accent)] focus:outline-none disabled:opacity-60"
           />
@@ -584,7 +600,7 @@ export function BuilderChatPane({
               className="inline-flex h-[44px] shrink-0 items-center gap-1.5 rounded-md border border-[color:var(--danger)]/40 px-3 py-2 text-[12px] font-semibold text-[color:var(--danger)] transition-colors hover:bg-[color:var(--danger)]/10"
             >
               <StopCircle className="size-4" aria-hidden />
-              Stop
+              {t('button.stop')}
             </button>
           ) : (
             <button
@@ -594,7 +610,7 @@ export function BuilderChatPane({
               className="inline-flex h-[44px] shrink-0 items-center gap-1.5 rounded-md bg-[color:var(--accent)] px-3 py-2 text-[12px] font-semibold text-white shadow-[var(--shadow-cta)] transition-opacity hover:opacity-90 disabled:opacity-40"
             >
               <Send className="size-4" aria-hidden />
-              Senden
+              {t('button.send')}
             </button>
           )}
         </div>
@@ -635,7 +651,7 @@ export function BuilderChatPane({
                   ? ` · ${String(liveness.toolCallsThisIter)} tools this iter`
                   : ''}
                 {liveness.sinceLastActivityMs > 30000
-                  ? ' · vermutlich hängt — Stop drücken?'
+                  ? ` · ${t('liveness.likelyStuck')}`
                   : ''}
               </span>
             ) : null}
@@ -665,6 +681,7 @@ interface TurnStats {
 }
 
 function TurnStatsLine({ stats }: { stats: TurnStats }): React.ReactElement {
+  const t = useTranslations('builder.chat');
   const tools: string[] = [];
   if (stats.patchSpecCount > 0) {
     tools.push(`${String(stats.patchSpecCount)} patch_spec`);
@@ -678,7 +695,7 @@ function TurnStatsLine({ stats }: { stats: TurnStats }): React.ReactElement {
   return (
     <div className="font-mono-num mx-5 mb-2 inline-flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
       <span>
-        {stats.isLive ? 'Turn live' : 'Letzter Turn'}: {toolsLabel}
+        {stats.isLive ? t('turnStats.live') : t('turnStats.last')}: {toolsLabel}
       </span>
       <span className="text-[color:var(--fg-muted)]">
         {(stats.totalLatencyMs / 1000).toFixed(2)} s tool-time
@@ -690,6 +707,7 @@ function TurnStatsLine({ stats }: { stats: TurnStats }): React.ReactElement {
 // ---------------------------------------------------------------------------
 
 function EmptyHint(): React.ReactElement {
+  const t = useTranslations('builder.chat');
   return (
     <div className="flex flex-col items-center justify-center gap-2 py-12 text-center">
       <MessageSquare
@@ -697,10 +715,10 @@ function EmptyHint(): React.ReactElement {
         aria-hidden
       />
       <p className="font-display text-[16px] text-[color:var(--fg-muted)]">
-        Sag dem Builder, womit du anfangen willst.
+        {t('empty.title')}
       </p>
       <p className="font-mono-num text-[11px] text-[color:var(--fg-subtle)]">
-        z.B. „Bau einen Confluence-Reader-Agent mit Tools page_read und page_search.“
+        {t('empty.example')}
       </p>
     </div>
   );

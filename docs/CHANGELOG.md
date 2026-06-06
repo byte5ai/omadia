@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Omadia are documented in this file.
+All notable changes to omadia are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -9,8 +9,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_Nothing yet — changes land here before the next tagged release._
+
+---
+
+## [0.2.0] — 2026-06-05
+
+Second public release of omadia — *An Agentic OS*. 155 commits since v0.1.0.
+Headline work: a multi-orchestrator runtime, the omadia UI canvas channel with a
+WebSocket transport, a plugin store with remote registries, a major builder
+upgrade (persona / quality / audit), the answer verifier, operator-owned Privacy
+Mode, and headless Office generation. Pre-1.0: schemas and internal surfaces may
+still change between minor versions.
+
 ### Added
 
+- **Multi-orchestrator runtime** (US1–US9): run multiple orchestrators with
+  strict per-orchestrator memory + Knowledge-Graph isolation, per-channel
+  `dispatch_service` routing, and per-binding agent routing with `channelType`
+  autodiscovery.
+- **omadia UI canvas channel**: an additive canvas interface surface on the
+  channel SDK, a WebSocket transport for channel plugins (handshake + turn +
+  surface fan-out), canvas sentinel parsers with a canvas-output gate, and
+  skeleton `ui-channel` / `ui-orchestrator` plugins.
+- **Plugin store (MVP)**: admin-managed remote registries, remote install with
+  `depends_on` chaining, and update detection with store-card update prompts.
+- **Builder upgrades**: service-type auto-discovery for integration-backed
+  agents, preview that reads through to the live `ServiceRegistry`, persona
+  templates + gallery (6 archetypes), a quality-score engine + panel, a
+  live compiled system-prompt preview, culture presets (6 industry overlays),
+  an audit-log backend + timeline UI, a `read_slot` tool, and plan-as-data
+  foundations.
+- **Answer verifier**: tool-output postcondition validation with retry,
+  citation enforcement for Knowledge-Graph-grounded answers, and
+  confidence-gated re-sampling on borderline verdicts.
+- **Privacy**: operator-owned per-plugin Privacy Mode and stable-id
+  tokenization for the privacy-guard proxy.
+- **Headless Office**: deterministic `.xlsx` / `.docx` generation with
+  multi-channel delivery.
+- **Cross-session memory**: a Knowledge-Graph recall probe for plans, processes
+  and team insights, with relevance-filtered cross-session plan recall.
+- **Knowledge-Graph ACL + curated-memory** system.
+- **Setup wizard collects the LLM key** (OB-61): the Anthropic API key is now
+  gathered through the first-user setup wizard and stored encrypted in the
+  per-plugin vault — `ANTHROPIC_API_KEY` in the environment is no longer
+  required.
+- **plugin-api**: structured-output + `writeCapabilities` contract, and
+  `EntityRef.op` widened to `'read' | 'write'`.
+- Localized third-party setup guides (`setup.guide`).
+- Architecture Decision Records under `docs/adr`.
 - Native issue-reporting + workaround-tracking for the agent builder.
   When the builder hits a platform-side failure (forbidden-import
   gate on valid code, codegen-internal error, core-stack-frame
@@ -68,6 +115,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Public-facing text now brands the product as **omadia** (formerly "Harness").
+- Default orchestrator model set to `claude-opus-4-7` (a stale id previously
+  caused 404s).
+- web-ui: `middleware.ts` renamed to `proxy.ts` for Next.js 16 compatibility.
 - `docs/CHANGELOG.md` reformatted to follow the Keep-a-Changelog convention.
   Detailed operational history prior to v0.1.0 is preserved in the git log.
 - Replaced the internal `docs/security-migration-plan.md` post-mortem with
@@ -79,6 +130,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Orchestrator resilience: retry on mid-stream Anthropic `overloaded_error`,
+  explicit `maxRetries=5` with turn-failure logging, quarantine of uninstalled
+  plugins instead of aborting registry boot, and per-Agent domain tools scoped
+  to enabled plugins only.
+- Privacy: hardened outbound payloads against lone UTF-16 surrogates; the
+  privacy-guard now renders real names instead of apologising, and expands
+  "summary + detail" tool results into per-record rows.
+- Builder: AST-writes `network.outbound` so integration-backed agents build,
+  unblocked non-search plugin specs, scoped plugin ids work end-to-end, and
+  new agents emit the `@omadia/agent-*` namespace.
+- web-ui: visible session-expiry handling (warning + auto-logout), the plugin
+  install drawer is scrollable for long config forms, and the React-Compiler
+  warnings were cleared.
 - CI pipeline brought back to green after the Actions outage:
   - `actions/setup-node` bumped from `20` to `22` to match
     `middleware/package.json` `engines.node ">=22 <23"`.
@@ -119,5 +183,6 @@ Initial public release of Omadia — *An Agentic OS*.
 - The full pre-release development history is preserved in the maintainer's
   internal repository and is not part of the public git history.
 
-[Unreleased]: https://github.com/byte5ai/omadia/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/byte5ai/omadia/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/byte5ai/omadia/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/byte5ai/omadia/releases/tag/v0.1.0

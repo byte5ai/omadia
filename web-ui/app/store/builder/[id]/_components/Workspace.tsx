@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { LayoutGroup, motion } from 'framer-motion';
+import { useTranslations } from 'next-intl';
+import { LayoutGroup } from 'framer-motion';
 import {
   ArrowLeft,
   MessageSquare,
@@ -44,6 +45,10 @@ import type {
   TemplateSlotDef,
 } from '../../../../_lib/builderTypes';
 
+import {
+  IssueReportCard,
+  type PendingIssueReport,
+} from '../../../../_components/IssueReportCard';
 import { BuilderChatPane } from './BuilderChatPane';
 import { InstallDiffModal } from './InstallDiffModal';
 import { PaneCard } from './PaneCard';
@@ -52,6 +57,7 @@ import {
   PreviewChatPane,
   type BuildStatusSnapshot,
 } from './PreviewChatPane';
+import { SimpleWorkspace } from './SimpleWorkspace';
 import { SlotEditor } from './SlotEditor';
 import { SpecEditor } from './SpecEditor';
 import { SpecOverview } from './SpecOverview';
@@ -67,25 +73,32 @@ interface WorkspaceProps {
 
 type EditorTab = 'overview' | 'spec' | 'slots' | 'persona' | 'versions';
 type MobilePane = 'chat' | 'editor' | 'preview' | 'ui-surfaces';
+type ViewMode = 'simple' | 'extended';
 
-const TAB_LABEL: Record<EditorTab, string> = {
-  overview: 'Übersicht',
-  spec: 'Spec',
-  slots: 'Slots',
-  persona: 'Persona',
-  versions: 'Versionen',
+const VIEW_MODE_STORAGE_KEY = 'builder-view-mode';
+
+// Editor-tab → i18n key under `builder.workspace`. The visible label is
+// resolved at render time via useTranslations.
+const TAB_KEY: Record<EditorTab, string> = {
+  overview: 'tabOverview',
+  spec: 'tabSpec',
+  slots: 'tabSlots',
+  persona: 'tabPersona',
+  versions: 'tabVersions',
 };
 
+// Model names are brand proper nouns — not translated.
 const MODEL_LABEL: Record<BuilderModelId, string> = {
   haiku: 'Haiku',
   sonnet: 'Sonnet',
   opus: 'Opus',
 };
 
-const STATUS_LABEL: Record<Draft['status'], string> = {
-  draft: 'Entwurf',
-  published: 'Veröffentlicht',
-  archived: 'Archiviert',
+// Draft-status → i18n key under `builder.workspace`.
+const STATUS_KEY: Record<Draft['status'], string> = {
+  draft: 'statusDraft',
+  published: 'statusPublished',
+  archived: 'statusArchived',
 };
 
 /**
@@ -108,6 +121,84 @@ const STATUS_LABEL: Record<Draft['status'], string> = {
 export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement {
   const [draft, setDraft] = useState<Draft>(initialDraft);
   const [tab, setTab] = useState<EditorTab>('overview');
+  // No-Code vs. full builder. `simple` is the default surface for
+  // non-technical operators (single-column intake → overview → preview,
+  // no source/tool transcript); `extended` is the historical 4-pane
+  // workspace. Persisted in localStorage so a returning operator keeps
+  // their preference. Starts `simple` on the server render and is
+  // reconciled from localStorage in an effect to avoid hydration drift.
+  const [viewMode, setViewMode] = useState<'simple' | 'extended'>('simple');
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(VIEW_MODE_STORAGE_KEY);
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      if (saved === 'simple' || saved === 'extended') setViewMode(saved);
+    } catch {
+      // localStorage unavailable (private mode / SSR) — keep the default.
+    }
+  }, []);
+  // Issue #224 — the simple and extended views are separate React subtrees
+  // (SimpleWorkspace's SimpleIntakePane vs the extended BuilderChatPane; each
+  // view also mounts its own PreviewChatPane). Toggling unmounts the active
+  // pane, which aborts any in-flight NDJSON turn and drops the live message
+  // that only lived in that pane's local state. Each chat pane lifts its
+  // in-flight flag up here; while either a build OR a test reply streams we
+  // lock the toggle so a half-streamed turn can never be lost.
+  const [builderChatStreaming, setBuilderChatStreaming] = useState(false);
+  const [previewChatStreaming, setPreviewChatStreaming] = useState(false);
+  const chatStreaming = builderChatStreaming || previewChatStreaming;
+  // Brief refetch-in-progress flag — also disables the toggle so a fast
+  // double-click can't fire a second switch mid-refetch.
+  const [viewSwitching, setViewSwitching] = useState(false);
+  // Read the freshest values inside the async handler without widening the
+  // callback's dep array (which would rebuild it on every keystroke-driven
+  // re-render of the workspace). Synced in an effect — mutating a ref during
+  // render is disallowed by react-hooks/refs.
+  const chatStreamingRef = useRef(chatStreaming);
+  const viewModeRef = useRef(viewMode);
+  useEffect(() => {
+    chatStreamingRef.current = chatStreaming;
+    viewModeRef.current = viewMode;
+  }, [chatStreaming, viewMode]);
+  const handleViewModeChange = useCallback(
+    async (next: 'simple' | 'extended'): Promise<void> => {
+      if (next === viewModeRef.current) return;
+      // Never switch mid-stream — the unmount would abort the turn and the
+      // live message would be lost. The UI disables the toggle while
+      // streaming; this guard defends against a click that races a
+      // just-started turn.
+      if (chatStreamingRef.current) return;
+      // The target pane seeds its transcript from `draft` exactly once, on
+      // mount. Refetch the persisted draft FIRST so the freshly-mounted pane
+      // shows every turn that completed in the view we're leaving — including
+      // one whose SSE-debounced refetch (250ms) may not have landed yet.
+      // Both `transcript` and `previewTranscript` are persisted per turn
+      // server-side, so this recovers build- and test-chat messages alike.
+      setViewSwitching(true);
+      try {
+        const env = await getBuilderDraft(initialDraft.id);
+        setDraft(env.draft);
+      } catch {
+        // Refetch failed — switch anyway. The new pane seeds from the current
+        // (possibly slightly stale) draft; the stream-lock already prevented
+        // the unrecoverable mid-stream loss.
+      } finally {
+        setViewSwitching(false);
+      }
+      // A turn may have started in the still-mounted current pane during the
+      // refetch window — re-check before committing the switch so we never
+      // unmount mid-stream.
+      if (chatStreamingRef.current) return;
+      setViewMode(next);
+      try {
+        window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, next);
+      } catch {
+        // Non-fatal — the preference just won't persist across reloads.
+      }
+    },
+    [initialDraft.id],
+  );
+  const tw = useTranslations('builder.workspace');
   const [busStatus, setBusStatus] = useState<'open' | 'closed' | 'error'>(
     'closed',
   );
@@ -171,6 +262,11 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
       description?: string;
     }>;
   } | null>(null);
+  // Issue #206 — pending core-bug report. Fed by the SpecEventBus
+  // (`issue_report_pending`); the chat panes render an IssueReportCard so the
+  // operator confirms the sanitized body before anything is filed.
+  const [pendingIssueReport, setPendingIssueReport] =
+    useState<PendingIssueReport | null>(null);
   // Pane collapse state — chat is the only pane that starts open. Editor +
   // Preview start collapsed so the user has the maximum width for the
   // initial conversation; expanding either is one click on the rail.
@@ -476,6 +572,20 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
         );
         return;
       }
+      if (ev.type === 'issue_report_pending') {
+        setPendingIssueReport({
+          pendingId: ev.pendingId,
+          mode: ev.mode,
+          title: ev.title,
+          summary: ev.summary,
+          fingerprint: ev.fingerprint,
+          fingerprintMarker: ev.fingerprintMarker,
+          sanitizedBody: ev.sanitizedBody,
+          ...(ev.githubNewUrl ? { githubNewUrl: ev.githubNewUrl } : {}),
+        });
+        // The spec is unchanged — the agent handed reporting to the operator.
+        return;
+      }
       scheduleRefetch();
     },
     { onStatus: setBusStatus },
@@ -566,18 +676,19 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
     <main className="mx-auto flex w-full max-w-[1600px] flex-col gap-4 px-4 py-6 lg:px-6 lg:py-8 2xl:max-w-[1900px] 3xl:max-w-[2300px]">
       <WorkspaceHeader
         draft={draft}
+        viewMode={viewMode}
+        onViewModeChange={handleViewModeChange}
+        viewToggleDisabled={chatStreaming || viewSwitching}
         installEnabled={installEnabled}
         installDisabledReason={
           buildStatus.phase !== 'ok'
-            ? 'Letzter Build muss erfolgreich sein'
+            ? tw('installBuildMustSucceed')
             : editorWarningTotal > 0
-              ? `${String(editorWarningTotal)} Editor-Warnung${
-                  editorWarningTotal === 1 ? '' : 'en'
-                }`
+              ? tw('installEditorWarnings', { count: editorWarningTotal })
               : missingRequiredCredentials > 0
-                ? `${String(missingRequiredCredentials)} fehlende Test-Credential${
-                    missingRequiredCredentials === 1 ? '' : 's'
-                  }`
+                ? tw('installMissingCredentials', {
+                    count: missingRequiredCredentials,
+                  })
                 : null
         }
         onInstallClick={() => setInstallModalOpen(true)}
@@ -641,6 +752,32 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
         onClose={() => setInstallModalOpen(false)}
       />
 
+      {pendingIssueReport && (
+        <IssueReportCard
+          draftId={draft.id}
+          report={pendingIssueReport}
+          onResolved={() => setPendingIssueReport(null)}
+        />
+      )}
+
+      {viewMode === 'simple' ? (
+        <SimpleWorkspace
+          draft={draft}
+          model={draft.codegenModel}
+          onBuildStatus={setBuildStatus}
+          onPersonaPersisted={(next) =>
+            setDraft((prev) => ({
+              ...prev,
+              spec: { ...prev.spec, persona: next },
+            }))
+          }
+          pendingUserChoice={pendingUserChoice}
+          onUserChoiceResolved={() => setPendingUserChoice(null)}
+          onIntakeStreamingChange={setBuilderChatStreaming}
+          onPreviewStreamingChange={setPreviewChatStreaming}
+        />
+      ) : (
+        <>
       {autoFix ? (
         <AutoFixIndicator
           snap={autoFix}
@@ -662,6 +799,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
             onPendingInputConsumed={() => setPendingChatInput(null)}
             pendingUserChoice={pendingUserChoice}
             onUserChoiceResolved={() => setPendingUserChoice(null)}
+            onStreamingChange={setBuilderChatStreaming}
           />
         );
         const editorPaneBody = (
@@ -750,6 +888,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
                 : undefined
             }
             onBufferedSecretKeysChange={handleBufferedSecretKeysChange}
+            onStreamingChange={setPreviewChatStreaming}
           />
         );
 
@@ -781,7 +920,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
                 >
                   <PaneCard
                     index="01"
-                    title="Builder-Chat"
+                    title={tw('paneChat')}
                     meta={<ChatMeta />}
                     fill
                     collapsed={chatCollapsed}
@@ -824,7 +963,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
                 >
                   <PaneCard
                     index="02"
-                    title="Editor"
+                    title={tw('paneEditor')}
                     meta={
                       <EditorTabs
                         current={tab}
@@ -874,7 +1013,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
                 >
                   <PaneCard
                     index="03"
-                    title="Preview"
+                    title={tw('panePreview')}
                     meta={<PreviewMeta model={draft.previewModel} />}
                     warningCount={missingRequiredCredentials}
                     fill
@@ -918,7 +1057,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
                 >
                   <PaneCard
                     index="04"
-                    title="UI-Surfaces"
+                    title={tw('paneUiSurfaces')}
                     fill
                     collapsed={uiSurfacesCollapsed}
                     onToggleCollapsed={() =>
@@ -977,7 +1116,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
               >
                 <PaneCard
                   index="01"
-                  title="Builder-Chat"
+                  title={tw('paneChat')}
                   meta={<ChatMeta />}
                   fill
                   collapsed={false}
@@ -994,7 +1133,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
               >
                 <PaneCard
                   index="02"
-                  title="Editor"
+                  title={tw('paneEditor')}
                   meta={
                     <EditorTabs
                       current={tab}
@@ -1018,7 +1157,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
               >
                 <PaneCard
                   index="03"
-                  title="Preview"
+                  title={tw('panePreview')}
                   meta={<PreviewMeta model={draft.previewModel} />}
                   warningCount={missingRequiredCredentials}
                   fill
@@ -1036,7 +1175,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
               >
                 <PaneCard
                   index="04"
-                  title="UI-Surfaces"
+                  title={tw('paneUiSurfaces')}
                   fill
                   collapsed={false}
                   onToggleCollapsed={() => setMobilePane('ui-surfaces')}
@@ -1070,6 +1209,8 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
             : undefined
         }
       />
+        </>
+      )}
     </main>
   );
 }
@@ -1093,16 +1234,17 @@ function MobilePaneTabs({
   onChange: (next: MobilePane) => void;
   warnings: Record<MobilePane, number>;
 }): React.ReactElement {
+  const tw = useTranslations('builder.workspace');
   const items: Array<{ id: MobilePane; label: string; index: string }> = [
-    { id: 'chat', label: 'Chat', index: '01' },
-    { id: 'editor', label: 'Editor', index: '02' },
-    { id: 'preview', label: 'Preview', index: '03' },
-    { id: 'ui-surfaces', label: 'UI', index: '04' },
+    { id: 'chat', label: tw('mobilePaneChat'), index: '01' },
+    { id: 'editor', label: tw('mobilePaneEditor'), index: '02' },
+    { id: 'preview', label: tw('mobilePanePreview'), index: '03' },
+    { id: 'ui-surfaces', label: tw('mobilePaneUi'), index: '04' },
   ];
   return (
     <nav
       role="tablist"
-      aria-label="Workspace-Pane wählen"
+      aria-label={tw('mobilePaneAriaLabel')}
       className="mb-3 flex items-center gap-1.5 overflow-x-auto rounded-[12px] border border-[color:var(--divider)] bg-[color:var(--bg-elevated)] p-1.5"
     >
       {items.map((it) => {
@@ -1134,7 +1276,7 @@ function MobilePaneTabs({
                     ? 'bg-white/25 text-white'
                     : 'bg-[color:var(--danger)] text-white',
                 )}
-                aria-label={`${String(w)} Pflicht-Felder fehlen`}
+                aria-label={tw('mobilePaneMissingAria', { count: w })}
               >
                 {w}
               </span>
@@ -1173,6 +1315,9 @@ function ResizeHandle(): React.ReactElement {
 
 function WorkspaceHeader({
   draft,
+  viewMode,
+  onViewModeChange,
+  viewToggleDisabled,
   installEnabled,
   installDisabledReason,
   onInstallClick,
@@ -1186,6 +1331,12 @@ function WorkspaceHeader({
   onPreviewModelChange,
 }: {
   draft: Draft;
+  viewMode: ViewMode;
+  onViewModeChange: (next: ViewMode) => void | Promise<void>;
+  /** Issue #224 — true while a chat reply streams or the post-toggle
+   *  refetch is in flight; the segmented control is locked so switching
+   *  views can't abort a turn or seed a pane from a stale transcript. */
+  viewToggleDisabled: boolean;
   installEnabled: boolean;
   installDisabledReason: string | null;
   onInstallClick: () => void;
@@ -1203,6 +1354,7 @@ function WorkspaceHeader({
   // Edit-from-Store-Reopen loop (B.6-3) — therefore allowed for installed
   // drafts as well. Only `archived` stays read-only (frozen state).
   const modelEditingEnabled = draft.status !== 'archived';
+  const tw = useTranslations('builder.workspace');
   return (
     <header className="flex flex-col gap-4 rounded-[14px] border border-[color:var(--divider)] bg-[color:var(--bg-elevated)] px-5 py-4 lg:flex-row lg:items-center">
       <Link
@@ -1210,7 +1362,7 @@ function WorkspaceHeader({
         className="inline-flex items-center gap-2 self-start rounded-md px-2 py-1 text-[12px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg-muted)] transition-colors hover:bg-[color:var(--bg-soft)] hover:text-[color:var(--fg-strong)]"
       >
         <ArrowLeft className="size-3.5" aria-hidden />
-        Drafts
+        {tw('backToDrafts')}
       </Link>
 
       <div className="flex min-w-0 flex-1 items-baseline gap-3">
@@ -1220,30 +1372,40 @@ function WorkspaceHeader({
         <StatusBadge status={draft.status} />
       </div>
 
-      <dl className="flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px]">
-        <TemplateSwitcher
-          templates={templates}
-          current={currentTemplate}
-          enabled={templateSwitchEnabled}
-          onChange={onTemplateChange}
-        />
-        <ModelSelector
-          label="Codegen"
-          value={draft.codegenModel}
-          enabled={modelEditingEnabled}
-          onChange={onCodegenModelChange}
-        />
-        <ModelSelector
-          label="Preview"
-          value={draft.previewModel}
-          enabled={modelEditingEnabled}
-          onChange={onPreviewModelChange}
-        />
-        <AutoFixToggle enabled={autoFixEnabled} onChange={onAutoFixToggle} />
-        <span className="font-mono-num text-[color:var(--fg-subtle)]">
-          ID: {draft.id.slice(0, 8)}
-        </span>
-      </dl>
+      {/* Technical controls — only in the Extended view. The Simplified
+          view keeps the header calm: just the mode toggle and Publish. */}
+      {viewMode === 'extended' ? (
+        <dl className="flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px]">
+          <TemplateSwitcher
+            templates={templates}
+            current={currentTemplate}
+            enabled={templateSwitchEnabled}
+            onChange={onTemplateChange}
+          />
+          <ModelSelector
+            label="Codegen"
+            value={draft.codegenModel}
+            enabled={modelEditingEnabled}
+            onChange={onCodegenModelChange}
+          />
+          <ModelSelector
+            label="Preview"
+            value={draft.previewModel}
+            enabled={modelEditingEnabled}
+            onChange={onPreviewModelChange}
+          />
+          <AutoFixToggle enabled={autoFixEnabled} onChange={onAutoFixToggle} />
+          <span className="font-mono-num text-[color:var(--fg-subtle)]">
+            ID: {draft.id.slice(0, 8)}
+          </span>
+        </dl>
+      ) : null}
+
+      <ViewModeToggle
+        value={viewMode}
+        onChange={onViewModeChange}
+        disabled={viewToggleDisabled}
+      />
 
       <button
         type="button"
@@ -1258,13 +1420,88 @@ function WorkspaceHeader({
         )}
       >
         <Rocket className="size-3.5" aria-hidden />
-        Veröffentlichen
+        {tw('publish')}
       </button>
     </header>
   );
 }
 
+/**
+ * Segmented control switching between the Simplified (Einfach) No-Code
+ * view and the Extended full builder. Lives in the header so the operator
+ * can flip modes at any point; the choice is persisted by the parent.
+ */
+function ViewModeToggle({
+  value,
+  onChange,
+  disabled = false,
+}: {
+  value: ViewMode;
+  onChange: (next: ViewMode) => void | Promise<void>;
+  /** Issue #224 — locks the control while a chat reply streams (or the
+   *  post-toggle refetch runs) so switching can't lose in-flight messages. */
+  disabled?: boolean;
+}): React.ReactElement {
+  const tw = useTranslations('builder.workspace');
+  const items: Array<{ id: ViewMode; label: string; title: string }> = [
+    {
+      id: 'simple',
+      label: tw('viewModeSimple'),
+      title: tw('viewModeSimpleTitle'),
+    },
+    {
+      id: 'extended',
+      label: tw('viewModeExtended'),
+      title: tw('viewModeExtendedTitle'),
+    },
+  ];
+  return (
+    <div
+      role="tablist"
+      aria-label={tw('viewModeAriaLabel')}
+      aria-busy={disabled || undefined}
+      className={cn(
+        'inline-flex shrink-0 items-center gap-1 rounded-full border border-[color:var(--divider)] bg-[color:var(--bg-soft)] p-1',
+        disabled && 'opacity-60',
+      )}
+    >
+      {items.map((it) => {
+        const active = it.id === value;
+        // While locked, only the inactive tab is truly disabled — keeping the
+        // active tab clickable would be a no-op anyway, but a uniform locked
+        // look reads clearer, so we disable both and surface the reason via
+        // the tooltip on the inactive one.
+        const lockedTitle = disabled ? tw('viewModeLockedTitle') : it.title;
+        return (
+          <button
+            key={it.id}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            disabled={disabled && !active}
+            title={lockedTitle}
+            onClick={() => {
+              if (disabled) return;
+              void onChange(it.id);
+            }}
+            className={cn(
+              'rounded-full px-3 py-1 text-[12px] font-semibold transition-colors',
+              active
+                ? 'bg-[color:var(--accent)] text-white shadow-[var(--shadow-cta)]'
+                : 'text-[color:var(--fg-muted)] hover:text-[color:var(--fg-strong)]',
+              disabled && !active && 'cursor-not-allowed',
+            )}
+          >
+            {it.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function StatusBadge({ status }: { status: Draft['status'] }): React.ReactElement {
+  const tw = useTranslations('builder.workspace');
   const palette: Record<Draft['status'], string> = {
     draft: 'bg-[color:var(--bg-soft)] text-[color:var(--fg-muted)]',
     published: 'bg-[color:var(--accent)]/12 text-[color:var(--accent)]',
@@ -1277,7 +1514,7 @@ function StatusBadge({ status }: { status: Draft['status'] }): React.ReactElemen
         palette[status],
       )}
     >
-      {STATUS_LABEL[status]}
+      {tw(STATUS_KEY[status])}
     </span>
   );
 }
@@ -1305,6 +1542,7 @@ function ModelSelector({
   enabled: boolean;
   onChange: (next: BuilderModelId) => void | Promise<void>;
 }): React.ReactElement {
+  const tw = useTranslations('builder.workspace');
   if (!enabled) {
     return (
       <div className="flex items-baseline gap-1.5">
@@ -1334,7 +1572,7 @@ function ModelSelector({
             'font-mono-num text-[12px] font-semibold text-[color:var(--fg-strong)]',
             'transition-colors hover:bg-[color:var(--bg-elevated)] focus:outline-none focus:ring-1 focus:ring-[color:var(--accent)]',
           )}
-          aria-label={`${label}-Modell wechseln`}
+          aria-label={tw('modelSwitchAria', { label })}
         >
           <option value="haiku">{MODEL_LABEL.haiku}</option>
           <option value="sonnet">{MODEL_LABEL.sonnet}</option>
@@ -1370,23 +1608,20 @@ function AutoFixToggle({
   enabled: boolean;
   onChange: (next: boolean) => void | Promise<void>;
 }): React.ReactElement {
+  const tw = useTranslations('builder.workspace');
   return (
     <button
       type="button"
       role="switch"
       aria-checked={enabled}
-      title={
-        enabled
-          ? 'Auto-Fix aktiv: Build/Smoke-Failures triggern automatisch einen Builder-Turn'
-          : 'Auto-Fix aus: Failures zeigen nur den "Fix mit Builder"-Button'
-      }
+      title={enabled ? tw('autoFixTitleOn') : tw('autoFixTitleOff')}
       onClick={() => {
         void onChange(!enabled);
       }}
       className="flex items-center gap-1.5"
     >
       <dt className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[color:var(--fg-subtle)]">
-        Auto-Fix
+        {tw('autoFixLabel')}
       </dt>
       <dd
         className={cn(
@@ -1402,7 +1637,7 @@ function AutoFixToggle({
             enabled ? 'bg-[color:var(--accent)]' : 'bg-[color:var(--fg-subtle)]',
           )}
         />
-        {enabled ? 'on' : 'off'}
+        {enabled ? tw('autoFixOn') : tw('autoFixOff')}
       </dd>
     </button>
   );
@@ -1433,14 +1668,16 @@ function AutoFixIndicator({
   };
   onDismiss: () => void;
 }): React.ReactElement {
-  const kindLabel = snap.kind === 'build_failed' ? 'Build' : 'Smoke';
+  const tw = useTranslations('builder.workspace');
+  const kindLabel =
+    snap.kind === 'build_failed' ? tw('autoFixKindBuild') : tw('autoFixKindSmoke');
 
   if (snap.phase === 'triggered') {
     return (
       <div className="inline-flex w-fit items-center gap-2 rounded-full border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/10 px-3 py-1.5 text-[12px] text-[color:var(--accent)]">
         <Loader2 className="size-3.5 animate-spin" aria-hidden />
         <span className="font-mono-num text-[11px]">
-          Auto-Fix läuft (#{String(snap.buildN)} · {kindLabel})
+          {tw('autoFixRunning', { buildN: snap.buildN, kind: kindLabel })}
         </span>
       </div>
     );
@@ -1451,20 +1688,20 @@ function AutoFixIndicator({
       <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
       <div className="min-w-0 flex-1 break-words">
         <div className="font-semibold">
-          Auto-Fix nach {String(snap.identicalCount ?? 3)} identischen{' '}
-          {kindLabel}-Fehlern gestoppt
+          {tw('autoFixStoppedTitle', {
+            count: snap.identicalCount ?? 3,
+            kind: kindLabel,
+          })}
         </div>
         <div className="mt-1 text-[11px] text-[color:var(--fg-muted)]">
-          Der Builder-Agent kommt mit derselben Fehlerklasse nicht weiter.
-          Auto-Fix wurde automatisch ausgeschaltet — prüf den Code manuell
-          oder schalte den Toggle wieder ein, sobald du eingegriffen hast.
+          {tw('autoFixStoppedBody')}
         </div>
       </div>
       <button
         type="button"
         onClick={onDismiss}
         className="text-[color:var(--fg-subtle)] transition-colors hover:text-[color:var(--fg-strong)]"
-        aria-label="Hinweis ausblenden"
+        aria-label={tw('autoFixDismissAria')}
       >
         <X className="size-3.5" aria-hidden />
       </button>
@@ -1483,6 +1720,7 @@ function TemplateSwitcher({
   enabled: boolean;
   onChange: (next: string) => void | Promise<void>;
 }): React.ReactElement {
+  const tw = useTranslations('builder.workspace');
   // Always include the current template even if it's not in the fetched
   // list yet (e.g. a draft pinned to a template that's been removed
   // server-side). Renders with a strikethrough so the operator sees the
@@ -1490,16 +1728,16 @@ function TemplateSwitcher({
   const options = templates.some((t) => t.id === current)
     ? templates
     : [
-        { id: current, description: '(unbekanntes Template)' },
+        { id: current, description: tw('templateUnknown') },
         ...templates,
       ];
   const tooltip = enabled
-    ? 'Template wechseln (verlustfrei — nur Slots / Tools / depends_on sind template-spezifisch)'
-    : 'Template-Wechsel deaktiviert — der Draft hat bereits Slots, Tools oder `depends_on`-Einträge, die beim Switch verloren gingen. Lege einen neuen Draft an oder lösche die betreffenden Felder zuerst.';
+    ? tw('templateTooltipEnabled')
+    : tw('templateTooltipDisabled');
   return (
     <div className="flex items-baseline gap-1.5">
       <dt className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[color:var(--fg-subtle)]">
-        Template
+        {tw('templateLabel')}
       </dt>
       <dd>
         <select
@@ -1538,6 +1776,7 @@ function EditorTabs({
   onChange: (next: EditorTab) => void;
   warnings?: Record<EditorTab, number>;
 }): React.ReactElement {
+  const tw = useTranslations('builder.workspace');
   return (
     <div role="tablist" className="flex items-center gap-1">
       {(['overview', 'spec', 'slots', 'persona', 'versions'] as EditorTab[]).map((t) => {
@@ -1560,7 +1799,7 @@ function EditorTabs({
                 'text-[color:var(--danger)] hover:bg-[color:var(--danger)]/10',
             )}
           >
-            {TAB_LABEL[t]}
+            {tw(TAB_KEY[t])}
             {warningCount > 0 ? (
               <span
                 className={cn(
@@ -1569,7 +1808,7 @@ function EditorTabs({
                     ? 'bg-white/25 text-white'
                     : 'bg-[color:var(--danger)] text-white',
                 )}
-                aria-label={`${String(warningCount)} fehlt`}
+                aria-label={tw('editorTabMissingAria', { count: warningCount })}
               >
                 {warningCount}
               </span>
@@ -1625,6 +1864,7 @@ function BuildStatusStrip({
   buildStatus: BuildStatusSnapshot;
   onFixWithBuilder?: () => void;
 }): React.ReactElement {
+  const tw = useTranslations('builder.workspace');
   const [errorsExpanded, setErrorsExpanded] = useState(false);
 
   const busColor =
@@ -1634,7 +1874,11 @@ function BuildStatusStrip({
         ? 'bg-[color:var(--warning)]'
         : 'bg-[color:var(--fg-subtle)]';
   const busLabel =
-    busStatus === 'open' ? 'live' : busStatus === 'error' ? 'reconnecting' : 'idle';
+    busStatus === 'open'
+      ? tw('buildBusLive')
+      : busStatus === 'error'
+        ? tw('buildBusReconnecting')
+        : tw('buildBusIdle');
 
   const buildPalette: Record<BuildStatusSnapshot['phase'], string> = {
     idle: 'text-[color:var(--fg-subtle)]',
@@ -1676,16 +1920,18 @@ function BuildStatusStrip({
         >
           <div className="font-mono-num mb-2 flex items-center justify-between text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
             <span>
-              {String(errors.length)} TypeScript-Fehler
               {buildStatus.buildN !== undefined
-                ? ` · build #${String(buildStatus.buildN)}`
-                : ''}
+                ? tw('buildErrorsHeadingWithBuild', {
+                    count: errors.length,
+                    buildN: buildStatus.buildN,
+                  })
+                : tw('buildErrorsHeading', { count: errors.length })}
             </span>
             <button
               type="button"
               onClick={() => setErrorsExpanded(false)}
               className="inline-flex items-center gap-1 rounded text-[color:var(--fg-subtle)] hover:text-[color:var(--fg-default)]"
-              aria-label="Fehlerliste schließen"
+              aria-label={tw('buildErrorsCloseAria')}
             >
               <X className="size-3" aria-hidden />
             </button>
@@ -1709,7 +1955,7 @@ function BuildStatusStrip({
       <footer className="flex items-center gap-3 rounded-[14px] border border-[color:var(--divider)] bg-[color:var(--bg-elevated)] px-5 py-3 text-[11px]">
         <span className="font-mono-num inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
           <Activity className="size-3" aria-hidden />
-          Build-Status
+          {tw('buildStatusLabel')}
         </span>
         {canExpand ? (
           <button
@@ -1719,8 +1965,8 @@ function BuildStatusStrip({
             aria-controls="builder-tsc-error-list"
             title={
               errorsExpanded
-                ? 'Fehlerliste ausblenden'
-                : 'Fehlerliste anzeigen'
+                ? tw('buildErrorsHideTitle')
+                : tw('buildErrorsShowTitle')
             }
             className={cn(
               buildPillClasses,
@@ -1753,12 +1999,12 @@ function BuildStatusStrip({
             className="inline-flex items-center gap-1.5 rounded-md border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/10 px-2 py-1 font-mono-num text-[10px] uppercase tracking-[0.18em] text-[color:var(--danger)] transition-colors hover:bg-[color:var(--danger)]/15"
           >
             <Wrench className="size-3" aria-hidden />
-            Fix mit Builder
+            {tw('fixWithBuilder')}
           </button>
         ) : null}
         <span className="font-mono-num inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
           <span className={`inline-block size-1.5 rounded-full ${busColor}`} />
-          SSE {busLabel}
+          {tw('buildSse', { status: busLabel })}
         </span>
         <span className="ml-auto font-mono-num text-[color:var(--fg-subtle)]">
           Phase B.5 (Workspace-UI)

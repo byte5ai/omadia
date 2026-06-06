@@ -1,7 +1,7 @@
 {
   "name": "odoo-bot-web-ui",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Local-only Next.js dev UI for chatting with the middleware. Not for production.",
   "license": "MIT",
   "scripts": {

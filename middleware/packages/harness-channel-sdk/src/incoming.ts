@@ -10,6 +10,24 @@ export interface IncomingTurn {
   channelId: string;
   /** channel-specific thread/chat id */
   conversationId: string;
+  /**
+   * Routing selector — the `channel_bindings.channel_type` this turn belongs
+   * to (e.g. `"teams"`, `"telegram"`). Additive (US7 per-binding routing): a
+   * channel adapter MAY set it so the core routes the turn to the bound
+   * Agent's scoped orchestrator. When absent, the core derives it from
+   * `channelId` (manifest `channel.channel_type`, else the last dotted segment
+   * of the id). Classic adapters that never set it keep dispatching to the
+   * shared `chatAgent`.
+   */
+  channelType?: string;
+  /**
+   * Routing selector — the `channel_bindings.channel_key` for this turn. The
+   * opaque per-binding key the operator bound to an Agent (Teams conversation
+   * id, Telegram chat id / `@bot_username`, …). Additive: when absent the core
+   * falls back to `conversationId`. Paired with {@link channelType} to look up
+   * the bound Agent via the platform `channelResolver`.
+   */
+  channelKey?: string;
   /** channel-native user ref */
   userRef: ChannelUserRef;
   /** user's message as plain text (mentions resolved, markup stripped) */

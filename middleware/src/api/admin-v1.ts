@@ -168,6 +168,14 @@ export interface ChannelManifestBlock {
    */
   dispatch_service?: string;
   /**
+   * US7 per-binding routing (additive): the short `channel_bindings.channel_type`
+   * selector this channel's turns route under (`"teams"`, `"telegram"`, …).
+   * Absent → the core derives it from the last dotted segment of the plugin id
+   * (`de.byte5.channel.teams` → `teams`). Declare it only when the id does not
+   * follow the `*.channel.<type>` convention. See `deriveChannelType`.
+   */
+  channel_type?: string;
+  /**
    * Omadia UI (additive): the omadia-canvas-protocol version this channel
    * speaks (e.g. `"1.0"`). Informational at the manifest layer; the actual
    * version is negotiated in the boot handshake.
@@ -207,7 +215,12 @@ export interface Plugin {
   compat_core: string;
   signed: boolean;
   signed_by: string | null;
-  required_secrets: PluginSetupField[];
+  /** All declared setup fields (secret AND non-secret config) from the
+   *  manifest's `setup.fields`. Named `setup_fields` because the list is not
+   *  secrets-only — it carries `string`/`url`/`enum`/`boolean`/`integer`
+   *  config alongside `secret`/`oauth` credentials. Consumers split the two
+   *  by each field's `type`. */
+  setup_fields: PluginSetupField[];
   permissions_summary: PluginPermissionsSummary;
   integrations_summary: string[];
   install_state: PluginInstallState;

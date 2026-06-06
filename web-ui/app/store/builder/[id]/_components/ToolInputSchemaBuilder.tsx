@@ -1,6 +1,7 @@
 'use client';
 
 import { Plus } from 'lucide-react';
+import { useTranslations } from 'next-intl';
 import { useCallback, useMemo } from 'react';
 
 import {
@@ -40,6 +41,7 @@ export function ToolInputSchemaBuilder({
   onChange,
   depth = 0,
 }: ToolInputSchemaBuilderProps): React.ReactElement {
+  const t = useTranslations('builder.tools.schema');
   const node = useMemo(() => ensureTopLevelObject(value), [value]);
   const properties = node.properties ?? {};
   const required = node.required ?? [];
@@ -110,12 +112,12 @@ export function ToolInputSchemaBuilder({
     <div className="space-y-1.5">
       {keys.length === 0 ? (
         <p className="rounded border border-dashed border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-[11px] italic text-[color:var(--fg-muted)]">
-          Keine Properties — Tool akzeptiert leeres Input-Objekt.
+          {t('noProperties')}
         </p>
       ) : (
         keys.map((k) => {
           const child = properties[k] as JsonSchemaNode;
-          const t = detectType(child);
+          const childType = detectType(child);
           const childRequired = required.includes(k);
           return (
             <div key={k} className="space-y-1">
@@ -139,7 +141,7 @@ export function ToolInputSchemaBuilder({
                 onRemove={() => removeProperty(k)}
                 onToggleRequired={(next) => toggleRequired(k, next)}
               />
-              {t === 'object' ? (
+              {childType === 'object' ? (
                 <ToolInputSchemaBuilder
                   value={child as Record<string, unknown>}
                   onChange={(next) =>
@@ -148,7 +150,7 @@ export function ToolInputSchemaBuilder({
                   depth={depth + 1}
                 />
               ) : null}
-              {t === 'array' &&
+              {childType === 'array' &&
               detectType(child.items as JsonSchemaNode) === 'object' ? (
                 <ToolInputSchemaBuilder
                   value={child.items as Record<string, unknown>}
@@ -171,7 +173,7 @@ export function ToolInputSchemaBuilder({
         className="inline-flex items-center gap-1 rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1 text-[11px] font-semibold text-[color:var(--fg-strong)] hover:border-[color:var(--accent)]"
       >
         <Plus className="size-3" aria-hidden />
-        Property
+        {t('addProperty')}
       </button>
     </div>
   );

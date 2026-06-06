@@ -276,6 +276,12 @@ export interface BuilderAgentDeps {
     labels: readonly string[];
   };
   /**
+   * Issue #206 (v1.2) — true when a GitHub-App issue creator is wired and
+   * the upstream is allowlisted, enabling the direct-create (operator-
+   * confirmed) path instead of browser-submit. Threaded into the tool ctx.
+   */
+  directIssueCreateAvailable?: boolean;
+  /**
    * Issue #56 — optional audit logger override. When omitted, the
    * default `createAuditLogger(draftStore)` is wired so every mutating
    * tool call lands in `builder_audit`. Tests can pass a spy to
@@ -320,6 +326,7 @@ export class BuilderAgent {
   private readonly userChoice?: UserChoiceCoordinator;
   private readonly triageLog?: BuilderTriageLog;
   private readonly githubIssueCache?: GithubIssueCache;
+  private readonly directIssueCreateAvailable: boolean;
   private readonly upstreamIssueConfig?: {
     owner: string;
     repo: string;
@@ -353,6 +360,7 @@ export class BuilderAgent {
     this.userChoice = deps.userChoice;
     this.triageLog = deps.triageLog;
     this.githubIssueCache = deps.githubIssueCache;
+    this.directIssueCreateAvailable = deps.directIssueCreateAvailable ?? false;
     this.upstreamIssueConfig = deps.upstreamIssueConfig;
     this.log = deps.logger ?? (() => {});
   }
@@ -456,6 +464,7 @@ export class BuilderAgent {
       ...(this.upstreamIssueConfig
         ? { upstreamIssueConfig: this.upstreamIssueConfig }
         : {}),
+      directIssueCreateAvailable: this.directIssueCreateAvailable,
       audit: this.audit,
     };
 

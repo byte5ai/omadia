@@ -7,7 +7,14 @@ export type {
 } from './plugin.js';
 
 // What channels call on the core
-export type { CoreApi, HttpMethod, LogLevel } from './coreApi.js';
+export type {
+  CoreApi,
+  HttpMethod,
+  LogLevel,
+  ChannelSocket,
+  ChannelSocketHandler,
+  ChannelSessionClaims,
+} from './coreApi.js';
 
 // Orchestrator access — the typed, blessed way for a channel to resolve the
 // ChatAgent it drives turns with (alternative to CoreApi.handleTurnStream when
@@ -18,6 +25,18 @@ export {
   getChatAgentBundle,
   type ChatAgentBundle,
 } from './chatAgentService.js';
+
+// US7 per-binding routing — resolve the *scoped* ChatAgent bound to a turn's
+// (channelType, channelKey) via the platform channelResolver. Direct-agent
+// channels (Teams, Telegram) MUST call this per turn instead of caching
+// getChatAgent(ctx), so each conversation reaches the Agent it was bound to.
+export {
+  CHANNEL_RESOLVER_SERVICE,
+  resolveChatAgentForChannel,
+  type ChannelBindingResolver,
+  type ChannelResolveResult,
+  type ChannelResolveDecision,
+} from './channelRouting.js';
 
 // Inbound message shape
 export type {

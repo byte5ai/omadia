@@ -83,4 +83,109 @@ describe('createOrchestratorDispatcher', () => {
     const events = await collect(dispatcher.streamTurn({ ...turn, channelId: 'x' }));
     assert.deepEqual(events, [{ type: 'error', message: 'orchestrator unavailable' }]);
   });
+
+  // ── US7 per-binding routing ───────────────────────────────────────────────
+
+  it('routes a classic-channel turn to the bound Agent (channelResolver wins over the chatAgent singleton)', async () => {
+    const asked: string[] = [];
+    const resolved: Array<[string, string]> = [];
+    const boundAgent = stubBundle([
+      { type: 'done', answer: 'scoped', toolCalls: 0, iterations: 1 },
+    ]).agent;
+    const dispatcher = createOrchestratorDispatcher({
+      getChannelBlock: () => undefined, // classic — no dispatch_service
+      getAgentBundle: (service) => {
+        asked.push(service); // must NOT be hit when a binding matches
+        return stubBundle([{ type: 'done', answer: 'singleton', toolCalls: 0, iterations: 1 }]);
+      },
+      channelTypeFor: (channelId) => channelId.split('.').pop() ?? channelId,
+      resolveBinding: (channelType, channelKey) => {
+        resolved.push([channelType, channelKey]);
+        return boundAgent;
+      },
+    });
+    const events = await collect(
+      dispatcher.streamTurn({
+        ...turn,
+        channelId: 'de.byte5.channel.teams',
+        channelKey: 'conv-42',
+      }),
+    );
+    assert.deepEqual(resolved, [['teams', 'conv-42']]);
+    assert.deepEqual(asked, []); // singleton never consulted
+    assert.equal(
+      (events.at(-1) as { answer?: string }).answer,
+      'scoped',
+    );
+  });
+
+  it('falls back to the static dispatch_service when no binding matches', async () => {
+    const asked: string[] = [];
+    const dispatcher = createOrchestratorDispatcher({
+      getChannelBlock: () => undefined,
+      getAgentBundle: (service) => {
+        asked.push(service);
+        return stubBundle([{ type: 'done', answer: 'singleton', toolCalls: 0, iterations: 1 }]);
+      },
+      channelTypeFor: (channelId) => channelId.split('.').pop() ?? channelId,
+      resolveBinding: () => undefined, // resolver rejects / no fallback Agent
+    });
+    const events = await collect(
+      dispatcher.streamTurn({
+        ...turn,
+        channelId: 'de.byte5.channel.teams',
+        channelKey: 'conv-42',
+      }),
+    );
+    assert.deepEqual(asked, ['chatAgent']);
+    assert.equal((events.at(-1) as { answer?: string }).answer, 'singleton');
+  });
+
+  it('never re-routes a channel with an explicit dispatch_service (canvas opt-out)', async () => {
+    const asked: string[] = [];
+    let bindingConsulted = false;
+    const dispatcher = createOrchestratorDispatcher({
+      getChannelBlock: () => canvasBlock, // dispatch_service: canvasChatAgent
+      getAgentBundle: (service) => {
+        asked.push(service);
+        return stubBundle([{ type: 'text_delta', text: 'x' }]);
+      },
+      channelTypeFor: (channelId) => channelId.split('.').pop() ?? channelId,
+      resolveBinding: () => {
+        bindingConsulted = true;
+        return stubBundle([]).agent;
+      },
+    });
+    await collect(
+      dispatcher.streamTurn({
+        ...turn,
+        channelId: 'de.byte5.channel.omadia-ui',
+        channelKey: 'canvas-1',
+      }),
+    );
+    assert.equal(bindingConsulted, false);
+    assert.deepEqual(asked, ['canvasChatAgent']);
+  });
+
+  it('skips binding routing when the turn carries no channelKey', async () => {
+    const asked: string[] = [];
+    let bindingConsulted = false;
+    const dispatcher = createOrchestratorDispatcher({
+      getChannelBlock: () => undefined,
+      getAgentBundle: (service) => {
+        asked.push(service);
+        return stubBundle([{ type: 'done', answer: 'ok', toolCalls: 0, iterations: 1 }]);
+      },
+      channelTypeFor: () => 'teams',
+      resolveBinding: () => {
+        bindingConsulted = true;
+        return undefined;
+      },
+    });
+    await collect(
+      dispatcher.streamTurn({ ...turn, channelId: 'de.byte5.channel.teams' }),
+    );
+    assert.equal(bindingConsulted, false);
+    assert.deepEqual(asked, ['chatAgent']);
+  });
 });

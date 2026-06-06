@@ -1,9 +1,14 @@
 import { promises as fs, type Dirent } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import yaml from 'yaml';
 import type { z } from 'zod';
 
 import { extractZipToDir, type ExtractLimits } from '../zipExtractor.js';
+import {
+  createPreviewMemoryAccessor,
+  type PreviewMemoryAccessor,
+} from './previewMemoryStore.js';
 
 /**
  * PreviewRuntime — activates a builder-built ZIP into an ephemeral, in-memory
@@ -115,6 +120,16 @@ export interface PreviewPluginContext {
     provide<T>(name: string, impl: T): () => void;
     replace<T>(name: string, impl: T): () => void;
   };
+  /** Per-plugin memory store, present exactly when the manifest declares
+   *  `permissions.memory.{reads,writes}` with at least one entry — the same
+   *  gate the kernel applies post-install (`pluginContext.ts:memoryDeclared`).
+   *  Preview backs it with an ephemeral in-memory store (one per activation,
+   *  dropped on close), so agents that persist project state via `ctx.memory`
+   *  activate and run in preview instead of crashing on their own
+   *  `if (!ctx.memory) throw …` null-guard. Absent when the manifest omits the
+   *  block, so a permissions-stripped manifest fails preview the same way it
+   *  would fail a real install — no false "works in preview" signal. */
+  readonly memory?: PreviewMemoryAccessor;
   readonly smokeMode: boolean;
   log(...args: unknown[]): void;
 }
@@ -329,6 +344,13 @@ export class PreviewRuntime {
       }
     }
 
+    // Memory accessor is gated on the manifest declaring memory permissions —
+    // exactly like the kernel's `memoryDeclared` check post-install. Reading
+    // the manifest here (we already have packageRoot) keeps preview faithful:
+    // a correct manifest gets a working ephemeral store, a stripped one gets
+    // `ctx.memory === undefined` and fails the same way install would.
+    const provideMemory = await manifestDeclaresMemory(packageRoot);
+
     const routeCaptures: PreviewRouteCapture[] = [];
     const ctx = createStubContext({
       agentId,
@@ -337,6 +359,7 @@ export class PreviewRuntime {
       smokeMode: opts.smokeMode === true,
       routeCaptures,
       hostServices: this.hostServices,
+      provideMemory,
       logger: (...args) => this.log(`[${agentId}]`, ...args),
     });
 
@@ -375,6 +398,40 @@ export class PreviewRuntime {
   }
 }
 
+/**
+ * Reads the package's `manifest.yaml` and reports whether it declares memory
+ * permissions (`permissions.memory.reads` OR `.writes` with ≥1 entry). This is
+ * a 1:1 mirror of `pluginContext.ts:memoryDeclared`, the gate the kernel uses
+ * to decide whether to hand a plugin `ctx.memory` after install. A missing or
+ * unparsable manifest reports `false` (no memory) rather than throwing — the
+ * preview test harness writes packages without a manifest, and a real build
+ * always ships one.
+ */
+async function manifestDeclaresMemory(packageRoot: string): Promise<boolean> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(path.join(packageRoot, 'manifest.yaml'), 'utf-8');
+  } catch {
+    return false;
+  }
+  let parsed: unknown;
+  try {
+    parsed = yaml.parse(raw);
+  } catch {
+    return false;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return false;
+  const permissions = (parsed as Record<string, unknown>)['permissions'];
+  if (typeof permissions !== 'object' || permissions === null) return false;
+  const mem = (permissions as Record<string, unknown>)['memory'];
+  if (typeof mem !== 'object' || mem === null) return false;
+  const reads = (mem as Record<string, unknown>)['reads'];
+  const writes = (mem as Record<string, unknown>)['writes'];
+  const readsLen = Array.isArray(reads) ? reads.length : 0;
+  const writesLen = Array.isArray(writes) ? writes.length : 0;
+  return readsLen > 0 || writesLen > 0;
+}
+
 function createStubContext(opts: {
   agentId: string;
   configValues: Readonly<Record<string, unknown>>;
@@ -382,6 +439,7 @@ function createStubContext(opts: {
   smokeMode: boolean;
   routeCaptures: PreviewRouteCapture[];
   hostServices?: PreviewHostServices;
+  provideMemory: boolean;
   logger: (...args: unknown[]) => void;
 }): PreviewPluginContext {
   // Services the previewed agent provides itself stay isolated to this
@@ -391,6 +449,9 @@ function createStubContext(opts: {
   // integrations resolve.
   const localServices = new Map<string, unknown>();
   const host = opts.hostServices;
+  const memory: PreviewMemoryAccessor | undefined = opts.provideMemory
+    ? createPreviewMemoryAccessor()
+    : undefined;
   return {
     agentId: opts.agentId,
     secrets: {
@@ -473,6 +534,11 @@ function createStubContext(opts: {
         };
       },
     },
+    // Ephemeral per-activation memory accessor, gated on the manifest's
+    // memory permissions (see `manifestDeclaresMemory`). Spread so the field
+    // is simply absent — not `memory: undefined` — when the manifest omits
+    // the block, matching the kernel's optional `ctx.memory`.
+    ...(memory ? { memory } : {}),
     smokeMode: opts.smokeMode,
     log: opts.logger,
   };

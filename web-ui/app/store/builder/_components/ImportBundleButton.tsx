@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useRef, useState } from 'react';
+import { useTranslations } from 'next-intl';
 import { useRouter } from 'next/navigation';
 import { Upload, FileArchive } from 'lucide-react';
 
@@ -21,6 +22,7 @@ import { cn } from '../../../_lib/cn';
  * or install missing plugins before retrying.
  */
 export function ImportBundleButton(): React.ReactElement {
+  const t = useTranslations('builder.drafts.import');
   const router = useRouter();
   const [open, setOpen] = useState(false);
 
@@ -38,7 +40,7 @@ export function ImportBundleButton(): React.ReactElement {
         )}
       >
         <Upload className="size-4" aria-hidden />
-        Bundle importieren
+        {t('button')}
       </button>
       {open ? (
         <ImportBundleModal
@@ -66,6 +68,7 @@ function ImportBundleModal({
   onClose,
   onImported,
 }: ImportBundleModalProps): React.ReactElement {
+  const t = useTranslations('builder.drafts.import');
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -82,12 +85,12 @@ function ImportBundleModal({
       return;
     }
     if (!picked.name.toLowerCase().endsWith('.zip')) {
-      setError('Bundle muss eine .zip-Datei sein.');
+      setError(t('errors.notZip'));
       setFile(null);
       return;
     }
     setFile(picked);
-  }, []);
+  }, [t]);
 
   const onSubmit = useCallback(async () => {
     if (!file) return;
@@ -108,9 +111,7 @@ function ImportBundleModal({
           if (body.code === 'bundle.import_conflict') {
             setErrorCode(body.code);
             const list = body.diverged_assets?.join(', ') ?? '';
-            setError(
-              `Profile hat bereits abweichenden Live-Content (${list}). Aktiviere „Überschreiben" um zu ersetzen.`,
-            );
+            setError(t('errors.conflict', { assets: list }));
           } else {
             setErrorCode(body.code ?? null);
             setError(body.message ?? err.message);
@@ -124,7 +125,7 @@ function ImportBundleModal({
     } finally {
       setBusy(false);
     }
-  }, [file, overwrite, onImported]);
+  }, [file, overwrite, onImported, t]);
 
   return (
     <div
@@ -138,21 +139,21 @@ function ImportBundleModal({
       <div className="w-full max-w-md rounded-lg border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-5 text-[color:var(--fg)] shadow-xl">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-base font-semibold text-[color:var(--fg-strong)]">
-            Bundle importieren
+            {t('modal.title')}
           </h2>
           <button
             type="button"
             onClick={onClose}
             className="text-xl leading-none text-[color:var(--fg-muted)] hover:text-[color:var(--fg-strong)]"
-            aria-label="Schließen"
+            aria-label={t('modal.close')}
           >
             ×
           </button>
         </div>
         <p className="mb-3 text-xs leading-relaxed text-[color:var(--fg-muted)]">
-          Drop eine Profile-Bundle-ZIP (Export aus dem Versionen-Tab via{' '}
-          <span className="font-mono-num">?format=bundle</span>) hier rein —
-          wir legen automatisch einen neuen Draft an.
+          {t.rich('modal.description', {
+            code: (chunks) => <span className="font-mono-num">{chunks}</span>,
+          })}
         </p>
 
         <button
@@ -193,10 +194,10 @@ function ImportBundleModal({
           ) : (
             <>
               <span className="text-sm text-[color:var(--fg)]">
-                ZIP hierher ziehen oder klicken
+                {t('modal.dropzone')}
               </span>
               <span className="text-[11px] text-[color:var(--fg-subtle)]">
-                max. 50 MB
+                {t('modal.maxSize')}
               </span>
             </>
           )}
@@ -217,10 +218,7 @@ function ImportBundleModal({
               onChange={(e) => setOverwrite(e.target.checked)}
               className="mt-0.5"
             />
-            <span>
-              Vorhandene Live-Inhalte überschreiben (nur sinnvoll bei Profile-
-              Targets — Builder-Drafts sind immer fresh).
-            </span>
+            <span>{t('modal.overwriteLabel')}</span>
           </label>
         ) : null}
 
@@ -241,7 +239,7 @@ function ImportBundleModal({
             onClick={onClose}
             className="rounded-md border border-[color:var(--border)] px-3 py-1.5 text-sm text-[color:var(--fg)]"
           >
-            Abbrechen
+            {t('modal.cancel')}
           </button>
           <button
             type="button"
@@ -252,7 +250,7 @@ function ImportBundleModal({
               'shadow-[var(--shadow-cta)] disabled:opacity-50',
             )}
           >
-            {busy ? 'Importiere…' : 'Importieren'}
+            {busy ? t('modal.importing') : t('modal.import')}
           </button>
         </div>
       </div>

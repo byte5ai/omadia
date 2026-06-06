@@ -2,6 +2,7 @@
 
 import dynamic from 'next/dynamic';
 import { AlertTriangle } from 'lucide-react';
+import { useTranslations } from 'next-intl';
 import { useCallback, useMemo, useState } from 'react';
 
 const MonacoEditor = dynamic(
@@ -30,6 +31,7 @@ export function ToolInputSchemaJsonTab({
   value,
   onChange,
 }: ToolInputSchemaJsonTabProps): React.ReactElement {
+  const t = useTranslations('builder.tools.schema');
   const initial = useMemo(
     () => JSON.stringify(value ?? {}, null, 2),
     [value],
@@ -65,18 +67,18 @@ export function ToolInputSchemaJsonTab({
           typeof parsed !== 'object' ||
           Array.isArray(parsed)
         ) {
-          setParseError('Top-level muss ein Objekt sein.');
+          setParseError(t('topLevelMustBeObject'));
           return;
         }
         setParseError(null);
         onChange(parsed as Record<string, unknown>);
       } catch (err) {
         setParseError(
-          err instanceof Error ? err.message : 'JSON-Parse-Fehler',
+          err instanceof Error ? err.message : t('jsonParseError'),
         );
       }
     },
-    [onChange],
+    [onChange, t],
   );
 
   return (
@@ -104,8 +106,7 @@ export function ToolInputSchemaJsonTab({
         </div>
       ) : null}
       <p className="text-[10px] italic text-[color:var(--fg-muted)]">
-        Direkter JSON-Schema-Modus. Beim Wechsel zur Formular-Ansicht werden
-        nicht-unterstützte Patterns (oneOf, $ref, polymorphic) read-only.
+        {t('jsonModeHint')}
       </p>
     </div>
   );

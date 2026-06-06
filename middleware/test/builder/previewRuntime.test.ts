@@ -43,9 +43,12 @@ describe('PreviewRuntime', () => {
   function buildRuntime(opts: {
     previewsRoot: string;
     handle?: PreviewAgentHandle;
-    onActivate?: (ctx: PreviewPluginContext) => void;
+    onActivate?: (ctx: PreviewPluginContext) => void | Promise<void>;
     activateThrows?: Error;
     serviceRegistry?: PreviewHostServices;
+    /** When set, written as `manifest.yaml` into the extracted package so
+     *  `manifestDeclaresMemory` can gate `ctx.memory`. */
+    manifestYaml?: string;
   }): PreviewRuntime {
     return new PreviewRuntime({
       previewsRoot: opts.previewsRoot,
@@ -61,6 +64,9 @@ describe('PreviewRuntime', () => {
             main: 'dist/index.js',
           }),
         );
+        if (opts.manifestYaml !== undefined) {
+          writeFileSync(path.join(destDir, 'manifest.yaml'), opts.manifestYaml);
+        }
         // Touch the entry path so default-activate's fs.access wouldn't fail
         // (we override activateModule anyway, so its existence isn't used).
         mkdirSync(path.join(destDir, 'dist'), { recursive: true });
@@ -68,7 +74,7 @@ describe('PreviewRuntime', () => {
       },
       activateModule: async (_entry, ctx) => {
         if (opts.activateThrows) throw opts.activateThrows;
-        opts.onActivate?.(ctx);
+        await opts.onActivate?.(ctx);
         return (
           opts.handle ?? {
             toolkit: { tools: [] },
@@ -78,6 +84,19 @@ describe('PreviewRuntime', () => {
       },
     });
   }
+
+  /** Minimal manifest declaring agent-scoped memory permissions, matching the
+   *  boilerplate's `permissions.memory` block. */
+  const MEMORY_MANIFEST = [
+    'schema_version: "1"',
+    'identity:',
+    '  id: "@omadia/agent-test"',
+    'permissions:',
+    '  memory:',
+    '    reads: ["session:*", "agent:@omadia/agent-test:*"]',
+    '    writes: ["agent:@omadia/agent-test:*"]',
+    '',
+  ].join('\n');
 
   beforeEach(() => {});
 
@@ -283,6 +302,132 @@ describe('PreviewRuntime', () => {
       assert.equal(host.has('local.only'), false);
       dispose();
       assert.equal(captured!.services.get('local.only'), undefined);
+    });
+
+    it('exposes ctx.memory when the manifest declares memory permissions, backed by an ephemeral store', async () => {
+      // Regression: previewRuntime had no `memory` accessor on its stub
+      // context, so any agent whose activate-body calls `ctx.memory` (project
+      // persistence) hit its own `if (!ctx.memory) throw …` guard and failed
+      // preview-chat with `ctx.memory is required but unavailable`, even
+      // though its manifest correctly declared permissions.memory. Preview now
+      // provides an ephemeral in-memory store gated on the same manifest field
+      // the kernel checks post-install.
+      const root = freshRoot('memory-present');
+      let captured: PreviewPluginContext | undefined;
+      const runtime = buildRuntime({
+        previewsRoot: root,
+        manifestYaml: MEMORY_MANIFEST,
+        onActivate: (ctx) => {
+          captured = ctx;
+        },
+      });
+      await runtime.activate({
+        zipBuffer: Buffer.alloc(0),
+        draftId: 'd1',
+        rev: 1,
+        configValues: {},
+        secretValues: {},
+      });
+      assert.ok(captured);
+      assert.ok(captured!.memory, 'ctx.memory must be present');
+      const mem = captured!.memory!;
+
+      // Empty scope: exists/list are well-behaved, not throwing.
+      assert.equal(await mem.exists('projects/p1.json'), false);
+      assert.deepEqual(await mem.list('.'), []);
+
+      // Write → read round-trip.
+      await mem.writeFile('projects/p1.json', '{"name":"alpha"}');
+      assert.equal(await mem.readFile('projects/p1.json'), '{"name":"alpha"}');
+      assert.equal(await mem.exists('projects/p1.json'), true);
+      assert.equal(await mem.exists('projects'), true);
+
+      // createFile is fail-if-exists.
+      await assert.rejects(() => mem.createFile('projects/p1.json', 'x'));
+      await mem.createFile('projects/p2.json', '{"name":"beta"}');
+
+      // A path that is an implicit directory cannot be written or created as
+      // a file — mirrors FilesystemMemoryStore (EISDIR / already-exists), and
+      // keeps `list()` from being shadowed by a file/dir key collision.
+      await assert.rejects(() => mem.writeFile('projects', 'x'));
+      await assert.rejects(() => mem.createFile('projects', 'x'));
+
+      // list returns the dir + its files (relative paths).
+      const listed = await mem.list('projects');
+      const rels = listed.map((e) => e.relPath).sort();
+      assert.deepEqual(rels, ['projects', 'projects/p1.json', 'projects/p2.json']);
+      const p1 = listed.find((e) => e.relPath === 'projects/p1.json');
+      assert.equal(p1?.isDirectory, false);
+      assert.ok((p1?.sizeBytes ?? 0) > 0);
+
+      // delete removes the file.
+      await mem.delete('projects/p1.json');
+      assert.equal(await mem.exists('projects/p1.json'), false);
+      await assert.rejects(() => mem.readFile('projects/p1.json'));
+
+      // Relative-path validation mirrors the real accessor.
+      await assert.rejects(() => mem.readFile('/abs/path'));
+      await assert.rejects(() => mem.readFile('../escape'));
+    });
+
+    it('leaves ctx.memory undefined when the manifest omits memory permissions (mirrors install gate)', async () => {
+      const root = freshRoot('memory-absent');
+      let captured: PreviewPluginContext | undefined;
+      const runtime = buildRuntime({
+        previewsRoot: root,
+        // Manifest present but with an empty memory block → not declared.
+        manifestYaml: [
+          'schema_version: "1"',
+          'permissions:',
+          '  memory:',
+          '    reads: []',
+          '    writes: []',
+          '',
+        ].join('\n'),
+        onActivate: (ctx) => {
+          captured = ctx;
+        },
+      });
+      await runtime.activate({
+        zipBuffer: Buffer.alloc(0),
+        draftId: 'd1',
+        rev: 1,
+        configValues: {},
+        secretValues: {},
+      });
+      assert.ok(captured);
+      assert.equal(captured!.memory, undefined);
+    });
+
+    it('memory stores from two separate activations are isolated', async () => {
+      const root = freshRoot('memory-isolation');
+      const captured: PreviewPluginContext[] = [];
+      const runtime = buildRuntime({
+        previewsRoot: root,
+        manifestYaml: MEMORY_MANIFEST,
+        onActivate: (ctx) => {
+          captured.push(ctx);
+        },
+      });
+      const h1 = await runtime.activate({
+        zipBuffer: Buffer.alloc(0),
+        draftId: 'd1',
+        rev: 1,
+        configValues: {},
+        secretValues: {},
+      });
+      await captured[0]!.memory!.writeFile('notes.md', 'first');
+      const h2 = await runtime.activate({
+        zipBuffer: Buffer.alloc(0),
+        draftId: 'd2',
+        rev: 1,
+        configValues: {},
+        secretValues: {},
+      });
+      // Second activation's store must not see the first's data.
+      assert.equal(await captured[1]!.memory!.exists('notes.md'), false);
+      await h1.close();
+      await h2.close();
     });
 
     it('throws when secrets.require is called for a missing key', async () => {

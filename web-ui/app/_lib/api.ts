@@ -2220,6 +2220,43 @@ export async function confirmBuilderIssue(input: {
   );
 }
 
+export type CreateBuilderIssueResponse = {
+  ok: true;
+  mode: 'created' | 'reused';
+  workaround: WorkaroundConfirmIssueResponse['workaround'];
+  issueRef?: {
+    owner: string;
+    repo: string;
+    number: number;
+    url: string;
+  };
+};
+
+/**
+ * Issue #206 (v1.2): server-side direct issue creation via the GitHub App.
+ * Used by the IssueReportCard for the `created-pending` mode. The server
+ * re-sanitizes the body, dedups, files the issue, and persists the
+ * workaround. Throws `ApiError` on failure — a 409 means no GitHub App is
+ * wired, so the caller should fall back to the browser-submit flow.
+ */
+export async function createBuilderIssue(input: {
+  draftId: string;
+  title: string;
+  body: string;
+  fingerprint: string;
+  summary: string;
+}): Promise<CreateBuilderIssueResponse> {
+  return postJson<CreateBuilderIssueResponse>(
+    `/v1/builder/drafts/${encodeURIComponent(input.draftId)}/workarounds/create-issue`,
+    {
+      title: input.title,
+      body: input.body,
+      fingerprint: input.fingerprint,
+      summary: input.summary,
+    },
+  );
+}
+
 export async function resolveBuilderUserChoice(input: {
   draftId: string;
   choiceId: string;

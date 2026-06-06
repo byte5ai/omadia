@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useTranslations } from 'next-intl';
 import { useRouter } from 'next/navigation';
 import { AlertTriangle, CheckCircle2, Loader2, ShieldCheck, X } from 'lucide-react';
 
@@ -52,6 +53,8 @@ function bumpPatchVersion(version: string): string {
  * are server-side too (B.7+).
  */
 
+type InstallT = ReturnType<typeof useTranslations<'builder.install'>>;
+
 export interface InstallDiffModalProps {
   draft: Draft;
   open: boolean;
@@ -79,6 +82,7 @@ export function InstallDiffModal({
   onClose,
   install,
 }: InstallDiffModalProps): React.ReactElement | null {
+  const t = useTranslations('builder.install');
   const router = useRouter();
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
 
@@ -137,12 +141,12 @@ export function InstallDiffModal({
       className="fixed inset-0 z-50 flex items-center justify-center px-4 py-6"
       role="dialog"
       aria-modal="true"
-      aria-label="Plugin veröffentlichen"
+      aria-label={t('publishTitle')}
     >
       <button
         type="button"
         onClick={handleClose}
-        aria-label="Modal schließen"
+        aria-label={t('closeModalAria')}
         disabled={busy}
         className="absolute inset-0 bg-[color:var(--ink)]/40 backdrop-blur-sm transition disabled:cursor-wait"
       />
@@ -159,15 +163,15 @@ export function InstallDiffModal({
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.22em] text-[color:var(--accent)]">
               <ShieldCheck className="size-3.5" aria-hidden />
-              Veröffentlichungs-Diff-Gate
+              {t('diffGateEyebrow')}
             </div>
             <h2 className="font-display mt-1 text-2xl font-medium leading-tight text-[color:var(--ink)]">
-              Plugin veröffentlichen
+              {t('publishTitle')}
             </h2>
             <p className="mt-2 text-[12px] leading-relaxed text-[color:var(--muted-ink)]">
-              Diese Surface wird in den Plugin-Store geschrieben. Nach „Veröffentlichen&ldquo;
-              ist <span className="font-mono-num">{draft.spec.id}</span> v
-              {draft.spec.version} für alle Agents im Tenant verfügbar.
+              {t('publishLeadPrefix')}{' '}
+              <span className="font-mono-num">{draft.spec.id}</span> v
+              {draft.spec.version} {t('publishLeadSuffix')}
             </p>
           </div>
           <button
@@ -175,7 +179,7 @@ export function InstallDiffModal({
             onClick={handleClose}
             disabled={busy}
             className="text-[color:var(--muted-ink)] transition hover:text-[color:var(--ink)] disabled:opacity-40"
-            aria-label="Schließen"
+            aria-label={t('closeAria')}
           >
             <X className="size-4" aria-hidden />
           </button>
@@ -184,6 +188,7 @@ export function InstallDiffModal({
         <div className="flex-1 overflow-y-auto px-7 py-6">
           {phase.kind === 'failed' ? (
             <FailureBanner
+              t={t}
               failure={phase.failure}
               onRetry={() => setPhase({ kind: 'idle' })}
               currentVersion={draft.spec.version}
@@ -202,7 +207,9 @@ export function InstallDiffModal({
                     failure: {
                       reason: 'conflict',
                       code: 'builder.bump_invalid_semver',
-                      message: `Version '${draft.spec.version}' ist kein Semver — manuell anpassen im Spec-Editor.`,
+                      message: t('bumpInvalidSemver', {
+                        version: draft.spec.version,
+                      }),
                     },
                   });
                   return;
@@ -230,12 +237,13 @@ export function InstallDiffModal({
           ) : null}
           {phase.kind === 'succeeded' ? (
             <SuccessBanner
+              t={t}
               publishedAgentId={phase.publishedAgentId}
               version={phase.version}
             />
           ) : null}
 
-          <DiffBody draft={draft} />
+          <DiffBody draft={draft} t={t} />
         </div>
 
         <footer className="flex items-center justify-end gap-3 border-t border-[color:var(--rule)] px-7 py-4">
@@ -250,7 +258,7 @@ export function InstallDiffModal({
               'disabled:opacity-40 disabled:cursor-not-allowed',
             )}
           >
-            Zurück
+            {t('back')}
           </button>
           <button
             type="button"
@@ -266,15 +274,15 @@ export function InstallDiffModal({
             {busy ? (
               <>
                 <Loader2 className="size-3.5 animate-spin" aria-hidden />
-                Veröffentliche …
+                {t('publishing')}
               </>
             ) : phase.kind === 'succeeded' ? (
               <>
                 <CheckCircle2 className="size-3.5" aria-hidden />
-                Erfolgreich
+                {t('succeeded')}
               </>
             ) : (
-              'Veröffentlichen'
+              t('publish')
             )}
           </button>
         </footer>
@@ -287,7 +295,7 @@ export function InstallDiffModal({
 // Body sections
 // ---------------------------------------------------------------------------
 
-function DiffBody({ draft }: { draft: Draft }): React.ReactElement {
+function DiffBody({ draft, t }: { draft: Draft; t: InstallT }): React.ReactElement {
   const spec = draft.spec;
   const skillPromptSlot = draft.slots['skill-prompt'];
   // Skeleton arrays may be undefined on drafts that were persisted before
@@ -300,26 +308,28 @@ function DiffBody({ draft }: { draft: Draft }): React.ReactElement {
   const setupFields = spec.setup_fields ?? [];
   return (
     <div className="space-y-6">
-      <Section title="Identität">
-        <KV k="ID" v={<span className="font-mono-num">{spec.id}</span>} />
-        <KV k="Name" v={spec.name} />
-        <KV k="Version" v={<span className="font-mono-num">{spec.version}</span>} />
-        <KV k="Kategorie" v={spec.category} />
+      <Section title={t('sectionIdentity')}>
+        <KV k={t('kvId')} v={<span className="font-mono-num">{spec.id}</span>} />
+        <KV k={t('kvName')} v={spec.name} />
+        <KV k={t('kvVersion')} v={<span className="font-mono-num">{spec.version}</span>} />
+        <KV k={t('kvCategory')} v={spec.category} />
         <KV
-          k="Domain"
+          k={t('kvDomain')}
           v={<span className="font-mono-num">{spec.domain || '—'}</span>}
         />
-        <KV k="Template" v={spec.template ?? 'agent-integration'} />
-        <KV k="Beschreibung" v={spec.description} />
+        <KV k={t('kvTemplate')} v={spec.template ?? 'agent-integration'} />
+        <KV k={t('kvDescription')} v={spec.description} />
       </Section>
 
-      <Section title="Skill / System-Prompt">
-        <KV k="Rolle" v={spec.skill.role} />
-        {spec.skill.tonality ? <KV k="Tonalität" v={spec.skill.tonality} /> : null}
+      <Section title={t('sectionSkill')}>
+        <KV k={t('kvRole')} v={spec.skill.role} />
+        {spec.skill.tonality ? (
+          <KV k={t('kvTonality')} v={spec.skill.tonality} />
+        ) : null}
         {skillPromptSlot ? (
           <details className="mt-2 rounded-md border border-[color:var(--divider)] bg-[color:var(--bg-soft)]">
             <summary className="cursor-pointer px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg-muted)]">
-              skill-prompt slot ({skillPromptSlot.length} Zeichen)
+              {t('skillPromptSlotSummary', { count: skillPromptSlot.length })}
             </summary>
             <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words border-t border-[color:var(--divider)] px-3 py-2 text-[11px] font-mono leading-relaxed text-[color:var(--fg-strong)]">
               {skillPromptSlot}
@@ -327,18 +337,17 @@ function DiffBody({ draft }: { draft: Draft }): React.ReactElement {
           </details>
         ) : (
           <p className="text-[11px] italic text-[color:var(--fg-subtle)]">
-            Kein dediziertes skill-prompt-Slot — der Agent läuft mit der
-            Boilerplate-Default-Anweisung.
+            {t('noSkillPromptSlot')}
           </p>
         )}
       </Section>
 
       <Section
-        title="Tools"
-        subtitle={`${String(tools.length)} ${tools.length === 1 ? 'Tool' : 'Tools'}`}
+        title={t('sectionTools')}
+        subtitle={t('toolsCount', { count: tools.length })}
       >
         {tools.length === 0 ? (
-          <EmptyHint>Keine Tools definiert.</EmptyHint>
+          <EmptyHint>{t('noToolsDefined')}</EmptyHint>
         ) : (
           <ul className="space-y-2">
             {tools.map((t) => (
@@ -371,11 +380,11 @@ function DiffBody({ draft }: { draft: Draft }): React.ReactElement {
       </Section>
 
       <Section
-        title="Abhängigkeiten"
-        subtitle="depends_on (gewährt Vault-Scopes)"
+        title={t('sectionDependencies')}
+        subtitle={t('sectionDependenciesSubtitle')}
       >
         {dependsOn.length === 0 ? (
-          <EmptyHint>Keine Plugin-Abhängigkeiten.</EmptyHint>
+          <EmptyHint>{t('noDependencies')}</EmptyHint>
         ) : (
           <ul className="space-y-1">
             {dependsOn.map((d) => (
@@ -391,11 +400,11 @@ function DiffBody({ draft }: { draft: Draft }): React.ReactElement {
       </Section>
 
       <Section
-        title="Netzwerk"
+        title={t('sectionNetwork')}
         subtitle="permissions.network.outbound"
       >
         {outbound.length === 0 ? (
-          <EmptyHint>Keine ausgehenden Hosts deklariert.</EmptyHint>
+          <EmptyHint>{t('noOutboundHosts')}</EmptyHint>
         ) : (
           <ul className="flex flex-wrap gap-1.5">
             {outbound.map((h) => (
@@ -411,11 +420,11 @@ function DiffBody({ draft }: { draft: Draft }): React.ReactElement {
       </Section>
 
       <Section
-        title="Setup-Felder"
-        subtitle="vom Operator beim Aktivieren auszufüllen"
+        title={t('sectionSetupFields')}
+        subtitle={t('sectionSetupFieldsSubtitle')}
       >
         {setupFields.length === 0 ? (
-          <EmptyHint>Kein Setup nötig.</EmptyHint>
+          <EmptyHint>{t('noSetupNeeded')}</EmptyHint>
         ) : (
           <ul className="space-y-1">
             {setupFields.map((f) => (
@@ -428,7 +437,7 @@ function DiffBody({ draft }: { draft: Draft }): React.ReactElement {
                 </span>
                 <span className="text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
                   {f.type ?? 'string'}
-                  {f.required ? ' · required' : ''}
+                  {f.required ? ` · ${t('required')}` : ''}
                 </span>
               </li>
             ))}
@@ -491,18 +500,22 @@ function EmptyHint({ children }: { children: React.ReactNode }): React.ReactElem
 // ---------------------------------------------------------------------------
 
 function FailureBanner({
+  t,
   failure,
   onRetry,
   currentVersion,
   onBumpAndRetry,
 }: {
+  t: InstallT;
   failure: InstallFailureBody;
   onRetry: () => void;
   currentVersion: string;
   onBumpAndRetry: () => void | Promise<void>;
 }): React.ReactElement {
-  const heading = HEADINGS[failure.reason] ?? 'Veröffentlichung fehlgeschlagen';
-  const hint = HINTS[failure.reason];
+  const headingKey = HEADING_KEYS[failure.reason];
+  const heading = headingKey ? t(headingKey) : t('failureGenericHeading');
+  const hintKey = HINT_KEYS[failure.reason];
+  const hint = hintKey ? t(hintKey) : undefined;
   // Theme C: only the duplicate_version sub-case of `conflict` is fixable
   // by bumping. We can't reliably distinguish from `id` collisions on
   // reason alone, so we ALSO check the code prefix. `package.duplicate_version`
@@ -537,7 +550,7 @@ function FailureBanner({
               {hint}
             </p>
           ) : null}
-          <FailureDetails failure={failure} />
+          <FailureDetails failure={failure} t={t} />
           <div className="mt-3 flex flex-wrap items-center gap-2">
             {canBump ? (
               <button
@@ -545,7 +558,7 @@ function FailureBanner({
                 onClick={() => void onBumpAndRetry()}
                 className="inline-flex items-center gap-2 rounded-md bg-[color:var(--accent)] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-white shadow-sm transition-opacity hover:opacity-90"
               >
-                Version anheben ({currentVersion} → {bumped}) + Veröffentlichen
+                {t('bumpAndPublish', { current: currentVersion, next: bumped ?? '' })}
               </button>
             ) : null}
             <button
@@ -553,7 +566,7 @@ function FailureBanner({
               onClick={onRetry}
               className="inline-flex items-center gap-2 rounded-md border border-[color:var(--divider)] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-strong)] transition-colors hover:bg-[color:var(--bg-soft)]"
             >
-              Erneut versuchen
+              {t('retry')}
             </button>
           </div>
         </div>
@@ -564,8 +577,10 @@ function FailureBanner({
 
 function FailureDetails({
   failure,
+  t,
 }: {
   failure: InstallFailureBody;
+  t: InstallT;
 }): React.ReactElement | null {
   const details = failure.details;
   if (!details || typeof details !== 'object') return null;
@@ -577,7 +592,7 @@ function FailureDetails({
       return (
         <details className="mt-2">
           <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
-            {String(errors.length)} TypeScript-Fehler
+            {t('typescriptErrors', { count: errors.length })}
           </summary>
           <ul className="mt-1.5 space-y-1">
             {errors.slice(0, 10).map((e, i) => {
@@ -618,7 +633,7 @@ function FailureDetails({
       return (
         <details className="mt-2">
           <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
-            {String(issues.length)} Codegen-Issue{issues.length === 1 ? '' : 's'}
+            {t('codegenIssues', { count: issues.length })}
           </summary>
           <ul className="mt-1.5 space-y-1">
             {issues.map((i, idx) => {
@@ -647,9 +662,11 @@ function FailureDetails({
 }
 
 function SuccessBanner({
+  t,
   publishedAgentId,
   version,
 }: {
+  t: InstallT;
   publishedAgentId: string;
   version: string;
 }): React.ReactElement {
@@ -662,11 +679,11 @@ function SuccessBanner({
         />
         <div className="min-w-0 flex-1">
           <p className="font-display text-[13px] font-semibold text-[color:var(--success)]">
-            Plugin veröffentlicht
+            {t('successHeading')}
           </p>
           <p className="mt-1 text-[12px] text-[color:var(--fg-strong)]">
             <span className="font-mono-num">{publishedAgentId}</span> v{version}{' '}
-            ist im Store sichtbar. Weiterleitung läuft …
+            {t('successBody')}
           </p>
         </div>
       </div>
@@ -674,27 +691,22 @@ function SuccessBanner({
   );
 }
 
-const HEADINGS: Partial<Record<InstallFailureReason, string>> = {
-  conflict: 'Plugin-ID-Konflikt',
-  build_failed: 'Build fehlgeschlagen (tsc)',
-  codegen_failed: 'Codegen fehlgeschlagen',
-  spec_invalid: 'Spec-Validierung fehlgeschlagen',
-  manifest_invalid: 'manifest.yaml ungültig',
-  too_large: 'Package zu groß',
-  pipeline_failed: 'Build-Pipeline-Fehler',
-  ingest_failed: 'Ingest-Fehler',
-  draft_not_found: 'Draft nicht gefunden',
+const HEADING_KEYS: Partial<Record<InstallFailureReason, string>> = {
+  conflict: 'headingConflict',
+  build_failed: 'headingBuildFailed',
+  codegen_failed: 'headingCodegenFailed',
+  spec_invalid: 'headingSpecInvalid',
+  manifest_invalid: 'headingManifestInvalid',
+  too_large: 'headingTooLarge',
+  pipeline_failed: 'headingPipelineFailed',
+  ingest_failed: 'headingIngestFailed',
+  draft_not_found: 'headingDraftNotFound',
 };
 
-const HINTS: Partial<Record<InstallFailureReason, string>> = {
-  conflict:
-    'Lösch das existierende Plugin im Store oder ändere `id` / `version` in der Spec.',
-  build_failed:
-    'Geh zurück in den Slot-Editor und korrigiere die Stellen, die der Compiler markiert.',
-  codegen_failed:
-    'Die Spec hat fehlende Pflichtfelder oder unaufgelöste Platzhalter — siehe Issue-Liste.',
-  spec_invalid:
-    'Die Spec hat ein Schema-Problem. Prüfe Pflichtfelder im Spec-Editor.',
-  too_large:
-    'Reduziere Slot-Inhalte oder Asset-Größen — der Server-Limit ist erreicht.',
+const HINT_KEYS: Partial<Record<InstallFailureReason, string>> = {
+  conflict: 'hintConflict',
+  build_failed: 'hintBuildFailed',
+  codegen_failed: 'hintCodegenFailed',
+  spec_invalid: 'hintSpecInvalid',
+  too_large: 'hintTooLarge',
 };

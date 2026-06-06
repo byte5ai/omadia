@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useId, useMemo, useState } from 'react';
+import { useTranslations } from 'next-intl';
 import { Plus, Trash2 } from 'lucide-react';
 
 import { ApiError, patchBuilderSpec } from '../../../../_lib/api';
@@ -42,6 +43,7 @@ export function SetupFieldsEditor({
   draftId,
   fields,
 }: SetupFieldsEditorProps): React.ReactElement {
+  const t = useTranslations('builder.spec.setupFields');
   const safeFields = useMemo<SetupField[]>(
     () => fields.filter((f): f is SetupField => f !== null && typeof f === 'object' && 'key' in f),
     [fields],
@@ -92,9 +94,11 @@ export function SetupFieldsEditor({
     <div className="space-y-3">
       {safeFields.length === 0 ? (
         <p className="text-[12px] text-[color:var(--fg-muted)]">
-          Noch keine Setup-Felder. Lege z.B.{' '}
-          <span className="font-mono-num">api_key (secret, required)</span>{' '}
-          an, damit der Preview-Agent Test-Credentials lesen kann.
+          {t.rich('emptyState', {
+            example: (chunks) => (
+              <span className="font-mono-num">{chunks}</span>
+            ),
+          })}
         </p>
       ) : (
         <ul className="space-y-2">
@@ -130,6 +134,7 @@ function SetupFieldRow({
   onChange: (patch: Partial<SetupField>) => void;
   onRemove: () => void;
 }): React.ReactElement {
+  const t = useTranslations('builder.spec.setupFields');
   const keyId = useId();
   const labelId = useId();
   return (
@@ -204,7 +209,7 @@ function SetupFieldRow({
               className="size-3.5 rounded border-[color:var(--border)] accent-[color:var(--accent)]"
             />
             <span className="font-mono-num text-[10px] uppercase tracking-[0.16em] text-[color:var(--fg-subtle)]">
-              {field.required ? 'pflicht' : 'optional'}
+              {field.required ? t('required.on') : t('required.off')}
             </span>
           </label>
         </div>
@@ -212,7 +217,7 @@ function SetupFieldRow({
           <button
             type="button"
             onClick={onRemove}
-            aria-label={`Setup-Feld ${field.key} entfernen`}
+            aria-label={t('removeAria', { key: field.key })}
             className="rounded-md p-1.5 text-[color:var(--fg-muted)] hover:bg-[color:var(--danger)]/10 hover:text-[color:var(--danger)]"
           >
             <Trash2 className="size-3.5" aria-hidden />
@@ -227,7 +232,7 @@ function SetupFieldRow({
           type="text"
           value={field.description ?? ''}
           onChange={(e) => onChange({ description: e.target.value })}
-          placeholder="Wofür braucht der Agent dieses Feld?"
+          placeholder={t('descriptionPlaceholder')}
           className="mt-0.5 w-full rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1 text-[12px] text-[color:var(--fg-strong)] placeholder:text-[color:var(--fg-subtle)] focus:border-[color:var(--accent)] focus:outline-none"
         />
       </div>
@@ -242,6 +247,7 @@ function NewFieldForm({
   existingKeys: ReadonlyArray<string>;
   onSubmit: (field: SetupField) => void;
 }): React.ReactElement {
+  const t = useTranslations('builder.spec.setupFields');
   const [key, setKey] = useState('');
   const [type, setType] = useState<NonNullable<SetupField['type']>>('string');
   const [required, setRequired] = useState(false);
@@ -257,7 +263,7 @@ function NewFieldForm({
       <div className="flex flex-wrap items-end gap-2">
         <div className="min-w-[180px] flex-1">
           <label className="block text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-subtle)]">
-            neuer key
+            {t('newKey')}
           </label>
           <input
             type="text"
@@ -270,7 +276,7 @@ function NewFieldForm({
                 setRequired(false);
               }
             }}
-            placeholder="z.B. api_key"
+            placeholder={t('newKeyPlaceholder')}
             className={cn(
               'font-mono-num mt-0.5 w-full rounded-md border bg-[color:var(--bg)] px-2 py-1 text-[12px] text-[color:var(--fg-strong)] placeholder:text-[color:var(--fg-subtle)] focus:outline-none',
               !key || valid
@@ -305,7 +311,7 @@ function NewFieldForm({
             className="size-3.5 rounded border-[color:var(--border)] accent-[color:var(--accent)]"
           />
           <span className="font-mono-num text-[10px] uppercase tracking-[0.16em] text-[color:var(--fg-subtle)]">
-            pflicht
+            {t('required.on')}
           </span>
         </label>
         <button
@@ -320,14 +326,14 @@ function NewFieldForm({
           className="ml-auto inline-flex items-center gap-1 rounded-md bg-[color:var(--accent)] px-2.5 py-1.5 text-[11px] font-semibold text-white shadow-[var(--shadow-cta)] disabled:opacity-40"
         >
           <Plus className="size-3" aria-hidden />
-          Hinzufügen
+          {t('add')}
         </button>
       </div>
       {key && !valid ? (
         <p className="mt-1 text-[10px] text-[color:var(--danger)]">
           {existingKeys.includes(trimmed)
-            ? 'Key existiert bereits.'
-            : 'Key muss snake_case sein (a-z, 0-9, _; mit Buchstaben starten).'}
+            ? t('validation.keyExists')
+            : t('validation.keyFormat')}
         </p>
       ) : null}
     </div>

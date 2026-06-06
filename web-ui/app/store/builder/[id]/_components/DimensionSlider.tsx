@@ -1,5 +1,6 @@
 'use client';
 
+import { useTranslations } from 'next-intl';
 import { AlertTriangle } from 'lucide-react';
 
 import { cn } from '../../../../_lib/cn';
@@ -57,6 +58,7 @@ export function DimensionSlider({
   warning,
   disabled,
 }: DimensionSliderProps): React.ReactElement {
+  const t = useTranslations('builder.persona.dimension');
   // Clamp the value-bubble's horizontal anchor so it doesn't escape the
   // track at 0% / 100%. 4% on each side keeps the badge fully visible
   // without drifting noticeably from the thumb in the middle 90% of the
@@ -82,7 +84,7 @@ export function DimensionSlider({
             'shadow-[var(--shadow-sm)]',
           )}
           style={{ left: `${bubbleLeftPct}%` }}
-          aria-label={`${axis} value`}
+          aria-label={t('valueLabel', { axis })}
         >
           {value}
         </span>
@@ -94,7 +96,7 @@ export function DimensionSlider({
           value={value}
           onChange={(e) => onChange(Number(e.target.value))}
           disabled={disabled}
-          aria-label={`${axis}: ${labelLeft} to ${labelRight}`}
+          aria-label={t('rangeLabel', { axis, labelLeft, labelRight })}
           {...(description ? { title: description } : {})}
           className={cn(
             'w-full appearance-none bg-[color:var(--border)] rounded-full h-1.5',
@@ -108,7 +110,7 @@ export function DimensionSlider({
             className="pointer-events-none absolute size-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[color:var(--fg-subtle)]"
             style={{ left: `${baseValue}%`, top: 'calc(1.25rem + 0.1875rem)' }}
             aria-hidden
-            title={`Modell-Default: ${baseValue}`}
+            title={t('modelDefault', { value: baseValue })}
             data-testid={`dimension-slider-${axis}-base-tick`}
           />
         ) : null}
@@ -124,7 +126,7 @@ export function DimensionSlider({
           data-testid={`dimension-slider-${axis}-warning`}
         >
           <AlertTriangle className="size-3.5" aria-hidden />
-          <span>Konflikt — siehe Banner.</span>
+          <span>{t('conflictHint')}</span>
         </div>
       ) : null}
     </div>

@@ -29,8 +29,9 @@ import {
  *     failure, replan the remainder of the DAG (E4).
  *   - onAfterTurn: finalise the in-progress step.
  *
- * Inert by default: the `enabled` setup field defaults to `off`, and the
- * plugin degrades to a no-op when any dependency (turn-hook registry,
+ * On by default: the `enabled` setup field defaults to `on` (a cheap Haiku
+ * gate keeps simple Q&A neutral; set `enabled=off` to disarm). The plugin
+ * still degrades to a no-op when any dependency (turn-hook registry,
  * knowledge graph, LLM) is unavailable.
  */
 
