@@ -23,6 +23,10 @@ import { createTopicsRouter } from './routes/topics.js';
 import { createUsageRouter } from './routes/usage.js';
 import { createAgentResolver } from './agents/resolveAgentForTool.js';
 import { scopeDomainToolsToPlugins } from './agents/scopeDomainTools.js';
+import {
+  mergeDomainTools,
+  reconcileDomainToolAcrossAgents,
+} from './agents/runtimeToolPropagation.js';
 // `/attachments/<signed-key>` is now mounted by the de.byte5.channel.teams
 // plugin via ctx.routes.register (see packages/harness-channel-teams/src/plugin.ts,
 // phase-3.1-4). No kernel-side attachment router import needed anymore.
@@ -59,6 +63,7 @@ import { createRegistryInstallRouter } from './routes/registryInstall.js';
 import { createRuntimeRouter } from './routes/runtime.js';
 import { createVaultStatusRouter } from './routes/vaultStatus.js';
 import { createBuilderRouter } from './routes/builder.js';
+import { OperatorGate } from './plugins/selfExtension/index.js';
 import { DraftStore } from './plugins/builder/draftStore.js';
 import { buildDraftStorageMirrorHook } from './plugins/builder/draftStorageBridge.js';
 import { DraftQuota } from './plugins/builder/draftQuota.js';
@@ -618,6 +623,24 @@ async function main(): Promise<void> {
   // eslint-disable-next-line prefer-const
   let channelRegistryRef: ChannelRegistry | undefined;
 
+  // Forward refs — runtime propagation of a POST-BOOT agent-plugin
+  // (de)activation into the per-Agent registry orchestrators + the fallback
+  // Agent's enabled-plugin set. Assigned in the orchestrator-wiring block far
+  // below (they need `registryForHydrate` + `currentDomainTools`). The install
+  // hooks only fire at runtime, after assignment; when chat is disabled (no
+  // orchestrator) they stay undefined and the `?.` calls no-op. Without this,
+  // a plugin installed at runtime (operator install, Hub/registry install,
+  // package re-upload, or self-extension) only reaches the single legacy
+  // orchestrator — un-slugged chat routes to the fallback Agent, whose
+  // per-Agent orchestrator never learned the new tool, so it behaves as if the
+  // plugin were never activated.
+   
+  let propagatePluginInstall: ((pluginId: string) => Promise<void>) | undefined;
+   
+  let propagatePluginUninstall:
+    | ((pluginId: string, removedToolName?: string) => Promise<void>)
+    | undefined;
+
   const installService = new InstallService({
     catalog: pluginCatalog,
     registry: installedRegistry,
@@ -647,6 +670,9 @@ async function main(): Promise<void> {
         case 'agent':
         default:
           await dynamicAgentRuntime.activate(agentId);
+          // Make the freshly-activated agent's tool reachable on the per-Agent
+          // orchestrators (incl. the fallback Agent) without a restart.
+          await propagatePluginInstall?.(agentId);
       }
     },
     onUninstall: async (agentId) => {
@@ -663,8 +689,14 @@ async function main(): Promise<void> {
           await toolPluginRuntime.deactivate(agentId);
           return;
         case 'agent':
-        default:
+        default: {
+          // Capture the tool name BEFORE deactivate drops it from the runtime —
+          // the per-Agent orchestrators must be told which tool to unregister.
+          const removedToolName =
+            dynamicAgentRuntime.domainToolFor(agentId)?.name;
           await dynamicAgentRuntime.deactivate(agentId);
+          await propagatePluginUninstall?.(agentId, removedToolName);
+        }
       }
     },
   });
@@ -1176,9 +1208,22 @@ async function main(): Promise<void> {
       // Agent (e.g. "marketing", which only enables the X plugin) no longer
       // inherits `query_odoo_accounting` et al. it was never granted.
       // See `scopeDomainToolsToPlugins` for the rule.
+      //
+      // LIVE tool source. The boot-time `domainTools[]` is frozen at process
+      // start, so an agent-plugin installed/activated AFTER boot (its tool
+      // lives only in `dynamicAgentRuntime`) would never reach a per-Agent
+      // orchestrator on a later rebuild. Merge the boot set with the runtime's
+      // currently-active domain tools, de-duped by name (boot built-ins are
+      // already in `domainTools` and win on clash).
+      const currentDomainTools = (): DomainTool[] =>
+        mergeDomainTools(domainTools, dynamicAgentRuntime.activeDomainTools());
+
       let attached = 0;
       for (const entry of registryForHydrate.list()) {
-        for (const t of scopeDomainToolsToPlugins(domainTools, entry.plugins)) {
+        for (const t of scopeDomainToolsToPlugins(
+          currentDomainTools(),
+          entry.plugins,
+        )) {
           if (!entry.built.orchestrator.hasDomainTool(t.name)) {
             entry.built.orchestrator.registerDomainTool(t);
             attached += 1;
@@ -1189,16 +1234,19 @@ async function main(): Promise<void> {
         `[middleware] registry orchestrators: hydrated with ${String(attached)} domain-tool registrations across ${String(registryForHydrate.list().length)} agent(s) (per-Agent plugin-scoped)`,
       );
       // Persist the wiring so a later `registry.reload()` that REBUILDS an
-      // Agent (privacy_profile flip, plugin enable/disable, etc.) re-hydrates
-      // the new orchestrator — still scoped to the Agent's enabled plugins.
-      // The entry is in the registry map before `onAgentBuilt` fires (both the
+      // Agent (privacy_profile flip, etc.) re-hydrates the new orchestrator —
+      // still scoped to the Agent's enabled plugins, and now from the LIVE tool
+      // source so a runtime-installed agent's tool survives the rebuild. The
+      // entry is in the registry map before `onAgentBuilt` fires (both the
       // `add` and `rebuild` actions set it first), so the plugin lookup is
       // available here. Without this, the rebuilt Agent goes back to
       // `domainTools: []` and the operator's next chat turn cannot reach its
       // sub-agents.
       registryForHydrate.setOnAgentBuilt((slug, built) => {
         const entry = registryForHydrate.get(slug);
-        const tools = entry ? scopeDomainToolsToPlugins(domainTools, entry.plugins) : [];
+        const tools = entry
+          ? scopeDomainToolsToPlugins(currentDomainTools(), entry.plugins)
+          : [];
         for (const t of tools) {
           if (!built.orchestrator.hasDomainTool(t.name)) {
             built.orchestrator.registerDomainTool(t);
@@ -1208,6 +1256,113 @@ async function main(): Promise<void> {
           `[middleware] registry: orchestrator for "${slug}" hydrated with ${String(tools.length)} domain-tool(s) (per-Agent plugin-scoped)`,
         );
       });
+
+      // --- Runtime plugin (de)activation propagation ----------------------
+      // A plugin (de)activated AFTER boot (operator install, Hub/registry
+      // install, package re-upload, self-extension) mutates only the standalone
+      // `dynamicAgentRuntime` + the single legacy orchestrator. The per-Agent
+      // registry orchestrators — which the chat router resolves for every turn,
+      // falling back to the fallback Agent for un-slugged turns — are a boot
+      // snapshot that the install path never reconciled. These two closures
+      // close that gap; the `let` forward-refs near the install hooks are
+      // assigned here (the hooks only fire at runtime, after this block ran).
+      const ORCHESTRATOR_PLUGIN_ID = '@omadia/orchestrator';
+
+      // Reconcile a single agent-plugin's DomainTool across every per-Agent
+      // orchestrator: (re-)register a fresh handle where the plugin is enabled,
+      // drop it where it is not. Idempotent and safe for re-uploads (the stale
+      // handle is replaced). No-ops for non-agent plugins (no DomainTool); on
+      // uninstall the runtime no longer knows the tool, so drop it by name.
+      const reconcileRuntimeDomainTool = (
+        pluginId: string,
+        removedToolName?: string,
+      ): void => {
+        const reg =
+          serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
+        if (!reg) return;
+        const tool = dynamicAgentRuntime.domainToolFor(pluginId);
+        reconcileDomainToolAcrossAgents(
+          reg.list().map((entry) => ({
+            slug: entry.agent.slug,
+            enabled: entry.plugins.some(
+              (p) => p.enabled && p.pluginId === pluginId,
+            ),
+            orchestrator: entry.built.orchestrator,
+          })),
+          {
+            ...(tool ? { tool } : {}),
+            ...(removedToolName ? { removedToolName } : {}),
+            onError: (slug, err) =>
+              console.error(
+                `[middleware] reconcileRuntimeDomainTool(${pluginId}) on "${slug}" FAILED:`,
+                err instanceof Error ? err.message : String(err),
+              ),
+          },
+        );
+      };
+
+      propagatePluginInstall = async (pluginId: string): Promise<void> => {
+        if (pluginId === ORCHESTRATOR_PLUGIN_ID) return;
+        const store =
+          serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
+        const reg =
+          serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
+        if (!store || !reg) return; // no-DB / chat-disabled boot — nothing to wire
+        try {
+          const { fallbackAgentId } = await store.getPlatformSettings();
+          if (fallbackAgentId) {
+            // Keep the "fallback Agent has every installed plugin enabled"
+            // invariant alive at runtime. Un-slugged chat routes to the
+            // fallback Agent (getDefaultSlug → slugForFallback); without an
+            // enabled `agent_plugins` row, `scopeDomainToolsToPlugins` would
+            // withhold the new tool even after it is hydrated. First-boot does
+            // this via `attachAllPlugins`; runtime installs never did.
+            await store.upsertAgentPlugin(fallbackAgentId, {
+              pluginId,
+              enabled: true,
+            });
+            // Refresh `entry.plugins` from the DB so the scoping check below
+            // sees the freshly-enabled row. Idempotent no-op when unchanged;
+            // a plugin-only change is an `update` (no rebuild → sessions kept).
+            await reg.reload();
+          }
+        } catch (err) {
+          console.error(
+            `[middleware] propagatePluginInstall(${pluginId}) enable/reload FAILED:`,
+            err instanceof Error ? err.message : String(err),
+          );
+        }
+        reconcileRuntimeDomainTool(pluginId);
+        console.log(`[middleware] runtime plugin install propagated: ${pluginId}`);
+      };
+
+      propagatePluginUninstall = async (
+        pluginId: string,
+        removedToolName?: string,
+      ): Promise<void> => {
+        if (pluginId === ORCHESTRATOR_PLUGIN_ID) return;
+        const store =
+          serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
+        const reg =
+          serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
+        if (!store || !reg) return;
+        try {
+          const { fallbackAgentId } = await store.getPlatformSettings();
+          if (fallbackAgentId) {
+            await store.removeAgentPlugin(fallbackAgentId, pluginId);
+            await reg.reload();
+          }
+        } catch (err) {
+          console.error(
+            `[middleware] propagatePluginUninstall(${pluginId}) disable/reload FAILED:`,
+            err instanceof Error ? err.message : String(err),
+          );
+        }
+        reconcileRuntimeDomainTool(pluginId, removedToolName);
+        console.log(
+          `[middleware] runtime plugin uninstall propagated: ${pluginId}`,
+        );
+      };
     }
   }
 
@@ -1872,6 +2027,10 @@ async function main(): Promise<void> {
               await dynamicAgentRuntime.deactivate(agentId);
             }
             await dynamicAgentRuntime.activate(agentId);
+            // Hub/registry install + package re-upload land here. Propagate the
+            // (fresh) tool onto the per-Agent orchestrators so the new/updated
+            // capability is live for the next chat turn without a restart.
+            await propagatePluginInstall?.(agentId);
           }
         }
       },
@@ -2472,6 +2631,11 @@ async function main(): Promise<void> {
   process.once('SIGTERM', shutdownBuilder);
   process.once('SIGINT', shutdownBuilder);
 
+  // Plugin self-extension — process-singleton gate holding the in-memory
+  // proposal store + audit trail. Constructed once so proposals survive across
+  // operator requests for the lifetime of the process.
+  const selfExtensionGate = new OperatorGate();
+
   app.use(
     '/api/v1/builder',
     requireAuth,
@@ -2523,6 +2687,15 @@ async function main(): Promise<void> {
               packageUploadService,
               quota: draftQuota,
               workaroundStateStore: builderWorkaroundStateStore,
+            },
+            // Self-extension shares the install dependency surface; an approved
+            // proposal installs + reactivates through the same ingest →
+            // onPackageReady seam as an operator upload.
+            selfExtension: {
+              gate: selfExtensionGate,
+              draftStore,
+              buildPipeline: builderBuildPipeline,
+              packageUploadService,
             },
           }
         : {}),

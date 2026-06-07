@@ -32,7 +32,12 @@ export function createRoutinesIntegration(
         userId: info.userId,
         channel: info.channel,
         conversationRef: info.conversationRef,
+        canTargetOthers: info.canTargetOthers ?? false,
       });
+    },
+
+    async updateRoutineConversationRef(routineId, conversationRef) {
+      await handle.runner.updateConversationRef(routineId, conversationRef);
     },
 
     publishProactiveSend(channel, send) {

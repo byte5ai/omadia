@@ -1,5 +1,6 @@
 export * from './pluginContext.js';
 export * from './conversation.js';
+export * from './limitSignal.js';
 export * from './localSubAgentTool.js';
 export * from './piiAnnotation.js';
 
@@ -71,6 +72,11 @@ export * from './nudge.js';
 // dynamic-import / plugin-store flow stays clean (no constructor-injected
 // Deps).
 export * from './routinesIntegration.js';
+
+// Cold-start proactive 1:1: shared delivery-target model (ColdStartTarget,
+// RoutineRecipient, type guards) so the routines kernel and channel plugins
+// agree on the shape of a deferred, not-yet-resolved recipient.
+export * from './routineTarget.js';
 
 // KG-ACL Slice 4a: Palaia-Excerpt-Extractor capability. Haiku-backed
 // per-turn enrichment producing {suggestedKind, suggestedSummary,
