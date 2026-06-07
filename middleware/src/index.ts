@@ -20,6 +20,7 @@ import { createBulkPromotionRouter } from './routes/bulkPromotion.js';
 import { createInconsistenciesRouter } from './routes/inconsistencies.js';
 import { createDuplicatesRouter } from './routes/duplicates.js';
 import { createTopicsRouter } from './routes/topics.js';
+import { createUsageRouter } from './routes/usage.js';
 import { createAgentResolver } from './agents/resolveAgentForTool.js';
 import { scopeDomainToolsToPlugins } from './agents/scopeDomainTools.js';
 import {
@@ -1635,6 +1636,17 @@ async function main(): Promise<void> {
   } else {
     console.log(
       '[middleware] topics endpoint skipped — topicClustering service not published',
+    );
+  }
+
+  // Cost telemetry read API (web-ui dashboard). Only with a Neon graphPool —
+  // in-memory mode persists no usage, so there is nothing to serve.
+  if (graphPool) {
+    app.use('/api/usage', requireAuth, createUsageRouter({ pool: graphPool }));
+    console.log('[middleware] usage cost endpoint ready at /api/usage');
+  } else {
+    console.log(
+      '[middleware] usage cost endpoint skipped — no graphPool (in-memory KG backend)',
     );
   }
 

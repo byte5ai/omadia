@@ -37,6 +37,7 @@ import {
 import type { VerifierBundle } from '@omadia/verifier';
 
 import type { Pool } from 'pg';
+import { initUsageRecorder } from '@omadia/usage-telemetry';
 
 import {
   buildOrchestratorForAgent,
@@ -389,6 +390,11 @@ export async function activate(
     ctx.config.get<string>('graph_tenant_id') ??
     'default';
 
+  // Cost telemetry: wire the usage recorder to the shared graph pool. The
+  // orchestrator + sub-agent usage is captured inside streamMessageEvents;
+  // this just ensures the recorder has a pool to flush to. Idempotent.
+  if (graphPool) initUsageRecorder(graphPool);
+
   // Anthropic client — shared across every Agent built from this plugin.
   //
   // maxRetries: the Anthropic SDK auto-retries 408/409/429/500/529 with
@@ -504,10 +510,45 @@ export async function activate(
     ...(assistantIdentity ? { assistantIdentity } : {}),
     ...(turnHookRegistry ? { turnHookRegistry } : {}),
   };
+  // Per-turn Sonnet/Opus routing (opt-in). When `orchestrator_model_routing`
+  // is true, a Haiku classifier picks the model per turn: simple → Sonnet,
+  // complex → Opus. Models default to the existing orchestrator/sub-agent/
+  // classifier config so it works out of the box once the flag is set.
+  const modelRoutingEnabled =
+    (ctx.config.get<string>('orchestrator_model_routing') ?? '')
+      .trim()
+      .toLowerCase() === 'true';
+  const modelRouting = modelRoutingEnabled
+    ? {
+        classifierModel:
+          (
+            ctx.config.get<string>('model_routing_classifier_model') ??
+            ctx.config.get<string>('topic_classifier_model') ??
+            'claude-haiku-4-5'
+          ).trim(),
+        simpleModel:
+          (
+            ctx.config.get<string>('model_routing_simple_model') ??
+            ctx.config.get<string>('sub_agent_model') ??
+            'claude-sonnet-4-6'
+          ).trim(),
+        complexModel:
+          (
+            ctx.config.get<string>('model_routing_complex_model') ?? model
+          ).trim(),
+      }
+    : undefined;
+  if (modelRouting) {
+    console.log(
+      `[harness-orchestrator] per-turn model routing ON (classifier=${modelRouting.classifierModel}, simple=${modelRouting.simpleModel}, complex=${modelRouting.complexModel})`,
+    );
+  }
+
   const built = buildOrchestratorForAgent(
     {
       agentId: 'default',
       model,
+      ...(modelRouting ? { modelRouting } : {}),
       maxTokens,
       maxToolIterations: maxIterations,
       ...(maxTurnSeconds > 0 ? { maxTurnSeconds } : {}),
@@ -564,6 +605,7 @@ export async function activate(
       registry = new OrchestratorRegistry(store, orchestratorDeps, {
         defaultRuntimeConfig: {
           model,
+          ...(modelRouting ? { modelRouting } : {}),
           maxTokens,
           maxToolIterations: maxIterations,
           ...(maxTurnSeconds > 0 ? { maxTurnSeconds } : {}),
