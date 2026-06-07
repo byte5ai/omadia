@@ -39,6 +39,13 @@ setup:
       required: false
       default: "missing"
 
+    - key: "dev_memory_endpoints_enabled"
+      type: "string"
+      label: "Dev-Memory-Endpoints aktivieren"
+      help: "'true' mountet /api/dev/memory (ungeschützt) — NUR für lokale Next-UI. Produktion MUSS leer oder 'false' bleiben."
+      required: false
+      default: "false"
+
 playbook:
   when_to_use: |
     Produktions-Setup, in dem /memories durable in Postgres statt auf dem

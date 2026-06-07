@@ -1,4 +1,9 @@
-import { MemorySeeder, MemoryToolHandler, type MemorySeedMode } from '@omadia/memory';
+import {
+  MemorySeeder,
+  MemoryToolHandler,
+  createDevMemoryRouter,
+  type MemorySeedMode,
+} from '@omadia/memory';
 import type { PluginContext } from '@omadia/plugin-api';
 import type { Pool } from 'pg';
 
@@ -24,6 +29,7 @@ import { PostgresMemoryStore } from './postgresMemoryStore.js';
 
 const GRAPH_POOL_SERVICE = 'graphPool';
 const MEMORY_STORE_SERVICE = 'memoryStore';
+const DEV_MEMORY_PREFIX = '/api/dev/memory';
 
 export interface MemoryPostgresPluginHandle {
   close(): Promise<void>;
@@ -76,6 +82,26 @@ export async function activate(
     toolHandler.handle(input),
   );
 
+  // Read-only dev memory browser (`/api/dev/memory`), gated by
+  // `dev_memory_endpoints_enabled`. Mounted HERE too (not only in
+  // @omadia/memory) so the operator memory view works when Postgres is the
+  // active backend — otherwise the router lives in the inactive in-memory
+  // provider and the browser 404s even with DEV_ENDPOINTS_ENABLED set. The
+  // router is backend-agnostic (reads via the MemoryStore). MUST stay
+  // disabled in production (no auth).
+  const devEndpointsEnabled =
+    String(ctx.config.get<string>('dev_memory_endpoints_enabled') ?? 'false')
+      .trim()
+      .toLowerCase() === 'true';
+  let disposeRoute: (() => void) | undefined;
+  if (devEndpointsEnabled) {
+    disposeRoute = ctx.routes.register(
+      DEV_MEMORY_PREFIX,
+      createDevMemoryRouter({ store }),
+    );
+    ctx.log(`[memory-postgres] mounted dev browser at ${DEV_MEMORY_PREFIX}`);
+  }
+
   ctx.log(`[memory-postgres] ready (seed=${seedDir}, mode=${seedMode})`);
 
   return {
@@ -85,6 +111,7 @@ export async function activate(
       // provider — do NOT call pool.end() here.
       disposeTool();
       disposeService();
+      disposeRoute?.();
     },
   };
 }
