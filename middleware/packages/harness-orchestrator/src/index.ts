@@ -23,6 +23,10 @@ export type {
   OrchestratorPluginHandle,
 } from './plugin.js';
 
+// Per-turn Sonnet/Opus routing config (attached to AgentRuntimeConfig).
+export { routeTurnModel } from './modelRouter.js';
+export type { ModelRoutingConfig } from './modelRouter.js';
+
 // Multi-orchestrator registry (US4) — read by US7 channel routing and US9 UI.
 export {
   OrchestratorRegistry,

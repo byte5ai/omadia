@@ -184,6 +184,82 @@ describe('ManageRoutineTool — create', () => {
   });
 });
 
+describe('ManageRoutineTool — create with targetEmail (cold-start outreach)', () => {
+  const baseArgs = {
+    action: 'create' as const,
+    name: 'hr-review',
+    cron: '0 9 * * 1',
+    prompt: 'remind about the review',
+  };
+
+  it('rejects targetEmail when the caller is not authorized', async () => {
+    const { runner, calls } = stubRunner();
+    // Default ctx has no canTargetOthers → unauthorized.
+    const tool = new ManageRoutineTool({ runner, resolveContext: () => ctx });
+    const result = await tool.handle({
+      ...baseArgs,
+      targetEmail: 'someone@byte5.de',
+    });
+    assert.match(result, /^Error: not authorized/);
+    assert.equal(calls.length, 0);
+  });
+
+  it('rejects an invalid targetEmail even when authorized', async () => {
+    const { runner, calls } = stubRunner();
+    const authedCtx: ManageRoutineContext = { ...ctx, canTargetOthers: true };
+    const tool = new ManageRoutineTool({
+      runner,
+      resolveContext: () => authedCtx,
+    });
+    const result = await tool.handle({
+      ...baseArgs,
+      targetEmail: 'not-an-email',
+    });
+    assert.match(result, /^Error: `targetEmail` is not a valid email/);
+    assert.equal(calls.length, 0);
+  });
+
+  it('builds a cold-start conversationRef when authorized', async () => {
+    const { runner, calls } = stubRunner();
+    const authedCtx: ManageRoutineContext = { ...ctx, canTargetOthers: true };
+    const tool = new ManageRoutineTool({
+      runner,
+      resolveContext: () => authedCtx,
+    });
+    const result = await tool.handle({
+      ...baseArgs,
+      targetEmail: '  Recipient@Byte5.DE ',
+    });
+    const payload = JSON.parse(result);
+    assert.equal(payload.action, 'created');
+    assert.equal(calls.length, 1);
+    const input = calls[0]!.args[0] as { conversationRef: Record<string, unknown> };
+    assert.equal(input.conversationRef.kind, 'coldStart');
+    assert.equal(input.conversationRef.channel, 'teams');
+    assert.deepEqual(input.conversationRef.recipient, {
+      by: 'email',
+      email: 'recipient@byte5.de',
+    });
+    assert.equal(input.conversationRef.orchestratorProfile, 'bare');
+    assert.deepEqual(input.conversationRef.createdBy, {
+      tenant: TENANT,
+      userId: USER,
+    });
+  });
+
+  it('falls back to the caller conversationRef when targetEmail is absent', async () => {
+    const { runner, calls } = stubRunner();
+    const authedCtx: ManageRoutineContext = { ...ctx, canTargetOthers: true };
+    const tool = new ManageRoutineTool({
+      runner,
+      resolveContext: () => authedCtx,
+    });
+    await tool.handle(baseArgs);
+    const input = calls[0]!.args[0] as { conversationRef: unknown };
+    assert.deepEqual(input.conversationRef, CONV_REF);
+  });
+});
+
 describe('ManageRoutineTool — error mapping', () => {
   const baseArgs = {
     action: 'create' as const,

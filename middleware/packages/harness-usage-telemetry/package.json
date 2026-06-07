@@ -1,0 +1,21 @@
+{
+  "name": "@omadia/usage-telemetry",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "Cross-cutting LLM token-usage + cost telemetry for the omadia middleware. Captures every Anthropic call (orchestrator, sub-agents, and the Haiku background extras/verifier) via a process-level singleton recorder backed by the shared Neon graphPool, computes per-call USD cost from a model price table, and exposes aggregate queries for the cost dashboard. No-ops gracefully when no pool is wired (in-memory KG mode).",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@anthropic-ai/sdk": "*",
+    "pg": "^8.13.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
