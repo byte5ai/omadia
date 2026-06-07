@@ -93,6 +93,7 @@ import {
 import { RunTraceCollector, type InvocationHandle } from './runTraceCollector.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import { graphScopeFor, type SessionLogger } from './sessionLogger.js';
+import { type ModelRoutingConfig, routeTurnModel } from './modelRouter.js';
 import { streamMessageEvents } from './streaming.js';
 import { steeringBus } from './steeringBus.js';
 import { buildDateHeader, today, turnContext } from './turnContext.js';
@@ -144,6 +145,12 @@ export interface OrchestratorOptions {
   agentId?: string;
   client: Anthropic;
   model: string;
+  /**
+   * When set, each turn is routed by a Haiku classifier to either
+   * `simpleModel` or `complexModel` instead of always using `model`. Absent →
+   * every turn uses `model` (routing off). See {@link routeTurnModel}.
+   */
+  modelRouting?: ModelRoutingConfig;
   maxTokens: number;
   maxToolIterations: number;
   /**
@@ -805,6 +812,7 @@ export class Orchestrator {
   readonly agentId: string;
   private readonly client: Anthropic;
   private readonly model: string;
+  private readonly modelRouting: ModelRoutingConfig | undefined;
   private readonly maxTokens: number;
   private readonly maxIterations: number;
   /** Round-loop guard thresholds (see {@link LoopGuard}). */
@@ -869,6 +877,7 @@ export class Orchestrator {
     this.agentId = options.agentId ?? 'default';
     this.client = options.client;
     this.model = options.model;
+    this.modelRouting = options.modelRouting;
     this.maxTokens = options.maxTokens;
     this.maxIterations = options.maxToolIterations;
     this.loopRepeatSoft = options.loopRepeatSoft;
@@ -1668,6 +1677,21 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * Resolves the model for a single turn. With routing configured, a Haiku
+   * classifier picks Sonnet (simple) or Opus (complex); otherwise the static
+   * `this.model` is used. Never throws — falls back to `this.model`.
+   */
+  private async resolveTurnModel(userMessage: string): Promise<string> {
+    if (!this.modelRouting) return this.model;
+    return routeTurnModel(
+      this.client,
+      this.modelRouting,
+      userMessage,
+      this.model,
+    );
+  }
+
   private async chatInContextInner(
     input: ChatTurnInput,
     turnId: string,
@@ -1753,6 +1777,10 @@ export class Orchestrator {
     const turnStartedAt = Date.now();
     let forceFinalize = false;
 
+    // Per-turn model routing (no-op unless configured). Resolved once so the
+    // whole turn — every tool-loop iteration — runs on one model.
+    const turnModel = await this.resolveTurnModel(input.userMessage);
+
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
         // Final pass: the loop guard stopped, the wall-clock budget is spent,
@@ -1763,7 +1791,7 @@ export class Orchestrator {
           iteration === this.maxIterations - 1 ||
           this.turnBudgetExceeded(turnStartedAt);
         const baseParams = {
-          model: this.model,
+          model: turnModel,
           max_tokens: this.maxTokens,
           system: buildSystemBlocks(
             this.composeStableSystemPrompt(prependRules),
@@ -2275,6 +2303,9 @@ export class Orchestrator {
     // Mid-turn steering — same key the route enqueues under (see chatStream:
     // `sessionId`). Drained at the top of every iteration below.
     const steerKey = input.sessionScope ?? turnId;
+    // Per-turn model routing (no-op unless configured). Resolved once so the
+    // whole streamed turn runs on one model.
+    const turnModel = await this.resolveTurnModel(input.userMessage);
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
         yield { type: 'iteration_start', iteration };
@@ -2320,7 +2351,7 @@ export class Orchestrator {
         for await (const ev of streamMessageEvents({
           client: this.client,
           params: {
-            model: this.model,
+            model: turnModel,
             max_tokens: this.maxTokens,
             system: buildSystemBlocks(
               this.composeStableSystemPrompt(prependRules),

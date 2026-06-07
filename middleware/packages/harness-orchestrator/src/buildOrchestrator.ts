@@ -41,6 +41,7 @@ import { MemoryToolHandler } from '@omadia/memory';
 import { ChatSessionStore } from './chatSessionStore.js';
 import type { Microsoft365Accessor } from './microsoft365-shim.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
+import type { ModelRoutingConfig } from './modelRouter.js';
 import { Orchestrator } from './orchestrator.js';
 import { OrchestratorMemoryNamespacer } from './orchestratorMemoryNamespacer.js';
 import {
@@ -65,6 +66,8 @@ export interface AgentRuntimeConfig {
   /** Stable id of the Agent (orchestrator instance) being built. */
   readonly agentId: string;
   readonly model: string;
+  /** Optional per-turn Sonnet/Opus routing (see {@link OrchestratorOptions}). */
+  readonly modelRouting?: ModelRoutingConfig;
   readonly maxTokens: number;
   readonly maxToolIterations: number;
   /** Optional round-loop guard thresholds (see {@link OrchestratorOptions}). */
@@ -189,6 +192,7 @@ export function buildOrchestratorForAgent(
     agentId: config.agentId,
     client: deps.client,
     model: config.model,
+    ...(config.modelRouting ? { modelRouting: config.modelRouting } : {}),
     maxTokens: config.maxTokens,
     maxToolIterations: config.maxToolIterations,
     ...(config.loopRepeatSoft !== undefined
