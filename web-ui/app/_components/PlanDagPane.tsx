@@ -46,7 +46,7 @@ export function PlanDagPane({ plan }: Props): React.ReactElement | null {
     toggleMaximized,
     headerHandlers,
     resizeHandlers,
-  } = useFloatingWindow({ anchor: 'left', defaultW: 440, defaultH: 560 });
+  } = useFloatingWindow({ anchor: 'left', defaultW: 440, defaultH: 640 });
 
   const steps = useMemo(
     () => [...(plan?.steps ?? [])].sort((a, b) => a.order - b.order),
