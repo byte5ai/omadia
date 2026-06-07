@@ -12,6 +12,7 @@ import {
   Plug,
   ShieldAlert,
   ShieldCheck,
+  Sparkles,
 } from 'lucide-react';
 
 import { getLocale } from 'next-intl/server';
@@ -31,6 +32,7 @@ import { Chip } from '../../_components/store/Chip';
 import { AuditModeSwitch } from '../../_components/store/AuditModeSwitch';
 import { CredentialsEditor } from '../../_components/store/CredentialsEditor';
 import { EditFromStoreButton } from '../../_components/store/EditFromStoreButton';
+import { SelfExtensionPanel } from '../../_components/store/SelfExtensionPanel';
 import { InstallButton } from '../../_components/store/InstallButton';
 import { PluginIcon } from '../../_components/store/PluginIcon';
 import { StateBadge } from '../../_components/store/StateBadge';
@@ -224,6 +226,20 @@ export default async function PluginDetailPage({
               icon={<ShieldAlert className="size-4" aria-hidden />}
             >
               <AuditModeSwitch pluginId={plugin.id} />
+            </Section>
+          ) : null}
+
+          {/* Plugin self-extension (operator-gated, non-escalating). Installed
+              plugins only — a proposal is evaluated against the source draft's
+              spec, and an approved one rebuilds + hot-reactivates the plugin.
+              See docs/harness-platform/DESIGN-plugin-self-extension.md. */}
+          {plugin.install_state === 'installed' ? (
+            <Section
+              label="Selbst-Erweiterung"
+              numeral="II.d"
+              icon={<Sparkles className="size-4" aria-hidden />}
+            >
+              <SelfExtensionPanel agentId={plugin.id} />
             </Section>
           ) : null}
 

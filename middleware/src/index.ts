@@ -58,6 +58,7 @@ import { createRegistryInstallRouter } from './routes/registryInstall.js';
 import { createRuntimeRouter } from './routes/runtime.js';
 import { createVaultStatusRouter } from './routes/vaultStatus.js';
 import { createBuilderRouter } from './routes/builder.js';
+import { OperatorGate } from './plugins/selfExtension/index.js';
 import { DraftStore } from './plugins/builder/draftStore.js';
 import { buildDraftStorageMirrorHook } from './plugins/builder/draftStorageBridge.js';
 import { DraftQuota } from './plugins/builder/draftQuota.js';
@@ -2460,6 +2461,11 @@ async function main(): Promise<void> {
   process.once('SIGTERM', shutdownBuilder);
   process.once('SIGINT', shutdownBuilder);
 
+  // Plugin self-extension — process-singleton gate holding the in-memory
+  // proposal store + audit trail. Constructed once so proposals survive across
+  // operator requests for the lifetime of the process.
+  const selfExtensionGate = new OperatorGate();
+
   app.use(
     '/api/v1/builder',
     requireAuth,
@@ -2511,6 +2517,15 @@ async function main(): Promise<void> {
               packageUploadService,
               quota: draftQuota,
               workaroundStateStore: builderWorkaroundStateStore,
+            },
+            // Self-extension shares the install dependency surface; an approved
+            // proposal installs + reactivates through the same ingest →
+            // onPackageReady seam as an operator upload.
+            selfExtension: {
+              gate: selfExtensionGate,
+              draftStore,
+              buildPipeline: builderBuildPipeline,
+              packageUploadService,
             },
           }
         : {}),
