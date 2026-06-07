@@ -60,5 +60,27 @@ export function parseExtensionProposal(input: unknown): ExtensionProposal {
   return ExtensionProposalSchema.parse(input);
 }
 
+/**
+ * Template proposal — the variant for standalone plugins (no Builder spec).
+ * Instead of spec patches it names a `templateId` the plugin's `selfExtend`
+ * contract declares + the `params` to instantiate it. The escalation guard
+ * proves the template's required sub-surface ⊆ the plugin's manifest surface.
+ */
+export const TemplateProposalSchema = z
+  .object({
+    pluginId: z.string().min(1),
+    rationale: z.string().min(1),
+    templateId: z.string().min(1),
+    params: z.record(z.string(), z.unknown()).default({}),
+    limitSignal: LimitSignalSchema.optional(),
+  })
+  .strict();
+
+export type TemplateProposal = z.infer<typeof TemplateProposalSchema>;
+
+export function parseTemplateProposal(input: unknown): TemplateProposal {
+  return TemplateProposalSchema.parse(input);
+}
+
 /** Re-export for callers building proposals programmatically. */
 export type { JsonPatch };

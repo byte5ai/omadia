@@ -12,11 +12,14 @@
 
 export {
   extractPermissionSurface,
+  extractSurfaceFromManifest,
+  surfaceFromPartial,
   computeWidenings,
   isSurfaceSubset,
   patternCovers,
   coveredByAny,
   type PermissionSurface,
+  type PartialSurface,
   type PrivacyClass,
   type SurfaceDimension,
   type SurfaceWidening,
@@ -25,12 +28,16 @@ export {
 export {
   ExtensionProposalSchema,
   parseExtensionProposal,
+  TemplateProposalSchema,
+  parseTemplateProposal,
   type ExtensionProposal,
+  type TemplateProposal,
   type JsonPatch,
 } from './extensionProposal.js';
 
 export {
   evaluateProposal,
+  evaluateTemplateProposal,
   type ProposalDecision,
   type ProposalEvaluation,
 } from './escalationGuard.js';
@@ -42,10 +49,23 @@ export {
   IllegalProposalTransitionError,
   type ProposalRecord,
   type ProposalStatus,
+  type ProposalKind,
   type OperatorGateOptions,
   type SubmitInput,
+  type SubmitSpecInput,
+  type SubmitTemplateInput,
   type ApproveInput,
 } from './operatorGate.js';
+
+export { ExtensionStore } from './extensionStore.js';
+export { SelfExtendRegistry } from './selfExtendRegistry.js';
+
+export {
+  createRequestSelfExtensionTool,
+  REQUEST_SELF_EXTENSION_TOOL,
+  type RequestSelfExtensionToolDeps,
+  type KernelToolRegistration,
+} from './requestSelfExtensionTool.js';
 
 export {
   SelfExtensionAudit,

@@ -11,9 +11,11 @@ import {
   denySelfExtensionProposal,
   installSelfExtensionProposal,
   listSelfExtensionProposals,
+  listSelfExtensionTemplates,
   proposeSelfExtension,
   ApiError,
   type SelfExtensionProposalView,
+  type SelfExtensionTemplateView,
 } from '../../_lib/api';
 import type { JsonPatch } from '../../_lib/builderTypes';
 
@@ -50,11 +52,19 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
   const [proposals, setProposals] = useState<SelfExtensionProposalView[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  // compose form
+  // compose form (spec / patches)
   const [rationale, setRationale] = useState('');
   const [patchesText, setPatchesText] = useState('');
   const [composeBusy, setComposeBusy] = useState(false);
   const [composeError, setComposeError] = useState<string | null>(null);
+
+  // template compose (standalone plugins)
+  const [templates, setTemplates] = useState<SelfExtensionTemplateView[]>([]);
+  const [tplId, setTplId] = useState('');
+  const [tplRationale, setTplRationale] = useState('');
+  const [tplParamsText, setTplParamsText] = useState('{}');
+  const [tplBusy, setTplBusy] = useState(false);
+  const [tplError, setTplError] = useState<string | null>(null);
 
   // per-proposal action state
   const [actionBusyId, setActionBusyId] = useState<string | null>(null);
@@ -93,6 +103,50 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
       cancelled = true;
     };
   }, [agentId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const list = await listSelfExtensionTemplates(agentId);
+        if (!cancelled) {
+          setTemplates(list);
+          if (list[0]) setTplId(list[0].id);
+        }
+      } catch {
+        // templates are optional (Builder plugins have none) — ignore
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId]);
+
+  async function handleProposeTemplate(): Promise<void> {
+    setTplError(null);
+    let params: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(tplParamsText) as unknown;
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('not an object');
+      }
+      params = parsed as Record<string, unknown>;
+    } catch {
+      setTplError(t('invalidParamsJson'));
+      return;
+    }
+    setTplBusy(true);
+    try {
+      await proposeSelfExtension(agentId, { rationale: tplRationale, templateId: tplId, params });
+      setTplRationale('');
+      setTplParamsText('{}');
+      await reload();
+    } catch (err) {
+      setTplError(errMessage(err));
+    } finally {
+      setTplBusy(false);
+    }
+  }
 
   async function handlePropose(): Promise<void> {
     setComposeError(null);
@@ -171,6 +225,58 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
         </button>
       </div>
 
+      {/* template compose (standalone plugins that expose selfExtend templates) */}
+      {templates.length > 0 ? (
+        <div className="rounded-[10px] border border-[color:var(--border)] bg-[color:var(--bg-soft)] p-3">
+          <label className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
+            <Sparkles className="size-3.5" aria-hidden />
+            {t('templateComposeTitle')}
+          </label>
+          <select
+            value={tplId}
+            onChange={(e) => setTplId(e.target.value)}
+            className="mt-2 w-full rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1.5 text-[13px] focus:outline-none focus:ring-1 focus:ring-[color:var(--accent)]"
+          >
+            {templates.map((tpl) => (
+              <option key={tpl.id} value={tpl.id}>
+                {tpl.title} — {tpl.id}
+              </option>
+            ))}
+          </select>
+          {templates.find((x) => x.id === tplId)?.description ? (
+            <p className="mt-1.5 text-[11px] leading-relaxed text-[color:var(--fg-subtle)]">
+              {templates.find((x) => x.id === tplId)?.description}
+            </p>
+          ) : null}
+          <input
+            type="text"
+            value={tplRationale}
+            onChange={(e) => setTplRationale(e.target.value)}
+            placeholder={t('rationalePlaceholder')}
+            className="mt-2 w-full rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1.5 text-[13px] focus:outline-none focus:ring-1 focus:ring-[color:var(--accent)]"
+          />
+          <textarea
+            value={tplParamsText}
+            onChange={(e) => setTplParamsText(e.target.value)}
+            placeholder={t('templateParamsPlaceholder')}
+            rows={3}
+            className="font-mono-num mt-2 w-full rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1.5 text-[12px] focus:outline-none focus:ring-1 focus:ring-[color:var(--accent)]"
+          />
+          {tplError ? (
+            <p className="font-mono-num mt-1.5 text-[11px] text-[color:var(--danger,#b03030)]">{tplError}</p>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => void handleProposeTemplate()}
+            disabled={tplBusy || tplRationale.trim().length === 0 || tplId.length === 0}
+            className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-[color:var(--accent)] px-4 py-1.5 text-[12px] font-semibold text-[color:var(--accent-fg)] disabled:opacity-60"
+          >
+            {tplBusy ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : null}
+            {tplBusy ? t('proposing') : t('proposeTemplate')}
+          </button>
+        </div>
+      ) : null}
+
       {/* list */}
       {proposals === null ? (
         <div className="inline-flex items-center gap-2 text-[12px] text-[color:var(--fg-subtle)]">
@@ -188,7 +294,7 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <DecisionBadge decision={p.decision} status={p.status} t={t} />
                 <span className="font-mono-num text-[10px] text-[color:var(--fg-subtle)]">
-                  {t('patchCount', { count: p.patchCount })}
+                  {p.kind === 'template' ? p.templateId : t('patchCount', { count: p.patchCount ?? 0 })}
                 </span>
               </div>
               <p className="mt-2 text-[13px] text-[color:var(--fg)]">{p.rationale}</p>

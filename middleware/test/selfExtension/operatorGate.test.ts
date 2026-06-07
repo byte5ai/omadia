@@ -7,7 +7,12 @@ import {
   IllegalProposalTransitionError,
 } from '../../src/plugins/selfExtension/operatorGate.js';
 import { SelfExtensionAudit } from '../../src/plugins/selfExtension/audit.js';
-import { parseExtensionProposal } from '../../src/plugins/selfExtension/extensionProposal.js';
+import {
+  parseExtensionProposal,
+  parseTemplateProposal,
+} from '../../src/plugins/selfExtension/extensionProposal.js';
+import type { ExtensionTemplate } from '@omadia/plugin-api';
+import type { Plugin } from '../../src/api/admin-v1.js';
 import { baseSpec } from './_fixtures.js';
 
 const PLUGIN_ID = 'de.byte5.agent.dynamics';
@@ -108,6 +113,57 @@ describe('OperatorGate', () => {
     assert.throws(() => gate.markInstalled(rec.id, '0.2.0'), IllegalProposalTransitionError);
     gate.approve({ id: rec.id, decidedBy: 'op@byte5.de' });
     const installed = gate.markInstalled(rec.id, '0.2.0');
+    assert.equal(installed.status, 'installed');
+  });
+});
+
+function dynManifest(): Plugin {
+  return {
+    id: PLUGIN_ID,
+    depends_on: [],
+    privacy_class: 'strict',
+    permissions_summary: {
+      memory_reads: [], memory_writes: [], graph_reads: [], graph_writes: [],
+      network_outbound: ['api.dynamics.com'],
+    },
+  } as unknown as Plugin;
+}
+
+const deltaTpl: ExtensionTemplate = {
+  id: 'odata.delta',
+  title: 'Delta',
+  description: 'change tracking',
+  paramsSchema: { type: 'object' },
+  requires: { networkOutbound: ['api.dynamics.com'] },
+};
+
+function tmpl(templateId: string) {
+  return parseTemplateProposal({ pluginId: PLUGIN_ID, rationale: 'delta', templateId, params: { entitySet: 'salesorders' } });
+}
+
+describe('OperatorGate — template path', () => {
+  it('submits a clean template proposal as pending (kind=template)', () => {
+    const { gate } = makeGate();
+    const rec = gate.submit({ kind: 'template', pluginId: PLUGIN_ID, plugin: dynManifest(), template: deltaTpl, proposal: tmpl('odata.delta'), submittedBy: 'agent' });
+    assert.equal(rec.status, 'pending');
+    assert.equal(rec.kind, 'template');
+  });
+
+  it('auto-denies a template requiring a new capability', () => {
+    const { gate } = makeGate();
+    const greedy: ExtensionTemplate = { ...deltaTpl, requires: { graphWrites: ['odoo:invoices:*'] } };
+    const rec = gate.submit({ kind: 'template', pluginId: PLUGIN_ID, plugin: dynManifest(), template: greedy, proposal: tmpl('odata.delta'), submittedBy: 'agent' });
+    assert.equal(rec.status, 'denied');
+  });
+
+  it('approve sets approvedExtension {templateId, params}; install marks installed', () => {
+    const { gate } = makeGate();
+    const rec = gate.submit({ kind: 'template', pluginId: PLUGIN_ID, plugin: dynManifest(), template: deltaTpl, proposal: tmpl('odata.delta'), submittedBy: 'agent' });
+    const approved = gate.approve({ id: rec.id, decidedBy: 'op@byte5.de' });
+    assert.equal(approved.status, 'approved');
+    assert.equal(approved.approvedExtension?.templateId, 'odata.delta');
+    assert.deepEqual(approved.approvedExtension?.params, { entitySet: 'salesorders' });
+    const installed = gate.markInstalled(rec.id, 'template:odata.delta');
     assert.equal(installed.status, 'installed');
   });
 });

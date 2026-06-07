@@ -24,16 +24,25 @@
 
 import { randomUUID } from 'node:crypto';
 
+import type { ApprovedExtension, ExtensionTemplate } from '@omadia/plugin-api';
+
 import { applySpecPatches, type JsonPatch } from '../builder/specPatcher.js';
 import type { AgentSpec } from '../builder/agentSpec.js';
+import type { Plugin } from '../../api/admin-v1.js';
 import {
   computeWidenings,
   extractPermissionSurface,
   type SurfaceWidening,
 } from './permissionSurface.js';
-import { evaluateProposal, type ProposalEvaluation } from './escalationGuard.js';
-import type { ExtensionProposal } from './extensionProposal.js';
+import {
+  evaluateProposal,
+  evaluateTemplateProposal,
+  type ProposalEvaluation,
+} from './escalationGuard.js';
+import type { ExtensionProposal, TemplateProposal } from './extensionProposal.js';
 import { SelfExtensionAudit } from './audit.js';
+
+export type ProposalKind = 'spec' | 'template';
 
 export type ProposalStatus =
   | 'pending'
@@ -45,20 +54,28 @@ export type ProposalStatus =
 export interface ProposalRecord {
   readonly id: string;
   readonly pluginId: string;
-  readonly proposal: ExtensionProposal;
+  /** `spec` = Builder-authored plugin (patch path); `template` = standalone
+   *  plugin extending itself via its `selfExtend` SDK contract. */
+  readonly kind: ProposalKind;
+  readonly proposal: ExtensionProposal | TemplateProposal;
   readonly evaluation: ProposalEvaluation;
   readonly submittedBy: string;
   readonly createdAt: number;
   status: ProposalStatus;
-  /** Live spec at submit time — kept so `approve` can re-check narrowing. */
-  readonly currentSpec: AgentSpec;
+  /** Live spec at submit time (spec path only) — kept so `approve` can re-check
+   *  narrowing. */
+  readonly currentSpec?: AgentSpec;
   decidedBy?: string;
   decidedAt?: number;
   denialReason?: string;
-  /** The spec the operator approved (proposed spec, possibly narrowed). */
+  /** The spec the operator approved (spec path; proposed spec, possibly
+   *  narrowed). */
   approvedSpec?: AgentSpec;
-  /** Narrowing patches the operator attached, if any. */
+  /** Narrowing patches the operator attached, if any (spec path). */
   narrowingPatches?: readonly JsonPatch[];
+  /** The approved {templateId, params} the plugin will materialise on the next
+   *  activation (template path). */
+  approvedExtension?: ApprovedExtension;
   installFailureReason?: string;
 }
 
@@ -97,12 +114,27 @@ export interface OperatorGateOptions {
   audit?: SelfExtensionAudit;
 }
 
-export interface SubmitInput {
+/** Spec-path submit (Builder plugins). `kind` optional + defaults to `spec`
+ *  so existing callers stay unchanged. */
+export interface SubmitSpecInput {
+  kind?: 'spec';
   pluginId: string;
   currentSpec: AgentSpec;
   proposal: ExtensionProposal;
   submittedBy: string;
 }
+
+/** Template-path submit (standalone plugins via the selfExtend SDK). */
+export interface SubmitTemplateInput {
+  kind: 'template';
+  pluginId: string;
+  plugin: Plugin;
+  template: ExtensionTemplate | undefined;
+  proposal: TemplateProposal;
+  submittedBy: string;
+}
+
+export type SubmitInput = SubmitSpecInput | SubmitTemplateInput;
 
 export interface ApproveInput {
   id: string;
@@ -126,7 +158,11 @@ export class OperatorGate {
   /** Submit a proposal. Runs the guard; an escalating/invalid proposal lands
    *  as `denied` and can never be approved. */
   submit(input: SubmitInput): ProposalRecord {
-    const evaluation = evaluateProposal(input.currentSpec, input.proposal);
+    const kind: ProposalKind = input.kind === 'template' ? 'template' : 'spec';
+    const evaluation =
+      input.kind === 'template'
+        ? evaluateTemplateProposal(input.plugin, input.template, input.proposal)
+        : evaluateProposal(input.currentSpec, input.proposal);
     const id = this.genId();
     const createdAt = this.now();
 
@@ -137,11 +173,12 @@ export class OperatorGate {
     const record: ProposalRecord = {
       id,
       pluginId: input.pluginId,
+      kind,
       proposal: input.proposal,
       evaluation,
       submittedBy: input.submittedBy,
       createdAt,
-      currentSpec: input.currentSpec,
+      ...(input.kind === 'template' ? {} : { currentSpec: input.currentSpec }),
       status: denied ? 'denied' : 'pending',
       ...(denied
         ? {
@@ -188,6 +225,29 @@ export class OperatorGate {
     if (record.status !== 'pending') {
       throw new IllegalProposalTransitionError(input.id, record.status, 'approve');
     }
+
+    // Template path: no spec to narrow. The approved {templateId, params} is
+    // the artifact the plugin re-materialises on activation. Params cannot
+    // widen the manifest surface, so there is nothing further to gate here.
+    if (record.kind === 'template') {
+      const proposal = record.proposal as TemplateProposal;
+      record.approvedExtension = {
+        templateId: proposal.templateId,
+        params: proposal.params,
+      };
+      record.status = 'approved';
+      record.decidedBy = input.decidedBy;
+      record.decidedAt = this.now();
+      this.audit.record({
+        type: 'approved',
+        pluginId: record.pluginId,
+        proposalId: record.id,
+        actor: input.decidedBy,
+        detail: record.proposal.rationale,
+      });
+      return record;
+    }
+
     const proposedSpec = record.evaluation.proposedSpec;
     const proposedSurface = record.evaluation.proposedSurface;
     if (!proposedSpec || !proposedSurface) {

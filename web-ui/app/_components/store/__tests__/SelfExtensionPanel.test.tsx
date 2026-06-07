@@ -7,12 +7,14 @@ import type { SelfExtensionProposalView } from '../../../_lib/api';
 
 const {
   mockList,
+  mockTemplates,
   mockApprove,
   mockDeny,
   mockInstall,
   mockPropose,
 } = vi.hoisted(() => ({
   mockList: vi.fn(),
+  mockTemplates: vi.fn(),
   mockApprove: vi.fn(),
   mockDeny: vi.fn(),
   mockInstall: vi.fn(),
@@ -22,6 +24,7 @@ const {
 vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
 vi.mock('../../../_lib/api', () => ({
   listSelfExtensionProposals: mockList,
+  listSelfExtensionTemplates: mockTemplates,
   approveSelfExtensionProposal: mockApprove,
   denySelfExtensionProposal: mockDeny,
   installSelfExtensionProposal: mockInstall,
@@ -47,9 +50,35 @@ function proposal(over: Partial<SelfExtensionProposalView> = {}): SelfExtensionP
 describe('<SelfExtensionPanel />', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockTemplates.mockResolvedValue([]); // most plugins expose none
   });
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('renders a template picker and proposes from a template', async () => {
+    mockList.mockResolvedValue([]);
+    mockTemplates.mockResolvedValue([
+      { id: 'odata.delta', title: 'Change tracking', description: 'delta query', paramsSchema: {} },
+    ]);
+    mockPropose.mockResolvedValue(proposal({ kind: 'template', templateId: 'odata.delta' }));
+    renderWithIntl(<SelfExtensionPanel agentId="de.byte5.integration.dynamics-crm" />);
+
+    // template option appears
+    expect(await screen.findByText(/Change tracking — odata\.delta/)).toBeTruthy();
+    // fill the template rationale (second textbox-ish: the template rationale input)
+    const proposeBtn = await screen.findByText('Propose from template');
+    // rationale inputs: spec + template; grab all and set the template one (last)
+    const inputs = screen.getAllByPlaceholderText('Why is this extension needed?');
+    fireEvent.change(inputs[inputs.length - 1]!, { target: { value: 'pipeline monitoring' } });
+    fireEvent.click(proposeBtn);
+    await waitFor(() =>
+      expect(mockPropose).toHaveBeenCalledWith('de.byte5.integration.dynamics-crm', {
+        rationale: 'pipeline monitoring',
+        templateId: 'odata.delta',
+        params: {},
+      }),
+    );
   });
 
   it('renders the escalations of an auto-denied proposal', async () => {

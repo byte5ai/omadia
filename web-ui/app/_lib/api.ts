@@ -3118,7 +3118,8 @@ export interface SelfExtensionProposalView {
   status: SelfExtensionStatus;
   decision: SelfExtensionDecision;
   rationale: string;
-  patchCount: number;
+  /** Spec-path only: number of patches (absent for template proposals). */
+  patchCount?: number;
   escalations: SelfExtensionEscalation[];
   invalidReason?: string;
   submittedBy: string;
@@ -3129,9 +3130,30 @@ export interface SelfExtensionProposalView {
   narrowed?: boolean;
   installFailureReason?: string;
   approvedToolCount?: number;
+  /** 'spec' (Builder plugins, patches) or 'template' (standalone SDK plugins). */
+  kind?: 'spec' | 'template';
+  /** Template-path only: the template this proposal instantiates. */
+  templateId?: string;
 }
 
 const SELF_EXT_BASE = '/v1/builder/self-extension';
+
+/** A self-extend template a standalone plugin offers (Theme B). */
+export interface SelfExtensionTemplateView {
+  id: string;
+  title: string;
+  description: string;
+  paramsSchema: Record<string, unknown>;
+}
+
+export async function listSelfExtensionTemplates(
+  agentId: string,
+): Promise<SelfExtensionTemplateView[]> {
+  const resp = await getJson<{ ok: boolean; templates: SelfExtensionTemplateView[] }>(
+    `${SELF_EXT_BASE}/${encodeURIComponent(agentId)}/templates`,
+  );
+  return resp.templates;
+}
 
 export async function listSelfExtensionProposals(
   agentId?: string,
@@ -3143,9 +3165,14 @@ export async function listSelfExtensionProposals(
   return resp.proposals;
 }
 
+/** Spec-path (patches) or template-path (templateId+params) proposal body. */
+export type SelfExtensionProposalBody =
+  | { rationale: string; patches: JsonPatch[] }
+  | { rationale: string; templateId: string; params?: Record<string, unknown> };
+
 export async function proposeSelfExtension(
   agentId: string,
-  body: { rationale: string; patches: JsonPatch[] },
+  body: SelfExtensionProposalBody,
 ): Promise<SelfExtensionProposalView> {
   const resp = await postJson<{ ok: boolean; proposal: SelfExtensionProposalView }>(
     `${SELF_EXT_BASE}/${encodeURIComponent(agentId)}/propose`,
@@ -3177,8 +3204,12 @@ export async function denySelfExtensionProposal(
 }
 
 export interface SelfExtensionInstallResult {
-  publishedAgentId: string;
-  version: string;
+  /** Spec path. */
+  publishedAgentId?: string;
+  version?: string;
+  /** Template path. */
+  pluginId?: string;
+  templateId?: string;
   proposal: SelfExtensionProposalView;
 }
 
@@ -3187,13 +3218,17 @@ export async function installSelfExtensionProposal(
 ): Promise<SelfExtensionInstallResult> {
   const resp = await postJson<{
     ok: boolean;
-    publishedAgentId: string;
-    version: string;
+    publishedAgentId?: string;
+    version?: string;
+    pluginId?: string;
+    templateId?: string;
     proposal: SelfExtensionProposalView;
   }>(`${SELF_EXT_BASE}/proposals/${encodeURIComponent(proposalId)}/install`, {});
   return {
     publishedAgentId: resp.publishedAgentId,
     version: resp.version,
+    pluginId: resp.pluginId,
+    templateId: resp.templateId,
     proposal: resp.proposal,
   };
 }

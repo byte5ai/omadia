@@ -87,8 +87,9 @@ export function formatLimitSignalNote(signal: LimitSignal | undefined): string {
   return (
     `[tool-limit:${signal.kind}] ${signal.detail}${boundsStr}.` +
     `${hintStr} This result is INCOMPLETE because the plugin hit a structural` +
-    ` limit — if the full data matters, propose an operator-approved` +
-    ` self-extension that lifts it.`
+    ` limit — if the full data matters and you cannot work around it, call` +
+    ` request_self_extension to propose an operator-approved capability that` +
+    ` lifts it (it will not take effect until an operator approves).`
   );
 }
 

@@ -6,15 +6,22 @@ import { JsonPatchSchema } from '../plugins/builder/specPatcher.js';
 import type { DraftStore } from '../plugins/builder/draftStore.js';
 import type { BuildPipeline } from '../plugins/builder/buildPipeline.js';
 import type { PackageUploadService } from '../plugins/packageUploadService.js';
+import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import type {
-  OperatorGate} from '../plugins/selfExtension/index.js';
+  OperatorGate,
+  SelfExtendRegistry,
+  ExtensionStore,
+} from '../plugins/selfExtension/index.js';
 import {
   NarrowingWidensError,
   IllegalProposalTransitionError,
   ProposalNotFoundError,
   parseExtensionProposal,
+  parseTemplateProposal,
   materializeApprovedProposal,
   type ProposalRecord,
+  type ExtensionProposal,
+  type TemplateProposal,
 } from '../plugins/selfExtension/index.js';
 
 /**
@@ -46,6 +53,13 @@ export interface SelfExtensionRouteDeps {
   draftStore: DraftStore;
   buildPipeline: BuildPipeline;
   packageUploadService: PackageUploadService;
+  /** Theme B (standalone plugins): template registry + manifest catalog +
+   *  approved-extension store + reactivation. When absent, template proposals
+   *  are rejected and only the Builder-spec path is available. */
+  pluginCatalog?: PluginCatalog;
+  selfExtendRegistry?: SelfExtendRegistry;
+  extensionStore?: ExtensionStore;
+  reactivate?: (pluginId: string) => Promise<void>;
   log?: (line: string) => void;
 }
 
@@ -65,23 +79,59 @@ export function registerSelfExtensionRoutes(
     const agentId = readParam(req, 'agentId');
     if (!agentId) return sendJson(res, 400, { code: 'self_ext.invalid_agent_id', message: 'missing :agentId' });
 
-    // Build the proposal, forcing pluginId = :agentId (no impersonation via body).
-    const proposalInput = { ...(req.body as Record<string, unknown>), pluginId: agentId };
+    const body = (req.body ?? {}) as Record<string, unknown>;
+
+    // Template proposal (standalone-plugin path): body carries a `templateId`.
+    if (typeof body['templateId'] === 'string') {
+      if (!deps.pluginCatalog || !deps.selfExtendRegistry) {
+        return sendJson(res, 501, {
+          code: 'self_ext.templates_unavailable',
+          message: 'template self-extension is not wired on this server',
+        });
+      }
+      let proposal;
+      try {
+        proposal = parseTemplateProposal({ ...body, pluginId: agentId });
+      } catch (err) {
+        return sendJson(res, 400, {
+          code: 'self_ext.invalid_proposal',
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+      const plugin = deps.pluginCatalog.get(agentId)?.plugin;
+      if (!plugin) {
+        return sendJson(res, 404, {
+          code: 'self_ext.plugin_not_found',
+          message: `plugin '${agentId}' is not installed`,
+        });
+      }
+      const template = deps.selfExtendRegistry.getTemplate(agentId, proposal.templateId);
+      const record = deps.gate.submit({
+        kind: 'template',
+        pluginId: agentId,
+        plugin,
+        template,
+        proposal,
+        submittedBy: email,
+      });
+      return sendJson(res, 200, { ok: true, proposal: serializeRecord(record) });
+    }
+
+    // Spec proposal (Builder-plugin path): patches against the source draft.
     let proposal;
     try {
-      proposal = parseExtensionProposal(proposalInput);
+      proposal = parseExtensionProposal({ ...body, pluginId: agentId });
     } catch (err) {
       return sendJson(res, 400, {
         code: 'self_ext.invalid_proposal',
         message: err instanceof Error ? err.message : String(err),
       });
     }
-
     const draft = await deps.draftStore.findByPublishedAgentId(email, agentId);
     if (!draft) {
       return sendJson(res, 404, {
         code: 'self_ext.source_not_found',
-        message: `no source draft for installed plugin '${agentId}' owned by this operator`,
+        message: `no source draft for installed plugin '${agentId}' owned by this operator (a standalone plugin must propose via a template)`,
       });
     }
     let currentSpec;
@@ -96,6 +146,23 @@ export function registerSelfExtensionRoutes(
 
     const record = deps.gate.submit({ pluginId: agentId, currentSpec, proposal, submittedBy: email });
     return sendJson(res, 200, { ok: true, proposal: serializeRecord(record) });
+  });
+
+  router.get('/self-extension/:agentId/templates', (req: Request, res: Response) => {
+    const email = readEmail(req);
+    if (!email) return sendJson(res, 401, { code: 'auth.missing', message: 'no session' });
+    const agentId = readParam(req, 'agentId');
+    if (!agentId) return sendJson(res, 400, { code: 'self_ext.invalid_agent_id', message: 'missing :agentId' });
+    const templates = deps.selfExtendRegistry?.templates(agentId) ?? [];
+    return sendJson(res, 200, {
+      ok: true,
+      templates: templates.map((t) => ({
+        id: t.id,
+        title: t.title,
+        description: t.description,
+        paramsSchema: t.paramsSchema,
+      })),
+    });
   });
 
   router.get('/self-extension/proposals', (req: Request, res: Response) => {
@@ -172,16 +239,25 @@ export function registerSelfExtensionRoutes(
         draftStore: deps.draftStore,
         buildPipeline: deps.buildPipeline,
         packageUploadService: deps.packageUploadService,
+        ...(deps.extensionStore ? { extensionStore: deps.extensionStore } : {}),
+        ...(deps.reactivate ? { reactivate: deps.reactivate } : {}),
         ...(deps.log ? { log: deps.log } : {}),
       },
     );
     if (result.ok) {
-      return sendJson(res, 200, {
-        ok: true,
-        publishedAgentId: result.install.publishedAgentId,
-        version: result.install.version,
-        proposal: serializeRecord(deps.gate.get(id) as ProposalRecord),
-      });
+      const proposal = serializeRecord(deps.gate.get(id) as ProposalRecord);
+      return sendJson(
+        res,
+        200,
+        result.kind === 'spec'
+          ? {
+              ok: true,
+              publishedAgentId: result.install.publishedAgentId,
+              version: result.install.version,
+              proposal,
+            }
+          : { ok: true, pluginId: result.pluginId, templateId: result.templateId, proposal },
+      );
     }
     const status = result.stage === 'precondition' ? 409 : 422;
     return sendJson(res, status, {
@@ -199,13 +275,17 @@ export function registerSelfExtensionRoutes(
  *  specs (large) — exposes the verdict, escalations, and a tool-count delta. */
 function serializeRecord(record: ProposalRecord): Record<string, unknown> {
   const ev = record.evaluation;
+  const kindFields =
+    record.kind === 'template'
+      ? { kind: 'template', templateId: (record.proposal as TemplateProposal).templateId }
+      : { kind: 'spec', patchCount: (record.proposal as ExtensionProposal).patches.length };
   return {
     id: record.id,
     pluginId: record.pluginId,
+    ...kindFields,
     status: record.status,
     decision: ev.decision,
     rationale: record.proposal.rationale,
-    patchCount: record.proposal.patches.length,
     escalations: ev.escalations,
     ...(ev.invalidReason ? { invalidReason: ev.invalidReason } : {}),
     submittedBy: record.submittedBy,

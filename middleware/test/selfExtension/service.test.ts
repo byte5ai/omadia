@@ -8,8 +8,14 @@ import { DraftStore } from '../../src/plugins/builder/draftStore.js';
 import type { BuildPipeline, PipelineRunResult } from '../../src/plugins/builder/buildPipeline.js';
 import type { PackageUploadService } from '../../src/plugins/packageUploadService.js';
 import { OperatorGate } from '../../src/plugins/selfExtension/operatorGate.js';
+import { ExtensionStore } from '../../src/plugins/selfExtension/extensionStore.js';
 import { materializeApprovedProposal } from '../../src/plugins/selfExtension/service.js';
-import { parseExtensionProposal } from '../../src/plugins/selfExtension/extensionProposal.js';
+import {
+  parseExtensionProposal,
+  parseTemplateProposal,
+} from '../../src/plugins/selfExtension/extensionProposal.js';
+import type { ExtensionTemplate } from '@omadia/plugin-api';
+import type { Plugin } from '../../src/api/admin-v1.js';
 import { baseSpec } from './_fixtures.js';
 
 const PLUGIN_ID = 'de.byte5.agent.dynamics';
@@ -82,9 +88,11 @@ describe('materializeApprovedProposal', () => {
       { gate, draftStore: store, buildPipeline: fakePipeline(true), packageUploadService: fakeUploadService() },
     );
     assert.equal(res.ok, true);
-    if (res.ok) {
+    if (res.ok && res.kind === 'spec') {
       assert.equal(res.install.publishedAgentId, PLUGIN_ID);
       assert.equal(res.install.version, '0.2.0');
+    } else {
+      assert.fail('expected a spec-kind install result');
     }
     assert.equal(gate.get(proposalId)?.status, 'installed');
   });
@@ -97,6 +105,44 @@ describe('materializeApprovedProposal', () => {
     );
     assert.equal(res.ok, false);
     assert.equal(gate.get(proposalId)?.status, 'install_failed');
+  });
+
+  it('materialises a template proposal: persists the extension + reactivates', async () => {
+    const gate = new OperatorGate({ now: () => 1, genId: () => 'pt1' });
+    const plugin = {
+      id: PLUGIN_ID,
+      depends_on: [],
+      privacy_class: 'strict',
+      permissions_summary: {
+        memory_reads: [], memory_writes: [], graph_reads: [], graph_writes: [],
+        network_outbound: ['api.dynamics.com'],
+      },
+    } as unknown as Plugin;
+    const template: ExtensionTemplate = {
+      id: 'odata.delta', title: 'Delta', description: 'd', paramsSchema: { type: 'object' },
+      requires: { networkOutbound: ['api.dynamics.com'] },
+    };
+    const proposal = parseTemplateProposal({ pluginId: PLUGIN_ID, rationale: 'delta', templateId: 'odata.delta', params: { entitySet: 'salesorders' } });
+    const rec = gate.submit({ kind: 'template', pluginId: PLUGIN_ID, plugin, template, proposal, submittedBy: 'agent' });
+    gate.approve({ id: rec.id, decidedBy: USER });
+
+    const extStore = new ExtensionStore(path.join(dir, 'ext.json'));
+    await extStore.load();
+    const reactivated: string[] = [];
+
+    const res = await materializeApprovedProposal(
+      { proposalId: rec.id, userEmail: USER },
+      { gate, extensionStore: extStore, reactivate: async (id) => { reactivated.push(id); } },
+    );
+    assert.equal(res.ok, true);
+    if (res.ok && res.kind === 'template') {
+      assert.equal(res.templateId, 'odata.delta');
+    } else {
+      assert.fail('expected a template-kind result');
+    }
+    assert.deepEqual(reactivated, [PLUGIN_ID]);
+    assert.equal(extStore.list(PLUGIN_ID).length, 1);
+    assert.equal(gate.get(rec.id)?.status, 'installed');
   });
 
   it('refuses to materialise a proposal that is not approved', async () => {

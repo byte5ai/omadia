@@ -24,6 +24,7 @@
  * counts as an escalation.
  */
 
+import type { Plugin } from '../../api/admin-v1.js';
 import type { AgentSpec } from '../builder/agentSpec.js';
 
 export type PrivacyClass = 'strict' | 'default';
@@ -85,6 +86,70 @@ export function extractPermissionSurface(spec: AgentSpec): PermissionSurface {
     webScanner: spec.network?.web_scanner === true,
     externalReads: new Set(spec.external_reads.map(externalReadKey)),
     privacyClass: spec.privacy_class,
+  };
+}
+
+/**
+ * Reduce an INSTALLED plugin's manifest to the same privilege surface. This is
+ * the universal path used for plugins that have no Builder `AgentSpec` draft —
+ * hand-written / side-loaded packages (e.g. the Dynamics CRM plugin). It maps
+ * the loader-assembled {@link PluginPermissionsSummary} onto the identical
+ * dimensions as {@link extractPermissionSurface}, so the escalation guard runs
+ * unchanged against either source.
+ *
+ * `externalReads` has no manifest equivalent (a standalone plugin's egress
+ * lives in `network_outbound`), and `memory_*` is intentionally NOT a surface
+ * dimension on either side — it mirrors the spec's `PermissionsSchema`
+ * (graph / subAgents / llm / network), so a template may not request memory
+ * scopes in v1.
+ */
+export function extractSurfaceFromManifest(plugin: Plugin): PermissionSurface {
+  const p = plugin.permissions_summary;
+  return {
+    dependsOn: new Set<string>(plugin.depends_on),
+    graphReads: new Set<string>(p.graph_reads),
+    graphWrites: new Set<string>(p.graph_writes),
+    graphEntitySystems: new Set(p.graph_entity_systems ?? []),
+    subAgentCalls: new Set(p.sub_agents_calls ?? []),
+    llmModels: new Set(p.llm_models_allowed ?? []),
+    networkOutbound: new Set(p.network_outbound),
+    webScanner: p.network_web_scanner === true,
+    externalReads: new Set<string>(),
+    privacyClass: plugin.privacy_class,
+  };
+}
+
+/**
+ * Build a {@link PermissionSurface} from a sparse descriptor — used to express
+ * what an {@link ExtensionTemplate} *requires*, so the guard can prove
+ * `requires ⊆ manifestSurface` via {@link computeWidenings}. Omitted dimensions
+ * default to empty / least-privilege (`webScanner:false`, `privacyClass:'strict'`).
+ */
+export interface PartialSurface {
+  dependsOn?: readonly string[];
+  graphReads?: readonly string[];
+  graphWrites?: readonly string[];
+  graphEntitySystems?: readonly string[];
+  subAgentCalls?: readonly string[];
+  llmModels?: readonly string[];
+  networkOutbound?: readonly string[];
+  webScanner?: boolean;
+  externalReads?: readonly string[];
+  privacyClass?: PrivacyClass;
+}
+
+export function surfaceFromPartial(partial: PartialSurface): PermissionSurface {
+  return {
+    dependsOn: new Set(partial.dependsOn ?? []),
+    graphReads: new Set(partial.graphReads ?? []),
+    graphWrites: new Set(partial.graphWrites ?? []),
+    graphEntitySystems: new Set(partial.graphEntitySystems ?? []),
+    subAgentCalls: new Set(partial.subAgentCalls ?? []),
+    llmModels: new Set(partial.llmModels ?? []),
+    networkOutbound: new Set(partial.networkOutbound ?? []),
+    webScanner: partial.webScanner === true,
+    externalReads: new Set(partial.externalReads ?? []),
+    privacyClass: partial.privacyClass ?? 'strict',
   };
 }
 

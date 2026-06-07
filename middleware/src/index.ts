@@ -58,7 +58,12 @@ import { createRegistryInstallRouter } from './routes/registryInstall.js';
 import { createRuntimeRouter } from './routes/runtime.js';
 import { createVaultStatusRouter } from './routes/vaultStatus.js';
 import { createBuilderRouter } from './routes/builder.js';
-import { OperatorGate } from './plugins/selfExtension/index.js';
+import {
+  OperatorGate,
+  SelfExtendRegistry,
+  ExtensionStore,
+  createRequestSelfExtensionTool,
+} from './plugins/selfExtension/index.js';
 import { DraftStore } from './plugins/builder/draftStore.js';
 import { buildDraftStorageMirrorHook } from './plugins/builder/draftStorageBridge.js';
 import { DraftQuota } from './plugins/builder/draftQuota.js';
@@ -540,6 +545,33 @@ async function main(): Promise<void> {
   // unregister EXACTLY those — independent of whether the catalog entry still
   // exists (uninstall may have reloaded the catalog and dropped it first).
   const registeredServiceTypesByPlugin = new Map<string, string[]>();
+  // Plugin self-extension (Theme A + B). The gate holds the in-memory proposal
+  // store (shared by the agent-in-loop `request_self_extension` tool and the
+  // operator routes); the registry holds plugins' declared extension templates;
+  // the store persists operator-approved extensions, replayed on each activate.
+  const selfExtensionGate = new OperatorGate();
+  const selfExtendRegistry = new SelfExtendRegistry();
+  const extensionStore = new ExtensionStore(
+    path.join(DATA_DIR, 'self-extensions.json'),
+  );
+  await extensionStore.load();
+
+  // Agent-in-loop auto-author tool — a kernel native tool available to every
+  // agent; submits proposals as `pending` (never auto-approved).
+  {
+    const reqTool = createRequestSelfExtensionTool({
+      gate: selfExtensionGate,
+      pluginCatalog,
+      selfExtendRegistry,
+      notificationRouter,
+    });
+    nativeToolRegistry.register(reqTool.name, {
+      handler: reqTool.handler,
+      spec: reqTool.spec,
+      promptDoc: reqTool.promptDoc,
+    });
+  }
+
   const toolPluginRuntime = new ToolPluginRuntime({
     catalog: pluginCatalog,
     registry: installedRegistry,
@@ -552,6 +584,8 @@ async function main(): Promise<void> {
     notificationRouter,
     uiRouteCatalog,
     jobScheduler,
+    selfExtendRegistry,
+    extensionStore,
     // When an integration plugin activates — at boot OR via a live hot-
     // install — register every `manifest.service_types` entry into the
     // agent-builder's `serviceTypeRegistry`, and link its package into the
@@ -2461,11 +2495,6 @@ async function main(): Promise<void> {
   process.once('SIGTERM', shutdownBuilder);
   process.once('SIGINT', shutdownBuilder);
 
-  // Plugin self-extension — process-singleton gate holding the in-memory
-  // proposal store + audit trail. Constructed once so proposals survive across
-  // operator requests for the lifetime of the process.
-  const selfExtensionGate = new OperatorGate();
-
   app.use(
     '/api/v1/builder',
     requireAuth,
@@ -2526,6 +2555,10 @@ async function main(): Promise<void> {
               draftStore,
               buildPipeline: builderBuildPipeline,
               packageUploadService,
+              pluginCatalog,
+              selfExtendRegistry,
+              extensionStore,
+              reactivate: reactivateAgent,
             },
           }
         : {}),

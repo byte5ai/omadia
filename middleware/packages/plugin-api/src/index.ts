@@ -1,6 +1,7 @@
 export * from './pluginContext.js';
 export * from './conversation.js';
 export * from './limitSignal.js';
+export * from './selfExtend.js';
 export * from './localSubAgentTool.js';
 export * from './piiAnnotation.js';
 
