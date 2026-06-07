@@ -8,7 +8,7 @@ import {
   type KeyboardEvent,
 } from 'react';
 import { useTranslations } from 'next-intl';
-import { Eraser } from 'lucide-react';
+import { Eraser, Navigation } from 'lucide-react';
 import { ChatTabs } from './_components/ChatTabs';
 import { AgentPicker } from './_components/AgentPicker';
 import { AgentUnavailableBanner } from './_components/AgentUnavailableBanner';
@@ -22,7 +22,7 @@ import { RecalledContextCard } from './_components/chat/RecalledContextCard';
 import { PrivacyReceiptCard } from './_components/chat/PrivacyReceiptCard';
 import { SaveMemoryButton } from './_components/chat/SaveMemoryButton';
 import { Markdown } from './_components/Markdown';
-import { resetChatSession } from './_lib/api';
+import { resetChatSession, steerActiveTurn } from './_lib/api';
 import {
   deriveTitle,
   newSessionId,
@@ -59,6 +59,12 @@ export default function ChatPage(): React.ReactElement {
   const [input, setInput] = useState('');
   const [resetPending, setResetPending] = useState(false);
   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
+  /** Mid-turn steering — true while a `/chat/steer` request is in flight. */
+  const [steerBusy, setSteerBusy] = useState(false);
+  /** Transient composer notice after a steer attempt: 'sent' when it was
+   *  buffered into the live turn, 'ended' when the turn had already finished
+   *  (the typed text is kept so the user can resend it as a normal turn). */
+  const [steerNotice, setSteerNotice] = useState<'sent' | 'ended' | null>(null);
   /** Phase A — selected Agent slug for the upcoming first turn.
    *  Ignored after the session pins (server snapshots on first turn). */
   const [selectedAgentSlug, setSelectedAgentSlug] = useState<string | undefined>(undefined);
@@ -173,10 +179,56 @@ export default function ChatPage(): React.ReactElement {
     streamStore.abort(activeId);
   };
 
+  /**
+   * Mid-turn steering — inject the composer text into the turn that's currently
+   * streaming, instead of starting a new one. The orchestrator folds it in at
+   * its next iteration boundary. If the turn ended in the meantime we keep the
+   * text so the user can resend it normally once the composer flips to Send.
+   */
+  const steer = useCallback(async (): Promise<void> => {
+    const trimmed = input.trim();
+    if (!trimmed || !sending || steerBusy) return;
+    setSteerBusy(true);
+    setSteerNotice(null);
+    try {
+      const outcome = await steerActiveTurn(activeId, trimmed);
+      if (outcome === 'applied') {
+        setInput('');
+        setSteerNotice('sent');
+      } else {
+        setSteerNotice('ended');
+      }
+    } catch (err) {
+      console.warn(
+        '[chat-steer] steer failed:',
+        err instanceof Error ? err.message : err,
+      );
+      setSteerNotice('ended');
+    } finally {
+      setSteerBusy(false);
+      inputRef.current?.focus();
+    }
+  }, [input, sending, steerBusy, activeId]);
+
+  // Auto-dismiss the steer notice so it doesn't linger across turns.
+  useEffect(() => {
+    if (!steerNotice) return;
+    const timer = setTimeout(() => {
+      setSteerNotice(null);
+    }, 4000);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [steerNotice]);
+
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
-      send();
+      if (sending) {
+        void steer();
+      } else {
+        send();
+      }
     }
   };
 
@@ -334,49 +386,84 @@ export default function ChatPage(): React.ReactElement {
       </div>
 
       <footer className="border-t border-neutral-200 bg-white/80 px-6 py-4 backdrop-blur dark:border-neutral-800 dark:bg-neutral-900/80">
-        <div className="mx-auto flex max-w-4xl items-end gap-2">
-          <button
-            type="button"
-            onClick={requestReset}
-            disabled={!canReset}
-            className="rounded border border-neutral-300 bg-white p-2 text-neutral-500 transition hover:border-neutral-400 hover:text-neutral-700 disabled:cursor-not-allowed disabled:opacity-30 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-200"
-            title={t('composerResetTitle')}
-            aria-label={t('composerResetAriaLabel')}
-          >
-            <Eraser size={16} aria-hidden />
-          </button>
-          <textarea
-            ref={inputRef}
-            value={input}
-            onChange={(e) => {
-              setInput(e.target.value);
-            }}
-            onKeyDown={onKeyDown}
-            rows={2}
-            placeholder={t('placeholder')}
-            className="flex-1 resize-none rounded border border-neutral-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-neutral-500 focus:outline-none dark:border-neutral-700 dark:bg-neutral-800"
-            disabled={sending || hydrating}
-          />
-          {sending ? (
-            <button
-              type="button"
-              onClick={abort}
-              className="rounded border border-red-300 bg-red-50 px-4 py-2 text-sm font-medium text-red-700 transition hover:bg-red-100 dark:border-red-900 dark:bg-red-950 dark:text-red-300"
-            >
-              {t('stopButton')}
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => {
-                send();
-              }}
-              disabled={input.trim().length === 0 || hydrating}
-              className="rounded bg-neutral-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
-            >
-              {t('sendButton')}
-            </button>
+        <div className="mx-auto flex max-w-4xl flex-col gap-1.5">
+          {/* Mid-turn steering hint / feedback — only while a turn streams. */}
+          {sending && (
+            <div className="flex items-center gap-1.5 text-[11px]">
+              <Navigation size={11} aria-hidden className="text-amber-600 dark:text-amber-400" />
+              {steerNotice === 'sent' ? (
+                <span className="text-amber-700 dark:text-amber-400">
+                  {t('steerNoticeSent')}
+                </span>
+              ) : steerNotice === 'ended' ? (
+                <span className="text-neutral-500 dark:text-neutral-400">
+                  {t('steerNoticeEnded')}
+                </span>
+              ) : (
+                <span className="text-neutral-500 dark:text-neutral-400">
+                  {t('steerHint')}
+                </span>
+              )}
+            </div>
           )}
+          <div className="flex items-end gap-2">
+            <button
+              type="button"
+              onClick={requestReset}
+              disabled={!canReset}
+              className="rounded border border-neutral-300 bg-white p-2 text-neutral-500 transition hover:border-neutral-400 hover:text-neutral-700 disabled:cursor-not-allowed disabled:opacity-30 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-200"
+              title={t('composerResetTitle')}
+              aria-label={t('composerResetAriaLabel')}
+            >
+              <Eraser size={16} aria-hidden />
+            </button>
+            <textarea
+              ref={inputRef}
+              value={input}
+              onChange={(e) => {
+                setInput(e.target.value);
+              }}
+              onKeyDown={onKeyDown}
+              rows={2}
+              placeholder={sending ? t('steerPlaceholder') : t('placeholder')}
+              className="flex-1 resize-none rounded border border-neutral-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-neutral-500 focus:outline-none dark:border-neutral-700 dark:bg-neutral-800"
+              disabled={hydrating}
+            />
+            {sending ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void steer();
+                  }}
+                  disabled={input.trim().length === 0 || steerBusy || hydrating}
+                  title={t('steerButtonTitle')}
+                  className="flex items-center gap-1.5 rounded border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-medium text-amber-800 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300 dark:hover:bg-amber-900"
+                >
+                  <Navigation size={14} aria-hidden />
+                  {t('steerButton')}
+                </button>
+                <button
+                  type="button"
+                  onClick={abort}
+                  className="rounded border border-red-300 bg-red-50 px-4 py-2 text-sm font-medium text-red-700 transition hover:bg-red-100 dark:border-red-900 dark:bg-red-950 dark:text-red-300"
+                >
+                  {t('stopButton')}
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  send();
+                }}
+                disabled={input.trim().length === 0 || hydrating}
+                className="rounded bg-neutral-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
+              >
+                {t('sendButton')}
+              </button>
+            )}
+          </div>
         </div>
       </footer>
 
@@ -487,6 +574,9 @@ function MessageRow({
             )}
             {(message.nudges?.length ?? 0) > 0 && (
               <NudgeList nudges={message.nudges ?? []} />
+            )}
+            {(message.steers?.length ?? 0) > 0 && (
+              <SteerList steers={message.steers ?? []} />
             )}
             {message.content.length > 0 ? (
               <Markdown
@@ -726,6 +816,32 @@ function NudgeList({ nudges }: { nudges: NudgeEvent[] }): React.ReactElement {
             console.warn(`[nudge] suppress requested for ${id}`);
           }}
         />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Mid-turn steering trace — renders each user message that was injected via
+ * `/chat/steer` while this turn was streaming, so the reader can see where live
+ * input was folded into the agent's reasoning. Amber to match the composer's
+ * steer affordance.
+ */
+function SteerList({ steers }: { steers: string[] }): React.ReactElement {
+  const t = useTranslations('chat');
+  return (
+    <div className="mt-2 space-y-1">
+      {steers.map((text, i) => (
+        <div
+          key={`${String(i)}:${text.slice(0, 24)}`}
+          className="flex items-start gap-1.5 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-800 dark:border-amber-900 dark:bg-amber-950/50 dark:text-amber-300"
+        >
+          <Navigation size={11} aria-hidden className="mt-0.5 shrink-0" />
+          <span>
+            <span className="font-medium">{t('steerTraceLabel')}</span>{' '}
+            {text}
+          </span>
+        </div>
       ))}
     </div>
   );
