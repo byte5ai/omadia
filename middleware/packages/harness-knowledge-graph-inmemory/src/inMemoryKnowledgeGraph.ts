@@ -45,6 +45,8 @@ import {
   type InconsistencyResolution,
   type InconsistencyStatus,
   type ListInconsistenciesOptions,
+  type KgWalkEdge,
+  type KgWalkNode,
   type ListMemoriesForScopeOptions,
   type MemorableKnowledgeHit,
   type MemoriesProvenanceView,
@@ -2566,6 +2568,82 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     return { memories, edges };
   }
 
+  async getMemorableKnowledgeSubgraph(
+    rootExternalIds: string[],
+    opts: { maxHops?: number; maxNodes?: number } = {},
+  ): Promise<{ nodes: KgWalkNode[]; edges: KgWalkEdge[] }> {
+    const maxHops = Math.max(1, Math.min(opts.maxHops ?? 2, 6));
+    const maxNodes = Math.max(1, Math.min(opts.maxNodes ?? 40, 500));
+
+    const roots = [...new Set(rootExternalIds)].filter(
+      (id) => typeof id === 'string' && id.length > 0 && this.nodes.has(id),
+    );
+    if (roots.length === 0) return { nodes: [], edges: [] };
+
+    // BFS over the in-memory edge map. `from`/`to` are already external_ids
+    // here (no UUID indirection like the Neon backend).
+    const distance = new Map<string, number>();
+    const included = new Set<string>();
+    let frontier: string[] = [];
+    for (const id of roots) {
+      distance.set(id, 0);
+      included.add(id);
+      frontier.push(id);
+    }
+
+    const edgeByKey = new Map<
+      string,
+      { from: string; to: string; type: string; hop: number }
+    >();
+
+    for (let hop = 1; hop <= maxHops; hop++) {
+      if (frontier.length === 0) break;
+      if (included.size >= maxNodes) break;
+      const frontierSet = new Set(frontier);
+      const nextFrontier: string[] = [];
+
+      for (const edge of this.edges.values()) {
+        const fromHit = frontierSet.has(edge.from);
+        const toHit = frontierSet.has(edge.to);
+        if (!fromHit && !toHit) continue;
+        const neighbour = fromHit ? edge.to : edge.from;
+        if (!this.nodes.has(neighbour)) continue;
+
+        if (!included.has(neighbour)) {
+          if (included.size >= maxNodes) continue; // cap — drop node + edge
+          included.add(neighbour);
+          distance.set(neighbour, hop);
+          nextFrontier.push(neighbour);
+        }
+        const key = `${edge.from}|${edge.type}|${edge.to}`;
+        if (!edgeByKey.has(key)) {
+          edgeByKey.set(key, {
+            from: edge.from,
+            to: edge.to,
+            type: edge.type,
+            hop,
+          });
+        }
+      }
+      frontier = nextFrontier;
+    }
+
+    const nodes: KgWalkNode[] = [];
+    for (const id of included) {
+      const node = this.nodes.get(id);
+      if (!node) continue;
+      nodes.push({ id: node.id, label: kgWalkLabel(node), kind: node.type });
+    }
+
+    const edges: KgWalkEdge[] = [];
+    for (const e of edgeByKey.values()) {
+      if (!included.has(e.from) || !included.has(e.to)) continue;
+      edges.push({ from: e.from, to: e.to, type: e.type, hop: e.hop });
+    }
+
+    return { nodes, edges };
+  }
+
   async findEntities(opts: FindEntitiesOptions): Promise<GraphNode[]> {
     const limit = Math.max(1, Math.min(opts.limit ?? 25, 200));
     const nameLower = opts.nameContains?.trim().toLowerCase();
@@ -2948,6 +3026,22 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     const key = `${edge.from}|${edge.type}|${edge.to}`;
     this.edges.set(key, edge);
   }
+}
+
+/**
+ * KG-walk node label — mirrors the Neon backend's helper. Prefers a human
+ * field (`summary` → `name` → `title` → `displayName`), else the node type.
+ */
+function kgWalkLabel(node: GraphNode): string {
+  const props = node.props as Record<string, unknown>;
+  for (const key of ['summary', 'name', 'title', 'displayName']) {
+    const v = props[key];
+    if (typeof v === 'string' && v.trim().length > 0) {
+      const t = v.trim();
+      return t.length > 120 ? `${t.slice(0, 117)}…` : t;
+    }
+  }
+  return node.type;
 }
 
 /**

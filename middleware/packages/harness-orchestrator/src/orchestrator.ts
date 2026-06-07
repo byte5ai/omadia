@@ -17,7 +17,10 @@ import type {
   FactExtractor,
   RecalledContext,
 } from '@omadia/orchestrator-extras';
-import { promoteTurnIfSignificant } from '@omadia/orchestrator-extras';
+import {
+  buildKgWalkPayload,
+  promoteTurnIfSignificant,
+} from '@omadia/orchestrator-extras';
 import type { AskObserver, DomainTool } from './tools/domainQueryTool.js';
 import type {
   TurnAnnotation,
@@ -1487,6 +1490,43 @@ export class Orchestrator {
   }
 
   /**
+   * KG-walk chat visualization — sibling of {@link toRecallAnnotationEvents}.
+   * When the recall surfaced any MemorableKnowledge / process / plan roots,
+   * walk the KG neighbourhood around them and emit a `kg_graph` turn-annotation
+   * carrying a {@link KgWalkPayload} so the frontend can animate iterating
+   * through the recalled subgraph.
+   *
+   * STRICT — best-effort and UI-only: this is wrapped in a try/catch and can
+   * NEVER throw, break, or delay the turn. A `turn_annotation` is additive and
+   * opaque to the model (the LLM never sees it; only the channel/UI consumes
+   * it), exactly like `kg_recall`. Returns `[]` (no event) on empty recall, no
+   * resolvable roots, an empty subgraph, or ANY error.
+   */
+  private async toKgGraphAnnotationEvents(
+    recalled: RecalledContext | undefined,
+  ): Promise<ChatStreamEvent[]> {
+    if (!recalled || !this.knowledgeGraph) return [];
+    try {
+      const payload = await buildKgWalkPayload(recalled, this.knowledgeGraph);
+      if (!payload) return [];
+      return [
+        {
+          type: 'turn_annotation' as const,
+          channel: 'kg_graph',
+          payload,
+        },
+      ];
+    } catch (err) {
+      // Never let the visualization affect the turn — log and move on.
+      console.warn(
+        '[orchestrator] kg_graph annotation build failed — skipping:',
+        err instanceof Error ? err.message : err,
+      );
+      return [];
+    }
+  }
+
+  /**
    * Public ChatAgent.chat — channel-facing. Delegates to the full-state
    * `runTurn()` and converts the internal `ChatTurnResult` to the
    * channel-agnostic `SemanticAnswer` at the boundary. Callers that need the
@@ -2220,6 +2260,10 @@ export class Orchestrator {
     // from prior sessions as a visible `kg_recall` card before the answer
     // streams in. No-op when every recall leg was empty.
     yield* this.toRecallAnnotationEvents(recalled);
+    // KG-walk chat visualization — a sibling `kg_graph` annotation carrying the
+    // recalled KG neighbourhood. Best-effort & guarded inside the helper so it
+    // can never break or delay the turn; additive/opaque to the model.
+    yield* await this.toKgGraphAnnotationEvents(recalled);
     const effectiveExtraSystemHint = composeExtraSystemHint(input);
     // Palaia Phase 8 (OB-77) — see chatInContextInner for rationale.
     const nudgeCounter = createNudgeTurnCounter();

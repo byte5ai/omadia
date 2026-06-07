@@ -75,6 +75,8 @@ import type {
   InconsistencyNode,
   InconsistencyResolution,
   InconsistencyStatus,
+  KgWalkEdge,
+  KgWalkNode,
   ListExcerptMergeCandidatesOptions,
   ListInconsistenciesOptions,
   ListMemoriesForScopeOptions,
@@ -409,6 +411,13 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
     opts?: ListMemoriesForScopeOptions,
   ): Promise<MemoriesProvenanceView> {
     return this.inner.listMemoriesForScope(scope, opts);
+  }
+
+  getMemorableKnowledgeSubgraph(
+    rootExternalIds: string[],
+    opts?: { maxHops?: number; maxNodes?: number },
+  ): Promise<{ nodes: KgWalkNode[]; edges: KgWalkEdge[] }> {
+    return this.inner.getMemorableKnowledgeSubgraph(rootExternalIds, opts);
   }
 
   listMemorableKnowledgeIdsForBulkInconsistencyCheck(opts: {

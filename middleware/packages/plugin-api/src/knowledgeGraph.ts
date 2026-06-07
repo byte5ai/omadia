@@ -663,6 +663,65 @@ export interface KnowledgeGraph {
     scope: string | undefined,
     opts?: ListMemoriesForScopeOptions,
   ): Promise<MemoriesProvenanceView>;
+
+  /**
+   * KG-walk chat visualization — given the top recalled MemorableKnowledge
+   * external ids (the recall frontier, hop 0), BFS outward over `graph_edges`
+   * in BOTH directions, tenant-scoped, up to `maxHops` (default 2) and capped
+   * at `maxNodes` (default ~40). Returns the surfaced neighbourhood as a flat
+   * node/edge list for the frontend to animate. Read-only and best-effort:
+   * callers wrap it so it can never affect or delay the turn / the LLM.
+   *
+   * `KgWalkEdge.hop` is the BFS discovery layer of the edge = (BFS distance of
+   * its nearer endpoint) + 1, i.e. the hop at which the edge was first crossed.
+   * Edges and nodes beyond `maxNodes` are dropped; every emitted edge is
+   * guaranteed to reference two emitted nodes.
+   */
+  getMemorableKnowledgeSubgraph(
+    rootExternalIds: string[],
+    opts?: { maxHops?: number; maxNodes?: number },
+  ): Promise<{ nodes: KgWalkNode[]; edges: KgWalkEdge[] }>;
+}
+
+// ---------------------------------------------------------------------------
+// KG-walk chat visualization — per-turn graph payload of the Knowledge-Graph
+// neighbourhood the recall surfaced. Emitted as a sibling `kg_graph`
+// turn-annotation next to `kg_recall`; consumed by the frontend to animate
+// iterating through the recalled subgraph. UI-only, additive, opaque to the
+// model.
+// ---------------------------------------------------------------------------
+
+/** One node in the recalled KG neighbourhood. */
+export interface KgWalkNode {
+  /** Graph `external_id` (matches `GraphNode.id`'s key space). */
+  id: string;
+  /** Human label — from `properties.summary` / `name` / `title`, else type. */
+  label: string;
+  /** Node `type` (e.g. `MemorableKnowledge`, `Turn`, `Entity`). */
+  kind: string;
+  /** Recall hit score; set only on root (hop-0) nodes when available. */
+  score?: number;
+}
+
+/** One edge in the recalled KG neighbourhood. */
+export interface KgWalkEdge {
+  /** Source node `external_id`. */
+  from: string;
+  /** Target node `external_id`. */
+  to: string;
+  /** Edge `type` (e.g. `DERIVED_FROM`, `INVOLVED`, `REQUIRES`). */
+  type: string;
+  /** BFS discovery layer of the edge from the nearest root (1..N). */
+  hop: number;
+}
+
+/** Per-turn KG-walk payload carried by the `kg_graph` turn-annotation. */
+export interface KgWalkPayload {
+  /** Top recalled MemorableKnowledge node ids (frontier seeds, hop 0). */
+  rootIds: string[];
+  nodes: KgWalkNode[];
+  /** `hop` = BFS distance from the nearest root (1..N). */
+  edges: KgWalkEdge[];
 }
 
 /**

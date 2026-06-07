@@ -50,6 +50,8 @@ import type {
   InconsistencyResolution,
   InconsistencyStatus,
   KnowledgeGraph,
+  KgWalkEdge,
+  KgWalkNode,
   ListInconsistenciesOptions,
   ListMemoriesForScopeOptions,
   ListMemorableKnowledgeOptions,
@@ -426,6 +428,12 @@ export class MergeTriggeringKnowledgeGraph implements KnowledgeGraph {
     opts?: ListMemoriesForScopeOptions,
   ): Promise<MemoriesProvenanceView> {
     return this.inner.listMemoriesForScope(scope, opts);
+  }
+  getMemorableKnowledgeSubgraph(
+    rootExternalIds: string[],
+    opts?: { maxHops?: number; maxNodes?: number },
+  ): Promise<{ nodes: KgWalkNode[]; edges: KgWalkEdge[] }> {
+    return this.inner.getMemorableKnowledgeSubgraph(rootExternalIds, opts);
   }
   listMemorableKnowledgeIdsForBulkInconsistencyCheck(opts: {
     limit: number;
