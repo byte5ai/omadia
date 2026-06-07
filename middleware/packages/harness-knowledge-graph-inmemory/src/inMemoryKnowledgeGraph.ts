@@ -3029,15 +3029,43 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
 }
 
 /**
- * KG-walk node label — mirrors the Neon backend's helper. Prefers a human
- * field (`summary` → `name` → `title` → `displayName`), else the node type.
+ * Per-type label keys — mirrors the Neon backend's {@link kgWalkLabel}. Surface
+ * a node's semantic content (a Turn's `userMessage`, a PalaiaExcerpt's `text`)
+ * rather than its bare type.
+ */
+const KG_WALK_LABEL_KEYS: Record<string, readonly string[]> = {
+  Turn: ['userMessage', 'assistantAnswer'],
+  PalaiaExcerpt: ['text'],
+  Plan: ['goal', 'summary'],
+  PlanStep: ['goal'],
+  Inconsistency: ['summary'],
+};
+
+const KG_WALK_GENERIC_LABEL_KEYS = [
+  'summary',
+  'name',
+  'title',
+  'displayName',
+  'text',
+  'goal',
+  'content',
+  'message',
+] as const;
+
+/**
+ * KG-walk node label — mirrors the Neon backend's helper. Tries the per-type
+ * semantic keys first, then generic human fields, else the node type.
  */
 function kgWalkLabel(node: GraphNode): string {
   const props = node.props as Record<string, unknown>;
-  for (const key of ['summary', 'name', 'title', 'displayName']) {
+  const keys = [
+    ...(KG_WALK_LABEL_KEYS[node.type] ?? []),
+    ...KG_WALK_GENERIC_LABEL_KEYS,
+  ];
+  for (const key of keys) {
     const v = props[key];
     if (typeof v === 'string' && v.trim().length > 0) {
-      const t = v.trim();
+      const t = v.trim().replace(/\s+/g, ' ');
       return t.length > 120 ? `${t.slice(0, 117)}…` : t;
     }
   }

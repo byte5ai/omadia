@@ -4816,16 +4816,49 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
 }
 
 /**
- * KG-walk node label — prefers a human field from the node's properties
- * (`summary` → `name` → `title`), falls back to the node `type`. Trimmed and
- * length-capped so the payload stays small for the frontend animation.
+ * Per-type label keys for {@link kgWalkLabel}. The KG-walk list should show the
+ * SEMANTIC content of a node, not its type repeated — so for the types whose
+ * meaning lives in a non-generic property we name that field explicitly. These
+ * are tried before the generic keys.
+ */
+export const KG_WALK_LABEL_KEYS: Record<string, readonly string[]> = {
+  Turn: ['userMessage', 'assistantAnswer'],
+  PalaiaExcerpt: ['text'],
+  Plan: ['goal', 'summary'],
+  PlanStep: ['goal'],
+  Inconsistency: ['summary'],
+};
+
+/** Generic human-label fields tried for every node type after the per-type set. */
+const KG_WALK_GENERIC_LABEL_KEYS = [
+  'summary',
+  'name',
+  'title',
+  'displayName',
+  'text',
+  'goal',
+  'content',
+  'message',
+] as const;
+
+/**
+ * KG-walk node label — surfaces the node's SEMANTIC content for the chat
+ * visualization rather than its bare type. Tries the per-type keys
+ * ({@link KG_WALK_LABEL_KEYS}, e.g. a Turn's `userMessage` or a PalaiaExcerpt's
+ * `text`) first, then the generic human fields, and only falls back to the
+ * node `type` when nothing readable exists. Whitespace is collapsed and the
+ * result is length-capped so the payload stays small for the frontend.
  */
 export function kgWalkLabel(node: GraphNode): string {
   const props = node.props as Record<string, unknown>;
-  for (const key of ['summary', 'name', 'title', 'displayName']) {
+  const keys = [
+    ...(KG_WALK_LABEL_KEYS[node.type] ?? []),
+    ...KG_WALK_GENERIC_LABEL_KEYS,
+  ];
+  for (const key of keys) {
     const v = props[key];
     if (typeof v === 'string' && v.trim().length > 0) {
-      const t = v.trim();
+      const t = v.trim().replace(/\s+/g, ' ');
       return t.length > 120 ? `${t.slice(0, 117)}…` : t;
     }
   }
