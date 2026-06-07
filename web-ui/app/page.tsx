@@ -10,7 +10,7 @@ import {
   type KeyboardEvent,
 } from 'react';
 import { useTranslations } from 'next-intl';
-import { Eraser, Navigation } from 'lucide-react';
+import { Eraser, Navigation, Network } from 'lucide-react';
 import { ChatTabs } from './_components/ChatTabs';
 import { AgentPicker } from './_components/AgentPicker';
 import { AgentUnavailableBanner } from './_components/AgentUnavailableBanner';
@@ -112,16 +112,20 @@ function subscribeKgWalkPref(onChange: () => void): () => void {
 }
 
 function useKgWalkEnabled(): readonly [boolean, (next: boolean) => void] {
+  // Default ON: the feature is on unless the operator explicitly turned it off
+  // (stored '0'). An unset key (first visit) reads as enabled, so the pane
+  // surfaces KG access out of the box. getServerSnapshot mirrors that default
+  // so SSR and the first client paint agree.
   const enabled = useSyncExternalStore(
     subscribeKgWalkPref,
     () => {
       try {
-        return window.localStorage.getItem(KG_WALK_PREF_KEY) === '1';
+        return window.localStorage.getItem(KG_WALK_PREF_KEY) !== '0';
       } catch {
-        return false;
+        return true;
       }
     },
-    () => false,
+    () => true,
   );
   const setEnabled = useCallback((next: boolean) => {
     try {
@@ -435,17 +439,34 @@ export default function ChatPage(): React.ReactElement {
               selectedSlug={selectedAgentSlug}
               onSelect={setSelectedAgentSlug}
             />
-            {/* KG-walk feature toggle — opt-in, persisted. Off → no launcher,
-                no pane (kg_graph annotations are simply not surfaced). */}
-            <label className="flex cursor-pointer select-none items-center gap-1.5 text-[11px] text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300">
-              <input
-                type="checkbox"
-                checked={kgWalkEnabled}
-                onChange={(e) => setKgWalkEnabled(e.target.checked)}
-                className="h-3 w-3 accent-indigo-500"
-              />
+            {/* KG-walk feature toggle — a pill that lights up when on (default).
+                On → the floating pane auto-opens whenever a turn touches the KG;
+                off → no pane (kg_graph/kg_insert annotations stay unsurfaced). */}
+            <button
+              type="button"
+              role="switch"
+              aria-checked={kgWalkEnabled}
+              onClick={() => setKgWalkEnabled(!kgWalkEnabled)}
+              title={t('kgWalk.toggleLabel')}
+              className={[
+                'inline-flex select-none items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition',
+                kgWalkEnabled
+                  ? 'border-indigo-300 bg-indigo-50 text-indigo-700 dark:border-indigo-600/60 dark:bg-indigo-500/15 dark:text-indigo-300'
+                  : 'border-neutral-300 bg-transparent text-neutral-400 hover:text-neutral-600 dark:border-neutral-700 dark:hover:text-neutral-300',
+              ].join(' ')}
+            >
+              <Network size={12} aria-hidden />
               {t('kgWalk.toggleLabel')}
-            </label>
+              <span
+                aria-hidden
+                className={[
+                  'inline-block h-1.5 w-1.5 rounded-full',
+                  kgWalkEnabled
+                    ? 'bg-indigo-500'
+                    : 'bg-neutral-400 dark:bg-neutral-600',
+                ].join(' ')}
+              />
+            </button>
           </div>
 
           {/* Row 2 — Agent-Usage-Pills (only when anything was invoked) */}

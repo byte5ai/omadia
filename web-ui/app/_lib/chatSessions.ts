@@ -268,6 +268,8 @@ export interface KgWalkNode {
   /** e.g. `MemorableKnowledge`, `Turn`, `Entity`, `User`. */
   kind: string;
   score?: number;
+  /** True when this turn WROTE the node (carried by the `kg_insert` merge). */
+  inserted?: boolean;
 }
 
 export interface KgWalkEdge {
@@ -276,6 +278,8 @@ export interface KgWalkEdge {
   type: string;
   /** BFS distance from a root (1..N). hop-0 are the roots themselves. */
   hop: number;
+  /** True when this turn created the edge (see KgWalkNode.inserted). */
+  inserted?: boolean;
 }
 
 export interface KgWalkPayload {

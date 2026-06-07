@@ -1,7 +1,7 @@
 // Minimal ambient declaration for d3-force-3d (force-graph's simulation
-// engine). It ships no types and has no @types package; we only use
-// `forceCollide` to add a collision force to the running simulation, so a
-// loose signature is sufficient.
+// engine). It ships no types and has no @types package; we use `forceCollide`
+// for overlap avoidance and `forceX`/`forceY` for weak centering, so loose
+// signatures are sufficient.
 declare module 'd3-force-3d' {
   interface CollideForce {
     radius(radius: number | ((node: unknown) => number)): CollideForce;
@@ -11,4 +11,13 @@ declare module 'd3-force-3d' {
   export function forceCollide(
     radius?: number | ((node: unknown) => number),
   ): CollideForce;
+
+  interface PositioningForce {
+    strength(strength: number | ((node: unknown) => number)): PositioningForce;
+    x(x: number | ((node: unknown) => number)): PositioningForce;
+    y(y: number | ((node: unknown) => number)): PositioningForce;
+    (...args: unknown[]): void;
+  }
+  export function forceX(x?: number | ((node: unknown) => number)): PositioningForce;
+  export function forceY(y?: number | ((node: unknown) => number)): PositioningForce;
 }

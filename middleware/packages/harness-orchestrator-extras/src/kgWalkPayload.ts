@@ -73,3 +73,38 @@ export async function buildKgWalkPayload(
 
   return { rootIds: presentRootIds, nodes: scoredNodes, edges };
 }
+
+/**
+ * KG-insert chat visualization — the sibling of {@link buildKgWalkPayload} for
+ * the WRITE side. After a turn auto-promotes a MemorableKnowledge node, walk a
+ * tight 1-hop neighbourhood around it and stamp every node + edge with
+ * `inserted: true` so the frontend can merge it into the live walk and pulse
+ * the freshly-written part of the graph.
+ *
+ * The inserted MK id becomes the (only) root. Returns `undefined` when the id
+ * is empty or the subgraph comes back empty so the caller can skip the
+ * annotation. Read-only against the KG, best-effort, UI-only — the caller MUST
+ * guard it so it can never affect or delay the turn.
+ */
+export async function buildKgInsertPayload(
+  insertedMkId: string | undefined,
+  kg: KnowledgeGraph,
+): Promise<KgWalkPayload | undefined> {
+  if (typeof insertedMkId !== 'string' || insertedMkId.length === 0) {
+    return undefined;
+  }
+
+  const { nodes, edges } = await kg.getMemorableKnowledgeSubgraph(
+    [insertedMkId],
+    { maxHops: 1 },
+  );
+  if (nodes.length === 0) return undefined;
+
+  const insertedNodes = nodes.map((n) => ({ ...n, inserted: true }));
+  const insertedEdges = edges.map((e) => ({ ...e, inserted: true }));
+
+  const presentIds = new Set(insertedNodes.map((n) => n.id));
+  const rootIds = presentIds.has(insertedMkId) ? [insertedMkId] : [];
+
+  return { rootIds, nodes: insertedNodes, edges: insertedEdges };
+}

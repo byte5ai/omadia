@@ -62,6 +62,8 @@ interface GraphNodeDatum {
   isRoot: boolean;
   hop: number;
   score?: number;
+  /** Written by THIS turn — rendered with an emerald pulse + always-on label. */
+  inserted: boolean;
 }
 
 interface GraphLinkDatum {
@@ -69,7 +71,11 @@ interface GraphLinkDatum {
   target: string;
   type: string;
   hop: number;
+  inserted: boolean;
 }
+
+/** Emerald accent for freshly-inserted nodes/edges (matches Turn green family). */
+const INSERT_ACCENT = '#34d399';
 
 function truncateLabel(label: string, max = 24): string {
   if (label.length <= max) return label;
@@ -145,6 +151,25 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
     setGeom((prev) => prev ?? defaultGeom());
     setOpen(true);
   }, []);
+
+  // Auto-open whenever a new walk arrives (the default behaviour now that the
+  // feature ships on). Keyed on `walk` identity: closing the pane keeps it shut
+  // for the current walk, but the next turn's walk — including a merged
+  // `kg_insert` delta, which produces a fresh object — pops it back open so the
+  // operator sees KG reads + writes without hunting for the launcher. Deferred
+  // a tick (setTimeout, like the reveal/zoom effects) so the first client paint
+  // still matches the SSR launcher — avoiding an SSR/client geometry mismatch —
+  // and so we never call setState synchronously inside the effect body.
+  useEffect(() => {
+    if (!walk) return;
+    const id = setTimeout(() => {
+      setGeom((prev) => prev ?? defaultGeom());
+      setOpen(true);
+    }, 0);
+    return () => {
+      clearTimeout(id);
+    };
+  }, [walk]);
 
   // Hop-reveal timer — settles quickly so the user isn't blocked.
   useEffect(() => {
@@ -227,6 +252,7 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
       color: kindColor(n.kind),
       isRoot: rootSet.has(n.id),
       hop: nodeHopById.get(n.id) ?? 0,
+      inserted: n.inserted === true,
       ...(n.score !== undefined ? { score: n.score } : {}),
     }));
     const links: GraphLinkDatum[] = walk.edges.map((e) => ({
@@ -234,26 +260,30 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
       target: e.to,
       type: e.type,
       hop: e.hop,
+      inserted: e.inserted === true,
     }));
     return { nodes, links };
   }, [walk, nodeHopById, rootSet]);
 
-  // De-noise force tuning: long links + strong repulsion + collision so the
-  // nodes spread out instead of piling up. Applied once the sim mounts.
+  // Compaction force tuning. The goal is a tight, centered cloud rather than a
+  // few hub-and-spoke clusters drifting into empty corners: modest repulsion +
+  // short links keep neighbours close, a small collide radius stops disc/label
+  // overlap, and weak x/y centering forces gravitate disconnected components
+  // toward the middle so `zoomToFit` frames a dense graph instead of mostly
+  // background.
   useEffect(() => {
     const fg = fgRef.current;
     if (!fg || data.nodes.length === 0) return;
     let cancelled = false;
     void (async () => {
       try {
-        // d3-force-3d is force-graph's own simulation engine; reuse its
-        // forceCollide so node discs + rings never overlap (the main
-        // contributor to the old label pile-up).
-        const { forceCollide } = await import('d3-force-3d');
+        const { forceCollide, forceX, forceY } = await import('d3-force-3d');
         if (cancelled || !fgRef.current) return;
-        fgRef.current.d3Force('charge')?.strength(-280);
-        fgRef.current.d3Force('link')?.distance(75);
-        fgRef.current.d3Force('collide', forceCollide(18));
+        fgRef.current.d3Force('charge')?.strength(-90).distanceMax(220);
+        fgRef.current.d3Force('link')?.distance(32);
+        fgRef.current.d3Force('collide', forceCollide(11));
+        fgRef.current.d3Force('x', forceX(0).strength(0.06));
+        fgRef.current.d3Force('y', forceY(0).strength(0.06));
         fgRef.current.d3ReheatSimulation?.();
       } catch {
         /* ignore — force tuning is best-effort */
@@ -423,6 +453,7 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
   if (!walk) return null;
 
   const totalNodes = walk.nodes.length;
+  const insertedCount = walk.nodes.filter((n) => n.inserted === true).length;
 
   // Launcher chip when the pane is closed.
   if (!open) {
@@ -494,6 +525,11 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
             <span className="rounded bg-white/10 px-1.5 py-0.5">
               {t('badgeHops', { count: maxHop })}
             </span>
+            {insertedCount > 0 && (
+              <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-emerald-300">
+                {t('badgeInserted', { count: insertedCount })}
+              </span>
+            )}
           </span>
           <button
             type="button"
@@ -548,31 +584,53 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
                 node ? (node as GraphNodeDatum).id : null,
               );
             }}
-            linkColor={(l) =>
-              (l as GraphLinkDatum).hop <= revealedHop
+            linkColor={(l) => {
+              const e = l as GraphLinkDatum;
+              if (e.inserted) return 'rgba(52, 211, 153, 0.7)';
+              return e.hop <= revealedHop
                 ? 'rgba(99, 102, 241, 0.45)'
-                : 'rgba(99, 102, 241, 0.08)'
-            }
-            linkWidth={1.4}
+                : 'rgba(99, 102, 241, 0.08)';
+            }}
+            linkWidth={(l) => ((l as GraphLinkDatum).inserted ? 2.2 : 1.4)}
             linkLabel={(l) => (l as GraphLinkDatum).type}
             linkDirectionalArrowLength={3}
             linkDirectionalArrowRelPos={1}
-            linkDirectionalParticles={(l) =>
-              (l as GraphLinkDatum).hop <= revealedHop ? 1 : 0
+            linkDirectionalParticles={(l) => {
+              const e = l as GraphLinkDatum;
+              if (e.inserted) return 3; // a steady flow = "writing into the graph"
+              return e.hop <= revealedHop ? 1 : 0;
+            }}
+            linkDirectionalParticleWidth={(l) =>
+              (l as GraphLinkDatum).inserted ? 2.6 : 1.8
             }
-            linkDirectionalParticleWidth={1.8}
-            linkDirectionalParticleColor={() => ROOT_ACCENT}
+            linkDirectionalParticleColor={(l) =>
+              (l as GraphLinkDatum).inserted ? INSERT_ACCENT : ROOT_ACCENT
+            }
             nodeCanvasObject={(node, ctx, globalScale) => {
               const n = node as GraphNodeDatum & { x?: number; y?: number };
               const x = n.x ?? 0;
               const y = n.y ?? 0;
-              const revealed = n.hop <= revealedHop;
+              // Inserted nodes are always treated as revealed — a write should
+              // never be dimmed behind the hop reveal.
+              const revealed = n.inserted || n.hop <= revealedHop;
               const isActive = n.id === activeNodeId;
-              const r = n.isRoot ? 6.5 : 4;
+              const r = n.inserted ? 6 : n.isRoot ? 6.5 : 4;
               ctx.globalAlpha = revealed ? 1 : 0.18;
 
-              // Ring: roots keep the accent ring; active node gets a halo.
-              if (n.isRoot || isActive) {
+              // Inserted: bold emerald double-ring so a fresh write pops.
+              if (n.inserted) {
+                ctx.beginPath();
+                ctx.arc(x, y, r + 4.5, 0, 2 * Math.PI);
+                ctx.strokeStyle = INSERT_ACCENT;
+                ctx.lineWidth = 2.4;
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.arc(x, y, r + 7.5, 0, 2 * Math.PI);
+                ctx.strokeStyle = 'rgba(52, 211, 153, 0.35)';
+                ctx.lineWidth = 1.4;
+                ctx.stroke();
+              } else if (n.isRoot || isActive) {
+                // Roots keep the accent ring; active node gets a halo.
                 ctx.beginPath();
                 ctx.arc(x, y, r + 3.5, 0, 2 * Math.PI);
                 ctx.strokeStyle = isActive ? '#fbbf24' : ROOT_ACCENT;
@@ -580,24 +638,31 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
                 ctx.stroke();
               }
 
-              ctx.fillStyle = n.color;
+              ctx.fillStyle = n.inserted ? INSERT_ACCENT : n.color;
               ctx.beginPath();
               ctx.arc(x, y, r, 0, 2 * Math.PI);
               ctx.fill();
 
-              // DE-NOISE: only roots + the hovered node carry a readable
-              // label by default; everyone else stays unlabeled (or appears
-              // when zoomed in past a threshold). This kills the overlap.
+              // DE-NOISE: only roots, inserts, and the hovered node carry a
+              // readable label by default; everyone else stays unlabeled (or
+              // appears when zoomed in past a threshold). This kills the overlap.
               const zoomedIn = globalScale > 2.2;
               const showLabel =
-                revealed && (n.isRoot || isActive || zoomedIn);
+                revealed && (n.isRoot || n.inserted || isActive || zoomedIn);
               if (showLabel) {
                 const fontSize = 11 / globalScale;
-                ctx.fillStyle = isActive ? '#fde68a' : '#e2e8f0';
-                ctx.font = `${String(fontSize)}px system-ui, sans-serif`;
+                const label = n.inserted
+                  ? `${truncateLabel(n.name)} • ${t('insertedTag')}`
+                  : truncateLabel(n.name);
+                ctx.fillStyle = n.inserted
+                  ? '#a7f3d0'
+                  : isActive
+                    ? '#fde68a'
+                    : '#e2e8f0';
+                ctx.font = `${n.inserted ? '600 ' : ''}${String(fontSize)}px system-ui, sans-serif`;
                 ctx.textAlign = 'left';
                 ctx.textBaseline = 'middle';
-                ctx.fillText(truncateLabel(n.name), x + r + 3, y);
+                ctx.fillText(label, x + r + 4, y);
               }
               ctx.globalAlpha = 1;
             }}
@@ -622,6 +687,16 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
             />
             {t('legendNeighbors')}
           </span>
+          {insertedCount > 0 && (
+            <span className="flex items-center gap-1">
+              <span
+                aria-hidden
+                className="inline-block h-2 w-2 rounded-full ring-2 ring-[#34d399]"
+                style={{ backgroundColor: INSERT_ACCENT }}
+              />
+              {t('legendInserted')}
+            </span>
+          )}
         </div>
       </div>
 
@@ -663,8 +738,16 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
                     <span className="shrink-0 rounded bg-white/10 px-1 py-0.5 font-mono text-[9px] text-neutral-400">
                       {n.kind}
                     </span>
+                    {n.inserted && (
+                      <span className="shrink-0 rounded bg-emerald-500/25 px-1 py-0.5 font-mono text-[9px] font-semibold text-emerald-300">
+                        {t('insertedTag')}
+                      </span>
+                    )}
                     <span
-                      className="truncate text-neutral-200"
+                      className={[
+                        'truncate',
+                        n.inserted ? 'text-emerald-200' : 'text-neutral-200',
+                      ].join(' ')}
                       title={n.name}
                     >
                       {truncateLabel(n.name, 40)}

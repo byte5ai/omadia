@@ -18,6 +18,7 @@ import type {
   RecalledContext,
 } from '@omadia/orchestrator-extras';
 import {
+  buildKgInsertPayload,
   buildKgWalkPayload,
   promoteTurnIfSignificant,
 } from '@omadia/orchestrator-extras';
@@ -1527,6 +1528,44 @@ export class Orchestrator {
   }
 
   /**
+   * KG-insert chat visualization — the WRITE-side sibling of
+   * {@link toKgGraphAnnotationEvents}. Emitted just before `done` once a turn
+   * auto-promotes a MemorableKnowledge node: walks a tight 1-hop neighbourhood
+   * around the freshly-written node and emits a `kg_insert` turn-annotation so
+   * the frontend can merge it into the live walk and pulse the new part.
+   *
+   * STRICT — best-effort and UI-only, exactly like the `kg_graph` sibling: it
+   * is wrapped in a try/catch and can NEVER throw, break, or delay the turn.
+   * Returns `[]` when there is no inserted id, no KG, an empty subgraph, or ANY
+   * error.
+   */
+  private async toKgInsertAnnotationEvents(
+    insertedMkId: string | undefined,
+  ): Promise<ChatStreamEvent[]> {
+    if (!insertedMkId || !this.knowledgeGraph) return [];
+    try {
+      const payload = await buildKgInsertPayload(
+        insertedMkId,
+        this.knowledgeGraph,
+      );
+      if (!payload) return [];
+      return [
+        {
+          type: 'turn_annotation' as const,
+          channel: 'kg_insert',
+          payload,
+        },
+      ];
+    } catch (err) {
+      console.warn(
+        '[orchestrator] kg_insert annotation build failed — skipping:',
+        err instanceof Error ? err.message : err,
+      );
+      return [];
+    }
+  }
+
+  /**
    * Public ChatAgent.chat — channel-facing. Delegates to the full-state
    * `runTurn()` and converts the internal `ChatTurnResult` to the
    * channel-agnostic `SemanticAnswer` at the boundary. Callers that need the
@@ -2489,6 +2528,10 @@ export class Orchestrator {
             palaiaExcerpt,
             fallbackAssistantAnswer: answer,
           });
+          // KG-insert chat visualization — when this turn wrote a node, pulse
+          // the freshly-inserted neighbourhood in the floating pane. Best-effort
+          // & guarded; emitted before `done` so it lands with the final turn.
+          yield* await this.toKgInsertAnnotationEvents(autoPromotedMkId);
           yield {
             type: 'done',
             answer,

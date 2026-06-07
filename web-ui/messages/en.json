@@ -291,7 +291,10 @@
       "hopHeaderRoots": "Hop 0 (roots)",
       "hopHeader": "Hop {hop}",
       "hopListHeader": "{nodes, plural, one {# node} other {# nodes}} · {hops, plural, one {# hop} other {# hops}}",
-      "toggleLabel": "Graph walk"
+      "toggleLabel": "Graph walk",
+      "legendInserted": "Inserted",
+      "insertedTag": "NEW",
+      "badgeInserted": "{count, plural, one {# inserted} other {# inserted}}"
     }
   },
   "privacyReceipt": {

@@ -291,7 +291,10 @@
       "hopHeaderRoots": "Sprung 0 (Wurzeln)",
       "hopHeader": "Sprung {hop}",
       "hopListHeader": "{nodes, plural, one {# Knoten} other {# Knoten}} · {hops, plural, one {# Sprung} other {# Sprünge}}",
-      "toggleLabel": "Graph-Walk"
+      "toggleLabel": "Graph-Walk",
+      "legendInserted": "Neu eingefügt",
+      "insertedTag": "NEU",
+      "badgeInserted": "{count, plural, one {# eingefügt} other {# eingefügt}}"
     }
   },
   "privacyReceipt": {

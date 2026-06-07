@@ -701,6 +701,13 @@ export interface KgWalkNode {
   kind: string;
   /** Recall hit score; set only on root (hop-0) nodes when available. */
   score?: number;
+  /**
+   * True when this node was WRITTEN into the KG by the current turn (e.g. the
+   * auto-promoted MemorableKnowledge + its Turn). Carried by the `kg_insert`
+   * follow-up annotation so the UI can visually distinguish a fresh insert
+   * (a "NEW" / pulse) from the recalled neighbourhood.
+   */
+  inserted?: boolean;
 }
 
 /** One edge in the recalled KG neighbourhood. */
@@ -713,6 +720,8 @@ export interface KgWalkEdge {
   type: string;
   /** BFS discovery layer of the edge from the nearest root (1..N). */
   hop: number;
+  /** True when this edge was created by the current turn (see KgWalkNode). */
+  inserted?: boolean;
 }
 
 /** Per-turn KG-walk payload carried by the `kg_graph` turn-annotation. */

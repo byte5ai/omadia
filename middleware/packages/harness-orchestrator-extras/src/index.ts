@@ -18,7 +18,7 @@ export type { OrchestratorExtrasPluginHandle } from './plugin.js';
 export { ContextRetriever, extractCandidateTerms } from './contextRetriever.js';
 // KG-walk chat visualization — builds the per-turn `kg_graph` payload of the
 // recalled Knowledge-Graph neighbourhood. Best-effort, UI-only.
-export { buildKgWalkPayload } from './kgWalkPayload.js';
+export { buildKgInsertPayload, buildKgWalkPayload } from './kgWalkPayload.js';
 export type {
   ContextRetrieverOptions,
   ContextBuildInput,

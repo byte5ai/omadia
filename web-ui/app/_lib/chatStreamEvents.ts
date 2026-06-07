@@ -179,6 +179,14 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
         const walk = parseKgWalk(event.payload);
         return walk ? { ...m, kgWalk: walk } : m;
       }
+      // KG-insert — what THIS turn wrote into the graph. Emitted after the
+      // answer (post auto-promotion). Merged into the existing walk (marking
+      // its nodes/edges `inserted`) so the pane pulses the fresh part; when no
+      // walk preceded it, the insert becomes the walk on its own.
+      if (event.channel === 'kg_insert' && event.payload) {
+        const insert = parseKgWalk(event.payload);
+        return insert ? { ...m, kgWalk: mergeKgInsert(m.kgWalk, insert) } : m;
+      }
       return m;
     case 'tool_use': {
       const tool: ToolEvent = {
@@ -342,6 +350,7 @@ function parseKgWalk(payload: unknown): KgWalkPayload | null {
           label: typeof n['label'] === 'string' ? n['label'] : n['id'],
           kind: typeof n['kind'] === 'string' ? n['kind'] : 'Entity',
           ...(typeof n['score'] === 'number' ? { score: n['score'] } : {}),
+          ...(n['inserted'] === true ? { inserted: true } : {}),
         });
         return acc;
       }, [])
@@ -359,12 +368,55 @@ function parseKgWalk(payload: unknown): KgWalkPayload | null {
           to: e['to'],
           type: typeof e['type'] === 'string' ? e['type'] : 'REL',
           hop: typeof e['hop'] === 'number' ? e['hop'] : 1,
+          ...(e['inserted'] === true ? { inserted: true } : {}),
         });
         return acc;
       }, [])
     : [];
 
   if (nodes.length === 0) return null;
+  return { rootIds, nodes, edges };
+}
+
+/**
+ * Merge a `kg_insert` delta into the existing per-turn walk. New nodes/edges
+ * (already flagged `inserted`) are appended; a node/edge that was already part
+ * of the recalled walk is upgraded in place to `inserted: true` so the pane
+ * pulses it. `rootIds` from both are unioned. When there was no prior walk the
+ * insert stands on its own.
+ */
+function mergeKgInsert(
+  prior: KgWalkPayload | undefined,
+  insert: KgWalkPayload,
+): KgWalkPayload {
+  if (!prior) return insert;
+
+  const insertedNodeIds = new Set(insert.nodes.map((n) => n.id));
+  const nodes: KgWalkNode[] = prior.nodes.map((n) =>
+    insertedNodeIds.has(n.id) ? { ...n, inserted: true } : n,
+  );
+  const haveNodeId = new Set(nodes.map((n) => n.id));
+  for (const n of insert.nodes) {
+    if (!haveNodeId.has(n.id)) {
+      nodes.push(n);
+      haveNodeId.add(n.id);
+    }
+  }
+
+  const edgeKey = (e: KgWalkEdge): string => `${e.from} ${e.to} ${e.type}`;
+  const insertedEdgeKeys = new Set(insert.edges.map(edgeKey));
+  const edges: KgWalkEdge[] = prior.edges.map((e) =>
+    insertedEdgeKeys.has(edgeKey(e)) ? { ...e, inserted: true } : e,
+  );
+  const haveEdgeKey = new Set(edges.map(edgeKey));
+  for (const e of insert.edges) {
+    if (!haveEdgeKey.has(edgeKey(e))) {
+      edges.push(e);
+      haveEdgeKey.add(edgeKey(e));
+    }
+  }
+
+  const rootIds = Array.from(new Set([...prior.rootIds, ...insert.rootIds]));
   return { rootIds, nodes, edges };
 }
 
