@@ -1100,6 +1100,12 @@ export interface MemorableKnowledgeIngest {
    */
   aclOwners?: string[];
   /**
+   * Initial visibility for the new MK. Omitted → backend default
+   * (admin-only / private). Used by the scratch-promotion reaper to publish
+   * consolidated agent knowledge team-wide.
+   */
+  visibility?: Visibility;
+  /**
    * Per-orchestrator isolation — the Agent slug that produced this MK,
    * stamped as the `origin_agent` property. Recall default-isolates by
    * origin agent (an Agent only sees its own MK) while team/public-promoted

@@ -849,6 +849,12 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     this.upsertNode({
       id: mkExtId,
       type: 'MemorableKnowledge',
+      // WS5 — reflect an explicit initial visibility on the node so
+      // `GraphNode.visibility` carries the value the reaper requested
+      // (team-wide). Omitted → undefined, the historical default.
+      ...(input.visibility !== undefined
+        ? { visibility: input.visibility }
+        : {}),
       props: {
         kind: input.kind,
         summary: input.summary,

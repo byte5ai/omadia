@@ -15,23 +15,27 @@
  *      score the `content` with the SignificanceScorer. If the score is
  *      >= threshold AND the content is non-trivial, materialise a
  *      MemorableKnowledge node (`kind=insight`) stamped with
- *      `originAgent=<slug>` and `createdBy='scratch-reaper'`, THEN delete
- *      the scratch row. Delete happens ONLY after a successful create, so
- *      a failed promotion leaves the scratch intact for the next run.
- *   3. Below-threshold rows are left untouched (NO destructive drop by
- *      default).
+ *      `originAgent=<slug>`, `createdBy='scratch-reaper'` and
+ *      `visibility='team'`, THEN delete the scratch row. Delete happens
+ *      ONLY after a successful create, so a failed promotion leaves the
+ *      scratch intact for the next run.
+ *   3. Aged rows that are NOT promoted (sub-threshold or trivial/too-short)
+ *      are left untouched by default. When `dropUnpromoted` is enabled they
+ *      are hard-deleted from `memory_files` instead (true TTL of stale
+ *      scratch). The two branches are mutually exclusive — a row is never
+ *      both promoted (which already deletes it) and dropped.
+ *
+ * Visibility: promoted scratch is published TEAM-VISIBLE (`visibility:
+ * 'team'`) so consolidated agent knowledge is shareable across the team
+ * rather than admin-only. `aclOwners` stays `[]` — team visibility, not the
+ * owner list, is what makes the MK recallable team-wide. Scratch memory is
+ * not user-attributed (it is the orchestrator's own scratchpad), so there
+ * are no `involvedOmadiaUserIds`. `defaultVisibility` (the dep) is carried
+ * for telemetry/log parity with the capture-filter.
  *
  * Failure semantics: per-row failures are logged and skipped — the run
- * never throws. `runOnce` returns `{ scanned, promoted, skipped, failed }`.
- *
- * ACL/visibility note: scratch memory is not user-attributed (it is the
- * orchestrator's own scratchpad, not a turn owned by an omadia user). We
- * therefore create the MK with `aclOwners: []` and no
- * `involvedOmadiaUserIds` — exactly the "admin-only" snapshot the KG-ACL
- * model assigns to owner-less MK. `defaultVisibility` is carried for
- * telemetry/log parity with the capture-filter; visibility on a
- * MemorableKnowledge is governed by its owners (empty owners → admin-only),
- * not a column on the ingest shape.
+ * never throws. `runOnce` returns
+ * `{ scanned, promoted, skipped, dropped, failed }`.
  */
 
 import type { Pool } from 'pg';
@@ -73,6 +77,12 @@ export interface ScratchPromotionReaperDeps {
   intervalMs: number;
   /** Default visibility — telemetry only (see file header). */
   defaultVisibility: Visibility;
+  /**
+   * Opt-in destructive TTL: when true, aged scratch rows that are NOT
+   * promoted (sub-threshold OR trivial/too-short) are hard-deleted from
+   * `memory_files`. Default false — non-promoted scratch is never destroyed.
+   */
+  dropUnpromoted?: boolean;
   /** Per-run batch ceiling. Default 50. */
   batchSize?: number;
   log?: (msg: string) => void;
@@ -83,8 +93,11 @@ export interface ScratchReapRunResult {
   scanned: number;
   /** Rows promoted to MemorableKnowledge + deleted from scratch. */
   promoted: number;
-  /** Rows left untouched (below threshold or trivial). */
+  /** Rows left untouched (below threshold or trivial, `dropUnpromoted`
+   *  off). */
   skipped: number;
+  /** Non-promoted aged rows hard-deleted (only when `dropUnpromoted`). */
+  dropped: number;
   /** Rows that errored (score/create/delete) — left intact for next run. */
   failed: number;
 }
@@ -139,6 +152,7 @@ export function createScratchPromotionReaper(
       scanned: 0,
       promoted: 0,
       skipped: 0,
+      dropped: 0,
       failed: 0,
     };
 
@@ -169,26 +183,43 @@ export function createScratchPromotionReaper(
 
     result.scanned = rows.length;
 
+    // Reap a NON-promoted aged row: when `dropUnpromoted` is on, hard-delete
+    // it (true TTL) and count it as dropped; otherwise leave it untouched
+    // and count it as skipped (historical default). Mutually exclusive with
+    // the promotion branch, which deletes the row itself.
+    const reapUnpromoted = async (virtualPath: string): Promise<void> => {
+      if (deps.dropUnpromoted) {
+        await deps.pool.query(
+          `DELETE FROM memory_files WHERE virtual_path = $1`,
+          [virtualPath],
+        );
+        result.dropped++;
+        log(`[scratch-reaper] dropped path=${virtualPath} (unpromoted, ttl)`);
+      } else {
+        result.skipped++;
+      }
+    };
+
     for (const row of rows) {
       try {
         const slug = deriveAgentSlug(row.virtual_path);
         const trimmed = row.content.trim();
 
         if (trimmed.length < MIN_NON_TRIVIAL_LEN) {
-          result.skipped++;
+          await reapUnpromoted(row.virtual_path);
           continue;
         }
 
         const { score } = await deps.scorer.score(trimmed);
         if (score < deps.threshold) {
-          result.skipped++;
+          await reapUnpromoted(row.virtual_path);
           continue;
         }
 
-        // Promote: owner-less, agent-scoped MemorableKnowledge. aclOwners=[]
-        // (admin-only snapshot — scratch isn't user-attributed), originAgent
-        // = the orchestrator slug so recall default-isolates it to that
-        // Agent.
+        // Promote: agent-scoped, TEAM-VISIBLE MemorableKnowledge. aclOwners=[]
+        // (scratch isn't user-attributed) — visibility='team' is what makes
+        // the consolidated knowledge shareable team-wide. originAgent = the
+        // orchestrator slug so recall can still attribute it to that Agent.
         await deps.kg.createMemorableKnowledge({
           kind: REAPER_MK_KIND,
           summary: deriveSummary(row.content),
@@ -196,6 +227,7 @@ export function createScratchPromotionReaper(
           createdBy: 'scratch-reaper',
           involvedOmadiaUserIds: [],
           aclOwners: [],
+          visibility: 'team',
           ...(slug ? { originAgent: slug } : {}),
         });
 
@@ -219,7 +251,7 @@ export function createScratchPromotionReaper(
     }
 
     log(
-      `[scratch-reaper] run done scanned=${String(result.scanned)} promoted=${String(result.promoted)} skipped=${String(result.skipped)} failed=${String(result.failed)}`,
+      `[scratch-reaper] run done scanned=${String(result.scanned)} promoted=${String(result.promoted)} skipped=${String(result.skipped)} dropped=${String(result.dropped)} failed=${String(result.failed)}`,
     );
     return result;
   }

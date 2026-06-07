@@ -470,6 +470,11 @@ export async function activate(
     ctx.config.get<unknown>('scratch_promotion_threshold'),
     captureSignificanceThreshold,
   );
+  // Opt-in destructive TTL of non-promoted aged scratch. Default false —
+  // the reaper never destroys scratch it didn't promote unless told to.
+  const scratchPromotionDropUnpromoted = parseBoolDefaultFalse(
+    ctx.config.get<unknown>('scratch_promotion_drop_unpromoted'),
+  );
   {
     let disabledReason: string | undefined;
     if (!scratchPromotionEnabled) {
@@ -500,6 +505,7 @@ export async function activate(
         ageMs,
         intervalMs,
         defaultVisibility: captureDefaultVisibility,
+        dropUnpromoted: scratchPromotionDropUnpromoted,
         log: (msg) => { console.error(msg); },
       });
       reaper.start();
@@ -509,7 +515,7 @@ export async function activate(
       const kick = setTimeout(() => { void reaper.runOnce(); }, 30_000);
       if (typeof kick.unref === 'function') kick.unref();
       ctx.log(
-        `[harness-orchestrator-extras] scratch-promotion reaper on every ${String(scratchPromotionIntervalMinutes)}min, age=${String(scratchPromotionAgeHours)}h, threshold=${scratchPromotionThreshold.toFixed(2)}`,
+        `[harness-orchestrator-extras] scratch-promotion reaper on every ${String(scratchPromotionIntervalMinutes)}min, age=${String(scratchPromotionAgeHours)}h, threshold=${scratchPromotionThreshold.toFixed(2)}, dropUnpromoted=${String(scratchPromotionDropUnpromoted)}`,
       );
     }
   }
@@ -736,6 +742,12 @@ function parseBoolDefaultTrue(value: unknown): boolean {
   if (typeof value === 'boolean') return value;
   if (typeof value === 'string') return value.trim().toLowerCase() !== 'false';
   return true;
+}
+
+function parseBoolDefaultFalse(value: unknown): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') return value.trim().toLowerCase() === 'true';
+  return false;
 }
 
 function parseCaptureLevel(

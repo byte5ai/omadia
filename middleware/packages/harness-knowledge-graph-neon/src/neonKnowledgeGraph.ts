@@ -1802,6 +1802,13 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         scope: null,
         userId: null,
         props,
+        // WS5 — forward an explicit initial visibility when the caller
+        // (the scratch-promotion reaper) wants the new MK shared team-wide.
+        // Omitted → undefined → upsertNode's `COALESCE($9, 'team')` keeps the
+        // exact pre-existing DB-default behaviour for every other caller.
+        ...(input.visibility !== undefined
+          ? { visibility: input.visibility }
+          : {}),
       });
 
       // INVOLVED edges — resolve omadiaUserId → user-cluster external_id
