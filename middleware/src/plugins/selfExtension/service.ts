@@ -28,12 +28,19 @@ import type { DraftStore } from '../builder/draftStore.js';
 import type { BuildPipeline } from '../builder/buildPipeline.js';
 import type { PackageUploadService } from '../packageUploadService.js';
 import type { OperatorGate } from './operatorGate.js';
+import type { ExtensionStore } from './extensionStore.js';
 
 export interface SelfExtensionServiceDeps {
   gate: OperatorGate;
-  draftStore: DraftStore;
-  buildPipeline: BuildPipeline;
-  packageUploadService: PackageUploadService;
+  /** Spec path (Builder plugins). */
+  draftStore?: DraftStore;
+  buildPipeline?: BuildPipeline;
+  packageUploadService?: PackageUploadService;
+  /** Template path (standalone plugins). */
+  extensionStore?: ExtensionStore;
+  /** Deactivate→activate the plugin so it re-materialises its approved
+   *  extensions (template path). Wired to ToolPluginRuntime reactivation. */
+  reactivate?: (pluginId: string) => Promise<void>;
   log?: (line: string) => void;
 }
 
@@ -46,7 +53,8 @@ export interface MaterializeInput {
 }
 
 export type MaterializeResult =
-  | { ok: true; install: Extract<InstallResult, { ok: true }> }
+  | { ok: true; kind: 'spec'; install: Extract<InstallResult, { ok: true }> }
+  | { ok: true; kind: 'template'; pluginId: string; templateId: string }
   | {
       ok: false;
       stage: 'precondition' | 'install';
@@ -55,9 +63,16 @@ export type MaterializeResult =
     };
 
 /**
- * Materialise an approved proposal. Idempotency / re-entry is the caller's
- * concern — the operator gate's status machine rejects a second install of a
- * record that already moved past `approved`.
+ * Materialise an approved proposal. Branches on the proposal kind:
+ *   - `spec` → drive the existing Builder install pipeline (codegen → build →
+ *     ingest → reactivate).
+ *   - `template` → persist the approved {templateId, params} in the
+ *     ExtensionStore and reactivate, so the standalone plugin re-runs its own
+ *     `selfExtend.apply()` and registers the new tool. No codegen, no package
+ *     write — the plugin materialises within its own capability scope.
+ *
+ * Idempotency / re-entry is the caller's concern — the gate's status machine
+ * rejects a second install of a record past `approved`.
  */
 export async function materializeApprovedProposal(
   input: MaterializeInput,
@@ -68,7 +83,7 @@ export async function materializeApprovedProposal(
   if (!record) {
     return { ok: false, stage: 'precondition', message: `proposal '${input.proposalId}' not found` };
   }
-  if (record.status !== 'approved' || !record.approvedSpec) {
+  if (record.status !== 'approved') {
     return {
       ok: false,
       stage: 'precondition',
@@ -76,18 +91,49 @@ export async function materializeApprovedProposal(
     };
   }
 
+  // ── Template path ────────────────────────────────────────────────────────
+  if (record.kind === 'template') {
+    if (!record.approvedExtension) {
+      return { ok: false, stage: 'precondition', message: 'approved template proposal has no approvedExtension' };
+    }
+    if (!deps.extensionStore || !deps.reactivate) {
+      return { ok: false, stage: 'precondition', message: 'template materialisation needs extensionStore + reactivate deps' };
+    }
+    try {
+      await deps.extensionStore.add(record.pluginId, record.approvedExtension);
+      await deps.reactivate(record.pluginId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      deps.gate.markFailed(record.id, message);
+      log(`[self-extension] template materialise FAILED for ${record.id}: ${message}`);
+      return { ok: false, stage: 'install', message };
+    }
+    deps.gate.markInstalled(record.id, `template:${record.approvedExtension.templateId}`);
+    log(`[self-extension] applied template ${record.approvedExtension.templateId} to ${record.pluginId}`);
+    return { ok: true, kind: 'template', pluginId: record.pluginId, templateId: record.approvedExtension.templateId };
+  }
+
+  // ── Spec path ────────────────────────────────────────────────────────────
+  if (!record.approvedSpec) {
+    return { ok: false, stage: 'precondition', message: 'approved spec proposal has no approvedSpec' };
+  }
+  if (!deps.draftStore || !deps.buildPipeline || !deps.packageUploadService) {
+    return { ok: false, stage: 'precondition', message: 'spec materialisation needs draftStore + buildPipeline + packageUploadService deps' };
+  }
+
+  const { draftStore, buildPipeline, packageUploadService } = deps;
   const spec = record.approvedSpec;
-  const draft = await deps.draftStore.create(input.userEmail, input.draftName ?? spec.name);
-  await deps.draftStore.update(input.userEmail, draft.id, {
+  const draft = await draftStore.create(input.userEmail, input.draftName ?? spec.name);
+  await draftStore.update(input.userEmail, draft.id, {
     spec,
     slots: spec.slots,
   });
   log(`[self-extension] materialising proposal ${record.id} via draft ${draft.id}`);
 
   const installDeps: InstallDraftDeps = {
-    draftStore: deps.draftStore,
-    buildPipeline: deps.buildPipeline,
-    packageUploadService: deps.packageUploadService,
+    draftStore,
+    buildPipeline,
+    packageUploadService,
   };
   const result = await installDraft(
     { userEmail: input.userEmail, draftId: draft.id },
@@ -97,7 +143,7 @@ export async function materializeApprovedProposal(
   if (result.ok) {
     deps.gate.markInstalled(record.id, result.version);
     log(`[self-extension] installed ${result.publishedAgentId}@${result.version}`);
-    return { ok: true, install: result };
+    return { ok: true, kind: 'spec', install: result };
   }
 
   deps.gate.markFailed(record.id, `${result.code}: ${result.message}`);

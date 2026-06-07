@@ -20,15 +20,20 @@
  * persist or build anything.
  */
 
+import type { ExtensionTemplate } from '@omadia/plugin-api';
+
 import {
   applySpecPatches,
   IllegalSpecState,
 } from '../builder/specPatcher.js';
 import type { AgentSpec } from '../builder/agentSpec.js';
-import type { ExtensionProposal } from './extensionProposal.js';
+import type { Plugin } from '../../api/admin-v1.js';
+import type { ExtensionProposal, TemplateProposal } from './extensionProposal.js';
 import {
   computeWidenings,
   extractPermissionSurface,
+  extractSurfaceFromManifest,
+  surfaceFromPartial,
   type PermissionSurface,
   type SurfaceWidening,
 } from './permissionSurface.js';
@@ -51,6 +56,8 @@ export interface ProposalEvaluation {
   readonly proposedSpec?: AgentSpec;
   /** Privilege surface of {@link proposedSpec} — present unless invalid. */
   readonly proposedSurface?: PermissionSurface;
+  /** Template path only: the sub-surface the chosen template requires. */
+  readonly requiredSurface?: PermissionSurface;
 }
 
 /**
@@ -123,5 +130,46 @@ export function evaluateProposal(
     currentSurface,
     proposedSpec,
     proposedSurface,
+  };
+}
+
+/**
+ * Evaluate a TEMPLATE proposal (standalone-plugin path) against the plugin's
+ * INSTALLED manifest. The non-escalation check is `template.requires ⊆ manifest
+ * surface` — params never widen the surface, so they are not security-relevant
+ * (the plugin validates them in `apply`). Pure.
+ */
+export function evaluateTemplateProposal(
+  plugin: Plugin,
+  template: ExtensionTemplate | undefined,
+  proposal: TemplateProposal,
+): ProposalEvaluation {
+  const currentSurface = extractSurfaceFromManifest(plugin);
+
+  if (proposal.pluginId !== plugin.id) {
+    return {
+      decision: 'invalid_spec',
+      escalations: [],
+      invalidReason: `proposal pluginId '${proposal.pluginId}' does not match plugin id '${plugin.id}'`,
+      currentSurface,
+    };
+  }
+  if (!template) {
+    return {
+      decision: 'invalid_spec',
+      escalations: [],
+      invalidReason: `plugin '${plugin.id}' declares no self-extend template '${proposal.templateId}'`,
+      currentSurface,
+    };
+  }
+
+  const requiredSurface = surfaceFromPartial(template.requires ?? {});
+  const escalations = computeWidenings(currentSurface, requiredSurface);
+
+  return {
+    decision: escalations.length > 0 ? 'denied_escalation' : 'needs_approval',
+    escalations,
+    currentSurface,
+    requiredSurface,
   };
 }

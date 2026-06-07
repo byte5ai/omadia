@@ -70,6 +70,11 @@ export default function AdminIndexPage(): React.ReactElement {
           description="Memory unwiderruflich entlang einer Achse löschen (Alles / Agent / User / Team / Channel). Vorschau-gated, mit Confirm-Phrase. Kein Undo."
           danger
         />
+        <AdminCard
+          href="/admin/usage"
+          title="Kosten"
+          description="LLM-Token-Verbrauch und Kosten pro Modell, Quelle und Zeit. Cache-Hit-Rate und Gesamtkosten über jeden Anthropic-Call (Orchestrator, Sub-Agents, Background-Tasks)."
+        />
       </ul>
     </main>
   );

@@ -9,7 +9,10 @@ import type { UiRouteCatalog } from '../platform/uiRouteCatalog.js';
 import type { ServiceRegistry } from '../platform/serviceRegistry.js';
 import type { SecretVault } from '../secrets/vault.js';
 import type { NativeToolRegistry } from '@omadia/orchestrator';
+import type { ApprovedExtension, ExtensionTemplate } from '@omadia/plugin-api';
 import type { BuiltInPackageStore } from './builtInPackageStore.js';
+import type { SelfExtendRegistry } from './selfExtension/selfExtendRegistry.js';
+import type { ExtensionStore } from './selfExtension/extensionStore.js';
 import { resolveEligiblePlugins } from './capabilityResolver.js';
 import type { InstalledRegistry } from './installedRegistry.js';
 import type { JobScheduler } from './jobScheduler.js';
@@ -38,16 +41,29 @@ interface ToolPluginHandle {
   close(): Promise<void>;
 }
 
+/** Plugin self-extension SDK surface a module may export next to `activate`. */
+interface ModuleSelfExtend {
+  templates?: readonly ExtensionTemplate[];
+  apply?: (
+    approved: ApprovedExtension,
+    ctx: unknown,
+  ) => Promise<() => void> | (() => void);
+}
+
 interface ToolPluginModuleShape {
   activate?: (ctx: unknown) => Promise<ToolPluginHandle>;
+  selfExtend?: ModuleSelfExtend;
   default?: {
     activate?: (ctx: unknown) => Promise<ToolPluginHandle>;
+    selfExtend?: ModuleSelfExtend;
   };
 }
 
 interface ActiveEntry {
   agentId: string;
   handle: ToolPluginHandle;
+  /** Dispose handles from `selfExtend.apply()` of each approved extension. */
+  extDisposes: Array<() => void>;
 }
 
 export interface ToolPluginRuntimeDeps {
@@ -79,6 +95,13 @@ export interface ToolPluginRuntimeDeps {
   /** Counterpart to `onActivated`: fired after a plugin is removed from the
    *  active set, so the wiring can `unregisterServiceType` its entries. */
   onDeactivated?: (agentId: string) => void | Promise<void>;
+  /** Plugin self-extension (Theme B): when present, a plugin exporting
+   *  `selfExtend` has its templates registered here on activate and its
+   *  operator-approved extensions (from {@link extensionStore}) re-materialised
+   *  via `selfExtend.apply(...)`. Both optional — absent ⇒ self-extension is
+   *  simply not offered for standalone plugins. */
+  selfExtendRegistry?: SelfExtendRegistry;
+  extensionStore?: ExtensionStore;
   log?: (msg: string) => void;
 }
 
@@ -226,7 +249,36 @@ export class ToolPluginRuntime {
       `activate(${agentId}) timed out after 10s`,
     );
 
-    this.active.set(agentId, { agentId, handle });
+    // Plugin self-extension (Theme B): if the module opted into the selfExtend
+    // SDK, register its declarative templates and re-materialise every
+    // operator-approved extension via the plugin's OWN `apply()`, passing the
+    // SAME capability-scoped ctx. Best-effort: a failing extension is logged,
+    // never flips the (healthy) base plugin to errored.
+    const extDisposes: Array<() => void> = [];
+    const selfExtend = mod.selfExtend ?? mod.default?.selfExtend;
+    if (selfExtend) {
+      if (this.deps.selfExtendRegistry && selfExtend.templates) {
+        this.deps.selfExtendRegistry.register(agentId, selfExtend.templates);
+      }
+      const applyFn = selfExtend.apply;
+      if (this.deps.extensionStore && typeof applyFn === 'function') {
+        for (const approved of this.deps.extensionStore.list(agentId)) {
+          try {
+            const dispose = await applyFn(approved, ctx);
+            if (typeof dispose === 'function') extDisposes.push(dispose);
+            log(
+              `[tool-runtime] applied self-extension ${agentId} template=${approved.templateId}`,
+            );
+          } catch (err) {
+            log(
+              `[tool-runtime] selfExtend.apply FAILED for ${agentId} template=${approved.templateId}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
+      }
+    }
+
+    this.active.set(agentId, { agentId, handle, extDisposes });
 
     try {
       await this.deps.registry.markActivationSucceeded(agentId);
@@ -254,6 +306,18 @@ export class ToolPluginRuntime {
     const log = this.deps.log ?? ((m) => console.log(m));
     const entry = this.active.get(agentId);
     if (!entry) return false;
+    // Dispose self-extension registrations first (they registered tools), then
+    // drop the plugin's templates from the registry.
+    for (const dispose of entry.extDisposes) {
+      try {
+        dispose();
+      } catch (err) {
+        log(
+          `[tool-runtime] selfExtend dispose FAILED for ${agentId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    this.deps.selfExtendRegistry?.unregister(agentId);
     try {
       await withTimeout(
         entry.handle.close(),

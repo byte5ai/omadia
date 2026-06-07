@@ -29,6 +29,7 @@ import {
 import { CaptureFilteringKnowledgeGraph } from './captureFilteringKnowledgeGraph.js';
 import { ContextRetriever } from './contextRetriever.js';
 import type { Pool } from 'pg';
+import { initUsageRecorder, withUsageTracking } from '@omadia/usage-telemetry';
 
 import { createBulkExcerptMergeDetectService } from './bulkExcerptMergeDetect.js';
 import { createBulkInconsistencyService } from './bulkInconsistency.js';
@@ -255,9 +256,16 @@ export async function activate(
     3,
   );
 
+  // Cost telemetry: wire the recorder to the shared graph pool and wrap the
+  // client so the background Haiku scorers/extractors record their usage.
+  const usagePool = ctx.services.get<Pool>('graphPool');
+  if (usagePool) initUsageRecorder(usagePool);
+
   let anthropic: Anthropic | undefined;
   if (apiKey) {
-    anthropic = new Anthropic({ apiKey });
+    anthropic = withUsageTracking(new Anthropic({ apiKey }), {
+      source: 'extras',
+    });
   }
 
   // ---------------------------------------------------------------------

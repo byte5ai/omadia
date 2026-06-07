@@ -54,7 +54,7 @@ describe('formatLimitSignalNote / appendLimitSignalNote (orchestrator surfacing)
     assert.match(note, /cap=50, observed=8300/);
     assert.match(note, /Hint: use \$apply\./);
     assert.match(note, /INCOMPLETE/);
-    assert.match(note, /self-extension/);
+    assert.match(note, /request_self_extension/);
   });
 
   it('appends the note separated by a blank line', () => {

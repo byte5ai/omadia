@@ -18,6 +18,7 @@
     "@omadia/memory": "*",
     "@omadia/orchestrator-extras": "*",
     "@omadia/plugin-api": "*",
+    "@omadia/usage-telemetry": "*",
     "@omadia/verifier": "*",
     "pg": "^8.13.0",
     "zod": "^4.0.0"

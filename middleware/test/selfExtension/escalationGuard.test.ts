@@ -1,8 +1,16 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
-import { evaluateProposal } from '../../src/plugins/selfExtension/escalationGuard.js';
-import { parseExtensionProposal } from '../../src/plugins/selfExtension/extensionProposal.js';
+import {
+  evaluateProposal,
+  evaluateTemplateProposal,
+} from '../../src/plugins/selfExtension/escalationGuard.js';
+import {
+  parseExtensionProposal,
+  parseTemplateProposal,
+} from '../../src/plugins/selfExtension/extensionProposal.js';
+import type { ExtensionTemplate } from '@omadia/plugin-api';
+import type { Plugin } from '../../src/api/admin-v1.js';
 import { baseSpec } from './_fixtures.js';
 
 const PLUGIN_ID = 'de.byte5.agent.dynamics';
@@ -87,5 +95,60 @@ describe('evaluateProposal — the escalation guard', () => {
     );
     assert.equal(ev.decision, 'denied_escalation');
     assert.equal(ev.escalations.length, 2);
+  });
+});
+
+function dynamicsManifest(over: Partial<Plugin['permissions_summary']> = {}): Plugin {
+  return {
+    id: PLUGIN_ID,
+    depends_on: ['de.byte5.integration.dynamics'],
+    privacy_class: 'strict',
+    permissions_summary: {
+      memory_reads: [],
+      memory_writes: [],
+      graph_reads: [],
+      graph_writes: [],
+      network_outbound: ['api.dynamics.com'],
+      ...over,
+    },
+  } as unknown as Plugin;
+}
+
+const deltaTemplate: ExtensionTemplate = {
+  id: 'odata.delta',
+  title: 'Change tracking',
+  description: 'Delta-query via odata.track-changes',
+  paramsSchema: { type: 'object' },
+  // read-only over the already-allowed Dataverse host — requires nothing new
+  requires: { networkOutbound: ['api.dynamics.com'] },
+};
+
+function tmplProposal(templateId: string, pluginId = PLUGIN_ID) {
+  return parseTemplateProposal({ pluginId, rationale: 'pipeline monitoring needs delta', templateId, params: { entitySet: 'salesorders' } });
+}
+
+describe('evaluateTemplateProposal — standalone path', () => {
+  it('needs_approval when the template requires only what the manifest holds', () => {
+    const ev = evaluateTemplateProposal(dynamicsManifest(), deltaTemplate, tmplProposal('odata.delta'));
+    assert.equal(ev.decision, 'needs_approval');
+    assert.equal(ev.escalations.length, 0);
+  });
+
+  it('denied_escalation when the template requires a new egress host', () => {
+    const greedy: ExtensionTemplate = { ...deltaTemplate, requires: { networkOutbound: ['evil.example.com'] } };
+    const ev = evaluateTemplateProposal(dynamicsManifest(), greedy, tmplProposal('odata.delta'));
+    assert.equal(ev.decision, 'denied_escalation');
+    assert.equal(ev.escalations[0]?.dimension, 'network.outbound');
+  });
+
+  it('invalid when the template is unknown', () => {
+    const ev = evaluateTemplateProposal(dynamicsManifest(), undefined, tmplProposal('does.not.exist'));
+    assert.equal(ev.decision, 'invalid_spec');
+    assert.match(ev.invalidReason ?? '', /no self-extend template/);
+  });
+
+  it('invalid when the proposal targets another plugin', () => {
+    const ev = evaluateTemplateProposal(dynamicsManifest(), deltaTemplate, tmplProposal('odata.delta', 'de.byte5.agent.other'));
+    assert.equal(ev.decision, 'invalid_spec');
   });
 });
