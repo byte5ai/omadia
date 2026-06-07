@@ -483,6 +483,22 @@ export class DynamicAgentRuntime {
   activeIds(): string[] {
     return Array.from(this.active.keys());
   }
+
+  /** DomainTools for every currently-active dynamic/uploaded agent. Lets the
+   *  host re-hydrate the per-Agent registry orchestrators after a POST-BOOT
+   *  activation — the boot-time `domainTools[]` snapshot in index.ts is frozen
+   *  and would otherwise never include a hot-installed agent's tool. */
+  activeDomainTools(): DomainTool[] {
+    return Array.from(this.active.values()).map((a) => a.domainTool);
+  }
+
+  /** The DomainTool a single active agent-plugin exposes, or `undefined` when
+   *  the agent is not active. The install/uninstall hooks use this to (re-)
+   *  register the fresh tool on — or drop a stale one from — the per-Agent
+   *  registry orchestrators without a restart. */
+  domainToolFor(agentId: string): DomainTool | undefined {
+    return this.active.get(agentId)?.domainTool;
+  }
 }
 
 // ---------------------------------------------------------------------------
