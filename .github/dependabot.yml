@@ -69,6 +69,14 @@ updates:
       # Revisit once the Next.js lint stack supports eslint 10+.
       - dependency-name: 'eslint'
         update-types: ['version-update:semver-major']
+      # @types/node tracks the RUNTIME major, not the latest release. The stack
+      # is ABI-locked to Node 22 LTS (better-sqlite3 NODE_MODULE_VERSION 127 via
+      # middleware/scripts/check-node-version.mjs; the docker `node` major is
+      # likewise pinned below). Types ahead of the runtime (24/25) invite
+      # referencing Node APIs that don't exist at run time. 22.x patch/minor
+      # still flow; revisit when the whole stack moves to the next Node LTS.
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
 
   # GitHub Actions versions in workflow files
   - package-ecosystem: 'github-actions'

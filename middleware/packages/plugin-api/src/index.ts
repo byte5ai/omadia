@@ -34,10 +34,11 @@ export * from './responseGuard.js';
 // for backends without a persistent layer.
 export * from './agentPriorities.js';
 
-// Privacy-Proxy Slice 1a: shared `PrivacyReceipt` vocabulary. Slice 1b
-// will land the wrapper + Presidio detector + tokenise-map roundtrip;
-// Slices 5/6 (Web + Teams renderers) build against the fixtures here so
-// they can ship in parallel.
+// Privacy-Proxy: shared `PrivacyReceipt` vocabulary. The redaction itself
+// is now the Privacy Shield v4 Data-Plane Boundary (@omadia/plugin-privacy-guard):
+// tool results are interned server-side into a Dataset Store and only a masked
+// Digest crosses the LLM wire — no external NER sidecar. The Web + Teams
+// renderers build against the fixtures here.
 export * from './privacyReceipt.js';
 export * from './privacyReceiptFixtures.js';
 
