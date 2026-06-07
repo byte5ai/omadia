@@ -283,7 +283,15 @@
       "badgeNodes": "{count, plural, one {# Knoten} other {# Knoten}}",
       "badgeHops": "{count, plural, one {# Sprung} other {# Sprünge}}",
       "revealing": "Sprung {current} von {total} wird gegangen…",
-      "empty": "Für diesen Turn liegt noch kein Graph-Walk vor."
+      "empty": "Für diesen Turn liegt noch kein Graph-Walk vor.",
+      "openLabel": "Wissensgraph",
+      "close": "Schließen",
+      "maximize": "Maximieren",
+      "restore": "Wiederherstellen",
+      "hopHeaderRoots": "Sprung 0 (Wurzeln)",
+      "hopHeader": "Sprung {hop}",
+      "hopListHeader": "{nodes, plural, one {# Knoten} other {# Knoten}} · {hops, plural, one {# Sprung} other {# Sprünge}}",
+      "toggleLabel": "Graph-Walk"
     }
   },
   "privacyReceipt": {

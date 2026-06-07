@@ -40,30 +40,43 @@ import {
 import { useChatSessionsCtx } from './_lib/chatSessionsContext';
 import { useStreamStore } from './_lib/streamStore';
 import { ChoiceCard } from './_components/ChoiceCard';
-import { KgWalkSidebar } from './_components/KgWalkSidebar';
+import { KgWalkPane } from './_components/KgWalkPane';
 import type { KgWalkPayload } from './_lib/chatSessions';
 
 /**
- * Dev-only KG-walk fixture. Rendered in the right rail when the URL carries
- * `?kgmock=1`, so the sidebar can be verified visually before the backend
- * emits real `kg_graph` annotations. Never shown otherwise.
+ * Dev-only KG-walk fixture. Rendered in the floating pane when the URL carries
+ * `?kgmock=1`, so the pane can be verified visually before the backend emits
+ * real `kg_graph` annotations. Never shown otherwise. Intentionally multi-hop
+ * (and multi-root, with several same-kind nodes) so the hop-details list and
+ * the label-on-hover de-noising are both exercisable.
  */
 const MOCK_KG_WALK: KgWalkPayload = {
-  rootIds: ['mk:1'],
+  rootIds: ['mk:1', 'mk:2'],
   nodes: [
     { id: 'mk:1', label: 'Urlaubsantrag-Policy', kind: 'MemorableKnowledge', score: 0.92 },
+    { id: 'mk:2', label: 'Gleitzeit-Konto-Regel', kind: 'MemorableKnowledge', score: 0.81 },
     { id: 'turn:a', label: 'Turn · Urlaub 2024', kind: 'Turn' },
-    { id: 'ent:hr', label: 'HR-Abteilung', kind: 'Entity' },
-    { id: 'user:max', label: 'Max Mustermann', kind: 'User' },
-    { id: 'ent:policy', label: 'Gleitzeit-Regel', kind: 'Entity' },
     { id: 'turn:b', label: 'Turn · Überstunden', kind: 'Turn' },
+    { id: 'turn:c', label: 'Turn · Resturlaub-Übertrag', kind: 'Turn' },
+    { id: 'ent:hr', label: 'HR-Abteilung', kind: 'Entity' },
+    { id: 'ent:policy', label: 'Gleitzeit-Regel', kind: 'Entity' },
+    { id: 'ent:contract', label: 'Arbeitsvertrag-Standard', kind: 'Entity' },
+    { id: 'user:max', label: 'Max Mustermann', kind: 'User' },
+    { id: 'user:eva', label: 'Eva Beispiel', kind: 'User' },
+    { id: 'ins:1', label: 'Mitarbeiter bevorzugen flexible Modelle', kind: 'Insight' },
   ],
   edges: [
     { from: 'mk:1', to: 'turn:a', type: 'DERIVED_FROM', hop: 1 },
     { from: 'mk:1', to: 'ent:hr', type: 'MENTIONS', hop: 1 },
+    { from: 'mk:2', to: 'ent:policy', type: 'DERIVED_FROM', hop: 1 },
+    { from: 'mk:2', to: 'turn:b', type: 'MENTIONS', hop: 1 },
     { from: 'turn:a', to: 'user:max', type: 'INVOLVES', hop: 2 },
     { from: 'ent:hr', to: 'ent:policy', type: 'RELATES_TO', hop: 2 },
-    { from: 'ent:policy', to: 'turn:b', type: 'CITED_IN', hop: 3 },
+    { from: 'turn:b', to: 'user:eva', type: 'INVOLVES', hop: 2 },
+    { from: 'ent:policy', to: 'ent:contract', type: 'GOVERNED_BY', hop: 2 },
+    { from: 'ent:policy', to: 'turn:c', type: 'CITED_IN', hop: 3 },
+    { from: 'ent:contract', to: 'ins:1', type: 'SUPPORTS', hop: 3 },
+    { from: 'turn:c', to: 'user:max', type: 'INVOLVES', hop: 3 },
   ],
 };
 
@@ -79,6 +92,46 @@ function useKgMockEnabled(): boolean {
       new URLSearchParams(window.location.search).get('kgmock') === '1',
     () => false,
   );
+}
+
+// Master on/off for the KG-walk pane, persisted in localStorage so the
+// operator's choice sticks across reloads. Default OFF (opt-in via the header
+// toggle). useSyncExternalStore keeps it SSR-safe (server snapshot = false)
+// and updates in place without a setState-in-effect; we also listen to the
+// cross-tab `storage` event plus a same-tab custom event.
+const KG_WALK_PREF_KEY = 'omadia.kgWalkEnabled';
+const KG_WALK_PREF_EVENT = 'omadia:kgwalk-pref';
+
+function subscribeKgWalkPref(onChange: () => void): () => void {
+  window.addEventListener('storage', onChange);
+  window.addEventListener(KG_WALK_PREF_EVENT, onChange);
+  return () => {
+    window.removeEventListener('storage', onChange);
+    window.removeEventListener(KG_WALK_PREF_EVENT, onChange);
+  };
+}
+
+function useKgWalkEnabled(): readonly [boolean, (next: boolean) => void] {
+  const enabled = useSyncExternalStore(
+    subscribeKgWalkPref,
+    () => {
+      try {
+        return window.localStorage.getItem(KG_WALK_PREF_KEY) === '1';
+      } catch {
+        return false;
+      }
+    },
+    () => false,
+  );
+  const setEnabled = useCallback((next: boolean) => {
+    try {
+      window.localStorage.setItem(KG_WALK_PREF_KEY, next ? '1' : '0');
+    } catch {
+      /* storage disabled (private mode) — toggle still applies this render */
+    }
+    window.dispatchEvent(new Event(KG_WALK_PREF_EVENT));
+  }, []);
+  return [enabled, setEnabled] as const;
 }
 
 export default function ChatPage(): React.ReactElement {
@@ -98,10 +151,11 @@ export default function ChatPage(): React.ReactElement {
   const streamStore = useStreamStore();
   const sending = streamStore.isActive(activeId);
   const kgMockEnabled = useKgMockEnabled();
+  const [kgWalkEnabled, setKgWalkEnabled] = useKgWalkEnabled();
 
-  // The KG-walk shown in the right rail = the most recent assistant message
-  // that carries one. Falls back to the dev mock when `?kgmock=1` and no real
-  // walk has streamed in yet.
+  // The KG-walk surfaced in the floating pane = the most recent assistant
+  // message that carries one. Falls back to the dev mock when `?kgmock=1` and
+  // no real walk has streamed in yet.
   const activeKgWalk = useMemo<KgWalkPayload | null>(() => {
     for (let i = activeSession.messages.length - 1; i >= 0; i -= 1) {
       const m = activeSession.messages[i];
@@ -381,6 +435,17 @@ export default function ChatPage(): React.ReactElement {
               selectedSlug={selectedAgentSlug}
               onSelect={setSelectedAgentSlug}
             />
+            {/* KG-walk feature toggle — opt-in, persisted. Off → no launcher,
+                no pane (kg_graph annotations are simply not surfaced). */}
+            <label className="flex cursor-pointer select-none items-center gap-1.5 text-[11px] text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300">
+              <input
+                type="checkbox"
+                checked={kgWalkEnabled}
+                onChange={(e) => setKgWalkEnabled(e.target.checked)}
+                className="h-3 w-3 accent-indigo-500"
+              />
+              {t('kgWalk.toggleLabel')}
+            </label>
           </div>
 
           {/* Row 2 — Agent-Usage-Pills (only when anything was invoked) */}
@@ -439,15 +504,12 @@ export default function ChatPage(): React.ReactElement {
             ))}
           </div>
         </div>
-
-        {/* KG-walk right rail — shows the most recent turn's graph walk.
-            Hidden below lg so the chat stays single-column on small screens. */}
-        {activeKgWalk && (
-          <div className="hidden w-80 shrink-0 overflow-y-auto border-l border-neutral-200 p-3 lg:block dark:border-neutral-800">
-            <KgWalkSidebar walk={activeKgWalk} />
-          </div>
-        )}
       </div>
+
+      {/* KG-walk — togglable floating pane (launcher chip → flying window) for
+          the most recent turn's graph walk. Chat stays full width. Gated by the
+          header toggle; `?kgmock=1` force-enables it for dev preview. */}
+      <KgWalkPane walk={kgWalkEnabled || kgMockEnabled ? activeKgWalk : null} />
 
       <footer className="border-t border-neutral-200 bg-white/80 px-6 py-4 backdrop-blur dark:border-neutral-800 dark:bg-neutral-900/80">
         <div className="mx-auto flex max-w-4xl flex-col gap-1.5">

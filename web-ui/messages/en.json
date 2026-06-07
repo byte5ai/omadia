@@ -283,7 +283,15 @@
       "badgeNodes": "{count, plural, one {# node} other {# nodes}}",
       "badgeHops": "{count, plural, one {# hop} other {# hops}}",
       "revealing": "Walking hop {current} of {total}…",
-      "empty": "No graph walk for this turn yet."
+      "empty": "No graph walk for this turn yet.",
+      "openLabel": "Knowledge graph",
+      "close": "Close",
+      "maximize": "Maximize",
+      "restore": "Restore",
+      "hopHeaderRoots": "Hop 0 (roots)",
+      "hopHeader": "Hop {hop}",
+      "hopListHeader": "{nodes, plural, one {# node} other {# nodes}} · {hops, plural, one {# hop} other {# hops}}",
+      "toggleLabel": "Graph walk"
     }
   },
   "privacyReceipt": {

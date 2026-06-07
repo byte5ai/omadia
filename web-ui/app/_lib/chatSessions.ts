@@ -297,7 +297,7 @@ export interface Message {
    *  before the answer. Persisted with the turn. */
   recalledContext?: RecalledContextSnapshot;
   /** KG-walk neighborhood this turn surfaced, streamed in as a `kg_graph`
-   *  annotation. Drives the right-rail `<KgWalkSidebar>` animation. Persisted
+   *  annotation. Drives the floating `<KgWalkPane>` animation. Persisted
    *  with the turn so a reloaded session keeps the walk. */
   kgWalk?: KgWalkPayload;
   /** KG-persisted Turn external_id (e.g. `turn:<sessionId>:<ts>`). Set
