@@ -1,10 +1,12 @@
+import { planNodeId } from '@omadia/plugin-api';
 import type { KnowledgeGraph, PluginContext } from '@omadia/plugin-api';
 import type { TurnAnnotation, TurnHookRegistrar } from '@omadia/orchestrator';
 import { graphScopeFor } from '@omadia/orchestrator';
 
 import { shouldPlan } from './gate.js';
 import { buildPlanSnapshot } from './snapshot.js';
-import { materializePlan } from './materializer.js';
+import { gcSupersededPlans } from './gc.js';
+import { materializePlan, summariseRequest } from './materializer.js';
 import {
   advanceStep,
   applyReplan,
@@ -133,6 +135,13 @@ export async function activate(
   const verifyExitConditions =
     ctx.config.get<string>('verifyExitConditions') === 'on';
 
+  // #237 — garbage-collect prior semantic-duplicate plans for a scope when a
+  // fresh plan is materialised, keeping only the latest. ON by default (the
+  // accumulation it fixes is the common case); set `gcDuplicatePlans=off` to
+  // disarm the hard-delete.
+  const gcDuplicatePlans =
+    ctx.config.get<string>('gcDuplicatePlans') !== 'off';
+
   // Per-turn plan state + replan context, keyed by orchestrator turn id.
   // Populated at onBeforeTurn (after materialisation) and drained at
   // onAfterTurn. An errored turn never fires onAfterTurn, so we evict stale
@@ -205,6 +214,39 @@ export async function activate(
             result.stepCount,
           )} steps)`,
         );
+        // #237 — GC prior duplicate plans for this scope. Fire-and-forget: it
+        // only hard-deletes OLDER plans (never the survivor or any in-flight
+        // turn), so it must not delay turn start or fail the turn. Protect
+        // every plan whose turn is still tracked in this process.
+        if (gcDuplicatePlans) {
+          const protectedPlanExternalIds = new Set<string>(
+            [...turns.keys()].map((tid) => planNodeId(tid)),
+          );
+          void gcSupersededPlans({
+            scope,
+            keepPlanExternalId: result.planExternalId,
+            requestSummary: summariseRequest(userMessage),
+            protectedPlanExternalIds,
+            llm,
+            kg,
+          })
+            .then((gc) => {
+              if (gc.deletedPlanExternalIds.length > 0) {
+                ctx.log(
+                  `[plan-runner] GC removed ${String(
+                    gc.deletedPlanExternalIds.length,
+                  )} superseded plan(s) (${String(gc.deletedSteps)} steps)`,
+                );
+              }
+            })
+            .catch((err: unknown) => {
+              ctx.log(
+                `[plan-runner] plan GC failed: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            });
+        }
         // E9 — stream the freshly-materialised plan as the turn's first event.
         return await planAnnotation(result.planExternalId);
       },

@@ -61,6 +61,13 @@ export function parsePlanSteps(raw: string): ParsedStep[] {
   return steps;
 }
 
+/** Cap the stored request summary so a long paste doesn't bloat the Plan node.
+ *  280 chars is plenty for the semantic same-task comparison the GC pass runs. */
+export function summariseRequest(userMessage: string): string {
+  const t = userMessage.trim().replace(/\s+/g, ' ');
+  return t.length > 280 ? `${t.slice(0, 280)}…` : t;
+}
+
 export interface MaterializeInput {
   /** Stable plan id for this turn (the orchestrator turn id). */
   planId: string;
@@ -104,6 +111,9 @@ export async function materializePlan(
     scope: input.scope,
     createdBy: 'gate',
     createdAt: input.createdAt,
+    // #237 (plan GC) — stash a capped copy of the request so the GC pass can
+    // judge whether a later plan in this scope is the same task re-planned.
+    requestSummary: summariseRequest(input.userMessage),
   });
 
   // Stable per-step ids so DEPENDS_ON references resolve and re-runs are
