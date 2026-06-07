@@ -37,6 +37,7 @@ import {
 import type { VerifierBundle } from '@omadia/verifier';
 
 import type { Pool } from 'pg';
+import { initUsageRecorder } from '@omadia/usage-telemetry';
 
 import {
   buildOrchestratorForAgent,
@@ -388,6 +389,11 @@ export async function activate(
     process.env['GRAPH_TENANT_ID'] ??
     ctx.config.get<string>('graph_tenant_id') ??
     'default';
+
+  // Cost telemetry: wire the usage recorder to the shared graph pool. The
+  // orchestrator + sub-agent usage is captured inside streamMessageEvents;
+  // this just ensures the recorder has a pool to flush to. Idempotent.
+  if (graphPool) initUsageRecorder(graphPool);
 
   // Anthropic client — shared across every Agent built from this plugin.
   //

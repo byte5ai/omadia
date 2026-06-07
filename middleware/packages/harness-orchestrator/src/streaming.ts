@@ -1,4 +1,5 @@
 import type Anthropic from '@anthropic-ai/sdk';
+import { normalizeUsage, recordUsage } from '@omadia/usage-telemetry';
 import type { AskObserver } from './tools/domainQueryTool.js';
 import { ensureWellFormedParams } from './privacyHandle.js';
 
@@ -248,6 +249,20 @@ export async function* streamMessageEvents(args: {
             }),
           'onIterationUsage',
         );
+
+        // Cost telemetry: persist this iteration's usage. `streamLabel`
+        // distinguishes orchestrator vs sub-agent; `params.model` is the
+        // model the request was actually sent to. recordUsage never throws
+        // and no-ops until a graphPool has been wired, so this is safe on the
+        // hot path. Covers BOTH the orchestrator and every sub-agent that
+        // streams through this helper — the background Haiku callers
+        // (extras/verifier) are captured via their wrapped clients instead.
+        recordUsage({
+          source: streamLabel,
+          model:
+            typeof params?.model === 'string' ? params.model : 'unknown',
+          ...normalizeUsage(usage),
+        });
       }
 
       yield { type: 'final', message: response };
