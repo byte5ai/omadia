@@ -41,6 +41,7 @@ import type {
   GraphNode,
   PlanIngest,
   PlanIngestResult,
+  PlanDeleteResult,
   PlanStepIngest,
   PlanStepIngestResult,
   PlanStepStatus,
@@ -192,6 +193,10 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
 
   listPlansForScope(scope: string): Promise<GraphNode[]> {
     return this.inner.listPlansForScope(scope);
+  }
+
+  deletePlan(planExternalId: string): Promise<PlanDeleteResult> {
+    return this.inner.deletePlan(planExternalId);
   }
 
   listRecentPlans(opts: {

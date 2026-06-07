@@ -410,6 +410,8 @@ const PlanPropsSchema = z
     turnId: z.string().optional(),
     strategy: z.string().optional(),
     createdBy: z.enum(['gate', 'manual']).optional(),
+    // #237 (plan GC) — originating request summary for semantic-dedup compare.
+    requestSummary: z.string().optional(),
     createdAt: z.string().datetime(),
   })
   .passthrough();

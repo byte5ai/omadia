@@ -37,14 +37,14 @@ const ConfigSchema = z.object({
   // register but their LLM-bound capabilities stay unpublished until the
   // operator runs /setup or PATCHes a key via /api/v1/admin/runtime/secrets.
   ANTHROPIC_API_KEY: z.string().optional(),
-  ORCHESTRATOR_MODEL: z.string().min(1).default('claude-opus-4-7'),
+  ORCHESTRATOR_MODEL: z.string().min(1).default('claude-opus-4-8'),
   ORCHESTRATOR_MAX_TOKENS: z.coerce.number().int().positive().default(8192),
 
   // Sub-agent runtime (Odoo Accounting, Odoo HR, Confluence Playbook). These
   // sub-agents run locally inside the middleware; skill markdown lives under
   // SKILLS_DIR. Model default matches the orchestrator; override to run
   // sub-agents cheaper (Sonnet/Haiku) while keeping the orchestrator on Opus.
-  SUB_AGENT_MODEL: z.string().min(1).default('claude-opus-4-7'),
+  SUB_AGENT_MODEL: z.string().min(1).default('claude-opus-4-8'),
   SUB_AGENT_MAX_TOKENS: z.coerce.number().int().positive().default(4096),
   SUB_AGENT_MAX_ITERATIONS: z.coerce.number().int().positive().default(16),
 

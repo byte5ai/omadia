@@ -153,6 +153,15 @@ export function buildForAgent(
       model: runtime.model,
       maxTokens: runtime.maxTokens,
       maxToolIterations: runtime.maxToolIterations,
+      ...(runtime.loopRepeatSoft !== undefined
+        ? { loopRepeatSoft: runtime.loopRepeatSoft }
+        : {}),
+      ...(runtime.loopRepeatHard !== undefined
+        ? { loopRepeatHard: runtime.loopRepeatHard }
+        : {}),
+      ...(runtime.maxTurnSeconds !== undefined
+        ? { maxTurnSeconds: runtime.maxTurnSeconds }
+        : {}),
     },
     deps,
   );

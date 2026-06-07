@@ -24,6 +24,7 @@ describe('inferFamilyFromModel', () => {
     assert.equal(inferFamilyFromModel('claude-haiku-4-5'), 'haiku');
     assert.equal(inferFamilyFromModel('claude-sonnet-4-6'), 'sonnet');
     assert.equal(inferFamilyFromModel('claude-opus-4-7'), 'opus');
+    assert.equal(inferFamilyFromModel('claude-opus-4-8'), 'opus');
     assert.equal(inferFamilyFromModel('claude-opus-4-7[1m]'), 'opus');
   });
 

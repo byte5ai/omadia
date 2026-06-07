@@ -75,6 +75,7 @@ import {
   type RunToolCallView,
   type PlanIngest,
   type PlanIngestResult,
+  type PlanDeleteResult,
   type PlanStepIngest,
   type PlanStepIngestResult,
   type PlanStepStatus,
@@ -2749,6 +2750,9 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         ...(input.turnExternalId ? { turnId: input.turnExternalId } : {}),
         ...(input.strategy ? { strategy: input.strategy } : {}),
         ...(input.createdBy ? { createdBy: input.createdBy } : {}),
+        ...(input.requestSummary
+          ? { requestSummary: input.requestSummary }
+          : {}),
         createdAt: input.createdAt,
       },
     });
@@ -2851,6 +2855,26 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
           String(a.props['createdAt'] ?? ''),
         ),
       );
+  }
+
+  async deletePlan(planExternalId: string): Promise<PlanDeleteResult> {
+    const plan = this.nodes.get(planExternalId);
+    if (!plan || plan.type !== 'Plan') {
+      return { deleted: false, deletedSteps: 0 };
+    }
+    // Steps are linked Plan-ward via STEP_OF (from = step, to = plan).
+    const stepIds = [...this.edges.values()]
+      .filter((e) => e.type === 'STEP_OF' && e.to === planExternalId)
+      .map((e) => e.from)
+      .filter((id) => this.nodes.get(id)?.type === 'PlanStep');
+    const doomed = new Set<string>([planExternalId, ...stepIds]);
+    // Drop every edge that touches the plan or any of its steps
+    // (STEP_OF, DEPENDS_ON between steps, PLAN_OF to the turn).
+    for (const [key, edge] of this.edges) {
+      if (doomed.has(edge.from) || doomed.has(edge.to)) this.edges.delete(key);
+    }
+    for (const id of doomed) this.nodes.delete(id);
+    return { deleted: true, deletedSteps: stepIds.length };
   }
 
   async listRecentPlans(opts: {
