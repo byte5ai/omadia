@@ -59,6 +59,11 @@ export default function AdminIndexPage(): React.ReactElement {
           title="Memory · Widersprüche"
           description="Semantisch ähnliche Memories mit widersprüchlichen Aussagen — Operator entscheidet welche korrekt ist (oder ob beide gelten)."
         />
+        <AdminCard
+          href="/admin/usage"
+          title="Kosten"
+          description="LLM-Token-Verbrauch und Kosten pro Modell, Quelle und Zeit. Cache-Hit-Rate und Gesamtkosten über jeden Anthropic-Call (Orchestrator, Sub-Agents, Background-Tasks)."
+        />
       </ul>
     </main>
   );
