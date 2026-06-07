@@ -295,6 +295,17 @@
       "legendInserted": "Inserted",
       "insertedTag": "NEW",
       "badgeInserted": "{count, plural, one {# inserted} other {# inserted}}"
+    },
+    "planDag": {
+      "title": "Plan",
+      "subtitle": "Live plan this turn is executing",
+      "toggleLabel": "Plan DAG",
+      "openLabel": "Plan",
+      "badgeProgress": "{done}/{total}",
+      "listHeader": "{done} of {total} steps done",
+      "maximize": "Maximize",
+      "restore": "Restore",
+      "close": "Close"
     }
   },
   "privacyReceipt": {

@@ -1,18 +1,12 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type PointerEvent as ReactPointerEvent,
-} from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Maximize2, Minimize2, Network, X } from 'lucide-react';
 
 import type { KgWalkPayload } from '../_lib/chatSessions';
+import { useFloatingWindow } from './useFloatingWindow';
 
 // react-force-graph-2d touches `window`/canvas at import time, so it must be
 // client-only. Ported from dk-intelligent-core's GraphPanel.
@@ -25,6 +19,9 @@ interface Props {
 
 /** Accent for roots + traversed edges. Matches the chat's indigo phase pill. */
 const ROOT_ACCENT = '#6366f1';
+
+/** Emerald accent for freshly-inserted nodes/edges (matches Turn green family). */
+const INSERT_ACCENT = '#34d399';
 
 /**
  * Clean, small per-kind palette. Anything outside the map falls back to the
@@ -47,13 +44,6 @@ function kindColor(kind: string): string {
 /** Delay between hop reveals, ms. Snappy so the user isn't trapped waiting. */
 const HOP_INTERVAL_MS = 320;
 
-/** Default + bounds for the floating pane geometry. */
-const DEFAULT_W = 560;
-const DEFAULT_H = 640;
-const MIN_W = 360;
-const MIN_H = 360;
-const VIEWPORT_MARGIN = 16; // px gap kept from each viewport edge.
-
 interface GraphNodeDatum {
   id: string;
   name: string;
@@ -74,60 +64,27 @@ interface GraphLinkDatum {
   inserted: boolean;
 }
 
-/** Emerald accent for freshly-inserted nodes/edges (matches Turn green family). */
-const INSERT_ACCENT = '#34d399';
-
 function truncateLabel(label: string, max = 24): string {
   if (label.length <= max) return label;
   return `${label.slice(0, max - 1)}…`;
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), max);
-}
-
-interface PaneGeom {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
-
-/** Bottom-right default anchor, clamped to the current viewport. */
-function defaultGeom(): PaneGeom {
-  if (typeof window === 'undefined') {
-    return { x: 0, y: 0, w: DEFAULT_W, h: DEFAULT_H };
-  }
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
-  const w = Math.min(DEFAULT_W, vw - VIEWPORT_MARGIN * 2);
-  const h = Math.min(DEFAULT_H, vh - VIEWPORT_MARGIN * 2);
-  return {
-    x: Math.max(VIEWPORT_MARGIN, vw - w - VIEWPORT_MARGIN),
-    y: Math.max(VIEWPORT_MARGIN, vh - h - VIEWPORT_MARGIN),
-    w,
-    h,
-  };
-}
-
 /**
  * Floating "flying pane" visualization of the knowledge-graph neighborhood a
- * turn walked. Replaces the old fixed right-rail sidebar. A launcher chip opens
- * a draggable / resizable / maximizable window with a de-noised force graph on
- * top and a hop-by-hop details list below.
+ * turn walked (anchored bottom-right). A launcher chip opens a draggable /
+ * resizable / maximizable window with a de-noised force graph on top and a
+ * hop-by-hop details list below. Window mechanics live in
+ * {@link useFloatingWindow}; this component owns the graph + list + insert
+ * visuals.
  */
 export function KgWalkPane({ walk }: Props): React.ReactElement | null {
   const t = useTranslations('chat.kgWalk');
-  const [open, setOpen] = useState(false);
-  const [maximized, setMaximized] = useState(false);
-  const [geom, setGeom] = useState<PaneGeom | null>(null);
+  const win = useFloatingWindow({ anchor: 'right' });
   /** id of the node currently hovered (in graph or list) for cross-highlight. */
   const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fgRef = useRef<any>(null);
-  const roRef = useRef<ResizeObserver | null>(null);
-  const [canvas, setCanvas] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [revealedHop, setRevealedHop] = useState(0);
   const [animatedWalk, setAnimatedWalk] = useState<KgWalkPayload | null>(walk);
 
@@ -144,36 +101,26 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
     setActiveNodeId(null);
   }
 
-  // Open the pane, seeding geometry from the live viewport on first open so it
-  // anchors bottom-right and stays within bounds. Done in the handler (not an
-  // effect) to avoid a setState-in-effect cascade.
-  const openPane = useCallback(() => {
-    setGeom((prev) => prev ?? defaultGeom());
-    setOpen(true);
-  }, []);
-
-  // Auto-open whenever a new walk arrives (the default behaviour now that the
-  // feature ships on). Keyed on `walk` identity: closing the pane keeps it shut
-  // for the current walk, but the next turn's walk — including a merged
-  // `kg_insert` delta, which produces a fresh object — pops it back open so the
-  // operator sees KG reads + writes without hunting for the launcher. Deferred
-  // a tick (setTimeout, like the reveal/zoom effects) so the first client paint
-  // still matches the SSR launcher — avoiding an SSR/client geometry mismatch —
-  // and so we never call setState synchronously inside the effect body.
+  // Auto-open whenever a new walk arrives (the feature ships on). Keyed on
+  // `walk` identity: closing the pane keeps it shut for the current walk, but
+  // the next turn's walk — including a merged `kg_insert` delta, which produces
+  // a fresh object — pops it back open. Deferred a tick so the first client
+  // paint still matches the SSR launcher (no geometry mismatch) and so we never
+  // call setState synchronously inside the effect body.
+  const { openWindow } = win;
   useEffect(() => {
     if (!walk) return;
     const id = setTimeout(() => {
-      setGeom((prev) => prev ?? defaultGeom());
-      setOpen(true);
+      openWindow();
     }, 0);
     return () => {
       clearTimeout(id);
     };
-  }, [walk]);
+  }, [walk, openWindow]);
 
   // Hop-reveal timer — settles quickly so the user isn't blocked.
   useEffect(() => {
-    if (!open || !walk || maxHop === 0) return;
+    if (!win.open || !walk || maxHop === 0) return;
     const id = setInterval(() => {
       setRevealedHop((hop) => {
         if (hop >= maxHop) {
@@ -186,29 +133,7 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
     return () => {
       clearInterval(id);
     };
-  }, [open, walk, maxHop]);
-
-  const setCanvasRef = useCallback((el: HTMLDivElement | null) => {
-    if (roRef.current) {
-      roRef.current.disconnect();
-      roRef.current = null;
-    }
-    if (!el) {
-      setCanvas({ w: 0, h: 0 });
-      return;
-    }
-    const measure = (): void => {
-      const w = el.clientWidth;
-      const h = el.clientHeight;
-      if (w > 0 && h > 0) {
-        setCanvas((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
-      }
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    roRef.current = ro;
-  }, []);
+  }, [win.open, walk, maxHop]);
 
   // Map each node to the smallest hop at which it becomes reachable.
   const nodeHopById = useMemo(() => {
@@ -227,10 +152,7 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
     return map;
   }, [walk]);
 
-  const rootSet = useMemo(
-    () => new Set<string>(walk?.rootIds ?? []),
-    [walk],
-  );
+  const rootSet = useMemo(() => new Set<string>(walk?.rootIds ?? []), [walk]);
 
   const labelById = useMemo(() => {
     const map = new Map<string, string>();
@@ -295,8 +217,10 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
   }, [data.nodes.length]);
 
   // Re-fit the camera as the layout settles.
+  const canvasW = win.canvas.w;
+  const canvasH = win.canvas.h;
   useEffect(() => {
-    if (!fgRef.current || canvas.w === 0 || canvas.h === 0) return;
+    if (!fgRef.current || canvasW === 0 || canvasH === 0) return;
     const id = setTimeout(() => {
       try {
         fgRef.current?.zoomToFit?.(400, 40);
@@ -307,120 +231,7 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
     return () => {
       clearTimeout(id);
     };
-  }, [canvas.w, canvas.h, data.nodes.length]);
-
-  // --- Drag handling (header) ---------------------------------------------
-  const dragState = useRef<{
-    startX: number;
-    startY: number;
-    originX: number;
-    originY: number;
-  } | null>(null);
-
-  const onHeaderPointerDown = useCallback(
-    (e: ReactPointerEvent<HTMLElement>): void => {
-      if (maximized || !geom) return;
-      // Don't start a drag from the control buttons.
-      if ((e.target as HTMLElement).closest('button')) return;
-      e.currentTarget.setPointerCapture(e.pointerId);
-      dragState.current = {
-        startX: e.clientX,
-        startY: e.clientY,
-        originX: geom.x,
-        originY: geom.y,
-      };
-    },
-    [maximized, geom],
-  );
-
-  const onHeaderPointerMove = useCallback(
-    (e: ReactPointerEvent<HTMLElement>): void => {
-      const st = dragState.current;
-      if (!st) return;
-      setGeom((prev) => {
-        if (!prev) return prev;
-        const vw = window.innerWidth;
-        const vh = window.innerHeight;
-        const nextX = clamp(
-          st.originX + (e.clientX - st.startX),
-          VIEWPORT_MARGIN,
-          Math.max(VIEWPORT_MARGIN, vw - prev.w - VIEWPORT_MARGIN),
-        );
-        const nextY = clamp(
-          st.originY + (e.clientY - st.startY),
-          VIEWPORT_MARGIN,
-          Math.max(VIEWPORT_MARGIN, vh - prev.h - VIEWPORT_MARGIN),
-        );
-        return { ...prev, x: nextX, y: nextY };
-      });
-    },
-    [],
-  );
-
-  const onHeaderPointerUp = useCallback(
-    (e: ReactPointerEvent<HTMLElement>): void => {
-      dragState.current = null;
-      try {
-        e.currentTarget.releasePointerCapture(e.pointerId);
-      } catch {
-        /* ignore */
-      }
-    },
-    [],
-  );
-
-  // --- Resize handling (corner handle) ------------------------------------
-  const resizeState = useRef<{
-    startX: number;
-    startY: number;
-    originW: number;
-    originH: number;
-  } | null>(null);
-
-  const onResizePointerDown = useCallback(
-    (e: ReactPointerEvent<HTMLElement>): void => {
-      if (maximized || !geom) return;
-      e.stopPropagation();
-      e.currentTarget.setPointerCapture(e.pointerId);
-      resizeState.current = {
-        startX: e.clientX,
-        startY: e.clientY,
-        originW: geom.w,
-        originH: geom.h,
-      };
-    },
-    [maximized, geom],
-  );
-
-  const onResizePointerMove = useCallback(
-    (e: ReactPointerEvent<HTMLElement>): void => {
-      const st = resizeState.current;
-      if (!st) return;
-      setGeom((prev) => {
-        if (!prev) return prev;
-        const vw = window.innerWidth;
-        const vh = window.innerHeight;
-        const maxW = vw - prev.x - VIEWPORT_MARGIN;
-        const maxH = vh - prev.y - VIEWPORT_MARGIN;
-        const nextW = clamp(st.originW + (e.clientX - st.startX), MIN_W, maxW);
-        const nextH = clamp(st.originH + (e.clientY - st.startY), MIN_H, maxH);
-        return { ...prev, w: nextW, h: nextH };
-      });
-    },
-    [],
-  );
-
-  const onResizePointerUp = useCallback(
-    (e: ReactPointerEvent<HTMLElement>): void => {
-      resizeState.current = null;
-      try {
-        e.currentTarget.releasePointerCapture(e.pointerId);
-      } catch {
-        /* ignore */
-      }
-    },
-    [],
-  );
+  }, [canvasW, canvasH, data.nodes.length]);
 
   // Hop-grouped node list for the details panel.
   const hopGroups = useMemo(() => {
@@ -456,11 +267,11 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
   const insertedCount = walk.nodes.filter((n) => n.inserted === true).length;
 
   // Launcher chip when the pane is closed.
-  if (!open) {
+  if (!win.open) {
     return (
       <button
         type="button"
-        onClick={openPane}
+        onClick={win.openWindow}
         className="fixed bottom-6 right-6 z-40 flex items-center gap-2 rounded-full border border-indigo-300 bg-white/90 px-4 py-2 text-sm font-medium text-indigo-700 shadow-lg backdrop-blur transition hover:bg-white dark:border-indigo-700 dark:bg-neutral-900/90 dark:text-indigo-300 dark:hover:bg-neutral-900"
         aria-label={t('openLabel')}
         title={t('openLabel')}
@@ -475,37 +286,21 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
   }
 
   // While geometry is being seeded on first open.
-  if (!geom) return null;
-
-  const style: React.CSSProperties = maximized
-    ? {
-        left: '5vw',
-        top: '7.5vh',
-        width: '90vw',
-        height: '85vh',
-      }
-    : {
-        left: geom.x,
-        top: geom.y,
-        width: geom.w,
-        height: geom.h,
-        maxWidth: `calc(100vw - ${String(VIEWPORT_MARGIN * 2)}px)`,
-        maxHeight: `calc(100vh - ${String(VIEWPORT_MARGIN * 2)}px)`,
-      };
+  if (!win.style) return null;
 
   return (
     <section
       className="fixed z-50 flex flex-col overflow-hidden rounded-xl border border-neutral-300 bg-neutral-950 text-neutral-200 shadow-2xl dark:border-neutral-700"
-      style={style}
+      style={win.style}
       aria-label={t('title')}
     >
       <header
-        onPointerDown={onHeaderPointerDown}
-        onPointerMove={onHeaderPointerMove}
-        onPointerUp={onHeaderPointerUp}
+        onPointerDown={win.headerHandlers.onPointerDown}
+        onPointerMove={win.headerHandlers.onPointerMove}
+        onPointerUp={win.headerHandlers.onPointerUp}
         className={[
           'flex items-center justify-between gap-2 border-b border-white/10 bg-neutral-900 px-3 py-2 select-none',
-          maximized ? '' : 'cursor-move',
+          win.maximized ? '' : 'cursor-move',
         ].join(' ')}
       >
         <div className="flex min-w-0 flex-col gap-0.5">
@@ -533,14 +328,12 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
           </span>
           <button
             type="button"
-            onClick={() => {
-              setMaximized((m) => !m);
-            }}
+            onClick={win.toggleMaximized}
             className="rounded p-1 text-neutral-400 transition hover:bg-white/10 hover:text-neutral-100"
-            aria-label={maximized ? t('restore') : t('maximize')}
-            title={maximized ? t('restore') : t('maximize')}
+            aria-label={win.maximized ? t('restore') : t('maximize')}
+            title={win.maximized ? t('restore') : t('maximize')}
           >
-            {maximized ? (
+            {win.maximized ? (
               <Minimize2 size={14} aria-hidden />
             ) : (
               <Maximize2 size={14} aria-hidden />
@@ -548,9 +341,7 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
           </button>
           <button
             type="button"
-            onClick={() => {
-              setOpen(false);
-            }}
+            onClick={win.close}
             className="rounded p-1 text-neutral-400 transition hover:bg-white/10 hover:text-neutral-100"
             aria-label={t('close')}
             title={t('close')}
@@ -561,13 +352,13 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
       </header>
 
       {/* Graph region — fills the top, leaving the list a flexible share. */}
-      <div ref={setCanvasRef} className="relative min-h-0 flex-[3]">
-        {canvas.w > 0 && canvas.h > 0 && (
+      <div ref={win.setCanvasRef} className="relative min-h-0 flex-[3]">
+        {canvasW > 0 && canvasH > 0 && (
           <ForceGraph
             ref={fgRef}
             graphData={data}
-            width={canvas.w}
-            height={canvas.h}
+            width={canvasW}
+            height={canvasH}
             backgroundColor="#0b1220"
             nodeRelSize={5}
             cooldownTicks={120}
@@ -580,9 +371,7 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
               }
             }}
             onNodeHover={(node) => {
-              setActiveNodeId(
-                node ? (node as GraphNodeDatum).id : null,
-              );
+              setActiveNodeId(node ? (node as GraphNodeDatum).id : null);
             }}
             linkColor={(l) => {
               const e = l as GraphLinkDatum;
@@ -774,11 +563,11 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
       </div>
 
       {/* Resize handle (bottom-right corner). Hidden while maximized. */}
-      {!maximized && (
+      {!win.maximized && (
         <div
-          onPointerDown={onResizePointerDown}
-          onPointerMove={onResizePointerMove}
-          onPointerUp={onResizePointerUp}
+          onPointerDown={win.resizeHandlers.onPointerDown}
+          onPointerMove={win.resizeHandlers.onPointerMove}
+          onPointerUp={win.resizeHandlers.onPointerUp}
           className="absolute bottom-0 right-0 h-4 w-4 cursor-nwse-resize"
           aria-hidden
         >

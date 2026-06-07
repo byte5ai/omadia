@@ -10,7 +10,7 @@ import {
   type KeyboardEvent,
 } from 'react';
 import { useTranslations } from 'next-intl';
-import { Eraser, Navigation, Network } from 'lucide-react';
+import { Eraser, GitBranch, Navigation, Network } from 'lucide-react';
 import { ChatTabs } from './_components/ChatTabs';
 import { AgentPicker } from './_components/AgentPicker';
 import { AgentUnavailableBanner } from './_components/AgentUnavailableBanner';
@@ -41,7 +41,8 @@ import { useChatSessionsCtx } from './_lib/chatSessionsContext';
 import { useStreamStore } from './_lib/streamStore';
 import { ChoiceCard } from './_components/ChoiceCard';
 import { KgWalkPane } from './_components/KgWalkPane';
-import type { KgWalkPayload } from './_lib/chatSessions';
+import { PlanDagPane } from './_components/PlanDagPane';
+import type { KgWalkPayload, PlanSnapshot } from './_lib/chatSessions';
 
 /**
  * Dev-only KG-walk fixture. Rendered in the floating pane when the URL carries
@@ -94,48 +95,59 @@ function useKgMockEnabled(): boolean {
   );
 }
 
-// Master on/off for the KG-walk pane, persisted in localStorage so the
-// operator's choice sticks across reloads. Default OFF (opt-in via the header
-// toggle). useSyncExternalStore keeps it SSR-safe (server snapshot = false)
-// and updates in place without a setState-in-effect; we also listen to the
-// cross-tab `storage` event plus a same-tab custom event.
-const KG_WALK_PREF_KEY = 'omadia.kgWalkEnabled';
-const KG_WALK_PREF_EVENT = 'omadia:kgwalk-pref';
+// Master on/off for the chat visualization panes (KG-walk on the right, Plan
+// DAG on the left), persisted in localStorage so the operator's choice sticks
+// across reloads. Both DEFAULT ON: the feature is enabled unless explicitly
+// turned off (stored '0'). useSyncExternalStore keeps it SSR-safe (server
+// snapshot mirrors the default) and updates in place without a setState-in-
+// effect; we also listen to the cross-tab `storage` event plus a same-tab
+// custom event so a pill flip in one place re-renders every reader.
+const TOGGLE_PREF_EVENT = 'omadia:viz-pref';
 
-function subscribeKgWalkPref(onChange: () => void): () => void {
+function subscribeTogglePref(onChange: () => void): () => void {
   window.addEventListener('storage', onChange);
-  window.addEventListener(KG_WALK_PREF_EVENT, onChange);
+  window.addEventListener(TOGGLE_PREF_EVENT, onChange);
   return () => {
     window.removeEventListener('storage', onChange);
-    window.removeEventListener(KG_WALK_PREF_EVENT, onChange);
+    window.removeEventListener(TOGGLE_PREF_EVENT, onChange);
   };
 }
 
-function useKgWalkEnabled(): readonly [boolean, (next: boolean) => void] {
-  // Default ON: the feature is on unless the operator explicitly turned it off
-  // (stored '0'). An unset key (first visit) reads as enabled, so the pane
-  // surfaces KG access out of the box. getServerSnapshot mirrors that default
-  // so SSR and the first client paint agree.
+/** Generic default-ON persisted boolean toggle keyed on a localStorage slot. */
+function usePersistedToggle(
+  storageKey: string,
+): readonly [boolean, (next: boolean) => void] {
   const enabled = useSyncExternalStore(
-    subscribeKgWalkPref,
+    subscribeTogglePref,
     () => {
       try {
-        return window.localStorage.getItem(KG_WALK_PREF_KEY) !== '0';
+        return window.localStorage.getItem(storageKey) !== '0';
       } catch {
         return true;
       }
     },
     () => true,
   );
-  const setEnabled = useCallback((next: boolean) => {
-    try {
-      window.localStorage.setItem(KG_WALK_PREF_KEY, next ? '1' : '0');
-    } catch {
-      /* storage disabled (private mode) — toggle still applies this render */
-    }
-    window.dispatchEvent(new Event(KG_WALK_PREF_EVENT));
-  }, []);
+  const setEnabled = useCallback(
+    (next: boolean) => {
+      try {
+        window.localStorage.setItem(storageKey, next ? '1' : '0');
+      } catch {
+        /* storage disabled (private mode) — toggle still applies this render */
+      }
+      window.dispatchEvent(new Event(TOGGLE_PREF_EVENT));
+    },
+    [storageKey],
+  );
   return [enabled, setEnabled] as const;
+}
+
+function useKgWalkEnabled(): readonly [boolean, (next: boolean) => void] {
+  return usePersistedToggle('omadia.kgWalkEnabled');
+}
+
+function usePlanDagEnabled(): readonly [boolean, (next: boolean) => void] {
+  return usePersistedToggle('omadia.planDagEnabled');
 }
 
 export default function ChatPage(): React.ReactElement {
@@ -156,6 +168,7 @@ export default function ChatPage(): React.ReactElement {
   const sending = streamStore.isActive(activeId);
   const kgMockEnabled = useKgMockEnabled();
   const [kgWalkEnabled, setKgWalkEnabled] = useKgWalkEnabled();
+  const [planDagEnabled, setPlanDagEnabled] = usePlanDagEnabled();
 
   // The KG-walk surfaced in the floating pane = the most recent assistant
   // message that carries one. Falls back to the dev mock when `?kgmock=1` and
@@ -167,6 +180,16 @@ export default function ChatPage(): React.ReactElement {
     }
     return kgMockEnabled ? MOCK_KG_WALK : null;
   }, [activeSession.messages, kgMockEnabled]);
+
+  // The live plan surfaced in the left pane = the most recent assistant message
+  // carrying a plan snapshot (re-emitted on every step change / replan).
+  const activePlan = useMemo<PlanSnapshot | null>(() => {
+    for (let i = activeSession.messages.length - 1; i >= 0; i -= 1) {
+      const m = activeSession.messages[i];
+      if (m?.role === 'assistant' && m.plan) return m.plan;
+    }
+    return null;
+  }, [activeSession.messages]);
 
   const [input, setInput] = useState('');
   const [resetPending, setResetPending] = useState(false);
@@ -467,6 +490,33 @@ export default function ChatPage(): React.ReactElement {
                 ].join(' ')}
               />
             </button>
+            {/* Plan-DAG feature toggle — sky pill, mirror of the KG one. On →
+                the left pane auto-opens when a plan is fetched/extended. */}
+            <button
+              type="button"
+              role="switch"
+              aria-checked={planDagEnabled}
+              onClick={() => setPlanDagEnabled(!planDagEnabled)}
+              title={t('planDag.toggleLabel')}
+              className={[
+                'inline-flex select-none items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition',
+                planDagEnabled
+                  ? 'border-sky-300 bg-sky-50 text-sky-700 dark:border-sky-600/60 dark:bg-sky-500/15 dark:text-sky-300'
+                  : 'border-neutral-300 bg-transparent text-neutral-400 hover:text-neutral-600 dark:border-neutral-700 dark:hover:text-neutral-300',
+              ].join(' ')}
+            >
+              <GitBranch size={12} aria-hidden />
+              {t('planDag.toggleLabel')}
+              <span
+                aria-hidden
+                className={[
+                  'inline-block h-1.5 w-1.5 rounded-full',
+                  planDagEnabled
+                    ? 'bg-sky-500'
+                    : 'bg-neutral-400 dark:bg-neutral-600',
+                ].join(' ')}
+              />
+            </button>
           </div>
 
           {/* Row 2 — Agent-Usage-Pills (only when anything was invoked) */}
@@ -531,6 +581,10 @@ export default function ChatPage(): React.ReactElement {
           the most recent turn's graph walk. Chat stays full width. Gated by the
           header toggle; `?kgmock=1` force-enables it for dev preview. */}
       <KgWalkPane walk={kgWalkEnabled || kgMockEnabled ? activeKgWalk : null} />
+
+      {/* Plan-DAG — left-anchored sibling pane for the live plan of the most
+          recent turn. Gated by its own header toggle. */}
+      <PlanDagPane plan={planDagEnabled ? activePlan : null} />
 
       <footer className="border-t border-neutral-200 bg-white/80 px-6 py-4 backdrop-blur dark:border-neutral-800 dark:bg-neutral-900/80">
         <div className="mx-auto flex max-w-4xl flex-col gap-1.5">
