@@ -3,8 +3,10 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type KeyboardEvent,
 } from 'react';
 import { useTranslations } from 'next-intl';
@@ -38,6 +40,46 @@ import {
 import { useChatSessionsCtx } from './_lib/chatSessionsContext';
 import { useStreamStore } from './_lib/streamStore';
 import { ChoiceCard } from './_components/ChoiceCard';
+import { KgWalkSidebar } from './_components/KgWalkSidebar';
+import type { KgWalkPayload } from './_lib/chatSessions';
+
+/**
+ * Dev-only KG-walk fixture. Rendered in the right rail when the URL carries
+ * `?kgmock=1`, so the sidebar can be verified visually before the backend
+ * emits real `kg_graph` annotations. Never shown otherwise.
+ */
+const MOCK_KG_WALK: KgWalkPayload = {
+  rootIds: ['mk:1'],
+  nodes: [
+    { id: 'mk:1', label: 'Urlaubsantrag-Policy', kind: 'MemorableKnowledge', score: 0.92 },
+    { id: 'turn:a', label: 'Turn · Urlaub 2024', kind: 'Turn' },
+    { id: 'ent:hr', label: 'HR-Abteilung', kind: 'Entity' },
+    { id: 'user:max', label: 'Max Mustermann', kind: 'User' },
+    { id: 'ent:policy', label: 'Gleitzeit-Regel', kind: 'Entity' },
+    { id: 'turn:b', label: 'Turn · Überstunden', kind: 'Turn' },
+  ],
+  edges: [
+    { from: 'mk:1', to: 'turn:a', type: 'DERIVED_FROM', hop: 1 },
+    { from: 'mk:1', to: 'ent:hr', type: 'MENTIONS', hop: 1 },
+    { from: 'turn:a', to: 'user:max', type: 'INVOLVES', hop: 2 },
+    { from: 'ent:hr', to: 'ent:policy', type: 'RELATES_TO', hop: 2 },
+    { from: 'ent:policy', to: 'turn:b', type: 'CITED_IN', hop: 3 },
+  ],
+};
+
+const EMPTY_SUBSCRIBE = (): (() => void) => () => undefined;
+
+function useKgMockEnabled(): boolean {
+  // useSyncExternalStore avoids a setState-in-effect: the client snapshot reads
+  // the URL directly, the server snapshot is always false (no SSR mismatch
+  // because the store never changes after mount).
+  return useSyncExternalStore(
+    EMPTY_SUBSCRIBE,
+    () =>
+      new URLSearchParams(window.location.search).get('kgmock') === '1',
+    () => false,
+  );
+}
 
 export default function ChatPage(): React.ReactElement {
   const t = useTranslations('chat');
@@ -55,6 +97,18 @@ export default function ChatPage(): React.ReactElement {
   } = useChatSessionsCtx();
   const streamStore = useStreamStore();
   const sending = streamStore.isActive(activeId);
+  const kgMockEnabled = useKgMockEnabled();
+
+  // The KG-walk shown in the right rail = the most recent assistant message
+  // that carries one. Falls back to the dev mock when `?kgmock=1` and no real
+  // walk has streamed in yet.
+  const activeKgWalk = useMemo<KgWalkPayload | null>(() => {
+    for (let i = activeSession.messages.length - 1; i >= 0; i -= 1) {
+      const m = activeSession.messages[i];
+      if (m?.role === 'assistant' && m.kgWalk) return m.kgWalk;
+    }
+    return kgMockEnabled ? MOCK_KG_WALK : null;
+  }, [activeSession.messages, kgMockEnabled]);
 
   const [input, setInput] = useState('');
   const [resetPending, setResetPending] = useState(false);
@@ -362,27 +416,37 @@ export default function ChatPage(): React.ReactElement {
         );
       })()}
 
-      <div
-        ref={scrollRef}
-        className="flex-1 overflow-y-auto px-6 py-6"
-        aria-live="polite"
-      >
-        <div className="mx-auto flex max-w-4xl flex-col gap-4">
-          {activeSession.messages.length === 0 && (
-            <EmptyState hydrating={hydrating} session={activeSession} />
-          )}
-          {activeSession.messages.map((m) => (
-            <MessageRow
-              key={m.id}
-              message={m}
-              disabled={sending || hydrating}
-              onChoose={(value) => {
-                send(value);
-              }}
-              onDiscardAutoPromoted={clearAutoPromoted}
-            />
-          ))}
+      <div className="flex min-h-0 flex-1">
+        <div
+          ref={scrollRef}
+          className="flex-1 overflow-y-auto px-6 py-6"
+          aria-live="polite"
+        >
+          <div className="mx-auto flex max-w-4xl flex-col gap-4">
+            {activeSession.messages.length === 0 && (
+              <EmptyState hydrating={hydrating} session={activeSession} />
+            )}
+            {activeSession.messages.map((m) => (
+              <MessageRow
+                key={m.id}
+                message={m}
+                disabled={sending || hydrating}
+                onChoose={(value) => {
+                  send(value);
+                }}
+                onDiscardAutoPromoted={clearAutoPromoted}
+              />
+            ))}
+          </div>
         </div>
+
+        {/* KG-walk right rail — shows the most recent turn's graph walk.
+            Hidden below lg so the chat stays single-column on small screens. */}
+        {activeKgWalk && (
+          <div className="hidden w-80 shrink-0 overflow-y-auto border-l border-neutral-200 p-3 lg:block dark:border-neutral-800">
+            <KgWalkSidebar walk={activeKgWalk} />
+          </div>
+        )}
       </div>
 
       <footer className="border-t border-neutral-200 bg-white/80 px-6 py-4 backdrop-blur dark:border-neutral-800 dark:bg-neutral-900/80">

@@ -274,6 +274,16 @@
       "skippedDerivedFrom": "skippedDerivedFrom",
       "openDetail": "Open memory",
       "close": "Close"
+    },
+    "kgWalk": {
+      "title": "Knowledge graph",
+      "subtitle": "Neighborhood this turn surfaced",
+      "legendRoots": "Roots",
+      "legendNeighbors": "Neighbors",
+      "badgeNodes": "{count, plural, one {# node} other {# nodes}}",
+      "badgeHops": "{count, plural, one {# hop} other {# hops}}",
+      "revealing": "Walking hop {current} of {total}…",
+      "empty": "No graph walk for this turn yet."
     }
   },
   "privacyReceipt": {

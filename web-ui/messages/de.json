@@ -274,6 +274,16 @@
       "skippedDerivedFrom": "skippedDerivedFrom",
       "openDetail": "Memory öffnen",
       "close": "Schließen"
+    },
+    "kgWalk": {
+      "title": "Wissensgraph",
+      "subtitle": "Nachbarschaft, die dieser Turn aufgerufen hat",
+      "legendRoots": "Wurzeln",
+      "legendNeighbors": "Nachbarn",
+      "badgeNodes": "{count, plural, one {# Knoten} other {# Knoten}}",
+      "badgeHops": "{count, plural, one {# Sprung} other {# Sprünge}}",
+      "revealing": "Sprung {current} von {total} wird gegangen…",
+      "empty": "Für diesen Turn liegt noch kein Graph-Walk vor."
     }
   },
   "privacyReceipt": {
