@@ -7,7 +7,6 @@
 #   - kroki + companion (Mermaid/PlantUML/Graphviz/Vega/Excalidraw rendering)
 #   - minio + init     (S3-compatible storage for diagram + attachment payloads)
 #   - ollama + init    (in-tenant embeddings + small NER model)
-#   - presidio         (Python NER sidecar for the privacy detector plugin)
 #
 # Usage:
 #   cp middleware/.env.example middleware/.env   # set ANTHROPIC_API_KEY
@@ -290,32 +289,6 @@ services:
         OLLAMA_HOST=http://ollama:11434 ollama pull llama3.2:3b
         echo "[ollama-init] nomic-embed-text + llama3.2:3b ready."
     restart: 'no'
-
-  # --- Presidio NER sidecar (Privacy-Proxy detector plugin) -----------------
-  # Built from middleware/sidecars/privacy-detector-presidio. Pulls ~1.5 GB
-  # of spaCy models on first build; subsequent rebuilds are cache-hot.
-  presidio:
-    build:
-      context: ./middleware/sidecars/privacy-detector-presidio
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    container_name: omadia-presidio
-    hostname: presidio
-    ports:
-      - '127.0.0.1:5001:5001'
-    networks:
-      omadia:
-        aliases: [presidio]
-    healthcheck:
-      test:
-        - 'CMD'
-        - 'python'
-        - '-c'
-        - "import urllib.request,sys; urllib.request.urlopen('http://localhost:5001/health',timeout=2); sys.exit(0)"
-      interval: 10s
-      timeout: 5s
-      retries: 6
-      start_period: 60s
 
 volumes:
   middleware-data:

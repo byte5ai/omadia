@@ -4,10 +4,10 @@
  *
  * Motivation
  * ----------
- * The Slice-3 NER detector (Presidio) tokenizes PII *after* a tool has
- * already serialized its result to a string. German names trip
- * Presidio in three failure modes that surfaced in the live HR-routine
- * v149..v152:
+ * An earlier slice tokenized PII with an NER sidecar (Microsoft Presidio +
+ * spaCy DE/EN) that ran *after* a tool had already serialized its result to a
+ * string. German names tripped that detector in three failure modes that
+ * surfaced in the live HR-routine v149..v152:
  *
  *   - Partial-name leaks: NER hits "Marvin" → `«PERSON_N»` but leaves
  *     "Vomberg" plaintext, producing rows like `«PERSON_53» Vomberg`.
@@ -23,13 +23,18 @@
  * data store gives them a stable identifier per entity (e.g. Odoo
  * `employee_id`, Confluence `accountId`) declare the JSON path to
  * that identifier alongside the PII-bearing field. The privacy-guard
- * mints `«PERSON_<id>»` tokens *before* NER runs, so:
+ * mints `«PERSON_<id>»` tokens deterministically from that id, so:
  *
  *   1. The whole value is masked as a single unit (no partial leak).
  *   2. The same identifier yields the same token across rows /
  *      paragraphs / tool calls within a turn (no doubles).
- *   3. NER becomes defense-in-depth for unannotated free-text only;
- *      false positives stay confined to the prose surface.
+ *   3. Masking no longer depends on a probabilistic detector at all.
+ *
+ * The NER sidecar has since been removed entirely: redaction is now the
+ * Privacy Shield v4 Data-Plane Boundary (@omadia/plugin-privacy-guard), which
+ * interns every tool result into a server-held Dataset Store and lets only a
+ * shape-classified, masked Digest cross the LLM wire. These tool-side
+ * annotations remain the precise, id-anchored layer on top of that boundary.
  *
  * Annotations live on the *tool wrapper*, never on the spec sent to
  * the public LLM. Anthropic's `messages.create({ tools })` rejects

@@ -18,7 +18,7 @@ src/                  Kernel code
   auth/               Multi-provider login (local + OIDC)
 
 packages/             In-tree plugin packages (@omadia/*)
-sidecars/             Optional Docker sidecar images (e.g. presidio NER)
+sidecars/             Optional Docker sidecar images
 seed/memory/          Domain-agnostic rules seeded into memory at boot
 test/                 Vitest test suites (unit + integration)
 profiles/             Builder profile presets
