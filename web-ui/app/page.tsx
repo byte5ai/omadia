@@ -632,6 +632,25 @@ function MessageRow({
                   {message.telemetry.iterations}
                 </span>
               )}
+              {message.model && (
+                <span
+                  className="ml-3 rounded bg-current/10 px-1.5 py-0.5 font-medium"
+                  title={message.model}
+                >
+                  {shortModelName(message.model)}
+                </span>
+              )}
+              {message.turnUsage && (
+                <span
+                  className="ml-3 tabular-nums"
+                  title={`Input ${message.turnUsage.inputTokens} · Output ${message.turnUsage.outputTokens} · Cache-Read ${message.turnUsage.cacheReadInputTokens} · Cache-Write ${message.turnUsage.cacheCreationInputTokens} Tokens`}
+                >
+                  ↑{compactTokens(message.turnUsage.inputTokens)} ↓
+                  {compactTokens(message.turnUsage.outputTokens)}
+                  {message.turnUsage.cacheReadInputTokens > 0 &&
+                    ` · 🟢${compactTokens(message.turnUsage.cacheReadInputTokens)}`}
+                </span>
+              )}
               {elapsed !== null && <span className="ml-3">⏱ {elapsed}s</span>}
               {message.streaming && (
                 <span className="ml-3">{t('streamingSuffix')}</span>
@@ -770,6 +789,24 @@ function ToolRow({ tool }: { tool: ToolEvent }): React.ReactElement {
  * sees it on its next API call) — this strip keeps the dev UI's `<pre>`
  * output clean.
  */
+/**
+ * Shorten an Anthropic model id for the footer badge: `claude-opus-4-8` →
+ * `opus-4-8`, `claude-3-5-haiku-20241022` → `haiku`. Falls back to the raw id.
+ */
+function shortModelName(model: string): string {
+  const stripped = model.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+  const family = stripped.match(/(opus|sonnet|haiku)[\w.-]*/i);
+  return family ? family[0] : stripped;
+}
+
+/** Compact token count for the footer: 1234 → "1.2k", 980 → "980". */
+function compactTokens(n: number): string {
+  return new Intl.NumberFormat('de-DE', {
+    notation: 'compact',
+    maximumFractionDigits: 1,
+  }).format(n);
+}
+
 function ToolOutputWithNudge({ output }: { output: string }): React.ReactElement {
   const t = useTranslations('chat');
   const { cleaned } = parseNudgeBlock(output);

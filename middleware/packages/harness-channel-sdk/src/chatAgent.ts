@@ -566,6 +566,13 @@ export type ChatStreamEvent =
       /** #133 — persisted Turn node external id (`turn:<scope>:<time>`); see
        *  ChatTurnResult.turnId. Lets the UI resolve the turn's plan DAG. */
       turnId?: string;
+      /**
+       * The model this turn actually ran on, resolved once at turn start by
+       * the per-turn router (Haiku triage → Sonnet/Opus). Equals the agent's
+       * default model when model-routing is off. Lets the UI show which model
+       * answered, alongside the live token counts.
+       */
+      model?: string;
     }
   /**
    * Emitted after `done` by the verifier wrapper (only when enabled). The

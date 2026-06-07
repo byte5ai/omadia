@@ -361,6 +361,23 @@ export interface Message {
     inputTokens: number;
     cacheReadInputTokens: number;
   };
+  /**
+   * Turn-cumulative token usage, summed across every `iteration_usage`
+   * snapshot of the turn (vs `lastUsage`, which is only the last iteration).
+   * Drives the per-turn token-consumption readout in the message footer.
+   */
+  turnUsage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadInputTokens: number;
+    cacheCreationInputTokens: number;
+  };
+  /**
+   * The model this turn ran on, from the `done` event. Resolved by the
+   * per-turn router (Haiku triage → Sonnet/Opus), or the agent default when
+   * routing is off. Rendered as a small badge next to the token counts.
+   */
+  model?: string;
 }
 
 /**
