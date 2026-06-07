@@ -4,6 +4,7 @@ import type {
   LocalSubAgentToolResult,
   LocalSubAgentToolSpec,
 } from '@omadia/plugin-api';
+import { appendLimitSignalNote } from '@omadia/plugin-api';
 import { streamMessageWithObserver } from './streaming.js';
 import type { AskObserver } from './tools/domainQueryTool.js';
 import { buildDateHeader, turnContext } from './turnContext.js';
@@ -457,7 +458,12 @@ export class LocalSubAgent {
     // while we still surface the optional postcondition marker upward to
     // the observer (which the RunTraceCollector copies onto the trace).
     const raw = await tool.handle(input);
-    const result = typeof raw === 'string' ? raw : raw.output;
+    const rawOutput = typeof raw === 'string' ? raw : raw.output;
+    const limitSignal = typeof raw === 'string' ? undefined : raw.limitSignal;
+    // Plugin self-extension (Layer 1) — fold the runtime limit note into the
+    // result string so it survives every downstream return path (bypass,
+    // fall-through). PII-free + deterministic, safe through the data-plane.
+    const result = appendLimitSignalNote(rawOutput, limitSignal);
     const postcondition = typeof raw === 'string' ? undefined : raw.postcondition;
     // Phase C.2 — Raw tool-result capture (parallel to orchestrator.dispatchTool).
     // Sub-agent tool calls also feed routine templates, so the capture
@@ -512,7 +518,9 @@ export class LocalSubAgent {
         // sub-agent is not running under a domain-tool bridge.
         turnContext.current()?.subAgentDatasetSink?.push(v4.datasetId);
         return {
-          output: v4.digestText,
+          // The raw result is interned away; re-attach the (PII-free) limit
+          // note to the digest so the agent still learns the result is bounded.
+          output: appendLimitSignalNote(v4.digestText, limitSignal),
           ...(postcondition ? { postcondition } : {}),
         };
       } catch (err) {
