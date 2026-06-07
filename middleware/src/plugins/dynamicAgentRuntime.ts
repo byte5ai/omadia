@@ -369,9 +369,26 @@ export class DynamicAgentRuntime {
       effectiveModel,
     );
 
+    // OB-61 follow-up: the host arms the shared Anthropic client from the
+    // operator's vault key AFTER boot (see index.ts
+    // `refreshSharedAnthropicClientFromVault` →
+    // `serviceRegistry.replace('anthropicClient', …)`). The constructor-
+    // injected `this.deps.anthropic` is the *boot-time* client, built from
+    // `config.ANTHROPIC_API_KEY ?? ''`. On deployments where the key lives
+    // only in the vault (operator completed /setup, no ANTHROPIC_API_KEY in
+    // ENV — e.g. the Docker demo), that injected client has an empty apiKey
+    // and every sub-agent inner call throws "Could not resolve authentication
+    // method" at construction time (0 ms, before any tool runs). Late-resolve
+    // the live, vault-armed client from the registry — matching the documented
+    // late-resolve contract (index.ts ~295) — and fall back to the injected
+    // client only when no provider override is registered (env-key path).
+    const liveAnthropic =
+      this.deps.serviceRegistry.get<Anthropic>('anthropicClient') ??
+      this.deps.anthropic;
+
     const subAgent = new LocalSubAgent({
       name: shortName,
-      client: this.deps.anthropic,
+      client: liveAnthropic,
       model: effectiveModel,
       maxTokens: this.deps.subAgentMaxTokens,
       maxIterations: this.deps.subAgentMaxIterations,
