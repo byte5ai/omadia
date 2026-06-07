@@ -3219,3 +3219,118 @@ export async function steerActiveTurn(
     throw err;
   }
 }
+
+// -----------------------------------------------------------------------------
+// Plugin self-extension (operator-gated, non-escalating)
+//
+// Backend lives under /api/v1/builder/self-extension/* — see
+// middleware/src/routes/selfExtension.ts and
+// docs/harness-platform/DESIGN-plugin-self-extension.md. Every call is
+// owner-scoped via the session cookie (credentials: 'include').
+// -----------------------------------------------------------------------------
+
+export interface SelfExtensionEscalation {
+  dimension: string;
+  item: string;
+  reason: string;
+}
+
+export type SelfExtensionStatus =
+  | 'pending'
+  | 'denied'
+  | 'approved'
+  | 'installed'
+  | 'install_failed';
+
+export type SelfExtensionDecision =
+  | 'needs_approval'
+  | 'denied_escalation'
+  | 'invalid_spec';
+
+/** Operator-facing view of a proposal (mirrors `serializeRecord` server-side).
+ *  Deliberately omits the full specs — only the verdict + metadata. */
+export interface SelfExtensionProposalView {
+  id: string;
+  pluginId: string;
+  status: SelfExtensionStatus;
+  decision: SelfExtensionDecision;
+  rationale: string;
+  patchCount: number;
+  escalations: SelfExtensionEscalation[];
+  invalidReason?: string;
+  submittedBy: string;
+  createdAt: number;
+  decidedBy?: string;
+  decidedAt?: number;
+  denialReason?: string;
+  narrowed?: boolean;
+  installFailureReason?: string;
+  approvedToolCount?: number;
+}
+
+const SELF_EXT_BASE = '/v1/builder/self-extension';
+
+export async function listSelfExtensionProposals(
+  agentId?: string,
+): Promise<SelfExtensionProposalView[]> {
+  const suffix = agentId ? `?agentId=${encodeURIComponent(agentId)}` : '';
+  const resp = await getJson<{ ok: boolean; proposals: SelfExtensionProposalView[] }>(
+    `${SELF_EXT_BASE}/proposals${suffix}`,
+  );
+  return resp.proposals;
+}
+
+export async function proposeSelfExtension(
+  agentId: string,
+  body: { rationale: string; patches: JsonPatch[] },
+): Promise<SelfExtensionProposalView> {
+  const resp = await postJson<{ ok: boolean; proposal: SelfExtensionProposalView }>(
+    `${SELF_EXT_BASE}/${encodeURIComponent(agentId)}/propose`,
+    body,
+  );
+  return resp.proposal;
+}
+
+export async function approveSelfExtensionProposal(
+  proposalId: string,
+  narrowingPatches?: JsonPatch[],
+): Promise<SelfExtensionProposalView> {
+  const resp = await postJson<{ ok: boolean; proposal: SelfExtensionProposalView }>(
+    `${SELF_EXT_BASE}/proposals/${encodeURIComponent(proposalId)}/approve`,
+    narrowingPatches ? { narrowingPatches } : {},
+  );
+  return resp.proposal;
+}
+
+export async function denySelfExtensionProposal(
+  proposalId: string,
+  reason: string,
+): Promise<SelfExtensionProposalView> {
+  const resp = await postJson<{ ok: boolean; proposal: SelfExtensionProposalView }>(
+    `${SELF_EXT_BASE}/proposals/${encodeURIComponent(proposalId)}/deny`,
+    { reason },
+  );
+  return resp.proposal;
+}
+
+export interface SelfExtensionInstallResult {
+  publishedAgentId: string;
+  version: string;
+  proposal: SelfExtensionProposalView;
+}
+
+export async function installSelfExtensionProposal(
+  proposalId: string,
+): Promise<SelfExtensionInstallResult> {
+  const resp = await postJson<{
+    ok: boolean;
+    publishedAgentId: string;
+    version: string;
+    proposal: SelfExtensionProposalView;
+  }>(`${SELF_EXT_BASE}/proposals/${encodeURIComponent(proposalId)}/install`, {});
+  return {
+    publishedAgentId: resp.publishedAgentId,
+    version: resp.version,
+    proposal: resp.proposal,
+  };
+}

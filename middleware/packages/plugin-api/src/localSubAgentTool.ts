@@ -9,6 +9,7 @@
  * to keep the seam loose (no plugin-api consumer needs to depend on the
  * Anthropic SDK).
  */
+import type { LimitSignal } from './limitSignal.js';
 import type { ToolPIIField } from './piiAnnotation.js';
 
 export interface LocalSubAgentToolSpec {
@@ -40,6 +41,15 @@ export interface LocalSubAgentToolResult {
    * canvas orchestrator (PR-9) is the first consumer that threads it.
    */
   readonly structured?: StructuredToolOutput;
+  /**
+   * Optional runtime limit signal (plugin self-extension, Layer A — additive).
+   * A tool that hits a structural wall (row cap, unsupported operation, …)
+   * sets this so the orchestrator can surface "this result is bounded — a
+   * self-extension could lift it" instead of the agent treating partial data
+   * as complete. Ignored by the legacy `string | LocalSubAgentToolResult`
+   * downcast. See `./limitSignal.js`.
+   */
+  readonly limitSignal?: LimitSignal;
 }
 
 /**
