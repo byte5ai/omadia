@@ -299,7 +299,7 @@
     "planDag": {
       "title": "Plan",
       "subtitle": "Aktiver Plan dieses Turns",
-      "toggleLabel": "Plan-DAG",
+      "toggleLabel": "Plan",
       "openLabel": "Plan",
       "badgeProgress": "{done}/{total}",
       "listHeader": "{done} von {total} Schritten erledigt",
