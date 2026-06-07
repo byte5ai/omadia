@@ -301,6 +301,32 @@ export class RoutineStore {
   }
 
   /**
+   * Replace the stored delivery handle (`conversation_ref`) on a routine.
+   *
+   * Used by the cold-start proactive path: a channel sender resolves a
+   * `ColdStartTarget` into a live, channel-native conversation reference on
+   * first delivery and persists it here so subsequent runs deliver via the
+   * warm path without re-installing / re-opening a chat. Does not touch the
+   * JobScheduler — the delivery handle has no bearing on cron firing.
+   * Returns the updated routine, or null if `id` was not found.
+   */
+  async updateConversationRef(
+    id: string,
+    conversationRef: unknown,
+  ): Promise<Routine | null> {
+    const result = await this.pool.query<RoutineRow>(
+      `UPDATE routines
+          SET conversation_ref = $2::jsonb,
+              updated_at        = now()
+        WHERE id = $1
+        RETURNING ${SELECT_COLUMNS}`,
+      [id, JSON.stringify(conversationRef ?? {})],
+    );
+    const row = result.rows[0];
+    return row ? rowToRoutine(row) : null;
+  }
+
+  /**
    * Flip a routine's status. Returns the updated row, or null if the id
    * was not found. The RoutineRunner mirrors the change into the
    * JobScheduler (register on resume, dispose on pause).

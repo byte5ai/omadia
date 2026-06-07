@@ -52,7 +52,29 @@ export interface RoutinesIntegration {
     userId: string;
     channel: string;
     conversationRef: unknown;
+    /**
+     * Cold-start authorization (default `false`). When `true`, the
+     * `manage_routine` tool permits this user to create routines that
+     * proactively message OTHER people (via `targetEmail` → a
+     * `ColdStartTarget`). Channel plugins populate it from their own
+     * governance source (e.g. an operator-configured allowlist of AAD
+     * object ids / roles). Omitted ⇒ self-only, unchanged behaviour.
+     */
+    canTargetOthers?: boolean;
   }): void;
+
+  /**
+   * Persist a materialised conversation reference back onto a routine row.
+   * Channel senders call this after resolving a {@link ColdStartTarget}
+   * delivery target (e.g. installing the bot for a user and opening a 1:1
+   * chat) so subsequent runs deliver via the warm reference without
+   * re-resolving. No-op-safe: an unknown routine id is ignored, and a
+   * failed write is logged but never thrown back into the send path.
+   */
+  updateRoutineConversationRef(
+    routineId: string,
+    conversationRef: unknown,
+  ): Promise<void>;
 
   /**
    * Register a channel-specific proactive sender so the routines runner

@@ -72,6 +72,11 @@ export * from './nudge.js';
 // Deps).
 export * from './routinesIntegration.js';
 
+// Cold-start proactive 1:1: shared delivery-target model (ColdStartTarget,
+// RoutineRecipient, type guards) so the routines kernel and channel plugins
+// agree on the shape of a deferred, not-yet-resolved recipient.
+export * from './routineTarget.js';
+
 // KG-ACL Slice 4a: Palaia-Excerpt-Extractor capability. Haiku-backed
 // per-turn enrichment producing {suggestedKind, suggestedSummary,
 // suggestedRationale?, excerpts[]}. Streamed via the orchestrator's
