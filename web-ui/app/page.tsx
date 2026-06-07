@@ -462,9 +462,13 @@ export default function ChatPage(): React.ReactElement {
               selectedSlug={selectedAgentSlug}
               onSelect={setSelectedAgentSlug}
             />
-            {/* KG-walk feature toggle — a pill that lights up when on (default).
-                On → the floating pane auto-opens whenever a turn touches the KG;
-                off → no pane (kg_graph/kg_insert annotations stay unsurfaced). */}
+          </div>
+
+          {/* Row 2 — Visualization toggles. Both pills live here together (kept
+              out of Row 1 so they don't wrap awkwardly under the agent picker).
+              KG-walk (indigo) auto-opens the right pane on KG access; Plan (sky)
+              auto-opens the left pane on plan fetch/extend. Both default ON. */}
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               role="switch"
@@ -490,8 +494,6 @@ export default function ChatPage(): React.ReactElement {
                 ].join(' ')}
               />
             </button>
-            {/* Plan-DAG feature toggle — sky pill, mirror of the KG one. On →
-                the left pane auto-opens when a plan is fetched/extended. */}
             <button
               type="button"
               role="switch"
@@ -519,7 +521,7 @@ export default function ChatPage(): React.ReactElement {
             </button>
           </div>
 
-          {/* Row 2 — Agent-Usage-Pills (only when anything was invoked) */}
+          {/* Row 3 — Agent-Usage-Pills (only when anything was invoked) */}
           <AgentUsagePills session={activeSession} />
         </div>
       </div>
