@@ -46,6 +46,17 @@ setup:
           label: "Off — keine Exit-Condition-Prüfung"
         - value: "on"
           label: "On — Exit-Conditions nach jedem Tool prüfen"
+    - key: "gcDuplicatePlans"
+      type: "enum"
+      label: "Doppelte Pläne aufräumen (#237)"
+      help: "Wenn aktiviert, räumt das Plugin direkt nach dem Materialisieren eines neuen Plans ältere, semantisch gleiche Pläne im selben Scope auf (der Nutzer verfeinert dasselbe Ziel über mehrere Turns → nur die letzte Iteration bleibt). Zwei Schichten, billigste zuerst: identische normalisierte Request-Summary (kein LLM), dann ein einzelner Haiku-Call über die jüngsten Kandidaten. Fire-and-forget; löscht NIE den Überlebenden oder einen Plan mit noch laufendem Turn. Greift nur bei aktivem Plan-Runner (enabled=on). Standard: on."
+      required: false
+      default: "on"
+      enum:
+        - value: "off"
+          label: "Off — keine Plan-Deduplizierung"
+        - value: "on"
+          label: "On — ältere Duplikat-Pläne aufräumen"
 
 # ---------------------------------------------------------------------------
 # Permissions. The plugin writes `Plan` / `PlanStep` nodes via the

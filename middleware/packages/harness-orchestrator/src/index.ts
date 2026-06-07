@@ -91,6 +91,17 @@ export type {
 export { Orchestrator, parseToolEmittedChoice } from './orchestrator.js';
 export type { OrchestratorOptions } from './orchestrator.js';
 
+// Round-loop guard — exported so it can be unit-tested in isolation and reused
+// by other agentic loops (e.g. the Builder).
+export { LoopGuard, canonicalize } from './loopGuard.js';
+export type {
+  LoopGuardOptions,
+  LoopGuardDecision,
+  LoopGuardAction,
+  ToolUseLike,
+  ToolResultLike,
+} from './loopGuard.js';
+
 // Omadia UI canvas sentinels (PR-7a) — pure parsers + the canvas-output gate.
 // Not yet wired into the tool loop; the canvas orchestrator (PR-9) consumes them.
 export {

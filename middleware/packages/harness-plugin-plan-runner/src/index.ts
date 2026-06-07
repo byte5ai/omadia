@@ -8,8 +8,16 @@
 export { activate, pruneTurns, type PlanRunnerPluginHandle } from './plugin.js';
 export { shouldPlan, GATE_MODEL } from './gate.js';
 export {
+  gcSupersededPlans,
+  parseIndexArray,
+  GC_MODEL,
+  type GcInput,
+  type GcResult,
+} from './gc.js';
+export {
   materializePlan,
   parsePlanSteps,
+  summariseRequest,
   PLAN_MODEL,
   type MaterializeInput,
   type MaterializeResult,
