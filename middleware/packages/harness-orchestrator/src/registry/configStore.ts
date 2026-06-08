@@ -1,5 +1,14 @@
 import type { Pool } from 'pg';
 
+import {
+  AgentGraphStore,
+  type ScheduleRow,
+  type SkillRow,
+  type SubAgentRow,
+  type McpServerRow,
+  type ToolGrantRow,
+} from './agentGraphStore.js';
+
 /**
  * Multi-orchestrator config store (US4 / T014).
  *
@@ -17,6 +26,11 @@ import type { Pool } from 'pg';
 export type PrivacyProfile = 'strict' | 'default';
 export type AgentStatus = 'enabled' | 'disabled';
 
+export interface CanvasPosition {
+  readonly x: number;
+  readonly y: number;
+}
+
 export interface AgentRow {
   readonly id: string;
   readonly slug: string;
@@ -24,6 +38,12 @@ export interface AgentRow {
   readonly description: string | null;
   readonly privacyProfile: PrivacyProfile;
   readonly status: AgentStatus;
+  /** Per-agent model routing (Agent Builder P0). Raw JSONB; shaped to
+   *  `ModelRoutingConfig` at the API boundary. `null`/absent = inherit
+   *  platform default. Optional so pre-existing AgentRow fixtures stay valid. */
+  readonly modelRouting?: Record<string, unknown> | null;
+  /** Cosmetic canvas coordinate; `null`/absent until first laid out. */
+  readonly canvasPosition?: CanvasPosition | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;
 }
@@ -61,6 +81,8 @@ export interface AgentPatch {
   readonly description?: string | null;
   readonly privacyProfile?: PrivacyProfile;
   readonly status?: AgentStatus;
+  readonly modelRouting?: Record<string, unknown> | null;
+  readonly canvasPosition?: CanvasPosition | null;
 }
 
 export interface AgentPluginInput {
@@ -95,6 +117,8 @@ interface AgentDbRow {
   description: string | null;
   privacy_profile: PrivacyProfile;
   status: AgentStatus;
+  model_routing: Record<string, unknown> | null;
+  canvas_position: CanvasPosition | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -127,6 +151,8 @@ function mapAgent(row: AgentDbRow): AgentRow {
     description: row.description,
     privacyProfile: row.privacy_profile,
     status: row.status,
+    modelRouting: row.model_routing ?? null,
+    canvasPosition: row.canvas_position ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -230,6 +256,8 @@ export class ConfigStore {
          description     = COALESCE($3, description),
          privacy_profile = COALESCE($4, privacy_profile),
          status          = COALESCE($5, status),
+         model_routing   = COALESCE($6::jsonb, model_routing),
+         canvas_position = COALESCE($7::jsonb, canvas_position),
          updated_at      = now()
        WHERE id = $1
        RETURNING *`,
@@ -239,6 +267,8 @@ export class ConfigStore {
         patch.description ?? null,
         patch.privacyProfile ?? null,
         patch.status ?? null,
+        patch.modelRouting ? JSON.stringify(patch.modelRouting) : null,
+        patch.canvasPosition ? JSON.stringify(patch.canvasPosition) : null,
       ],
     );
     const row = rows[0];
@@ -250,6 +280,46 @@ export class ConfigStore {
 
   async deleteAgent(id: string): Promise<void> {
     await this.pool.query('DELETE FROM agents WHERE id = $1', [id]);
+  }
+
+  /** Agent Builder — set (or clear, with null) the per-agent model routing.
+   *  Direct write (not COALESCE) so the operator can disable routing. */
+  async setModelRouting(
+    id: string,
+    routing: Record<string, unknown> | null,
+  ): Promise<AgentRow> {
+    const { rows } = await this.pool.query<AgentDbRow>(
+      `UPDATE agents SET model_routing = $2::jsonb, updated_at = now()
+       WHERE id = $1 RETURNING *`,
+      [id, routing ? JSON.stringify(routing) : null],
+    );
+    const row = rows[0];
+    if (!row) throw new ConfigValidationError(`agent ${id} not found`);
+    return mapAgent(row);
+  }
+
+  /** Agent Builder — persist an agent's cosmetic canvas coordinate. */
+  async setCanvasPosition(
+    id: string,
+    pos: CanvasPosition | null,
+  ): Promise<void> {
+    await this.pool.query(
+      `UPDATE agents SET canvas_position = $2::jsonb WHERE id = $1`,
+      [id, pos ? JSON.stringify(pos) : null],
+    );
+  }
+
+  /** Agent Builder — persist a channel binding's cosmetic canvas coordinate. */
+  async setChannelBindingPosition(
+    channelType: string,
+    channelKey: string,
+    pos: CanvasPosition | null,
+  ): Promise<void> {
+    await this.pool.query(
+      `UPDATE channel_bindings SET canvas_position = $3::jsonb
+       WHERE channel_type = $1 AND channel_key = $2`,
+      [channelType, channelKey, pos ? JSON.stringify(pos) : null],
+    );
   }
 
   // ── agent_plugins ─────────────────────────────────────────────────────
@@ -412,13 +482,39 @@ export class ConfigStore {
    * mildly-stale snapshot. The US5 reload bus catches up on the next NOTIFY.
    */
   async loadSnapshot(): Promise<ConfigSnapshot> {
-    const [agents, plugins, bindings, settings] = await Promise.all([
+    const graph = new AgentGraphStore(this.pool);
+    const [
+      agents,
+      plugins,
+      bindings,
+      settings,
+      subAgents,
+      toolGrants,
+      schedules,
+      skills,
+      mcpServers,
+    ] = await Promise.all([
       this.listAgents(),
       this.listAllAgentPlugins(),
       this.listChannelBindings(),
       this.getPlatformSettings(),
+      graph.listAllSubAgents(),
+      graph.listAllToolGrants(),
+      graph.listAllSchedules(),
+      graph.listSkills(),
+      graph.listMcpServers(),
     ]);
-    return { agents, agentPlugins: plugins, channelBindings: bindings, platformSettings: settings };
+    return {
+      agents,
+      agentPlugins: plugins,
+      channelBindings: bindings,
+      platformSettings: settings,
+      subAgents,
+      toolGrants,
+      schedules,
+      skills,
+      mcpServers,
+    };
   }
 }
 
@@ -427,6 +523,13 @@ export interface ConfigSnapshot {
   readonly agentPlugins: readonly AgentPluginRow[];
   readonly channelBindings: readonly ChannelBindingRow[];
   readonly platformSettings: PlatformSettingsRow;
+  // Agent Builder graph (P0). Optional so pre-existing snapshot literals
+  // (tests, fixtures) stay valid; `loadSnapshot` always populates them.
+  readonly subAgents?: readonly SubAgentRow[];
+  readonly toolGrants?: readonly ToolGrantRow[];
+  readonly schedules?: readonly ScheduleRow[];
+  readonly skills?: readonly SkillRow[];
+  readonly mcpServers?: readonly McpServerRow[];
 }
 
 function isUniqueViolation(err: unknown, constraint?: string): boolean {

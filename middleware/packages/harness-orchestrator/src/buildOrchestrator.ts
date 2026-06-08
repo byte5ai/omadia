@@ -70,6 +70,9 @@ export interface AgentRuntimeConfig {
   readonly modelRouting?: ModelRoutingConfig;
   readonly maxTokens: number;
   readonly maxToolIterations: number;
+  /** Agent Builder — optional per-agent allow-list over plugin-contributed
+   *  native tools. Absent = all available. */
+  readonly nativeToolAllowList?: ReadonlySet<string>;
   /** Optional round-loop guard thresholds (see {@link OrchestratorOptions}). */
   readonly loopRepeatSoft?: number;
   readonly loopRepeatHard?: number;
@@ -206,6 +209,9 @@ export function buildOrchestratorForAgent(
       : {}),
     domainTools: [],
     nativeToolRegistry: deps.nativeToolRegistry,
+    ...(config.nativeToolAllowList
+      ? { nativeToolAllowList: config.nativeToolAllowList }
+      : {}),
     memoryToolHandler,
     sessionLogger,
     entityRefBus: deps.entityRefBus,

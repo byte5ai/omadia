@@ -13,6 +13,12 @@ export * from './targetRef.js';
 // mutability derivation. Consumed by the canvas orchestrator (PR-9).
 export * from './writeCapabilities.js';
 
+// Agent Builder canvas (P0): the shared graph contract — AgentGraph, node
+// DTOs, GraphEdge/EdgeKind, ModelRoutingConfig. The editable visual builder
+// is a thin renderer over the config graph; backend serialises this shape
+// from the registry tables and the web-ui xyflow canvas renders/mutates it.
+export * from './agentGraph.js';
+
 // S+11-1: Knowledge-graph capability contract (interface + DTOs + node-id
 // helpers) lives on the plugin-api surface. Both the in-memory and the Neon
 // `knowledgeGraph@1` provider plugins (S+11-2 split of @omadia/knowledge-graph)

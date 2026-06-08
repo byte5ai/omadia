@@ -6,6 +6,11 @@ import type {
 
 import type { ChatSessionStore, SessionConfigSnapshot } from '../chatSessionStore.js';
 
+import type {
+  SkillRow,
+  SubAgentRow,
+  ToolGrantRow,
+} from './agentGraphStore.js';
 import {
   buildForAgent,
   diffSnapshots,
@@ -137,6 +142,16 @@ export interface ActiveAgent {
   readonly bindings: readonly ChannelBindingRow[];
   readonly built: BuiltOrchestrator;
   /**
+   * Agent Builder graph (P0/P2): the agent's DB-defined sub-agents, the tool
+   * grants targeting the agent or those sub-agents, and the skills those
+   * sub-agents reference. Populated from the snapshot on add/rebuild/update so
+   * the kernel's `onAgentBuilt` callback can materialise sub-agent domain
+   * tools without re-querying the store.
+   */
+  readonly subAgents: readonly SubAgentRow[];
+  readonly toolGrants: readonly ToolGrantRow[];
+  readonly skills: readonly SkillRow[];
+  /**
    * Strict per-orchestrator memory scope: `['core', 'orchestrator:<slug>:*']`
    * (see {@link computeMemoryScope}). The Agent may touch only its own
    * orchestrator tree plus the shared `core` namespace — never another
@@ -261,10 +276,11 @@ export class OrchestratorRegistry {
   private applyDiffActions(plan: DiffPlan, snap: ConfigSnapshot): void {
     const pluginsByAgent = groupBy(snap.agentPlugins, (p) => p.agentId);
     const bindingsByAgent = groupBy(snap.channelBindings, (b) => b.agentId);
+    const graph = indexGraph(snap);
 
     for (const action of plan.actions) {
       try {
-        this.runAction(action, pluginsByAgent, bindingsByAgent);
+        this.runAction(action, pluginsByAgent, bindingsByAgent, graph);
       } catch (err) {
         // T022 — isolate per-action failures so a throw on one Agent never
         // aborts the rest of the diff.
@@ -289,6 +305,7 @@ export class OrchestratorRegistry {
     action: DiffAction,
     pluginsByAgent: Map<string, AgentPluginRow[]>,
     bindingsByAgent: Map<string, ChannelBindingRow[]>,
+    graph: GraphIndex,
   ): void {
     switch (action.kind) {
       case 'add': {
@@ -296,6 +313,7 @@ export class OrchestratorRegistry {
           action.agent,
           this.deps,
           this.options.defaultRuntimeConfig,
+          nativeAllowFromGrants(graph.grantsByAgent.get(action.agent.id) ?? []),
         );
         const plugins = pluginsByAgent.get(action.agent.id) ?? [];
         const bindings = bindingsByAgent.get(action.agent.id) ?? [];
@@ -305,6 +323,9 @@ export class OrchestratorRegistry {
           plugins,
           bindings,
           built,
+          subAgents: graph.subAgentsByAgent.get(action.agent.id) ?? [],
+          toolGrants: graph.grantsByAgent.get(action.agent.id) ?? [],
+          skills: graph.skillsByAgent.get(action.agent.id) ?? [],
           memoryScope,
         });
         this.notifyBuilt(action.agent.slug, built, 'add');
@@ -336,6 +357,7 @@ export class OrchestratorRegistry {
           action.agent,
           this.deps,
           this.options.defaultRuntimeConfig,
+          nativeAllowFromGrants(graph.grantsByAgent.get(action.agent.id) ?? []),
         );
         const plugins = pluginsByAgent.get(action.agent.id) ?? [];
         const bindings = bindingsByAgent.get(action.agent.id) ?? [];
@@ -345,6 +367,9 @@ export class OrchestratorRegistry {
           plugins,
           bindings,
           built,
+          subAgents: graph.subAgentsByAgent.get(action.agent.id) ?? [],
+          toolGrants: graph.grantsByAgent.get(action.agent.id) ?? [],
+          skills: graph.skillsByAgent.get(action.agent.id) ?? [],
           memoryScope,
         });
         this.notifyBuilt(action.agent.slug, built, 'rebuild');
@@ -367,6 +392,9 @@ export class OrchestratorRegistry {
           agent: action.agent,
           plugins,
           bindings,
+          subAgents: graph.subAgentsByAgent.get(action.agent.id) ?? [],
+          toolGrants: graph.grantsByAgent.get(action.agent.id) ?? [],
+          skills: graph.skillsByAgent.get(action.agent.id) ?? [],
           memoryScope,
         });
         this.log(`registry: agent metadata updated`, {
@@ -650,6 +678,68 @@ function actionSlug(action: DiffAction): string {
  */
 export function computeMemoryScope(agentSlug: string): readonly string[] {
   return orchestratorMemoryScope(agentSlug);
+}
+
+/**
+ * Per-agent index of the Agent Builder graph collections in a snapshot, so a
+ * diff action can attach an agent's sub-agents / tool grants / referenced
+ * skills in O(1). A grant is attributed to an agent when it targets the agent
+ * directly (`agentId`) or one of the agent's sub-agents (`subAgentId`).
+ */
+interface GraphIndex {
+  readonly subAgentsByAgent: Map<string, SubAgentRow[]>;
+  readonly grantsByAgent: Map<string, ToolGrantRow[]>;
+  readonly skillsByAgent: Map<string, SkillRow[]>;
+}
+
+/**
+ * Per-agent native-tool allow-list from its agent-level native grants. Empty
+ * (no native grants) → `undefined` = every plugin-contributed native tool is
+ * available (default). One or more → only those names are advertised.
+ */
+function nativeAllowFromGrants(
+  grants: readonly ToolGrantRow[],
+): ReadonlySet<string> | undefined {
+  const names = grants
+    .filter((g) => g.toolKind === 'native' && g.agentId)
+    .map((g) => g.toolRef);
+  return names.length > 0 ? new Set(names) : undefined;
+}
+
+function indexGraph(snap: ConfigSnapshot): GraphIndex {
+  const subAgents = snap.subAgents ?? [];
+  const grants = snap.toolGrants ?? [];
+  const skills = snap.skills ?? [];
+
+  const subAgentsByAgent = groupBy(subAgents, (s) => s.parentAgentId);
+  const subParent = new Map<string, string>(
+    subAgents.map((s) => [s.id, s.parentAgentId]),
+  );
+  const skillsById = new Map<string, SkillRow>(skills.map((s) => [s.id, s]));
+
+  const grantsByAgent = new Map<string, ToolGrantRow[]>();
+  for (const g of grants) {
+    const owner = g.agentId ?? (g.subAgentId ? subParent.get(g.subAgentId) : undefined);
+    if (!owner) continue;
+    const list = grantsByAgent.get(owner);
+    if (list) list.push(g);
+    else grantsByAgent.set(owner, [g]);
+  }
+
+  const skillsByAgent = new Map<string, SkillRow[]>();
+  for (const [agentId, subs] of subAgentsByAgent) {
+    const ids = new Set(
+      subs.map((s) => s.skillId).filter((id): id is string => !!id),
+    );
+    const refSkills: SkillRow[] = [];
+    for (const id of ids) {
+      const sk = skillsById.get(id);
+      if (sk) refSkills.push(sk);
+    }
+    skillsByAgent.set(agentId, refSkills);
+  }
+
+  return { subAgentsByAgent, grantsByAgent, skillsByAgent };
 }
 
 function groupBy<T, K>(
