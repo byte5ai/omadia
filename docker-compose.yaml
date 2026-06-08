@@ -6,7 +6,7 @@
 #   - postgres         (Postgres + pgvector — KG / routines / verifier store)
 #   - kroki + companion (Mermaid/PlantUML/Graphviz/Vega/Excalidraw rendering)
 #   - minio + init     (S3-compatible storage for diagram + attachment payloads)
-#   - ollama + init    (in-tenant embeddings + small NER model)
+#   - ollama + init    (in-tenant embeddings)
 #
 # Usage:
 #   cp middleware/.env.example middleware/.env   # set ANTHROPIC_API_KEY
@@ -284,10 +284,7 @@ services:
           sleep 3
         done
         OLLAMA_HOST=http://ollama:11434 ollama pull nomic-embed-text
-        # Pull the NER model used by @omadia/plugin-privacy-detector-ollama
-        # so the Privacy-Proxy can run without an external API key.
-        OLLAMA_HOST=http://ollama:11434 ollama pull llama3.2:3b
-        echo "[ollama-init] nomic-embed-text + llama3.2:3b ready."
+        echo "[ollama-init] nomic-embed-text ready."
     restart: 'no'
 
 volumes:

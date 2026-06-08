@@ -166,7 +166,13 @@ export function buildForAgent(
       model: routing.model ?? runtime.model,
       maxTokens: runtime.maxTokens,
       maxToolIterations: runtime.maxToolIterations,
-      ...(routing.modelRouting ? { modelRouting: routing.modelRouting } : {}),
+      // Per-turn model routing: prefer the agent's own persisted routing
+      // (Agent Builder P5); otherwise fall back to the platform default
+      // `runtime.modelRouting` so registry-managed orchestrators still emit
+      // `turn_routing` and the UI renders the Haiku-triage badge (origin/main).
+      ...((routing.modelRouting ?? runtime.modelRouting)
+        ? { modelRouting: routing.modelRouting ?? runtime.modelRouting }
+        : {}),
       ...(runtime.loopRepeatSoft !== undefined
         ? { loopRepeatSoft: runtime.loopRepeatSoft }
         : {}),
