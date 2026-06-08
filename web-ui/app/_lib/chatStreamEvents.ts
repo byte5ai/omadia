@@ -25,6 +25,13 @@ import type {
  */
 export type ChatStreamEvent =
   | { type: 'iteration_start'; iteration: number }
+  /** Per-turn Haiku-triage verdict, emitted once at turn start. */
+  | {
+      type: 'turn_routing';
+      bucket: 'simple' | 'complex' | 'fallback';
+      classifierModel: string;
+      model: string;
+    }
   | { type: 'text_delta'; text: string }
   | {
       type: 'tool_use';
@@ -157,6 +164,15 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
   switch (event.type) {
     case 'text_delta':
       return { ...m, content: m.content + event.text };
+    case 'turn_routing':
+      return {
+        ...m,
+        routing: {
+          bucket: event.bucket,
+          classifierModel: event.classifierModel,
+          model: event.model,
+        },
+      };
     case 'turn_annotation':
       // #133 (E9) — the live plan snapshot. Re-emitted on every step change;
       // we just replace, so the card reflects the latest state.

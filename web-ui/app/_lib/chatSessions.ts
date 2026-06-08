@@ -378,6 +378,16 @@ export interface Message {
    * routing is off. Rendered as a small badge next to the token counts.
    */
   model?: string;
+  /**
+   * Per-turn Haiku-triage verdict, from the `turn_routing` event emitted at
+   * turn start. Present only when model-routing is enabled. Rendered inline at
+   * the top of the assistant card as soon as the classifier resolves.
+   */
+  routing?: {
+    bucket: 'simple' | 'complex' | 'fallback';
+    classifierModel: string;
+    model: string;
+  };
 }
 
 /**

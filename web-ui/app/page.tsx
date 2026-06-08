@@ -560,6 +560,7 @@ function MessageRow({
           <div className="whitespace-pre-wrap text-sm">{message.content}</div>
         ) : (
           <>
+            {message.routing && <TriageBadge routing={message.routing} />}
             {message.recalledContext && (
               <RecalledContextCard recalled={message.recalledContext} />
             )}
@@ -805,6 +806,57 @@ function compactTokens(n: number): string {
     notation: 'compact',
     maximumFractionDigits: 1,
   }).format(n);
+}
+
+/**
+ * Inline triage chip — rendered at the top of an assistant turn as soon as the
+ * Haiku classifier resolves (the `turn_routing` event). Shows the verdict
+ * (einfach/komplex/Fallback) and which model the turn was routed to.
+ */
+function TriageBadge({
+  routing,
+}: {
+  routing: {
+    bucket: 'simple' | 'complex' | 'fallback';
+    classifierModel: string;
+    model: string;
+  };
+}): React.ReactElement {
+  const verdict: Record<typeof routing.bucket, { label: string; cls: string }> = {
+    simple: {
+      label: 'einfach',
+      cls: 'bg-emerald-500/10 text-emerald-600 ring-emerald-500/30 dark:text-emerald-400',
+    },
+    complex: {
+      label: 'komplex',
+      cls: 'bg-violet-500/10 text-violet-600 ring-violet-500/30 dark:text-violet-400',
+    },
+    fallback: {
+      label: 'Fallback',
+      cls: 'bg-amber-500/10 text-amber-600 ring-amber-500/30 dark:text-amber-400',
+    },
+  };
+  const v = verdict[routing.bucket];
+  return (
+    <div
+      className="mb-2 inline-flex flex-wrap items-center gap-1.5 text-[11px] text-neutral-500 dark:text-neutral-400"
+      title={`Triage-Klassifizierer: ${routing.classifierModel} → ${routing.bucket} → ${routing.model}`}
+    >
+      <span className="font-medium uppercase tracking-[0.12em]">Triage</span>
+      <span className="text-neutral-400 dark:text-neutral-500">
+        {shortModelName(routing.classifierModel)} →
+      </span>
+      <span
+        className={`inline-flex items-center rounded-full px-1.5 py-0.5 font-medium uppercase tracking-[0.08em] ring-1 ${v.cls}`}
+      >
+        {v.label}
+      </span>
+      <span className="text-neutral-400 dark:text-neutral-500">→</span>
+      <span className="rounded bg-current/10 px-1.5 py-0.5 font-medium">
+        {shortModelName(routing.model)}
+      </span>
+    </div>
+  );
 }
 
 function ToolOutputWithNudge({ output }: { output: string }): React.ReactElement {

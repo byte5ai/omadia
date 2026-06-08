@@ -47,18 +47,39 @@ function firstText(message: any): string {
   return '';
 }
 
+/** The bucket the classifier (or the fallback) landed on. `fallback` means the
+ *  classifier call failed and the caller's fallback model was used. */
+export type RoutingBucket = 'simple' | 'complex' | 'fallback';
+
+export interface RouteResult {
+  /** Model id the turn should run on. */
+  readonly model: string;
+  /** Which bucket the turn was routed into. */
+  readonly bucket: RoutingBucket;
+  /** The Haiku-tier model that made (or attempted) the classification. */
+  readonly classifierModel: string;
+}
+
 /**
- * Classifies `userMessage` and returns the model id the turn should run on.
- * Best-effort: returns `fallbackModel` on any failure.
+ * Classifies `userMessage` and returns the model id the turn should run on,
+ * together with the routing decision so callers can surface it in the UI.
+ * Best-effort: returns `fallbackModel` (bucket `fallback`) on any failure.
  */
 export async function routeTurnModel(
   client: Anthropic,
   cfg: ModelRoutingConfig,
   userMessage: string,
   fallbackModel: string,
-): Promise<string> {
+): Promise<RouteResult> {
   const text = userMessage.trim().slice(0, 4000);
-  if (!text) return cfg.complexModel;
+  // Empty message → nothing to classify; default to the stronger model.
+  if (!text) {
+    return {
+      model: cfg.complexModel,
+      bucket: 'complex',
+      classifierModel: cfg.classifierModel,
+    };
+  }
   try {
     const res = await client.messages.create({
       model: cfg.classifierModel,
@@ -76,14 +97,28 @@ export async function routeTurnModel(
       });
     }
     const verdict = firstText(res).toUpperCase();
-    if (verdict.includes('SIMPLE')) return cfg.simpleModel;
+    if (verdict.includes('SIMPLE')) {
+      return {
+        model: cfg.simpleModel,
+        bucket: 'simple',
+        classifierModel: cfg.classifierModel,
+      };
+    }
     // 'COMPLEX' or anything ambiguous → stronger model.
-    return cfg.complexModel;
+    return {
+      model: cfg.complexModel,
+      bucket: 'complex',
+      classifierModel: cfg.classifierModel,
+    };
   } catch (err) {
     console.warn(
       '[model-router] classification failed — using fallback model:',
       err instanceof Error ? err.message : err,
     );
-    return fallbackModel;
+    return {
+      model: fallbackModel,
+      bucket: 'fallback',
+      classifierModel: cfg.classifierModel,
+    };
   }
 }

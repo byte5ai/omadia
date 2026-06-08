@@ -93,7 +93,11 @@ import {
 import { RunTraceCollector, type InvocationHandle } from './runTraceCollector.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import { graphScopeFor, type SessionLogger } from './sessionLogger.js';
-import { type ModelRoutingConfig, routeTurnModel } from './modelRouter.js';
+import {
+  type ModelRoutingConfig,
+  type RoutingBucket,
+  routeTurnModel,
+} from './modelRouter.js';
 import { streamMessageEvents } from './streaming.js';
 import { steeringBus } from './steeringBus.js';
 import { buildDateHeader, today, turnContext } from './turnContext.js';
@@ -1680,16 +1684,29 @@ export class Orchestrator {
   /**
    * Resolves the model for a single turn. With routing configured, a Haiku
    * classifier picks Sonnet (simple) or Opus (complex); otherwise the static
-   * `this.model` is used. Never throws — falls back to `this.model`.
+   * `this.model` is used. Never throws — falls back to `this.model`. Returns
+   * the routing decision (when routing ran) so the streaming path can surface
+   * it inline in the UI as soon as the classifier resolves.
    */
-  private async resolveTurnModel(userMessage: string): Promise<string> {
-    if (!this.modelRouting) return this.model;
-    return routeTurnModel(
+  private async resolveTurnModel(userMessage: string): Promise<{
+    model: string;
+    routing?: { bucket: RoutingBucket; classifierModel: string; model: string };
+  }> {
+    if (!this.modelRouting) return { model: this.model };
+    const r = await routeTurnModel(
       this.client,
       this.modelRouting,
       userMessage,
       this.model,
     );
+    return {
+      model: r.model,
+      routing: {
+        bucket: r.bucket,
+        classifierModel: r.classifierModel,
+        model: r.model,
+      },
+    };
   }
 
   private async chatInContextInner(
@@ -1778,8 +1795,10 @@ export class Orchestrator {
     let forceFinalize = false;
 
     // Per-turn model routing (no-op unless configured). Resolved once so the
-    // whole turn — every tool-loop iteration — runs on one model.
-    const turnModel = await this.resolveTurnModel(input.userMessage);
+    // whole turn — every tool-loop iteration — runs on one model. The
+    // non-streaming path has no event channel, so the routing decision is
+    // simply applied (channels that want to surface it use chatStream).
+    const turnModel = (await this.resolveTurnModel(input.userMessage)).model;
 
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
@@ -2305,7 +2324,19 @@ export class Orchestrator {
     const steerKey = input.sessionScope ?? turnId;
     // Per-turn model routing (no-op unless configured). Resolved once so the
     // whole streamed turn runs on one model.
-    const turnModel = await this.resolveTurnModel(input.userMessage);
+    const resolved = await this.resolveTurnModel(input.userMessage);
+    const turnModel = resolved.model;
+    // Surface the Haiku-triage decision inline, before the first model call —
+    // the UI renders it at the top of the turn card so the operator sees the
+    // classifier's verdict (simple/complex → model) as soon as it lands.
+    if (resolved.routing) {
+      yield {
+        type: 'turn_routing',
+        bucket: resolved.routing.bucket,
+        classifierModel: resolved.routing.classifierModel,
+        model: resolved.routing.model,
+      };
+    }
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
         yield { type: 'iteration_start', iteration };
