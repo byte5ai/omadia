@@ -1680,6 +1680,8 @@ async function main(): Promise<void> {
         graphPool ? new AgentGraphStore(graphPool) : undefined,
       getRegistry: () =>
         serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
+      getNativeTools: () => nativeToolRegistry.list(),
+      getInstalledPlugins: () => installedRegistry.list().map((a) => a.id),
     }),
   );
   console.log(

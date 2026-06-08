@@ -33,6 +33,10 @@ export interface AgentBuilderRouterOptions {
   readonly getConfigStore: () => ConfigStore | undefined;
   readonly getGraphStore: () => AgentGraphStore | undefined;
   readonly getRegistry: () => OrchestratorRegistry | undefined;
+  /** Names of the orchestrator-native tools available to every agent. */
+  readonly getNativeTools?: () => readonly string[];
+  /** Ids of every installed plugin (for the per-agent plugin picker). */
+  readonly getInstalledPlugins?: () => readonly string[];
 }
 
 interface Live {
@@ -93,6 +97,7 @@ export function createAgentBuilderRouter(
       const plugins = (active?.plugins ?? [])
         .filter((p) => p.enabled)
         .map((p) => ({ id: p.pluginId }));
+      const nativeTools = options.getNativeTools?.() ?? [];
       res.json(
         assembleGraph(
           agent,
@@ -103,6 +108,7 @@ export function createAgentBuilderRouter(
           servers,
           schedules,
           plugins,
+          nativeTools,
         ),
       );
     } catch (err) {
@@ -235,6 +241,61 @@ export function createAgentBuilderRouter(
       fail(res, err);
     }
   });
+
+  // ── plugins (per-agent enable/disable) ──────────────────────────────────────
+  router.get(
+    '/agents/:slug/installable-plugins',
+    async (req: Request, res: Response) => {
+      const l = live(res);
+      if (!l) return;
+      try {
+        const agent = await agentOr404(l, str(req.params.slug), res);
+        if (!agent) return;
+        const installed = options.getInstalledPlugins?.() ?? [];
+        const enabled = new Set(
+          (await l.config.listAgentPlugins(agent.id))
+            .filter((p) => p.enabled)
+            .map((p) => p.pluginId),
+        );
+        res.json({ plugins: installed.filter((id) => !enabled.has(id)) });
+      } catch (err) {
+        fail(res, err);
+      }
+    },
+  );
+
+  router.post('/agents/:slug/plugins', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const agent = await agentOr404(l, str(req.params.slug), res);
+      if (!agent) return;
+      const pluginId = String((req.body ?? {}).pluginId ?? '').trim();
+      if (!pluginId) throw new ConfigValidationError('pluginId is required');
+      await l.config.upsertAgentPlugin(agent.id, { pluginId, enabled: true });
+      await reload(l);
+      res.json({ id: pluginId });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  router.delete(
+    '/agents/:slug/plugins/:pluginId',
+    async (req: Request, res: Response) => {
+      const l = live(res);
+      if (!l) return;
+      try {
+        const agent = await agentOr404(l, str(req.params.slug), res);
+        if (!agent) return;
+        await l.config.removeAgentPlugin(agent.id, str(req.params.pluginId));
+        await reload(l);
+        res.status(204).end();
+      } catch (err) {
+        fail(res, err);
+      }
+    },
+  );
 
   // ── skills (global) ────────────────────────────────────────────────────────
   router.get('/skills', async (_req: Request, res: Response) => {
@@ -492,6 +553,7 @@ function assembleGraph(
   servers: readonly McpServerRow[],
   schedules: readonly ScheduleRow[],
   plugins: readonly { id: string }[] = [],
+  nativeTools: readonly string[] = [],
 ) {
   const mySubs = subAgents.filter((s) => s.parentAgentId === agent.id);
   const subIds = new Set(mySubs.map((s) => s.id));
@@ -564,6 +626,7 @@ function assembleGraph(
     mcpServers: servers.map(mcpNode),
     schedules: schedules.map(scheduleNode),
     plugins: plugins.map((p) => ({ id: p.id })),
+    nativeTools: [...nativeTools],
     edges,
   };
 }

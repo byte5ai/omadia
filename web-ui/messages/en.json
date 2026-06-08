@@ -20,6 +20,7 @@
         "mcp": "MCP Server",
         "schedule": "Schedule",
         "plugin": "Plugin",
+        "nativeBaseline": "native (built-in)",
         "tools": "tools"
       },
       "palette": {
@@ -53,7 +54,17 @@
         "transport": "Transport",
         "endpoint": "Endpoint",
         "cron": "Cron",
-        "timezone": "Timezone"
+        "timezone": "Timezone",
+        "channelType": "Channel type",
+        "channelKey": "Channel key",
+        "channelMissing": "Enter a channel type and key.",
+        "bind": "Bind to agent",
+        "pluginId": "Plugin",
+        "pluginHint": "Active plugin on this agent (managed via plugin install).",
+        "pluginDetach": "Detach from this agent",
+        "addPlugin": "Add a plugin",
+        "noInstallable": "No further installable plugins.",
+        "enable": "Enable"
       }
     }
   },

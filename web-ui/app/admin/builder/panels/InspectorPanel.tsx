@@ -1,10 +1,14 @@
 'use client';
 
 import { useTranslations } from 'next-intl';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import {
+  createGraphEdge,
+  disablePlugin,
   discoverMcpTools,
+  enablePlugin,
+  listInstallablePlugins,
   patchModelRouting,
   patchSkill,
   patchSubAgent,
@@ -12,11 +16,12 @@ import {
   type McpServerNode,
   type ModelRoutingConfig,
   type ModelRoutingMode,
+  type PluginNode,
   type ScheduleNode,
   type SkillNode,
   type SubAgentNode,
 } from '../../../_lib/agentBuilder';
-import type { BuilderNodeData } from '../nodes/types';
+import type { BuilderNodeData, ChannelNodeData } from '../nodes/types';
 import { Field, inputCls, SaveButton } from './InspectorControls';
 
 export interface InspectorPanelProps {
@@ -79,6 +84,10 @@ function Editor(props: InspectorPanelProps): React.ReactElement {
       return <McpEditor server={data.server} onSaved={props.onSaved} />;
     case 'schedule':
       return <ScheduleViewer schedule={data.schedule} />;
+    case 'channel':
+      return <ChannelEditor slug={props.slug} data={data} onSaved={props.onSaved} />;
+    case 'plugin':
+      return <PluginEditor slug={props.slug} plugin={data.plugin} onSaved={props.onSaved} />;
     default:
       return <ReadOnly />;
   }
@@ -132,6 +141,27 @@ function AgentEditor({
   const [triage, setTriage] = useState(r?.triage ?? '');
   const [simple, setSimple] = useState(r?.simple ?? '');
   const { pending, error, run } = useSaver();
+  const [installable, setInstallable] = useState<string[]>([]);
+
+  useEffect(() => {
+    let alive = true;
+    void listInstallablePlugins(slug)
+      .then((res) => {
+        if (alive) setInstallable(res.plugins);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [slug]);
+
+  async function enable(id: string): Promise<void> {
+    await run(async () => {
+      await enablePlugin(slug, id);
+      setInstallable((xs) => xs.filter((x) => x !== id));
+      onSaved();
+    });
+  }
 
   async function save(): Promise<void> {
     await run(async () => {
@@ -174,6 +204,31 @@ function AgentEditor({
       )}
       <ErrLine error={error} />
       <SaveButton onClick={() => void save()} pending={pending} label={t('inspector.save')} />
+
+      <div className="mt-2 border-t border-[color:var(--border)] pt-3">
+        <p className="mb-2 text-[11px] uppercase tracking-[0.14em] text-[color:var(--fg-muted)]">
+          {t('inspector.addPlugin')}
+        </p>
+        {installable.length === 0 ? (
+          <p className="text-xs text-[color:var(--fg-muted)]">{t('inspector.noInstallable')}</p>
+        ) : (
+          <ul className="flex flex-col gap-1">
+            {installable.map((id) => (
+              <li key={id} className="flex items-center justify-between gap-2">
+                <span className="truncate text-xs text-[color:var(--fg-strong)]">{id}</span>
+                <button
+                  type="button"
+                  onClick={() => void enable(id)}
+                  disabled={pending}
+                  className="shrink-0 rounded-md border border-[color:var(--border)] px-2 py-0.5 text-xs text-[color:var(--accent)] hover:bg-[color:var(--card)] disabled:opacity-50"
+                >
+                  {t('inspector.enable')}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }
@@ -321,6 +376,103 @@ function McpEditor({
       </div>
       <ErrLine error={error} />
       <SaveButton onClick={() => void discover()} pending={pending} label={t('inspector.discover')} />
+    </div>
+  );
+}
+
+// ── Channel (bind a draft, or view a binding) ────────────────────────────────
+function ChannelEditor({
+  slug,
+  data,
+  onSaved,
+}: {
+  slug: string;
+  data: ChannelNodeData;
+  onSaved: () => void;
+}): React.ReactElement {
+  const t = useTranslations('admin.builder');
+  const [channelType, setChannelType] = useState(data.channel.channelType);
+  const [channelKey, setChannelKey] = useState(data.channel.channelKey);
+  const { pending, error, run } = useSaver();
+  const isDraft = !!data.draft;
+
+  async function bind(): Promise<void> {
+    await run(async () => {
+      const type = channelType.trim();
+      const key = channelKey.trim();
+      if (!type || !key) throw new Error(t('inspector.channelMissing'));
+      await createGraphEdge(slug, {
+        kind: 'channel_bind',
+        source: `channel:${type}:${key}`,
+        target: 'agent:_',
+      });
+      onSaved();
+    });
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <Field label={t('inspector.channelType')}>
+        <input
+          value={channelType}
+          onChange={(e) => setChannelType(e.target.value)}
+          readOnly={!isDraft}
+          placeholder="slack"
+          className={inputCls}
+        />
+      </Field>
+      <Field label={t('inspector.channelKey')}>
+        <input
+          value={channelKey}
+          onChange={(e) => setChannelKey(e.target.value)}
+          readOnly={!isDraft}
+          placeholder="team:acme:general"
+          className={inputCls}
+        />
+      </Field>
+      <ErrLine error={error} />
+      {isDraft && (
+        <SaveButton onClick={() => void bind()} pending={pending} label={t('inspector.bind')} />
+      )}
+    </div>
+  );
+}
+
+// ── Plugin (read-only id + detach from this agent) ────────────────────────────
+function PluginEditor({
+  slug,
+  plugin,
+  onSaved,
+}: {
+  slug: string;
+  plugin: PluginNode;
+  onSaved: () => void;
+}): React.ReactElement {
+  const t = useTranslations('admin.builder');
+  const { pending, error, run } = useSaver();
+
+  async function detach(): Promise<void> {
+    await run(async () => {
+      await disablePlugin(slug, plugin.id);
+      onSaved();
+    });
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <Field label={t('inspector.pluginId')}>
+        <input value={plugin.id} readOnly className={inputCls} />
+      </Field>
+      <p className="text-xs text-[color:var(--fg-muted)]">{t('inspector.pluginHint')}</p>
+      <ErrLine error={error} />
+      <button
+        type="button"
+        onClick={() => void detach()}
+        disabled={pending}
+        className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-400 hover:bg-red-500/20 disabled:opacity-50"
+      >
+        {t('inspector.pluginDetach')}
+      </button>
     </div>
   );
 }

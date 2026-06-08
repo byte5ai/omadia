@@ -89,6 +89,7 @@ function CanvasInner({ slug }: BuilderCanvasProps): React.ReactElement {
       schedule: t('nodes.schedule'),
       plugin: t('nodes.plugin'),
       tools: t('nodes.tools'),
+      nativeBaseline: t('nodes.nativeBaseline'),
     }),
     [t],
   );
@@ -307,15 +308,34 @@ function CanvasInner({ slug }: BuilderCanvasProps): React.ReactElement {
             await createMcpServer({ name: t('defaults.mcpName'), transport: 'http' });
           } else if (kind === 'schedule') {
             await createSchedule(slug, { cron: '0 9 * * *', timezone: 'UTC' });
+          } else if (kind === 'channel') {
+            // Channel needs a type+key before it can bind — drop a draft node
+            // the operator fills in via the inspector, then "Bind" persists it.
+            const draftId = `channel:__draft__:${String(Date.now())}`;
+            setNodes((ns) => [
+              ...ns,
+              {
+                id: draftId,
+                type: 'channel',
+                position: pos,
+                deletable: true,
+                data: {
+                  kind: 'channel',
+                  labels,
+                  channel: { channelType: '', channelKey: '', position: null },
+                  draft: true,
+                },
+              },
+            ]);
+            return;
           } else {
-            // channel — created via binding edge once wired; nothing to POST yet.
             return;
           }
           await reload();
         },
       );
     },
-    [slug, mutate, reload, t],
+    [slug, mutate, reload, t, labels],
   );
 
   const onDrop = useCallback(

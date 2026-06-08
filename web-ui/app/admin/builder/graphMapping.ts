@@ -111,6 +111,23 @@ export function graphToFlow(
     });
   });
 
+  // Read-only baseline: orchestrator-native tools the agent can already use
+  // (current-system view). Skip any that are explicitly granted (a grant node
+  // already represents them). Non-deletable; wired into the agent.
+  const nativeBaseline = (graph.nativeTools ?? []).filter(
+    (ref) => !toolRefs.has(ref),
+  );
+  nativeBaseline.forEach((ref, i) => {
+    nodes.push({
+      id: nodeId.tool(ref),
+      type: 'tool',
+      position: gridPos(5, i),
+      deletable: false,
+      connectable: false,
+      data: { kind: 'tool', labels, toolRef: ref, grant: null, system: true },
+    });
+  });
+
   graph.mcpServers.forEach((server, i) => {
     nodes.push({
       id: nodeId.mcp(server.id),
@@ -136,6 +153,16 @@ export function graphToFlow(
     data: { kind: e.kind },
     animated: e.kind === 'schedule',
   }));
+  // Client-only baseline native-tool edges (read-only; not persisted).
+  for (const ref of nativeBaseline) {
+    edges.push({
+      id: `native:${ref}`,
+      source: nodeId.agent(graph.agent.id),
+      target: nodeId.tool(ref),
+      data: { kind: 'tool_grant' },
+      deletable: false,
+    });
+  }
 
   return { nodes, edges };
 }

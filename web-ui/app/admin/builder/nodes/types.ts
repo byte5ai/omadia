@@ -25,6 +25,8 @@ export interface BaseNodeData extends Record<string, unknown> {
 export interface ChannelNodeData extends BaseNodeData {
   kind: 'channel';
   channel: ChannelNode;
+  /** Client-only: a freshly-added channel awaiting type/key before it binds. */
+  draft?: boolean;
 }
 export interface AgentNodeData extends BaseNodeData {
   kind: 'agent';
@@ -42,6 +44,8 @@ export interface ToolNodeData extends BaseNodeData {
   kind: 'tool';
   toolRef: string;
   grant: ToolGrantNode | null;
+  /** True for read-only baseline native tools (current-system view). */
+  system?: boolean;
 }
 export interface McpNodeData extends BaseNodeData {
   kind: 'mcp';

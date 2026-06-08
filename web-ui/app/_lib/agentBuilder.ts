@@ -197,6 +197,8 @@ export interface AgentGraph {
   mcpServers: McpServerNode[];
   schedules: ScheduleNode[];
   plugins: PluginNode[];
+  /** Orchestrator-native tools available to the agent (read-only baseline). */
+  nativeTools: string[];
   edges: CanvasEdge[];
 }
 
@@ -320,6 +322,39 @@ export async function patchPositions(
   await callJson(
     `/v1/operator/agents/${encodeURIComponent(slug)}/positions`,
     { method: 'PATCH', body: JSON.stringify(input) },
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Plugins (per-agent enable/disable)
+// -----------------------------------------------------------------------------
+
+export interface InstallablePluginsResponse {
+  plugins: string[];
+}
+
+export async function listInstallablePlugins(
+  slug: string,
+): Promise<InstallablePluginsResponse> {
+  return callJson<InstallablePluginsResponse>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/installable-plugins`,
+  );
+}
+
+export async function enablePlugin(
+  slug: string,
+  pluginId: string,
+): Promise<{ id: string }> {
+  return callJson<{ id: string }>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/plugins`,
+    { method: 'POST', body: JSON.stringify({ pluginId }) },
+  );
+}
+
+export async function disablePlugin(slug: string, pluginId: string): Promise<void> {
+  await callJson(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/plugins/${encodeURIComponent(pluginId)}`,
+    { method: 'DELETE' },
   );
 }
 
