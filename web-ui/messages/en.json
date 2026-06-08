@@ -1357,5 +1357,20 @@
         "tooltip": "{used} of {cap} active drafts, warning from {warnAt}"
       }
     }
+  },
+  "adminSettings": {
+    "pluginDirectory": {
+      "heading": "Per-plugin settings",
+      "intro": "Most configuration now lives with each plugin and is edited in its own settings panel. Only genuinely cross-plugin values (like the shared Anthropic key above) remain on this page.",
+      "open": "Open settings",
+      "plugins": {
+        "orchestrator": "Orchestrator & model routing",
+        "verifier": "Verifier",
+        "embeddings": "Embeddings",
+        "knowledgeGraph": "Knowledge graph",
+        "diagrams": "Diagrams & storage",
+        "integrations": "Integrations (Microsoft, Teams, Telegram)"
+      }
+    }
   }
 }

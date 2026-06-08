@@ -91,6 +91,26 @@ setup:
       type: "string"
       required: false
       help: "Hard cap auf den agentic tool-loop pro Turn. Bei Erschöpfung wird KEIN roher Fehler mehr geworfen — der Orchestrator erzwingt eine letzte tool-freie Iteration und gibt eine Best-Effort-Antwort. Default: 100 (auch Floor — niedrigere installierte Werte werden hochgesetzt). Round-Loops werden separat vom Loop-Guard abgefangen. Migriert aus MAX_TOOL_ITERATIONS."
+    - key: "orchestrator_model_routing"
+      label: "Per-Turn Model-Routing (Haiku-Triage)"
+      type: "boolean"
+      required: false
+      help: "Wenn an, klassifiziert ein günstiger Haiku-Call jeden Turn: einfach → Simple-Modell, komplex → Complex-Modell. Migriert aus ORCHESTRATOR_MODEL_ROUTING."
+    - key: "model_routing_classifier_model"
+      label: "Routing: Klassifizierer-Modell"
+      type: "string"
+      required: false
+      help: "Haiku-Modell für die Triage. Leer = Default (haiku-4-5). Migriert aus MODEL_ROUTING_CLASSIFIER_MODEL."
+    - key: "model_routing_simple_model"
+      label: "Routing: Modell für einfache Turns"
+      type: "string"
+      required: false
+      help: "Leer = Default (sonnet-4-6). Migriert aus MODEL_ROUTING_SIMPLE_MODEL."
+    - key: "model_routing_complex_model"
+      label: "Routing: Modell für komplexe Turns"
+      type: "string"
+      required: false
+      help: "Leer = Orchestrator-Modell. Migriert aus MODEL_ROUTING_COMPLEX_MODEL."
     - key: "max_turn_seconds"
       label: "Max Turn-Dauer (Sekunden)"
       type: "string"
