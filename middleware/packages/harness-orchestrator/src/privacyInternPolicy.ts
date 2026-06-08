@@ -47,6 +47,9 @@ export const INTERN_EXEMPT_TOOLS: ReadonlySet<string> = new Set([
   // Agent self-produced UI/meta output — no external payload.
   'suggest_follow_ups',
   'ask_user_choice',
+  // #268 — a user-uploaded document the agent was explicitly asked to read.
+  // Not a specialist-agent PII source; the user already has this content.
+  'read_attachment',
 ]);
 
 /**

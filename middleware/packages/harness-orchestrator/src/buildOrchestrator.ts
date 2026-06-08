@@ -56,6 +56,7 @@ import { BookMeetingTool } from './tools/bookMeetingTool.js';
 import { ChatParticipantsTool } from './tools/chatParticipantsTool.js';
 import { FindFreeSlotsTool } from './tools/findFreeSlotsTool.js';
 import { SuggestFollowUpsTool } from './tools/suggestFollowUpsTool.js';
+import type { AttachmentReader } from './tools/readAttachmentTool.js';
 import { VerifierService } from './verifierService.js';
 
 /**
@@ -123,6 +124,13 @@ export interface OrchestratorDeps {
   readonly assistantIdentity?: string;
   /** #133 E0 — side-channel turn-hook runner, fired during each turn. */
   readonly turnHookRegistry?: TurnHookRunner;
+  /**
+   * #268 — byte source for user-uploaded attachments. When present, the
+   * orchestrator auto-ingests document text and exposes `read_attachment`.
+   * Built kernel-side over the shared S3/Tigris bucket. Optional — absent →
+   * both attachment-reading mechanisms stay inert.
+   */
+  readonly attachmentReader?: AttachmentReader;
 }
 
 /** What one `buildOrchestratorForAgent` call produces. */
@@ -241,6 +249,9 @@ export function buildOrchestratorForAgent(
       : {}),
     ...(deps.turnHookRegistry
       ? { turnHookRegistry: deps.turnHookRegistry }
+      : {}),
+    ...(deps.attachmentReader
+      ? { attachmentReader: deps.attachmentReader }
       : {}),
   });
 

@@ -43,6 +43,10 @@ import {
   buildOrchestratorForAgent,
   type OrchestratorDeps,
 } from './buildOrchestrator.js';
+import {
+  createAttachmentReader,
+  type AttachmentByteStore,
+} from './attachmentReaderFactory.js';
 import type { TurnHookRunner } from './turnHooks.js';
 import type { ChatSessionStore } from './chatSessionStore.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
@@ -301,6 +305,14 @@ export async function activate(
   const microsoft365 = ctx.services.get<Microsoft365Accessor>(
     'microsoft365.graph',
   );
+  // #268 — attachment byte source. The kernel provides `tigrisStore` (the same
+  // S3/Tigris bucket Teams uploads + brand:// logos use) when the bucket env
+  // is configured. Absent → the reader's storage-key path is inert; URL reads
+  // still work via fetch. The reader drives auto-ingest + the read_attachment
+  // tool; harness-orchestrator stays free of any @aws-sdk dependency.
+  const attachmentByteStore =
+    ctx.services.get<AttachmentByteStore>('tigrisStore');
+  const attachmentReader = createAttachmentReader(attachmentByteStore);
   // Phase-1 of the Kemia integration. Late-bound `responseGuard@1` getter —
   // the orchestrator generally activates BEFORE its tool plugins, so a
   // bind-at-activate lookup would always miss the responseGuard provider
@@ -516,6 +528,7 @@ export async function activate(
     graphTenantId,
     ...(assistantIdentity ? { assistantIdentity } : {}),
     ...(turnHookRegistry ? { turnHookRegistry } : {}),
+    attachmentReader,
   };
   // Per-turn Sonnet/Opus routing (opt-in). When `orchestrator_model_routing`
   // is true, a Haiku classifier picks the model per turn: simple → Sonnet,

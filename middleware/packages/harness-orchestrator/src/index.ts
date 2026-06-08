@@ -267,6 +267,14 @@ export {
 } from './tools/suggestFollowUpsTool.js';
 export type { FollowUpOption } from './tools/suggestFollowUpsTool.js';
 export {
+  READ_ATTACHMENT_TOOL_NAME,
+  ReadAttachmentTool,
+  readAttachmentToolSpec,
+} from './tools/readAttachmentTool.js';
+export type { AttachmentReader } from './tools/readAttachmentTool.js';
+export { createAttachmentReader } from './attachmentReaderFactory.js';
+export type { AttachmentByteStore } from './attachmentReaderFactory.js';
+export {
   FindFreeSlotsTool,
   FIND_FREE_SLOTS_TOOL_NAME,
   findFreeSlotsToolSpec,
