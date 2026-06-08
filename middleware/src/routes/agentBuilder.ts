@@ -86,8 +86,24 @@ export function createAgentBuilderRouter(
           l.graph.listMcpServers(),
           l.graph.listSchedulesForAgent(agent.id),
         ]);
+      // Current-system representation: the agent's live enabled plugins (the
+      // real capability surface), surfaced as read-only nodes so the canvas
+      // reflects what the agent already is — not just the editable graph layer.
+      const active = l.registry?.get(agent.slug);
+      const plugins = (active?.plugins ?? [])
+        .filter((p) => p.enabled)
+        .map((p) => ({ id: p.pluginId }));
       res.json(
-        assembleGraph(agent, bindings, subAgents, skills, grants, servers, schedules),
+        assembleGraph(
+          agent,
+          bindings,
+          subAgents,
+          skills,
+          grants,
+          servers,
+          schedules,
+          plugins,
+        ),
       );
     } catch (err) {
       fail(res, err);
@@ -475,6 +491,7 @@ function assembleGraph(
   grants: readonly ToolGrantRow[],
   servers: readonly McpServerRow[],
   schedules: readonly ScheduleRow[],
+  plugins: readonly { id: string }[] = [],
 ) {
   const mySubs = subAgents.filter((s) => s.parentAgentId === agent.id);
   const subIds = new Set(mySubs.map((s) => s.id));
@@ -525,6 +542,14 @@ function assembleGraph(
       target: `agent:${agent.id}`,
     });
   }
+  for (const p of plugins) {
+    edges.push({
+      id: `plugin:${p.id}`,
+      kind: 'plugin',
+      source: `plugin:${p.id}`,
+      target: `agent:${agent.id}`,
+    });
+  }
 
   return {
     agent: agentNode(agent),
@@ -538,6 +563,7 @@ function assembleGraph(
     tools: myGrants.map(toolGrantNode),
     mcpServers: servers.map(mcpNode),
     schedules: schedules.map(scheduleNode),
+    plugins: plugins.map((p) => ({ id: p.id })),
     edges,
   };
 }

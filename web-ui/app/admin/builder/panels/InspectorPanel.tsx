@@ -25,6 +25,8 @@ export interface InspectorPanelProps {
   onClose: () => void;
   /** Re-fetch the authoritative graph after a successful save. */
   onSaved: () => void;
+  /** Delete the selected node (agent + plugin nodes are not deletable). */
+  onDelete: (data: BuilderNodeData) => void;
 }
 
 /**
@@ -49,6 +51,15 @@ export function InspectorPanel(props: InspectorPanelProps): React.ReactElement {
         </button>
       </div>
       <Editor {...props} />
+      {props.data.kind !== 'agent' && props.data.kind !== 'plugin' && (
+        <button
+          type="button"
+          onClick={() => props.onDelete(props.data)}
+          className="mt-auto rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-400 hover:bg-red-500/20"
+        >
+          {t('inspector.delete')}
+        </button>
+      )}
     </aside>
   );
 }

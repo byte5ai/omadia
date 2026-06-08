@@ -4,6 +4,7 @@ import type {
   CanvasNodeKind,
   ChannelNode,
   McpServerNode,
+  PluginNode,
   ScheduleNode,
   SkillNode,
   SubAgentNode,
@@ -50,6 +51,10 @@ export interface ScheduleNodeData extends BaseNodeData {
   kind: 'schedule';
   schedule: ScheduleNode;
 }
+export interface PluginNodeData extends BaseNodeData {
+  kind: 'plugin';
+  plugin: PluginNode;
+}
 
 export type BuilderNodeData =
   | ChannelNodeData
@@ -58,6 +63,7 @@ export type BuilderNodeData =
   | SkillNodeData
   | ToolNodeData
   | McpNodeData
-  | ScheduleNodeData;
+  | ScheduleNodeData
+  | PluginNodeData;
 
 export type BuilderNode = Node<BuilderNodeData>;

@@ -16,6 +16,7 @@ export const nodeId = {
   tool: (ref: string): string => `tool:${ref}`,
   mcp: (id: string): string => `mcp:${id}`,
   schedule: (id: string): string => `schedule:${id}`,
+  plugin: (id: string): string => `plugin:${id}`,
 };
 
 export function kindOfNodeId(id: string): CanvasNodeKind | null {
@@ -35,6 +36,8 @@ export function kindOfNodeId(id: string): CanvasNodeKind | null {
       return 'mcp';
     case 'schedule':
       return 'schedule';
+    case 'plugin':
+      return 'plugin';
     default:
       return null;
   }
@@ -64,7 +67,19 @@ export function graphToFlow(
     id: nodeId.agent(graph.agent.id),
     type: 'agent',
     position: graph.agent.position ?? gridPos(1, 0),
+    deletable: false,
     data: { kind: 'agent', labels, agent: graph.agent },
+  });
+
+  (graph.plugins ?? []).forEach((plugin, i) => {
+    nodes.push({
+      id: nodeId.plugin(plugin.id),
+      type: 'plugin',
+      position: gridPos(1, i + 1),
+      deletable: false,
+      connectable: false,
+      data: { kind: 'plugin', labels, plugin },
+    });
   });
 
   graph.subAgents.forEach((subAgent, i) => {

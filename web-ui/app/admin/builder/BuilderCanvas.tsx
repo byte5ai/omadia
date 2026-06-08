@@ -26,6 +26,10 @@ import {
   createSkill,
   createMcpServer,
   deleteGraphEdge,
+  deleteSubAgent,
+  deleteSkill,
+  deleteMcpServer,
+  deleteSchedule,
   patchPositions,
   resolveEdgeKind,
   type CanvasPosition,
@@ -34,6 +38,7 @@ import {
 import { AgentNodeView } from './nodes/AgentNode';
 import { ChannelNodeView } from './nodes/ChannelNode';
 import { McpServerNodeView } from './nodes/McpServerNode';
+import { PluginNodeView } from './nodes/PluginNode';
 import { ScheduleNodeView } from './nodes/ScheduleNode';
 import { SkillNodeView } from './nodes/SkillNode';
 import { SubAgentNodeView } from './nodes/SubAgentNode';
@@ -53,6 +58,7 @@ const nodeTypes: NodeTypes = {
   tool: ToolNodeView as NodeTypes[string],
   mcp: McpServerNodeView as NodeTypes[string],
   schedule: ScheduleNodeView as NodeTypes[string],
+  plugin: PluginNodeView as NodeTypes[string],
 };
 
 export interface BuilderCanvasProps {
@@ -81,6 +87,7 @@ function CanvasInner({ slug }: BuilderCanvasProps): React.ReactElement {
       tool: t('nodes.tool'),
       mcp: t('nodes.mcp'),
       schedule: t('nodes.schedule'),
+      plugin: t('nodes.plugin'),
       tools: t('nodes.tools'),
     }),
     [t],
@@ -159,6 +166,69 @@ function CanvasInner({ slug }: BuilderCanvasProps): React.ReactElement {
       );
     },
     [slug, mutate],
+  );
+
+  // Map a node to its backend delete. Agent + plugin nodes are not deletable
+  // (the agent is the canvas root; plugin nodes mirror the live system).
+  const deleteNodeData = useCallback(
+    async (data: BuilderNodeData): Promise<void> => {
+      switch (data.kind) {
+        case 'subagent':
+          await deleteSubAgent(slug, data.subAgent.id);
+          return;
+        case 'skill':
+          await deleteSkill(data.skill.id);
+          return;
+        case 'mcp':
+          await deleteMcpServer(data.server.id);
+          return;
+        case 'schedule':
+          await deleteSchedule(slug, data.schedule.id);
+          return;
+        case 'channel':
+          await deleteGraphEdge(
+            slug,
+            `channel_bind:${data.channel.channelType}:${data.channel.channelKey}`,
+            'channel_bind',
+          );
+          return;
+        case 'tool':
+          if (data.grant) {
+            await deleteGraphEdge(slug, `tool_grant:${data.grant.id}`, 'tool_grant');
+          }
+          return;
+        default:
+          return; // agent, plugin — not deletable
+      }
+    },
+    [slug],
+  );
+
+  const onNodesDelete = useCallback(
+    (deleted: BuilderNode[]) => {
+      void mutate(
+        (g) => g,
+        async () => {
+          for (const n of deleted) await deleteNodeData(n.data);
+          await reload();
+        },
+      );
+    },
+    [mutate, reload, deleteNodeData],
+  );
+
+  const deleteSelected = useCallback(
+    (data: BuilderNodeData) => {
+      setSelected(null);
+      void mutate(
+        (g) => g,
+        async () => {
+          await deleteNodeData(data);
+          await reload();
+        },
+      );
+    },
+    [mutate, reload, deleteNodeData],
   );
 
   // Debounced persistence of node positions after a drag settles.
@@ -290,9 +360,11 @@ function CanvasInner({ slug }: BuilderCanvasProps): React.ReactElement {
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
           onEdgesDelete={onEdgesDelete}
+          onNodesDelete={onNodesDelete}
           onNodeDragStop={onNodeDragStop}
           onSelectionChange={onSelectionChange}
           isValidConnection={isValidConnection}
+          deleteKeyCode={['Backspace', 'Delete']}
           fitView
           colorMode="dark"
           proOptions={{ hideAttribution: true }}
@@ -312,6 +384,7 @@ function CanvasInner({ slug }: BuilderCanvasProps): React.ReactElement {
           data={selected}
           onClose={() => setSelected(null)}
           onSaved={() => void reload()}
+          onDelete={deleteSelected}
         />
       )}
       {state.kind === 'ready' && (

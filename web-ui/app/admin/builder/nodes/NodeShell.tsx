@@ -24,6 +24,7 @@ const ACCENTS: Record<CanvasNodeKind, string> = {
   tool: '#f59e0b',
   mcp: '#ec4899',
   schedule: '#a3a3a3',
+  plugin: '#64748b',
 };
 
 /**

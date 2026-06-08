@@ -19,6 +19,7 @@
         "tool": "Tool",
         "mcp": "MCP-Server",
         "schedule": "Zeitplan",
+        "plugin": "Plugin",
         "tools": "Tools"
       },
       "palette": {
@@ -36,6 +37,7 @@
       "inspector": {
         "title": "Inspektor",
         "close": "Schließen",
+        "delete": "Löschen",
         "save": "Speichern",
         "discover": "Tools erkennen",
         "readOnly": "Dieser Node hat keine editierbaren Eigenschaften.",

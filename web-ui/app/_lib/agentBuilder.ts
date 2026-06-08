@@ -168,12 +168,18 @@ export interface ScheduleNode {
   lastRunAt: string | null;
 }
 
+/** Read-only mirror of an enabled plugin on the agent (current-system view). */
+export interface PluginNode {
+  id: string;
+}
+
 export type EdgeKind =
   | 'channel_bind'
   | 'subagent'
   | 'skill'
   | 'tool_grant'
-  | 'schedule';
+  | 'schedule'
+  | 'plugin';
 
 export interface CanvasEdge {
   id: string;
@@ -190,6 +196,7 @@ export interface AgentGraph {
   tools: ToolGrantNode[];
   mcpServers: McpServerNode[];
   schedules: ScheduleNode[];
+  plugins: PluginNode[];
   edges: CanvasEdge[];
 }
 
@@ -455,7 +462,8 @@ export type CanvasNodeKind =
   | 'skill'
   | 'tool'
   | 'mcp'
-  | 'schedule';
+  | 'schedule'
+  | 'plugin';
 
 interface EdgeRule {
   source: CanvasNodeKind;
