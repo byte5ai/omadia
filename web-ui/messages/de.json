@@ -1445,5 +1445,20 @@
         "tooltip": "{used} von {cap} aktiven Drafts, Warnung ab {warnAt}"
       }
     }
+  },
+  "adminSettings": {
+    "pluginDirectory": {
+      "heading": "Plugin-Einstellungen",
+      "intro": "Die meisten Einstellungen liegen jetzt direkt beim jeweiligen Plugin und werden in dessen eigenem Einstellungs-Panel bearbeitet. Auf dieser Seite verbleiben nur echte Plugin-übergreifende Werte (wie der gemeinsame Anthropic-Key oben).",
+      "open": "Einstellungen öffnen",
+      "plugins": {
+        "orchestrator": "Orchestrator & Model-Routing",
+        "verifier": "Verifier",
+        "embeddings": "Embeddings",
+        "knowledgeGraph": "Knowledge-Graph",
+        "diagrams": "Diagramme & Speicher",
+        "integrations": "Integrationen (Microsoft, Teams, Telegram)"
+      }
+    }
   }
 }
