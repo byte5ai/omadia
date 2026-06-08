@@ -20,6 +20,7 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@monaco-editor/react": "^4.7.0",
+    "@xyflow/react": "^12.11.0",
     "clsx": "^2.1.1",
     "cytoscape": "^3.33.4",
     "cytoscape-fcose": "^2.2.0",

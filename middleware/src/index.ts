@@ -13,6 +13,8 @@ import { createMemoryBackendRouter } from './routes/memoryBackend.js';
 import { createChatRouter } from './routes/chat.js';
 import { createOperatorAgentsRouter } from './routes/operatorAgents.js';
 import { createOperatorChannelsRouter } from './routes/operatorChannels.js';
+import { createAgentBuilderRouter } from './routes/agentBuilder.js';
+import { ScheduleWorker } from './scheduler/scheduleWorker.js';
 import type {
   ConfigStore as MultiOrchestratorConfigStore,
   OrchestratorRegistry as MultiOrchestratorRegistry,
@@ -179,6 +181,9 @@ import { UiRouteCatalog } from './platform/uiRouteCatalog.js';
 import { ServiceRegistry } from './platform/serviceRegistry.js';
 import { TurnHookRegistry } from './platform/turnHookRegistry.js';
 import { NativeToolRegistry } from '@omadia/orchestrator';
+import { McpManager } from '@omadia/orchestrator';
+import { AgentGraphStore } from '@omadia/orchestrator';
+import { registerDbSubAgentTools } from './agents/subAgentToolHydration.js';
 import {
   DATA_DIR,
   DEV_VAULT_KEY_PATH,
@@ -1255,6 +1260,37 @@ async function main(): Promise<void> {
       const currentDomainTools = (): DomainTool[] =>
         mergeDomainTools(domainTools, dynamicAgentRuntime.activeDomainTools());
 
+      // Agent Builder P2/P4 — shared MCP connection pool + a closure that
+      // materialises each agent's DB-defined sub-agents into DomainTools and
+      // registers them on its orchestrator. Called on initial hydrate AND
+      // from `onAgentBuilt` so a rebuilt agent re-acquires its sub-agents.
+      const mcpManager = new McpManager();
+      const SUBAGENT_DEFAULT_MODEL = 'claude-sonnet-4-6';
+      const hydrateSubAgentTools = (
+        slug: string,
+        built: { orchestrator: { hasDomainTool(n: string): boolean; registerDomainTool(t: DomainTool): void } },
+      ): number => {
+        const entry = registryForHydrate.get(slug);
+        if (!entry) return 0;
+        const mcpServers = registryForHydrate.currentSnapshot()?.mcpServers ?? [];
+        return registerDbSubAgentTools(
+          {
+            subAgents: entry.subAgents,
+            toolGrants: entry.toolGrants,
+            skills: entry.skills,
+          },
+          built,
+          {
+            client,
+            nativeToolRegistry,
+            mcpManager,
+            mcpServers,
+            defaultModel: SUBAGENT_DEFAULT_MODEL,
+            log: (m: string) => console.log(`[middleware] ${m}`),
+          },
+        );
+      };
+
       let attached = 0;
       for (const entry of registryForHydrate.list()) {
         for (const t of scopeDomainToolsToPlugins(
@@ -1266,6 +1302,7 @@ async function main(): Promise<void> {
             attached += 1;
           }
         }
+        attached += hydrateSubAgentTools(entry.agent.slug, entry.built);
       }
       console.log(
         `[middleware] registry orchestrators: hydrated with ${String(attached)} domain-tool registrations across ${String(registryForHydrate.list().length)} agent(s) (per-Agent plugin-scoped)`,
@@ -1289,8 +1326,9 @@ async function main(): Promise<void> {
             built.orchestrator.registerDomainTool(t);
           }
         }
+        const subTools = hydrateSubAgentTools(slug, built);
         console.log(
-          `[middleware] registry: orchestrator for "${slug}" hydrated with ${String(tools.length)} domain-tool(s) (per-Agent plugin-scoped)`,
+          `[middleware] registry: orchestrator for "${slug}" hydrated with ${String(tools.length)} domain-tool(s) + ${String(subTools)} sub-agent tool(s) (per-Agent plugin-scoped)`,
         );
       });
 
@@ -1663,6 +1701,41 @@ async function main(): Promise<void> {
   console.log(
     '[middleware] operator-channels endpoints ready at /api/v1/operator/channels/* (auth-gated)',
   );
+
+  // Agent Builder canvas backend (P1/P2). Mounted at the /api/v1/operator
+  // parent so the /agents/:slug/graph|subagents|… subpaths fall through here
+  // after the operator-agents router. 503s without a graphPool (in-memory KG
+  // backend). Writes route through ConfigStore/AgentGraphStore → notify →
+  // registry.reload(), and we reload inline so the response reflects the diff.
+  app.use(
+    '/api/v1/operator',
+    requireAuth,
+    createAgentBuilderRouter({
+      getConfigStore: () =>
+        serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
+      getGraphStore: () =>
+        graphPool ? new AgentGraphStore(graphPool) : undefined,
+      getRegistry: () =>
+        serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
+    }),
+  );
+  console.log(
+    `[middleware] agent-builder endpoints ready at /api/v1/operator/{agents/:slug/graph,skills,mcp-servers,…} (auth-gated, graphPool=${graphPool ? 'on' : 'off'})`,
+  );
+
+  // Agent Builder schedule worker (P6) — fires cron-scheduled agent turns.
+  // Only with a Neon graphPool (the agent_schedules table lives there).
+  if (graphPool) {
+    const schedulePool = graphPool;
+    const scheduleWorker = new ScheduleWorker({
+      getGraphStore: () => new AgentGraphStore(schedulePool),
+      getRegistry: () =>
+        serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
+      log: (m, f) => console.log(`[middleware] ${m}`, f ?? ''),
+    });
+    scheduleWorker.start();
+    console.log('[middleware] agent-builder schedule worker started (1-min poll)');
+  }
 
   // Slice 10 — near-duplicate MK workflow. Mirrors the Slice 9
   // mounting pattern: detector + bulk are optional, route 503s when

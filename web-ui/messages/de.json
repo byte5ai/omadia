@@ -1,4 +1,60 @@
 {
+  "admin": {
+    "builder": {
+      "title": "Agent-Builder",
+      "subtitle": "Kanäle, Sub-Agenten, Skills und Tools auf einer editierbaren Leinwand verdrahten.",
+      "agentPicker": "Agent",
+      "loading": "Lädt …",
+      "loadError": "Laden fehlgeschlagen",
+      "noAgents": "Noch keine Agenten verfügbar.",
+      "card": {
+        "title": "Agent-Builder",
+        "description": "Visuelle Node-Graph-Leinwand: Kanäle, Sub-Agenten, Skills, Tools/MCP und Zeitpläne verdrahten. Eine gezogene Verbindung schreibt die Verdrahtung; eine gelöschte Kante entfernt sie."
+      },
+      "nodes": {
+        "channel": "Kanal",
+        "agent": "Agent",
+        "subagent": "Sub-Agent",
+        "skill": "Skill",
+        "tool": "Tool",
+        "mcp": "MCP-Server",
+        "schedule": "Zeitplan",
+        "tools": "Tools"
+      },
+      "palette": {
+        "title": "Hinzufügen"
+      },
+      "toolbox": {
+        "native": "Native Tools",
+        "noTools": "Noch keine erkannten Tools."
+      },
+      "defaults": {
+        "subAgentName": "Neuer Sub-Agent",
+        "skillName": "Neuer Skill",
+        "mcpName": "Neuer MCP-Server"
+      },
+      "inspector": {
+        "title": "Inspektor",
+        "close": "Schließen",
+        "save": "Speichern",
+        "discover": "Tools erkennen",
+        "readOnly": "Dieser Node hat keine editierbaren Eigenschaften.",
+        "name": "Name",
+        "model": "Modell",
+        "systemPrompt": "System-Prompt-Override",
+        "routingMode": "Routing-Modus",
+        "modelMain": "Hauptmodell",
+        "modelTriage": "Triage-Modell",
+        "modelSimple": "Einfaches Modell",
+        "skillBody": "Skill-Inhalt (Markdown)",
+        "skillFileReadOnly": "Datei-basierter Skill — hier schreibgeschützt.",
+        "transport": "Transport",
+        "endpoint": "Endpoint",
+        "cron": "Cron",
+        "timezone": "Zeitzone"
+      }
+    }
+  },
   "selfExtension": {
     "intro": "Schlage eine Selbst-Erweiterung für dieses installierte Plugin vor: füge Tools oder Capabilities per Spec-Patch hinzu. Der Escalation-Guard lehnt jede Rechte-Ausweitung automatisch ab — ein Plugin kann sich keine Rechte selbst geben, die es nicht ohnehin schon hat.",
     "composeTitle": "Neuer Vorschlag",
