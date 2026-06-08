@@ -670,11 +670,126 @@ async function main(): Promise<void> {
   // per-Agent orchestrator never learned the new tool, so it behaves as if the
   // plugin were never activated.
    
-  let propagatePluginInstall: ((pluginId: string) => Promise<void>) | undefined;
-   
-  let propagatePluginUninstall:
-    | ((pluginId: string, removedToolName?: string) => Promise<void>)
-    | undefined;
+  // --- Runtime plugin (de)activation propagation ------------------------
+  // A plugin (de)activated AFTER boot (operator install, Hub/registry
+  // install, package re-upload, self-extension) mutates only the standalone
+  // `dynamicAgentRuntime` + the single legacy orchestrator. The per-Agent
+  // registry orchestrators — which the chat router resolves for every turn,
+  // falling back to the fallback Agent for un-slugged turns — are a boot
+  // snapshot that the install path must reconcile.
+  //
+  // These closures are defined UNCONDITIONALLY here (not gated on the
+  // boot-time `orchestrator` being present) and resolve `configStore` /
+  // `orchestratorRegistry` LIVE from the serviceRegistry on every call.
+  // Previously they were assigned inside the `if (orchestrator) { … }`
+  // boot block, so on a chat-DISABLED boot (no ANTHROPIC_API_KEY at start —
+  // the Setup-Wizard / Docker path) they stayed `undefined`. The
+  // `onInstalled` hook's `propagatePluginInstall?.(agentId)` then silently
+  // no-op'd: the agent activated in `dynamicAgentRuntime` but the fallback
+  // Agent's `agent_plugins` enablement row was never written, so
+  // `scopeDomainToolsToPlugins` withheld its `query_*` tool — at install
+  // time AND on every later restart, because the missing DB row persists.
+  // (Channels are unaffected: the channel install hook activates them
+  // directly, with no plugin-scoping — which is why connectors appear on a
+  // new session but specialist agents never did.) Resolving live here makes
+  // the propagation take effect the moment chat goes live via the wizard.
+  const ORCHESTRATOR_PLUGIN_ID = '@omadia/orchestrator';
+
+  // Reconcile a single agent-plugin's DomainTool across every per-Agent
+  // orchestrator: (re-)register a fresh handle where the plugin is enabled,
+  // drop it where it is not. Idempotent and safe for re-uploads (the stale
+  // handle is replaced). No-ops for non-agent plugins (no DomainTool); on
+  // uninstall the runtime no longer knows the tool, so drop it by name.
+  const reconcileRuntimeDomainTool = (
+    pluginId: string,
+    removedToolName?: string,
+  ): void => {
+    const reg =
+      serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
+    if (!reg) return;
+    const tool = dynamicAgentRuntime.domainToolFor(pluginId);
+    reconcileDomainToolAcrossAgents(
+      reg.list().map((entry) => ({
+        slug: entry.agent.slug,
+        enabled: entry.plugins.some(
+          (p) => p.enabled && p.pluginId === pluginId,
+        ),
+        orchestrator: entry.built.orchestrator,
+      })),
+      {
+        ...(tool ? { tool } : {}),
+        ...(removedToolName ? { removedToolName } : {}),
+        onError: (slug, err) =>
+          console.error(
+            `[middleware] reconcileRuntimeDomainTool(${pluginId}) on "${slug}" FAILED:`,
+            err instanceof Error ? err.message : String(err),
+          ),
+      },
+    );
+  };
+
+  const propagatePluginInstall = async (pluginId: string): Promise<void> => {
+    if (pluginId === ORCHESTRATOR_PLUGIN_ID) return;
+    const store =
+      serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
+    const reg =
+      serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
+    if (!store || !reg) return; // no-DB / chat-disabled boot — nothing to wire
+    try {
+      const { fallbackAgentId } = await store.getPlatformSettings();
+      if (fallbackAgentId) {
+        // Keep the "fallback Agent has every installed plugin enabled"
+        // invariant alive at runtime. Un-slugged chat routes to the
+        // fallback Agent (getDefaultSlug → slugForFallback); without an
+        // enabled `agent_plugins` row, `scopeDomainToolsToPlugins` would
+        // withhold the new tool even after it is hydrated. First-boot does
+        // this via `attachAllPlugins`; runtime installs never did.
+        await store.upsertAgentPlugin(fallbackAgentId, {
+          pluginId,
+          enabled: true,
+        });
+        // Refresh `entry.plugins` from the DB so the scoping check below
+        // sees the freshly-enabled row. Idempotent no-op when unchanged;
+        // a plugin-only change is an `update` (no rebuild → sessions kept).
+        await reg.reload();
+      }
+    } catch (err) {
+      console.error(
+        `[middleware] propagatePluginInstall(${pluginId}) enable/reload FAILED:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+    reconcileRuntimeDomainTool(pluginId);
+    console.log(`[middleware] runtime plugin install propagated: ${pluginId}`);
+  };
+
+  const propagatePluginUninstall = async (
+    pluginId: string,
+    removedToolName?: string,
+  ): Promise<void> => {
+    if (pluginId === ORCHESTRATOR_PLUGIN_ID) return;
+    const store =
+      serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
+    const reg =
+      serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
+    if (!store || !reg) return;
+    try {
+      const { fallbackAgentId } = await store.getPlatformSettings();
+      if (fallbackAgentId) {
+        await store.removeAgentPlugin(fallbackAgentId, pluginId);
+        await reg.reload();
+      }
+    } catch (err) {
+      console.error(
+        `[middleware] propagatePluginUninstall(${pluginId}) disable/reload FAILED:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+    reconcileRuntimeDomainTool(pluginId, removedToolName);
+    console.log(
+      `[middleware] runtime plugin uninstall propagated: ${pluginId}`,
+    );
+  };
 
   const installService = new InstallService({
     catalog: pluginCatalog,
@@ -707,7 +822,7 @@ async function main(): Promise<void> {
           await dynamicAgentRuntime.activate(agentId);
           // Make the freshly-activated agent's tool reachable on the per-Agent
           // orchestrators (incl. the fallback Agent) without a restart.
-          await propagatePluginInstall?.(agentId);
+          await propagatePluginInstall(agentId);
       }
     },
     onUninstall: async (agentId) => {
@@ -730,7 +845,7 @@ async function main(): Promise<void> {
           const removedToolName =
             dynamicAgentRuntime.domainToolFor(agentId)?.name;
           await dynamicAgentRuntime.deactivate(agentId);
-          await propagatePluginUninstall?.(agentId, removedToolName);
+          await propagatePluginUninstall(agentId, removedToolName);
         }
       }
     },
@@ -1292,112 +1407,6 @@ async function main(): Promise<void> {
         );
       });
 
-      // --- Runtime plugin (de)activation propagation ----------------------
-      // A plugin (de)activated AFTER boot (operator install, Hub/registry
-      // install, package re-upload, self-extension) mutates only the standalone
-      // `dynamicAgentRuntime` + the single legacy orchestrator. The per-Agent
-      // registry orchestrators — which the chat router resolves for every turn,
-      // falling back to the fallback Agent for un-slugged turns — are a boot
-      // snapshot that the install path never reconciled. These two closures
-      // close that gap; the `let` forward-refs near the install hooks are
-      // assigned here (the hooks only fire at runtime, after this block ran).
-      const ORCHESTRATOR_PLUGIN_ID = '@omadia/orchestrator';
-
-      // Reconcile a single agent-plugin's DomainTool across every per-Agent
-      // orchestrator: (re-)register a fresh handle where the plugin is enabled,
-      // drop it where it is not. Idempotent and safe for re-uploads (the stale
-      // handle is replaced). No-ops for non-agent plugins (no DomainTool); on
-      // uninstall the runtime no longer knows the tool, so drop it by name.
-      const reconcileRuntimeDomainTool = (
-        pluginId: string,
-        removedToolName?: string,
-      ): void => {
-        const reg =
-          serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
-        if (!reg) return;
-        const tool = dynamicAgentRuntime.domainToolFor(pluginId);
-        reconcileDomainToolAcrossAgents(
-          reg.list().map((entry) => ({
-            slug: entry.agent.slug,
-            enabled: entry.plugins.some(
-              (p) => p.enabled && p.pluginId === pluginId,
-            ),
-            orchestrator: entry.built.orchestrator,
-          })),
-          {
-            ...(tool ? { tool } : {}),
-            ...(removedToolName ? { removedToolName } : {}),
-            onError: (slug, err) =>
-              console.error(
-                `[middleware] reconcileRuntimeDomainTool(${pluginId}) on "${slug}" FAILED:`,
-                err instanceof Error ? err.message : String(err),
-              ),
-          },
-        );
-      };
-
-      propagatePluginInstall = async (pluginId: string): Promise<void> => {
-        if (pluginId === ORCHESTRATOR_PLUGIN_ID) return;
-        const store =
-          serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
-        const reg =
-          serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
-        if (!store || !reg) return; // no-DB / chat-disabled boot — nothing to wire
-        try {
-          const { fallbackAgentId } = await store.getPlatformSettings();
-          if (fallbackAgentId) {
-            // Keep the "fallback Agent has every installed plugin enabled"
-            // invariant alive at runtime. Un-slugged chat routes to the
-            // fallback Agent (getDefaultSlug → slugForFallback); without an
-            // enabled `agent_plugins` row, `scopeDomainToolsToPlugins` would
-            // withhold the new tool even after it is hydrated. First-boot does
-            // this via `attachAllPlugins`; runtime installs never did.
-            await store.upsertAgentPlugin(fallbackAgentId, {
-              pluginId,
-              enabled: true,
-            });
-            // Refresh `entry.plugins` from the DB so the scoping check below
-            // sees the freshly-enabled row. Idempotent no-op when unchanged;
-            // a plugin-only change is an `update` (no rebuild → sessions kept).
-            await reg.reload();
-          }
-        } catch (err) {
-          console.error(
-            `[middleware] propagatePluginInstall(${pluginId}) enable/reload FAILED:`,
-            err instanceof Error ? err.message : String(err),
-          );
-        }
-        reconcileRuntimeDomainTool(pluginId);
-        console.log(`[middleware] runtime plugin install propagated: ${pluginId}`);
-      };
-
-      propagatePluginUninstall = async (
-        pluginId: string,
-        removedToolName?: string,
-      ): Promise<void> => {
-        if (pluginId === ORCHESTRATOR_PLUGIN_ID) return;
-        const store =
-          serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
-        const reg =
-          serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
-        if (!store || !reg) return;
-        try {
-          const { fallbackAgentId } = await store.getPlatformSettings();
-          if (fallbackAgentId) {
-            await store.removeAgentPlugin(fallbackAgentId, pluginId);
-            await reg.reload();
-          }
-        } catch (err) {
-          console.error(
-            `[middleware] propagatePluginUninstall(${pluginId}) disable/reload FAILED:`,
-            err instanceof Error ? err.message : String(err),
-          );
-        }
-        reconcileRuntimeDomainTool(pluginId, removedToolName);
-        console.log(
-          `[middleware] runtime plugin uninstall propagated: ${pluginId}`,
-        );
-      };
     }
   }
 
@@ -2065,7 +2074,7 @@ async function main(): Promise<void> {
             // Hub/registry install + package re-upload land here. Propagate the
             // (fresh) tool onto the per-Agent orchestrators so the new/updated
             // capability is live for the next chat turn without a restart.
-            await propagatePluginInstall?.(agentId);
+            await propagatePluginInstall(agentId);
           }
         }
       },
