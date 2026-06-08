@@ -143,10 +143,11 @@ services:
   postgres:
     image: pgvector/pgvector:pg17
     restart: unless-stopped
-    # Explicit container_name + network alias so the middleware always
-    # resolves the `postgres` DNS name regardless of the compose project
-    # prefix (default name would be `<dir>-postgres-1`).
-    container_name: omadia-postgres
+    # Network alias + hostname so the middleware always resolves the
+    # `postgres` DNS name regardless of the compose project prefix. No explicit
+    # container_name: it's redundant for in-network DNS (the service name +
+    # `networks.omadia.aliases` below already resolve `postgres`) and a fixed
+    # name collides when a second compose project runs side by side.
     hostname: postgres
     environment:
       POSTGRES_USER: omadia
