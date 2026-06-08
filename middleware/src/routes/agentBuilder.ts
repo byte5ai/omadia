@@ -75,7 +75,7 @@ export function createAgentBuilderRouter(
     const l = live(res);
     if (!l) return;
     try {
-      const agent = await agentOr404(l, req.params.slug ?? '', res);
+      const agent = await agentOr404(l, str(req.params.slug), res);
       if (!agent) return;
       const [bindings, subAgents, skills, grants, servers, schedules] =
         await Promise.all([
@@ -99,7 +99,7 @@ export function createAgentBuilderRouter(
     const l = live(res);
     if (!l) return;
     try {
-      const agent = await agentOr404(l, req.params.slug ?? '', res);
+      const agent = await agentOr404(l, str(req.params.slug), res);
       if (!agent) return;
       const edge = await createEdge(l, agent, req.body ?? {});
       const diff = await reload(l);
@@ -115,8 +115,8 @@ export function createAgentBuilderRouter(
       const l = live(res);
       if (!l) return;
       try {
-        const kind = String(req.query['kind'] ?? '');
-        await deleteEdge(l, decodeURIComponent(req.params.id ?? ''), kind);
+        const kind = str(req.query['kind']);
+        await deleteEdge(l, decodeURIComponent(str(req.params.id)), kind);
         await reload(l);
         res.status(204).end();
       } catch (err) {
@@ -130,7 +130,7 @@ export function createAgentBuilderRouter(
     const l = live(res);
     if (!l) return;
     try {
-      const agent = await agentOr404(l, req.params.slug ?? '', res);
+      const agent = await agentOr404(l, str(req.params.slug), res);
       if (!agent) return;
       const b = req.body ?? {};
       const row = await l.graph.createSubAgent({
@@ -157,7 +157,7 @@ export function createAgentBuilderRouter(
       const l = live(res);
       if (!l) return;
       try {
-        const row = await l.graph.updateSubAgent(req.params.id ?? '', req.body ?? {});
+        const row = await l.graph.updateSubAgent(str(req.params.id), req.body ?? {});
         await reload(l);
         res.json(subAgentNode(row));
       } catch (err) {
@@ -172,7 +172,7 @@ export function createAgentBuilderRouter(
       const l = live(res);
       if (!l) return;
       try {
-        await l.graph.deleteSubAgent(req.params.id ?? '');
+        await l.graph.deleteSubAgent(str(req.params.id));
         await reload(l);
         res.status(204).end();
       } catch (err) {
@@ -188,7 +188,7 @@ export function createAgentBuilderRouter(
       const l = live(res);
       if (!l) return;
       try {
-        const agent = await agentOr404(l, req.params.slug ?? '', res);
+        const agent = await agentOr404(l, str(req.params.slug), res);
         if (!agent) return;
         const routing = (req.body ?? {}).modelRouting ?? null;
         const updated = await l.config.setModelRouting(agent.id, routing);
@@ -204,7 +204,7 @@ export function createAgentBuilderRouter(
     const l = live(res);
     if (!l) return;
     try {
-      const agent = await agentOr404(l, req.params.slug ?? '', res);
+      const agent = await agentOr404(l, str(req.params.slug), res);
       if (!agent) return;
       const b = req.body ?? {};
       if (b.agent) await l.config.setCanvasPosition(agent.id, b.agent);
@@ -253,7 +253,7 @@ export function createAgentBuilderRouter(
     const l = live(res);
     if (!l) return;
     try {
-      const row = await l.graph.updateSkill(req.params.id ?? '', req.body ?? {});
+      const row = await l.graph.updateSkill(str(req.params.id), req.body ?? {});
       await reload(l);
       res.json(skillNode(row));
     } catch (err) {
@@ -265,7 +265,7 @@ export function createAgentBuilderRouter(
     const l = live(res);
     if (!l) return;
     try {
-      await l.graph.deleteSkill(req.params.id ?? '');
+      await l.graph.deleteSkill(str(req.params.id));
       await reload(l);
       res.status(204).end();
     } catch (err) {
@@ -305,7 +305,7 @@ export function createAgentBuilderRouter(
     const l = live(res);
     if (!l) return;
     try {
-      await l.graph.deleteMcpServer(req.params.id ?? '');
+      await l.graph.deleteMcpServer(str(req.params.id));
       await reload(l);
       res.status(204).end();
     } catch (err) {
@@ -318,7 +318,7 @@ export function createAgentBuilderRouter(
     if (!l) return;
     try {
       const servers = await l.graph.listMcpServers();
-      const row = servers.find((s) => s.id === req.params.id);
+      const row = servers.find((s) => s.id === str(req.params.id));
       if (!row) {
         res.status(404).json({ error: 'mcp_server_not_found' });
         return;
@@ -338,7 +338,7 @@ export function createAgentBuilderRouter(
     const l = live(res);
     if (!l) return;
     try {
-      const agent = await agentOr404(l, req.params.slug ?? '', res);
+      const agent = await agentOr404(l, str(req.params.slug), res);
       if (!agent) return;
       const schedules = (await l.graph.listSchedulesForAgent(agent.id)).map(
         scheduleNode,
@@ -353,7 +353,7 @@ export function createAgentBuilderRouter(
     const l = live(res);
     if (!l) return;
     try {
-      const agent = await agentOr404(l, req.params.slug ?? '', res);
+      const agent = await agentOr404(l, str(req.params.slug), res);
       if (!agent) return;
       const b = req.body ?? {};
       const row = await l.graph.createSchedule({
@@ -375,7 +375,7 @@ export function createAgentBuilderRouter(
       const l = live(res);
       if (!l) return;
       try {
-        await l.graph.deleteSchedule(req.params.id ?? '');
+        await l.graph.deleteSchedule(str(req.params.id));
         res.status(204).end();
       } catch (err) {
         fail(res, err);
@@ -666,4 +666,15 @@ function fail(res: Response, err: unknown): void {
 
 function msg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Express 5 types `req.params[x]` / `req.query[x]` as `string | string[]`.
+ * Coerce to a single string (first element of an array, else empty) so route
+ * handlers can pass them to string-typed store methods.
+ */
+function str(v: unknown): string {
+  if (typeof v === 'string') return v;
+  if (Array.isArray(v) && typeof v[0] === 'string') return v[0];
+  return '';
 }
