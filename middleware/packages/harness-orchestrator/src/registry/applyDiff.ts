@@ -153,6 +153,12 @@ export function buildForAgent(
       model: runtime.model,
       maxTokens: runtime.maxTokens,
       maxToolIterations: runtime.maxToolIterations,
+      // Per-turn model routing is a runtime knob like the others — forward it
+      // so registry-managed per-Agent orchestrators emit `turn_routing` (and
+      // the UI renders the Haiku-triage badge), not just the default boot-path
+      // orchestrator. Without this the badge only ever shows for the default
+      // agent. See harness-orchestrator/plugin.ts (defaultRuntimeConfig).
+      ...(runtime.modelRouting ? { modelRouting: runtime.modelRouting } : {}),
       ...(runtime.loopRepeatSoft !== undefined
         ? { loopRepeatSoft: runtime.loopRepeatSoft }
         : {}),
