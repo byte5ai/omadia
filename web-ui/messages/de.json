@@ -437,6 +437,8 @@
     "memoryReadTooltip": "Memory-Read-Scope dieses Plugins",
     "memoryWriteTooltip": "Memory-Write-Scope dieses Plugins",
     "networkLabel": "Netzwerk:",
+    "networkHosts": "{count, plural, one {# Host} other {# Hosts}}",
+    "networkHostsTitle": "Ausgehende Netzwerk-Hosts",
     "configShow": "Config",
     "configHide": "Schließen",
     "orphanPluginBadge": "nicht mehr installiert",

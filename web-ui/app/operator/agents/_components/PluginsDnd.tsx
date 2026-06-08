@@ -19,7 +19,7 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { GripVertical } from 'lucide-react';
+import { Globe, GripVertical } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { useTranslations } from 'next-intl';
 
@@ -286,24 +286,26 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
 
   return (
     <div>
-      <h4 className="mb-2 flex items-center justify-between text-sm font-medium">
-        {t('pluginsHeading')}
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h4 className="text-sm font-semibold text-neutral-800 dark:text-neutral-100">
+          {t('pluginsHeading')}
+        </h4>
         <button
           type="button"
-          className="rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-0.5 text-xs hover:bg-neutral-50 dark:hover:bg-neutral-700"
+          className="rounded-md border border-sky-600 bg-sky-600 px-3 py-1 text-xs font-medium text-white shadow-sm transition-colors hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-50"
           disabled={props.disabled}
           onClick={submit}
         >
           {t('save')}
         </button>
-      </h4>
+      </div>
       <DndContext
         sensors={sensors}
         collisionDetection={closestCorners}
         onDragStart={onDragStart}
         onDragEnd={onDragEnd}
       >
-        <div className="grid gap-3 lg:grid-cols-2">
+        <div className="grid gap-4 lg:grid-cols-2">
           <Column
             id={AVAILABLE_ID}
             title={t('pluginsAvailable')}
@@ -415,11 +417,12 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
         </div>
         <DragOverlay>
           {activeEntry ? (
-            <div className="rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-1.5 text-xs shadow-lg">
-              <span className="font-medium">{activeEntry.name}</span>
-              <code className="ml-1 font-mono text-[10px] text-neutral-500 dark:text-neutral-400">
-                {activeEntry.id}
-              </code>
+            <div className="flex items-center gap-2 rounded-lg border border-sky-300 bg-white px-3 py-2 text-xs shadow-xl ring-2 ring-sky-200 dark:border-sky-700 dark:bg-neutral-900 dark:ring-sky-900">
+              <GripVertical size={14} className="text-neutral-400" />
+              <span className="font-medium text-neutral-800 dark:text-neutral-100">
+                {activeEntry.name}
+              </span>
+              <KindBadge kind={activeEntry.kind} />
             </div>
           ) : null}
         </DragOverlay>
@@ -498,29 +501,57 @@ function Column(props: {
     return [props.id];
   }, [props.id]);
 
+  const accent = props.id === ENABLED_ID;
+
   return (
     <div
       ref={setNodeRef}
       className={[
-        'rounded border bg-neutral-50/40 dark:bg-neutral-900/40 p-2 transition-colors',
+        'flex min-w-0 flex-col rounded-xl border p-3 transition-colors',
         isOver
-          ? 'border-sky-400 bg-sky-50/60'
-          : 'border-neutral-200 dark:border-neutral-800',
+          ? 'border-sky-400 bg-sky-50/70 ring-2 ring-sky-200 dark:bg-sky-950/30 dark:ring-sky-900'
+          : accent
+            ? 'border-emerald-200 bg-emerald-50/30 dark:border-emerald-900/60 dark:bg-emerald-950/10'
+            : 'border-neutral-200 bg-neutral-50/50 dark:border-neutral-800 dark:bg-neutral-900/40',
       ].join(' ')}
     >
-      <div className="mb-2 flex items-center justify-between px-1">
-        <span className="text-xs font-medium uppercase tracking-wide text-neutral-600">
-          {props.title}
+      <div className="mb-3 flex items-center justify-between gap-2 px-0.5">
+        <div className="flex items-center gap-2">
+          <span
+            className={[
+              'inline-block h-2 w-2 rounded-full',
+              accent ? 'bg-emerald-500' : 'bg-neutral-400',
+            ].join(' ')}
+          />
+          <span className="text-xs font-semibold uppercase tracking-wide text-neutral-700 dark:text-neutral-200">
+            {props.title}
+          </span>
+        </div>
+        <span
+          className={[
+            'inline-flex min-w-[1.5rem] items-center justify-center rounded-full px-2 py-0.5 text-[11px] font-medium tabular-nums',
+            accent
+              ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-200'
+              : 'bg-neutral-200 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300',
+          ].join(' ')}
+        >
+          {props.count}
         </span>
-        <span className="text-[10px] text-neutral-500 dark:text-neutral-400">{props.count}</span>
       </div>
       <SortableContext
         items={itemIds}
         strategy={verticalListSortingStrategy}
       >
-        <div className="space-y-1.5">
+        <div className="flex-1 space-y-2">
           {props.count === 0 ? (
-            <p className="px-1 py-3 text-center text-xs text-neutral-400 dark:text-neutral-500 dark:text-neutral-400">
+            <p
+              className={[
+                'rounded-lg border border-dashed px-3 py-8 text-center text-xs',
+                isOver
+                  ? 'border-sky-400 text-sky-600 dark:text-sky-300'
+                  : 'border-neutral-300 text-neutral-400 dark:border-neutral-700 dark:text-neutral-500',
+              ].join(' ')}
+            >
               {props.emptyLabel}
             </p>
           ) : (
@@ -575,26 +606,32 @@ function DraggablePluginTile(props: {
 
   return (
     <div ref={setNodeRef} style={style} className="select-none">
-      <div className="rounded border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900">
-        <div className="flex items-start gap-1.5 px-2 py-1.5">
-          <button
-            type="button"
-            {...attributes}
-            {...listeners}
-            className="mt-0.5 cursor-grab text-neutral-400 dark:text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:text-neutral-200 active:cursor-grabbing"
-            title={t('dragHandle')}
-            disabled={props.disabled}
-          >
-            <GripVertical size={14} />
-          </button>
-          <div className="flex-1 text-xs">
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="font-medium text-neutral-800 dark:text-neutral-100">
+      <div
+        className={[
+          'min-w-0 overflow-hidden rounded-lg border bg-white shadow-sm transition-shadow hover:shadow-md dark:bg-neutral-900',
+          attached && props.selection?.enabled === false
+            ? 'border-neutral-200 opacity-60 dark:border-neutral-800'
+            : 'border-neutral-200 dark:border-neutral-800',
+        ].join(' ')}
+      >
+        <div className="flex min-w-0">
+        <button
+          type="button"
+          {...attributes}
+          {...listeners}
+          className="flex shrink-0 cursor-grab touch-none items-stretch border-r border-neutral-100 bg-neutral-50 px-1.5 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 active:cursor-grabbing dark:border-neutral-800 dark:bg-neutral-800/50 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+          title={t('dragHandle')}
+          aria-label={t('dragHandle')}
+          disabled={props.disabled}
+        >
+          <GripVertical size={16} className="my-auto" />
+        </button>
+        <div className="flex min-w-0 flex-1 items-start gap-2 px-3 py-2.5">
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+              <span className="truncate font-medium text-neutral-800 dark:text-neutral-100">
                 {entry.name}
               </span>
-              <code className="font-mono text-[10px] text-neutral-500 dark:text-neutral-400">
-                {entry.id}
-              </code>
               <KindBadge kind={entry.kind} />
               {!entry.multi_instance && (
                 <span
@@ -622,26 +659,19 @@ function DraggablePluginTile(props: {
                   {t('dependencyMissingBadge')}
                 </span>
               )}
-              {attached && (
-                <label className="ml-auto flex items-center gap-1 text-[10px] text-neutral-600">
-                  <input
-                    type="checkbox"
-                    checked={props.selection?.enabled ?? false}
-                    disabled={props.disabled}
-                    onChange={props.onToggleEnabled}
-                  />
-                  {t('enabledShort')}
-                </label>
-              )}
             </div>
+            <code className="mt-0.5 block truncate font-mono text-[10px] text-neutral-400 dark:text-neutral-500">
+              {entry.id}
+            </code>
             {(entry.memory_reads.length > 0 ||
-              entry.memory_writes.length > 0) && (
-              <div className="mt-1 flex flex-wrap gap-1">
+              entry.memory_writes.length > 0 ||
+              entry.network_outbound.length > 0) && (
+              <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-1">
                 {entry.memory_reads.map((s) => (
                   <span
                     key={`r-${s}`}
                     title={t('memoryReadTooltip')}
-                    className="rounded bg-blue-50 px-1.5 py-0 text-[10px] text-blue-800"
+                    className="max-w-full truncate rounded bg-blue-50 px-1.5 py-0 text-[10px] text-blue-800"
                   >
                     r:{s}
                   </span>
@@ -650,24 +680,28 @@ function DraggablePluginTile(props: {
                   <span
                     key={`w-${s}`}
                     title={t('memoryWriteTooltip')}
-                    className="rounded bg-emerald-50 px-1.5 py-0 text-[10px] text-emerald-800"
+                    className="max-w-full truncate rounded bg-emerald-50 px-1.5 py-0 text-[10px] text-emerald-800"
                   >
                     w:{s}
                   </span>
                 ))}
+                {entry.network_outbound.length > 0 && (
+                  <span
+                    title={`${t('networkHostsTitle')}\n${entry.network_outbound.join('\n')}`}
+                    className="inline-flex max-w-full items-center gap-1 rounded bg-neutral-100 px-1.5 py-0 text-[10px] text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300"
+                  >
+                    <Globe size={10} className="shrink-0" />
+                    {t('networkHosts', { count: entry.network_outbound.length })}
+                  </span>
+                )}
               </div>
             )}
-            {entry.network_outbound.length > 0 && (
-              <p className="mt-1 truncate text-[10px] text-neutral-500 dark:text-neutral-400">
-                {t('networkLabel')} {entry.network_outbound.join(', ')}
-              </p>
-            )}
           </div>
-          <div className="flex flex-col items-end gap-1">
+          <div className="flex shrink-0 flex-col items-end gap-1.5">
             {!attached ? (
               <button
                 type="button"
-                className="rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-1.5 py-0.5 text-[10px] hover:bg-neutral-100 dark:hover:bg-neutral-700"
+                className="rounded-md border border-sky-200 bg-sky-50 px-2 py-1 text-[11px] font-medium text-sky-700 transition-colors hover:bg-sky-100 disabled:opacity-50 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-300"
                 disabled={props.disabled}
                 onClick={props.onAttach}
               >
@@ -675,28 +709,44 @@ function DraggablePluginTile(props: {
               </button>
             ) : (
               <>
-                {hasFields && (
+                <label
+                  className="flex cursor-pointer items-center gap-1 text-[11px] font-medium text-neutral-600 dark:text-neutral-300"
+                  title={t('enabledShort')}
+                >
+                  <input
+                    type="checkbox"
+                    className="h-3.5 w-3.5 accent-emerald-600"
+                    checked={props.selection?.enabled ?? false}
+                    disabled={props.disabled}
+                    onChange={props.onToggleEnabled}
+                  />
+                  {t('enabledShort')}
+                </label>
+                <div className="flex items-center gap-1">
+                  {hasFields && (
+                    <button
+                      type="button"
+                      onClick={props.onToggleExpanded}
+                      className="rounded-md border border-neutral-300 bg-white px-2 py-1 text-[11px] hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900 dark:hover:bg-neutral-800"
+                    >
+                      {props.expanded ? t('configHide') : t('configShow')}
+                    </button>
+                  )}
                   <button
                     type="button"
-                    onClick={props.onToggleExpanded}
-                    className="rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-1.5 py-0.5 text-[10px] hover:bg-neutral-100 dark:hover:bg-neutral-700"
+                    className="rounded-md border border-red-200 bg-red-50 px-2 py-1 text-[11px] font-medium text-red-700 transition-colors hover:bg-red-100 disabled:opacity-50 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300"
+                    disabled={props.disabled}
+                    onClick={props.onDetach}
                   >
-                    {props.expanded ? t('configHide') : t('configShow')}
+                    {t('detach')}
                   </button>
-                )}
-                <button
-                  type="button"
-                  className="rounded border border-red-200 bg-red-50 px-1.5 py-0.5 text-[10px] text-red-800 hover:bg-red-100"
-                  disabled={props.disabled}
-                  onClick={props.onDetach}
-                >
-                  {t('detach')}
-                </button>
+                </div>
               </>
             )}
           </div>
         </div>
-        {attached && props.expanded && hasFields && (
+      </div>
+      {attached && props.expanded && hasFields && (
           <PluginConfigForm
             fields={entry.setup_fields}
             values={props.selection?.config ?? {}}
