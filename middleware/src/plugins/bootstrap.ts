@@ -844,6 +844,25 @@ async function bootstrapOrchestratorFromEnv(
     deps.config.ORCHESTRATOR_MAX_TOKENS,
   );
   config['max_tool_iterations'] = String(deps.config.MAX_TOOL_ITERATIONS);
+  // Per-turn model routing (see plugin.ts — reads these keys). The flag is
+  // always seeded so the runtime read has a definite value; the per-bucket
+  // model overrides are seeded only when explicitly set, leaving the
+  // plugin's built-in fallbacks in charge otherwise.
+  config['orchestrator_model_routing'] = deps.config.ORCHESTRATOR_MODEL_ROUTING
+    ? 'true'
+    : 'false';
+  if (deps.config.MODEL_ROUTING_CLASSIFIER_MODEL) {
+    config['model_routing_classifier_model'] =
+      deps.config.MODEL_ROUTING_CLASSIFIER_MODEL;
+  }
+  if (deps.config.MODEL_ROUTING_SIMPLE_MODEL) {
+    config['model_routing_simple_model'] =
+      deps.config.MODEL_ROUTING_SIMPLE_MODEL;
+  }
+  if (deps.config.MODEL_ROUTING_COMPLEX_MODEL) {
+    config['model_routing_complex_model'] =
+      deps.config.MODEL_ROUTING_COMPLEX_MODEL;
+  }
 
   await deps.registry.register({
     id: ORCHESTRATOR_TOOL_ID,

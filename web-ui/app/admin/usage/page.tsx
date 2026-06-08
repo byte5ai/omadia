@@ -73,7 +73,7 @@ export default function UsageDashboardPage(): React.ReactElement {
       params.set('since', new Date(Date.now() - cfg.hours * 3_600_000).toISOString());
     }
     try {
-      const res = await fetch(`/bot-api/api/usage/dashboard?${params.toString()}`, {
+      const res = await fetch(`/bot-api/usage/dashboard?${params.toString()}`, {
         credentials: 'include',
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);

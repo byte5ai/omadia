@@ -513,8 +513,13 @@
     "tokensInTitle": "{n} Input-Tokens (kumuliert über Iterationen)",
     "tokensOutTitle": "{n} Output-Tokens (kumuliert über Iterationen)",
     "cacheHitTitle": "{n} Cache-Read-Tokens",
-    "dismissAriaLabel": "Stream abbrechen",
-    "dismissTitle": "Abbrechen"
+    "dismissAriaLabel": "Benachrichtigung schließen (Stream läuft weiter)",
+    "dismissTitle": "Schließen",
+    "abortButton": "Stream stoppen",
+    "abortConfirmTitle": "Stream wirklich stoppen?",
+    "abortConfirmBody": "Die laufende Antwort wird sofort abgebrochen und kann nicht fortgesetzt werden.",
+    "abortConfirmKeep": "Weiter laufen lassen",
+    "abortConfirmStop": "Ja, stoppen"
   },
   "builder": {
     "issueReport": {

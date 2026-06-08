@@ -100,6 +100,8 @@ export type ChatStreamEvent =
       answer: string;
       toolCalls: number;
       iterations: number;
+      /** Model this turn ran on (per-turn router → Sonnet/Opus, or default). */
+      model?: string;
       turnId?: string;
       palaiaExcerpt?: PalaiaExcerpt;
       autoPromotedMkId?: string;
@@ -229,14 +231,27 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
             }
           : m.liveness,
       };
-    case 'iteration_usage':
+    case 'iteration_usage': {
+      const prev = m.turnUsage;
       return {
         ...m,
         lastUsage: {
           inputTokens: event.inputTokens,
           cacheReadInputTokens: event.cacheReadInputTokens,
         },
+        // Sum across iterations so the footer shows the whole turn's spend,
+        // not just the last iteration's snapshot.
+        turnUsage: {
+          inputTokens: (prev?.inputTokens ?? 0) + event.inputTokens,
+          outputTokens: (prev?.outputTokens ?? 0) + event.outputTokens,
+          cacheReadInputTokens:
+            (prev?.cacheReadInputTokens ?? 0) + event.cacheReadInputTokens,
+          cacheCreationInputTokens:
+            (prev?.cacheCreationInputTokens ?? 0) +
+            event.cacheCreationInputTokens,
+        },
       };
+    }
     case 'tool_result': {
       const tools = (m.tools ?? []).map((t) =>
         t.id === event.id
@@ -282,6 +297,7 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
           tool_calls: event.toolCalls,
           iterations: event.iterations,
         },
+        ...(event.model ? { model: event.model } : {}),
         ...(event.turnId ? { turnId: event.turnId } : {}),
         ...(event.palaiaExcerpt ? { palaiaExcerpt: event.palaiaExcerpt } : {}),
         ...(event.autoPromotedMkId

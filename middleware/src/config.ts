@@ -40,6 +40,21 @@ const ConfigSchema = z.object({
   ORCHESTRATOR_MODEL: z.string().min(1).default('claude-opus-4-8'),
   ORCHESTRATOR_MAX_TOKENS: z.coerce.number().int().positive().default(8192),
 
+  // Per-turn Sonnet/Opus routing (opt-in). When ON, a cheap Haiku classifier
+  // picks the model per turn: simple → ROUTING_SIMPLE_MODEL, complex →
+  // ROUTING_COMPLEX_MODEL. Seeded into the orchestrator plugin config so it is
+  // also editable at runtime via /api/v1/admin/settings. The *_MODEL overrides
+  // are optional — the orchestrator falls back to sensible defaults (classifier
+  // → TOPIC_CLASSIFIER_MODEL/haiku, simple → SUB_AGENT_MODEL/sonnet, complex →
+  // ORCHESTRATOR_MODEL) when they're unset.
+  ORCHESTRATOR_MODEL_ROUTING: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default(false),
+  MODEL_ROUTING_CLASSIFIER_MODEL: z.string().min(1).optional(),
+  MODEL_ROUTING_SIMPLE_MODEL: z.string().min(1).optional(),
+  MODEL_ROUTING_COMPLEX_MODEL: z.string().min(1).optional(),
+
   // Sub-agent runtime (Odoo Accounting, Odoo HR, Confluence Playbook). These
   // sub-agents run locally inside the middleware; skill markdown lives under
   // SKILLS_DIR. Model default matches the orchestrator; override to run
