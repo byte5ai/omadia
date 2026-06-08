@@ -2,12 +2,29 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import Link from 'next/link';
+import { useTranslations } from 'next-intl';
+
 import {
   getSettings,
   patchSettings,
   type ResolvedSetting,
   type SettingsCategory,
 } from '../../_lib/api';
+
+/**
+ * The plugins whose settings used to live on this page and now live with each
+ * plugin (edited via its own panel at `/store/<id>`, driven by the plugin's
+ * manifest setup.fields). Shown as a directory so operators can jump straight
+ * to the right editor. `labelKey` resolves under `adminSettings.pluginDirectory.plugins`.
+ */
+const PLUGIN_DIRECTORY: ReadonlyArray<{ id: string; labelKey: string }> = [
+  { id: '@omadia/orchestrator', labelKey: 'orchestrator' },
+  { id: '@omadia/verifier', labelKey: 'verifier' },
+  { id: '@omadia/embeddings', labelKey: 'embeddings' },
+  { id: '@omadia/knowledge-graph-neon', labelKey: 'knowledgeGraph' },
+  { id: '@omadia/diagrams', labelKey: 'diagrams' },
+];
 
 /**
  * Operator settings overview — every .env-based value that bootstrap writes
@@ -33,6 +50,7 @@ export default function AdminSettingsPage(): React.ReactElement {
   const [status, setStatus] = useState<Record<string, FieldStatus>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const tDir = useTranslations('adminSettings.pluginDirectory');
 
   const load = useCallback(async (): Promise<void> => {
     try {
@@ -196,6 +214,37 @@ export default function AdminSettingsPage(): React.ReactElement {
           ))}
         </div>
       )}
+
+      <section className="mt-12 border-t border-[color:var(--border)] pt-8">
+        <h2 className="mb-2 text-[13px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
+          {tDir('heading')}
+        </h2>
+        <p className="mb-4 max-w-2xl text-[13px] leading-[1.55] text-[color:var(--fg-muted)]">
+          {tDir('intro')}
+        </p>
+        <ul className="flex flex-col gap-2">
+          {PLUGIN_DIRECTORY.map((p) => (
+            <li key={p.id}>
+              <Link
+                href={`/store/${encodeURIComponent(p.id)}`}
+                className="flex items-center justify-between gap-3 rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 px-5 py-4 transition-colors hover:bg-[color:var(--card)]"
+              >
+                <span className="flex items-center gap-2">
+                  <span className="text-[14px] font-semibold text-[color:var(--fg-strong)]">
+                    {tDir(`plugins.${p.labelKey}`)}
+                  </span>
+                  <code className="text-[11px] text-[color:var(--fg-muted)]">
+                    {p.id}
+                  </code>
+                </span>
+                <span className="text-[13px] font-medium text-[color:var(--accent)]">
+                  {tDir('open')} →
+                </span>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      </section>
     </main>
   );
 }

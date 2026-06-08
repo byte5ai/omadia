@@ -10,16 +10,17 @@ import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
 import { InMemorySecretVault } from '../src/secrets/vault.js';
 
 /**
- * /api/v1/admin/settings — the .env-based config/vault overview. Verifies the
- * catalog → current-value resolution, the typed PATCH validation, and that a
- * change writes to the right target (config-store vs vault) and reactivates
- * exactly the touched plugins.
+ * /api/v1/admin/settings — the *cross-plugin* config/vault overview. After the
+ * per-plugin settings were de-duplicated out of this page (each plugin's own
+ * setup.fields editor is now the source of truth), the catalog holds only the
+ * shared Anthropic API key, whose secret fans out to three vault scopes. These
+ * tests cover that one entry end-to-end: secret set/unset resolution, the
+ * fan-out write, the sk-ant- prefix validation, and unknown/not-installed paths.
  */
 
 const ORCH = '@omadia/orchestrator';
 const VERIFIER = '@omadia/verifier';
 const EXTRAS = '@omadia/orchestrator-extras';
-const DIAGRAMS = '@omadia/diagrams';
 
 interface Harness {
   server: Server;
@@ -94,7 +95,7 @@ async function getSettings(h: Harness): Promise<{
 function findSetting(
   body: Awaited<ReturnType<typeof getSettings>>,
   key: string,
-): { installed: boolean; value?: string | null; isSet?: boolean } | undefined {
+): { installed: boolean; value?: string | null; isSet?: boolean; type?: string } | undefined {
   for (const c of body.categories) {
     const s = c.settings.find((x) => x.key === key);
     if (s) return s;
@@ -120,27 +121,31 @@ describe('admin settings route — GET /', () => {
     if (h) await h.close();
   });
 
-  it('groups the catalog and resolves current config values', async () => {
-    h = await makeHarness([
-      { id: ORCH, config: { orchestrator_model: 'claude-opus-4-7' } },
-    ]);
+  it('exposes the shared Anthropic key as an installed secret when all scopes are present', async () => {
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
     const body = await getSettings(h);
     assert.ok(body.vault_available);
-    const model = findSetting(body, 'ORCHESTRATOR_MODEL');
-    assert.equal(model?.installed, true);
-    assert.equal(model?.value, 'claude-opus-4-7');
-    // A setting whose plugin isn't installed is flagged not-installed.
-    const telegram = findSetting(body, 'TELEGRAM_BOT_TOKEN');
-    assert.equal(telegram?.installed, false);
+    const key = findSetting(body, 'ANTHROPIC_API_KEY');
+    assert.equal(key?.installed, true);
+    assert.equal(key?.type, 'secret');
+    assert.equal(key?.isSet, false);
+  });
+
+  it('flags the key not-installed when one scope plugin is missing', async () => {
+    // Verifier + extras missing → the cross-plugin secret can't be fully written.
+    h = await makeHarness([{ id: ORCH }]);
+    const body = await getSettings(h);
+    const key = findSetting(body, 'ANTHROPIC_API_KEY');
+    assert.equal(key?.installed, false);
   });
 
   it('reports secret set/unset without leaking the value', async () => {
-    h = await makeHarness([{ id: DIAGRAMS }]);
-    await h.vault.setMany(DIAGRAMS, { aws_access_key_id: 'AKIA-secret' });
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
+    await h.vault.setMany(ORCH, { anthropic_api_key: 'sk-ant-supersecret' });
     const body = await getSettings(h);
-    const aws = findSetting(body, 'AWS_ACCESS_KEY_ID');
-    assert.equal(aws?.isSet, true);
-    assert.ok(!JSON.stringify(body).includes('AKIA-secret'));
+    const key = findSetting(body, 'ANTHROPIC_API_KEY');
+    assert.equal(key?.isSet, true);
+    assert.ok(!JSON.stringify(body).includes('sk-ant-supersecret'));
   });
 });
 
@@ -150,61 +155,7 @@ describe('admin settings route — PATCH /', () => {
     if (h) await h.close();
   });
 
-  it('writes a config value and reactivates the target plugin', async () => {
-    h = await makeHarness([
-      { id: ORCH, config: { orchestrator_model: 'claude-opus-4-7' } },
-    ]);
-    const { status } = await patch(h, [
-      { key: 'ORCHESTRATOR_MODEL', value: 'claude-opus-4-8' },
-    ]);
-    assert.equal(status, 200);
-    assert.equal(
-      h.registry.get(ORCH)?.config['orchestrator_model'],
-      'claude-opus-4-8',
-    );
-    assert.deepEqual(h.reactivated, [ORCH]);
-  });
-
-  it('stores a boolean toggle as a string and reactivates once', async () => {
-    h = await makeHarness([{ id: ORCH }]);
-    const { status } = await patch(h, [
-      { key: 'ORCHESTRATOR_MODEL_ROUTING', value: 'true' },
-    ]);
-    assert.equal(status, 200);
-    assert.equal(
-      h.registry.get(ORCH)?.config['orchestrator_model_routing'],
-      'true',
-    );
-    assert.deepEqual(h.reactivated, [ORCH]);
-  });
-
-  it('clears a config key when value is empty/null', async () => {
-    h = await makeHarness([
-      { id: ORCH, config: { model_routing_simple_model: 'claude-sonnet-4-6' } },
-    ]);
-    const { status } = await patch(h, [
-      { key: 'MODEL_ROUTING_SIMPLE_MODEL', value: null },
-    ]);
-    assert.equal(status, 200);
-    assert.equal(
-      h.registry.get(ORCH)?.config['model_routing_simple_model'],
-      undefined,
-    );
-  });
-
-  it('rejects a non-numeric value for a number setting', async () => {
-    h = await makeHarness([{ id: ORCH }]);
-    const { status, body } = await patch(h, [
-      { key: 'ORCHESTRATOR_MAX_TOKENS', value: 'lots' },
-    ]);
-    // Only change is invalid → no valid changes.
-    assert.equal(status, 400);
-    assert.equal(body.code, 'settings.no_valid_changes');
-    assert.ok(body.errors?.some((e) => e.key === 'ORCHESTRATOR_MAX_TOKENS'));
-    assert.deepEqual(h.reactivated, []);
-  });
-
-  it('writes a secret to every configured vault scope', async () => {
+  it('writes the Anthropic secret to every configured vault scope and reactivates each', async () => {
     h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
     const { status } = await patch(h, [
       { key: 'ANTHROPIC_API_KEY', value: 'sk-ant-test123' },
@@ -217,6 +168,19 @@ describe('admin settings route — PATCH /', () => {
     assert.deepEqual(h.reactivated.sort(), [ORCH, EXTRAS, VERIFIER].sort());
   });
 
+  it('clears the Anthropic secret from every scope on an empty value', async () => {
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
+    for (const scope of [ORCH, VERIFIER, EXTRAS]) {
+      await h.vault.setMany(scope, { anthropic_api_key: 'sk-ant-old' });
+    }
+    const { status } = await patch(h, [{ key: 'ANTHROPIC_API_KEY', value: null }]);
+    assert.equal(status, 200);
+    for (const scope of [ORCH, VERIFIER, EXTRAS]) {
+      const keys = await h.vault.listKeys(scope);
+      assert.ok(!keys.includes('anthropic_api_key'), `still set in ${scope}`);
+    }
+  });
+
   it('rejects an Anthropic key without the sk-ant- prefix', async () => {
     h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
     const { status, body } = await patch(h, [
@@ -224,35 +188,36 @@ describe('admin settings route — PATCH /', () => {
     ]);
     assert.equal(status, 400);
     assert.ok(body.errors?.some((e) => e.key === 'ANTHROPIC_API_KEY'));
+    assert.deepEqual(h.reactivated, []);
   });
 
-  it('errors a change whose target plugin is not installed', async () => {
-    h = await makeHarness([{ id: ORCH }]);
+  it('errors on an unknown setting key', async () => {
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
     const { status, body } = await patch(h, [
-      { key: 'TELEGRAM_PUBLIC_BASE_URL', value: 'https://x.example' },
+      { key: 'ORCHESTRATOR_MODEL', value: 'claude-opus-4-8' },
+    ]);
+    // No longer in the catalog — orchestrator settings moved to the per-plugin editor.
+    assert.equal(status, 400);
+    assert.equal(body.code, 'settings.no_valid_changes');
+    assert.ok(
+      body.errors?.some(
+        (e) => e.key === 'ORCHESTRATOR_MODEL' && e.message.includes('unknown'),
+      ),
+    );
+  });
+
+  it('errors when a target scope plugin is not installed', async () => {
+    h = await makeHarness([{ id: ORCH }]); // verifier + extras missing
+    const { status, body } = await patch(h, [
+      { key: 'ANTHROPIC_API_KEY', value: 'sk-ant-test123' },
     ]);
     assert.equal(status, 400);
     assert.equal(body.code, 'settings.no_valid_changes');
     assert.ok(
       body.errors?.some(
         (e) =>
-          e.key === 'TELEGRAM_PUBLIC_BASE_URL' &&
-          e.message.includes('not installed'),
+          e.key === 'ANTHROPIC_API_KEY' && e.message.includes('not installed'),
       ),
     );
-  });
-
-  it('applies the valid changes in a mixed batch and skips the invalid one', async () => {
-    h = await makeHarness([{ id: ORCH }]);
-    const { status, body } = await patch(h, [
-      { key: 'ORCHESTRATOR_MODEL', value: 'claude-opus-4-8' },
-      { key: 'ORCHESTRATOR_MODEL_ROUTING', value: 'maybe' },
-    ]);
-    assert.equal(status, 200);
-    assert.equal(
-      h.registry.get(ORCH)?.config['orchestrator_model'],
-      'claude-opus-4-8',
-    );
-    assert.ok(body.errors?.some((e) => e.key === 'ORCHESTRATOR_MODEL_ROUTING'));
   });
 });
