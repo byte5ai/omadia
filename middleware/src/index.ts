@@ -61,6 +61,7 @@ import { createProfilesRouter } from './routes/profiles.js';
 import { createPackagesRouter } from './routes/packages.js';
 import { createRegistryInstallRouter } from './routes/registryInstall.js';
 import { createRuntimeRouter } from './routes/runtime.js';
+import { createAdminSettingsRouter } from './routes/adminSettings.js';
 import { createVaultStatusRouter } from './routes/vaultStatus.js';
 import { createBuilderRouter } from './routes/builder.js';
 import {
@@ -2139,6 +2140,20 @@ async function main(): Promise<void> {
     }),
   );
   console.log('[middleware] runtime introspection endpoint ready at /api/v1/admin/runtime (auth: required)');
+
+  // Operator settings overview — every .env-based value bootstrap writes into
+  // the config-store / vault, editable with live re-activation. Reuses the
+  // same installedRegistry + vault + reactivate plumbing as the runtime route.
+  app.use(
+    '/api/v1/admin/settings',
+    requireAuth,
+    createAdminSettingsRouter({
+      installedRegistry,
+      vault: secretVault,
+      reactivate: reactivateAgent,
+    }),
+  );
+  console.log('[middleware] settings overview endpoint ready at /api/v1/admin/settings (auth: required)');
 
   // ── Agent-Builder drafts (B.0) ────────────────────────────────────────────
   // SQLite-backed draft store; persists alongside the vault so redeploys
