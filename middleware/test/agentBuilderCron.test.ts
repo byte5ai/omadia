@@ -35,6 +35,18 @@ test('day-of-week (Sunday is both 0 and 7)', () => {
   assert.equal(cronMatches('30 9 * * 0', sun), true);
 });
 
+test('timezone projection: 09:00 fires at local wall-clock, not UTC', () => {
+  // 2026-06-08T07:30Z = 09:30 in Europe/Berlin (CEST, UTC+2).
+  const utc0730 = new Date('2026-06-08T07:30:00Z');
+  assert.equal(cronMatches('30 9 * * *', utc0730, 'Europe/Berlin'), true);
+  assert.equal(cronMatches('30 9 * * *', utc0730, 'UTC'), false);
+  assert.equal(cronMatches('30 7 * * *', utc0730, 'UTC'), true);
+});
+
+test('invalid timezone falls back to UTC', () => {
+  assert.equal(cronMatches('30 9 * * *', MON_0930, 'Not/AZone'), true);
+});
+
 test('isValidCron rejects malformed expressions', () => {
   assert.equal(isValidCron('* * * * *'), true);
   assert.equal(isValidCron('*/15 9 * * 1-5'), true);

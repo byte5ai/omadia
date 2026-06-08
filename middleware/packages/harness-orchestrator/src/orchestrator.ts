@@ -91,7 +91,10 @@ import {
   ensureWellFormedParams,
 } from './privacyHandle.js';
 import { RunTraceCollector, type InvocationHandle } from './runTraceCollector.js';
-import type { NativeToolRegistry } from './nativeToolRegistry.js';
+import type {
+  NativeToolRegistration,
+  NativeToolRegistry,
+} from './nativeToolRegistry.js';
 import { graphScopeFor, type SessionLogger } from './sessionLogger.js';
 import {
   type ModelRoutingConfig,
@@ -180,6 +183,14 @@ export interface OrchestratorOptions {
    *  between the orchestrator and the plugin-activation pipeline so plugin-
    *  contributed tools land in the same dispatch map as the kernel's own. */
   nativeToolRegistry: NativeToolRegistry;
+  /**
+   * Agent Builder — optional per-agent allow-list over plugin-contributed
+   * native tools. When set, only these tool names are advertised to the model
+   * (kernel marker tools like `memory` / `query_knowledge_graph` are always
+   * available — they are not plugin-contributed and not filtered). When
+   * absent, every plugin-contributed native tool is offered (default).
+   */
+  nativeToolAllowList?: ReadonlySet<string>;
   /**
    * Optional. #133 (plan-as-data) slice E0 — side-channel turn-hook runner.
    * When set, the orchestrator fires `onBeforeTurn` / `onAfterToolCall` /
@@ -868,6 +879,7 @@ export class Orchestrator {
    *  `OrchestratorOptions.assistantIdentity` / `DEFAULT_ASSISTANT_IDENTITY`. */
   private readonly assistantIdentity: string;
   private readonly nativeTools: NativeToolRegistry;
+  private readonly nativeToolAllowList: ReadonlySet<string> | undefined;
   /**
    * Per-turn scratchpad for the routine list smart-card emitted in-band by
    * `manage_routine.list`. Set by `extractToolEmittedRoutineList` when a
@@ -922,11 +934,23 @@ export class Orchestrator {
     this.turnHookRegistry = options.turnHookRegistry;
 
     this.nativeTools = options.nativeToolRegistry;
+    this.nativeToolAllowList = options.nativeToolAllowList;
     for (const name of KERNEL_NATIVE_TOOL_NAMES) {
       if (!this.nativeTools.has(name)) {
         this.nativeTools.register(name);
       }
     }
+  }
+
+  /**
+   * Plugin-contributed native tools the model may use this turn — the full
+   * registry list, narrowed to the per-agent allow-list when one is set.
+   * Kernel marker tools are unaffected (they are not in `listWithHandler`).
+   */
+  private allowedNativeEntries(): readonly NativeToolRegistration[] {
+    const all = this.nativeTools.listWithHandler();
+    if (!this.nativeToolAllowList) return all;
+    return all.filter((e) => this.nativeToolAllowList!.has(e.name));
   }
 
   /** Fresh {@link LoopGuard} for one turn, wired to this Agent's thresholds. */
@@ -3161,8 +3185,7 @@ export class Orchestrator {
     // kernel's hardcoded blocks (graph/diagram/…) remain in buildSystemPrompt
     // for their tools; plugin docs land in a separate bullet list so both
     // paths coexist cleanly during the extraction transition.
-    const extraDocs = this.nativeTools
-      .listWithHandler()
+    const extraDocs = this.allowedNativeEntries()
       .map((e) => e.promptDoc)
       .filter((doc): doc is string => typeof doc === 'string' && doc.length > 0);
     return buildSystemPrompt(
@@ -3285,8 +3308,9 @@ export class Orchestrator {
     if (this.bookMeetingTool) tools.push(bookMeetingToolSpec);
     // Plugin-contributed native tools (registered via ctx.tools.register).
     // Live-ingested: activating a tool-kind plugin makes its spec appear on
-    // the next iteration without requiring an orchestrator rebuild.
-    for (const entry of this.nativeTools.listWithHandler()) {
+    // the next iteration without requiring an orchestrator rebuild. Narrowed
+    // to the per-agent native-tool allow-list when one is configured.
+    for (const entry of this.allowedNativeEntries()) {
       if (entry.spec) tools.push(entry.spec);
     }
     // DomainTools dynamically from the map — so hot-registered uploaded

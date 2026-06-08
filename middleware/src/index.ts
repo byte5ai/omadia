@@ -1682,6 +1682,7 @@ async function main(): Promise<void> {
         serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
       getNativeTools: () => nativeToolRegistry.list(),
       getInstalledPlugins: () => installedRegistry.list().map((a) => a.id),
+      getChannelDirectory: () => channelDirectoryRegistry,
     }),
   );
   console.log(

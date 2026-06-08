@@ -326,6 +326,40 @@ export async function patchPositions(
 }
 
 // -----------------------------------------------------------------------------
+// Channel directory (available channels for the bind picker)
+// -----------------------------------------------------------------------------
+
+export interface ChannelDirectoryEntry {
+  channelType: string;
+  key: string;
+  label: string;
+  hint: string | null;
+}
+
+export interface ChannelDirectoryResponse {
+  types: string[];
+  keys: ChannelDirectoryEntry[];
+}
+
+export async function listChannelDirectory(): Promise<ChannelDirectoryResponse> {
+  return callJson<ChannelDirectoryResponse>('/v1/operator/channel-directory');
+}
+
+// -----------------------------------------------------------------------------
+// Per-agent native-tool allow-list (empty = all available)
+// -----------------------------------------------------------------------------
+
+export async function setAgentNativeTools(
+  slug: string,
+  tools: string[],
+): Promise<{ tools: string[] }> {
+  return callJson<{ tools: string[] }>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/native-tools`,
+    { method: 'PUT', body: JSON.stringify({ tools }) },
+  );
+}
+
+// -----------------------------------------------------------------------------
 // Plugins (per-agent enable/disable)
 // -----------------------------------------------------------------------------
 

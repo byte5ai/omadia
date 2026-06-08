@@ -64,7 +64,10 @@
         "pluginDetach": "Detach from this agent",
         "addPlugin": "Add a plugin",
         "noInstallable": "No further installable plugins.",
-        "enable": "Enable"
+        "enable": "Enable",
+        "installMore": "Install more plugins →",
+        "nativeTools": "Native tools",
+        "nativeToolsHint": "Checked tools are available to this agent. All checked = no restriction."
       }
     }
   },

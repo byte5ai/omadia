@@ -64,7 +64,10 @@
         "pluginDetach": "Von diesem Agent lösen",
         "addPlugin": "Plugin hinzufügen",
         "noInstallable": "Keine weiteren installierbaren Plugins.",
-        "enable": "Aktivieren"
+        "enable": "Aktivieren",
+        "installMore": "Weitere Plugins installieren →",
+        "nativeTools": "Native Tools",
+        "nativeToolsHint": "Angehakte Tools stehen diesem Agent zur Verfügung. Alle angehakt = keine Einschränkung."
       }
     }
   },

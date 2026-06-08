@@ -75,7 +75,7 @@ export class ScheduleWorker {
       if (s.status !== 'enabled') continue;
       if (this.inFlight.has(s.id)) continue;
       if (this.firedThisMinute.get(s.id) === minuteKey) continue;
-      if (!cronMatches(s.cron, now)) continue;
+      if (!cronMatches(s.cron, now, s.timezone)) continue;
 
       const slug = slugByAgentId.get(s.agentId);
       if (!slug) {

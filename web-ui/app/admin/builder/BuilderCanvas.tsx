@@ -405,6 +405,14 @@ function CanvasInner({ slug }: BuilderCanvasProps): React.ReactElement {
           onClose={() => setSelected(null)}
           onSaved={() => void reload()}
           onDelete={deleteSelected}
+          nativeTools={state.kind === 'ready' ? state.graph.nativeTools : []}
+          nativeGrants={
+            state.kind === 'ready'
+              ? state.graph.tools
+                  .filter((g) => g.agentId && g.toolKind === 'native')
+                  .map((g) => g.toolRef)
+              : []
+          }
         />
       )}
       {state.kind === 'ready' && (

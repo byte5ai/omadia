@@ -313,6 +313,7 @@ export class OrchestratorRegistry {
           action.agent,
           this.deps,
           this.options.defaultRuntimeConfig,
+          nativeAllowFromGrants(graph.grantsByAgent.get(action.agent.id) ?? []),
         );
         const plugins = pluginsByAgent.get(action.agent.id) ?? [];
         const bindings = bindingsByAgent.get(action.agent.id) ?? [];
@@ -356,6 +357,7 @@ export class OrchestratorRegistry {
           action.agent,
           this.deps,
           this.options.defaultRuntimeConfig,
+          nativeAllowFromGrants(graph.grantsByAgent.get(action.agent.id) ?? []),
         );
         const plugins = pluginsByAgent.get(action.agent.id) ?? [];
         const bindings = bindingsByAgent.get(action.agent.id) ?? [];
@@ -688,6 +690,20 @@ interface GraphIndex {
   readonly subAgentsByAgent: Map<string, SubAgentRow[]>;
   readonly grantsByAgent: Map<string, ToolGrantRow[]>;
   readonly skillsByAgent: Map<string, SkillRow[]>;
+}
+
+/**
+ * Per-agent native-tool allow-list from its agent-level native grants. Empty
+ * (no native grants) → `undefined` = every plugin-contributed native tool is
+ * available (default). One or more → only those names are advertised.
+ */
+function nativeAllowFromGrants(
+  grants: readonly ToolGrantRow[],
+): ReadonlySet<string> | undefined {
+  const names = grants
+    .filter((g) => g.toolKind === 'native' && g.agentId)
+    .map((g) => g.toolRef);
+  return names.length > 0 ? new Set(names) : undefined;
 }
 
 function indexGraph(snap: ConfigSnapshot): GraphIndex {

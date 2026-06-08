@@ -549,6 +549,40 @@ export class AgentGraphStore {
     await this.pool.query('DELETE FROM agent_tool_grants WHERE id = $1', [id]);
   }
 
+  /**
+   * Replace an agent's native-tool allow-list with exactly `toolRefs`
+   * (agent-level native grants). Empty list clears it → the agent gets every
+   * plugin-contributed native tool again. Atomic so the registry reload sees a
+   * consistent set.
+   */
+  async setAgentNativeTools(
+    agentId: string,
+    toolRefs: readonly string[],
+  ): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `DELETE FROM agent_tool_grants
+         WHERE agent_id = $1 AND tool_kind = 'native'`,
+        [agentId],
+      );
+      for (const ref of toolRefs) {
+        await client.query(
+          `INSERT INTO agent_tool_grants (agent_id, tool_kind, tool_ref)
+           VALUES ($1, 'native', $2)`,
+          [agentId, ref],
+        );
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
   // ── schedules ─────────────────────────────────────────────────────────────
   async listAllSchedules(): Promise<readonly ScheduleRow[]> {
     const { rows } = await this.pool.query<ScheduleDbRow>(

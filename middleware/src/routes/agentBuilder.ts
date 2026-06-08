@@ -29,6 +29,8 @@ import {
 import { McpManager } from '@omadia/orchestrator';
 import { Router, type Request, type Response } from 'express';
 
+import type { ChannelDirectoryRegistry } from '../channels/channelDirectoryRegistry.js';
+
 export interface AgentBuilderRouterOptions {
   readonly getConfigStore: () => ConfigStore | undefined;
   readonly getGraphStore: () => AgentGraphStore | undefined;
@@ -37,6 +39,8 @@ export interface AgentBuilderRouterOptions {
   readonly getNativeTools?: () => readonly string[];
   /** Ids of every installed plugin (for the per-agent plugin picker). */
   readonly getInstalledPlugins?: () => readonly string[];
+  /** Channel directory (available channel types + keys) for the bind picker. */
+  readonly getChannelDirectory?: () => ChannelDirectoryRegistry | undefined;
 }
 
 interface Live {
@@ -222,6 +226,26 @@ export function createAgentBuilderRouter(
     },
   );
 
+  // Per-agent native-tool allow-list (empty = all available).
+  router.put('/agents/:slug/native-tools', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const agent = await agentOr404(l, str(req.params.slug), res);
+      if (!agent) return;
+      const tools = Array.isArray((req.body ?? {}).tools)
+        ? ((req.body.tools as unknown[]).filter(
+            (x): x is string => typeof x === 'string',
+          ))
+        : [];
+      await l.graph.setAgentNativeTools(agent.id, tools);
+      await reload(l);
+      res.json({ tools });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
   router.patch('/agents/:slug/positions', async (req: Request, res: Response) => {
     const l = live(res);
     if (!l) return;
@@ -237,6 +261,29 @@ export function createAgentBuilderRouter(
         await l.config.setChannelBindingPosition(c.channelType, c.channelKey, c.position);
       }
       res.status(204).end(); // positions are cosmetic — no reload needed
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  // ── channel directory (available channels for the bind picker) ───────────────
+  router.get('/channel-directory', async (_req: Request, res: Response) => {
+    const dir = options.getChannelDirectory?.();
+    if (!dir) {
+      res.json({ types: [], keys: [] });
+      return;
+    }
+    try {
+      const keys = await dir.listAll();
+      res.json({
+        types: dir.types(),
+        keys: keys.map((k) => ({
+          channelType: k.channelType,
+          key: k.key,
+          label: k.label,
+          hint: k.hint ?? null,
+        })),
+      });
     } catch (err) {
       fail(res, err);
     }

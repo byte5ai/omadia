@@ -8,11 +8,14 @@ import {
   disablePlugin,
   discoverMcpTools,
   enablePlugin,
+  listChannelDirectory,
   listInstallablePlugins,
   patchModelRouting,
   patchSkill,
   patchSubAgent,
+  setAgentNativeTools,
   type AgentNode,
+  type ChannelDirectoryEntry,
   type McpServerNode,
   type ModelRoutingConfig,
   type ModelRoutingMode,
@@ -32,6 +35,10 @@ export interface InspectorPanelProps {
   onSaved: () => void;
   /** Delete the selected node (agent + plugin nodes are not deletable). */
   onDelete: (data: BuilderNodeData) => void;
+  /** All native tools available (for the agent's allow-list checklist). */
+  nativeTools?: string[];
+  /** The agent's current native-tool grants (the active allow-list). */
+  nativeGrants?: string[];
 }
 
 /**
@@ -73,7 +80,15 @@ function Editor(props: InspectorPanelProps): React.ReactElement {
   const { data } = props;
   switch (data.kind) {
     case 'agent':
-      return <AgentEditor slug={props.slug} agent={data.agent} onSaved={props.onSaved} />;
+      return (
+        <AgentEditor
+          slug={props.slug}
+          agent={data.agent}
+          onSaved={props.onSaved}
+          nativeTools={props.nativeTools ?? []}
+          nativeGrants={props.nativeGrants ?? []}
+        />
+      );
     case 'subagent':
       return (
         <SubAgentEditor slug={props.slug} subAgent={data.subAgent} onSaved={props.onSaved} />
@@ -129,10 +144,14 @@ function AgentEditor({
   slug,
   agent,
   onSaved,
+  nativeTools,
+  nativeGrants,
 }: {
   slug: string;
   agent: AgentNode;
   onSaved: () => void;
+  nativeTools: string[];
+  nativeGrants: string[];
 }): React.ReactElement {
   const t = useTranslations('admin.builder');
   const r = agent.modelRouting;
@@ -159,6 +178,23 @@ function AgentEditor({
     await run(async () => {
       await enablePlugin(slug, id);
       setInstallable((xs) => xs.filter((x) => x !== id));
+      onSaved();
+    });
+  }
+
+  // Native-tool allow-list. Empty grants = every native tool is available.
+  const allowActive = nativeGrants.length > 0;
+  const checked = (ref: string): boolean =>
+    allowActive ? nativeGrants.includes(ref) : true;
+
+  async function toggleNative(ref: string): Promise<void> {
+    await run(async () => {
+      const next = new Set(nativeTools.filter(checked));
+      if (next.has(ref)) next.delete(ref);
+      else next.add(ref);
+      // All selected → clear the allow-list (back to "all available").
+      const tools = next.size === nativeTools.length ? [] : [...next];
+      await setAgentNativeTools(slug, tools);
       onSaved();
     });
   }
@@ -205,10 +241,40 @@ function AgentEditor({
       <ErrLine error={error} />
       <SaveButton onClick={() => void save()} pending={pending} label={t('inspector.save')} />
 
+      {nativeTools.length > 0 && (
+        <div className="mt-2 border-t border-[color:var(--border)] pt-3">
+          <p className="mb-1 text-[11px] uppercase tracking-[0.14em] text-[color:var(--fg-muted)]">
+            {t('inspector.nativeTools')}
+          </p>
+          <p className="mb-2 text-[11px] text-[color:var(--fg-muted)]">
+            {t('inspector.nativeToolsHint')}
+          </p>
+          <ul className="flex flex-col gap-1">
+            {nativeTools.map((ref) => (
+              <li key={ref} className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={checked(ref)}
+                  disabled={pending}
+                  onChange={() => void toggleNative(ref)}
+                />
+                <span className="truncate text-xs text-[color:var(--fg-strong)]">{ref}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div className="mt-2 border-t border-[color:var(--border)] pt-3">
         <p className="mb-2 text-[11px] uppercase tracking-[0.14em] text-[color:var(--fg-muted)]">
           {t('inspector.addPlugin')}
         </p>
+        <a
+          href="/admin/registries"
+          className="mb-2 block text-xs text-[color:var(--accent)] hover:underline"
+        >
+          {t('inspector.installMore')}
+        </a>
         {installable.length === 0 ? (
           <p className="text-xs text-[color:var(--fg-muted)]">{t('inspector.noInstallable')}</p>
         ) : (
@@ -395,6 +461,25 @@ function ChannelEditor({
   const [channelKey, setChannelKey] = useState(data.channel.channelKey);
   const { pending, error, run } = useSaver();
   const isDraft = !!data.draft;
+  const [dirTypes, setDirTypes] = useState<string[]>([]);
+  const [dirKeys, setDirKeys] = useState<ChannelDirectoryEntry[]>([]);
+
+  useEffect(() => {
+    if (!isDraft) return;
+    let alive = true;
+    void listChannelDirectory()
+      .then((res) => {
+        if (!alive) return;
+        setDirTypes(res.types);
+        setDirKeys(res.keys);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [isDraft]);
+
+  const keySuggestions = dirKeys.filter((k) => k.channelType === channelType);
 
   async function bind(): Promise<void> {
     await run(async () => {
@@ -413,22 +498,49 @@ function ChannelEditor({
   return (
     <div className="flex flex-col gap-3">
       <Field label={t('inspector.channelType')}>
-        <input
-          value={channelType}
-          onChange={(e) => setChannelType(e.target.value)}
-          readOnly={!isDraft}
-          placeholder="slack"
-          className={inputCls}
-        />
+        {isDraft && dirTypes.length > 0 ? (
+          <input
+            value={channelType}
+            onChange={(e) => setChannelType(e.target.value)}
+            list="ch-types"
+            placeholder="slack"
+            className={inputCls}
+          />
+        ) : (
+          <input
+            value={channelType}
+            onChange={(e) => setChannelType(e.target.value)}
+            readOnly={!isDraft}
+            placeholder="slack"
+            className={inputCls}
+          />
+        )}
+        {isDraft && (
+          <datalist id="ch-types">
+            {dirTypes.map((tp) => (
+              <option key={tp} value={tp} />
+            ))}
+          </datalist>
+        )}
       </Field>
       <Field label={t('inspector.channelKey')}>
         <input
           value={channelKey}
           onChange={(e) => setChannelKey(e.target.value)}
           readOnly={!isDraft}
+          list={isDraft ? 'ch-keys' : undefined}
           placeholder="team:acme:general"
           className={inputCls}
         />
+        {isDraft && (
+          <datalist id="ch-keys">
+            {keySuggestions.map((k) => (
+              <option key={k.key} value={k.key}>
+                {k.label}
+              </option>
+            ))}
+          </datalist>
+        )}
       </Field>
       <ErrLine error={error} />
       {isDraft && (

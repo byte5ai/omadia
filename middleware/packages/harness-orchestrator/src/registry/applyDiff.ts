@@ -155,6 +155,7 @@ export function buildForAgent(
   agent: AgentRow,
   deps: OrchestratorDeps,
   runtime: Omit<AgentRuntimeConfig, 'agentId'>,
+  nativeToolAllowList?: ReadonlySet<string>,
 ): BuiltOrchestrator {
   // Agent Builder P5 — overlay the agent's persisted model_routing onto the
   // platform default: `main` overrides the model, `triage` mode adds per-turn
@@ -173,6 +174,7 @@ export function buildForAgent(
       ...((routing.modelRouting ?? runtime.modelRouting)
         ? { modelRouting: routing.modelRouting ?? runtime.modelRouting }
         : {}),
+      ...(nativeToolAllowList ? { nativeToolAllowList } : {}),
       ...(runtime.loopRepeatSoft !== undefined
         ? { loopRepeatSoft: runtime.loopRepeatSoft }
         : {}),
