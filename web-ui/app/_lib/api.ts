@@ -178,6 +178,82 @@ export class ApiError extends Error {
 }
 
 // -----------------------------------------------------------------------------
+// Admin settings — the .env-based config/vault overview (/api/v1/admin/settings)
+// -----------------------------------------------------------------------------
+
+export type SettingValueType =
+  | 'string'
+  | 'url'
+  | 'number'
+  | 'boolean'
+  | 'enum'
+  | 'secret';
+
+export interface ResolvedSetting {
+  key: string;
+  label: string;
+  help?: string;
+  category: string;
+  type: SettingValueType;
+  options?: Array<{ value: string; label: string }>;
+  placeholder?: string;
+  /** All target plugins installed? Drives whether the field is editable. */
+  installed: boolean;
+  /** Current non-secret value (stringified), or null when unset. */
+  value?: string | null;
+  /** Secret only: whether a value is stored (never the value itself). */
+  isSet?: boolean;
+}
+
+export interface SettingsCategory {
+  category: string;
+  settings: ResolvedSetting[];
+}
+
+export interface SettingsResponse {
+  categories: SettingsCategory[];
+  vault_available: boolean;
+}
+
+export interface SettingChange {
+  key: string;
+  /** New value, or null to clear/delete. */
+  value: string | null;
+}
+
+export interface SettingsPatchResponse {
+  updated: ResolvedSetting[];
+  errors: Array<{ key: string; message: string }>;
+}
+
+export async function getSettings(): Promise<SettingsResponse> {
+  return getJson<SettingsResponse>('/v1/admin/settings');
+}
+
+export async function patchSettings(
+  changes: SettingChange[],
+): Promise<SettingsPatchResponse> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(botApi('/v1/admin/settings'), {
+    method: 'PATCH',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      ...forwarded,
+    },
+    body: JSON.stringify({ changes }),
+    cache: 'no-store',
+    credentials: 'include',
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    maybeNavigateToLogin(res.status);
+    throw new ApiError(res.status, `PATCH settings failed: ${res.status}`, text);
+  }
+  return JSON.parse(text) as SettingsPatchResponse;
+}
+
+// -----------------------------------------------------------------------------
 // NDJSON helper — yields parsed JSON objects from a `application/x-ndjson`
 // stream. Tolerates LF and CRLF line endings, ignores blank lines, and
 // surfaces JSON parse errors with line context so the caller can decide to
