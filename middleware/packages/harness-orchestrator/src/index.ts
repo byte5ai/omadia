@@ -85,6 +85,47 @@ export type {
 } from './registry/configStore.js';
 export { runMultiOrchestratorMigrations } from './registry/migrator.js';
 
+// Agent Builder — editable graph store, MCP client, sub-agent materialisation,
+// and the persisted-routing → runtime mapping.
+export { AgentGraphStore } from './registry/agentGraphStore.js';
+export type {
+  CanvasPos,
+  McpServerInput,
+  McpServerRow,
+  ScheduleInput,
+  ScheduleRow,
+  SkillInput,
+  SkillPatch,
+  SkillRow,
+  SubAgentInput,
+  SubAgentPatch,
+  SubAgentRow,
+  ToolGrantInput,
+  ToolGrantRow,
+} from './registry/agentGraphStore.js';
+export {
+  McpManager,
+  mcpNativeHandler,
+  mcpNativeToolName,
+  mcpToolToLocalSubAgentTool,
+  mcpToolToNativeSpec,
+} from './mcp/mcpClient.js';
+export type {
+  McpServerConfig,
+  McpToolDescriptor,
+  McpTransportKind,
+} from './mcp/mcpClient.js';
+export {
+  buildSubAgentDomainTools,
+  subAgentToolName,
+} from './registry/subAgentTools.js';
+export type {
+  SubAgentGraph,
+  SubAgentToolDeps,
+} from './registry/subAgentTools.js';
+export { resolveAgentModelRouting } from './registry/agentRuntime.js';
+export type { ResolvedAgentRuntime } from './registry/agentRuntime.js';
+
 // Per-Agent Orchestrator factory (US3) — re-exported so US4-style external
 // callers (CLI, tests) can build Orchestrators without going through the
 // plugin's activate path.

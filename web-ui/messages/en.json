@@ -1,4 +1,60 @@
 {
+  "admin": {
+    "builder": {
+      "title": "Agent Builder",
+      "subtitle": "Wire channels, sub-agents, skills and tools on an editable canvas.",
+      "agentPicker": "Agent",
+      "loading": "Loading…",
+      "loadError": "Failed to load",
+      "noAgents": "No agents available yet.",
+      "card": {
+        "title": "Agent Builder",
+        "description": "Visual node-graph canvas: wire channels, sub-agents, skills, tools/MCP and schedules. Drawing a connection writes the wiring; deleting an edge removes it."
+      },
+      "nodes": {
+        "channel": "Channel",
+        "agent": "Agent",
+        "subagent": "Sub-Agent",
+        "skill": "Skill",
+        "tool": "Tool",
+        "mcp": "MCP Server",
+        "schedule": "Schedule",
+        "tools": "tools"
+      },
+      "palette": {
+        "title": "Add"
+      },
+      "toolbox": {
+        "native": "Native tools",
+        "noTools": "No discovered tools yet."
+      },
+      "defaults": {
+        "subAgentName": "New sub-agent",
+        "skillName": "New skill",
+        "mcpName": "New MCP server"
+      },
+      "inspector": {
+        "title": "Inspector",
+        "close": "Close",
+        "save": "Save",
+        "discover": "Discover tools",
+        "readOnly": "This node has no editable properties.",
+        "name": "Name",
+        "model": "Model",
+        "systemPrompt": "System prompt override",
+        "routingMode": "Routing mode",
+        "modelMain": "Main model",
+        "modelTriage": "Triage model",
+        "modelSimple": "Simple model",
+        "skillBody": "Skill body (Markdown)",
+        "skillFileReadOnly": "File-backed skill — read-only here.",
+        "transport": "Transport",
+        "endpoint": "Endpoint",
+        "cron": "Cron",
+        "timezone": "Timezone"
+      }
+    }
+  },
   "selfExtension": {
     "intro": "Propose a self-extension for this installed plugin: add tools or capabilities by patching its spec. The escalation guard auto-denies any privilege widening — a plugin can never grant itself rights it does not already hold.",
     "composeTitle": "New proposal",
