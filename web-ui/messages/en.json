@@ -481,8 +481,13 @@
     "tokensInTitle": "{n} input tokens (cumulative across iterations)",
     "tokensOutTitle": "{n} output tokens (cumulative across iterations)",
     "cacheHitTitle": "{n} cache-read tokens",
-    "dismissAriaLabel": "Cancel stream",
-    "dismissTitle": "Cancel"
+    "dismissAriaLabel": "Dismiss notification (stream keeps running)",
+    "dismissTitle": "Dismiss",
+    "abortButton": "Stop stream",
+    "abortConfirmTitle": "Stop this stream?",
+    "abortConfirmBody": "The running response will be aborted immediately and can't be resumed.",
+    "abortConfirmKeep": "Keep running",
+    "abortConfirmStop": "Yes, stop"
   },
   "builder": {
     "issueReport": {
