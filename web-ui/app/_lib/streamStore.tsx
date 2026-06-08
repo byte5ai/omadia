@@ -101,6 +101,11 @@ interface StreamStoreContextValue {
   ): void;
   /** User-initiated abort. Synchronous — flips phase immediately. */
   abort(sessionId: string): void;
+  /** Visual-only dismiss — drops the record from the store (hiding its
+   *  toast / tab badge) WITHOUT aborting the underlying stream. The runner
+   *  keeps writing tokens to ChatSessions; patch()/finish() simply no-op
+   *  once the record is gone. */
+  dismiss(sessionId: string): void;
   /** Inspect the record for a session. */
   get(sessionId: string): StreamRecord | undefined;
   /** True while the session has a non-terminal stream. */
@@ -262,6 +267,19 @@ export function StreamStoreProvider({
     [bumpQueue, publishSnapshot],
   );
 
+  const dismiss = useCallback(
+    (sessionId: string): void => {
+      // Visual-only: forget the record so its toast/badge disappears. We do
+      // NOT touch the AbortController — the runner owns its own signal
+      // reference, so the network stream keeps going and the assistant
+      // message still lands in ChatSessions. Any later patch()/finish()
+      // calls for this session early-return harmlessly.
+      if (!internalRef.current.delete(sessionId)) return;
+      publishSnapshot();
+    },
+    [publishSnapshot],
+  );
+
   const get = useCallback(
     (sessionId: string): StreamRecord | undefined => records.get(sessionId),
     [records],
@@ -302,6 +320,7 @@ export function StreamStoreProvider({
       patch,
       finish,
       abort,
+      dismiss,
       get,
       isActive,
     }),
@@ -313,6 +332,7 @@ export function StreamStoreProvider({
       patch,
       finish,
       abort,
+      dismiss,
       get,
       isActive,
     ],
