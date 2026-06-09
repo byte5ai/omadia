@@ -22,6 +22,9 @@ describe('privacyInternPolicy', () => {
     'edit_process',
     'suggest_follow_ups',
     'ask_user_choice',
+    // #268 — user-uploaded attachment the agent was asked to read; not a
+    // specialist-agent PII source.
+    'read_attachment',
   ];
 
   const GUARDED = [
