@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omadia.ai/protocol/1.0/handshake.schema.json",
+  "title": "Boot handshake messages",
+  "description": "The first message exchange after WebSocket-open, server-initiated. handshake_offer → handshake_select → handshake_ack (success) or handshake_error (then the client may downgrade and re-select once; a second mismatch closes the connection).",
+  "oneOf": [
+    {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "protocolVersions", "opsCatalogVersions", "handshakeId"],
+      "properties": {
+        "type": { "const": "handshake_offer" },
+        "protocolVersions": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "e.g. [\"1.0\"] — from the channel manifest" },
+        "opsCatalogVersions": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "e.g. [\"1.0\"] — published by Tier 2" },
+        "serverFeatures": { "type": "array", "items": { "type": "string" } },
+        "handshakeId": { "type": "string" }
+      }
+    },
+    {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "handshakeId", "protocolVersion", "opsCatalogVersion", "localOperations"],
+      "properties": {
+        "type": { "const": "handshake_select" },
+        "handshakeId": { "type": "string" },
+        "protocolVersion": { "type": "string", "description": "single chosen value from the offer" },
+        "opsCatalogVersion": { "type": "string" },
+        "clientFeatures": { "type": "array", "items": { "type": "string" } },
+        "localOperations": { "type": "array", "items": { "type": "string" }, "description": "the catalog operations this client actually implements (authoritative truth Tier 2 routes Class-B actions against)" }
+      }
+    },
+    {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "handshakeId", "reason", "supported"],
+      "properties": {
+        "type": { "const": "handshake_error" },
+        "handshakeId": { "type": "string" },
+        "reason": { "enum": ["protocol-version-unsupported", "ops-catalog-version-unsupported", "local-ops-incomplete"] },
+        "supported": {
+          "type": "object", "additionalProperties": false,
+          "properties": { "protocolVersions": { "type": "array", "items": { "type": "string" } }, "opsCatalogVersions": { "type": "array", "items": { "type": "string" } } }
+        }
+      }
+    },
+    {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "handshakeId"],
+      "properties": { "type": { "const": "handshake_ack" }, "handshakeId": { "type": "string" } }
+    }
+  ]
+}

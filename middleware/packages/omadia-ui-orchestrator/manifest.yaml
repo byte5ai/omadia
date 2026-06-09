@@ -6,7 +6,7 @@ identity:
   version: "0.1.0"
   kind: "extension"
   domain: "omadia.ui"
-  description: "Omadia UI Tier-2 orchestrator (skeleton). Publishes canvasChatAgent@1 — the service a canvas channel dispatches to via channel.dispatch_service (PR-6). v0 delegates to the base chatAgent, resolved lazily per call; this is the seam where the canvas composition (UI Skill / surface_* synthesis / per-canvasSession mutex / cache) and the deferred sentinel-gating, writeCapabilities and structured-output wiring will land in follow-ups. CCM is intentionally NOT a hard requires (it has no provider on main) — it will be late-resolved with an in-memory fallback when the continuity feature lands."
+  description: "Omadia UI Tier-2 orchestrator. Publishes canvasChatAgent@1 — the service a canvas channel dispatches to via channel.dispatch_service (PR-6). For canvas turns (input.canvasSessionId) it runs the Haiku composition step: a validator-gated skeleton surface_snapshot is emitted BEFORE the delegated main turn (skeleton-first, ~500ms target), the main turn carries a [canvas-context] block with the skeleton's dataRequirements (so Tier-3 sub-agents return _pendingStructuredPayloads matching exactly the promised containerIds + fieldKeys), and the base stream is wrapped in surface synthesis (_pendingCanvasTree → surface_snapshot; _pendingStructuredPayload → deterministic surface_patch onto the skeleton). Non-canvas turns pass through byte-for-byte. Deferred to later slices: per-canvasSession mutex + state persistence (9b-3), DataRef HMAC, boot-computed canvas-output allow-set (interim: canvas_output_tools config, deny-by-default). CCM is intentionally NOT a hard requires (it has no provider on main) — it will be late-resolved with an in-memory fallback when the continuity feature lands."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"
@@ -36,6 +36,31 @@ requires:
 provides:
   - "canvasChatAgent@1"
 
+setup:
+  fields:
+    - key: "ui_orchestrator_model"
+      type: "string"
+      label: "Composition model"
+      help: "Fast-tier model for the skeleton composition call. Pin to a Sonnet id if the spike tree-validity gate (<95% first-attempt schema-valid) fails — implementation-plan §8 risk #1."
+      required: false
+      default: "claude-haiku-4-5"
+    - key: "canvas_output_tools"
+      type: "string"
+      label: "Canvas-output tool allow-set"
+      help: "Comma-separated tool names authorised to emit canvas sentinels (_pendingCanvasTree / _pendingStructuredPayload). Interim operator-managed allow-set until the boot-computed canvas-output capability wiring (PR-7b) lands. Empty → deny-by-default, no synthesis."
+      required: false
+      default: ""
+
 permissions:
   filesystem:
     scratch: false
+  # The skeleton composition call (composeSkeleton): fast tier by default,
+  # Sonnet allowed as the documented fallback when the validity gate fails.
+  # Per turn: 1 composition call + at most 1 repair retry; the cap of 8 leaves
+  # headroom for later 9b slices (patch recomposition, suggestedActions).
+  llm:
+    models_allowed:
+      - "claude-haiku-4-5*"
+      - "claude-sonnet-4-*"
+    calls_per_invocation: 8
+    max_tokens_per_call: 2048
