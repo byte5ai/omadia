@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { Pool } from 'pg';
 import type { KnowledgeGraph } from '@omadia/plugin-api';
 import type { PluginContext } from '@omadia/plugin-api';
+import { initUsageRecorder, withUsageTracking } from '@omadia/usage-telemetry';
 
 import { ClaimExtractor } from './claimExtractor.js';
 import { DeterministicChecker, type OdooReader } from './deterministicChecker.js';
@@ -121,6 +122,9 @@ export async function activate(
   }
 
   const graphPool = ctx.services.get<Pool>('graphPool');
+  // Cost telemetry: wire the usage recorder to the shared graph pool (the
+  // verifier's Haiku calls write here). Idempotent across plugins.
+  if (graphPool) initUsageRecorder(graphPool);
   // Phase 5B: type-import for `OdooClient` lifted to a local `OdooReader`
   // shim (narrow execute({...}) surface — same shape DeterministicChecker
   // already used for stub-injection).
@@ -152,7 +156,12 @@ export async function activate(
     (ctx.config.get<string>('graph_tenant_id') ?? '').trim() ||
     DEFAULT_TENANT;
 
-  const anthropic = new Anthropic({ apiKey });
+  // Wrapped so ClaimExtractor + EvidenceJudge `.messages.create` calls are
+  // recorded for cost telemetry (the streaming path is captured separately).
+  const anthropic = withUsageTracking(new Anthropic({ apiKey }), {
+    source: 'verifier',
+    tenantId: tenant,
+  });
 
   const extractor = new ClaimExtractor({
     anthropic,

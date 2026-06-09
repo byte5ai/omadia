@@ -137,12 +137,9 @@ docker compose -f infra/docker-compose.yml --profile diagrams up -d
 # In-tenant embeddings via Ollama (no external API required)
 docker compose -f infra/docker-compose.yml --profile embeddings up -d
 
-# Presidio NER sidecar for the privacy-proxy detector plugin
-docker compose -f infra/docker-compose.yml --profile privacy-presidio up -d
-
 # All optional profiles in one command
 docker compose -f infra/docker-compose.yml \
-  --profile diagrams --profile embeddings --profile privacy-presidio up -d
+  --profile diagrams --profile embeddings up -d
 ```
 
 > **Enable diagram rendering** by generating a secret and adding it to

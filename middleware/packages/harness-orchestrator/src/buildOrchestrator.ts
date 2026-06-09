@@ -41,6 +41,7 @@ import { MemoryToolHandler } from '@omadia/memory';
 import { ChatSessionStore } from './chatSessionStore.js';
 import type { Microsoft365Accessor } from './microsoft365-shim.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
+import type { ModelRoutingConfig } from './modelRouter.js';
 import { Orchestrator } from './orchestrator.js';
 import { OrchestratorMemoryNamespacer } from './orchestratorMemoryNamespacer.js';
 import {
@@ -55,6 +56,7 @@ import { BookMeetingTool } from './tools/bookMeetingTool.js';
 import { ChatParticipantsTool } from './tools/chatParticipantsTool.js';
 import { FindFreeSlotsTool } from './tools/findFreeSlotsTool.js';
 import { SuggestFollowUpsTool } from './tools/suggestFollowUpsTool.js';
+import type { AttachmentReader } from './tools/readAttachmentTool.js';
 import { VerifierService } from './verifierService.js';
 
 /**
@@ -65,6 +67,8 @@ export interface AgentRuntimeConfig {
   /** Stable id of the Agent (orchestrator instance) being built. */
   readonly agentId: string;
   readonly model: string;
+  /** Optional per-turn Sonnet/Opus routing (see {@link OrchestratorOptions}). */
+  readonly modelRouting?: ModelRoutingConfig;
   readonly maxTokens: number;
   readonly maxToolIterations: number;
   /** Optional round-loop guard thresholds (see {@link OrchestratorOptions}). */
@@ -120,6 +124,13 @@ export interface OrchestratorDeps {
   readonly assistantIdentity?: string;
   /** #133 E0 — side-channel turn-hook runner, fired during each turn. */
   readonly turnHookRegistry?: TurnHookRunner;
+  /**
+   * #268 — byte source for user-uploaded attachments. When present, the
+   * orchestrator auto-ingests document text and exposes `read_attachment`.
+   * Built kernel-side over the shared S3/Tigris bucket. Optional — absent →
+   * both attachment-reading mechanisms stay inert.
+   */
+  readonly attachmentReader?: AttachmentReader;
 }
 
 /** What one `buildOrchestratorForAgent` call produces. */
@@ -189,6 +200,7 @@ export function buildOrchestratorForAgent(
     agentId: config.agentId,
     client: deps.client,
     model: config.model,
+    ...(config.modelRouting ? { modelRouting: config.modelRouting } : {}),
     maxTokens: config.maxTokens,
     maxToolIterations: config.maxToolIterations,
     ...(config.loopRepeatSoft !== undefined
@@ -237,6 +249,9 @@ export function buildOrchestratorForAgent(
       : {}),
     ...(deps.turnHookRegistry
       ? { turnHookRegistry: deps.turnHookRegistry }
+      : {}),
+    ...(deps.attachmentReader
+      ? { attachmentReader: deps.attachmentReader }
       : {}),
   });
 

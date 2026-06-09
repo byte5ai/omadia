@@ -6,6 +6,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
 import {
+  bootstrapBuiltInPackages,
   bootstrapMemoryFromEnv,
   retryErroredPlugins,
   type RetryErroredPluginsDeps,
@@ -406,7 +407,6 @@ describe('bootstrapMemoryFromEnv — env→config reconcile', () => {
   function makeConfig(devEnabled: boolean): Config {
     return {
       DEV_ENDPOINTS_ENABLED: devEnabled,
-      MEMORY_DIR: '/test/.memory',
       MEMORY_SEED_DIR: '/test/seed/memory',
       MEMORY_SEED_MODE: 'missing',
     } as unknown as Config;
@@ -441,6 +441,8 @@ describe('bootstrapMemoryFromEnv — env→config reconcile', () => {
     assert.ok(entry, 'memory plugin should be auto-installed');
     assert.equal(entry.status, 'active');
     assert.equal(entry.config?.['dev_memory_endpoints_enabled'], 'true');
+    // The inmemory store needs no directory — memory_dir must NOT be written.
+    assert.equal(entry.config?.['memory_dir'], undefined);
   });
 
   it('reconciles dev_memory_endpoints_enabled from false→true on subsequent boots when env flips on', async () => {
@@ -451,7 +453,6 @@ describe('bootstrapMemoryFromEnv — env→config reconcile', () => {
       installed_at: '2026-04-29T00:00:00Z',
       status: 'active',
       config: {
-        memory_dir: '/test/.memory',
         seed_dir: '/test/seed/memory',
         seed_mode: 'missing',
         dev_memory_endpoints_enabled: 'false',
@@ -483,7 +484,6 @@ describe('bootstrapMemoryFromEnv — env→config reconcile', () => {
       installed_at: '2026-04-29T00:00:00Z',
       status: 'active',
       config: {
-        memory_dir: '/test/.memory',
         seed_dir: '/test/seed/memory',
         seed_mode: 'missing',
         dev_memory_endpoints_enabled: 'true',
@@ -507,7 +507,7 @@ describe('bootstrapMemoryFromEnv — env→config reconcile', () => {
     );
   });
 
-  it('preserves operator-owned config keys (memory_dir, seed_dir, seed_mode) during reconcile', async () => {
+  it('preserves operator-owned config keys (seed_dir, seed_mode) during reconcile', async () => {
     // The reconcile path may NOT clobber non-env-derived config. Only
     // `dev_memory_endpoints_enabled` is the env-driven flag; other
     // values are operator-managed after first boot.
@@ -518,7 +518,6 @@ describe('bootstrapMemoryFromEnv — env→config reconcile', () => {
       installed_at: '2026-04-29T00:00:00Z',
       status: 'active',
       config: {
-        memory_dir: '/operator/picked/.memory',
         seed_dir: '/operator/picked/seed',
         seed_mode: 'always',
         dev_memory_endpoints_enabled: 'false',
@@ -537,7 +536,6 @@ describe('bootstrapMemoryFromEnv — env→config reconcile', () => {
     });
 
     const entry = reg.get(MEMORY_ID);
-    assert.equal(entry?.config?.['memory_dir'], '/operator/picked/.memory');
     assert.equal(entry?.config?.['seed_dir'], '/operator/picked/seed');
     assert.equal(entry?.config?.['seed_mode'], 'always');
     assert.equal(entry?.config?.['dev_memory_endpoints_enabled'], 'true');
@@ -556,7 +554,6 @@ describe('bootstrapMemoryFromEnv — env→config reconcile', () => {
       installed_at: installedAt,
       status: 'active',
       config: {
-        memory_dir: '/test/.memory',
         seed_dir: '/test/seed/memory',
         seed_mode: 'missing',
         dev_memory_endpoints_enabled: 'true',
@@ -610,5 +607,209 @@ describe('retryErroredPlugins — guards', () => {
     await retryErroredPlugins({ catalog: cat, registry: reg, log: () => {} });
 
     assert.equal(reg.get('p1')?.status, 'errored');
+  });
+});
+
+describe('memoryStore provider selection', () => {
+  const MEMORY_ID = '@omadia/memory';
+  const MEMORY_PG_ID = '@omadia/memory-postgres';
+
+  const stubVault = {
+    get: async () => undefined,
+    set: async () => {},
+    has: async () => false,
+    purge: async () => {},
+    list: async () => [],
+  } as unknown as SecretVault;
+
+  function memCfg(opts: {
+    backend?: 'inmemory' | 'postgres';
+    databaseUrl?: string;
+  }): Config {
+    return {
+      DEV_ENDPOINTS_ENABLED: false,
+      // MEMORY_BACKEND is optional now — only set it when the test pins it.
+      ...(opts.backend ? { MEMORY_BACKEND: opts.backend } : {}),
+      MEMORY_SEED_DIR: '/test/seed/memory',
+      MEMORY_SEED_MODE: 'missing',
+      ...(opts.databaseUrl ? { DATABASE_URL: opts.databaseUrl } : {}),
+    } as unknown as Config;
+  }
+
+  const memCatalog = makeCatalog([
+    {
+      id: MEMORY_ID,
+      kind: 'extension',
+      provides: ['memoryStore@1'],
+      requires: [],
+      depends_on: [],
+    },
+    {
+      id: MEMORY_PG_ID,
+      kind: 'extension',
+      provides: ['memoryStore@1'],
+      requires: ['graphPool@^1'],
+      depends_on: [],
+    },
+  ]);
+
+  function memDeps(reg: InMemoryInstalledRegistry, cfg: Config) {
+    return {
+      config: cfg,
+      vault: stubVault,
+      registry: reg,
+      catalog: memCatalog,
+      log: () => {},
+    };
+  }
+
+  async function seedActive(
+    reg: InMemoryInstalledRegistry,
+    id: string,
+    config: Record<string, unknown> = {},
+  ) {
+    await reg.register({
+      id,
+      installed_version: '0.1.0',
+      installed_at: '2026-04-29T00:00:00Z',
+      status: 'active',
+      config,
+    });
+  }
+
+  it('inmemory (explicit) installs @omadia/memory, not the Postgres provider', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await bootstrapMemoryFromEnv(memDeps(reg, memCfg({ backend: 'inmemory' })));
+    assert.equal(reg.get(MEMORY_ID)?.status, 'active');
+    assert.equal(reg.get(MEMORY_PG_ID), undefined);
+  });
+
+  it('unset MEMORY_BACKEND + no DATABASE_URL → installs @omadia/memory (inmemory derived default)', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await bootstrapMemoryFromEnv(memDeps(reg, memCfg({})));
+    assert.equal(
+      reg.get(MEMORY_ID)?.status,
+      'active',
+      'inmemory is the derived default without a DB',
+    );
+    assert.equal(reg.get(MEMORY_PG_ID), undefined);
+  });
+
+  it('unset MEMORY_BACKEND + DATABASE_URL set → installs @omadia/memory-postgres (postgres is the sharp default)', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await bootstrapMemoryFromEnv(
+      memDeps(reg, memCfg({ databaseUrl: 'postgres://x' })),
+    );
+    assert.equal(
+      reg.get(MEMORY_PG_ID)?.status,
+      'active',
+      'postgres is the sharp default whenever DATABASE_URL is configured',
+    );
+    assert.equal(reg.get(MEMORY_ID), undefined);
+  });
+
+  it('postgres + DATABASE_URL installs memory-postgres and removes the inmemory provider', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await seedActive(reg, MEMORY_ID);
+    await bootstrapMemoryFromEnv(
+      memDeps(reg, memCfg({ backend: 'postgres', databaseUrl: 'postgres://x' })),
+    );
+    assert.equal(reg.get(MEMORY_PG_ID)?.status, 'active');
+    assert.equal(
+      reg.get(MEMORY_ID),
+      undefined,
+      'inmemory provider removed (memoryStore@1 mutual exclusion)',
+    );
+  });
+
+  it('postgres WITHOUT DATABASE_URL falls back to inmemory', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await bootstrapMemoryFromEnv(memDeps(reg, memCfg({ backend: 'postgres' })));
+    assert.equal(reg.get(MEMORY_ID)?.status, 'active', 'fell back to inmemory');
+    assert.equal(reg.get(MEMORY_PG_ID), undefined);
+  });
+
+  it('a persisted both-active state self-heals to the selected backend', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await seedActive(reg, MEMORY_ID);
+    await seedActive(reg, MEMORY_PG_ID);
+    await bootstrapMemoryFromEnv(memDeps(reg, memCfg({ backend: 'inmemory' })));
+    assert.equal(reg.get(MEMORY_ID)?.status, 'active');
+    assert.equal(
+      reg.get(MEMORY_PG_ID),
+      undefined,
+      'non-selected provider removed',
+    );
+  });
+
+  it('persisted memory_backend=postgres (UI choice) overrides the inmemory env value', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    // Operator switched to postgres via UI — choice persisted on the entry.
+    await seedActive(reg, MEMORY_PG_ID, { memory_backend: 'postgres' });
+    await bootstrapMemoryFromEnv(
+      memDeps(reg, memCfg({ backend: 'inmemory', databaseUrl: 'postgres://x' })),
+    );
+    assert.equal(
+      reg.get(MEMORY_PG_ID)?.status,
+      'active',
+      'UI choice honoured over env value',
+    );
+    assert.equal(reg.get(MEMORY_ID), undefined);
+  });
+
+  it('catch-all never auto-installs the opt-in memory-postgres', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await seedActive(reg, MEMORY_ID);
+    await bootstrapBuiltInPackages({
+      config: memCfg({}),
+      vault: stubVault,
+      registry: reg,
+      catalog: memCatalog,
+      builtInStore: makeBuiltInStore([
+        { id: MEMORY_ID, path: '/x/memory' },
+        { id: MEMORY_PG_ID, path: '/x/memory-postgres' },
+      ]) as unknown as Parameters<
+        typeof bootstrapBuiltInPackages
+      >[0]['builtInStore'],
+      log: () => {},
+    });
+    assert.equal(
+      reg.get(MEMORY_PG_ID),
+      undefined,
+      'memory-postgres stays opt-in',
+    );
+  });
+
+  it('postgres backend: full boot order leaves ONLY memory-postgres (catch-all does not re-install the removed filesystem provider)', async () => {
+    // Reproduces the boot crash: bootstrapMemoryFromEnv removes
+    // @omadia/memory for the postgres backend, then the built-in catch-all
+    // must NOT re-install it (or capability resolution throws "memoryStore@1
+    // provided by both").
+    const reg = new InMemoryInstalledRegistry();
+    await seedActive(reg, MEMORY_ID);
+    await seedActive(reg, MEMORY_PG_ID);
+    const cfg = memCfg({ backend: 'postgres', databaseUrl: 'postgres://x' });
+
+    await bootstrapMemoryFromEnv(memDeps(reg, cfg));
+    await bootstrapBuiltInPackages({
+      config: cfg,
+      vault: stubVault,
+      registry: reg,
+      catalog: memCatalog,
+      builtInStore: makeBuiltInStore([
+        { id: MEMORY_ID, path: '/x/memory' },
+        { id: MEMORY_PG_ID, path: '/x/memory-postgres' },
+      ]) as unknown as Parameters<
+        typeof bootstrapBuiltInPackages
+      >[0]['builtInStore'],
+      log: () => {},
+    });
+
+    assert.equal(reg.get(MEMORY_PG_ID)?.status, 'active', 'postgres active');
+    assert.equal(
+      reg.get(MEMORY_ID),
+      undefined,
+      'filesystem provider NOT re-installed by the catch-all',
+    );
   });
 });

@@ -55,6 +55,10 @@ import {
   registerBuilderIssueReportingRoutes,
   type BuilderIssueReportingDeps,
 } from './builderIssueReporting.js';
+import {
+  registerSelfExtensionRoutes,
+  type SelfExtensionRouteDeps,
+} from './selfExtension.js';
 
 /**
  * Builder REST surface — Phase B.0 scope.
@@ -112,6 +116,12 @@ export interface BuilderRouterDeps {
    *  choice + confirm-issue endpoints stay absent so legacy callers
    *  see no behaviour change. */
   issueReporting?: BuilderIssueReportingDeps;
+  /** Plugin self-extension lifecycle (operator-gated, non-escalating). When
+   *  omitted, the /self-extension/* endpoints stay absent. Wired by `index.ts`
+   *  with a process-singleton `OperatorGate` + the same install dependency
+   *  surface (draftStore / buildPipeline / packageUploadService) so an approved
+   *  self-extension installs and reactivates exactly like an operator upload. */
+  selfExtension?: SelfExtensionRouteDeps;
 }
 
 export function createBuilderRouter(deps: BuilderRouterDeps): Router {
@@ -498,6 +508,10 @@ export function createBuilderRouter(deps: BuilderRouterDeps): Router {
   }
 
   // ── Builder native issue-reporting (concept plan) ─────────────────────
+  if (deps.selfExtension) {
+    registerSelfExtensionRoutes(router, deps.selfExtension);
+  }
+
   if (deps.issueReporting) {
     registerBuilderIssueReportingRoutes(router, deps.issueReporting);
   }

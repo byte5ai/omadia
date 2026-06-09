@@ -125,10 +125,12 @@ ENV BUILDER_ENTITY_REGISTRY_PATH=/app/entity-registry.v1.yaml
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-# Prepare /data so the first boot without a mounted volume also works.
+# Prepare /data (platform state: vault, installed.json, uploaded packages,
+# builder drafts) so the first boot without a mounted volume also works.
 # Also create an empty /app/skills so SKILLS_DIR points at an existing dir
-# even when the deployment ships no domain skill bundles.
-RUN mkdir -p /data/memory /app/skills && chown -R node:node /data /app
+# even when the deployment ships no domain skill bundles. (No /data/memory —
+# memory is Postgres- or RAM-backed, there is no on-disk memory store.)
+RUN mkdir -p /data /app/skills && chown -R node:node /data /app
 
 EXPOSE 8080
 

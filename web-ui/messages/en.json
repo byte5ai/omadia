@@ -1,4 +1,95 @@
 {
+  "admin": {
+    "builder": {
+      "title": "Agent Builder",
+      "subtitle": "Wire channels, sub-agents, skills and tools on an editable canvas.",
+      "agentPicker": "Agent",
+      "loading": "Loading…",
+      "loadError": "Failed to load",
+      "noAgents": "No agents available yet.",
+      "card": {
+        "title": "Agent Builder",
+        "description": "Visual node-graph canvas: wire channels, sub-agents, skills, tools/MCP and schedules. Drawing a connection writes the wiring; deleting an edge removes it."
+      },
+      "nodes": {
+        "channel": "Channel",
+        "agent": "Agent",
+        "subagent": "Sub-Agent",
+        "skill": "Skill",
+        "tool": "Tool",
+        "mcp": "MCP Server",
+        "schedule": "Schedule",
+        "tools": "tools"
+      },
+      "palette": {
+        "title": "Add"
+      },
+      "toolbox": {
+        "native": "Native tools",
+        "noTools": "No discovered tools yet."
+      },
+      "defaults": {
+        "subAgentName": "New sub-agent",
+        "skillName": "New skill",
+        "mcpName": "New MCP server"
+      },
+      "inspector": {
+        "title": "Inspector",
+        "close": "Close",
+        "save": "Save",
+        "discover": "Discover tools",
+        "readOnly": "This node has no editable properties.",
+        "name": "Name",
+        "model": "Model",
+        "systemPrompt": "System prompt override",
+        "routingMode": "Routing mode",
+        "modelMain": "Main model",
+        "modelTriage": "Triage model",
+        "modelSimple": "Simple model",
+        "skillBody": "Skill body (Markdown)",
+        "skillFileReadOnly": "File-backed skill — read-only here.",
+        "transport": "Transport",
+        "endpoint": "Endpoint",
+        "cron": "Cron",
+        "timezone": "Timezone"
+      }
+    }
+  },
+  "selfExtension": {
+    "intro": "Propose a self-extension for this installed plugin: add tools or capabilities by patching its spec. The escalation guard auto-denies any privilege widening — a plugin can never grant itself rights it does not already hold.",
+    "composeTitle": "New proposal",
+    "rationalePlaceholder": "Why is this extension needed?",
+    "patchesPlaceholder": "Spec patches as a JSON array, e.g. [{\"op\":\"add\",\"path\":\"/tools/-\",\"value\":{\"id\":\"my_tool\",\"description\":\"…\",\"input\":{}}}]",
+    "propose": "Propose",
+    "proposing": "Submitting …",
+    "invalidPatchesJson": "Patches must be a valid JSON array of RFC-6902 operations.",
+    "templateComposeTitle": "Propose from a template",
+    "templateParamsPlaceholder": "Template params as JSON, e.g. {\"entitySet\":\"salesorders\"}",
+    "proposeTemplate": "Propose from template",
+    "invalidParamsJson": "Params must be a valid JSON object.",
+    "loading": "Loading proposals …",
+    "loadError": "Could not load proposals: {message}",
+    "empty": "No proposals yet.",
+    "patchCount": "{count, plural, one {# patch} other {# patches}}",
+    "escalationsTitle": "Privilege escalation — auto-denied",
+    "denied": "Denied: {reason}",
+    "installFailed": "Install failed: {reason}",
+    "denyReasonPlaceholder": "Reason for denial",
+    "confirmDeny": "Confirm denial",
+    "cancel": "Cancel",
+    "approve": "Approve",
+    "deny": "Deny",
+    "installing": "Installing …",
+    "install": "Install + reactivate",
+    "status_pending": "Pending",
+    "status_denied": "Denied",
+    "status_approved": "Approved",
+    "status_installed": "Installed",
+    "status_install_failed": "Install failed",
+    "decision_needs_approval": "needs approval",
+    "decision_denied_escalation": "escalation",
+    "decision_invalid_spec": "invalid spec"
+  },
   "planCard": {
     "heading": "Plan",
     "summary": "{done}/{total} steps",
@@ -274,6 +365,38 @@
       "skippedDerivedFrom": "skippedDerivedFrom",
       "openDetail": "Open memory",
       "close": "Close"
+    },
+    "kgWalk": {
+      "title": "Knowledge graph",
+      "subtitle": "Neighborhood this turn surfaced",
+      "legendRoots": "Roots",
+      "legendNeighbors": "Neighbors",
+      "badgeNodes": "{count, plural, one {# node} other {# nodes}}",
+      "badgeHops": "{count, plural, one {# hop} other {# hops}}",
+      "revealing": "Walking hop {current} of {total}…",
+      "empty": "No graph walk for this turn yet.",
+      "openLabel": "Knowledge graph",
+      "close": "Close",
+      "maximize": "Maximize",
+      "restore": "Restore",
+      "hopHeaderRoots": "Hop 0 (roots)",
+      "hopHeader": "Hop {hop}",
+      "hopListHeader": "{nodes, plural, one {# node} other {# nodes}} · {hops, plural, one {# hop} other {# hops}}",
+      "toggleLabel": "Graph walk",
+      "legendInserted": "Inserted",
+      "insertedTag": "NEW",
+      "badgeInserted": "{count, plural, one {# inserted} other {# inserted}}"
+    },
+    "planDag": {
+      "title": "Plan",
+      "subtitle": "Live plan this turn is executing",
+      "toggleLabel": "Plan",
+      "openLabel": "Plan",
+      "badgeProgress": "{done}/{total}",
+      "listHeader": "{done} of {total} steps done",
+      "maximize": "Maximize",
+      "restore": "Restore",
+      "close": "Close"
     }
   },
   "privacyReceipt": {
@@ -446,8 +569,13 @@
     "tokensInTitle": "{n} input tokens (cumulative across iterations)",
     "tokensOutTitle": "{n} output tokens (cumulative across iterations)",
     "cacheHitTitle": "{n} cache-read tokens",
-    "dismissAriaLabel": "Cancel stream",
-    "dismissTitle": "Cancel"
+    "dismissAriaLabel": "Dismiss notification (stream keeps running)",
+    "dismissTitle": "Dismiss",
+    "abortButton": "Stop stream",
+    "abortConfirmTitle": "Stop this stream?",
+    "abortConfirmBody": "The running response will be aborted immediately and can't be resumed.",
+    "abortConfirmKeep": "Keep running",
+    "abortConfirmStop": "Yes, stop"
   },
   "builder": {
     "issueReport": {
@@ -1315,6 +1443,21 @@
         "almostFull": "almost full",
         "limitReached": "limit reached",
         "tooltip": "{used} of {cap} active drafts, warning from {warnAt}"
+      }
+    }
+  },
+  "adminSettings": {
+    "pluginDirectory": {
+      "heading": "Per-plugin settings",
+      "intro": "Most configuration now lives with each plugin and is edited in its own settings panel. Only genuinely cross-plugin values (like the shared Anthropic key above) remain on this page.",
+      "open": "Open settings",
+      "plugins": {
+        "orchestrator": "Orchestrator & model routing",
+        "verifier": "Verifier",
+        "embeddings": "Embeddings",
+        "knowledgeGraph": "Knowledge graph",
+        "diagrams": "Diagrams & storage",
+        "integrations": "Integrations (Microsoft, Teams, Telegram)"
       }
     }
   }

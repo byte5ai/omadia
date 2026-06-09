@@ -18,11 +18,20 @@
     "@omadia/memory": "*",
     "@omadia/orchestrator-extras": "*",
     "@omadia/plugin-api": "*",
+    "@omadia/usage-telemetry": "*",
     "@omadia/verifier": "*",
     "pg": "^8.13.0",
     "zod": "^4.0.0"
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "mammoth": "^1.8.0",
+    "pdf-parse": "^1.1.1"
+  },
+  "devDependencies": {
+    "@types/pdf-parse": "^1.1.5"
   }
 }

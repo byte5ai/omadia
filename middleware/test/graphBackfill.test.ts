@@ -1,26 +1,14 @@
-import { describe, it, before, after } from 'node:test';
+import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { FilesystemMemoryStore } from '@omadia/memory';
+import { InMemoryMemoryStore } from '@omadia/memory';
 import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
 import { SessionLogger } from '@omadia/orchestrator';
 import { backfillGraph } from '@omadia/orchestrator-extras';
 
 describe('backfillGraph', () => {
-  let dir: string;
-  before(() => {
-    dir = mkdtempSync(join(tmpdir(), 'backfill-'));
-  });
-  after(() => {
-    rmSync(dir, { recursive: true, force: true });
-  });
-
   it('rebuilds a graph identical in shape to live ingest', async () => {
     // 1. Create an "original" session by logging through the real pipeline.
-    const store = new FilesystemMemoryStore(dir);
-    await store.init();
+    const store = new InMemoryMemoryStore();
     const liveGraph = new InMemoryKnowledgeGraph();
     const logger = new SessionLogger(store, liveGraph);
 
@@ -68,20 +56,14 @@ describe('backfillGraph', () => {
   });
 
   it('returns an empty result when no sessions directory exists', async () => {
-    const emptyDir = mkdtempSync(join(tmpdir(), 'backfill-empty-'));
-    try {
-      const store = new FilesystemMemoryStore(emptyDir);
-      await store.init();
-      const graph = new InMemoryKnowledgeGraph();
-      const result = await backfillGraph(store, graph);
-      assert.deepEqual(result, {
-        scopes: 0,
-        files: 0,
-        turns: 0,
-        skippedFiles: [],
-      });
-    } finally {
-      rmSync(emptyDir, { recursive: true, force: true });
-    }
+    const store = new InMemoryMemoryStore();
+    const graph = new InMemoryKnowledgeGraph();
+    const result = await backfillGraph(store, graph);
+    assert.deepEqual(result, {
+      scopes: 0,
+      files: 0,
+      turns: 0,
+      skippedFiles: [],
+    });
   });
 });

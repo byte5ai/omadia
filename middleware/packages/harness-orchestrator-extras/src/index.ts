@@ -16,6 +16,9 @@ export { activate } from './plugin.js';
 export type { OrchestratorExtrasPluginHandle } from './plugin.js';
 
 export { ContextRetriever, extractCandidateTerms } from './contextRetriever.js';
+// KG-walk chat visualization — builds the per-turn `kg_graph` payload of the
+// recalled Knowledge-Graph neighbourhood. Best-effort, UI-only.
+export { buildKgInsertPayload, buildKgWalkPayload } from './kgWalkPayload.js';
 export type {
   ContextRetrieverOptions,
   ContextBuildInput,
@@ -113,6 +116,21 @@ export type { PromoteTurnInput, PromoteTurnResult } from './promotion.js';
 // pipeline the live path uses. Idempotent in both phases.
 export { createBulkPromotionService } from './bulkPromotion.js';
 export type { BulkPromotionDeps } from './bulkPromotion.js';
+
+// WS5 — Scratchpad-Promotion Reaper. Periodic background job that
+// consolidates significant, aged agent-scratch memory (the
+// PostgresMemoryStore `memory_files` tree under
+// `/memories/orchestrators/<slug>/…`) into the KG as owner-less,
+// agent-scoped MemorableKnowledge. Delete-after-create → idempotent.
+export {
+  createScratchPromotionReaper,
+  deriveAgentSlug,
+} from './scratchPromotionReaper.js';
+export type {
+  ScratchPromotionReaper,
+  ScratchPromotionReaperDeps,
+  ScratchReapRunResult,
+} from './scratchPromotionReaper.js';
 
 // KG-ACL Slice 9 — contradiction detector. Per MK create / update /
 // auto-promotion: cosine top-k → Haiku judgement-pass → persist

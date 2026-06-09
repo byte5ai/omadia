@@ -570,7 +570,7 @@ export class ContextRetriever {
 
     const compactMode = filtered.length > this.opts.compactModeThreshold;
 
-    // Greedy fill — tail-turns FIRST (chronological), then everything else
+    // Tail-turns FIRST (chronological for RENDERING), then everything else
     // sorted by score DESC (ties → turnId ASC for determinism).
     const tailTurns = filtered.filter((c) => c.origin === 'tail');
     const nonTail = filtered
@@ -580,13 +580,24 @@ export class ContextRetriever {
         return a.turnId.localeCompare(b.turnId);
       });
     const fillOrder = [...tailTurns, ...nonTail];
+    // SELECTION order differs from render order on one axis: within the tail we
+    // budget newest-first, so if anything has to drop it's the oldest tail turn
+    // — never the immediately-preceding one a follow-up depends on. `tailTurns`
+    // arrives chronological (oldest→newest); reverse for selection. Rendering
+    // still uses `fillOrder` (chronological), so the prose reads in order.
+    const tailNewestFirst = [...tailTurns].reverse();
+    const selectionOrder = [...tailNewestFirst, ...nonTail];
 
     // Cross-session recall blocks (plans / processes / insights) are NOT
     // turn-shaped, so they render outside the turn greedy-fill as their own
-    // prepended section. They are the headline of the recall probe → they
-    // get first claim on up to half the budget; the turn pool fills the
-    // remainder. When every recall leg is empty the blocks render to '' and
-    // the turn budget is untouched (byte-identical to pre-probe behaviour).
+    // prepended section. They are the headline of the recall probe → they get
+    // first claim on up to half the budget. CONTINUITY GUARD: that half is
+    // taken from the budget AFTER reserving the verbatim tail, so a fuller
+    // insights leg (e.g. once auto-promotion is on) can never evict the recent
+    // in-session turns and make a follow-up silently lose the latest state. The
+    // tail reservation is capped so a pathological giant turn can't starve
+    // recall entirely. When every recall leg is empty the blocks render to ''
+    // and the turn budget is untouched (byte-identical to pre-probe behaviour).
     const insights: RecalledInsight[] = memoryHits.map((h) => ({
       mkId: h.mk.id,
       kind: String(h.mk.props['kind'] ?? 'memory'),
@@ -598,7 +609,24 @@ export class ContextRetriever {
       processes: processHits,
       insights,
     };
-    const recallBudgetChars = Math.floor(budgetChars * 0.5);
+    const tailReserveCapChars = Math.floor(budgetChars * 0.6);
+    let tailReservedChars = 0;
+    for (let i = 0; i < tailNewestFirst.length; i++) {
+      const chars = renderHitChunk(
+        tailNewestFirst[i] as CandidateHit,
+        compactMode,
+      ).length;
+      // The single most-recent turn (i === 0) is ALWAYS reserved — it is the
+      // one piece of state a follow-up cannot do without, even if it is large.
+      // The 0.6 cap only limits the OLDER tail turns so they can't, together,
+      // starve cross-session recall.
+      if (i > 0 && tailReservedChars + chars > tailReserveCapChars) break;
+      tailReservedChars += chars;
+    }
+    tailReservedChars = Math.min(tailReservedChars, budgetChars);
+    const recallBudgetChars = Math.floor(
+      Math.max(0, budgetChars - tailReservedChars) * 0.5,
+    );
     const recallBlocksText = renderRecallBlocks(recalled, recallBudgetChars);
     const recallTokens =
       recallBlocksText.length > 0
@@ -609,7 +637,7 @@ export class ContextRetriever {
 
     const included: AssembledHit[] = [];
     let turnTokensUsed = 0;
-    for (const c of fillOrder) {
+    for (const c of selectionOrder) {
       const chunk = renderHitChunk(c, compactMode);
       const chunkChars = chunk.length;
       const chunkTokens = Math.ceil(chunkChars / charsPerToken);

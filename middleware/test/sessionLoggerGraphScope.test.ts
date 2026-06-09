@@ -9,11 +9,8 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 
-import { FilesystemMemoryStore } from '@omadia/memory';
+import { InMemoryMemoryStore } from '@omadia/memory';
 import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
 // Import from source: `graphScopeFor` was added after the last dist build,
 // so the built `@omadia/orchestrator` barrel doesn't re-export it yet.
@@ -31,10 +28,7 @@ test('graphScopeFor qualifies with the agent slug; sanitizes the base; undefined
 });
 
 test('an agent-bound SessionLogger ingests Turns under the qualified scope', async () => {
-  const store = new FilesystemMemoryStore(
-    mkdtempSync(join(tmpdir(), 'sl-scope-')),
-  );
-  await store.init();
+  const store = new InMemoryMemoryStore();
   const graph = new InMemoryKnowledgeGraph();
   const logger = new SessionLogger(store, graph, undefined, 'agent-a');
 
@@ -56,10 +50,7 @@ test('an agent-bound SessionLogger ingests Turns under the qualified scope', asy
 });
 
 test('a different Agent logging the same conversation id does not collide in the graph', async () => {
-  const store = new FilesystemMemoryStore(
-    mkdtempSync(join(tmpdir(), 'sl-scope-')),
-  );
-  await store.init();
+  const store = new InMemoryMemoryStore();
   const graph = new InMemoryKnowledgeGraph();
 
   await new SessionLogger(store, graph, undefined, 'agent-a').log({

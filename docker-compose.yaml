@@ -6,8 +6,7 @@
 #   - postgres         (Postgres + pgvector — KG / routines / verifier store)
 #   - kroki + companion (Mermaid/PlantUML/Graphviz/Vega/Excalidraw rendering)
 #   - minio + init     (S3-compatible storage for diagram + attachment payloads)
-#   - ollama + init    (in-tenant embeddings + small NER model)
-#   - presidio         (Python NER sidecar for the privacy detector plugin)
+#   - ollama + init    (in-tenant embeddings)
 #
 # Usage:
 #   cp middleware/.env.example middleware/.env   # set ANTHROPIC_API_KEY
@@ -79,12 +78,12 @@ services:
       # To enable for local inspection, uncomment `DEV_ENDPOINTS_ENABLED=true`
       # in `middleware/.env` (already picked up via `env_file` below).
       # **NEVER set this on a public deployment.**
-      # Redirect kernel persistent state (vault, installed.json, memory
-      # store, builder drafts.db, uploaded plugin packages) to the volume
-      # mount below. Without this, the kernel writes under /app/data which
-      # lives in the image layer and gets wiped on every `--build` — all
-      # builder drafts disappear, every plugin re-auto-installs from
-      # scratch, etc. Path must match the volume target.
+      # Redirect kernel persistent state (vault, installed.json, builder
+      # drafts.db, uploaded plugin packages) to the volume mount below.
+      # Without this, the kernel writes under /app/data which lives in the
+      # image layer and gets wiped on every `--build` — all builder drafts
+      # disappear, uploaded plugins vanish, etc. Path must match the volume
+      # target. (Memory itself is Postgres- or RAM-backed — no on-disk store.)
       PLATFORM_DATA_DIR: /data
     depends_on:
       postgres:
@@ -144,10 +143,11 @@ services:
   postgres:
     image: pgvector/pgvector:pg17
     restart: unless-stopped
-    # Explicit container_name + network alias so the middleware always
-    # resolves the `postgres` DNS name regardless of the compose project
-    # prefix (default name would be `<dir>-postgres-1`).
-    container_name: omadia-postgres
+    # Network alias + hostname so the middleware always resolves the
+    # `postgres` DNS name regardless of the compose project prefix. No explicit
+    # container_name: it's redundant for in-network DNS (the service name +
+    # `networks.omadia.aliases` below already resolve `postgres`) and a fixed
+    # name collides when a second compose project runs side by side.
     hostname: postgres
     environment:
       POSTGRES_USER: omadia
@@ -285,37 +285,8 @@ services:
           sleep 3
         done
         OLLAMA_HOST=http://ollama:11434 ollama pull nomic-embed-text
-        # Pull the NER model used by @omadia/plugin-privacy-detector-ollama
-        # so the Privacy-Proxy can run without an external API key.
-        OLLAMA_HOST=http://ollama:11434 ollama pull llama3.2:3b
-        echo "[ollama-init] nomic-embed-text + llama3.2:3b ready."
+        echo "[ollama-init] nomic-embed-text ready."
     restart: 'no'
-
-  # --- Presidio NER sidecar (Privacy-Proxy detector plugin) -----------------
-  # Built from middleware/sidecars/privacy-detector-presidio. Pulls ~1.5 GB
-  # of spaCy models on first build; subsequent rebuilds are cache-hot.
-  presidio:
-    build:
-      context: ./middleware/sidecars/privacy-detector-presidio
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    container_name: omadia-presidio
-    hostname: presidio
-    ports:
-      - '127.0.0.1:5001:5001'
-    networks:
-      omadia:
-        aliases: [presidio]
-    healthcheck:
-      test:
-        - 'CMD'
-        - 'python'
-        - '-c'
-        - "import urllib.request,sys; urllib.request.urlopen('http://localhost:5001/health',timeout=2); sys.exit(0)"
-      interval: 10s
-      timeout: 5s
-      retries: 6
-      start_period: 60s
 
 volumes:
   middleware-data:

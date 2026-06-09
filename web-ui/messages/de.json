@@ -1,4 +1,95 @@
 {
+  "admin": {
+    "builder": {
+      "title": "Agent-Builder",
+      "subtitle": "Kanäle, Sub-Agenten, Skills und Tools auf einer editierbaren Leinwand verdrahten.",
+      "agentPicker": "Agent",
+      "loading": "Lädt …",
+      "loadError": "Laden fehlgeschlagen",
+      "noAgents": "Noch keine Agenten verfügbar.",
+      "card": {
+        "title": "Agent-Builder",
+        "description": "Visuelle Node-Graph-Leinwand: Kanäle, Sub-Agenten, Skills, Tools/MCP und Zeitpläne verdrahten. Eine gezogene Verbindung schreibt die Verdrahtung; eine gelöschte Kante entfernt sie."
+      },
+      "nodes": {
+        "channel": "Kanal",
+        "agent": "Agent",
+        "subagent": "Sub-Agent",
+        "skill": "Skill",
+        "tool": "Tool",
+        "mcp": "MCP-Server",
+        "schedule": "Zeitplan",
+        "tools": "Tools"
+      },
+      "palette": {
+        "title": "Hinzufügen"
+      },
+      "toolbox": {
+        "native": "Native Tools",
+        "noTools": "Noch keine erkannten Tools."
+      },
+      "defaults": {
+        "subAgentName": "Neuer Sub-Agent",
+        "skillName": "Neuer Skill",
+        "mcpName": "Neuer MCP-Server"
+      },
+      "inspector": {
+        "title": "Inspektor",
+        "close": "Schließen",
+        "save": "Speichern",
+        "discover": "Tools erkennen",
+        "readOnly": "Dieser Node hat keine editierbaren Eigenschaften.",
+        "name": "Name",
+        "model": "Modell",
+        "systemPrompt": "System-Prompt-Override",
+        "routingMode": "Routing-Modus",
+        "modelMain": "Hauptmodell",
+        "modelTriage": "Triage-Modell",
+        "modelSimple": "Einfaches Modell",
+        "skillBody": "Skill-Inhalt (Markdown)",
+        "skillFileReadOnly": "Datei-basierter Skill — hier schreibgeschützt.",
+        "transport": "Transport",
+        "endpoint": "Endpoint",
+        "cron": "Cron",
+        "timezone": "Zeitzone"
+      }
+    }
+  },
+  "selfExtension": {
+    "intro": "Schlage eine Selbst-Erweiterung für dieses installierte Plugin vor: füge Tools oder Capabilities per Spec-Patch hinzu. Der Escalation-Guard lehnt jede Rechte-Ausweitung automatisch ab — ein Plugin kann sich keine Rechte selbst geben, die es nicht ohnehin schon hat.",
+    "composeTitle": "Neuer Vorschlag",
+    "rationalePlaceholder": "Warum wird diese Erweiterung benötigt?",
+    "patchesPlaceholder": "Spec-Patches als JSON-Array, z. B. [{\"op\":\"add\",\"path\":\"/tools/-\",\"value\":{\"id\":\"mein_tool\",\"description\":\"…\",\"input\":{}}}]",
+    "propose": "Vorschlagen",
+    "proposing": "Wird übermittelt …",
+    "invalidPatchesJson": "Patches müssen ein gültiges JSON-Array aus RFC-6902-Operationen sein.",
+    "templateComposeTitle": "Aus Template vorschlagen",
+    "templateParamsPlaceholder": "Template-Parameter als JSON, z. B. {\"entitySet\":\"salesorders\"}",
+    "proposeTemplate": "Aus Template vorschlagen",
+    "invalidParamsJson": "Parameter müssen ein gültiges JSON-Objekt sein.",
+    "loading": "Vorschläge werden geladen …",
+    "loadError": "Vorschläge konnten nicht geladen werden: {message}",
+    "empty": "Noch keine Vorschläge.",
+    "patchCount": "{count, plural, one {# Patch} other {# Patches}}",
+    "escalationsTitle": "Rechte-Ausweitung — automatisch abgelehnt",
+    "denied": "Abgelehnt: {reason}",
+    "installFailed": "Installation fehlgeschlagen: {reason}",
+    "denyReasonPlaceholder": "Grund für die Ablehnung",
+    "confirmDeny": "Ablehnung bestätigen",
+    "cancel": "Abbrechen",
+    "approve": "Genehmigen",
+    "deny": "Ablehnen",
+    "installing": "Wird installiert …",
+    "install": "Installieren + reaktivieren",
+    "status_pending": "Offen",
+    "status_denied": "Abgelehnt",
+    "status_approved": "Genehmigt",
+    "status_installed": "Installiert",
+    "status_install_failed": "Installation fehlgeschlagen",
+    "decision_needs_approval": "Genehmigung nötig",
+    "decision_denied_escalation": "Eskalation",
+    "decision_invalid_spec": "ungültige Spec"
+  },
   "planCard": {
     "heading": "Plan",
     "summary": "{done}/{total} Schritte",
@@ -274,6 +365,38 @@
       "skippedDerivedFrom": "skippedDerivedFrom",
       "openDetail": "Memory öffnen",
       "close": "Schließen"
+    },
+    "kgWalk": {
+      "title": "Wissensgraph",
+      "subtitle": "Nachbarschaft, die dieser Turn aufgerufen hat",
+      "legendRoots": "Wurzeln",
+      "legendNeighbors": "Nachbarn",
+      "badgeNodes": "{count, plural, one {# Knoten} other {# Knoten}}",
+      "badgeHops": "{count, plural, one {# Sprung} other {# Sprünge}}",
+      "revealing": "Sprung {current} von {total} wird gegangen…",
+      "empty": "Für diesen Turn liegt noch kein Graph-Walk vor.",
+      "openLabel": "Wissensgraph",
+      "close": "Schließen",
+      "maximize": "Maximieren",
+      "restore": "Wiederherstellen",
+      "hopHeaderRoots": "Sprung 0 (Wurzeln)",
+      "hopHeader": "Sprung {hop}",
+      "hopListHeader": "{nodes, plural, one {# Knoten} other {# Knoten}} · {hops, plural, one {# Sprung} other {# Sprünge}}",
+      "toggleLabel": "Graph-Walk",
+      "legendInserted": "Neu eingefügt",
+      "insertedTag": "NEU",
+      "badgeInserted": "{count, plural, one {# eingefügt} other {# eingefügt}}"
+    },
+    "planDag": {
+      "title": "Plan",
+      "subtitle": "Aktiver Plan dieses Turns",
+      "toggleLabel": "Plan",
+      "openLabel": "Plan",
+      "badgeProgress": "{done}/{total}",
+      "listHeader": "{done} von {total} Schritten erledigt",
+      "maximize": "Maximieren",
+      "restore": "Wiederherstellen",
+      "close": "Schließen"
     }
   },
   "privacyReceipt": {
@@ -446,8 +569,13 @@
     "tokensInTitle": "{n} Input-Tokens (kumuliert über Iterationen)",
     "tokensOutTitle": "{n} Output-Tokens (kumuliert über Iterationen)",
     "cacheHitTitle": "{n} Cache-Read-Tokens",
-    "dismissAriaLabel": "Stream abbrechen",
-    "dismissTitle": "Abbrechen"
+    "dismissAriaLabel": "Benachrichtigung schließen (Stream läuft weiter)",
+    "dismissTitle": "Schließen",
+    "abortButton": "Stream stoppen",
+    "abortConfirmTitle": "Stream wirklich stoppen?",
+    "abortConfirmBody": "Die laufende Antwort wird sofort abgebrochen und kann nicht fortgesetzt werden.",
+    "abortConfirmKeep": "Weiter laufen lassen",
+    "abortConfirmStop": "Ja, stoppen"
   },
   "builder": {
     "issueReport": {
@@ -1315,6 +1443,21 @@
         "almostFull": "bald voll",
         "limitReached": "Limit erreicht",
         "tooltip": "{used} von {cap} aktiven Drafts, Warnung ab {warnAt}"
+      }
+    }
+  },
+  "adminSettings": {
+    "pluginDirectory": {
+      "heading": "Plugin-Einstellungen",
+      "intro": "Die meisten Einstellungen liegen jetzt direkt beim jeweiligen Plugin und werden in dessen eigenem Einstellungs-Panel bearbeitet. Auf dieser Seite verbleiben nur echte Plugin-übergreifende Werte (wie der gemeinsame Anthropic-Key oben).",
+      "open": "Einstellungen öffnen",
+      "plugins": {
+        "orchestrator": "Orchestrator & Model-Routing",
+        "verifier": "Verifier",
+        "embeddings": "Embeddings",
+        "knowledgeGraph": "Knowledge-Graph",
+        "diagrams": "Diagramme & Speicher",
+        "integrations": "Integrationen (Microsoft, Teams, Telegram)"
       }
     }
   }

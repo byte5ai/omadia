@@ -45,6 +45,8 @@ import {
   type InconsistencyNode,
   type InconsistencyResolution,
   type InconsistencyStatus,
+  type KgWalkEdge,
+  type KgWalkNode,
   type ListInconsistenciesOptions,
   type ListMemoriesForScopeOptions,
   type MemorableKnowledgeHit,
@@ -53,6 +55,7 @@ import {
   type MemoryWithAncestors,
   type MemorableKnowledgeIngest,
   type MemorableKnowledgeIngestResult,
+  type MemorableKnowledgePurgeFilter,
   type MemorableKnowledgeSearchOptions,
   type MemorableKnowledgeUpdate,
   type MergeCandidateNode,
@@ -1855,6 +1858,13 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         scope: null,
         userId: null,
         props,
+        // WS5 — forward an explicit initial visibility when the caller
+        // (the scratch-promotion reaper) wants the new MK shared team-wide.
+        // Omitted → undefined → upsertNode's `COALESCE($9, 'team')` keeps the
+        // exact pre-existing DB-default behaviour for every other caller.
+        ...(input.visibility !== undefined
+          ? { visibility: input.visibility }
+          : {}),
       });
 
       // INVOLVED edges — resolve omadiaUserId → user-cluster external_id
@@ -2233,6 +2243,104 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       // CASCADE on graph_edges FK removes inbound/outbound edges.
       await client.query(`DELETE FROM graph_nodes WHERE id = $1`, [uuid]);
       await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Build the shared `WHERE` predicate + bound params for the Danger-Zone
+   * purge/count queries. `$1` is always `this.tenantId`. `originAgent` and
+   * `aclOwner` append `$2`/`$N` AND-clauses. The filter is pinned to this
+   * instance's tenant — a mismatching `filter.tenantId` is rejected so an
+   * admin caller cannot accidentally purge a tenant the graph is not bound to.
+   */
+  private buildMemorableKnowledgePurgeWhere(filter: MemorableKnowledgePurgeFilter): {
+    where: string;
+    params: unknown[];
+  } {
+    if (filter.tenantId !== this.tenantId) {
+      throw Object.assign(
+        new Error('tenant_mismatch'),
+        { code: 'tenant_mismatch' },
+      );
+    }
+    const params: unknown[] = [this.tenantId];
+    let where = `tenant_id = $1 AND type = 'MemorableKnowledge'`;
+    if (filter.originAgent !== undefined) {
+      params.push(filter.originAgent);
+      where += ` AND properties->>'origin_agent' = $${params.length}`;
+    }
+    if (filter.aclOwner !== undefined) {
+      params.push(JSON.stringify([filter.aclOwner]));
+      where += ` AND properties->'acl_owners' @> $${params.length}::jsonb`;
+    }
+    return { where, params };
+  }
+
+  async countMemorableKnowledge(
+    filter: MemorableKnowledgePurgeFilter,
+  ): Promise<{ count: number }> {
+    const { where, params } = this.buildMemorableKnowledgePurgeWhere(filter);
+    const res = await this.pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM graph_nodes WHERE ${where}`,
+      params,
+    );
+    return { count: Number(res.rows[0]?.count ?? '0') };
+  }
+
+  async purgeMemorableKnowledge(
+    filter: MemorableKnowledgePurgeFilter,
+  ): Promise<{ deletedNodes: number }> {
+    const { where, params } = this.buildMemorableKnowledgePurgeWhere(filter);
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      // Resolve the internal uuids of the MK rows in scope first; both the
+      // excerpt cascade and the edge sweep key off these.
+      const uuidRows = await client.query<{ id: string }>(
+        `SELECT id FROM graph_nodes WHERE ${where}`,
+        params,
+      );
+      const uuids = uuidRows.rows.map((r) => r.id);
+      if (uuids.length === 0) {
+        await client.query('COMMIT');
+        return { deletedNodes: 0 };
+      }
+      // Cascade-delete attached PalaiaExcerpt nodes (mirrors deleteMemory):
+      // their EXCERPT_OF edges FK-cascade, but the Excerpt rows are
+      // standalone and would orphan otherwise.
+      await client.query(
+        `DELETE FROM graph_nodes
+         WHERE tenant_id = $1
+           AND type = 'PalaiaExcerpt'
+           AND id IN (
+             SELECT from_node FROM graph_edges
+             WHERE tenant_id = $1
+               AND type = 'EXCERPT_OF'
+               AND to_node = ANY($2::uuid[])
+           )`,
+        [this.tenantId, uuids],
+      );
+      // Explicitly remove all incident edges (graph_edges FK CASCADEs on
+      // graph_nodes delete, but we delete both halves in-transaction to be
+      // robust against schemas without the cascade and to make the intent
+      // obvious).
+      await client.query(
+        `DELETE FROM graph_edges
+         WHERE tenant_id = $1
+           AND (from_node = ANY($2::uuid[]) OR to_node = ANY($2::uuid[]))`,
+        [this.tenantId, uuids],
+      );
+      const deleted = await client.query(
+        `DELETE FROM graph_nodes WHERE id = ANY($1::uuid[])`,
+        [uuids],
+      );
+      await client.query('COMMIT');
+      return { deletedNodes: deleted.rowCount ?? 0 };
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
@@ -4303,6 +4411,134 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     return { memories, edges };
   }
 
+  async getMemorableKnowledgeSubgraph(
+    rootExternalIds: string[],
+    opts: { maxHops?: number; maxNodes?: number } = {},
+  ): Promise<{ nodes: KgWalkNode[]; edges: KgWalkEdge[] }> {
+    const maxHops = Math.max(1, Math.min(opts.maxHops ?? 2, 6));
+    const maxNodes = Math.max(1, Math.min(opts.maxNodes ?? 40, 500));
+
+    const roots = [...new Set(rootExternalIds)].filter(
+      (id) => typeof id === 'string' && id.length > 0,
+    );
+    if (roots.length === 0) return { nodes: [], edges: [] };
+
+    // Resolve root external_ids → UUIDs (tenant-scoped). BFS runs on UUIDs;
+    // we map back to external_ids for the payload. Only roots that exist in
+    // this tenant seed the walk.
+    const rootRows = await this.pool.query<NodeRow>(
+      `SELECT ${NODE_COLUMNS}
+         FROM graph_nodes
+        WHERE tenant_id = $1 AND external_id = ANY($2::text[])`,
+      [this.tenantId, roots],
+    );
+    if (rootRows.rows.length === 0) return { nodes: [], edges: [] };
+
+    // BFS bookkeeping keyed on UUID. `distance` = BFS layer of the node.
+    const nodeRowByUuid = new Map<string, NodeRow>();
+    const distanceByUuid = new Map<string, number>();
+    let frontier: string[] = [];
+    for (const r of rootRows.rows) {
+      nodeRowByUuid.set(r.id, r);
+      distanceByUuid.set(r.id, 0);
+      frontier.push(r.id);
+    }
+
+    // Edge accumulation. Key dedupes parallel discoveries; `hop` is the layer
+    // at which the edge was first crossed = distance(nearer endpoint) + 1.
+    const edgeByKey = new Map<
+      string,
+      { from: string; to: string; type: string; hop: number }
+    >();
+
+    for (let hop = 1; hop <= maxHops; hop++) {
+      if (frontier.length === 0) break;
+      if (nodeRowByUuid.size >= maxNodes) break;
+
+      // Pull every edge incident on the current frontier (both directions),
+      // tenant-scoped, plus the neighbour node row in one round-trip.
+      const rows = await this.pool.query<
+        NodeRow & {
+          edge_from: string;
+          edge_to: string;
+          edge_type: string;
+          neighbour_uuid: string;
+        }
+      >(
+        `
+        SELECT e.from_node AS edge_from,
+               e.to_node   AS edge_to,
+               e.type      AS edge_type,
+               n.id        AS neighbour_uuid,
+               ${NODE_COLUMNS.split(', ')
+                 .map((c) => `n.${c}`)
+                 .join(', ')}
+        FROM graph_edges e
+        JOIN graph_nodes n
+          ON n.id = CASE WHEN e.from_node = ANY($2::uuid[])
+                         THEN e.to_node ELSE e.from_node END
+        WHERE e.tenant_id = $1
+          AND (e.from_node = ANY($2::uuid[]) OR e.to_node = ANY($2::uuid[]))
+          AND n.tenant_id = $1
+        `,
+        [this.tenantId, frontier],
+      );
+
+      const nextFrontier: string[] = [];
+      for (const r of rows.rows) {
+        // Record the edge once. Both endpoints must end up emitted, so we
+        // only keep edges whose neighbour we can also admit (checked below).
+        const key = `${r.edge_from}|${r.edge_type}|${r.edge_to}`;
+        const neighbourUuid = r.neighbour_uuid;
+
+        const isNew = !nodeRowByUuid.has(neighbourUuid);
+        if (isNew) {
+          if (nodeRowByUuid.size >= maxNodes) {
+            // Cap reached — drop this neighbour AND its edge (no dangling).
+            continue;
+          }
+          nodeRowByUuid.set(neighbourUuid, r);
+          distanceByUuid.set(neighbourUuid, hop);
+          nextFrontier.push(neighbourUuid);
+        }
+        if (!edgeByKey.has(key)) {
+          edgeByKey.set(key, {
+            from: r.edge_from,
+            to: r.edge_to,
+            type: r.edge_type,
+            hop,
+          });
+        }
+      }
+      frontier = nextFrontier;
+    }
+
+    // Map UUID-keyed accumulators → external-id payload. Drop any edge whose
+    // endpoint did not make the node cut (cap-induced) so the payload is
+    // always internally consistent.
+    const extIdByUuid = new Map<string, string>();
+    const nodes: KgWalkNode[] = [];
+    for (const [uuid, row] of nodeRowByUuid) {
+      const node = rowToNode(row);
+      extIdByUuid.set(uuid, node.id);
+      nodes.push({
+        id: node.id,
+        label: kgWalkLabel(node),
+        kind: node.type,
+      });
+    }
+
+    const edges: KgWalkEdge[] = [];
+    for (const e of edgeByKey.values()) {
+      const from = extIdByUuid.get(e.from);
+      const to = extIdByUuid.get(e.to);
+      if (from === undefined || to === undefined) continue;
+      edges.push({ from, to, type: e.type, hop: e.hop });
+    }
+
+    return { nodes, edges };
+  }
+
   async findEntities(opts: FindEntitiesOptions): Promise<GraphNode[]> {
     const limit = Math.max(1, Math.min(opts.limit ?? 25, 200));
     const model = opts.model.trim();
@@ -4577,6 +4813,56 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       });
     }
   }
+}
+
+/**
+ * Per-type label keys for {@link kgWalkLabel}. The KG-walk list should show the
+ * SEMANTIC content of a node, not its type repeated — so for the types whose
+ * meaning lives in a non-generic property we name that field explicitly. These
+ * are tried before the generic keys.
+ */
+export const KG_WALK_LABEL_KEYS: Record<string, readonly string[]> = {
+  Turn: ['userMessage', 'assistantAnswer'],
+  PalaiaExcerpt: ['text'],
+  Plan: ['goal', 'summary'],
+  PlanStep: ['goal'],
+  Inconsistency: ['summary'],
+};
+
+/** Generic human-label fields tried for every node type after the per-type set. */
+const KG_WALK_GENERIC_LABEL_KEYS = [
+  'summary',
+  'name',
+  'title',
+  'displayName',
+  'text',
+  'goal',
+  'content',
+  'message',
+] as const;
+
+/**
+ * KG-walk node label — surfaces the node's SEMANTIC content for the chat
+ * visualization rather than its bare type. Tries the per-type keys
+ * ({@link KG_WALK_LABEL_KEYS}, e.g. a Turn's `userMessage` or a PalaiaExcerpt's
+ * `text`) first, then the generic human fields, and only falls back to the
+ * node `type` when nothing readable exists. Whitespace is collapsed and the
+ * result is length-capped so the payload stays small for the frontend.
+ */
+export function kgWalkLabel(node: GraphNode): string {
+  const props = node.props as Record<string, unknown>;
+  const keys = [
+    ...(KG_WALK_LABEL_KEYS[node.type] ?? []),
+    ...KG_WALK_GENERIC_LABEL_KEYS,
+  ];
+  for (const key of keys) {
+    const v = props[key];
+    if (typeof v === 'string' && v.trim().length > 0) {
+      const t = v.trim().replace(/\s+/g, ' ');
+      return t.length > 120 ? `${t.slice(0, 117)}…` : t;
+    }
+  }
+  return node.type;
 }
 
 export function rowToNode(row: NodeRow): GraphNode {

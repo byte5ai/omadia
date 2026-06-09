@@ -5,7 +5,7 @@ import {
   MemoryInvalidPathError,
   MemoryIsDirectoryError,
   MemoryPathNotFoundError,
-} from './filesystem.js';
+} from './errors.js';
 
 /**
  * Client-side handler for the Anthropic `memory_20250818` tool. Implements the six

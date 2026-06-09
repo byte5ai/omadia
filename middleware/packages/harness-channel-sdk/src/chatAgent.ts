@@ -442,6 +442,19 @@ export interface AgentMeta {
  */
 export type ChatStreamEvent =
   | { type: 'iteration_start'; iteration: number }
+  /**
+   * Per-turn model-routing verdict. Emitted ONCE at turn start, right after the
+   * Haiku classifier resolves and before the first model call — only when
+   * routing is configured. Lets the UI show the triage decision inline at the
+   * top of the turn card. `bucket: 'fallback'` means the classifier call failed
+   * and the configured fallback model was used.
+   */
+  | {
+      type: 'turn_routing';
+      bucket: 'simple' | 'complex' | 'fallback';
+      classifierModel: string;
+      model: string;
+    }
   | { type: 'text_delta'; text: string }
   | {
       type: 'tool_use';
@@ -566,6 +579,13 @@ export type ChatStreamEvent =
       /** #133 — persisted Turn node external id (`turn:<scope>:<time>`); see
        *  ChatTurnResult.turnId. Lets the UI resolve the turn's plan DAG. */
       turnId?: string;
+      /**
+       * The model this turn actually ran on, resolved once at turn start by
+       * the per-turn router (Haiku triage → Sonnet/Opus). Equals the agent's
+       * default model when model-routing is off. Lets the UI show which model
+       * answered, alongside the live token counts.
+       */
+      model?: string;
     }
   /**
    * Emitted after `done` by the verifier wrapper (only when enabled). The

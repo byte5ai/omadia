@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { Markdown } from '../_components/Markdown';
+import { getMemoryBackend, type MemoryBackend } from '../_lib/api';
 
 interface Entry {
   virtualPath: string;
@@ -25,6 +26,7 @@ export default function MemoryPage(): React.ReactElement {
   const [fileError, setFileError] = useState<string | null>(null);
   const [loadingList, setLoadingList] = useState(false);
   const [loadingFile, setLoadingFile] = useState(false);
+  const [backend, setBackend] = useState<MemoryBackend | null>(null);
 
   const loadDir = useCallback(async (path: string): Promise<void> => {
     setLoadingList(true);
@@ -96,6 +98,15 @@ export default function MemoryPage(): React.ReactElement {
   }, []);
 
   useEffect(() => {
+    // Best-effort backend badge — needs an authed session; the dev memory
+    // browser itself runs unauthenticated, so swallow failures and just
+    // omit the badge.
+    void getMemoryBackend()
+      .then((s) => setBackend(s.current))
+      .catch(() => setBackend(null));
+  }, []);
+
+  useEffect(() => {
     // Load-on-change: loadDir marks the list 'loading' (one intended render)
     // before fetching the directory — not a cascading-render anti-pattern.
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -116,6 +127,33 @@ export default function MemoryPage(): React.ReactElement {
   return (
     <main className="flex h-full">
       <aside className="flex w-80 min-w-0 flex-col border-r border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+        <div className="border-b border-neutral-200 px-3 py-2 dark:border-neutral-800">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold text-neutral-800 dark:text-neutral-100">
+              Memory
+            </span>
+            {backend !== null && (
+              <span
+                className={[
+                  'rounded px-1.5 py-0.5 text-[10px] font-medium',
+                  backend === 'postgres'
+                    ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
+                    : 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
+                ].join(' ')}
+              >
+                {backend === 'postgres' ? 'Postgres' : 'In-Memory · flüchtig'}
+              </span>
+            )}
+          </div>
+          <p className="mt-0.5 text-[11px] text-neutral-500">
+            Live-Browser des aktiven Memory-Stores
+            {backend === 'inmemory'
+              ? ' (RAM, beim Neustart leer).'
+              : backend === 'postgres'
+                ? ' (persistent in Postgres).'
+                : '.'}
+          </p>
+        </div>
         <div className="border-b border-neutral-200 px-3 py-2 text-xs dark:border-neutral-800">
           <div className="mb-1 text-neutral-500">Pfad</div>
           <div className="flex flex-wrap items-center gap-1 font-mono text-[11px]">
@@ -199,7 +237,7 @@ export default function MemoryPage(): React.ReactElement {
       <section className="flex min-w-0 flex-1 flex-col bg-neutral-50 dark:bg-neutral-950">
         {selected === null ? (
           <div className="flex h-full items-center justify-center text-sm text-neutral-500">
-            Datei links wählen…
+            Eintrag links wählen…
           </div>
         ) : (
           <>

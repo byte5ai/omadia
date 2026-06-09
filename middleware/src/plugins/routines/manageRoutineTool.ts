@@ -1,3 +1,4 @@
+import { buildEmailColdStartTarget } from '@omadia/plugin-api';
 import { z } from 'zod';
 
 import {
@@ -29,6 +30,14 @@ const ManageRoutineInputSchema = z.object({
   id: z.string().uuid().optional(),
   /** Optional for `create`. Defaults to 60_000ms. */
   timeoutMs: z.number().int().min(1000).max(600_000).optional(),
+  /**
+   * Optional for `create`. Email of ANOTHER person this routine should
+   * proactively message (cold-start 1:1 outreach — e.g. an HR review
+   * reminder). Omitted ⇒ the routine delivers to the current user's
+   * conversation (default, unchanged). Requires the caller to be
+   * authorized to target others (see ManageRoutineContext.canTargetOthers).
+   */
+  targetEmail: z.string().min(3).max(254).optional(),
   /** Optional for `list`. Filters the rows the smart-card renders. */
   filter: ListFilterSchema.optional(),
 });
@@ -50,6 +59,14 @@ export interface ManageRoutineContext {
   userId: string;
   channel: string;
   conversationRef: unknown;
+  /**
+   * Cold-start authorization (default `false`). When `true`, the caller may
+   * create routines that proactively message OTHER people via `targetEmail`.
+   * Populated by the channel adapter from its governance source (e.g. an
+   * operator-configured allowlist). Self-targeting routines never consult
+   * this flag.
+   */
+  canTargetOthers?: boolean;
 }
 
 export type ManageRoutineContextResolver = () =>
@@ -61,7 +78,7 @@ export const manageRoutineToolSpec = {
   description:
     'Lege wiederkehrende Routinen / Cronjobs für den User an, liste sie auf, pausiere, reaktiviere oder lösche sie. Der Agent ruft dieses Tool, wenn der User Wünsche wie "erinnere mich jeden Montag um 9 Uhr an X" oder "zeig mir meine Routinen" äußert.\n\n' +
     '**Aktionen:**\n' +
-    '- `create` — neue Routine. Pflicht: `name` (eindeutig pro User), `cron` (5-Feld: Min Std DOM Mon DOW), `prompt` (was der Agent zur Trigger-Zeit ausführen soll). Optional: `timeoutMs` (Default 10 min = 600000).\n' +
+    '- `create` — neue Routine. Pflicht: `name` (eindeutig pro User), `cron` (5-Feld: Min Std DOM Mon DOW), `prompt` (was der Agent zur Trigger-Zeit ausführen soll). Optional: `timeoutMs` (Default 10 min = 600000), `targetEmail` (proaktiv eine ANDERE Person im 1:1 anschreiben statt den aktuellen User — nur erlaubt, wenn der User dafür berechtigt ist; sonst Fehler).\n' +
     '- `list` — alle Routinen des aktuellen Users (aktiv + pausiert).\n' +
     '- `pause` / `resume` / `delete` — Pflicht: `id` aus einer vorigen `list`-Antwort.\n\n' +
     '**Cron-Regeln:**\n' +
@@ -102,6 +119,11 @@ export const manageRoutineToolSpec = {
         type: 'integer',
         description:
           'Pro-Run-Timeout in ms. Optional bei `create`. 1000–600000 (1s–10min). Default 600000 (10min) — passt für Tool-heavy Routinen mit KG-Lookups oder Sub-Agent-Delegation.',
+      },
+      targetEmail: {
+        type: 'string',
+        description:
+          'Optional bei `create`. E-Mail einer ANDEREN Person, die diese Routine proaktiv im 1:1 anschreiben soll (z.B. HR-Review-Erinnerung). Ohne Angabe geht die Routine an den aktuellen User. Erfordert Berechtigung — sonst gibt das Tool `Error: not authorized …` zurück.',
       },
       filter: {
         type: 'string',
@@ -167,6 +189,28 @@ export class ManageRoutineTool {
     if (!ctx) {
       return 'Error: cannot create routine outside a channel turn (no user context).';
     }
+
+    // Cold-start 1:1 outreach: when the caller names another person via
+    // `targetEmail`, deliver to that person's (yet-to-be-created) 1:1
+    // conversation instead of the caller's own. This is gated on an
+    // explicit authorization flag the channel populates — without it, a
+    // routine could spam arbitrary tenant members.
+    let conversationRef: unknown = ctx.conversationRef;
+    if (args.targetEmail !== undefined && args.targetEmail.trim().length > 0) {
+      if (!ctx.canTargetOthers) {
+        return 'Error: not authorized to create routines that proactively message other people (targetEmail). Ask an operator to grant cold-start outreach for your account.';
+      }
+      const target = buildEmailColdStartTarget({
+        channel: ctx.channel,
+        email: args.targetEmail,
+        createdBy: { tenant: ctx.tenant, userId: ctx.userId },
+      });
+      if (!target) {
+        return `Error: \`targetEmail\` is not a valid email address: ${args.targetEmail}`;
+      }
+      conversationRef = target;
+    }
+
     const routine = await this.runner.createRoutine({
       tenant: ctx.tenant,
       userId: ctx.userId,
@@ -174,7 +218,7 @@ export class ManageRoutineTool {
       cron: args.cron,
       prompt: args.prompt,
       channel: ctx.channel,
-      conversationRef: ctx.conversationRef,
+      conversationRef,
       timeoutMs: args.timeoutMs,
     });
     return JSON.stringify({

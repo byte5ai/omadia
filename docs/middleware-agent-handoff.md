@@ -439,11 +439,22 @@ PR-11s `CoreApi.registerWebSocket` aufsetzend. Drei neue Module im Package
   Teardown: Routes + WS-Registrierungen + Live-Sockets räumt der Kernel pro
   `channelId` beim Deactivate ab.
 
+**Client-Context-Passthrough** (Folge-Slice): die im `handshake_select`
+deklarierten **`localOperations`** (das Ops-Catalog-Subset des Clients — die
+Tier-2-Routing-Wahrheit für Class-B-Aktionen) werden pro Verbindung gehalten und
+auf jedem Turn als `IncomingTurn.metadata.localOperations` mitgegeben (Key fehlt,
+wenn der Client nichts deklariert). Außerdem kann ein `turn` eine strukturierte
+**`action`** tragen (Button-/Row-Click; Objekt mit String-`type`, sonst
+`turn_error` ohne Dispatch) → `IncomingTurn.metadata.action`. Beides additiv via
+`metadata`, bis das SDK typed Fields bekommt (Protokoll-Feedback omadia-ui
+`docs/protocol/1.0.md` §5.1).
+
 Test: `test/uiChannelWebSocket.test.ts` treibt `handleCanvasSocket` mit
 Mock-`ChannelSocket` + Mock-`handleTurnStream` (offer; matching select → ack mit
 client-`canvasSessionId`; Versions-Mismatch → error, zweiter → close; Turn →
 korrekt geformter `IncomingTurn` + `surface_*`/`agent_text_delta`/`turn_complete`
-Fan-out; Turn vor Handshake wird verworfen). Real-Socket-Pfad ist durch PR-11s
+Fan-out; Turn vor Handshake wird verworfen; `localOperations`/`action` landen in
+`metadata`, malformed `action` → `turn_error`). Real-Socket-Pfad ist durch PR-11s
 `webSocketRegistry.test.ts` abgedeckt. **Damit kann der Agent live UI über den
 Canvas synthetisieren, sobald Tier 2 (`omadia-ui-orchestrator`) `surface_*`
 emittiert** — der Transport ist vollständig.

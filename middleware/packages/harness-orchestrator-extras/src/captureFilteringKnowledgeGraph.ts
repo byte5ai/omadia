@@ -60,6 +60,7 @@ import type {
   ListMemorableKnowledgeOptions,
   AclAuditEntry,
   AclMutationOptions,
+  MemorableKnowledgePurgeFilter,
   PalaiaExcerptNode,
   PalaiaExcerptUpdate,
   MemorableKnowledgeSearchOptions,
@@ -74,6 +75,8 @@ import type {
   InconsistencyNode,
   InconsistencyResolution,
   InconsistencyStatus,
+  KgWalkEdge,
+  KgWalkNode,
   ListExcerptMergeCandidatesOptions,
   ListInconsistenciesOptions,
   ListMemoriesForScopeOptions,
@@ -306,6 +309,18 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
     return this.inner.deleteMemory(memorableKnowledgeNodeId, actor);
   }
 
+  countMemorableKnowledge(
+    filter: MemorableKnowledgePurgeFilter,
+  ): Promise<{ count: number }> {
+    return this.inner.countMemorableKnowledge(filter);
+  }
+
+  purgeMemorableKnowledge(
+    filter: MemorableKnowledgePurgeFilter,
+  ): Promise<{ deletedNodes: number }> {
+    return this.inner.purgeMemorableKnowledge(filter);
+  }
+
   listMemoryAclAudit(
     memorableKnowledgeNodeId: string,
     opts?: { limit?: number },
@@ -396,6 +411,13 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
     opts?: ListMemoriesForScopeOptions,
   ): Promise<MemoriesProvenanceView> {
     return this.inner.listMemoriesForScope(scope, opts);
+  }
+
+  getMemorableKnowledgeSubgraph(
+    rootExternalIds: string[],
+    opts?: { maxHops?: number; maxNodes?: number },
+  ): Promise<{ nodes: KgWalkNode[]; edges: KgWalkEdge[] }> {
+    return this.inner.getMemorableKnowledgeSubgraph(rootExternalIds, opts);
   }
 
   listMemorableKnowledgeIdsForBulkInconsistencyCheck(opts: {

@@ -251,6 +251,34 @@ export interface KnowledgeGraph {
     actor: AclMutationOptions,
   ): Promise<void>;
   /**
+   * Danger-Zone purge — count the MemorableKnowledge nodes that
+   * {@link purgeMemorableKnowledge} WOULD delete for the same filter.
+   * Read-only; used by the admin dry-run preview. Never throws on an
+   * empty match — returns `{ deletedNodes: 0 }`-shaped `{ count: 0 }`.
+   */
+  countMemorableKnowledge(
+    filter: MemorableKnowledgePurgeFilter,
+  ): Promise<{ count: number }>;
+  /**
+   * Danger-Zone purge — hard-delete every MemorableKnowledge node
+   * matching `filter` (and its incident edges) in ONE transaction.
+   *
+   *   - No filter beyond `tenantId` ⇒ ALL MemorableKnowledge for the
+   *     tenant.
+   *   - `originAgent` matches the `properties->>'origin_agent'` prop.
+   *   - `aclOwner` matches membership in `properties->'acl_owners'`.
+   *
+   * Only `type = 'MemorableKnowledge'` rows are removed — other node
+   * types are never touched. Attached `PalaiaExcerpt` nodes are cascaded
+   * (mirrors {@link deleteMemory}). Unlike `deleteMemory`, this is an
+   * operator-level bulk action: it does NOT enforce per-MK ownership and
+   * does NOT write per-MK ACL audit rows (the admin layer writes a single
+   * `memory_purge_audit` row for the whole operation).
+   */
+  purgeMemorableKnowledge(
+    filter: MemorableKnowledgePurgeFilter,
+  ): Promise<{ deletedNodes: number }>;
+  /**
    * Slice 3 — read the ACL audit-log for a single MemorableKnowledge.
    * Returns newest-first. Survives delete of the MK.
    */
@@ -635,6 +663,74 @@ export interface KnowledgeGraph {
     scope: string | undefined,
     opts?: ListMemoriesForScopeOptions,
   ): Promise<MemoriesProvenanceView>;
+
+  /**
+   * KG-walk chat visualization — given the top recalled MemorableKnowledge
+   * external ids (the recall frontier, hop 0), BFS outward over `graph_edges`
+   * in BOTH directions, tenant-scoped, up to `maxHops` (default 2) and capped
+   * at `maxNodes` (default ~40). Returns the surfaced neighbourhood as a flat
+   * node/edge list for the frontend to animate. Read-only and best-effort:
+   * callers wrap it so it can never affect or delay the turn / the LLM.
+   *
+   * `KgWalkEdge.hop` is the BFS discovery layer of the edge = (BFS distance of
+   * its nearer endpoint) + 1, i.e. the hop at which the edge was first crossed.
+   * Edges and nodes beyond `maxNodes` are dropped; every emitted edge is
+   * guaranteed to reference two emitted nodes.
+   */
+  getMemorableKnowledgeSubgraph(
+    rootExternalIds: string[],
+    opts?: { maxHops?: number; maxNodes?: number },
+  ): Promise<{ nodes: KgWalkNode[]; edges: KgWalkEdge[] }>;
+}
+
+// ---------------------------------------------------------------------------
+// KG-walk chat visualization — per-turn graph payload of the Knowledge-Graph
+// neighbourhood the recall surfaced. Emitted as a sibling `kg_graph`
+// turn-annotation next to `kg_recall`; consumed by the frontend to animate
+// iterating through the recalled subgraph. UI-only, additive, opaque to the
+// model.
+// ---------------------------------------------------------------------------
+
+/** One node in the recalled KG neighbourhood. */
+export interface KgWalkNode {
+  /** Graph `external_id` (matches `GraphNode.id`'s key space). */
+  id: string;
+  /** Human label — from `properties.summary` / `name` / `title`, else type. */
+  label: string;
+  /** Node `type` (e.g. `MemorableKnowledge`, `Turn`, `Entity`). */
+  kind: string;
+  /** Recall hit score; set only on root (hop-0) nodes when available. */
+  score?: number;
+  /**
+   * True when this node was WRITTEN into the KG by the current turn (e.g. the
+   * auto-promoted MemorableKnowledge + its Turn). Carried by the `kg_insert`
+   * follow-up annotation so the UI can visually distinguish a fresh insert
+   * (a "NEW" / pulse) from the recalled neighbourhood.
+   */
+  inserted?: boolean;
+}
+
+/** One edge in the recalled KG neighbourhood. */
+export interface KgWalkEdge {
+  /** Source node `external_id`. */
+  from: string;
+  /** Target node `external_id`. */
+  to: string;
+  /** Edge `type` (e.g. `DERIVED_FROM`, `INVOLVED`, `REQUIRES`). */
+  type: string;
+  /** BFS discovery layer of the edge from the nearest root (1..N). */
+  hop: number;
+  /** True when this edge was created by the current turn (see KgWalkNode). */
+  inserted?: boolean;
+}
+
+/** Per-turn KG-walk payload carried by the `kg_graph` turn-annotation. */
+export interface KgWalkPayload {
+  /** Top recalled MemorableKnowledge node ids (frontier seeds, hop 0). */
+  rootIds: string[];
+  nodes: KgWalkNode[];
+  /** `hop` = BFS distance from the nearest root (1..N). */
+  edges: KgWalkEdge[];
 }
 
 /**
@@ -1080,6 +1176,12 @@ export interface MemorableKnowledgeIngest {
    */
   aclOwners?: string[];
   /**
+   * Initial visibility for the new MK. Omitted → backend default
+   * (admin-only / private). Used by the scratch-promotion reaper to publish
+   * consolidated agent knowledge team-wide.
+   */
+  visibility?: Visibility;
+  /**
    * Per-orchestrator isolation — the Agent slug that produced this MK,
    * stamped as the `origin_agent` property. Recall default-isolates by
    * origin agent (an Agent only sees its own MK) while team/public-promoted
@@ -1211,6 +1313,22 @@ export interface AclMutationOptions {
   actorChannelIdentityId?: string;
   /** Optional rationale shown in the audit trail. */
   reason?: string;
+}
+
+/**
+ * Danger-Zone bulk-purge selector for MemorableKnowledge. `tenantId` is
+ * always required (purge is never cross-tenant). `originAgent` and
+ * `aclOwner` are additive AND-narrowing filters; omitting both means
+ * "all MemorableKnowledge for the tenant". Used by
+ * `countMemorableKnowledge` (preview) and `purgeMemorableKnowledge`.
+ */
+export interface MemorableKnowledgePurgeFilter {
+  /** Tenant whose MemorableKnowledge is in scope. Required. */
+  tenantId: string;
+  /** Restrict to MK whose `properties->>'origin_agent'` equals this slug. */
+  originAgent?: string;
+  /** Restrict to MK whose `properties->'acl_owners'` contains this user id. */
+  aclOwner?: string;
 }
 
 /**

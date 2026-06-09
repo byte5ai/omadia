@@ -16,12 +16,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { mkdtemp } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
 import Anthropic from '@anthropic-ai/sdk';
-import { FilesystemMemoryStore } from '@omadia/memory';
+import { InMemoryMemoryStore } from '@omadia/memory';
 import { InMemoryNudgeRegistry } from '@omadia/plugin-api';
 import type { EntityRefBus, KnowledgeGraph } from '@omadia/plugin-api';
 
@@ -55,7 +51,7 @@ function fakeNativeToolRegistry(): NativeToolRegistry {
   } as unknown as NativeToolRegistry;
 }
 
-function deps(memoryStore: FilesystemMemoryStore): OrchestratorDeps {
+function deps(memoryStore: InMemoryMemoryStore): OrchestratorDeps {
   return {
     client: new Anthropic({ apiKey: 'test-key' }),
     knowledgeGraph: {} as KnowledgeGraph,
@@ -117,8 +113,7 @@ test('strict: computeMemoryScope is core + the Agent\'s own orchestrator tree', 
 });
 
 test('strict: orchestrator:<slug>:* grants the Agent its own tree, denies another\'s', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'omadia-mem-'));
-  const inner = new FilesystemMemoryStore(dir);
+  const inner = new InMemoryMemoryStore();
   await inner.writeFile('/memories/orchestrators/public/plugins/p/n.md', 'mine');
   await inner.writeFile('/memories/orchestrators/marketing/plugins/p/n.md', 'theirs');
 
@@ -147,8 +142,7 @@ test('strict: orchestrator:<slug>:* grants the Agent its own tree, denies anothe
 });
 
 test('SC-003: a Public Agent reads Confluence memory but NOT Odoo-HR memory', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'omadia-mem-'));
-  const inner = new FilesystemMemoryStore(dir);
+  const inner = new InMemoryMemoryStore();
   // Seed memory for both plugins.
   await inner.writeFile(
     '/memories/agents/@omadia/agent-confluence/notes.md',
@@ -190,8 +184,7 @@ test('SC-003: a Public Agent reads Confluence memory but NOT Odoo-HR memory', as
 });
 
 test('SC-003: shared plugin → both Agents see the plugin\'s memory', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'omadia-mem-'));
-  const inner = new FilesystemMemoryStore(dir);
+  const inner = new InMemoryMemoryStore();
   await inner.writeFile(
     '/memories/agents/@omadia/agent-shared/notes.md',
     'shared',
@@ -219,8 +212,7 @@ test('SC-003: shared plugin → both Agents see the plugin\'s memory', async () 
 });
 
 test('SC-003: removing a plugin makes its memory entry invisible (persists in storage)', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'omadia-mem-'));
-  const inner = new FilesystemMemoryStore(dir);
+  const inner = new InMemoryMemoryStore();
   await inner.writeFile(
     '/memories/agents/@omadia/agent-confluence/notes.md',
     'persists',
@@ -257,8 +249,7 @@ test('SC-003: removing a plugin makes its memory entry invisible (persists in st
 });
 
 test('T034: core scope grants read access to shared kernel namespaces', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'omadia-mem-'));
-  const inner = new FilesystemMemoryStore(dir);
+  const inner = new InMemoryMemoryStore();
   await inner.writeFile('/memories/sessions/abc.md', 'session');
   await inner.writeFile('/memories/chat-sessions/xyz.json', '{}');
   await inner.writeFile('/memories/_brand/logo.md', 'brand');
@@ -274,8 +265,7 @@ test('T034: core scope grants read access to shared kernel namespaces', async ()
 });
 
 test('T035: SessionConfigSnapshot.memoryScope matches the Agent\'s computed scope', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'omadia-mem-'));
-  const memoryStore = new FilesystemMemoryStore(dir);
+  const memoryStore = new InMemoryMemoryStore();
   const chatSessionStore = new ChatSessionStore(memoryStore);
 
   const snap: ConfigSnapshot = {

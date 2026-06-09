@@ -188,6 +188,30 @@ describe('Slice 2 · InMemory createMemorableKnowledge round-trip', () => {
     assert.equal(node?.props['created_by'], channelByA);
   });
 
+  it('WS5 · forwards explicit visibility to the created node', async () => {
+    const teamMk = await kg.createMemorableKnowledge({
+      kind: 'insight',
+      summary: 'Consolidated agent scratch worth sharing team-wide.',
+      createdBy: 'scratch-reaper',
+      visibility: 'team',
+    });
+    const teamNode = await kg.getMemorableKnowledge(
+      teamMk.memorableKnowledgeNodeId,
+    );
+    assert.equal(teamNode?.visibility, 'team');
+
+    // Omitted → historical default (no explicit visibility on the node).
+    const plainMk = await kg.createMemorableKnowledge({
+      kind: 'insight',
+      summary: 'A memory created without an explicit visibility.',
+      createdBy: channelByA,
+    });
+    const plainNode = await kg.getMemorableKnowledge(
+      plainMk.memorableKnowledgeNodeId,
+    );
+    assert.equal(plainNode?.visibility, undefined);
+  });
+
   it('skips INVOLVED entries for missing user-clusters and counts them', async () => {
     const a = await kg.resolveOrCreateChannelIdentity({
       channelKind: 'web',
