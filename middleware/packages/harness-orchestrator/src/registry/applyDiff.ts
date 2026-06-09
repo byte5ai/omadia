@@ -6,6 +6,12 @@ import {
 } from '../buildOrchestrator.js';
 
 import type {
+  SkillRow,
+  SubAgentRow,
+  ToolGrantRow,
+} from './agentGraphStore.js';
+import { resolveAgentModelRouting } from './agentRuntime.js';
+import type {
   AgentPluginRow,
   AgentRow,
   ChannelBindingRow,
@@ -99,7 +105,10 @@ export function diffSnapshots(
     if (!isEnabled) continue;
 
     // Both old and new are enabled. Decide rebuild vs metadata-only update.
-    const reasons = runtimeChangeReasons(oldAgent!, newAgent);
+    const reasons = [
+      ...runtimeChangeReasons(oldAgent!, newAgent),
+      ...graphChangeReasons(oldAgent!.id, newAgent.id, oldSnap, newSnap),
+    ];
     if (reasons.length > 0) {
       actions.push({
         kind: 'rebuild',
@@ -147,18 +156,23 @@ export function buildForAgent(
   deps: OrchestratorDeps,
   runtime: Omit<AgentRuntimeConfig, 'agentId'>,
 ): BuiltOrchestrator {
+  // Agent Builder P5 — overlay the agent's persisted model_routing onto the
+  // platform default: `main` overrides the model, `triage` mode adds per-turn
+  // Haiku→Sonnet/Opus routing. Falls back to the platform runtime when unset.
+  const routing = resolveAgentModelRouting(agent.modelRouting);
   return buildOrchestratorForAgent(
     {
       agentId: agent.slug,
-      model: runtime.model,
+      model: routing.model ?? runtime.model,
       maxTokens: runtime.maxTokens,
       maxToolIterations: runtime.maxToolIterations,
-      // Per-turn model routing is a runtime knob like the others — forward it
-      // so registry-managed per-Agent orchestrators emit `turn_routing` (and
-      // the UI renders the Haiku-triage badge), not just the default boot-path
-      // orchestrator. Without this the badge only ever shows for the default
-      // agent. See harness-orchestrator/plugin.ts (defaultRuntimeConfig).
-      ...(runtime.modelRouting ? { modelRouting: runtime.modelRouting } : {}),
+      // Per-turn model routing: prefer the agent's own persisted routing
+      // (Agent Builder P5); otherwise fall back to the platform default
+      // `runtime.modelRouting` so registry-managed orchestrators still emit
+      // `turn_routing` and the UI renders the Haiku-triage badge (origin/main).
+      ...((routing.modelRouting ?? runtime.modelRouting)
+        ? { modelRouting: routing.modelRouting ?? runtime.modelRouting }
+        : {}),
       ...(runtime.loopRepeatSoft !== undefined
         ? { loopRepeatSoft: runtime.loopRepeatSoft }
         : {}),
@@ -180,9 +194,88 @@ function runtimeChangeReasons(oldAgent: AgentRow, newAgent: AgentRow): string[] 
       `privacy_profile:${oldAgent.privacyProfile}->${newAgent.privacyProfile}`,
     );
   }
+  // Per-agent model routing (Agent Builder P5) changes which model the turn
+  // loop selects — a runtime-relevant change warranting a rebuild.
+  if (
+    JSON.stringify(oldAgent.modelRouting ?? null) !==
+    JSON.stringify(newAgent.modelRouting ?? null)
+  ) {
+    reasons.push('model_routing');
+  }
   // `name` / `description` are display-only and never warrant a rebuild —
   // they would invalidate sessions for no semantic gain.
   return reasons;
+}
+
+/**
+ * Agent Builder graph (P0): rebuild when an agent's sub-agents, tool grants,
+ * or any skill referenced by those sub-agents changed. These define what the
+ * orchestrator (and its LocalSubAgents) can do, so a change is runtime-
+ * relevant. Schedules are intentionally excluded — they are consumed by the
+ * cron worker, not baked into the orchestrator build.
+ */
+function graphChangeReasons(
+  oldAgentId: string,
+  newAgentId: string,
+  oldSnap: ConfigSnapshot | undefined,
+  newSnap: ConfigSnapshot,
+): string[] {
+  const oldSig = graphSignature(oldAgentId, oldSnap);
+  const newSig = graphSignature(newAgentId, newSnap);
+  return oldSig === newSig ? [] : ['graph'];
+}
+
+/**
+ * Deterministic fingerprint of an agent's graph wiring within one snapshot:
+ * its sub-agents, the tool grants targeting the agent or those sub-agents,
+ * and the bodies of any skills those sub-agents reference. Order-independent
+ * (everything is sorted) so it captures semantic, not row-order, change.
+ */
+function graphSignature(
+  agentId: string,
+  snap: ConfigSnapshot | undefined,
+): string {
+  const subAgents: readonly SubAgentRow[] = (snap?.subAgents ?? []).filter(
+    (s) => s.parentAgentId === agentId,
+  );
+  const subAgentIds = new Set(subAgents.map((s) => s.id));
+  const skillIds = new Set(
+    subAgents.map((s) => s.skillId).filter((id): id is string => !!id),
+  );
+
+  const grants: readonly ToolGrantRow[] = (snap?.toolGrants ?? []).filter(
+    (g) =>
+      (g.agentId !== null && g.agentId === agentId) ||
+      (g.subAgentId !== null && subAgentIds.has(g.subAgentId)),
+  );
+
+  const skills: readonly SkillRow[] = (snap?.skills ?? []).filter((sk) =>
+    skillIds.has(sk.id),
+  );
+
+  const subPart = subAgents
+    .map(
+      (s) =>
+        `${s.id}|${s.name}|${s.skillId ?? ''}|${s.model ?? ''}|${
+          s.maxTokens ?? ''
+        }|${s.maxIterations ?? ''}|${s.systemPromptOverride ?? ''}|${s.status}`,
+    )
+    .sort();
+  const grantPart = grants
+    .map(
+      (g) =>
+        `${g.agentId ?? ''}|${g.subAgentId ?? ''}|${g.toolKind}|${g.toolRef}|${
+          g.mcpServerId ?? ''
+        }|${JSON.stringify(g.config)}`,
+    )
+    .sort();
+  const skillPart = skills
+    .map(
+      (sk) => `${sk.id}|${sk.name}|${sk.body}|${JSON.stringify(sk.frontmatter)}`,
+    )
+    .sort();
+
+  return JSON.stringify({ subPart, grantPart, skillPart });
 }
 
 function equalPlugins(

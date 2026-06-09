@@ -3124,6 +3124,143 @@ export async function resetChatSession(
 }
 
 // -----------------------------------------------------------------------------
+// Danger Zone — memory purge (destructive). Backed by the admin router at
+// /api/v1/admin/memory/purge{/preview}, surfaced to the browser as
+// /bot-api/v1/admin/memory/purge{/preview}. Two stages:
+//   - POST /preview  → dry-run counts (no writes)
+//   - DELETE /        → irreversible purge, gated by a confirm phrase
+//
+// Axis semantics: 'all' wipes both the agent-scratch (per-agent Turn store)
+// and the Knowledge-Graph. The scoped axes (agent/user/team/channel) only
+// touch the Knowledge-Graph — the agent-scratch is agent-scoped and is not
+// reachable by a user/team/channel selector. The backend surfaces that as a
+// `warning` on the response, which the UI renders verbatim.
+// -----------------------------------------------------------------------------
+
+export type MemoryPurgeAxis = 'all' | 'agent' | 'user' | 'team' | 'channel';
+
+export interface MemoryPurgePreviewResult {
+  scratchCount: number;
+  kgCount: number;
+  warning?: string;
+}
+
+export interface MemoryPurgeResult {
+  scratchDeleted: number;
+  kgDeleted: number;
+  warning?: string;
+}
+
+/** Dry-run: count the rows a purge would delete. Never writes. */
+export async function previewMemoryPurge(body: {
+  axis: MemoryPurgeAxis;
+  selector?: string;
+}): Promise<MemoryPurgePreviewResult> {
+  return postJson<MemoryPurgePreviewResult>(
+    '/v1/admin/memory/purge/preview',
+    body,
+  );
+}
+
+/**
+ * Irreversible purge. `confirm` must match the phrase the operator typed
+ * (`DELETE ALL MEMORY` for axis 'all', otherwise the selector value); the
+ * backend re-checks it server-side. `reseed` re-installs the default seed
+ * memories after wiping and is only meaningful for axis 'all'.
+ */
+export async function purgeMemory(body: {
+  axis: MemoryPurgeAxis;
+  selector?: string;
+  confirm: string;
+  reseed?: boolean;
+}): Promise<MemoryPurgeResult> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(botApi('/v1/admin/memory/purge'), {
+    method: 'DELETE',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      ...forwarded,
+    },
+    body: JSON.stringify(body),
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    maybeNavigateToLogin(res.status);
+    throw new ApiError(
+      res.status,
+      `DELETE memory/purge failed: ${res.status}`,
+      text,
+    );
+  }
+  return JSON.parse(text) as MemoryPurgeResult;
+}
+
+// -----------------------------------------------------------------------------
+// Memory storage backend switch (postgres ↔ inmemory). Backed by the admin
+// router at /api/v1/admin/memory/backend, surfaced to the browser as
+// /bot-api/v1/admin/memory/backend. The PUT only PERSISTS the choice — the
+// provider swap is applied by the middleware's bootstrap on the NEXT restart.
+//   - GET /  → current state + whether a restart is pending
+//   - PUT /  → persist a backend choice (postgres requires DATABASE_URL)
+// -----------------------------------------------------------------------------
+
+export type MemoryBackend = 'postgres' | 'inmemory';
+
+export interface MemoryBackendState {
+  current: MemoryBackend;
+  envDefault: string;
+  databaseUrlPresent: boolean;
+  activeProviderId: string | null;
+  restartRequiredToApply: boolean;
+}
+
+export interface SetMemoryBackendResult {
+  ok: true;
+  backend: MemoryBackend;
+  restartRequired: true;
+}
+
+/** Read the current memory-storage backend and pending-restart state. */
+export async function getMemoryBackend(): Promise<MemoryBackendState> {
+  return getJson<MemoryBackendState>('/v1/admin/memory/backend');
+}
+
+/**
+ * Persist the operator's backend choice. Throws `ApiError` (status 400,
+ * `body` = `{"error":"database_url_required",...}`) when `postgres` is
+ * requested without `DATABASE_URL`; callers surface that inline.
+ */
+export async function setMemoryBackend(
+  backend: MemoryBackend,
+): Promise<SetMemoryBackendResult> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(botApi('/v1/admin/memory/backend'), {
+    method: 'PUT',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      ...forwarded,
+    },
+    body: JSON.stringify({ backend }),
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    maybeNavigateToLogin(res.status);
+    throw new ApiError(
+      res.status,
+      `PUT memory/backend failed: ${res.status}`,
+      text,
+    );
+  }
+  return JSON.parse(text) as SetMemoryBackendResult;
+}
+
+// -----------------------------------------------------------------------------
 // Mid-turn steering (2026-06-06).
 // -----------------------------------------------------------------------------
 

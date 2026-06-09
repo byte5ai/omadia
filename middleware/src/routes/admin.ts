@@ -96,6 +96,10 @@ export function createAdminRouter(deps: AdminDeps): Router {
     }
   });
 
+  // Danger-Zone memory purge lives on the cookie-auth `/api/v1/admin/memory/
+  // purge` router (see `routes/memoryPurge.ts`), NOT here — the admin UI has
+  // no client-side ADMIN_TOKEN.
+
   return router;
 }
 

@@ -73,8 +73,17 @@ const ConfigSchema = z.object({
   BUILDER_AGENT_MAX_TOKENS: z.coerce.number().int().positive().default(16384),
   SKILLS_DIR: z.string().min(1).default('../skills'),
 
-  // Memory persistence (filesystem backend for now)
-  MEMORY_DIR: z.string().min(1).default('./.memory'),
+  // Memory persistence backend selection.
+  //   postgres → @omadia/memory-postgres (PostgresMemoryStore) — requires
+  //              DATABASE_URL (the Neon KG provides the shared graphPool the
+  //              Postgres store consumes). Without DATABASE_URL the bootstrap
+  //              falls back to inmemory.
+  //   inmemory → @omadia/memory (InMemoryMemoryStore, RAM-only, DB-less).
+  // NO default: when unset the bootstrap derives the default from DATABASE_URL
+  // (DATABASE_URL ? postgres : inmemory) — so Postgres is sharp by default
+  // whenever a DB is configured. A persisted operator choice (UI) takes
+  // precedence over this env value (see bootstrapMemoryFromEnv).
+  MEMORY_BACKEND: z.enum(['postgres', 'inmemory']).optional(),
   MEMORY_SEED_DIR: z.string().min(1).default('./seed/memory'),
   MEMORY_SEED_MODE: z.enum(['missing', 'overwrite', 'skip']).default('missing'),
 
@@ -386,6 +395,32 @@ function resolvePath(value: string): string {
   return path.isAbsolute(value) ? value : path.resolve(middlewareRoot, value);
 }
 
+/**
+ * Resolve a WRITABLE persistent-state dir (memory store, uploaded plugin
+ * packages). Precedence:
+ *   1. explicit env override → honour it verbatim (resolvePath).
+ *   2. else, when `PLATFORM_DATA_DIR` is set → default UNDER it, so the single
+ *      data volume captures this state alongside the vault + installed.json +
+ *      builder drafts (see platform/paths.ts `DATA_DIR`). Without this the dir
+ *      defaulted under the image layer (`/app/.memory`, `/app/.uploaded-
+ *      packages`) and was wiped on every `docker compose up --build` — leaving
+ *      installed.json (on the volume) pointing at packages that no longer
+ *      exist, so locally-installed plugins silently stop loading while their
+ *      settings persist. The compose comment already promises this behaviour.
+ *   3. else (local dev, no PLATFORM_DATA_DIR) → legacy app-root default.
+ */
+export function resolveStateDir(
+  envKey: string,
+  zodDefaultResolved: string,
+  leaf: string,
+): string {
+  const explicit = process.env[envKey];
+  if (explicit && explicit.trim() !== '') return resolvePath(explicit);
+  const platformDataDir = process.env['PLATFORM_DATA_DIR']?.trim();
+  if (platformDataDir) return path.join(path.resolve(platformDataDir), leaf);
+  return resolvePath(zodDefaultResolved);
+}
+
 function loadConfig(): Config {
   const parsed = ConfigSchema.safeParse(process.env);
   if (!parsed.success) {
@@ -396,10 +431,13 @@ function loadConfig(): Config {
   }
   return {
     ...parsed.data,
-    MEMORY_DIR: resolvePath(parsed.data.MEMORY_DIR),
     MEMORY_SEED_DIR: resolvePath(parsed.data.MEMORY_SEED_DIR),
     SKILLS_DIR: resolvePath(parsed.data.SKILLS_DIR),
-    UPLOADED_PACKAGES_DIR: resolvePath(parsed.data.UPLOADED_PACKAGES_DIR),
+    UPLOADED_PACKAGES_DIR: resolveStateDir(
+      'UPLOADED_PACKAGES_DIR',
+      parsed.data.UPLOADED_PACKAGES_DIR,
+      '.uploaded-packages',
+    ),
     PLUGIN_DEV_DIR: parsed.data.PLUGIN_DEV_DIR
       ? resolvePath(parsed.data.PLUGIN_DEV_DIR)
       : undefined,

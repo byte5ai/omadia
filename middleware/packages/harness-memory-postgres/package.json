@@ -1,0 +1,22 @@
+{
+  "name": "@omadia/memory-postgres",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "Postgres-backed memory store (PostgresMemoryStore) for the byte5 Harness — a drop-in alternative to @omadia/memory's FilesystemMemoryStore. Ships as a kind:extension plugin that reuses the shared 'graphPool' service (from @omadia/knowledge-graph-neon), runs its own schema migrations, and provides the 'memoryStore' service + the Anthropic-native 'memory' tool handler + the startup seeder. Structurally mutually exclusive with @omadia/memory — both declare memoryStore@1.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc && node scripts/copy-sql-assets.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@omadia/plugin-api": "*",
+    "@omadia/memory": "*",
+    "pg": "^8.13.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

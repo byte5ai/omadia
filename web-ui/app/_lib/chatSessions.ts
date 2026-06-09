@@ -256,6 +256,38 @@ export interface RecalledContextSnapshot {
   insights: RecalledInsightSnapshot[];
 }
 
+/**
+ * KG-walk visualization payload — the knowledge-graph neighborhood a turn
+ * surfaced, streamed in as a `turn_annotation` with `channel: 'kg_graph'`.
+ * Local mirror of `@omadia/plugin-api`'s `KgWalkPayload`; the web-ui doesn't
+ * import middleware types, so this is intentionally a structural copy.
+ */
+export interface KgWalkNode {
+  id: string;
+  label: string;
+  /** e.g. `MemorableKnowledge`, `Turn`, `Entity`, `User`. */
+  kind: string;
+  score?: number;
+  /** True when this turn WROTE the node (carried by the `kg_insert` merge). */
+  inserted?: boolean;
+}
+
+export interface KgWalkEdge {
+  from: string;
+  to: string;
+  type: string;
+  /** BFS distance from a root (1..N). hop-0 are the roots themselves. */
+  hop: number;
+  /** True when this turn created the edge (see KgWalkNode.inserted). */
+  inserted?: boolean;
+}
+
+export interface KgWalkPayload {
+  rootIds: string[];
+  nodes: KgWalkNode[];
+  edges: KgWalkEdge[];
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant';
@@ -268,6 +300,10 @@ export interface Message {
    *  pulled from PRIOR sessions, streamed in as a `kg_recall` annotation
    *  before the answer. Persisted with the turn. */
   recalledContext?: RecalledContextSnapshot;
+  /** KG-walk neighborhood this turn surfaced, streamed in as a `kg_graph`
+   *  annotation. Drives the floating `<KgWalkPane>` animation. Persisted
+   *  with the turn so a reloaded session keeps the walk. */
+  kgWalk?: KgWalkPayload;
   /** KG-persisted Turn external_id (e.g. `turn:<sessionId>:<ts>`). Set
    *  from the orchestrator's `done` event when session-logging succeeded.
    *  Drives the save-as-memory affordance — without it there's no

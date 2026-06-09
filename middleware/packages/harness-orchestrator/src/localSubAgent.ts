@@ -7,6 +7,7 @@ import type {
 import { appendLimitSignalNote } from '@omadia/plugin-api';
 import { streamMessageWithObserver } from './streaming.js';
 import type { AskObserver } from './tools/domainQueryTool.js';
+import { isInternExemptTool } from './privacyInternPolicy.js';
 import { buildDateHeader, turnContext } from './turnContext.js';
 
 // `LocalSubAgentTool` and `LocalSubAgentToolSpec` were inlined here
@@ -480,6 +481,14 @@ export class LocalSubAgent {
       }
     }
     if (privacy !== undefined && typeof result === 'string') {
+      // Interning-exemption: the agent's own infrastructure/self tools are
+      // never interned (see `privacyInternPolicy.ts`). Same allowlist the
+      // top-level orchestrator dispatch honours, applied here so a sub-agent
+      // reading memory / stored processes sees them in clear too. Checked
+      // first so it wins over every other branch.
+      if (isInternExemptTool(toolName)) {
+        return { output: result, ...(postcondition ? { postcondition } : {}) };
+      }
       // Slice 2.5 — same operator-owned bypass check the orchestrator's
       // outer dispatch consults. If the tool's plugin opted into `bypass`,
       // the sub-agent's LLM sees real values (not `[masked]`), record a

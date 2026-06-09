@@ -8,26 +8,21 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 
-import { FilesystemMemoryStore } from '@omadia/memory';
+import { InMemoryMemoryStore } from '@omadia/memory';
 
 import { OrchestratorMemoryNamespacer } from '../packages/harness-orchestrator/src/orchestratorMemoryNamespacer.js';
 
-async function ns(slug: string): Promise<{
-  store: FilesystemMemoryStore;
+function ns(slug: string): {
+  store: InMemoryMemoryStore;
   nsr: OrchestratorMemoryNamespacer;
-}> {
-  const store = new FilesystemMemoryStore(
-    await mkdtemp(join(tmpdir(), 'omadia-nsr-')),
-  );
+} {
+  const store = new InMemoryMemoryStore();
   return { store, nsr: new OrchestratorMemoryNamespacer(slug, store) };
 }
 
 test('model /memories/<x> notes are physically privatized per orchestrator', async () => {
-  const { store, nsr } = await ns('public');
+  const { store, nsr } = ns('public');
   await nsr.createFile('/memories/notes.md', 'hi');
   assert.equal(
     await store.readFile('/memories/orchestrators/public/notes.md'),
@@ -39,7 +34,7 @@ test('model /memories/<x> notes are physically privatized per orchestrator', asy
 });
 
 test('shared namespaces (core, sessions, chat-sessions, _brand) pass through', async () => {
-  const { store, nsr } = await ns('public');
+  const { store, nsr } = ns('public');
   await nsr.writeFile('/memories/core/rules.md', 'shared');
   await nsr.writeFile('/memories/_brand/logo.md', 'brand');
   // Physically NOT under the private tree.
@@ -48,7 +43,7 @@ test('shared namespaces (core, sessions, chat-sessions, _brand) pass through', a
 });
 
 test('list round-trips entries back into the model namespace', async () => {
-  const { nsr } = await ns('public');
+  const { nsr } = ns('public');
   await nsr.createFile('/memories/a.md', '1');
   await nsr.createFile('/memories/sub/b.md', '2');
   const entries = await nsr.list('/memories');
@@ -62,9 +57,7 @@ test('list round-trips entries back into the model namespace', async () => {
 });
 
 test('two orchestrators do not collide at the same model path', async () => {
-  const store = new FilesystemMemoryStore(
-    await mkdtemp(join(tmpdir(), 'omadia-nsr-')),
-  );
+  const store = new InMemoryMemoryStore();
   const a = new OrchestratorMemoryNamespacer('a', store);
   const b = new OrchestratorMemoryNamespacer('b', store);
   await a.createFile('/memories/shared-name.md', 'from-a');

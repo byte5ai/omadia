@@ -17,7 +17,11 @@ import type {
   FactExtractor,
   RecalledContext,
 } from '@omadia/orchestrator-extras';
-import { promoteTurnIfSignificant } from '@omadia/orchestrator-extras';
+import {
+  buildKgInsertPayload,
+  buildKgWalkPayload,
+  promoteTurnIfSignificant,
+} from '@omadia/orchestrator-extras';
 import type { AskObserver, DomainTool } from './tools/domainQueryTool.js';
 import type {
   TurnAnnotation,
@@ -62,6 +66,14 @@ import {
   BOOK_MEETING_TOOL_NAME,
   bookMeetingToolSpec,
 } from './tools/bookMeetingTool.js';
+import type { AttachmentReader } from './tools/readAttachmentTool.js';
+import {
+  READ_ATTACHMENT_TOOL_NAME,
+  ReadAttachmentTool,
+  readAttachmentToolSpec,
+} from './tools/readAttachmentTool.js';
+import { parseAttachmentsInfo } from './attachmentsInfo.js';
+import { extractAttachmentText } from './attachmentExtract.js';
 import type {
   EntityRefBus,
   KnowledgeGraph,
@@ -92,6 +104,7 @@ import {
 } from './privacyHandle.js';
 import { RunTraceCollector, type InvocationHandle } from './runTraceCollector.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
+import { isInternExemptTool } from './privacyInternPolicy.js';
 import { graphScopeFor, type SessionLogger } from './sessionLogger.js';
 import {
   type ModelRoutingConfig,
@@ -254,6 +267,16 @@ export interface OrchestratorOptions {
    */
   suggestFollowUpsTool?: SuggestFollowUpsTool;
   /**
+   * Optional byte source for user-uploaded attachments (#268 sub-problem 2).
+   * When set, the orchestrator (a) auto-ingests the TEXT of supported
+   * documents (.docx/.pdf/.md/.txt/.csv/.json) into the user message and
+   * (b) exposes the `read_attachment` tool as an explicit fallback. Absent →
+   * both mechanisms are inert (no auto-ingest, tool not offered). Wired
+   * kernel-side over the shared S3/Tigris bucket; harness-orchestrator never
+   * imports @aws-sdk directly.
+   */
+  attachmentReader?: AttachmentReader;
+  /**
    * Optional. When set, exposes `find_free_slots` + `book_meeting` so the
    * orchestrator can answer "wann hat X Zeit?" / "buche Termin …" using
    * delegated Microsoft Graph access to the calling user's M365 calendar.
@@ -394,11 +417,24 @@ type Message = any;
  * Teams calendar/diagram channels don't populate `attachments` today,
  * so this stays a no-op for them.
  */
-function buildUserContent(input: ChatTurnInput): ContentBlock[] | string {
+function buildUserContent(
+  input: ChatTurnInput,
+  extraText?: string,
+): ContentBlock[] | string {
+  // #268 — server-side auto-ingested attachment text, appended as a trailing
+  // block so the model sees the document content without a tool call. Kept
+  // additive to the existing image/bytesBase64 multimodal path.
+  const ingested =
+    extraText && extraText.trim().length > 0 ? extraText : undefined;
   const imageAtts = (input.attachments ?? []).filter(
     (a) => a.kind === 'image' && typeof a.bytesBase64 === 'string',
   );
-  if (imageAtts.length === 0) return input.userMessage;
+  if (imageAtts.length === 0) {
+    if (!ingested) return input.userMessage;
+    return input.userMessage.length > 0
+      ? `${input.userMessage}${ingested}`
+      : ingested;
+  }
   const blocks: ContentBlock[] = [];
   for (const att of imageAtts) {
     blocks.push({
@@ -410,8 +446,9 @@ function buildUserContent(input: ChatTurnInput): ContentBlock[] | string {
       },
     });
   }
-  if (input.userMessage.trim().length > 0) {
-    blocks.push({ type: 'text', text: input.userMessage });
+  const trailingText = `${input.userMessage}${ingested ?? ''}`;
+  if (trailingText.trim().length > 0) {
+    blocks.push({ type: 'text', text: trailingText });
   }
   return blocks;
 }
@@ -842,6 +879,10 @@ export class Orchestrator {
   private readonly turnHookRegistry: TurnHookRunner | undefined;
   private readonly askUserChoiceTool: AskUserChoiceTool | undefined;
   private readonly suggestFollowUpsTool: SuggestFollowUpsTool | undefined;
+  /** #268 — byte source for attachments; drives auto-ingest + read_attachment. */
+  private readonly attachmentReader: AttachmentReader | undefined;
+  /** #268 — lazily built `read_attachment` handler (only when reader present). */
+  private readonly readAttachmentTool: ReadAttachmentTool | undefined;
   private readonly chatParticipantsTool: ChatParticipantsTool | undefined;
   private readonly findFreeSlotsTool: FindFreeSlotsTool | undefined;
   private readonly bookMeetingTool: BookMeetingTool | undefined;
@@ -900,6 +941,10 @@ export class Orchestrator {
     this.chatParticipantsTool = options.chatParticipantsTool;
     this.askUserChoiceTool = options.askUserChoiceTool;
     this.suggestFollowUpsTool = options.suggestFollowUpsTool;
+    this.attachmentReader = options.attachmentReader;
+    this.readAttachmentTool = options.attachmentReader
+      ? new ReadAttachmentTool(options.attachmentReader)
+      : undefined;
     this.findFreeSlotsTool = options.findFreeSlotsTool;
     this.bookMeetingTool = options.bookMeetingTool;
     this.responseGuard = options.responseGuard;
@@ -1499,6 +1544,81 @@ export class Orchestrator {
   }
 
   /**
+   * KG-walk chat visualization — sibling of {@link toRecallAnnotationEvents}.
+   * When the recall surfaced any MemorableKnowledge / process / plan roots,
+   * walk the KG neighbourhood around them and emit a `kg_graph` turn-annotation
+   * carrying a {@link KgWalkPayload} so the frontend can animate iterating
+   * through the recalled subgraph.
+   *
+   * STRICT — best-effort and UI-only: this is wrapped in a try/catch and can
+   * NEVER throw, break, or delay the turn. A `turn_annotation` is additive and
+   * opaque to the model (the LLM never sees it; only the channel/UI consumes
+   * it), exactly like `kg_recall`. Returns `[]` (no event) on empty recall, no
+   * resolvable roots, an empty subgraph, or ANY error.
+   */
+  private async toKgGraphAnnotationEvents(
+    recalled: RecalledContext | undefined,
+  ): Promise<ChatStreamEvent[]> {
+    if (!recalled || !this.knowledgeGraph) return [];
+    try {
+      const payload = await buildKgWalkPayload(recalled, this.knowledgeGraph);
+      if (!payload) return [];
+      return [
+        {
+          type: 'turn_annotation' as const,
+          channel: 'kg_graph',
+          payload,
+        },
+      ];
+    } catch (err) {
+      // Never let the visualization affect the turn — log and move on.
+      console.warn(
+        '[orchestrator] kg_graph annotation build failed — skipping:',
+        err instanceof Error ? err.message : err,
+      );
+      return [];
+    }
+  }
+
+  /**
+   * KG-insert chat visualization — the WRITE-side sibling of
+   * {@link toKgGraphAnnotationEvents}. Emitted just before `done` once a turn
+   * auto-promotes a MemorableKnowledge node: walks a tight 1-hop neighbourhood
+   * around the freshly-written node and emits a `kg_insert` turn-annotation so
+   * the frontend can merge it into the live walk and pulse the new part.
+   *
+   * STRICT — best-effort and UI-only, exactly like the `kg_graph` sibling: it
+   * is wrapped in a try/catch and can NEVER throw, break, or delay the turn.
+   * Returns `[]` when there is no inserted id, no KG, an empty subgraph, or ANY
+   * error.
+   */
+  private async toKgInsertAnnotationEvents(
+    insertedMkId: string | undefined,
+  ): Promise<ChatStreamEvent[]> {
+    if (!insertedMkId || !this.knowledgeGraph) return [];
+    try {
+      const payload = await buildKgInsertPayload(
+        insertedMkId,
+        this.knowledgeGraph,
+      );
+      if (!payload) return [];
+      return [
+        {
+          type: 'turn_annotation' as const,
+          channel: 'kg_insert',
+          payload,
+        },
+      ];
+    } catch (err) {
+      console.warn(
+        '[orchestrator] kg_insert annotation build failed — skipping:',
+        err instanceof Error ? err.message : err,
+      );
+      return [];
+    }
+  }
+
+  /**
    * Public ChatAgent.chat — channel-facing. Delegates to the full-state
    * `runTurn()` and converts the internal `ChatTurnResult` to the
    * channel-agnostic `SemanticAnswer` at the boundary. Callers that need the
@@ -1722,6 +1842,8 @@ export class Orchestrator {
     // path emits it as a `kg_recall` annotation instead).
     const { text: priorContext, recalled } =
       await this.retrievePriorContext(input);
+    // #268 — pre-fetch + extract any uploaded document text for this turn.
+    const ingestedText = await this.ingestAttachments(input);
     const effectiveExtraSystemHint = composeExtraSystemHint(input);
     // Palaia Phase 8 (OB-77) — per-turn nudge counter (shared across all
     // tool-call iterations of this turn so NUDGE_MAX_PER_TURN is enforced).
@@ -1759,7 +1881,7 @@ export class Orchestrator {
         }
         return pair;
       }),
-      { role: 'user', content: buildUserContent(input) },
+      { role: 'user', content: buildUserContent(input, ingestedText) },
     ];
 
     // Open an EntityRef collection keyed to this turn. Tool handlers that
@@ -2266,6 +2388,12 @@ export class Orchestrator {
     // from prior sessions as a visible `kg_recall` card before the answer
     // streams in. No-op when every recall leg was empty.
     yield* this.toRecallAnnotationEvents(recalled);
+    // KG-walk chat visualization — a sibling `kg_graph` annotation carrying the
+    // recalled KG neighbourhood. Best-effort & guarded inside the helper so it
+    // can never break or delay the turn; additive/opaque to the model.
+    yield* await this.toKgGraphAnnotationEvents(recalled);
+    // #268 — pre-fetch + extract any uploaded document text for this turn.
+    const ingestedText = await this.ingestAttachments(input);
     const effectiveExtraSystemHint = composeExtraSystemHint(input);
     // Palaia Phase 8 (OB-77) — see chatInContextInner for rationale.
     const nudgeCounter = createNudgeTurnCounter();
@@ -2295,7 +2423,7 @@ export class Orchestrator {
         }
         return pair;
       }),
-      { role: 'user', content: buildUserContent(input) },
+      { role: 'user', content: buildUserContent(input, ingestedText) },
     ];
 
     const entityCollection = this.entityRefBus?.beginCollection(turnId);
@@ -2506,6 +2634,10 @@ export class Orchestrator {
             palaiaExcerpt,
             fallbackAssistantAnswer: answer,
           });
+          // KG-insert chat visualization — when this turn wrote a node, pulse
+          // the freshly-inserted neighbourhood in the floating pane. Best-effort
+          // & guarded; emitted before `done` so it lands with the final turn.
+          yield* await this.toKgInsertAnnotationEvents(autoPromotedMkId);
           yield {
             type: 'done',
             answer,
@@ -2939,6 +3071,14 @@ export class Orchestrator {
       }
     }
     if (privacy !== undefined && typeof result === 'string') {
+      // Interning-exemption: the agent's own infrastructure/self tools
+      // (memory, stored-process CRUD, self-produced meta output) are never
+      // interned — masking them blinds the agent to its own operational
+      // state. See `privacyInternPolicy.ts` for the auditable allowlist and
+      // rationale. Checked first so it wins over every other branch.
+      if (isInternExemptTool(name)) {
+        return result;
+      }
       // Slice 2.5 — Operator-owned per-plugin bypass. If the originating
       // plugin's `_privacy_mode` is `bypass` (or per-tool whitelist hits
       // this name), pass the raw result through unmasked AND record an
@@ -3140,6 +3280,9 @@ export class Orchestrator {
     if (name === SUGGEST_FOLLOW_UPS_TOOL_NAME && this.suggestFollowUpsTool) {
       return this.suggestFollowUpsTool.handle(input);
     }
+    if (name === READ_ATTACHMENT_TOOL_NAME && this.readAttachmentTool) {
+      return this.readAttachmentTool.handle(input);
+    }
     if (name === FIND_FREE_SLOTS_TOOL_NAME && this.findFreeSlotsTool) {
       return this.findFreeSlotsTool.handle(input);
     }
@@ -3272,6 +3415,108 @@ export class Orchestrator {
     return this.domainToolsByName.delete(name);
   }
 
+  /**
+   * #268 sub-problem 2 — server-side attachment auto-ingest.
+   *
+   * Pre-fetches and text-extracts the user's current-turn document uploads so
+   * the model can read them WITHOUT a tool call. Candidates come from BOTH
+   * sources:
+   *   - the `[attachments-info]` block Teams appends to `input.userMessage`
+   *     (preferred: read by storage_key, since signed URLs expire);
+   *   - `input.attachments[]` non-image file entries from other channels
+   *     (read by url).
+   * De-duplicated by storageKey/url. Images and unsupported types are skipped
+   * silently (brand:// / vision handles images). Ingested regardless of
+   * `freshCheck` — these are the user's current message, not recalled context.
+   *
+   * Returns a concatenation of `[attachment-content: …]` blocks (leading
+   * with `\n\n`), or '' when there is nothing to ingest or no reader is
+   * configured. NEVER throws — any failure logs a warning and returns ''.
+   */
+  private async ingestAttachments(input: ChatTurnInput): Promise<string> {
+    if (!this.attachmentReader) return '';
+    try {
+      type Candidate = {
+        fileName: string | undefined;
+        contentType: string | undefined;
+        storageKey?: string;
+        url?: string;
+        dedupe: string;
+      };
+      const candidates: Candidate[] = [];
+      const seen = new Set<string>();
+      const push = (c: Candidate): void => {
+        if (seen.has(c.dedupe)) return;
+        seen.add(c.dedupe);
+        candidates.push(c);
+      };
+
+      // 1. Teams `[attachments-info]` manifest (storage_key-bearing).
+      for (const info of parseAttachmentsInfo(input.userMessage)) {
+        push({
+          fileName: info.fileName,
+          contentType: info.contentType,
+          storageKey: info.storageKey,
+          ...(info.signedUrl ? { url: info.signedUrl } : {}),
+          dedupe: `key:${info.storageKey}`,
+        });
+      }
+      // 2. Non-image file attachments from other channels (url-bearing).
+      for (const att of input.attachments ?? []) {
+        if (att.kind === 'image') continue;
+        if (typeof att.url !== 'string' || att.url.length === 0) continue;
+        push({
+          fileName: att.name,
+          contentType: att.mediaType,
+          url: att.url,
+          dedupe: `url:${att.url}`,
+        });
+      }
+      if (candidates.length === 0) return '';
+
+      const blocks: string[] = [];
+      for (const c of candidates) {
+        try {
+          // Prefer storage_key (durable) over url (Teams signed urls expire).
+          const fetched = c.storageKey
+            ? await this.attachmentReader.readByStorageKey(c.storageKey)
+            : c.url
+              ? await this.attachmentReader.readByUrl(c.url)
+              : undefined;
+          if (!fetched) continue;
+          const fetchedFileName =
+            'fileName' in fetched
+              ? (fetched as { fileName?: string }).fileName
+              : undefined;
+          const result = await extractAttachmentText(
+            fetched.bytes,
+            fetched.contentType ?? c.contentType,
+            fetchedFileName ?? c.fileName,
+          );
+          if (!result.ok) continue;
+          const label = c.fileName ?? c.storageKey ?? c.url ?? 'attachment';
+          blocks.push(
+            `\n\n[attachment-content: ${label}]\n${result.text}\n[/attachment-content]`,
+          );
+        } catch (err) {
+          console.warn(
+            `[harness-orchestrator] ingestAttachments: skipped one attachment — ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
+      return blocks.join('');
+    } catch (err) {
+      console.warn(
+        `[harness-orchestrator] ingestAttachments failed (non-fatal) — ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return '';
+    }
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private buildToolsList(): any[] {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -3281,6 +3526,7 @@ export class Orchestrator {
     if (this.chatParticipantsTool) tools.push(chatParticipantsToolSpec);
     if (this.askUserChoiceTool) tools.push(askUserChoiceToolSpec);
     if (this.suggestFollowUpsTool) tools.push(suggestFollowUpsToolSpec);
+    if (this.readAttachmentTool) tools.push(readAttachmentToolSpec);
     if (this.findFreeSlotsTool) tools.push(findFreeSlotsToolSpec);
     if (this.bookMeetingTool) tools.push(bookMeetingToolSpec);
     // Plugin-contributed native tools (registered via ctx.tools.register).

@@ -43,6 +43,10 @@ import {
   buildOrchestratorForAgent,
   type OrchestratorDeps,
 } from './buildOrchestrator.js';
+import {
+  createAttachmentReader,
+  type AttachmentByteStore,
+} from './attachmentReaderFactory.js';
 import type { TurnHookRunner } from './turnHooks.js';
 import type { ChatSessionStore } from './chatSessionStore.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
@@ -301,6 +305,14 @@ export async function activate(
   const microsoft365 = ctx.services.get<Microsoft365Accessor>(
     'microsoft365.graph',
   );
+  // #268 — attachment byte source. The kernel provides `tigrisStore` (the same
+  // S3/Tigris bucket Teams uploads + brand:// logos use) when the bucket env
+  // is configured. Absent → the reader's storage-key path is inert; URL reads
+  // still work via fetch. The reader drives auto-ingest + the read_attachment
+  // tool; harness-orchestrator stays free of any @aws-sdk dependency.
+  const attachmentByteStore =
+    ctx.services.get<AttachmentByteStore>('tigrisStore');
+  const attachmentReader = createAttachmentReader(attachmentByteStore);
   // Phase-1 of the Kemia integration. Late-bound `responseGuard@1` getter —
   // the orchestrator generally activates BEFORE its tool plugins, so a
   // bind-at-activate lookup would always miss the responseGuard provider
@@ -377,9 +389,16 @@ export async function activate(
   // KG-ACL Slice 4b — env-var opt-in for auto-promotion at
   // significance ≥ threshold. Read straight from process.env (these
   // are operator-level feature flags, not per-plugin setup fields).
-  // Default OFF — no auto-saves without an explicit signal from
-  // both the capture-filter scorer AND the operator.
-  const autoPromote = parseBooleanEnv(process.env['KG_ACL_AUTO_PROMOTE']);
+  // Default ON — significant turns auto-promote to the Knowledge-Graph
+  // out of the box. Still gated at runtime by the capture-filter scorer
+  // (needs `capture_level >= normal`, now the default) and the presence of
+  // a Postgres KG + Anthropic key; without those the promote is a no-op.
+  // Set `KG_ACL_AUTO_PROMOTE=false` to opt out. NOTE: this means a Haiku
+  // significance call per captured turn — real Anthropic spend + latency.
+  const autoPromote =
+    process.env['KG_ACL_AUTO_PROMOTE'] === undefined
+      ? true
+      : parseBooleanEnv(process.env['KG_ACL_AUTO_PROMOTE']);
   const autoPromoteThreshold = parseNumberOrDefault(
     process.env['KG_ACL_AUTO_PROMOTE_THRESHOLD'],
     0.7,
@@ -509,6 +528,7 @@ export async function activate(
     graphTenantId,
     ...(assistantIdentity ? { assistantIdentity } : {}),
     ...(turnHookRegistry ? { turnHookRegistry } : {}),
+    attachmentReader,
   };
   // Per-turn Sonnet/Opus routing (opt-in). When `orchestrator_model_routing`
   // is true, a Haiku classifier picks the model per turn: simple → Sonnet,

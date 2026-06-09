@@ -17,12 +17,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { mkdtemp } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
 import Anthropic from '@anthropic-ai/sdk';
-import { FilesystemMemoryStore } from '@omadia/memory';
+import { InMemoryMemoryStore } from '@omadia/memory';
 import { InMemoryNudgeRegistry } from '@omadia/plugin-api';
 import type {
   EntityRefBus,
@@ -53,7 +49,7 @@ function fakeNativeToolRegistry(): NativeToolRegistry {
   } as unknown as NativeToolRegistry;
 }
 
-function deps(memoryStore: FilesystemMemoryStore): OrchestratorDeps {
+function deps(memoryStore: InMemoryMemoryStore): OrchestratorDeps {
   return {
     client: new Anthropic({ apiKey: 'test-key' }),
     knowledgeGraph: {} as KnowledgeGraph,
@@ -112,8 +108,7 @@ const baseSnapshot: ConfigSnapshot = {
 };
 
 async function setup() {
-  const dir = await mkdtemp(join(tmpdir(), 'omadia-sess-'));
-  const memoryStore = new FilesystemMemoryStore(dir);
+  const memoryStore = new InMemoryMemoryStore();
   const chatSessionStore = new ChatSessionStore(memoryStore);
   const cfgStore = new MutableFakeStore(baseSnapshot);
   const registry = new OrchestratorRegistry(
@@ -124,7 +119,7 @@ async function setup() {
     },
   );
   await registry.start();
-  return { dir, memoryStore, chatSessionStore, cfgStore, registry };
+  return { memoryStore, chatSessionStore, cfgStore, registry };
 }
 
 async function makeSession(

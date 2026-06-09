@@ -45,6 +45,8 @@ import {
   type InconsistencyResolution,
   type InconsistencyStatus,
   type ListInconsistenciesOptions,
+  type KgWalkEdge,
+  type KgWalkNode,
   type ListMemoriesForScopeOptions,
   type MemorableKnowledgeHit,
   type MemoriesProvenanceView,
@@ -52,6 +54,7 @@ import {
   type MemoryWithAncestors,
   type MemorableKnowledgeIngest,
   type MemorableKnowledgeIngestResult,
+  type MemorableKnowledgePurgeFilter,
   type MemorableKnowledgeSearchOptions,
   type MemorableKnowledgeUpdate,
   type MergeCandidateNode,
@@ -849,6 +852,12 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     this.upsertNode({
       id: mkExtId,
       type: 'MemorableKnowledge',
+      // WS5 — reflect an explicit initial visibility on the node so
+      // `GraphNode.visibility` carries the value the reaper requested
+      // (team-wide). Omitted → undefined, the historical default.
+      ...(input.visibility !== undefined
+        ? { visibility: input.visibility }
+        : {}),
       props: {
         kind: input.kind,
         summary: input.summary,
@@ -1120,6 +1129,70 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     // deleted excerpts so cosine-search can never resurrect a tombstoned
     // memory by keeping its vector around.
     for (const id of droppedIds) this.embeddings.delete(id);
+  }
+
+  /**
+   * True when an MK node matches a Danger-Zone purge filter. The
+   * in-memory store is single-tenant, so `filter.tenantId` is accepted
+   * for interface parity but not matched against (every node is in the
+   * one implicit tenant).
+   */
+  private matchesMkPurgeFilter(
+    node: GraphNode,
+    filter: MemorableKnowledgePurgeFilter,
+  ): boolean {
+    if (node.type !== 'MemorableKnowledge') return false;
+    if (
+      filter.originAgent !== undefined &&
+      node.props['origin_agent'] !== filter.originAgent
+    ) {
+      return false;
+    }
+    if (filter.aclOwner !== undefined) {
+      const owners = Array.isArray(node.props['acl_owners'])
+        ? (node.props['acl_owners'] as string[])
+        : [];
+      if (!owners.includes(filter.aclOwner)) return false;
+    }
+    return true;
+  }
+
+  async countMemorableKnowledge(
+    filter: MemorableKnowledgePurgeFilter,
+  ): Promise<{ count: number }> {
+    let count = 0;
+    for (const node of this.nodes.values()) {
+      if (this.matchesMkPurgeFilter(node, filter)) count++;
+    }
+    return { count };
+  }
+
+  async purgeMemorableKnowledge(
+    filter: MemorableKnowledgePurgeFilter,
+  ): Promise<{ deletedNodes: number }> {
+    const mkIds: string[] = [];
+    for (const node of this.nodes.values()) {
+      if (this.matchesMkPurgeFilter(node, filter)) mkIds.push(node.id);
+    }
+    if (mkIds.length === 0) return { deletedNodes: 0 };
+    const mkIdSet = new Set(mkIds);
+    // Cascade-delete attached PalaiaExcerpt nodes BEFORE dropping parents
+    // + their edges (mirrors deleteMemory's Slice 6.5 cascade).
+    const excerptIds: string[] = [];
+    for (const edge of this.edges.values()) {
+      if (edge.type === 'EXCERPT_OF' && mkIdSet.has(edge.to)) {
+        excerptIds.push(edge.from);
+      }
+    }
+    const droppedIds = new Set<string>([...mkIds, ...excerptIds]);
+    for (const id of droppedIds) this.nodes.delete(id);
+    for (const [key, edge] of this.edges.entries()) {
+      if (droppedIds.has(edge.from) || droppedIds.has(edge.to)) {
+        this.edges.delete(key);
+      }
+    }
+    for (const id of droppedIds) this.embeddings.delete(id);
+    return { deletedNodes: mkIds.length };
   }
 
   async updateMemorableKnowledge(
@@ -2495,6 +2568,82 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     return { memories, edges };
   }
 
+  async getMemorableKnowledgeSubgraph(
+    rootExternalIds: string[],
+    opts: { maxHops?: number; maxNodes?: number } = {},
+  ): Promise<{ nodes: KgWalkNode[]; edges: KgWalkEdge[] }> {
+    const maxHops = Math.max(1, Math.min(opts.maxHops ?? 2, 6));
+    const maxNodes = Math.max(1, Math.min(opts.maxNodes ?? 40, 500));
+
+    const roots = [...new Set(rootExternalIds)].filter(
+      (id) => typeof id === 'string' && id.length > 0 && this.nodes.has(id),
+    );
+    if (roots.length === 0) return { nodes: [], edges: [] };
+
+    // BFS over the in-memory edge map. `from`/`to` are already external_ids
+    // here (no UUID indirection like the Neon backend).
+    const distance = new Map<string, number>();
+    const included = new Set<string>();
+    let frontier: string[] = [];
+    for (const id of roots) {
+      distance.set(id, 0);
+      included.add(id);
+      frontier.push(id);
+    }
+
+    const edgeByKey = new Map<
+      string,
+      { from: string; to: string; type: string; hop: number }
+    >();
+
+    for (let hop = 1; hop <= maxHops; hop++) {
+      if (frontier.length === 0) break;
+      if (included.size >= maxNodes) break;
+      const frontierSet = new Set(frontier);
+      const nextFrontier: string[] = [];
+
+      for (const edge of this.edges.values()) {
+        const fromHit = frontierSet.has(edge.from);
+        const toHit = frontierSet.has(edge.to);
+        if (!fromHit && !toHit) continue;
+        const neighbour = fromHit ? edge.to : edge.from;
+        if (!this.nodes.has(neighbour)) continue;
+
+        if (!included.has(neighbour)) {
+          if (included.size >= maxNodes) continue; // cap — drop node + edge
+          included.add(neighbour);
+          distance.set(neighbour, hop);
+          nextFrontier.push(neighbour);
+        }
+        const key = `${edge.from}|${edge.type}|${edge.to}`;
+        if (!edgeByKey.has(key)) {
+          edgeByKey.set(key, {
+            from: edge.from,
+            to: edge.to,
+            type: edge.type,
+            hop,
+          });
+        }
+      }
+      frontier = nextFrontier;
+    }
+
+    const nodes: KgWalkNode[] = [];
+    for (const id of included) {
+      const node = this.nodes.get(id);
+      if (!node) continue;
+      nodes.push({ id: node.id, label: kgWalkLabel(node), kind: node.type });
+    }
+
+    const edges: KgWalkEdge[] = [];
+    for (const e of edgeByKey.values()) {
+      if (!included.has(e.from) || !included.has(e.to)) continue;
+      edges.push({ from: e.from, to: e.to, type: e.type, hop: e.hop });
+    }
+
+    return { nodes, edges };
+  }
+
   async findEntities(opts: FindEntitiesOptions): Promise<GraphNode[]> {
     const limit = Math.max(1, Math.min(opts.limit ?? 25, 200));
     const nameLower = opts.nameContains?.trim().toLowerCase();
@@ -2877,6 +3026,50 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     const key = `${edge.from}|${edge.type}|${edge.to}`;
     this.edges.set(key, edge);
   }
+}
+
+/**
+ * Per-type label keys — mirrors the Neon backend's {@link kgWalkLabel}. Surface
+ * a node's semantic content (a Turn's `userMessage`, a PalaiaExcerpt's `text`)
+ * rather than its bare type.
+ */
+const KG_WALK_LABEL_KEYS: Record<string, readonly string[]> = {
+  Turn: ['userMessage', 'assistantAnswer'],
+  PalaiaExcerpt: ['text'],
+  Plan: ['goal', 'summary'],
+  PlanStep: ['goal'],
+  Inconsistency: ['summary'],
+};
+
+const KG_WALK_GENERIC_LABEL_KEYS = [
+  'summary',
+  'name',
+  'title',
+  'displayName',
+  'text',
+  'goal',
+  'content',
+  'message',
+] as const;
+
+/**
+ * KG-walk node label — mirrors the Neon backend's helper. Tries the per-type
+ * semantic keys first, then generic human fields, else the node type.
+ */
+function kgWalkLabel(node: GraphNode): string {
+  const props = node.props as Record<string, unknown>;
+  const keys = [
+    ...(KG_WALK_LABEL_KEYS[node.type] ?? []),
+    ...KG_WALK_GENERIC_LABEL_KEYS,
+  ];
+  for (const key of keys) {
+    const v = props[key];
+    if (typeof v === 'string' && v.trim().length > 0) {
+      const t = v.trim().replace(/\s+/g, ' ');
+      return t.length > 120 ? `${t.slice(0, 117)}…` : t;
+    }
+  }
+  return node.type;
 }
 
 /**

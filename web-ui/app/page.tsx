@@ -3,12 +3,14 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type KeyboardEvent,
 } from 'react';
 import { useTranslations } from 'next-intl';
-import { Eraser, Navigation } from 'lucide-react';
+import { Eraser, GitBranch, Navigation, Network } from 'lucide-react';
 import { ChatTabs } from './_components/ChatTabs';
 import { AgentPicker } from './_components/AgentPicker';
 import { AgentUnavailableBanner } from './_components/AgentUnavailableBanner';
@@ -38,6 +40,115 @@ import {
 import { useChatSessionsCtx } from './_lib/chatSessionsContext';
 import { useStreamStore } from './_lib/streamStore';
 import { ChoiceCard } from './_components/ChoiceCard';
+import { KgWalkPane } from './_components/KgWalkPane';
+import { PlanDagPane } from './_components/PlanDagPane';
+import type { KgWalkPayload, PlanSnapshot } from './_lib/chatSessions';
+
+/**
+ * Dev-only KG-walk fixture. Rendered in the floating pane when the URL carries
+ * `?kgmock=1`, so the pane can be verified visually before the backend emits
+ * real `kg_graph` annotations. Never shown otherwise. Intentionally multi-hop
+ * (and multi-root, with several same-kind nodes) so the hop-details list and
+ * the label-on-hover de-noising are both exercisable.
+ */
+const MOCK_KG_WALK: KgWalkPayload = {
+  rootIds: ['mk:1', 'mk:2'],
+  nodes: [
+    { id: 'mk:1', label: 'Urlaubsantrag-Policy', kind: 'MemorableKnowledge', score: 0.92 },
+    { id: 'mk:2', label: 'Gleitzeit-Konto-Regel', kind: 'MemorableKnowledge', score: 0.81 },
+    { id: 'turn:a', label: 'Turn · Urlaub 2024', kind: 'Turn' },
+    { id: 'turn:b', label: 'Turn · Überstunden', kind: 'Turn' },
+    { id: 'turn:c', label: 'Turn · Resturlaub-Übertrag', kind: 'Turn' },
+    { id: 'ent:hr', label: 'HR-Abteilung', kind: 'Entity' },
+    { id: 'ent:policy', label: 'Gleitzeit-Regel', kind: 'Entity' },
+    { id: 'ent:contract', label: 'Arbeitsvertrag-Standard', kind: 'Entity' },
+    { id: 'user:max', label: 'Max Mustermann', kind: 'User' },
+    { id: 'user:eva', label: 'Eva Beispiel', kind: 'User' },
+    { id: 'ins:1', label: 'Mitarbeiter bevorzugen flexible Modelle', kind: 'Insight' },
+  ],
+  edges: [
+    { from: 'mk:1', to: 'turn:a', type: 'DERIVED_FROM', hop: 1 },
+    { from: 'mk:1', to: 'ent:hr', type: 'MENTIONS', hop: 1 },
+    { from: 'mk:2', to: 'ent:policy', type: 'DERIVED_FROM', hop: 1 },
+    { from: 'mk:2', to: 'turn:b', type: 'MENTIONS', hop: 1 },
+    { from: 'turn:a', to: 'user:max', type: 'INVOLVES', hop: 2 },
+    { from: 'ent:hr', to: 'ent:policy', type: 'RELATES_TO', hop: 2 },
+    { from: 'turn:b', to: 'user:eva', type: 'INVOLVES', hop: 2 },
+    { from: 'ent:policy', to: 'ent:contract', type: 'GOVERNED_BY', hop: 2 },
+    { from: 'ent:policy', to: 'turn:c', type: 'CITED_IN', hop: 3 },
+    { from: 'ent:contract', to: 'ins:1', type: 'SUPPORTS', hop: 3 },
+    { from: 'turn:c', to: 'user:max', type: 'INVOLVES', hop: 3 },
+  ],
+};
+
+const EMPTY_SUBSCRIBE = (): (() => void) => () => undefined;
+
+function useKgMockEnabled(): boolean {
+  // useSyncExternalStore avoids a setState-in-effect: the client snapshot reads
+  // the URL directly, the server snapshot is always false (no SSR mismatch
+  // because the store never changes after mount).
+  return useSyncExternalStore(
+    EMPTY_SUBSCRIBE,
+    () =>
+      new URLSearchParams(window.location.search).get('kgmock') === '1',
+    () => false,
+  );
+}
+
+// Master on/off for the chat visualization panes (KG-walk on the right, Plan
+// DAG on the left), persisted in localStorage so the operator's choice sticks
+// across reloads. Both DEFAULT ON: the feature is enabled unless explicitly
+// turned off (stored '0'). useSyncExternalStore keeps it SSR-safe (server
+// snapshot mirrors the default) and updates in place without a setState-in-
+// effect; we also listen to the cross-tab `storage` event plus a same-tab
+// custom event so a pill flip in one place re-renders every reader.
+const TOGGLE_PREF_EVENT = 'omadia:viz-pref';
+
+function subscribeTogglePref(onChange: () => void): () => void {
+  window.addEventListener('storage', onChange);
+  window.addEventListener(TOGGLE_PREF_EVENT, onChange);
+  return () => {
+    window.removeEventListener('storage', onChange);
+    window.removeEventListener(TOGGLE_PREF_EVENT, onChange);
+  };
+}
+
+/** Generic default-ON persisted boolean toggle keyed on a localStorage slot. */
+function usePersistedToggle(
+  storageKey: string,
+): readonly [boolean, (next: boolean) => void] {
+  const enabled = useSyncExternalStore(
+    subscribeTogglePref,
+    () => {
+      try {
+        return window.localStorage.getItem(storageKey) !== '0';
+      } catch {
+        return true;
+      }
+    },
+    () => true,
+  );
+  const setEnabled = useCallback(
+    (next: boolean) => {
+      try {
+        window.localStorage.setItem(storageKey, next ? '1' : '0');
+      } catch {
+        /* storage disabled (private mode) — toggle still applies this render */
+      }
+      window.dispatchEvent(new Event(TOGGLE_PREF_EVENT));
+    },
+    [storageKey],
+  );
+  return [enabled, setEnabled] as const;
+}
+
+function useKgWalkEnabled(): readonly [boolean, (next: boolean) => void] {
+  return usePersistedToggle('omadia.kgWalkEnabled');
+}
+
+function usePlanDagEnabled(): readonly [boolean, (next: boolean) => void] {
+  return usePersistedToggle('omadia.planDagEnabled');
+}
 
 export default function ChatPage(): React.ReactElement {
   const t = useTranslations('chat');
@@ -55,6 +166,30 @@ export default function ChatPage(): React.ReactElement {
   } = useChatSessionsCtx();
   const streamStore = useStreamStore();
   const sending = streamStore.isActive(activeId);
+  const kgMockEnabled = useKgMockEnabled();
+  const [kgWalkEnabled, setKgWalkEnabled] = useKgWalkEnabled();
+  const [planDagEnabled, setPlanDagEnabled] = usePlanDagEnabled();
+
+  // The KG-walk surfaced in the floating pane = the most recent assistant
+  // message that carries one. Falls back to the dev mock when `?kgmock=1` and
+  // no real walk has streamed in yet.
+  const activeKgWalk = useMemo<KgWalkPayload | null>(() => {
+    for (let i = activeSession.messages.length - 1; i >= 0; i -= 1) {
+      const m = activeSession.messages[i];
+      if (m?.role === 'assistant' && m.kgWalk) return m.kgWalk;
+    }
+    return kgMockEnabled ? MOCK_KG_WALK : null;
+  }, [activeSession.messages, kgMockEnabled]);
+
+  // The live plan surfaced in the left pane = the most recent assistant message
+  // carrying a plan snapshot (re-emitted on every step change / replan).
+  const activePlan = useMemo<PlanSnapshot | null>(() => {
+    for (let i = activeSession.messages.length - 1; i >= 0; i -= 1) {
+      const m = activeSession.messages[i];
+      if (m?.role === 'assistant' && m.plan) return m.plan;
+    }
+    return null;
+  }, [activeSession.messages]);
 
   const [input, setInput] = useState('');
   const [resetPending, setResetPending] = useState(false);
@@ -329,7 +464,64 @@ export default function ChatPage(): React.ReactElement {
             />
           </div>
 
-          {/* Row 2 — Agent-Usage-Pills (only when anything was invoked) */}
+          {/* Row 2 — Visualization toggles. Both pills live here together (kept
+              out of Row 1 so they don't wrap awkwardly under the agent picker).
+              KG-walk (indigo) auto-opens the right pane on KG access; Plan (sky)
+              auto-opens the left pane on plan fetch/extend. Both default ON. */}
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={kgWalkEnabled}
+              onClick={() => setKgWalkEnabled(!kgWalkEnabled)}
+              title={t('kgWalk.toggleLabel')}
+              className={[
+                'inline-flex select-none items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition',
+                kgWalkEnabled
+                  ? 'border-indigo-300 bg-indigo-50 text-indigo-700 dark:border-indigo-600/60 dark:bg-indigo-500/15 dark:text-indigo-300'
+                  : 'border-neutral-300 bg-transparent text-neutral-400 hover:text-neutral-600 dark:border-neutral-700 dark:hover:text-neutral-300',
+              ].join(' ')}
+            >
+              <Network size={12} aria-hidden />
+              {t('kgWalk.toggleLabel')}
+              <span
+                aria-hidden
+                className={[
+                  'inline-block h-1.5 w-1.5 rounded-full',
+                  kgWalkEnabled
+                    ? 'bg-indigo-500'
+                    : 'bg-neutral-400 dark:bg-neutral-600',
+                ].join(' ')}
+              />
+            </button>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={planDagEnabled}
+              onClick={() => setPlanDagEnabled(!planDagEnabled)}
+              title={t('planDag.toggleLabel')}
+              className={[
+                'inline-flex select-none items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition',
+                planDagEnabled
+                  ? 'border-sky-300 bg-sky-50 text-sky-700 dark:border-sky-600/60 dark:bg-sky-500/15 dark:text-sky-300'
+                  : 'border-neutral-300 bg-transparent text-neutral-400 hover:text-neutral-600 dark:border-neutral-700 dark:hover:text-neutral-300',
+              ].join(' ')}
+            >
+              <GitBranch size={12} aria-hidden />
+              {t('planDag.toggleLabel')}
+              <span
+                aria-hidden
+                className={[
+                  'inline-block h-1.5 w-1.5 rounded-full',
+                  planDagEnabled
+                    ? 'bg-sky-500'
+                    : 'bg-neutral-400 dark:bg-neutral-600',
+                ].join(' ')}
+              />
+            </button>
+          </div>
+
+          {/* Row 3 — Agent-Usage-Pills (only when anything was invoked) */}
           <AgentUsagePills session={activeSession} />
         </div>
       </div>
@@ -362,28 +554,39 @@ export default function ChatPage(): React.ReactElement {
         );
       })()}
 
-      <div
-        ref={scrollRef}
-        className="flex-1 overflow-y-auto px-6 py-6"
-        aria-live="polite"
-      >
-        <div className="mx-auto flex max-w-4xl flex-col gap-4">
-          {activeSession.messages.length === 0 && (
-            <EmptyState hydrating={hydrating} session={activeSession} />
-          )}
-          {activeSession.messages.map((m) => (
-            <MessageRow
-              key={m.id}
-              message={m}
-              disabled={sending || hydrating}
-              onChoose={(value) => {
-                send(value);
-              }}
-              onDiscardAutoPromoted={clearAutoPromoted}
-            />
-          ))}
+      <div className="flex min-h-0 flex-1">
+        <div
+          ref={scrollRef}
+          className="flex-1 overflow-y-auto px-6 py-6"
+          aria-live="polite"
+        >
+          <div className="mx-auto flex max-w-4xl flex-col gap-4">
+            {activeSession.messages.length === 0 && (
+              <EmptyState hydrating={hydrating} session={activeSession} />
+            )}
+            {activeSession.messages.map((m) => (
+              <MessageRow
+                key={m.id}
+                message={m}
+                disabled={sending || hydrating}
+                onChoose={(value) => {
+                  send(value);
+                }}
+                onDiscardAutoPromoted={clearAutoPromoted}
+              />
+            ))}
+          </div>
         </div>
       </div>
+
+      {/* KG-walk — togglable floating pane (launcher chip → flying window) for
+          the most recent turn's graph walk. Chat stays full width. Gated by the
+          header toggle; `?kgmock=1` force-enables it for dev preview. */}
+      <KgWalkPane walk={kgWalkEnabled || kgMockEnabled ? activeKgWalk : null} />
+
+      {/* Plan-DAG — left-anchored sibling pane for the live plan of the most
+          recent turn. Gated by its own header toggle. */}
+      <PlanDagPane plan={planDagEnabled ? activePlan : null} />
 
       <footer className="border-t border-neutral-200 bg-white/80 px-6 py-4 backdrop-blur dark:border-neutral-800 dark:bg-neutral-900/80">
         <div className="mx-auto flex max-w-4xl flex-col gap-1.5">

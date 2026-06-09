@@ -10,20 +10,17 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 
-import { FilesystemMemoryStore } from '@omadia/memory';
+import { InMemoryMemoryStore } from '@omadia/memory';
 
 import { createMemoryAccessor } from '../src/platform/memoryAccessor.js';
 
-async function freshStore(): Promise<FilesystemMemoryStore> {
-  return new FilesystemMemoryStore(await mkdtemp(join(tmpdir(), 'omadia-acc-')));
+function freshStore(): InMemoryMemoryStore {
+  return new InMemoryMemoryStore();
 }
 
 test('same plugin under two Agents writes to disjoint trees', async () => {
-  const store = await freshStore();
+  const store = freshStore();
   let slug = 'agent-a';
   const acc = createMemoryAccessor({
     pluginId: 'p',
@@ -53,7 +50,7 @@ test('same plugin under two Agents writes to disjoint trees', async () => {
 });
 
 test('legacy /memories/agents/<plugin>/ data is read-through for default only', async () => {
-  const store = await freshStore();
+  const store = freshStore();
   await store.writeFile('/memories/agents/p/old.md', 'legacy');
 
   let slug = 'default';
@@ -73,7 +70,7 @@ test('legacy /memories/agents/<plugin>/ data is read-through for default only', 
 });
 
 test('outside a turn the accessor falls back to the default Agent tree', async () => {
-  const store = await freshStore();
+  const store = freshStore();
   const acc = createMemoryAccessor({
     pluginId: 'p',
     store,
