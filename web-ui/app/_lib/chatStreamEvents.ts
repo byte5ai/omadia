@@ -4,6 +4,9 @@ import type {
   ChatSession,
   DiagramAttachment,
   FollowUpOption,
+  KgWalkEdge,
+  KgWalkNode,
+  KgWalkPayload,
   Message,
   NudgeEvent,
   OutgoingFileAttachment,
@@ -25,6 +28,13 @@ import type {
  */
 export type ChatStreamEvent =
   | { type: 'iteration_start'; iteration: number }
+  /** Per-turn Haiku-triage verdict, emitted once at turn start. */
+  | {
+      type: 'turn_routing';
+      bucket: 'simple' | 'complex' | 'fallback';
+      classifierModel: string;
+      model: string;
+    }
   | { type: 'text_delta'; text: string }
   | {
       type: 'tool_use';
@@ -97,6 +107,8 @@ export type ChatStreamEvent =
       answer: string;
       toolCalls: number;
       iterations: number;
+      /** Model this turn ran on (per-turn router → Sonnet/Opus, or default). */
+      model?: string;
       turnId?: string;
       palaiaExcerpt?: PalaiaExcerpt;
       autoPromotedMkId?: string;
@@ -155,6 +167,15 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
   switch (event.type) {
     case 'text_delta':
       return { ...m, content: m.content + event.text };
+    case 'turn_routing':
+      return {
+        ...m,
+        routing: {
+          bucket: event.bucket,
+          classifierModel: event.classifierModel,
+          model: event.model,
+        },
+      };
     case 'turn_annotation':
       // #133 (E9) — the live plan snapshot. Re-emitted on every step change;
       // we just replace, so the card reflects the latest state.
@@ -168,6 +189,21 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
           ...m,
           recalledContext: event.payload as RecalledContextSnapshot,
         };
+      }
+      // KG-walk neighborhood — the graph the turn traversed. Emitted once,
+      // typically before the answer. Parsed defensively: a malformed payload
+      // is dropped rather than crashing the fold.
+      if (event.channel === 'kg_graph' && event.payload) {
+        const walk = parseKgWalk(event.payload);
+        return walk ? { ...m, kgWalk: walk } : m;
+      }
+      // KG-insert — what THIS turn wrote into the graph. Emitted after the
+      // answer (post auto-promotion). Merged into the existing walk (marking
+      // its nodes/edges `inserted`) so the pane pulses the fresh part; when no
+      // walk preceded it, the insert becomes the walk on its own.
+      if (event.channel === 'kg_insert' && event.payload) {
+        const insert = parseKgWalk(event.payload);
+        return insert ? { ...m, kgWalk: mergeKgInsert(m.kgWalk, insert) } : m;
       }
       return m;
     case 'tool_use': {
@@ -211,14 +247,27 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
             }
           : m.liveness,
       };
-    case 'iteration_usage':
+    case 'iteration_usage': {
+      const prev = m.turnUsage;
       return {
         ...m,
         lastUsage: {
           inputTokens: event.inputTokens,
           cacheReadInputTokens: event.cacheReadInputTokens,
         },
+        // Sum across iterations so the footer shows the whole turn's spend,
+        // not just the last iteration's snapshot.
+        turnUsage: {
+          inputTokens: (prev?.inputTokens ?? 0) + event.inputTokens,
+          outputTokens: (prev?.outputTokens ?? 0) + event.outputTokens,
+          cacheReadInputTokens:
+            (prev?.cacheReadInputTokens ?? 0) + event.cacheReadInputTokens,
+          cacheCreationInputTokens:
+            (prev?.cacheCreationInputTokens ?? 0) +
+            event.cacheCreationInputTokens,
+        },
       };
+    }
     case 'tool_result': {
       const tools = (m.tools ?? []).map((t) =>
         t.id === event.id
@@ -264,6 +313,7 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
           tool_calls: event.toolCalls,
           iterations: event.iterations,
         },
+        ...(event.model ? { model: event.model } : {}),
         ...(event.turnId ? { turnId: event.turnId } : {}),
         ...(event.palaiaExcerpt ? { palaiaExcerpt: event.palaiaExcerpt } : {}),
         ...(event.autoPromotedMkId
@@ -306,6 +356,100 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
     default:
       return m;
   }
+}
+
+/**
+ * Defensive parse of a `kg_graph` annotation payload. The server is trusted
+ * but the contract is young, so partial/missing fields are tolerated: any
+ * node/edge that lacks its required string fields is skipped, and a payload
+ * with no usable nodes returns null (the caller then leaves `kgWalk` unset).
+ */
+function parseKgWalk(payload: unknown): KgWalkPayload | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const rec = payload as Record<string, unknown>;
+
+  const rootIds = Array.isArray(rec['rootIds'])
+    ? rec['rootIds'].filter((v): v is string => typeof v === 'string')
+    : [];
+
+  const nodes: KgWalkNode[] = Array.isArray(rec['nodes'])
+    ? rec['nodes'].reduce<KgWalkNode[]>((acc, raw) => {
+        if (!raw || typeof raw !== 'object') return acc;
+        const n = raw as Record<string, unknown>;
+        if (typeof n['id'] !== 'string') return acc;
+        acc.push({
+          id: n['id'],
+          label: typeof n['label'] === 'string' ? n['label'] : n['id'],
+          kind: typeof n['kind'] === 'string' ? n['kind'] : 'Entity',
+          ...(typeof n['score'] === 'number' ? { score: n['score'] } : {}),
+          ...(n['inserted'] === true ? { inserted: true } : {}),
+        });
+        return acc;
+      }, [])
+    : [];
+
+  const edges: KgWalkEdge[] = Array.isArray(rec['edges'])
+    ? rec['edges'].reduce<KgWalkEdge[]>((acc, raw) => {
+        if (!raw || typeof raw !== 'object') return acc;
+        const e = raw as Record<string, unknown>;
+        if (typeof e['from'] !== 'string' || typeof e['to'] !== 'string') {
+          return acc;
+        }
+        acc.push({
+          from: e['from'],
+          to: e['to'],
+          type: typeof e['type'] === 'string' ? e['type'] : 'REL',
+          hop: typeof e['hop'] === 'number' ? e['hop'] : 1,
+          ...(e['inserted'] === true ? { inserted: true } : {}),
+        });
+        return acc;
+      }, [])
+    : [];
+
+  if (nodes.length === 0) return null;
+  return { rootIds, nodes, edges };
+}
+
+/**
+ * Merge a `kg_insert` delta into the existing per-turn walk. New nodes/edges
+ * (already flagged `inserted`) are appended; a node/edge that was already part
+ * of the recalled walk is upgraded in place to `inserted: true` so the pane
+ * pulses it. `rootIds` from both are unioned. When there was no prior walk the
+ * insert stands on its own.
+ */
+function mergeKgInsert(
+  prior: KgWalkPayload | undefined,
+  insert: KgWalkPayload,
+): KgWalkPayload {
+  if (!prior) return insert;
+
+  const insertedNodeIds = new Set(insert.nodes.map((n) => n.id));
+  const nodes: KgWalkNode[] = prior.nodes.map((n) =>
+    insertedNodeIds.has(n.id) ? { ...n, inserted: true } : n,
+  );
+  const haveNodeId = new Set(nodes.map((n) => n.id));
+  for (const n of insert.nodes) {
+    if (!haveNodeId.has(n.id)) {
+      nodes.push(n);
+      haveNodeId.add(n.id);
+    }
+  }
+
+  const edgeKey = (e: KgWalkEdge): string => `${e.from} ${e.to} ${e.type}`;
+  const insertedEdgeKeys = new Set(insert.edges.map(edgeKey));
+  const edges: KgWalkEdge[] = prior.edges.map((e) =>
+    insertedEdgeKeys.has(edgeKey(e)) ? { ...e, inserted: true } : e,
+  );
+  const haveEdgeKey = new Set(edges.map(edgeKey));
+  for (const e of insert.edges) {
+    if (!haveEdgeKey.has(edgeKey(e))) {
+      edges.push(e);
+      haveEdgeKey.add(edgeKey(e));
+    }
+  }
+
+  const rootIds = Array.from(new Set([...prior.rootIds, ...insert.rootIds]));
+  return { rootIds, nodes, edges };
 }
 
 function toSubAgentEvent(

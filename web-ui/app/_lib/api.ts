@@ -178,6 +178,82 @@ export class ApiError extends Error {
 }
 
 // -----------------------------------------------------------------------------
+// Admin settings — the .env-based config/vault overview (/api/v1/admin/settings)
+// -----------------------------------------------------------------------------
+
+export type SettingValueType =
+  | 'string'
+  | 'url'
+  | 'number'
+  | 'boolean'
+  | 'enum'
+  | 'secret';
+
+export interface ResolvedSetting {
+  key: string;
+  label: string;
+  help?: string;
+  category: string;
+  type: SettingValueType;
+  options?: Array<{ value: string; label: string }>;
+  placeholder?: string;
+  /** All target plugins installed? Drives whether the field is editable. */
+  installed: boolean;
+  /** Current non-secret value (stringified), or null when unset. */
+  value?: string | null;
+  /** Secret only: whether a value is stored (never the value itself). */
+  isSet?: boolean;
+}
+
+export interface SettingsCategory {
+  category: string;
+  settings: ResolvedSetting[];
+}
+
+export interface SettingsResponse {
+  categories: SettingsCategory[];
+  vault_available: boolean;
+}
+
+export interface SettingChange {
+  key: string;
+  /** New value, or null to clear/delete. */
+  value: string | null;
+}
+
+export interface SettingsPatchResponse {
+  updated: ResolvedSetting[];
+  errors: Array<{ key: string; message: string }>;
+}
+
+export async function getSettings(): Promise<SettingsResponse> {
+  return getJson<SettingsResponse>('/v1/admin/settings');
+}
+
+export async function patchSettings(
+  changes: SettingChange[],
+): Promise<SettingsPatchResponse> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(botApi('/v1/admin/settings'), {
+    method: 'PATCH',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      ...forwarded,
+    },
+    body: JSON.stringify({ changes }),
+    cache: 'no-store',
+    credentials: 'include',
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    maybeNavigateToLogin(res.status);
+    throw new ApiError(res.status, `PATCH settings failed: ${res.status}`, text);
+  }
+  return JSON.parse(text) as SettingsPatchResponse;
+}
+
+// -----------------------------------------------------------------------------
 // NDJSON helper — yields parsed JSON objects from a `application/x-ndjson`
 // stream. Tolerates LF and CRLF line endings, ignores blank lines, and
 // surfaces JSON parse errors with line context so the caller can decide to
@@ -3048,6 +3124,143 @@ export async function resetChatSession(
 }
 
 // -----------------------------------------------------------------------------
+// Danger Zone — memory purge (destructive). Backed by the admin router at
+// /api/v1/admin/memory/purge{/preview}, surfaced to the browser as
+// /bot-api/v1/admin/memory/purge{/preview}. Two stages:
+//   - POST /preview  → dry-run counts (no writes)
+//   - DELETE /        → irreversible purge, gated by a confirm phrase
+//
+// Axis semantics: 'all' wipes both the agent-scratch (per-agent Turn store)
+// and the Knowledge-Graph. The scoped axes (agent/user/team/channel) only
+// touch the Knowledge-Graph — the agent-scratch is agent-scoped and is not
+// reachable by a user/team/channel selector. The backend surfaces that as a
+// `warning` on the response, which the UI renders verbatim.
+// -----------------------------------------------------------------------------
+
+export type MemoryPurgeAxis = 'all' | 'agent' | 'user' | 'team' | 'channel';
+
+export interface MemoryPurgePreviewResult {
+  scratchCount: number;
+  kgCount: number;
+  warning?: string;
+}
+
+export interface MemoryPurgeResult {
+  scratchDeleted: number;
+  kgDeleted: number;
+  warning?: string;
+}
+
+/** Dry-run: count the rows a purge would delete. Never writes. */
+export async function previewMemoryPurge(body: {
+  axis: MemoryPurgeAxis;
+  selector?: string;
+}): Promise<MemoryPurgePreviewResult> {
+  return postJson<MemoryPurgePreviewResult>(
+    '/v1/admin/memory/purge/preview',
+    body,
+  );
+}
+
+/**
+ * Irreversible purge. `confirm` must match the phrase the operator typed
+ * (`DELETE ALL MEMORY` for axis 'all', otherwise the selector value); the
+ * backend re-checks it server-side. `reseed` re-installs the default seed
+ * memories after wiping and is only meaningful for axis 'all'.
+ */
+export async function purgeMemory(body: {
+  axis: MemoryPurgeAxis;
+  selector?: string;
+  confirm: string;
+  reseed?: boolean;
+}): Promise<MemoryPurgeResult> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(botApi('/v1/admin/memory/purge'), {
+    method: 'DELETE',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      ...forwarded,
+    },
+    body: JSON.stringify(body),
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    maybeNavigateToLogin(res.status);
+    throw new ApiError(
+      res.status,
+      `DELETE memory/purge failed: ${res.status}`,
+      text,
+    );
+  }
+  return JSON.parse(text) as MemoryPurgeResult;
+}
+
+// -----------------------------------------------------------------------------
+// Memory storage backend switch (postgres ↔ inmemory). Backed by the admin
+// router at /api/v1/admin/memory/backend, surfaced to the browser as
+// /bot-api/v1/admin/memory/backend. The PUT only PERSISTS the choice — the
+// provider swap is applied by the middleware's bootstrap on the NEXT restart.
+//   - GET /  → current state + whether a restart is pending
+//   - PUT /  → persist a backend choice (postgres requires DATABASE_URL)
+// -----------------------------------------------------------------------------
+
+export type MemoryBackend = 'postgres' | 'inmemory';
+
+export interface MemoryBackendState {
+  current: MemoryBackend;
+  envDefault: string;
+  databaseUrlPresent: boolean;
+  activeProviderId: string | null;
+  restartRequiredToApply: boolean;
+}
+
+export interface SetMemoryBackendResult {
+  ok: true;
+  backend: MemoryBackend;
+  restartRequired: true;
+}
+
+/** Read the current memory-storage backend and pending-restart state. */
+export async function getMemoryBackend(): Promise<MemoryBackendState> {
+  return getJson<MemoryBackendState>('/v1/admin/memory/backend');
+}
+
+/**
+ * Persist the operator's backend choice. Throws `ApiError` (status 400,
+ * `body` = `{"error":"database_url_required",...}`) when `postgres` is
+ * requested without `DATABASE_URL`; callers surface that inline.
+ */
+export async function setMemoryBackend(
+  backend: MemoryBackend,
+): Promise<SetMemoryBackendResult> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(botApi('/v1/admin/memory/backend'), {
+    method: 'PUT',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      ...forwarded,
+    },
+    body: JSON.stringify({ backend }),
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    maybeNavigateToLogin(res.status);
+    throw new ApiError(
+      res.status,
+      `PUT memory/backend failed: ${res.status}`,
+      text,
+    );
+  }
+  return JSON.parse(text) as SetMemoryBackendResult;
+}
+
+// -----------------------------------------------------------------------------
 // Mid-turn steering (2026-06-06).
 // -----------------------------------------------------------------------------
 
@@ -3081,4 +3294,154 @@ export async function steerActiveTurn(
     if (err instanceof ApiError && err.status === 409) return 'no_active_turn';
     throw err;
   }
+}
+
+// -----------------------------------------------------------------------------
+// Plugin self-extension (operator-gated, non-escalating)
+//
+// Backend lives under /api/v1/builder/self-extension/* — see
+// middleware/src/routes/selfExtension.ts and
+// docs/harness-platform/DESIGN-plugin-self-extension.md. Every call is
+// owner-scoped via the session cookie (credentials: 'include').
+// -----------------------------------------------------------------------------
+
+export interface SelfExtensionEscalation {
+  dimension: string;
+  item: string;
+  reason: string;
+}
+
+export type SelfExtensionStatus =
+  | 'pending'
+  | 'denied'
+  | 'approved'
+  | 'installed'
+  | 'install_failed';
+
+export type SelfExtensionDecision =
+  | 'needs_approval'
+  | 'denied_escalation'
+  | 'invalid_spec';
+
+/** Operator-facing view of a proposal (mirrors `serializeRecord` server-side).
+ *  Deliberately omits the full specs — only the verdict + metadata. */
+export interface SelfExtensionProposalView {
+  id: string;
+  pluginId: string;
+  status: SelfExtensionStatus;
+  decision: SelfExtensionDecision;
+  rationale: string;
+  /** Spec-path only: number of patches (absent for template proposals). */
+  patchCount?: number;
+  escalations: SelfExtensionEscalation[];
+  invalidReason?: string;
+  submittedBy: string;
+  createdAt: number;
+  decidedBy?: string;
+  decidedAt?: number;
+  denialReason?: string;
+  narrowed?: boolean;
+  installFailureReason?: string;
+  approvedToolCount?: number;
+  /** 'spec' (Builder plugins, patches) or 'template' (standalone SDK plugins). */
+  kind?: 'spec' | 'template';
+  /** Template-path only: the template this proposal instantiates. */
+  templateId?: string;
+}
+
+const SELF_EXT_BASE = '/v1/builder/self-extension';
+
+/** A self-extend template a standalone plugin offers (Theme B). */
+export interface SelfExtensionTemplateView {
+  id: string;
+  title: string;
+  description: string;
+  paramsSchema: Record<string, unknown>;
+}
+
+export async function listSelfExtensionTemplates(
+  agentId: string,
+): Promise<SelfExtensionTemplateView[]> {
+  const resp = await getJson<{ ok: boolean; templates: SelfExtensionTemplateView[] }>(
+    `${SELF_EXT_BASE}/${encodeURIComponent(agentId)}/templates`,
+  );
+  return resp.templates;
+}
+
+export async function listSelfExtensionProposals(
+  agentId?: string,
+): Promise<SelfExtensionProposalView[]> {
+  const suffix = agentId ? `?agentId=${encodeURIComponent(agentId)}` : '';
+  const resp = await getJson<{ ok: boolean; proposals: SelfExtensionProposalView[] }>(
+    `${SELF_EXT_BASE}/proposals${suffix}`,
+  );
+  return resp.proposals;
+}
+
+/** Spec-path (patches) or template-path (templateId+params) proposal body. */
+export type SelfExtensionProposalBody =
+  | { rationale: string; patches: JsonPatch[] }
+  | { rationale: string; templateId: string; params?: Record<string, unknown> };
+
+export async function proposeSelfExtension(
+  agentId: string,
+  body: SelfExtensionProposalBody,
+): Promise<SelfExtensionProposalView> {
+  const resp = await postJson<{ ok: boolean; proposal: SelfExtensionProposalView }>(
+    `${SELF_EXT_BASE}/${encodeURIComponent(agentId)}/propose`,
+    body,
+  );
+  return resp.proposal;
+}
+
+export async function approveSelfExtensionProposal(
+  proposalId: string,
+  narrowingPatches?: JsonPatch[],
+): Promise<SelfExtensionProposalView> {
+  const resp = await postJson<{ ok: boolean; proposal: SelfExtensionProposalView }>(
+    `${SELF_EXT_BASE}/proposals/${encodeURIComponent(proposalId)}/approve`,
+    narrowingPatches ? { narrowingPatches } : {},
+  );
+  return resp.proposal;
+}
+
+export async function denySelfExtensionProposal(
+  proposalId: string,
+  reason: string,
+): Promise<SelfExtensionProposalView> {
+  const resp = await postJson<{ ok: boolean; proposal: SelfExtensionProposalView }>(
+    `${SELF_EXT_BASE}/proposals/${encodeURIComponent(proposalId)}/deny`,
+    { reason },
+  );
+  return resp.proposal;
+}
+
+export interface SelfExtensionInstallResult {
+  /** Spec path. */
+  publishedAgentId?: string;
+  version?: string;
+  /** Template path. */
+  pluginId?: string;
+  templateId?: string;
+  proposal: SelfExtensionProposalView;
+}
+
+export async function installSelfExtensionProposal(
+  proposalId: string,
+): Promise<SelfExtensionInstallResult> {
+  const resp = await postJson<{
+    ok: boolean;
+    publishedAgentId?: string;
+    version?: string;
+    pluginId?: string;
+    templateId?: string;
+    proposal: SelfExtensionProposalView;
+  }>(`${SELF_EXT_BASE}/proposals/${encodeURIComponent(proposalId)}/install`, {});
+  return {
+    publishedAgentId: resp.publishedAgentId,
+    version: resp.version,
+    pluginId: resp.pluginId,
+    templateId: resp.templateId,
+    proposal: resp.proposal,
+  };
 }

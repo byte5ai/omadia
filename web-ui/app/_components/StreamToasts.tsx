@@ -2,9 +2,10 @@
 
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslations } from 'next-intl';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Loader2, X } from 'lucide-react';
+import { Ban, Loader2, X } from 'lucide-react';
 
 import { useChatSessionsCtx } from '../_lib/chatSessionsContext';
 import {
@@ -76,6 +77,13 @@ export function StreamToasts(): React.ReactElement {
                 openChat(rec.sessionId);
               }}
               onDismiss={() => {
+                // Visual-only: hide the toast but let the stream finish in
+                // the background. The message still lands in ChatSessions.
+                store.dismiss(rec.sessionId);
+              }}
+              onAbort={() => {
+                // Real stop: aborts the underlying fetch via the store's
+                // AbortController. Gated behind the confirm modal.
                 store.abort(rec.sessionId);
               }}
             />
@@ -91,6 +99,7 @@ interface StreamToastProps {
   t: ReturnType<typeof useTranslations>;
   onOpen: () => void;
   onDismiss: () => void;
+  onAbort: () => void;
 }
 
 function StreamToast({
@@ -98,11 +107,14 @@ function StreamToast({
   t,
   onOpen,
   onDismiss,
+  onAbort,
 }: StreamToastProps): React.ReactElement {
   const isTerminal =
     record.phase === 'done' ||
     record.phase === 'error' ||
     record.phase === 'aborted';
+  // Whether the abort-confirmation modal is currently open for this toast.
+  const [confirming, setConfirming] = useState(false);
   const phaseLabel = phaseLabelFor(record.phase, t);
   // Tick once a second while active so the elapsed-seconds line stays
   // honest. Terminal toasts freeze at their last event time — no point
@@ -198,7 +210,135 @@ function StreamToast({
           </div>
         </div>
       </div>
+      {/* Real-stop affordance — only while the stream is still running.
+          Clicking opens a confirm modal; confirming calls onAbort(), which
+          aborts the underlying fetch. Separate from the top-right X, which
+          only hides the toast. */}
+      {!isTerminal ? (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            setConfirming(true);
+          }}
+          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-md border border-red-200 bg-red-50/60 px-2 py-1 text-[11px] font-medium text-red-700 transition hover:bg-red-100 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300 dark:hover:bg-red-950/70"
+        >
+          <Ban size={12} aria-hidden />
+          {t('abortButton')}
+        </button>
+      ) : null}
+      <AnimatePresence>
+        {confirming ? (
+          <AbortConfirmModal
+            t={t}
+            onConfirm={() => {
+              setConfirming(false);
+              onAbort();
+            }}
+            onCancel={() => {
+              setConfirming(false);
+            }}
+          />
+        ) : null}
+      </AnimatePresence>
     </div>
+  );
+}
+
+interface AbortConfirmModalProps {
+  t: ReturnType<typeof useTranslations>;
+  onConfirm: () => void;
+  onCancel: () => void;
+}
+
+/**
+ * Lightweight custom confirmation dialog (no native window.confirm). Rendered
+ * through a portal to <body> so its fixed positioning is immune to the
+ * transformed motion ancestors of the toast stack. Closes on Escape or
+ * backdrop click; the safe "keep running" action is auto-focused.
+ */
+function AbortConfirmModal({
+  t,
+  onConfirm,
+  onCancel,
+}: AbortConfirmModalProps): React.ReactPortal | null {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') onCancel();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [onCancel]);
+
+  if (typeof document === 'undefined') return null;
+
+  return createPortal(
+    <motion.div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.12 }}
+      onClick={(e) => {
+        e.stopPropagation();
+        onCancel();
+      }}
+      role="presentation"
+    >
+      <motion.div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="stream-abort-title"
+        aria-describedby="stream-abort-body"
+        className="w-full max-w-xs rounded-lg border border-neutral-200 bg-white p-4 shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
+        initial={{ opacity: 0, scale: 0.95, y: 8 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95, y: 8 }}
+        transition={{ duration: 0.14 }}
+        onClick={(e) => {
+          e.stopPropagation();
+        }}
+      >
+        <h2
+          id="stream-abort-title"
+          className="text-sm font-semibold text-neutral-900 dark:text-neutral-100"
+        >
+          {t('abortConfirmTitle')}
+        </h2>
+        <p
+          id="stream-abort-body"
+          className="mt-1 text-xs leading-snug text-neutral-600 dark:text-neutral-400"
+        >
+          {t('abortConfirmBody')}
+        </p>
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            autoFocus
+            onClick={(e) => {
+              e.stopPropagation();
+              onCancel();
+            }}
+            className="rounded-md border border-neutral-200 px-3 py-1.5 text-xs font-medium text-neutral-700 transition hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800"
+          >
+            {t('abortConfirmKeep')}
+          </button>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onConfirm();
+            }}
+            className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-red-700"
+          >
+            {t('abortConfirmStop')}
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>,
+    document.body,
   );
 }
 

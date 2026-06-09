@@ -1,0 +1,82 @@
+schema_version: "1"
+
+identity:
+  id: "@omadia/memory-postgres"
+  name: "Memory (Postgres)"
+  version: "0.1.0"
+  kind: "extension"
+  domain: "core.memory"
+  description: "Postgres-backed /memories-Speicher (PostgresMemoryStore) — Drop-in-Alternative zu @omadia/memory's FilesystemMemoryStore. Provider des Kernel-Service 'memoryStore' + des Anthropic-nativen memory-Tool-Handlers + des Startup-Seeders. Nutzt den geteilten 'graphPool'-Service (aus @omadia/knowledge-graph-neon) — öffnet KEINEN eigenen Pool — und fährt eigene Schema-Migrationen. Mutual exclusion mit @omadia/memory: beide deklarieren memoryStore@1, also installiert der Operator genau einen der beiden Provider."
+  authors:
+    - name: "byte5 GmbH"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
+  license: "Proprietary"
+  categories:
+    - "infrastructure"
+    - "storage"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+lifecycle:
+  entry: "dist/plugin.js"
+
+setup:
+  fields:
+    - key: "seed_dir"
+      type: "string"
+      label: "Seed-Verzeichnis"
+      help: "Optionaler Pfad mit Initial-Dateien, die beim Start in die memory_files-Tabelle kopiert werden."
+      required: false
+      default: "memory-seed"
+
+    - key: "seed_mode"
+      type: "string"
+      label: "Seed-Modus"
+      help: "'missing' (nur fehlende Dateien anlegen), 'overwrite' (Repo-Version immer pinnen) oder 'skip' (kein Seeding)."
+      required: false
+      default: "missing"
+
+    - key: "dev_memory_endpoints_enabled"
+      type: "string"
+      label: "Dev-Memory-Endpoints aktivieren"
+      help: "'true' mountet /api/dev/memory (ungeschützt) — NUR für lokale Next-UI. Produktion MUSS leer oder 'false' bleiben."
+      required: false
+      default: "false"
+
+playbook:
+  when_to_use: |
+    Produktions-Setup, in dem /memories durable in Postgres statt auf dem
+    lokalen Dateisystem leben soll (z. B. mehrere Instanzen / ephemeral
+    Containers). Setzt @omadia/knowledge-graph-neon mit gesetztem database_url
+    voraus, da der geteilte graphPool-Service konsumiert wird. Mutual exclusion
+    mit @omadia/memory — nur einer der beiden memoryStore@1-Provider darf
+    gleichzeitig installiert sein.
+
+permissions:
+  memory:
+    reads: []
+    writes: []
+  graph:
+    reads: []
+    writes: []
+  network:
+    outbound:
+      - "neon-database"
+  filesystem:
+    scratch: false
+
+integrations: []
+
+# Capabilities this plugin contributes to the kernel. `memoryStore@1` matches
+# the kernel-service published via ServiceRegistry ('memoryStore'), so
+# consumers that `requires: ["memoryStore@^1"]` resolve to this provider.
+# `graphPool@^1` is consumed (the shared pg Pool) — this plugin reuses it
+# rather than opening its own connection.
+provides:
+  - "memoryStore@1"
+
+requires:
+  - "graphPool@^1"

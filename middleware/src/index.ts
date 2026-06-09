@@ -8,9 +8,13 @@ import { config, parseRegistries } from './config.js';
 import { createTigrisStore } from '@omadia/diagrams';
 import type { MemoryStore } from '@omadia/plugin-api';
 import { createAdminRouter } from './routes/admin.js';
+import { createMemoryPurgeRouter } from './routes/memoryPurge.js';
+import { createMemoryBackendRouter } from './routes/memoryBackend.js';
 import { createChatRouter } from './routes/chat.js';
 import { createOperatorAgentsRouter } from './routes/operatorAgents.js';
 import { createOperatorChannelsRouter } from './routes/operatorChannels.js';
+import { createAgentBuilderRouter } from './routes/agentBuilder.js';
+import { ScheduleWorker } from './scheduler/scheduleWorker.js';
 import type {
   ConfigStore as MultiOrchestratorConfigStore,
   OrchestratorRegistry as MultiOrchestratorRegistry,
@@ -20,8 +24,13 @@ import { createBulkPromotionRouter } from './routes/bulkPromotion.js';
 import { createInconsistenciesRouter } from './routes/inconsistencies.js';
 import { createDuplicatesRouter } from './routes/duplicates.js';
 import { createTopicsRouter } from './routes/topics.js';
+import { createUsageRouter } from './routes/usage.js';
 import { createAgentResolver } from './agents/resolveAgentForTool.js';
 import { scopeDomainToolsToPlugins } from './agents/scopeDomainTools.js';
+import {
+  mergeDomainTools,
+  reconcileDomainToolAcrossAgents,
+} from './agents/runtimeToolPropagation.js';
 // `/attachments/<signed-key>` is now mounted by the de.byte5.channel.teams
 // plugin via ctx.routes.register (see packages/harness-channel-teams/src/plugin.ts,
 // phase-3.1-4). No kernel-side attachment router import needed anymore.
@@ -56,8 +65,15 @@ import { createProfilesRouter } from './routes/profiles.js';
 import { createPackagesRouter } from './routes/packages.js';
 import { createRegistryInstallRouter } from './routes/registryInstall.js';
 import { createRuntimeRouter } from './routes/runtime.js';
+import { createAdminSettingsRouter } from './routes/adminSettings.js';
 import { createVaultStatusRouter } from './routes/vaultStatus.js';
 import { createBuilderRouter } from './routes/builder.js';
+import {
+  OperatorGate,
+  SelfExtendRegistry,
+  ExtensionStore,
+  createRequestSelfExtensionTool,
+} from './plugins/selfExtension/index.js';
 import { DraftStore } from './plugins/builder/draftStore.js';
 import { buildDraftStorageMirrorHook } from './plugins/builder/draftStorageBridge.js';
 import { DraftQuota } from './plugins/builder/draftQuota.js';
@@ -165,6 +181,9 @@ import { UiRouteCatalog } from './platform/uiRouteCatalog.js';
 import { ServiceRegistry } from './platform/serviceRegistry.js';
 import { TurnHookRegistry } from './platform/turnHookRegistry.js';
 import { NativeToolRegistry } from '@omadia/orchestrator';
+import { McpManager } from '@omadia/orchestrator';
+import { AgentGraphStore } from '@omadia/orchestrator';
+import { registerDbSubAgentTools } from './agents/subAgentToolHydration.js';
 import {
   DATA_DIR,
   DEV_VAULT_KEY_PATH,
@@ -539,6 +558,33 @@ async function main(): Promise<void> {
   // unregister EXACTLY those — independent of whether the catalog entry still
   // exists (uninstall may have reloaded the catalog and dropped it first).
   const registeredServiceTypesByPlugin = new Map<string, string[]>();
+  // Plugin self-extension (Theme A + B). The gate holds the in-memory proposal
+  // store (shared by the agent-in-loop `request_self_extension` tool and the
+  // operator routes); the registry holds plugins' declared extension templates;
+  // the store persists operator-approved extensions, replayed on each activate.
+  const selfExtensionGate = new OperatorGate();
+  const selfExtendRegistry = new SelfExtendRegistry();
+  const extensionStore = new ExtensionStore(
+    path.join(DATA_DIR, 'self-extensions.json'),
+  );
+  await extensionStore.load();
+
+  // Agent-in-loop auto-author tool — a kernel native tool available to every
+  // agent; submits proposals as `pending` (never auto-approved).
+  {
+    const reqTool = createRequestSelfExtensionTool({
+      gate: selfExtensionGate,
+      pluginCatalog,
+      selfExtendRegistry,
+      notificationRouter,
+    });
+    nativeToolRegistry.register(reqTool.name, {
+      handler: reqTool.handler,
+      spec: reqTool.spec,
+      promptDoc: reqTool.promptDoc,
+    });
+  }
+
   const toolPluginRuntime = new ToolPluginRuntime({
     catalog: pluginCatalog,
     registry: installedRegistry,
@@ -551,6 +597,8 @@ async function main(): Promise<void> {
     notificationRouter,
     uiRouteCatalog,
     jobScheduler,
+    selfExtendRegistry,
+    extensionStore,
     // When an integration plugin activates — at boot OR via a live hot-
     // install — register every `manifest.service_types` entry into the
     // agent-builder's `serviceTypeRegistry`, and link its package into the
@@ -617,6 +665,139 @@ async function main(): Promise<void> {
   // eslint-disable-next-line prefer-const
   let channelRegistryRef: ChannelRegistry | undefined;
 
+  // Forward refs — runtime propagation of a POST-BOOT agent-plugin
+  // (de)activation into the per-Agent registry orchestrators + the fallback
+  // Agent's enabled-plugin set. Assigned in the orchestrator-wiring block far
+  // below (they need `registryForHydrate` + `currentDomainTools`). The install
+  // hooks only fire at runtime, after assignment; when chat is disabled (no
+  // orchestrator) they stay undefined and the `?.` calls no-op. Without this,
+  // a plugin installed at runtime (operator install, Hub/registry install,
+  // package re-upload, or self-extension) only reaches the single legacy
+  // orchestrator — un-slugged chat routes to the fallback Agent, whose
+  // per-Agent orchestrator never learned the new tool, so it behaves as if the
+  // plugin were never activated.
+   
+  // --- Runtime plugin (de)activation propagation ------------------------
+  // A plugin (de)activated AFTER boot (operator install, Hub/registry
+  // install, package re-upload, self-extension) mutates only the standalone
+  // `dynamicAgentRuntime` + the single legacy orchestrator. The per-Agent
+  // registry orchestrators — which the chat router resolves for every turn,
+  // falling back to the fallback Agent for un-slugged turns — are a boot
+  // snapshot that the install path must reconcile.
+  //
+  // These closures are defined UNCONDITIONALLY here (not gated on the
+  // boot-time `orchestrator` being present) and resolve `configStore` /
+  // `orchestratorRegistry` LIVE from the serviceRegistry on every call.
+  // Previously they were assigned inside the `if (orchestrator) { … }`
+  // boot block, so on a chat-DISABLED boot (no ANTHROPIC_API_KEY at start —
+  // the Setup-Wizard / Docker path) they stayed `undefined`. The
+  // `onInstalled` hook's `propagatePluginInstall?.(agentId)` then silently
+  // no-op'd: the agent activated in `dynamicAgentRuntime` but the fallback
+  // Agent's `agent_plugins` enablement row was never written, so
+  // `scopeDomainToolsToPlugins` withheld its `query_*` tool — at install
+  // time AND on every later restart, because the missing DB row persists.
+  // (Channels are unaffected: the channel install hook activates them
+  // directly, with no plugin-scoping — which is why connectors appear on a
+  // new session but specialist agents never did.) Resolving live here makes
+  // the propagation take effect the moment chat goes live via the wizard.
+  const ORCHESTRATOR_PLUGIN_ID = '@omadia/orchestrator';
+
+  // Reconcile a single agent-plugin's DomainTool across every per-Agent
+  // orchestrator: (re-)register a fresh handle where the plugin is enabled,
+  // drop it where it is not. Idempotent and safe for re-uploads (the stale
+  // handle is replaced). No-ops for non-agent plugins (no DomainTool); on
+  // uninstall the runtime no longer knows the tool, so drop it by name.
+  const reconcileRuntimeDomainTool = (
+    pluginId: string,
+    removedToolName?: string,
+  ): void => {
+    const reg =
+      serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
+    if (!reg) return;
+    const tool = dynamicAgentRuntime.domainToolFor(pluginId);
+    reconcileDomainToolAcrossAgents(
+      reg.list().map((entry) => ({
+        slug: entry.agent.slug,
+        enabled: entry.plugins.some(
+          (p) => p.enabled && p.pluginId === pluginId,
+        ),
+        orchestrator: entry.built.orchestrator,
+      })),
+      {
+        ...(tool ? { tool } : {}),
+        ...(removedToolName ? { removedToolName } : {}),
+        onError: (slug, err) =>
+          console.error(
+            `[middleware] reconcileRuntimeDomainTool(${pluginId}) on "${slug}" FAILED:`,
+            err instanceof Error ? err.message : String(err),
+          ),
+      },
+    );
+  };
+
+  const propagatePluginInstall = async (pluginId: string): Promise<void> => {
+    if (pluginId === ORCHESTRATOR_PLUGIN_ID) return;
+    const store =
+      serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
+    const reg =
+      serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
+    if (!store || !reg) return; // no-DB / chat-disabled boot — nothing to wire
+    try {
+      const { fallbackAgentId } = await store.getPlatformSettings();
+      if (fallbackAgentId) {
+        // Keep the "fallback Agent has every installed plugin enabled"
+        // invariant alive at runtime. Un-slugged chat routes to the
+        // fallback Agent (getDefaultSlug → slugForFallback); without an
+        // enabled `agent_plugins` row, `scopeDomainToolsToPlugins` would
+        // withhold the new tool even after it is hydrated. First-boot does
+        // this via `attachAllPlugins`; runtime installs never did.
+        await store.upsertAgentPlugin(fallbackAgentId, {
+          pluginId,
+          enabled: true,
+        });
+        // Refresh `entry.plugins` from the DB so the scoping check below
+        // sees the freshly-enabled row. Idempotent no-op when unchanged;
+        // a plugin-only change is an `update` (no rebuild → sessions kept).
+        await reg.reload();
+      }
+    } catch (err) {
+      console.error(
+        `[middleware] propagatePluginInstall(${pluginId}) enable/reload FAILED:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+    reconcileRuntimeDomainTool(pluginId);
+    console.log(`[middleware] runtime plugin install propagated: ${pluginId}`);
+  };
+
+  const propagatePluginUninstall = async (
+    pluginId: string,
+    removedToolName?: string,
+  ): Promise<void> => {
+    if (pluginId === ORCHESTRATOR_PLUGIN_ID) return;
+    const store =
+      serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
+    const reg =
+      serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
+    if (!store || !reg) return;
+    try {
+      const { fallbackAgentId } = await store.getPlatformSettings();
+      if (fallbackAgentId) {
+        await store.removeAgentPlugin(fallbackAgentId, pluginId);
+        await reg.reload();
+      }
+    } catch (err) {
+      console.error(
+        `[middleware] propagatePluginUninstall(${pluginId}) disable/reload FAILED:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+    reconcileRuntimeDomainTool(pluginId, removedToolName);
+    console.log(
+      `[middleware] runtime plugin uninstall propagated: ${pluginId}`,
+    );
+  };
+
   const installService = new InstallService({
     catalog: pluginCatalog,
     registry: installedRegistry,
@@ -646,6 +827,9 @@ async function main(): Promise<void> {
         case 'agent':
         default:
           await dynamicAgentRuntime.activate(agentId);
+          // Make the freshly-activated agent's tool reachable on the per-Agent
+          // orchestrators (incl. the fallback Agent) without a restart.
+          await propagatePluginInstall(agentId);
       }
     },
     onUninstall: async (agentId) => {
@@ -662,8 +846,14 @@ async function main(): Promise<void> {
           await toolPluginRuntime.deactivate(agentId);
           return;
         case 'agent':
-        default:
+        default: {
+          // Capture the tool name BEFORE deactivate drops it from the runtime —
+          // the per-Agent orchestrators must be told which tool to unregister.
+          const removedToolName =
+            dynamicAgentRuntime.domainToolFor(agentId)?.name;
           await dynamicAgentRuntime.deactivate(agentId);
+          await propagatePluginUninstall(agentId, removedToolName);
+        }
       }
     },
   });
@@ -1175,38 +1365,88 @@ async function main(): Promise<void> {
       // Agent (e.g. "marketing", which only enables the X plugin) no longer
       // inherits `query_odoo_accounting` et al. it was never granted.
       // See `scopeDomainToolsToPlugins` for the rule.
+      //
+      // LIVE tool source. The boot-time `domainTools[]` is frozen at process
+      // start, so an agent-plugin installed/activated AFTER boot (its tool
+      // lives only in `dynamicAgentRuntime`) would never reach a per-Agent
+      // orchestrator on a later rebuild. Merge the boot set with the runtime's
+      // currently-active domain tools, de-duped by name (boot built-ins are
+      // already in `domainTools` and win on clash).
+      const currentDomainTools = (): DomainTool[] =>
+        mergeDomainTools(domainTools, dynamicAgentRuntime.activeDomainTools());
+
+      // Agent Builder P2/P4 — shared MCP connection pool + a closure that
+      // materialises each agent's DB-defined sub-agents into DomainTools and
+      // registers them on its orchestrator. Called on initial hydrate AND
+      // from `onAgentBuilt` so a rebuilt agent re-acquires its sub-agents.
+      const mcpManager = new McpManager();
+      const SUBAGENT_DEFAULT_MODEL = 'claude-sonnet-4-6';
+      const hydrateSubAgentTools = (
+        slug: string,
+        built: { orchestrator: { hasDomainTool(n: string): boolean; registerDomainTool(t: DomainTool): void } },
+      ): number => {
+        const entry = registryForHydrate.get(slug);
+        if (!entry) return 0;
+        const mcpServers = registryForHydrate.currentSnapshot()?.mcpServers ?? [];
+        return registerDbSubAgentTools(
+          {
+            subAgents: entry.subAgents,
+            toolGrants: entry.toolGrants,
+            skills: entry.skills,
+          },
+          built,
+          {
+            client,
+            nativeToolRegistry,
+            mcpManager,
+            mcpServers,
+            defaultModel: SUBAGENT_DEFAULT_MODEL,
+            log: (m: string) => console.log(`[middleware] ${m}`),
+          },
+        );
+      };
+
       let attached = 0;
       for (const entry of registryForHydrate.list()) {
-        for (const t of scopeDomainToolsToPlugins(domainTools, entry.plugins)) {
+        for (const t of scopeDomainToolsToPlugins(
+          currentDomainTools(),
+          entry.plugins,
+        )) {
           if (!entry.built.orchestrator.hasDomainTool(t.name)) {
             entry.built.orchestrator.registerDomainTool(t);
             attached += 1;
           }
         }
+        attached += hydrateSubAgentTools(entry.agent.slug, entry.built);
       }
       console.log(
         `[middleware] registry orchestrators: hydrated with ${String(attached)} domain-tool registrations across ${String(registryForHydrate.list().length)} agent(s) (per-Agent plugin-scoped)`,
       );
       // Persist the wiring so a later `registry.reload()` that REBUILDS an
-      // Agent (privacy_profile flip, plugin enable/disable, etc.) re-hydrates
-      // the new orchestrator — still scoped to the Agent's enabled plugins.
-      // The entry is in the registry map before `onAgentBuilt` fires (both the
+      // Agent (privacy_profile flip, etc.) re-hydrates the new orchestrator —
+      // still scoped to the Agent's enabled plugins, and now from the LIVE tool
+      // source so a runtime-installed agent's tool survives the rebuild. The
+      // entry is in the registry map before `onAgentBuilt` fires (both the
       // `add` and `rebuild` actions set it first), so the plugin lookup is
       // available here. Without this, the rebuilt Agent goes back to
       // `domainTools: []` and the operator's next chat turn cannot reach its
       // sub-agents.
       registryForHydrate.setOnAgentBuilt((slug, built) => {
         const entry = registryForHydrate.get(slug);
-        const tools = entry ? scopeDomainToolsToPlugins(domainTools, entry.plugins) : [];
+        const tools = entry
+          ? scopeDomainToolsToPlugins(currentDomainTools(), entry.plugins)
+          : [];
         for (const t of tools) {
           if (!built.orchestrator.hasDomainTool(t.name)) {
             built.orchestrator.registerDomainTool(t);
           }
         }
+        const subTools = hydrateSubAgentTools(slug, built);
         console.log(
-          `[middleware] registry: orchestrator for "${slug}" hydrated with ${String(tools.length)} domain-tool(s) (per-Agent plugin-scoped)`,
+          `[middleware] registry: orchestrator for "${slug}" hydrated with ${String(tools.length)} domain-tool(s) + ${String(subTools)} sub-agent tool(s) (per-Agent plugin-scoped)`,
         );
       });
+
     }
   }
 
@@ -1398,6 +1638,41 @@ async function main(): Promise<void> {
     `[middleware] inconsistencies endpoint ready at /api/v1/admin/inconsistencies (detector=${inconsistencyDetectorSvc ? 'on' : 'off'}, bulk=${bulkInconsistencyService ? 'on' : 'off'})`,
   );
 
+  // Danger Zone — bulk memory purge (scratch + KG). Cookie-auth admin
+  // surface, consistent with the other /api/v1/admin/* routers the admin
+  // UI calls (NOT the machine ADMIN_TOKEN surface). `requireAuth` gates
+  // the router; type-to-confirm is enforced per-route.
+  app.use(
+    '/api/v1/admin/memory/purge',
+    requireAuth,
+    createMemoryPurgeRouter({
+      store: memoryStore,
+      ...(knowledgeGraph ? { knowledgeGraph } : {}),
+      ...(graphPool ? { graphPool } : {}),
+      tenantId: graphTenantId,
+    }),
+  );
+  console.log(
+    '[middleware] memory-purge endpoint ready at /api/v1/admin/memory/purge',
+  );
+
+  // Memory-storage backend switch (postgres ↔ inmemory). Cookie-auth admin
+  // surface, consistent with the memory-purge router above. Reads/writes the
+  // persisted `memory_backend` choice on the active memoryStore provider's
+  // registry entry; the swap is applied by bootstrapMemoryFromEnv on the NEXT
+  // restart (no live hot-swap).
+  app.use(
+    '/api/v1/admin/memory/backend',
+    requireAuth,
+    createMemoryBackendRouter({
+      registry: installedRegistry,
+      config,
+    }),
+  );
+  console.log(
+    '[middleware] memory-backend endpoint ready at /api/v1/admin/memory/backend',
+  );
+
   // US9 / T037 — operator-facing Agents dashboard backend. Mounts at
   // /api/v1/operator/agents/*. 503s when the orchestratorRegistry@1
   // service is not published (no DATABASE_URL / orchestrator plugin not
@@ -1435,6 +1710,41 @@ async function main(): Promise<void> {
   console.log(
     '[middleware] operator-channels endpoints ready at /api/v1/operator/channels/* (auth-gated)',
   );
+
+  // Agent Builder canvas backend (P1/P2). Mounted at the /api/v1/operator
+  // parent so the /agents/:slug/graph|subagents|… subpaths fall through here
+  // after the operator-agents router. 503s without a graphPool (in-memory KG
+  // backend). Writes route through ConfigStore/AgentGraphStore → notify →
+  // registry.reload(), and we reload inline so the response reflects the diff.
+  app.use(
+    '/api/v1/operator',
+    requireAuth,
+    createAgentBuilderRouter({
+      getConfigStore: () =>
+        serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
+      getGraphStore: () =>
+        graphPool ? new AgentGraphStore(graphPool) : undefined,
+      getRegistry: () =>
+        serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
+    }),
+  );
+  console.log(
+    `[middleware] agent-builder endpoints ready at /api/v1/operator/{agents/:slug/graph,skills,mcp-servers,…} (auth-gated, graphPool=${graphPool ? 'on' : 'off'})`,
+  );
+
+  // Agent Builder schedule worker (P6) — fires cron-scheduled agent turns.
+  // Only with a Neon graphPool (the agent_schedules table lives there).
+  if (graphPool) {
+    const schedulePool = graphPool;
+    const scheduleWorker = new ScheduleWorker({
+      getGraphStore: () => new AgentGraphStore(schedulePool),
+      getRegistry: () =>
+        serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
+      log: (m, f) => console.log(`[middleware] ${m}`, f ?? ''),
+    });
+    scheduleWorker.start();
+    console.log('[middleware] agent-builder schedule worker started (1-min poll)');
+  }
 
   // Slice 10 — near-duplicate MK workflow. Mirrors the Slice 9
   // mounting pattern: detector + bulk are optional, route 503s when
@@ -1480,6 +1790,17 @@ async function main(): Promise<void> {
   } else {
     console.log(
       '[middleware] topics endpoint skipped — topicClustering service not published',
+    );
+  }
+
+  // Cost telemetry read API (web-ui dashboard). Only with a Neon graphPool —
+  // in-memory mode persists no usage, so there is nothing to serve.
+  if (graphPool) {
+    app.use('/api/usage', requireAuth, createUsageRouter({ pool: graphPool }));
+    console.log('[middleware] usage cost endpoint ready at /api/usage');
+  } else {
+    console.log(
+      '[middleware] usage cost endpoint skipped — no graphPool (in-memory KG backend)',
     );
   }
 
@@ -1860,6 +2181,10 @@ async function main(): Promise<void> {
               await dynamicAgentRuntime.deactivate(agentId);
             }
             await dynamicAgentRuntime.activate(agentId);
+            // Hub/registry install + package re-upload land here. Propagate the
+            // (fresh) tool onto the per-Agent orchestrators so the new/updated
+            // capability is live for the next chat turn without a restart.
+            await propagatePluginInstall(agentId);
           }
         }
       },
@@ -1934,6 +2259,20 @@ async function main(): Promise<void> {
     }),
   );
   console.log('[middleware] runtime introspection endpoint ready at /api/v1/admin/runtime (auth: required)');
+
+  // Operator settings overview — every .env-based value bootstrap writes into
+  // the config-store / vault, editable with live re-activation. Reuses the
+  // same installedRegistry + vault + reactivate plumbing as the runtime route.
+  app.use(
+    '/api/v1/admin/settings',
+    requireAuth,
+    createAdminSettingsRouter({
+      installedRegistry,
+      vault: secretVault,
+      reactivate: reactivateAgent,
+    }),
+  );
+  console.log('[middleware] settings overview endpoint ready at /api/v1/admin/settings (auth: required)');
 
   // ── Agent-Builder drafts (B.0) ────────────────────────────────────────────
   // SQLite-backed draft store; persists alongside the vault so redeploys
@@ -2512,6 +2851,19 @@ async function main(): Promise<void> {
               quota: draftQuota,
               workaroundStateStore: builderWorkaroundStateStore,
             },
+            // Self-extension shares the install dependency surface; an approved
+            // proposal installs + reactivates through the same ingest →
+            // onPackageReady seam as an operator upload.
+            selfExtension: {
+              gate: selfExtensionGate,
+              draftStore,
+              buildPipeline: builderBuildPipeline,
+              packageUploadService,
+              pluginCatalog,
+              selfExtendRegistry,
+              extensionStore,
+              reactivate: reactivateAgent,
+            },
           }
         : {}),
       // Native issue-reporting routes (concept plan). Always wired —
@@ -2540,7 +2892,13 @@ async function main(): Promise<void> {
   );
 
   if (config.ADMIN_TOKEN && config.ADMIN_TOKEN.length > 0) {
-    app.use('/api/admin', createAdminRouter({ store: memoryStore, token: config.ADMIN_TOKEN }));
+    app.use(
+      '/api/admin',
+      createAdminRouter({
+        store: memoryStore,
+        token: config.ADMIN_TOKEN,
+      }),
+    );
     console.log('[middleware] admin endpoints enabled at /api/admin');
     // S+7.7 — Telegram admin endpoints are now self-contained inside the
     // plugin (mounted via core.registerRouter at /api/telegram/admin/*).
@@ -2756,7 +3114,6 @@ async function main(): Promise<void> {
   // memory/feedback-fly-operational.
   const server = app.listen(config.PORT, '::', () => {
     console.log(`[middleware] listening on [::]:${config.PORT}`);
-    console.log(`[middleware] memory dir: ${config.MEMORY_DIR}`);
     console.log(`[middleware] skills dir: ${config.SKILLS_DIR}`);
     console.log(`[middleware] orchestrator model: ${config.ORCHESTRATOR_MODEL}`);
     console.log(`[middleware] sub-agent model:   ${config.SUB_AGENT_MODEL}`);

@@ -20,6 +20,16 @@ export default function AdminIndexPage(): React.ReactElement {
 
       <ul className="grid gap-4 lg:grid-cols-2">
         <AdminCard
+          href="/admin/builder"
+          title="Agent-Builder"
+          description="Visuelle Node-Graph-Leinwand: Kanäle, Sub-Agenten, Skills, Tools/MCP und Zeitpläne verdrahten. Verbindung ziehen schreibt die Verdrahtung, Kante löschen entfernt sie."
+        />
+        <AdminCard
+          href="/admin/settings"
+          title="Konfiguration"
+          description="Alle .env-basierten Werte (Modelle & Routing, Verifier, Embeddings, Integrationen), die in Config-Store/Vault landen — direkt editierbar. Auto-Save, wirkt sofort ohne Neustart."
+        />
+        <AdminCard
           href="/admin/auth"
           title="Authentifizierungs-Provider"
           description="Lokale Anmeldung und Entra-ID aktivieren oder deaktivieren. Änderungen wirken ohne Neustart."
@@ -59,6 +69,22 @@ export default function AdminIndexPage(): React.ReactElement {
           title="Memory · Widersprüche"
           description="Semantisch ähnliche Memories mit widersprüchlichen Aussagen — Operator entscheidet welche korrekt ist (oder ob beide gelten)."
         />
+        <AdminCard
+          href="/admin/memory-backend"
+          title="Memory · Speicher-Backend"
+          description="Memory-Storage zwischen Dateisystem und Postgres umschalten. Postgres benötigt DATABASE_URL (Neon-KG/graphPool). Der Wechsel greift erst nach einem Neustart."
+        />
+        <AdminCard
+          href="/admin/danger-zone"
+          title="Danger Zone · Memory-Purge"
+          description="Memory unwiderruflich entlang einer Achse löschen (Alles / Agent / User / Team / Channel). Vorschau-gated, mit Confirm-Phrase. Kein Undo."
+          danger
+        />
+        <AdminCard
+          href="/admin/usage"
+          title="Kosten"
+          description="LLM-Token-Verbrauch und Kosten pro Modell, Quelle und Zeit. Cache-Hit-Rate und Gesamtkosten über jeden Anthropic-Call (Orchestrator, Sub-Agents, Background-Tasks)."
+        />
       </ul>
     </main>
   );
@@ -68,18 +94,30 @@ function AdminCard({
   href,
   title,
   description,
+  danger = false,
 }: {
   href: string;
   title: string;
   description: string;
+  danger?: boolean;
 }): React.ReactElement {
   return (
     <li>
       <Link
         href={href}
-        className="block rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5 transition-colors hover:border-[color:var(--accent)]"
+        className={
+          danger
+            ? 'block rounded-[14px] border border-red-500/40 bg-red-500/5 p-5 transition-colors hover:border-red-500'
+            : 'block rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5 transition-colors hover:border-[color:var(--accent)]'
+        }
       >
-        <div className="text-[15px] font-semibold text-[color:var(--fg-strong)]">
+        <div
+          className={
+            danger
+              ? 'text-[15px] font-semibold text-red-500'
+              : 'text-[15px] font-semibold text-[color:var(--fg-strong)]'
+          }
+        >
           {title}
         </div>
         <p className="mt-1.5 text-sm text-[color:var(--fg-muted)]">

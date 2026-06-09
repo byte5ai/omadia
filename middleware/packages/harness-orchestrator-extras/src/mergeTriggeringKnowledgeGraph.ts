@@ -23,6 +23,7 @@ import type {
   AclAuditEntry,
   AclMutationOptions,
   ChannelIdentityIngest,
+  MemorableKnowledgePurgeFilter,
   CreateInconsistencyInput,
   CreateExcerptMergeCandidateInput,
   CreateMergeCandidateInput,
@@ -49,6 +50,8 @@ import type {
   InconsistencyResolution,
   InconsistencyStatus,
   KnowledgeGraph,
+  KgWalkEdge,
+  KgWalkNode,
   ListInconsistenciesOptions,
   ListMemoriesForScopeOptions,
   ListMemorableKnowledgeOptions,
@@ -367,6 +370,18 @@ export class MergeTriggeringKnowledgeGraph implements KnowledgeGraph {
   ): Promise<void> {
     return this.inner.deleteMemory(memorableKnowledgeNodeId, actor);
   }
+
+  countMemorableKnowledge(
+    filter: MemorableKnowledgePurgeFilter,
+  ): Promise<{ count: number }> {
+    return this.inner.countMemorableKnowledge(filter);
+  }
+
+  purgeMemorableKnowledge(
+    filter: MemorableKnowledgePurgeFilter,
+  ): Promise<{ deletedNodes: number }> {
+    return this.inner.purgeMemorableKnowledge(filter);
+  }
   listMemoryAclAudit(
     memorableKnowledgeNodeId: string,
     opts?: { limit?: number },
@@ -413,6 +428,12 @@ export class MergeTriggeringKnowledgeGraph implements KnowledgeGraph {
     opts?: ListMemoriesForScopeOptions,
   ): Promise<MemoriesProvenanceView> {
     return this.inner.listMemoriesForScope(scope, opts);
+  }
+  getMemorableKnowledgeSubgraph(
+    rootExternalIds: string[],
+    opts?: { maxHops?: number; maxNodes?: number },
+  ): Promise<{ nodes: KgWalkNode[]; edges: KgWalkEdge[] }> {
+    return this.inner.getMemorableKnowledgeSubgraph(rootExternalIds, opts);
   }
   listMemorableKnowledgeIdsForBulkInconsistencyCheck(opts: {
     limit: number;

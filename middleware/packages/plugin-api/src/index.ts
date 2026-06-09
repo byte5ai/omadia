@@ -1,5 +1,7 @@
 export * from './pluginContext.js';
 export * from './conversation.js';
+export * from './limitSignal.js';
+export * from './selfExtend.js';
 export * from './localSubAgentTool.js';
 export * from './piiAnnotation.js';
 
@@ -10,6 +12,12 @@ export * from './targetRef.js';
 // Omadia UI — write-tool capability contract + the deterministic Tier-2
 // mutability derivation. Consumed by the canvas orchestrator (PR-9).
 export * from './writeCapabilities.js';
+
+// Agent Builder canvas (P0): the shared graph contract — AgentGraph, node
+// DTOs, GraphEdge/EdgeKind, ModelRoutingConfig. The editable visual builder
+// is a thin renderer over the config graph; backend serialises this shape
+// from the registry tables and the web-ui xyflow canvas renders/mutates it.
+export * from './agentGraph.js';
 
 // S+11-1: Knowledge-graph capability contract (interface + DTOs + node-id
 // helpers) lives on the plugin-api surface. Both the in-memory and the Neon
@@ -33,10 +41,11 @@ export * from './responseGuard.js';
 // for backends without a persistent layer.
 export * from './agentPriorities.js';
 
-// Privacy-Proxy Slice 1a: shared `PrivacyReceipt` vocabulary. Slice 1b
-// will land the wrapper + Presidio detector + tokenise-map roundtrip;
-// Slices 5/6 (Web + Teams renderers) build against the fixtures here so
-// they can ship in parallel.
+// Privacy-Proxy: shared `PrivacyReceipt` vocabulary. The redaction itself
+// is now the Privacy Shield v4 Data-Plane Boundary (@omadia/plugin-privacy-guard):
+// tool results are interned server-side into a Dataset Store and only a masked
+// Digest crosses the LLM wire — no external NER sidecar. The Web + Teams
+// renderers build against the fixtures here.
 export * from './privacyReceipt.js';
 export * from './privacyReceiptFixtures.js';
 
@@ -70,6 +79,11 @@ export * from './nudge.js';
 // dynamic-import / plugin-store flow stays clean (no constructor-injected
 // Deps).
 export * from './routinesIntegration.js';
+
+// Cold-start proactive 1:1: shared delivery-target model (ColdStartTarget,
+// RoutineRecipient, type guards) so the routines kernel and channel plugins
+// agree on the shape of a deferred, not-yet-resolved recipient.
+export * from './routineTarget.js';
 
 // KG-ACL Slice 4a: Palaia-Excerpt-Extractor capability. Haiku-backed
 // per-turn enrichment producing {suggestedKind, suggestedSummary,

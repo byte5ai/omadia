@@ -29,6 +29,7 @@ import {
 import { CaptureFilteringKnowledgeGraph } from './captureFilteringKnowledgeGraph.js';
 import { ContextRetriever } from './contextRetriever.js';
 import type { Pool } from 'pg';
+import { initUsageRecorder, withUsageTracking } from '@omadia/usage-telemetry';
 
 import { createBulkExcerptMergeDetectService } from './bulkExcerptMergeDetect.js';
 import { createBulkInconsistencyService } from './bulkInconsistency.js';
@@ -44,6 +45,7 @@ import { FactExtractor } from './factExtractor.js';
 import { createHaikuSessionSummaryGenerator } from './sessionSummaryGenerator.js';
 import { createSessionBriefingService } from './sessionBriefing.js';
 import { createHaikuSignificanceScorer } from './significanceScorer.js';
+import { createScratchPromotionReaper } from './scratchPromotionReaper.js';
 import { TopicDetector } from './topicDetector.js';
 import { ProcessPromoteProvider } from './nudgeProviders/processPromote.js';
 
@@ -90,7 +92,12 @@ const CAPTURE_FILTER_SERVICE = 'captureFilter';
 const DEFAULT_HAIKU_MODEL = 'claude-haiku-4-5-20251001';
 const DEFAULT_TOPIC_UPPER = 0.55;
 const DEFAULT_TOPIC_LOWER = 0.15;
-const DEFAULT_CAPTURE_LEVEL: CaptureLevel = 'minimal';
+// Default `normal`: the capture-filter scores each turn's significance so
+// auto-promotion (now on by default) has a signal to gate on. Costs a Haiku
+// call per captured turn — set `capture_level=minimal` (scorer off) to avoid
+// that spend. Requires an Anthropic key; without one the scorer stays
+// disabled regardless of level.
+const DEFAULT_CAPTURE_LEVEL: CaptureLevel = 'normal';
 const DEFAULT_CAPTURE_VISIBILITY: Visibility = 'team';
 
 export interface OrchestratorExtrasPluginHandle {
@@ -249,9 +256,16 @@ export async function activate(
     3,
   );
 
+  // Cost telemetry: wire the recorder to the shared graph pool and wrap the
+  // client so the background Haiku scorers/extractors record their usage.
+  const usagePool = ctx.services.get<Pool>('graphPool');
+  if (usagePool) initUsageRecorder(usagePool);
+
   let anthropic: Anthropic | undefined;
   if (apiKey) {
-    anthropic = new Anthropic({ apiKey });
+    anthropic = withUsageTracking(new Anthropic({ apiKey }), {
+      source: 'extras',
+    });
   }
 
   // ---------------------------------------------------------------------
@@ -437,6 +451,81 @@ export async function activate(
     ctx.log(
       '[harness-orchestrator-extras] bulkPromotion skipped — graphPool capability not published',
     );
+  }
+
+  // WS5 — Scratchpad-Promotion Reaper. Periodically consolidates
+  // significant, aged agent-scratch memory (PostgresMemoryStore
+  // `memory_files` under `/memories/orchestrators/<slug>/…`) into the KG
+  // as owner-less, agent-scoped MemorableKnowledge. Starts ONLY when:
+  // enabled AND graphPool present AND a SignificanceScorer is available
+  // (needs an Anthropic key) — mirrors turn-promotion's no-DB / no-key
+  // no-op. The first scan is NOT run synchronously at activate (don't
+  // block boot); a short-delayed kick fires the first pass, then the
+  // interval takes over.
+  let stopScratchReaper: (() => void) | undefined;
+  const scratchPromotionEnabled = parseBoolDefaultTrue(
+    ctx.config.get<unknown>('scratch_promotion_enabled'),
+  );
+  const scratchPromotionIntervalMinutes = parseNumberOrDefault(
+    ctx.config.get<unknown>('scratch_promotion_interval_minutes'),
+    60,
+  );
+  const scratchPromotionAgeHours = parseNumberOrDefault(
+    ctx.config.get<unknown>('scratch_promotion_age_hours'),
+    24,
+  );
+  const scratchPromotionThreshold = parseNumberOrDefault(
+    ctx.config.get<unknown>('scratch_promotion_threshold'),
+    captureSignificanceThreshold,
+  );
+  // Opt-in destructive TTL of non-promoted aged scratch. Default false —
+  // the reaper never destroys scratch it didn't promote unless told to.
+  const scratchPromotionDropUnpromoted = parseBoolDefaultFalse(
+    ctx.config.get<unknown>('scratch_promotion_drop_unpromoted'),
+  );
+  {
+    let disabledReason: string | undefined;
+    if (!scratchPromotionEnabled) {
+      disabledReason = 'config scratch_promotion_enabled=false';
+    } else if (!bulkPromotionPool) {
+      disabledReason = 'graphPool capability not published';
+    } else if (!significanceScorer) {
+      disabledReason = 'no significance scorer (Anthropic key missing)';
+    }
+
+    if (disabledReason) {
+      ctx.log(
+        `[harness-orchestrator-extras] scratch-promotion reaper disabled: ${disabledReason}`,
+      );
+    } else if (bulkPromotionPool && significanceScorer) {
+      // Re-narrowed for the type-checker (the guards above already
+      // guarantee both are present when disabledReason is undefined).
+      const reaperPool = bulkPromotionPool;
+      const reaperScorer = significanceScorer;
+      const intervalMs = Math.max(1, scratchPromotionIntervalMinutes) * 60_000;
+      const ageMs = Math.max(0, scratchPromotionAgeHours) * 3_600_000;
+      const reaper = createScratchPromotionReaper({
+        pool: reaperPool,
+        tenantId: bulkPromotionTenantId,
+        kg: wrappedKg,
+        scorer: reaperScorer,
+        threshold: scratchPromotionThreshold,
+        ageMs,
+        intervalMs,
+        defaultVisibility: captureDefaultVisibility,
+        dropUnpromoted: scratchPromotionDropUnpromoted,
+        log: (msg) => { console.error(msg); },
+      });
+      reaper.start();
+      stopScratchReaper = () => { reaper.stop(); };
+      // Kick a first pass off the boot critical-path (don't await in
+      // activate). Errors are swallowed inside runOnce.
+      const kick = setTimeout(() => { void reaper.runOnce(); }, 30_000);
+      if (typeof kick.unref === 'function') kick.unref();
+      ctx.log(
+        `[harness-orchestrator-extras] scratch-promotion reaper on every ${String(scratchPromotionIntervalMinutes)}min, age=${String(scratchPromotionAgeHours)}h, threshold=${scratchPromotionThreshold.toFixed(2)}, dropUnpromoted=${String(scratchPromotionDropUnpromoted)}`,
+      );
+    }
   }
 
   // Slice 9.5 — operator-triggered bulk inconsistency-detect pass.
@@ -631,6 +720,7 @@ export async function activate(
       disposeBulkMergeDetect();
       disposeBulkInconsistency();
       disposeBulkPromotion?.();
+      stopScratchReaper?.();
       disposeContext();
       // Tear down KG wrappers FIRST (restores original provider), THEN
       // the captureFilter capability — symmetric with the activate order.
@@ -652,6 +742,20 @@ function parseNumberOrDefault(value: unknown, fallback: number): number {
     if (Number.isFinite(parsed)) return parsed;
   }
   return fallback;
+}
+
+/** Parse a tri-state config boolean that defaults to TRUE when unset.
+ *  Only an explicit `false` / `'false'` (case-insensitive) disables. */
+function parseBoolDefaultTrue(value: unknown): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') return value.trim().toLowerCase() !== 'false';
+  return true;
+}
+
+function parseBoolDefaultFalse(value: unknown): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') return value.trim().toLowerCase() === 'true';
+  return false;
 }
 
 function parseCaptureLevel(

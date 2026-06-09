@@ -1,24 +1,12 @@
-import { describe, it, before, after } from 'node:test';
+import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { FilesystemMemoryStore } from '@omadia/memory';
+import { InMemoryMemoryStore } from '@omadia/memory';
 import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
 import { SessionLogger } from '@omadia/orchestrator';
 
 describe('SessionLogger + KnowledgeGraph integration', () => {
-  let dir: string;
-  before(() => {
-    dir = mkdtempSync(join(tmpdir(), 'sl-graph-'));
-  });
-  after(() => {
-    rmSync(dir, { recursive: true, force: true });
-  });
-
   it('writes markdown AND ingests a Turn node on every log()', async () => {
-    const store = new FilesystemMemoryStore(dir);
-    await store.init();
+    const store = new InMemoryMemoryStore();
     const graph = new InMemoryKnowledgeGraph();
     const logger = new SessionLogger(store, graph);
 
@@ -56,8 +44,7 @@ describe('SessionLogger + KnowledgeGraph integration', () => {
   });
 
   it('graph ingest failure does not break the markdown write', async () => {
-    const store = new FilesystemMemoryStore(dir);
-    await store.init();
+    const store = new InMemoryMemoryStore();
     // A sabotaged graph that throws on every ingestTurn; SessionLogger must
     // still write the transcript.
     const badGraph: Parameters<typeof SessionLogger>[1] = {
@@ -86,8 +73,7 @@ describe('SessionLogger + KnowledgeGraph integration', () => {
   });
 
   it('works without a graph at all (backward-compat)', async () => {
-    const store = new FilesystemMemoryStore(dir);
-    await store.init();
+    const store = new InMemoryMemoryStore();
     const logger = new SessionLogger(store);
     await logger.log({
       scope: 'no-graph',

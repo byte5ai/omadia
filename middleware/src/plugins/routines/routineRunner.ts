@@ -327,6 +327,25 @@ export class RoutineRunner {
     return this.store.delete(id);
   }
 
+  /**
+   * Persist a materialised conversation reference onto a routine after a
+   * channel sender resolved a cold-start delivery target into a live
+   * conversation. Best-effort: the JobScheduler is not touched (the
+   * delivery handle has no bearing on cron firing) and a missing id is a
+   * silent no-op — the routine simply re-resolves on its next run.
+   */
+  async updateConversationRef(
+    id: string,
+    conversationRef: unknown,
+  ): Promise<void> {
+    const updated = await this.store.updateConversationRef(id, conversationRef);
+    if (!updated) {
+      this.log(
+        `[routines/runner] updateConversationRef: routine ${id} not found (cold-start ref not persisted)`,
+      );
+    }
+  }
+
   // --- internals -----------------------------------------------------------
 
   private registerInScheduler(routine: Routine): void {

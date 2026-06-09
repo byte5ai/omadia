@@ -11,6 +11,7 @@ import type {
   ProcessQueryHit,
   RecalledContext,
 } from '@omadia/plugin-api';
+import { turnNodeId } from '@omadia/plugin-api';
 
 // Cross-session KG-recall probe — R0 (listRecentPlans), R1 (team-visibility
 // for curated-memory recall), R2 (ContextRetriever plan/process/insight legs).
@@ -312,6 +313,75 @@ describe('R2 · ContextRetriever cross-session recall legs', () => {
       insights: [],
     });
     assert.doesNotMatch(result.text, /Aus früheren Sessions/);
+  });
+
+  // Regression: cross-session recall must NOT evict the immediately-preceding
+  // in-session turn from the budget. Before the continuity guard, the recall
+  // blocks claimed up to half the budget first and a large recent answer could
+  // be dropped (`reason: budget-exceeded`) — so a follow-up silently lost the
+  // latest state. The tail is now reserved before recall takes its share.
+  it('keeps the most-recent in-session turn even when recall fills the budget', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+
+    // Two in-session turns: an old short one and a recent LARGE one.
+    await kg.ingestTurn({
+      scope: 'sess-now',
+      time: '2026-06-01T09:00:00.000Z',
+      userMessage: 'kurze Frage',
+      assistantAnswer: 'kurze Antwort',
+      entityRefs: [],
+      userId: 'alice',
+    });
+    const recentTime = '2026-06-01T09:30:00.000Z';
+    await kg.ingestTurn({
+      scope: 'sess-now',
+      time: recentTime,
+      userMessage: 'Detailanalyse der nicht abgerechneten TN bitte',
+      // Big distinctive answer — the "latest state" a follow-up must keep.
+      assistantAnswer: `LATEST-STATE-MARKER ${'Befund über nicht abgerechnete Teilnehmer. '.repeat(30)}`,
+      entityRefs: [],
+      userId: 'alice',
+    });
+
+    // Several team-visible insights, all aligned to the query so the recall
+    // block is as full as it can get.
+    for (let i = 0; i < 6; i++) {
+      const mk = await kg.createMemorableKnowledge({
+        kind: 'reference',
+        summary: `Insight ${String(i)}: ${'kontextreiche Erkenntnis. '.repeat(10)}`,
+        createdBy: 'web:bob',
+        involvedOmadiaUserIds: [],
+        aclOwners: ['bob'],
+      });
+      kg.setEmbedding(mk.memorableKnowledgeNodeId, ALIGNED);
+    }
+
+    const retriever = new ContextRetriever(
+      kg,
+      { teamVisibility: true },
+      stubEmbedder,
+    );
+    const result = await retriever.assembleForBudget({
+      userMessage: 'kannst du eine Detailanalyse machen?',
+      agentId: 'test-agent',
+      sessionScope: 'sess-now',
+      userId: 'alice',
+      budget: { tokens: 500 }, // tight: recall would otherwise crowd the tail
+    });
+
+    // Recall is present (the block did claim its share) …
+    assert.ok(
+      result.recalled.insights.length > 0,
+      'recall insights should still be surfaced',
+    );
+    // … and yet the most-recent turn survived in the assembled context.
+    const recentTurnId = turnNodeId('sess-now', recentTime);
+    const includedIds = new Set(result.included.map((h) => h.turnId));
+    assert.ok(
+      includedIds.has(recentTurnId),
+      'the latest in-session turn must be carried into the follow-up context',
+    );
+    assert.match(result.text, /LATEST-STATE-MARKER/);
   });
 });
 
