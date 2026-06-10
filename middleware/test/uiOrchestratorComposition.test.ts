@@ -189,6 +189,48 @@ describe('composeStructuredPayloadPatch', () => {
     assert.equal(table.rows.length, 2);
   });
 
+  it('maps via the explicit data.containerId onto a table nested in a pane', () => {
+    // detail view: a participants table inside a tabs/pane whose id is named by
+    // NO dataRequirement — only the agent's explicit containerId resolves it.
+    const paneTree = {
+      type: 'container',
+      id: 'root',
+      layout: 'stack',
+      children: [
+        {
+          type: 'tabs',
+          id: 'detail_tabs',
+          tabs: [
+            {
+              label: 'Teilnehmer',
+              child: {
+                type: 'table',
+                id: 'participants',
+                loading: 'skeleton',
+                columns: [{ fieldKey: 'name', label: 'Name' }],
+                rows: [],
+              },
+            },
+          ],
+        },
+      ],
+    };
+    const composed = composeStructuredPayloadPatch({
+      baseTree: paneTree,
+      payload: {
+        prose: '1 Teilnehmer',
+        dataRefId: 'p1',
+        data: { containerId: 'participants', rows: [{ name: 'Dean Hughes' }] },
+      },
+      dataRequirements: [], // intentionally empty — explicit containerId must win
+    });
+    assert.ok(composed, 'explicit containerId resolves the nested table');
+    assert.equal(composed?.patches.some((p) => p.path.endsWith('/loading')), true);
+    const table = ((composed?.nextTree as { children: Array<{ tabs: Array<{ child: { rows: unknown[] } }> }> })
+      .children[0]?.tabs[0]?.child);
+    assert.equal(table?.rows.length, 1);
+  });
+
   it('returns null for unmappable payloads (no rows / unknown container)', () => {
     assert.equal(
       composeStructuredPayloadPatch({

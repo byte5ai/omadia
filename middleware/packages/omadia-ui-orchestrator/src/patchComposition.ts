@@ -88,13 +88,29 @@ export function composeStructuredPayloadPatch(opts: {
   const rows = extractRows(opts.payload);
   if (!rows) return null;
 
-  // First requirement whose containerId resolves to a table in the skeleton wins.
+  // Target resolution, in priority order:
+  //   1. the containerId the publishing tool named EXPLICITLY (data.containerId)
+  //      — authoritative, and the only id that resolves a table nested in a
+  //      pane/tab whose id differs from any dataRequirement entry;
+  //   2. otherwise the first dataRequirement containerId that resolves to a table.
+  // Without (1) a panes/tabs detail view never patches: the agent publishes to
+  // "participants", but the requirement list may name it differently.
   let table: { node: TableNode; path: string } | null = null;
-  for (const req of opts.dataRequirements) {
-    const hit = findNodeById(opts.baseTree, req.containerId, '');
-    if (hit && isTableNode(hit.node)) {
-      table = { node: hit.node as TableNode, path: hit.path };
-      break;
+  const explicitId =
+    typeof (opts.payload.data as { containerId?: unknown } | null)?.containerId === 'string'
+      ? ((opts.payload.data as { containerId: string }).containerId)
+      : undefined;
+  if (explicitId) {
+    const hit = findNodeById(opts.baseTree, explicitId, '');
+    if (hit && isTableNode(hit.node)) table = { node: hit.node as TableNode, path: hit.path };
+  }
+  if (!table) {
+    for (const req of opts.dataRequirements) {
+      const hit = findNodeById(opts.baseTree, req.containerId, '');
+      if (hit && isTableNode(hit.node)) {
+        table = { node: hit.node as TableNode, path: hit.path };
+        break;
+      }
     }
   }
   if (!table) return null;
