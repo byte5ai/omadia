@@ -13,7 +13,11 @@ import type { PluginContext } from '../packages/plugin-api/src/index.js';
 import {
   activate,
   CANVAS_CHAT_AGENT_SERVICE,
+  CANVAS_PUBLISH_TOOL,
+  handleCanvasPublishRows,
 } from '../packages/omadia-ui-orchestrator/src/plugin.js';
+import { parseToolEmittedStructuredPayload } from '../packages/harness-orchestrator/src/canvasSentinels.js';
+import { composeStructuredPayloadPatch } from '../packages/omadia-ui-orchestrator/src/patchComposition.js';
 
 /**
  * PR-9a — the omadia-ui-orchestrator skeleton. activate() publishes
@@ -95,6 +99,82 @@ describe('omadia-ui-orchestrator skeleton', () => {
     assert.ok(reg.get('canvasChatAgent'));
     await handle.close();
     assert.equal(reg.get('canvasChatAgent'), undefined);
+  });
+});
+
+describe('canvas_publish_rows producer tool', () => {
+  it('emits a parseable structured-payload sentinel that composes onto a skeleton table', async () => {
+    const out = await handleCanvasPublishRows({
+      containerId: 'courses',
+      rows: [
+        { courseName: 'Sea Survival', date: '2026-06-15' },
+        { courseName: 'First Aid', date: '2026-06-16' },
+      ],
+      prose: '2 Kurse veröffentlicht.',
+    });
+    const payload = parseToolEmittedStructuredPayload(out);
+    assert.ok(payload, 'handler output carries the sentinel');
+    assert.equal(payload.prose, '2 Kurse veröffentlicht.');
+
+    const baseTree = {
+      type: 'container',
+      id: 'root',
+      layout: 'stack',
+      children: [
+        {
+          type: 'table',
+          id: 'courses',
+          loading: 'skeleton',
+          columns: [
+            { fieldKey: 'courseName', label: 'Kurs' },
+            { fieldKey: 'date', label: 'Datum' },
+          ],
+          rows: [],
+        },
+      ],
+    };
+    const composed = composeStructuredPayloadPatch({
+      baseTree,
+      payload,
+      dataRequirements: [{ containerId: 'courses', description: 'Kurse', fields: [] }],
+    });
+    assert.ok(composed, 'payload maps onto the skeleton table');
+    assert.equal(composed.patches[0]?.op, 'replace'); // loading: skeleton → none
+    assert.equal(composed.patches.length, 3, 'loading replace + 2 row adds');
+  });
+
+  it('returns an error string (no sentinel) for missing containerId or empty rows', async () => {
+    const out = await handleCanvasPublishRows({ containerId: '', rows: [] });
+    assert.match(out, /^Error:/);
+    assert.equal(parseToolEmittedStructuredPayload(out), undefined);
+  });
+
+  it('registers the tool when the context has a tools accessor and disposes on close', async () => {
+    const reg = new Map<string, unknown>();
+    const registered: string[] = [];
+    let disposed = 0;
+    const ctx = {
+      log: () => {},
+      services: {
+        get: <T>(name: string): T | undefined => reg.get(name) as T | undefined,
+        provide: (name: string, impl: unknown) => {
+          reg.set(name, impl);
+          return () => reg.delete(name);
+        },
+      },
+      tools: {
+        register: (spec: { name: string }) => {
+          registered.push(spec.name);
+          return () => {
+            disposed += 1;
+          };
+        },
+      },
+    } as unknown as PluginContext;
+    const handle = await activate(ctx);
+    assert.deepEqual(registered, [CANVAS_PUBLISH_TOOL]);
+    await handle.close();
+    assert.equal(disposed, 1);
   });
 });
 

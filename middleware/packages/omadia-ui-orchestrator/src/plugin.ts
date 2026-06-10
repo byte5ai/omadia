@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import type { PluginContext } from '@omadia/plugin-api';
 import {
   CHAT_AGENT_SERVICE,
@@ -59,6 +61,38 @@ export interface UiOrchestratorPluginHandle {
   close(): Promise<void>;
 }
 
+/** Tier-3 producer tool — the first consumer of the canvas-output path. The
+ *  [canvas-context] handoff instructs the main turn to publish fetched rows
+ *  through this tool; its result string carries the
+ *  `_pendingStructuredPayload` sentinel that surface synthesis maps onto the
+ *  skeleton as a deterministic `surface_patch`. Always in the allow-set. */
+export const CANVAS_PUBLISH_TOOL = 'canvas_publish_rows';
+
+/** NativeToolHandler for {@link CANVAS_PUBLISH_TOOL}. Exported for tests. */
+export async function handleCanvasPublishRows(input: unknown): Promise<string> {
+  const args = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>;
+  const containerId = typeof args['containerId'] === 'string' ? args['containerId'].trim() : '';
+  const rows = Array.isArray(args['rows'])
+    ? args['rows'].filter(
+        (r): r is Record<string, unknown> => typeof r === 'object' && r !== null && !Array.isArray(r),
+      )
+    : [];
+  if (containerId.length === 0 || rows.length === 0) {
+    return 'Error: canvas_publish_rows requires a containerId and a non-empty rows array of objects.';
+  }
+  const prose =
+    typeof args['prose'] === 'string' && args['prose'].trim().length > 0
+      ? args['prose'].trim()
+      : `Published ${rows.length} row(s) for ${containerId}.`;
+  return JSON.stringify({
+    _pendingStructuredPayload: {
+      prose,
+      dataRefId: randomUUID(),
+      data: { containerId, rows },
+    },
+  });
+}
+
 export async function activate(
   ctx: PluginContext,
 ): Promise<UiOrchestratorPluginHandle> {
@@ -70,11 +104,55 @@ export async function activate(
   const model =
     ctx.config?.get<string>('ui_orchestrator_model')?.trim() ||
     DEFAULT_COMPOSITION_MODEL;
-  const canvasOutputTools: ReadonlySet<string> = new Set(
-    (ctx.config?.get<string>('canvas_output_tools') ?? '')
+  // Our own producer tool is always authorised; the operator config extends
+  // the allow-set with additional sentinel-emitting tools.
+  const canvasOutputTools: ReadonlySet<string> = new Set([
+    CANVAS_PUBLISH_TOOL,
+    ...(ctx.config?.get<string>('canvas_output_tools') ?? '')
       .split(',')
       .map((s) => s.trim())
       .filter((s) => s.length > 0),
+  ]);
+
+  // Register the producer tool in the orchestrator tool loop. The accessor is
+  // typed required but absent in narrow test contexts; without it the canvas
+  // still renders skeleton + prose, only the data path is unavailable.
+  const toolsAccessor = ctx.tools as PluginContext['tools'] | undefined;
+  const disposeTool: (() => void) | undefined = toolsAccessor?.register(
+    {
+      name: CANVAS_PUBLISH_TOOL,
+      description:
+        'Publish fetched data rows for an Omadia UI canvas container. Use ONLY when the user ' +
+        'message carries a [canvas-context] block: call once per containerId from its ' +
+        'dataRequirements, with rows keyed EXACTLY by the promised fieldKeys. The rows render ' +
+        'directly into the already-visible canvas table — do not repeat them as text afterwards.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          containerId: {
+            type: 'string',
+            description: 'containerId from the [canvas-context] dataRequirements',
+          },
+          rows: {
+            type: 'array',
+            items: { type: 'object' },
+            description:
+              'one object per row; keys = the promised fieldKeys (optional rowKey/id for stable row identity)',
+          },
+          prose: {
+            type: 'string',
+            description: 'one short human sentence describing the published data',
+          },
+        },
+        required: ['containerId', 'rows'],
+      },
+    },
+    handleCanvasPublishRows,
+  );
+  ctx.log(
+    `[omadia-ui-orchestrator] producer tool ${CANVAS_PUBLISH_TOOL} ${
+      disposeTool ? 'registered' : 'NOT registered (no tools accessor in this context)'
+    }`,
   );
   const llm: CompositionLlm = ctx.llm ?? {
     complete: () => Promise.reject(new Error('llm unavailable')),
@@ -121,8 +199,11 @@ export async function activate(
           dataRequirements: skeleton.dataRequirements,
           instruction:
             'A canvas skeleton with the above data requirements is already ' +
-            'rendered. Fetch and return the data matching exactly these ' +
-            'containerIds and fieldKeys.',
+            'rendered. Fetch the data, then call the canvas_publish_rows tool ' +
+            'once per containerId with rows keyed EXACTLY by the promised ' +
+            'fieldKeys. The rows render into the visible canvas table — after ' +
+            'publishing, reply with one short summary sentence only and do NOT ' +
+            'repeat the rows as text or markdown tables.',
         }),
     };
 
@@ -168,6 +249,7 @@ export async function activate(
   return {
     async close(): Promise<void> {
       ctx.log('deactivating omadia-ui-orchestrator');
+      disposeTool?.();
       dispose();
     },
   };

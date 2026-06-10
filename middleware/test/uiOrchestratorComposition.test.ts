@@ -302,7 +302,7 @@ describe('canvasChatAgent — Haiku composition step', () => {
     assert.equal(seen.length, 1);
     assert.match(seen[0]?.userMessage ?? '', /\[canvas-context\]/);
     assert.match(seen[0]?.userMessage ?? '', /"containerId":"tickets"/);
-    assert.match(seen[0]?.userMessage ?? '', /matching exactly these/);
+    assert.match(seen[0]?.userMessage ?? '', /call the canvas_publish_rows tool/);
 
     // (c) authorised structured payload → surface_patch based on the skeleton
     const patch = events.find((e) => e.type === 'surface_patch');
