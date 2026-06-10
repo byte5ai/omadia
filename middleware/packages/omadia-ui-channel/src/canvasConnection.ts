@@ -78,6 +78,8 @@ export function handleCanvasSocket(
   // Per-connection turn queue — serialises turns so two in-flight turns can't
   // interleave surface frames on the same socket.
   let turnChain: Promise<void> = Promise.resolve();
+  // canvas_refresh rate limit window (issue #5 open question #1)
+  let lastRefreshAt = 0;
 
   const send = (msg: unknown): void => {
     if (phase === 'closed') return;
@@ -181,6 +183,14 @@ export function handleCanvasSocket(
       // serialises behind it; the revision equality check on the resulting
       // patches settles the rest (issue's open question #3).
       const turnId = msg.turnId && msg.turnId.length > 0 ? msg.turnId : deps.mintId();
+      // Rate limit (issue #5 open question #1): a refresh is spammable far
+      // faster than a chat turn — one per canvas session per 3s window.
+      const now = Date.now();
+      if (now - lastRefreshAt < 3000) {
+        send({ type: 'turn_error', forTurn: turnId, message: 'refresh rate-limited' });
+        return;
+      }
+      lastRefreshAt = now;
       if (
         typeof msg.basedOnRevision !== 'string' ||
         msg.basedOnRevision.length === 0 ||
