@@ -45,10 +45,24 @@ const SYSTEM_PROMPT = `You are the Omadia UI Tier-2 composer. Given a user reque
 { "tree": <primitive tree>, "dataRequirements": [{ "containerId", "description", "dataClass"?, "fields": [{ "fieldKey", "label", "type"? }] }] }
 The tree is a SKELETON for data still being fetched: data-carrying primitives use loading:"skeleton" and empty rows/items. Use only these primitives: container, heading, text, table, list, tree, button, input, choice, toggle, image, chart, form, toolbar, menubar, tabs, pane, status, progress, divider. Every container and data-carrying primitive needs a stable "id"; table columns need fieldKey+label. dataRequirements must name, per data-carrying container, exactly the fields the content agents must deliver. No prose, no markdown fences — raw JSON only.`;
 
+/** Models routinely ignore "raw JSON only" and wrap the object in markdown
+ *  fences or a prose preamble — extract the JSON payload before parsing. */
+function extractJsonPayload(raw: string): string {
+  let s = raw.trim();
+  const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(s);
+  if (fenced?.[1]) s = fenced[1].trim();
+  if (!s.startsWith('{')) {
+    const start = s.indexOf('{');
+    const end = s.lastIndexOf('}');
+    if (start >= 0 && end > start) s = s.slice(start, end + 1);
+  }
+  return s;
+}
+
 function parseResult(raw: string): { tree: unknown; dataRequirements: DataRequirement[] } | null {
   let obj: unknown;
   try {
-    obj = JSON.parse(raw.trim());
+    obj = JSON.parse(extractJsonPayload(raw));
   } catch {
     return null;
   }

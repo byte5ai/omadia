@@ -109,6 +109,36 @@ describe('composeSkeleton', () => {
     const r2 = await composeSkeleton({ llm: rejecting, model: 'claude-haiku-4-5', userText: 'x' });
     assert.equal(r2.source, 'fallback');
   });
+
+  it('accepts fenced and preambled JSON output (models ignore "raw JSON only")', async () => {
+    const fenced = '```json\n' + VALID_COMPOSER_OUTPUT + '\n```';
+    const r1 = await composeSkeleton({
+      llm: llmReturning([fenced]).llm,
+      model: 'claude-haiku-4-5',
+      userText: 'show tickets',
+    });
+    assert.equal(r1.source, 'model');
+
+    const preambled = 'Here is the skeleton you asked for:\n' + VALID_COMPOSER_OUTPUT;
+    const r2 = await composeSkeleton({
+      llm: llmReturning([preambled]).llm,
+      model: 'claude-haiku-4-5',
+      userText: 'show tickets',
+    });
+    assert.equal(r2.source, 'model');
+  });
+
+  it('reports every fallback reason through the log hook', async () => {
+    const logged: string[] = [];
+    await composeSkeleton({
+      llm: llmReturning(['not json at all']).llm,
+      model: 'claude-haiku-4-5',
+      userText: 'x',
+      log: (m) => logged.push(m),
+    });
+    assert.ok(logged.some((m) => m.includes('not parseable')));
+    assert.ok(logged.some((m) => m.includes('fallback')));
+  });
 });
 
 describe('composeStructuredPayloadPatch', () => {
