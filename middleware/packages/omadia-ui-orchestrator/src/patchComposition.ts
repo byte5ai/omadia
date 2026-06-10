@@ -88,6 +88,15 @@ function extractRows(payload: PendingStructuredPayload): Array<Record<string, un
   return objects.length === rows.length ? objects : null;
 }
 
+/** Canvas content is plain text (protocol §2) — models still emit markdown
+ *  emphasis into values. Strip the inline markers, keep the text. */
+function stripInlineMarkdown(s: string): string {
+  return s
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/`([^`]+)`/g, '$1');
+}
+
 /** container-like primitives a disambiguation `choice` may be appended into. */
 function canHostChildren(node: Record<string, unknown>): boolean {
   const t = node['type'];
@@ -217,7 +226,9 @@ export function composeStructuredPayloadPatch(opts: {
             ? ''
             : typeof v === 'object'
               ? JSON.stringify(v)
-              : (v as string | number | boolean);
+              : typeof v === 'string'
+                ? stripInlineMarkdown(v)
+                : (v as number | boolean);
         return [k, cell];
       }),
     ),
@@ -230,6 +241,38 @@ export function composeStructuredPayloadPatch(opts: {
   for (const row of mapped) {
     patches.push({ op: 'add', path: `${table.path}/rows/-`, value: row });
   }
+
+  // Agent-authored row context-menu entries → suggestedActions on the table
+  // (protocol commonTraits). The agent knows the current view; the client
+  // falls back to its generic affordance only when none arrive.
+  const rawActions = (opts.payload.data as { actions?: unknown }).actions;
+  const tableId = typeof table.node['id'] === 'string' ? (table.node['id'] as string) : undefined;
+  const suggestedActions =
+    Array.isArray(rawActions) && tableId
+      ? rawActions
+          .filter(
+            (a): a is { id: string; label: string; prompt?: string } =>
+              typeof a === 'object' &&
+              a !== null &&
+              typeof (a as { id?: unknown }).id === 'string' &&
+              typeof (a as { label?: unknown }).label === 'string',
+          )
+          .map((a) => ({
+            id: a.id,
+            label: stripInlineMarkdown(a.label),
+            effect: 'internal',
+            target: { kind: 'container', containerId: tableId },
+            ...(typeof a.prompt === 'string' ? { prompt: stripInlineMarkdown(a.prompt) } : {}),
+          }))
+      : [];
+  if (suggestedActions.length > 0) {
+    patches.push({
+      op: Array.isArray(table.node['suggestedActions']) ? 'replace' : 'add',
+      path: `${table.path}/suggestedActions`,
+      value: suggestedActions,
+    });
+  }
+
   // Empty rows + already-resolved loading state → nothing to patch.
   if (patches.length === 0) return null;
 
@@ -240,6 +283,7 @@ export function composeStructuredPayloadPatch(opts: {
   if (!cloneHit || !isTableNode(cloneHit.node)) return null;
   if (cloneHit.node.loading === 'skeleton') cloneHit.node['loading'] = 'none';
   cloneHit.node.rows.push(...mapped);
+  if (suggestedActions.length > 0) cloneHit.node['suggestedActions'] = suggestedActions;
 
   if (!validateTree(nextTree).ok) return null;
   return { patches, nextTree };

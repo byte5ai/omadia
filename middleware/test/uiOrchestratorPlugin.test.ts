@@ -145,6 +145,52 @@ describe('canvas_publish_rows producer tool', () => {
     assert.equal(composed.patches.length, 3, 'loading replace + 2 row adds');
   });
 
+  it('maps agent-authored actions onto the table as suggestedActions and strips markdown in cells', async () => {
+    const out = await handleCanvasPublishRows({
+      containerId: 'courses',
+      rows: [{ courseName: '**Sea Survival**' }],
+      actions: [
+        { id: 'unenroll', label: 'Teilnehmer abmelden', prompt: 'Melde diesen Teilnehmer ab' },
+        { label: 'E-Mail senden' },
+      ],
+    });
+    const payload = parseToolEmittedStructuredPayload(out);
+    assert.ok(payload);
+    const baseTree = {
+      type: 'container',
+      id: 'root',
+      layout: 'stack',
+      children: [
+        {
+          type: 'table',
+          id: 'courses',
+          loading: 'skeleton',
+          columns: [{ fieldKey: 'courseName', label: 'Kurs' }],
+          rows: [],
+        },
+      ],
+    };
+    const composed = composeStructuredPayloadPatch({
+      baseTree,
+      payload,
+      dataRequirements: [{ containerId: 'courses', description: 'Kurse', fields: [] }],
+    });
+    assert.ok(composed, 'rows + actions compose');
+    const actionsPatch = composed.patches.find((p) => p.path.endsWith('/suggestedActions'));
+    assert.ok(actionsPatch, 'suggestedActions patch emitted');
+    const acts = actionsPatch.value as Array<{ id: string; label: string; effect: string; prompt?: string }>;
+    assert.equal(acts.length, 2);
+    assert.equal(acts[0]?.id, 'unenroll');
+    assert.equal(acts[0]?.effect, 'internal');
+    assert.equal(acts[1]?.label, 'E-Mail senden');
+    const rowPatch = composed.patches.find((p) => p.path.endsWith('/rows/-'));
+    assert.equal(
+      (rowPatch?.value as { cells: Record<string, unknown> }).cells['courseName'],
+      'Sea Survival',
+      'markdown emphasis stripped from cell values',
+    );
+  });
+
   it('returns an error string (no sentinel) for a missing containerId or rows array', async () => {
     assert.match(await handleCanvasPublishRows({ containerId: '', rows: [] }), /^Error:/);
     assert.match(await handleCanvasPublishRows({ containerId: 'courses' }), /^Error:/);

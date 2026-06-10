@@ -75,6 +75,7 @@ RULES:
 - dataRequirements: one entry per data-carrying container, naming EXACTLY the fieldKeys its columns/fields use.
 - INTERACTION: when the request implies picking between alternatives, render a choice (one option per alternative, stable values) — never plan a prose question. Editable parameters → input/toggle inside a form; primary commands → button with an action.
 - A fetched data set may be EMPTY — the table keeps rows:[]; never plan placeholder rows.
+- BE MINIMAL: compact JSON (no whitespace), only the containers the request needs, omit every optional prop you don't use. Latency scales with output length.
 
 EXAMPLE — "Zeige Kursdetails inkl. Teilnehmer als Panes":
 { "tree": { "type":"container", "id":"root", "layout":"stack", "children":[
@@ -144,6 +145,7 @@ export async function composeSkeleton(opts: {
   let user = `User request: ${opts.userText}`;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     let raw: string;
+    const startedAt = Date.now();
     try {
       const result = await opts.llm.complete({
         model: opts.model,
@@ -152,6 +154,11 @@ export async function composeSkeleton(opts: {
         maxTokens: 2048,
       });
       raw = result.text;
+      // Latency observability: the skeleton gates the first paint, so every
+      // model call logs its duration (a retry doubles the wait).
+      opts.log?.(
+        `[composition] model call attempt ${attempt + 1}: ${Date.now() - startedAt}ms, ${raw.length} chars`,
+      );
     } catch (err) {
       opts.log?.(
         `[composition] llm call failed → fallback skeleton: ${err instanceof Error ? err.message : String(err)}`,

@@ -80,6 +80,23 @@ export async function handleCanvasPublishRows(input: unknown): Promise<string> {
   const rows = args['rows'].filter(
     (r): r is Record<string, unknown> => typeof r === 'object' && r !== null && !Array.isArray(r),
   );
+  // Optional agent-authored row context-menu entries for the published
+  // container — the client renders them in the context-invoke panel instead
+  // of its generic fallback. The agent knows the CURRENT view; the client
+  // doesn't.
+  const actions = (Array.isArray(args['actions']) ? args['actions'] : [])
+    .filter(
+      (a): a is Record<string, unknown> => typeof a === 'object' && a !== null && !Array.isArray(a),
+    )
+    .filter((a) => typeof a['label'] === 'string' && (a['label'] as string).trim().length > 0)
+    .slice(0, 4)
+    .map((a, i) => ({
+      id: typeof a['id'] === 'string' && a['id'].length > 0 ? a['id'] : `act-${i}`,
+      label: (a['label'] as string).trim(),
+      ...(typeof a['prompt'] === 'string' && a['prompt'].trim().length > 0
+        ? { prompt: a['prompt'].trim() }
+        : {}),
+    }));
   const prose =
     typeof args['prose'] === 'string' && args['prose'].trim().length > 0
       ? args['prose'].trim()
@@ -90,7 +107,7 @@ export async function handleCanvasPublishRows(input: unknown): Promise<string> {
     _pendingStructuredPayload: {
       prose,
       dataRefId: randomUUID(),
-      data: { containerId, rows },
+      data: { containerId, rows, ...(actions.length > 0 ? { actions } : {}) },
     },
   });
 }
@@ -192,6 +209,25 @@ export async function activate(
           prose: {
             type: 'string',
             description: 'one short human sentence describing the published data',
+          },
+          actions: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string', description: 'stable action id' },
+                label: { type: 'string', description: 'menu entry, in the user’s language' },
+                prompt: {
+                  type: 'string',
+                  description: 'beam text the click pre-fills (the row context is attached automatically)',
+                },
+              },
+              required: ['label'],
+            },
+            description:
+              '1–4 row context-menu entries that fit the CURRENT view and data (e.g. in a detail ' +
+              'view: actions on the detail rows). NEVER an action that re-opens the view the user ' +
+              'is already in. Omit to keep the client’s generic fallback.',
           },
         },
         required: ['containerId', 'rows'],
@@ -310,12 +346,16 @@ export async function activate(
             'the data, then call the canvas_publish_rows tool once per ' +
             'containerId with rows keyed EXACTLY by the promised fieldKeys; ' +
             'publish rows: [] when the data set is genuinely empty (never ' +
-            'invent rows). If the request is AMBIGUOUS (several plausible ' +
-            'records match), call canvas_publish_choice with one option per ' +
-            'alternative instead of asking back in prose. The published data ' +
-            'renders into the visible canvas — after publishing, reply with ' +
-            'ONE short summary sentence only and do NOT repeat the data as ' +
-            'text or markdown tables.',
+            'invent rows). All published values are PLAIN TEXT — never ' +
+            'markdown (**bold**, `code`, # headings); labels belong in ' +
+            'columns, not inline markers. Pass 1–3 `actions` (row context-menu ' +
+            'entries) that fit the CURRENT view, in the user’s language — ' +
+            'never one that re-opens the current view. If the request is ' +
+            'AMBIGUOUS (several plausible records match), call ' +
+            'canvas_publish_choice with one option per alternative instead of ' +
+            'asking back in prose. The published data renders into the visible ' +
+            'canvas — after publishing, reply with ONE short summary sentence ' +
+            'only and do NOT repeat the data as text or markdown tables.',
         }),
     };
 
