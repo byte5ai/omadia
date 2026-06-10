@@ -2906,6 +2906,16 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     });
   }
 
+  async getPlanStepsForPlans(
+    planExternalIds: string[],
+  ): Promise<Map<string, GraphNode[]>> {
+    const out = new Map<string, GraphNode[]>();
+    for (const id of planExternalIds) {
+      out.set(id, await this.getPlanSteps(id));
+    }
+    return out;
+  }
+
   async setPlanStepStatus(
     stepExternalId: string,
     status: PlanStepStatus,

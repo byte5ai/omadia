@@ -97,7 +97,9 @@
     "statusInProgress": "läuft",
     "statusDone": "fertig",
     "statusFailed": "fehlgeschlagen",
-    "statusSkipped": "übersprungen"
+    "statusSkipped": "übersprungen",
+    "reusedBadge": "wiederverwendet",
+    "reusedFrom": "Wiederverwendet aus gespeichertem Prozess: {title}"
   },
   "recalledContext": {
     "heading": "Aus früheren Sessions",

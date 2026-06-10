@@ -1,12 +1,20 @@
-import { planNodeId } from '@omadia/plugin-api';
-import type { KnowledgeGraph, PluginContext } from '@omadia/plugin-api';
+import { planNodeId, PROCESS_MEMORY_SERVICE_NAME } from '@omadia/plugin-api';
+import type {
+  KnowledgeGraph,
+  PluginContext,
+  ProcessMemoryService,
+} from '@omadia/plugin-api';
 import type { TurnAnnotation, TurnHookRegistrar } from '@omadia/orchestrator';
 import { graphScopeFor } from '@omadia/orchestrator';
 
 import { shouldPlan } from './gate.js';
 import { buildPlanSnapshot } from './snapshot.js';
 import { gcSupersededPlans } from './gc.js';
-import { materializePlan, summariseRequest } from './materializer.js';
+import {
+  materializePlan,
+  materializePlanFromSteps,
+  summariseRequest,
+} from './materializer.js';
 import {
   advanceStep,
   applyReplan,
@@ -59,6 +67,10 @@ interface TurnRecord {
   /** Step external id → its exit condition, for the opt-in E4 trigger (b)
    *  check. Only initial-plan steps are tracked (replan steps aren't). */
   readonly exitConditionByStep: ReadonlyMap<string, string>;
+  /** Title of the stored process this plan was reused from (no LLM
+   *  re-planning), threaded into every plan snapshot so the UI badges it.
+   *  Undefined for freshly-materialised plans. */
+  readonly reusedProcessTitle?: string;
   /** Replan counter — namespaces recovery step ids. */
   generation: number;
 }
@@ -94,6 +106,40 @@ export function pruneTurns<T extends { startedAtMs: number }>(
       dropped += 1;
     }
   }
+}
+
+/** Default hybrid-retrieval score above which a stored process is reused
+ *  instead of re-planned. Tunable via the `processReuseThreshold` setup field. */
+export const DEFAULT_PROCESS_REUSE_THRESHOLD = 0.6;
+
+export interface ReusableProcess {
+  readonly steps: readonly string[];
+  readonly title: string;
+  readonly id: string;
+}
+
+/**
+ * Find a learned process worth reusing for `query`. Returns the top hit when
+ * its hybrid score clears `threshold` and it has steps, else null. Never
+ * throws — a degraded process-recall must fall through to LLM planning, not
+ * kill the turn. Exported for unit testing.
+ */
+export async function pickReusableProcess(
+  processMemory: Pick<ProcessMemoryService, 'query'>,
+  query: string,
+  threshold: number,
+): Promise<ReusableProcess | null> {
+  let hits: Awaited<ReturnType<ProcessMemoryService['query']>>;
+  try {
+    hits = await processMemory.query({ query, limit: 1 });
+  } catch {
+    return null;
+  }
+  const top = hits[0];
+  if (!top || top.score < threshold || top.record.steps.length === 0) {
+    return null;
+  }
+  return { steps: top.record.steps, title: top.record.title, id: top.record.id };
 }
 
 export interface PlanRunnerPluginHandle {
@@ -142,6 +188,26 @@ export async function activate(
   const gcDuplicatePlans =
     ctx.config.get<string>('gcDuplicatePlans') !== 'off';
 
+  // Reuse a learned process (ProcessMemory) instead of re-planning a matching
+  // turn via Haiku — the core "stop re-thinking every turn" fix. ON by default
+  // (set `reuseProcesses=off` to disarm). Inert when no processMemory@1
+  // provider is published (e.g. the in-memory KG) → falls through to the gate.
+  const reuseProcesses = ctx.config.get<string>('reuseProcesses') !== 'off';
+  const processMemory = reuseProcesses
+    ? ctx.services.get<ProcessMemoryService>(PROCESS_MEMORY_SERVICE_NAME)
+    : undefined;
+  const reuseThresholdRaw = Number.parseFloat(
+    ctx.config.get<string>('processReuseThreshold') ?? '',
+  );
+  const reuseThreshold = Number.isFinite(reuseThresholdRaw)
+    ? reuseThresholdRaw
+    : DEFAULT_PROCESS_REUSE_THRESHOLD;
+  if (processMemory) {
+    ctx.log(
+      `[plan-runner] process reuse ON (threshold=${reuseThreshold.toFixed(2)})`,
+    );
+  }
+
   // Per-turn plan state + replan context, keyed by orchestrator turn id.
   // Populated at onBeforeTurn (after materialisation) and drained at
   // onAfterTurn. An errored turn never fires onAfterTurn, so we evict stale
@@ -154,9 +220,19 @@ export async function activate(
   // status. Never throws (a failed snapshot just means no UI update this tick).
   const planAnnotation = async (
     planExternalId: string,
+    reusedProcessTitle?: string,
   ): Promise<TurnAnnotation[]> => {
     try {
-      return [{ channel: 'plan', payload: await buildPlanSnapshot(planExternalId, kg) }];
+      return [
+        {
+          channel: 'plan',
+          payload: await buildPlanSnapshot(
+            planExternalId,
+            kg,
+            reusedProcessTitle ? { reusedProcessTitle } : undefined,
+          ),
+        },
+      ];
     } catch {
       return [];
     }
@@ -169,7 +245,6 @@ export async function activate(
       hook: async (hookCtx, payload): Promise<void | TurnAnnotation[]> => {
         const userMessage = payload.userMessage?.trim();
         if (!userMessage) return;
-        if (!(await shouldPlan(userMessage, llm))) return;
         // Per-orchestrator isolation: qualify the plan scope with the Agent
         // slug (same `graphScopeFor` formula SessionLogger uses for Turns) so
         // `listRecentPlans` recall stays per-Agent. `agentSlug` is undefined
@@ -180,14 +255,50 @@ export async function activate(
         );
         const nowMs = Date.now();
         const createdAt = new Date(nowMs).toISOString();
-        const result = await materializePlan({
-          planId: hookCtx.turnId,
-          scope,
-          userMessage,
-          createdAt,
-          llm,
-          kg,
-        });
+
+        // Process reuse first: a learned workflow that matches this request is
+        // materialised straight from its stored steps — no gate, no Haiku
+        // re-planning. A matched process is multi-step by construction, so the
+        // gate would only confirm what we already know. Data is still fetched
+        // fresh by the tool loop; the plan fixes the steps, not their results.
+        let result = null as Awaited<ReturnType<typeof materializePlan>>;
+        let reusedProcessId: string | undefined;
+        let reusedProcessTitle: string | undefined;
+        if (processMemory) {
+          const reuse = await pickReusableProcess(
+            processMemory,
+            userMessage,
+            reuseThreshold,
+          );
+          if (reuse) {
+            result = await materializePlanFromSteps({
+              planId: hookCtx.turnId,
+              scope,
+              userMessage,
+              createdAt,
+              kg,
+              steps: reuse.steps,
+              processTitle: reuse.title,
+            });
+            if (result) {
+              reusedProcessId = reuse.id;
+              reusedProcessTitle = reuse.title;
+            }
+          }
+        }
+
+        // No reusable process → the original gate → LLM-materialise path.
+        if (!result) {
+          if (!(await shouldPlan(userMessage, llm))) return;
+          result = await materializePlan({
+            planId: hookCtx.turnId,
+            scope,
+            userMessage,
+            createdAt,
+            llm,
+            kg,
+          });
+        }
         if (!result) return;
         // Evict any leaked records before adding this turn's.
         pruneTurns(turns, nowMs);
@@ -205,14 +316,17 @@ export async function activate(
           createdAt,
           startedAtMs: nowMs,
           exitConditionByStep,
+          ...(reusedProcessTitle ? { reusedProcessTitle } : {}),
           generation: 0,
         };
         turns.set(hookCtx.turnId, record);
         await startFirstStep(record.plan, kg);
         ctx.log(
-          `[plan-runner] materialised ${result.planExternalId} (${String(
-            result.stepCount,
-          )} steps)`,
+          `[plan-runner] ${
+            reusedProcessId
+              ? `reused process ${reusedProcessId} →`
+              : 'materialised'
+          } ${result.planExternalId} (${String(result.stepCount)} steps)`,
         );
         // #237 — GC prior duplicate plans for this scope. Fire-and-forget: it
         // only hard-deletes OLDER plans (never the survivor or any in-flight
@@ -248,7 +362,7 @@ export async function activate(
             });
         }
         // E9 — stream the freshly-materialised plan as the turn's first event.
-        return await planAnnotation(result.planExternalId);
+        return await planAnnotation(result.planExternalId, reusedProcessTitle);
       },
     }),
   );
@@ -288,7 +402,7 @@ export async function activate(
             // No recovery path — abandon the plan but don't loop.
             record.plan.cursor += 1;
           }
-          return await planAnnotation(record.planExternalId);
+          return await planAnnotation(record.planExternalId, record.reusedProcessTitle);
         }
 
         // Trigger (b) — exit condition unmet → replan the remainder. Opt-in
@@ -324,7 +438,7 @@ export async function activate(
           } else {
             record.plan.cursor += 1;
           }
-          return await planAnnotation(record.planExternalId);
+          return await planAnnotation(record.planExternalId, record.reusedProcessTitle);
         }
 
         await advanceStep(
@@ -335,7 +449,7 @@ export async function activate(
             : undefined,
         );
         // E9 — emit the refreshed plan snapshot so the UI advances the step live.
-        return await planAnnotation(record.planExternalId);
+        return await planAnnotation(record.planExternalId, record.reusedProcessTitle);
       },
     }),
   );
@@ -372,7 +486,7 @@ export async function activate(
         await finishPlan(record.plan, kg);
         // E9 — emit the final plan snapshot (all reached steps done) before the
         // turn's `done` event, then drop the per-turn state.
-        const annotation = await planAnnotation(record.planExternalId);
+        const annotation = await planAnnotation(record.planExternalId, record.reusedProcessTitle);
         turns.delete(hookCtx.turnId);
         return annotation;
       },

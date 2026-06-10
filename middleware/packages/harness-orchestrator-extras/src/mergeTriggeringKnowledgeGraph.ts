@@ -274,6 +274,12 @@ export class MergeTriggeringKnowledgeGraph implements KnowledgeGraph {
     return this.inner.getPlanSteps(planExternalId);
   }
 
+  getPlanStepsForPlans(
+    planExternalIds: string[],
+  ): Promise<Map<string, GraphNode[]>> {
+    return this.inner.getPlanStepsForPlans(planExternalIds);
+  }
+
   setPlanStepStatus(
     stepExternalId: string,
     status: PlanStepStatus,

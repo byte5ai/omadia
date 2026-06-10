@@ -820,10 +820,20 @@ export class ContextRetriever {
           ? { agentScopePrefix: input.agentScopePrefix }
           : {}),
       });
+      // Cross-session only — drop same-session plans before fetching steps so
+      // the batched read does no wasted work.
+      const candidates = plans.filter(
+        (p) => p.props['scope'] !== input.sessionScope,
+      );
+      // One round-trip for every candidate's steps instead of a serial
+      // getPlanSteps per plan (the old loop was up to ~24 sequential Neon
+      // round-trips on the turn's context-build hot path).
+      const stepsByPlan = await this.graph.getPlanStepsForPlans(
+        candidates.map((p) => p.id),
+      );
       const scored: Array<{ hit: RecalledPlan; score: number }> = [];
-      for (const p of plans) {
-        if (p.props['scope'] === input.sessionScope) continue; // cross-session only
-        const steps = await this.graph.getPlanSteps(p.id);
+      for (const p of candidates) {
+        const steps = stepsByPlan.get(p.id) ?? [];
         const openStepGoals: string[] = [];
         const goalTexts: string[] = [];
         let doneCount = 0;
