@@ -74,6 +74,10 @@ export interface CanvasListEntry {
   sessionId: string;
   title: string;
   color: number;
+  /** last server-authoritative tree — materialises the canvas on app start.
+   *  Stored opaquely (the CLIENT whitelist-validates before rendering). */
+  tree?: unknown;
+  revision?: string;
 }
 
 /** server → client: the user's persisted canvas list (answer to canvas_list_get). */
@@ -178,12 +182,26 @@ export function sanitizeCanvasList(raw: unknown): CanvasListEntry[] {
     )
     .filter((e) => typeof e['sessionId'] === 'string' && (e['sessionId'] as string).length > 0)
     .slice(0, 50)
-    .map((e) => ({
-      sessionId: (e['sessionId'] as string).slice(0, 128),
-      title: typeof e['title'] === 'string' ? (e['title'] as string).slice(0, 64) : '',
-      color:
-        typeof e['color'] === 'number' && Number.isInteger(e['color'])
-          ? Math.min(Math.max(e['color'], 0), 5)
-          : 0,
-    }));
+    .map((e) => {
+      // tree blobs are size-capped (256 KB serialised) — oversized ones are
+      // dropped silently; the canvas then cold-starts like before.
+      let tree: unknown;
+      if (typeof e['tree'] === 'object' && e['tree'] !== null) {
+        try {
+          if (JSON.stringify(e['tree']).length <= 262_144) tree = e['tree'];
+        } catch {
+          /* circular / unserialisable → drop */
+        }
+      }
+      return {
+        sessionId: (e['sessionId'] as string).slice(0, 128),
+        title: typeof e['title'] === 'string' ? (e['title'] as string).slice(0, 64) : '',
+        color:
+          typeof e['color'] === 'number' && Number.isInteger(e['color'])
+            ? Math.min(Math.max(e['color'], 0), 5)
+            : 0,
+        ...(tree !== undefined ? { tree } : {}),
+        ...(typeof e['revision'] === 'string' ? { revision: (e['revision'] as string).slice(0, 64) } : {}),
+      };
+    });
 }
