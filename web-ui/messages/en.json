@@ -1408,6 +1408,16 @@
         "delete": "Delete",
         "workspace": "Workspace",
         "restore": "Restore",
+        "export": {
+          "label": "Export",
+          "menuLabel": "Choose export format",
+          "plugin": "Plugin ZIP",
+          "pluginHint": "Directly installable via /install/packages/upload",
+          "bundle": "Bundle ZIP",
+          "bundleHint": "Profile bundle for cross-instance migration",
+          "preparing": "Preparing…",
+          "failed": "Export failed: {message}"
+        },
         "confirmDelete": "Delete draft \"{name}\"?",
         "lastUpdated": "Last {relative}",
         "relative": {

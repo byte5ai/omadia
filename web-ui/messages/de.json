@@ -1408,6 +1408,16 @@
         "delete": "Löschen",
         "workspace": "Workspace",
         "restore": "Wiederherstellen",
+        "export": {
+          "label": "Export",
+          "menuLabel": "Exportformat wählen",
+          "plugin": "Plugin-ZIP",
+          "pluginHint": "Direkt installierbar über /install/packages/upload",
+          "bundle": "Bundle-ZIP",
+          "bundleHint": "Profil-Bundle für instanzübergreifende Migration",
+          "preparing": "Wird vorbereitet…",
+          "failed": "Export fehlgeschlagen: {message}"
+        },
         "confirmDelete": "Draft \"{name}\" löschen?",
         "lastUpdated": "Zuletzt {relative}",
         "relative": {

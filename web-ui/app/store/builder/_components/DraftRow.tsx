@@ -17,6 +17,7 @@ import type {
   DraftSummary,
 } from '../../../_lib/builderTypes';
 import { cn } from '../../../_lib/cn';
+import { ExportDraftButton } from './ExportDraftButton';
 
 interface DraftRowProps {
   draft: DraftSummary;
@@ -206,6 +207,9 @@ export function DraftRow({ draft, deleted = false }: DraftRowProps): React.React
           </button>
         ) : (
           <>
+            {draft.status === 'published' ? (
+              <ExportDraftButton draftId={draft.id} />
+            ) : null}
             <Link
               href={`/store/builder/${encodeURIComponent(draft.id)}`}
               className="inline-flex items-center gap-1.5 rounded-md bg-[color:var(--accent)]/10 px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-[color:var(--accent)] transition-colors hover:bg-[color:var(--accent)] hover:text-white"
