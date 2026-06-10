@@ -197,9 +197,13 @@ export async function activate(
       name: CANVAS_PUBLISH_TOOL,
       description:
         'Publish fetched data rows for an Omadia UI canvas container. Use ONLY when the user ' +
-        'message carries a [canvas-context] block: call once per containerId from its ' +
-        'dataRequirements, with rows keyed EXACTLY by the promised fieldKeys. The rows render ' +
-        'directly into the already-visible canvas table — do not repeat them as text afterwards.',
+        'message carries a [canvas-context] block: call it for each containerId from its ' +
+        'dataRequirements, with rows keyed EXACTLY by the promised fieldKeys. Large data sets ' +
+        'MUST go out in batches of at most 30 rows per call — repeated calls for the same ' +
+        'containerId APPEND; make ONE call, wait for its result, then publish the next batch ' +
+        'until every row is out (a single oversized call risks being truncated and dropped ' +
+        'entirely). The rows render directly into the already-visible canvas table — do not ' +
+        'repeat them as text afterwards.',
       input_schema: {
         type: 'object',
         properties: {
@@ -211,10 +215,12 @@ export async function activate(
             type: 'array',
             items: { type: 'object' },
             description:
-              'one object per row; keys = the promised fieldKeys (optional rowKey/id for stable ' +
-              'row identity). MAY be empty ([]) when the fetched data set is genuinely empty — ' +
-              'the table then shows its empty state; never invent rows. For a CHART container, ' +
-              'each row carries { label: string, value: number } — one row per data point.',
+              'one object per row, AT MOST 30 rows per call (more rows → follow-up calls to the ' +
+              'same containerId, they append); keys = the promised fieldKeys (optional rowKey/id ' +
+              'for stable row identity). MAY be empty ([]) when the fetched data set is genuinely ' +
+              'empty — the table then shows its empty state; never invent rows. For a CHART ' +
+              'container, each row carries { label: string, value: number } — one row per data ' +
+              'point.',
           },
           prose: {
             type: 'string',
@@ -372,10 +378,14 @@ export async function activate(
             'A canvas skeleton with the above data requirements is already ' +
             'rendered. Work silently: do NOT narrate planning, lookups, memory ' +
             'checks, or tool calls — the canvas is the output channel. Fetch ' +
-            'the data, then call the canvas_publish_rows tool once per ' +
-            'containerId with rows keyed EXACTLY by the promised fieldKeys; ' +
-            'publish rows: [] when the data set is genuinely empty (never ' +
-            'invent rows). All published values are PLAIN TEXT — never ' +
+            'the data, then call the canvas_publish_rows tool for each ' +
+            'containerId with rows keyed EXACTLY by the promised fieldKeys. ' +
+            'BATCH RULE: at most 30 rows per call — for larger sets publish ' +
+            'batch after batch to the same containerId (calls append), one ' +
+            'call at a time, until every row is out; NEVER pack the whole set ' +
+            'into one giant call (it gets truncated and dropped). Publish ' +
+            'rows: [] when the data set is genuinely empty (never invent ' +
+            'rows). All published values are PLAIN TEXT — never ' +
             'markdown (**bold**, `code`, # headings); labels belong in ' +
             'columns, not inline markers. Pass 1–3 `actions` (row context-menu ' +
             'entries) that fit the CURRENT view, in the user’s language — ' +

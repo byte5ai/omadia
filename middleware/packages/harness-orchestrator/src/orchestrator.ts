@@ -1966,6 +1966,20 @@ export class Orchestrator {
           const responseHasToolUse = response.content.some(
             (b: ContentBlock) => b.type === 'tool_use',
           );
+          // A non-end_turn finalize is the silent killer of announced-but-
+          // never-made tool calls: a max_tokens cut mid-tool_use drops every
+          // call in the response (a canvas skeleton then never resolves).
+          // Make it visible in monitoring instead of indistinguishable from
+          // a normal turn end.
+          if (response.stop_reason !== 'end_turn') {
+            console.error(
+              `[orchestrator] finalized with stop_reason=${String(response.stop_reason)} ` +
+                `iterations=${iteration + 1}/${this.maxIterations}` +
+                (responseHasToolUse
+                  ? ' — response carries tool_use blocks that will NOT run (truncated mid-call?)'
+                  : ''),
+            );
+          }
           if (
             !finalizeThisIter &&
             !fileForceRetried &&
@@ -2549,6 +2563,17 @@ export class Orchestrator {
           const responseHasToolUse = finalMessage.content.some(
             (b: ContentBlock) => b.type === 'tool_use',
           );
+          // Mirror of chat(): surface non-end_turn finalizes — a max_tokens
+          // cut mid-tool_use silently drops the calls of this response.
+          if (finalMessage.stop_reason !== 'end_turn') {
+            console.error(
+              `[orchestrator] finalized with stop_reason=${String(finalMessage.stop_reason)} ` +
+                `iterations=${iteration + 1}/${this.maxIterations}` +
+                (responseHasToolUse
+                  ? ' — response carries tool_use blocks that will NOT run (truncated mid-call?)'
+                  : ''),
+            );
+          }
           if (
             !finalizeThisIter &&
             !fileForceRetried &&
