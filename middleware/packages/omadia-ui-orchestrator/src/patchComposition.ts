@@ -77,6 +77,75 @@ function isTableNode(node: Record<string, unknown>): node is TableNode {
   return node['type'] === 'table' && Array.isArray(node['rows']);
 }
 
+interface ChartNode {
+  type: 'chart';
+  loading?: string;
+  points: Array<Record<string, unknown>>;
+  [key: string]: unknown;
+}
+
+function isChartNode(node: Record<string, unknown>): node is ChartNode {
+  return node['type'] === 'chart' && Array.isArray(node['points']);
+}
+
+/** Map a published row onto a chart point: the idiom keys are `label` +
+ *  `value`; fall back to the first string / first finite number in the row. */
+function toChartPoint(
+  row: Record<string, unknown>,
+  i: number,
+  dataRefId: string,
+): { pointKey: string; label: string; value: number } | null {
+  const asNumber = (v: unknown): number =>
+    typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN;
+  let label = typeof row['label'] === 'string' ? (row['label'] as string) : undefined;
+  let value = Number.isFinite(asNumber(row['value'])) ? asNumber(row['value']) : undefined;
+  for (const [k, v] of Object.entries(row)) {
+    if (k === 'rowKey' || k === 'id' || k === 'pointKey') continue;
+    if (label === undefined && typeof v === 'string' && !Number.isFinite(Number(v))) {
+      label = stripInlineMarkdown(v);
+    } else if (value === undefined && Number.isFinite(asNumber(v))) {
+      value = asNumber(v);
+    }
+  }
+  if (value === undefined) return null;
+  return {
+    pointKey: String(row['pointKey'] ?? row['rowKey'] ?? row['id'] ?? `${dataRefId}-${i}`),
+    label: label ?? String(i + 1),
+    value,
+  };
+}
+
+/** Rows published against a CHART container become points (loading resolved). */
+function composeChartRowsPatch(
+  chart: { node: ChartNode; path: string },
+  rows: Array<Record<string, unknown>>,
+  opts: { baseTree: unknown; payload: PendingStructuredPayload },
+): ComposedPatch | null {
+  const points = rows
+    .map((row, i) => toChartPoint(row, i, opts.payload.dataRefId))
+    .filter((p): p is NonNullable<typeof p> => p !== null);
+  // some rows but no mappable numbers → unmappable; data stays prose
+  if (rows.length > 0 && points.length === 0) return null;
+
+  const patches: TreePatchOp[] = [];
+  if (chart.node.loading === 'skeleton') {
+    patches.push({ op: 'replace', path: `${chart.path}/loading`, value: 'none' });
+  }
+  for (const p of points) {
+    patches.push({ op: 'add', path: `${chart.path}/points/-`, value: p });
+  }
+  if (patches.length === 0) return null;
+
+  const nextTree = structuredClone(opts.baseTree);
+  const cloneHit = findNodeById(nextTree, chart.node['id'] as string, '');
+  if (!cloneHit || !isChartNode(cloneHit.node)) return null;
+  if (cloneHit.node.loading === 'skeleton') cloneHit.node['loading'] = 'none';
+  cloneHit.node.points.push(...points);
+
+  if (!validateTree(nextTree).ok) return null;
+  return { patches, nextTree };
+}
+
 function extractRows(payload: PendingStructuredPayload): Array<Record<string, unknown>> | null {
   const data = payload.data;
   if (typeof data !== 'object' || data === null) return null;
@@ -191,25 +260,32 @@ export function composeStructuredPayloadPatch(opts: {
   //   2. otherwise the first dataRequirement containerId that resolves to a table.
   // Without (1) a panes/tabs detail view never patches: the agent publishes to
   // "participants", but the requirement list may name it differently.
-  let table: { node: TableNode; path: string } | null = null;
+  const isDataNode = (n: Record<string, unknown>): boolean => isTableNode(n) || isChartNode(n);
   const explicitId =
     typeof (opts.payload.data as { containerId?: unknown } | null)?.containerId === 'string'
       ? ((opts.payload.data as { containerId: string }).containerId)
       : undefined;
+  let hit: { node: Record<string, unknown>; path: string } | null = null;
   if (explicitId) {
-    const hit = findNodeById(opts.baseTree, explicitId, '');
-    if (hit && isTableNode(hit.node)) table = { node: hit.node as TableNode, path: hit.path };
+    const h = findNodeById(opts.baseTree, explicitId, '');
+    if (h && isDataNode(h.node)) hit = h;
   }
-  if (!table) {
+  if (!hit) {
     for (const req of opts.dataRequirements) {
-      const hit = findNodeById(opts.baseTree, req.containerId, '');
-      if (hit && isTableNode(hit.node)) {
-        table = { node: hit.node as TableNode, path: hit.path };
+      const h = findNodeById(opts.baseTree, req.containerId, '');
+      if (h && isDataNode(h.node)) {
+        hit = h;
         break;
       }
     }
   }
-  if (!table) return null;
+  if (!hit) return null;
+  // rows published against a chart container become points
+  if (isChartNode(hit.node)) {
+    return composeChartRowsPatch({ node: hit.node, path: hit.path }, rows, opts);
+  }
+  if (!isTableNode(hit.node)) return null;
+  const table: { node: TableNode; path: string } = { node: hit.node, path: hit.path };
 
   // Cells are mapped against the SKELETON's own columns — the contract the
   // [canvas-context] handoff asked Tier 3 to fill.

@@ -204,7 +204,8 @@ export async function activate(
             description:
               'one object per row; keys = the promised fieldKeys (optional rowKey/id for stable ' +
               'row identity). MAY be empty ([]) when the fetched data set is genuinely empty — ' +
-              'the table then shows its empty state; never invent rows.',
+              'the table then shows its empty state; never invent rows. For a CHART container, ' +
+              'each row carries { label: string, value: number } — one row per data point.',
           },
           prose: {
             type: 'string',

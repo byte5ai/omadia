@@ -191,6 +191,38 @@ describe('canvas_publish_rows producer tool', () => {
     );
   });
 
+  it('maps rows published against a CHART container onto points and resolves loading', async () => {
+    const out = await handleCanvasPublishRows({
+      containerId: 'bookings_chart',
+      rows: [
+        { label: 'KW 25', value: 12 },
+        { label: 'KW 26', value: 7 },
+      ],
+    });
+    const payload = parseToolEmittedStructuredPayload(out);
+    assert.ok(payload);
+    const baseTree = {
+      type: 'container',
+      id: 'root',
+      layout: 'stack',
+      children: [
+        { type: 'chart', id: 'bookings_chart', chartType: 'bar', loading: 'skeleton', points: [] },
+      ],
+    };
+    const composed = composeStructuredPayloadPatch({
+      baseTree,
+      payload,
+      dataRequirements: [{ containerId: 'bookings_chart', description: 'Buchungen', fields: [] }],
+    });
+    assert.ok(composed, 'rows map onto the chart');
+    assert.equal(composed.patches[0]?.op, 'replace'); // loading → none
+    assert.equal(composed.patches.length, 3, 'loading + 2 point adds');
+    const point = composed.patches[1]?.value as { pointKey: string; label: string; value: number };
+    assert.equal(point.label, 'KW 25');
+    assert.equal(point.value, 12);
+    assert.ok(point.pointKey.length > 0);
+  });
+
   it('returns an error string (no sentinel) for a missing containerId or rows array', async () => {
     assert.match(await handleCanvasPublishRows({ containerId: '', rows: [] }), /^Error:/);
     assert.match(await handleCanvasPublishRows({ containerId: 'courses' }), /^Error:/);
