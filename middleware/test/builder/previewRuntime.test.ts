@@ -399,6 +399,75 @@ describe('PreviewRuntime', () => {
       assert.equal(captured!.memory, undefined);
     });
 
+    it('exposes ctx.http gated on the manifest outbound allow-list, enforcing the host allow-list', async () => {
+      // Regression: previewRuntime's stub context never wired `ctx.http`, so
+      // ANY agent whose activate-body or tool calls `ctx.http` (a
+      // self-contained agent fetching e.g. api.github.com) hit its own
+      // `if (!ctx.http) throw 'ctx.http unavailable'` guard and failed preview
+      // — even though its manifest correctly declared
+      // permissions.network.outbound. Preview now provides the SAME
+      // allow-list-enforced accessor the kernel hands out post-install.
+      const root = freshRoot('http-present');
+      let captured: PreviewPluginContext | undefined;
+      const runtime = buildRuntime({
+        previewsRoot: root,
+        manifestYaml: [
+          'schema_version: "1"',
+          'permissions:',
+          '  network:',
+          '    outbound: ["api.github.com"]',
+          '',
+        ].join('\n'),
+        onActivate: (ctx) => {
+          captured = ctx;
+        },
+      });
+      await runtime.activate({
+        zipBuffer: Buffer.alloc(0),
+        draftId: 'd1',
+        rev: 1,
+        configValues: {},
+        secretValues: {},
+      });
+      assert.ok(captured);
+      assert.ok(captured!.http, 'ctx.http must be present');
+      // A host outside the manifest allow-list is rejected before any network
+      // I/O — proving the accessor is wired AND gating on the declared hosts.
+      await assert.rejects(
+        () => captured!.http!.fetch('https://evil.example.com/'),
+        /evil\.example\.com|forbidden/i,
+      );
+      // Non-http(s) schemes are rejected by the same accessor.
+      await assert.rejects(() => captured!.http!.fetch('file:///etc/passwd'));
+    });
+
+    it('leaves ctx.http undefined when the manifest declares no outbound hosts and is not a web_scanner', async () => {
+      const root = freshRoot('http-absent');
+      let captured: PreviewPluginContext | undefined;
+      const runtime = buildRuntime({
+        previewsRoot: root,
+        manifestYaml: [
+          'schema_version: "1"',
+          'permissions:',
+          '  network:',
+          '    outbound: []',
+          '',
+        ].join('\n'),
+        onActivate: (ctx) => {
+          captured = ctx;
+        },
+      });
+      await runtime.activate({
+        zipBuffer: Buffer.alloc(0),
+        draftId: 'd1',
+        rev: 1,
+        configValues: {},
+        secretValues: {},
+      });
+      assert.ok(captured);
+      assert.equal(captured!.http, undefined);
+    });
+
     it('memory stores from two separate activations are isolated', async () => {
       const root = freshRoot('memory-isolation');
       const captured: PreviewPluginContext[] = [];
