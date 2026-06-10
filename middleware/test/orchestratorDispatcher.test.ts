@@ -112,6 +112,35 @@ describe('createOrchestratorDispatcher', () => {
     assert.deepEqual(input.action?.target, { kind: 'element', elementId: 'choice_1' });
   });
 
+  it('threads the target for a row-bound TEXT turn (beam / context action) without an action', async () => {
+    const seen: unknown[] = [];
+    const dispatcher = createOrchestratorDispatcher({
+      getChannelBlock: () => canvasBlock,
+      getAgentBundle: () => ({
+        agent: {
+          chat: () => Promise.resolve({ text: '' }),
+          async *chatStream(input) {
+            seen.push(input);
+            await Promise.resolve();
+            yield { type: 'done', answer: 'ok', toolCalls: 0, iterations: 1 } as ChatStreamEvent;
+          },
+        },
+      }),
+    });
+    await collect(
+      dispatcher.streamTurn({
+        ...turn,
+        text: 'Zeige die Teilnehmerliste zu diesem Kurs',
+        channelId: 'de.byte5.channel.omadia-ui',
+        target: { kind: 'item', containerId: 'courses', itemKey: 'k-7' },
+        metadata: { canvasSessionId: 'cs-1' },
+      }),
+    );
+    const input = seen[0] as { target?: unknown; action?: unknown };
+    assert.equal(input.action, undefined);
+    assert.deepEqual(input.target, { kind: 'item', containerId: 'courses', itemKey: 'k-7' });
+  });
+
   it('yields a single error event when no orchestrator is registered', async () => {
     const dispatcher = createOrchestratorDispatcher({
       getChannelBlock: () => undefined,

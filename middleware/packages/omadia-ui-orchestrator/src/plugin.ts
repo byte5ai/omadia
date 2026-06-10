@@ -330,11 +330,22 @@ export async function activate(
         'choice pick carries the chosen value in payload.value). Act on it ' +
         'directly — do not ask what the user meant.'
       : '';
+    // A row-bound text turn (beam, context action) carries the TargetRef of
+    // the record it refers to — the agent must act on THAT record, never ask.
+    const targetBlock =
+      !input.action && input.target !== undefined
+        ? '\n\n[canvas-target]\n' +
+          JSON.stringify(input.target) +
+          '\nThe user’s message refers to EXACTLY this record on the canvas ' +
+          '(stable ids: containerId/itemKey/rowKey). Act on it directly — ' +
+          'do not ask which record was meant.'
+        : '';
     const augmented: ChatTurnInput = {
       ...input,
       userMessage:
         input.userMessage +
         actionBlock +
+        targetBlock +
         '\n\n[canvas-context]\n' +
         JSON.stringify({
           canvasSkeleton: { revision: initialRevision, source: skeleton.source },

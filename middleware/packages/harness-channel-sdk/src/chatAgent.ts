@@ -278,6 +278,14 @@ export interface ChatTurnInput {
    * `target` is the originating element's TargetRef, passed through untyped.
    */
   action?: { type: string; payload?: unknown; target?: unknown };
+  /**
+   * Omadia UI: the TargetRef a TEXT turn is bound to (beam on a row, context
+   * action) — protocol 1.0 §6. Threaded by the dispatcher for canvas turns
+   * whether or not a structured `action` rides along; a canvas-aware
+   * orchestrator hands it to the main turn as a `[canvas-target]` block so
+   * the agent never guesses which record the user meant.
+   */
+  target?: unknown;
 }
 
 /**

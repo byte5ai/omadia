@@ -114,6 +114,9 @@ export function createOrchestratorDispatcher(
         userId: input.userRef.id,
         ...(canvasSessionId ? { canvasSessionId } : {}),
         ...(action ? { action } : {}),
+        // a TEXT turn may be row-bound too (beam / context action) — thread
+        // the TargetRef even without a structured action.
+        ...(input.target !== undefined ? { target: input.target } : {}),
       });
     },
   };
