@@ -95,6 +95,7 @@ export async function activate(
       llm,
       model,
       userText: input.userMessage,
+      log: (message) => ctx.log(message),
     });
     let surfaceSeq = 0;
     const initialRevision = '0' as RevisionId;

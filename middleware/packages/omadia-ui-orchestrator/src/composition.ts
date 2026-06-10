@@ -76,6 +76,8 @@ export async function composeSkeleton(opts: {
   llm: CompositionLlm;
   model: string;
   userText: string;
+  /** observability for the never-throw contract: every fallback states why. */
+  log?: (message: string) => void;
 }): Promise<SkeletonResult> {
   const fallback: SkeletonResult = {
     tree: structuredClone(FALLBACK_SKELETON),
@@ -94,11 +96,15 @@ export async function composeSkeleton(opts: {
         maxTokens: 2048,
       });
       raw = result.text;
-    } catch {
+    } catch (err) {
+      opts.log?.(
+        `[composition] llm call failed → fallback skeleton: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return fallback;
     }
     const parsed = parseResult(raw);
     if (!parsed) {
+      opts.log?.(`[composition] attempt ${attempt + 1}: output not parseable as raw JSON`);
       user = `User request: ${opts.userText}\nYour previous output was not valid raw JSON. Emit ONLY the JSON object.`;
       continue;
     }
@@ -106,7 +112,9 @@ export async function composeSkeleton(opts: {
     if (valid.ok) {
       return { ...parsed, source: 'model' };
     }
+    opts.log?.(`[composition] attempt ${attempt + 1}: tree schema-invalid: ${valid.errors}`);
     user = `User request: ${opts.userText}\nYour previous tree was schema-invalid: ${valid.errors}. Emit a corrected JSON object.`;
   }
+  opts.log?.('[composition] both attempts schema-invalid → fallback skeleton');
   return fallback;
 }

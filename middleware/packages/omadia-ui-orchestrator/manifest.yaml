@@ -62,5 +62,11 @@ permissions:
     models_allowed:
       - "claude-haiku-4-5*"
       - "claude-sonnet-4-*"
-    calls_per_invocation: 8
+    # NOTE: the LlmAccessor's calls counter is scoped to the plugin CONTEXT,
+    # which for an extension plugin is created once per activation — so this
+    # cap is effectively a LIFETIME budget, not per-invocation. With the old
+    # value of 8 the composition silently fell back to the static skeleton
+    # after 8 calls since boot. High cap until the kernel scopes budgets
+    # per turn for long-lived extension contexts.
+    calls_per_invocation: 1000000
     max_tokens_per_call: 2048
