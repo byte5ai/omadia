@@ -577,9 +577,12 @@ export async function activate(
         'newer data, nothing else. Work silently: no narration, no memory ' +
         'commentary. Publish via canvas_publish_rows per containerId with ' +
         'rows keyed EXACTLY by the listed fieldKeys (batches of at most 30 ' +
-        'rows, one call at a time); the canvas REPLACES the stale rows. Do ' +
-        'NOT compose a new view, do NOT publish to other containers, do NOT ' +
-        'call canvas_publish_choice. Reply with one short sentence.',
+        'rows, one call at a time); the canvas REPLACES the stale rows. On ' +
+        'the FIRST publish per container pass `source` (exact tool + input + ' +
+        'fieldKey→attribute map, relative date operators for relative ' +
+        'periods) so the NEXT refresh runs without you. Do NOT compose a ' +
+        'new view, do NOT publish to other containers, do NOT call ' +
+        'canvas_publish_choice. Reply with one short sentence.',
     };
     yield* synthesizeSurfaceEvents(base.chatStream(augmented, observer), {
       canvasSessionId,
