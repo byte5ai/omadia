@@ -246,6 +246,24 @@ function findLineNumbers(haystack: string, needle: string): number[] {
   return hits;
 }
 
+/**
+ * The four domain error classes are part of the memory tool's normal return
+ * contract: they are caught in `handle`, formatted, and handed back to the model
+ * as a recoverable tool result (e.g. "create on an existing path" → the model
+ * switches to `str_replace`). They are control-flow signals, NOT failures, so
+ * they must never be logged as `console.error` with a stack trace — doing so
+ * makes routine model behaviour look like an unhandled crash in production logs
+ * and trips false-positive monitoring alerts.
+ */
+function isExpectedMemoryError(err: unknown): boolean {
+  return (
+    err instanceof MemoryAlreadyExistsError ||
+    err instanceof MemoryPathNotFoundError ||
+    err instanceof MemoryIsDirectoryError ||
+    err instanceof MemoryInvalidPathError
+  );
+}
+
 function logMemoryCall(cmd: MemoryCommand | undefined, result: string, err: unknown): void {
   const cmdLabel = cmd
     ? `${cmd.command} ${'path' in cmd ? cmd.path : `${cmd.old_path} → ${cmd.new_path}`}`
@@ -253,7 +271,10 @@ function logMemoryCall(cmd: MemoryCommand | undefined, result: string, err: unkn
   const outcome = err ? `ERROR (${err instanceof Error ? err.name : typeof err})` : 'ok';
   const snippet = result.replace(/\n/g, ' ⏎ ').slice(0, 240);
   console.log(`[memory] ${cmdLabel} → ${outcome}: ${snippet}`);
-  if (err) {
+  // Only surface a full stack trace for UNEXPECTED errors (DB outage, bugs).
+  // Expected domain errors are already conveyed by the one-line log above and
+  // are returned to the model as a recoverable result.
+  if (err && !isExpectedMemoryError(err)) {
     console.error('[memory] full error:', err);
   }
 }
