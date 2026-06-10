@@ -68,27 +68,74 @@ export interface UiOrchestratorPluginHandle {
  *  skeleton as a deterministic `surface_patch`. Always in the allow-set. */
 export const CANVAS_PUBLISH_TOOL = 'canvas_publish_rows';
 
-/** NativeToolHandler for {@link CANVAS_PUBLISH_TOOL}. Exported for tests. */
+/** NativeToolHandler for {@link CANVAS_PUBLISH_TOOL}. Exported for tests.
+ *  An EMPTY rows array is legitimate (the data set is genuinely empty) — the
+ *  sentinel still resolves the skeleton's loading state client-side. */
 export async function handleCanvasPublishRows(input: unknown): Promise<string> {
   const args = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>;
   const containerId = typeof args['containerId'] === 'string' ? args['containerId'].trim() : '';
-  const rows = Array.isArray(args['rows'])
-    ? args['rows'].filter(
-        (r): r is Record<string, unknown> => typeof r === 'object' && r !== null && !Array.isArray(r),
-      )
-    : [];
-  if (containerId.length === 0 || rows.length === 0) {
-    return 'Error: canvas_publish_rows requires a containerId and a non-empty rows array of objects.';
+  if (containerId.length === 0 || !Array.isArray(args['rows'])) {
+    return 'Error: canvas_publish_rows requires a containerId and a rows array of objects (rows may be empty for an empty data set).';
   }
+  const rows = args['rows'].filter(
+    (r): r is Record<string, unknown> => typeof r === 'object' && r !== null && !Array.isArray(r),
+  );
   const prose =
     typeof args['prose'] === 'string' && args['prose'].trim().length > 0
       ? args['prose'].trim()
-      : `Published ${rows.length} row(s) for ${containerId}.`;
+      : rows.length === 0
+        ? `No rows for ${containerId} — the data set is empty.`
+        : `Published ${rows.length} row(s) for ${containerId}.`;
   return JSON.stringify({
     _pendingStructuredPayload: {
       prose,
       dataRefId: randomUUID(),
       data: { containerId, rows },
+    },
+  });
+}
+
+/** Tier-3 producer tool for runtime disambiguation: when the main turn finds
+ *  SEVERAL plausible targets for the user's request, it publishes the
+ *  alternatives as a `choice` element on the canvas instead of asking in
+ *  prose. The pick comes back as the next turn's `action`. Always in the
+ *  allow-set. */
+export const CANVAS_CHOICE_TOOL = 'canvas_publish_choice';
+
+/** NativeToolHandler for {@link CANVAS_CHOICE_TOOL}. Exported for tests. */
+export async function handleCanvasPublishChoice(input: unknown): Promise<string> {
+  const args = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>;
+  const question = typeof args['question'] === 'string' ? args['question'].trim() : '';
+  const options = (Array.isArray(args['options']) ? args['options'] : []).filter(
+    (o): o is { value: string; label: string } =>
+      typeof o === 'object' &&
+      o !== null &&
+      typeof (o as { value?: unknown }).value === 'string' &&
+      typeof (o as { label?: unknown }).label === 'string',
+  );
+  if (question.length === 0 || options.length < 2) {
+    return 'Error: canvas_publish_choice requires a question and at least two options of { value, label }.';
+  }
+  const containerId =
+    typeof args['containerId'] === 'string' && args['containerId'].trim().length > 0
+      ? args['containerId'].trim()
+      : undefined;
+  const prose =
+    typeof args['prose'] === 'string' && args['prose'].trim().length > 0
+      ? args['prose'].trim()
+      : `Asked the user to pick one of ${options.length} options.`;
+  return JSON.stringify({
+    _pendingStructuredPayload: {
+      prose,
+      dataRefId: randomUUID(),
+      data: {
+        ...(containerId ? { containerId } : {}),
+        choice: {
+          question,
+          ...(args['variant'] === 'dropdown' ? { variant: 'dropdown' } : {}),
+          options: options.map((o) => ({ value: o.value, label: o.label })),
+        },
+      },
     },
   });
 }
@@ -108,6 +155,7 @@ export async function activate(
   // the allow-set with additional sentinel-emitting tools.
   const canvasOutputTools: ReadonlySet<string> = new Set([
     CANVAS_PUBLISH_TOOL,
+    CANVAS_CHOICE_TOOL,
     ...(ctx.config?.get<string>('canvas_output_tools') ?? '')
       .split(',')
       .map((s) => s.trim())
@@ -137,7 +185,9 @@ export async function activate(
             type: 'array',
             items: { type: 'object' },
             description:
-              'one object per row; keys = the promised fieldKeys (optional rowKey/id for stable row identity)',
+              'one object per row; keys = the promised fieldKeys (optional rowKey/id for stable ' +
+              'row identity). MAY be empty ([]) when the fetched data set is genuinely empty — ' +
+              'the table then shows its empty state; never invent rows.',
           },
           prose: {
             type: 'string',
@@ -149,8 +199,49 @@ export async function activate(
     },
     handleCanvasPublishRows,
   );
+  const disposeChoiceTool: (() => void) | undefined = toolsAccessor?.register(
+    {
+      name: CANVAS_CHOICE_TOOL,
+      description:
+        'Render a clickable choice on the Omadia UI canvas when the user request is AMBIGUOUS ' +
+        '(several plausible records/interpretations match). Use ONLY when the user message ' +
+        'carries a [canvas-context] block. Call it INSTEAD of asking back in prose; the pick ' +
+        'arrives as the next turn. One option per alternative, values must be stable keys.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          question: {
+            type: 'string',
+            description: 'the disambiguation question, in the user’s language',
+          },
+          options: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                value: { type: 'string', description: 'stable key (e.g. record id)' },
+                label: { type: 'string', description: 'human-readable alternative' },
+              },
+              required: ['value', 'label'],
+            },
+            description: 'the alternatives (at least two)',
+          },
+          containerId: {
+            type: 'string',
+            description: 'optional canvas container to render into; defaults to the page root',
+          },
+          prose: {
+            type: 'string',
+            description: 'one short human sentence accompanying the question',
+          },
+        },
+        required: ['question', 'options'],
+      },
+    },
+    handleCanvasPublishChoice,
+  );
   ctx.log(
-    `[omadia-ui-orchestrator] producer tool ${CANVAS_PUBLISH_TOOL} ${
+    `[omadia-ui-orchestrator] producer tools ${CANVAS_PUBLISH_TOOL}+${CANVAS_CHOICE_TOOL} ${
       disposeTool ? 'registered' : 'NOT registered (no tools accessor in this context)'
     }`,
   );
@@ -199,11 +290,17 @@ export async function activate(
           dataRequirements: skeleton.dataRequirements,
           instruction:
             'A canvas skeleton with the above data requirements is already ' +
-            'rendered. Fetch the data, then call the canvas_publish_rows tool ' +
-            'once per containerId with rows keyed EXACTLY by the promised ' +
-            'fieldKeys. The rows render into the visible canvas table — after ' +
-            'publishing, reply with one short summary sentence only and do NOT ' +
-            'repeat the rows as text or markdown tables.',
+            'rendered. Work silently: do NOT narrate planning, lookups, memory ' +
+            'checks, or tool calls — the canvas is the output channel. Fetch ' +
+            'the data, then call the canvas_publish_rows tool once per ' +
+            'containerId with rows keyed EXACTLY by the promised fieldKeys; ' +
+            'publish rows: [] when the data set is genuinely empty (never ' +
+            'invent rows). If the request is AMBIGUOUS (several plausible ' +
+            'records match), call canvas_publish_choice with one option per ' +
+            'alternative instead of asking back in prose. The published data ' +
+            'renders into the visible canvas — after publishing, reply with ' +
+            'ONE short summary sentence only and do NOT repeat the data as ' +
+            'text or markdown tables.',
         }),
     };
 
@@ -250,6 +347,7 @@ export async function activate(
     async close(): Promise<void> {
       ctx.log('deactivating omadia-ui-orchestrator');
       disposeTool?.();
+      disposeChoiceTool?.();
       dispose();
     },
   };

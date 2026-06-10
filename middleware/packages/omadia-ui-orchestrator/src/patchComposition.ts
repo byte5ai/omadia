@@ -14,6 +14,14 @@ import { validateTree } from './treeValidator.js';
  * skips the patch and the data still reaches the user as prose. Skipping
  * (instead of an LLM recomposition snapshot) is the deliberate v1 slice:
  * no mid-stream model call, no risk of a malformed patch.
+ *
+ * Two payload shapes are understood:
+ *   - `data.rows`   → append rows onto the promised skeleton table. An EMPTY
+ *     rows array is legitimate (the data set is genuinely empty) and still
+ *     resolves the table's `loading:"skeleton"` state.
+ *   - `data.choice` → append a `choice` element (disambiguation: "which of
+ *     these did you mean?") into the target container, so the user picks via
+ *     the canvas instead of a prose round-trip.
  */
 
 export interface TreePatchOp {
@@ -73,11 +81,80 @@ function extractRows(payload: PendingStructuredPayload): Array<Record<string, un
   const data = payload.data;
   if (typeof data !== 'object' || data === null) return null;
   const rows = (data as { rows?: unknown }).rows;
-  if (!Array.isArray(rows) || rows.length === 0) return null;
+  if (!Array.isArray(rows)) return null;
   const objects = rows.filter(
     (r): r is Record<string, unknown> => typeof r === 'object' && r !== null && !Array.isArray(r),
   );
   return objects.length === rows.length ? objects : null;
+}
+
+/** container-like primitives a disambiguation `choice` may be appended into. */
+function canHostChildren(node: Record<string, unknown>): boolean {
+  const t = node['type'];
+  return t === 'container' || t === 'pane' || t === 'form';
+}
+
+function composeChoicePatch(opts: {
+  baseTree: unknown;
+  payload: PendingStructuredPayload;
+}): ComposedPatch | null {
+  const data = opts.payload.data as Record<string, unknown>;
+  const choice = data['choice'] as Record<string, unknown>;
+  const options = (Array.isArray(choice['options']) ? choice['options'] : []).filter(
+    (o): o is { value: string; label: string } =>
+      typeof o === 'object' &&
+      o !== null &&
+      typeof (o as { value?: unknown }).value === 'string' &&
+      typeof (o as { label?: unknown }).label === 'string',
+  );
+  if (options.length < 2) return null;
+
+  // Target: the explicitly named container if it can host children, else the
+  // root container — a disambiguation question is page-level by default.
+  const explicitId = typeof data['containerId'] === 'string' ? data['containerId'] : undefined;
+  let target: { node: Record<string, unknown>; path: string } | null = null;
+  if (explicitId) {
+    const hit = findNodeById(opts.baseTree, explicitId, '');
+    if (hit && canHostChildren(hit.node)) target = hit;
+  }
+  if (!target) {
+    const root = opts.baseTree;
+    if (typeof root === 'object' && root !== null && canHostChildren(root as Record<string, unknown>)) {
+      target = { node: root as Record<string, unknown>, path: '' };
+    }
+  }
+  if (!target) return null;
+
+  const node = {
+    type: 'choice',
+    id: `choice_${opts.payload.dataRefId.slice(0, 8)}`,
+    ...(typeof choice['question'] === 'string' && choice['question'].length > 0
+      ? { label: choice['question'] }
+      : {}),
+    variant: choice['variant'] === 'dropdown' ? 'dropdown' : 'radio',
+    options: options.map((o) => ({ value: o.value, label: o.label })),
+  };
+  const hasChildren = Array.isArray(target.node['children']);
+  const patches: TreePatchOp[] = [
+    hasChildren
+      ? { op: 'add', path: `${target.path}/children/-`, value: node }
+      : { op: 'add', path: `${target.path}/children`, value: [node] },
+  ];
+
+  const nextTree = structuredClone(opts.baseTree);
+  const cloneHit =
+    target.path === ''
+      ? { node: nextTree as Record<string, unknown>, path: '' }
+      : findNodeById(nextTree, target.node['id'] as string, '');
+  if (!cloneHit) return null;
+  const children = Array.isArray(cloneHit.node['children'])
+    ? (cloneHit.node['children'] as unknown[])
+    : [];
+  children.push(node);
+  cloneHit.node['children'] = children;
+
+  if (!validateTree(nextTree).ok) return null;
+  return { patches, nextTree };
 }
 
 export function composeStructuredPayloadPatch(opts: {
@@ -85,6 +162,16 @@ export function composeStructuredPayloadPatch(opts: {
   payload: PendingStructuredPayload;
   dataRequirements: readonly DataRequirement[];
 }): ComposedPatch | null {
+  const data = opts.payload.data;
+  if (
+    typeof data === 'object' &&
+    data !== null &&
+    typeof (data as { choice?: unknown }).choice === 'object' &&
+    (data as { choice?: unknown }).choice !== null
+  ) {
+    return composeChoicePatch(opts);
+  }
+
   const rows = extractRows(opts.payload);
   if (!rows) return null;
 
@@ -143,6 +230,8 @@ export function composeStructuredPayloadPatch(opts: {
   for (const row of mapped) {
     patches.push({ op: 'add', path: `${table.path}/rows/-`, value: row });
   }
+  // Empty rows + already-resolved loading state → nothing to patch.
+  if (patches.length === 0) return null;
 
   // Apply directly to a clone (the patches above are append/replace on the
   // located node — no generic applier needed server-side).

@@ -57,6 +57,15 @@ PRIMITIVE SHAPES — emit EXACTLY these keys, no others (extra keys are rejected
 - chart:     { "type":"chart", "id", "loading":"skeleton", "chartType":string, "points":[] }
 - tabs:      { "type":"tabs", "id", "tabs":[ { "label":string, "child": <ONE primitive> } ] }
 - pane:      { "type":"pane", "id", "title"?:string, "container"?: <ONE primitive>, "children"?:[ ...primitives ] }
+- button:    { "type":"button", "id", "label":string, "action"?:{ "type":string, "payload"?:object } }
+- choice:    { "type":"choice", "id", "label"?:string, "variant"?:"radio"|"dropdown", "options":[ { "value":string, "label":string } ] }
+- input:     { "type":"input", "id", "label"?:string, "value"?:string, "placeholder"?:string }
+- toggle:    { "type":"toggle", "id", "label"?:string, "value"?:boolean, "variant"?:"checkbox"|"switch" }
+- form:      { "type":"form", "id", "title"?:string, "children":[ ...primitives ] }
+- toolbar:   { "type":"toolbar", "id", "children":[ ...primitives ] }
+- progress:  { "type":"progress", "id", "value"?:number, "indeterminate"?:boolean }
+- image:     { "type":"image", "id", "src":string, "altText"?:string }
+- tree:      { "type":"tree", "id", "nodes":[ { "itemKey":string, "label"?:string, "children"?:[ ...nodes ] } ] }
 
 RULES:
 - The ROOT must be a container.
@@ -64,6 +73,8 @@ RULES:
 - tabs REQUIRES tabs:[]; each tab is { "label", "child" } where child is ONE primitive (usually a container/table).
 - A table row later looks like { "rowKey":string, "cells":{ fieldKey: value } } — you only emit the EMPTY skeleton, not rows.
 - dataRequirements: one entry per data-carrying container, naming EXACTLY the fieldKeys its columns/fields use.
+- INTERACTION: when the request implies picking between alternatives, render a choice (one option per alternative, stable values) — never plan a prose question. Editable parameters → input/toggle inside a form; primary commands → button with an action.
+- A fetched data set may be EMPTY — the table keeps rows:[]; never plan placeholder rows.
 
 EXAMPLE — "Zeige Kursdetails inkl. Teilnehmer als Panes":
 { "tree": { "type":"container", "id":"root", "layout":"stack", "children":[

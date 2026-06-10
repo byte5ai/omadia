@@ -13,7 +13,9 @@ import type { PluginContext } from '../packages/plugin-api/src/index.js';
 import {
   activate,
   CANVAS_CHAT_AGENT_SERVICE,
+  CANVAS_CHOICE_TOOL,
   CANVAS_PUBLISH_TOOL,
+  handleCanvasPublishChoice,
   handleCanvasPublishRows,
 } from '../packages/omadia-ui-orchestrator/src/plugin.js';
 import { parseToolEmittedStructuredPayload } from '../packages/harness-orchestrator/src/canvasSentinels.js';
@@ -143,10 +145,78 @@ describe('canvas_publish_rows producer tool', () => {
     assert.equal(composed.patches.length, 3, 'loading replace + 2 row adds');
   });
 
-  it('returns an error string (no sentinel) for missing containerId or empty rows', async () => {
-    const out = await handleCanvasPublishRows({ containerId: '', rows: [] });
-    assert.match(out, /^Error:/);
-    assert.equal(parseToolEmittedStructuredPayload(out), undefined);
+  it('returns an error string (no sentinel) for a missing containerId or rows array', async () => {
+    assert.match(await handleCanvasPublishRows({ containerId: '', rows: [] }), /^Error:/);
+    assert.match(await handleCanvasPublishRows({ containerId: 'courses' }), /^Error:/);
+    assert.equal(
+      parseToolEmittedStructuredPayload(await handleCanvasPublishRows({ containerId: '', rows: [] })),
+      undefined,
+    );
+  });
+
+  it('accepts empty rows (empty data set) and still resolves the skeleton loading state', async () => {
+    const out = await handleCanvasPublishRows({ containerId: 'courses', rows: [] });
+    const payload = parseToolEmittedStructuredPayload(out);
+    assert.ok(payload, 'empty data set still emits the sentinel');
+    assert.match(payload.prose, /empty/);
+
+    const baseTree = {
+      type: 'container',
+      id: 'root',
+      layout: 'stack',
+      children: [
+        {
+          type: 'table',
+          id: 'courses',
+          loading: 'skeleton',
+          columns: [{ fieldKey: 'courseName', label: 'Kurs' }],
+          rows: [],
+        },
+      ],
+    };
+    const composed = composeStructuredPayloadPatch({
+      baseTree,
+      payload,
+      dataRequirements: [{ containerId: 'courses', description: 'Kurse', fields: [] }],
+    });
+    assert.ok(composed, 'empty payload still composes the loading-clearing patch');
+    assert.deepEqual(composed.patches, [
+      { op: 'replace', path: '/children/0/loading', value: 'none' },
+    ]);
+  });
+});
+
+describe('canvas_publish_choice producer tool', () => {
+  it('emits a sentinel that appends a choice element to the root container', async () => {
+    const out = await handleCanvasPublishChoice({
+      question: 'Welchen Kurs meinst du?',
+      options: [
+        { value: 'heinemann', label: 'Manual Handling — Heinemann, 09:00' },
+        { value: 'mukran', label: 'Manual Handling — Mukran, 08:30' },
+      ],
+      prose: 'Zwei Kurse gefunden.',
+    });
+    const payload = parseToolEmittedStructuredPayload(out);
+    assert.ok(payload, 'handler output carries the sentinel');
+    assert.equal(payload.prose, 'Zwei Kurse gefunden.');
+
+    const baseTree = { type: 'container', id: 'root', layout: 'stack', children: [] };
+    const composed = composeStructuredPayloadPatch({ baseTree, payload, dataRequirements: [] });
+    assert.ok(composed, 'choice payload composes onto the root container');
+    assert.equal(composed.patches.length, 1);
+    assert.equal(composed.patches[0]?.path, '/children/-');
+    const node = composed.patches[0]?.value as { type: string; label: string; options: unknown[] };
+    assert.equal(node.type, 'choice');
+    assert.equal(node.label, 'Welchen Kurs meinst du?');
+    assert.equal(node.options.length, 2);
+  });
+
+  it('returns an error string (no sentinel) for a missing question or fewer than two options', async () => {
+    assert.match(await handleCanvasPublishChoice({ question: '', options: [] }), /^Error:/);
+    assert.match(
+      await handleCanvasPublishChoice({ question: 'Which?', options: [{ value: 'a', label: 'A' }] }),
+      /^Error:/,
+    );
   });
 
   it('registers the tool when the context has a tools accessor and disposes on close', async () => {
@@ -172,9 +242,9 @@ describe('canvas_publish_rows producer tool', () => {
       },
     } as unknown as PluginContext;
     const handle = await activate(ctx);
-    assert.deepEqual(registered, [CANVAS_PUBLISH_TOOL]);
+    assert.deepEqual(registered, [CANVAS_PUBLISH_TOOL, CANVAS_CHOICE_TOOL]);
     await handle.close();
-    assert.equal(disposed, 1);
+    assert.equal(disposed, 2);
   });
 });
 
