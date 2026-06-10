@@ -67,6 +67,21 @@ export interface TurnError {
   message: string;
 }
 
+/** One entry of the per-USER canvas registry (multi-canvas sidebar). The
+ *  registry is keyed by the authenticated subject server-side, so every
+ *  Omadia UI install of the same user sees the same canvas list. */
+export interface CanvasListEntry {
+  sessionId: string;
+  title: string;
+  color: number;
+}
+
+/** server → client: the user's persisted canvas list (answer to canvas_list_get). */
+export interface CanvasList {
+  type: 'canvas_list';
+  canvases: CanvasListEntry[];
+}
+
 // ───────────────────────── client → server ─────────────────────────
 
 export interface HandshakeSelect {
@@ -99,7 +114,18 @@ export interface ClientTurn {
   viewStateTruncated?: boolean;
 }
 
-export type ClientMessage = HandshakeSelect | ClientTurn;
+/** client → server: fetch the user's persisted canvas list (app start sync). */
+export interface ClientCanvasListGet {
+  type: 'canvas_list_get';
+}
+
+/** client → server: replace the user's persisted canvas list. */
+export interface ClientCanvasListPut {
+  type: 'canvas_list_put';
+  canvases?: unknown;
+}
+
+export type ClientMessage = HandshakeSelect | ClientTurn | ClientCanvasListGet | ClientCanvasListPut;
 
 /**
  * The surface_* event types forwarded 1:1 to the canvas client — the runtime
@@ -132,8 +158,32 @@ export function parseClientMessage(raw: string): ClientMessage | null {
   }
   if (typeof obj !== 'object' || obj === null) return null;
   const type = (obj as { type?: unknown }).type;
-  if (type === 'handshake_select' || type === 'turn') {
+  if (
+    type === 'handshake_select' ||
+    type === 'turn' ||
+    type === 'canvas_list_get' ||
+    type === 'canvas_list_put'
+  ) {
     return obj as ClientMessage;
   }
   return null;
+}
+
+/** Whitelist-sanitise a client-supplied canvas list (max 50 entries). */
+export function sanitizeCanvasList(raw: unknown): CanvasListEntry[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(
+      (e): e is Record<string, unknown> => typeof e === 'object' && e !== null && !Array.isArray(e),
+    )
+    .filter((e) => typeof e['sessionId'] === 'string' && (e['sessionId'] as string).length > 0)
+    .slice(0, 50)
+    .map((e) => ({
+      sessionId: (e['sessionId'] as string).slice(0, 128),
+      title: typeof e['title'] === 'string' ? (e['title'] as string).slice(0, 64) : '',
+      color:
+        typeof e['color'] === 'number' && Number.isInteger(e['color'])
+          ? Math.min(Math.max(e['color'], 0), 5)
+          : 0,
+    }));
 }

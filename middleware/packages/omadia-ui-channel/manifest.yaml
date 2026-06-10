@@ -44,3 +44,7 @@ channel:
 permissions:
   filesystem:
     scratch: false
+  # per-user canvas registry (multi-canvas sidebar sync) — plugin-scoped store
+  memory:
+    reads: ["agent:@omadia/ui-channel:*"]
+    writes: ["agent:@omadia/ui-channel:*"]

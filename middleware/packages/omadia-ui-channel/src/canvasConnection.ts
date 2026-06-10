@@ -9,7 +9,9 @@ import type { TargetRef } from '@omadia/plugin-api';
 
 import {
   parseClientMessage,
+  sanitizeCanvasList,
   SURFACE_EVENT_TYPES,
+  type CanvasListEntry,
   type ClientTurn,
   type HandshakeAck,
   type HandshakeError,
@@ -33,6 +35,13 @@ export interface CanvasConnectionDeps {
   tenantId?: string;
   /** mint a handshakeId / canvasSessionId / turnId. Injected for deterministic tests. */
   mintId: () => string;
+  /** per-USER canvas list persistence (multi-canvas sidebar sync). Optional —
+   *  without it `canvas_list_get` answers with an empty list and puts are
+   *  dropped, so old deployments stay wire-compatible. */
+  canvasRegistry?: {
+    load(subject: string): Promise<CanvasListEntry[]>;
+    save(subject: string, canvases: CanvasListEntry[]): Promise<void>;
+  };
   log?: (msg: string) => void;
 }
 
@@ -145,6 +154,27 @@ export function handleCanvasSocket(
     }
 
     // phase === 'ready'
+    if (msg.type === 'canvas_list_get') {
+      if (!deps.canvasRegistry) {
+        send({ type: 'canvas_list', canvases: [] });
+        return;
+      }
+      void deps.canvasRegistry.load(session.subject).then(
+        (canvases) => send({ type: 'canvas_list', canvases }),
+        (err: unknown) => {
+          deps.log?.(`[ui-channel] canvas_list load failed: ${String(err)}`);
+          send({ type: 'canvas_list', canvases: [] });
+        },
+      );
+      return;
+    }
+    if (msg.type === 'canvas_list_put') {
+      const canvases = sanitizeCanvasList(msg.canvases);
+      void deps.canvasRegistry?.save(session.subject, canvases).catch((err: unknown) => {
+        deps.log?.(`[ui-channel] canvas_list save failed: ${String(err)}`);
+      });
+      return;
+    }
     if (msg.type !== 'turn') return;
     const turnId =
       msg.turnId && msg.turnId.length > 0 ? msg.turnId : deps.mintId();

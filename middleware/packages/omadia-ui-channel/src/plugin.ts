@@ -4,6 +4,7 @@ import type { PluginContext } from '@omadia/plugin-api';
 import type { ChannelHandle, CoreApi } from '@omadia/channel-sdk';
 
 import { handleCanvasSocket } from './canvasConnection.js';
+import { sanitizeCanvasList, type CanvasListEntry } from './protocol.js';
 
 /**
  * @omadia/ui-channel — Omadia UI Tier-1 server-side channel (PR-10b).
@@ -62,6 +63,33 @@ export async function activate(
   // kernel wired a WebSocket registry into the CoreApi (PR-11). The kernel
   // authenticates each upgrade before this handler runs — `session` is the
   // verified identity; each connection is one canvas.
+  // Per-USER canvas registry (multi-canvas sidebar sync): persisted in the
+  // plugin memory store when the manifest grants it (survives restarts and is
+  // shared across server instances on a DB-backed memory); in-memory fallback
+  // otherwise so the wire contract still holds.
+  const memory = ctx.memory;
+  const volatileRegistry = new Map<string, CanvasListEntry[]>();
+  const registryPath = (subject: string): string =>
+    `canvases/${encodeURIComponent(subject)}.json`;
+  const canvasRegistry = {
+    async load(subject: string): Promise<CanvasListEntry[]> {
+      if (!memory) return volatileRegistry.get(subject) ?? [];
+      const rel = registryPath(subject);
+      if (!(await memory.exists(rel))) return [];
+      return sanitizeCanvasList(JSON.parse(await memory.readFile(rel)));
+    },
+    async save(subject: string, canvases: CanvasListEntry[]): Promise<void> {
+      if (!memory) {
+        volatileRegistry.set(subject, canvases);
+        return;
+      }
+      await memory.writeFile(registryPath(subject), JSON.stringify(canvases));
+    },
+  };
+  ctx.log(
+    `[omadia-ui-channel] canvas registry ${memory ? 'memory-backed' : 'VOLATILE (no memory permission)'}`,
+  );
+
   if (wsAvailable) {
     const tenantId = ctx.services.get<string>('graphTenantId');
     core.registerWebSocket?.(ctx.agentId, CANVAS_PATH, (socket, session) => {
@@ -72,6 +100,7 @@ export async function activate(
         handleTurnStream: (turn) => core.handleTurnStream(turn),
         ...(tenantId ? { tenantId } : {}),
         mintId: () => randomUUID(),
+        canvasRegistry,
         log: (msg) => {
           ctx.log(msg);
         },
