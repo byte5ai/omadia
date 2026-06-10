@@ -458,6 +458,15 @@ export interface ToolsAccessor {
     handler: NativeToolHandler,
     options?: ToolRegistrationOptions,
   ): () => void;
+  /** Invoke a registered native tool OUTSIDE the orchestrator turn loop.
+   *  Powers the deterministic canvas refresh (omadia-ui#5): a recorded
+   *  source query is re-executed with no LLM in the seat. Resolves to the
+   *  handler's string result; rejects when the tool is unknown or was
+   *  registered without a handler. NOTE: this bypasses the per-turn
+   *  dispatch hooks (privacy guard, telemetry) — callers replay only
+   *  inputs a real turn of the same user already executed. Optional so
+   *  narrow test contexts need not implement it. */
+  invoke?(name: string, input: unknown): Promise<string>;
 }
 
 export interface ToolRegistrationOptions {

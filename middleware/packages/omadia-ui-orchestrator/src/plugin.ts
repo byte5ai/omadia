@@ -11,6 +11,11 @@ import {
 } from '@omadia/channel-sdk';
 
 import { composeSkeleton, type CompositionLlm, type DataRequirement } from './composition.js';
+import {
+  applyRefreshSource,
+  createRecipeStore,
+  parseRefreshSource,
+} from './refreshRecipes.js';
 import { synthesizeSurfaceEvents } from './surfaceSynthesis.js';
 
 /**
@@ -226,6 +231,32 @@ export async function activate(
             type: 'string',
             description: 'one short human sentence describing the published data',
           },
+          source: {
+            type: 'object',
+            description:
+              'REFRESH RECIPE (pass on the FIRST publish per container): the exact tool + ' +
+              'input you just used to fetch this data, plus the fieldKey→attribute map you ' +
+              'applied — the canvas then refreshes deterministically without you. TIME RULE: ' +
+              'express relative periods with the data source’s RELATIVE operators (FetchXML ' +
+              '`next-week`, `this-year`, `last-x-days`, …), NEVER literal dates computed from ' +
+              'today — a refresh next month must pull the then-current window. Explicit ranges ' +
+              'the user named (e.g. 2025 vs 2026) stay literal. If the query cannot be ' +
+              'expressed time-safely, OMIT source.',
+            properties: {
+              tool: { type: 'string', description: 'tool name to replay (e.g. dynamics_fetchxml)' },
+              input: { type: 'object', description: 'the EXACT input object you called it with' },
+              itemsPath: {
+                type: 'string',
+                description: 'dot-path to the record array in the tool output (default: first array)',
+              },
+              map: {
+                type: 'object',
+                description: 'fieldKey → attribute name in each result record',
+              },
+              rowKey: { type: 'string', description: 'attribute carrying a stable row id' },
+            },
+            required: ['tool', 'map'],
+          },
           chartType: {
             type: 'string',
             enum: ['bar', 'line', 'pie'],
@@ -312,6 +343,18 @@ export async function activate(
   const resolveBase = (): ChatAgent | undefined =>
     ctx.services.get<ChatAgentBundle>(CHAT_AGENT_SERVICE)?.agent;
 
+  // LLM-free refresh recipes (omadia-ui#5 phase 2): captured at publish time
+  // from the `source` param, replayed via ctx.tools.invoke on canvas_refresh.
+  // In-memory per process — a recipe-less canvas falls back to the agent path.
+  const refreshRecipes = createRecipeStore();
+  const captureSource = (canvasSessionId: string) => (containerId: string, raw: unknown) => {
+    const source = parseRefreshSource(raw);
+    if (source) {
+      refreshRecipes.set(canvasSessionId, containerId, source);
+      ctx.log(`[canvas-refresh] recipe captured: ${containerId} via ${source.tool}`);
+    }
+  };
+
   async function* canvasTurnStream(
     input: ChatTurnInput,
     observer: Parameters<ChatAgent['chatStream']>[1],
@@ -385,7 +428,12 @@ export async function activate(
             'call at a time, until every row is out; NEVER pack the whole set ' +
             'into one giant call (it gets truncated and dropped). Publish ' +
             'rows: [] when the data set is genuinely empty (never invent ' +
-            'rows). All published values are PLAIN TEXT — never ' +
+            'rows). On the FIRST publish per container also pass `source` ' +
+            '(the exact tool + input you used + fieldKey→attribute map) so ' +
+            'the canvas can refresh without you — use the source’s RELATIVE ' +
+            'date operators for relative periods (FetchXML next-week, ' +
+            'this-year, …), literal values only for ranges the user named ' +
+            'explicitly; omit source if not expressible time-safely. All published values are PLAIN TEXT — never ' +
             'markdown (**bold**, `code`, # headings); labels belong in ' +
             'columns, not inline markers. Pass 1–3 `actions` (row context-menu ' +
             'entries) that fit the CURRENT view, in the user’s language — ' +
@@ -409,6 +457,7 @@ export async function activate(
       baseRevision: initialRevision,
       baseTree: skeleton.tree,
       dataRequirements: skeleton.dataRequirements,
+      onPublishedSource: captureSource(canvasSessionId),
       log: (message) => ctx.log(message),
     });
   }
@@ -441,6 +490,78 @@ export async function activate(
       };
       return;
     }
+    // LLM-free path (phase 2): when EVERY container in scope has a captured
+    // source recipe, re-execute the queries directly and feed the results
+    // through the same synthesis pipeline — synthetic publish events, no
+    // model anywhere. Any miss/failure → the silent agent turn below.
+    const invoke = toolsAccessor?.invoke?.bind(toolsAccessor);
+    if (invoke) {
+      const jobs: Array<{ containerId: string; rows: Array<Record<string, unknown>> }> = [];
+      let deterministic = true;
+      for (const req of requirements) {
+        const recipe = refreshRecipes.get(canvasSessionId, req.containerId);
+        if (!recipe) {
+          deterministic = false;
+          break;
+        }
+        try {
+          const t0 = Date.now();
+          const raw = await invoke(recipe.tool, recipe.input);
+          const rows = applyRefreshSource(raw, recipe);
+          if (rows === null) {
+            ctx.log(
+              `[canvas-refresh] recipe for ${req.containerId} unmappable — agent fallback`,
+            );
+            deterministic = false;
+            break;
+          }
+          ctx.log(
+            `[canvas-refresh] deterministic: ${req.containerId} via ${recipe.tool} → ` +
+              `${rows.length} rows in ${Date.now() - t0}ms (no LLM)`,
+          );
+          jobs.push({ containerId: req.containerId, rows });
+        } catch (err) {
+          ctx.log(
+            `[canvas-refresh] recipe ${recipe.tool} failed: ${
+              err instanceof Error ? err.message : String(err)
+            } — agent fallback`,
+          );
+          deterministic = false;
+          break;
+        }
+      }
+      if (deterministic) {
+        const publishEvents = async function* (): AsyncGenerator<ChatStreamEvent> {
+          for (const job of jobs) {
+            const id = randomUUID();
+            yield {
+              type: 'tool_use',
+              id,
+              name: CANVAS_PUBLISH_TOOL,
+              input: { containerId: job.containerId },
+            };
+            const output = await handleCanvasPublishRows({
+              containerId: job.containerId,
+              rows: job.rows,
+            });
+            yield { type: 'tool_result', id, output, durationMs: 0 };
+          }
+        };
+        yield* synthesizeSurfaceEvents(publishEvents(), {
+          canvasSessionId,
+          authorizedToolNames: canvasOutputTools,
+          protocolVersion: CANVAS_PROTOCOL_VERSION,
+          opsCatalogVersion: OPS_CATALOG_VERSION,
+          startSurfaceSeq: 0,
+          baseRevision: refresh.basedOnRevision as RevisionId,
+          baseTree: refresh.currentTree,
+          dataRequirements: requirements,
+          refreshContainers: new Set(requirements.map((r) => r.containerId)),
+          log: (message) => ctx.log(message),
+        });
+        return;
+      }
+    }
     const augmented: ChatTurnInput = {
       ...input,
       userMessage:
@@ -464,6 +585,9 @@ export async function activate(
       baseTree: refresh.currentTree,
       dataRequirements: requirements,
       refreshContainers: new Set(requirements.map((r) => r.containerId)),
+      // a fallback refresh that publishes WITH a source upgrades the next
+      // refresh of this canvas to the deterministic path
+      onPublishedSource: captureSource(canvasSessionId),
       log: (message) => ctx.log(message),
     });
   }

@@ -330,6 +330,13 @@ export function createPluginContext(
           : {}),
       });
     },
+    async invoke(name, input) {
+      const entry = opts.nativeToolRegistry.get(name);
+      if (!entry?.handler) {
+        throw new Error(`tools.invoke: '${name}' is unknown or handler-less`);
+      }
+      return entry.handler(input);
+    },
   };
 
   // Routes accessor: append to the kernel's route queue. The kernel mounts

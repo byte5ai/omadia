@@ -57,6 +57,11 @@ export interface SurfaceSynthesisConfig {
   /** deterministic refresh (omadia-ui#5): containers whose FIRST publish in
    *  this stream REPLACES the stale rows/points; follow-up batches append. */
   refreshContainers?: ReadonlySet<string>;
+  /** recipe capture (omadia-ui#5, LLM-free refresh): called when a publish
+   *  payload declares a `source` refresh recipe for its container — the
+   *  caller persists it so a later canvas_refresh can re-execute the query
+   *  without an LLM in the seat. */
+  onPublishedSource?: (containerId: string, source: unknown) => void;
 }
 
 /**
@@ -109,6 +114,18 @@ export async function* synthesizeSurfaceEvents(
       if (currentTree === undefined || currentRevision === undefined) continue;
       const payload = parseToolEmittedStructuredPayload(ev.output);
       if (!payload) continue;
+      // recipe capture happens regardless of compose success — a recipe for
+      // a payload whose patch was skipped is still a valid refresh source
+      if (config.onPublishedSource) {
+        const d = payload.data as { containerId?: unknown; source?: unknown } | null;
+        if (
+          typeof d?.containerId === 'string' &&
+          typeof d.source === 'object' &&
+          d.source !== null
+        ) {
+          config.onPublishedSource(d.containerId, d.source);
+        }
+      }
       const composed = composeStructuredPayloadPatch({
         baseTree: currentTree,
         payload,
