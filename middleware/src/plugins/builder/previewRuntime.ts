@@ -4,7 +4,10 @@ import { pathToFileURL } from 'node:url';
 import yaml from 'yaml';
 import type { z } from 'zod';
 
+import type { HttpAccessor } from '@omadia/plugin-api';
+
 import { extractZipToDir, type ExtractLimits } from '../zipExtractor.js';
+import { createHttpAccessor, isAuditMode } from '../../platform/httpAccessor.js';
 import {
   createPreviewMemoryAccessor,
   type PreviewMemoryAccessor,
@@ -130,6 +133,17 @@ export interface PreviewPluginContext {
    *  block, so a permissions-stripped manifest fails preview the same way it
    *  would fail a real install — no false "works in preview" signal. */
   readonly memory?: PreviewMemoryAccessor;
+  /** Outbound-allowlisted HTTP, present exactly when the manifest declares
+   *  `permissions.network.outbound` with ≥1 host OR `network.web_scanner:
+   *  true` — the same gate the kernel applies post-install
+   *  (`pluginContext.ts:createPluginContext`). Backed by the SAME
+   *  `createHttpAccessor` the kernel uses, so the egress allow-list, host
+   *  matching and rate limit behave identically in preview. Absent when the
+   *  manifest declares no outbound hosts and is not a web_scanner, so a
+   *  self-contained agent that forgot to declare `api.github.com` fails
+   *  preview the same way it would fail a real install — no false
+   *  "works in preview" signal. */
+  readonly http?: HttpAccessor;
   readonly smokeMode: boolean;
   log(...args: unknown[]): void;
 }
@@ -351,6 +365,27 @@ export class PreviewRuntime {
     // `ctx.memory === undefined` and fails the same way install would.
     const provideMemory = await manifestDeclaresMemory(packageRoot);
 
+    // ctx.http is gated on the manifest's outbound allow-list exactly like the
+    // kernel's createPluginContext — a self-contained agent that declares
+    // `permissions.network.outbound` (or `web_scanner`) gets a working,
+    // allow-list-enforced fetch in preview; one that declares neither gets
+    // `ctx.http === undefined` and fails preview the same way it would fail a
+    // real install. Built with the SAME createHttpAccessor the kernel uses so
+    // host-matching, the rate limit and the audit modes behave identically.
+    const network = await manifestNetworkConfig(packageRoot);
+    const auditMode = opts.configValues['audit_mode'];
+    const http: HttpAccessor | undefined =
+      network.outbound.length > 0 || network.webScanner
+        ? createHttpAccessor({
+            agentId,
+            outbound: network.outbound,
+            webScanner: network.webScanner,
+            ...(network.webScanner && isAuditMode(auditMode)
+              ? { auditMode }
+              : {}),
+          })
+        : undefined;
+
     const routeCaptures: PreviewRouteCapture[] = [];
     const ctx = createStubContext({
       agentId,
@@ -360,6 +395,7 @@ export class PreviewRuntime {
       routeCaptures,
       hostServices: this.hostServices,
       provideMemory,
+      ...(http ? { http } : {}),
       logger: (...args) => this.log(`[${agentId}]`, ...args),
     });
 
@@ -432,6 +468,46 @@ async function manifestDeclaresMemory(packageRoot: string): Promise<boolean> {
   return readsLen > 0 || writesLen > 0;
 }
 
+/**
+ * Reads the package's `manifest.yaml` and extracts the egress configuration
+ * the kernel uses to gate `ctx.http`: the `permissions.network.outbound[]`
+ * host allow-list and the `permissions.network.web_scanner` flag. Mirrors
+ * `pluginContext.ts:extractOutboundAllowlist` (which reads the same manifest
+ * shape post-install) so preview and production agree on when `ctx.http` is
+ * present. A missing or unparsable manifest reports no egress (`outbound: []`,
+ * `webScanner: false`) rather than throwing — the same lenient stance as
+ * `manifestDeclaresMemory`.
+ */
+async function manifestNetworkConfig(
+  packageRoot: string,
+): Promise<{ outbound: string[]; webScanner: boolean }> {
+  const empty = { outbound: [] as string[], webScanner: false };
+  let raw: string;
+  try {
+    raw = await fs.readFile(path.join(packageRoot, 'manifest.yaml'), 'utf-8');
+  } catch {
+    return empty;
+  }
+  let parsed: unknown;
+  try {
+    parsed = yaml.parse(raw);
+  } catch {
+    return empty;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return empty;
+  const permissions = (parsed as Record<string, unknown>)['permissions'];
+  if (typeof permissions !== 'object' || permissions === null) return empty;
+  const network = (permissions as Record<string, unknown>)['network'];
+  if (typeof network !== 'object' || network === null) return empty;
+  const rawOutbound = (network as Record<string, unknown>)['outbound'];
+  const outbound = Array.isArray(rawOutbound)
+    ? rawOutbound.filter((h): h is string => typeof h === 'string')
+    : [];
+  const webScanner =
+    (network as Record<string, unknown>)['web_scanner'] === true;
+  return { outbound, webScanner };
+}
+
 function createStubContext(opts: {
   agentId: string;
   configValues: Readonly<Record<string, unknown>>;
@@ -440,6 +516,7 @@ function createStubContext(opts: {
   routeCaptures: PreviewRouteCapture[];
   hostServices?: PreviewHostServices;
   provideMemory: boolean;
+  http?: HttpAccessor;
   logger: (...args: unknown[]) => void;
 }): PreviewPluginContext {
   // Services the previewed agent provides itself stay isolated to this
@@ -539,6 +616,11 @@ function createStubContext(opts: {
     // is simply absent — not `memory: undefined` — when the manifest omits
     // the block, matching the kernel's optional `ctx.memory`.
     ...(memory ? { memory } : {}),
+    // Outbound-allowlisted HTTP — present iff the manifest gated it on (see
+    // activate()). Spread so the field is simply absent — not
+    // `http: undefined` — when the manifest declares no egress, matching the
+    // kernel's optional `ctx.http`.
+    ...(opts.http ? { http: opts.http } : {}),
     smokeMode: opts.smokeMode,
     log: opts.logger,
   };
