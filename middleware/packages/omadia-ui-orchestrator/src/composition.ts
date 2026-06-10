@@ -54,7 +54,7 @@ PRIMITIVE SHAPES — emit EXACTLY these keys, no others (extra keys are rejected
 - divider:   { "type":"divider" }
 - table:     { "type":"table", "id", "loading":"skeleton", "columns":[ { "fieldKey":string, "label":string, "type"?:string } ], "rows":[] }
 - list:      { "type":"list", "id", "loading":"skeleton", "items":[] }
-- chart:     { "type":"chart", "id", "loading":"skeleton", "chartType":string, "points":[] }
+- chart:     { "type":"chart", "id", "loading":"skeleton", "chartType":"bar"|"line"|"pie", "points":[] }
 - tabs:      { "type":"tabs", "id", "tabs":[ { "label":string, "child": <ONE primitive> } ] }
 - pane:      { "type":"pane", "id", "title"?:string, "container"?: <ONE primitive>, "children"?:[ ...primitives ] }
 - button:    { "type":"button", "id", "label":string, "action"?:{ "type":string, "payload"?:object } }
@@ -74,6 +74,7 @@ RULES:
 - A table row later looks like { "rowKey":string, "cells":{ fieldKey: value } } — you only emit the EMPTY skeleton, not rows.
 - dataRequirements: one entry per data-carrying container, naming EXACTLY the fieldKeys its columns/fields use.
 - INTERACTION: when the request implies picking between alternatives, render a choice (one option per alternative, stable values) — never plan a prose question. Editable parameters → input/toggle inside a form; primary commands → button with an action.
+- CHART TYPE is YOUR decision (Tier 2): time series / development over time → "line"; comparing categories → "bar"; share-of-whole → "pie". Each chart needs a dataRequirements entry with fields label + value.
 - A fetched data set may be EMPTY — the table keeps rows:[]; never plan placeholder rows.
 - BE MINIMAL: compact JSON (no whitespace), only the containers the request needs, omit every optional prop you don't use. Latency scales with output length.
 

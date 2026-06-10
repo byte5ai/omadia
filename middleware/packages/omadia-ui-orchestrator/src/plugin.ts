@@ -103,11 +103,20 @@ export async function handleCanvasPublishRows(input: unknown): Promise<string> {
       : rows.length === 0
         ? `No rows for ${containerId} — the data set is empty.`
         : `Published ${rows.length} row(s) for ${containerId}.`;
+  const chartType =
+    args['chartType'] === 'bar' || args['chartType'] === 'line' || args['chartType'] === 'pie'
+      ? args['chartType']
+      : undefined;
   return JSON.stringify({
     _pendingStructuredPayload: {
       prose,
       dataRefId: randomUUID(),
-      data: { containerId, rows, ...(actions.length > 0 ? { actions } : {}) },
+      data: {
+        containerId,
+        rows,
+        ...(actions.length > 0 ? { actions } : {}),
+        ...(chartType ? { chartType } : {}),
+      },
     },
   });
 }
@@ -210,6 +219,14 @@ export async function activate(
           prose: {
             type: 'string',
             description: 'one short human sentence describing the published data',
+          },
+          chartType: {
+            type: 'string',
+            enum: ['bar', 'line', 'pie'],
+            description:
+              'when publishing to a CHART container: the chart kind that fits the fetched data ' +
+              '(time series → line, category comparison → bar, share-of-whole → pie). Overrides ' +
+              'the skeleton’s guess — YOU have seen the data, the skeleton hasn’t.',
           },
           actions: {
             type: 'array',
@@ -382,6 +399,7 @@ export async function activate(
       baseRevision: initialRevision,
       baseTree: skeleton.tree,
       dataRequirements: skeleton.dataRequirements,
+      log: (message) => ctx.log(message),
     });
   }
 

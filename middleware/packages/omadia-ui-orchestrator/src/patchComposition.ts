@@ -115,7 +115,9 @@ function toChartPoint(
   };
 }
 
-/** Rows published against a CHART container become points (loading resolved). */
+/** Rows published against a CHART container become points (loading resolved).
+ *  The publishing turn may OVERRIDE the skeleton's chartType — the chart kind
+ *  is a Tier-2 decision, and the main turn has seen the actual data shape. */
 function composeChartRowsPatch(
   chart: { node: ChartNode; path: string },
   rows: Array<Record<string, unknown>>,
@@ -127,9 +129,18 @@ function composeChartRowsPatch(
   // some rows but no mappable numbers → unmappable; data stays prose
   if (rows.length > 0 && points.length === 0) return null;
 
+  const requestedType = (opts.payload.data as { chartType?: unknown }).chartType;
+  const chartType =
+    requestedType === 'bar' || requestedType === 'line' || requestedType === 'pie'
+      ? requestedType
+      : undefined;
+
   const patches: TreePatchOp[] = [];
   if (chart.node.loading === 'skeleton') {
     patches.push({ op: 'replace', path: `${chart.path}/loading`, value: 'none' });
+  }
+  if (chartType && chart.node['chartType'] !== chartType) {
+    patches.push({ op: 'replace', path: `${chart.path}/chartType`, value: chartType });
   }
   for (const p of points) {
     patches.push({ op: 'add', path: `${chart.path}/points/-`, value: p });
@@ -140,6 +151,7 @@ function composeChartRowsPatch(
   const cloneHit = findNodeById(nextTree, chart.node['id'] as string, '');
   if (!cloneHit || !isChartNode(cloneHit.node)) return null;
   if (cloneHit.node.loading === 'skeleton') cloneHit.node['loading'] = 'none';
+  if (chartType) cloneHit.node['chartType'] = chartType;
   cloneHit.node.points.push(...points);
 
   if (!validateTree(nextTree).ok) return null;
@@ -239,6 +251,9 @@ export function composeStructuredPayloadPatch(opts: {
   baseTree: unknown;
   payload: PendingStructuredPayload;
   dataRequirements: readonly DataRequirement[];
+  /** observability — every skip states its reason (a dropped patch reads as
+   *  "empty canvas" to the user; silence here cost us a debugging session). */
+  log?: (message: string) => void;
 }): ComposedPatch | null {
   const data = opts.payload.data;
   if (
@@ -251,7 +266,10 @@ export function composeStructuredPayloadPatch(opts: {
   }
 
   const rows = extractRows(opts.payload);
-  if (!rows) return null;
+  if (!rows) {
+    opts.log?.('[patch-composition] skip: data.rows missing or not an array of objects');
+    return null;
+  }
 
   // Target resolution, in priority order:
   //   1. the containerId the publishing tool named EXPLICITLY (data.containerId)
@@ -279,7 +297,13 @@ export function composeStructuredPayloadPatch(opts: {
       }
     }
   }
-  if (!hit) return null;
+  if (!hit) {
+    opts.log?.(
+      `[patch-composition] skip: no table/chart resolves (explicit=${String(explicitId)}, ` +
+        `requirements=${opts.dataRequirements.map((r) => r.containerId).join(',')})`,
+    );
+    return null;
+  }
   // rows published against a chart container become points
   if (isChartNode(hit.node)) {
     return composeChartRowsPatch({ node: hit.node, path: hit.path }, rows, opts);
@@ -290,7 +314,10 @@ export function composeStructuredPayloadPatch(opts: {
   // Cells are mapped against the SKELETON's own columns — the contract the
   // [canvas-context] handoff asked Tier 3 to fill.
   const fieldKeys = (table.node.columns ?? []).map((c) => c.fieldKey);
-  if (fieldKeys.length === 0) return null;
+  if (fieldKeys.length === 0) {
+    opts.log?.(`[patch-composition] skip: table ${String(table.node['id'])} has no columns`);
+    return null;
+  }
 
   const mapped = rows.map((row, i) => ({
     rowKey: String(row['rowKey'] ?? row['id'] ?? `${opts.payload.dataRefId}-${i}`),
@@ -361,6 +388,10 @@ export function composeStructuredPayloadPatch(opts: {
   cloneHit.node.rows.push(...mapped);
   if (suggestedActions.length > 0) cloneHit.node['suggestedActions'] = suggestedActions;
 
-  if (!validateTree(nextTree).ok) return null;
+  const valid = validateTree(nextTree);
+  if (!valid.ok) {
+    opts.log?.(`[patch-composition] skip: post-patch tree schema-invalid: ${valid.errors}`);
+    return null;
+  }
   return { patches, nextTree };
 }

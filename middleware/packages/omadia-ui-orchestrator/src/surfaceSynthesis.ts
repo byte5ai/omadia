@@ -52,6 +52,8 @@ export interface SurfaceSynthesisConfig {
   baseTree?: unknown;
   /** the [canvas-context] requirement contract — payload→container mapping. */
   dataRequirements?: readonly DataRequirement[];
+  /** observability: every skipped (unmappable) payload states why. */
+  log?: (message: string) => void;
 }
 
 /**
@@ -106,8 +108,22 @@ export async function* synthesizeSurfaceEvents(
         baseTree: currentTree,
         payload,
         dataRequirements: config.dataRequirements ?? [],
+        ...(config.log ? { log: config.log } : {}),
       });
-      if (!composed) continue; // unmappable → skip; data still arrives as prose
+      if (!composed) {
+        // unmappable → skip; data still arrives as prose. Loud, because a
+        // silently-dropped patch reads as "empty canvas" to the user.
+        const dataInfo =
+          typeof payload.data === 'object' && payload.data !== null
+            ? `containerId=${String((payload.data as { containerId?: unknown }).containerId)} ` +
+              `rows=${Array.isArray((payload.data as { rows?: unknown }).rows) ? ((payload.data as { rows: unknown[] }).rows.length) : 'n/a'}`
+            : 'data=non-object';
+        config.log?.(
+          `[surface-synthesis] structured payload UNMAPPABLE (${dataInfo}; ` +
+            `requirements=${(config.dataRequirements ?? []).map((r) => r.containerId).join(',')})`,
+        );
+        continue;
+      }
       const producesRevision = String(revisionCounter++) as RevisionId;
       yield {
         type: 'surface_patch',
