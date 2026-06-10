@@ -112,6 +112,11 @@ export async function handleCanvasPublishRows(input: unknown): Promise<string> {
     args['chartType'] === 'bar' || args['chartType'] === 'line' || args['chartType'] === 'pie'
       ? args['chartType']
       : undefined;
+  // refresh recipe (omadia-ui#5 phase 2) — threaded through the sentinel for
+  // the synthesis layer's recipe capture (whitelist-validated there); stays
+  // server-side, patches never carry it to the client
+  const source =
+    typeof args['source'] === 'object' && args['source'] !== null ? args['source'] : undefined;
   return JSON.stringify({
     _pendingStructuredPayload: {
       prose,
@@ -119,6 +124,7 @@ export async function handleCanvasPublishRows(input: unknown): Promise<string> {
       data: {
         containerId,
         rows,
+        ...(source ? { source } : {}),
         ...(actions.length > 0 ? { actions } : {}),
         ...(chartType ? { chartType } : {}),
       },
