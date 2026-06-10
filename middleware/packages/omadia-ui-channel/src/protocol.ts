@@ -129,7 +129,29 @@ export interface ClientCanvasListPut {
   canvases?: unknown;
 }
 
-export type ClientMessage = HandshakeSelect | ClientTurn | ClientCanvasListGet | ClientCanvasListPut;
+/** client → server: deterministic refresh (protocol 1.1 additive, omadia-ui#5).
+ *  Carries the client's CURRENT tree + revision; the server re-fetches the
+ *  data behind the tree's containers and answers with ordinary surface_patch
+ *  events whose first publish per container REPLACES the stale rows. No new
+ *  view is composed. Completion signals via turn_complete/turn_error. */
+export interface ClientCanvasRefresh {
+  type: 'canvas_refresh';
+  /** optional client-supplied correlation id; the server mints one if absent */
+  turnId?: string;
+  /** the revision the client's tree is at — patches build on it */
+  basedOnRevision?: unknown;
+  /** the client's current canvas tree (server is stateless cross-turn in v1) */
+  currentTree?: unknown;
+  /** optional containerId — refresh a single table/chart instead of all */
+  scope?: unknown;
+}
+
+export type ClientMessage =
+  | HandshakeSelect
+  | ClientTurn
+  | ClientCanvasListGet
+  | ClientCanvasListPut
+  | ClientCanvasRefresh;
 
 /**
  * The surface_* event types forwarded 1:1 to the canvas client — the runtime
@@ -166,7 +188,8 @@ export function parseClientMessage(raw: string): ClientMessage | null {
     type === 'handshake_select' ||
     type === 'turn' ||
     type === 'canvas_list_get' ||
-    type === 'canvas_list_put'
+    type === 'canvas_list_put' ||
+    type === 'canvas_refresh'
   ) {
     return obj as ClientMessage;
   }

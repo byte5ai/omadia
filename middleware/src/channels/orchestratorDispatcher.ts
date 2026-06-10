@@ -108,12 +108,22 @@ export function createOrchestratorDispatcher(
               ...(input.target !== undefined ? { target: input.target } : {}),
             }
           : undefined;
+      // Deterministic canvas refresh (omadia-ui#5) — same metadata ride as
+      // `action`; shape-validated by the channel, re-checked here.
+      const rawRefresh = input.metadata?.['canvasRefresh'];
+      const canvasRefresh =
+        typeof rawRefresh === 'object' &&
+        rawRefresh !== null &&
+        typeof (rawRefresh as { basedOnRevision?: unknown }).basedOnRevision === 'string'
+          ? (rawRefresh as { basedOnRevision: string; currentTree: unknown; scope?: string })
+          : undefined;
       yield* agent.chatStream({
         userMessage: input.text,
         sessionScope: input.scope,
         userId: input.userRef.id,
         ...(canvasSessionId ? { canvasSessionId } : {}),
         ...(action ? { action } : {}),
+        ...(canvasRefresh ? { canvasRefresh } : {}),
         // a TEXT turn may be row-bound too (beam / context action) — thread
         // the TargetRef even without a structured action.
         ...(input.target !== undefined ? { target: input.target } : {}),

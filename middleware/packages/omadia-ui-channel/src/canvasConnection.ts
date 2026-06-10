@@ -175,6 +175,46 @@ export function handleCanvasSocket(
       });
       return;
     }
+    if (msg.type === 'canvas_refresh') {
+      // Deterministic refresh (protocol 1.1, omadia-ui#5). Joins the SAME
+      // turnChain as real turns — a refresh racing an in-flight turn
+      // serialises behind it; the revision equality check on the resulting
+      // patches settles the rest (issue's open question #3).
+      const turnId = msg.turnId && msg.turnId.length > 0 ? msg.turnId : deps.mintId();
+      if (
+        typeof msg.basedOnRevision !== 'string' ||
+        msg.basedOnRevision.length === 0 ||
+        !isPlainObject(msg.currentTree) ||
+        (msg.scope !== undefined && typeof msg.scope !== 'string')
+      ) {
+        send({
+          type: 'turn_error',
+          forTurn: turnId,
+          message:
+            'invalid canvas_refresh: basedOnRevision (string) and currentTree (object) required',
+        });
+        return;
+      }
+      // Same cap as the registry's tree snapshots — the client echoes a tree
+      // the server once produced; anything bigger is hostile or corrupt.
+      if (JSON.stringify(msg.currentTree).length > 262_144) {
+        send({ type: 'turn_error', forTurn: turnId, message: 'canvas_refresh: currentTree too large' });
+        return;
+      }
+      const turn = formIncomingTurn({ type: 'turn', turnId, text: '' }, turnId);
+      turn.metadata = {
+        ...turn.metadata,
+        canvasRefresh: {
+          basedOnRevision: msg.basedOnRevision,
+          currentTree: msg.currentTree,
+          ...(typeof msg.scope === 'string' ? { scope: msg.scope } : {}),
+        },
+      };
+      turnChain = turnChain.then(() => runTurn(turn, turnId)).catch(() => {
+        /* runTurn never rejects; guard the chain anyway. */
+      });
+      return;
+    }
     if (msg.type !== 'turn') return;
     const turnId =
       msg.turnId && msg.turnId.length > 0 ? msg.turnId : deps.mintId();
@@ -188,7 +228,7 @@ export function handleCanvasSocket(
       return;
     }
     // Serialise: each turn runs to completion before the next starts.
-    turnChain = turnChain.then(() => runTurn(msg, turnId)).catch(() => {
+    turnChain = turnChain.then(() => runTurn(formIncomingTurn(msg, turnId), turnId)).catch(() => {
       /* runTurn never rejects (it sends turn_error); guard the chain anyway. */
     });
   });
@@ -212,8 +252,7 @@ export function handleCanvasSocket(
     return null;
   }
 
-  async function runTurn(msg: ClientTurn, turnId: string): Promise<void> {
-    const turn = formIncomingTurn(msg, turnId);
+  async function runTurn(turn: IncomingTurn, turnId: string): Promise<void> {
     let terminated = false;
     try {
       for await (const ev of deps.handleTurnStream(turn)) {

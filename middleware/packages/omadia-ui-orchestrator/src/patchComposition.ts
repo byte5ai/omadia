@@ -121,7 +121,7 @@ function toChartPoint(
 function composeChartRowsPatch(
   chart: { node: ChartNode; path: string },
   rows: Array<Record<string, unknown>>,
-  opts: { baseTree: unknown; payload: PendingStructuredPayload },
+  opts: { baseTree: unknown; payload: PendingStructuredPayload; refreshContainers?: Set<string> },
 ): ComposedPatch | null {
   const points = rows
     .map((row, i) => toChartPoint(row, i, opts.payload.dataRefId))
@@ -142,8 +142,13 @@ function composeChartRowsPatch(
   if (chartType && chart.node['chartType'] !== chartType) {
     patches.push({ op: 'replace', path: `${chart.path}/chartType`, value: chartType });
   }
-  for (const p of points) {
-    patches.push({ op: 'add', path: `${chart.path}/points/-`, value: p });
+  const replacePoints = opts.refreshContainers?.delete(String(chart.node['id'])) === true;
+  if (replacePoints) {
+    patches.push({ op: 'replace', path: `${chart.path}/points`, value: points });
+  } else {
+    for (const p of points) {
+      patches.push({ op: 'add', path: `${chart.path}/points/-`, value: p });
+    }
   }
   if (patches.length === 0) return null;
 
@@ -152,7 +157,8 @@ function composeChartRowsPatch(
   if (!cloneHit || !isChartNode(cloneHit.node)) return null;
   if (cloneHit.node.loading === 'skeleton') cloneHit.node['loading'] = 'none';
   if (chartType) cloneHit.node['chartType'] = chartType;
-  cloneHit.node.points.push(...points);
+  if (replacePoints) cloneHit.node.points.splice(0, cloneHit.node.points.length, ...points);
+  else cloneHit.node.points.push(...points);
 
   if (!validateTree(nextTree).ok) return null;
   return { patches, nextTree };
@@ -254,6 +260,11 @@ export function composeStructuredPayloadPatch(opts: {
   /** observability — every skip states its reason (a dropped patch reads as
    *  "empty canvas" to the user; silence here cost us a debugging session). */
   log?: (message: string) => void;
+  /** deterministic refresh (omadia-ui#5): containers whose FIRST publish of
+   *  this stream REPLACES the stale rows/points instead of appending. The
+   *  set is consumed — a container is removed on its first hit, so follow-up
+   *  batches append onto the freshly replaced data. */
+  refreshContainers?: Set<string>;
 }): ComposedPatch | null {
   const data = opts.payload.data;
   if (
@@ -341,8 +352,13 @@ export function composeStructuredPayloadPatch(opts: {
   if (table.node.loading === 'skeleton') {
     patches.push({ op: 'replace', path: `${table.path}/loading`, value: 'none' });
   }
-  for (const row of mapped) {
-    patches.push({ op: 'add', path: `${table.path}/rows/-`, value: row });
+  const replaceRows = opts.refreshContainers?.delete(String(table.node['id'])) === true;
+  if (replaceRows) {
+    patches.push({ op: 'replace', path: `${table.path}/rows`, value: mapped });
+  } else {
+    for (const row of mapped) {
+      patches.push({ op: 'add', path: `${table.path}/rows/-`, value: row });
+    }
   }
 
   // Agent-authored row context-menu entries → suggestedActions on the table
@@ -385,7 +401,8 @@ export function composeStructuredPayloadPatch(opts: {
   const cloneHit = findNodeById(nextTree, table.node['id'] as string, '');
   if (!cloneHit || !isTableNode(cloneHit.node)) return null;
   if (cloneHit.node.loading === 'skeleton') cloneHit.node['loading'] = 'none';
-  cloneHit.node.rows.push(...mapped);
+  if (replaceRows) cloneHit.node.rows.splice(0, cloneHit.node.rows.length, ...mapped);
+  else cloneHit.node.rows.push(...mapped);
   if (suggestedActions.length > 0) cloneHit.node['suggestedActions'] = suggestedActions;
 
   const valid = validateTree(nextTree);

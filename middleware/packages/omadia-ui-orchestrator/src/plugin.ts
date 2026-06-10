@@ -10,7 +10,7 @@ import {
   type RevisionId,
 } from '@omadia/channel-sdk';
 
-import { composeSkeleton, type CompositionLlm } from './composition.js';
+import { composeSkeleton, type CompositionLlm, type DataRequirement } from './composition.js';
 import { synthesizeSurfaceEvents } from './surfaceSynthesis.js';
 
 /**
@@ -413,6 +413,61 @@ export async function activate(
     });
   }
 
+  /** Deterministic refresh (protocol 1.1 `canvas_refresh`, omadia-ui#5, v1):
+   *  NO skeleton composition — the client sent its current tree; the data
+   *  requirements are derived from that tree's own containers, the main turn
+   *  re-fetches silently, and the first publish per container REPLACES its
+   *  rows (the consumed `refreshContainers` set). Patches restart surfaceSeq
+   *  at 0 on top of the client's revision — the client accepts a seq-0 patch
+   *  run whose basedOnRevision matches. The LLM-free dataRef re-resolution
+   *  swaps these internals later without touching the wire contract. */
+  async function* canvasRefreshStream(
+    input: ChatTurnInput,
+    observer: Parameters<ChatAgent['chatStream']>[1],
+    base: ChatAgent,
+    canvasSessionId: string,
+    refresh: NonNullable<ChatTurnInput['canvasRefresh']>,
+  ): AsyncGenerator<ChatStreamEvent> {
+    const requirements = deriveDataRequirements(refresh.currentTree, refresh.scope);
+    if (requirements.length === 0) {
+      // nothing refreshable in scope — a defined error, not a silent no-op
+      yield {
+        type: 'surface_error',
+        canvasSessionId,
+        surfaceSeq: 0,
+        revision: refresh.basedOnRevision as RevisionId,
+        severity: 'recoverable',
+        message: 'refresh_unsupported: no data containers in scope',
+      };
+      return;
+    }
+    const augmented: ChatTurnInput = {
+      ...input,
+      userMessage:
+        '[canvas-refresh]\n' +
+        JSON.stringify({ dataRequirements: requirements }) +
+        '\nRe-fetch the CURRENT data for the above containers — same query, ' +
+        'newer data, nothing else. Work silently: no narration, no memory ' +
+        'commentary. Publish via canvas_publish_rows per containerId with ' +
+        'rows keyed EXACTLY by the listed fieldKeys (batches of at most 30 ' +
+        'rows, one call at a time); the canvas REPLACES the stale rows. Do ' +
+        'NOT compose a new view, do NOT publish to other containers, do NOT ' +
+        'call canvas_publish_choice. Reply with one short sentence.',
+    };
+    yield* synthesizeSurfaceEvents(base.chatStream(augmented, observer), {
+      canvasSessionId,
+      authorizedToolNames: canvasOutputTools,
+      protocolVersion: CANVAS_PROTOCOL_VERSION,
+      opsCatalogVersion: OPS_CATALOG_VERSION,
+      startSurfaceSeq: 0,
+      baseRevision: refresh.basedOnRevision as RevisionId,
+      baseTree: refresh.currentTree,
+      dataRequirements: requirements,
+      refreshContainers: new Set(requirements.map((r) => r.containerId)),
+      log: (message) => ctx.log(message),
+    });
+  }
+
   const canvasAgent: ChatAgent = {
     chat(input) {
       const base = resolveBase();
@@ -425,6 +480,9 @@ export async function activate(
       // Only a canvas turn (channel-threaded canvasSessionId) gets composition
       // + surface synthesis; classic turns pass straight through, byte-for-byte.
       if (!input.canvasSessionId) return base.chatStream(input, observer);
+      if (input.canvasRefresh) {
+        return canvasRefreshStream(input, observer, base, input.canvasSessionId, input.canvasRefresh);
+      }
       return canvasTurnStream(input, observer, base, input.canvasSessionId);
     },
   };
@@ -449,6 +507,53 @@ export async function activate(
 }
 
 /** Stream yielded when no base orchestrator is registered (graceful degrade). */
+/** Derive the refreshable data requirements from a canvas tree itself — the
+ *  tables' own columns ARE the field contract the original skeleton promised
+ *  (deterministic, no LLM; omadia-ui#5). `scope` narrows to one containerId. */
+export function deriveDataRequirements(tree: unknown, scope?: string): DataRequirement[] {
+  const out: DataRequirement[] = [];
+  const walk = (n: unknown): void => {
+    if (Array.isArray(n)) {
+      for (const child of n) walk(child);
+      return;
+    }
+    if (typeof n !== 'object' || n === null) return;
+    const node = n as Record<string, unknown>;
+    const id = typeof node['id'] === 'string' ? node['id'] : undefined;
+    if (id && (!scope || id === scope)) {
+      if (node['type'] === 'table' && Array.isArray(node['columns'])) {
+        const fields = (node['columns'] as Array<Record<string, unknown>>)
+          .filter((c) => typeof c?.['fieldKey'] === 'string')
+          .map((c) => ({
+            fieldKey: c['fieldKey'] as string,
+            label: String(c['label'] ?? c['fieldKey']),
+          }));
+        if (fields.length > 0) {
+          out.push({
+            containerId: id,
+            description: `refresh: ${String(node['title'] ?? id)}`,
+            fields,
+          });
+        }
+      } else if (node['type'] === 'chart') {
+        out.push({
+          containerId: id,
+          description: `refresh chart: ${String(node['title'] ?? id)}`,
+          fields: [
+            { fieldKey: 'label', label: 'label' },
+            { fieldKey: 'value', label: 'value' },
+          ],
+        });
+      }
+    }
+    for (const value of Object.values(node)) {
+      if (typeof value === 'object' && value !== null) walk(value);
+    }
+  };
+  walk(tree);
+  return out;
+}
+
 async function* errorStream(): AsyncGenerator<ChatStreamEvent> {
   yield { type: 'error', message: 'orchestrator unavailable' };
 }

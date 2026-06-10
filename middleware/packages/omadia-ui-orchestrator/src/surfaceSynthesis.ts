@@ -54,6 +54,9 @@ export interface SurfaceSynthesisConfig {
   dataRequirements?: readonly DataRequirement[];
   /** observability: every skipped (unmappable) payload states why. */
   log?: (message: string) => void;
+  /** deterministic refresh (omadia-ui#5): containers whose FIRST publish in
+   *  this stream REPLACES the stale rows/points; follow-up batches append. */
+  refreshContainers?: ReadonlySet<string>;
 }
 
 /**
@@ -66,6 +69,8 @@ export async function* synthesizeSurfaceEvents(
   config: SurfaceSynthesisConfig,
 ): AsyncGenerator<ChatStreamEvent> {
   const toolNameById = new Map<string, string>();
+  // consumed set: patchComposition removes a container on its first publish
+  const refreshContainers = new Set(config.refreshContainers ?? []);
   let surfaceSeq = config.startSurfaceSeq ?? 0;
   let revisionCounter =
     config.baseRevision !== undefined ? Number(config.baseRevision) + 1 : 0;
@@ -108,6 +113,7 @@ export async function* synthesizeSurfaceEvents(
         baseTree: currentTree,
         payload,
         dataRequirements: config.dataRequirements ?? [],
+        ...(refreshContainers.size > 0 ? { refreshContainers } : {}),
         ...(config.log ? { log: config.log } : {}),
       });
       if (!composed) {

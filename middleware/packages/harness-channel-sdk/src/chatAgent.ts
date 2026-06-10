@@ -286,6 +286,15 @@ export interface ChatTurnInput {
    * the agent never guesses which record the user meant.
    */
   target?: unknown;
+  /**
+   * Omadia UI deterministic refresh (protocol 1.1 `canvas_refresh`,
+   * omadia-ui#5): the client sends its CURRENT tree + revision; a
+   * canvas-aware orchestrator skips skeleton composition, derives the data
+   * requirements from that tree's own containers and re-fetches ONLY — the
+   * first publish per container REPLACES its stale rows. `scope` narrows the
+   * refresh to one container id. Set only by the canvas channel.
+   */
+  canvasRefresh?: { basedOnRevision: string; currentTree: unknown; scope?: string };
 }
 
 /**
