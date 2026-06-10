@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omadia.ai/protocol/1.0/data-ref.schema.json",
+  "title": "DataRef",
+  "description": "Canonical reference to bulk data behind a primitive or carried by a surface event. Content-addressed id, HMAC-signed token, expiry. The single shape used everywhere bulk data is referenced (omadia-canvas-protocol/1.0).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "signedToken", "expiresAt"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Content-addressed identifier: \"<kind>-<sha256(content)[:16]>\", kind ∈ {pixel,vector,audio,video,struct,...}. Same content → same id (automatic dedup).",
+      "pattern": "^[a-z]+-[0-9a-f]{16}$"
+    },
+    "signedToken": {
+      "type": "string",
+      "minLength": 1,
+      "description": "HMAC signature over tenantId ‖ userId ‖ canvasSessionId ‖ dataRefBody ‖ expiryEpoch (see §Security). Server re-validates signature, scope, expiry on fetch."
+    },
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 expiry. ≤ the server-secret lifetime."
+    }
+  }
+}

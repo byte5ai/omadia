@@ -356,4 +356,77 @@ describe('omadia-ui-channel canvas WebSocket — turn fan-out', () => {
     assert.ok(err, 'turn_error for malformed target');
     assert.equal(called, false, 'orchestrator not invoked');
   });
+
+  it('threads handshake localOperations and turn action into IncomingTurn.metadata', async () => {
+    const m = makeSocket();
+    let captured: IncomingTurn | undefined;
+    handleCanvasSocket(m.socket, SESSION, {
+      channelId: '@omadia/ui-channel',
+      protocolVersions: ['1.0'],
+      opsCatalogVersions: ['1.0'],
+      handleTurnStream: (turn) => {
+        captured = turn;
+        return emptyStream();
+      },
+      mintId: idMinter(),
+    });
+    const offer = m.sent[0] as SentFrame;
+    m.client({
+      type: 'handshake_select',
+      handshakeId: offer.handshakeId,
+      protocolVersion: '1.0',
+      opsCatalogVersion: '1.0',
+      localOperations: ['brush', 'blur', 42], // non-strings are dropped
+      canvasSessionId: 'c',
+    });
+    m.client({
+      type: 'turn',
+      turnId: 't1',
+      text: '',
+      action: { type: 'row-click', payload: { rowKey: 'anna' } },
+    });
+    await flush();
+
+    assert.ok(captured, 'handleTurnStream was called');
+    const metadata = captured?.metadata as Record<string, unknown> | undefined;
+    assert.deepEqual(metadata?.localOperations, ['brush', 'blur']);
+    assert.deepEqual(metadata?.action, { type: 'row-click', payload: { rowKey: 'anna' } });
+  });
+
+  it('omits localOperations from metadata when the client declared none, and rejects a malformed action', async () => {
+    const m = makeSocket();
+    let captured: IncomingTurn | undefined;
+    let calls = 0;
+    handleCanvasSocket(m.socket, SESSION, {
+      channelId: '@omadia/ui-channel',
+      protocolVersions: ['1.0'],
+      opsCatalogVersions: ['1.0'],
+      handleTurnStream: (turn) => {
+        captured = turn;
+        calls += 1;
+        return emptyStream();
+      },
+      mintId: idMinter(),
+    });
+    const offer = m.sent[0] as SentFrame;
+    m.client({
+      type: 'handshake_select',
+      handshakeId: offer.handshakeId,
+      protocolVersion: '1.0',
+      opsCatalogVersion: '1.0',
+      canvasSessionId: 'c',
+    });
+    m.client({ type: 'turn', turnId: 't1', text: 'plain turn' });
+    await flush();
+    assert.equal(calls, 1);
+    const metadata = captured?.metadata as Record<string, unknown> | undefined;
+    assert.equal('localOperations' in (metadata ?? {}), false, 'no localOperations key when none declared');
+    assert.equal('action' in (metadata ?? {}), false, 'no action key on a plain turn');
+
+    m.client({ type: 'turn', turnId: 't2', text: 'go', action: 'not-an-object' });
+    await flush();
+    const err = m.sent.find((f) => f.type === 'turn_error' && f.forTurn === 't2');
+    assert.ok(err, 'turn_error for malformed action');
+    assert.equal(calls, 1, 'orchestrator not invoked for the malformed action');
+  });
 });

@@ -63,6 +63,8 @@ export function handleCanvasSocket(
   let downgradeAttempts = 0;
   /** the client-facing canvas id (client-supplied or server-minted). */
   let canvasSessionId = '';
+  /** the catalog ops the client declared at handshake — Tier-2 Class-B routing truth. */
+  let localOperations: string[] = [];
   const handshakeId = deps.mintId();
   // Per-connection turn queue — serialises turns so two in-flight turns can't
   // interleave surface frames on the same socket.
@@ -125,6 +127,9 @@ export function handleCanvasSocket(
         }
         return;
       }
+      localOperations = Array.isArray(msg.localOperations)
+        ? msg.localOperations.filter((op): op is string => typeof op === 'string')
+        : [];
       canvasSessionId =
         msg.canvasSessionId && msg.canvasSessionId.length > 0
           ? msg.canvasSessionId
@@ -167,6 +172,12 @@ export function handleCanvasSocket(
     }
     if (msg.viewState !== undefined && !isPlainObject(msg.viewState)) {
       return 'invalid viewState: expected an object keyed by containerId';
+    }
+    if (
+      msg.action !== undefined &&
+      !(isPlainObject(msg.action) && typeof msg.action['type'] === 'string')
+    ) {
+      return 'invalid action: expected an object with a string `type`';
     }
     return null;
   }
@@ -224,6 +235,11 @@ export function handleCanvasSocket(
         turnId,
         provider: session.provider,
         ...(session.omadiaUserId ? { omadiaUserId: session.omadiaUserId } : {}),
+        // Client-context passthrough for Tier 2: the handshake-declared ops
+        // catalog (Class-B routing truth) and the structured UI action — both
+        // ride metadata until the SDK grows typed fields (protocol 1.0 §5.1).
+        ...(localOperations.length > 0 ? { localOperations } : {}),
+        ...(msg.action !== undefined ? { action: msg.action } : {}),
       },
     };
     // tenantId: populate when the host published one; otherwise leave unset so
