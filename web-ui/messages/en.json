@@ -97,7 +97,9 @@
     "statusInProgress": "in progress",
     "statusDone": "done",
     "statusFailed": "failed",
-    "statusSkipped": "skipped"
+    "statusSkipped": "skipped",
+    "reusedBadge": "reused",
+    "reusedFrom": "Reused from stored process: {title}"
   },
   "recalledContext": {
     "heading": "From earlier sessions",

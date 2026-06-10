@@ -5,7 +5,14 @@
  * `activate`). Re-exports here are for tests + programmatic consumers.
  */
 
-export { activate, pruneTurns, type PlanRunnerPluginHandle } from './plugin.js';
+export {
+  activate,
+  pruneTurns,
+  pickReusableProcess,
+  DEFAULT_PROCESS_REUSE_THRESHOLD,
+  type PlanRunnerPluginHandle,
+  type ReusableProcess,
+} from './plugin.js';
 export { shouldPlan, GATE_MODEL } from './gate.js';
 export {
   gcSupersededPlans,
@@ -16,10 +23,12 @@ export {
 } from './gc.js';
 export {
   materializePlan,
+  materializePlanFromSteps,
   parsePlanSteps,
   summariseRequest,
   PLAN_MODEL,
   type MaterializeInput,
+  type MaterializeFromStepsInput,
   type MaterializeResult,
   type ParsedStep,
 } from './materializer.js';

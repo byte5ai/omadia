@@ -1,9 +1,17 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
-import type { KnowledgeGraph } from '@omadia/plugin-api';
+import type { GraphNode, KnowledgeGraph } from '@omadia/plugin-api';
+
+import { PlanScopeCache } from './planScopeCache.js';
+
+/** Cached `/plans` payload shape: a scope's plans, each with its steps. */
+export type PlanWithSteps = { plan: GraphNode; steps: GraphNode[] };
 
 interface DevGraphDeps {
   graph: KnowledgeGraph;
+  /** Optional injected cache (tests pass a clock-controlled instance). When
+   *  omitted, a default short-TTL cache is created per router. */
+  planCache?: PlanScopeCache<PlanWithSteps[]>;
 }
 
 /**
@@ -14,6 +22,7 @@ interface DevGraphDeps {
  */
 export function createDevGraphRouter(deps: DevGraphDeps): Router {
   const router = Router();
+  const planCache = deps.planCache ?? new PlanScopeCache<PlanWithSteps[]>();
 
   router.get('/stats', async (_req: Request, res: Response) => {
     try {
@@ -198,13 +207,22 @@ export function createDevGraphRouter(deps: DevGraphDeps): Router {
       return;
     }
     try {
+      const cached = planCache.get(scopeParam);
+      if (cached) {
+        res.json({ scope: scopeParam, plans: cached });
+        return;
+      }
       const planNodes = await deps.graph.listPlansForScope(scopeParam);
-      const plans = await Promise.all(
-        planNodes.map(async (plan) => ({
-          plan,
-          steps: await deps.graph.getPlanSteps(plan.id),
-        })),
+      // One batched read for all steps instead of a getPlanSteps per plan
+      // (the old Promise.all fanned out 1+2N Neon round-trips per request).
+      const stepsByPlan = await deps.graph.getPlanStepsForPlans(
+        planNodes.map((p) => p.id),
       );
+      const plans: PlanWithSteps[] = planNodes.map((plan) => ({
+        plan,
+        steps: stepsByPlan.get(plan.id) ?? [],
+      }));
+      planCache.set(scopeParam, plans);
       res.json({ scope: scopeParam, plans });
     } catch (err) {
       res

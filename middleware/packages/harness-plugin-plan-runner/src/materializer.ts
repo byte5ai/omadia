@@ -91,25 +91,25 @@ export interface MaterializeResult {
   exitConditions: Array<string | undefined>;
 }
 
-/** Materialise + persist a plan. Returns null when the model produced no
- *  usable steps (the gate said "plan" but decomposition yielded nothing). */
-export async function materializePlan(
-  input: MaterializeInput,
+/** Persist a parsed step list as a Plan + PlanStep DAG. Shared by the LLM
+ *  materialiser ({@link materializePlan}) and the process-reuse materialiser
+ *  ({@link materializePlanFromSteps}) so both write identical graph shapes;
+ *  only `createdBy`/`strategy` provenance differs. */
+async function persistPlan(
+  input: Pick<
+    MaterializeInput,
+    'planId' | 'scope' | 'userMessage' | 'createdAt' | 'kg'
+  >,
+  steps: ParsedStep[],
+  provenance: { createdBy: 'gate' | 'process'; strategy?: string },
 ): Promise<MaterializeResult | null> {
-  const res = await input.llm.complete({
-    model: PLAN_MODEL,
-    system: PLAN_SYSTEM,
-    messages: [{ role: 'user', content: input.userMessage.trim() }],
-    maxTokens: 1024,
-    temperature: 0,
-  });
-  const steps = parsePlanSteps(res.text);
   if (steps.length === 0) return null;
 
   const { planExternalId } = await input.kg.ingestPlan({
     planId: input.planId,
     scope: input.scope,
-    createdBy: 'gate',
+    createdBy: provenance.createdBy,
+    ...(provenance.strategy ? { strategy: provenance.strategy } : {}),
     createdAt: input.createdAt,
     // #237 (plan GC) — stash a capped copy of the request so the GC pass can
     // judge whether a later plan in this scope is the same task re-planned.
@@ -141,4 +141,49 @@ export async function materializePlan(
   }
 
   return { planExternalId, stepCount: steps.length, stepExternalIds, exitConditions };
+}
+
+/** Materialise + persist a plan. Returns null when the model produced no
+ *  usable steps (the gate said "plan" but decomposition yielded nothing). */
+export async function materializePlan(
+  input: MaterializeInput,
+): Promise<MaterializeResult | null> {
+  const res = await input.llm.complete({
+    model: PLAN_MODEL,
+    system: PLAN_SYSTEM,
+    messages: [{ role: 'user', content: input.userMessage.trim() }],
+    maxTokens: 1024,
+    temperature: 0,
+  });
+  return persistPlan(input, parsePlanSteps(res.text), { createdBy: 'gate' });
+}
+
+export interface MaterializeFromStepsInput
+  extends Omit<MaterializeInput, 'llm'> {
+  /** Ordered workflow steps from a reused {@link ProcessRecord}. Flat strings
+   *  (Phase-7 process shape) → sequential plan steps, no DAG dependencies. */
+  steps: readonly string[];
+  /** Title of the source process — stored on the plan as `strategy` so the UI
+   *  and GC can see the plan was reused, not freshly thought. */
+  processTitle: string;
+}
+
+/**
+ * Materialise a plan from a reused stored process — NO LLM call. The agent
+ * learned this workflow once (`write_process`); reusing its steps here is what
+ * stops every plan-worthy turn from re-deriving the same DAG via Haiku. Data
+ * is still fetched fresh at execution time — the plan only fixes the *steps*,
+ * never their results. Returns null on an empty/blank step list.
+ */
+export async function materializePlanFromSteps(
+  input: MaterializeFromStepsInput,
+): Promise<MaterializeResult | null> {
+  const steps: ParsedStep[] = input.steps
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+    .map((goal) => ({ goal, dependsOn: [] }));
+  return persistPlan(input, steps, {
+    createdBy: 'process',
+    strategy: `Reused stored process: ${input.processTitle}`,
+  });
 }
