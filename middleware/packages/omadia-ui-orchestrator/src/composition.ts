@@ -43,7 +43,38 @@ export const FALLBACK_SKELETON = {
 
 const SYSTEM_PROMPT = `You are the Omadia UI Tier-2 composer. Given a user request, emit ONLY a JSON object:
 { "tree": <primitive tree>, "dataRequirements": [{ "containerId", "description", "dataClass"?, "fields": [{ "fieldKey", "label", "type"? }] }] }
-The tree is a SKELETON for data still being fetched: data-carrying primitives use loading:"skeleton" and empty rows/items. Use only these primitives: container, heading, text, table, list, tree, button, input, choice, toggle, image, chart, form, toolbar, menubar, tabs, pane, status, progress, divider. Every container and data-carrying primitive needs a stable "id"; table columns need fieldKey+label. dataRequirements must name, per data-carrying container, exactly the fields the content agents must deliver. No prose, no markdown fences — raw JSON only.`;
+
+The tree is a SKELETON for data still being fetched: data-carrying primitives set "loading":"skeleton" with EMPTY rows/items/points ([]). The fetched data is patched in later.
+
+PRIMITIVE SHAPES — emit EXACTLY these keys, no others (extra keys are rejected). Every node MAY carry "id" (stable string) and "loading":"none"|"skeleton"|"spinner".
+- container: { "type":"container", "id", "layout":"stack"|"split"|"grid"|"flow", "children":[ ...primitives ], "title"?:string }
+- heading:   { "type":"heading", "content":string, "level"?:1..6 }
+- text:      { "type":"text", "content":string }
+- status:    { "type":"status", "text":string }
+- divider:   { "type":"divider" }
+- table:     { "type":"table", "id", "loading":"skeleton", "columns":[ { "fieldKey":string, "label":string, "type"?:string } ], "rows":[] }
+- list:      { "type":"list", "id", "loading":"skeleton", "items":[] }
+- chart:     { "type":"chart", "id", "loading":"skeleton", "chartType":string, "points":[] }
+- tabs:      { "type":"tabs", "id", "tabs":[ { "label":string, "child": <ONE primitive> } ] }
+- pane:      { "type":"pane", "id", "title"?:string, "container"?: <ONE primitive>, "children"?:[ ...primitives ] }
+
+RULES:
+- The ROOT must be a container.
+- table REQUIRES columns AND rows (rows:[] when skeleton). list REQUIRES items:[]. chart REQUIRES chartType AND points:[].
+- tabs REQUIRES tabs:[]; each tab is { "label", "child" } where child is ONE primitive (usually a container/table).
+- A table row later looks like { "rowKey":string, "cells":{ fieldKey: value } } — you only emit the EMPTY skeleton, not rows.
+- dataRequirements: one entry per data-carrying container, naming EXACTLY the fieldKeys its columns/fields use.
+
+EXAMPLE — "Zeige Kursdetails inkl. Teilnehmer als Panes":
+{ "tree": { "type":"container", "id":"root", "layout":"stack", "children":[
+  { "type":"tabs", "id":"detail_tabs", "tabs":[
+    { "label":"Übersicht", "child": { "type":"container", "id":"overview", "layout":"stack", "loading":"skeleton", "children":[ { "type":"text", "id":"overview_text", "content":"" } ] } },
+    { "label":"Teilnehmer", "child": { "type":"table", "id":"participants", "loading":"skeleton", "columns":[ { "fieldKey":"name", "label":"Name" }, { "fieldKey":"status", "label":"Status" } ], "rows":[] } }
+  ] }
+] },
+  "dataRequirements":[ { "containerId":"participants", "description":"Teilnehmerliste des Kurses", "fields":[ { "fieldKey":"name", "label":"Name" }, { "fieldKey":"status", "label":"Status" } ] } ] }
+
+Output raw JSON only — no prose, no markdown fences.`;
 
 /** Models routinely ignore "raw JSON only" and wrap the object in markdown
  *  fences or a prose preamble — extract the JSON payload before parsing. */
