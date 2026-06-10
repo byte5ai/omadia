@@ -80,6 +80,8 @@ export function handleCanvasSocket(
   let turnChain: Promise<void> = Promise.resolve();
   // canvas_refresh rate limit window (issue #5 open question #1)
   let lastRefreshAt = 0;
+  // the turn currently consuming the orchestrator stream (turn_abort target)
+  let activeTurn: { turnId: string; abort: () => void } | null = null;
 
   const send = (msg: unknown): void => {
     if (phase === 'closed') return;
@@ -177,6 +179,14 @@ export function handleCanvasSocket(
       });
       return;
     }
+    if (msg.type === 'turn_abort') {
+      // abort the named in-flight turn (omadia-ui#13); a stale/unknown id is
+      // a no-op — the turn it referred to already ended
+      if (typeof msg.forTurn === 'string' && activeTurn?.turnId === msg.forTurn) {
+        activeTurn.abort();
+      }
+      return;
+    }
     if (msg.type === 'canvas_refresh') {
       // Deterministic refresh (protocol 1.1, omadia-ui#5). Joins the SAME
       // turnChain as real turns — a refresh racing an in-flight turn
@@ -264,8 +274,28 @@ export function handleCanvasSocket(
 
   async function runTurn(turn: IncomingTurn, turnId: string): Promise<void> {
     let terminated = false;
+    // turn_abort (omadia-ui#13): race the stream against the abort signal so
+    // the abort takes effect IMMEDIATELY, not on the next event. Already-sent
+    // surface events stay applied; the canvas keeps what rendered.
+    let signalAbort: () => void = () => {};
+    const abortPromise = new Promise<'aborted'>((resolve) => {
+      signalAbort = () => resolve('aborted');
+    });
+    activeTurn = { turnId, abort: () => signalAbort() };
+    const it = deps.handleTurnStream(turn)[Symbol.asyncIterator]();
     try {
-      for await (const ev of deps.handleTurnStream(turn)) {
+      for (;;) {
+        const r = await Promise.race([it.next(), abortPromise]);
+        if (r === 'aborted') {
+          // unwind the orchestrator generator stack (finally blocks run);
+          // never await it — a hung tool call must not delay the abort
+          void it.return?.().catch(() => {});
+          send({ type: 'turn_error', forTurn: turnId, message: 'aborted' });
+          terminated = true;
+          break;
+        }
+        if (r.done) break;
+        const ev = r.value;
         if (phase === 'closed') return;
         if (SURFACE_EVENT_TYPES.has(ev.type)) {
           send(ev); // forward the surface_* event 1:1
@@ -290,6 +320,8 @@ export function handleCanvasSocket(
         forTurn: turnId,
         message: err instanceof Error ? err.message : String(err),
       });
+    } finally {
+      activeTurn = null;
     }
   }
 

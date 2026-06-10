@@ -146,12 +146,22 @@ export interface ClientCanvasRefresh {
   scope?: unknown;
 }
 
+/** client → server: abort the named in-flight turn (omadia-ui#13, additive).
+ *  The channel stops consuming the orchestrator stream immediately and
+ *  answers `turn_error { forTurn, message: 'aborted' }`; surface events
+ *  already emitted stay applied. Stale/unknown ids are a no-op. */
+export interface ClientTurnAbort {
+  type: 'turn_abort';
+  forTurn?: unknown;
+}
+
 export type ClientMessage =
   | HandshakeSelect
   | ClientTurn
   | ClientCanvasListGet
   | ClientCanvasListPut
-  | ClientCanvasRefresh;
+  | ClientCanvasRefresh
+  | ClientTurnAbort;
 
 /**
  * The surface_* event types forwarded 1:1 to the canvas client — the runtime
@@ -189,7 +199,8 @@ export function parseClientMessage(raw: string): ClientMessage | null {
     type === 'turn' ||
     type === 'canvas_list_get' ||
     type === 'canvas_list_put' ||
-    type === 'canvas_refresh'
+    type === 'canvas_refresh' ||
+    type === 'turn_abort'
   ) {
     return obj as ClientMessage;
   }
