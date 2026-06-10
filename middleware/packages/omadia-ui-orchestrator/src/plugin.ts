@@ -11,6 +11,7 @@ import {
 } from '@omadia/channel-sdk';
 
 import { composeSkeleton, type CompositionLlm, type DataRequirement } from './composition.js';
+import { mintDataRef } from './dataRef.js';
 import {
   applyRefreshSource,
   createRecipeStore,
@@ -355,10 +356,11 @@ export async function activate(
   const refreshRecipes = createRecipeStore();
   const captureSource = (canvasSessionId: string) => (containerId: string, raw: unknown) => {
     const source = parseRefreshSource(raw);
-    if (source) {
-      refreshRecipes.set(canvasSessionId, containerId, source);
-      ctx.log(`[canvas-refresh] recipe captured: ${containerId} via ${source.tool}`);
-    }
+    if (!source) return undefined;
+    refreshRecipes.set(canvasSessionId, containerId, source);
+    ctx.log(`[canvas-refresh] recipe captured: ${containerId} via ${source.tool}`);
+    // announce refreshability to the client (surface_data_ref_created)
+    return mintDataRef(canvasSessionId, containerId);
   };
 
   async function* canvasTurnStream(

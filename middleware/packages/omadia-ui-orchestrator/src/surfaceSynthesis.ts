@@ -1,4 +1,4 @@
-import type { ChatStreamEvent, RevisionId } from '@omadia/channel-sdk';
+import type { ChatStreamEvent, DataRef, RevisionId } from '@omadia/channel-sdk';
 import {
   parseToolEmittedCanvasTree,
   parseToolEmittedStructuredPayload,
@@ -60,8 +60,10 @@ export interface SurfaceSynthesisConfig {
   /** recipe capture (omadia-ui#5, LLM-free refresh): called when a publish
    *  payload declares a `source` refresh recipe for its container — the
    *  caller persists it so a later canvas_refresh can re-execute the query
-   *  without an LLM in the seat. */
-  onPublishedSource?: (containerId: string, source: unknown) => void;
+   *  without an LLM in the seat. May return a minted DataRef; the synthesis
+   *  then announces it via `surface_data_ref_created` (refreshable flag)
+   *  right after the corresponding patch. */
+  onPublishedSource?: (containerId: string, source: unknown) => DataRef | undefined;
 }
 
 /**
@@ -116,6 +118,7 @@ export async function* synthesizeSurfaceEvents(
       if (!payload) continue;
       // recipe capture happens regardless of compose success — a recipe for
       // a payload whose patch was skipped is still a valid refresh source
+      let mintedRef: DataRef | undefined;
       if (config.onPublishedSource) {
         const d = payload.data as { containerId?: unknown; source?: unknown } | null;
         if (
@@ -123,7 +126,7 @@ export async function* synthesizeSurfaceEvents(
           typeof d.source === 'object' &&
           d.source !== null
         ) {
-          config.onPublishedSource(d.containerId, d.source);
+          mintedRef = config.onPublishedSource(d.containerId, d.source);
         }
       }
       const composed = composeStructuredPayloadPatch({
@@ -158,6 +161,17 @@ export async function* synthesizeSurfaceEvents(
       };
       currentTree = composed.nextTree;
       currentRevision = producesRevision;
+      // announce the captured refresh recipe (9b-3 minimal slice): the ref
+      // rides the SAME seq run right after its patch, at the new revision
+      if (mintedRef) {
+        yield {
+          type: 'surface_data_ref_created',
+          canvasSessionId: config.canvasSessionId,
+          surfaceSeq: surfaceSeq++,
+          revision: producesRevision,
+          dataRef: mintedRef,
+        };
+      }
       continue;
     }
 

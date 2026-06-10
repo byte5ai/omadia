@@ -33,6 +33,12 @@ export interface DataRef {
   signedToken: string;
   /** ISO 8601 timestamp */
   expiresAt: string;
+  /** protocol 1.1 (omadia-ui#5): true → the server can re-resolve this data
+   *  deterministically (a refresh recipe exists); the client may surface an
+   *  instant-refresh affordance. Absent = unknown (agent-fallback refresh). */
+  refreshable?: boolean;
+  /** protocol 1.1: the canvas container this ref's data feeds (table/chart id) */
+  containerId?: string;
 }
 
 /** Fields every surface event carries. `surfaceSeq` is server-assigned, monotonic per canvasSessionId. */
