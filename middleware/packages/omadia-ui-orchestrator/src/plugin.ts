@@ -260,10 +260,15 @@ export async function activate(
   ): AsyncGenerator<ChatStreamEvent> {
     // 1. Skeleton-first — emitted BEFORE the (slow) main turn starts. Never
     //    throws: schema failure → bounded repair retry → deterministic fallback.
+    //    An action-only turn (choice pick, button click) has no text — the
+    //    structured action then IS the request the skeleton is composed for.
     const skeleton = await composeSkeleton({
       llm,
       model,
-      userText: input.userMessage,
+      userText:
+        input.userMessage.trim().length > 0
+          ? input.userMessage
+          : `UI action: ${JSON.stringify(input.action ?? {})}`,
       log: (message) => ctx.log(message),
     });
     let surfaceSeq = 0;
@@ -280,10 +285,20 @@ export async function activate(
 
     // 2. Requirement handoff — the main turn carries what the skeleton
     //    promised, so Tier 3 returns payloads matching those exact fields.
+    //    A structured UI action (choice pick, button click) is the user's
+    //    ANSWER — handed to the main turn as a [canvas-action] block.
+    const actionBlock = input.action
+      ? '\n\n[canvas-action]\n' +
+        JSON.stringify(input.action) +
+        '\nThis structured UI action is the user’s input for this turn (a ' +
+        'choice pick carries the chosen value in payload.value). Act on it ' +
+        'directly — do not ask what the user meant.'
+      : '';
     const augmented: ChatTurnInput = {
       ...input,
       userMessage:
         input.userMessage +
+        actionBlock +
         '\n\n[canvas-context]\n' +
         JSON.stringify({
           canvasSkeleton: { revision: initialRevision, source: skeleton.source },

@@ -75,6 +75,43 @@ describe('createOrchestratorDispatcher', () => {
     assert.equal(events[0]?.type, 'text_delta');
   });
 
+  it('threads canvasSessionId + the structured UI action (with target) into ChatTurnInput', async () => {
+    const seen: unknown[] = [];
+    const dispatcher = createOrchestratorDispatcher({
+      getChannelBlock: () => canvasBlock,
+      getAgentBundle: () => ({
+        agent: {
+          chat: () => Promise.resolve({ text: '' }),
+          async *chatStream(input) {
+            seen.push(input);
+            await Promise.resolve();
+            yield { type: 'done', answer: 'ok', toolCalls: 0, iterations: 1 } as ChatStreamEvent;
+          },
+        },
+      }),
+    });
+    await collect(
+      dispatcher.streamTurn({
+        ...turn,
+        text: '',
+        channelId: 'de.byte5.channel.omadia-ui',
+        target: { kind: 'element', elementId: 'choice_1' },
+        metadata: {
+          canvasSessionId: 'cs-1',
+          action: { type: 'choice_select', payload: { value: 'mukran' } },
+        },
+      }),
+    );
+    const input = seen[0] as {
+      canvasSessionId?: string;
+      action?: { type: string; payload?: unknown; target?: unknown };
+    };
+    assert.equal(input.canvasSessionId, 'cs-1');
+    assert.equal(input.action?.type, 'choice_select');
+    assert.deepEqual(input.action?.payload, { value: 'mukran' });
+    assert.deepEqual(input.action?.target, { kind: 'element', elementId: 'choice_1' });
+  });
+
   it('yields a single error event when no orchestrator is registered', async () => {
     const dispatcher = createOrchestratorDispatcher({
       getChannelBlock: () => undefined,

@@ -95,11 +95,25 @@ export function createOrchestratorDispatcher(
         typeof input.metadata?.['canvasSessionId'] === 'string'
           ? (input.metadata['canvasSessionId'] as string)
           : undefined;
+      // The structured UI action (button click, choice pick) set by the canvas
+      // channel — protocol 1.0 §5.1's typed-field promise. The originating
+      // element's TargetRef rides along so Tier 2 knows WHICH element fired.
+      const rawAction = input.metadata?.['action'];
+      const action =
+        typeof rawAction === 'object' &&
+        rawAction !== null &&
+        typeof (rawAction as { type?: unknown }).type === 'string'
+          ? {
+              ...(rawAction as { type: string; payload?: unknown }),
+              ...(input.target !== undefined ? { target: input.target } : {}),
+            }
+          : undefined;
       yield* agent.chatStream({
         userMessage: input.text,
         sessionScope: input.scope,
         userId: input.userRef.id,
         ...(canvasSessionId ? { canvasSessionId } : {}),
+        ...(action ? { action } : {}),
       });
     },
   };

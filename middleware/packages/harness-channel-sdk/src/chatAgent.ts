@@ -269,6 +269,15 @@ export interface ChatTurnInput {
    * Tier 1 can correlate them to the right canvas. Never reaches the model prompt.
    */
   canvasSessionId?: string;
+  /**
+   * Structured UI action from an Omadia UI canvas client (button click,
+   * choice pick, row action) — the typed field promised in protocol 1.0 §5.1
+   * (until now the action rode `IncomingTurn.metadata.action` and was dropped
+   * at the dispatcher). Set only for canvas turns; a canvas-aware orchestrator
+   * threads it to the main turn as a `[canvas-action]` block. The optional
+   * `target` is the originating element's TargetRef, passed through untyped.
+   */
+  action?: { type: string; payload?: unknown; target?: unknown };
 }
 
 /**

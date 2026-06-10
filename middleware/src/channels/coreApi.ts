@@ -41,6 +41,12 @@ export interface TurnDispatcher {
     userRef: ChannelUserRef;
     text: string;
     metadata?: Record<string, unknown>;
+    /**
+     * Omadia UI: the TargetRef of the element a structured UI action
+     * originated from (protocol 1.0 §5.1). Untyped at this layer; the
+     * canvas-aware orchestrator narrows it. Classic channels never set it.
+     */
+    target?: unknown;
   }): AsyncIterable<ChatStreamEvent>;
 }
 
@@ -85,6 +91,7 @@ export function createCoreApi(opts: CreateCoreApiOptions): CoreApi {
         userRef: turn.userRef,
         text: turn.text,
         ...(turn.metadata ? { metadata: turn.metadata } : {}),
+        ...(turn.target !== undefined ? { target: turn.target } : {}),
       });
     },
 
