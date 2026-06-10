@@ -278,6 +278,56 @@ einem Fake-Base-Stream (autorisierter Sentinel → `surface_snapshot`; leeres
 Allow-Set → nichts; kein Sentinel → nichts; Nicht-Tool-Events unverändert;
 monotone `surfaceSeq`/Revision).
 
+### Tier-2 Haiku-Komposition (Omadia UI, PR-9b-2)
+
+Macht den `canvasChatAgent` zum echten Tier-2-Composer. Für einen Canvas-Turn
+(`input.canvasSessionId` gesetzt) laufen drei Schritte; Nicht-Canvas-Turns und
+`chat()` bleiben Byte-für-Byte-Passthrough (testbelegt, null LLM-Calls):
+
+1. **Skeleton-first** (`src/composition.ts`): ein Fast-Tier-Call
+   (`ctx.llm.complete`, Modell aus Setup-Feld `ui_orchestrator_model`, Default
+   `claude-haiku-4-5`; Manifest-Gate `permissions.llm`) erzeugt
+   `{ tree, dataRequirements }`. Der Tree wird **server-seitig gegen die
+   Protokoll-Schemas validiert** (`src/treeValidator.ts`, Ajv 2020 über die
+   nach `packages/omadia-ui-orchestrator/schema/` **vendorte** Kopie der
+   omadia-ui-Spec 1.0); ein begrenzter Repair-Retry trägt die Validator-Fehler
+   in den Prompt; danach deterministischer Fallback (`FALLBACK_SKELETON`) —
+   die Komposition blockiert den Turn **nie** (auch ohne `ctx.llm`). Das
+   Skeleton geht als `surface_snapshot` (Revision `"0"`) raus, **bevor** der
+   langsame Hauptturn startet (~500ms-Ziel, implementation-plan Risiko #1;
+   Spike-Gate: <95% First-Attempt-Validität → Modell auf Sonnet pinnen).
+2. **Requirement-Handoff**: der delegierte Hauptturn bekommt die
+   `dataRequirements` als `[canvas-context]`-Block an die `userMessage`
+   angehängt (containerIds + exakte fieldKeys + Instruktion) — Tier-3
+   Sub-Agents liefern ihre `_pendingStructuredPayload`s damit genau passend
+   zu dem, was das Skeleton versprochen hat.
+3. **Synthese-Fortsetzung** (`src/surfaceSynthesis.ts`, erweitert):
+   `startSurfaceSeq`/`baseRevision`/`baseTree` setzen die Zähler **nach** dem
+   Skeleton fort. Neu: `_pendingStructuredPayload` (autorisiertes Tool) wird
+   **deterministisch, ohne LLM-Call** auf das Skeleton gemappt
+   (`src/patchComposition.ts`): Rows gegen die `columns[].fieldKey`s der
+   Skeleton-Tabelle, `surface_patch` in der in omadia-ui
+   `docs/protocol/1.0.md` §5.1 gepinnten RFC-6902-Subset-Grammatik
+   (`replace loading` + `add rows/-`), Post-Patch-Tree validiert.
+   **Unmappbare Payloads werden übersprungen** (Daten kommen weiter als Prose
+   an) — bewusste Slice-Entscheidung statt LLM-Rekompositions-Snapshot
+   mid-stream.
+
+**Allow-Set (Interim):** Setup-Feld `canvas_output_tools` (kommagetrennte
+Tool-Namen) füllt das deny-by-default-Gate, bis das boot-berechnete
+canvas-output-Capability-Wiring (PR-7b) landet. Leer → keine Synthese.
+
+**Weiter offen (9b-3):** per-`canvasSessionId`-Mutex, cross-turn-`surfaceSeq`/
+State-Persistenz (Re-Handshake-Snapshot-Replay), `surface_data_ref_created` +
+DataRef-HMAC, `writeCapabilities`-Ableitung.
+
+Test: `test/uiOrchestratorComposition.test.ts` — `composeSkeleton`
+(Model-Pfad, Repair-Retry mit Validator-Fehlern, Fallback bei Non-JSON /
+Invalid-Twice / fehlendem LLM), `composeStructuredPayloadPatch` (Mapping +
+gepinnte Patch-Grammatik, `null` bei unmappbar), Plugin-Ebene (Skeleton ist
+**erstes** Event, `[canvas-context]` am Hauptturn, Payload → `surface_patch`
+`basedOnRevision "0"`, Nicht-Canvas-Turn → null LLM-Calls).
+
 ### omadia-ui-channel (Tier-1 Server, Skeleton, PR-10a)
 
 Neues Channel-Plugin `packages/omadia-ui-channel/` (`@omadia/ui-channel`,
@@ -389,11 +439,22 @@ PR-11s `CoreApi.registerWebSocket` aufsetzend. Drei neue Module im Package
   Teardown: Routes + WS-Registrierungen + Live-Sockets räumt der Kernel pro
   `channelId` beim Deactivate ab.
 
+**Client-Context-Passthrough** (Folge-Slice): die im `handshake_select`
+deklarierten **`localOperations`** (das Ops-Catalog-Subset des Clients — die
+Tier-2-Routing-Wahrheit für Class-B-Aktionen) werden pro Verbindung gehalten und
+auf jedem Turn als `IncomingTurn.metadata.localOperations` mitgegeben (Key fehlt,
+wenn der Client nichts deklariert). Außerdem kann ein `turn` eine strukturierte
+**`action`** tragen (Button-/Row-Click; Objekt mit String-`type`, sonst
+`turn_error` ohne Dispatch) → `IncomingTurn.metadata.action`. Beides additiv via
+`metadata`, bis das SDK typed Fields bekommt (Protokoll-Feedback omadia-ui
+`docs/protocol/1.0.md` §5.1).
+
 Test: `test/uiChannelWebSocket.test.ts` treibt `handleCanvasSocket` mit
 Mock-`ChannelSocket` + Mock-`handleTurnStream` (offer; matching select → ack mit
 client-`canvasSessionId`; Versions-Mismatch → error, zweiter → close; Turn →
 korrekt geformter `IncomingTurn` + `surface_*`/`agent_text_delta`/`turn_complete`
-Fan-out; Turn vor Handshake wird verworfen). Real-Socket-Pfad ist durch PR-11s
+Fan-out; Turn vor Handshake wird verworfen; `localOperations`/`action` landen in
+`metadata`, malformed `action` → `turn_error`). Real-Socket-Pfad ist durch PR-11s
 `webSocketRegistry.test.ts` abgedeckt. **Damit kann der Agent live UI über den
 Canvas synthetisieren, sobald Tier 2 (`omadia-ui-orchestrator`) `surface_*`
 emittiert** — der Transport ist vollständig.

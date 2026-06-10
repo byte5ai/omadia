@@ -88,6 +88,10 @@ export interface ClientTurn {
   /** optional client-supplied correlation id; the server mints one if absent */
   turnId?: string;
   text?: string;
+  /** structured UI action (button click, row-click); shape-validated by the
+   *  channel, semantically by Tier 2. Rides `IncomingTurn.metadata.action`
+   *  until the SDK grows a typed field (protocol 1.0 §5.1 feedback). */
+  action?: unknown;
   /** a `TargetRef` (canvas/container/element/…); validated downstream by Tier 2. */
   target?: unknown;
   /** a `CanvasViewState`; passed through for referential continuity. */

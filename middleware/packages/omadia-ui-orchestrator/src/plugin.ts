@@ -4,29 +4,43 @@ import {
   type ChatAgent,
   type ChatAgentBundle,
   type ChatStreamEvent,
+  type ChatTurnInput,
+  type RevisionId,
 } from '@omadia/channel-sdk';
 
+import { composeSkeleton, type CompositionLlm } from './composition.js';
 import { synthesizeSurfaceEvents } from './surfaceSynthesis.js';
 
 /**
- * @omadia/ui-orchestrator — Omadia UI Tier-2 orchestrator (PR-9b-1).
+ * @omadia/ui-orchestrator — Omadia UI Tier-2 orchestrator (PR-9b-2).
  *
  * `kind: extension`. On activate it publishes the `canvasChatAgent` service —
  * the bundle a canvas channel reaches via `channel.dispatch_service` (PR-6).
  *
- * `canvasChatAgent` resolves the base `chatAgent` lazily per call (so a
- * hot-reloaded orchestrator is always used) and, for a **canvas turn** (one that
- * carries `input.canvasSessionId`), wraps the base event stream in
- * {@link synthesizeSurfaceEvents}: an authorised tool's `_pendingCanvasTree`
- * sentinel becomes an injected `surface_snapshot`. Non-canvas turns (and the
- * `chat()` path) pass straight through. The base orchestrator tool loop is
- * untouched.
+ * For a **canvas turn** (one that carries `input.canvasSessionId`) the agent now
+ * runs the Haiku composition step before delegating:
  *
- * Still to land (later 9b slices): the producer (a canvas-output tool / UI Skill
- * that actually emits the sentinel — until then the synthesiser is inert in
- * production), the boot-computed canvas-output allow-set wiring,
- * `_pendingStructuredPayload` → `surface_data_ref_created`, and the
- * per-`canvasSessionId` write mutex + cross-turn `surfaceSeq` continuity.
+ *   1. **Skeleton-first** — `composeSkeleton` (fast model from
+ *      `ui_orchestrator_model`, validator-gated with one repair retry,
+ *      deterministic fallback) yields a `surface_snapshot` (revision "0")
+ *      BEFORE the slow main turn starts.
+ *   2. **Requirement handoff** — the delegated main turn's user message carries
+ *      a `[canvas-context]` block with the skeleton's `dataRequirements`, so
+ *      Tier-3 sub-agents return `_pendingStructuredPayload`s matching exactly
+ *      the promised containerIds + fieldKeys.
+ *   3. **Synthesis** — the base stream is wrapped in
+ *      {@link synthesizeSurfaceEvents}, continuing seq/revision after the
+ *      skeleton: authorised `_pendingCanvasTree` → `surface_snapshot`,
+ *      `_pendingStructuredPayload` → deterministic `surface_patch`.
+ *
+ * Non-canvas turns (and the `chat()` path) pass straight through, byte-for-byte.
+ * The base orchestrator tool loop is untouched.
+ *
+ * Still to land (later 9b slices): per-`canvasSessionId` write mutex +
+ * cross-turn `surfaceSeq`/state persistence (PR-9b-3), DataRef HMAC signing,
+ * the boot-computed canvas-output allow-set (PR-7b wiring — until then the
+ * `canvas_output_tools` config field is the operator-managed interim allow-set,
+ * deny-by-default when unset).
  */
 
 /**
@@ -39,14 +53,7 @@ export const CANVAS_CHAT_AGENT_SERVICE = 'canvasChatAgent';
 
 const CANVAS_PROTOCOL_VERSION = '1.0';
 const OPS_CATALOG_VERSION = '1.0';
-
-/**
- * Deny-by-default canvas-output allow-set. EMPTY until the boot-computed set of
- * canvas-output-authorised tools is wired alongside the first producer tool
- * (PR-9b-2); until then no tool is trusted to emit canvas sentinels, so the
- * synthesiser is correctly inert in production. The gate mechanism is live.
- */
-const CANVAS_OUTPUT_TOOLS: ReadonlySet<string> = new Set<string>();
+const DEFAULT_COMPOSITION_MODEL = 'claude-haiku-4-5';
 
 export interface UiOrchestratorPluginHandle {
   close(): Promise<void>;
@@ -55,10 +62,82 @@ export interface UiOrchestratorPluginHandle {
 export async function activate(
   ctx: PluginContext,
 ): Promise<UiOrchestratorPluginHandle> {
-  ctx.log('activating omadia-ui-orchestrator (skeleton)');
+  ctx.log('activating omadia-ui-orchestrator');
+
+  // ctx.config / ctx.llm are optional-chained: real kernels always provide
+  // config, but the accessors are absent in narrow test contexts and ctx.llm
+  // is genuinely optional (no ANTHROPIC_API_KEY → composition falls back).
+  const model =
+    ctx.config?.get<string>('ui_orchestrator_model')?.trim() ||
+    DEFAULT_COMPOSITION_MODEL;
+  const canvasOutputTools: ReadonlySet<string> = new Set(
+    (ctx.config?.get<string>('canvas_output_tools') ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0),
+  );
+  const llm: CompositionLlm = ctx.llm ?? {
+    complete: () => Promise.reject(new Error('llm unavailable')),
+  };
 
   const resolveBase = (): ChatAgent | undefined =>
     ctx.services.get<ChatAgentBundle>(CHAT_AGENT_SERVICE)?.agent;
+
+  async function* canvasTurnStream(
+    input: ChatTurnInput,
+    observer: Parameters<ChatAgent['chatStream']>[1],
+    base: ChatAgent,
+    canvasSessionId: string,
+  ): AsyncGenerator<ChatStreamEvent> {
+    // 1. Skeleton-first — emitted BEFORE the (slow) main turn starts. Never
+    //    throws: schema failure → bounded repair retry → deterministic fallback.
+    const skeleton = await composeSkeleton({
+      llm,
+      model,
+      userText: input.userMessage,
+    });
+    let surfaceSeq = 0;
+    const initialRevision = '0' as RevisionId;
+    yield {
+      type: 'surface_snapshot',
+      canvasSessionId,
+      surfaceSeq: surfaceSeq++,
+      producesRevision: initialRevision,
+      tree: skeleton.tree,
+      protocolVersion: CANVAS_PROTOCOL_VERSION,
+      opsCatalogVersion: OPS_CATALOG_VERSION,
+    };
+
+    // 2. Requirement handoff — the main turn carries what the skeleton
+    //    promised, so Tier 3 returns payloads matching those exact fields.
+    const augmented: ChatTurnInput = {
+      ...input,
+      userMessage:
+        input.userMessage +
+        '\n\n[canvas-context]\n' +
+        JSON.stringify({
+          canvasSkeleton: { revision: initialRevision, source: skeleton.source },
+          dataRequirements: skeleton.dataRequirements,
+          instruction:
+            'A canvas skeleton with the above data requirements is already ' +
+            'rendered. Fetch and return the data matching exactly these ' +
+            'containerIds and fieldKeys.',
+        }),
+    };
+
+    // 3. Delegate + canvas-aware synthesis continuing seq/revision after the
+    //    skeleton.
+    yield* synthesizeSurfaceEvents(base.chatStream(augmented, observer), {
+      canvasSessionId,
+      authorizedToolNames: canvasOutputTools,
+      protocolVersion: CANVAS_PROTOCOL_VERSION,
+      opsCatalogVersion: OPS_CATALOG_VERSION,
+      startSurfaceSeq: surfaceSeq,
+      baseRevision: initialRevision,
+      baseTree: skeleton.tree,
+      dataRequirements: skeleton.dataRequirements,
+    });
+  }
 
   const canvasAgent: ChatAgent = {
     chat(input) {
@@ -69,16 +148,10 @@ export async function activate(
     chatStream(input, observer) {
       const base = resolveBase();
       if (!base) return errorStream();
-      const stream = base.chatStream(input, observer);
-      // Only a canvas turn (channel-threaded canvasSessionId) gets surface
-      // synthesis; classic turns pass straight through, byte-for-byte.
-      if (!input.canvasSessionId) return stream;
-      return synthesizeSurfaceEvents(stream, {
-        canvasSessionId: input.canvasSessionId,
-        authorizedToolNames: CANVAS_OUTPUT_TOOLS,
-        protocolVersion: CANVAS_PROTOCOL_VERSION,
-        opsCatalogVersion: OPS_CATALOG_VERSION,
-      });
+      // Only a canvas turn (channel-threaded canvasSessionId) gets composition
+      // + surface synthesis; classic turns pass straight through, byte-for-byte.
+      if (!input.canvasSessionId) return base.chatStream(input, observer);
+      return canvasTurnStream(input, observer, base, input.canvasSessionId);
     },
   };
 
@@ -87,7 +160,8 @@ export async function activate(
   } satisfies ChatAgentBundle);
 
   ctx.log(
-    `[omadia-ui-orchestrator] published ${CANVAS_CHAT_AGENT_SERVICE} (delegating skeleton)`,
+    `[omadia-ui-orchestrator] published ${CANVAS_CHAT_AGENT_SERVICE} ` +
+      `(composition model: ${model}; canvas-output tools: ${canvasOutputTools.size})`,
   );
 
   return {

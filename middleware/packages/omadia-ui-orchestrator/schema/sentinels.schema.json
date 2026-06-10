@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omadia.ai/protocol/1.0/sentinels.schema.json",
+  "title": "Sentinel envelopes",
+  "description": "In-band JSON sentinels a Tier-3 tool (or, for _pendingMutation, the client) embeds in its result string. The orchestrator JSON.parse-extracts them. canvas-output sentinels are origin-gated: only accepted from a tool whose plugin declares the canvas-output capability. Each schema below validates the WHOLE result object (the sentinel key + its payload).",
+  "$defs": {
+    "targetRef": { "$ref": "https://omadia.ai/protocol/1.0/target-ref.schema.json" }
+  },
+  "oneOf": [
+    {
+      "type": "object", "required": ["_pendingStructuredPayload"],
+      "properties": {
+        "_pendingStructuredPayload": {
+          "type": "object", "additionalProperties": false, "required": ["prose", "data", "dataRefId"],
+          "properties": {
+            "prose": { "type": "string", "description": "human-facing; classic channels render this and ignore the rest" },
+            "data": { "description": "structured payload (any JSON)" },
+            "dataRefId": { "type": "string" },
+            "actions": { "type": "array" }
+          }
+        }
+      }
+    },
+    {
+      "type": "object", "required": ["_pendingCanvasTree"],
+      "properties": {
+        "_pendingCanvasTree": {
+          "type": "object", "additionalProperties": false, "required": ["tree"],
+          "properties": { "tree": { "$ref": "https://omadia.ai/protocol/1.0/canvas-tree.schema.json" } }
+        }
+      }
+    },
+    {
+      "type": "object", "required": ["_pendingMutation"],
+      "properties": {
+        "_pendingMutation": {
+          "type": "object", "additionalProperties": false, "required": ["mutationId", "target", "oldValue", "newValue", "basedOnRevision"],
+          "properties": {
+            "mutationId": { "type": "string", "description": "client-generated UUID; resolution correlation key" },
+            "target": { "$ref": "#/$defs/targetRef" },
+            "oldValue": { "description": "may be null" },
+            "newValue": { "description": "may be null (e.g. clearing a field)" },
+            "basedOnRevision": { "type": "string", "description": "opaque RevisionId the client saw when editing" }
+          }
+        }
+      }
+    }
+  ]
+}
