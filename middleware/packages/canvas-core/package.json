@@ -24,8 +24,8 @@
     "pretest": "npm run gen",
     "test": "vitest run",
     "pretypecheck": "npm run gen",
-    "typecheck": "tsc --noEmit",
-    "build": "npm run gen && tsc -p tsconfig.build.json"
+    "typecheck": "npm run gen && tsc --noEmit",
+    "build": "npm run gen && tsc -p tsconfig.build.json && node tools/copyGenerated.mjs"
   },
   "dependencies": {
     "ajv": "^8.20.0"
@@ -36,6 +36,7 @@
     "tsx": "^4.19.0",
     "typescript": "^5.9.0",
     "vitest": "^4.1.8",
-    "ws": "^8.21.0"
+    "ws": "^8.21.0",
+    "@omadia/plugin-api": "*"
   }
 }

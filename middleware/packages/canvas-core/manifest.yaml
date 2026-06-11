@@ -1,0 +1,62 @@
+schema_version: "1"
+
+# ===========================================================================
+# Canvas Core — the canonical canvas protocol as a generic (extension) plugin.
+#
+# Single source of truth for the omadia-canvas-protocol: the canvas-tree /
+# surface-event JSON schemas, the precompiled validator, and the TypeScript
+# types. Agent plugins that PRODUCE canvas trees (e.g. @omadia/agent-x-studio)
+# `depends_on` this plugin and `requires: ["canvasValidator@^1"]` to validate
+# against one contract instead of vendoring their own schema copy. The
+# orchestrator and the desktop/mobile renderers consume the same package.
+# ===========================================================================
+
+identity:
+  id: "@omadia/canvas-core"
+  kind: "extension"
+  domain: "core.canvas"
+  name: "Canvas Core Protocol"
+  version: "0.1.0"
+  description: "Provider des Kernel-Service 'canvasValidator' — die kanonischen canvas-tree/surface-event-Schemas + Validator des omadia-canvas-protocol/1.1. Quelle der Wahrheit für alle Canvas-Produzenten und -Renderer."
+  authors:
+    - name: "byte5 GmbH"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
+  license: "Proprietary"
+  categories:
+    - "infrastructure"
+    - "canvas"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+multi_instance: false
+privacy_class: "strict"
+
+lifecycle:
+  entry: "dist/src/plugin.js"
+
+permissions:
+  memory:
+    reads: []
+    writes: []
+  graph:
+    reads: []
+    writes: []
+  network:
+    outbound: []
+  filesystem:
+    scratch: false
+
+playbook:
+  when_to_use: |
+    Wird von Canvas-Produzenten (Agent-Plugins wie @omadia/agent-x-studio)
+    und vom omadia-ui-orchestrator konsumiert. Konsumenten deklarieren
+    `depends_on: ["@omadia/canvas-core"]` + `requires: ["canvasValidator@^1"]`
+    und holen den Validator via `ctx.services.get('canvasValidator')`.
+    Kein Operator-Setup nötig — aktiviert sich ohne Konfiguration.
+
+provides:
+  - "canvasValidator@1"
+requires: []
