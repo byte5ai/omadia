@@ -322,6 +322,21 @@ export function handleCanvasSocket(
     ) {
       return 'invalid action: expected an object with a string `type`';
     }
+    // PR-9b-3 in-place action: currentTree + basedOnRevision must arrive as a
+    // pair, shaped + size-capped like a refresh tree (the client echoes a tree
+    // the server once produced). A lone field is a client bug, not a no-op.
+    if (msg.currentTree !== undefined || msg.basedOnRevision !== undefined) {
+      if (
+        typeof msg.basedOnRevision !== 'string' ||
+        msg.basedOnRevision.length === 0 ||
+        !isPlainObject(msg.currentTree)
+      ) {
+        return 'invalid canvasState: basedOnRevision (non-empty string) and currentTree (object) required together';
+      }
+      if (JSON.stringify(msg.currentTree).length > 262_144) {
+        return 'canvasState: currentTree too large';
+      }
+    }
     return null;
   }
 
@@ -404,6 +419,20 @@ export function handleCanvasSocket(
         // ride metadata until the SDK grows typed fields (protocol 1.0 §5.1).
         ...(localOperations.length > 0 ? { localOperations } : {}),
         ...(msg.action !== undefined ? { action: msg.action } : {}),
+        // PR-9b-3: the client's live tree for in-place patching, threaded the
+        // same metadata ride as `action`. Shape already guarded by
+        // validateTurnInput; a canvas-aware orchestrator skips the skeleton
+        // when this is present and synthesises on top of `currentTree`.
+        ...(typeof msg.basedOnRevision === 'string' &&
+        msg.basedOnRevision.length > 0 &&
+        isPlainObject(msg.currentTree)
+          ? {
+              canvasState: {
+                basedOnRevision: msg.basedOnRevision,
+                currentTree: msg.currentTree,
+              },
+            }
+          : {}),
       },
     };
     // tenantId: populate when the host published one; otherwise leave unset so

@@ -116,6 +116,13 @@ export interface ClientTurn {
   /** a `CanvasViewState`; passed through for referential continuity. */
   viewState?: unknown;
   viewStateTruncated?: boolean;
+  /** PR-9b-3 in-place action: the client's CURRENT canvas tree + the revision
+   *  it is at, sent on an ACTION turn so the orchestrator patches in place
+   *  instead of remounting a fresh skeleton. Same pair as `canvas_refresh`;
+   *  shape-validated by the channel, size-capped like a tree snapshot. Both
+   *  must be present together or neither — a lone field is ignored. */
+  basedOnRevision?: unknown;
+  currentTree?: unknown;
 }
 
 // ── notifications (issue omadia-ui#15) — out-of-band from surface_* ──

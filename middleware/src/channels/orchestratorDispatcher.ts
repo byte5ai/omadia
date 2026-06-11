@@ -117,6 +117,16 @@ export function createOrchestratorDispatcher(
         typeof (rawRefresh as { basedOnRevision?: unknown }).basedOnRevision === 'string'
           ? (rawRefresh as { basedOnRevision: string; currentTree: unknown; scope?: string })
           : undefined;
+      // PR-9b-3 in-place action — same metadata ride as `canvasRefresh`: the
+      // client's live tree so a canvas-aware orchestrator skips the skeleton
+      // and patches on top of it. Re-checked here (defence in depth).
+      const rawState = input.metadata?.['canvasState'];
+      const canvasState =
+        typeof rawState === 'object' &&
+        rawState !== null &&
+        typeof (rawState as { basedOnRevision?: unknown }).basedOnRevision === 'string'
+          ? (rawState as { basedOnRevision: string; currentTree: unknown })
+          : undefined;
       yield* agent.chatStream({
         userMessage: input.text,
         sessionScope: input.scope,
@@ -124,6 +134,7 @@ export function createOrchestratorDispatcher(
         ...(canvasSessionId ? { canvasSessionId } : {}),
         ...(action ? { action } : {}),
         ...(canvasRefresh ? { canvasRefresh } : {}),
+        ...(canvasState ? { canvasState } : {}),
         // a TEXT turn may be row-bound too (beam / context action) — thread
         // the TargetRef even without a structured action.
         ...(input.target !== undefined ? { target: input.target } : {}),

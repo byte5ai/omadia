@@ -418,6 +418,77 @@ export async function activate(
     base: ChatAgent,
     canvasSessionId: string,
   ): AsyncGenerator<ChatStreamEvent> {
+    // A structured UI action (choice pick, button click) is the user's ANSWER
+    // — handed to the main turn as a [canvas-action] block. Built up-front so
+    // both the in-place and skeleton paths below reuse it verbatim.
+    const actionBlock = input.action
+      ? '\n\n[canvas-action]\n' +
+        JSON.stringify(input.action) +
+        '\nThis structured UI action is the user’s input for this turn (a ' +
+        'choice pick carries the chosen value in payload.value). Act on it ' +
+        'directly — do not ask what the user meant.'
+      : '';
+    // A row-bound text turn (beam, context action) carries the TargetRef of
+    // the record it refers to — the agent must act on THAT record, never ask.
+    const targetBlock =
+      !input.action && input.target !== undefined
+        ? '\n\n[canvas-target]\n' +
+          JSON.stringify(input.target) +
+          '\nThe user’s message refers to EXACTLY this record on the canvas ' +
+          '(stable ids: containerId/itemKey/rowKey). Act on it directly — ' +
+          'do not ask which record was meant.'
+        : '';
+
+    // ── In-place action (PR-9b-3) ──────────────────────────────────────────
+    // The client handed its CURRENT tree + revision: this action should PATCH
+    // the live canvas, NOT remount a fresh skeleton. Skip skeleton composition
+    // entirely and synthesise on top of `currentTree` — a plugin status-flip
+    // emitting `_pendingSurfacePatch` lands as a `surface_patch` (no remount),
+    // while an action that genuinely recomposes still replaces the tree via a
+    // full snapshot. The data-field contract is derived from the live tree
+    // itself, exactly as `canvas_refresh` does, so a republishing action keeps
+    // its fieldKeys. surfaceSeq restarts at 0 on the client's revision.
+    if (input.canvasState) {
+      const requirements = deriveDataRequirements(input.canvasState.currentTree);
+      const augmentedInPlace: ChatTurnInput = {
+        ...input,
+        userMessage:
+          input.userMessage +
+          actionBlock +
+          targetBlock +
+          '\n\n[canvas-context]\n' +
+          JSON.stringify({
+            canvasRevision: input.canvasState.basedOnRevision,
+            dataRequirements: requirements,
+            instruction:
+              'The canvas is ALREADY rendered at the above revision — act on ' +
+              'the action IN PLACE. Work silently: do NOT narrate planning, ' +
+              'lookups or tool calls — the canvas is the output channel. Make ' +
+              'the SMALLEST change that satisfies the action: flip/patch the ' +
+              'affected cell or republish ONLY the changed rows; do NOT ' +
+              'recompose the whole view unless the action genuinely opens a ' +
+              'new one. When you republish rows, key them EXACTLY by the ' +
+              'listed fieldKeys (batches of at most 30, one call at a time). ' +
+              'All published values are PLAIN TEXT — never markdown. After ' +
+              'acting, reply with ONE short sentence and do NOT repeat the ' +
+              'data as text or a markdown table.',
+          }),
+      };
+      yield* synthesizeSurfaceEvents(base.chatStream(augmentedInPlace, observer), {
+        canvasSessionId,
+        authorizedToolNames: canvasOutputTools,
+        protocolVersion: CANVAS_PROTOCOL_VERSION,
+        opsCatalogVersion: OPS_CATALOG_VERSION,
+        startSurfaceSeq: 0,
+        baseRevision: input.canvasState.basedOnRevision as RevisionId,
+        baseTree: input.canvasState.currentTree,
+        dataRequirements: requirements,
+        onPublishedSource: captureSource(canvasSessionId),
+        log: (message) => ctx.log(message),
+      });
+      return;
+    }
+
     // 1. Skeleton-first — emitted BEFORE the (slow) main turn starts. Never
     //    throws: schema failure → bounded repair retry → deterministic fallback.
     //    An action-only turn (choice pick, button click) has no text — the
@@ -445,25 +516,6 @@ export async function activate(
 
     // 2. Requirement handoff — the main turn carries what the skeleton
     //    promised, so Tier 3 returns payloads matching those exact fields.
-    //    A structured UI action (choice pick, button click) is the user's
-    //    ANSWER — handed to the main turn as a [canvas-action] block.
-    const actionBlock = input.action
-      ? '\n\n[canvas-action]\n' +
-        JSON.stringify(input.action) +
-        '\nThis structured UI action is the user’s input for this turn (a ' +
-        'choice pick carries the chosen value in payload.value). Act on it ' +
-        'directly — do not ask what the user meant.'
-      : '';
-    // A row-bound text turn (beam, context action) carries the TargetRef of
-    // the record it refers to — the agent must act on THAT record, never ask.
-    const targetBlock =
-      !input.action && input.target !== undefined
-        ? '\n\n[canvas-target]\n' +
-          JSON.stringify(input.target) +
-          '\nThe user’s message refers to EXACTLY this record on the canvas ' +
-          '(stable ids: containerId/itemKey/rowKey). Act on it directly — ' +
-          'do not ask which record was meant.'
-        : '';
     const augmented: ChatTurnInput = {
       ...input,
       userMessage:

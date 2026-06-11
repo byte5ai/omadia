@@ -502,3 +502,102 @@ describe('canvasChatAgent — Haiku composition step', () => {
     assert.equal(events[0]?.type, 'done');
   });
 });
+
+// ── PR-9b-3: in-place action turns (client sends canvasState) ──
+
+describe('canvasChatAgent — in-place action (canvasState, 9b-3)', () => {
+  const LIVE_TREE = {
+    type: 'container',
+    id: 'root',
+    layout: 'stack',
+    children: [
+      { type: 'heading', id: 'h', content: 'Drafts', level: 2 },
+      { type: 'status', id: 'd-1-status', text: 'draft' },
+    ],
+  };
+
+  it('skips the skeleton and patches the live tree in place — no remount, no composition', async () => {
+    const { llm, calls } = llmReturning([VALID_COMPOSER_OUTPUT]);
+    const { ctx, reg } = makeCtx({ llm, config: { canvas_output_tools: 'studio_patch' } });
+    const seen: ChatTurnInput[] = [];
+    const PATCH_OUTPUT = JSON.stringify({
+      prose: 'approved',
+      _pendingSurfacePatch: { ops: [{ id: 'd-1-status', set: { text: 'approved', tone: 'success' } }] },
+    });
+    reg.set(
+      CHAT_AGENT_SERVICE,
+      baseBundle(
+        [
+          { type: 'tool_use', id: 't1', name: 'studio_patch', input: {} } as unknown as ChatStreamEvent,
+          { type: 'tool_result', id: 't1', output: PATCH_OUTPUT, durationMs: 1 } as unknown as ChatStreamEvent,
+          { type: 'done', answer: 'x' } as unknown as ChatStreamEvent,
+        ],
+        seen,
+      ),
+    );
+    await activate(ctx);
+    const agent = (reg.get('canvasChatAgent') as ChatAgentBundle).agent;
+    const events = await collect(
+      agent.chatStream({
+        userMessage: 'approve draft 1',
+        canvasSessionId: 'cs1',
+        action: { type: 'studio.approve', payload: { value: 'd-1' } },
+        canvasState: { basedOnRevision: '5', currentTree: LIVE_TREE },
+      } as unknown as ChatTurnInput),
+    );
+
+    // (a) no skeleton: zero composition calls, and NO surface_snapshot remount
+    assert.equal(calls.length, 0, 'in-place action skips skeleton composition');
+    assert.ok(!events.some((e) => e.type === 'surface_snapshot'), 'no remount snapshot');
+
+    // (b) the action turn still runs, carrying the [canvas-action] + in-place context
+    assert.equal(seen.length, 1);
+    assert.match(seen[0]?.userMessage ?? '', /\[canvas-action\]/);
+    assert.match(seen[0]?.userMessage ?? '', /IN PLACE/);
+    assert.match(seen[0]?.userMessage ?? '', /"canvasRevision":"5"/);
+
+    // (c) the plugin patch lands as a surface_patch on the CLIENT's revision (seq 0)
+    const patch = events.find((e) => e.type === 'surface_patch');
+    assert.ok(patch, 'surface_patch emitted');
+    assert.equal(field(patch as ChatStreamEvent, 'basedOnRevision'), '5');
+    assert.equal(field(patch as ChatStreamEvent, 'surfaceSeq'), 0);
+    assert.ok(events.some((e) => e.type === 'done'), 'base events survive');
+  });
+
+  it('still recomposes via a single snapshot when an in-place action emits a full tree', async () => {
+    const { ctx, reg } = makeCtx({ config: { canvas_output_tools: 'studio_view' } });
+    const seen: ChatTurnInput[] = [];
+    const NEW_TREE = {
+      type: 'container',
+      id: 'root',
+      layout: 'stack',
+      children: [{ type: 'heading', id: 'h2', content: 'Wizard', level: 2 }],
+    };
+    const TREE_OUTPUT = JSON.stringify({ prose: 'wizard', _pendingCanvasTree: { tree: NEW_TREE } });
+    reg.set(
+      CHAT_AGENT_SERVICE,
+      baseBundle(
+        [
+          { type: 'tool_use', id: 't1', name: 'studio_view', input: {} } as unknown as ChatStreamEvent,
+          { type: 'tool_result', id: 't1', output: TREE_OUTPUT, durationMs: 1 } as unknown as ChatStreamEvent,
+          { type: 'done', answer: 'x' } as unknown as ChatStreamEvent,
+        ],
+        seen,
+      ),
+    );
+    await activate(ctx);
+    const agent = (reg.get('canvasChatAgent') as ChatAgentBundle).agent;
+    const events = await collect(
+      agent.chatStream({
+        userMessage: 'open wizard',
+        canvasSessionId: 'cs1',
+        action: { type: 'studio.wizard' },
+        canvasState: { basedOnRevision: '3', currentTree: LIVE_TREE },
+      } as unknown as ChatTurnInput),
+    );
+    // exactly one snapshot (the recompose) — no skeleton flash before it
+    const snaps = events.filter((e) => e.type === 'surface_snapshot');
+    assert.equal(snaps.length, 1, 'one snapshot (the recompose), not a skeleton + a recompose');
+    assert.deepEqual(field(snaps[0] as ChatStreamEvent, 'tree'), NEW_TREE);
+  });
+});

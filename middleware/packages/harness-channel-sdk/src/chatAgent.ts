@@ -295,6 +295,16 @@ export interface ChatTurnInput {
    * refresh to one container id. Set only by the canvas channel.
    */
   canvasRefresh?: { basedOnRevision: string; currentTree: unknown; scope?: string };
+  /**
+   * Omadia UI in-place action (PR-9b-3): on a structured ACTION turn the client
+   * sends its CURRENT tree + revision so a canvas-aware orchestrator can SKIP
+   * skeleton composition and synthesise on top of that live tree — a plugin
+   * status-flip then lands as a `surface_patch` (no remount), while a full
+   * recompose still replaces the tree via a snapshot. Mirrors `canvasRefresh`'s
+   * base-tree handoff but keeps the normal main turn (the action is acted on).
+   * Set only by the canvas channel; absent → the skeleton path is unchanged.
+   */
+  canvasState?: { basedOnRevision: string; currentTree: unknown };
 }
 
 /**
