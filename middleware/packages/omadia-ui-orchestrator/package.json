@@ -20,6 +20,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@omadia/canvas-core": "*",
     "ajv": "^8.20.0"
   }
 }

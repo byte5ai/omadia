@@ -4,14 +4,17 @@ import { Ajv2020, type ValidateFunction } from 'ajv/dist/2020.js';
 /**
  * Server-side whitelist validator over the omadia-canvas-protocol/1.0 schemas.
  *
- * The schemas under `../schema/` are a vendored copy of the versioned spec in
- * `byte5ai/omadia-ui` `docs/protocol/schema/` (protocol 1.0 is frozen; a
- * protocol bump re-vendors). Loaded at module init via fs (not JSON imports)
+ * The schemas are the canonical set owned by @omadia/canvas-core (the single
+ * source of truth). Loaded at module init via fs (not JSON imports)
  * so the same path works from `src/` (tests, tsx) and `dist/` (production
  * entry) — both resolve `../schema/` to the package root.
  */
 
-const schemaDir = new URL('../schema/', import.meta.url);
+// Canonical schemas now live in the sibling @omadia/canvas-core package
+// (single source of truth). Workspace-relative so it resolves from both
+// src/ (tests, tsx) and dist/ (production) — packages/<pkg>/{src,dist} are
+// the same depth, so '../../canvas-core/schema/' lands on the package root.
+const schemaDir = new URL('../../canvas-core/schema/', import.meta.url);
 
 function loadSchema(file: string): object {
   return JSON.parse(readFileSync(new URL(file, schemaDir), 'utf8')) as object;
