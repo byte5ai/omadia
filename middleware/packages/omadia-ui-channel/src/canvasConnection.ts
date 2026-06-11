@@ -42,6 +42,17 @@ export interface CanvasConnectionDeps {
     load(subject: string): Promise<CanvasListEntry[]>;
     save(subject: string, canvases: CanvasListEntry[]): Promise<void>;
   };
+  /** Notifications (omadia-ui#15): once the handshake completes, the
+   *  connection registers a sink so the plugin's NotificationRouter handler
+   *  can push out-of-band `notification` messages to this user's sockets.
+   *  Returns a dispose called on socket close. Optional — old deployments
+   *  simply never emit notifications. */
+  registerNotificationSink?: (
+    subject: string,
+    sink: (msg: unknown) => void,
+  ) => () => void;
+  /** dismissal/seen ack from the client (history sync is a later slice). */
+  onNotificationAck?: (subject: string, notificationId: string) => void;
   log?: (msg: string) => void;
 }
 
@@ -88,8 +99,14 @@ export function handleCanvasSocket(
     socket.send(JSON.stringify(msg));
   };
 
+  // notifications (omadia-ui#15): sink registered once the handshake
+  // completes; disposed on close so the router never pushes into a dead socket.
+  let disposeNotificationSink: (() => void) | undefined;
+
   socket.onClose(() => {
     phase = 'closed';
+    disposeNotificationSink?.();
+    disposeNotificationSink = undefined;
   });
 
   // 1. Server-initiated offer.
@@ -154,10 +171,17 @@ export function handleCanvasSocket(
       };
       send(ack);
       phase = 'ready';
+      disposeNotificationSink = deps.registerNotificationSink?.(session.subject, send);
       return;
     }
 
     // phase === 'ready'
+    if (msg.type === 'notification_ack') {
+      if (typeof msg.id === 'string' && msg.id.length > 0) {
+        deps.onNotificationAck?.(session.subject, msg.id);
+      }
+      return;
+    }
     if (msg.type === 'canvas_list_get') {
       if (!deps.canvasRegistry) {
         send({ type: 'canvas_list', canvases: [] });

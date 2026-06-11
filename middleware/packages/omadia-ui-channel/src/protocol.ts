@@ -118,6 +118,38 @@ export interface ClientTurn {
   viewStateTruncated?: boolean;
 }
 
+// ── notifications (issue omadia-ui#15) — out-of-band from surface_* ──
+
+export type NotificationSeverity = 'info' | 'success' | 'warning' | 'error';
+
+/** server → client: a user-facing notification (NotificationRouter fan-out).
+ *  Structured and server-authoritative — never free text only. Severity maps
+ *  to a fixed UI element (info/success → toast, warning/error → banner). */
+export interface NotificationMsg {
+  type: 'notification';
+  /** stable id for dedupe + dismissal ack */
+  id: string;
+  severity: NotificationSeverity;
+  title: string;
+  body?: string;
+  /** producing plugin — shown as the source line */
+  source?: string;
+  /** typed action reusing the canvas action→turn plumbing (e.g. Retry) */
+  action?: { type: string; payload?: unknown; label?: string };
+  /** coalesce key — newer notification replaces an undismissed older one */
+  dedupeKey?: string;
+  /** auto-dismiss for transient toasts; errors/actionables never carry one */
+  ttlMs?: number;
+  /** target canvas session, or absent → app-global */
+  scope?: string;
+}
+
+/** client → server: the user saw/dismissed a notification. */
+export interface ClientNotificationAck {
+  type: 'notification_ack';
+  id?: unknown;
+}
+
 /** client → server: fetch the user's persisted canvas list (app start sync). */
 export interface ClientCanvasListGet {
   type: 'canvas_list_get';
@@ -161,7 +193,8 @@ export type ClientMessage =
   | ClientCanvasListGet
   | ClientCanvasListPut
   | ClientCanvasRefresh
-  | ClientTurnAbort;
+  | ClientTurnAbort
+  | ClientNotificationAck;
 
 /**
  * The surface_* event types forwarded 1:1 to the canvas client — the runtime
@@ -200,7 +233,8 @@ export function parseClientMessage(raw: string): ClientMessage | null {
     type === 'canvas_list_get' ||
     type === 'canvas_list_put' ||
     type === 'canvas_refresh' ||
-    type === 'turn_abort'
+    type === 'turn_abort' ||
+    type === 'notification_ack'
   ) {
     return obj as ClientMessage;
   }
