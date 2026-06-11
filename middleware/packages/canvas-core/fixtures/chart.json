@@ -1,0 +1,10 @@
+{
+  "type": "chart",
+  "id": "fixture-chart",
+  "chartType": "bar",
+  "points": [
+    { "pointKey": "q1", "label": "Q1", "value": 1200 },
+    { "pointKey": "q2", "label": "Q2", "value": 1450 },
+    { "pointKey": "q3", "label": "Q3", "value": 1380 }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "type": "tabs",
+  "id": "fixture-tabs",
+  "activeStep": 0,
+  "tabs": [
+    { "label": "Summary", "done": true, "child": { "type": "text", "content": "Summary tab body." } },
+    { "label": "Details", "done": false, "child": { "type": "text", "content": "Details tab body." } }
+  ]
+}

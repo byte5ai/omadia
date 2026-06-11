@@ -1,0 +1,11 @@
+{
+  "type": "container",
+  "id": "fixture-container",
+  "title": "Dashboard",
+  "layout": "stack",
+  "kind": "plain",
+  "children": [
+    { "type": "heading", "content": "Overview", "level": 3 },
+    { "type": "text", "content": "Two cards summarising the current state." }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "type": "vector-path",
+  "id": "path-1",
+  "points": [
+    { "x": 0, "y": 0 },
+    { "x": 100, "y": 40 },
+    { "x": 160, "y": 120 }
+  ],
+  "closed": false
+}

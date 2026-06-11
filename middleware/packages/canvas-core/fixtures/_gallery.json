@@ -1,0 +1,331 @@
+{
+  "type": "container",
+  "id": "gallery",
+  "title": "Primitive Gallery",
+  "layout": "stack",
+  "children": [
+    {
+      "type": "button",
+      "id": "fixture-button",
+      "label": "Run report"
+    },
+    {
+      "type": "canvas-region",
+      "id": "region-1",
+      "width": 1920,
+      "height": 1080,
+      "pixelFormat": "rgba8",
+      "colorSpace": "srgb",
+      "dpi": 144
+    },
+    {
+      "type": "chart",
+      "id": "fixture-chart",
+      "chartType": "bar",
+      "points": [
+        {
+          "pointKey": "q1",
+          "label": "Q1",
+          "value": 1200
+        },
+        {
+          "pointKey": "q2",
+          "label": "Q2",
+          "value": 1450
+        },
+        {
+          "pointKey": "q3",
+          "label": "Q3",
+          "value": 1380
+        }
+      ]
+    },
+    {
+      "type": "choice",
+      "id": "fixture-choice",
+      "label": "Environment",
+      "variant": "radio",
+      "value": "staging",
+      "options": [
+        {
+          "value": "staging",
+          "label": "Staging"
+        },
+        {
+          "value": "production",
+          "label": "Production"
+        }
+      ]
+    },
+    {
+      "type": "container",
+      "id": "fixture-container",
+      "title": "Dashboard",
+      "layout": "stack",
+      "kind": "plain",
+      "children": [
+        {
+          "type": "heading",
+          "content": "Overview",
+          "level": 3
+        },
+        {
+          "type": "text",
+          "content": "Two cards summarising the current state."
+        }
+      ]
+    },
+    {
+      "type": "divider",
+      "id": "fixture-divider"
+    },
+    {
+      "type": "form",
+      "id": "fixture-form",
+      "title": "Create project",
+      "children": [
+        {
+          "type": "input",
+          "label": "Name",
+          "placeholder": "Project name"
+        },
+        {
+          "type": "button",
+          "label": "Create"
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "id": "fixture-heading",
+      "content": "Quarterly Revenue",
+      "level": 2
+    },
+    {
+      "type": "image",
+      "id": "fixture-image",
+      "src": "https://omadia.ai/assets/sample.png",
+      "altText": "A sample chart rendered as a static image."
+    },
+    {
+      "type": "input",
+      "id": "fixture-input",
+      "label": "Project name",
+      "value": "Omadia",
+      "placeholder": "Enter a name"
+    },
+    {
+      "type": "list",
+      "id": "fixture-list",
+      "items": [
+        {
+          "itemKey": "item-1",
+          "label": "Deploy succeeded",
+          "tone": "success"
+        },
+        {
+          "itemKey": "item-2",
+          "label": "Awaiting review"
+        }
+      ],
+      "canReorder": true
+    },
+    {
+      "type": "media",
+      "id": "fixture-media",
+      "mediaType": "video",
+      "dataRef": {
+        "id": "video-0123456789abcdef",
+        "signedToken": "sig.example.token",
+        "expiresAt": "2030-01-01T00:00:00Z"
+      },
+      "duration": 12000,
+      "frameRate": 30,
+      "channels": 2
+    },
+    {
+      "type": "menubar",
+      "id": "fixture-menubar",
+      "items": [
+        {
+          "label": "File"
+        },
+        {
+          "label": "Edit"
+        },
+        {
+          "label": "View"
+        }
+      ]
+    },
+    {
+      "type": "pane",
+      "id": "fixture-pane",
+      "kind": "plain",
+      "title": "Inspector",
+      "children": [
+        {
+          "type": "text",
+          "content": "Pane body content."
+        }
+      ]
+    },
+    {
+      "type": "progress",
+      "id": "fixture-progress",
+      "value": 0.65,
+      "indeterminate": false
+    },
+    {
+      "type": "status",
+      "id": "fixture-status",
+      "text": "All checks passed",
+      "tone": "success"
+    },
+    {
+      "type": "table",
+      "id": "fixture-table",
+      "columns": [
+        {
+          "fieldKey": "name",
+          "label": "Name",
+          "type": "string"
+        },
+        {
+          "fieldKey": "amount",
+          "label": "Amount",
+          "type": "number",
+          "dataClass": "currency"
+        }
+      ],
+      "rows": [
+        {
+          "rowKey": "row-1",
+          "cells": {
+            "name": "Alpha",
+            "amount": 1200
+          }
+        },
+        {
+          "rowKey": "row-2",
+          "cells": {
+            "name": "Beta",
+            "amount": 980
+          }
+        }
+      ]
+    },
+    {
+      "type": "tabs",
+      "id": "fixture-tabs",
+      "activeStep": 0,
+      "tabs": [
+        {
+          "label": "Summary",
+          "done": true,
+          "child": {
+            "type": "text",
+            "content": "Summary tab body."
+          }
+        },
+        {
+          "label": "Details",
+          "done": false,
+          "child": {
+            "type": "text",
+            "content": "Details tab body."
+          }
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "id": "fixture-text",
+      "content": "The quarterly report is ready for review."
+    },
+    {
+      "type": "timeline",
+      "id": "timeline-1",
+      "tracks": [
+        {
+          "id": "v1",
+          "kind": "video"
+        },
+        {
+          "id": "a1",
+          "kind": "audio"
+        },
+        {
+          "id": "m1",
+          "kind": "marker"
+        }
+      ],
+      "timebase": {
+        "frameRate": 30,
+        "sampleRate": 48000
+      },
+      "duration": 12000,
+      "playhead": 0
+    },
+    {
+      "type": "toggle",
+      "id": "fixture-toggle",
+      "label": "Enable notifications",
+      "value": true,
+      "variant": "switch"
+    },
+    {
+      "type": "toolbar",
+      "id": "fixture-toolbar",
+      "children": [
+        {
+          "type": "button",
+          "label": "Save"
+        },
+        {
+          "type": "button",
+          "label": "Cancel"
+        }
+      ]
+    },
+    {
+      "type": "tree",
+      "id": "fixture-tree",
+      "nodes": [
+        {
+          "itemKey": "root",
+          "label": "Layers",
+          "children": [
+            {
+              "itemKey": "background",
+              "label": "Background"
+            },
+            {
+              "itemKey": "foreground",
+              "label": "Foreground"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "vector-path",
+      "id": "path-1",
+      "points": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 100,
+          "y": 40
+        },
+        {
+          "x": 160,
+          "y": 120
+        }
+      ],
+      "closed": false
+    }
+  ]
+}

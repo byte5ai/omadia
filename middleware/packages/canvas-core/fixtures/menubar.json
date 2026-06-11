@@ -1,0 +1,9 @@
+{
+  "type": "menubar",
+  "id": "fixture-menubar",
+  "items": [
+    { "label": "File" },
+    { "label": "Edit" },
+    { "label": "View" }
+  ]
+}

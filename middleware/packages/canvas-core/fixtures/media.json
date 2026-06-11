@@ -1,0 +1,13 @@
+{
+  "type": "media",
+  "id": "fixture-media",
+  "mediaType": "video",
+  "dataRef": {
+    "id": "video-0123456789abcdef",
+    "signedToken": "sig.example.token",
+    "expiresAt": "2030-01-01T00:00:00Z"
+  },
+  "duration": 12000,
+  "frameRate": 30,
+  "channels": 2
+}

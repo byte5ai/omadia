@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omadia.ai/protocol/1.0/canvas-tree.schema.json",
+  "title": "Canvas primitive tree",
+  "description": "The omadia-canvas-protocol/1.0 primitive vocabulary: 24 primitives in three groups, rendered by Tier 1 against the single Omadia (Lume) theme. The root is any primitive; `container`/`pane`/`tabs` nest children recursively. Validation is strict: unknown primitive types and unknown props are rejected (the whitelist parser).",
+
+  "$ref": "#/$defs/primitive",
+
+  "$defs": {
+    "dataRef": { "$ref": "https://omadia.ai/protocol/1.0/data-ref.schema.json" },
+
+    "commonTraits": {
+      "$comment": "Cross-cutting traits every primitive may carry. Merged into each primitive via allOf; `unevaluatedProperties:false` on each primitive then rejects anything outside traits+specific.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "stable reference for patches/actions/selections" },
+        "dataRef": { "$ref": "#/$defs/dataRef" },
+        "selectable": { "enum": ["none", "single", "multi"], "description": "selection MODE only; the selected ids live client-side in viewState.selection" },
+        "loading": { "enum": ["none", "skeleton", "spinner"] },
+        "error": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "object", "additionalProperties": false, "required": ["message", "severity"],
+              "properties": { "message": { "type": "string" }, "severity": { "enum": ["info", "warning", "error"] } } }
+          ]
+        },
+        "virtualized": { "type": "boolean" },
+        "action": {
+          "type": "object", "additionalProperties": false, "required": ["type"],
+          "properties": { "type": { "type": "string" }, "payload": {}, "effect": { "$ref": "#/$defs/actionEffect" } }
+        },
+        "style": {
+          "type": "array",
+          "description": "theme tokens only (clipped by the Tier-1 normaliser). Includes the typographic registers 'prose'/'mono' on text.",
+          "items": { "enum": ["compact", "spacious", "accent", "no-accent", "prose", "mono", "center-glyph"] }
+        },
+        "tone": {
+          "description": "semantic severity hint the renderer maps to a Lume status colour (e.g. a PASS/WARN/FAIL chip). Purely presentational; default 'neutral'.",
+          "enum": ["neutral", "info", "success", "warning", "danger"]
+        },
+        "continuous-input": { "type": "boolean" },
+        "selection-region": {
+          "type": "object", "additionalProperties": false, "required": ["kind"],
+          "properties": { "kind": { "enum": ["rect", "lasso", "magic-wand"] }, "bbox": {}, "points": {}, "maskHash": { "type": "string" } }
+        },
+        "realtime-output": { "type": "boolean" },
+        "frame-precise-time": {
+          "type": "object", "additionalProperties": false, "required": ["unit", "value"],
+          "properties": { "unit": { "enum": ["frame", "sample", "ms"] }, "value": { "type": "number" } }
+        },
+        "suggestedActions": { "type": "array", "items": { "$ref": "#/$defs/suggestedAction" } },
+        "dataClass": { "$ref": "#/$defs/dataClass" }
+      }
+    },
+
+    "actionEffect": { "enum": ["local", "internal", "external-effect"] },
+
+    "dataClass": {
+      "description": "Annotation on a data-carrying container so Tier 2 can derive mutability per dataClass. Either one string for the whole container, or per-field overrides for a mixed-source container.",
+      "oneOf": [
+        { "type": "string" },
+        { "type": "object", "required": ["default"], "additionalProperties": false,
+          "properties": { "default": { "type": "string" }, "fields": { "type": "object", "additionalProperties": { "type": "string" } } } }
+      ]
+    },
+
+    "suggestedAction": {
+      "type": "object", "additionalProperties": false, "required": ["id", "label", "effect", "target"],
+      "properties": {
+        "id": { "type": "string", "description": "stable per (treeRevision, container) for idempotency" },
+        "label": { "type": "string", "description": "agent-authored, in the user's language" },
+        "effect": { "$ref": "#/$defs/actionEffect" },
+        "target": { "$ref": "https://omadia.ai/protocol/1.0/target-ref.schema.json" },
+        "validUntilRevision": { "type": "string", "description": "opaque RevisionId; dropped client-side when treeRevision moves past it (equality semantics)" },
+        "validWhileDataRefs": { "type": "array", "items": { "type": "string" } },
+        "prompt": { "type": "string", "description": "pre-filled beam text on click" }
+      }
+    },
+
+    "editableField": {
+      "$comment": "Per-field mutability declaration (client-checkable constraints only).",
+      "type": "object",
+      "properties": {
+        "editable": { "type": "boolean" },
+        "type": { "type": "string" },
+        "min": { "type": "number" }, "max": { "type": "number" },
+        "pattern": { "type": "string" },
+        "enum": { "type": "array" },
+        "maxLength": { "type": "integer" },
+        "required": { "type": "boolean" }
+      }
+    },
+
+    "tableColumn": {
+      "type": "object", "additionalProperties": false, "required": ["fieldKey", "label"],
+      "properties": {
+        "fieldKey": { "type": "string" }, "label": { "type": "string" },
+        "type": { "type": "string" }, "dataClass": { "type": "string" }
+      }
+    },
+
+    "tableRow": {
+      "type": "object", "required": ["rowKey", "cells"], "additionalProperties": false,
+      "properties": {
+        "rowKey": { "type": "string", "description": "REQUIRED stable id, immutable across patches" },
+        "cells": { "type": "object", "description": "fieldKey → value; an editable cell carries the editableField shape", "additionalProperties": true }
+      }
+    },
+
+    "listItem": {
+      "type": "object", "required": ["itemKey"], "additionalProperties": true,
+      "properties": { "itemKey": { "type": "string", "description": "REQUIRED stable id" }, "label": { "type": "string" } }
+    },
+
+    "treeNode": {
+      "type": "object", "required": ["itemKey"], "additionalProperties": false,
+      "properties": {
+        "itemKey": { "type": "string" }, "label": { "type": "string" },
+        "children": { "type": "array", "items": { "$ref": "#/$defs/treeNode" } },
+        "layer": { "type": "object", "description": "layer-stack trait (visibility/opacity/blend-mode/lock)", "additionalProperties": true }
+      }
+    },
+
+    "chartPoint": {
+      "type": "object", "required": ["pointKey"], "additionalProperties": true,
+      "properties": { "pointKey": { "type": "string", "description": "REQUIRED stable id" } }
+    },
+
+    "primitive": {
+      "type": "object",
+      "required": ["type"],
+      "oneOf": [
+        { "$ref": "#/$defs/p_text" }, { "$ref": "#/$defs/p_heading" }, { "$ref": "#/$defs/p_container" },
+        { "$ref": "#/$defs/p_list" }, { "$ref": "#/$defs/p_table" }, { "$ref": "#/$defs/p_tree" },
+        { "$ref": "#/$defs/p_button" }, { "$ref": "#/$defs/p_input" }, { "$ref": "#/$defs/p_choice" },
+        { "$ref": "#/$defs/p_toggle" }, { "$ref": "#/$defs/p_image" }, { "$ref": "#/$defs/p_chart" },
+        { "$ref": "#/$defs/p_form" }, { "$ref": "#/$defs/p_toolbar" }, { "$ref": "#/$defs/p_menubar" },
+        { "$ref": "#/$defs/p_tabs" }, { "$ref": "#/$defs/p_pane" }, { "$ref": "#/$defs/p_status" },
+        { "$ref": "#/$defs/p_progress" }, { "$ref": "#/$defs/p_divider" },
+        { "$ref": "#/$defs/p_media" }, { "$ref": "#/$defs/p_canvasRegion" }, { "$ref": "#/$defs/p_timeline" }, { "$ref": "#/$defs/p_vectorPath" }
+      ]
+    },
+
+    "p_text":      { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type"], "properties": { "type": { "const": "text" }, "content": { "type": "string" } } } ], "unevaluatedProperties": false },
+    "p_heading":   { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type", "content"], "properties": { "type": { "const": "heading" }, "content": { "type": "string" }, "level": { "type": "integer", "minimum": 1, "maximum": 6 } } } ], "unevaluatedProperties": false },
+    "p_container": { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type"], "properties": { "type": { "const": "container" }, "title": { "type": "string" }, "layout": { "enum": ["stack", "split", "grid", "flow"] }, "kind": { "enum": ["modal", "plain"] }, "canAddItems": { "type": "boolean" }, "canRemoveItems": { "type": "boolean" }, "canReorder": { "type": "boolean" }, "children": { "type": "array", "items": { "$ref": "#/$defs/primitive" } } } } ], "unevaluatedProperties": false },
+    "p_list":      { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type", "items"], "properties": { "type": { "const": "list" }, "items": { "type": "array", "items": { "$ref": "#/$defs/listItem" } }, "canAddItems": { "type": "boolean" }, "canRemoveItems": { "type": "boolean" }, "canReorder": { "type": "boolean" } } } ], "unevaluatedProperties": false },
+    "p_table":     { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type", "columns", "rows"], "properties": { "type": { "const": "table" }, "columns": { "type": "array", "items": { "$ref": "#/$defs/tableColumn" } }, "rows": { "type": "array", "items": { "$ref": "#/$defs/tableRow" } }, "canAddItems": { "type": "boolean" }, "canRemoveItems": { "type": "boolean" }, "canReorder": { "type": "boolean" } } } ], "unevaluatedProperties": false },
+    "p_tree":      { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type", "nodes"], "properties": { "type": { "const": "tree" }, "nodes": { "type": "array", "items": { "$ref": "#/$defs/treeNode" } } } } ], "unevaluatedProperties": false },
+    "p_button":    { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type", "label"], "properties": { "type": { "const": "button" }, "label": { "type": "string" } } } ], "unevaluatedProperties": false },
+    "p_input":     { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type"], "properties": { "type": { "const": "input" }, "label": { "type": "string" }, "value": { "type": "string" }, "placeholder": { "type": "string" } } } ], "unevaluatedProperties": false },
+    "p_choice":    { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type", "options"], "properties": { "type": { "const": "choice" }, "label": { "type": "string" }, "variant": { "enum": ["radio", "dropdown"] }, "value": { "type": "string" }, "options": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["value", "label"], "properties": { "value": { "type": "string" }, "label": { "type": "string" } } } } } } ], "unevaluatedProperties": false },
+    "p_toggle":    { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type"], "properties": { "type": { "const": "toggle" }, "label": { "type": "string" }, "value": { "type": "boolean" }, "variant": { "enum": ["checkbox", "switch"] } } } ], "unevaluatedProperties": false },
+    "p_image":     { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type"], "properties": { "type": { "const": "image" }, "src": { "type": "string" }, "altText": { "type": "string" } } } ], "unevaluatedProperties": false },
+    "p_chart":     { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type", "chartType", "points"], "properties": { "type": { "const": "chart" }, "chartType": { "enum": ["bar", "line", "pie"] }, "points": { "type": "array", "items": { "$ref": "#/$defs/chartPoint" } } } } ], "unevaluatedProperties": false },
+    "p_form":      { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type"], "properties": { "type": { "const": "form" }, "title": { "type": "string" }, "contextBinding": { "$ref": "https://omadia.ai/protocol/1.0/target-ref.schema.json" }, "children": { "type": "array", "items": { "$ref": "#/$defs/primitive" } } } } ], "unevaluatedProperties": false },
+    "p_toolbar":   { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type", "children"], "properties": { "type": { "const": "toolbar" }, "children": { "type": "array", "items": { "$ref": "#/$defs/primitive" } } } } ], "unevaluatedProperties": false },
+    "p_menubar":   { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type", "items"], "properties": { "type": { "const": "menubar" }, "items": { "type": "array" } } } ], "unevaluatedProperties": false },
+    "p_tabs":      { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type", "tabs"], "properties": { "type": { "const": "tabs" }, "activeStep": { "type": "integer" }, "tabs": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["label", "child"], "properties": { "label": { "type": "string" }, "done": { "type": "boolean" }, "child": { "$ref": "#/$defs/primitive" } } } } } } ], "unevaluatedProperties": false },
+    "p_pane":      { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type"], "properties": { "type": { "const": "pane" }, "kind": { "enum": ["plain", "modal"] }, "title": { "type": "string" }, "container": { "$ref": "#/$defs/primitive" }, "children": { "type": "array", "items": { "$ref": "#/$defs/primitive" } } } } ], "unevaluatedProperties": false },
+    "p_status":    { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type"], "properties": { "type": { "const": "status" }, "text": { "type": "string" } } } ], "unevaluatedProperties": false },
+    "p_progress":  { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type"], "properties": { "type": { "const": "progress" }, "value": { "type": "number" }, "indeterminate": { "type": "boolean" } } } ], "unevaluatedProperties": false },
+    "p_divider":   { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type"], "properties": { "type": { "const": "divider" } } } ], "unevaluatedProperties": false },
+
+    "p_media":     { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type", "mediaType", "dataRef", "duration"], "properties": { "type": { "const": "media" }, "mediaType": { "enum": ["audio", "video"] }, "dataRef": { "$ref": "#/$defs/dataRef" }, "duration": { "type": "number", "description": "ms" }, "frameRate": { "type": "number" }, "resolution": {}, "sampleRate": { "type": "number" }, "channels": { "type": "integer" }, "poster": { "$ref": "#/$defs/dataRef" } } } ], "unevaluatedProperties": false },
+    "p_canvasRegion": { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type", "width", "height", "pixelFormat"], "properties": { "type": { "const": "canvas-region" }, "width": { "type": "integer", "minimum": 1 }, "height": { "type": "integer", "minimum": 1 }, "pixelFormat": { "enum": ["rgba8", "rgba16"] }, "colorSpace": { "type": "string" }, "dpi": { "type": "number" } } } ], "unevaluatedProperties": false },
+    "p_timeline":  { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type", "tracks", "timebase"], "properties": { "type": { "const": "timeline" }, "tracks": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["id", "kind"], "properties": { "id": { "type": "string" }, "kind": { "enum": ["audio", "video", "marker"] } } } }, "timebase": { "type": "object", "additionalProperties": false, "properties": { "frameRate": { "type": "number" }, "sampleRate": { "type": "number" } } }, "duration": { "type": "number" }, "playhead": { "type": "number" }, "loopRegion": {} } } ], "unevaluatedProperties": false },
+    "p_vectorPath": { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type", "points"], "properties": { "type": { "const": "vector-path" }, "points": { "type": "array", "items": { "type": "object", "required": ["x", "y"], "properties": { "x": { "type": "number" }, "y": { "type": "number" }, "ctrlIn": {}, "ctrlOut": {} } } }, "closed": { "type": "boolean" }, "strokeStyle": {}, "fillStyle": {} } } ], "unevaluatedProperties": false }
+  }
+}

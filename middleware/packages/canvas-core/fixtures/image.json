@@ -1,0 +1,6 @@
+{
+  "type": "image",
+  "id": "fixture-image",
+  "src": "https://omadia.ai/assets/sample.png",
+  "altText": "A sample chart rendered as a static image."
+}

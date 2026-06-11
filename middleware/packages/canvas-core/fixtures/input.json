@@ -1,0 +1,7 @@
+{
+  "type": "input",
+  "id": "fixture-input",
+  "label": "Project name",
+  "value": "Omadia",
+  "placeholder": "Enter a name"
+}

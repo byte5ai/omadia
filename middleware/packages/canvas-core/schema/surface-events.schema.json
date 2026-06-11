@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omadia.ai/protocol/1.0/surface-events.schema.json",
+  "title": "Surface stream events",
+  "description": "The surface_* event family Tier 2 streams to Tier 1 (folded into the SDK ChatStreamEvent union). Every event carries the envelope {canvasSessionId, surfaceSeq}. `treeRevision`/producesRevision/basedOnRevision/revision are OPAQUE RevisionId values — compared by EQUALITY only, never arithmetic (v1 implements them as a monotonic integer rendered as a string).",
+
+  "$defs": {
+    "revisionId": { "type": "string", "description": "opaque, equality-only; v1 = stringified monotonic integer" },
+    "dataRef": { "$ref": "https://omadia.ai/protocol/1.0/data-ref.schema.json" },
+    "targetRef": { "$ref": "https://omadia.ai/protocol/1.0/target-ref.schema.json" },
+    "envelope": {
+      "type": "object",
+      "properties": {
+        "canvasSessionId": { "type": "string" },
+        "surfaceSeq": { "type": "integer", "description": "server-assigned, monotonic per canvasSessionId; gaps trigger a snapshot request" }
+      },
+      "required": ["canvasSessionId", "surfaceSeq"]
+    }
+  },
+
+  "oneOf": [
+    { "allOf": [ { "$ref": "#/$defs/envelope" }, { "required": ["type", "producesRevision", "tree", "protocolVersion", "opsCatalogVersion"], "properties": {
+      "type": { "const": "surface_snapshot" },
+      "producesRevision": { "$ref": "#/$defs/revisionId" },
+      "tree": { "$ref": "https://omadia.ai/protocol/1.0/canvas-tree.schema.json" },
+      "protocolVersion": { "type": "string" },
+      "opsCatalogVersion": { "type": "string" }
+    } } ], "unevaluatedProperties": false },
+
+    { "allOf": [ { "$ref": "#/$defs/envelope" }, { "required": ["type", "basedOnRevision", "producesRevision", "patches"], "properties": {
+      "type": { "const": "surface_patch" },
+      "basedOnRevision": { "$ref": "#/$defs/revisionId" },
+      "producesRevision": { "$ref": "#/$defs/revisionId" },
+      "patches": { "type": "array", "items": { "type": "object", "description": "tree-path-targeted mutation (op/path/value); reject if basedOnRevision mismatches the client revision" } }
+    } } ], "unevaluatedProperties": false },
+
+    { "allOf": [ { "$ref": "#/$defs/envelope" }, { "required": ["type", "revision", "dataRef"], "properties": {
+      "type": { "const": "surface_data_ref_created" },
+      "revision": { "$ref": "#/$defs/revisionId" },
+      "dataRef": { "$ref": "#/$defs/dataRef" },
+      "schema": {},
+      "sizeHint": { "type": "integer" }
+    } } ], "unevaluatedProperties": false },
+
+    { "allOf": [ { "$ref": "#/$defs/envelope" }, { "required": ["type", "revision", "id", "reason"], "properties": {
+      "type": { "const": "surface_data_ref_invalidated" },
+      "revision": { "$ref": "#/$defs/revisionId" },
+      "id": { "type": "string" },
+      "reason": { "type": "string" }
+    } } ], "unevaluatedProperties": false },
+
+    { "allOf": [ { "$ref": "#/$defs/envelope" }, { "required": ["type", "forActionId", "basedOnRevision", "status"], "properties": {
+      "type": { "const": "surface_action_result" },
+      "forActionId": { "type": "string" },
+      "basedOnRevision": { "$ref": "#/$defs/revisionId" },
+      "status": { "type": "string" },
+      "message": { "type": "string" },
+      "followUpPatch": {}
+    } } ], "unevaluatedProperties": false },
+
+    { "allOf": [ { "$ref": "#/$defs/envelope" }, { "required": ["type", "revision", "effect", "operation", "target"], "properties": {
+      "type": { "const": "surface_local_action" },
+      "revision": { "$ref": "#/$defs/revisionId" },
+      "effect": { "enum": ["preview", "durable"], "description": "preview does NOT mutate the revision; durable is always followed by a surface_patch" },
+      "operation": { "type": "string", "description": "must be in the client's handshake-declared localOperations" },
+      "params": {},
+      "target": { "$ref": "#/$defs/targetRef" }
+    } } ], "unevaluatedProperties": false },
+
+    { "allOf": [ { "$ref": "#/$defs/envelope" }, { "required": ["type", "revision", "severity", "message"], "properties": {
+      "type": { "const": "surface_error" },
+      "revision": { "$ref": "#/$defs/revisionId" },
+      "severity": { "enum": ["info", "warning", "error"] },
+      "message": { "type": "string" },
+      "scope": {}
+    } } ], "unevaluatedProperties": false },
+
+    { "allOf": [ { "$ref": "#/$defs/envelope" }, { "required": ["type", "revision", "forMutationId", "status"], "properties": {
+      "type": { "const": "surface_mutation_resolved" },
+      "revision": { "$ref": "#/$defs/revisionId" },
+      "forMutationId": { "type": "string", "description": "correlates a _pendingMutation by mutationId" },
+      "status": { "enum": ["success", "modified", "rejected", "invalid", "conflict"] },
+      "actualValue": {},
+      "error": { "type": "object", "additionalProperties": false, "properties": { "message": { "type": "string" }, "code": { "type": "string" } } },
+      "originAuthor": { "type": "string", "description": "v2+ multi-user provenance; empty in v1" },
+      "originSession": { "type": "string" }
+    } } ], "unevaluatedProperties": false }
+  ]
+}

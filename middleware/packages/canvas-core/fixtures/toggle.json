@@ -1,0 +1,7 @@
+{
+  "type": "toggle",
+  "id": "fixture-toggle",
+  "label": "Enable notifications",
+  "value": true,
+  "variant": "switch"
+}

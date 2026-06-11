@@ -1,0 +1,9 @@
+{
+  "type": "form",
+  "id": "fixture-form",
+  "title": "Create project",
+  "children": [
+    { "type": "input", "label": "Name", "placeholder": "Project name" },
+    { "type": "button", "label": "Create" }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "type": "choice",
+  "id": "fixture-choice",
+  "label": "Environment",
+  "variant": "radio",
+  "value": "staging",
+  "options": [
+    { "value": "staging", "label": "Staging" },
+    { "value": "production", "label": "Production" }
+  ]
+}

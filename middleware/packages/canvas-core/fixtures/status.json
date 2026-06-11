@@ -1,0 +1,6 @@
+{
+  "type": "status",
+  "id": "fixture-status",
+  "text": "All checks passed",
+  "tone": "success"
+}

@@ -1,0 +1,14 @@
+{
+  "type": "tree",
+  "id": "fixture-tree",
+  "nodes": [
+    {
+      "itemKey": "root",
+      "label": "Layers",
+      "children": [
+        { "itemKey": "background", "label": "Background" },
+        { "itemKey": "foreground", "label": "Foreground" }
+      ]
+    }
+  ]
+}

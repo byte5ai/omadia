@@ -1,0 +1,6 @@
+{
+  "type": "progress",
+  "id": "fixture-progress",
+  "value": 0.65,
+  "indeterminate": false
+}

@@ -1,0 +1,12 @@
+{
+  "type": "timeline",
+  "id": "timeline-1",
+  "tracks": [
+    { "id": "v1", "kind": "video" },
+    { "id": "a1", "kind": "audio" },
+    { "id": "m1", "kind": "marker" }
+  ],
+  "timebase": { "frameRate": 30, "sampleRate": 48000 },
+  "duration": 12000,
+  "playhead": 0
+}

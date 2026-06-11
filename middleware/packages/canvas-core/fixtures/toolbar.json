@@ -1,0 +1,8 @@
+{
+  "type": "toolbar",
+  "id": "fixture-toolbar",
+  "children": [
+    { "type": "button", "label": "Save" },
+    { "type": "button", "label": "Cancel" }
+  ]
+}

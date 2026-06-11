@@ -1,0 +1,9 @@
+{
+  "type": "list",
+  "id": "fixture-list",
+  "items": [
+    { "itemKey": "item-1", "label": "Deploy succeeded", "tone": "success" },
+    { "itemKey": "item-2", "label": "Awaiting review" }
+  ],
+  "canReorder": true
+}

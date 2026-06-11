@@ -1,0 +1,41 @@
+{
+  "name": "@omadia/canvas-core",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Canonical Omadia canvas protocol core: protocol types, tree patching, store reducer, handshake FSM, WebSocket-injected socket client, precompiled ajv validators, canonical schemas, and validated primitive fixtures.",
+  "type": "module",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    },
+    "./schema/*": "./schema/*",
+    "./fixtures/*": "./fixtures/*"
+  },
+  "files": [
+    "dist",
+    "schema",
+    "fixtures"
+  ],
+  "scripts": {
+    "gen": "tsx tools/genValidator.ts",
+    "pretest": "npm run gen",
+    "test": "vitest run",
+    "pretypecheck": "npm run gen",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run gen && tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "ajv": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.8",
+    "ws": "^8.21.0"
+  }
+}

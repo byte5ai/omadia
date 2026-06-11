@@ -1,0 +1,9 @@
+{
+  "type": "canvas-region",
+  "id": "region-1",
+  "width": 1920,
+  "height": 1080,
+  "pixelFormat": "rgba8",
+  "colorSpace": "srgb",
+  "dpi": 144
+}

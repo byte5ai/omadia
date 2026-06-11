@@ -1,0 +1,12 @@
+{
+  "type": "table",
+  "id": "fixture-table",
+  "columns": [
+    { "fieldKey": "name", "label": "Name", "type": "string" },
+    { "fieldKey": "amount", "label": "Amount", "type": "number", "dataClass": "currency" }
+  ],
+  "rows": [
+    { "rowKey": "row-1", "cells": { "name": "Alpha", "amount": 1200 } },
+    { "rowKey": "row-2", "cells": { "name": "Beta", "amount": 980 } }
+  ]
+}

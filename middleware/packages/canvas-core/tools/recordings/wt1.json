@@ -1,0 +1,54 @@
+{
+  "frames": [
+    { "delayMs": 80, "message": { "type": "agent_text_delta", "forTurn": "$TURN", "text": "Pulling tickets and budgets… " } },
+    { "delayMs": 400, "message": {
+      "type": "surface_snapshot", "canvasSessionId": "$CANVAS", "surfaceSeq": 0,
+      "producesRevision": "0", "protocolVersion": "1.0", "opsCatalogVersion": "1.0",
+      "tree": {
+        "type": "container", "id": "root", "title": "Team tickets · ERP budgets", "layout": "stack",
+        "children": [
+          { "type": "heading", "id": "h1", "content": "Open tickets by owner", "level": 2 },
+          { "type": "table", "id": "tickets", "loading": "skeleton",
+            "columns": [
+              { "fieldKey": "owner", "label": "Owner" },
+              { "fieldKey": "openTickets", "label": "Open tickets" },
+              { "fieldKey": "hoursLeft", "label": "ERP budget left (h)" }
+            ],
+            "rows": [] },
+          { "type": "divider", "id": "d1" },
+          { "type": "toolbar", "id": "tb", "children": [
+            { "type": "button", "id": "b-refresh", "label": "Refresh",
+              "action": { "type": "refresh", "effect": "internal" } }
+          ] },
+          { "type": "status", "id": "st", "text": "Querying Jira and ERP…" }
+        ]
+      }
+    } },
+    { "delayMs": 900, "message": {
+      "type": "surface_patch", "canvasSessionId": "$CANVAS", "surfaceSeq": 1,
+      "basedOnRevision": "0", "producesRevision": "1",
+      "patches": [
+        { "op": "replace", "path": "/children/1/loading", "value": "none" },
+        { "op": "add", "path": "/children/1/rows/-", "value": { "rowKey": "anna",   "cells": { "owner": "Anna Becker",  "openTickets": 4, "hoursLeft": 5 } } },
+        { "op": "add", "path": "/children/1/rows/-", "value": { "rowKey": "bernd",  "cells": { "owner": "Bernd Roth",   "openTickets": 3, "hoursLeft": 7 } } },
+        { "op": "add", "path": "/children/1/rows/-", "value": { "rowKey": "cara",   "cells": { "owner": "Cara Liem",    "openTickets": 2, "hoursLeft": 6 } } },
+        { "op": "add", "path": "/children/1/rows/-", "value": { "rowKey": "daniel", "cells": { "owner": "Daniel Voss",  "openTickets": 3, "hoursLeft": 14 } } },
+        { "op": "replace", "path": "/children/4/text", "value": "12 open tickets · budgets loaded" }
+      ]
+    } },
+    { "delayMs": 350, "message": { "type": "agent_text_delta", "forTurn": "$TURN", "text": "Three people are under budget — Anna, Bernd, Cara. " } },
+    { "delayMs": 500, "message": {
+      "type": "surface_patch", "canvasSessionId": "$CANVAS", "surfaceSeq": 2,
+      "basedOnRevision": "1", "producesRevision": "2",
+      "patches": [
+        { "op": "add", "path": "/children/1/columns/-", "value": { "fieldKey": "vacation", "label": "Out" } },
+        { "op": "add", "path": "/children/1/rows/0/cells/vacation", "value": "Mo–We" },
+        { "op": "add", "path": "/children/1/rows/1/cells/vacation", "value": "–" },
+        { "op": "add", "path": "/children/1/rows/2/cells/vacation", "value": "–" },
+        { "op": "add", "path": "/children/1/rows/3/cells/vacation", "value": "–" },
+        { "op": "replace", "path": "/children/4/text", "value": "Vacation overlay added" }
+      ]
+    } },
+    { "delayMs": 100, "message": { "type": "turn_complete", "forTurn": "$TURN" } }
+  ]
+}
