@@ -36,7 +36,14 @@ describe('omadia-ui-channel manifest', () => {
 
 describe('omadia-ui-channel activate', () => {
   function makeMocks() {
-    const ctx = { agentId: '@omadia/ui-channel', log: () => {} } as unknown as PluginContext;
+    // `notifications` is a required PluginContext accessor (activate registers a
+    // notification channel via ctx.notifications.registerChannel); mock it so the
+    // discovery-route tests exercise activate() without the full kernel wiring.
+    const ctx = {
+      agentId: '@omadia/ui-channel',
+      log: () => {},
+      notifications: { registerChannel: () => () => {} },
+    } as unknown as PluginContext;
     const captured: {
       channelId?: string;
       method?: string;
