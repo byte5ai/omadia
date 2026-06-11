@@ -214,9 +214,9 @@ export async function activate(
   const model =
     ctx.config?.get<string>('ui_orchestrator_model')?.trim() ||
     DEFAULT_COMPOSITION_MODEL;
-  // Our own producer tool is always authorised; the operator config extends
-  // the allow-set with additional sentinel-emitting tools.
-  const canvasOutputTools: ReadonlySet<string> = new Set([
+  // Our own producer tools are always authorised; the operator config extends
+  // the allow-set with additional sentinel-emitting tools (override path).
+  const configuredCanvasOutputTools: ReadonlySet<string> = new Set([
     CANVAS_PUBLISH_TOOL,
     CANVAS_CHOICE_TOOL,
     ...(ctx.config?.get<string>('canvas_output_tools') ?? '')
@@ -224,6 +224,19 @@ export async function activate(
       .map((s) => s.trim())
       .filter((s) => s.length > 0),
   ]);
+  // Canvas-output autodiscovery (declare → resolve → derive): plugins declare
+  // `canvas_output: true` per manifest capability; the kernel resolves those
+  // into the `canvasOutputRegistry` service as plugins (de)activate. The
+  // lookup is LAZY per check — a plugin installed after this activation is
+  // authorised without re-activating the orchestrator. Deny-by-default is
+  // unchanged: no declaration + no config entry → sentinel ignored.
+  const canvasOutputTools: { has(name: string): boolean } = {
+    has: (name: string): boolean =>
+      configuredCanvasOutputTools.has(name) ||
+      ctx.services
+        ?.get<{ has(name: string): boolean }>('canvasOutputRegistry')
+        ?.has(name) === true,
+  };
 
   // Register the producer tool in the orchestrator tool loop. The accessor is
   // typed required but absent in narrow test contexts; without it the canvas
@@ -668,7 +681,7 @@ export async function activate(
 
   ctx.log(
     `[omadia-ui-orchestrator] published ${CANVAS_CHAT_AGENT_SERVICE} ` +
-      `(composition model: ${model}; canvas-output tools: ${canvasOutputTools.size})`,
+      `(composition model: ${model}; canvas-output tools: ${configuredCanvasOutputTools.size} configured + manifest-declared via canvasOutputRegistry)`,
   );
 
   return {

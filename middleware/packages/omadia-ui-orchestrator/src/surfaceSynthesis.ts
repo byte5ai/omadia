@@ -36,12 +36,15 @@ export interface SurfaceSynthesisConfig {
   /** the canvas session this turn belongs to — stamped onto every surface event. */
   canvasSessionId: string;
   /**
-   * Deny-by-default gate: only a tool result from a tool in this set is scanned
-   * for canvas sentinels. Populated from the plugin's `canvas_output_tools`
-   * config (interim allow-set until the boot-computed canvas-output capability
-   * wiring lands); empty → nothing is synthesised.
+   * Deny-by-default gate: only a tool result from a tool this lookup accepts
+   * is scanned for canvas sentinels. Derived from manifest-declared
+   * `canvas_output: true` capabilities (kernel `canvasOutputRegistry`,
+   * resolved on plugin activation) plus the operator's `canvas_output_tools`
+   * config override. A plain ReadonlySet<string> satisfies the shape (tests);
+   * the plugin passes a lazy predicate so hot-installed plugins are
+   * authorised without re-activation. Nothing accepted → nothing synthesised.
    */
-  authorizedToolNames: ReadonlySet<string>;
+  authorizedToolNames: { has(toolName: string): boolean };
   protocolVersion: string;
   opsCatalogVersion: string;
   /** continue after an already-emitted skeleton snapshot (default 0). */

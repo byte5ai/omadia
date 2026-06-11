@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import type Anthropic from '@anthropic-ai/sdk';
 import type { z } from 'zod';
 
+import { canvasOutputToolIds } from '../platform/canvasOutputRegistry.js';
 import { createPluginContext } from '../platform/pluginContext.js';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
 import type { NotificationRouter } from '../platform/notificationRouter.js';
@@ -133,6 +134,14 @@ export interface DynamicAgentRuntimeDeps {
   /** Kernel-wide background-job scheduler. Plugin-contributed jobs register
    *  here via `ctx.jobs.register(spec, handler)`. */
   jobScheduler: JobScheduler;
+  /** Canvas-output autodiscovery: manifest capability entries declaring
+   *  `canvas_output: true` are resolved into this registry on (de)activation
+   *  so the ui-orchestrator can derive its sentinel allow-set without
+   *  operator config. Optional — absent in narrow test contexts. */
+  canvasOutputRegistry?: {
+    register(pluginId: string, toolIds: readonly string[]): void;
+    unregister(pluginId: string): void;
+  };
   log?: (...args: unknown[]) => void;
 }
 
@@ -432,6 +441,18 @@ export class DynamicAgentRuntime {
     });
     this.orchestrator?.registerDomainTool(domainTool);
 
+    // Canvas-output autodiscovery: resolve `canvas_output: true` capability
+    // declarations from the raw manifest into the kernel registry. Hot
+    // installs flow through this same path, so a freshly uploaded plugin is
+    // authorised for canvas sentinels without any orchestrator re-activation.
+    const canvasOutputIds = canvasOutputToolIds(catalogEntry.manifest);
+    if (canvasOutputIds.length > 0) {
+      this.deps.canvasOutputRegistry?.register(agentId, canvasOutputIds);
+      log(
+        `[dynamic-runtime] canvas-output capabilities registered for ${agentId}: ${canvasOutputIds.join(', ')}`,
+      );
+    }
+
     // Circuit-breaker: clear any prior failure counter so an agent that
     // recovers (e.g. after a config fix + re-upload) returns to a healthy
     // starting state for the next boot. Best-effort — registry write errors
@@ -459,6 +480,8 @@ export class DynamicAgentRuntime {
     // re-runs activate() which registers a fresh DomainTool; without this
     // dispose, ServiceRegistry would throw 'duplicate provider'.
     entry.disposeSubAgentService();
+    // Symmetric to the activate-time canvas-output registration.
+    this.deps.canvasOutputRegistry?.unregister(agentId);
     try {
       await withTimeout(
         entry.handle.close(),
