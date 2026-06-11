@@ -494,17 +494,20 @@ export async function activate(
             canvasRevision: input.canvasState.basedOnRevision,
             dataRequirements: requirements,
             instruction:
-              'The canvas is ALREADY rendered at the above revision — act on ' +
-              'the action IN PLACE. Work silently: do NOT narrate planning, ' +
-              'lookups or tool calls — the canvas is the output channel. Make ' +
-              'the SMALLEST change that satisfies the action: flip/patch the ' +
-              'affected cell or republish ONLY the changed rows; do NOT ' +
-              'recompose the whole view unless the action genuinely opens a ' +
-              'new one. When you republish rows, key them EXACTLY by the ' +
-              'listed fieldKeys (batches of at most 30, one call at a time). ' +
-              'All published values are PLAIN TEXT — never markdown. After ' +
-              'acting, reply with ONE short sentence and do NOT repeat the ' +
-              'data as text or a markdown table.',
+              'The canvas is ALREADY rendered at the above revision. PERFORM ' +
+              'the structured action IN PLACE by INVOKING THE TOOL THAT OWNS ' +
+              'IT — for a domain plugin action (e.g. a draft status-update, ' +
+              'schedule, or whatever produced this view) call that tool (via ' +
+              'its domain query tool if that is how it is reached); the tool ' +
+              'emits a precise surface patch that updates only the affected ' +
+              'element. Work silently — the canvas is the output channel: do ' +
+              'NOT merely describe the change in prose, do NOT ask what the ' +
+              'user meant, and do NOT re-run generation. Do NOT recompose the ' +
+              'whole view or re-publish unrelated rows unless the action ' +
+              'genuinely opens a new view. When you DO publish, key rows ' +
+              'EXACTLY by the listed fieldKeys; all published values are ' +
+              'PLAIN TEXT, never markdown. After the tool runs, reply with ' +
+              'ONE short sentence.',
           }),
       };
       yield* synthesizeSurfaceEvents(base.chatStream(augmentedInPlace, observer), {
