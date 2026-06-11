@@ -6,7 +6,9 @@ import type { ChannelHandle, CoreApi } from '@omadia/channel-sdk';
 import { handleCanvasSocket } from './canvasConnection.js';
 import {
   sanitizeCanvasList,
+  sanitizeDesktopList,
   type CanvasListEntry,
+  type DesktopListEntry,
   type NotificationMsg,
 } from './protocol.js';
 
@@ -94,6 +96,27 @@ export async function activate(
     `[omadia-ui-channel] canvas registry ${memory ? 'memory-backed' : 'VOLATILE (no memory permission)'}`,
   );
 
+  // Per-USER desktop registry (multi-desktop workspaces): same persistence
+  // pattern as the canvas registry — desktops travel across installs.
+  const volatileDesktops = new Map<string, DesktopListEntry[]>();
+  const desktopPath = (subject: string): string =>
+    `desktops/${encodeURIComponent(subject)}.json`;
+  const desktopRegistry = {
+    async load(subject: string): Promise<DesktopListEntry[]> {
+      if (!memory) return volatileDesktops.get(subject) ?? [];
+      const rel = desktopPath(subject);
+      if (!(await memory.exists(rel))) return [];
+      return sanitizeDesktopList(JSON.parse(await memory.readFile(rel)));
+    },
+    async save(subject: string, desktops: DesktopListEntry[]): Promise<void> {
+      if (!memory) {
+        volatileDesktops.set(subject, desktops);
+        return;
+      }
+      await memory.writeFile(desktopPath(subject), JSON.stringify(desktops));
+    },
+  };
+
   // Notifications (omadia-ui#15): live sinks per authenticated subject. The
   // NotificationRouter handler below maps a middleware payload onto the wire
   // `notification` message and fans it out to the target user's sockets —
@@ -157,6 +180,7 @@ export async function activate(
         ...(tenantId ? { tenantId } : {}),
         mintId: () => randomUUID(),
         canvasRegistry,
+        desktopRegistry,
         registerNotificationSink,
         onNotificationAck: (subject, id) => {
           // v1: dismissal is client-persisted; server-side history sync is a

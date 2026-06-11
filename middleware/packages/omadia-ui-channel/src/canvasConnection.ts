@@ -10,8 +10,10 @@ import type { TargetRef } from '@omadia/plugin-api';
 import {
   parseClientMessage,
   sanitizeCanvasList,
+  sanitizeDesktopList,
   SURFACE_EVENT_TYPES,
   type CanvasListEntry,
+  type DesktopListEntry,
   type ClientTurn,
   type HandshakeAck,
   type HandshakeError,
@@ -41,6 +43,12 @@ export interface CanvasConnectionDeps {
   canvasRegistry?: {
     load(subject: string): Promise<CanvasListEntry[]>;
     save(subject: string, canvases: CanvasListEntry[]): Promise<void>;
+  };
+  /** per-USER desktop registry (multi-desktop workspaces). Optional — old
+   *  deployments answer desktop_list_get with an empty list. */
+  desktopRegistry?: {
+    load(subject: string): Promise<DesktopListEntry[]>;
+    save(subject: string, desktops: DesktopListEntry[]): Promise<void>;
   };
   /** Notifications (omadia-ui#15): once the handshake completes, the
    *  connection registers a sink so the plugin's NotificationRouter handler
@@ -200,6 +208,27 @@ export function handleCanvasSocket(
       const canvases = sanitizeCanvasList(msg.canvases);
       void deps.canvasRegistry?.save(session.subject, canvases).catch((err: unknown) => {
         deps.log?.(`[ui-channel] canvas_list save failed: ${String(err)}`);
+      });
+      return;
+    }
+    if (msg.type === 'desktop_list_get') {
+      if (!deps.desktopRegistry) {
+        send({ type: 'desktop_list', desktops: [] });
+        return;
+      }
+      void deps.desktopRegistry.load(session.subject).then(
+        (desktops) => send({ type: 'desktop_list', desktops }),
+        (err: unknown) => {
+          deps.log?.(`[ui-channel] desktop_list load failed: ${String(err)}`);
+          send({ type: 'desktop_list', desktops: [] });
+        },
+      );
+      return;
+    }
+    if (msg.type === 'desktop_list_put') {
+      const desktops = sanitizeDesktopList(msg.desktops);
+      void deps.desktopRegistry?.save(session.subject, desktops).catch((err: unknown) => {
+        deps.log?.(`[ui-channel] desktop_list save failed: ${String(err)}`);
       });
       return;
     }

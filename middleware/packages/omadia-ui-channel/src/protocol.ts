@@ -150,6 +150,35 @@ export interface ClientNotificationAck {
   id?: unknown;
 }
 
+// ── desktops (multi-desktop workspaces, follow-up to omadia-ui#14) ──
+
+/** A desktop layout node — keyed by canvasSessionId (client slot ids are
+ *  device-local and do not travel across installs). */
+export type DesktopLayoutNode =
+  | { kind: 'leaf'; sessionId: string }
+  | { kind: 'split'; dir: 'columns' | 'rows'; ratio: number; a: DesktopLayoutNode; b: DesktopLayoutNode };
+
+/** One persisted desktop: a named, colored tiling layout. `updatedAt` drives
+ *  last-write-wins merging across installs. */
+export interface DesktopListEntry {
+  desktopId: string;
+  name: string;
+  color: number;
+  updatedAt: number;
+  layout: DesktopLayoutNode;
+}
+
+/** client → server: fetch the user's persisted desktops (app-start sync). */
+export interface ClientDesktopListGet {
+  type: 'desktop_list_get';
+}
+
+/** client → server: replace the user's persisted desktops. */
+export interface ClientDesktopListPut {
+  type: 'desktop_list_put';
+  desktops?: unknown;
+}
+
 /** client → server: fetch the user's persisted canvas list (app start sync). */
 export interface ClientCanvasListGet {
   type: 'canvas_list_get';
@@ -192,6 +221,8 @@ export type ClientMessage =
   | ClientTurn
   | ClientCanvasListGet
   | ClientCanvasListPut
+  | ClientDesktopListGet
+  | ClientDesktopListPut
   | ClientCanvasRefresh
   | ClientTurnAbort
   | ClientNotificationAck;
@@ -232,6 +263,8 @@ export function parseClientMessage(raw: string): ClientMessage | null {
     type === 'turn' ||
     type === 'canvas_list_get' ||
     type === 'canvas_list_put' ||
+    type === 'desktop_list_get' ||
+    type === 'desktop_list_put' ||
     type === 'canvas_refresh' ||
     type === 'turn_abort' ||
     type === 'notification_ack'
@@ -239,6 +272,64 @@ export function parseClientMessage(raw: string): ClientMessage | null {
     return obj as ClientMessage;
   }
   return null;
+}
+
+const MAX_DESKTOPS = 24;
+const MAX_LAYOUT_DEPTH = 8;
+
+function sanitizeDesktopLayout(node: unknown, depth: number): DesktopLayoutNode | null {
+  if (depth > MAX_LAYOUT_DEPTH || typeof node !== 'object' || node === null) return null;
+  const n = node as Record<string, unknown>;
+  if (n['kind'] === 'leaf') {
+    return typeof n['sessionId'] === 'string' && n['sessionId'].length > 0
+      ? { kind: 'leaf', sessionId: (n['sessionId'] as string).slice(0, 128) }
+      : null;
+  }
+  if (n['kind'] === 'split' && (n['dir'] === 'columns' || n['dir'] === 'rows')) {
+    const a = sanitizeDesktopLayout(n['a'], depth + 1);
+    const b = sanitizeDesktopLayout(n['b'], depth + 1);
+    if (a && b) {
+      return {
+        kind: 'split',
+        dir: n['dir'],
+        ratio:
+          typeof n['ratio'] === 'number' ? Math.min(Math.max(n['ratio'], 0.15), 0.85) : 0.5,
+        a,
+        b,
+      };
+    }
+    return a ?? b; // a leaf that failed sanitisation collapses its split
+  }
+  return null;
+}
+
+/** Whitelist-sanitise a client-supplied desktop list (max 24 entries). */
+export function sanitizeDesktopList(raw: unknown): DesktopListEntry[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(
+      (e): e is Record<string, unknown> => typeof e === 'object' && e !== null && !Array.isArray(e),
+    )
+    .map((e): DesktopListEntry | null => {
+      if (typeof e['desktopId'] !== 'string' || e['desktopId'].length === 0) return null;
+      const layout = sanitizeDesktopLayout(e['layout'], 0);
+      if (!layout) return null;
+      return {
+        desktopId: (e['desktopId'] as string).slice(0, 64),
+        name:
+          typeof e['name'] === 'string' && e['name'].trim()
+            ? (e['name'] as string).slice(0, 48)
+            : 'Desktop',
+        color:
+          typeof e['color'] === 'number' && Number.isInteger(e['color'])
+            ? Math.min(Math.max(e['color'], 0), 5)
+            : 0,
+        updatedAt: typeof e['updatedAt'] === 'number' ? e['updatedAt'] : 0,
+        layout,
+      };
+    })
+    .filter((e): e is DesktopListEntry => e !== null)
+    .slice(0, MAX_DESKTOPS);
 }
 
 /** Whitelist-sanitise a client-supplied canvas list (max 50 entries). */
