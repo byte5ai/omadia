@@ -2,6 +2,7 @@ import type { ChatStreamEvent, DataRef, RevisionId } from '@omadia/channel-sdk';
 import {
   parseToolEmittedCanvasTree,
   parseToolEmittedStructuredPayload,
+  parseToolEmittedSurfacePatch,
 } from '@omadia/orchestrator';
 
 import type { DataRequirement } from './composition.js';
@@ -74,6 +75,71 @@ export interface SurfaceSynthesisConfig {
  * Builds its own `tool_use.id → name` map (the `tool_result` event carries only
  * the id) so the gate can be enforced by tool name.
  */
+
+/** JSON-Pointer path to the first node carrying `id`, or null. Generic walk:
+ *  recurses every array element and nested object, so it finds nodes under
+ *  children/container/tabs[].child/pane/form/toolbar uniformly. */
+function findNodePath(node: unknown, id: string, base: string): string | null {
+  if (node === null || typeof node !== 'object') return null;
+  if ((node as { id?: unknown }).id === id) return base;
+  for (const [key, value] of Object.entries(node)) {
+    if (Array.isArray(value)) {
+      for (let i = 0; i < value.length; i++) {
+        const hit = findNodePath(value[i], id, `${base}/${key}/${i}`);
+        if (hit !== null) return hit;
+      }
+    } else if (value !== null && typeof value === 'object') {
+      const hit = findNodePath(value, id, `${base}/${key}`);
+      if (hit !== null) return hit;
+    }
+  }
+  return null;
+}
+
+/** Resolve a JSON-Pointer to the parent object + leaf key, creating nothing. */
+function resolvePointer(
+  root: unknown,
+  pointer: string,
+): { parent: Record<string, unknown>; key: string } | null {
+  const parts = pointer.split('/').slice(1).map((p) => p.replace(/~1/g, '/').replace(/~0/g, '~'));
+  const leaf = parts.pop();
+  if (leaf === undefined) return null;
+  let cur: unknown = root;
+  for (const part of parts) {
+    if (cur === null || typeof cur !== 'object') return null;
+    cur = Array.isArray(cur) ? cur[Number(part)] : (cur as Record<string, unknown>)[part];
+  }
+  if (cur === null || typeof cur !== 'object' || Array.isArray(cur)) return null;
+  return { parent: cur as Record<string, unknown>, key: leaf };
+}
+
+/** Apply an ID-addressed surface patch against a (deep-cloned) tree. Returns
+ *  the next tree + the RFC-6902 ops that produced it, or null if no op mapped
+ *  (every id missing). Unmappable ids are skipped (logged by the caller). */
+function applySurfacePatch(
+  tree: unknown,
+  ops: { id: string; set: Record<string, unknown> }[],
+  log?: (m: string) => void,
+): { nextTree: unknown; patches: { op: 'add'; path: string; value: unknown }[] } | null {
+  const next = structuredClone(tree);
+  const patches: { op: 'add'; path: string; value: unknown }[] = [];
+  for (const op of ops) {
+    const nodePath = findNodePath(next, op.id, '');
+    if (nodePath === null) {
+      log?.(`[surface-synthesis] surface-patch UNMAPPABLE id=${op.id} (no node with that id)`);
+      continue;
+    }
+    for (const [field, value] of Object.entries(op.set)) {
+      const fieldPath = `${nodePath}/${field.replace(/~/g, '~0').replace(/\//g, '~1')}`;
+      const target = resolvePointer(next, fieldPath);
+      if (!target) continue;
+      target.parent[target.key] = value;
+      patches.push({ op: 'add', path: fieldPath, value });
+    }
+  }
+  return patches.length > 0 ? { nextTree: next, patches } : null;
+}
+
 export async function* synthesizeSurfaceEvents(
   base: AsyncIterable<ChatStreamEvent>,
   config: SurfaceSynthesisConfig,
@@ -120,6 +186,28 @@ export async function* synthesizeSurfaceEvents(
     }
 
     if (currentTree === undefined || currentRevision === undefined) return;
+
+    // ID-addressed surface patch (PR-9b-3): update existing nodes by stable id
+    // without re-emitting the tree — the client patches in place (no remount).
+    const surfacePatch = parseToolEmittedSurfacePatch(output);
+    if (surfacePatch) {
+      const applied = applySurfacePatch(currentTree, surfacePatch.ops, config.log);
+      if (applied) {
+        const producesRevision = String(revisionCounter++) as RevisionId;
+        yield {
+          type: 'surface_patch',
+          canvasSessionId: config.canvasSessionId,
+          surfaceSeq: surfaceSeq++,
+          basedOnRevision: currentRevision,
+          producesRevision,
+          patches: applied.patches,
+        };
+        currentTree = applied.nextTree;
+        currentRevision = producesRevision;
+      }
+      return;
+    }
+
     const payload = parseToolEmittedStructuredPayload(output);
     if (!payload) return;
       // recipe capture happens regardless of compose success — a recipe for

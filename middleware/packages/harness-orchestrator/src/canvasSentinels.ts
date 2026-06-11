@@ -49,6 +49,16 @@ export interface PendingCanvasTree {
   tree: unknown;
 }
 
+/** An ID-addressed surface patch a canvas-aware tool hands to Tier 2 to
+ *  update an EXISTING tree node without re-emitting the whole tree (PR-9b-3).
+ *  Each op targets a node by its stable `id` and merges `set` fields onto it
+ *  (RFC-6902 `add` semantics — adds or replaces the member). Deterministic UIs
+ *  publish their structure once and patch state by id afterwards, so the
+ *  client never remounts the canvas for a single status flip. */
+export interface PendingSurfacePatch {
+  ops: { id: string; set: Record<string, unknown> }[];
+}
+
 /** A client-originated Class-D optimistic mutation awaiting resolution. */
 export interface PendingMutation {
   mutationId: string;
@@ -106,6 +116,26 @@ export function parseToolEmittedCanvasTree(
   const r = raw as { tree?: unknown };
   if (typeof r.tree !== 'object' || r.tree === null) return undefined;
   return { tree: r.tree };
+}
+
+/** Parse a `_pendingSurfacePatch` sidecar, or `undefined`. Tolerant: drops
+ *  malformed ops, returns undefined if none survive. */
+export function parseToolEmittedSurfacePatch(
+  content: string,
+): PendingSurfacePatch | undefined {
+  const raw = readSentinel(content, '_pendingSurfacePatch');
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const rawOps = (raw as { ops?: unknown }).ops;
+  if (!Array.isArray(rawOps)) return undefined;
+  const ops: PendingSurfacePatch['ops'] = [];
+  for (const o of rawOps) {
+    if (typeof o !== 'object' || o === null) continue;
+    const rec = o as { id?: unknown; set?: unknown };
+    if (typeof rec.id !== 'string' || rec.id.length === 0) continue;
+    if (typeof rec.set !== 'object' || rec.set === null || Array.isArray(rec.set)) continue;
+    ops.push({ id: rec.id, set: rec.set as Record<string, unknown> });
+  }
+  return ops.length > 0 ? { ops } : undefined;
 }
 
 /** Parse a `_pendingMutation` sidecar (client → orchestrator), or `undefined`. */

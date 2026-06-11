@@ -158,11 +158,13 @@ export {
   isCanvasOutputAuthorized,
   parseToolEmittedStructuredPayload,
   parseToolEmittedCanvasTree,
+  parseToolEmittedSurfacePatch,
   parseToolEmittedMutation,
 } from './canvasSentinels.js';
 export type {
   PendingStructuredPayload,
   PendingCanvasTree,
+  PendingSurfacePatch,
   PendingMutation,
 } from './canvasSentinels.js';
 

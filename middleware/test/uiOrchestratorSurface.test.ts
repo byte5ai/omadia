@@ -193,3 +193,67 @@ describe('canvasChatAgent surface synthesis', () => {
     assert.equal(field(snaps[1] as ChatStreamEvent, 'producesRevision'), '1');
   });
 });
+
+const surfacePatchOutput = JSON.stringify({
+  prose: 'approved',
+  _pendingSurfacePatch: {
+    ops: [
+      { id: 'variant-0-review', set: { text: 'Self-Review: ✓ PASS', tone: 'success' } },
+      { id: 'd-1-status', set: { text: 'approved' } },
+    ],
+  },
+});
+
+describe('canvasChatAgent surface synthesis — ID-addressed surface patch (9b-3)', () => {
+  const baseTree = {
+    type: 'container',
+    id: 'root',
+    children: [
+      { type: 'pane', id: 'variant-0', children: [{ type: 'status', id: 'variant-0-review', text: 'Self-Review: ⚠ WARN', tone: 'warning' }] },
+      { type: 'status', id: 'd-1-status', text: 'draft' },
+    ],
+  };
+
+  it('emits a surface_patch that updates nodes by id without a snapshot', async () => {
+    const out = await collect(
+      synthesizeSurfaceEvents(
+        streamOf([toolUse('t1', 'studio_patch'), toolResult('t1', surfacePatchOutput)]),
+        { ...cfg(['studio_patch']), baseTree, baseRevision: '0' },
+      ),
+    );
+    const snap = out.find((e) => e.type === 'surface_snapshot');
+    assert.ok(!snap, 'no snapshot — patch only');
+    const patch = out.find((e) => e.type === 'surface_patch');
+    assert.ok(patch, 'surface_patch emitted');
+    assert.equal(field(patch, 'basedOnRevision'), '0');
+    const patches = field(patch, 'patches') as Array<{ op: string; path: string; value: unknown }>;
+    // both ids resolved to their JSON-Pointer paths and fields set
+    const byPath = Object.fromEntries(patches.map((p) => [p.path, p.value]));
+    assert.equal(byPath['/children/0/children/0/text'], 'Self-Review: ✓ PASS');
+    assert.equal(byPath['/children/0/children/0/tone'], 'success');
+    assert.equal(byPath['/children/1/text'], 'approved');
+  });
+
+  it('skips unmappable ids and emits nothing when none resolve', async () => {
+    const out = await collect(
+      synthesizeSurfaceEvents(
+        streamOf([
+          toolUse('t1', 'studio_patch'),
+          toolResult('t1', JSON.stringify({ prose: 'x', _pendingSurfacePatch: { ops: [{ id: 'ghost', set: { text: 'y' } }] } })),
+        ]),
+        { ...cfg(['studio_patch']), baseTree, baseRevision: '0' },
+      ),
+    );
+    assert.ok(!out.some((e) => e.type === 'surface_patch'), 'no patch for unmappable id');
+  });
+
+  it('does not patch when the tool is not authorised', async () => {
+    const out = await collect(
+      synthesizeSurfaceEvents(
+        streamOf([toolUse('t1', 'studio_patch'), toolResult('t1', surfacePatchOutput)]),
+        { ...cfg([]), baseTree, baseRevision: '0' },
+      ),
+    );
+    assert.ok(!out.some((e) => e.type === 'surface_patch'));
+  });
+});
