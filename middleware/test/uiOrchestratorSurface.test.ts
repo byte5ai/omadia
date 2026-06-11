@@ -50,6 +50,17 @@ const toolUse = (id: string, name: string): ChatStreamEvent =>
   ({ type: 'tool_use', id, name, input: {} }) as unknown as ChatStreamEvent;
 const toolResult = (id: string, output: string): ChatStreamEvent =>
   ({ type: 'tool_result', id, output, durationMs: 1 }) as unknown as ChatStreamEvent;
+const subToolUse = (id: string, name: string): ChatStreamEvent =>
+  ({ type: 'sub_tool_use', parentId: 'q', id, name, input: {} }) as unknown as ChatStreamEvent;
+const subToolResult = (id: string, output: string): ChatStreamEvent =>
+  ({
+    type: 'sub_tool_result',
+    parentId: 'q',
+    id,
+    output,
+    durationMs: 1,
+    isError: false,
+  }) as unknown as ChatStreamEvent;
 
 const CANVAS_TREE_OUTPUT = JSON.stringify({
   prose: 'here is the table',
@@ -78,6 +89,41 @@ describe('canvasChatAgent surface synthesis', () => {
     // original events survive
     assert.ok(out.some((e) => e.type === 'tool_result'));
     assert.ok(out.some((e) => e.type === 'done'));
+  });
+
+  it('synthesises a surface_snapshot from a SUB-AGENT tool canvas sentinel', async () => {
+    // Agent-kind plugins (e.g. X Studio) emit their deterministic tree from a
+    // sub-tool inside the domain tool; the orchestrator forwards it as
+    // sub_tool_use/sub_tool_result. Authorisation matches on the sub-tool name.
+    const out = await collect(
+      synthesizeSurfaceEvents(
+        streamOf([
+          subToolUse('s1', 'x_studio_show_wizard'),
+          subToolResult('s1', CANVAS_TREE_OUTPUT),
+          { type: 'done', answer: 'x' } as unknown as ChatStreamEvent,
+        ]),
+        cfg(['x_studio_show_wizard']),
+      ),
+    );
+    const snap = out.find((e) => e.type === 'surface_snapshot');
+    assert.ok(snap, 'surface_snapshot emitted from sub-tool sentinel');
+    assert.deepEqual(field(snap, 'tree'), { type: 'p_text', id: 'x' });
+    assert.ok(out.some((e) => e.type === 'sub_tool_result'), 'sub_tool_result passes through');
+    assert.ok(out.some((e) => e.type === 'sub_tool_use'), 'sub_tool_use passes through');
+  });
+
+  it('denies an unauthorised SUB-AGENT tool (deny-by-default)', async () => {
+    const out = await collect(
+      synthesizeSurfaceEvents(
+        streamOf([
+          subToolUse('s1', 'untrusted_subtool'),
+          subToolResult('s1', CANVAS_TREE_OUTPUT),
+        ]),
+        cfg(['x_studio_show_wizard']),
+      ),
+    );
+    assert.ok(!out.some((e) => e.type === 'surface_snapshot'));
+    assert.ok(out.some((e) => e.type === 'sub_tool_result'), 'event still passes through');
   });
 
   it('does not synthesise when the tool is not authorised (deny-by-default)', async () => {

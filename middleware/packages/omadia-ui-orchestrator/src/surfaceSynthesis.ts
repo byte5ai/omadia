@@ -87,38 +87,41 @@ export async function* synthesizeSurfaceEvents(
   let currentTree: unknown = config.baseTree;
   let currentRevision: RevisionId | undefined = config.baseRevision;
 
-  for await (const ev of base) {
-    if (ev.type === 'tool_use') {
-      toolNameById.set(ev.id, ev.name);
-      yield ev;
-      continue;
+  // Scan one authorised tool result (top-level OR sub-agent) for canvas
+  // sentinels and emit the corresponding surface events. Returns the events
+  // to yield; an empty array means the result carried no sentinel. Sub-agent
+  // tool results (`sub_tool_result`) reach here because the orchestrator
+  // forwards inner sub-tool events into the main stream — an agent-kind
+  // plugin's deterministic tree, emitted by a sub-tool like
+  // `x_studio_show_wizard`, is otherwise buried inside the domain-tool result
+  // and never synthesised.
+  async function* handleAuthorisedResult(
+    id: string,
+    output: string,
+  ): AsyncGenerator<ChatStreamEvent> {
+    const name = toolNameById.get(id);
+    if (name === undefined || !config.authorizedToolNames.has(name)) return;
+
+    const parsedTree = parseToolEmittedCanvasTree(output);
+    if (parsedTree) {
+      const producesRevision = String(revisionCounter++) as RevisionId;
+      currentTree = parsedTree.tree;
+      currentRevision = producesRevision;
+      yield {
+        type: 'surface_snapshot',
+        canvasSessionId: config.canvasSessionId,
+        surfaceSeq: surfaceSeq++,
+        producesRevision,
+        tree: parsedTree.tree,
+        protocolVersion: config.protocolVersion,
+        opsCatalogVersion: config.opsCatalogVersion,
+      };
+      return;
     }
 
-    if (ev.type === 'tool_result') {
-      yield ev;
-      const name = toolNameById.get(ev.id);
-      if (name === undefined || !config.authorizedToolNames.has(name)) continue;
-
-      const parsedTree = parseToolEmittedCanvasTree(ev.output);
-      if (parsedTree) {
-        const producesRevision = String(revisionCounter++) as RevisionId;
-        currentTree = parsedTree.tree;
-        currentRevision = producesRevision;
-        yield {
-          type: 'surface_snapshot',
-          canvasSessionId: config.canvasSessionId,
-          surfaceSeq: surfaceSeq++,
-          producesRevision,
-          tree: parsedTree.tree,
-          protocolVersion: config.protocolVersion,
-          opsCatalogVersion: config.opsCatalogVersion,
-        };
-        continue;
-      }
-
-      if (currentTree === undefined || currentRevision === undefined) continue;
-      const payload = parseToolEmittedStructuredPayload(ev.output);
-      if (!payload) continue;
+    if (currentTree === undefined || currentRevision === undefined) return;
+    const payload = parseToolEmittedStructuredPayload(output);
+    if (!payload) return;
       // recipe capture happens regardless of compose success — a recipe for
       // a payload whose patch was skipped is still a valid refresh source
       let mintedRef: DataRef | undefined;
@@ -151,7 +154,7 @@ export async function* synthesizeSurfaceEvents(
           `[surface-synthesis] structured payload UNMAPPABLE (${dataInfo}; ` +
             `requirements=${(config.dataRequirements ?? []).map((r) => r.containerId).join(',')})`,
         );
-        continue;
+        return;
       }
       const producesRevision = String(revisionCounter++) as RevisionId;
       yield {
@@ -175,6 +178,33 @@ export async function* synthesizeSurfaceEvents(
           dataRef: mintedRef,
         };
       }
+  }
+
+  for await (const ev of base) {
+    if (ev.type === 'tool_use') {
+      toolNameById.set(ev.id, ev.name);
+      yield ev;
+      continue;
+    }
+
+    // Sub-agent inner tool calls — forwarded into the main stream by the
+    // orchestrator. Map their names so an agent-kind plugin's sub-tool that
+    // emits a canvas sentinel is synthesised exactly like a top-level tool.
+    if (ev.type === 'sub_tool_use') {
+      toolNameById.set(ev.id, ev.name);
+      yield ev;
+      continue;
+    }
+
+    if (ev.type === 'tool_result') {
+      yield ev;
+      yield* handleAuthorisedResult(ev.id, ev.output);
+      continue;
+    }
+
+    if (ev.type === 'sub_tool_result') {
+      yield ev;
+      yield* handleAuthorisedResult(ev.id, ev.output);
       continue;
     }
 
