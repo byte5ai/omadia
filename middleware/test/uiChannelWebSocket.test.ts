@@ -430,3 +430,73 @@ describe('omadia-ui-channel canvas WebSocket — turn fan-out', () => {
     assert.equal(calls, 1, 'orchestrator not invoked for the malformed action');
   });
 });
+
+describe('omadia-ui-channel — per-user canvas registry (canvas_list)', () => {
+  function readyConnection(registry?: {
+    load(subject: string): Promise<Array<{ sessionId: string; title: string; color: number }>>;
+    save(subject: string, canvases: Array<{ sessionId: string; title: string; color: number }>): Promise<void>;
+  }) {
+    const m = makeSocket();
+    handleCanvasSocket(m.socket, SESSION, {
+      channelId: '@omadia/ui-channel',
+      protocolVersions: ['1.0'],
+      opsCatalogVersions: ['1.0'],
+      handleTurnStream: () => emptyStream(),
+      mintId: idMinter(),
+      ...(registry ? { canvasRegistry: registry } : {}),
+    });
+    const offer = m.sent[0] as SentFrame;
+    m.client({
+      type: 'handshake_select',
+      handshakeId: offer.handshakeId,
+      protocolVersion: '1.0',
+      opsCatalogVersion: '1.0',
+    });
+    return m;
+  }
+
+  it('answers canvas_list_get from the subject-scoped registry and sanitises puts', async () => {
+    const store = new Map<string, Array<{ sessionId: string; title: string; color: number }>>();
+    const registry = {
+      load: (subject: string) => Promise.resolve(store.get(subject) ?? []),
+      save: (subject: string, canvases: Array<{ sessionId: string; title: string; color: number }>) => {
+        store.set(subject, canvases);
+        return Promise.resolve();
+      },
+    };
+    const m = readyConnection(registry);
+
+    m.client({
+      type: 'canvas_list_put',
+      canvases: [
+        { sessionId: 'cs-1', title: 'Umsatzzahlen 2026', color: 2 },
+        { sessionId: '', title: 'dropped — no sessionId', color: 1 },
+        { sessionId: 'cs-2', title: 'X'.repeat(200), color: 99 },
+      ],
+    });
+    await flush();
+    const saved = store.get('u1');
+    assert.ok(saved, 'registry keyed by the authenticated subject');
+    assert.equal(saved.length, 2, 'entry without sessionId dropped');
+    assert.equal(saved[1]?.title.length, 64, 'title clamped');
+    assert.equal(saved[1]?.color, 5, 'color clamped to the palette cycle');
+
+    m.client({ type: 'canvas_list_get' });
+    await flush();
+    const list = m.sent.find((f) => f.type === 'canvas_list');
+    assert.ok(list, 'canvas_list answered');
+    assert.deepEqual((list.canvases as Array<{ sessionId: string }>).map((c) => c.sessionId), [
+      'cs-1',
+      'cs-2',
+    ]);
+  });
+
+  it('answers with an empty list when no registry is wired (wire-compatible degrade)', async () => {
+    const m = readyConnection();
+    m.client({ type: 'canvas_list_get' });
+    await flush();
+    const list = m.sent.find((f) => f.type === 'canvas_list');
+    assert.ok(list);
+    assert.deepEqual(list.canvases, []);
+  });
+});
