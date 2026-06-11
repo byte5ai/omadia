@@ -21,6 +21,14 @@
       "type": "string",
       "format": "date-time",
       "description": "ISO 8601 expiry. ≤ the server-secret lifetime."
+    },
+    "refreshable": {
+      "type": "boolean",
+      "description": "Protocol 1.1 (issue #5): true → the server holds a refresh recipe and re-resolves this data deterministically; the client may surface an instant-refresh affordance. Absent = unknown (agent-fallback refresh)."
+    },
+    "containerId": {
+      "type": "string",
+      "description": "Protocol 1.1: the canvas container (table/chart id) this ref's data feeds."
     }
   }
 }
