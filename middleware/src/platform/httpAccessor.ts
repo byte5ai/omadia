@@ -1,5 +1,7 @@
 import { isIP } from 'node:net';
 
+import { fetch as undiciFetch } from 'undici';
+
 import {
   HttpForbiddenError,
   HttpRateLimitError,
@@ -57,6 +59,10 @@ export function createHttpAccessor(opts: {
   extraHosts?: readonly string[];
   /** Override the default 60 req/min cap. Tests only — not wired to manifest yet. */
   rateLimitPerMinute?: number;
+  /** Test seam: the fetch used for the guarded public-web path. Production
+   *  uses undici's OWN fetch — it must match the guarded undici `Agent`, or
+   *  the global (version-skewed) fetch throws "invalid onRequestStart method". */
+  guardedFetch?: (url: string, init: Record<string, unknown>) => Promise<Response>;
 }): HttpAccessor {
   const { agentId, outbound } = opts;
   const limit = opts.rateLimitPerMinute ?? DEFAULT_RATE_LIMIT_PER_MINUTE;
@@ -80,6 +86,12 @@ export function createHttpAccessor(opts: {
   // The rebinding-safe dispatcher is built once and reused. Only public-web
   // mode needs it — the static-allow-list modes trust the named hosts.
   const guardedAgent = mode === 'public-web' ? createGuardedAgent() : undefined;
+
+  // The guarded path MUST use undici's own fetch (see `guardedFetch` doc).
+  const guardedFetch =
+    opts.guardedFetch ??
+    ((url: string, init: Record<string, unknown>): Promise<Response> =>
+      undiciFetch(url, init as Parameters<typeof undiciFetch>[1]) as unknown as Promise<Response>);
 
   return {
     async fetch(url: string, init?: RequestInit): Promise<Response> {
@@ -122,9 +134,8 @@ export function createHttpAccessor(opts: {
       }
 
       if (guardedAgent) {
-        // Node's global fetch (undici) honours `dispatcher`; the DOM
-        // RequestInit type does not declare it, hence the cast.
-        return fetch(url, { ...init, dispatcher: guardedAgent } as RequestInit);
+        // undici's own fetch + the undici guarded Agent (see `guardedFetch`).
+        return guardedFetch(url, { ...(init as Record<string, unknown>), dispatcher: guardedAgent });
       }
       return fetch(url, init);
     },

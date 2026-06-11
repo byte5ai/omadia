@@ -569,6 +569,7 @@ function extractPermissions(
   const memory = asRecord(permissions?.['memory']);
   const graph = asRecord(permissions?.['graph']);
   const network = asRecord(permissions?.['network']);
+  const rawAuditMode = network?.['audit_mode'];
   const subAgents = asRecord(permissions?.['subAgents']);
   // OB-29-1: per-tool-handler invocation budget. Default 5 when missing,
   // negative or non-integer values are clamped to 0 (effectively no calls).
@@ -605,6 +606,12 @@ function extractPermissions(
     graph_writes: extractStringArray(graph?.['writes']),
     network_outbound: extractStringArray(network?.['outbound']),
     network_web_scanner: network?.['web_scanner'] === true,
+    network_default_audit_mode:
+      rawAuditMode === 'single-host' ||
+      rawAuditMode === 'allowlist' ||
+      rawAuditMode === 'public-web'
+        ? rawAuditMode
+        : undefined,
     sub_agents_calls: extractStringArray(subAgents?.['calls']),
     sub_agents_calls_per_invocation: parsedBudget,
     graph_entity_systems: entitySystems,

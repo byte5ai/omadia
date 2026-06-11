@@ -138,17 +138,19 @@ describe('createHttpAccessor — public-web', () => {
     }
   });
 
-  it('reaches fetch for an arbitrary public hostname', async (t) => {
+  it('reaches the guarded fetch for an arbitrary public hostname', async () => {
     const seen: string[] = [];
-    t.mock.method(globalThis, 'fetch', async (u: string | URL) => {
-      seen.push(String(u));
-      return new Response('ok');
-    });
+    // public-web routes through undici's own fetch (NOT global fetch) so the
+    // guarded undici Agent matches; inject it via the test seam.
     const http = createHttpAccessor({
       agentId: 'a',
       outbound: [],
       webScanner: true,
       auditMode: 'public-web',
+      guardedFetch: async (u: string) => {
+        seen.push(String(u));
+        return new Response('ok');
+      },
     });
     const res = await http.fetch('https://wikipedia.org/wiki/Main_Page');
     assert.equal(await res.text(), 'ok');

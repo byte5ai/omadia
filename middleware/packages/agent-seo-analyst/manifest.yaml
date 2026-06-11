@@ -212,6 +212,14 @@ permissions:
     writes: []
 
   network:
+    # The SEO analyst fetches user-supplied public URLs (any domain), so it is
+    # a #91 web_scanner and declares public-web as its default audit mode. The
+    # kernel egress filter still hard-blocks private / loopback / link-local /
+    # cloud-metadata addresses at connect time (SSRF guard); an operator can
+    # tighten the mode to `allowlist` / `single-host` via the admin runtime
+    # config. `outbound` stays as the example host (used by `allowlist` mode).
+    web_scanner: true
+    audit_mode: "public-web"
     outbound:
       - "omadia.ai"
       - "*.omadia.ai"

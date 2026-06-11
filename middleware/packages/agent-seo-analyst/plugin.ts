@@ -26,7 +26,10 @@ export async function activate(ctx: PluginContext): Promise<AgentHandle> {
   }
   // #91 — operator-selected audit mode. Surfaced in the blocked-host error
   // path so the agent never silently substitutes a different URL.
-  const auditMode = ctx.config.get<string>('audit_mode') ?? 'single-host';
+  // Cosmetic only (surfaced in blocked-host errors + the self-test log). The
+  // ENFORCED mode lives in the kernel's ctx.http; the manifest declares
+  // `public-web` as the default audit mode, so mirror that when config is unset.
+  const auditMode = ctx.config.get<string>('audit_mode') ?? 'public-web';
   ctx.log('activating', { auditMode });
 
   const targetBaseUrl = ctx.config.get<string>('target_base_url') ?? DEFAULT_BASE_URL;

@@ -79,6 +79,13 @@ export interface PluginPermissionsSummary {
    *  the operator must confirm at install time. Optional; the loader
    *  defaults to `false`. */
   network_web_scanner?: boolean;
+  /** #91: a web_scanner plugin MAY declare its intended default audit mode
+   *  (`single-host` | `allowlist` | `public-web`). The kernel uses it as the
+   *  EFFECTIVE mode when the operator has not overridden `audit_mode` in the
+   *  installed-registry config — so a scanner ships open-by-intent without an
+   *  extra operator step. Ignored for non-web_scanner plugins (forced
+   *  `single-host`). Optional; the loader leaves it undefined when absent. */
+  network_default_audit_mode?: 'single-host' | 'allowlist' | 'public-web';
   /** OB-29-1: agentId whitelist this plugin may call via `ctx.subAgent.ask`.
    *  Wildcards allowed (`'de.byte5.agent.*'`). Optional to keep legacy
    *  fixtures buildable; the loader always populates with `[]` when the

@@ -786,9 +786,19 @@ function extractAuditConfig(
       if (typeof host === 'string' && host.length > 0) extraHosts.push(host);
     }
   }
+  // Operator override (registry config) wins; otherwise fall back to the audit
+  // mode the plugin manifest declared as its intended default (#91). A
+  // non-web_scanner plugin is still forced to single-host in createHttpAccessor,
+  // so this default only takes effect for declared scanners.
   const rawMode = config['audit_mode'];
+  const declaredDefault = catalog.get(agentId)?.plugin.permissions_summary.network_default_audit_mode;
+  const auditMode: AuditMode | undefined = isAuditMode(rawMode)
+    ? rawMode
+    : isAuditMode(declaredDefault)
+      ? declaredDefault
+      : undefined;
   return {
-    ...(isAuditMode(rawMode) ? { auditMode: rawMode } : {}),
+    ...(auditMode ? { auditMode } : {}),
     extraHosts,
   };
 }
