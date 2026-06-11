@@ -75,6 +75,7 @@ RULES:
 - dataRequirements: one entry per data-carrying container, naming EXACTLY the fieldKeys its columns/fields use.
 - INTERACTION: when the request implies picking between alternatives, render a choice (one option per alternative, stable values) — never plan a prose question. Editable parameters → input/toggle inside a form; primary commands → button with an action.
 - CHART TYPE is YOUR decision (Tier 2): time series / development over time → "line"; comparing categories → "bar"; share-of-whole → "pie". Each chart needs a dataRequirements entry with fields label + value.
+- SCALAR / KPI BLOCK (named single values like scores or metrics — NOT rows of a table): use a container with "loading":"skeleton" whose children are one small container per metric, each holding a "heading" (the label) and a VALUE node { "type":"text", "id":"<containerId>.<fieldKey>", "content":"" }. The value node id MUST be EXACTLY "<containerId>.<fieldKey>" — that id is how the fetched value is patched in. Add ONE dataRequirements entry for the block: { "containerId":"<id>", "fields":[ { "fieldKey", "label" }, … ] }. The main turn fills it with { containerId, fields:{ fieldKey: value } }, NOT rows. Use this for a header of scores/KPIs; use a table only for repeating records.
 - A fetched data set may be EMPTY — the table keeps rows:[]; never plan placeholder rows.
 - BE MINIMAL: compact JSON (no whitespace), only the containers the request needs, omit every optional prop you don't use. Latency scales with output length.
 
@@ -86,6 +87,15 @@ EXAMPLE — "Zeige Kursdetails inkl. Teilnehmer als Panes":
   ] }
 ] },
   "dataRequirements":[ { "containerId":"participants", "description":"Teilnehmerliste des Kurses", "fields":[ { "fieldKey":"name", "label":"Name" }, { "fieldKey":"status", "label":"Status" } ] } ] }
+
+EXAMPLE — a KPI/score header ("SEO-Score und Kennzahlen"):
+{ "tree": { "type":"container", "id":"root", "layout":"stack", "children":[
+  { "type":"container", "id":"scores", "layout":"grid", "loading":"skeleton", "children":[
+    { "type":"container", "id":"scores.seo_card", "layout":"stack", "children":[ { "type":"heading", "content":"SEO-Score", "level":4 }, { "type":"text", "id":"scores.seo", "content":"" } ] },
+    { "type":"container", "id":"scores.tech_card", "layout":"stack", "children":[ { "type":"heading", "content":"Technical", "level":4 }, { "type":"text", "id":"scores.technical", "content":"" } ] }
+  ] }
+] },
+  "dataRequirements":[ { "containerId":"scores", "description":"SEO-Kennzahlen", "fields":[ { "fieldKey":"seo", "label":"SEO-Score" }, { "fieldKey":"technical", "label":"Technical" } ] } ] }
 
 Output raw JSON only — no prose, no markdown fences.`;
 

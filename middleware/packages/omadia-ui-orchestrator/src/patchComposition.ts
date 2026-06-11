@@ -15,10 +15,15 @@ import { validateTree } from './treeValidator.js';
  * (instead of an LLM recomposition snapshot) is the deliberate v1 slice:
  * no mid-stream model call, no risk of a malformed patch.
  *
- * Two payload shapes are understood:
- *   - `data.rows`   → append rows onto the promised skeleton table. An EMPTY
- *     rows array is legitimate (the data set is genuinely empty) and still
- *     resolves the table's `loading:"skeleton"` state.
+ * Three payload shapes are understood:
+ *   - `data.rows`   → append rows onto the promised skeleton table (or points
+ *     onto a chart). An EMPTY rows array is legitimate (the data set is
+ *     genuinely empty) and still resolves the `loading:"skeleton"` state.
+ *   - `data.fields` → the scalar analogue of rows: a `{ fieldKey: value }`
+ *     object fills a KPI/score container whose value leaf nodes carry the id
+ *     `${containerId}.${fieldKey}` (text/heading `content`, status `text`).
+ *     Generic — any capability whose output_schema has a flat scalar object
+ *     (e.g. SEO `score{}`) renders without a bespoke producer.
  *   - `data.choice` → append a `choice` element (disambiguation: "which of
  *     these did you mean?") into the target container, so the user picks via
  *     the canvas instead of a prose round-trip.
@@ -253,6 +258,115 @@ function composeChoicePatch(opts: {
   return { patches, nextTree };
 }
 
+function isScalar(v: unknown): v is string | number | boolean {
+  return typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean';
+}
+
+/** The value-bearing prop of a fillable scalar LEAF primitive: text/heading
+ *  carry `content`, status carries `text`. null = not a scalar value node. */
+function scalarValueProp(node: Record<string, unknown>): 'content' | 'text' | null {
+  const t = node['type'];
+  if (t === 'text' || t === 'heading') return 'content';
+  if (t === 'status') return 'text';
+  return null;
+}
+
+function extractFields(
+  payload: PendingStructuredPayload,
+): Record<string, string | number | boolean> | null {
+  const data = payload.data;
+  if (typeof data !== 'object' || data === null) return null;
+  const fields = (data as { fields?: unknown }).fields;
+  if (typeof fields !== 'object' || fields === null || Array.isArray(fields)) return null;
+  const out: Record<string, string | number | boolean> = {};
+  for (const [k, v] of Object.entries(fields)) {
+    if (isScalar(v)) out[k] = v;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+const fieldText = (v: string | number | boolean): string =>
+  typeof v === 'string' ? stripInlineMarkdown(v) : String(v);
+
+/**
+ * Fill a KPI/score container from a `data.fields` payload — the scalar analogue
+ * of rows→table. Each value lives in a leaf node whose id is exactly
+ * `${containerId}.${fieldKey}`; we `replace` that leaf's value prop and resolve
+ * the container's (and leaf's) `loading:"skeleton"` to "none". Generic: the
+ * convention is schema-driven, not capability-specific.
+ *
+ * Returns null when no value node matches (unmappable → data stays prose) or the
+ * post-patch tree fails the whitelist.
+ */
+function composeFieldsPatch(opts: {
+  baseTree: unknown;
+  payload: PendingStructuredPayload;
+  refreshContainers?: Set<string>;
+  log?: (message: string) => void;
+}): ComposedPatch | null {
+  const fields = extractFields(opts.payload);
+  if (!fields) return null;
+  const containerId =
+    typeof (opts.payload.data as { containerId?: unknown }).containerId === 'string'
+      ? (opts.payload.data as { containerId: string }).containerId
+      : undefined;
+  if (!containerId) {
+    opts.log?.('[patch-composition] skip fields: no containerId');
+    return null;
+  }
+  const container = findNodeById(opts.baseTree, containerId, '');
+  if (!container) {
+    opts.log?.(`[patch-composition] skip fields: container ${containerId} not found`);
+    return null;
+  }
+
+  const patches: TreePatchOp[] = [];
+  if (container.node['loading'] === 'skeleton') {
+    patches.push({ op: 'replace', path: `${container.path}/loading`, value: 'none' });
+  }
+  let mappedAny = false;
+  for (const [fieldKey, value] of Object.entries(fields)) {
+    const hit = findNodeById(opts.baseTree, `${containerId}.${fieldKey}`, '');
+    if (!hit) continue;
+    const prop = scalarValueProp(hit.node);
+    if (!prop) continue;
+    patches.push({ op: 'replace', path: `${hit.path}/${prop}`, value: fieldText(value) });
+    if (hit.node['loading'] === 'skeleton') {
+      patches.push({ op: 'replace', path: `${hit.path}/loading`, value: 'none' });
+    }
+    mappedAny = true;
+  }
+  if (!mappedAny) {
+    opts.log?.(
+      `[patch-composition] skip fields: no value nodes (${containerId}.<fieldKey>) matched ` +
+        `(fields=${Object.keys(fields).join(',')})`,
+    );
+    return null;
+  }
+  // scalar set is idempotent, but keep the refresh bookkeeping consistent
+  opts.refreshContainers?.delete(containerId);
+  if (patches.length === 0) return null;
+
+  const nextTree = structuredClone(opts.baseTree);
+  const cNext = findNodeById(nextTree, containerId, '');
+  if (cNext && cNext.node['loading'] === 'skeleton') cNext.node['loading'] = 'none';
+  for (const [fieldKey, value] of Object.entries(fields)) {
+    const hit = findNodeById(nextTree, `${containerId}.${fieldKey}`, '');
+    if (!hit) continue;
+    const prop = scalarValueProp(hit.node);
+    if (!prop) continue;
+    hit.node[prop] = fieldText(value);
+    if (hit.node['loading'] === 'skeleton') hit.node['loading'] = 'none';
+  }
+
+  const valid = validateTree(nextTree);
+  if (!valid.ok) {
+    opts.log?.(`[patch-composition] skip fields: post-patch tree schema-invalid: ${valid.errors}`);
+    return null;
+  }
+  return { patches, nextTree };
+}
+
 export function composeStructuredPayloadPatch(opts: {
   baseTree: unknown;
   payload: PendingStructuredPayload;
@@ -274,6 +388,22 @@ export function composeStructuredPayloadPatch(opts: {
     (data as { choice?: unknown }).choice !== null
   ) {
     return composeChoicePatch(opts);
+  }
+
+  // Scalar/KPI container fill — the `data.fields` analogue of rows→table.
+  if (
+    typeof data === 'object' &&
+    data !== null &&
+    typeof (data as { fields?: unknown }).fields === 'object' &&
+    (data as { fields?: unknown }).fields !== null &&
+    !Array.isArray((data as { fields?: unknown }).fields)
+  ) {
+    return composeFieldsPatch({
+      baseTree: opts.baseTree,
+      payload: opts.payload,
+      ...(opts.refreshContainers ? { refreshContainers: opts.refreshContainers } : {}),
+      ...(opts.log ? { log: opts.log } : {}),
+    });
   }
 
   const rows = extractRows(opts.payload);

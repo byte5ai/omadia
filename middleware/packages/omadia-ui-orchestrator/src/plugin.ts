@@ -75,17 +75,38 @@ export interface UiOrchestratorPluginHandle {
 export const CANVAS_PUBLISH_TOOL = 'canvas_publish_rows';
 
 /** NativeToolHandler for {@link CANVAS_PUBLISH_TOOL}. Exported for tests.
- *  An EMPTY rows array is legitimate (the data set is genuinely empty) — the
- *  sentinel still resolves the skeleton's loading state client-side. */
+ *  Accepts EITHER `rows` (tabular → table/chart) OR `fields` (a flat scalar
+ *  object → a KPI/score container). An EMPTY rows array is legitimate (the data
+ *  set is genuinely empty) — the sentinel still resolves the skeleton's loading
+ *  state client-side. */
 export async function handleCanvasPublishRows(input: unknown): Promise<string> {
   const args = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>;
   const containerId = typeof args['containerId'] === 'string' ? args['containerId'].trim() : '';
-  if (containerId.length === 0 || !Array.isArray(args['rows'])) {
-    return 'Error: canvas_publish_rows requires a containerId and a rows array of objects (rows may be empty for an empty data set).';
+  const hasRows = Array.isArray(args['rows']);
+  const fieldsRaw = args['fields'];
+  const hasFields =
+    typeof fieldsRaw === 'object' && fieldsRaw !== null && !Array.isArray(fieldsRaw);
+  if (containerId.length === 0 || (!hasRows && !hasFields)) {
+    return (
+      'Error: canvas_publish_rows requires a containerId and EITHER a rows array of objects ' +
+      '(tabular data → table/chart; may be empty for an empty data set) OR a fields object ' +
+      '{ fieldKey: value } of named scalar values (KPI/score container).'
+    );
   }
-  const rows = args['rows'].filter(
-    (r): r is Record<string, unknown> => typeof r === 'object' && r !== null && !Array.isArray(r),
-  );
+  const rows = hasRows
+    ? (args['rows'] as unknown[]).filter(
+        (r): r is Record<string, unknown> => typeof r === 'object' && r !== null && !Array.isArray(r),
+      )
+    : [];
+  // Scalar/KPI payload: keep only scalar values (strings/numbers/booleans).
+  const fields = hasFields
+    ? Object.fromEntries(
+        Object.entries(fieldsRaw as Record<string, unknown>).filter(
+          ([, v]) => typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean',
+        ),
+      )
+    : undefined;
+  const hasMappableFields = fields !== undefined && Object.keys(fields).length > 0;
   // Optional agent-authored row context-menu entries for the published
   // container — the client renders them in the context-invoke panel instead
   // of its generic fallback. The agent knows the CURRENT view; the client
@@ -106,9 +127,11 @@ export async function handleCanvasPublishRows(input: unknown): Promise<string> {
   const prose =
     typeof args['prose'] === 'string' && args['prose'].trim().length > 0
       ? args['prose'].trim()
-      : rows.length === 0
-        ? `No rows for ${containerId} — the data set is empty.`
-        : `Published ${rows.length} row(s) for ${containerId}.`;
+      : hasMappableFields
+        ? `Published ${Object.keys(fields as object).length} field(s) for ${containerId}.`
+        : rows.length === 0
+          ? `No rows for ${containerId} — the data set is empty.`
+          : `Published ${rows.length} row(s) for ${containerId}.`;
   const chartType =
     args['chartType'] === 'bar' || args['chartType'] === 'line' || args['chartType'] === 'pie'
       ? args['chartType']
@@ -124,7 +147,9 @@ export async function handleCanvasPublishRows(input: unknown): Promise<string> {
       dataRefId: randomUUID(),
       data: {
         containerId,
-        rows,
+        // A fields publish targets a scalar/KPI container; omit `rows` so the
+        // synthesis layer routes it through the fields branch, not the table one.
+        ...(hasMappableFields ? { fields } : { rows }),
         ...(source ? { source } : {}),
         ...(actions.length > 0 ? { actions } : {}),
         ...(chartType ? { chartType } : {}),
@@ -208,14 +233,16 @@ export async function activate(
     {
       name: CANVAS_PUBLISH_TOOL,
       description:
-        'Publish fetched data rows for an Omadia UI canvas container. Use ONLY when the user ' +
+        'Publish fetched data for an Omadia UI canvas container. Use ONLY when the user ' +
         'message carries a [canvas-context] block: call it for each containerId from its ' +
-        'dataRequirements, with rows keyed EXACTLY by the promised fieldKeys. Large data sets ' +
-        'MUST go out in batches of at most 30 rows per call — repeated calls for the same ' +
-        'containerId APPEND; make ONE call, wait for its result, then publish the next batch ' +
-        'until every row is out (a single oversized call risks being truncated and dropped ' +
-        'entirely). The rows render directly into the already-visible canvas table — do not ' +
-        'repeat them as text afterwards.',
+        'dataRequirements. TWO shapes — pick by the container the dataRequirement describes: ' +
+        '(1) TABULAR containers (a row per record) → pass `rows` keyed EXACTLY by the promised ' +
+        'fieldKeys; large sets go out in batches of at most 30 rows per call (repeated calls ' +
+        'for the same containerId APPEND — one call at a time until every row is out; a single ' +
+        'oversized call risks being truncated and dropped). (2) SCALAR/KPI containers (named ' +
+        'single values, e.g. a score block) → pass `fields` as a { fieldKey: value } object ' +
+        'instead of rows. The data renders directly into the already-visible canvas — do not ' +
+        'repeat it as text afterwards.',
       input_schema: {
         type: 'object',
         properties: {
@@ -227,12 +254,21 @@ export async function activate(
             type: 'array',
             items: { type: 'object' },
             description:
-              'one object per row, AT MOST 30 rows per call (more rows → follow-up calls to the ' +
-              'same containerId, they append); keys = the promised fieldKeys (optional rowKey/id ' +
-              'for stable row identity). MAY be empty ([]) when the fetched data set is genuinely ' +
-              'empty — the table then shows its empty state; never invent rows. For a CHART ' +
-              'container, each row carries { label: string, value: number } — one row per data ' +
-              'point.',
+              'TABULAR containers: one object per row, AT MOST 30 rows per call (more rows → ' +
+              'follow-up calls to the same containerId, they append); keys = the promised ' +
+              'fieldKeys (optional rowKey/id for stable row identity). MAY be empty ([]) when ' +
+              'the fetched data set is genuinely empty — the table then shows its empty state; ' +
+              'never invent rows. For a CHART container, each row carries { label: string, ' +
+              'value: number } — one row per data point. Use `fields` instead for scalar/KPI ' +
+              'containers.',
+          },
+          fields: {
+            type: 'object',
+            description:
+              'SCALAR/KPI containers ONLY: a flat { fieldKey: value } object of named single ' +
+              'values (e.g. a score block: { "seo": 82, "mobile": 90 }). Keys = the promised ' +
+              'fieldKeys; values are plain scalars (string/number/boolean). Use INSTEAD of ' +
+              '`rows` — never both. The values fill the container’s cards in place.',
           },
           prose: {
             type: 'string',
@@ -292,7 +328,7 @@ export async function activate(
               'is already in. Omit to keep the client’s generic fallback.',
           },
         },
-        required: ['containerId', 'rows'],
+        required: ['containerId'],
       },
     },
     handleCanvasPublishRows,
@@ -431,6 +467,10 @@ export async function activate(
             'checks, or tool calls — the canvas is the output channel. Fetch ' +
             'the data, then call the canvas_publish_rows tool for each ' +
             'containerId with rows keyed EXACTLY by the promised fieldKeys. ' +
+            'A dataRequirement that describes a SCALAR/KPI block (named single ' +
+            'values, e.g. a score block — its fields are individual metrics, ' +
+            'not table columns) is filled by passing `fields` ({ fieldKey: ' +
+            'value }) INSTEAD of rows. ' +
             'BATCH RULE: at most 30 rows per call — for larger sets publish ' +
             'batch after batch to the same containerId (calls append), one ' +
             'call at a time, until every row is out; NEVER pack the whole set ' +
@@ -645,6 +685,39 @@ export async function activate(
 /** Derive the refreshable data requirements from a canvas tree itself — the
  *  tables' own columns ARE the field contract the original skeleton promised
  *  (deterministic, no LLM; omadia-ui#5). `scope` narrows to one containerId. */
+/** Scalar/KPI value leaves carry id `${containerId}.${fieldKey}` (the
+ *  fields-publish convention). Collect the single-segment fieldKeys of the
+ *  scalar leaves (text/heading/status) under `container`. */
+function collectFieldLeafKeys(container: Record<string, unknown>, containerId: string): string[] {
+  const prefix = `${containerId}.`;
+  const keys = new Set<string>();
+  const walk = (n: unknown): void => {
+    if (Array.isArray(n)) {
+      for (const c of n) walk(c);
+      return;
+    }
+    if (typeof n !== 'object' || n === null) return;
+    const node = n as Record<string, unknown>;
+    const nid = typeof node['id'] === 'string' ? node['id'] : undefined;
+    const type = node['type'];
+    if (
+      nid &&
+      nid.startsWith(prefix) &&
+      (type === 'text' || type === 'heading' || type === 'status')
+    ) {
+      const seg = nid.slice(prefix.length);
+      if (seg.length > 0 && !seg.includes('.')) keys.add(seg);
+    }
+    for (const value of Object.values(node)) {
+      if (typeof value === 'object' && value !== null) walk(value);
+    }
+  };
+  for (const value of Object.values(container)) {
+    if (typeof value === 'object' && value !== null) walk(value);
+  }
+  return [...keys];
+}
+
 export function deriveDataRequirements(tree: unknown, scope?: string): DataRequirement[] {
   const out: DataRequirement[] = [];
   const walk = (n: unknown): void => {
@@ -679,6 +752,17 @@ export function deriveDataRequirements(tree: unknown, scope?: string): DataRequi
             { fieldKey: 'value', label: 'value' },
           ],
         });
+      } else {
+        // Scalar/KPI container: its value leaves carry id `${id}.${fieldKey}`
+        // (the fields-publish convention). The leaf ids ARE the field contract.
+        const fieldKeys = collectFieldLeafKeys(node, id);
+        if (fieldKeys.length > 0) {
+          out.push({
+            containerId: id,
+            description: `refresh fields: ${String(node['title'] ?? id)}`,
+            fields: fieldKeys.map((k) => ({ fieldKey: k, label: k })),
+          });
+        }
       }
     }
     for (const value of Object.values(node)) {

@@ -145,6 +145,49 @@ describe('canvas_publish_rows producer tool', () => {
     assert.equal(composed.patches.length, 3, 'loading replace + 2 row adds');
   });
 
+  it('emits a fields sentinel that fills a scalar/KPI container (no rows)', async () => {
+    const out = await handleCanvasPublishRows({
+      containerId: 'scores',
+      fields: { seo: 82, technical: 'OK' },
+      prose: 'Scores veröffentlicht.',
+    });
+    const payload = parseToolEmittedStructuredPayload(out);
+    assert.ok(payload, 'handler output carries the sentinel');
+    // a fields publish carries `fields`, not `rows`
+    assert.deepEqual((payload.data as { fields?: unknown }).fields, { seo: 82, technical: 'OK' });
+    assert.equal((payload.data as { rows?: unknown }).rows, undefined);
+
+    const baseTree = {
+      type: 'container',
+      id: 'root',
+      layout: 'stack',
+      children: [
+        {
+          type: 'container',
+          id: 'scores',
+          layout: 'grid',
+          loading: 'skeleton',
+          children: [
+            { type: 'text', id: 'scores.seo', content: '' },
+            { type: 'text', id: 'scores.technical', content: '' },
+          ],
+        },
+      ],
+    };
+    const composed = composeStructuredPayloadPatch({
+      baseTree,
+      payload,
+      dataRequirements: [{ containerId: 'scores', description: 'Scores', fields: [] }],
+    });
+    assert.ok(composed, 'fields payload maps onto the scalar container');
+    const tree = composed.nextTree as {
+      children: Array<{ loading?: string; children: Array<{ content?: string }> }>;
+    };
+    assert.equal(tree.children[0]?.loading, 'none');
+    assert.equal(tree.children[0]?.children[0]?.content, '82');
+    assert.equal(tree.children[0]?.children[1]?.content, 'OK');
+  });
+
   it('maps agent-authored actions onto the table as suggestedActions and strips markdown in cells', async () => {
     const out = await handleCanvasPublishRows({
       containerId: 'courses',

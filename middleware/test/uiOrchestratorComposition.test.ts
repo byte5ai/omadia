@@ -251,6 +251,121 @@ describe('composeStructuredPayloadPatch', () => {
   });
 });
 
+describe('composeStructuredPayloadPatch — fields (scalar/KPI)', () => {
+  // a KPI block: value leaves carry id `${containerId}.${fieldKey}`
+  const KPI_TREE = {
+    type: 'container',
+    id: 'root',
+    layout: 'stack',
+    children: [
+      {
+        type: 'container',
+        id: 'scores',
+        layout: 'grid',
+        loading: 'skeleton',
+        children: [
+          {
+            type: 'container',
+            id: 'scores.seo_card',
+            layout: 'stack',
+            children: [
+              { type: 'heading', id: 'scores.seo_card.h', content: 'SEO', level: 4 },
+              { type: 'text', id: 'scores.seo', content: '' },
+            ],
+          },
+          {
+            type: 'container',
+            id: 'scores.tech_card',
+            layout: 'stack',
+            children: [
+              { type: 'heading', id: 'scores.tech_card.h', content: 'Technical', level: 4 },
+              { type: 'text', id: 'scores.technical', content: '' },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+
+  it('fills value leaves `${containerId}.${fieldKey}` from data.fields and resolves loading', () => {
+    const composed = composeStructuredPayloadPatch({
+      baseTree: KPI_TREE,
+      payload: {
+        prose: '2 scores',
+        dataRefId: 'seo-1',
+        data: { containerId: 'scores', fields: { seo: 82, technical: 'OK' } },
+      },
+      dataRequirements: [
+        {
+          containerId: 'scores',
+          description: 'scores',
+          fields: [
+            { fieldKey: 'seo', label: 'SEO' },
+            { fieldKey: 'technical', label: 'Technical' },
+          ],
+        },
+      ],
+    });
+    assert.ok(composed, 'fields patch composed');
+    // container skeleton resolved + each value leaf replaced (as text)
+    assert.ok(composed?.patches.some((p) => p.path === '/children/0/loading' && p.op === 'replace'));
+    // value leaf `scores.seo` lives at /children/0/children/0/children/1 (the text node)
+    const seoPatch = composed?.patches.find(
+      (p) => p.path === '/children/0/children/0/children/1/content',
+    );
+    assert.equal(seoPatch?.op, 'replace');
+    assert.equal(seoPatch?.value, '82');
+    const tree = composed?.nextTree as typeof KPI_TREE;
+    assert.equal(tree.children[0]?.loading, 'none');
+    assert.equal(
+      (tree.children[0]?.children?.[0]?.children?.[1] as { content?: string }).content,
+      '82',
+    );
+    assert.equal(
+      (tree.children[0]?.children?.[1]?.children?.[1] as { content?: string }).content,
+      'OK',
+    );
+  });
+
+  it('returns null when no value leaf matches a field key (unmappable → prose)', () => {
+    assert.equal(
+      composeStructuredPayloadPatch({
+        baseTree: KPI_TREE,
+        payload: {
+          prose: 'x',
+          dataRefId: 'd1',
+          data: { containerId: 'scores', fields: { unknown_metric: 5 } },
+        },
+        dataRequirements: [],
+      }),
+      null,
+    );
+  });
+
+  it('drops non-scalar field values, keeps scalar ones', () => {
+    const composed = composeStructuredPayloadPatch({
+      baseTree: KPI_TREE,
+      payload: {
+        prose: 'x',
+        dataRefId: 'd2',
+        data: { containerId: 'scores', fields: { seo: 90, technical: { nested: true } } },
+      },
+      dataRequirements: [],
+    });
+    assert.ok(composed, 'composed with the one scalar field');
+    const tree = composed?.nextTree as typeof KPI_TREE;
+    assert.equal(
+      (tree.children[0]?.children?.[0]?.children?.[1] as { content?: string }).content,
+      '90',
+    );
+    // the object-valued field was dropped → its leaf stays empty
+    assert.equal(
+      (tree.children[0]?.children?.[1]?.children?.[1] as { content?: string }).content,
+      '',
+    );
+  });
+});
+
 // ── plugin-level: the canvas turn stream ──
 
 function makeCtx(opts?: { llm?: CompositionLlm; config?: Record<string, string> }) {
