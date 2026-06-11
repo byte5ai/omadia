@@ -34,6 +34,10 @@
           "description": "theme tokens only (clipped by the Tier-1 normaliser). Includes the typographic registers 'prose'/'mono' on text.",
           "items": { "enum": ["compact", "spacious", "accent", "no-accent", "prose", "mono", "center-glyph"] }
         },
+        "tone": {
+          "description": "semantic severity hint the renderer maps to a Lume status colour (e.g. a PASS/WARN/FAIL chip). Purely presentational; default 'neutral'.",
+          "enum": ["neutral", "info", "success", "warning", "danger"]
+        },
         "continuous-input": { "type": "boolean" },
         "selection-region": {
           "type": "object", "additionalProperties": false, "required": ["kind"],
