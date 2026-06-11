@@ -44,11 +44,14 @@ import { synthesizeSurfaceEvents } from './surfaceSynthesis.js';
  * Non-canvas turns (and the `chat()` path) pass straight through, byte-for-byte.
  * The base orchestrator tool loop is untouched.
  *
- * Still to land (later 9b slices): per-`canvasSessionId` write mutex +
- * cross-turn `surfaceSeq`/state persistence (PR-9b-3), DataRef HMAC signing,
- * the boot-computed canvas-output allow-set (PR-7b wiring — until then the
- * `canvas_output_tools` config field is the operator-managed interim allow-set,
- * deny-by-default when unset).
+ * Landed (PR-9b-3): the per-`canvasSessionId` write mutex (serialises all
+ * surface writes for one canvas), in-place action turns (the client's live tree
+ * via `canvasState` → skeleton skipped, patched on top), and DataRef HMAC
+ * sign+verify (see `dataRef.ts`). The boot-computed canvas-output allow-set is
+ * effectively covered by capability autodiscovery (declare→resolve→derive); the
+ * `canvas_output_tools` config field remains the operator override, deny-by-
+ * default when unset. Still open: a token-validated bulk-data FETCH path (the
+ * verify primitive is ready; the consumer endpoint is a later slice).
  */
 
 /**
@@ -403,6 +406,36 @@ export async function activate(
   // from the `source` param, replayed via ctx.tools.invoke on canvas_refresh.
   // In-memory per process — a recipe-less canvas falls back to the agent path.
   const refreshRecipes = createRecipeStore();
+
+  // Per-canvasSessionId write mutex (9b-3). A canvas turn mutates ONE shared
+  // surface: it counts revisions and patches a tree from a base revision. Two
+  // clients on the SAME canvas (multi-window, or a refresh racing a turn from a
+  // second socket) would otherwise interleave surface_* events at colliding
+  // revisions and force a resync. Each canvas turn/refresh for a session runs
+  // behind the previous one; classic turns (no canvasSessionId) never queue.
+  // The lock is held for the WHOLE stream and released in finally, so an abort
+  // (generator .return()) or a mid-stream throw always frees the next turn.
+  const sessionTail = new Map<string, Promise<void>>();
+  async function* serializePerSession(
+    sessionId: string,
+    make: () => AsyncGenerator<ChatStreamEvent>,
+  ): AsyncGenerator<ChatStreamEvent> {
+    const prev = sessionTail.get(sessionId) ?? Promise.resolve();
+    let release!: () => void;
+    const mine = new Promise<void>((r) => (release = r));
+    const tail = prev.then(() => mine);
+    sessionTail.set(sessionId, tail);
+    // a failed/aborted prior turn must never wedge the queue
+    await prev.catch(() => {});
+    try {
+      yield* make();
+    } finally {
+      release();
+      // GC: drop the entry only if no later turn chained after ours
+      if (sessionTail.get(sessionId) === tail) sessionTail.delete(sessionId);
+    }
+  }
+
   const captureSource = (canvasSessionId: string) => (containerId: string, raw: unknown) => {
     const source = parseRefreshSource(raw);
     if (!source) return undefined;
@@ -720,10 +753,13 @@ export async function activate(
       // Only a canvas turn (channel-threaded canvasSessionId) gets composition
       // + surface synthesis; classic turns pass straight through, byte-for-byte.
       if (!input.canvasSessionId) return base.chatStream(input, observer);
+      const sid = input.canvasSessionId;
+      // Serialise all writes to a single canvas behind the per-session mutex.
       if (input.canvasRefresh) {
-        return canvasRefreshStream(input, observer, base, input.canvasSessionId, input.canvasRefresh);
+        const refresh = input.canvasRefresh;
+        return serializePerSession(sid, () => canvasRefreshStream(input, observer, base, sid, refresh));
       }
-      return canvasTurnStream(input, observer, base, input.canvasSessionId);
+      return serializePerSession(sid, () => canvasTurnStream(input, observer, base, sid));
     },
   };
 

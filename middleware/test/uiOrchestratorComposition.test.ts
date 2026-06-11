@@ -601,3 +601,63 @@ describe('canvasChatAgent — in-place action (canvasState, 9b-3)', () => {
     assert.deepEqual(field(snaps[0] as ChatStreamEvent, 'tree'), NEW_TREE);
   });
 });
+
+// ── PR-9b-3: per-canvasSessionId write mutex ──
+
+describe('canvasChatAgent — per-session write mutex (9b-3)', () => {
+  // a base whose chatStream records enter/exit order and holds for a tick, so
+  // an unserialised second turn would interleave (start-1, start-2, …).
+  function recordingBundle(order: string[]): ChatAgentBundle {
+    let n = 0;
+    return {
+      agent: {
+        chat: () => Promise.resolve({ text: 'x' }),
+        async *chatStream() {
+          const id = ++n;
+          order.push(`start-${id}`);
+          await new Promise((r) => setTimeout(r, 5));
+          order.push(`end-${id}`);
+          yield { type: 'done', answer: 'x' } as unknown as ChatStreamEvent;
+        },
+      },
+    };
+  }
+
+  const inPlaceTurn = (canvasSessionId: string): ChatTurnInput =>
+    ({
+      userMessage: 'go',
+      canvasSessionId,
+      action: { type: 'a' },
+      canvasState: {
+        basedOnRevision: '0',
+        currentTree: { type: 'container', id: 'root', layout: 'stack', children: [] },
+      },
+    }) as unknown as ChatTurnInput;
+
+  it('serialises two concurrent turns on the SAME canvas session', async () => {
+    const order: string[] = [];
+    const { ctx, reg } = makeCtx();
+    reg.set(CHAT_AGENT_SERVICE, recordingBundle(order));
+    await activate(ctx);
+    const agent = (reg.get('canvasChatAgent') as ChatAgentBundle).agent;
+    await Promise.all([
+      collect(agent.chatStream(inPlaceTurn('shared'))),
+      collect(agent.chatStream(inPlaceTurn('shared'))),
+    ]);
+    assert.deepEqual(order, ['start-1', 'end-1', 'start-2', 'end-2'], 'second turn waits for the first');
+  });
+
+  it('does NOT serialise turns on different canvas sessions', async () => {
+    const order: string[] = [];
+    const { ctx, reg } = makeCtx();
+    reg.set(CHAT_AGENT_SERVICE, recordingBundle(order));
+    await activate(ctx);
+    const agent = (reg.get('canvasChatAgent') as ChatAgentBundle).agent;
+    await Promise.all([
+      collect(agent.chatStream(inPlaceTurn('cs-a'))),
+      collect(agent.chatStream(inPlaceTurn('cs-b'))),
+    ]);
+    // both start before either ends — independent canvases run concurrently
+    assert.deepEqual(order.slice(0, 2), ['start-1', 'start-2'], 'distinct sessions interleave');
+  });
+});
