@@ -235,7 +235,9 @@ function LoginPageInner(): React.ReactElement {
 function PageShell({ children }: { children: React.ReactNode }): React.ReactElement {
   return (
     <main className="flex min-h-screen items-center justify-center px-4">
-      <div className="w-full max-w-sm rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-6 shadow-sm">
+      {/* Lume modal-class surface: the login card is the lit object (§2.10
+          elev.modal carries the accent-glow components). */}
+      <div className="lume-surface-raised lume-border w-full max-w-sm rounded-lg p-6 shadow-[var(--shadow-lg)]">
         <header className="mb-6 flex flex-col leading-none">
           <h1 className="font-display text-3xl text-[color:var(--fg-strong)]">
             Omadia

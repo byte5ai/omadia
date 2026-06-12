@@ -194,11 +194,13 @@ body {
 .md-view code {
   @apply rounded px-1 py-0.5 text-[0.85em];
   font-family: var(--font-mono);
-  background: var(--bg-soft);
+  background: linear-gradient(180deg, var(--bg-surface-sunken-top) 0%, var(--bg-surface-sunken-btm) 100%);
 }
 .md-view pre {
-  @apply my-3 overflow-x-auto rounded p-3 text-xs;
-  background: var(--bg-soft);
+  @apply my-3 overflow-x-auto rounded-md p-3 text-xs;
+  background: linear-gradient(180deg, var(--bg-surface-sunken-top) 0%, var(--bg-surface-sunken-btm) 100%);
+  border: 1px solid var(--border-subtle-btm);
+  border-top-color: var(--border-subtle-top);
 }
 .md-view pre code {
   @apply bg-transparent p-0 text-xs;
@@ -235,6 +237,177 @@ body {
 .md-view hr {
   @apply my-3;
   border-color: var(--divider);
+}
+
+/* ========================================================================== */
+/* Lume material layer — auto-applied (spec §4.1).                            */
+/*                                                                            */
+/* The component code paints flat token fills (`bg-[color:var(--card)]`,      */
+/* `bg-[color:var(--accent)]`, ...). Lume's material is not flat: surfaces    */
+/* are gradient pairs, borders are directional, accent fills emit light.      */
+/* Rather than editing 300+ call sites, this layer matches the existing       */
+/* utility class *strings* and upgrades them to the §3 recipes. These rules   */
+/* are intentionally UN-layered: in Tailwind v4 utilities live in             */
+/* `@layer utilities`, and un-layered author CSS wins the cascade — so the    */
+/* material applies on top of every existing component without touching it.  */
+/*                                                                            */
+/* Pattern notes:                                                             */
+/*   [class^='X'], [class*=' X']  → matches X as a *base* utility only        */
+/*     (not `hover:X`, which would otherwise substring-match).                */
+/*   :not([class*='X/'])          → skips translucent variants (`X/40`),      */
+/*     which components use deliberately for washes and scrims.               */
+/* ========================================================================== */
+
+/* ---- Pane surfaces (ladder depth 1): bg / paper → bg.surface gradient ---- */
+[class^='bg-[color:var(--bg)]']:not([class*='bg-[color:var(--bg)]/']),
+[class*=' bg-[color:var(--bg)]']:not([class*='bg-[color:var(--bg)]/']),
+[class^='bg-[color:var(--paper)]']:not([class*='bg-[color:var(--paper)]/']),
+[class*=' bg-[color:var(--paper)]']:not([class*='bg-[color:var(--paper)]/']) {
+  background: linear-gradient(180deg, var(--bg-surface-top) 0%, var(--bg-surface-btm) 100%);
+}
+
+/* ---- Raised surfaces (depth 3): card / surface / bg-elevated ------------- */
+[class^='bg-[color:var(--card)]']:not([class*='bg-[color:var(--card)]/']),
+[class*=' bg-[color:var(--card)]']:not([class*='bg-[color:var(--card)]/']),
+[class^='bg-[color:var(--surface)]']:not([class*='bg-[color:var(--surface)]/']),
+[class*=' bg-[color:var(--surface)]']:not([class*='bg-[color:var(--surface)]/']),
+[class^='bg-[color:var(--bg-elevated)]']:not([class*='bg-[color:var(--bg-elevated)]/']),
+[class*=' bg-[color:var(--bg-elevated)]']:not([class*='bg-[color:var(--bg-elevated)]/']) {
+  background: linear-gradient(180deg, var(--bg-surface-raised-top) 0%, var(--bg-surface-raised-btm) 100%);
+  border-color: var(--border-subtle-btm);
+  border-top-color: var(--border-subtle-top);
+}
+/* Inset top-edge highlight (§3.4) — only when the element doesn't manage its
+   own shadow stack (modals carry elev tokens that already include it). */
+[class^='bg-[color:var(--card)]']:not([class*='bg-[color:var(--card)]/']):not([class*='shadow-']),
+[class*=' bg-[color:var(--card)]']:not([class*='bg-[color:var(--card)]/']):not([class*='shadow-']),
+[class^='bg-[color:var(--surface)]']:not([class*='bg-[color:var(--surface)]/']):not([class*='shadow-']),
+[class*=' bg-[color:var(--surface)]']:not([class*='bg-[color:var(--surface)]/']):not([class*='shadow-']),
+[class^='bg-[color:var(--bg-elevated)]']:not([class*='bg-[color:var(--bg-elevated)]/']):not([class*='shadow-']),
+[class*=' bg-[color:var(--bg-elevated)]']:not([class*='bg-[color:var(--bg-elevated)]/']):not([class*='shadow-']) {
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.06) inset;
+}
+
+/* ---- Sunken surfaces (depth 4+): bg-soft / surface-muted / bg-subtle ----- */
+[class^='bg-[color:var(--bg-soft)]']:not([class*='bg-[color:var(--bg-soft)]/']),
+[class*=' bg-[color:var(--bg-soft)]']:not([class*='bg-[color:var(--bg-soft)]/']),
+[class^='bg-[color:var(--surface-muted)]']:not([class*='bg-[color:var(--surface-muted)]/']),
+[class*=' bg-[color:var(--surface-muted)]']:not([class*='bg-[color:var(--surface-muted)]/']),
+[class^='bg-[color:var(--bg-subtle)]']:not([class*='bg-[color:var(--bg-subtle)]/']),
+[class*=' bg-[color:var(--bg-subtle)]']:not([class*='bg-[color:var(--bg-subtle)]/']) {
+  background: linear-gradient(180deg, var(--bg-surface-sunken-top) 0%, var(--bg-surface-sunken-btm) 100%);
+}
+
+/* ---- Hover wash for interactive surfaces ---------------------------------
+   The base rules above out-cascade `hover:bg-*` utilities, so interactive
+   elements would lose hover feedback. Restore it the Lume way: the agent's
+   attention as an accent-subtle tint over the gradient (inset-spread trick
+   tints without replacing the background). */
+a:hover[class*='bg-[color:var(--'],
+button:hover[class*='bg-[color:var(--']:not([class*='bg-[color:var(--accent)]']):not(:disabled),
+[role='button']:hover[class*='bg-[color:var(--']:not([class*='bg-[color:var(--accent)]']) {
+  box-shadow: inset 0 0 0 999px var(--accent-subtle);
+}
+
+/* ---- Accent fills: the lit elements (§4.2 button-primary) ---------------- */
+[class^='bg-[color:var(--accent)]']:not([class*='bg-[color:var(--accent)]/']),
+[class*=' bg-[color:var(--accent)]']:not([class*='bg-[color:var(--accent)]/']) {
+  background: linear-gradient(180deg, var(--accent) 0%, var(--accent-hover) 100%);
+  border-color: var(--accent-hover);
+  border-top-color: rgba(255, 255, 255, 0.18);
+  color: var(--accent-fg);
+  box-shadow: 0 0 4px var(--accent-glow-core), 0 4px 12px var(--accent-glow);
+  transition:
+    box-shadow var(--motion-quick) var(--easing-standard),
+    filter var(--motion-quick) var(--easing-standard);
+}
+a[class^='bg-[color:var(--accent)]']:hover,
+a[class*=' bg-[color:var(--accent)]']:hover,
+button[class^='bg-[color:var(--accent)]']:hover:not(:disabled),
+button[class*=' bg-[color:var(--accent)]']:hover:not(:disabled) {
+  box-shadow: 0 0 6px var(--accent-glow-core), 0 6px 18px var(--accent-glow-strong);
+  filter: brightness(1.04);
+}
+button[class^='bg-[color:var(--accent)]']:active:not(:disabled),
+button[class*=' bg-[color:var(--accent)]']:active:not(:disabled) {
+  background: var(--accent-active);
+  filter: none;
+}
+/* Focus on accent fills: §4.2 layered ring on top of the two-stop glow. */
+[class^='bg-[color:var(--accent)]']:focus-visible,
+[class*=' bg-[color:var(--accent)]']:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px var(--bg),
+    0 0 0 4px var(--accent),
+    0 0 4px var(--accent-glow-core),
+    0 4px 12px var(--accent-glow);
+}
+
+/* ---- Inputs (§4.2 input): raised gradient, directional border, lit focus - */
+input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']):not([type='color']):not([type='hidden']),
+select,
+textarea {
+  background: linear-gradient(180deg, var(--bg-surface-raised-top) 0%, var(--bg-surface-raised-btm) 100%);
+  border-color: var(--border-default-btm);
+  border-top-color: var(--border-default-top);
+  transition:
+    border-color var(--motion-quick) var(--easing-standard),
+    box-shadow var(--motion-quick) var(--easing-standard);
+}
+input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']):not([type='color']):not([type='hidden']):focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  border-top-color: var(--accent);
+  box-shadow:
+    0 0 0 1px var(--accent),
+    0 0 0 4px var(--accent-glow),
+    0 0 12px var(--accent-glow-core);
+}
+/* Checked choice controls emit a small glow (§4.2 choice/toggle). */
+input[type='checkbox']:checked,
+input[type='radio']:checked {
+  accent-color: var(--accent);
+  box-shadow: 0 0 3px var(--accent-glow-core), 0 0 6px var(--accent-glow);
+}
+input[type='checkbox'],
+input[type='radio'] {
+  accent-color: var(--accent);
+}
+
+/* ---- Focus emits light, everywhere (§4.1) -------------------------------- */
+button:focus-visible,
+a:focus-visible,
+summary:focus-visible,
+[role='button']:focus-visible,
+[tabindex]:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent), 0 0 0 6px var(--accent-glow);
+}
+
+/* ---- Text selection: a lit pocket ----------------------------------------- */
+::selection {
+  background: var(--accent-glow);
+  color: var(--fg-strong);
+}
+
+/* ---- Scrollbars follow the material --------------------------------------- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+/* ---- App header: pane-class chrome with directional bottom edge ----------- */
+.app-header {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--bg-surface-top) 90%, transparent) 0%,
+    color-mix(in srgb, var(--bg-surface-btm) 90%, transparent) 100%
+  );
+  border-bottom: 1px solid var(--border-subtle-btm);
+  box-shadow: 0 1px 0 var(--border-subtle-top) inset;
 }
 
 /* ------------------------------------------------------------------------ */
