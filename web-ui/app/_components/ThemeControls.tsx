@@ -2,7 +2,7 @@
 
 import { Moon, Palette, Sun } from 'lucide-react';
 import { useTranslations } from 'next-intl';
-import { useState } from 'react';
+import { useSyncExternalStore } from 'react';
 
 /**
  * Lume palette + appearance controls (issue #282).
@@ -12,12 +12,15 @@ import { useState } from 'react';
  * Appearance pins light/dark (or follows the OS) via `data-theme`, which flips
  * the `color-scheme` that the token layer's `light-dark()` resolves against.
  *
- * Both persist to localStorage; the pre-paint bootstrap script in layout.tsx
- * replays them before first paint so there is no flash.
+ * The <html> attributes are the single source of truth: the pre-paint
+ * bootstrap script in layout.tsx seeds them from localStorage before first
+ * paint (no FOUC), and the selects read them via useSyncExternalStore — so
+ * SSR renders the defaults and React reconciles to the real value right
+ * after hydration (no suppressed-mismatch staleness).
  */
 
 const PALETTES = ['lagoon', 'petrol', 'atelier'] as const;
-type Palette = (typeof PALETTES)[number];
+type PaletteName = (typeof PALETTES)[number];
 
 const THEMES = ['system', 'light', 'dark'] as const;
 type Theme = (typeof THEMES)[number];
@@ -25,11 +28,30 @@ type Theme = (typeof THEMES)[number];
 const PALETTE_KEY = 'omadia-palette';
 const THEME_KEY = 'omadia-theme';
 
-function isPalette(v: string | null): v is Palette {
+function isPalette(v: string | null): v is PaletteName {
   return v === 'lagoon' || v === 'petrol' || v === 'atelier';
 }
 function isTheme(v: string | null): v is Theme {
   return v === 'system' || v === 'light' || v === 'dark';
+}
+
+/** Re-render whenever the <html> theme attributes change. */
+function subscribeToRootAttrs(onChange: () => void): () => void {
+  const observer = new MutationObserver(onChange);
+  observer.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ['data-palette', 'data-theme'],
+  });
+  return () => observer.disconnect();
+}
+
+function readPalette(): PaletteName {
+  const v = document.documentElement.getAttribute('data-palette');
+  return isPalette(v) ? v : 'lagoon';
+}
+function readTheme(): Theme {
+  const v = document.documentElement.getAttribute('data-theme');
+  return isTheme(v) ? v : 'system';
 }
 
 const selectClass =
@@ -39,24 +61,10 @@ const selectClass =
 
 export function ThemeControls(): React.ReactElement {
   const t = useTranslations('themeControls');
-  // Initialise from the attributes the pre-paint bootstrap script set on
-  // <html> (client), or fall back to the defaults during SSR. The <select>s
-  // carry suppressHydrationWarning so a client value differing from the SSR
-  // default doesn't warn.
-  const [palette, setPalette] = useState<Palette>(() => {
-    if (typeof document === 'undefined') return 'lagoon';
-    const p = document.documentElement.getAttribute('data-palette');
-    return isPalette(p) ? p : 'lagoon';
-  });
-  const [theme, setTheme] = useState<Theme>(() => {
-    if (typeof document === 'undefined') return 'system';
-    // bootstrap sets data-theme only for an explicit light/dark pin; absent => system.
-    const attr = document.documentElement.getAttribute('data-theme');
-    return isTheme(attr) ? attr : 'system';
-  });
+  const palette = useSyncExternalStore(subscribeToRootAttrs, readPalette, () => 'lagoon' as const);
+  const theme = useSyncExternalStore(subscribeToRootAttrs, readTheme, () => 'system' as const);
 
-  function applyPalette(next: Palette): void {
-    setPalette(next);
+  function applyPalette(next: PaletteName): void {
     document.documentElement.setAttribute('data-palette', next);
     try {
       localStorage.setItem(PALETTE_KEY, next);
@@ -66,7 +74,6 @@ export function ThemeControls(): React.ReactElement {
   }
 
   function applyTheme(next: Theme): void {
-    setTheme(next);
     const root = document.documentElement;
     if (next === 'system') {
       root.removeAttribute('data-theme');
@@ -89,9 +96,8 @@ export function ThemeControls(): React.ReactElement {
         />
         <select
           value={palette}
-          onChange={(e) => applyPalette(e.target.value as Palette)}
+          onChange={(e) => applyPalette(e.target.value as PaletteName)}
           className={selectClass}
-          suppressHydrationWarning
         >
           {PALETTES.map((p) => (
             <option
@@ -121,7 +127,6 @@ export function ThemeControls(): React.ReactElement {
           value={theme}
           onChange={(e) => applyTheme(e.target.value as Theme)}
           className={selectClass}
-          suppressHydrationWarning
         >
           {THEMES.map((m) => (
             <option
