@@ -788,10 +788,14 @@ function MessageRow({
               <SteerList steers={message.steers ?? []} />
             )}
             {message.content.length > 0 ? (
-              <Markdown
-                source={message.content}
-                highlightTerms={message.maskedValues}
-              />
+              /* §2.7: agent narration renders in the prose register
+                 (Source Serif 4); headings/tables/code stay structural. */
+              <div className="lume-prose">
+                <Markdown
+                  source={message.content}
+                  highlightTerms={message.maskedValues}
+                />
+              </div>
             ) : message.streaming ? (
               <StreamingDots />
             ) : null}

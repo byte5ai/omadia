@@ -90,6 +90,28 @@ body {
   line-height: 1.65;
 }
 
+/* §2.7 prose-vs-structure protocol applied to rendered agent markdown:
+   narration reads in the prose register (type.prose — 1rem/1.65, serif with
+   optical sizing); headings, tables and code stay structural/mono — they are
+   structural elements even inside a prose pane. */
+.lume-prose .md-view {
+  font-family: var(--font-serif);
+  font-optical-sizing: auto;
+  font-size: 1rem;
+  line-height: 1.65;
+}
+.lume-prose .md-view h1,
+.lume-prose .md-view h2,
+.lume-prose .md-view h3,
+.lume-prose .md-view table,
+.lume-prose .md-view th,
+.lume-prose .md-view td {
+  font-family: var(--font-sans);
+}
+.lume-prose .md-view table {
+  font-size: 0.75rem; /* type.caption — data stays compact */
+}
+
 /* ------------------------------------------------------------------------ */
 /* Lume implementation primitives (spec §3) as composable utility classes.  */
 /* ------------------------------------------------------------------------ */

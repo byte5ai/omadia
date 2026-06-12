@@ -65,7 +65,12 @@ export function ThemeControls(): React.ReactElement {
   const theme = useSyncExternalStore(subscribeToRootAttrs, readTheme, () => 'system' as const);
 
   function applyPalette(next: PaletteName): void {
-    document.documentElement.setAttribute('data-palette', next);
+    const root = document.documentElement;
+    // §6.6: palette changes crossfade over motion.smooth. The transient class
+    // gates the typed-property transition so theme switches stay instant.
+    root.classList.add('lume-xfade');
+    root.setAttribute('data-palette', next);
+    window.setTimeout(() => root.classList.remove('lume-xfade'), 280);
     try {
       localStorage.setItem(PALETTE_KEY, next);
     } catch {

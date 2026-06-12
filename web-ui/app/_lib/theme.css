@@ -270,6 +270,33 @@
    [data-palette] on <html>. Each carries light + dark via light-dark().
    `lagoon` is also the :root default above.
    ============================================================ */
+/* ============================================================
+   §6.6 Palette-switch crossfade. Registering the accent sub-tokens as
+   typed <color> properties lets the browser interpolate them — which
+   animates every gradient, glow and fill that consumes them. The
+   transition is gated on a transient .lume-xfade class (set by
+   ThemeControls for ~250ms around a palette change) so that the
+   light/dark THEME switch stays motion.instant per §2.11.
+   ============================================================ */
+@property --accent            { syntax: '<color>'; inherits: true; initial-value: #1F8FA3; }
+@property --accent-hover      { syntax: '<color>'; inherits: true; initial-value: #197D90; }
+@property --accent-active     { syntax: '<color>'; inherits: true; initial-value: #146B7C; }
+@property --accent-subtle     { syntax: '<color>'; inherits: true; initial-value: rgba(31, 143, 163, 0.12); }
+@property --accent-glow       { syntax: '<color>'; inherits: true; initial-value: rgba(60, 175, 195, 0.32); }
+@property --accent-glow-strong{ syntax: '<color>'; inherits: true; initial-value: rgba(60, 175, 195, 0.48); }
+@property --accent-glow-core  { syntax: '<color>'; inherits: true; initial-value: rgba(180, 238, 248, 0.60); }
+
+html.lume-xfade {
+  transition:
+    --accent 200ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    --accent-hover 200ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    --accent-active 200ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    --accent-subtle 200ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    --accent-glow 200ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    --accent-glow-strong 200ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    --accent-glow-core 200ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
 :root[data-palette='lagoon'] {
   --accent:            light-dark(#1F8FA3, #6FC8D6);
   --accent-hover:      light-dark(#197D90, #88D2DE);
