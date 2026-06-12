@@ -93,7 +93,7 @@ export default function InconsistencyDetailPage(): React.ReactElement {
   );
 
   return (
-    <main className="mx-auto max-w-[1100px] px-6 py-12 lg:px-10 lg:py-16">
+    <main className="mx-auto max-w-[1100px] px-6 py-12 lg:px-8 lg:py-16">
       <header className="mb-8">
         <Link
           href="/admin/inconsistencies"
@@ -115,7 +115,7 @@ export default function InconsistencyDetailPage(): React.ReactElement {
 
       {detail !== null && (
         <>
-          <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
+          <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
             <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
               Detector-Befund
             </h2>
@@ -140,7 +140,7 @@ export default function InconsistencyDetailPage(): React.ReactElement {
           </div>
 
           {detail.props.status === 'open' && (
-            <section className="mt-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
+            <section className="mt-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
               <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
                 Auflösung
               </h2>
@@ -199,7 +199,7 @@ function MemoryCard({
   mk: MemorableKnowledgeNode | null;
 }): React.ReactElement {
   return (
-    <article className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
+    <article className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
       <header className="mb-3 flex items-center justify-between">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
           {label}

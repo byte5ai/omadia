@@ -158,7 +158,7 @@ export function PageForm({
           {(['library', 'react-ssr', 'free-form-html'] as const).map((mode) => (
             <label
               key={mode}
-              className="flex cursor-pointer items-start gap-2 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2.5 py-2 hover:border-[color:var(--accent)]"
+              className="flex cursor-pointer items-start gap-2 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 hover:border-[color:var(--accent)]"
             >
               <input
                 type="radio"
@@ -195,7 +195,7 @@ export function PageForm({
               {(['list-card', 'kpi-tiles'] as const).map((ut) => (
                 <label
                   key={ut}
-                  className="flex cursor-pointer items-start gap-2 rounded-md border border-[color:var(--success)]/60 bg-[color:var(--bg-elevated)] px-2.5 py-1.5 hover:border-[color:var(--success)]"
+                  className="flex cursor-pointer items-start gap-2 rounded-md border border-[color:var(--success)]/60 bg-[color:var(--bg-elevated)] px-3 py-2 hover:border-[color:var(--success)]"
                 >
                   <input
                     type="radio"
@@ -264,7 +264,7 @@ export function PageForm({
                 patchField('/data_binding/tool_id', id);
               }
             }}
-            className="flex-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1.5 text-[12px]"
+            className="flex-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-2 text-[12px]"
           >
             <option value="">{t('dataBinding.noToolOption')}</option>
             {tools.map((t) => (
@@ -283,7 +283,7 @@ export function PageForm({
           for react-ssr mode; lint rejects interactive=true for library/
           free-form-html (no React component to hydrate). */}
       {route.render_mode === 'react-ssr' ? (
-        <label className="flex items-start gap-2 rounded-md border border-[color:var(--accent)] bg-[color:var(--accent)]/10 px-2.5 py-2 hover:border-[color:var(--accent)]">
+        <label className="flex items-start gap-2 rounded-md border border-[color:var(--accent)] bg-[color:var(--accent)]/10 px-3 py-2 hover:border-[color:var(--accent)]">
           <input
             type="checkbox"
             checked={route.interactive === true}
@@ -365,7 +365,7 @@ function Field({
         value={value}
         maxLength={maxLength}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1.5 text-[12px]"
+        className="w-full rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-2 text-[12px]"
       />
       {help ? (
         <p className="mt-1 text-[11px] text-[color:var(--fg-muted)]">{help}</p>

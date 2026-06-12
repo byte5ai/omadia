@@ -91,7 +91,7 @@ export function PlanDagPane({ plan }: Props): React.ReactElement | null {
       >
         <GitBranch size={16} aria-hidden />
         {t('openLabel')}
-        <span className="rounded bg-[color:var(--accent)]/10 px-1.5 py-0.5 font-mono text-[10px] text-[color:var(--accent)]">
+        <span className="rounded bg-[color:var(--accent)]/10 px-2 py-0.5 font-mono text-[10px] text-[color:var(--accent)]">
           {doneCount}/{totalSteps}
         </span>
       </button>
@@ -116,7 +116,7 @@ export function PlanDagPane({ plan }: Props): React.ReactElement | null {
         ].join(' ')}
       >
         <div className="flex min-w-0 flex-col gap-0.5">
-          <span className="flex items-center gap-1.5 text-xs font-semibold tracking-wide text-[color:var(--fg-on-dark)]">
+          <span className="flex items-center gap-2 text-xs font-semibold tracking-wide text-[color:var(--fg-on-dark)]">
             <GitBranch size={13} aria-hidden className="text-[color:var(--accent)]" />
             {t('title')}
           </span>
@@ -124,9 +124,9 @@ export function PlanDagPane({ plan }: Props): React.ReactElement | null {
             {t('subtitle')}
           </span>
         </div>
-        <div className="flex shrink-0 items-center gap-1.5">
+        <div className="flex shrink-0 items-center gap-2">
           <span className="flex gap-1 font-mono text-[10px] text-[color:var(--fg-subtle)]">
-            <span className="rounded bg-white/10 px-1.5 py-0.5">
+            <span className="rounded bg-white/10 px-2 py-0.5">
               {t('badgeProgress', { done: doneCount, total: totalSteps })}
             </span>
           </span>
@@ -157,7 +157,7 @@ export function PlanDagPane({ plan }: Props): React.ReactElement | null {
 
       {/* Step list — the whole body. Ordered, scrollable, shows each goal. */}
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="sticky top-0 z-10 bg-[color:var(--bg-inverse)]/95 px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-[color:var(--fg-muted)] backdrop-blur">
+        <div className="sticky top-0 z-10 bg-[color:var(--bg-inverse)]/95 px-3 py-2 text-[10px] font-medium uppercase tracking-wide text-[color:var(--fg-muted)] backdrop-blur">
           {t('listHeader', { done: doneCount, total: totalSteps })}
         </div>
         <ul className="flex flex-col">
@@ -165,7 +165,7 @@ export function PlanDagPane({ plan }: Props): React.ReactElement | null {
             <li
               key={s.stepExternalId}
               className={[
-                'flex items-center gap-2.5 border-t border-white/5 px-3 py-2 text-[12px] transition hover:bg-white/5',
+                'flex items-center gap-3 border-t border-white/5 px-3 py-2 text-[12px] transition hover:bg-white/5',
                 s.status === 'in_progress' ? 'bg-[color:var(--warning)]/10' : '',
               ].join(' ')}
             >
@@ -189,7 +189,7 @@ export function PlanDagPane({ plan }: Props): React.ReactElement | null {
                 {s.goal}
               </span>
               <span
-                className="shrink-0 rounded px-1.5 py-0.5 font-mono text-[9px]"
+                className="shrink-0 rounded px-2 py-0.5 font-mono text-[9px]"
                 style={{
                   backgroundColor: `${statusColor(s.status)}26`,
                   color: statusColor(s.status),

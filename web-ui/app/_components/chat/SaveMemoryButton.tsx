@@ -174,7 +174,7 @@ export function SaveMemoryButton({
           if (saved !== null) reset();
           setOpen(true);
         }}
-        className="ml-3 rounded border border-[color:var(--border)] px-1.5 py-0.5 text-[11px] text-[color:var(--fg-muted)] transition hover:border-[color:var(--border-strong)] hover:text-[color:var(--fg-strong)]"
+        className="ml-3 rounded border border-[color:var(--border)] px-2 py-0.5 text-[11px] text-[color:var(--fg-muted)] transition hover:border-[color:var(--border-strong)] hover:text-[color:var(--fg-strong)]"
         title={t('buttonTitle')}
       >
         {saved !== null ? `✓ ${t('savedShort')}` : t('buttonLabel')}
@@ -190,7 +190,7 @@ export function SaveMemoryButton({
             if (e.target === e.currentTarget && !busy) close();
           }}
         >
-          <div className="w-full max-w-lg rounded-lg bg-[color:var(--bg-elevated)] p-5 shadow-xl">
+          <div className="w-full max-w-lg rounded-lg bg-[color:var(--bg-elevated)] p-4 shadow-xl">
             <div className="mb-3 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <h2
@@ -202,7 +202,7 @@ export function SaveMemoryButton({
                 {palaiaExcerpt && (
                   <span
                     className={[
-                      'rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wider',
+                      'rounded px-2 py-0.5 text-[10px] uppercase tracking-wider',
                       palaiaExcerpt.source === 'hint'
                         ? 'bg-[color:var(--warning)]/10 text-[color:var(--warning)]'
                         : 'bg-[color:var(--accent)]/10 text-[color:var(--accent)]',
@@ -230,7 +230,7 @@ export function SaveMemoryButton({
                   <legend className="mb-1 text-[11px] uppercase tracking-wider text-[color:var(--fg-muted)]">
                     {t('kindLabel')}
                   </legend>
-                  <div className="flex flex-wrap gap-1.5">
+                  <div className="flex flex-wrap gap-2">
                     {KINDS.map((k) => (
                       <label
                         key={k}
@@ -267,7 +267,7 @@ export function SaveMemoryButton({
                     disabled={busy}
                     maxLength={2000}
                     rows={3}
-                    className="w-full resize-y rounded border border-[color:var(--border)] px-2 py-1.5 text-sm text-[color:var(--fg-strong)] focus:border-[color:var(--border-strong)] focus:outline-none"
+                    className="w-full resize-y rounded border border-[color:var(--border)] px-2 py-2 text-sm text-[color:var(--fg-strong)] focus:border-[color:var(--border-strong)] focus:outline-none"
                     placeholder={t('summaryPlaceholder')}
                   />
                   <span className="mt-0.5 block text-right text-[10px] text-[color:var(--fg-muted)]">
@@ -314,7 +314,7 @@ export function SaveMemoryButton({
                     disabled={busy}
                     maxLength={10000}
                     rows={2}
-                    className="w-full resize-y rounded border border-[color:var(--border)] px-2 py-1.5 text-sm text-[color:var(--fg-strong)] focus:border-[color:var(--border-strong)] focus:outline-none"
+                    className="w-full resize-y rounded border border-[color:var(--border)] px-2 py-2 text-sm text-[color:var(--fg-strong)] focus:border-[color:var(--border-strong)] focus:outline-none"
                     placeholder={t('rationalePlaceholder')}
                   />
                 </label>
@@ -350,7 +350,7 @@ export function SaveMemoryButton({
               </>
             ) : (
               <>
-                <div className="mb-3 border-l-2 border-[color:var(--success)] px-2 py-1.5 text-xs text-[color:var(--fg)]">
+                <div className="mb-3 border-l-2 border-[color:var(--success)] px-2 py-2 text-xs text-[color:var(--fg)]">
                   {t('successHeadline')}
                 </div>
                 <dl className="mb-4 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 font-mono text-[11px]">

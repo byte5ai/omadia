@@ -75,7 +75,7 @@ export function ExportDraftButton({
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={t('label')}
-        className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-[color:var(--fg-muted)] transition-colors hover:bg-[color:var(--bg-soft)] hover:text-[color:var(--fg-strong)] disabled:opacity-50"
+        className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[color:var(--fg-muted)] transition-colors hover:bg-[color:var(--bg-soft)] hover:text-[color:var(--fg-strong)] disabled:opacity-50"
       >
         {busy ? (
           <span className="lume-busy-dots" aria-hidden />

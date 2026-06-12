@@ -122,7 +122,7 @@ export function IssueReportCard({
 
   return (
     <div className="mt-3 rounded border border-[color:var(--warning)]/50 bg-[color:var(--warning)]/10 p-3">
-      <div className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-[color:var(--warning)]">
+      <div className="mb-1 flex items-center gap-2 text-xs font-semibold text-[color:var(--warning)]">
         <span aria-hidden>⚠</span> {t('kicker')}
       </div>
 
@@ -197,7 +197,7 @@ export function IssueReportCard({
                   setIssueNumberInput(e.target.value);
                 }}
                 placeholder={t('issueNumberPlaceholder')}
-                className="w-28 rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-2 py-1.5 text-xs text-[color:var(--fg)]"
+                className="w-28 rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-2 py-2 text-xs text-[color:var(--fg)]"
               />
               <PrimaryButton
                 disabled={busy}
@@ -230,7 +230,7 @@ function PrimaryButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="rounded border border-[color:var(--warning)] bg-[color:var(--warning)] px-3 py-1.5 text-xs font-medium text-[color:var(--fg-on-dark)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+      className="rounded border border-[color:var(--warning)] bg-[color:var(--warning)] px-3 py-2 text-xs font-medium text-[color:var(--fg-on-dark)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
     >
       {children}
     </button>
@@ -251,7 +251,7 @@ function SecondaryButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-3 py-1.5 text-xs font-medium text-[color:var(--fg)] transition hover:border-[color:var(--border-strong)] disabled:cursor-not-allowed disabled:opacity-40"
+      className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-3 py-2 text-xs font-medium text-[color:var(--fg)] transition hover:border-[color:var(--border-strong)] disabled:cursor-not-allowed disabled:opacity-40"
     >
       {children}
     </button>

@@ -84,7 +84,7 @@ export function Nav(): React.ReactElement {
   const t = useTranslations('nav');
   const activeHref = bestPrefixMatch(pathname);
   return (
-    <nav className="flex items-center gap-5 text-[13px] uppercase tracking-[0.18em]">
+    <nav className="flex items-center gap-4 text-[13px] uppercase tracking-[0.18em]">
       {NAV.map((item) =>
         item.kind === 'link' ? (
           <LeafLink
@@ -217,7 +217,7 @@ function ClusterDropdown({
                   role="menuitem"
                   onClick={() => setOpen(false)}
                   className={[
-                    'block px-3 py-1.5 text-[12px] uppercase tracking-[0.16em] transition-colors',
+                    'block px-3 py-2 text-[12px] uppercase tracking-[0.16em] transition-colors',
                     active
                       ? 'bg-[color:var(--bg-soft)] text-[color:var(--ink)]'
                       : 'text-[color:var(--muted-ink)] hover:bg-[color:var(--bg-soft)] hover:text-[color:var(--ink)]',

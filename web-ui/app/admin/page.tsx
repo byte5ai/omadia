@@ -7,8 +7,8 @@ export const metadata: Metadata = {
 
 export default function AdminIndexPage(): React.ReactElement {
   return (
-    <main className="mx-auto max-w-[960px] px-6 py-12 lg:px-10 lg:py-16">
-      <header className="mb-10">
+    <main className="mx-auto max-w-[960px] px-6 py-12 lg:px-8 lg:py-16">
+      <header className="mb-8">
         <h1 className="font-display text-[clamp(2rem,4vw,3rem)] leading-[1.1] text-[color:var(--fg-strong)]">
           Admin
         </h1>
@@ -107,8 +107,8 @@ function AdminCard({
         href={href}
         className={
           danger
-            ? 'block rounded-lg border border-[color:var(--danger-edge)]/40 bg-[color:var(--danger)]/5 p-5 transition-colors hover:border-[color:var(--danger-edge)]'
-            : 'block rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5 transition-colors hover:border-[color:var(--accent)]'
+            ? 'block rounded-lg border border-[color:var(--danger-edge)]/40 bg-[color:var(--danger)]/5 p-4 transition-colors hover:border-[color:var(--danger-edge)]'
+            : 'block rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4 transition-colors hover:border-[color:var(--accent)]'
         }
       >
         <div
@@ -120,7 +120,7 @@ function AdminCard({
         >
           {title}
         </div>
-        <p className="mt-1.5 text-sm text-[color:var(--fg-muted)]">
+        <p className="mt-2 text-sm text-[color:var(--fg-muted)]">
           {description}
         </p>
       </Link>

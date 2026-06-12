@@ -171,7 +171,7 @@ export function PaneCard({
             transition={{ duration: 0.18 }}
             className="flex min-h-0 flex-1 flex-col"
           >
-            <header className="flex items-baseline gap-3 border-b border-[color:var(--divider)] px-5 py-4">
+            <header className="flex items-baseline gap-3 border-b border-[color:var(--divider)] px-4 py-4">
               <span className="font-mono-num text-[10px] font-semibold uppercase tracking-[0.24em] text-[color:var(--fg-subtle)]">
                 {index}
               </span>

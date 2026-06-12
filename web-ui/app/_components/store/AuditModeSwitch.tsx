@@ -155,12 +155,12 @@ export function AuditModeSwitch({
       </div>
       <div className="min-h-[20px] text-[12px]">
         {status.kind === 'loading' && (
-          <span className="inline-flex items-center gap-1.5 text-[color:var(--fg-muted)]">
+          <span className="inline-flex items-center gap-2 text-[color:var(--fg-muted)]">
             <span className="lume-busy-dots" aria-hidden /> lädt …
           </span>
         )}
         {status.kind === 'saving' && (
-          <span className="inline-flex items-center gap-1.5 text-[color:var(--fg-muted)]">
+          <span className="inline-flex items-center gap-2 text-[color:var(--fg-muted)]">
             <span className="lume-busy-dots" aria-hidden /> speichert …
           </span>
         )}

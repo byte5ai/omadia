@@ -143,7 +143,7 @@ export default function KgLifecyclePage(): JSX.Element {
         </div>
         <button
           type="button"
-          className="rounded-md border border-[color:var(--border)] px-3 py-1.5 text-sm transition-colors hover:bg-[color:var(--border)]/30"
+          className="rounded-md border border-[color:var(--border)] px-3 py-2 text-sm transition-colors hover:bg-[color:var(--border)]/30"
           onClick={() => void reload()}
         >
           Refresh
@@ -180,7 +180,7 @@ export default function KgLifecyclePage(): JSX.Element {
       <section className="mb-8 grid gap-6 md:grid-cols-3">
         <Card title="Tier breakdown">
           {stats ? (
-            <ul className="space-y-1.5 text-sm">
+            <ul className="space-y-2 text-sm">
               <li>
                 <span className="text-[color:var(--fg-muted)]">HOT</span>:{' '}
                 <strong>{stats.byTier.HOT}</strong>
@@ -193,7 +193,7 @@ export default function KgLifecyclePage(): JSX.Element {
                 <span className="text-[color:var(--fg-muted)]">COLD</span>:{' '}
                 <strong>{stats.byTier.COLD}</strong>
               </li>
-              <li className="border-t border-[color:var(--border)] pt-1.5">
+              <li className="border-t border-[color:var(--border)] pt-2">
                 <span className="text-[color:var(--fg-muted)]">Total Turns</span>:{' '}
                 <strong>{stats.totalTurns}</strong>
               </li>
@@ -205,7 +205,7 @@ export default function KgLifecyclePage(): JSX.Element {
 
         <Card title="Entry-type breakdown">
           {stats ? (
-            <ul className="space-y-1.5 text-sm">
+            <ul className="space-y-2 text-sm">
               <li>
                 <span className="text-[color:var(--fg-muted)]">memory</span>:{' '}
                 <strong>{stats.byEntryType.memory}</strong>
@@ -226,7 +226,7 @@ export default function KgLifecyclePage(): JSX.Element {
 
         <Card title="Decay-score distribution">
           {stats ? (
-            <ul className="space-y-1.5 text-sm">
+            <ul className="space-y-2 text-sm">
               <li>
                 <span className="text-[color:var(--fg-muted)]">≥ 0.8</span>:{' '}
                 <strong>{stats.decayDistribution.high}</strong>
@@ -277,18 +277,18 @@ export default function KgLifecyclePage(): JSX.Element {
                       key={row.scope}
                       className="border-t border-[color:var(--border)]/50"
                     >
-                      <td className="py-1.5 font-mono text-xs">{row.scope}</td>
-                      <td className="py-1.5 text-right">{row.count}</td>
-                      <td className="py-1.5 text-right">
+                      <td className="py-2 font-mono text-xs">{row.scope}</td>
+                      <td className="py-2 text-right">{row.count}</td>
+                      <td className="py-2 text-right">
                         <QuotaPill
                           value={row.count}
                           limit={stats.quotas?.hotMaxEntries}
                         />
                       </td>
-                      <td className="py-1.5 text-right">
+                      <td className="py-2 text-right">
                         {row.chars.toLocaleString()}
                       </td>
-                      <td className="py-1.5 text-right">
+                      <td className="py-2 text-right">
                         <QuotaPill
                           value={row.chars}
                           limit={stats.quotas?.maxTotalChars}
@@ -383,7 +383,7 @@ function ActionCard({
       <button
         type="button"
         disabled={busy}
-        className="self-start rounded-md border border-[color:var(--highlight)] bg-[color:var(--highlight)]/10 px-3 py-1.5 text-sm text-[color:var(--highlight)] transition-colors hover:bg-[color:var(--highlight)]/20 disabled:opacity-50"
+        className="self-start rounded-md border border-[color:var(--highlight)] bg-[color:var(--highlight)]/10 px-3 py-2 text-sm text-[color:var(--highlight)] transition-colors hover:bg-[color:var(--highlight)]/20 disabled:opacity-50"
         onClick={onClick}
       >
         {busy ? 'Running…' : 'Run now'}

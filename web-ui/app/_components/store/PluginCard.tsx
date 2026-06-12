@@ -64,13 +64,13 @@ export function PluginCard({ plugin }: PluginCardProps): React.ReactElement {
         </div>
       </div>
 
-      <p className="mt-5 line-clamp-3 text-[14px] leading-relaxed text-[color:var(--fg-muted)]">
+      <p className="mt-4 line-clamp-3 text-[14px] leading-relaxed text-[color:var(--fg-muted)]">
         {plugin.description || <em>Keine Beschreibung hinterlegt.</em>}
       </p>
 
       {/* Metadata row. An update-available plugin IS installed — show that
           inline; the update itself is the top-right Störer. */}
-      <div className="mt-5 flex flex-wrap items-center gap-1.5">
+      <div className="mt-4 flex flex-wrap items-center gap-2">
         <StateBadge
           state={hasUpdate ? 'installed' : plugin.install_state}
           isLegacy={isLegacy}
@@ -93,7 +93,7 @@ export function PluginCard({ plugin }: PluginCardProps): React.ReactElement {
 
       {/* Integrations pinned at bottom */}
       {visibleIntegrations.length > 0 ? (
-        <div className="mt-5 border-t border-[color:var(--divider)] pt-3">
+        <div className="mt-4 border-t border-[color:var(--divider)] pt-3">
           <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[11px]">
             <span className="uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
               Integration

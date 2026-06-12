@@ -75,12 +75,12 @@ export function DimensionSlider({
           {labelRight}
         </span>
       </div>
-      <div className="relative pt-5">
+      <div className="relative pt-4">
         <span
           className={cn(
             'pointer-events-none absolute top-0 z-10 -translate-x-1/2',
             'rounded-md border border-[color:var(--border)] bg-[color:var(--bg-elevated)]',
-            'px-1.5 py-0.5 font-mono-num tabular-nums text-[10px] text-[color:var(--fg-strong)]',
+            'px-2 py-0.5 font-mono-num tabular-nums text-[10px] text-[color:var(--fg-strong)]',
             'shadow-[var(--shadow-sm)]',
           )}
           style={{ left: `${bubbleLeftPct}%` }}
@@ -118,7 +118,7 @@ export function DimensionSlider({
       {warning ? (
         <div
           className={cn(
-            'flex items-center gap-1.5 text-[11px]',
+            'flex items-center gap-2 text-[11px]',
             warning === 'hard'
               ? 'text-[color:var(--danger)]'
               : 'text-[color:var(--warning)]',

@@ -83,8 +83,8 @@ export default async function BuilderDashboardPage({
   const counts = countByScope(activeItems, deletedItems);
 
   return (
-    <main className="mx-auto max-w-[1280px] px-6 py-12 lg:px-10 lg:py-16">
-      <header className="b5-hero-bg relative -mx-6 rounded-lg border border-[color:var(--divider)] px-6 py-10 lg:-mx-10 lg:px-10 lg:py-14">
+    <main className="mx-auto max-w-[1280px] px-6 py-12 lg:px-8 lg:py-16">
+      <header className="b5-hero-bg relative -mx-6 rounded-lg border border-[color:var(--divider)] px-6 py-8 lg:-mx-8 lg:px-8 lg:py-12">
         <div className="flex items-baseline gap-3 text-[12px] font-semibold uppercase tracking-[0.24em] text-[color:var(--accent)]">
           <span className="font-mono-num text-[color:var(--fg-subtle)]">02</span>
           <span className="h-px flex-1 bg-[color:var(--border)]" />
@@ -110,7 +110,7 @@ export default async function BuilderDashboardPage({
           </div>
         </div>
 
-        <dl className="mt-10 grid max-w-2xl grid-cols-4 gap-6 border-t border-[color:var(--divider)] pt-5 text-sm">
+        <dl className="mt-8 grid max-w-2xl grid-cols-4 gap-6 border-t border-[color:var(--divider)] pt-4 text-sm">
           <Stat label={t('stats.drafts')} value={counts.draft} />
           <Stat label={t('stats.published')} value={counts.published} />
           <Stat label={t('stats.deleted')} value={counts.deleted} />
@@ -119,7 +119,7 @@ export default async function BuilderDashboardPage({
       </header>
 
       <nav
-        className="mt-10 flex flex-wrap items-center gap-2"
+        className="mt-8 flex flex-wrap items-center gap-2"
         aria-label={t('scopeFilterLabel')}
       >
         {(['draft', 'published', 'deleted'] as ScopeFilter[]).map((s) => {
@@ -130,7 +130,7 @@ export default async function BuilderDashboardPage({
               key={s}
               href={s === 'draft' ? '/store/builder' : `/store/builder?scope=${s}`}
               className={cn(
-                'inline-flex items-center gap-2 rounded-full px-4 py-1.5',
+                'inline-flex items-center gap-2 rounded-full px-4 py-2',
                 'text-[12px] font-semibold transition-colors duration-[140ms]',
                 'ease-[cubic-bezier(0.22,0.61,0.36,1)]',
                 active
@@ -142,7 +142,7 @@ export default async function BuilderDashboardPage({
               <span>{scopeLabel[s]}</span>
               <span
                 className={cn(
-                  'font-mono-num tabular-nums rounded-full px-1.5 text-[10px]',
+                  'font-mono-num tabular-nums rounded-full px-2 text-[10px]',
                   active
                     ? 'text-[color:var(--accent-fg)]'
                     : 'bg-[color:var(--bg)] text-[color:var(--fg-subtle)]',
@@ -173,7 +173,7 @@ export default async function BuilderDashboardPage({
         )}
       </section>
 
-      <footer className="mt-20 flex items-center justify-between border-t border-[color:var(--divider)] pt-5 text-[11px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
+      <footer className="mt-20 flex items-center justify-between border-t border-[color:var(--divider)] pt-4 text-[11px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
         <span>
           {t('footer.phaseLabel')}{' '}
           <span className="font-mono-num normal-case tracking-normal text-[color:var(--fg-muted)]">

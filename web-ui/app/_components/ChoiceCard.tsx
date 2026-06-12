@@ -50,7 +50,7 @@ export function ChoiceCard({
             }}
             disabled={disabled}
             className={[
-              'rounded border px-3 py-1.5 text-xs font-medium transition',
+              'rounded border px-3 py-2 text-xs font-medium transition',
               idx === 0
                 ? 'border-[color:var(--accent)] bg-[color:var(--accent)] text-[color:var(--fg-on-dark)] hover:bg-[color:var(--accent)]'
                 : 'border-[color:var(--border)] bg-[color:var(--bg-elevated)] text-[color:var(--fg)] hover:border-[color:var(--border-strong)]',

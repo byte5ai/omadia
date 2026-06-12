@@ -162,7 +162,7 @@ export default function DangerZonePage(): React.ReactElement {
   const warning = result?.warning ?? preview?.warning ?? null;
 
   return (
-    <main className="mx-auto max-w-[800px] px-6 py-12 lg:px-10 lg:py-16">
+    <main className="mx-auto max-w-[800px] px-6 py-12 lg:px-8 lg:py-16">
       <header className="mb-8">
         <Link
           href="/admin"
@@ -193,7 +193,7 @@ export default function DangerZonePage(): React.ReactElement {
         )}
       </section>
 
-      <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
+      <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
         <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
           Ziel
         </h2>
@@ -264,13 +264,13 @@ export default function DangerZonePage(): React.ReactElement {
       </section>
 
       {previewError !== null && (
-        <section className="mb-6 rounded-lg border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-5 text-sm text-[color:var(--danger)]">
+        <section className="mb-6 rounded-lg border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-4 text-sm text-[color:var(--danger)]">
           Vorschau-Fehler: {previewError}
         </section>
       )}
 
       {preview !== null && previewError === null && (
-        <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
+        <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
           <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
             Vorschau — wird gelöscht
           </h2>
@@ -287,7 +287,7 @@ export default function DangerZonePage(): React.ReactElement {
         </section>
       )}
 
-      <section className="mb-6 rounded-lg border border-[color:var(--danger-edge)]/50 bg-[color:var(--danger)]/5 p-5">
+      <section className="mb-6 rounded-lg border border-[color:var(--danger-edge)]/50 bg-[color:var(--danger)]/5 p-4">
         <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--danger)]">
           Löschen bestätigen
         </h2>
@@ -303,7 +303,7 @@ export default function DangerZonePage(): React.ReactElement {
           <>
             <p className="mb-2 text-sm text-[color:var(--fg-muted)]">
               Zum Bestätigen exakt eingeben:{' '}
-              <code className="rounded bg-[color:var(--danger)]/15 px-1.5 py-0.5 font-mono text-[color:var(--danger)]">
+              <code className="rounded bg-[color:var(--danger)]/15 px-2 py-0.5 font-mono text-[color:var(--danger)]">
                 {requiredPhrase}
               </code>
             </p>
@@ -313,14 +313,14 @@ export default function DangerZonePage(): React.ReactElement {
               onChange={(e) => { setConfirmInput(e.target.value); }}
               placeholder={requiredPhrase}
               disabled={deleting}
-              className="w-full rounded border border-[color:var(--danger-edge)] px-2 py-1.5 text-sm font-mono"
+              className="w-full rounded border border-[color:var(--danger-edge)] px-2 py-2 text-sm font-mono"
             />
             <div className="mt-4 flex items-center justify-end">
               <button
                 type="button"
                 onClick={() => void runDelete()}
                 disabled={!canDelete}
-                className="rounded-md border border-[color:var(--danger-edge)] bg-transparent px-4 py-1.5 text-xs font-semibold text-[color:var(--danger)] transition hover:bg-[color:var(--danger)]/8 disabled:cursor-not-allowed disabled:opacity-40"
+                className="rounded-md border border-[color:var(--danger-edge)] bg-transparent px-4 py-2 text-xs font-semibold text-[color:var(--danger)] transition hover:bg-[color:var(--danger)]/8 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {deleting ? 'löscht…' : 'Unwiderruflich löschen'}
               </button>
@@ -330,13 +330,13 @@ export default function DangerZonePage(): React.ReactElement {
       </section>
 
       {deleteError !== null && (
-        <section className="mb-6 rounded-lg border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-5 text-sm text-[color:var(--danger)]">
+        <section className="mb-6 rounded-lg border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-4 text-sm text-[color:var(--danger)]">
           Lösch-Fehler: {deleteError}
         </section>
       )}
 
       {result !== null && (
-        <section className="rounded-lg border border-[color:var(--success)]/40 bg-[color:var(--success)]/5 p-5">
+        <section className="rounded-lg border border-[color:var(--success)]/40 bg-[color:var(--success)]/5 p-4">
           <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--success)]">
             Gelöscht
           </h2>

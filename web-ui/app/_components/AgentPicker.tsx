@@ -91,7 +91,7 @@ export function AgentPicker(props: AgentPickerProps): React.ReactElement {
   if (props.pinnedSlug) {
     return (
       <span
-        className="inline-flex items-center gap-1.5 rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-2 py-1 font-mono text-xs text-[color:var(--fg)]"
+        className="inline-flex items-center gap-2 rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-2 py-1 font-mono text-xs text-[color:var(--fg)]"
         title={t('pinnedTooltip')}
       >
         <span className="text-[color:var(--fg-muted)]">{t('label')}</span>
@@ -121,7 +121,7 @@ export function AgentPicker(props: AgentPickerProps): React.ReactElement {
     return (
       <a
         href="/operator/agents"
-        className="inline-flex items-center gap-1.5 rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 px-2 py-1 text-xs text-[color:var(--warning)] hover:bg-[color:var(--warning)]/10"
+        className="inline-flex items-center gap-2 rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 px-2 py-1 text-xs text-[color:var(--warning)] hover:bg-[color:var(--warning)]/10"
       >
         {t('emptyCta')}
       </a>

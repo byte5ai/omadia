@@ -30,8 +30,8 @@ export default async function RoutinesPage(): Promise<React.ReactElement> {
   const pausedCount = routines.filter((r) => r.status === 'paused').length;
 
   return (
-    <main className="mx-auto w-full max-w-[1600px] px-6 py-12 lg:px-10 lg:py-16">
-      <header className="b5-hero-bg relative -mx-6 rounded-lg border border-[color:var(--divider)] px-6 py-10 lg:-mx-10 lg:px-10 lg:py-14">
+    <main className="mx-auto w-full max-w-[1600px] px-6 py-12 lg:px-8 lg:py-16">
+      <header className="b5-hero-bg relative -mx-6 rounded-lg border border-[color:var(--divider)] px-6 py-8 lg:-mx-8 lg:px-8 lg:py-12">
         <div className="flex items-baseline gap-3 text-[12px] font-semibold uppercase tracking-[0.24em] text-[color:var(--accent)]">
           <span className="font-mono-num text-[color:var(--fg-subtle)]">
             04
@@ -58,7 +58,7 @@ export default async function RoutinesPage(): Promise<React.ReactElement> {
         </div>
       </header>
 
-      <section className="mt-10">
+      <section className="mt-8">
         {loadError ? (
           <div className="rounded-lg border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/5 p-6 text-sm text-[color:var(--danger)]">
             <div className="font-semibold">Routinen nicht erreichbar</div>
@@ -147,7 +147,7 @@ function EmptyState(): React.ReactElement {
         Routinen entstehen, wenn ein User im Chat etwas wie &bdquo;erinnere
         mich jeden Montag um 9 Uhr an X&ldquo; sagt &mdash; der Agent ruft
         das{' '}
-        <code className="rounded bg-[color:var(--surface-muted)] px-1.5 py-0.5 font-mono text-xs">
+        <code className="rounded bg-[color:var(--surface-muted)] px-2 py-0.5 font-mono text-xs">
           manage_routine
         </code>{' '}
         Tool und legt sie an.

@@ -88,7 +88,7 @@ export default function MemoriesPage(): React.ReactElement {
             ↻ neu laden
           </button>
         </div>
-        <div className="mt-3 flex flex-wrap gap-1.5">
+        <div className="mt-3 flex flex-wrap gap-2">
           {KIND_FILTERS.map((k) => {
             const active = filter === k;
             const label = k === 'all' ? 'alle' : KIND_LABELS[k];

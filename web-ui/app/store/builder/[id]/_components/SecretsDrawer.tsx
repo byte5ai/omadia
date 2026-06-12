@@ -147,7 +147,7 @@ export function SecretsDrawer({
             role="dialog"
             aria-label={t('title')}
           >
-            <header className="flex items-baseline gap-3 border-b border-[color:var(--divider)] px-5 py-4">
+            <header className="flex items-baseline gap-3 border-b border-[color:var(--divider)] px-4 py-4">
               <KeyRound
                 className="size-3.5 shrink-0 text-[color:var(--accent)]"
                 aria-hidden
@@ -165,7 +165,7 @@ export function SecretsDrawer({
               </button>
             </header>
 
-            <div className="space-y-4 overflow-y-auto px-5 py-4 text-[13px]">
+            <div className="space-y-4 overflow-y-auto px-4 py-4 text-[13px]">
               <p className="text-[12px] text-[color:var(--fg-muted)]">
                 {persistent === true
                   ? t('persistence.persistent')
@@ -205,12 +205,12 @@ export function SecretsDrawer({
               ) : null}
             </div>
 
-            <footer className="flex items-center gap-2 border-t border-[color:var(--divider)] px-5 py-3">
+            <footer className="flex items-center gap-2 border-t border-[color:var(--divider)] px-4 py-3">
               <button
                 type="button"
                 onClick={() => void onClearAll()}
                 disabled={pending || bufferedKeys.length === 0}
-                className="inline-flex items-center gap-1.5 rounded-md border border-[color:var(--danger)]/40 px-2.5 py-1.5 text-[11px] font-semibold text-[color:var(--danger)] transition-colors hover:bg-[color:var(--danger)]/10 disabled:opacity-40"
+                className="inline-flex items-center gap-2 rounded-md border border-[color:var(--danger)]/40 px-3 py-2 text-[11px] font-semibold text-[color:var(--danger)] transition-colors hover:bg-[color:var(--danger)]/10 disabled:opacity-40"
               >
                 <Trash2 className="size-3" aria-hidden />
                 {t('clearAll')}
@@ -219,7 +219,7 @@ export function SecretsDrawer({
                 type="button"
                 onClick={() => void onSave()}
                 disabled={pending || fields.length === 0}
-                className="ml-auto inline-flex items-center gap-1.5 rounded-md bg-[color:var(--accent)] px-3 py-1.5 text-[12px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] disabled:opacity-50"
+                className="ml-auto inline-flex items-center gap-2 rounded-md bg-[color:var(--accent)] px-3 py-2 text-[12px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] disabled:opacity-50"
               >
                 {pending ? (
                   <span className="lume-busy-dots" aria-hidden />
@@ -273,7 +273,7 @@ function SecretFieldRow({
         >
           {field.type ?? 'string'}
           {buffered ? (
-            <span className="ml-1 inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[color:var(--success)]">
+            <span className="ml-1 inline-flex items-center gap-0.5 px-2 py-0.5 text-[color:var(--success)]">
               <CheckCircle2 className="size-2.5" aria-hidden />
               {t('set')}
             </span>
@@ -289,7 +289,7 @@ function SecretFieldRow({
         </p>
       ) : null}
       {field.type === 'boolean' ? (
-        <label className="mt-1 inline-flex items-center gap-1.5 text-[12px] text-[color:var(--fg-strong)]">
+        <label className="mt-1 inline-flex items-center gap-2 text-[12px] text-[color:var(--fg-strong)]">
           <input
             type="checkbox"
             checked={value === 'true'}
@@ -308,7 +308,7 @@ function SecretFieldRow({
             buffered ? t('placeholder.buffered') : t('placeholder.empty')
           }
           autoComplete="off"
-          className="mt-1 w-full rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1.5 text-[12px] text-[color:var(--fg-strong)] placeholder:text-[color:var(--fg-subtle)] focus:border-[color:var(--accent)] focus:outline-none"
+          className="mt-1 w-full rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-2 text-[12px] text-[color:var(--fg-strong)] placeholder:text-[color:var(--fg-subtle)] focus:border-[color:var(--accent)] focus:outline-none"
         />
       )}
     </li>

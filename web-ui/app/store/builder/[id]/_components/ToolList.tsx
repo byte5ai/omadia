@@ -152,7 +152,7 @@ export function ToolList({
             <button
               type="button"
               onClick={onAdd}
-              className="inline-flex items-center gap-1 rounded-md bg-[color:var(--accent)] px-2.5 py-1.5 text-[11px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)]"
+              className="inline-flex items-center gap-1 rounded-md bg-[color:var(--accent)] px-3 py-2 text-[11px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)]"
             >
               <Plus className="size-3" aria-hidden />
               {t('addFirstTool')}
@@ -160,7 +160,7 @@ export function ToolList({
             <button
               type="button"
               onClick={() => setTemplatesOpen(true)}
-              className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2.5 py-1.5 text-[11px] font-semibold text-[color:var(--fg-strong)] hover:border-[color:var(--accent)]"
+              className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-[11px] font-semibold text-[color:var(--fg-strong)] hover:border-[color:var(--accent)]"
             >
               <Layers className="size-3" aria-hidden />
               {t('fromTemplate')}
@@ -186,7 +186,7 @@ export function ToolList({
         onDragEnd={onDragEnd}
       >
         <SortableContext items={ids} strategy={verticalListSortingStrategy}>
-          <ul className="space-y-1.5">
+          <ul className="space-y-2">
             {tools.map((tool, index) => {
               const isExpanded = expandedId === tool.id;
               const stuck = isStuckForTool(agentStuck, tool.id);
@@ -214,7 +214,7 @@ export function ToolList({
         <button
           type="button"
           onClick={onAdd}
-          className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2.5 py-1.5 text-[11px] font-semibold text-[color:var(--fg-strong)] hover:border-[color:var(--accent)]"
+          className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-[11px] font-semibold text-[color:var(--fg-strong)] hover:border-[color:var(--accent)]"
         >
           <Plus className="size-3" aria-hidden />
           {t('addTool')}
@@ -222,7 +222,7 @@ export function ToolList({
         <button
           type="button"
           onClick={() => setTemplatesOpen(true)}
-          className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2.5 py-1.5 text-[11px] font-semibold text-[color:var(--fg-strong)] hover:border-[color:var(--accent)]"
+          className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-[11px] font-semibold text-[color:var(--fg-strong)] hover:border-[color:var(--accent)]"
         >
           <Layers className="size-3" aria-hidden />
           {t('fromTemplate')}
@@ -230,7 +230,7 @@ export function ToolList({
         <button
           type="button"
           onClick={() => setImportOpen(true)}
-          className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2.5 py-1.5 text-[11px] font-semibold text-[color:var(--fg-strong)] hover:border-[color:var(--accent)]"
+          className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-[11px] font-semibold text-[color:var(--fg-strong)] hover:border-[color:var(--accent)]"
         >
           <Upload className="size-3" aria-hidden />
           {t('import')}
@@ -292,7 +292,7 @@ function SortableRow({
         isDragging && 'opacity-50 shadow-[var(--shadow-drag)]',
       )}
     >
-      <div className="flex items-center gap-1.5 px-2 py-1.5">
+      <div className="flex items-center gap-2 px-2 py-2">
         <button
           type="button"
           aria-label={t('reorderHandle')}

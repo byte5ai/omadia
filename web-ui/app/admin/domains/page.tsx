@@ -75,8 +75,8 @@ export default function AdminDomainsPage(): React.ReactElement {
   }, []);
 
   return (
-    <main className="mx-auto max-w-[960px] px-6 py-12 lg:px-10 lg:py-16">
-      <header className="mb-10">
+    <main className="mx-auto max-w-[960px] px-6 py-12 lg:px-8 lg:py-16">
+      <header className="mb-8">
         <h1 className="font-display text-[clamp(2rem,4vw,3rem)] leading-[1.1] text-[color:var(--fg-strong)]">
           Plugin-Domains
         </h1>
@@ -155,8 +155,8 @@ function DomainSection({
     <li
       className={
         bucket.isFallback
-          ? 'rounded-lg border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/5 p-5'
-          : 'rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5'
+          ? 'rounded-lg border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/5 p-4'
+          : 'rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4'
       }
     >
       <header className="mb-4 flex items-baseline justify-between gap-3">

@@ -74,7 +74,7 @@ export function ConfirmDialog({
         if (e.target === e.currentTarget) onCancel();
       }}
     >
-      <div className="w-full max-w-md rounded-lg border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-5 shadow-lg">
+      <div className="w-full max-w-md rounded-lg border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-4 shadow-lg">
         <h2
           id="confirm-dialog-title"
           className="text-base font-semibold text-[color:var(--fg-strong)]"
@@ -86,19 +86,19 @@ export function ConfirmDialog({
             {body}
           </p>
         )}
-        <div className="mt-5 flex justify-end gap-2">
+        <div className="mt-4 flex justify-end gap-2">
           <button
             ref={cancelRef}
             type="button"
             onClick={onCancel}
-            className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-4 py-1.5 text-sm font-medium text-[color:var(--fg)] transition hover:border-[color:var(--border-strong)]"
+            className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-4 py-2 text-sm font-medium text-[color:var(--fg)] transition hover:border-[color:var(--border-strong)]"
           >
             {cancelLabel}
           </button>
           <button
             type="button"
             onClick={onConfirm}
-            className={`rounded border px-4 py-1.5 text-sm font-medium transition ${confirmCls}`}
+            className={`rounded border px-4 py-2 text-sm font-medium transition ${confirmCls}`}
           >
             {confirmLabel}
           </button>

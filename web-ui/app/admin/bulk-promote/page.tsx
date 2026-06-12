@@ -81,7 +81,7 @@ export default function BulkPromotePage(): React.ReactElement {
   }, [scoreLimit, promoteLimit, threshold, loadPreview]);
 
   return (
-    <main className="mx-auto max-w-[800px] px-6 py-12 lg:px-10 lg:py-16">
+    <main className="mx-auto max-w-[800px] px-6 py-12 lg:px-8 lg:py-16">
       <header className="mb-8">
         <Link
           href="/admin"
@@ -99,7 +99,7 @@ export default function BulkPromotePage(): React.ReactElement {
         </p>
       </header>
 
-      <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
+      <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
         <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
           Vorschau
         </h2>
@@ -135,7 +135,7 @@ export default function BulkPromotePage(): React.ReactElement {
         )}
       </section>
 
-      <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
+      <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
         <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
           Parameter
         </h2>
@@ -209,13 +209,13 @@ export default function BulkPromotePage(): React.ReactElement {
       </section>
 
       {runError !== null && (
-        <section className="mb-6 rounded-lg border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-5 text-sm text-[color:var(--danger)]">
+        <section className="mb-6 rounded-lg border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-4 text-sm text-[color:var(--danger)]">
           {runError}
         </section>
       )}
 
       {result !== null && (
-        <section className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
+        <section className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
           <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
             Ergebnis ({result.durationMs} ms)
           </h2>

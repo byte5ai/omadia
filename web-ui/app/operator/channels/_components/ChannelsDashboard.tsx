@@ -89,7 +89,7 @@ export function ChannelsDashboard({ initial }: Props): React.ReactElement {
           key={group.type}
           className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)]"
         >
-          <header className="border-b border-[color:var(--border)] px-5 py-3">
+          <header className="border-b border-[color:var(--border)] px-4 py-3">
             <h2 className="text-base font-semibold uppercase tracking-wide text-[color:var(--fg)]">
               {group.type}{' '}
               <span className="ml-1 text-xs font-normal text-[color:var(--fg-muted)]">
@@ -101,7 +101,7 @@ export function ChannelsDashboard({ initial }: Props): React.ReactElement {
             {group.channels.map((c) => (
               <li
                 key={`${c.channel_type}:${c.channel_key}`}
-                className="flex flex-wrap items-center gap-3 px-5 py-3"
+                className="flex flex-wrap items-center gap-3 px-4 py-3"
               >
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
@@ -109,12 +109,12 @@ export function ChannelsDashboard({ initial }: Props): React.ReactElement {
                       {c.label}
                     </span>
                     {c.hint && (
-                      <span className="rounded bg-[color:var(--bg-soft)] px-1.5 py-0 text-[11px] text-[color:var(--fg-muted)]">
+                      <span className="rounded bg-[color:var(--bg-soft)] px-2 py-0 text-[11px] text-[color:var(--fg-muted)]">
                         {c.hint}
                       </span>
                     )}
                     {c.stale && (
-                      <span className="rounded bg-[color:var(--warning)]/10 px-1.5 py-0 text-[10px] uppercase tracking-wide text-[color:var(--warning)]">
+                      <span className="rounded bg-[color:var(--warning)]/10 px-2 py-0 text-[10px] uppercase tracking-wide text-[color:var(--warning)]">
                         {t('staleBadge')}
                       </span>
                     )}

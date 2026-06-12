@@ -476,7 +476,7 @@ export default function ChatPage(): React.ReactElement {
               onClick={() => setKgWalkEnabled(!kgWalkEnabled)}
               title={t('kgWalk.toggleLabel')}
               className={[
-                'inline-flex select-none items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition',
+                'inline-flex select-none items-center gap-2 rounded-full border px-3 py-1 text-[11px] font-medium transition',
                 kgWalkEnabled
                   ? 'border-[color:var(--accent)] bg-[color:var(--accent)]/10 text-[color:var(--accent)]'
                   : 'border-[color:var(--border)] bg-transparent text-[color:var(--fg-subtle)] hover:text-[color:var(--fg-muted)]',
@@ -501,7 +501,7 @@ export default function ChatPage(): React.ReactElement {
               onClick={() => setPlanDagEnabled(!planDagEnabled)}
               title={t('planDag.toggleLabel')}
               className={[
-                'inline-flex select-none items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition',
+                'inline-flex select-none items-center gap-2 rounded-full border px-3 py-1 text-[11px] font-medium transition',
                 planDagEnabled
                   ? 'border-[color:var(--accent)] bg-[color:var(--accent)]/10 text-[color:var(--accent)]'
                   : 'border-[color:var(--border)] bg-transparent text-[color:var(--fg-subtle)] hover:text-[color:var(--fg-muted)]',
@@ -589,10 +589,10 @@ export default function ChatPage(): React.ReactElement {
       <PlanDagPane plan={planDagEnabled ? activePlan : null} />
 
       <footer className="border-t border-[color:var(--border)] bg-[color:var(--bg-elevated)]/85 px-6 py-4 backdrop-blur">
-        <div className="mx-auto flex max-w-4xl flex-col gap-1.5">
+        <div className="mx-auto flex max-w-4xl flex-col gap-2">
           {/* Mid-turn steering hint / feedback — only while a turn streams. */}
           {sending && (
-            <div className="flex items-center gap-1.5 text-[11px]">
+            <div className="flex items-center gap-2 text-[11px]">
               <Navigation size={11} aria-hidden className="text-[color:var(--warning)]" />
               {steerNotice === 'sent' ? (
                 <span className="text-[color:var(--warning)]">
@@ -643,7 +643,7 @@ export default function ChatPage(): React.ReactElement {
                   }}
                   disabled={input.trim().length === 0 || steerBusy || hydrating}
                   title={t('steerButtonTitle')}
-                  className="flex items-center gap-1.5 rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 px-4 py-2 text-sm font-medium text-[color:var(--warning)] transition hover:bg-[color:var(--warning)]/10 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="flex items-center gap-2 rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 px-4 py-2 text-sm font-medium text-[color:var(--warning)] transition hover:bg-[color:var(--warning)]/10 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <Navigation size={14} aria-hidden />
                   {t('steerButton')}
@@ -847,7 +847,7 @@ function MessageRow({
               )}
               {message.model && (
                 <span
-                  className="ml-3 rounded bg-current/10 px-1.5 py-0.5 font-medium"
+                  className="ml-3 rounded bg-current/10 px-2 py-0.5 font-medium"
                   title={message.model}
                 >
                   {shortModelName(message.model)}
@@ -1051,7 +1051,7 @@ function TriageBadge({
   const v = verdict[routing.bucket];
   return (
     <div
-      className="mb-2 inline-flex flex-wrap items-center gap-1.5 text-[11px] text-[color:var(--fg-muted)]"
+      className="mb-2 inline-flex flex-wrap items-center gap-2 text-[11px] text-[color:var(--fg-muted)]"
       title={`Triage-Klassifizierer: ${routing.classifierModel} → ${routing.bucket} → ${routing.model}`}
     >
       <span className="font-medium uppercase tracking-[0.12em]">Triage</span>
@@ -1059,12 +1059,12 @@ function TriageBadge({
         {shortModelName(routing.classifierModel)} →
       </span>
       <span
-        className={`inline-flex items-center rounded-full px-1.5 py-0.5 font-medium uppercase tracking-[0.08em] ring-1 ${v.cls}`}
+        className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium uppercase tracking-[0.08em] ring-1 ${v.cls}`}
       >
         {v.label}
       </span>
       <span className="text-[color:var(--fg-subtle)]">→</span>
-      <span className="rounded bg-current/10 px-1.5 py-0.5 font-medium">
+      <span className="rounded bg-current/10 px-2 py-0.5 font-medium">
         {shortModelName(routing.model)}
       </span>
     </div>
@@ -1135,7 +1135,7 @@ function SteerList({ steers }: { steers: string[] }): React.ReactElement {
       {steers.map((text, i) => (
         <div
           key={`${String(i)}:${text.slice(0, 24)}`}
-          className="flex items-start gap-1.5 rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 px-2 py-1 text-[11px] text-[color:var(--warning)]"
+          className="flex items-start gap-2 rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 px-2 py-1 text-[11px] text-[color:var(--warning)]"
         >
           <Navigation size={11} aria-hidden className="mt-0.5 shrink-0" />
           <span>
@@ -1480,10 +1480,10 @@ function FollowUpButtons({
   const t = useTranslations('chat');
   return (
     <div className="mt-3 border-t border-[color:var(--border)] pt-2">
-      <div className="mb-1.5 text-[10px] font-medium tracking-wide text-[color:var(--fg-muted)] uppercase">
+      <div className="mb-2 text-[10px] font-medium tracking-wide text-[color:var(--fg-muted)] uppercase">
         {t('followUpsLabel')}
       </div>
-      <div className="flex flex-wrap gap-1.5">
+      <div className="flex flex-wrap gap-2">
         {options.map((opt, idx) => (
           <button
             key={`${opt.label}-${String(idx)}`}
@@ -1542,7 +1542,7 @@ function LivenessRow({
   return (
     <div
       className={[
-        'mt-2 inline-flex flex-wrap items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.18em]',
+        'mt-2 inline-flex flex-wrap items-center gap-2 font-mono text-[10px] uppercase tracking-[0.18em]',
         stuck
           ? 'text-[color:var(--danger)]'
           : 'text-[color:var(--fg-muted)]',
@@ -1589,7 +1589,7 @@ function phasePillClass(
   phase: 'thinking' | 'streaming' | 'tool_running' | 'idle',
 ): string {
   const base =
-    'inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.16em]';
+    'inline-flex items-center rounded px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.16em]';
   switch (phase) {
     case 'streaming':
       return `${base} bg-[color:var(--accent)]/15 text-[color:var(--accent)]`;

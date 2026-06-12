@@ -11,7 +11,7 @@ export function Field({
   children: React.ReactNode;
 }): React.ReactElement {
   return (
-    <label className="flex flex-col gap-1.5">
+    <label className="flex flex-col gap-2">
       <span className="text-[11px] uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
         {label}
       </span>

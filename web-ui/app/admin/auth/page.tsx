@@ -69,7 +69,7 @@ export default function AdminAuthPage(): React.ReactElement {
   }
 
   return (
-    <main className="mx-auto max-w-[960px] px-6 py-12 lg:px-10 lg:py-16">
+    <main className="mx-auto max-w-[960px] px-6 py-12 lg:px-8 lg:py-16">
       <header className="mb-8">
         <h1 className="font-display text-[clamp(1.75rem,3.5vw,2.5rem)] leading-[1.1] text-[color:var(--fg-strong)]">
           Authentifizierungs-Provider
@@ -95,23 +95,23 @@ export default function AdminAuthPage(): React.ReactElement {
           {state.providers.map((p) => (
             <li
               key={p.id}
-              className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5"
+              className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4"
             >
               <div className="flex flex-1 flex-col">
                 <div className="flex items-center gap-2">
                   <span className="text-[15px] font-semibold text-[color:var(--fg-strong)]">
                     {p.display_name}
                   </span>
-                  <code className="rounded bg-[color:var(--card)] px-1.5 py-0.5 text-[11px] text-[color:var(--fg-muted)]">
+                  <code className="rounded bg-[color:var(--card)] px-2 py-0.5 text-[11px] text-[color:var(--fg-muted)]">
                     {p.id}
                   </code>
-                  <code className="rounded bg-[color:var(--card)] px-1.5 py-0.5 text-[11px] text-[color:var(--fg-muted)]">
+                  <code className="rounded bg-[color:var(--card)] px-2 py-0.5 text-[11px] text-[color:var(--fg-muted)]">
                     {p.kind}
                   </code>
                 </div>
                 <span
                   className={[
-                    'mt-1 inline-flex w-fit items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] uppercase tracking-[0.16em]',
+                    'mt-1 inline-flex w-fit items-center gap-2 rounded-full px-2 py-0.5 text-[11px] uppercase tracking-[0.16em]',
                     p.active
                       ? 'bg-[color:var(--success)]/10 text-[color:var(--success)]'
                       : 'bg-[color:var(--border)]/40 text-[color:var(--fg-muted)]',

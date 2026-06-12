@@ -90,20 +90,20 @@ export function SimpleWorkspace({
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5, ease: EASE_OUT }}
-        className="b5-hero-bg relative overflow-hidden rounded-lg px-7 py-7 shadow-[var(--shadow-sm)]"
+        className="b5-hero-bg relative overflow-hidden rounded-lg px-6 py-6 shadow-[var(--shadow-sm)]"
       >
         <div
           aria-hidden
           className="pointer-events-none absolute -right-8 -top-10 size-40 rounded-full bg-white/40 blur-2xl"
         />
-        <span className="inline-flex items-center gap-1.5 rounded-full bg-[color:var(--accent-subtle)] px-3 py-1 text-[12px] font-semibold text-[color:var(--accent)]">
+        <span className="inline-flex items-center gap-2 rounded-full bg-[color:var(--accent-subtle)] px-3 py-1 text-[12px] font-semibold text-[color:var(--accent)]">
           <Wand2 className="size-3.5" aria-hidden />
           {t('intro.badge')}
         </span>
         <h2 className="font-display mt-3 text-[26px] leading-tight">
           {t('intro.title')}
                   </h2>
-        <p className="mt-1.5 max-w-[480px] text-[15px] leading-relaxed">
+        <p className="mt-2 max-w-[480px] text-[15px] leading-relaxed">
           {t('intro.subtitle')}
         </p>
       </motion.div>
@@ -164,7 +164,7 @@ export function SimpleWorkspace({
         subtitle={t('step2.subtitle')}
         delay={0.24}
       >
-        <div className="flex flex-col gap-5 px-7 py-6">
+        <div className="flex flex-col gap-4 px-6 py-6">
           <OverviewField label={t('overview.nameLabel')}>
             <span className="font-display text-[18px] text-[color:var(--fg-strong)]">
               {spec.name || t('overview.namePlaceholder')}
@@ -185,7 +185,7 @@ export function SimpleWorkspace({
           </OverviewField>
 
           {hasBeenBuilt ? (
-            <div className="flex items-center gap-2.5 rounded-lg bg-[color:var(--bg-soft)] px-4 py-3 text-[14px] text-[color:var(--fg-muted)]">
+            <div className="flex items-center gap-3 rounded-lg bg-[color:var(--bg-soft)] px-4 py-3 text-[14px] text-[color:var(--fg-muted)]">
               <span className="inline-flex size-7 items-center justify-center text-[color:var(--success)]">
                 <Sparkles className="size-3.5" aria-hidden />
               </span>
@@ -201,7 +201,7 @@ export function SimpleWorkspace({
               type="button"
               onClick={() => setPersonaOpen((v) => !v)}
               aria-expanded={personaOpen}
-              className="flex w-full items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-[color:var(--bg-soft)]"
+              className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-[color:var(--bg-soft)]"
             >
               <span className="inline-flex size-8 shrink-0 items-center justify-center rounded-full bg-[color:var(--highlight)]/12 text-[color:var(--highlight)]">
                 <MessageCircleHeart className="size-4" aria-hidden />
@@ -214,7 +214,7 @@ export function SimpleWorkspace({
                   {t('persona.subtitle')}
                 </span>
               </span>
-              <span className="rounded-full bg-[color:var(--bg-soft)] px-2.5 py-0.5 text-[11px] font-medium text-[color:var(--fg-subtle)]">
+              <span className="rounded-full bg-[color:var(--bg-soft)] px-3 py-0.5 text-[11px] font-medium text-[color:var(--fg-subtle)]">
                 {t('persona.optional')}
               </span>
               <ChevronDown
@@ -252,7 +252,7 @@ function OverviewField({
   return (
     <div>
       <p className="text-[12px] font-semibold text-[color:var(--fg-subtle)]">{label}</p>
-      <div className="mt-1.5 break-words">{children}</div>
+      <div className="mt-2 break-words">{children}</div>
     </div>
   );
 }
@@ -279,8 +279,8 @@ function SimpleStepCard({
       transition={{ duration: 0.5, ease: EASE_OUT, delay }}
       className="overflow-hidden rounded-lg border border-[color:var(--divider)] bg-[color:var(--bg-elevated)] shadow-[var(--shadow-md)]"
     >
-      <header className="flex items-center gap-4 border-b border-[color:var(--divider)] px-7 py-5">
-        <span className="relative inline-flex size-10 shrink-0 items-center justify-center rounded-full bg-[color:var(--accent)] text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)]">
+      <header className="flex items-center gap-4 border-b border-[color:var(--divider)] px-6 py-4">
+        <span className="lume-donut relative inline-flex size-10 shrink-0 items-center justify-center rounded-full border border-[color:var(--accent)] text-[color:var(--accent)]">
           <span className="font-display text-[16px] leading-none">{step}</span>
         </span>
         <div className="min-w-0 flex-1">

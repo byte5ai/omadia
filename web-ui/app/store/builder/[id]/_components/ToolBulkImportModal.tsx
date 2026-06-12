@@ -88,7 +88,7 @@ export function ToolBulkImportModal({
       role="dialog"
       aria-modal="true"
       aria-label={t('dialogLabel')}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-[color:var(--bg-modal-overlay)] px-4 py-10"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-[color:var(--bg-modal-overlay)] px-4 py-8"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -196,7 +196,7 @@ function TabBtn({
       type="button"
       onClick={onClick}
       className={cn(
-        'rounded-t border-x border-t px-3 py-1.5 text-[11px] font-semibold',
+        'rounded-t border-x border-t px-3 py-2 text-[11px] font-semibold',
         active
           ? 'border-[color:var(--border)] bg-[color:var(--bg)] text-[color:var(--fg-strong)]'
           : 'border-transparent text-[color:var(--fg-subtle)] hover:text-[color:var(--fg-strong)]',

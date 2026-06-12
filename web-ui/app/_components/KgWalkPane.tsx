@@ -278,7 +278,7 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
       >
         <Network size={16} aria-hidden />
         {t('openLabel')}
-        <span className="rounded bg-[color:var(--accent)]/10 px-1.5 py-0.5 font-mono text-[10px] text-[color:var(--accent)]">
+        <span className="rounded bg-[color:var(--accent)]/10 px-2 py-0.5 font-mono text-[10px] text-[color:var(--accent)]">
           {totalNodes}
         </span>
       </button>
@@ -304,7 +304,7 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
         ].join(' ')}
       >
         <div className="flex min-w-0 flex-col gap-0.5">
-          <span className="flex items-center gap-1.5 text-xs font-semibold tracking-wide text-[color:var(--fg-on-dark)]">
+          <span className="flex items-center gap-2 text-xs font-semibold tracking-wide text-[color:var(--fg-on-dark)]">
             <Network size={13} aria-hidden className="text-[color:var(--accent)]" />
             {t('title')}
           </span>
@@ -312,16 +312,16 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
             {t('subtitle')}
           </span>
         </div>
-        <div className="flex shrink-0 items-center gap-1.5">
+        <div className="flex shrink-0 items-center gap-2">
           <span className="flex gap-1 font-mono text-[10px] text-[color:var(--fg-subtle)]">
-            <span className="rounded bg-white/10 px-1.5 py-0.5">
+            <span className="rounded bg-white/10 px-2 py-0.5">
               {t('badgeNodes', { count: totalNodes })}
             </span>
-            <span className="rounded bg-white/10 px-1.5 py-0.5">
+            <span className="rounded bg-white/10 px-2 py-0.5">
               {t('badgeHops', { count: maxHop })}
             </span>
             {insertedCount > 0 && (
-              <span className="rounded bg-[color:var(--success)]/20 px-1.5 py-0.5 text-[color:var(--success)]">
+              <span className="rounded bg-[color:var(--success)]/20 px-2 py-0.5 text-[color:var(--success)]">
                 {t('badgeInserted', { count: insertedCount })}
               </span>
             )}
@@ -491,11 +491,11 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
 
       {/* Hop-details list — scrollable, grouped by hop. */}
       <div className="min-h-0 flex-[2] overflow-y-auto border-t border-white/10 bg-[color:var(--bg-inverse)]/60">
-        <div className="px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-[color:var(--fg-muted)]">
+        <div className="px-3 py-2 text-[10px] font-medium uppercase tracking-wide text-[color:var(--fg-muted)]">
           {t('hopListHeader', { nodes: totalNodes, hops: maxHop })}
         </div>
         {hopGroups.map((group) => (
-          <div key={group.hop} className="border-t border-white/5 px-3 py-1.5">
+          <div key={group.hop} className="border-t border-white/5 px-3 py-2">
             <div className="mb-1 text-[11px] font-semibold text-[color:var(--accent)]">
               {group.hop === 0
                 ? t('hopHeaderRoots')
@@ -515,7 +515,7 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
                       setActiveNodeId(null);
                     }}
                     className={[
-                      'flex items-center gap-1.5 rounded px-1.5 py-1 text-[11px]',
+                      'flex items-center gap-2 rounded px-2 py-1 text-[11px]',
                       isActive ? 'bg-white/10' : 'hover:bg-white/5',
                     ].join(' ')}
                   >

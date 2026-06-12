@@ -159,7 +159,7 @@ export function InstallDiffModal({
           'max-h-[90vh] overflow-hidden',
         )}
       >
-        <header className="flex items-start justify-between gap-6 border-b border-[color:var(--rule)] px-7 py-5">
+        <header className="flex items-start justify-between gap-6 border-b border-[color:var(--rule)] px-6 py-4">
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.22em] text-[color:var(--accent)]">
               <ShieldCheck className="size-3.5" aria-hidden />
@@ -185,7 +185,7 @@ export function InstallDiffModal({
           </button>
         </header>
 
-        <div className="flex-1 overflow-y-auto px-7 py-6">
+        <div className="flex-1 overflow-y-auto px-6 py-6">
           {phase.kind === 'failed' ? (
             <FailureBanner
               t={t}
@@ -246,7 +246,7 @@ export function InstallDiffModal({
           <DiffBody draft={draft} t={t} />
         </div>
 
-        <footer className="flex items-center justify-end gap-3 border-t border-[color:var(--rule)] px-7 py-4">
+        <footer className="flex items-center justify-end gap-3 border-t border-[color:var(--rule)] px-6 py-4">
           <button
             type="button"
             onClick={handleClose}
@@ -265,7 +265,7 @@ export function InstallDiffModal({
             onClick={() => void handleInstall()}
             disabled={busy || phase.kind === 'succeeded'}
             className={cn(
-              'inline-flex items-center gap-2 rounded-md px-5 py-2 text-[12px] font-semibold uppercase tracking-[0.18em]',
+              'inline-flex items-center gap-2 rounded-md px-4 py-2 text-[12px] font-semibold uppercase tracking-[0.18em]',
               'bg-[color:var(--accent)] text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)]',
               'transition-opacity',
               'disabled:opacity-50 disabled:cursor-not-allowed',
@@ -368,7 +368,7 @@ function DiffBody({ draft, t }: { draft: Draft; t: InstallT }): React.ReactEleme
                     <summary className="cursor-pointer text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-subtle)]">
                       input schema
                     </summary>
-                    <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded border border-[color:var(--divider)] bg-[color:var(--paper)] px-2 py-1.5 text-[10px] font-mono leading-relaxed text-[color:var(--fg-strong)]">
+                    <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded border border-[color:var(--divider)] bg-[color:var(--paper)] px-2 py-2 text-[10px] font-mono leading-relaxed text-[color:var(--fg-strong)]">
                       {JSON.stringify(t.input, null, 2)}
                     </pre>
                   </details>
@@ -406,11 +406,11 @@ function DiffBody({ draft, t }: { draft: Draft; t: InstallT }): React.ReactEleme
         {outbound.length === 0 ? (
           <EmptyHint>{t('noOutboundHosts')}</EmptyHint>
         ) : (
-          <ul className="flex flex-wrap gap-1.5">
+          <ul className="flex flex-wrap gap-2">
             {outbound.map((h) => (
               <li
                 key={h}
-                className="font-mono-num rounded-full border border-[color:var(--divider)] bg-[color:var(--bg-soft)] px-2.5 py-0.5 text-[11px] text-[color:var(--fg-strong)]"
+                className="font-mono-num rounded-full border border-[color:var(--divider)] bg-[color:var(--bg-soft)] px-3 py-0.5 text-[11px] text-[color:var(--fg-strong)]"
               >
                 {h}
               </li>
@@ -430,7 +430,7 @@ function DiffBody({ draft, t }: { draft: Draft; t: InstallT }): React.ReactEleme
             {setupFields.map((f) => (
               <li
                 key={f.key}
-                className="flex items-baseline justify-between gap-3 rounded-md border border-[color:var(--divider)] px-3 py-1.5"
+                className="flex items-baseline justify-between gap-3 rounded-md border border-[color:var(--divider)] px-3 py-2"
               >
                 <span className="font-mono-num text-[12px] text-[color:var(--fg-strong)]">
                   {f.key}
@@ -467,7 +467,7 @@ function Section({
           <span className="text-[11px] text-[color:var(--fg-subtle)]">{subtitle}</span>
         ) : null}
       </div>
-      <div className="space-y-1.5 text-[12px]">{children}</div>
+      <div className="space-y-2 text-[12px]">{children}</div>
     </section>
   );
 }
@@ -594,7 +594,7 @@ function FailureDetails({
           <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
             {t('typescriptErrors', { count: errors.length })}
           </summary>
-          <ul className="mt-1.5 space-y-1">
+          <ul className="mt-2 space-y-1">
             {errors.slice(0, 10).map((e, i) => {
               const row = e as {
                 path?: string;
@@ -606,7 +606,7 @@ function FailureDetails({
               return (
                 <li
                   key={i}
-                  className="rounded border border-[color:var(--divider)] bg-[color:var(--paper)] px-2 py-1.5 text-[10px] font-mono leading-relaxed"
+                  className="rounded border border-[color:var(--divider)] bg-[color:var(--paper)] px-2 py-2 text-[10px] font-mono leading-relaxed"
                 >
                   <span className="text-[color:var(--fg-subtle)]">
                     {row.path ?? '?'}:{row.line ?? '?'}:{row.col ?? '?'}
@@ -635,13 +635,13 @@ function FailureDetails({
           <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
             {t('codegenIssues', { count: issues.length })}
           </summary>
-          <ul className="mt-1.5 space-y-1">
+          <ul className="mt-2 space-y-1">
             {issues.map((i, idx) => {
               const row = i as { code?: string; detail?: string };
               return (
                 <li
                   key={idx}
-                  className="rounded border border-[color:var(--divider)] bg-[color:var(--paper)] px-2 py-1.5 text-[11px]"
+                  className="rounded border border-[color:var(--divider)] bg-[color:var(--paper)] px-2 py-2 text-[11px]"
                 >
                   <span className="font-mono-num text-[10px] uppercase tracking-[0.14em] text-[color:var(--fg-subtle)]">
                     {row.code ?? '?'}

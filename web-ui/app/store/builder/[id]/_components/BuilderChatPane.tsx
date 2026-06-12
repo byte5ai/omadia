@@ -540,7 +540,7 @@ export function BuilderChatPane({
     <div className="flex h-full min-h-0 flex-col">
       <div
         ref={scrollRef}
-        className="flex-1 space-y-3 overflow-y-auto px-5 py-4"
+        className="flex-1 space-y-3 overflow-y-auto px-4 py-4"
       >
         {empty ? (
           <EmptyHint />
@@ -565,7 +565,7 @@ export function BuilderChatPane({
       </div>
 
       {error ? (
-        <div className="mx-5 mb-2 flex items-start gap-2 rounded-md border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/8 px-3 py-2 text-[12px] text-[color:var(--danger)]">
+        <div className="mx-4 mb-2 flex items-start gap-2 rounded-md border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/8 px-3 py-2 text-[12px] text-[color:var(--danger)]">
           <AlertCircle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
           <span className="break-words">{error}</span>
         </div>
@@ -573,7 +573,7 @@ export function BuilderChatPane({
 
       {turnStats ? <TurnStatsLine stats={turnStats} /> : null}
 
-      <div className="border-t border-[color:var(--divider)] px-5 py-3">
+      <div className="border-t border-[color:var(--divider)] px-4 py-3">
         <label className="sr-only" htmlFor={inputId}>
           {t('inputLabel')}
         </label>
@@ -596,7 +596,7 @@ export function BuilderChatPane({
             <button
               type="button"
               onClick={onStop}
-              className="inline-flex h-[44px] shrink-0 items-center gap-1.5 rounded-md border border-[color:var(--danger)]/40 px-3 py-2 text-[12px] font-semibold text-[color:var(--danger)] transition-colors hover:bg-[color:var(--danger)]/10"
+              className="inline-flex h-[44px] shrink-0 items-center gap-2 rounded-md border border-[color:var(--danger)]/40 px-3 py-2 text-[12px] font-semibold text-[color:var(--danger)] transition-colors hover:bg-[color:var(--danger)]/10"
             >
               <StopCircle className="size-4" aria-hidden />
               {t('button.stop')}
@@ -606,7 +606,7 @@ export function BuilderChatPane({
               type="button"
               onClick={() => void onSend()}
               disabled={input.trim().length === 0}
-              className="inline-flex h-[44px] shrink-0 items-center gap-1.5 rounded-md bg-[color:var(--accent)] px-3 py-2 text-[12px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] transition-opacity hover:opacity-90 disabled:opacity-40"
+              className="inline-flex h-[44px] shrink-0 items-center gap-2 rounded-md bg-[color:var(--accent)] px-3 py-2 text-[12px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] transition-opacity hover:opacity-90 disabled:opacity-40"
             >
               <Send className="size-4" aria-hidden />
               {t('button.send')}
@@ -617,8 +617,8 @@ export function BuilderChatPane({
           <p
             className={
               liveness && liveness.sinceLastActivityMs > 30000
-                ? 'font-mono-num mt-2 inline-flex flex-wrap items-center gap-1.5 text-[10px] uppercase tracking-[0.18em] text-[color:var(--danger)]'
-                : 'font-mono-num mt-2 inline-flex flex-wrap items-center gap-1.5 text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]'
+                ? 'font-mono-num mt-2 inline-flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-[color:var(--danger)]'
+                : 'font-mono-num mt-2 inline-flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]'
             }
           >
             <span className="lume-busy-dots" aria-hidden />
@@ -692,7 +692,7 @@ function TurnStatsLine({ stats }: { stats: TurnStats }): React.ReactElement {
   if (others > 0) tools.push(`${String(others)} other`);
   const toolsLabel = tools.length > 0 ? tools.join(' · ') : '0 tools';
   return (
-    <div className="font-mono-num mx-5 mb-2 inline-flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
+    <div className="font-mono-num mx-4 mb-2 inline-flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
       <span>
         {stats.isLive ? t('turnStats.live') : t('turnStats.last')}: {toolsLabel}
       </span>
@@ -800,7 +800,7 @@ function ToolCard({
         type="button"
         onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
-        className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-[color:var(--fg-muted)] hover:bg-[color:var(--bg-soft)] focus:outline-none"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-[color:var(--fg-muted)] hover:bg-[color:var(--bg-soft)] focus:outline-none"
       >
         {expanded ? (
           <ChevronDown className="size-3" aria-hidden />
@@ -824,7 +824,7 @@ function ToolCard({
         )}
       </button>
       {expanded ? (
-        <div className="space-y-1.5 border-t border-[color:var(--divider)] px-3 py-2">
+        <div className="space-y-2 border-t border-[color:var(--divider)] px-3 py-2">
           <pre className="font-mono-num overflow-x-auto whitespace-pre-wrap break-words rounded bg-[color:var(--bg)] px-2 py-1 text-[11px] text-[color:var(--fg-muted)]">
             {jsonPreview(item.input)}
           </pre>
@@ -858,7 +858,7 @@ function EventChip({
   return (
     <div className="font-mono-num inline-flex items-center gap-2 rounded-md bg-[color:var(--bg-soft)] px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
       <span className="text-[color:var(--accent)]">{label}</span>
-      <span className="rounded bg-[color:var(--bg)] px-1.5 py-0.5 normal-case tracking-normal text-[color:var(--fg-strong)]">
+      <span className="rounded bg-[color:var(--bg)] px-2 py-0.5 normal-case tracking-normal text-[color:var(--fg-strong)]">
         {detail}
       </span>
       <span className="text-[color:var(--fg-subtle)]">{cause}</span>
@@ -908,7 +908,7 @@ function phasePillClass(
   phase: 'thinking' | 'streaming' | 'tool_running' | 'idle',
 ): string {
   const base =
-    'inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.16em]';
+    'inline-flex items-center rounded px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.16em]';
   switch (phase) {
     case 'streaming':
       return `${base} bg-[color:var(--accent)]/15 text-[color:var(--accent)]`;

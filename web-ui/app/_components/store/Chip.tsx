@@ -25,7 +25,7 @@ export function Chip({
   return (
     <span
       className={cn(
-        'inline-flex items-center rounded-full border px-2.5 py-0.5 text-[11px] leading-5',
+        'inline-flex items-center rounded-full border px-3 py-0.5 text-[11px] leading-5',
         tone !== 'mono' && 'uppercase tracking-[0.14em]',
         toneClass,
         className,

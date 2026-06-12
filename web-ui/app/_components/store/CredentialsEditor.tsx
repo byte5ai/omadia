@@ -213,7 +213,7 @@ export function CredentialsEditor({
                       "credentials". Secrets/OAuth land in the encrypted vault;
                       everything else is instance config. */}
                   <span
-                    className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] ${
+                    className={`rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] ${
                       isSecret
                         ? 'bg-[color:var(--accent)]/12 text-[color:var(--accent)]'
                         : 'bg-[color:var(--rule)]/50 text-[color:var(--muted-ink)]'
@@ -269,7 +269,7 @@ export function CredentialsEditor({
                             },
                           }))
                         }
-                        className="min-w-0 flex-1 rounded-md border border-[color:var(--rule)] bg-[color:var(--bg)] px-2.5 py-1.5 text-[12px] text-[color:var(--ink)] focus:border-[color:var(--accent)] focus:outline-none disabled:opacity-50"
+                        className="min-w-0 flex-1 rounded-md border border-[color:var(--rule)] bg-[color:var(--bg)] px-3 py-2 text-[12px] text-[color:var(--ink)] focus:border-[color:var(--accent)] focus:outline-none disabled:opacity-50"
                       >
                         <option value="">{placeholder}</option>
                         {enumOptions.map((opt) => (
@@ -312,7 +312,7 @@ export function CredentialsEditor({
                           }))
                         }
                         placeholder={placeholder}
-                        className="min-w-0 flex-1 rounded-md border border-[color:var(--rule)] bg-[color:var(--bg)] px-2.5 py-1.5 text-[12px] text-[color:var(--ink)] placeholder:text-[color:var(--faint-ink)] focus:border-[color:var(--accent)] focus:outline-none disabled:opacity-50"
+                        className="min-w-0 flex-1 rounded-md border border-[color:var(--rule)] bg-[color:var(--bg)] px-3 py-2 text-[12px] text-[color:var(--ink)] placeholder:text-[color:var(--faint-ink)] focus:border-[color:var(--accent)] focus:outline-none disabled:opacity-50"
                       />
                     );
                   })()
@@ -358,7 +358,7 @@ export function CredentialsEditor({
           type="button"
           onClick={() => void onSave()}
           disabled={saving || dirtyCount === 0}
-          className="inline-flex items-center gap-2 rounded-md bg-[color:var(--accent)] px-3 py-1.5 text-[12px] font-semibold text-[color:var(--fg-on-dark)] shadow-sm transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+          className="inline-flex items-center gap-2 rounded-md bg-[color:var(--accent)] px-3 py-2 text-[12px] font-semibold text-[color:var(--fg-on-dark)] shadow-sm transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {saving ? (
             <span className="lume-busy-dots" aria-hidden />

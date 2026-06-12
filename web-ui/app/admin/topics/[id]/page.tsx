@@ -36,7 +36,7 @@ export default function TopicDetailPage(): React.ReactElement {
   }, [id, load]);
 
   return (
-    <main className="mx-auto max-w-[960px] px-6 py-12 lg:px-10 lg:py-16">
+    <main className="mx-auto max-w-[960px] px-6 py-12 lg:px-8 lg:py-16">
       <header className="mb-8">
         <Link
           href="/admin/topics"
@@ -62,10 +62,10 @@ export default function TopicDetailPage(): React.ReactElement {
             {detail.props.description}
           </p>
           <div className="mb-6 flex flex-wrap gap-2 text-[10px]">
-            <span className="rounded bg-[color:var(--accent)]/10 px-1.5 py-0.5 font-mono uppercase tracking-wider text-[color:var(--accent)]">
+            <span className="rounded bg-[color:var(--accent)]/10 px-2 py-0.5 font-mono uppercase tracking-wider text-[color:var(--accent)]">
               {detail.props.member_count} Memories
             </span>
-            <span className="rounded bg-[color:var(--bg-soft)] px-1.5 py-0.5 font-mono uppercase tracking-wider text-[color:var(--fg)]">
+            <span className="rounded bg-[color:var(--bg-soft)] px-2 py-0.5 font-mono uppercase tracking-wider text-[color:var(--fg)]">
               {detail.props.naming_source}
             </span>
           </div>

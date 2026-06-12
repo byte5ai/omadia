@@ -370,7 +370,7 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
                   </p>
                   <button
                     type="button"
-                    className="rounded border border-[color:var(--warning)] bg-[color:var(--bg-elevated)] px-1.5 py-0 text-[10px] text-[color:var(--warning)] hover:bg-[color:var(--warning)]/10"
+                    className="rounded border border-[color:var(--warning)] bg-[color:var(--bg-elevated)] px-2 py-0 text-[10px] text-[color:var(--warning)] hover:bg-[color:var(--warning)]/10"
                     disabled={props.disabled}
                     onClick={clearAllOrphans}
                     title={t('orphanDetachAllTooltip')}
@@ -401,7 +401,7 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
                     </span>
                     <button
                       type="button"
-                      className="ml-auto rounded border border-[color:var(--warning)] bg-[color:var(--bg-elevated)] px-1.5 py-0 text-[10px] hover:bg-[color:var(--warning)]/10"
+                      className="ml-auto rounded border border-[color:var(--warning)] bg-[color:var(--bg-elevated)] px-2 py-0 text-[10px] hover:bg-[color:var(--warning)]/10"
                       disabled={props.disabled}
                       onClick={() => detach(id)}
                     >
@@ -415,7 +415,7 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
         </div>
         <DragOverlay>
           {activeEntry ? (
-            <div className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-2 py-1.5 text-xs shadow-lg">
+            <div className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-2 py-2 text-xs shadow-lg">
               <span className="font-medium">{activeEntry.name}</span>
               <code className="ml-1 font-mono text-[10px] text-[color:var(--fg-muted)]">
                 {activeEntry.id}
@@ -518,7 +518,7 @@ function Column(props: {
         items={itemIds}
         strategy={verticalListSortingStrategy}
       >
-        <div className="space-y-1.5">
+        <div className="space-y-2">
           {props.count === 0 ? (
             <p className="px-1 py-3 text-center text-xs text-[color:var(--fg-subtle)]">
               {props.emptyLabel}
@@ -577,7 +577,7 @@ function DraggablePluginTile(props: {
   return (
     <div ref={setNodeRef} style={style} className="select-none">
       <div className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)]">
-        <div className="flex items-start gap-1.5 px-2 py-1.5">
+        <div className="flex items-start gap-2 px-2 py-2">
           <button
             type="button"
             {...attributes}
@@ -589,7 +589,7 @@ function DraggablePluginTile(props: {
             <GripVertical size={14} />
           </button>
           <div className="flex-1 text-xs">
-            <div className="flex flex-wrap items-center gap-1.5">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="font-medium text-[color:var(--fg)]">
                 {entry.name}
               </span>
@@ -603,13 +603,13 @@ function DraggablePluginTile(props: {
                     entry.multi_instance_justification ??
                     t('multiInstanceFalseBadge')
                   }
-                  className="rounded bg-[color:var(--warning)]/10 px-1.5 py-0 text-[10px] uppercase tracking-wide text-[color:var(--warning)]"
+                  className="rounded bg-[color:var(--warning)]/10 px-2 py-0 text-[10px] uppercase tracking-wide text-[color:var(--warning)]"
                 >
                   {t('multiInstanceFalseShort')}
                 </span>
               )}
               {isStrict && (
-                <span className="rounded bg-[color:var(--accent)]/10 px-1.5 py-0 text-[10px] uppercase tracking-wide text-[color:var(--accent)]">
+                <span className="rounded bg-[color:var(--accent)]/10 px-2 py-0 text-[10px] uppercase tracking-wide text-[color:var(--accent)]">
                   {t('privacyStrictBadge')}
                 </span>
               )}
@@ -618,7 +618,7 @@ function DraggablePluginTile(props: {
                   title={t('dependencyMissingTooltip', {
                     parent: entry.depends_on[0] ?? '',
                   })}
-                  className="rounded bg-[color:var(--danger)]/8 px-1.5 py-0 text-[10px] uppercase tracking-wide text-[color:var(--danger)]"
+                  className="rounded bg-[color:var(--danger)]/8 px-2 py-0 text-[10px] uppercase tracking-wide text-[color:var(--danger)]"
                 >
                   {t('dependencyMissingBadge')}
                 </span>
@@ -642,7 +642,7 @@ function DraggablePluginTile(props: {
                   <span
                     key={`r-${s}`}
                     title={t('memoryReadTooltip')}
-                    className="rounded bg-[color:var(--accent)]/10 px-1.5 py-0 text-[10px] text-[color:var(--accent)]"
+                    className="rounded bg-[color:var(--accent)]/10 px-2 py-0 text-[10px] text-[color:var(--accent)]"
                   >
                     r:{s}
                   </span>
@@ -651,7 +651,7 @@ function DraggablePluginTile(props: {
                   <span
                     key={`w-${s}`}
                     title={t('memoryWriteTooltip')}
-                    className="rounded bg-[color:var(--success)]/10 px-1.5 py-0 text-[10px] text-[color:var(--success)]"
+                    className="rounded bg-[color:var(--success)]/10 px-2 py-0 text-[10px] text-[color:var(--success)]"
                   >
                     w:{s}
                   </span>
@@ -668,7 +668,7 @@ function DraggablePluginTile(props: {
             {!attached ? (
               <button
                 type="button"
-                className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-1.5 py-0.5 text-[10px] hover:bg-[color:var(--bg-soft)]"
+                className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-2 py-0.5 text-[10px] hover:bg-[color:var(--bg-soft)]"
                 disabled={props.disabled}
                 onClick={props.onAttach}
               >
@@ -680,14 +680,14 @@ function DraggablePluginTile(props: {
                   <button
                     type="button"
                     onClick={props.onToggleExpanded}
-                    className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-1.5 py-0.5 text-[10px] hover:bg-[color:var(--bg-soft)]"
+                    className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-2 py-0.5 text-[10px] hover:bg-[color:var(--bg-soft)]"
                   >
                     {props.expanded ? t('configHide') : t('configShow')}
                   </button>
                 )}
                 <button
                   type="button"
-                  className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 px-1.5 py-0.5 text-[10px] text-[color:var(--danger)] hover:bg-[color:var(--danger)]/8"
+                  className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 px-2 py-0.5 text-[10px] text-[color:var(--danger)] hover:bg-[color:var(--danger)]/8"
                   disabled={props.disabled}
                   onClick={props.onDetach}
                 >
@@ -720,7 +720,7 @@ function KindBadge({ kind }: { kind: string }): React.ReactElement {
   }[kind] ?? 'bg-[color:var(--state-loading)] text-[color:var(--fg)]';
   return (
     <span
-      className={`rounded px-1.5 py-0 text-[10px] uppercase tracking-wide ${cls}`}
+      className={`rounded px-2 py-0 text-[10px] uppercase tracking-wide ${cls}`}
     >
       {kind}
     </span>

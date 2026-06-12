@@ -200,7 +200,7 @@ export default function DuplicatesListPage(): React.ReactElement {
   }, [items]);
 
   return (
-    <main className="mx-auto max-w-[960px] px-6 py-12 lg:px-10 lg:py-16">
+    <main className="mx-auto max-w-[960px] px-6 py-12 lg:px-8 lg:py-16">
       <header className="mb-6">
         <Link
           href="/admin"
@@ -405,13 +405,13 @@ export default function DuplicatesListPage(): React.ReactElement {
                 <div className="mb-2 flex flex-wrap items-center gap-2 text-[10px]">
                   <span
                     className={[
-                      'rounded px-1.5 py-0.5 uppercase tracking-wider',
+                      'rounded px-2 py-0.5 uppercase tracking-wider',
                       STATUS_BADGE[mc.props.status],
                     ].join(' ')}
                   >
                     {mc.props.status}
                   </span>
-                  <span className="rounded bg-[color:var(--accent)]/10 px-1.5 py-0.5 font-mono uppercase tracking-wider text-[color:var(--accent)]">
+                  <span className="rounded bg-[color:var(--accent)]/10 px-2 py-0.5 font-mono uppercase tracking-wider text-[color:var(--accent)]">
                     cosine {mc.props.cosine_sim.toFixed(3)}
                   </span>
                   <time
@@ -603,13 +603,13 @@ export default function DuplicatesListPage(): React.ReactElement {
                     <div className="mb-2 flex flex-wrap items-center gap-2 text-[10px]">
                       <span
                         className={[
-                          'rounded px-1.5 py-0.5 uppercase tracking-wider',
+                          'rounded px-2 py-0.5 uppercase tracking-wider',
                           STATUS_BADGE[mc.props.status],
                         ].join(' ')}
                       >
                         {mc.props.status}
                       </span>
-                      <span className="rounded bg-[color:var(--warning)]/10 px-1.5 py-0.5 font-mono uppercase tracking-wider text-[color:var(--warning)]">
+                      <span className="rounded bg-[color:var(--warning)]/10 px-2 py-0.5 font-mono uppercase tracking-wider text-[color:var(--warning)]">
                         cosine {mc.props.cosine_sim.toFixed(3)}
                       </span>
                       <time

@@ -136,7 +136,7 @@ export default function KgPrioritiesPage(): React.ReactElement {
   );
 
   return (
-    <main className="mx-auto max-w-[1200px] px-6 py-12 lg:px-10 lg:py-16">
+    <main className="mx-auto max-w-[1200px] px-6 py-12 lg:px-8 lg:py-16">
       <header className="mb-8">
         <h1 className="font-display text-[clamp(2rem,4vw,3rem)] leading-[1.1] text-[color:var(--fg-strong)]">
           Knowledge-Graph Priorities
@@ -149,7 +149,7 @@ export default function KgPrioritiesPage(): React.ReactElement {
         </p>
       </header>
 
-      <section className="mb-8 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
+      <section className="mb-8 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
         <label className="block text-sm font-semibold text-[color:var(--fg-strong)]">
           Agent-ID
         </label>
@@ -177,7 +177,7 @@ export default function KgPrioritiesPage(): React.ReactElement {
         </div>
       ) : null}
 
-      <section className="mb-8 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
+      <section className="mb-8 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
         <h2 className="text-lg font-semibold text-[color:var(--fg-strong)]">
           Neuer Eintrag
         </h2>

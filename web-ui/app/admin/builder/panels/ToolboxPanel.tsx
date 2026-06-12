@@ -37,7 +37,7 @@ export function ToolboxPanel({
         <h2 className="mb-2 px-1 text-[11px] uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
           {t('toolbox.native')}
         </h2>
-        <div className="flex flex-col gap-1.5">
+        <div className="flex flex-col gap-2">
           {NATIVE_TOOLS.map((ref) => (
             <div
               key={ref}
@@ -45,7 +45,7 @@ export function ToolboxPanel({
               onDragStart={(e) =>
                 onDragStart(e, { toolKind: 'native', toolRef: ref, mcpServerId: null })
               }
-              className="cursor-grab rounded-md border border-[color:var(--border)] bg-[color:var(--card)] px-2.5 py-1.5 text-[12px] text-[color:var(--fg-strong)] hover:border-[color:var(--accent)] active:cursor-grabbing"
+              className="cursor-grab rounded-md border border-[color:var(--border)] bg-[color:var(--card)] px-3 py-2 text-[12px] text-[color:var(--fg-strong)] hover:border-[color:var(--accent)] active:cursor-grabbing"
             >
               {ref}
             </div>
@@ -63,7 +63,7 @@ export function ToolboxPanel({
               {t('toolbox.noTools')}
             </p>
           ) : (
-            <div className="flex flex-col gap-1.5">
+            <div className="flex flex-col gap-2">
               {server.discoveredTools.map((tool) => (
                 <div
                   key={tool.name}
@@ -76,7 +76,7 @@ export function ToolboxPanel({
                       mcpServerId: server.id,
                     })
                   }
-                  className="cursor-grab rounded-md border border-[color:var(--border)] bg-[color:var(--card)] px-2.5 py-1.5 text-[12px] text-[color:var(--fg-strong)] hover:border-[color:var(--accent)] active:cursor-grabbing"
+                  className="cursor-grab rounded-md border border-[color:var(--border)] bg-[color:var(--card)] px-3 py-2 text-[12px] text-[color:var(--fg-strong)] hover:border-[color:var(--accent)] active:cursor-grabbing"
                 >
                   {tool.name}
                 </div>

@@ -106,7 +106,7 @@ export function ToolTestModal({
       role="dialog"
       aria-modal="true"
       aria-label={t('dialogLabel', { id: tool.id })}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-[color:var(--bg-modal-overlay)] px-4 py-10"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-[color:var(--bg-modal-overlay)] px-4 py-8"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -173,7 +173,7 @@ export function ToolTestModal({
                 type="button"
                 onClick={() => void onSave()}
                 disabled={savingTestCase}
-                className="inline-flex items-center gap-1 rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2.5 py-1 text-[11px] font-semibold text-[color:var(--fg-strong)] hover:border-[color:var(--accent)] disabled:opacity-50"
+                className="inline-flex items-center gap-1 rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-1 text-[11px] font-semibold text-[color:var(--fg-strong)] hover:border-[color:var(--accent)] disabled:opacity-50"
               >
                 {savingTestCase ? (
                   <span className="lume-busy-dots" aria-hidden />

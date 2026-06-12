@@ -242,7 +242,7 @@ function PageShell({ children }: { children: React.ReactNode }): React.ReactElem
           <h1 className="font-display text-3xl text-[color:var(--fg-strong)]">
             Omadia
           </h1>
-          <span className="mt-1.5 text-[11px] uppercase tracking-[0.18em] text-[color:var(--fg-muted)]">
+          <span className="mt-2 text-[11px] uppercase tracking-[0.18em] text-[color:var(--fg-muted)]">
             an Agentic OS
           </span>
         </header>

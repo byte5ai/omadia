@@ -46,7 +46,7 @@ export function AgentUsagePills({
     <>
       <motion.div
         className={cn(
-          'flex flex-wrap items-center gap-1.5',
+          'flex flex-wrap items-center gap-2',
           className,
         )}
         aria-label={t('ariaLabel')}
@@ -73,7 +73,7 @@ export function AgentUsagePills({
               onClick={() => setSelectedAgentId(agent.id)}
               title={t('pillTitle', { id: agent.id })}
               className={cn(
-                'inline-flex items-center gap-1.5 rounded-full px-3 py-1',
+                'inline-flex items-center gap-2 rounded-full px-3 py-1',
                 'text-[11px] font-semibold',
                 'focus:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[color:var(--bg)]',
                 TONE_CLASS[agent.tone],
@@ -82,7 +82,7 @@ export function AgentUsagePills({
               <span>{agent.label}</span>
               <span
                 className={cn(
-                  'font-mono-num tabular-nums inline-flex min-w-[1.25rem] justify-center rounded-full px-1.5',
+                  'font-mono-num tabular-nums inline-flex min-w-[1.25rem] justify-center rounded-full px-2',
                   'bg-[color:var(--accent)] text-[color:var(--accent-fg)] text-[10px] leading-[1.1rem]',
                 )}
               >

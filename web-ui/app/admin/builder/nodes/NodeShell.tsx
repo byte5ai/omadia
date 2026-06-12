@@ -65,14 +65,14 @@ export function NodeShell({
           style={{ background: accent, width: 9, height: 9 }}
         />
       )}
-      <div className="px-3 py-2.5 pl-4">
+      <div className="px-3 py-3 pl-4">
         <div className="flex items-start justify-between gap-2">
           <span className="text-[13px] font-semibold leading-tight text-[color:var(--fg-strong)]">
             {title}
           </span>
           {badge ? (
             <span
-              className="shrink-0 rounded-full px-1.5 py-0.5 text-[9px] uppercase tracking-[0.14em]"
+              className="shrink-0 rounded-full px-2 py-0.5 text-[9px] uppercase tracking-[0.14em]"
               style={{ background: `${accent}22`, color: accent }}
             >
               {badge}

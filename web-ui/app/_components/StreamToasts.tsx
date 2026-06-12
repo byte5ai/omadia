@@ -221,7 +221,7 @@ function StreamToast({
             e.stopPropagation();
             setConfirming(true);
           }}
-          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-md border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 px-2 py-1 text-[11px] font-medium text-[color:var(--danger)] transition hover:bg-[color:var(--danger)]/8"
+          className="mt-2 flex w-full items-center justify-center gap-2 rounded-md border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 px-2 py-1 text-[11px] font-medium text-[color:var(--danger)] transition hover:bg-[color:var(--danger)]/8"
         >
           <Ban size={12} aria-hidden />
           {t('abortButton')}
@@ -321,7 +321,7 @@ function AbortConfirmModal({
               e.stopPropagation();
               onCancel();
             }}
-            className="rounded-md border border-[color:var(--border)] px-3 py-1.5 text-xs font-medium text-[color:var(--fg)] transition hover:bg-[color:var(--bg-soft)]"
+            className="rounded-md border border-[color:var(--border)] px-3 py-2 text-xs font-medium text-[color:var(--fg)] transition hover:bg-[color:var(--bg-soft)]"
           >
             {t('abortConfirmKeep')}
           </button>
@@ -331,7 +331,7 @@ function AbortConfirmModal({
               e.stopPropagation();
               onConfirm();
             }}
-            className="rounded-md border border-[color:var(--danger-edge)] bg-transparent px-3 py-1.5 text-xs font-medium text-[color:var(--danger)] transition hover:bg-[color:var(--danger)]/8"
+            className="rounded-md border border-[color:var(--danger-edge)] bg-transparent px-3 py-2 text-xs font-medium text-[color:var(--danger)] transition hover:bg-[color:var(--danger)]/8"
           >
             {t('abortConfirmStop')}
           </button>

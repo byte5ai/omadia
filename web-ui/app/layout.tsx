@@ -101,7 +101,7 @@ export default async function RootLayout({
                   <span className="text-xs text-[color:var(--fg-muted)]">
                     {t('subtitle')}
                   </span>
-                  <div className="ml-auto flex items-center gap-5">
+                  <div className="ml-auto flex items-center gap-4">
                     <Nav />
                     <span
                       className="hidden h-5 w-px bg-[color:var(--border)] sm:block"

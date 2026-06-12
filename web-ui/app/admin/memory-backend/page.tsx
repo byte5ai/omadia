@@ -116,7 +116,7 @@ export default function MemoryBackendPage(): React.ReactElement {
   }, [choice, load]);
 
   return (
-    <main className="mx-auto max-w-[800px] px-6 py-12 lg:px-10 lg:py-16">
+    <main className="mx-auto max-w-[800px] px-6 py-12 lg:px-8 lg:py-16">
       <header className="mb-8">
         <Link
           href="/admin"
@@ -138,20 +138,20 @@ export default function MemoryBackendPage(): React.ReactElement {
       </header>
 
       {loading && (
-        <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5 text-sm text-[color:var(--fg-muted)]">
+        <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4 text-sm text-[color:var(--fg-muted)]">
           lädt…
         </section>
       )}
 
       {loadError !== null && (
-        <section className="mb-6 rounded-lg border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-5 text-sm text-[color:var(--danger)]">
+        <section className="mb-6 rounded-lg border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-4 text-sm text-[color:var(--danger)]">
           Laden fehlgeschlagen: {loadError}
         </section>
       )}
 
       {state !== null && !loading && (
         <>
-          <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
+          <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
             <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
               Aktueller Stand
             </h2>
@@ -176,7 +176,7 @@ export default function MemoryBackendPage(): React.ReactElement {
             </section>
           )}
 
-          <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
+          <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
             <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
               Backend wählen
             </h2>
@@ -220,7 +220,7 @@ export default function MemoryBackendPage(): React.ReactElement {
                 type="button"
                 onClick={() => void onSave()}
                 disabled={!canSave}
-                className="rounded bg-[color:var(--accent)] px-4 py-1.5 text-xs font-semibold text-[color:var(--fg-on-dark)] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                className="rounded bg-[color:var(--accent)] px-4 py-2 text-xs font-semibold text-[color:var(--fg-on-dark)] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {saving ? 'speichert…' : 'Auswahl speichern'}
               </button>
@@ -228,13 +228,13 @@ export default function MemoryBackendPage(): React.ReactElement {
           </section>
 
           {saveError !== null && (
-            <section className="mb-6 rounded-lg border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-5 text-sm text-[color:var(--danger)]">
+            <section className="mb-6 rounded-lg border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-4 text-sm text-[color:var(--danger)]">
               {saveError}
             </section>
           )}
 
           {saved !== null && saveError === null && (
-            <section className="rounded-lg border border-[color:var(--warning)]/50 bg-[color:var(--warning)]/10 p-5 text-sm text-[color:var(--warning)]">
+            <section className="rounded-lg border border-[color:var(--warning)]/50 bg-[color:var(--warning)]/10 p-4 text-sm text-[color:var(--warning)]">
               <p className="font-semibold">
                 Backend <code className="font-mono">{saved}</code> gespeichert.
               </p>

@@ -571,7 +571,7 @@ export default function GraphPage(): React.ReactElement {
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className="flex items-center justify-between px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-[color:var(--fg-subtle)]">
+          <div className="flex items-center justify-between px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-[color:var(--fg-subtle)]">
             <span>
               Sessions ({filteredSessions.length}
               {filter ? `/${sessions.length}` : ''})
@@ -892,7 +892,7 @@ function SessionCard({
           [...agents].slice(0, 3).map((a) => (
             <span
               key={a}
-              className="rounded-full bg-[color:var(--accent)]/10 px-1.5 py-0.5 font-mono text-[color:var(--accent)] ring-1 ring-[color:var(--accent)]"
+              className="rounded-full bg-[color:var(--accent)]/10 px-2 py-0.5 font-mono text-[color:var(--accent)] ring-1 ring-[color:var(--accent)]"
             >
               🤖 {a}
             </span>
@@ -918,7 +918,7 @@ function Badge({
       : 'bg-[color:var(--bg-soft)] text-[color:var(--fg)] ring-[color:var(--border-strong)]';
   return (
     <span
-      className={`rounded-full px-1.5 py-0.5 font-mono text-[10px] ring-1 ${cls}`}
+      className={`rounded-full px-2 py-0.5 font-mono text-[10px] ring-1 ${cls}`}
     >
       {children}
     </span>
@@ -988,7 +988,7 @@ function FilterChip({
       onClick={onClick}
       title={hint}
       className={[
-        'rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition',
+        'rounded-full border px-3 py-0.5 text-[11px] font-medium transition',
         active
           ? activeTone[tone]
           : 'border-[color:var(--border)] bg-[color:var(--bg-elevated)] text-[color:var(--fg-muted)] hover:border-[color:var(--border-strong)]',

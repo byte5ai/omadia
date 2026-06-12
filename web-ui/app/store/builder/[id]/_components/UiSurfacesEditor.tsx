@@ -124,7 +124,7 @@ export function UiSurfacesEditor({
                 value={adminUiPath ?? ''}
                 onChange={(e) => updateAdminUiPath(e.target.value)}
                 placeholder="/api/<slug>/admin/index.html"
-                className="w-full rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1.5 font-mono text-[12px]"
+                className="w-full rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-2 font-mono text-[12px]"
               />
             </label>
 

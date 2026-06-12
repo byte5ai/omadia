@@ -248,7 +248,7 @@ function ToolCallRow({
               key={e.id}
               type="button"
               onClick={() => onEntityClick(e.id)}
-              className="rounded bg-[color:var(--success)]/10 px-1.5 py-0.5 text-[color:var(--success)] ring-1 ring-[color:var(--success)] hover:bg-[color:var(--success)]/10"
+              className="rounded bg-[color:var(--success)]/10 px-2 py-0.5 text-[color:var(--success)] ring-1 ring-[color:var(--success)] hover:bg-[color:var(--success)]/10"
               title={e.id}
             >
               {String(e.props['displayName'] ?? e.id)}
@@ -263,20 +263,20 @@ function ToolCallRow({
 function StatusPill({ status }: { status: string }): React.ReactElement {
   if (status === 'success') {
     return (
-      <span className="rounded bg-[color:var(--success)]/10 px-1.5 py-0.5 text-[10px] font-semibold text-[color:var(--success)]">
+      <span className="rounded bg-[color:var(--success)]/10 px-2 py-0.5 text-[10px] font-semibold text-[color:var(--success)]">
         OK
       </span>
     );
   }
   if (status === 'error') {
     return (
-      <span className="rounded bg-[color:var(--danger)]/8 px-1.5 py-0.5 text-[10px] font-semibold text-[color:var(--danger)]">
+      <span className="rounded bg-[color:var(--danger)]/8 px-2 py-0.5 text-[10px] font-semibold text-[color:var(--danger)]">
         FAIL
       </span>
     );
   }
   return (
-    <span className="rounded bg-[color:var(--state-loading)] px-1.5 py-0.5 text-[10px] font-semibold text-[color:var(--fg)]">
+    <span className="rounded bg-[color:var(--state-loading)] px-2 py-0.5 text-[10px] font-semibold text-[color:var(--fg)]">
       {status}
     </span>
   );

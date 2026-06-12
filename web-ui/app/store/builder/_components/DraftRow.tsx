@@ -93,7 +93,7 @@ export function DraftRow({ draft, deleted = false }: DraftRowProps): React.React
   return (
     <div
       className={cn(
-        'group relative flex items-start gap-4 rounded-lg border border-[color:var(--divider)] bg-[color:var(--bg-elevated)] p-5 transition-[box-shadow] duration-[var(--dur-base)]',
+        'group relative flex items-start gap-4 rounded-lg border border-[color:var(--divider)] bg-[color:var(--bg-elevated)] p-4 transition-[box-shadow] duration-[var(--dur-base)]',
         'hover:shadow-[0_4px_14px_rgba(0,75,115,0.08)]',
         pending && 'opacity-60',
       )}
@@ -124,7 +124,7 @@ export function DraftRow({ draft, deleted = false }: DraftRowProps): React.React
             <button
               type="submit"
               aria-label={t('save')}
-              className="rounded-md p-1.5 text-[color:var(--accent)] hover:bg-[color:var(--bg-soft)]"
+              className="rounded-md p-2 text-[color:var(--accent)] hover:bg-[color:var(--bg-soft)]"
               disabled={pending}
             >
               <Check className="size-4" aria-hidden />
@@ -136,7 +136,7 @@ export function DraftRow({ draft, deleted = false }: DraftRowProps): React.React
                 setEditing(false);
                 setName(draft.name);
               }}
-              className="rounded-md p-1.5 text-[color:var(--fg-muted)] hover:bg-[color:var(--bg-soft)]"
+              className="rounded-md p-2 text-[color:var(--fg-muted)] hover:bg-[color:var(--bg-soft)]"
               disabled={pending}
             >
               <X className="size-4" aria-hidden />
@@ -200,7 +200,7 @@ export function DraftRow({ draft, deleted = false }: DraftRowProps): React.React
             type="button"
             onClick={onRestore}
             disabled={pending}
-            className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-semibold text-[color:var(--fg-muted)] hover:bg-[color:var(--bg-soft)] hover:text-[color:var(--fg-strong)] disabled:opacity-50"
+            className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-[11px] font-semibold text-[color:var(--fg-muted)] hover:bg-[color:var(--bg-soft)] hover:text-[color:var(--fg-strong)] disabled:opacity-50"
           >
             <Undo2 className="size-3.5" aria-hidden />
             {t('restore')}
@@ -212,7 +212,7 @@ export function DraftRow({ draft, deleted = false }: DraftRowProps): React.React
             ) : null}
             <Link
               href={`/store/builder/${encodeURIComponent(draft.id)}`}
-              className="inline-flex items-center gap-1.5 rounded-md bg-[color:var(--accent)]/10 px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-[color:var(--accent)] transition-colors hover:bg-[color:var(--accent)] hover:text-[color:var(--fg-on-dark)]"
+              className="inline-flex items-center gap-2 rounded-md bg-[color:var(--accent)]/10 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[color:var(--accent)] transition-colors hover:bg-[color:var(--accent)] hover:text-[color:var(--fg-on-dark)]"
             >
               {t('workspace')}
               <ArrowRight className="size-3.5" aria-hidden />
@@ -222,7 +222,7 @@ export function DraftRow({ draft, deleted = false }: DraftRowProps): React.React
               onClick={onDelete}
               disabled={pending}
               aria-label={t('delete')}
-              className="rounded-md p-1.5 text-[color:var(--fg-muted)] hover:bg-[color:var(--danger)]/10 hover:text-[color:var(--danger)] disabled:opacity-50"
+              className="rounded-md p-2 text-[color:var(--fg-muted)] hover:bg-[color:var(--danger)]/10 hover:text-[color:var(--danger)] disabled:opacity-50"
             >
               <Trash2 className="size-4" aria-hidden />
             </button>

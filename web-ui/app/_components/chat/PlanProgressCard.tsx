@@ -53,7 +53,7 @@ export function PlanProgressCard({
       open
       className="mb-2 rounded-md border border-[color:var(--accent)] bg-[color:var(--accent)]/10 text-xs"
     >
-      <summary className="flex cursor-pointer items-center gap-2 px-2.5 py-1.5 font-medium text-[color:var(--accent)]">
+      <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 font-medium text-[color:var(--accent)]">
         <span aria-hidden>🗺</span>
         <span>{t('heading')}</span>
         <span className="font-normal text-[color:var(--accent)]">
@@ -68,7 +68,7 @@ export function PlanProgressCard({
         )}
         {plan.reusedProcessTitle && (
           <span
-            className="ml-auto inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium text-[color:var(--success)]"
+            className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium text-[color:var(--success)]"
             title={t('reusedFrom', { title: plan.reusedProcessTitle })}
           >
             <span aria-hidden>♻</span>
@@ -76,7 +76,7 @@ export function PlanProgressCard({
           </span>
         )}
       </summary>
-      <ol className="flex flex-col gap-1 px-2.5 pb-2 pt-0.5">
+      <ol className="flex flex-col gap-1 px-3 pb-2 pt-0.5">
         {steps.map((s, i) => {
           const active = s.status === 'in_progress';
           return (
@@ -100,7 +100,7 @@ export function PlanProgressCard({
                   {i + 1}.
                 </span>{' '}
                 {s.goal}
-                <span className="ml-1.5 text-[10px] uppercase tracking-wide text-[color:var(--fg-subtle)]">
+                <span className="ml-2 text-[10px] uppercase tracking-wide text-[color:var(--fg-subtle)]">
                   {statusLabel(s.status)}
                 </span>
               </span>

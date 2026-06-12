@@ -41,7 +41,7 @@ export default async function RoutineRunDetailPage({
   }
 
   return (
-    <main className="mx-auto w-full max-w-[1280px] px-6 py-12 lg:px-10 lg:py-16">
+    <main className="mx-auto w-full max-w-[1280px] px-6 py-12 lg:px-8 lg:py-16">
       <nav className="text-[12px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
         <Link href="/routines" className="hover:text-[color:var(--accent)]">
           Routinen

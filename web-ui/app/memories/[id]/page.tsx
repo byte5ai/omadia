@@ -326,10 +326,10 @@ export default function MemoryDetailPage(): React.ReactElement {
         )}
 
         {!loading && node !== null && (
-          <article className="mx-auto max-w-2xl rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-5 shadow-sm">
+          <article className="mx-auto max-w-2xl rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-4 shadow-sm">
             <div className="mb-3 flex items-center justify-between gap-3">
               {editing ? (
-                <div className="flex flex-wrap gap-1.5">
+                <div className="flex flex-wrap gap-2">
                   {KINDS.map((k) => (
                     <label
                       key={k}
@@ -382,7 +382,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                   disabled={busy}
                   maxLength={2000}
                   rows={3}
-                  className="w-full resize-y rounded border border-[color:var(--border)] px-2 py-1.5 text-sm focus:border-[color:var(--border-strong)] focus:outline-none"
+                  className="w-full resize-y rounded border border-[color:var(--border)] px-2 py-2 text-sm focus:border-[color:var(--border-strong)] focus:outline-none"
                 />
               ) : (
                 <p className="text-sm text-[color:var(--fg-strong)]">
@@ -402,7 +402,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                   disabled={busy}
                   maxLength={10000}
                   rows={3}
-                  className="w-full resize-y rounded border border-[color:var(--border)] px-2 py-1.5 text-sm focus:border-[color:var(--border-strong)] focus:outline-none"
+                  className="w-full resize-y rounded border border-[color:var(--border)] px-2 py-2 text-sm focus:border-[color:var(--border-strong)] focus:outline-none"
                   placeholder="(optional)"
                 />
               ) : node.props.rationale !== undefined ? (
@@ -500,7 +500,7 @@ export default function MemoryDetailPage(): React.ReactElement {
         {!loading && node !== null && (
           <section
             aria-label="Quellen-Snippets"
-            className="mx-auto mt-4 max-w-2xl rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-5 shadow-sm"
+            className="mx-auto mt-4 max-w-2xl rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-4 shadow-sm"
           >
             <header className="mb-3 flex items-center justify-between">
               <div>
@@ -541,7 +541,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                           </span>
                           <span
                             className={[
-                              'rounded px-1.5 py-0.5 uppercase tracking-wider',
+                              'rounded px-2 py-0.5 uppercase tracking-wider',
                               SOURCE_BADGE[ex.props.source],
                             ].join(' ')}
                           >
@@ -648,7 +648,7 @@ export default function MemoryDetailPage(): React.ReactElement {
         {!loading && node !== null && (
           <section
             aria-label="Audit-Verlauf"
-            className="mx-auto mt-4 max-w-2xl rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-5 shadow-sm"
+            className="mx-auto mt-4 max-w-2xl rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-4 shadow-sm"
           >
             <header className="mb-3 flex items-center justify-between">
               <h2 className="text-xs font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
@@ -689,7 +689,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                       <div className="flex flex-wrap items-center gap-2 text-[10px]">
                         <span
                           className={[
-                            'rounded px-1.5 py-0.5 uppercase tracking-wider',
+                            'rounded px-2 py-0.5 uppercase tracking-wider',
                             ACTION_BADGE[e.action],
                           ].join(' ')}
                         >

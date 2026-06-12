@@ -1244,7 +1244,7 @@ function MobilePaneTabs({
     <nav
       role="tablist"
       aria-label={tw('mobilePaneAriaLabel')}
-      className="mb-3 flex items-center gap-1.5 overflow-x-auto rounded-lg border border-[color:var(--divider)] bg-[color:var(--bg-elevated)] p-1.5"
+      className="mb-3 flex items-center gap-2 overflow-x-auto rounded-lg border border-[color:var(--divider)] bg-[color:var(--bg-elevated)] p-2"
     >
       {items.map((it) => {
         const isActive = it.id === active;
@@ -1355,7 +1355,7 @@ function WorkspaceHeader({
   const modelEditingEnabled = draft.status !== 'archived';
   const tw = useTranslations('builder.workspace');
   return (
-    <header className="flex flex-col gap-4 rounded-lg border border-[color:var(--divider)] bg-[color:var(--bg-elevated)] px-5 py-4 lg:flex-row lg:items-center">
+    <header className="flex flex-col gap-4 rounded-lg border border-[color:var(--divider)] bg-[color:var(--bg-elevated)] px-4 py-4 lg:flex-row lg:items-center">
       <Link
         href="/store/builder"
         className="inline-flex items-center gap-2 self-start rounded-md px-2 py-1 text-[12px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg-muted)] transition-colors hover:bg-[color:var(--bg-soft)] hover:text-[color:var(--fg-strong)]"
@@ -1374,7 +1374,7 @@ function WorkspaceHeader({
       {/* Technical controls — only in the Extended view. The Simplified
           view keeps the header calm: just the mode toggle and Publish. */}
       {viewMode === 'extended' ? (
-        <dl className="flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px]">
+        <dl className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px]">
           <TemplateSwitcher
             templates={templates}
             current={currentTemplate}
@@ -1509,7 +1509,7 @@ function StatusBadge({ status }: { status: Draft['status'] }): React.ReactElemen
   return (
     <span
       className={cn(
-        'inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-[0.16em]',
+        'inline-flex items-center rounded-full px-3 py-0.5 text-[11px] font-semibold uppercase tracking-[0.16em]',
         palette[status],
       )}
     >
@@ -1544,7 +1544,7 @@ function ModelSelector({
   const tw = useTranslations('builder.workspace');
   if (!enabled) {
     return (
-      <div className="flex items-baseline gap-1.5">
+      <div className="flex items-baseline gap-2">
         <dt className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[color:var(--fg-subtle)]">
           {label}
         </dt>
@@ -1555,7 +1555,7 @@ function ModelSelector({
     );
   }
   return (
-    <label className="flex items-baseline gap-1.5">
+    <label className="flex items-baseline gap-2">
       <span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[color:var(--fg-subtle)]">
         {label}
       </span>
@@ -1617,7 +1617,7 @@ function AutoFixToggle({
       onClick={() => {
         void onChange(!enabled);
       }}
-      className="flex items-center gap-1.5"
+      className="flex items-center gap-2"
     >
       <dt className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[color:var(--fg-subtle)]">
         {tw('autoFixLabel')}
@@ -1673,7 +1673,7 @@ function AutoFixIndicator({
 
   if (snap.phase === 'triggered') {
     return (
-      <div className="inline-flex w-fit items-center gap-2 rounded-full border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/10 px-3 py-1.5 text-[12px] text-[color:var(--accent)]">
+      <div className="inline-flex w-fit items-center gap-2 rounded-full border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/10 px-3 py-2 text-[12px] text-[color:var(--accent)]">
         <span className="lume-busy-dots" aria-hidden />
         <span className="font-mono-num text-[11px]">
           {tw('autoFixRunning', { buildN: snap.buildN, kind: kindLabel })}
@@ -1734,7 +1734,7 @@ function TemplateSwitcher({
     ? tw('templateTooltipEnabled')
     : tw('templateTooltipDisabled');
   return (
-    <div className="flex items-baseline gap-1.5">
+    <div className="flex items-baseline gap-2">
       <dt className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[color:var(--fg-subtle)]">
         {tw('templateLabel')}
       </dt>
@@ -1789,7 +1789,7 @@ function EditorTabs({
             aria-selected={active}
             onClick={() => onChange(t)}
             className={cn(
-              'inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] transition-colors',
+              'inline-flex items-center gap-1 rounded-md px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] transition-colors',
               active
                 ? 'bg-[color:var(--accent)] text-[color:var(--fg-on-dark)]'
                 : 'text-[color:var(--fg-muted)] hover:bg-[color:var(--bg-soft)] hover:text-[color:var(--fg-strong)]',
@@ -1825,7 +1825,7 @@ function EditorTabs({
 
 function ChatMeta(): React.ReactElement {
   return (
-    <span className="font-mono-num inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
+    <span className="font-mono-num inline-flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
       <MessageSquare className="size-3" aria-hidden />
       NDJSON
     </span>
@@ -1838,7 +1838,7 @@ function PreviewMeta({
   model: BuilderModelId;
 }): React.ReactElement {
   return (
-    <span className="font-mono-num inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
+    <span className="font-mono-num inline-flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
       <Eye className="size-3" aria-hidden />
       {MODEL_LABEL[model]}
     </span>
@@ -1899,7 +1899,7 @@ function BuildStatusStrip({
   const showErrorList = canExpand && errorsExpanded;
 
   const buildPillClasses = cn(
-    'font-mono-num inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.18em]',
+    'font-mono-num inline-flex items-center gap-2 text-[10px] uppercase tracking-[0.18em]',
     buildPalette[buildStatus.phase],
   );
 
@@ -1915,7 +1915,7 @@ function BuildStatusStrip({
       {showErrorList ? (
         <div
           id="builder-tsc-error-list"
-          className="rounded-lg border border-[color:var(--danger)]/30 bg-[color:var(--bg-elevated)] px-5 py-3"
+          className="rounded-lg border border-[color:var(--danger)]/30 bg-[color:var(--bg-elevated)] px-4 py-3"
         >
           <div className="font-mono-num mb-2 flex items-center justify-between text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
             <span>
@@ -1935,7 +1935,7 @@ function BuildStatusStrip({
               <X className="size-3" aria-hidden />
             </button>
           </div>
-          <ul className="font-mono-num max-h-[40vh] space-y-1.5 overflow-y-auto text-[11px] leading-relaxed text-[color:var(--fg-default)]">
+          <ul className="font-mono-num max-h-[40vh] space-y-2 overflow-y-auto text-[11px] leading-relaxed text-[color:var(--fg-default)]">
             {errors.map((e, i) => (
               <li
                 key={`${e.file}:${String(e.line)}:${String(e.column)}:${e.code}:${String(i)}`}
@@ -1951,8 +1951,8 @@ function BuildStatusStrip({
           </ul>
         </div>
       ) : null}
-      <footer className="flex items-center gap-3 rounded-lg border border-[color:var(--divider)] bg-[color:var(--bg-elevated)] px-5 py-3 text-[11px]">
-        <span className="font-mono-num inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
+      <footer className="flex items-center gap-3 rounded-lg border border-[color:var(--divider)] bg-[color:var(--bg-elevated)] px-4 py-3 text-[11px]">
+        <span className="font-mono-num inline-flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
           <Activity className="size-3" aria-hidden />
           {tw('buildStatusLabel')}
         </span>
@@ -1995,13 +1995,13 @@ function BuildStatusStrip({
           <button
             type="button"
             onClick={onFixWithBuilder}
-            className="inline-flex items-center gap-1.5 rounded-md border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/10 px-2 py-1 font-mono-num text-[10px] uppercase tracking-[0.18em] text-[color:var(--danger)] transition-colors hover:bg-[color:var(--danger)]/15"
+            className="inline-flex items-center gap-2 rounded-md border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/10 px-2 py-1 font-mono-num text-[10px] uppercase tracking-[0.18em] text-[color:var(--danger)] transition-colors hover:bg-[color:var(--danger)]/15"
           >
             <Wrench className="size-3" aria-hidden />
             {tw('fixWithBuilder')}
           </button>
         ) : null}
-        <span className="font-mono-num inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
+        <span className="font-mono-num inline-flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
           <span className={`inline-block size-1.5 rounded-full ${busColor}`} />
           {tw('buildSse', { status: busLabel })}
         </span>

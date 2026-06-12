@@ -201,7 +201,7 @@ function SetupFieldRow({
           <label className="block text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-subtle)]">
             required
           </label>
-          <label className="mt-1 inline-flex items-center gap-1.5 text-[12px] text-[color:var(--fg-strong)]">
+          <label className="mt-1 inline-flex items-center gap-2 text-[12px] text-[color:var(--fg-strong)]">
             <input
               type="checkbox"
               checked={Boolean(field.required)}
@@ -218,7 +218,7 @@ function SetupFieldRow({
             type="button"
             onClick={onRemove}
             aria-label={t('removeAria', { key: field.key })}
-            className="rounded-md p-1.5 text-[color:var(--fg-muted)] hover:bg-[color:var(--danger)]/10 hover:text-[color:var(--danger)]"
+            className="rounded-md p-2 text-[color:var(--fg-muted)] hover:bg-[color:var(--danger)]/10 hover:text-[color:var(--danger)]"
           >
             <Trash2 className="size-3.5" aria-hidden />
           </button>
@@ -303,7 +303,7 @@ function NewFieldForm({
             ))}
           </select>
         </div>
-        <label className="mt-5 inline-flex items-center gap-1.5 text-[11px] text-[color:var(--fg-strong)]">
+        <label className="mt-4 inline-flex items-center gap-2 text-[11px] text-[color:var(--fg-strong)]">
           <input
             type="checkbox"
             checked={required}
@@ -323,7 +323,7 @@ function NewFieldForm({
             setRequired(false);
           }}
           disabled={!valid}
-          className="ml-auto inline-flex items-center gap-1 rounded-md bg-[color:var(--accent)] px-2.5 py-1.5 text-[11px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] disabled:opacity-40"
+          className="ml-auto inline-flex items-center gap-1 rounded-md bg-[color:var(--accent)] px-3 py-2 text-[11px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] disabled:opacity-40"
         >
           <Plus className="size-3" aria-hidden />
           {t('add')}

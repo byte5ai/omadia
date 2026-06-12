@@ -912,7 +912,7 @@ export default function GraphCanvas({
       />
       <div className="pointer-events-none absolute inset-0 flex items-start justify-between p-3">
         <Legend dark={dark} filter={filter} />
-        <div className="pointer-events-auto flex flex-col gap-1.5 rounded-lg border border-[color:var(--border)] bg-[color:var(--bg-elevated)]/90 p-1.5 shadow-sm backdrop-blur">
+        <div className="pointer-events-auto flex flex-col gap-2 rounded-lg border border-[color:var(--border)] bg-[color:var(--bg-elevated)]/90 p-2 shadow-sm backdrop-blur">
           <IconBtn title="Zoom in" onClick={zoomIn}>＋</IconBtn>
           <IconBtn title="Zoom out" onClick={zoomOut}>−</IconBtn>
           <IconBtn title="Fit" onClick={fit}>⤢</IconBtn>
@@ -1013,7 +1013,7 @@ function Legend({
   return (
     <div
       className={[
-        'pointer-events-auto flex flex-col gap-1 rounded-lg border px-2 py-1.5 text-[10px] shadow-sm backdrop-blur',
+        'pointer-events-auto flex flex-col gap-1 rounded-lg border px-2 py-2 text-[10px] shadow-sm backdrop-blur',
         dark
           ? 'border-[color:var(--border-strong)] bg-[color:var(--bg-inverse)]/80 text-[color:var(--fg-subtle)]'
           : 'border-[color:var(--border)] bg-[color:var(--bg-elevated)]/90 text-[color:var(--fg-muted)]',

@@ -32,7 +32,7 @@ export function RecalledContextCard({
 
   return (
     <details className="mb-2 rounded-md border border-[color:var(--accent)] bg-[color:var(--accent)]/10 text-xs">
-      <summary className="flex cursor-pointer items-center gap-2 px-2.5 py-1.5 font-medium text-[color:var(--accent)]">
+      <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 font-medium text-[color:var(--accent)]">
         <span aria-hidden>🧠</span>
         <span>{t('heading')}</span>
         <span className="font-normal text-[color:var(--accent)]">
@@ -43,7 +43,7 @@ export function RecalledContextCard({
           })}
         </span>
       </summary>
-      <div className="flex flex-col gap-2 px-2.5 pb-2 pt-0.5">
+      <div className="flex flex-col gap-2 px-3 pb-2 pt-0.5">
         {plans.length > 0 && (
           <section>
             <h4 className="text-[10px] uppercase tracking-wide text-[color:var(--accent)]">

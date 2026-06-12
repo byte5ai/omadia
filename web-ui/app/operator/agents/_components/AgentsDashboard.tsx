@@ -105,7 +105,7 @@ export function AgentsDashboard({
   }
 
   return (
-    <div className="space-y-10">
+    <div className="space-y-8">
       {error && (
         <div className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-3 text-sm text-[color:var(--danger)]">
           {error}
@@ -117,7 +117,7 @@ export function AgentsDashboard({
         </div>
       )}
 
-      <section className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-5">
+      <section className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-4">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-medium">{t('platformHeading')}</h2>
           <div className="flex gap-2">
@@ -292,7 +292,7 @@ function RoutingTester(props: {
   }
 
   return (
-    <section className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-5">
+    <section className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-4">
       <h2 className="mb-1 text-lg font-medium">{t('routingTesterHeading')}</h2>
       <p className="mb-3 text-xs text-[color:var(--fg-muted)]">
         {t('routingTesterHelp')}
@@ -346,7 +346,7 @@ function RoutingTester(props: {
         <button
           type="submit"
           disabled={props.disabled || running || !type || !key}
-          className="rounded bg-[color:var(--bg-inverse)] px-4 py-1.5 text-sm text-[color:var(--fg-on-dark)] hover:bg-[color:var(--bg-inverse)] disabled:opacity-40"
+          className="rounded bg-[color:var(--bg-inverse)] px-4 py-2 text-sm text-[color:var(--fg-on-dark)] hover:bg-[color:var(--bg-inverse)] disabled:opacity-40"
         >
           {running ? t('routingTesterRunning') : t('routingTesterSubmit')}
         </button>
@@ -390,7 +390,7 @@ function CreateAgentForm(props: {
   const [privacy, setPrivacy] = useState<PrivacyProfile>('default');
 
   return (
-    <section className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-5">
+    <section className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-4">
       <h2 className="mb-4 text-lg font-medium">{t('createHeading')}</h2>
       <form
         className="grid gap-4 lg:grid-cols-4"
@@ -451,7 +451,7 @@ function CreateAgentForm(props: {
           <button
             type="submit"
             disabled={props.disabled || !slug || !name}
-            className="rounded bg-[color:var(--bg-inverse)] px-4 py-1.5 text-sm text-[color:var(--fg-on-dark)] hover:bg-[color:var(--bg-inverse)] disabled:opacity-40"
+            className="rounded bg-[color:var(--bg-inverse)] px-4 py-2 text-sm text-[color:var(--fg-on-dark)] hover:bg-[color:var(--bg-inverse)] disabled:opacity-40"
           >
             {t('createSubmit')}
           </button>
@@ -499,7 +499,7 @@ function AgentCard(props: {
 
   return (
     <article className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)]">
-      <header className="flex items-start justify-between gap-4 px-5 py-3">
+      <header className="flex items-start justify-between gap-4 px-4 py-3">
         <button
           type="button"
           className="flex flex-1 items-start gap-2 text-left"
@@ -577,7 +577,7 @@ function AgentCard(props: {
       </header>
 
       {expanded && (
-        <div className="border-t border-[color:var(--border)] px-5 py-4">
+        <div className="border-t border-[color:var(--border)] px-4 py-4">
           {agent.description && (
             <p className="mb-4 text-sm text-[color:var(--fg)]">{agent.description}</p>
           )}
@@ -732,7 +732,7 @@ function BindingsEditor(props: {
       {rows.length === 0 ? (
         <p className="text-xs text-[color:var(--fg-muted)]">{t('bindingsEmpty')}</p>
       ) : (
-        <ul className="space-y-1.5">
+        <ul className="space-y-2">
           {rows.map((row, idx) => (
             <li key={idx} className="flex items-center gap-2">
               {props.channelTypes.length > 0 ? (

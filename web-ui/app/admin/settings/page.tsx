@@ -163,7 +163,7 @@ export default function AdminSettingsPage(): React.ReactElement {
   );
 
   return (
-    <main className="mx-auto max-w-[960px] px-6 py-12 lg:px-10 lg:py-16">
+    <main className="mx-auto max-w-[960px] px-6 py-12 lg:px-8 lg:py-16">
       <header className="mb-8">
         <h1 className="font-display text-[clamp(1.75rem,3.5vw,2.5rem)] leading-[1.1] text-[color:var(--fg-strong)]">
           Konfiguration
@@ -197,7 +197,7 @@ export default function AdminSettingsPage(): React.ReactElement {
                 {cat.settings.map((s) => (
                   <li
                     key={s.key}
-                    className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5"
+                    className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4"
                   >
                     <SettingRow
                       setting={s}
@@ -227,7 +227,7 @@ export default function AdminSettingsPage(): React.ReactElement {
             <li key={p.id}>
               <Link
                 href={`/store/${encodeURIComponent(p.id)}`}
-                className="flex items-center justify-between gap-3 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 px-5 py-4 transition-colors hover:bg-[color:var(--card)]"
+                className="flex items-center justify-between gap-3 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 px-4 py-4 transition-colors hover:bg-[color:var(--card)]"
               >
                 <span className="flex items-center gap-2">
                   <span className="text-[14px] font-semibold text-[color:var(--fg-strong)]">

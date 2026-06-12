@@ -179,7 +179,7 @@ export default function AdminUserEditPage(): React.ReactElement {
         </p>
       </header>
 
-      <section className="mb-8 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
+      <section className="mb-8 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
         <h2 className="mb-3 text-[15px] font-semibold text-[color:var(--fg-strong)]">
           Profil
         </h2>
@@ -221,7 +221,7 @@ export default function AdminUserEditPage(): React.ReactElement {
       </section>
 
       {isLocal && (
-        <section className="mb-8 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
+        <section className="mb-8 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
           <h2 className="mb-3 text-[15px] font-semibold text-[color:var(--fg-strong)]">
             Passwort zurücksetzen
           </h2>
@@ -258,7 +258,7 @@ export default function AdminUserEditPage(): React.ReactElement {
         </section>
       )}
 
-      <section className="rounded-lg border border-[color:var(--danger-edge)]/30 bg-[color:var(--danger)]/5 p-5">
+      <section className="rounded-lg border border-[color:var(--danger-edge)]/30 bg-[color:var(--danger)]/5 p-4">
         <h2 className="mb-2 text-[15px] font-semibold text-[color:var(--danger)]">
           Gefahrenzone
         </h2>

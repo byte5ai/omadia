@@ -112,7 +112,7 @@ export function UploadDropzone(): React.ReactElement {
       onDragLeave={() => setDragging(false)}
       onDrop={onDrop}
     >
-      <div className="flex items-start gap-5 px-6 py-5">
+      <div className="flex items-start gap-4 px-6 py-4">
         <div
           className={cn(
             'flex h-12 w-12 flex-none items-center justify-center rounded-full',
@@ -163,7 +163,7 @@ export function UploadDropzone(): React.ReactElement {
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
                 className={cn(
-                  'inline-flex items-center gap-2 rounded-full px-4 py-1.5',
+                  'inline-flex items-center gap-2 rounded-full px-4 py-2',
                   'text-[13px] font-semibold',
                   'bg-[color:var(--accent)] text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)]',
                   'hover:brightness-110',

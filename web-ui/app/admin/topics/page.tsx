@@ -71,7 +71,7 @@ export default function TopicsListPage(): React.ReactElement {
   }, [load]);
 
   return (
-    <main className="mx-auto max-w-[1000px] px-6 py-12 lg:px-10 lg:py-16">
+    <main className="mx-auto max-w-[1000px] px-6 py-12 lg:px-8 lg:py-16">
       <header className="mb-8">
         <Link
           href="/admin"
@@ -197,11 +197,11 @@ export default function TopicsListPage(): React.ReactElement {
                 className="block rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4 transition-colors hover:border-[color:var(--accent)]"
               >
                 <div className="mb-2 flex flex-wrap items-center gap-2 text-[10px]">
-                  <span className="rounded bg-[color:var(--accent)]/10 px-1.5 py-0.5 font-mono uppercase tracking-wider text-[color:var(--accent)]">
+                  <span className="rounded bg-[color:var(--accent)]/10 px-2 py-0.5 font-mono uppercase tracking-wider text-[color:var(--accent)]">
                     {t.props.member_count} Memories
                   </span>
                   {t.props.naming_source === 'fallback' && (
-                    <span className="rounded bg-[color:var(--warning)]/10 px-1.5 py-0.5 font-mono uppercase tracking-wider text-[color:var(--warning)]">
+                    <span className="rounded bg-[color:var(--warning)]/10 px-2 py-0.5 font-mono uppercase tracking-wider text-[color:var(--warning)]">
                       fallback-name
                     </span>
                   )}

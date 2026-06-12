@@ -172,7 +172,7 @@ export function AuthBadge(): React.ReactElement | null {
               <div className="font-mono text-[11px] text-[color:var(--fg-muted)]">
                 {user.email}
               </div>
-              <div className="mt-2 flex items-center gap-1.5 text-[10px] uppercase tracking-[0.14em] text-[color:var(--fg-subtle)]">
+              <div className="mt-2 flex items-center gap-2 text-[10px] uppercase tracking-[0.14em] text-[color:var(--fg-subtle)]">
                 {tSession('expiresAtLabel')}
                 <span className="font-mono normal-case tracking-normal text-[color:var(--fg-muted)]">
                   {expiryLabel}

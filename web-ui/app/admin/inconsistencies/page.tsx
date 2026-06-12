@@ -134,7 +134,7 @@ export default function InconsistenciesListPage(): React.ReactElement {
   }, [items]);
 
   return (
-    <main className="mx-auto max-w-[960px] px-6 py-12 lg:px-10 lg:py-16">
+    <main className="mx-auto max-w-[960px] px-6 py-12 lg:px-8 lg:py-16">
       <header className="mb-8">
         <Link
           href="/admin"
@@ -335,7 +335,7 @@ export default function InconsistenciesListPage(): React.ReactElement {
                 <div className="mb-2 flex flex-wrap items-center gap-2 text-[10px]">
                   <span
                     className={[
-                      'rounded px-1.5 py-0.5 uppercase tracking-wider',
+                      'rounded px-2 py-0.5 uppercase tracking-wider',
                       SEVERITY_BADGE[inc.props.severity],
                     ].join(' ')}
                   >
@@ -343,7 +343,7 @@ export default function InconsistenciesListPage(): React.ReactElement {
                   </span>
                   <span
                     className={[
-                      'rounded px-1.5 py-0.5 uppercase tracking-wider',
+                      'rounded px-2 py-0.5 uppercase tracking-wider',
                       STATUS_BADGE[inc.props.status],
                     ].join(' ')}
                   >

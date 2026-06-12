@@ -64,7 +64,7 @@ function tryRenderChoiceCards(items: ReactElement[]): React.ReactElement | null 
         return (
           <div
             key={i}
-            className="rounded-md border border-[color:var(--divider)] bg-[color:var(--bg-elevated)] px-3 py-2.5 text-[12px] leading-snug text-[color:var(--fg-strong)] transition-colors hover:border-[color:var(--accent)]"
+            className="rounded-md border border-[color:var(--divider)] bg-[color:var(--bg-elevated)] px-3 py-3 text-[12px] leading-snug text-[color:var(--fg-strong)] transition-colors hover:border-[color:var(--accent)]"
           >
             <div className="flex items-baseline gap-2">
               <span className="font-mono-num shrink-0 text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-subtle)]">

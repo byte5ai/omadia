@@ -135,7 +135,7 @@ export default function MemoryPage(): React.ReactElement {
             {backend !== null && (
               <span
                 className={[
-                  'rounded px-1.5 py-0.5 text-[10px] font-medium',
+                  'rounded px-2 py-0.5 text-[10px] font-medium',
                   backend === 'postgres'
                     ? 'bg-[color:var(--success)]/10 text-[color:var(--success)]'
                     : 'bg-[color:var(--warning)]/10 text-[color:var(--warning)]',
@@ -183,7 +183,7 @@ export default function MemoryPage(): React.ReactElement {
             <button
               type="button"
               onClick={() => setCwd(parent)}
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-xs text-[color:var(--fg-muted)] hover:bg-[color:var(--bg-soft)]"
+              className="flex w-full items-center gap-2 px-3 py-2 text-left font-mono text-xs text-[color:var(--fg-muted)] hover:bg-[color:var(--bg-soft)]"
             >
               ← ..
             </button>
@@ -215,7 +215,7 @@ export default function MemoryPage(): React.ReactElement {
                   }
                 }}
                 className={[
-                  'flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-xs transition',
+                  'flex w-full items-center gap-2 px-3 py-2 text-left font-mono text-xs transition',
                   activeFile
                     ? 'bg-[color:var(--bg-soft)]'
                     : 'hover:bg-[color:var(--bg-soft)]',
