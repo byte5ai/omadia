@@ -110,8 +110,10 @@ export interface ClientTurn {
   type: 'turn';
   turnId?: string;
   text?: string;
-  /** structured UI action (button click, row-click). Carried to Tier 2 via
-   *  IncomingTurn.metadata.action — lands server-side with Part B Task B1. */
+  /** structured UI action (button click, choice pick, row-click). The channel
+   *  forwards it to the orchestrator, which injects it as a [canvas-action]
+   *  block on the turn (a choice pick carries the chosen value in
+   *  payload.value). The interactive loop is closed end-to-end. */
   action?: { type: string; payload?: unknown };
   target?: unknown;
   viewState?: unknown;
