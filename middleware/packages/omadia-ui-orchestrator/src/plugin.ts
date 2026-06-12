@@ -14,7 +14,7 @@ import {
   type ChatTurnInput,
   type RevisionId,
 } from '@omadia/channel-sdk';
-import { turnContext } from '@omadia/orchestrator';
+import { today, turnContext } from '@omadia/orchestrator';
 
 import { composeSkeleton, type CompositionLlm, type DataRequirement } from './composition.js';
 import { mintDataRef } from './dataRef.js';
@@ -105,22 +105,30 @@ const looksLikeDatasetRef = (rows: ReadonlyArray<Record<string, unknown>>): bool
  *  bigger sets belong in a file (create_xlsx) or a filtered view. */
 const MAX_DATASET_PUBLISH_ROWS = 500;
 
-/** Install the canvas sentinel tap on the current turn and return the FIFO
- *  lookup for `synthesizeSurfaceEvents`. On privacy-guard servers every tool
- *  result reaching the stream is the interned digest — the guard's dispatch
- *  sites hand the RAW sentinel-bearing result to this sink BEFORE interning,
- *  so synthesis composes from ground truth (incl. server-side resolved
- *  dataset rows the LLM never sees). Guard-less servers never call the sink
- *  and the lookup stays empty — behaviour is unchanged there. */
-function tapCanvasSentinels(): (toolName: string) => string | undefined {
+/** Install the canvas sentinel tap and return the FIFO lookup for
+ *  `synthesizeSurfaceEvents`. On privacy-guard servers every tool result
+ *  reaching the stream is the interned digest — the guard's dispatch sites
+ *  hand the RAW sentinel-bearing result to this sink BEFORE interning, so
+ *  synthesis composes from ground truth (incl. server-side resolved dataset
+ *  rows the LLM never sees). The sink is set on the CURRENT (outer) scope —
+ *  the orchestrator's turn scope carries it inward (same merge contract as
+ *  `captureRawToolResult`); when no scope exists yet (canvas channel
+ *  dispatch), one is entered with placeholder identity, exactly like
+ *  `withChatParticipants` does for Teams. Guard-less servers never call the
+ *  sink and the lookup stays empty — behaviour is unchanged there. */
+function tapCanvasSentinels(log?: (m: string) => void): (toolName: string) => string | undefined {
   const queues = new Map<string, string[]>();
+  const sink = (toolName: string, raw: string): void => {
+    log?.(`[ui-orchestrator] sentinel tapped tool=${toolName} bytes=${raw.length}`);
+    const q = queues.get(toolName);
+    if (q) q.push(raw);
+    else queues.set(toolName, [raw]);
+  };
   const t = turnContext.current();
   if (t !== undefined) {
-    t.canvasSentinelSink = (toolName, raw) => {
-      const q = queues.get(toolName);
-      if (q) q.push(raw);
-      else queues.set(toolName, [raw]);
-    };
+    t.canvasSentinelSink = sink;
+  } else {
+    turnContext.enter({ turnId: '', turnDate: today(), canvasSentinelSink: sink });
   }
   return (toolName) => queues.get(toolName)?.shift();
 }
@@ -819,7 +827,7 @@ export async function activate(
         baseTree: input.canvasState.currentTree,
         dataRequirements: requirements,
         onPublishedSource: captureSource(canvasSessionId),
-        takeRawSentinel: tapCanvasSentinels(),
+        takeRawSentinel: tapCanvasSentinels((m) => ctx.log(m)),
         log: (message) => ctx.log(message),
       });
       return;
@@ -912,7 +920,7 @@ export async function activate(
       baseTree: skeleton.tree,
       dataRequirements: skeleton.dataRequirements,
       onPublishedSource: captureSource(canvasSessionId),
-      takeRawSentinel: tapCanvasSentinels(),
+      takeRawSentinel: tapCanvasSentinels((m) => ctx.log(m)),
       log: (message) => ctx.log(message),
     });
   }
@@ -1043,7 +1051,7 @@ export async function activate(
       baseRevision: refresh.basedOnRevision as RevisionId,
       baseTree: refresh.currentTree,
       dataRequirements: requirements,
-      takeRawSentinel: tapCanvasSentinels(),
+      takeRawSentinel: tapCanvasSentinels((m) => ctx.log(m)),
       refreshContainers: new Set(requirements.map((r) => r.containerId)),
       // a fallback refresh that publishes WITH a source upgrades the next
       // refresh of this canvas to the deterministic path

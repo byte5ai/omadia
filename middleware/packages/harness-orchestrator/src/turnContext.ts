@@ -163,6 +163,9 @@ export const turnContext = {
         ...(prev?.captureRawToolResult
           ? { captureRawToolResult: prev.captureRawToolResult }
           : {}),
+        ...(prev?.canvasSentinelSink
+          ? { canvasSentinelSink: prev.canvasSentinelSink }
+          : {}),
       },
       fn,
     );

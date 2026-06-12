@@ -1664,6 +1664,12 @@ export class Orchestrator {
         ...(parent?.captureRawToolResult
           ? { captureRawToolResult: parent.captureRawToolResult }
           : {}),
+        // Canvas sentinel tap — installed by the ui-orchestrator in its
+        // OUTER scope before this turn scope exists; must survive into the
+        // turn so dispatchTool can hand raw sentinels past the privacy guard.
+        ...(parent?.canvasSentinelSink
+          ? { canvasSentinelSink: parent.canvasSentinelSink }
+          : {}),
       },
       async () => {
         let result = await this.chatInContext(input, turnId);
