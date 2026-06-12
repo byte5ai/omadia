@@ -190,7 +190,7 @@ async function startHarness(opts: {
   });
 
   const chatService = new PreviewChatService({
-    anthropic: {} as never,
+    anthropic: (() => ({})) as never,
     draftStore: store,
     systemPromptFor: async () => 'sp',
     buildSubAgent: () => ({

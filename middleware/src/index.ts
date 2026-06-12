@@ -314,6 +314,16 @@ async function main(): Promise<void> {
   // stays under 'llm' for plugins that go through the budget/model gate.
   serviceRegistry.provide('anthropicClient', client);
 
+  // Customer bug (builder.ask_failed / "Could not resolve authentication
+  // method"): on installs where the key arrives via the Setup Wizard (vault)
+  // and not via ENV, the boot-time `client` above is unauthenticated forever —
+  // `refreshSharedAnthropicClientFromVault` only swaps the REGISTRY providers,
+  // never this const. Host-side consumers (BuilderAgent, PreviewChatService)
+  // therefore take this accessor and re-resolve the current client per turn
+  // instead of capturing the boot instance.
+  const currentAnthropicClient = (): Anthropic =>
+    serviceRegistry.get<Anthropic>('anthropicClient') ?? client;
+
   // OB-29-3 — wrap the Anthropic client as an `llm` ServiceRegistry
   // provider so plugins that declare `permissions.llm.models_allowed`
   // can reach it via `ctx.llm.complete()`. The accessor wrapper applies
@@ -2494,7 +2504,7 @@ async function main(): Promise<void> {
   );
 
   const previewChatService = new PreviewChatService({
-    anthropic: client,
+    anthropic: currentAnthropicClient,
     draftStore,
     logger: () => {},
   });
@@ -2712,7 +2722,7 @@ async function main(): Promise<void> {
     `${builderPlatformPkg.version ?? '0.0.0'} (process booted ${new Date().toISOString()})`;
 
   const builderAgent = new BuilderAgent({
-    anthropic: client,
+    anthropic: currentAnthropicClient,
     draftStore,
     bus: builderSpecBus,
     rebuildScheduler: {
