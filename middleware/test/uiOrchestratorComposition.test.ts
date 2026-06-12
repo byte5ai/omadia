@@ -595,6 +595,62 @@ describe('canvasChatAgent — deterministic action (LLM-free dispatch)', () => {
     assert.equal(invokeCalls.length, 0, 'no direct dispatch when not allow-listed');
     assert.equal(seen.length, 1, 'the agent loop ran instead');
   });
+
+  it('falls back to the agentToolInvoker when the native registry misses (agent-plugin tool)', async () => {
+    // native invoke THROWS (agent-plugin tools are not in the native registry —
+    // this is the real-world miss the live E2E surfaced); the agentToolInvoker
+    // service resolves it instead. Result: still LLM-free, still a snapshot.
+    const reg = new Map<string, unknown>();
+    const agentInvokeCalls: Array<{ id: string; input: unknown }> = [];
+    const ctx = {
+      log: () => {},
+      services: {
+        get: <T>(name: string): T | undefined => reg.get(name) as T | undefined,
+        provide: (name: string, impl: unknown) => {
+          reg.set(name, impl);
+          return () => reg.delete(name);
+        },
+      },
+      config: {
+        get: <T>(k: string): T | undefined =>
+          (({ deterministic_action_tools: 'studio_load_page', canvas_output_tools: 'studio_load_page' } as Record<string, string>)[k] as T | undefined),
+      },
+      tools: {
+        register: () => () => {},
+        invoke: async () => {
+          throw new Error("tools.invoke: 'studio_load_page' is unknown or handler-less");
+        },
+      },
+    } as unknown as PluginContext;
+    reg.set('agentToolInvoker', {
+      invoke: async (id: string, input: unknown) => {
+        agentInvokeCalls.push({ id, input });
+        if (id === 'studio_load_page') {
+          return JSON.stringify({ ok: true, _pendingCanvasTree: { tree: PAGE_TREE } });
+        }
+        return undefined;
+      },
+    });
+    const seen: ChatTurnInput[] = [];
+    reg.set(
+      CHAT_AGENT_SERVICE,
+      baseBundle([{ type: 'done', answer: 'x' } as unknown as ChatStreamEvent], seen),
+    );
+    await activate(ctx);
+    const agent = (reg.get('canvasChatAgent') as ChatAgentBundle).agent;
+    const events = await collect(
+      agent.chatStream({
+        userMessage: '',
+        canvasSessionId: 'cs1',
+        action: { type: 'studio_load_page', payload: { page: 'drafts' } },
+      } as unknown as ChatTurnInput),
+    );
+    assert.deepEqual(agentInvokeCalls, [{ id: 'studio_load_page', input: { page: 'drafts' } }]);
+    assert.equal(seen.length, 0, 'no LLM turn — agent tool ran directly');
+    const snap = events.find((e) => e.type === 'surface_snapshot');
+    assert.ok(snap, 'surface_snapshot from the agent-plugin tool');
+    assert.deepEqual(field(snap as ChatStreamEvent, 'tree'), PAGE_TREE);
+  });
 });
 
 // ── PR-9b-3: in-place action turns (client sends canvasState) ──

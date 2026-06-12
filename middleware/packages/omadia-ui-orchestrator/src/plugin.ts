@@ -504,24 +504,55 @@ export async function activate(
     // skeleton, no model turn, instant. Deny-by-default: the tool must be in the
     // deterministic-action allow-set AND remain canvas-output-authorised for its
     // sentinel to resolve. Any miss falls through to the in-place/agent paths.
+    //
+    // Two invocation sources, tried in order: (1) the native tool registry
+    // (integrations + the orchestrator's own producer tools), then (2) the
+    // `agentToolInvoker` service — the kernel's invoke-one-agent-tool-by-id
+    // path, so AGENT-plugin tools (which live behind a `query_<domain>`
+    // sub-agent, not in the native registry) are reachable LLM-free too.
     const directActionTool =
       input.action && typeof (input.action as { type?: unknown }).type === 'string'
         ? ((input.action as { type: string }).type)
         : undefined;
     const directInvoke = toolsAccessor?.invoke?.bind(toolsAccessor);
-    if (directActionTool && deterministicActionTools.has(directActionTool) && directInvoke) {
+    const agentToolInvoker = ctx.services?.get<{
+      invoke(toolId: string, input: unknown): Promise<string | undefined>;
+    }>('agentToolInvoker');
+    if (
+      directActionTool &&
+      deterministicActionTools.has(directActionTool) &&
+      (directInvoke || agentToolInvoker)
+    ) {
       const directPayload =
         (input.action as { payload?: unknown }).payload ?? {};
       const baseRevision = (input.canvasState?.basedOnRevision ?? '0') as RevisionId;
       const baseTree = input.canvasState?.currentTree;
+      // native registry first, then the agent-plugin invoker — the first source
+      // that yields a result wins. Throws only when neither can resolve the id.
+      const resolveDirect = async (): Promise<string> => {
+        if (directInvoke) {
+          try {
+            const raw = await directInvoke(directActionTool, directPayload);
+            return typeof raw === 'string' ? raw : JSON.stringify(raw);
+          } catch (nativeErr) {
+            if (!agentToolInvoker) throw nativeErr;
+            // native miss (unknown/handler-less) → try the agent-plugin tool
+          }
+        }
+        const viaAgent = await agentToolInvoker?.invoke(directActionTool, directPayload);
+        if (viaAgent !== undefined) return viaAgent;
+        throw new Error(
+          `deterministic-action: '${directActionTool}' not resolvable ` +
+            `(native registry miss and no agent-plugin tool of that id)`,
+        );
+      };
       const directEvents = async function* (): AsyncGenerator<ChatStreamEvent> {
         const id = randomUUID();
         yield { type: 'tool_use', id, name: directActionTool, input: directPayload };
         let output: string;
         try {
           const t0 = Date.now();
-          const raw = await directInvoke(directActionTool, directPayload);
-          output = typeof raw === 'string' ? raw : JSON.stringify(raw);
+          output = await resolveDirect();
           ctx.log(
             `[deterministic-action] ${directActionTool} dispatched LLM-free in ` +
               `${Date.now() - t0}ms (no model turn)`,

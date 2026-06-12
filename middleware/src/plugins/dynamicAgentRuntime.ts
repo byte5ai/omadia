@@ -6,6 +6,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 import type { z } from 'zod';
 
 import { canvasOutputToolIds } from '../platform/canvasOutputRegistry.js';
+import { deterministicActionToolIds } from '../platform/deterministicActionRegistry.js';
 import { createPluginContext } from '../platform/pluginContext.js';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
 import type { NotificationRouter } from '../platform/notificationRouter.js';
@@ -101,6 +102,10 @@ interface ActiveAgent {
   agentId: string;
   handle: UploadedAgentHandle;
   domainTool: DomainTool;
+  /** Bridged sub-agent tools, kept so the kernel can invoke ONE of them
+   *  directly by id (deterministic-action fast-path) without driving the
+   *  sub-agent's model loop. Same instances the LocalSubAgent runs. */
+  subAgentTools: LocalSubAgentTool[];
   /** OB-29-1 — dispose handle for the `subAgent:<agentId>` ServiceRegistry
    *  entry. Called on deactivate so a hot-upgrade doesn't leave a stale
    *  DomainTool reachable via `ctx.subAgent.ask`. */
@@ -139,6 +144,14 @@ export interface DynamicAgentRuntimeDeps {
    *  so the ui-orchestrator can derive its sentinel allow-set without
    *  operator config. Optional — absent in narrow test contexts. */
   canvasOutputRegistry?: {
+    register(pluginId: string, toolIds: readonly string[]): void;
+    unregister(pluginId: string): void;
+  };
+  /** Deterministic-action autodiscovery: manifest capability entries declaring
+   *  `deterministic_action: true` are resolved into this registry on
+   *  (de)activation so the ui-orchestrator can dispatch them LLM-free without
+   *  operator config. Optional — absent in narrow test contexts. */
+  deterministicActionRegistry?: {
     register(pluginId: string, toolIds: readonly string[]): void;
     unregister(pluginId: string): void;
   };
@@ -437,6 +450,7 @@ export class DynamicAgentRuntime {
       agentId,
       handle,
       domainTool,
+      subAgentTools,
       disposeSubAgentService,
     });
     this.orchestrator?.registerDomainTool(domainTool);
@@ -450,6 +464,17 @@ export class DynamicAgentRuntime {
       this.deps.canvasOutputRegistry?.register(agentId, canvasOutputIds);
       log(
         `[dynamic-runtime] canvas-output capabilities registered for ${agentId}: ${canvasOutputIds.join(', ')}`,
+      );
+    }
+
+    // Deterministic-action autodiscovery: same declare → resolve → derive path
+    // as canvas-output. A tool declaring `deterministic_action: true` becomes
+    // dispatchable LLM-free via the orchestrator fast-path + agentToolInvoker.
+    const deterministicActionIds = deterministicActionToolIds(catalogEntry.manifest);
+    if (deterministicActionIds.length > 0) {
+      this.deps.deterministicActionRegistry?.register(agentId, deterministicActionIds);
+      log(
+        `[dynamic-runtime] deterministic-action capabilities registered for ${agentId}: ${deterministicActionIds.join(', ')}`,
       );
     }
 
@@ -482,6 +507,7 @@ export class DynamicAgentRuntime {
     entry.disposeSubAgentService();
     // Symmetric to the activate-time canvas-output registration.
     this.deps.canvasOutputRegistry?.unregister(agentId);
+    this.deps.deterministicActionRegistry?.unregister(agentId);
     try {
       await withTimeout(
         entry.handle.close(),
@@ -538,6 +564,28 @@ export class DynamicAgentRuntime {
    *  registry orchestrators without a restart. */
   domainToolFor(agentId: string): DomainTool | undefined {
     return this.active.get(agentId)?.domainTool;
+  }
+
+  /** Invoke ONE active agent-plugin tool DIRECTLY by its id, bypassing the
+   *  sub-agent model loop entirely. Powers the orchestrator's
+   *  deterministic-action fast-path: an action whose `type` names a
+   *  `deterministic_action: true` tool runs that tool's bridged handler and
+   *  returns its raw result string (carrying any `_pendingCanvasTree` /
+   *  `_pendingSurfacePatch` sentinel). Returns `undefined` when no active agent
+   *  owns a tool with this id — the caller then falls back to the normal path.
+   *
+   *  This is the kernel half of "agents ship their own deterministic UIs": the
+   *  registry says WHICH tools are deterministic, this says HOW to run one
+   *  without a model. Data-driven agents never reach here — they go through the
+   *  domain tool + compose path instead. */
+  async invokeAgentTool(toolId: string, input: unknown): Promise<string | undefined> {
+    for (const entry of this.active.values()) {
+      const tool = entry.subAgentTools.find((t) => t.spec.name === toolId);
+      if (!tool) continue;
+      const res = await tool.handle(input);
+      return typeof res === 'string' ? res : res.output;
+    }
+    return undefined;
   }
 }
 
