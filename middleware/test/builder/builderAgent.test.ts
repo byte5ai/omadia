@@ -93,6 +93,10 @@ interface Harness {
     script?: FakeAskScript;
     tools?: BuilderTool<unknown, unknown>[];
     slotTypechecker?: SlotTypecheckService;
+    anthropic?: () => Anthropic;
+    buildSubAgent?: (
+      opts: BuilderSubAgentBuildOptions,
+    ) => { ask: (q: string, observer?: AskObserver) => Promise<string> };
   }) => BuilderAgent;
   dispose: () => Promise<void>;
 }
@@ -126,7 +130,7 @@ async function createHarness(): Promise<Harness> {
     tmpRoot,
     agentFor(overrides) {
       return new BuilderAgent({
-        anthropic: fakeAnthropic,
+        anthropic: overrides?.anthropic ?? (() => fakeAnthropic),
         draftStore,
         bus,
         rebuildScheduler: {
@@ -139,9 +143,9 @@ async function createHarness(): Promise<Harness> {
         slotTypechecker: overrides?.slotTypechecker ?? noopSlotTypechecker,
         referenceCatalog,
         systemPromptSeed: async () => 'TEST-SEED',
-        buildSubAgent: makeFakeBuildSubAgent(
-          overrides?.script ?? { finalText: 'ok' },
-        ),
+        buildSubAgent:
+          overrides?.buildSubAgent ??
+          makeFakeBuildSubAgent(overrides?.script ?? { finalText: 'ok' }),
         tools: (overrides?.tools as ReadonlyArray<BuilderTool<unknown, unknown>>) ?? [
           patchSpecTool as unknown as BuilderTool<unknown, unknown>,
           fillSlotTool as unknown as BuilderTool<unknown, unknown>,
@@ -209,6 +213,49 @@ describe('BuilderAgent.runTurn', () => {
       assert.equal(assistantEv.role, 'assistant');
       assert.equal(assistantEv.text, 'Got it.');
     }
+  });
+
+  // Regression: customer-reported builder.ask_failed ("Could not resolve
+  // authentication method"). On vault-only installs the shared Anthropic
+  // client is hot-swapped AFTER boot (Setup Wizard key entry, OB-61); the
+  // BuilderAgent used to capture the unauthenticated boot client at
+  // construction and never see the swap. The accessor must be re-resolved
+  // on every turn.
+  it('resolves the anthropic client per turn, picking up a post-construction hot-swap', async () => {
+    const bootClient = { kind: 'boot' } as unknown as Anthropic;
+    const vaultClient = { kind: 'vault' } as unknown as Anthropic;
+    let current = bootClient;
+    const seenClients: Anthropic[] = [];
+    const inner = makeFakeBuildSubAgent({ finalText: 'ok' });
+    const agent = harness.agentFor({
+      anthropic: () => current,
+      buildSubAgent: (opts) => {
+        seenClients.push(opts.client);
+        return inner(opts);
+      },
+    });
+
+    await collect(
+      agent.runTurn({
+        draftId: harness.draftId,
+        userEmail: harness.userEmail,
+        userMessage: 'first turn',
+        modelChoice: 'claude-haiku-4-5-20251001',
+      }),
+    );
+    current = vaultClient; // Setup-Wizard key entry swaps the shared client
+    await collect(
+      agent.runTurn({
+        draftId: harness.draftId,
+        userEmail: harness.userEmail,
+        userMessage: 'second turn',
+        modelChoice: 'claude-haiku-4-5-20251001',
+      }),
+    );
+
+    assert.equal(seenClients.length, 2);
+    assert.equal(seenClients[0], bootClient);
+    assert.equal(seenClients[1], vaultClient);
   });
 
   it('reuses an explicit turnId in turn_started + turn_done when caller passes opts.turnId', async () => {
@@ -284,7 +331,7 @@ describe('BuilderAgent.runTurn', () => {
     });
 
     const agent = new BuilderAgent({
-      anthropic: {} as Anthropic,
+      anthropic: () => ({}) as Anthropic,
       draftStore: harness.draftStore,
       bus: harness.bus,
       rebuildScheduler: { schedule: () => {} },
@@ -321,7 +368,7 @@ describe('BuilderAgent.runTurn', () => {
   it('passes the bare user message through when the transcript is empty', async () => {
     let captured: string | null = null;
     const agent = new BuilderAgent({
-      anthropic: {} as Anthropic,
+      anthropic: () => ({}) as Anthropic,
       draftStore: harness.draftStore,
       bus: harness.bus,
       rebuildScheduler: { schedule: () => {} },
@@ -700,7 +747,7 @@ describe('BuilderAgent — B.8 manifest-linter E2E', () => {
 
     const knownIds = ['de.byte5.integration.openweather'];
     const agent = new BuilderAgent({
-      anthropic: {} as Anthropic,
+      anthropic: () => ({}) as Anthropic,
       draftStore: harness.draftStore,
       bus: harness.bus,
       rebuildScheduler: { schedule: () => {} },
@@ -778,7 +825,7 @@ describe('BuilderAgent — B.8 manifest-linter E2E', () => {
     });
 
     const agent = new BuilderAgent({
-      anthropic: {} as Anthropic,
+      anthropic: () => ({}) as Anthropic,
       draftStore: harness.draftStore,
       bus: harness.bus,
       rebuildScheduler: { schedule: () => {} },
@@ -865,7 +912,7 @@ describe('BuilderAgent.runTurn — OB-31 askOptions wiring', () => {
       },
     });
     const agent = new BuilderAgent({
-      anthropic: {} as Anthropic,
+      anthropic: () => ({}) as Anthropic,
       draftStore: harness.draftStore,
       bus: harness.bus,
       rebuildScheduler: {

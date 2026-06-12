@@ -90,7 +90,7 @@ async function createTestApp(opts: {
 
   const fakeAnthropic = {} as Anthropic;
   const builderAgent = new BuilderAgent({
-    anthropic: fakeAnthropic,
+    anthropic: () => fakeAnthropic,
     draftStore,
     bus,
     rebuildScheduler: {

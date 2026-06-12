@@ -204,7 +204,12 @@ export type BuilderReferenceCatalog = Readonly<
 >;
 
 export interface BuilderAgentDeps {
-  anthropic: Anthropic;
+  /** Accessor (not a captured instance): the shared Anthropic client is
+   *  hot-swapped when the API key arrives via the Setup Wizard / admin
+   *  secrets (OB-61), so it must be re-resolved per turn. A captured
+   *  boot-time client stays unauthenticated forever on vault-only installs
+   *  and every ask fails with builder.ask_failed. */
+  anthropic: () => Anthropic;
   draftStore: DraftStore;
   bus: SpecEventBus;
   rebuildScheduler: RebuildScheduler;
@@ -332,7 +337,7 @@ export interface RunBuilderTurnOptions {
 }
 
 export class BuilderAgent {
-  private readonly anthropic: Anthropic;
+  private readonly anthropic: () => Anthropic;
   private readonly draftStore: DraftStore;
   private readonly bus: SpecEventBus;
   private readonly rebuildScheduler: RebuildScheduler;
@@ -510,7 +515,7 @@ export class BuilderAgent {
 
     const subAgent = this.buildSubAgent({
       name: `builder-${opts.draftId}`,
-      client: this.anthropic,
+      client: this.anthropic(),
       model: opts.modelChoice,
       maxTokens: this.maxTokens,
       maxIterations: this.maxIterations,

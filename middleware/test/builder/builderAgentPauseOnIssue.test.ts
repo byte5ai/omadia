@@ -68,7 +68,7 @@ describe('BuilderAgent — pause-on-issue guard', () => {
 
     let subAgentBuilt = 0;
     const agent = new BuilderAgent({
-      anthropic: {} as Anthropic,
+      anthropic: () => ({}) as Anthropic,
       draftStore: store,
       bus,
       rebuildScheduler: { schedule: () => undefined },
@@ -129,7 +129,7 @@ describe('BuilderAgent — pause-on-issue guard', () => {
   it('runs normally when paused_on_issue is unset', async () => {
     let subAgentBuilt = 0;
     const agent = new BuilderAgent({
-      anthropic: {} as Anthropic,
+      anthropic: () => ({}) as Anthropic,
       draftStore: store,
       bus,
       rebuildScheduler: { schedule: () => undefined },

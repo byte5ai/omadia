@@ -77,7 +77,10 @@ export interface SubAgentBuildOptions {
 }
 
 export interface PreviewChatServiceDeps {
-  anthropic: Anthropic;
+  /** Accessor (not a captured instance) — same rationale as
+   *  BuilderAgentDeps.anthropic: the shared client is hot-swapped on
+   *  Setup-Wizard key entry (OB-61), so resolve it per turn. */
+  anthropic: () => Anthropic;
   draftStore: DraftStore;
   /**
    * Custom system-prompt-loader. Default: read `<previewDir>/skills/*.md`,
@@ -121,7 +124,7 @@ export interface DirectToolResult {
 }
 
 export class PreviewChatService {
-  private readonly anthropic: Anthropic;
+  private readonly anthropic: () => Anthropic;
   private readonly draftStore: DraftStore;
   private readonly systemPromptFor: NonNullable<
     PreviewChatServiceDeps['systemPromptFor']
@@ -175,7 +178,7 @@ export class PreviewChatService {
 
     const subAgent = this.buildSubAgent({
       name: `preview-${opts.handle.agentId}`,
-      client: this.anthropic,
+      client: this.anthropic(),
       model: opts.modelChoice,
       maxTokens: this.maxTokens,
       maxIterations: this.maxIterations,
