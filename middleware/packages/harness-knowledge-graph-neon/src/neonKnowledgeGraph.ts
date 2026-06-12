@@ -1083,21 +1083,60 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
   }
 
   async getPlanSteps(planExternalId: string): Promise<GraphNode[]> {
-    const planRow = await this.findNodeByExternalId(planExternalId);
-    if (!planRow || planRow.type !== 'Plan') return [];
+    // Single round-trip: join Plan→STEP_OF→PlanStep by the plan's external id
+    // so we no longer re-resolve the plan node we were handed (the old
+    // findNodeByExternalId + step query was two round-trips per call, and this
+    // runs once per tool-call on the live plan-snapshot path). A missing or
+    // non-Plan node simply yields no rows → [].
+    const stepCols = NODE_COLUMNS.split(', ')
+      .map((c) => `s.${c}`)
+      .join(', ');
     const res = await this.pool.query<NodeRow>(
-      `SELECT ${NODE_COLUMNS}
-         FROM graph_nodes
-        WHERE tenant_id = $1
-          AND type = 'PlanStep'
-          AND id IN (
-            SELECT from_node FROM graph_edges
-             WHERE tenant_id = $1 AND type = 'STEP_OF' AND to_node = $2
-          )
-        ORDER BY (properties->>'order')::int ASC`,
-      [this.tenantId, planRow.id],
+      `SELECT ${stepCols}
+         FROM graph_nodes p
+         JOIN graph_edges e
+           ON e.tenant_id = p.tenant_id AND e.type = 'STEP_OF' AND e.to_node = p.id
+         JOIN graph_nodes s
+           ON s.tenant_id = p.tenant_id AND s.id = e.from_node AND s.type = 'PlanStep'
+        WHERE p.tenant_id = $1 AND p.external_id = $2 AND p.type = 'Plan'
+        ORDER BY (s.properties->>'order')::int ASC`,
+      [this.tenantId, planExternalId],
     );
     return res.rows.map((r) => rowToNode(r));
+  }
+
+  async getPlanStepsForPlans(
+    planExternalIds: string[],
+  ): Promise<Map<string, GraphNode[]>> {
+    // Pre-seed every requested id so callers get a stable `[]` for plans with
+    // no steps (or unknown ids) without an `undefined` check.
+    const out = new Map<string, GraphNode[]>();
+    for (const id of planExternalIds) out.set(id, []);
+    if (planExternalIds.length === 0) return out;
+    // One round-trip for ALL plans: the same join as getPlanSteps, tagged with
+    // the owning plan's external id and filtered by `= ANY($2)`. Replaces the
+    // per-plan N+1 on the recall + overlay paths (up to 1+2N → 1 query).
+    const stepCols = NODE_COLUMNS.split(', ')
+      .map((c) => `s.${c}`)
+      .join(', ');
+    const res = await this.pool.query<NodeRow & { plan_ext: string }>(
+      `SELECT p.external_id AS plan_ext, ${stepCols}
+         FROM graph_nodes p
+         JOIN graph_edges e
+           ON e.tenant_id = p.tenant_id AND e.type = 'STEP_OF' AND e.to_node = p.id
+         JOIN graph_nodes s
+           ON s.tenant_id = p.tenant_id AND s.id = e.from_node AND s.type = 'PlanStep'
+        WHERE p.tenant_id = $1
+          AND p.external_id = ANY($2::text[])
+          AND p.type = 'Plan'
+        ORDER BY (s.properties->>'order')::int ASC`,
+      [this.tenantId, planExternalIds],
+    );
+    for (const r of res.rows) {
+      // Every plan_ext is one of the pre-seeded ids (WHERE = ANY($2)).
+      out.get(r.plan_ext)!.push(rowToNode(r));
+    }
+    return out;
   }
 
   async setPlanStepStatus(

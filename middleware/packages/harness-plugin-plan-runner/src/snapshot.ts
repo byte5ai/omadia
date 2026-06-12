@@ -19,17 +19,27 @@ export interface PlanStepSnapshot {
 export interface PlanSnapshot {
   planExternalId: string;
   steps: PlanStepSnapshot[];
+  /** Title of the stored process this plan was reused from (no LLM
+   *  re-planning). Absent for freshly-materialised plans. Surfaced so the chat
+   *  UI can badge the plan as reused. */
+  reusedProcessTitle?: string;
 }
 
 /** Read the plan's steps from the graph and project them into a PlanSnapshot,
- *  ordered by step order ascending. */
+ *  ordered by step order ascending. `opts.reusedProcessTitle` is threaded
+ *  through from the plugin (which knows it at materialisation time) so the
+ *  snapshot carries reuse provenance without an extra plan-node read. */
 export async function buildPlanSnapshot(
   planExternalId: string,
   kg: KnowledgeGraph,
+  opts?: { reusedProcessTitle?: string },
 ): Promise<PlanSnapshot> {
   const steps = await kg.getPlanSteps(planExternalId);
   return {
     planExternalId,
+    ...(opts?.reusedProcessTitle
+      ? { reusedProcessTitle: opts.reusedProcessTitle }
+      : {}),
     steps: steps
       .map((s) => ({
         stepExternalId: s.id,

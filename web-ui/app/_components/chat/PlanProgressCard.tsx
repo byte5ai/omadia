@@ -66,6 +66,15 @@ export function PlanProgressCard({
             aria-hidden
           />
         )}
+        {plan.reusedProcessTitle && (
+          <span
+            className="ml-auto inline-flex items-center gap-1 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+            title={t('reusedFrom', { title: plan.reusedProcessTitle })}
+          >
+            <span aria-hidden>♻</span>
+            {t('reusedBadge')}
+          </span>
+        )}
       </summary>
       <ol className="flex flex-col gap-1 px-2.5 pb-2 pt-0.5">
         {steps.map((s, i) => {

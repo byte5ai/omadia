@@ -220,6 +220,9 @@ export interface PlanStepSnapshot {
 export interface PlanSnapshot {
   planExternalId: string;
   steps: PlanStepSnapshot[];
+  /** Title of the stored process this plan was reused from (no LLM
+   *  re-planning). Absent for freshly-materialised plans. */
+  reusedProcessTitle?: string;
 }
 
 /** Cross-session recall probe — payload of the `kg_recall` turn_annotation.

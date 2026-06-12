@@ -75,6 +75,16 @@ export interface KnowledgeGraph {
   /** #133 — read a Plan's steps, ordered by `props.order` ascending. */
   getPlanSteps(planExternalId: string): Promise<GraphNode[]>;
   /**
+   * #133 — batched {@link getPlanSteps}: load the steps for many plans in a
+   * single round-trip. Returns a Map keyed by plan external id; an unknown id
+   * or a step-less plan maps to `[]`. Each list is ordered by `props.order`
+   * ascending, identically to {@link getPlanSteps}. Collapses the per-plan N+1
+   * on the plan-recall (context build) and graph-overlay hot paths.
+   */
+  getPlanStepsForPlans(
+    planExternalIds: string[],
+  ): Promise<Map<string, GraphNode[]>>;
+  /**
    * #133 (E3) — patch a PlanStep's status (and optional resultSummary) in
    * place, leaving its other props intact. No-op when the step id is unknown.
    */
@@ -1538,9 +1548,13 @@ export interface PlanIngest {
   /** Turn external id to link via `PLAN_OF`. Skipped silently if absent. */
   turnExternalId?: string;
   userId?: string;
-  /** Free-form planning strategy label (e.g. the gate's rationale). */
+  /** Free-form planning strategy label (e.g. the gate's rationale, or the
+   *  title of the stored process a reused plan was materialised from). */
   strategy?: string;
-  createdBy?: 'gate' | 'manual';
+  /** Provenance of the plan: `gate` (Haiku materialiser), `manual`, or
+   *  `process` (materialised from a reused {@link ProcessMemoryService}
+   *  record — no LLM re-planning). */
+  createdBy?: 'gate' | 'manual' | 'process';
   createdAt: string;
   /**
    * #237 (plan GC) — a short summary of the originating user request, stored on
