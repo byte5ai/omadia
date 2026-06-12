@@ -219,13 +219,17 @@
                           0 1px 2px rgba(0, 0, 0, 0.30));
   --shadow-sm: light-dark(0 1px 2px rgba(20, 24, 36, 0.04),
                           0 1px 2px rgba(0, 0, 0, 0.30));
-  --shadow-md: light-dark(0 1px 2px rgba(20, 24, 36, 0.04), 0 8px 24px rgba(20, 24, 36, 0.06),
-                          0 1px 2px rgba(0, 0, 0, 0.30), 0 8px 24px rgba(0, 0, 0, 0.45));
-  --shadow-lg: light-dark(
-      0 4px 16px rgba(20, 24, 36, 0.06), 0 24px 48px rgba(20, 24, 36, 0.12),
-      0 0 32px var(--accent-glow-core), 0 0 96px var(--accent-glow),
-      0 4px 16px rgba(0, 0, 0, 0.55), 0 24px 48px rgba(0, 0, 0, 0.65),
-      0 0 32px var(--accent-glow-core), 0 0 96px var(--accent-glow));
+  /* Multi-layer shadows wrap EACH layer in its own light-dark() — the
+     layer-separating commas must stay at the box-shadow top level, not inside
+     light-dark() (which takes exactly two args). */
+  --shadow-md:
+      light-dark(0 1px 2px rgba(20, 24, 36, 0.04), 0 1px 2px rgba(0, 0, 0, 0.30)),
+      light-dark(0 8px 24px rgba(20, 24, 36, 0.06), 0 8px 24px rgba(0, 0, 0, 0.45));
+  --shadow-lg:
+      light-dark(0 4px 16px rgba(20, 24, 36, 0.06), 0 4px 16px rgba(0, 0, 0, 0.55)),
+      light-dark(0 24px 48px rgba(20, 24, 36, 0.12), 0 24px 48px rgba(0, 0, 0, 0.65)),
+      0 0 32px var(--accent-glow-core),
+      0 0 96px var(--accent-glow);
   /* Accent emphasis on CTAs uses the two-stop Lume glow (spec §3.2), not a
      drop shadow. */
   --shadow-cta:     0 0 4px var(--accent-glow-core), 0 4px 12px var(--accent-glow);
