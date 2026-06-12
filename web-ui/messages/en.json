@@ -527,6 +527,8 @@
     "memoryReadTooltip": "Plugin's memory read scope",
     "memoryWriteTooltip": "Plugin's memory write scope",
     "networkLabel": "Network:",
+    "networkHosts": "{count, plural, one {# host} other {# hosts}}",
+    "networkHostsTitle": "Outbound network hosts",
     "configShow": "Config",
     "configHide": "Close",
     "orphanPluginBadge": "no longer installed",
