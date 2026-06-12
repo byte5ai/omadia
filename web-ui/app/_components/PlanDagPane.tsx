@@ -85,7 +85,7 @@ export function PlanDagPane({ plan }: Props): React.ReactElement | null {
       <button
         type="button"
         onClick={openWindow}
-        className="fixed bottom-6 left-6 z-40 flex items-center gap-2 rounded-full border border-[color:var(--accent)] bg-white/90 px-4 py-2 text-sm font-medium text-[color:var(--accent)] shadow-lg backdrop-blur transition hover:bg-[color:var(--bg-elevated)]"
+        className="fixed bottom-6 left-6 z-40 flex items-center gap-2 rounded-full border border-[color:var(--accent)] bg-[color:var(--bg-elevated)]/90 px-4 py-2 text-sm font-medium text-[color:var(--accent)] shadow-lg backdrop-blur transition hover:bg-[color:var(--bg-elevated)]"
         aria-label={t('openLabel')}
         title={t('openLabel')}
       >

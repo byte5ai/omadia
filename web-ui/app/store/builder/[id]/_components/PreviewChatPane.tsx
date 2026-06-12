@@ -778,7 +778,7 @@ function ChatItemView({ item }: { item: ChatItem }): React.ReactElement | null {
             {item.codegenIssues.map((iss, i) => (
               <li
                 key={`codegen-${String(i)}`}
-                className="rounded border border-current/20 bg-white/40 px-2 py-1"
+                className="rounded border border-current/20 bg-[color:var(--bg-elevated)]/40 px-2 py-1"
               >
                 <span className="font-mono-num text-[10px] uppercase tracking-[0.16em] opacity-80">
                   {iss.code}

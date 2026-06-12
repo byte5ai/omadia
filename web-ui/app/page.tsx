@@ -441,7 +441,7 @@ export default function ChatPage(): React.ReactElement {
         disabled={sending}
       />
 
-      <div className="border-b border-[color:var(--border)] bg-white/60 px-6 py-2 text-xs">
+      <div className="border-b border-[color:var(--border)] bg-[color:var(--bg-elevated)]/75 px-6 py-2 text-xs">
         <div className="mx-auto flex max-w-4xl flex-col gap-2">
           {/* Row 1 — stream info. Verlauf-Leeren wanderte 2026-05-26 als
               Eraser-Icon in den Composer (links neben Senden). */}
@@ -588,7 +588,7 @@ export default function ChatPage(): React.ReactElement {
           recent turn. Gated by its own header toggle. */}
       <PlanDagPane plan={planDagEnabled ? activePlan : null} />
 
-      <footer className="border-t border-[color:var(--border)] bg-white/80 px-6 py-4 backdrop-blur">
+      <footer className="border-t border-[color:var(--border)] bg-[color:var(--bg-elevated)]/85 px-6 py-4 backdrop-blur">
         <div className="mx-auto flex max-w-4xl flex-col gap-1.5">
           {/* Mid-turn steering hint / feedback — only while a turn streams. */}
           {sending && (
@@ -663,7 +663,7 @@ export default function ChatPage(): React.ReactElement {
                   send();
                 }}
                 disabled={input.trim().length === 0 || hydrating}
-                className="rounded bg-[color:var(--bg-inverse)] px-4 py-2 text-sm font-medium text-[color:var(--fg-on-dark)] transition hover:bg-[color:var(--fg-muted)] disabled:cursor-not-allowed disabled:opacity-40"
+                className="rounded-md bg-[color:var(--accent)] px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {t('sendButton')}
               </button>
@@ -1229,7 +1229,7 @@ function SubTrace({
                 ? 'border-[color:var(--border)]'
                 : row.result?.isError
                   ? 'border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8'
-                  : 'border-[color:var(--border)] bg-white/60',
+                  : 'border-[color:var(--border)] bg-[color:var(--bg-elevated)]/75',
             ].join(' ')}
           >
             <summary className="flex cursor-pointer items-center gap-2 px-2 py-0.5 font-mono select-none">

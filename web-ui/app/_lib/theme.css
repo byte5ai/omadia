@@ -106,7 +106,10 @@
   --fg-muted:     var(--text-secondary);
   --fg-subtle:    var(--text-tertiary);
   --fg-disabled:  var(--text-disabled);
-  --fg-on-dark:   #FCFCFD;
+  /* Text on an inverse-colored surface (--bg-inverse). The inverse surface
+     flips per mode (dark chip in light mode, light chip in dark mode), so its
+     text must flip with it — pinning this to white breaks dark mode. */
+  --fg-on-dark:   var(--text-inverse);
   --fg-on-accent: var(--text-inverse);
 
   --accent-fg:    var(--text-inverse);
