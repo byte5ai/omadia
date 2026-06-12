@@ -241,6 +241,30 @@ export async function activate(
         ?.has(name) === true,
   };
 
+  // Deterministic-action allow-set (declare → resolve → derive, same shape as
+  // canvas-output): a tool listed here owns a FULLY plugin-determined result —
+  // a structured UI action whose `type` names it is dispatched DIRECTLY (no
+  // model turn), its `_pendingCanvasTree`/`_pendingSurfacePatch` sentinel
+  // synthesised straight into surface events. This is the "the application
+  // layer already has this value, don't spend an LLM turn" path: saved-page
+  // recalls, status flips, list views. Deny-by-default — a tool not declared
+  // here still goes through the agent loop. Operator override via the
+  // `deterministic_action_tools` config field; `deterministicActionRegistry`
+  // is the forward-compat manifest-autodiscovery hook (absent today = no-op).
+  const configuredDeterministicActionTools: ReadonlySet<string> = new Set(
+    (ctx.config?.get<string>('deterministic_action_tools') ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0),
+  );
+  const deterministicActionTools: { has(name: string): boolean } = {
+    has: (name: string): boolean =>
+      configuredDeterministicActionTools.has(name) ||
+      ctx.services
+        ?.get<{ has(name: string): boolean }>('deterministicActionRegistry')
+        ?.has(name) === true,
+  };
+
   // Register the producer tool in the orchestrator tool loop. The accessor is
   // typed required but absent in narrow test contexts; without it the canvas
   // still renders skeleton + prose, only the data path is unavailable.
@@ -471,6 +495,64 @@ export async function activate(
           '(stable ids: containerId/itemKey/rowKey). Act on it directly — ' +
           'do not ask which record was meant.'
         : '';
+
+    // ── Deterministic action (LLM-free) ────────────────────────────────────
+    // The structured action names a tool whose result is FULLY plugin-determined
+    // (a saved-page recall, a status flip, a list view). There is nothing for the
+    // model to decide: invoke the tool DIRECTLY with the action payload and feed
+    // its sentinel through the SAME synthesis pipeline the agent path uses — no
+    // skeleton, no model turn, instant. Deny-by-default: the tool must be in the
+    // deterministic-action allow-set AND remain canvas-output-authorised for its
+    // sentinel to resolve. Any miss falls through to the in-place/agent paths.
+    const directActionTool =
+      input.action && typeof (input.action as { type?: unknown }).type === 'string'
+        ? ((input.action as { type: string }).type)
+        : undefined;
+    const directInvoke = toolsAccessor?.invoke?.bind(toolsAccessor);
+    if (directActionTool && deterministicActionTools.has(directActionTool) && directInvoke) {
+      const directPayload =
+        (input.action as { payload?: unknown }).payload ?? {};
+      const baseRevision = (input.canvasState?.basedOnRevision ?? '0') as RevisionId;
+      const baseTree = input.canvasState?.currentTree;
+      const directEvents = async function* (): AsyncGenerator<ChatStreamEvent> {
+        const id = randomUUID();
+        yield { type: 'tool_use', id, name: directActionTool, input: directPayload };
+        let output: string;
+        try {
+          const t0 = Date.now();
+          const raw = await directInvoke(directActionTool, directPayload);
+          output = typeof raw === 'string' ? raw : JSON.stringify(raw);
+          ctx.log(
+            `[deterministic-action] ${directActionTool} dispatched LLM-free in ` +
+              `${Date.now() - t0}ms (no model turn)`,
+          );
+        } catch (err) {
+          output = JSON.stringify({
+            ok: false,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          ctx.log(
+            `[deterministic-action] ${directActionTool} failed: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+        yield { type: 'tool_result', id, output, durationMs: 0 };
+      };
+      yield* synthesizeSurfaceEvents(directEvents(), {
+        canvasSessionId,
+        authorizedToolNames: canvasOutputTools,
+        protocolVersion: CANVAS_PROTOCOL_VERSION,
+        opsCatalogVersion: OPS_CATALOG_VERSION,
+        startSurfaceSeq: 0,
+        baseRevision,
+        baseTree,
+        dataRequirements: baseTree ? deriveDataRequirements(baseTree) : [],
+        onPublishedSource: captureSource(canvasSessionId),
+        log: (message) => ctx.log(message),
+      });
+      return;
+    }
 
     // ── In-place action (PR-9b-3) ──────────────────────────────────────────
     // The client handed its CURRENT tree + revision: this action should PATCH

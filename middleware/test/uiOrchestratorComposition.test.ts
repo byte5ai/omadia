@@ -503,6 +503,100 @@ describe('canvasChatAgent — Haiku composition step', () => {
   });
 });
 
+// ── Deterministic action: LLM-free direct tool dispatch ──
+
+describe('canvasChatAgent — deterministic action (LLM-free dispatch)', () => {
+  const PAGE_TREE = {
+    type: 'container',
+    id: 'x-studio-drafts',
+    layout: 'stack',
+    children: [{ type: 'heading', id: 'drafts-h', content: 'Drafts', level: 2 }],
+  };
+
+  function makeToolsCtx(config: Record<string, string>) {
+    const reg = new Map<string, unknown>();
+    const invokeCalls: Array<{ name: string; input: unknown }> = [];
+    const ctx = {
+      log: () => {},
+      services: {
+        get: <T>(name: string): T | undefined => reg.get(name) as T | undefined,
+        provide: (name: string, impl: unknown) => {
+          reg.set(name, impl);
+          return () => reg.delete(name);
+        },
+      },
+      config: { get: <T>(k: string): T | undefined => config[k] as T | undefined },
+      tools: {
+        register: () => () => {},
+        invoke: async (name: string, input: unknown) => {
+          invokeCalls.push({ name, input });
+          if (name === 'studio_load_page') {
+            return JSON.stringify({
+              ok: true,
+              prose: 'Seite geladen.',
+              _pendingCanvasTree: { tree: PAGE_TREE },
+            });
+          }
+          throw new Error('unexpected tool ' + name);
+        },
+      },
+    } as unknown as PluginContext;
+    return { ctx, reg, invokeCalls };
+  }
+
+  it('dispatches a deterministic action directly — surface_snapshot, no model turn', async () => {
+    const { ctx, reg, invokeCalls } = makeToolsCtx({
+      deterministic_action_tools: 'studio_load_page',
+      canvas_output_tools: 'studio_load_page',
+    });
+    const seen: ChatTurnInput[] = [];
+    reg.set(
+      CHAT_AGENT_SERVICE,
+      baseBundle([{ type: 'done', answer: 'x' } as unknown as ChatStreamEvent], seen),
+    );
+    await activate(ctx);
+    const agent = (reg.get('canvasChatAgent') as ChatAgentBundle).agent;
+    const events = await collect(
+      agent.chatStream({
+        userMessage: '',
+        canvasSessionId: 'cs1',
+        action: { type: 'studio_load_page', payload: { page: 'drafts' } },
+      } as unknown as ChatTurnInput),
+    );
+
+    // (a) the tool ran directly with the action payload
+    assert.deepEqual(invokeCalls, [{ name: 'studio_load_page', input: { page: 'drafts' } }]);
+    // (b) NO model turn — the base agent was never delegated to
+    assert.equal(seen.length, 0, 'no LLM turn for a deterministic action');
+    // (c) the sentinel became a full snapshot of the recalled page
+    const snap = events.find((e) => e.type === 'surface_snapshot');
+    assert.ok(snap, 'surface_snapshot emitted');
+    assert.deepEqual(field(snap as ChatStreamEvent, 'tree'), PAGE_TREE);
+  });
+
+  it('falls through to the agent loop when the tool is NOT in the deterministic allow-set', async () => {
+    const { ctx, reg, invokeCalls } = makeToolsCtx({ canvas_output_tools: 'studio_load_page' });
+    const seen: ChatTurnInput[] = [];
+    reg.set(
+      CHAT_AGENT_SERVICE,
+      baseBundle([{ type: 'done', answer: 'x' } as unknown as ChatStreamEvent], seen),
+    );
+    await activate(ctx);
+    const agent = (reg.get('canvasChatAgent') as ChatAgentBundle).agent;
+    await collect(
+      agent.chatStream({
+        userMessage: '',
+        canvasSessionId: 'cs1',
+        action: { type: 'studio_load_page', payload: { page: 'drafts' } },
+      } as unknown as ChatTurnInput),
+    );
+
+    // deny-by-default: not declared deterministic → no direct dispatch, model runs
+    assert.equal(invokeCalls.length, 0, 'no direct dispatch when not allow-listed');
+    assert.equal(seen.length, 1, 'the agent loop ran instead');
+  });
+});
+
 // ── PR-9b-3: in-place action turns (client sends canvasState) ──
 
 describe('canvasChatAgent — in-place action (canvasState, 9b-3)', () => {
