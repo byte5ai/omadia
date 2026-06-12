@@ -107,7 +107,7 @@ function AdminCard({
         href={href}
         className={
           danger
-            ? 'block rounded-lg border border-[color:var(--danger-edge)]/40 bg-[color:var(--danger)]/80/5 p-5 transition-colors hover:border-[color:var(--danger-edge)]'
+            ? 'block rounded-lg border border-[color:var(--danger-edge)]/40 bg-[color:var(--danger)]/5 p-5 transition-colors hover:border-[color:var(--danger-edge)]'
             : 'block rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5 transition-colors hover:border-[color:var(--accent)]'
         }
       >

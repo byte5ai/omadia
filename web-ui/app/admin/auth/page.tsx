@@ -113,7 +113,7 @@ export default function AdminAuthPage(): React.ReactElement {
                   className={[
                     'mt-1 inline-flex w-fit items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] uppercase tracking-[0.16em]',
                     p.active
-                      ? 'bg-[color:var(--success)]/100/10 text-[color:var(--success)]'
+                      ? 'bg-[color:var(--success)]/10 text-[color:var(--success)]'
                       : 'bg-[color:var(--border)]/40 text-[color:var(--fg-muted)]',
                   ].join(' ')}
                 >

@@ -231,6 +231,9 @@
       0 24px 48px light-dark(rgba(20, 24, 36, 0.12), rgba(0, 0, 0, 0.65)),
       0 0 32px var(--accent-glow-core),
       0 0 96px var(--accent-glow);
+  /* elev.drag (§2.10) — drag-in-flight ghost. No accent glow: drag is an
+     operation, not an active state (§6.7). */
+  --shadow-drag: 0 8px 24px light-dark(rgba(20, 24, 36, 0.16), rgba(0, 0, 0, 0.55));
   /* Accent emphasis on CTAs uses the two-stop Lume glow (spec §3.2), not a
      drop shadow. */
   --shadow-cta:     0 0 4px var(--accent-glow-core), 0 4px 12px var(--accent-glow);

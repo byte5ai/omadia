@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { useRouter } from 'next/navigation';
-import { AlertTriangle, CheckCircle2, Loader2, ShieldCheck, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ShieldCheck, X } from 'lucide-react';
 
 import { installBuilderDraft, patchBuilderSpec } from '../../../../_lib/api';
 import { cn } from '../../../../_lib/cn';
@@ -273,7 +273,7 @@ export function InstallDiffModal({
           >
             {busy ? (
               <>
-                <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                <span className="lume-busy-dots" aria-hidden />
                 {t('publishing')}
               </>
             ) : phase.kind === 'succeeded' ? (

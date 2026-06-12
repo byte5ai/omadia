@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { AlertCircle, Check, Loader2, Plus, X } from 'lucide-react';
+import { AlertCircle, Check, Plus, X } from 'lucide-react';
 
 import { ApiError, patchBuilderSpec } from '../../../../_lib/api';
 import type {
@@ -560,7 +560,7 @@ function SaveBadge({ status }: { status: SaveStatus }): React.ReactElement {
     if (status.kind === 'pending') {
       return (
         <>
-          <Loader2 className="size-3 animate-spin" aria-hidden />
+          <span className="lume-busy-dots" aria-hidden />
           <span>{t('save.saving')}</span>
         </>
       );

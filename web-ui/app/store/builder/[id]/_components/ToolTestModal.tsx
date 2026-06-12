@@ -1,6 +1,6 @@
 'use client';
 
-import { Loader2, Play, Save, X } from 'lucide-react';
+import { Play, Save, X } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 
@@ -176,7 +176,7 @@ export function ToolTestModal({
                 className="inline-flex items-center gap-1 rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2.5 py-1 text-[11px] font-semibold text-[color:var(--fg-strong)] hover:border-[color:var(--accent)] disabled:opacity-50"
               >
                 {savingTestCase ? (
-                  <Loader2 className="size-3 animate-spin" aria-hidden />
+                  <span className="lume-busy-dots" aria-hidden />
                 ) : (
                   <Save className="size-3" aria-hidden />
                 )}
@@ -190,7 +190,7 @@ export function ToolTestModal({
               className="inline-flex items-center gap-1 rounded bg-[color:var(--accent)] px-3 py-1 text-[11px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] disabled:opacity-50"
             >
               {pending ? (
-                <Loader2 className="size-3 animate-spin" aria-hidden />
+                <span className="lume-busy-dots" aria-hidden />
               ) : (
                 <Play className="size-3" aria-hidden />
               )}

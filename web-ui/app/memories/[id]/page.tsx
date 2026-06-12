@@ -45,12 +45,12 @@ const KIND_BADGE: Record<MemorableKind, string> = {
 };
 
 const ACTION_BADGE: Record<MemorableAclAction, string> = {
-  create: 'bg-[color:var(--success)]/100/20 text-[color:var(--success)]',
-  expand: 'bg-[color:var(--accent)]/100/20 text-[color:var(--accent)]',
-  shrink: 'bg-[color:var(--warning)]/100/20 text-[color:var(--warning)]',
-  delete: 'bg-[color:var(--danger)]/80/20 text-[color:var(--danger)]',
-  edit: 'bg-[color:var(--accent)]/100/20 text-[color:var(--accent)]',
-  edit_excerpt: 'bg-[color:var(--accent)]/100/20 text-[color:var(--accent)]',
+  create: 'bg-[color:var(--success)]/20 text-[color:var(--success)]',
+  expand: 'bg-[color:var(--accent)]/20 text-[color:var(--accent)]',
+  shrink: 'bg-[color:var(--warning)]/20 text-[color:var(--warning)]',
+  delete: 'bg-[color:var(--danger)]/20 text-[color:var(--danger)]',
+  edit: 'bg-[color:var(--accent)]/20 text-[color:var(--accent)]',
+  edit_excerpt: 'bg-[color:var(--accent)]/20 text-[color:var(--accent)]',
 };
 
 const ACTION_LABELS: Record<MemorableAclAction, string> = {

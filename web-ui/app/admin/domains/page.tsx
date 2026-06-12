@@ -93,7 +93,7 @@ export default function AdminDomainsPage(): React.ReactElement {
       {loading ? (
         <p className="text-[color:var(--fg-muted)]">Lade …</p>
       ) : error ? (
-        <p className="rounded-md border border-[color:var(--danger-edge)]/40 bg-[color:var(--danger)]/80/10 p-4 text-sm text-[color:var(--danger)]">
+        <p className="rounded-md border border-[color:var(--danger-edge)]/40 bg-[color:var(--danger)]/10 p-4 text-sm text-[color:var(--danger)]">
           Fehler beim Laden: {error}
         </p>
       ) : data ? (
@@ -131,7 +131,7 @@ function Content({ data }: { data: DomainsResponse }): React.ReactElement {
       )}
 
       {data.totals.fallbackDomains > 0 ? (
-        <p className="mt-8 rounded-md border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/100/10 p-4 text-sm text-[color:var(--warning)]">
+        <p className="mt-8 rounded-md border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/10 p-4 text-sm text-[color:var(--warning)]">
           {data.totals.fallbackDomains} Plugin
           {data.totals.fallbackDomains === 1 ? '' : 's'} ohne deklarierte
           Domain — auto-fallback auf{' '}
@@ -155,7 +155,7 @@ function DomainSection({
     <li
       className={
         bucket.isFallback
-          ? 'rounded-lg border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/100/5 p-5'
+          ? 'rounded-lg border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/5 p-5'
           : 'rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5'
       }
     >
@@ -211,7 +211,7 @@ function Stat({
     <div
       className={
         warn
-          ? 'rounded-lg border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/100/5 p-4'
+          ? 'rounded-lg border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/5 p-4'
           : 'rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4'
       }
     >

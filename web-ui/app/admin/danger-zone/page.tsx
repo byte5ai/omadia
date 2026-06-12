@@ -181,7 +181,7 @@ export default function DangerZonePage(): React.ReactElement {
         </p>
       </header>
 
-      <section className="mb-6 rounded-lg border border-[color:var(--danger-edge)]/40 bg-[color:var(--danger)]/80/5 p-4 text-sm text-[color:var(--danger)]">
+      <section className="mb-6 rounded-lg border border-[color:var(--danger-edge)]/40 bg-[color:var(--danger)]/5 p-4 text-sm text-[color:var(--danger)]">
         <p>
           <strong>Hinweis:</strong> Pro User / Team / Channel löschen wirkt nur
           im Knowledge-Graph — der Agent-Scratch ist agent-scoped.
@@ -287,7 +287,7 @@ export default function DangerZonePage(): React.ReactElement {
         </section>
       )}
 
-      <section className="mb-6 rounded-lg border border-[color:var(--danger-edge)]/50 bg-[color:var(--danger)]/80/5 p-5">
+      <section className="mb-6 rounded-lg border border-[color:var(--danger-edge)]/50 bg-[color:var(--danger)]/5 p-5">
         <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--danger)]">
           Löschen bestätigen
         </h2>
@@ -303,7 +303,7 @@ export default function DangerZonePage(): React.ReactElement {
           <>
             <p className="mb-2 text-sm text-[color:var(--fg-muted)]">
               Zum Bestätigen exakt eingeben:{' '}
-              <code className="rounded bg-[color:var(--danger)]/80/15 px-1.5 py-0.5 font-mono text-[color:var(--danger)]">
+              <code className="rounded bg-[color:var(--danger)]/15 px-1.5 py-0.5 font-mono text-[color:var(--danger)]">
                 {requiredPhrase}
               </code>
             </p>
@@ -320,7 +320,7 @@ export default function DangerZonePage(): React.ReactElement {
                 type="button"
                 onClick={() => void runDelete()}
                 disabled={!canDelete}
-                className="rounded bg-[color:var(--danger)] px-4 py-1.5 text-xs font-semibold text-[color:var(--fg-on-dark)] hover:bg-[color:var(--danger)] disabled:cursor-not-allowed disabled:opacity-40"
+                className="rounded-md border border-[color:var(--danger-edge)] bg-transparent px-4 py-1.5 text-xs font-semibold text-[color:var(--danger)] transition hover:bg-[color:var(--danger)]/8 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {deleting ? 'löscht…' : 'Unwiderruflich löschen'}
               </button>
@@ -336,7 +336,7 @@ export default function DangerZonePage(): React.ReactElement {
       )}
 
       {result !== null && (
-        <section className="rounded-lg border border-[color:var(--success)]/40 bg-[color:var(--success)]/100/5 p-5">
+        <section className="rounded-lg border border-[color:var(--success)]/40 bg-[color:var(--success)]/5 p-5">
           <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--success)]">
             Gelöscht
           </h2>

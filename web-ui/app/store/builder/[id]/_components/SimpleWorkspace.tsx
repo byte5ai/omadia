@@ -186,7 +186,7 @@ export function SimpleWorkspace({
 
           {hasBeenBuilt ? (
             <div className="flex items-center gap-2.5 rounded-lg bg-[color:var(--bg-soft)] px-4 py-3 text-[14px] text-[color:var(--fg-muted)]">
-              <span className="inline-flex size-7 items-center justify-center rounded-full bg-[color:var(--success)]/12 text-[color:var(--success)]">
+              <span className="inline-flex size-7 items-center justify-center text-[color:var(--success)]">
                 <Sparkles className="size-3.5" aria-hidden />
               </span>
               {toolCount > 0

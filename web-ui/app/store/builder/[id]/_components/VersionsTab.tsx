@@ -289,7 +289,7 @@ function StatusPills({ snapshot }: { snapshot: SnapshotSummary }): React.ReactEl
   return (
     <div className="flex flex-wrap gap-1">
       {snapshot.is_deploy_ready ? (
-        <span className="rounded-full border border-[var(--success)] bg-[color-mix(in_srgb,var(--success)_12%,transparent)] px-2 py-0.5 text-xs font-medium text-[var(--success)]">
+        <span className="text-xs font-medium text-[var(--success)]">
           deploy-ready
         </span>
       ) : null}

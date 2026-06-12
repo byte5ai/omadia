@@ -231,7 +231,7 @@ export default function AdminRegistriesPage(): React.ReactElement {
                     type="button"
                     onClick={() => void onDelete(r)}
                     disabled={pending === r.name}
-                    className="rounded-md border border-[color:var(--border)] px-3 py-2 text-sm font-medium text-[color:var(--danger)] hover:bg-[color:var(--danger)]/80/10 disabled:opacity-50"
+                    className="rounded-md border border-[color:var(--border)] px-3 py-2 text-sm font-medium text-[color:var(--danger)] hover:bg-[color:var(--danger)]/10 disabled:opacity-50"
                   >
                     {pending === r.name ? '…' : 'Entfernen'}
                   </button>
@@ -314,7 +314,7 @@ function TokenBadge({ hasToken }: { hasToken: boolean }): React.ReactElement {
       className={[
         'inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] uppercase tracking-[0.16em]',
         hasToken
-          ? 'bg-[color:var(--success)]/100/10 text-[color:var(--success)]'
+          ? 'bg-[color:var(--success)]/10 text-[color:var(--success)]'
           : 'bg-[color:var(--border)]/40 text-[color:var(--fg-muted)]',
       ].join(' ')}
     >

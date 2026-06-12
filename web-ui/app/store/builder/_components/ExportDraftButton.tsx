@@ -2,7 +2,7 @@
 
 import { useCallback, useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { ChevronDown, Download, Loader2 } from 'lucide-react';
+import { ChevronDown, Download } from 'lucide-react';
 
 import { ApiError, captureSnapshot, snapshotDownloadUrl } from '../../../_lib/api';
 import { cn } from '../../../_lib/cn';
@@ -78,7 +78,7 @@ export function ExportDraftButton({
         className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-[color:var(--fg-muted)] transition-colors hover:bg-[color:var(--bg-soft)] hover:text-[color:var(--fg-strong)] disabled:opacity-50"
       >
         {busy ? (
-          <Loader2 className="size-3.5 animate-spin" aria-hidden />
+          <span className="lume-busy-dots" aria-hidden />
         ) : (
           <Download className="size-3.5" aria-hidden />
         )}

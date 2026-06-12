@@ -175,7 +175,7 @@ export default async function StorePage({
                   className={cn(
                     'font-mono-num tabular-nums rounded-full px-1.5 text-[10px]',
                     active
-                      ? 'bg-white/25 text-[color:var(--fg-on-dark)]'
+                      ? 'text-[color:var(--accent-fg)]'
                       : 'bg-[color:var(--bg)] text-[color:var(--fg-subtle)]',
                   )}
                 >
@@ -314,7 +314,7 @@ function SourceTabs({
               className={cn(
                 'font-mono-num tabular-nums rounded-full px-1.5 text-[10px]',
                 active
-                  ? 'bg-white/25 text-[color:var(--fg-on-dark)]'
+                  ? 'text-[color:var(--accent-fg)]'
                   : 'bg-[color:var(--bg)] text-[color:var(--fg-subtle)]',
               )}
             >

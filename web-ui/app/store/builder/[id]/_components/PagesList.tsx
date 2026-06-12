@@ -232,7 +232,8 @@ function SortableRow({
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
-    opacity: isDragging ? 0.6 : 1,
+    opacity: isDragging ? 0.5 : 1,
+    boxShadow: isDragging ? 'var(--shadow-drag)' : undefined,
   };
   void index;
 

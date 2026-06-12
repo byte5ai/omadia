@@ -190,6 +190,46 @@ body {
     animation: lume-condense var(--motion-condense) var(--easing-emphasis) both;
   }
 
+  /* §7.3 button-in-flight — the single spinner exception: verb + animated
+     dots. No spinner glyph, no spinning ring. Period. */
+  .lume-busy-dots::after {
+    content: '.';
+    display: inline-block;
+    width: 1.2em;
+    text-align: left;
+    animation: lume-dots 1.2s steps(1, end) infinite;
+  }
+
+  /* §4.2 list/tree — full selection recipe: the row is a lit pocket; the
+     accent left bar is the edge of the pocket, not a paint stroke. */
+  .lume-selected {
+    position: relative;
+    background:
+      radial-gradient(ellipse at 30% 50%, var(--accent-glow-core) 0%, var(--accent-glow) 20%, transparent 70%),
+      linear-gradient(180deg, var(--accent-subtle), transparent);
+    box-shadow:
+      0 0 12px -2px var(--accent-glow-core),
+      0 0 24px -6px var(--accent-glow-strong);
+  }
+  .lume-selected::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 4px;
+    bottom: 4px;
+    width: 2px;
+    background: var(--accent);
+    border-radius: 2px;
+    box-shadow: 0 0 6px var(--accent-glow-strong);
+  }
+
+  /* §6.7 drop target — 2px dashed accent, fades in over motion.quick. */
+  .lume-drop-target {
+    outline: 2px dashed var(--accent);
+    outline-offset: 2px;
+    transition: outline-color var(--motion-quick) var(--easing-standard);
+  }
+
   /* §4.2 tabs — the active tab's underline is lit, not just colored. */
   .lume-tab-active {
     position: relative;
@@ -234,6 +274,18 @@ body {
       0 0 0 4px var(--accent-glow),
       0 0 16px var(--accent-glow-core),
       0 12px 40px var(--accent-glow-strong);
+  }
+}
+
+@keyframes lume-dots {
+  0% {
+    content: '.';
+  }
+  33% {
+    content: '..';
+  }
+  66% {
+    content: '...';
   }
 }
 
@@ -532,6 +584,18 @@ summary:focus-visible,
 [tabindex]:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px var(--accent), 0 0 0 6px var(--accent-glow);
+}
+
+/* ---- Tables (§4.2): sunken header, accent-washed row hover, aria-sort ---- */
+table:not(.md-view table) thead th {
+  background: linear-gradient(180deg, var(--bg-surface-sunken-top) 0%, var(--bg-surface-sunken-btm) 100%);
+}
+table:not(.md-view table) tbody tr:hover {
+  background: var(--accent-subtle);
+}
+th[aria-sort='ascending'],
+th[aria-sort='descending'] {
+  color: var(--accent); /* sort-active header: accent text, no glow (§4.2) */
 }
 
 /* ---- Text selection: a lit pocket ----------------------------------------- */

@@ -59,7 +59,7 @@ export default function DetailPanel({
         ) : null}
         {node.type === 'Turn' && node.manuallyAuthored ? (
           <span
-            className="rounded-full bg-[color:var(--warning)]/100/20 px-2 py-0.5 text-[10px] font-medium text-[color:var(--warning)]"
+            className="px-2 py-0.5 text-[10px] font-medium text-[color:var(--warning)]"
             title="manuell erfasst — Score-Boost ×1.3 im Token-Budget-Assembler"
           >
             ✎ manual
@@ -177,8 +177,8 @@ function TierBadge({
   accessCount?: number;
 }): React.ReactElement {
   const palette: Record<Tier, string> = {
-    HOT: 'bg-[color:var(--accent)]/100/20 text-[color:var(--accent)]',
-    WARM: 'bg-[color:var(--warning)]/100/20 text-[color:var(--warning)]',
+    HOT: 'bg-[color:var(--accent)]/20 text-[color:var(--accent)]',
+    WARM: 'bg-[color:var(--warning)]/20 text-[color:var(--warning)]',
     COLD: 'bg-[color:var(--fg-subtle)]/20 text-[color:var(--fg-muted)]',
   };
   const tooltipParts: string[] = [`tier=${tier}`];

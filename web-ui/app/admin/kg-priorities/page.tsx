@@ -172,7 +172,7 @@ export default function KgPrioritiesPage(): React.ReactElement {
       </section>
 
       {error !== null ? (
-        <div className="mb-6 rounded-md border border-[color:var(--danger-edge)]/40 bg-[color:var(--danger)]/80/10 p-3 text-sm text-[color:var(--danger)]">
+        <div className="mb-6 rounded-md border border-[color:var(--danger-edge)]/40 bg-[color:var(--danger)]/10 p-3 text-sm text-[color:var(--danger)]">
           {error}
         </div>
       ) : null}
@@ -268,8 +268,8 @@ export default function KgPrioritiesPage(): React.ReactElement {
                     <span
                       className={
                         r.action === 'block'
-                          ? 'rounded-full bg-[color:var(--danger)]/80/20 px-2 py-0.5 text-xs font-medium text-[color:var(--danger)]'
-                          : 'rounded-full bg-[color:var(--success)]/100/20 px-2 py-0.5 text-xs font-medium text-[color:var(--success)]'
+                          ? 'px-2 py-0.5 text-xs font-medium text-[color:var(--danger)]'
+                          : 'px-2 py-0.5 text-xs font-medium text-[color:var(--success)]'
                       }
                     >
                       {r.action}
@@ -289,7 +289,7 @@ export default function KgPrioritiesPage(): React.ReactElement {
                       type="button"
                       onClick={() => { void handleRemove(r.entryExternalId); }}
                       disabled={busy === `remove:${r.entryExternalId}`}
-                      className="rounded-md border border-[color:var(--border)] px-3 py-1 text-xs text-[color:var(--fg-strong)] hover:bg-[color:var(--danger)]/80/20 disabled:opacity-40"
+                      className="rounded-md border border-[color:var(--border)] px-3 py-1 text-xs text-[color:var(--fg-strong)] hover:bg-[color:var(--danger)]/20 disabled:opacity-40"
                     >
                       {busy === `remove:${r.entryExternalId}` ? '…' : 'Remove'}
                     </button>

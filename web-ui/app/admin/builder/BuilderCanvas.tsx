@@ -301,7 +301,7 @@ function CanvasInner({ slug }: BuilderCanvasProps): React.ReactElement {
           <Controls />
         </ReactFlow>
         {actionError && (
-          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-md border border-[color:var(--danger-edge)]/40 bg-[color:var(--danger)]/80/10 px-4 py-2 text-sm text-[color:var(--danger)]">
+          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-md border border-[color:var(--danger-edge)]/40 bg-[color:var(--danger)]/10 px-4 py-2 text-sm text-[color:var(--danger)]">
             {actionError}
           </div>
         )}

@@ -321,7 +321,7 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
               {t('badgeHops', { count: maxHop })}
             </span>
             {insertedCount > 0 && (
-              <span className="rounded bg-[color:var(--success)]/100/20 px-1.5 py-0.5 text-[color:var(--success)]">
+              <span className="rounded bg-[color:var(--success)]/20 px-1.5 py-0.5 text-[color:var(--success)]">
                 {t('badgeInserted', { count: insertedCount })}
               </span>
             )}
@@ -528,7 +528,7 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
                       {n.kind}
                     </span>
                     {n.inserted && (
-                      <span className="shrink-0 rounded bg-[color:var(--success)]/100/25 px-1 py-0.5 font-mono text-[9px] font-semibold text-[color:var(--success)]">
+                      <span className="shrink-0 rounded bg-[color:var(--success)]/25 px-1 py-0.5 font-mono text-[9px] font-semibold text-[color:var(--success)]">
                         {t('insertedTag')}
                       </span>
                     )}

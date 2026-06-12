@@ -11,8 +11,7 @@ import {
   Activity,
   Rocket,
   Wrench,
-  Loader2,
-  AlertTriangle,
+    AlertTriangle,
   X,
   ChevronDown,
   ChevronUp,
@@ -1273,8 +1272,8 @@ function MobilePaneTabs({
                 className={cn(
                   'font-mono-num inline-flex min-w-[1rem] items-center justify-center rounded-full px-1 text-[10px] font-semibold',
                   isActive
-                    ? 'bg-white/25 text-[color:var(--fg-on-dark)]'
-                    : 'bg-[color:var(--danger)] text-[color:var(--fg-on-dark)]',
+                    ? 'text-[color:var(--accent-fg)]'
+                    : 'text-[color:var(--danger)]',
                 )}
                 aria-label={tw('mobilePaneMissingAria', { count: w })}
               >
@@ -1675,7 +1674,7 @@ function AutoFixIndicator({
   if (snap.phase === 'triggered') {
     return (
       <div className="inline-flex w-fit items-center gap-2 rounded-full border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/10 px-3 py-1.5 text-[12px] text-[color:var(--accent)]">
-        <Loader2 className="size-3.5 animate-spin" aria-hidden />
+        <span className="lume-busy-dots" aria-hidden />
         <span className="font-mono-num text-[11px]">
           {tw('autoFixRunning', { buildN: snap.buildN, kind: kindLabel })}
         </span>
@@ -1805,8 +1804,8 @@ function EditorTabs({
                 className={cn(
                   'font-mono-num inline-flex min-w-[1rem] items-center justify-center rounded-full px-1 text-[10px] font-semibold',
                   active
-                    ? 'bg-white/25 text-[color:var(--fg-on-dark)]'
-                    : 'bg-[color:var(--danger)] text-[color:var(--fg-on-dark)]',
+                    ? 'text-[color:var(--accent-fg)]'
+                    : 'text-[color:var(--danger)]',
                 )}
                 aria-label={tw('editorTabMissingAria', { count: warningCount })}
               >

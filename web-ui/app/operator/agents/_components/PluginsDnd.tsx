@@ -504,7 +504,7 @@ function Column(props: {
       className={[
         'rounded border bg-[color:var(--bg-soft)]/40 p-2 transition-colors',
         isOver
-          ? 'border-[color:var(--accent)] bg-[color:var(--accent)]/10'
+          ? 'border-dashed border-[color:var(--accent)] bg-[color:var(--accent)]/10'
           : 'border-[color:var(--border)]',
       ].join(' ')}
     >
@@ -566,7 +566,8 @@ function DraggablePluginTile(props: {
     transform: CSS.Transform.toString(transform),
     transition,
     marginLeft: props.depth > 0 ? `${props.depth * 16}px` : undefined,
-    opacity: isDragging ? 0.4 : 1,
+    opacity: isDragging ? 0.5 : 1,
+    boxShadow: isDragging ? 'var(--shadow-drag)' : undefined,
   };
 
   const attached = props.selection !== null;

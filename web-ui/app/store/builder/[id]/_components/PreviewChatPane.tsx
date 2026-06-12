@@ -16,8 +16,7 @@ import {
   Eye,
   Hammer,
   KeyRound,
-  Loader2,
-  RefreshCw,
+    RefreshCw,
   Send,
   StopCircle,
   Wrench,
@@ -438,7 +437,7 @@ export function PreviewChatPane({
           className="inline-flex items-center gap-1 rounded-md bg-[color:var(--bg-soft)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)] hover:bg-[color:var(--gray-100)] hover:text-[color:var(--fg-strong)] disabled:opacity-50"
         >
           {rebuildPending ? (
-            <Loader2 className="size-3 animate-spin" aria-hidden />
+            <span className="lume-busy-dots" aria-hidden />
           ) : (
             <RefreshCw className="size-3" aria-hidden />
           )}
@@ -601,7 +600,7 @@ export function PreviewChatPane({
         </div>
         {inflight ? (
           <p className="font-mono-num mt-2 inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
-            <Loader2 className="size-3 animate-spin" aria-hidden />
+            <span className="lume-busy-dots" aria-hidden />
             {t('streamLive')} · {formatElapsed(turnStartedAt, elapsedNow)}
           </p>
         ) : null}
@@ -630,7 +629,7 @@ function RuntimeSmokeStrip({
   let label: string;
 
   if (snap.phase === 'running') {
-    icon = <Loader2 className="size-3 animate-spin" aria-hidden />;
+    icon = <span className="lume-busy-dots" aria-hidden />;
     toneClass =
       'border-[color:var(--divider)] bg-[color:var(--bg-soft)] text-[color:var(--fg-muted)]';
     label = t('running', { buildN: snap.buildN });
@@ -767,7 +766,7 @@ function ChatItemView({ item }: { item: ChatItem }): React.ReactElement | null {
             </span>
           ) : null}
           {item.phase === 'building' ? (
-            <Loader2 className="ml-auto size-3 animate-spin" aria-hidden />
+            <span className="lume-busy-dots" aria-hidden />
           ) : null}
         </div>
         {item.reason ? (
@@ -829,10 +828,7 @@ function ToolCard({
           {item.toolId}
         </span>
         {pending ? (
-          <Loader2
-            className="ml-auto size-3 animate-spin text-[color:var(--accent)]"
-            aria-hidden
-          />
+          <span className="lume-busy-dots ml-auto text-[color:var(--accent)]" aria-hidden />
         ) : item.isError ? (
           <span className="ml-auto inline-flex items-center gap-1 text-[10px] uppercase tracking-[0.16em] text-[color:var(--danger)]">
             error

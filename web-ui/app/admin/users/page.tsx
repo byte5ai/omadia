@@ -199,8 +199,8 @@ export default function AdminUsersPage(): React.ReactElement {
                       className={[
                         'inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] uppercase tracking-[0.16em]',
                         u.status === 'active'
-                          ? 'bg-[color:var(--success)]/100/10 text-[color:var(--success)]'
-                          : 'bg-[color:var(--warning)]/100/10 text-[color:var(--warning)]',
+                          ? 'bg-[color:var(--success)]/10 text-[color:var(--success)]'
+                          : 'bg-[color:var(--warning)]/10 text-[color:var(--warning)]',
                       ].join(' ')}
                     >
                       {u.status}

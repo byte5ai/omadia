@@ -30,12 +30,14 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
 }: ConfirmDialogProps): React.ReactElement | null {
-  const confirmRef = useRef<HTMLButtonElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!open) return;
-    // Auto-focus the confirm button so Enter commits.
-    confirmRef.current?.focus();
+    // §7.5: focus opens on Cancel — deliberate friction before an
+    // external-effect action. Enter therefore cancels by default; confirming
+    // requires an explicit Tab or click.
+    cancelRef.current?.focus();
   }, [open]);
 
   useEffect(() => {
@@ -54,10 +56,13 @@ export function ConfirmDialog({
 
   if (!open) return null;
 
+  // §4.2 button variants: danger is transparent + error edge + error text
+  // (the error is the signal — no fill, no glow); neutral confirm is the
+  // Lume primary (accent fill → gradient + glow via the material layer).
   const confirmCls =
     tone === 'danger'
-      ? 'bg-[color:var(--danger)] hover:bg-[color:var(--danger)] text-[color:var(--fg-on-dark)] border-[color:var(--danger-edge)]'
-      : 'bg-[color:var(--bg-inverse)] hover:bg-[color:var(--fg-muted)] text-[color:var(--fg-on-dark)] border-[color:var(--border-strong)]';
+      ? 'border-[color:var(--danger-edge)] bg-transparent text-[color:var(--danger)] hover:bg-[color:var(--danger)]/8'
+      : 'border-transparent bg-[color:var(--accent)]';
 
   return (
     <div
@@ -69,7 +74,7 @@ export function ConfirmDialog({
         if (e.target === e.currentTarget) onCancel();
       }}
     >
-      <div className="w-full max-w-md rounded-lg border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-5 shadow-xl">
+      <div className="w-full max-w-md rounded-lg border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-5 shadow-lg">
         <h2
           id="confirm-dialog-title"
           className="text-base font-semibold text-[color:var(--fg-strong)]"
@@ -83,6 +88,7 @@ export function ConfirmDialog({
         )}
         <div className="mt-5 flex justify-end gap-2">
           <button
+            ref={cancelRef}
             type="button"
             onClick={onCancel}
             className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-4 py-1.5 text-sm font-medium text-[color:var(--fg)] transition hover:border-[color:var(--border-strong)]"
@@ -90,7 +96,6 @@ export function ConfirmDialog({
             {cancelLabel}
           </button>
           <button
-            ref={confirmRef}
             type="button"
             onClick={onConfirm}
             className={`rounded border px-4 py-1.5 text-sm font-medium transition ${confirmCls}`}

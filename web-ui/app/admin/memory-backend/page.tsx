@@ -170,7 +170,7 @@ export default function MemoryBackendPage(): React.ReactElement {
           </section>
 
           {state.restartRequiredToApply && (
-            <section className="mb-6 rounded-lg border border-[color:var(--warning)]/50 bg-[color:var(--warning)]/100/10 p-4 text-sm font-medium text-[color:var(--warning)]">
+            <section className="mb-6 rounded-lg border border-[color:var(--warning)]/50 bg-[color:var(--warning)]/10 p-4 text-sm font-medium text-[color:var(--warning)]">
               ⚠ Ein Wechsel ist gespeichert, aber noch nicht aktiv — Neustart
               erforderlich, damit der Wechsel greift.
             </section>
@@ -234,7 +234,7 @@ export default function MemoryBackendPage(): React.ReactElement {
           )}
 
           {saved !== null && saveError === null && (
-            <section className="rounded-lg border border-[color:var(--warning)]/50 bg-[color:var(--warning)]/100/10 p-5 text-sm text-[color:var(--warning)]">
+            <section className="rounded-lg border border-[color:var(--warning)]/50 bg-[color:var(--warning)]/10 p-5 text-sm text-[color:var(--warning)]">
               <p className="font-semibold">
                 Backend <code className="font-mono">{saved}</code> gespeichert.
               </p>

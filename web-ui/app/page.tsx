@@ -1037,15 +1037,15 @@ function TriageBadge({
   const verdict: Record<typeof routing.bucket, { label: string; cls: string }> = {
     simple: {
       label: 'einfach',
-      cls: 'bg-[color:var(--success)]/100/10 text-[color:var(--success)] ring-[color:var(--success)]',
+      cls: 'bg-[color:var(--success)]/10 text-[color:var(--success)] ring-[color:var(--success)]',
     },
     complex: {
       label: 'komplex',
-      cls: 'bg-[color:var(--accent)]/100/10 text-[color:var(--accent)] ring-[color:var(--accent)]',
+      cls: 'bg-[color:var(--accent)]/10 text-[color:var(--accent)] ring-[color:var(--accent)]',
     },
     fallback: {
       label: 'Fallback',
-      cls: 'bg-[color:var(--warning)]/100/10 text-[color:var(--warning)] ring-[color:var(--warning)]',
+      cls: 'bg-[color:var(--warning)]/10 text-[color:var(--warning)] ring-[color:var(--warning)]',
     },
   };
   const v = verdict[routing.bucket];
@@ -1592,9 +1592,9 @@ function phasePillClass(
     'inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.16em]';
   switch (phase) {
     case 'streaming':
-      return `${base} bg-[color:var(--accent)]/100/15 text-[color:var(--accent)]`;
+      return `${base} bg-[color:var(--accent)]/15 text-[color:var(--accent)]`;
     case 'tool_running':
-      return `${base} bg-[color:var(--warning)]/100/15 text-[color:var(--warning)]`;
+      return `${base} bg-[color:var(--warning)]/15 text-[color:var(--warning)]`;
     case 'thinking':
     case 'idle':
     default:

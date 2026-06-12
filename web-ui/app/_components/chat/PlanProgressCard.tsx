@@ -68,7 +68,7 @@ export function PlanProgressCard({
         )}
         {plan.reusedProcessTitle && (
           <span
-            className="ml-auto inline-flex items-center gap-1 rounded-full bg-[color:var(--success)]/10 px-1.5 py-0.5 text-[10px] font-medium text-[color:var(--success)]"
+            className="ml-auto inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium text-[color:var(--success)]"
             title={t('reusedFrom', { title: plan.reusedProcessTitle })}
           >
             <span aria-hidden>♻</span>

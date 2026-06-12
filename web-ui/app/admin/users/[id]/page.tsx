@@ -258,7 +258,7 @@ export default function AdminUserEditPage(): React.ReactElement {
         </section>
       )}
 
-      <section className="rounded-lg border border-[color:var(--danger-edge)]/30 bg-[color:var(--danger)]/80/5 p-5">
+      <section className="rounded-lg border border-[color:var(--danger-edge)]/30 bg-[color:var(--danger)]/5 p-5">
         <h2 className="mb-2 text-[15px] font-semibold text-[color:var(--danger)]">
           Gefahrenzone
         </h2>
@@ -269,7 +269,7 @@ export default function AdminUserEditPage(): React.ReactElement {
           type="button"
           onClick={() => void handleDelete()}
           disabled={deleting}
-          className="rounded-md border border-[color:var(--danger-edge)]/40 px-4 py-2 text-sm font-medium text-[color:var(--danger)] hover:bg-[color:var(--danger)]/80/10 disabled:opacity-50"
+          className="rounded-md border border-[color:var(--danger-edge)]/40 px-4 py-2 text-sm font-medium text-[color:var(--danger)] hover:bg-[color:var(--danger)]/10 disabled:opacity-50"
         >
           {deleting ? 'Lösche …' : 'Nutzer löschen'}
         </button>

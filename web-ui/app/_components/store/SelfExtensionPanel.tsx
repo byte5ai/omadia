@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
-import { AlertTriangle, Check, Loader2, ShieldQuestion, Sparkles, X } from 'lucide-react';
+import { AlertTriangle, Check, ShieldQuestion, Sparkles, X } from 'lucide-react';
 
 import { cn } from '../../_lib/cn';
 import {
@@ -220,7 +220,7 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
           disabled={composeBusy || rationale.trim().length === 0 || patchesText.trim().length === 0}
           className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-[color:var(--accent)] px-4 py-1.5 text-[12px] font-semibold text-[color:var(--accent-fg)] disabled:opacity-60"
         >
-          {composeBusy ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : null}
+          {composeBusy ? <span className="lume-busy-dots" aria-hidden /> : null}
           {composeBusy ? t('proposing') : t('propose')}
         </button>
       </div>
@@ -271,7 +271,7 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
             disabled={tplBusy || tplRationale.trim().length === 0 || tplId.length === 0}
             className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-[color:var(--accent)] px-4 py-1.5 text-[12px] font-semibold text-[color:var(--accent-fg)] disabled:opacity-60"
           >
-            {tplBusy ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : null}
+            {tplBusy ? <span className="lume-busy-dots" aria-hidden /> : null}
             {tplBusy ? t('proposing') : t('proposeTemplate')}
           </button>
         </div>
@@ -280,7 +280,7 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
       {/* list */}
       {proposals === null ? (
         <div className="inline-flex items-center gap-2 text-[12px] text-[color:var(--fg-subtle)]">
-          <Loader2 className="size-3.5 animate-spin" aria-hidden />
+          <span className="lume-busy-dots" aria-hidden />
           {t('loading')}
         </div>
       ) : loadError ? (
@@ -369,7 +369,7 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
                       onClick={() => void runAction(p.id, () => approveSelfExtensionProposal(p.id))}
                       className="inline-flex items-center gap-1.5 rounded-full bg-[color:var(--accent)] px-3 py-1 text-[12px] font-semibold text-[color:var(--accent-fg)] disabled:opacity-60"
                     >
-                      {actionBusyId === p.id ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <Check className="size-3.5" aria-hidden />}
+                      {actionBusyId === p.id ? <span className="lume-busy-dots" aria-hidden /> : <Check className="size-3.5" aria-hidden />}
                       {t('approve')}
                     </button>
                     <button
@@ -397,7 +397,7 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
                   }
                   className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-[color:var(--accent)] px-3 py-1 text-[12px] font-semibold text-[color:var(--accent-fg)] disabled:opacity-60"
                 >
-                  {actionBusyId === p.id ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : null}
+                  {actionBusyId === p.id ? <span className="lume-busy-dots" aria-hidden /> : null}
                   {actionBusyId === p.id ? t('installing') : t('install')}
                 </button>
               ) : null}

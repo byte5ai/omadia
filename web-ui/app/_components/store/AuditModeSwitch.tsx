@@ -16,7 +16,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { Loader2, ShieldAlert } from 'lucide-react';
+import { ShieldAlert } from 'lucide-react';
 
 import { ApiError, listInstalledSecretKeys, setAuditMode } from '../../_lib/api';
 import type { AuditMode } from '../../_lib/storeTypes';
@@ -156,12 +156,12 @@ export function AuditModeSwitch({
       <div className="min-h-[20px] text-[12px]">
         {status.kind === 'loading' && (
           <span className="inline-flex items-center gap-1.5 text-[color:var(--fg-muted)]">
-            <Loader2 className="size-3 animate-spin" aria-hidden /> lädt …
+            <span className="lume-busy-dots" aria-hidden /> lädt …
           </span>
         )}
         {status.kind === 'saving' && (
           <span className="inline-flex items-center gap-1.5 text-[color:var(--fg-muted)]">
-            <Loader2 className="size-3 animate-spin" aria-hidden /> speichert …
+            <span className="lume-busy-dots" aria-hidden /> speichert …
           </span>
         )}
         {status.kind === 'saved' && (

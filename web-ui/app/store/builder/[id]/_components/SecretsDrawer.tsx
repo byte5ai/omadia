@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { AnimatePresence, motion } from 'framer-motion';
-import { CheckCircle2, KeyRound, Loader2, Trash2, X } from 'lucide-react';
+import { CheckCircle2, KeyRound, Trash2, X } from 'lucide-react';
 
 import {
   ApiError,
@@ -222,7 +222,7 @@ export function SecretsDrawer({
                 className="ml-auto inline-flex items-center gap-1.5 rounded-md bg-[color:var(--accent)] px-3 py-1.5 text-[12px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] disabled:opacity-50"
               >
                 {pending ? (
-                  <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                  <span className="lume-busy-dots" aria-hidden />
                 ) : (
                   <CheckCircle2 className="size-3.5" aria-hidden />
                 )}
@@ -273,7 +273,7 @@ function SecretFieldRow({
         >
           {field.type ?? 'string'}
           {buffered ? (
-            <span className="ml-1 inline-flex items-center gap-0.5 rounded-full bg-[color:var(--success)]/15 px-1.5 py-0.5 text-[color:var(--success)]">
+            <span className="ml-1 inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[color:var(--success)]">
               <CheckCircle2 className="size-2.5" aria-hidden />
               {t('set')}
             </span>

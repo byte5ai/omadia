@@ -2,7 +2,7 @@
 
 import { useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Check, Loader2, X } from 'lucide-react';
+import { Check, X } from 'lucide-react';
 
 import { cn } from '../../_lib/cn';
 import {
@@ -480,7 +480,7 @@ function InstallingBody({
   return (
     <div className="space-y-5">
       <div className="flex items-center gap-3">
-        <Loader2 className="size-5 animate-spin text-[color:var(--accent)]" aria-hidden />
+        <span className="lume-busy-dots" aria-hidden />
         <div>
           <div className="text-[11px] uppercase tracking-[0.18em] text-[color:var(--faint-ink)]">
             Schritt {phase.stepIndex + 1} / {phase.stepCount}
@@ -541,7 +541,7 @@ function SuccessBody({
 }): React.ReactElement {
   return (
     <div className="flex flex-col items-center gap-3 py-6 text-center">
-      <div className="flex size-12 items-center justify-center rounded-full bg-[color:var(--success)]/10 text-[color:var(--success)]">
+      <div className="flex size-12 items-center justify-center text-[color:var(--success)]">
         <Check className="size-6" aria-hidden />
       </div>
       <div className="font-display text-xl text-[color:var(--ink)]">

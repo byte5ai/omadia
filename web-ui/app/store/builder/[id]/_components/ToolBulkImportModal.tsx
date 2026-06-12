@@ -1,6 +1,6 @@
 'use client';
 
-import { AlertTriangle, Check, Loader2, Upload, X } from 'lucide-react';
+import { AlertTriangle, Check, Upload, X } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { useMemo, useState } from 'react';
 
@@ -170,7 +170,7 @@ export function ToolBulkImportModal({
             className="inline-flex items-center gap-1 rounded bg-[color:var(--accent)] px-3 py-1 text-[11px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] disabled:opacity-50"
           >
             {pending ? (
-              <Loader2 className="size-3 animate-spin" aria-hidden />
+              <span className="lume-busy-dots" aria-hidden />
             ) : (
               <Check className="size-3" aria-hidden />
             )}

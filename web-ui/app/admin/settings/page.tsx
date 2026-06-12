@@ -184,7 +184,7 @@ export default function AdminSettingsPage(): React.ReactElement {
       ) : (
         <div className="flex flex-col gap-8">
           {!state.vaultAvailable && (
-            <p className="rounded-lg border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/100/10 px-4 py-3 text-sm text-[color:var(--warning)]">
+            <p className="rounded-lg border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/10 px-4 py-3 text-sm text-[color:var(--warning)]">
               Vault nicht verfügbar — Secrets können nicht bearbeitet werden.
             </p>
           )}
@@ -315,7 +315,7 @@ function SettingRow({
             className={[
               'inline-flex items-center rounded-full px-2 py-0.5 text-[11px] uppercase tracking-[0.16em]',
               s.isSet
-                ? 'bg-[color:var(--success)]/100/10 text-[color:var(--success)]'
+                ? 'bg-[color:var(--success)]/10 text-[color:var(--success)]'
                 : 'bg-[color:var(--border)]/40 text-[color:var(--fg-muted)]',
             ].join(' ')}
           >

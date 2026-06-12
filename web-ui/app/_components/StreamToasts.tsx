@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslations } from 'next-intl';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Ban, Loader2, X } from 'lucide-react';
+import { Ban, X } from 'lucide-react';
 
 import { useChatSessionsCtx } from '../_lib/chatSessionsContext';
 import {
@@ -145,7 +145,7 @@ function StreamToast({
           {isTerminal ? (
             <span className="text-base leading-none">{palette.symbol}</span>
           ) : (
-            <Loader2 size={14} className="animate-spin" />
+            <span className="lume-busy-dots" aria-hidden />
           )}
         </div>
         <div className="min-w-0 flex-1">
@@ -331,7 +331,7 @@ function AbortConfirmModal({
               e.stopPropagation();
               onConfirm();
             }}
-            className="rounded-md bg-[color:var(--danger)] px-3 py-1.5 text-xs font-medium text-[color:var(--fg-on-dark)] transition hover:bg-[color:var(--danger)]"
+            className="rounded-md border border-[color:var(--danger-edge)] bg-transparent px-3 py-1.5 text-xs font-medium text-[color:var(--danger)] transition hover:bg-[color:var(--danger)]/8"
           >
             {t('abortConfirmStop')}
           </button>

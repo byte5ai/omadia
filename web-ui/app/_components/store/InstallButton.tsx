@@ -6,8 +6,7 @@ import { useLocale } from 'next-intl';
 import {
   ArrowRight,
   Check,
-  Loader2,
-  Lock,
+    Lock,
   RefreshCw,
   Shield,
   Trash2,
@@ -167,7 +166,7 @@ export function InstallButton({
           {phase.kind === 'success' ? 'Installation erfolgreich' : 'Jetzt installieren'}
         </span>
         {phase.kind === 'creating' ? (
-          <Loader2 className="size-5 animate-spin" aria-hidden />
+          <span className="lume-busy-dots" aria-hidden />
         ) : (
           <ArrowRight
             className="size-5 transition-transform group-hover:translate-x-0.5"
@@ -433,7 +432,7 @@ function InstalledPanel({
               disabled={updating}
               className="inline-flex items-center gap-1.5 rounded-full bg-[color:var(--accent)] px-4 py-1.5 text-[12px] font-semibold text-[color:var(--accent-fg)] disabled:opacity-60"
             >
-              {updating ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : null}
+              {updating ? <span className="lume-busy-dots" aria-hidden /> : null}
               {updating ? 'Aktualisiere …' : 'Aktualisieren'}
             </button>
           </div>
@@ -530,7 +529,7 @@ function InstalledPanel({
 
       {working && (
         <div className="inline-flex items-center gap-2 text-[12px] text-[color:var(--fg-muted)]">
-          <Loader2 className="size-3.5 animate-spin" aria-hidden />
+          <span className="lume-busy-dots" aria-hidden />
           Wird deinstalliert …
         </div>
       )}
@@ -636,7 +635,7 @@ function InstallDrawer({
 
         {phase.kind === 'creating' ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 p-10 text-[color:var(--muted-ink)]">
-            <Loader2 className="size-8 animate-spin" aria-hidden />
+            <span className="lume-busy-dots" aria-hidden />
             <span className="text-sm">Job wird erstellt …</span>
           </div>
         ) : phase.kind === 'error' && !jobFromPhase ? (
@@ -706,7 +705,7 @@ function InstallDrawer({
                 )}
               >
                 {submitting ? (
-                  <Loader2 className="size-4 animate-spin" aria-hidden />
+                  <span className="lume-busy-dots" aria-hidden />
                 ) : null}
                 <span className="text-[15px] font-semibold">
                   {submitting ? 'Wird installiert …' : 'Installation bestätigen'}
@@ -849,7 +848,7 @@ function PrivacyModePicker({
     return (
       <div className="rounded-md border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-3 py-2.5">
         <div className="flex items-center gap-2 text-[11px] text-[color:var(--fg-subtle)]">
-          <Loader2 className="size-3.5 animate-spin" aria-hidden />
+          <span className="lume-busy-dots" aria-hidden />
           Privacy-Mode wird geladen …
         </div>
       </div>
@@ -908,7 +907,7 @@ function PrivacyModePicker({
       </p>
       {saving && (
         <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-[color:var(--fg-subtle)]">
-          <Loader2 className="size-3 animate-spin" aria-hidden />
+          <span className="lume-busy-dots" aria-hidden />
           Speichere …
         </div>
       )}

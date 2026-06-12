@@ -240,7 +240,7 @@ function SkillEditor({
   return (
     <div className="flex flex-col gap-3">
       {readOnly && (
-        <p className="rounded-md bg-[color:var(--warning)]/100/10 px-2 py-1 text-xs text-[color:var(--warning)]">
+        <p className="rounded-md bg-[color:var(--warning)]/10 px-2 py-1 text-xs text-[color:var(--warning)]">
           {t('inspector.skillFileReadOnly')}
         </p>
       )}

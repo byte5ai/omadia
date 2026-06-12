@@ -151,7 +151,7 @@ export default function KgLifecyclePage(): JSX.Element {
       </header>
 
       {error ? (
-        <div className="mb-6 rounded-md border border-[color:var(--danger-edge)]/40 bg-[color:var(--danger)]/80/10 px-4 py-3 text-sm text-[color:var(--danger)]">
+        <div className="mb-6 rounded-md border border-[color:var(--danger-edge)]/40 bg-[color:var(--danger)]/10 px-4 py-3 text-sm text-[color:var(--danger)]">
           {error}
         </div>
       ) : null}
@@ -475,10 +475,10 @@ function QuotaPill({
   const ratio = value / limit;
   const tone =
     ratio > 1.0
-      ? 'bg-[color:var(--danger)]/80/20 text-[color:var(--danger)]'
+      ? 'bg-[color:var(--danger)]/20 text-[color:var(--danger)]'
       : ratio > 0.8
-        ? 'bg-[color:var(--warning)]/100/20 text-[color:var(--warning)]'
-        : 'bg-[color:var(--success)]/100/20 text-[color:var(--success)]';
+        ? 'bg-[color:var(--warning)]/20 text-[color:var(--warning)]'
+        : 'bg-[color:var(--success)]/20 text-[color:var(--success)]';
   const formatted = `${value.toLocaleString()}/${limit.toLocaleString()}`;
   const tooltip =
     ratio > 1.0

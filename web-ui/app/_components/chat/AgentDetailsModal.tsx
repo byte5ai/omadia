@@ -215,11 +215,11 @@ function ToolCallRow({
         </span>
         <span className="ml-auto flex items-center gap-2">
           {event.isError ? (
-            <span className="rounded-full bg-[color:var(--danger)]/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[color:var(--danger)]">
+            <span className="px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[color:var(--danger)]">
               {t('statusError')}
             </span>
           ) : (
-            <span className="rounded-full bg-[color:var(--success)]/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[color:var(--success)]">
+            <span className="px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[color:var(--success)]">
               {t('statusOk')}
             </span>
           )}

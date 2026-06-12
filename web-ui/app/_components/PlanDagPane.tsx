@@ -166,7 +166,7 @@ export function PlanDagPane({ plan }: Props): React.ReactElement | null {
               key={s.stepExternalId}
               className={[
                 'flex items-center gap-2.5 border-t border-white/5 px-3 py-2 text-[12px] transition hover:bg-white/5',
-                s.status === 'in_progress' ? 'bg-[color:var(--warning)]/100/10' : '',
+                s.status === 'in_progress' ? 'bg-[color:var(--warning)]/10' : '',
               ].join(' ')}
             >
               <span

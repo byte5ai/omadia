@@ -289,7 +289,7 @@ function SortableRow({
       style={style}
       className={cn(
         'rounded-md border border-[color:var(--border)] bg-[color:var(--bg)]',
-        isDragging && 'opacity-60 shadow-[var(--shadow-cta)]',
+        isDragging && 'opacity-50 shadow-[var(--shadow-drag)]',
       )}
     >
       <div className="flex items-center gap-1.5 px-2 py-1.5">
@@ -369,7 +369,7 @@ function AgentStuckMarker(): React.ReactElement {
   return (
     <span
       title={t('stuckTitle')}
-      className="ml-1 inline-flex shrink-0 items-center gap-1 rounded-full border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/10 px-1.5 py-0.5 text-[10px] font-semibold text-[color:var(--warning)]"
+      className="ml-1 inline-flex shrink-0 items-center gap-1 text-[10px] font-semibold text-[color:var(--warning)]"
     >
       <AlertTriangle className="size-2.5" aria-hidden />
       {t('stuckBadge')}

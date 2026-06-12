@@ -17,8 +17,7 @@ import {
   CircleDashed,
   CircleDot,
   FileCode2,
-  Loader2,
-  Save,
+    Save,
   Sparkles,
 } from 'lucide-react';
 
@@ -435,7 +434,7 @@ export function SlotEditor({
           }}
           loading={
             <div className="flex h-full items-center justify-center text-[color:var(--fg-muted)]">
-              <Loader2 className="size-4 animate-spin" aria-hidden />
+              <span className="lume-busy-dots" aria-hidden />
             </div>
           }
         />
@@ -481,7 +480,7 @@ function TemplateSlotsPanel({
           className={cn(
             'font-mono-num rounded-full px-1.5 text-[10px] font-semibold',
             missingRequired.length > 0
-              ? 'bg-[color:var(--danger)] text-[color:var(--fg-on-dark)]'
+              ? 'text-[color:var(--danger)]'
               : 'bg-[color:var(--success)]/15 text-[color:var(--success)]',
           )}
         >
@@ -583,7 +582,7 @@ function SaveBadge({ status }: { status: SaveStatus }): React.ReactElement | nul
         status.kind === 'dirty' && 'text-[color:var(--warning)]',
       )}
     >
-      {status.kind === 'pending' && <Loader2 className="size-3 animate-spin" aria-hidden />}
+      {status.kind === 'pending' && <span className="lume-busy-dots" aria-hidden />}
       {status.kind === 'saved' && <Check className="size-3" aria-hidden />}
       {status.kind === 'dirty' && <span className="size-1.5 rounded-full bg-current" />}
       {status.kind === 'error' && <AlertCircle className="size-3" aria-hidden />}

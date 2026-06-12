@@ -280,7 +280,7 @@ export default function MemoryAclSection({
                 type="button"
                 onClick={() => void deleteMemory()}
                 disabled={busy}
-                className="rounded border border-[color:var(--danger-edge)] px-2 py-1 text-[11px] text-[color:var(--danger)] hover:bg-[color:var(--danger)]/80/10 disabled:opacity-50"
+                className="rounded border border-[color:var(--danger-edge)] px-2 py-1 text-[11px] text-[color:var(--danger)] hover:bg-[color:var(--danger)]/10 disabled:opacity-50"
                 title="Memory hart löschen (Audit-Trail bleibt)"
               >
                 Delete
@@ -322,16 +322,16 @@ export default function MemoryAclSection({
                     <span
                       className={
                         e.action === 'create'
-                          ? 'rounded bg-[color:var(--success)]/100/20 px-1 text-[color:var(--success)]'
+                          ? 'rounded bg-[color:var(--success)]/20 px-1 text-[color:var(--success)]'
                           : e.action === 'expand'
-                            ? 'rounded bg-[color:var(--accent)]/100/20 px-1 text-[color:var(--accent)]'
+                            ? 'rounded bg-[color:var(--accent)]/20 px-1 text-[color:var(--accent)]'
                             : e.action === 'shrink'
-                              ? 'rounded bg-[color:var(--warning)]/100/20 px-1 text-[color:var(--warning)]'
+                              ? 'rounded bg-[color:var(--warning)]/20 px-1 text-[color:var(--warning)]'
                               : e.action === 'edit'
-                                ? 'rounded bg-[color:var(--accent)]/100/20 px-1 text-[color:var(--accent)]'
+                                ? 'rounded bg-[color:var(--accent)]/20 px-1 text-[color:var(--accent)]'
                                 : e.action === 'edit_excerpt'
-                                  ? 'rounded bg-[color:var(--accent)]/100/20 px-1 text-[color:var(--accent)]'
-                                  : 'rounded bg-[color:var(--danger)]/80/20 px-1 text-[color:var(--danger)]'
+                                  ? 'rounded bg-[color:var(--accent)]/20 px-1 text-[color:var(--accent)]'
+                                  : 'rounded bg-[color:var(--danger)]/20 px-1 text-[color:var(--danger)]'
                       }
                     >
                       {e.action}

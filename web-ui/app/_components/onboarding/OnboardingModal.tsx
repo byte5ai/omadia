@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Check, Loader2, Sparkles, X } from 'lucide-react';
+import { Check, Sparkles, X } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
 import { applyProfile, ApiError, profileExportUrl } from '../../_lib/api';
@@ -229,7 +229,7 @@ function ProfileGrid({
             >
               {isActive ? (
                 <>
-                  <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                  <span className="lume-busy-dots" aria-hidden />
                   {t('applying')}
                 </>
               ) : (

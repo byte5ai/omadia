@@ -144,7 +144,7 @@ export default function UsageDashboardPage(): React.ReactElement {
       </header>
 
       {error && (
-        <div className="mb-6 rounded-lg border border-[color:var(--danger-edge)]/40 bg-[color:var(--danger)]/80/10 px-4 py-3 text-sm text-[color:var(--danger)]">
+        <div className="mb-6 rounded-lg border border-[color:var(--danger-edge)]/40 bg-[color:var(--danger)]/10 px-4 py-3 text-sm text-[color:var(--danger)]">
           Fehler beim Laden: {error}
         </div>
       )}
