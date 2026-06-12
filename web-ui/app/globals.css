@@ -38,6 +38,14 @@
   --radius-sm: var(--radius-sm);
   --radius-md: var(--radius-md);
   --radius-lg: var(--radius-lg);
+
+  /* Elevation (§2.10): route the stock shadow-sm/md/lg utilities through the
+     Lume elevation tokens, so every existing `shadow-md` popover and
+     `shadow-lg` modal in the codebase gets elev.popover / elev.modal
+     (including the accent-glow components) without per-component edits. */
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -132,6 +140,105 @@ body {
   .lume-selected {
     background: var(--accent-subtle);
     box-shadow: 0 0 4px var(--accent-glow-core), 0 4px 12px var(--accent-glow);
+  }
+}
+
+/* ------------------------------------------------------------------------ */
+/* Lume per-primitive recipes (§3.5, §4.2, §5.3, §7.2)                       */
+/* ------------------------------------------------------------------------ */
+@layer components {
+  /* §7.2 / §3.5 — skeleton: state.loading gradient with a linear shimmer.
+     Replaces opacity-pulse skeletons; reduced-motion freezes to static fill. */
+  .lume-skeleton {
+    background: linear-gradient(
+      100deg,
+      var(--state-loading) 35%,
+      var(--state-loading-hi) 50%,
+      var(--state-loading) 65%
+    );
+    background-size: 220% 100%;
+    animation: lume-shimmer 1.6s var(--easing-linear) infinite;
+  }
+
+  /* §3.5 / §6.1 — content materialisation (condensation, single-component
+     web variant): opacity + scale(1.03) + blur(2px) → settled, 800ms,
+     front-loaded (≈90% visible at 40%). Applied to newly-arrived agent
+     content (chat messages, materialised cards). */
+  .lume-condense {
+    animation: lume-condense var(--motion-condense) var(--easing-emphasis) both;
+  }
+
+  /* §4.2 tabs — the active tab's underline is lit, not just colored. */
+  .lume-tab-active {
+    position: relative;
+    color: var(--fg-strong);
+  }
+  .lume-tab-active::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -1px;
+    height: 2px;
+    border-radius: 2px;
+    background: var(--accent);
+    box-shadow:
+      0 1px 6px var(--accent-glow),
+      0 0 4px var(--accent-glow-core);
+  }
+
+  /* §5.3 Spotlight — the composer stage: a radial accent-glow behind the
+     input leads the eye before the user reads it. The input itself gets the
+     three-stop showcase glow on focus. */
+  .lume-spotlight-stage {
+    position: relative;
+  }
+  .lume-spotlight-stage::before {
+    content: '';
+    position: absolute;
+    inset: -24px -12px -16px;
+    pointer-events: none;
+    background: radial-gradient(ellipse at 50% 60%, var(--accent-glow) 0%, transparent 65%);
+    opacity: 0.5;
+    transition: opacity var(--motion-smooth) var(--easing-standard);
+  }
+  .lume-spotlight-stage:focus-within::before {
+    opacity: 1;
+  }
+  .lume-spotlight-stage textarea:focus,
+  .lume-spotlight-stage input:focus {
+    border-color: var(--accent);
+    box-shadow:
+      0 0 0 4px var(--accent-glow),
+      0 0 16px var(--accent-glow-core),
+      0 12px 40px var(--accent-glow-strong);
+  }
+}
+
+@keyframes lume-shimmer {
+  from {
+    background-position: 120% 0;
+  }
+  to {
+    background-position: -120% 0;
+  }
+}
+
+@keyframes lume-condense {
+  0% {
+    opacity: 0;
+    transform: scale(1.03);
+    filter: blur(2px);
+  }
+  40% {
+    opacity: 0.92;
+    transform: scale(1.004);
+    filter: blur(0.3px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0);
   }
 }
 

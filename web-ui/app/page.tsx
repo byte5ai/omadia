@@ -609,7 +609,9 @@ export default function ChatPage(): React.ReactElement {
               )}
             </div>
           )}
-          <div className="flex items-end gap-2">
+          {/* §5.3 Spotlight: the composer is the stage — radial accent glow
+              behind it, three-stop showcase glow on the focused input. */}
+          <div className="lume-spotlight-stage flex items-end gap-2">
             <button
               type="button"
               onClick={requestReset}
@@ -751,12 +753,15 @@ function MessageRow({
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div
         className={[
-          'max-w-[85%] rounded-lg px-4 py-3 shadow-sm',
+          'max-w-[85%] rounded-lg px-4 py-3',
+          // §6.1: agent content condenses into existence; user bubbles are
+          // the user's own action and appear instantly.
+          isUser ? '' : 'lume-condense',
           isUser
             ? 'bg-[color:var(--bg-inverse)] text-[color:var(--fg-on-dark)]'
             : message.error
               ? 'bg-[color:var(--danger)]/8 text-[color:var(--danger)] ring-1 ring-[color:var(--danger-edge)]'
-              : 'bg-[color:var(--bg-elevated)] text-[color:var(--fg-strong)] ring-1 ring-[color:var(--border-strong)]',
+              : 'bg-[color:var(--bg-elevated)] text-[color:var(--fg-strong)] ring-1 ring-[color:var(--border)]',
         ].join(' ')}
       >
         {isUser ? (

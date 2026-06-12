@@ -445,9 +445,9 @@ function LastRunCard({
 function SkeletonRows(): JSX.Element {
   return (
     <div className="space-y-2">
-      <div className="h-3 w-3/4 animate-pulse rounded bg-[color:var(--border)]" />
-      <div className="h-3 w-2/3 animate-pulse rounded bg-[color:var(--border)]" />
-      <div className="h-3 w-1/2 animate-pulse rounded bg-[color:var(--border)]" />
+      <div className="h-3 w-3/4 rounded lume-skeleton" />
+      <div className="h-3 w-2/3 rounded lume-skeleton" />
+      <div className="h-3 w-1/2 rounded lume-skeleton" />
     </div>
   );
 }

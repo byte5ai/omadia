@@ -141,8 +141,9 @@ function Tab({
       }}
       className={[
         'group flex shrink-0 cursor-pointer items-center gap-1 rounded px-2 py-1 transition',
+        // §4.2 tabs: the active tab carries the lit accent underline.
         active
-          ? 'bg-[color:var(--bg-elevated)] font-semibold text-[color:var(--fg-strong)] ring-1 ring-[color:var(--border-strong)]'
+          ? 'lume-tab-active bg-[color:var(--bg-elevated)] font-semibold'
           : 'text-[color:var(--fg-muted)] hover:bg-[color:var(--bg-soft)]',
       ].join(' ')}
       title={`${session.title}\n${t('tabTitleSuffix', { id: session.id })}`}
