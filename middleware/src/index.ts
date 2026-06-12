@@ -569,11 +569,17 @@ async function main(): Promise<void> {
   // agentToolInvoker — the kernel half of the deterministic-action fast-path.
   // Lets the ui-orchestrator run ONE agent-plugin tool by id directly (no
   // sub-agent model loop) when a canvas action names a deterministic tool.
-  // Invoke-only: it deliberately does NOT add these tools to the main
-  // orchestrator's offered-tool list, so agent isolation is preserved.
+  // Also exposes the optional streaming variant (`hasStream` + `invokeStream`)
+  // for tools whose raw UploadedToolkit entry carries `runStream()`. This
+  // deliberately does NOT add these tools to the main orchestrator's offered-
+  // tool list, so agent isolation is preserved.
   serviceRegistry.provide('agentToolInvoker', {
     invoke: (toolId: string, input: unknown): Promise<string | undefined> =>
       dynamicAgentRuntime.invokeAgentTool(toolId, input),
+    hasStream: (toolId: string): boolean =>
+      dynamicAgentRuntime.hasStreamingTool(toolId),
+    invokeStream: (toolId: string, input: unknown): AsyncGenerator<string> =>
+      dynamicAgentRuntime.invokeAgentToolStream(toolId, input),
   });
 
   // Runtime for `kind: tool` / `kind: extension` plugins. These don't expose

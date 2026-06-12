@@ -651,6 +651,111 @@ describe('canvasChatAgent — deterministic action (LLM-free dispatch)', () => {
     assert.ok(snap, 'surface_snapshot from the agent-plugin tool');
     assert.deepEqual(field(snap as ChatStreamEvent, 'tree'), PAGE_TREE);
   });
+
+  it('streams a deterministic agent-plugin action chunk-by-chunk — snapshot, patch, snapshot; no model turn', async () => {
+    const reg = new Map<string, unknown>();
+    const streamedCalls: Array<{ id: string; input: unknown }> = [];
+    const PROGRESS_TREE = {
+      type: 'container',
+      id: 'x-studio-variants',
+      layout: 'stack',
+      children: [
+        { type: 'heading', id: 'variants-h', content: 'Generating variants', level: 2 },
+        { type: 'status', id: 'variants-progress', text: 'Starting…' },
+      ],
+    };
+    const FINAL_TREE = {
+      type: 'container',
+      id: 'x-studio-variants',
+      layout: 'stack',
+      children: [
+        { type: 'heading', id: 'variants-h', content: 'Variants ready', level: 2 },
+        {
+          type: 'table',
+          id: 'variants-table',
+          loading: 'none',
+          columns: [{ fieldKey: 'name', label: 'Variant' }],
+          rows: [{ rowKey: 'v1', cells: { name: 'Homepage hero' } }],
+        },
+      ],
+    };
+    const ctx = {
+      log: () => {},
+      services: {
+        get: <T>(name: string): T | undefined => reg.get(name) as T | undefined,
+        provide: (name: string, impl: unknown) => {
+          reg.set(name, impl);
+          return () => reg.delete(name);
+        },
+      },
+      config: {
+        get: <T>(k: string): T | undefined =>
+          (({
+            deterministic_action_tools: 'studio_generate_variants',
+            canvas_output_tools: 'studio_generate_variants',
+          } as Record<string, string>)[k] as T | undefined),
+      },
+      tools: {
+        register: () => () => {},
+        invoke: async () => {
+          throw new Error("tools.invoke: 'studio_generate_variants' is unknown or handler-less");
+        },
+      },
+    } as unknown as PluginContext;
+    reg.set('agentToolInvoker', {
+      invoke: async () => undefined,
+      hasStream: (id: string) => id === 'studio_generate_variants',
+      invokeStream: async function* (id: string, input: unknown): AsyncGenerator<string> {
+        streamedCalls.push({ id, input });
+        yield JSON.stringify({ ok: true, _pendingCanvasTree: { tree: PROGRESS_TREE } });
+        yield JSON.stringify({
+          ok: true,
+          _pendingSurfacePatch: {
+            ops: [{ id: 'variants-progress', set: { text: '2 of 3 ready', tone: 'info' } }],
+          },
+        });
+        yield JSON.stringify({ ok: true, _pendingCanvasTree: { tree: FINAL_TREE } });
+      },
+    });
+    const seen: ChatTurnInput[] = [];
+    reg.set(
+      CHAT_AGENT_SERVICE,
+      baseBundle([{ type: 'done', answer: 'x' } as unknown as ChatStreamEvent], seen),
+    );
+    await activate(ctx);
+    const agent = (reg.get('canvasChatAgent') as ChatAgentBundle).agent;
+    const events = await collect(
+      agent.chatStream({
+        userMessage: '',
+        canvasSessionId: 'cs1',
+        action: { type: 'studio_generate_variants', payload: { page: 'drafts' } },
+      } as unknown as ChatTurnInput),
+    );
+
+    assert.deepEqual(streamedCalls, [
+      { id: 'studio_generate_variants', input: { page: 'drafts' } },
+    ]);
+    assert.equal(seen.length, 0, 'no LLM turn for a streaming deterministic action');
+
+    const surfaceEvents = events.filter(
+      (e) => e.type === 'surface_snapshot' || e.type === 'surface_patch',
+    );
+    assert.deepEqual(
+      surfaceEvents.map((e) => e.type),
+      ['surface_snapshot', 'surface_patch', 'surface_snapshot'],
+    );
+    assert.deepEqual(
+      surfaceEvents.map((e) => field(e, 'surfaceSeq')),
+      [0, 1, 2],
+    );
+    assert.deepEqual(
+      surfaceEvents.map((e) => field(e, 'producesRevision')),
+      ['1', '2', '3'],
+    );
+    assert.equal(field(surfaceEvents[1] as ChatStreamEvent, 'basedOnRevision'), '1');
+    assert.deepEqual(field(surfaceEvents[0] as ChatStreamEvent, 'tree'), PROGRESS_TREE);
+    assert.deepEqual(field(surfaceEvents[2] as ChatStreamEvent, 'tree'), FINAL_TREE);
+  });
 });
 
 // ── PR-9b-3: in-place action turns (client sends canvasState) ──

@@ -517,7 +517,68 @@ export async function activate(
     const directInvoke = toolsAccessor?.invoke?.bind(toolsAccessor);
     const agentToolInvoker = ctx.services?.get<{
       invoke(toolId: string, input: unknown): Promise<string | undefined>;
+      hasStream?(toolId: string): boolean;
+      invokeStream?(toolId: string, input: unknown): AsyncGenerator<string>;
     }>('agentToolInvoker');
+    const directInvokeStream = agentToolInvoker?.invokeStream?.bind(agentToolInvoker);
+    // Streaming deterministic action: an AGENT-plugin tool may emit several
+    // sentinel-bearing results during ONE dispatch (progress snapshot →
+    // patches → final snapshot). Decide synchronously up-front; when no stream
+    // exists, the legacy one-shot directEvents generator below is reused
+    // verbatim.
+    const hasDirectStream =
+      directActionTool !== undefined &&
+      deterministicActionTools.has(directActionTool) &&
+      agentToolInvoker?.hasStream?.(directActionTool) === true &&
+      directInvokeStream !== undefined;
+    if (hasDirectStream && directActionTool && directInvokeStream) {
+      const directPayload =
+        (input.action as { payload?: unknown }).payload ?? {};
+      const baseRevision = (input.canvasState?.basedOnRevision ?? '0') as RevisionId;
+      const baseTree = input.canvasState?.currentTree;
+      const directEvents = async function* (): AsyncGenerator<ChatStreamEvent> {
+        let streamedChunks = 0;
+        const t0 = Date.now();
+        try {
+          for await (const output of directInvokeStream(directActionTool, directPayload)) {
+            streamedChunks += 1;
+            const id = randomUUID();
+            yield { type: 'tool_use', id, name: directActionTool, input: directPayload };
+            yield { type: 'tool_result', id, output, durationMs: 0 };
+          }
+          ctx.log(
+            `[deterministic-action] ${directActionTool} STREAMED ${streamedChunks} chunks ` +
+              `LLM-free in ${Date.now() - t0}ms (no model turn)`,
+          );
+        } catch (err) {
+          const id = randomUUID();
+          const output = JSON.stringify({
+            ok: false,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          ctx.log(
+            `[deterministic-action] ${directActionTool} failed: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+          yield { type: 'tool_use', id, name: directActionTool, input: directPayload };
+          yield { type: 'tool_result', id, output, durationMs: 0 };
+        }
+      };
+      yield* synthesizeSurfaceEvents(directEvents(), {
+        canvasSessionId,
+        authorizedToolNames: canvasOutputTools,
+        protocolVersion: CANVAS_PROTOCOL_VERSION,
+        opsCatalogVersion: OPS_CATALOG_VERSION,
+        startSurfaceSeq: 0,
+        baseRevision,
+        baseTree,
+        dataRequirements: baseTree ? deriveDataRequirements(baseTree) : [],
+        onPublishedSource: captureSource(canvasSessionId),
+        log: (message) => ctx.log(message),
+      });
+      return;
+    }
     if (
       directActionTool &&
       deterministicActionTools.has(directActionTool) &&
