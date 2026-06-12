@@ -19,17 +19,17 @@ const BULK_DEFAULT_LIMIT = 25;
 const BULK_HARD_CAP = 200;
 
 const SEVERITY_BADGE: Record<InconsistencySeverity, string> = {
-  low: 'bg-neutral-200 text-neutral-700 dark:bg-neutral-700 dark:text-neutral-200',
-  medium: 'bg-amber-200 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200',
-  high: 'bg-red-200 text-red-800 dark:bg-red-900/40 dark:text-red-200',
+  low: 'bg-[color:var(--state-loading)] text-[color:var(--fg)]',
+  medium: 'bg-[color:var(--warning)] text-[color:var(--warning)]',
+  high: 'bg-[color:var(--danger)]/15 text-[color:var(--danger)]',
 };
 
 const STATUS_BADGE: Record<InconsistencyStatus, string> = {
-  open: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
+  open: 'bg-[color:var(--accent)]/10 text-[color:var(--accent)]',
   resolved:
-    'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
+    'bg-[color:var(--success)]/10 text-[color:var(--success)]',
   dismissed:
-    'bg-neutral-100 text-neutral-800 dark:bg-neutral-800 dark:text-neutral-300',
+    'bg-[color:var(--bg-soft)] text-[color:var(--fg)]',
 };
 
 const SEVERITY_RANK: Record<InconsistencySeverity, number> = {
@@ -138,7 +138,7 @@ export default function InconsistenciesListPage(): React.ReactElement {
       <header className="mb-8">
         <Link
           href="/admin"
-          className="text-xs text-neutral-500 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100"
+          className="text-xs text-[color:var(--fg-muted)] hover:text-[color:var(--fg-strong)]"
         >
           ← /admin
         </Link>
@@ -155,7 +155,7 @@ export default function InconsistenciesListPage(): React.ReactElement {
           the operator sees the marker-progress at a glance. */}
       <section
         aria-label="Bulk inconsistency detect"
-        className="mb-6 rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4"
+        className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4"
       >
         <div className="mb-3 flex flex-wrap items-baseline gap-3">
           <h2 className="text-sm font-semibold text-[color:var(--fg-strong)]">
@@ -168,7 +168,7 @@ export default function InconsistenciesListPage(): React.ReactElement {
         </div>
 
         {bulkPreviewError !== null && (
-          <p className="mb-2 text-xs text-red-600 dark:text-red-300">
+          <p className="mb-2 text-xs text-[color:var(--danger)]">
             Preview fehlgeschlagen: {bulkPreviewError}
           </p>
         )}
@@ -176,29 +176,29 @@ export default function InconsistenciesListPage(): React.ReactElement {
         {bulkPreview !== null && (
           <dl className="mb-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
             <div>
-              <dt className="text-neutral-500">ungeprüft</dt>
+              <dt className="text-[color:var(--fg-muted)]">ungeprüft</dt>
               <dd className="font-mono text-base">{bulkPreview.unchecked}</dd>
             </div>
             <div>
-              <dt className="text-neutral-500">schon geprüft</dt>
+              <dt className="text-[color:var(--fg-muted)]">schon geprüft</dt>
               <dd className="font-mono text-base">
                 {bulkPreview.alreadyChecked}
               </dd>
             </div>
             <div>
-              <dt className="text-neutral-500">ohne Embedding</dt>
+              <dt className="text-[color:var(--fg-muted)]">ohne Embedding</dt>
               <dd className="font-mono text-base">
                 {bulkPreview.withoutEmbedding}
               </dd>
             </div>
             <div>
-              <dt className="text-neutral-500">Detector</dt>
+              <dt className="text-[color:var(--fg-muted)]">Detector</dt>
               <dd
                 className={[
                   'font-mono text-base',
                   bulkPreview.detectorAvailable
-                    ? 'text-green-700 dark:text-green-300'
-                    : 'text-amber-700 dark:text-amber-300',
+                    ? 'text-[color:var(--success)]'
+                    : 'text-[color:var(--warning)]',
                 ].join(' ')}
               >
                 {bulkPreview.detectorAvailable ? 'ready' : 'kein Key'}
@@ -236,49 +236,49 @@ export default function InconsistenciesListPage(): React.ReactElement {
               bulkPreview?.detectorAvailable === false ||
               (bulkPreview !== null && bulkPreview.unchecked === 0)
             }
-            className="rounded border border-neutral-900 bg-neutral-900 px-3 py-1 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50 dark:border-neutral-200 dark:bg-neutral-200 dark:text-neutral-900"
+            className="rounded border border-[color:var(--border-strong)] bg-[color:var(--bg-inverse)] px-3 py-1 text-xs text-[color:var(--fg-on-dark)] disabled:cursor-not-allowed disabled:opacity-50"
           >
             {bulkRunning ? 'läuft…' : 'Bulk-Detect starten'}
           </button>
           {bulkLimit > BULK_CONFIRM_THRESHOLD && (
-            <span className="text-[11px] text-amber-700 dark:text-amber-300">
+            <span className="text-[11px] text-[color:var(--warning)]">
               ⚠️ Cost-Confirm bei Limit &gt; {BULK_CONFIRM_THRESHOLD}
             </span>
           )}
         </div>
 
         {bulkError !== null && (
-          <p className="mt-3 text-xs text-red-600 dark:text-red-300">
+          <p className="mt-3 text-xs text-[color:var(--danger)]">
             Run fehlgeschlagen: {bulkError}
           </p>
         )}
 
         {bulkResult !== null && (
-          <div className="mt-3 rounded border border-[color:var(--border)] bg-black/5 p-3 text-xs dark:bg-white/5">
+          <div className="mt-3 rounded border border-[color:var(--border)] bg-black/5 p-3 text-xs">
             <p className="mb-2 font-medium">
               Ergebnis · {bulkResult.durationMs} ms
             </p>
             <dl className="grid grid-cols-2 gap-2 sm:grid-cols-5">
               <div>
-                <dt className="text-neutral-500">scanned</dt>
+                <dt className="text-[color:var(--fg-muted)]">scanned</dt>
                 <dd className="font-mono">{bulkResult.scanned}</dd>
               </div>
               <div>
-                <dt className="text-neutral-500">checked</dt>
+                <dt className="text-[color:var(--fg-muted)]">checked</dt>
                 <dd className="font-mono">{bulkResult.checked}</dd>
               </div>
               <div>
-                <dt className="text-neutral-500">neue Konflikte</dt>
+                <dt className="text-[color:var(--fg-muted)]">neue Konflikte</dt>
                 <dd className="font-mono">
                   {bulkResult.inconsistenciesCreated}
                 </dd>
               </div>
               <div>
-                <dt className="text-neutral-500">ohne Embedding</dt>
+                <dt className="text-[color:var(--fg-muted)]">ohne Embedding</dt>
                 <dd className="font-mono">{bulkResult.skippedNoEmbedding}</dd>
               </div>
               <div>
-                <dt className="text-neutral-500">Fehler</dt>
+                <dt className="text-[color:var(--fg-muted)]">Fehler</dt>
                 <dd className="font-mono">{bulkResult.failed}</dd>
               </div>
             </dl>
@@ -295,8 +295,8 @@ export default function InconsistenciesListPage(): React.ReactElement {
             className={[
               'rounded border px-3 py-1 text-xs',
               statusFilter === s
-                ? 'border-neutral-900 bg-neutral-900 text-white dark:border-neutral-200 dark:bg-neutral-200 dark:text-neutral-900'
-                : 'border-neutral-300 hover:border-neutral-400 dark:border-neutral-700',
+                ? 'border-[color:var(--border-strong)] bg-[color:var(--bg-inverse)] text-[color:var(--fg-on-dark)]'
+                : 'border-[color:var(--border)] hover:border-[color:var(--border-strong)]',
             ].join(' ')}
           >
             {s === 'all' ? 'alle' : s}
@@ -306,20 +306,20 @@ export default function InconsistenciesListPage(): React.ReactElement {
           type="button"
           onClick={() => void load()}
           disabled={loading}
-          className="ml-auto rounded border border-neutral-300 px-3 py-1 text-xs hover:border-neutral-400 disabled:opacity-50 dark:border-neutral-700"
+          className="ml-auto rounded border border-[color:var(--border)] px-3 py-1 text-xs hover:border-[color:var(--border-strong)] disabled:opacity-50"
         >
           {loading ? 'lädt…' : 'aktualisieren'}
         </button>
       </div>
 
       {error !== null && (
-        <div className="mb-4 border-l-2 border-red-400 px-3 py-2 text-xs text-red-700 dark:text-red-300">
+        <div className="mb-4 border-l-2 border-[color:var(--danger-edge)] px-3 py-2 text-xs text-[color:var(--danger)]">
           Fehler: {error}
         </div>
       )}
 
       {sorted !== null && sorted.length === 0 && error === null && (
-        <p className="text-sm italic text-neutral-500">
+        <p className="text-sm italic text-[color:var(--fg-muted)]">
           Keine Widersprüche in dieser Auswahl.
         </p>
       )}
@@ -330,7 +330,7 @@ export default function InconsistenciesListPage(): React.ReactElement {
             <li key={inc.id}>
               <Link
                 href={`/admin/inconsistencies/${encodeURIComponent(inc.id)}`}
-                className="block rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4 transition-colors hover:border-[color:var(--accent)]"
+                className="block rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4 transition-colors hover:border-[color:var(--accent)]"
               >
                 <div className="mb-2 flex flex-wrap items-center gap-2 text-[10px]">
                   <span
@@ -350,16 +350,16 @@ export default function InconsistenciesListPage(): React.ReactElement {
                     {inc.props.status}
                   </span>
                   <time
-                    className="font-mono text-neutral-500"
+                    className="font-mono text-[color:var(--fg-muted)]"
                     dateTime={inc.props.created_at}
                   >
                     {new Date(inc.props.created_at).toLocaleString('de-DE')}
                   </time>
                 </div>
-                <p className="text-sm text-neutral-900 dark:text-neutral-100">
+                <p className="text-sm text-[color:var(--fg-strong)]">
                   {inc.props.summary}
                 </p>
-                <p className="mt-2 font-mono text-[10px] text-neutral-500">
+                <p className="mt-2 font-mono text-[10px] text-[color:var(--fg-muted)]">
                   {inc.mkA?.props.summary?.slice(0, 60) ?? '(MK A)'} ↔{' '}
                   {inc.mkB?.props.summary?.slice(0, 60) ?? '(MK B)'}
                 </p>

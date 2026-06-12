@@ -99,7 +99,7 @@ export function UploadDropzone(): React.ReactElement {
   return (
     <section
       className={cn(
-        'rounded-[14px] border border-dashed transition-colors',
+        'rounded-lg border border-dashed transition-colors',
         'bg-[color:var(--bg-soft)]',
         dragging
           ? 'border-[color:var(--accent)] bg-[color:var(--accent)]/6'
@@ -165,7 +165,7 @@ export function UploadDropzone(): React.ReactElement {
                 className={cn(
                   'inline-flex items-center gap-2 rounded-full px-4 py-1.5',
                   'text-[13px] font-semibold',
-                  'bg-[color:var(--accent)] text-white shadow-[var(--shadow-cta)]',
+                  'bg-[color:var(--accent)] text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)]',
                   'hover:brightness-110',
                 )}
               >
@@ -260,7 +260,7 @@ function SuccessRow({
   onDismiss: () => void;
 }): React.ReactElement {
   return (
-    <div className="mt-4 rounded-[10px] border border-[color:var(--success,#2a8a5f)]/40 bg-[color:var(--success,#2a8a5f)]/6 px-4 py-3">
+    <div className="mt-4 rounded-md border border-[color:var(--success,#2a8a5f)]/40 bg-[color:var(--success,#2a8a5f)]/6 px-4 py-3">
       <div className="flex items-baseline gap-2 text-[11px] font-semibold uppercase tracking-[0.2em] text-[color:var(--success,#2a8a5f)]">
         <span>✓ Hochgeladen</span>
         <span className="h-px flex-1 bg-[color:var(--success,#2a8a5f)]/30" />
@@ -307,7 +307,7 @@ function ErrorRow({
   onDismiss: () => void;
 }): React.ReactElement {
   return (
-    <div className="mt-4 rounded-[10px] border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/6 px-4 py-3">
+    <div className="mt-4 rounded-md border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/6 px-4 py-3">
       <div className="flex items-baseline gap-2 text-[11px] font-semibold uppercase tracking-[0.2em] text-[color:var(--danger)]">
         <span>Upload fehlgeschlagen</span>
         <span className="h-px flex-1 bg-[color:var(--danger)]/30" />

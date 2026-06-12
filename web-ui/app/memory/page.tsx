@@ -126,10 +126,10 @@ export default function MemoryPage(): React.ReactElement {
 
   return (
     <main className="flex h-full">
-      <aside className="flex w-80 min-w-0 flex-col border-r border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
-        <div className="border-b border-neutral-200 px-3 py-2 dark:border-neutral-800">
+      <aside className="flex w-80 min-w-0 flex-col border-r border-[color:var(--border)] bg-[color:var(--bg-elevated)]">
+        <div className="border-b border-[color:var(--border)] px-3 py-2">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-neutral-800 dark:text-neutral-100">
+            <span className="text-sm font-semibold text-[color:var(--fg)]">
               Memory
             </span>
             {backend !== null && (
@@ -137,15 +137,15 @@ export default function MemoryPage(): React.ReactElement {
                 className={[
                   'rounded px-1.5 py-0.5 text-[10px] font-medium',
                   backend === 'postgres'
-                    ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
-                    : 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
+                    ? 'bg-[color:var(--success)]/10 text-[color:var(--success)]'
+                    : 'bg-[color:var(--warning)]/10 text-[color:var(--warning)]',
                 ].join(' ')}
               >
                 {backend === 'postgres' ? 'Postgres' : 'In-Memory · flüchtig'}
               </span>
             )}
           </div>
-          <p className="mt-0.5 text-[11px] text-neutral-500">
+          <p className="mt-0.5 text-[11px] text-[color:var(--fg-muted)]">
             Live-Browser des aktiven Memory-Stores
             {backend === 'inmemory'
               ? ' (RAM, beim Neustart leer).'
@@ -154,16 +154,16 @@ export default function MemoryPage(): React.ReactElement {
                 : '.'}
           </p>
         </div>
-        <div className="border-b border-neutral-200 px-3 py-2 text-xs dark:border-neutral-800">
-          <div className="mb-1 text-neutral-500">Pfad</div>
+        <div className="border-b border-[color:var(--border)] px-3 py-2 text-xs">
+          <div className="mb-1 text-[color:var(--fg-muted)]">Pfad</div>
           <div className="flex flex-wrap items-center gap-1 font-mono text-[11px]">
             {crumbs.map((c, i) => (
               <span key={c.path} className="flex items-center gap-1">
-                {i > 0 && <span className="text-neutral-400">/</span>}
+                {i > 0 && <span className="text-[color:var(--fg-subtle)]">/</span>}
                 <button
                   type="button"
                   onClick={() => setCwd(c.path)}
-                  className="rounded px-1 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                  className="rounded px-1 hover:bg-[color:var(--bg-soft)]"
                 >
                   {c.label}
                 </button>
@@ -173,7 +173,7 @@ export default function MemoryPage(): React.ReactElement {
           <button
             type="button"
             onClick={() => void loadDir(cwd)}
-            className="mt-2 text-[11px] text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100"
+            className="mt-2 text-[11px] text-[color:var(--fg-muted)] hover:text-[color:var(--fg-strong)]"
           >
             ↻ neu laden
           </button>
@@ -183,21 +183,21 @@ export default function MemoryPage(): React.ReactElement {
             <button
               type="button"
               onClick={() => setCwd(parent)}
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-xs text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-xs text-[color:var(--fg-muted)] hover:bg-[color:var(--bg-soft)]"
             >
               ← ..
             </button>
           )}
           {loadingList && (
-            <div className="px-3 py-2 text-xs text-neutral-500">lädt…</div>
+            <div className="px-3 py-2 text-xs text-[color:var(--fg-muted)]">lädt…</div>
           )}
           {listError && (
-            <div className="border-l-2 border-red-400 px-3 py-2 text-xs text-red-700 dark:text-red-300">
+            <div className="border-l-2 border-[color:var(--danger-edge)] px-3 py-2 text-xs text-[color:var(--danger)]">
               {listError}
             </div>
           )}
           {!loadingList && !listError && entries.length === 0 && (
-            <div className="px-3 py-2 text-xs text-neutral-500">leer</div>
+            <div className="px-3 py-2 text-xs text-[color:var(--fg-muted)]">leer</div>
           )}
           {entries.map((e) => {
             const name = basename(e.virtualPath);
@@ -217,14 +217,14 @@ export default function MemoryPage(): React.ReactElement {
                 className={[
                   'flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-xs transition',
                   activeFile
-                    ? 'bg-neutral-100 dark:bg-neutral-800'
-                    : 'hover:bg-neutral-100 dark:hover:bg-neutral-800',
+                    ? 'bg-[color:var(--bg-soft)]'
+                    : 'hover:bg-[color:var(--bg-soft)]',
                 ].join(' ')}
               >
                 <span>{e.isDirectory ? '📁' : '📄'}</span>
                 <span className="truncate">{name}</span>
                 {!e.isDirectory && (
-                  <span className="ml-auto text-[10px] text-neutral-400">
+                  <span className="ml-auto text-[10px] text-[color:var(--fg-subtle)]">
                     {formatSize(e.sizeBytes)}
                   </span>
                 )}
@@ -234,22 +234,22 @@ export default function MemoryPage(): React.ReactElement {
         </div>
       </aside>
 
-      <section className="flex min-w-0 flex-1 flex-col bg-neutral-50 dark:bg-neutral-950">
+      <section className="flex min-w-0 flex-1 flex-col bg-[color:var(--bg-soft)]">
         {selected === null ? (
-          <div className="flex h-full items-center justify-center text-sm text-neutral-500">
+          <div className="flex h-full items-center justify-center text-sm text-[color:var(--fg-muted)]">
             Eintrag links wählen…
           </div>
         ) : (
           <>
-            <div className="flex items-center gap-3 border-b border-neutral-200 bg-white px-4 py-2 text-xs dark:border-neutral-800 dark:bg-neutral-900">
-              <span className="font-mono text-neutral-600 dark:text-neutral-400">
+            <div className="flex items-center gap-3 border-b border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-4 py-2 text-xs">
+              <span className="font-mono text-[color:var(--fg-muted)]">
                 {selected}
               </span>
               <div className="ml-auto flex items-center gap-2">
                 <button
                   type="button"
                   onClick={() => void loadFile(selected)}
-                  className="rounded border border-neutral-300 px-2 py-0.5 hover:border-neutral-400 dark:border-neutral-700"
+                  className="rounded border border-[color:var(--border)] px-2 py-0.5 hover:border-[color:var(--border-strong)]"
                 >
                   ↻
                 </button>
@@ -257,10 +257,10 @@ export default function MemoryPage(): React.ReactElement {
             </div>
             <div className="min-h-0 flex-1 overflow-auto px-6 py-4">
               {loadingFile && (
-                <div className="text-xs text-neutral-500">lädt…</div>
+                <div className="text-xs text-[color:var(--fg-muted)]">lädt…</div>
               )}
               {fileError && (
-                <div className="border-l-2 border-red-400 px-3 py-2 text-xs text-red-700 dark:text-red-300">
+                <div className="border-l-2 border-[color:var(--danger-edge)] px-3 py-2 text-xs text-[color:var(--danger)]">
                   {fileError}
                 </div>
               )}
@@ -268,7 +268,7 @@ export default function MemoryPage(): React.ReactElement {
                 <Markdown source={content} />
               )}
               {!loadingFile && !fileError && !isMarkdown && (
-                <pre className="whitespace-pre-wrap font-mono text-xs text-neutral-800 dark:text-neutral-200">
+                <pre className="whitespace-pre-wrap font-mono text-xs text-[color:var(--fg)]">
                   {content}
                 </pre>
               )}

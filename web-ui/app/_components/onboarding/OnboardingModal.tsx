@@ -256,8 +256,8 @@ function OutcomeBody({
         className={cn(
           'flex items-center gap-3 border px-4 py-3',
           hasErrors
-            ? 'border-amber-500/50 bg-amber-50/40 text-amber-900'
-            : 'border-emerald-500/50 bg-emerald-50/40 text-emerald-900',
+            ? 'border-[color:var(--warning)]/50 bg-[color:var(--warning)]/10 text-[color:var(--warning)]'
+            : 'border-[color:var(--success)]/50 bg-[color:var(--success)]/10 text-[color:var(--success)]',
         )}
       >
         {hasErrors ? (
@@ -313,7 +313,7 @@ function OutcomeBody({
             {outcome.errored.map((p) => (
               <li
                 key={p.id}
-                className="border border-amber-500/40 bg-amber-50/30 px-3 py-2 text-amber-900"
+                className="border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/10 px-3 py-2 text-[color:var(--warning)]"
               >
                 <div className="font-mono text-[11px]">{p.id}</div>
                 <div className="mt-0.5 text-[10px] uppercase tracking-[0.16em]">
@@ -350,7 +350,7 @@ function ErrorBody({
   const t = useTranslations('onboarding');
   return (
     <div className="space-y-4">
-      <div className="flex items-start gap-3 border border-rose-500/50 bg-rose-50/40 px-4 py-3 text-rose-900">
+      <div className="flex items-start gap-3 border border-[color:var(--danger-edge)]/50 bg-[color:var(--danger)]/8 px-4 py-3 text-[color:var(--danger)]">
         <span aria-hidden>✗</span>
         <div className="text-[12px]">
           <div className="font-medium">

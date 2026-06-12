@@ -418,7 +418,7 @@ function InstalledPanel({
   return (
     <div className="space-y-3">
       {update ? (
-        <div className="rounded-[10px] border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/5 px-4 py-3">
+        <div className="rounded-md border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/5 px-4 py-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <span className="flex items-center gap-2 text-[13px] text-[color:var(--fg)]">
               <RefreshCw className="size-4 text-[color:var(--accent)]" aria-hidden />
@@ -483,7 +483,7 @@ function InstalledPanel({
       )}
 
       {state.kind === 'confirming' && (
-        <div className="rounded-[10px] border border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] p-3">
+        <div className="rounded-md border border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] p-3">
           <p className="text-[12px] leading-relaxed text-[color:var(--fg)]">
             <strong>{pluginName}</strong> entfernen? Tool wird sofort aus dem
             Orchestrator abgebaut, der Vault-Namespace wird geleert, Registry-
@@ -511,7 +511,7 @@ function InstalledPanel({
             <button
               type="button"
               onClick={doUninstall}
-              className="rounded-full bg-[color:var(--danger,#b03030)] px-4 py-1.5 text-[12px] font-semibold text-white"
+              className="rounded-full bg-[color:var(--danger,#b03030)] px-4 py-1.5 text-[12px] font-semibold text-[color:var(--fg-on-dark)]"
             >
               {alsoDeletePackage
                 ? 'Ja, deinstallieren + löschen'
@@ -536,7 +536,7 @@ function InstalledPanel({
       )}
 
       {state.kind === 'error' && (
-        <div className="rounded-[10px] border border-[color:var(--danger,#b03030)]/40 bg-[color:var(--danger,#b03030)]/6 px-3 py-2">
+        <div className="rounded-md border border-[color:var(--danger,#b03030)]/40 bg-[color:var(--danger,#b03030)]/6 px-3 py-2">
           <p className="text-[12px] text-[color:var(--danger,#b03030)]">
             Deinstallation fehlgeschlagen: {state.message}
           </p>
@@ -847,7 +847,7 @@ function PrivacyModePicker({
 
   if (!loaded) {
     return (
-      <div className="rounded-[10px] border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-3 py-2.5">
+      <div className="rounded-md border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-3 py-2.5">
         <div className="flex items-center gap-2 text-[11px] text-[color:var(--fg-subtle)]">
           <Loader2 className="size-3.5 animate-spin" aria-hidden />
           Privacy-Mode wird geladen …
@@ -857,7 +857,7 @@ function PrivacyModePicker({
   }
   if (mode === null) {
     return (
-      <div className="rounded-[10px] border border-[color:var(--danger,#b03030)]/40 bg-[color:var(--danger,#b03030)]/5 px-3 py-2">
+      <div className="rounded-md border border-[color:var(--danger,#b03030)]/40 bg-[color:var(--danger,#b03030)]/5 px-3 py-2">
         <p className="text-[12px] text-[color:var(--danger,#b03030)]">
           Privacy-Mode konnte nicht geladen werden{error ? `: ${error}` : '.'}
         </p>
@@ -867,11 +867,11 @@ function PrivacyModePicker({
 
   const tone =
     mode === 'bypass'
-      ? 'border-amber-300 bg-amber-50/50 dark:border-amber-800/60 dark:bg-amber-950/20'
+      ? 'border-[color:var(--warning)] bg-[color:var(--warning)]/10'
       : 'border-[color:var(--border)] bg-[color:var(--bg-soft)]';
 
   return (
-    <div className={cn('rounded-[10px] border px-3 py-2.5', tone)}>
+    <div className={cn('rounded-md border px-3 py-2.5', tone)}>
       <label
         htmlFor={`privacy-mode-${pluginId}`}
         className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]"

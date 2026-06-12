@@ -152,7 +152,7 @@ export function ToolList({
             <button
               type="button"
               onClick={onAdd}
-              className="inline-flex items-center gap-1 rounded-md bg-[color:var(--accent)] px-2.5 py-1.5 text-[11px] font-semibold text-white shadow-[var(--shadow-cta)]"
+              className="inline-flex items-center gap-1 rounded-md bg-[color:var(--accent)] px-2.5 py-1.5 text-[11px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)]"
             >
               <Plus className="size-3" aria-hidden />
               {t('addFirstTool')}

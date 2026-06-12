@@ -186,16 +186,16 @@ export function PageForm({
 
       {/* Library-mode fields */}
       {route.render_mode === 'library' ? (
-        <div className="space-y-3 rounded-md border border-emerald-200 bg-emerald-50/40 p-3">
+        <div className="space-y-3 rounded-md border border-[color:var(--success)] bg-[color:var(--success)]/10 p-3">
           <div>
-            <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-emerald-800">
+            <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-[color:var(--success)]">
               {t('uiTemplate.heading')}
             </div>
             <div className="space-y-1">
               {(['list-card', 'kpi-tiles'] as const).map((ut) => (
                 <label
                   key={ut}
-                  className="flex cursor-pointer items-start gap-2 rounded-md border border-emerald-200/60 bg-white px-2.5 py-1.5 hover:border-emerald-400"
+                  className="flex cursor-pointer items-start gap-2 rounded-md border border-[color:var(--success)]/60 bg-[color:var(--bg-elevated)] px-2.5 py-1.5 hover:border-[color:var(--success)]"
                 >
                   <input
                     type="radio"
@@ -283,7 +283,7 @@ export function PageForm({
           for react-ssr mode; lint rejects interactive=true for library/
           free-form-html (no React component to hydrate). */}
       {route.render_mode === 'react-ssr' ? (
-        <label className="flex items-start gap-2 rounded-md border border-sky-200 bg-sky-50/40 px-2.5 py-2 hover:border-sky-400">
+        <label className="flex items-start gap-2 rounded-md border border-[color:var(--accent)] bg-[color:var(--accent)]/10 px-2.5 py-2 hover:border-[color:var(--accent)]">
           <input
             type="checkbox"
             checked={route.interactive === true}
@@ -291,7 +291,7 @@ export function PageForm({
             className="mt-0.5"
           />
           <span className="flex-1 text-[12px]">
-            <span className="font-medium text-sky-900">
+            <span className="font-medium text-[color:var(--accent)]">
               {t('interactive.label')}
             </span>
             <span className="ml-2 text-[color:var(--fg-muted)]">
@@ -395,7 +395,7 @@ export default function ${componentName}Page({ data, fetchError }: PageProps) {
   if (fetchError) {
     return (
       <main data-omadia-page="${routeId}" className="max-w-3xl mx-auto p-6">
-        <div className="rounded-md border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+        <div className="rounded-md border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-4 text-sm text-[color:var(--danger)]">
           Daten konnten nicht gelesen werden: {fetchError}
         </div>
       </main>
@@ -404,7 +404,7 @@ export default function ${componentName}Page({ data, fetchError }: PageProps) {
   const items = Array.isArray(data) ? data : [];
   if (items.length === 0) {
     return (
-      <main data-omadia-page="${routeId}" className="max-w-3xl mx-auto p-6 text-center text-slate-500">
+      <main data-omadia-page="${routeId}" className="max-w-3xl mx-auto p-6 text-center text-[color:var(--fg-muted)]">
         Keine Daten.
       </main>
     );
@@ -412,7 +412,7 @@ export default function ${componentName}Page({ data, fetchError }: PageProps) {
   return (
     <main data-omadia-page="${routeId}" className="max-w-3xl mx-auto p-6 space-y-2">
       <h1 className="text-2xl font-semibold mb-3">${componentName}</h1>
-      <pre className="text-xs bg-slate-100 p-3 rounded">{JSON.stringify(items, null, 2)}</pre>
+      <pre className="text-xs bg-[color:var(--bg-soft)] p-3 rounded">{JSON.stringify(items, null, 2)}</pre>
     </main>
   );
 }
@@ -426,7 +426,7 @@ function defaultFreeFormStub(pageTitle: string): string {
   body: html\`
     <main class="max-w-3xl mx-auto p-6">
       <h1 class="text-2xl font-semibold mb-4">${pageTitle}</h1>
-      <p class="text-sm text-slate-500">Replace this with your own rendering.</p>
+      <p class="text-sm text-[color:var(--fg-muted)]">Replace this with your own rendering.</p>
     </main>
   \`,
 });
@@ -461,7 +461,7 @@ function ItemTemplateEditor({
 
   return (
     <div className="space-y-2">
-      <div className="text-[11px] font-medium uppercase tracking-wide text-emerald-800">
+      <div className="text-[11px] font-medium uppercase tracking-wide text-[color:var(--success)]">
         {t.rich('itemTemplate.heading', {
           code: (chunks) => <code>{chunks}</code>,
         })}

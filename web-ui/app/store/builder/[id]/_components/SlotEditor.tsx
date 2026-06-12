@@ -406,7 +406,7 @@ export function SlotEditor({
           type="button"
           onClick={() => void flush()}
           disabled={status.kind === 'pending'}
-          className="ml-auto inline-flex items-center gap-1.5 rounded-md bg-[color:var(--accent)] px-2.5 py-1 text-[11px] font-semibold text-white shadow-[var(--shadow-cta)] disabled:opacity-50"
+          className="ml-auto inline-flex items-center gap-1.5 rounded-md bg-[color:var(--accent)] px-2.5 py-1 text-[11px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] disabled:opacity-50"
         >
           <Save className="size-3" aria-hidden />
           {t('save')}
@@ -481,7 +481,7 @@ function TemplateSlotsPanel({
           className={cn(
             'font-mono-num rounded-full px-1.5 text-[10px] font-semibold',
             missingRequired.length > 0
-              ? 'bg-[color:var(--danger)] text-white'
+              ? 'bg-[color:var(--danger)] text-[color:var(--fg-on-dark)]'
               : 'bg-[color:var(--success)]/15 text-[color:var(--success)]',
           )}
         >

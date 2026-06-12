@@ -145,7 +145,7 @@ function StatusBadge({ status }: { status: SaveStatus }): React.ReactElement | n
     case 'idle':
       return null;
     case 'dirty':
-      return <span className="text-amber-700">{t('inline.status.dirty')}</span>;
+      return <span className="text-[color:var(--warning)]">{t('inline.status.dirty')}</span>;
     case 'saving':
       return (
         <span className="text-[color:var(--fg-muted)]">
@@ -153,10 +153,10 @@ function StatusBadge({ status }: { status: SaveStatus }): React.ReactElement | n
         </span>
       );
     case 'saved':
-      return <span className="text-emerald-700">{t('inline.status.saved')}</span>;
+      return <span className="text-[color:var(--success)]">{t('inline.status.saved')}</span>;
     case 'error':
       return (
-        <span className="text-rose-700" title={status.message}>
+        <span className="text-[color:var(--danger)]" title={status.message}>
           {t('inline.status.error')}
         </span>
       );

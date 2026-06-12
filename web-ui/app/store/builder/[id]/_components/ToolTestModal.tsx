@@ -106,7 +106,7 @@ export function ToolTestModal({
       role="dialog"
       aria-modal="true"
       aria-label={t('dialogLabel', { id: tool.id })}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-10"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-[color:var(--bg-modal-overlay)] px-4 py-10"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -187,7 +187,7 @@ export function ToolTestModal({
               type="button"
               onClick={() => void onRun()}
               disabled={pending}
-              className="inline-flex items-center gap-1 rounded bg-[color:var(--accent)] px-3 py-1 text-[11px] font-semibold text-white shadow-[var(--shadow-cta)] disabled:opacity-50"
+              className="inline-flex items-center gap-1 rounded bg-[color:var(--accent)] px-3 py-1 text-[11px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] disabled:opacity-50"
             >
               {pending ? (
                 <Loader2 className="size-3 animate-spin" aria-hidden />

@@ -84,7 +84,7 @@ export default async function BuilderDashboardPage({
 
   return (
     <main className="mx-auto max-w-[1280px] px-6 py-12 lg:px-10 lg:py-16">
-      <header className="b5-hero-bg relative -mx-6 rounded-[22px] border border-[color:var(--divider)] px-6 py-10 lg:-mx-10 lg:px-10 lg:py-14">
+      <header className="b5-hero-bg relative -mx-6 rounded-lg border border-[color:var(--divider)] px-6 py-10 lg:-mx-10 lg:px-10 lg:py-14">
         <div className="flex items-baseline gap-3 text-[12px] font-semibold uppercase tracking-[0.24em] text-[color:var(--accent)]">
           <span className="font-mono-num text-[color:var(--fg-subtle)]">02</span>
           <span className="h-px flex-1 bg-[color:var(--border)]" />
@@ -97,8 +97,7 @@ export default async function BuilderDashboardPage({
               {t('headline')}
             </h1>
             <p className="mt-6 text-[18px] font-semibold leading-[1.55] text-[color:var(--fg)]">
-              <span className="b5-colon">:</span>
-              {t('lede')}
+                            {t('lede')}
             </p>
           </div>
 
@@ -135,7 +134,7 @@ export default async function BuilderDashboardPage({
                 'text-[12px] font-semibold transition-colors duration-[140ms]',
                 'ease-[cubic-bezier(0.22,0.61,0.36,1)]',
                 active
-                  ? 'bg-[color:var(--accent)] text-white shadow-[var(--shadow-cta)]'
+                  ? 'bg-[color:var(--accent)] text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)]'
                   : 'bg-[color:var(--bg-soft)] text-[color:var(--fg-muted)] hover:bg-[color:var(--gray-100)] hover:text-[color:var(--fg-strong)]',
               )}
               aria-current={active ? 'page' : undefined}
@@ -145,7 +144,7 @@ export default async function BuilderDashboardPage({
                 className={cn(
                   'font-mono-num tabular-nums rounded-full px-1.5 text-[10px]',
                   active
-                    ? 'bg-white/25 text-white'
+                    ? 'bg-white/25 text-[color:var(--fg-on-dark)]'
                     : 'bg-[color:var(--bg)] text-[color:var(--fg-subtle)]',
                 )}
               >
@@ -223,7 +222,7 @@ async function EmptyState({ scope }: { scope: ScopeFilter }): Promise<React.Reac
         ? t('empty.published.hint')
         : t('empty.deleted.hint');
   return (
-    <div className="rounded-[14px] border border-dashed border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] p-12 text-center">
+    <div className="rounded-lg border border-dashed border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] p-12 text-center">
       <p className="font-display text-[22px] text-[color:var(--fg-strong)]">{headline}</p>
       <p className="mt-3 text-sm leading-relaxed text-[color:var(--fg-muted)]">{hint}</p>
     </div>
@@ -233,7 +232,7 @@ async function EmptyState({ scope }: { scope: ScopeFilter }): Promise<React.Reac
 async function LoadErrorState({ message }: { message: string }): Promise<React.ReactElement> {
   const t = await getTranslations('builder.drafts.list');
   return (
-    <div className="rounded-[14px] border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/6 p-8">
+    <div className="rounded-lg border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/6 p-8">
       <div className="flex items-baseline gap-3 text-[11px] font-semibold uppercase tracking-[0.2em] text-[color:var(--danger)]">
         <span>{t('error.label')}</span>
         <span className="h-px flex-1 bg-[color:var(--danger)]/30" />

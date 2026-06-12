@@ -128,7 +128,7 @@ export function PagePreviewFrame({
           key={iframeKey}
           src={previewUrl}
           title={t('iframeTitle', { label: label ?? routeId })}
-          className="h-[480px] w-full border-0 bg-white"
+          className="h-[480px] w-full border-0 bg-[color:var(--bg-elevated)]"
           sandbox="allow-scripts allow-same-origin"
         />
       )}
@@ -147,13 +147,13 @@ function PreviewErrorBanner({
   const hintKey = HINT_KEYS[code];
   const hint = hintKey ? t(hintKey) : undefined;
   return (
-    <div className="bg-amber-50 px-4 py-6 text-[12px] text-amber-900">
+    <div className="bg-[color:var(--warning)]/10 px-4 py-6 text-[12px] text-[color:var(--warning)]">
       <div className="mb-1 font-semibold">{t('unavailableTitle')}</div>
-      <code className="block break-words text-[11px] text-amber-900/80">
+      <code className="block break-words text-[11px] text-[color:var(--warning)]/80">
         {code}: {message}
       </code>
       {hint ? (
-        <p className="mt-2 text-[11px] text-amber-800/90">
+        <p className="mt-2 text-[11px] text-[color:var(--warning)]/90">
           {t.rich('hintLine', {
             strong: (chunks) => <strong>{chunks}</strong>,
             hint,

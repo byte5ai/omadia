@@ -89,7 +89,7 @@ export function PaneCard({
       layout
       transition={COLLAPSE_TRANSITION}
       className={cn(
-        'flex flex-col rounded-[14px] border bg-[color:var(--bg-elevated)]',
+        'flex flex-col rounded-lg border bg-[color:var(--bg-elevated)]',
         'overflow-hidden',
         hasWarning
           ? 'border-[color:var(--danger)]/50'
@@ -131,7 +131,7 @@ export function PaneCard({
             />
             {hasWarning ? (
               <span
-                className="font-mono-num inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-[color:var(--danger)] px-1 text-[10px] font-semibold text-white"
+                className="font-mono-num inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-[color:var(--danger)] px-1 text-[10px] font-semibold text-[color:var(--fg-on-dark)]"
                 aria-label={t('missingCountAria', { count: warningCount })}
                 title={t('missingRequiredFields', { count: warningCount })}
               >
@@ -180,7 +180,7 @@ export function PaneCard({
               </h2>
               {hasWarning ? (
                 <span
-                  className="font-mono-num inline-flex items-center gap-1 rounded-full bg-[color:var(--danger)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-white"
+                  className="font-mono-num inline-flex items-center gap-1 rounded-full bg-[color:var(--danger)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-on-dark)]"
                   title={t('missingRequiredFields', { count: warningCount })}
                 >
                   <AlertTriangle className="size-2.5" aria-hidden />

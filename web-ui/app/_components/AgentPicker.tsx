@@ -91,10 +91,10 @@ export function AgentPicker(props: AgentPickerProps): React.ReactElement {
   if (props.pinnedSlug) {
     return (
       <span
-        className="inline-flex items-center gap-1.5 rounded border border-neutral-300 bg-neutral-50 px-2 py-1 font-mono text-xs text-neutral-700"
+        className="inline-flex items-center gap-1.5 rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-2 py-1 font-mono text-xs text-[color:var(--fg)]"
         title={t('pinnedTooltip')}
       >
-        <span className="text-neutral-500">{t('label')}</span>
+        <span className="text-[color:var(--fg-muted)]">{t('label')}</span>
         <span className="font-semibold">{props.pinnedSlug}</span>
       </span>
     );
@@ -102,7 +102,7 @@ export function AgentPicker(props: AgentPickerProps): React.ReactElement {
 
   if (state.loading) {
     return (
-      <span className="inline-flex text-xs text-neutral-500">
+      <span className="inline-flex text-xs text-[color:var(--fg-muted)]">
         {t('loading')}
       </span>
     );
@@ -110,7 +110,7 @@ export function AgentPicker(props: AgentPickerProps): React.ReactElement {
 
   if (state.error) {
     return (
-      <span className="inline-flex text-xs text-red-700" title={state.error}>
+      <span className="inline-flex text-xs text-[color:var(--danger)]" title={state.error}>
         {t('error')}
       </span>
     );
@@ -121,7 +121,7 @@ export function AgentPicker(props: AgentPickerProps): React.ReactElement {
     return (
       <a
         href="/operator/agents"
-        className="inline-flex items-center gap-1.5 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-800 hover:bg-amber-100"
+        className="inline-flex items-center gap-1.5 rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 px-2 py-1 text-xs text-[color:var(--warning)] hover:bg-[color:var(--warning)]/10"
       >
         {t('emptyCta')}
       </a>
@@ -130,9 +130,9 @@ export function AgentPicker(props: AgentPickerProps): React.ReactElement {
 
   return (
     <label className="inline-flex items-center gap-2 text-xs">
-      <span className="text-neutral-500">{t('label')}</span>
+      <span className="text-[color:var(--fg-muted)]">{t('label')}</span>
       <select
-        className="rounded border border-neutral-300 bg-white px-2 py-1 font-mono text-xs"
+        className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-2 py-1 font-mono text-xs"
         value={props.selectedSlug ?? state.fallbackSlug ?? ''}
         onChange={(e) =>
           props.onSelect(e.target.value === '' ? undefined : e.target.value)

@@ -121,8 +121,7 @@ export function AgentDetailsModal({
 
             <footer className="flex items-center justify-between gap-3 border-t border-[color:var(--border)] bg-[color:var(--bg-soft)] px-6 py-3">
               <p className="text-[11px] leading-relaxed text-[color:var(--fg-muted)]">
-                <span className="b5-colon">:</span>
-                {t('footerNote')}
+                                {t('footerNote')}
               </p>
               <button
                 type="button"
@@ -256,8 +255,7 @@ function ToolCallRow({
 
       {event.subEvents && event.subEvents.length > 0 ? (
         <div className="mt-3 text-[11px] text-[color:var(--fg-muted)]">
-          <span className="b5-colon">:</span>
-          {t('subIterations', { count: event.subEvents.length })}
+                    {t('subIterations', { count: event.subEvents.length })}
         </div>
       ) : null}
     </li>

@@ -192,7 +192,7 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
       <p className="text-[12px] leading-relaxed text-[color:var(--fg-muted)]">{t('intro')}</p>
 
       {/* compose */}
-      <div className="rounded-[10px] border border-[color:var(--border)] bg-[color:var(--bg-soft)] p-3">
+      <div className="rounded-md border border-[color:var(--border)] bg-[color:var(--bg-soft)] p-3">
         <label className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
           <Sparkles className="size-3.5" aria-hidden />
           {t('composeTitle')}
@@ -227,7 +227,7 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
 
       {/* template compose (standalone plugins that expose selfExtend templates) */}
       {templates.length > 0 ? (
-        <div className="rounded-[10px] border border-[color:var(--border)] bg-[color:var(--bg-soft)] p-3">
+        <div className="rounded-md border border-[color:var(--border)] bg-[color:var(--bg-soft)] p-3">
           <label className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
             <Sparkles className="size-3.5" aria-hidden />
             {t('templateComposeTitle')}
@@ -290,7 +290,7 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
       ) : (
         <ul className="space-y-3">
           {proposals.map((p) => (
-            <li key={p.id} className="rounded-[10px] border border-[color:var(--border)] bg-[color:var(--bg)] p-3">
+            <li key={p.id} className="rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <DecisionBadge decision={p.decision} status={p.status} t={t} />
                 <span className="font-mono-num text-[10px] text-[color:var(--fg-subtle)]">
@@ -346,7 +346,7 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
                       type="button"
                       disabled={actionBusyId === p.id || denyReason.trim().length === 0}
                       onClick={() => void runAction(p.id, () => denySelfExtensionProposal(p.id, denyReason))}
-                      className="rounded-full bg-[color:var(--danger,#b03030)] px-3 py-1 text-[12px] font-semibold text-white disabled:opacity-60"
+                      className="rounded-full bg-[color:var(--danger,#b03030)] px-3 py-1 text-[12px] font-semibold text-[color:var(--fg-on-dark)] disabled:opacity-60"
                     >
                       {t('confirmDeny')}
                     </button>

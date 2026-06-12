@@ -607,7 +607,7 @@ export function BuilderChatPane({
               type="button"
               onClick={() => void onSend()}
               disabled={input.trim().length === 0}
-              className="inline-flex h-[44px] shrink-0 items-center gap-1.5 rounded-md bg-[color:var(--accent)] px-3 py-2 text-[12px] font-semibold text-white shadow-[var(--shadow-cta)] transition-opacity hover:opacity-90 disabled:opacity-40"
+              className="inline-flex h-[44px] shrink-0 items-center gap-1.5 rounded-md bg-[color:var(--accent)] px-3 py-2 text-[12px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] transition-opacity hover:opacity-90 disabled:opacity-40"
             >
               <Send className="size-4" aria-hidden />
               {t('button.send')}
@@ -639,7 +639,7 @@ export function BuilderChatPane({
               </span>
             ) : null}
             {lastUsage && lastUsage.cacheReadInputTokens > 0 ? (
-              <span className="text-emerald-600">
+              <span className="text-[color:var(--success)]">
                 · 🟢 cache ({String(lastUsage.cacheReadInputTokens)}t)
               </span>
             ) : null}
@@ -731,9 +731,9 @@ function ChatItemView({ item }: { item: ChatItem }): React.ReactElement | null {
       <div className={cn('flex', isUser ? 'justify-end' : 'justify-start')}>
         <div
           className={cn(
-            'max-w-[88%] rounded-[12px] px-3 py-2 text-[13px] leading-snug',
+            'max-w-[88%] rounded-lg px-3 py-2 text-[13px] leading-snug',
             isUser
-              ? 'bg-[color:var(--accent)] text-white'
+              ? 'bg-[color:var(--accent)] text-[color:var(--fg-on-dark)]'
               : 'bg-[color:var(--bg-soft)] text-[color:var(--fg-strong)]',
           )}
         >
@@ -796,7 +796,7 @@ function ToolCard({
   const [expanded, setExpanded] = useState(false);
   const pending = item.output === null;
   return (
-    <div className="rounded-[10px] border border-[color:var(--divider)] bg-[color:var(--bg-soft)]/60 text-[12px]">
+    <div className="rounded-md border border-[color:var(--divider)] bg-[color:var(--bg-soft)]/60 text-[12px]">
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
@@ -917,7 +917,7 @@ function phasePillClass(
     case 'streaming':
       return `${base} bg-[color:var(--accent)]/15 text-[color:var(--accent)]`;
     case 'tool_running':
-      return `${base} bg-amber-500/15 text-amber-600`;
+      return `${base} bg-[color:var(--warning)]/100/15 text-[color:var(--warning)]`;
     case 'thinking':
     case 'idle':
     default:

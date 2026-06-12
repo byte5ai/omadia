@@ -109,10 +109,10 @@ function SaveBadge({ status }: { status: SaveStatus }): React.ReactElement | nul
   if (status.kind === 'idle') return null;
   const cls =
     status.kind === 'error'
-      ? 'bg-rose-50 text-rose-900 border-rose-200'
+      ? 'bg-[color:var(--danger)]/8 text-[color:var(--danger)] border-[color:var(--danger-edge)]'
       : status.kind === 'saved'
-        ? 'bg-emerald-50 text-emerald-900 border-emerald-200'
-        : 'bg-slate-50 text-slate-700 border-slate-200';
+        ? 'bg-[color:var(--success)]/10 text-[color:var(--success)] border-[color:var(--success)]'
+        : 'bg-[color:var(--bg-soft)] text-[color:var(--fg)] border-[color:var(--border)]';
   const label =
     status.kind === 'pending'
       ? t('saving')

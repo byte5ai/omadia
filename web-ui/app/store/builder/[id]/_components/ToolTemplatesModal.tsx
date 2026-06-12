@@ -66,7 +66,7 @@ export function ToolTemplatesModal({
       role="dialog"
       aria-modal="true"
       aria-label={t('dialogLabel')}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-10"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-[color:var(--bg-modal-overlay)] px-4 py-10"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}

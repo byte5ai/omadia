@@ -48,7 +48,7 @@ async function LoadErrorState({
   const message = error instanceof Error ? error.message : t('error.unknown');
   return (
     <main className="mx-auto max-w-[1280px] px-6 py-12 lg:px-10 lg:py-16">
-      <div className="rounded-[14px] border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/6 p-8">
+      <div className="rounded-lg border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/6 p-8">
         <div className="flex items-baseline gap-3 text-[11px] font-semibold uppercase tracking-[0.2em] text-[color:var(--danger)]">
           <span>{t('error.label')}</span>
           <span className="h-px flex-1 bg-[color:var(--danger)]/30" />
@@ -61,7 +61,7 @@ async function LoadErrorState({
         </p>
         <Link
           href="/store/builder"
-          className="mt-6 inline-flex items-center gap-2 rounded-full bg-[color:var(--accent)] px-5 py-2 text-[12px] font-semibold uppercase tracking-[0.18em] text-white shadow-[var(--shadow-cta)]"
+          className="mt-6 inline-flex items-center gap-2 rounded-full bg-[color:var(--accent)] px-5 py-2 text-[12px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)]"
         >
           ← {t('error.backToList')}
         </Link>

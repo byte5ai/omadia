@@ -309,7 +309,7 @@ function InputSchemaSection({
             className={cn(
               'px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.18em]',
               tab === 'form'
-                ? 'bg-[color:var(--accent)] text-white'
+                ? 'bg-[color:var(--accent)] text-[color:var(--fg-on-dark)]'
                 : 'bg-[color:var(--bg)] text-[color:var(--fg-subtle)] hover:text-[color:var(--fg-strong)]',
             )}
           >
@@ -323,7 +323,7 @@ function InputSchemaSection({
             className={cn(
               'px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.18em]',
               tab === 'json'
-                ? 'bg-[color:var(--accent)] text-white'
+                ? 'bg-[color:var(--accent)] text-[color:var(--fg-on-dark)]'
                 : 'bg-[color:var(--bg)] text-[color:var(--fg-subtle)] hover:text-[color:var(--fg-strong)]',
             )}
           >

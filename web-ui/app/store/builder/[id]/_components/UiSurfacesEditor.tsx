@@ -88,7 +88,7 @@ export function UiSurfacesEditor({
     <div className="space-y-4">
       {/* ─── Admin UI Sub-Card ─── */}
       <SurfaceCard
-        icon={<ShieldCheck className="size-4 text-slate-500" />}
+        icon={<ShieldCheck className="size-4 text-[color:var(--fg-muted)]" />}
         title={t('adminUi.title')}
         subtitle={t('adminUi.subtitle')}
       >
@@ -137,7 +137,7 @@ export function UiSurfacesEditor({
               heightPx={280}
             />
 
-            <p className="rounded-md border border-amber-200 bg-amber-50/40 px-3 py-2 text-[11px] text-amber-900">
+            <p className="rounded-md border border-[color:var(--warning)] bg-[color:var(--warning)]/10 px-3 py-2 text-[11px] text-[color:var(--warning)]">
               {t.rich('adminUi.operatorContract', {
                 strong: (chunks) => <strong>{chunks}</strong>,
                 code: (chunks) => <code>{chunks}</code>,
@@ -155,7 +155,7 @@ export function UiSurfacesEditor({
 
       {/* ─── Dashboard Pages Sub-Card ─── */}
       <SurfaceCard
-        icon={<LayoutDashboard className="size-4 text-slate-500" />}
+        icon={<LayoutDashboard className="size-4 text-[color:var(--fg-muted)]" />}
         title={t('dashboardPages.title')}
         subtitle={t('dashboardPages.subtitle')}
       >

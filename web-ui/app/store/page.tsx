@@ -101,7 +101,7 @@ export default async function StorePage({
       <OnboardingModal installedCount={installedCount} profiles={profiles} />
 
       {/* Hero — Omadia brand cadence (Days One headline + magenta colon lead) */}
-      <header className="b5-hero-bg relative -mx-6 rounded-[22px] border border-[color:var(--divider)] px-6 py-10 lg:-mx-10 lg:px-10 lg:py-14">
+      <header className="b5-hero-bg relative -mx-6 rounded-lg border border-[color:var(--divider)] px-6 py-10 lg:-mx-10 lg:px-10 lg:py-14">
         <div className="flex items-baseline gap-3 text-[12px] font-semibold uppercase tracking-[0.24em] text-[color:var(--accent)]">
           <span className="font-mono-num text-[color:var(--fg-subtle)]">
             01
@@ -115,8 +115,7 @@ export default async function StorePage({
         </h1>
 
         <p className="mt-6 max-w-2xl text-[18px] font-semibold leading-[1.55] text-[color:var(--fg)]">
-          <span className="b5-colon">:</span>
-          Der Katalog bündelt Integrations (Credential-Container), Agents
+                    Der Katalog bündelt Integrations (Credential-Container), Agents
           (Domain-Capabilities) und Channels (User-Kanäle wie Teams,
           Telegram). Ein Klick auf eine Kachel zeigt Berechtigungen, Secrets
           und Abhängigkeiten vor der Installation.
@@ -166,7 +165,7 @@ export default async function StorePage({
                   'text-[12px] font-semibold transition-colors duration-[140ms]',
                   'ease-[cubic-bezier(0.22,0.61,0.36,1)]',
                   active
-                    ? 'bg-[color:var(--accent)] text-white shadow-[var(--shadow-cta)]'
+                    ? 'bg-[color:var(--accent)] text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)]'
                     : 'bg-[color:var(--bg-soft)] text-[color:var(--fg-muted)] hover:bg-[color:var(--gray-100)] hover:text-[color:var(--fg-strong)]',
                 )}
                 aria-current={active ? 'page' : undefined}
@@ -176,7 +175,7 @@ export default async function StorePage({
                   className={cn(
                     'font-mono-num tabular-nums rounded-full px-1.5 text-[10px]',
                     active
-                      ? 'bg-white/25 text-white'
+                      ? 'bg-white/25 text-[color:var(--fg-on-dark)]'
                       : 'bg-[color:var(--bg)] text-[color:var(--fg-subtle)]',
                   )}
                 >
@@ -305,7 +304,7 @@ function SourceTabs({
               'text-[13px] font-semibold transition-colors duration-[140ms]',
               'ease-[cubic-bezier(0.22,0.61,0.36,1)]',
               active
-                ? 'bg-[color:var(--accent)] text-white shadow-[var(--shadow-cta)]'
+                ? 'bg-[color:var(--accent)] text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)]'
                 : 'text-[color:var(--fg-muted)] hover:text-[color:var(--fg-strong)]',
             )}
           >
@@ -315,7 +314,7 @@ function SourceTabs({
               className={cn(
                 'font-mono-num tabular-nums rounded-full px-1.5 text-[10px]',
                 active
-                  ? 'bg-white/25 text-white'
+                  ? 'bg-white/25 text-[color:var(--fg-on-dark)]'
                   : 'bg-[color:var(--bg)] text-[color:var(--fg-subtle)]',
               )}
             >
@@ -338,7 +337,7 @@ function EmptyState({
   // Kind-filtered-into-emptiness inside a non-empty source: keep it short.
   if (filter !== 'all') {
     return (
-      <div className="rounded-[14px] border border-dashed border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] p-12 text-center">
+      <div className="rounded-lg border border-dashed border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] p-12 text-center">
         <p className="font-display text-[22px] text-[color:var(--fg-strong)]">
           Keine {FILTER_LABEL[filter]} in dieser Ansicht.
         </p>
@@ -351,7 +350,7 @@ function EmptyState({
 
   if (source === 'installed') {
     return (
-      <div className="rounded-[14px] border border-dashed border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] p-12 text-center">
+      <div className="rounded-lg border border-dashed border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] p-12 text-center">
         <p className="font-display text-[22px] text-[color:var(--fg-strong)]">
           Noch keine Plugins installiert.
         </p>
@@ -378,7 +377,7 @@ function EmptyState({
 
   if (source === 'local') {
     return (
-      <div className="rounded-[14px] border border-dashed border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] p-12 text-center">
+      <div className="rounded-lg border border-dashed border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] p-12 text-center">
         <p className="font-display text-[22px] text-[color:var(--fg-strong)]">
           Keine lokalen Pakete.
         </p>
@@ -394,7 +393,7 @@ function EmptyState({
   // (not-yet-local) plugin. Either no registry is reachable, or every hub
   // entry is already installed locally (the merge drops those).
   return (
-    <div className="rounded-[14px] border border-dashed border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] p-12 text-center">
+    <div className="rounded-lg border border-dashed border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] p-12 text-center">
       <p className="font-display text-[22px] text-[color:var(--fg-strong)]">
         Keine Plugins im Hub verfügbar.
       </p>
@@ -421,7 +420,7 @@ function EmptyState({
 
 function LoadErrorState({ message }: { message: string }): React.ReactElement {
   return (
-    <div className="rounded-[14px] border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/6 p-8">
+    <div className="rounded-lg border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/6 p-8">
       <div className="flex items-baseline gap-3 text-[11px] font-semibold uppercase tracking-[0.2em] text-[color:var(--danger)]">
         <span>Fehler</span>
         <span className="h-px flex-1 bg-[color:var(--danger)]/30" />

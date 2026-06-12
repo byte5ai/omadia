@@ -358,7 +358,7 @@ export function CredentialsEditor({
           type="button"
           onClick={() => void onSave()}
           disabled={saving || dirtyCount === 0}
-          className="inline-flex items-center gap-2 rounded-md bg-[color:var(--accent)] px-3 py-1.5 text-[12px] font-semibold text-white shadow-sm transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+          className="inline-flex items-center gap-2 rounded-md bg-[color:var(--accent)] px-3 py-1.5 text-[12px] font-semibold text-[color:var(--fg-on-dark)] shadow-sm transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {saving ? (
             <Loader2 className="size-3.5 animate-spin" aria-hidden />

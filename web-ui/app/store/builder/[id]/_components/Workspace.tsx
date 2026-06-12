@@ -1245,7 +1245,7 @@ function MobilePaneTabs({
     <nav
       role="tablist"
       aria-label={tw('mobilePaneAriaLabel')}
-      className="mb-3 flex items-center gap-1.5 overflow-x-auto rounded-[12px] border border-[color:var(--divider)] bg-[color:var(--bg-elevated)] p-1.5"
+      className="mb-3 flex items-center gap-1.5 overflow-x-auto rounded-lg border border-[color:var(--divider)] bg-[color:var(--bg-elevated)] p-1.5"
     >
       {items.map((it) => {
         const isActive = it.id === active;
@@ -1261,7 +1261,7 @@ function MobilePaneTabs({
               'inline-flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2',
               'text-[12px] font-semibold uppercase tracking-[0.18em] transition-colors',
               isActive
-                ? 'bg-[color:var(--accent)] text-white shadow-[var(--shadow-cta)]'
+                ? 'bg-[color:var(--accent)] text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)]'
                 : 'text-[color:var(--fg-muted)] hover:bg-[color:var(--bg-soft)] hover:text-[color:var(--fg-strong)]',
               w > 0 && !isActive && 'text-[color:var(--danger)]',
             )}
@@ -1273,8 +1273,8 @@ function MobilePaneTabs({
                 className={cn(
                   'font-mono-num inline-flex min-w-[1rem] items-center justify-center rounded-full px-1 text-[10px] font-semibold',
                   isActive
-                    ? 'bg-white/25 text-white'
-                    : 'bg-[color:var(--danger)] text-white',
+                    ? 'bg-white/25 text-[color:var(--fg-on-dark)]'
+                    : 'bg-[color:var(--danger)] text-[color:var(--fg-on-dark)]',
                 )}
                 aria-label={tw('mobilePaneMissingAria', { count: w })}
               >
@@ -1356,7 +1356,7 @@ function WorkspaceHeader({
   const modelEditingEnabled = draft.status !== 'archived';
   const tw = useTranslations('builder.workspace');
   return (
-    <header className="flex flex-col gap-4 rounded-[14px] border border-[color:var(--divider)] bg-[color:var(--bg-elevated)] px-5 py-4 lg:flex-row lg:items-center">
+    <header className="flex flex-col gap-4 rounded-lg border border-[color:var(--divider)] bg-[color:var(--bg-elevated)] px-5 py-4 lg:flex-row lg:items-center">
       <Link
         href="/store/builder"
         className="inline-flex items-center gap-2 self-start rounded-md px-2 py-1 text-[12px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg-muted)] transition-colors hover:bg-[color:var(--bg-soft)] hover:text-[color:var(--fg-strong)]"
@@ -1415,7 +1415,7 @@ function WorkspaceHeader({
         className={cn(
           'inline-flex items-center gap-2 rounded-md px-4 py-2 text-[12px] font-semibold uppercase tracking-[0.18em] transition-opacity',
           installEnabled
-            ? 'bg-[color:var(--accent)] text-white shadow-[var(--shadow-cta)] hover:opacity-90'
+            ? 'bg-[color:var(--accent)] text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] hover:opacity-90'
             : 'cursor-not-allowed bg-[color:var(--bg-soft)] text-[color:var(--fg-subtle)]',
         )}
       >
@@ -1487,7 +1487,7 @@ function ViewModeToggle({
             className={cn(
               'rounded-full px-3 py-1 text-[12px] font-semibold transition-colors',
               active
-                ? 'bg-[color:var(--accent)] text-white shadow-[var(--shadow-cta)]'
+                ? 'bg-[color:var(--accent)] text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)]'
                 : 'text-[color:var(--fg-muted)] hover:text-[color:var(--fg-strong)]',
               disabled && !active && 'cursor-not-allowed',
             )}
@@ -1792,7 +1792,7 @@ function EditorTabs({
             className={cn(
               'inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] transition-colors',
               active
-                ? 'bg-[color:var(--accent)] text-white'
+                ? 'bg-[color:var(--accent)] text-[color:var(--fg-on-dark)]'
                 : 'text-[color:var(--fg-muted)] hover:bg-[color:var(--bg-soft)] hover:text-[color:var(--fg-strong)]',
               warningCount > 0 &&
                 !active &&
@@ -1805,8 +1805,8 @@ function EditorTabs({
                 className={cn(
                   'font-mono-num inline-flex min-w-[1rem] items-center justify-center rounded-full px-1 text-[10px] font-semibold',
                   active
-                    ? 'bg-white/25 text-white'
-                    : 'bg-[color:var(--danger)] text-white',
+                    ? 'bg-white/25 text-[color:var(--fg-on-dark)]'
+                    : 'bg-[color:var(--danger)] text-[color:var(--fg-on-dark)]',
                 )}
                 aria-label={tw('editorTabMissingAria', { count: warningCount })}
               >
@@ -1916,7 +1916,7 @@ function BuildStatusStrip({
       {showErrorList ? (
         <div
           id="builder-tsc-error-list"
-          className="rounded-[14px] border border-[color:var(--danger)]/30 bg-[color:var(--bg-elevated)] px-5 py-3"
+          className="rounded-lg border border-[color:var(--danger)]/30 bg-[color:var(--bg-elevated)] px-5 py-3"
         >
           <div className="font-mono-num mb-2 flex items-center justify-between text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
             <span>
@@ -1952,7 +1952,7 @@ function BuildStatusStrip({
           </ul>
         </div>
       ) : null}
-      <footer className="flex items-center gap-3 rounded-[14px] border border-[color:var(--divider)] bg-[color:var(--bg-elevated)] px-5 py-3 text-[11px]">
+      <footer className="flex items-center gap-3 rounded-lg border border-[color:var(--divider)] bg-[color:var(--bg-elevated)] px-5 py-3 text-[11px]">
         <span className="font-mono-num inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
           <Activity className="size-3" aria-hidden />
           {tw('buildStatusLabel')}

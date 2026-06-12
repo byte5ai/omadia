@@ -420,7 +420,7 @@ export function PersonaPillar({
             onClick={handleSave}
             disabled={!dirty || pending || disabled}
             className={cn(
-              'rounded-md bg-[color:var(--accent)] px-3 py-1.5 text-sm font-medium text-white',
+              'rounded-md bg-[color:var(--accent)] px-3 py-1.5 text-sm font-medium text-[color:var(--fg-on-dark)]',
               'shadow-[var(--shadow-cta)] disabled:opacity-50',
             )}
           >

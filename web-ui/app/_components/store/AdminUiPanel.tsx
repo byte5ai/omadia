@@ -54,7 +54,7 @@ export function AdminUiToggle(): React.ReactElement {
         'text-[12px] font-semibold uppercase tracking-[0.18em]',
         'border transition-colors',
         open
-          ? 'border-[color:var(--accent)] bg-[color:var(--accent)] text-white hover:bg-[color:var(--accent)]/90'
+          ? 'border-[color:var(--accent)] bg-[color:var(--accent)] text-[color:var(--fg-on-dark)] hover:bg-[color:var(--accent)]/90'
           : 'border-[color:var(--rule-strong)] bg-[color:var(--paper)] text-[color:var(--ink)] hover:bg-[color:var(--bg-soft)]',
       )}
     >

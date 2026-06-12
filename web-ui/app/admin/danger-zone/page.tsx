@@ -166,11 +166,11 @@ export default function DangerZonePage(): React.ReactElement {
       <header className="mb-8">
         <Link
           href="/admin"
-          className="text-xs text-neutral-500 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100"
+          className="text-xs text-[color:var(--fg-muted)] hover:text-[color:var(--fg-strong)]"
         >
           ← /admin
         </Link>
-        <h1 className="mt-2 font-display text-[clamp(2rem,4vw,3rem)] leading-[1.1] text-red-500">
+        <h1 className="mt-2 font-display text-[clamp(2rem,4vw,3rem)] leading-[1.1] text-[color:var(--danger)]">
           Danger Zone · Memory-Purge
         </h1>
         <p className="mt-3 max-w-2xl text-[16px] leading-[1.55] text-[color:var(--fg-muted)]">
@@ -181,32 +181,32 @@ export default function DangerZonePage(): React.ReactElement {
         </p>
       </header>
 
-      <section className="mb-6 rounded-[14px] border border-red-500/40 bg-red-500/5 p-4 text-sm text-red-600 dark:text-red-300">
+      <section className="mb-6 rounded-lg border border-[color:var(--danger-edge)]/40 bg-[color:var(--danger)]/80/5 p-4 text-sm text-[color:var(--danger)]">
         <p>
           <strong>Hinweis:</strong> Pro User / Team / Channel löschen wirkt nur
           im Knowledge-Graph — der Agent-Scratch ist agent-scoped.
         </p>
         {warning !== null && (
-          <p className="mt-2 border-t border-red-500/30 pt-2 font-medium">
+          <p className="mt-2 border-t border-[color:var(--danger-edge)]/30 pt-2 font-medium">
             ⚠ {warning}
           </p>
         )}
       </section>
 
-      <section className="mb-6 rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
-        <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+      <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
+        <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
           Ziel
         </h2>
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="flex flex-col gap-1">
-            <span className="text-[11px] uppercase tracking-wider text-neutral-500">
+            <span className="text-[11px] uppercase tracking-wider text-[color:var(--fg-muted)]">
               Achse
             </span>
             <select
               value={axis}
               onChange={(e) => { onAxisChange(e.target.value as MemoryPurgeAxis); }}
               disabled={deleting}
-              className="rounded border border-neutral-300 px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-800"
+              className="rounded border border-[color:var(--border)] px-2 py-1 text-sm"
             >
               {AXES.map((a) => (
                 <option key={a.value} value={a.value}>
@@ -218,7 +218,7 @@ export default function DangerZonePage(): React.ReactElement {
 
           {requiresSelector && (
             <label className="flex flex-col gap-1">
-              <span className="text-[11px] uppercase tracking-wider text-neutral-500">
+              <span className="text-[11px] uppercase tracking-wider text-[color:var(--fg-muted)]">
                 Selector
               </span>
               <input
@@ -229,7 +229,7 @@ export default function DangerZonePage(): React.ReactElement {
                   SELECTOR_PLACEHOLDER[axis as Exclude<MemoryPurgeAxis, 'all'>]
                 }
                 disabled={deleting}
-                className="rounded border border-neutral-300 px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-800"
+                className="rounded border border-[color:var(--border)] px-2 py-1 text-sm"
               />
             </label>
           )}
@@ -256,7 +256,7 @@ export default function DangerZonePage(): React.ReactElement {
               deleting ||
               (requiresSelector && trimmedSelector.length === 0)
             }
-            className="rounded border border-neutral-300 px-3 py-1 text-xs hover:border-neutral-400 disabled:opacity-50 dark:border-neutral-700"
+            className="rounded border border-[color:var(--border)] px-3 py-1 text-xs hover:border-[color:var(--border-strong)] disabled:opacity-50"
           >
             {previewLoading ? 'lädt…' : 'Vorschau'}
           </button>
@@ -264,31 +264,31 @@ export default function DangerZonePage(): React.ReactElement {
       </section>
 
       {previewError !== null && (
-        <section className="mb-6 rounded-[14px] border border-red-400 bg-red-50 p-5 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300">
+        <section className="mb-6 rounded-lg border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-5 text-sm text-[color:var(--danger)]">
           Vorschau-Fehler: {previewError}
         </section>
       )}
 
       {preview !== null && previewError === null && (
-        <section className="mb-6 rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
-          <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+        <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
+          <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
             Vorschau — wird gelöscht
           </h2>
           <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
-            <dt className="text-neutral-500">Agent-Scratch</dt>
-            <dd className="font-mono text-red-600 dark:text-red-400">
+            <dt className="text-[color:var(--fg-muted)]">Agent-Scratch</dt>
+            <dd className="font-mono text-[color:var(--danger)]">
               {preview.scratchCount}
             </dd>
-            <dt className="text-neutral-500">Knowledge-Graph</dt>
-            <dd className="font-mono text-red-600 dark:text-red-400">
+            <dt className="text-[color:var(--fg-muted)]">Knowledge-Graph</dt>
+            <dd className="font-mono text-[color:var(--danger)]">
               {preview.kgCount}
             </dd>
           </dl>
         </section>
       )}
 
-      <section className="mb-6 rounded-[14px] border border-red-500/50 bg-red-500/5 p-5">
-        <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-red-500">
+      <section className="mb-6 rounded-lg border border-[color:var(--danger-edge)]/50 bg-[color:var(--danger)]/80/5 p-5">
+        <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--danger)]">
           Löschen bestätigen
         </h2>
         {preview === null ? (
@@ -303,7 +303,7 @@ export default function DangerZonePage(): React.ReactElement {
           <>
             <p className="mb-2 text-sm text-[color:var(--fg-muted)]">
               Zum Bestätigen exakt eingeben:{' '}
-              <code className="rounded bg-red-500/15 px-1.5 py-0.5 font-mono text-red-600 dark:text-red-300">
+              <code className="rounded bg-[color:var(--danger)]/80/15 px-1.5 py-0.5 font-mono text-[color:var(--danger)]">
                 {requiredPhrase}
               </code>
             </p>
@@ -313,14 +313,14 @@ export default function DangerZonePage(): React.ReactElement {
               onChange={(e) => { setConfirmInput(e.target.value); }}
               placeholder={requiredPhrase}
               disabled={deleting}
-              className="w-full rounded border border-red-400 px-2 py-1.5 text-sm font-mono dark:border-red-700 dark:bg-neutral-900"
+              className="w-full rounded border border-[color:var(--danger-edge)] px-2 py-1.5 text-sm font-mono"
             />
             <div className="mt-4 flex items-center justify-end">
               <button
                 type="button"
                 onClick={() => void runDelete()}
                 disabled={!canDelete}
-                className="rounded bg-red-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-40"
+                className="rounded bg-[color:var(--danger)] px-4 py-1.5 text-xs font-semibold text-[color:var(--fg-on-dark)] hover:bg-[color:var(--danger)] disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {deleting ? 'löscht…' : 'Unwiderruflich löschen'}
               </button>
@@ -330,20 +330,20 @@ export default function DangerZonePage(): React.ReactElement {
       </section>
 
       {deleteError !== null && (
-        <section className="mb-6 rounded-[14px] border border-red-400 bg-red-50 p-5 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300">
+        <section className="mb-6 rounded-lg border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-5 text-sm text-[color:var(--danger)]">
           Lösch-Fehler: {deleteError}
         </section>
       )}
 
       {result !== null && (
-        <section className="rounded-[14px] border border-emerald-500/40 bg-emerald-500/5 p-5">
-          <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
+        <section className="rounded-lg border border-[color:var(--success)]/40 bg-[color:var(--success)]/100/5 p-5">
+          <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--success)]">
             Gelöscht
           </h2>
           <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
-            <dt className="text-neutral-500">Agent-Scratch</dt>
+            <dt className="text-[color:var(--fg-muted)]">Agent-Scratch</dt>
             <dd className="font-mono">{result.scratchDeleted}</dd>
-            <dt className="text-neutral-500">Knowledge-Graph</dt>
+            <dt className="text-[color:var(--fg-muted)]">Knowledge-Graph</dt>
             <dd className="font-mono">{result.kgDeleted}</dd>
           </dl>
         </section>

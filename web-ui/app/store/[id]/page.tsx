@@ -103,7 +103,7 @@ export default async function PluginDetailPage({
       </Link>
 
       {/* Hero */}
-      <header className="b5-hero-bg relative mt-6 -mx-6 rounded-[22px] border border-[color:var(--divider)] px-6 py-10 lg:-mx-10 lg:px-10 lg:py-12">
+      <header className="b5-hero-bg relative mt-6 -mx-6 rounded-lg border border-[color:var(--divider)] px-6 py-10 lg:-mx-10 lg:px-10 lg:py-12">
         <div className="flex flex-col items-start gap-8 lg:flex-row lg:items-end lg:justify-between">
           <div className="flex items-start gap-6">
             <PluginIcon
@@ -152,8 +152,7 @@ export default async function PluginDetailPage({
             <p className="text-[18px] font-semibold leading-[1.6] text-[color:var(--fg)]">
               {plugin.description ? (
                 <>
-                  <span className="b5-colon">:</span>
-                  {plugin.description}
+                                    {plugin.description}
                 </>
               ) : (
                 <span className="text-[color:var(--fg-muted)]">

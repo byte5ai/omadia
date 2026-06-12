@@ -34,7 +34,7 @@ export function SaveButton({
       type="button"
       onClick={onClick}
       disabled={pending}
-      className="rounded-md bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-black disabled:opacity-50"
+      className="rounded-md bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-[color:var(--text-inverse)] disabled:opacity-50"
     >
       {pending ? '…' : label}
     </button>

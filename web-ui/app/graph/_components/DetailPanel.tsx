@@ -40,8 +40,8 @@ export default function DetailPanel({
     ([, v]) => v !== null && v !== undefined && v !== '',
   );
   return (
-    <aside className="flex w-96 shrink-0 flex-col border-l border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
-      <div className="flex items-center gap-2 border-b border-neutral-200 px-3 py-2 text-xs dark:border-neutral-800">
+    <aside className="flex w-96 shrink-0 flex-col border-l border-[color:var(--border)] bg-[color:var(--bg-elevated)]">
+      <div className="flex items-center gap-2 border-b border-[color:var(--border)] px-3 py-2 text-xs">
         <span
           className="h-2.5 w-2.5 rounded-full"
           style={{ backgroundColor: nodeColor(node.type) }}
@@ -59,7 +59,7 @@ export default function DetailPanel({
         ) : null}
         {node.type === 'Turn' && node.manuallyAuthored ? (
           <span
-            className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400"
+            className="rounded-full bg-[color:var(--warning)]/100/20 px-2 py-0.5 text-[10px] font-medium text-[color:var(--warning)]"
             title="manuell erfasst — Score-Boost ×1.3 im Token-Budget-Assembler"
           >
             ✎ manual
@@ -68,25 +68,25 @@ export default function DetailPanel({
         <button
           type="button"
           onClick={onClose}
-          className="ml-auto rounded border border-neutral-300 px-2 py-0.5 hover:border-neutral-400 dark:border-neutral-700"
+          className="ml-auto rounded border border-[color:var(--border)] px-2 py-0.5 hover:border-[color:var(--border-strong)]"
         >
           ×
         </button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-3 text-xs">
-        <div className="mb-3 break-all font-mono text-[10px] text-neutral-500">
+        <div className="mb-3 break-all font-mono text-[10px] text-[color:var(--fg-muted)]">
           {node.id}
         </div>
         <div className="mb-3 flex flex-col gap-1">
           {propEntries.map(([k, v]) => (
             <div
               key={k}
-              className="flex items-start gap-2 border-b border-neutral-100 pb-1 last:border-0 dark:border-neutral-800"
+              className="flex items-start gap-2 border-b border-[color:var(--border)] pb-1 last:border-0"
             >
-              <span className="w-24 shrink-0 font-mono text-[10px] uppercase tracking-wide text-neutral-400">
+              <span className="w-24 shrink-0 font-mono text-[10px] uppercase tracking-wide text-[color:var(--fg-subtle)]">
                 {k}
               </span>
-              <span className="min-w-0 break-words text-neutral-700 dark:text-neutral-300">
+              <span className="min-w-0 break-words text-[color:var(--fg)]">
                 {formatValue(v)}
               </span>
             </div>
@@ -96,7 +96,7 @@ export default function DetailPanel({
           type="button"
           onClick={() => onExpand(node.id)}
           disabled={loadingNeighbors}
-          className="w-full rounded border border-neutral-300 px-2 py-1 text-[11px] font-semibold hover:border-neutral-400 disabled:opacity-50 dark:border-neutral-700"
+          className="w-full rounded border border-[color:var(--border)] px-2 py-1 text-[11px] font-semibold hover:border-[color:var(--border-strong)] disabled:opacity-50"
         >
           {loadingNeighbors ? 'lade Nachbarn…' : '↔ Nachbarn expandieren'}
         </button>
@@ -114,7 +114,7 @@ export default function DetailPanel({
 
         {neighbors && neighbors.length > 0 && (
           <div className="mt-3">
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-neutral-400">
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-[color:var(--fg-subtle)]">
               {neighbors.length} Nachbar{neighbors.length === 1 ? '' : 'n'}
             </div>
             <div className="flex flex-col gap-1">
@@ -123,14 +123,14 @@ export default function DetailPanel({
                   key={n.id}
                   type="button"
                   onClick={() => onSelect(n)}
-                  className="flex items-start gap-2 rounded border border-neutral-200 px-2 py-1 text-left hover:border-neutral-400 dark:border-neutral-700 dark:hover:border-neutral-500"
+                  className="flex items-start gap-2 rounded border border-[color:var(--border)] px-2 py-1 text-left hover:border-[color:var(--border-strong)]"
                 >
                   <span
                     className="mt-1 h-2 w-2 shrink-0 rounded-full"
                     style={{ backgroundColor: nodeColor(n.type) }}
                   />
                   <span className="min-w-0">
-                    <span className="block font-mono text-[10px] text-neutral-500">
+                    <span className="block font-mono text-[10px] text-[color:var(--fg-muted)]">
                       {nodeIcon(n.type)} {n.type}
                     </span>
                     <span className="block truncate">
@@ -177,9 +177,9 @@ function TierBadge({
   accessCount?: number;
 }): React.ReactElement {
   const palette: Record<Tier, string> = {
-    HOT: 'bg-cyan-500/20 text-cyan-600 dark:text-cyan-400',
-    WARM: 'bg-amber-500/20 text-amber-600 dark:text-amber-400',
-    COLD: 'bg-neutral-500/20 text-neutral-600 dark:text-neutral-400',
+    HOT: 'bg-[color:var(--accent)]/100/20 text-[color:var(--accent)]',
+    WARM: 'bg-[color:var(--warning)]/100/20 text-[color:var(--warning)]',
+    COLD: 'bg-[color:var(--fg-subtle)]/20 text-[color:var(--fg-muted)]',
   };
   const tooltipParts: string[] = [`tier=${tier}`];
   if (typeof decayScore === 'number') {
@@ -222,8 +222,8 @@ function ProvenanceSection({
       ? 'Lvl 2 · Session'
       : 'Lvl 2 · Turn / User / Entitäten';
   return (
-    <div className="mt-3 rounded border border-fuchsia-200 bg-fuchsia-50/50 p-2 dark:border-fuchsia-800/60 dark:bg-fuchsia-900/10">
-      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-fuchsia-700 dark:text-fuchsia-300">
+    <div className="mt-3 rounded border border-[color:var(--accent)] bg-[color:var(--accent)]/10 p-2">
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-[color:var(--accent)]">
         Provenance (2 Hops)
       </div>
       <ProvenanceList label={lvl1Label} nodes={provenance.level1} onSelect={onSelect} />
@@ -244,16 +244,16 @@ function ProvenanceList({
   if (nodes.length === 0) {
     return (
       <div className="mt-1">
-        <div className="text-[10px] uppercase tracking-wide text-neutral-400">
+        <div className="text-[10px] uppercase tracking-wide text-[color:var(--fg-subtle)]">
           {label}
         </div>
-        <div className="text-[11px] italic text-neutral-400">keine</div>
+        <div className="text-[11px] italic text-[color:var(--fg-subtle)]">keine</div>
       </div>
     );
   }
   return (
     <div className="mt-1">
-      <div className="text-[10px] uppercase tracking-wide text-neutral-400">
+      <div className="text-[10px] uppercase tracking-wide text-[color:var(--fg-subtle)]">
         {label}
       </div>
       <div className="mt-1 flex flex-col gap-1">
@@ -262,14 +262,14 @@ function ProvenanceList({
             key={n.id}
             type="button"
             onClick={() => onSelect(n)}
-            className="flex items-start gap-2 rounded border border-neutral-200 bg-white px-2 py-1 text-left hover:border-fuchsia-400 dark:border-neutral-700 dark:bg-neutral-900 dark:hover:border-fuchsia-500"
+            className="flex items-start gap-2 rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-2 py-1 text-left hover:border-[color:var(--accent)]"
           >
             <span
               className="mt-1 h-2 w-2 shrink-0 rounded-full"
               style={{ backgroundColor: nodeColor(n.type) }}
             />
             <span className="min-w-0">
-              <span className="block font-mono text-[10px] text-neutral-500">
+              <span className="block font-mono text-[10px] text-[color:var(--fg-muted)]">
                 {nodeIcon(n.type)} {n.type}
               </span>
               <span className="block truncate">

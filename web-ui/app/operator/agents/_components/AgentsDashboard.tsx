@@ -107,23 +107,23 @@ export function AgentsDashboard({
   return (
     <div className="space-y-10">
       {error && (
-        <div className="rounded border border-red-400 bg-red-50 p-3 text-sm text-red-800">
+        <div className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-3 text-sm text-[color:var(--danger)]">
           {error}
         </div>
       )}
       {catalogError && (
-        <div className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
+        <div className="rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 p-3 text-sm text-[color:var(--warning)]">
           {t('catalogError', { message: catalogError })}
         </div>
       )}
 
-      <section className="rounded border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
+      <section className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-5">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-medium">{t('platformHeading')}</h2>
           <div className="flex gap-2">
             <button
               type="button"
-              className="rounded border border-neutral-300 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 px-3 py-1 text-xs hover:bg-neutral-100 dark:hover:bg-neutral-700"
+              className="rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-3 py-1 text-xs hover:bg-[color:var(--bg-soft)]"
               disabled={pending || !!busy || !fallbackSlug}
               onClick={() => {
                 if (!confirm(t('rehydrateConfirm'))) return;
@@ -143,7 +143,7 @@ export function AgentsDashboard({
             </button>
             <button
               type="button"
-              className="rounded border border-neutral-300 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 px-3 py-1 text-xs hover:bg-neutral-100 dark:hover:bg-neutral-700"
+              className="rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-3 py-1 text-xs hover:bg-[color:var(--bg-soft)]"
               disabled={pending || !!busy}
               onClick={() => run('reload', () => triggerAgentReload())}
             >
@@ -172,12 +172,12 @@ export function AgentsDashboard({
       <section className="space-y-4">
         <h2 className="text-lg font-medium">
           {t('agentsHeading')}{' '}
-          <span className="text-sm font-normal text-neutral-500 dark:text-neutral-400">
+          <span className="text-sm font-normal text-[color:var(--fg-muted)]">
             ({initial.agents.length})
           </span>
         </h2>
         {initial.agents.length === 0 ? (
-          <p className="text-sm text-neutral-500 dark:text-neutral-400">{t('agentsEmpty')}</p>
+          <p className="text-sm text-[color:var(--fg-muted)]">{t('agentsEmpty')}</p>
         ) : (
           initial.agents.map((agent) => (
             <AgentCard
@@ -246,9 +246,9 @@ function FallbackPicker(props: {
   const t = useTranslations('operatorAgents');
   return (
     <label className="flex items-center gap-3 text-sm">
-      <span className="text-neutral-600 dark:text-neutral-300">{t('fallbackLabel')}</span>
+      <span className="text-[color:var(--fg-muted)]">{t('fallbackLabel')}</span>
       <select
-        className="rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-1"
+        className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-2 py-1"
         value={props.currentSlug ?? ''}
         disabled={props.disabled}
         onChange={(e) =>
@@ -292,9 +292,9 @@ function RoutingTester(props: {
   }
 
   return (
-    <section className="rounded border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
+    <section className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-5">
       <h2 className="mb-1 text-lg font-medium">{t('routingTesterHeading')}</h2>
-      <p className="mb-3 text-xs text-neutral-500 dark:text-neutral-400">
+      <p className="mb-3 text-xs text-[color:var(--fg-muted)]">
         {t('routingTesterHelp')}
       </p>
       <form
@@ -305,14 +305,14 @@ function RoutingTester(props: {
         }}
       >
         <label className="flex flex-col gap-1">
-          <span className="text-xs uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+          <span className="text-xs uppercase tracking-wide text-[color:var(--fg-muted)]">
             {t('fieldChannelType')}
           </span>
           {props.channelTypes.length > 0 ? (
             <select
               value={type}
               onChange={(e) => setType(e.target.value)}
-              className="rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 text-sm"
+              className="rounded border border-[color:var(--border)] px-2 py-1 text-sm"
             >
               <option value="">—</option>
               {props.channelTypes.map((ct) => (
@@ -327,12 +327,12 @@ function RoutingTester(props: {
               value={type}
               onChange={(e) => setType(e.target.value)}
               placeholder="teams"
-              className="rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 text-sm"
+              className="rounded border border-[color:var(--border)] px-2 py-1 text-sm"
             />
           )}
         </label>
         <label className="flex flex-1 flex-col gap-1">
-          <span className="text-xs uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+          <span className="text-xs uppercase tracking-wide text-[color:var(--fg-muted)]">
             {t('fieldChannelKey')}
           </span>
           <input
@@ -340,22 +340,22 @@ function RoutingTester(props: {
             value={key}
             onChange={(e) => setKey(e.target.value)}
             placeholder="28:bot-id-or-@username"
-            className="rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 text-sm"
+            className="rounded border border-[color:var(--border)] px-2 py-1 text-sm"
           />
         </label>
         <button
           type="submit"
           disabled={props.disabled || running || !type || !key}
-          className="rounded bg-neutral-900 px-4 py-1.5 text-sm text-white hover:bg-neutral-800 disabled:opacity-40"
+          className="rounded bg-[color:var(--bg-inverse)] px-4 py-1.5 text-sm text-[color:var(--fg-on-dark)] hover:bg-[color:var(--bg-inverse)] disabled:opacity-40"
         >
           {running ? t('routingTesterRunning') : t('routingTesterSubmit')}
         </button>
       </form>
       {error && (
-        <p className="mt-3 text-sm text-red-700">{error}</p>
+        <p className="mt-3 text-sm text-[color:var(--danger)]">{error}</p>
       )}
       {result && (
-        <div className="mt-3 rounded border border-neutral-200 bg-neutral-50 dark:bg-neutral-800 p-3 text-sm">
+        <div className="mt-3 rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)] p-3 text-sm">
           {result.matched ? (
             <p>
               {t('routingTesterMatched', {
@@ -364,7 +364,7 @@ function RoutingTester(props: {
               })}
             </p>
           ) : (
-            <p className="text-neutral-600 dark:text-neutral-300">
+            <p className="text-[color:var(--fg-muted)]">
               {result.message ?? t('routingTesterNoMatch')}
             </p>
           )}
@@ -390,7 +390,7 @@ function CreateAgentForm(props: {
   const [privacy, setPrivacy] = useState<PrivacyProfile>('default');
 
   return (
-    <section className="rounded border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-5">
+    <section className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-5">
       <h2 className="mb-4 text-lg font-medium">{t('createHeading')}</h2>
       <form
         className="grid gap-4 lg:grid-cols-4"
@@ -416,7 +416,7 @@ function CreateAgentForm(props: {
             onChange={(e) => setSlug(e.target.value)}
             pattern="^[a-z0-9][a-z0-9-]*$"
             required
-            className="w-full rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 text-sm"
+            className="w-full rounded border border-[color:var(--border)] px-2 py-1 text-sm"
             placeholder="public"
           />
         </Field>
@@ -426,7 +426,7 @@ function CreateAgentForm(props: {
             value={name}
             onChange={(e) => setName(e.target.value)}
             required
-            className="w-full rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 text-sm"
+            className="w-full rounded border border-[color:var(--border)] px-2 py-1 text-sm"
           />
         </Field>
         <Field label={t('fieldDescription')}>
@@ -434,14 +434,14 @@ function CreateAgentForm(props: {
             type="text"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            className="w-full rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 text-sm"
+            className="w-full rounded border border-[color:var(--border)] px-2 py-1 text-sm"
           />
         </Field>
         <Field label={t('fieldPrivacy')}>
           <select
             value={privacy}
             onChange={(e) => setPrivacy(e.target.value as PrivacyProfile)}
-            className="w-full rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 text-sm"
+            className="w-full rounded border border-[color:var(--border)] px-2 py-1 text-sm"
           >
             <option value="default">default</option>
             <option value="strict">strict</option>
@@ -451,7 +451,7 @@ function CreateAgentForm(props: {
           <button
             type="submit"
             disabled={props.disabled || !slug || !name}
-            className="rounded bg-neutral-900 px-4 py-1.5 text-sm text-white hover:bg-neutral-800 disabled:opacity-40"
+            className="rounded bg-[color:var(--bg-inverse)] px-4 py-1.5 text-sm text-[color:var(--fg-on-dark)] hover:bg-[color:var(--bg-inverse)] disabled:opacity-40"
           >
             {t('createSubmit')}
           </button>
@@ -498,7 +498,7 @@ function AgentCard(props: {
   const enabledPluginCount = agent.plugins.filter((p) => p.enabled).length;
 
   return (
-    <article className="rounded border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900">
+    <article className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)]">
       <header className="flex items-start justify-between gap-4 px-5 py-3">
         <button
           type="button"
@@ -506,17 +506,17 @@ function AgentCard(props: {
           onClick={() => setExpanded((v) => !v)}
           aria-expanded={expanded}
         >
-          <span className="mt-0.5 text-neutral-500 dark:text-neutral-400">
+          <span className="mt-0.5 text-[color:var(--fg-muted)]">
             {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
           </span>
           <span className="flex-1">
             <span className="block text-base font-semibold">
               {agent.name}{' '}
-              <span className="font-mono text-sm text-neutral-500 dark:text-neutral-400">
+              <span className="font-mono text-sm text-[color:var(--fg-muted)]">
                 ({agent.slug})
               </span>
             </span>
-            <span className="block text-xs text-neutral-500 dark:text-neutral-400">
+            <span className="block text-xs text-[color:var(--fg-muted)]">
               {t('agentCardSummary', {
                 privacy: agent.privacy_profile,
                 status:
@@ -536,7 +536,7 @@ function AgentCard(props: {
           <div className="flex gap-2">
             <button
               type="button"
-              className="rounded border border-neutral-300 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 px-2 py-1 text-xs hover:bg-neutral-100 dark:hover:bg-neutral-700"
+              className="rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-2 py-1 text-xs hover:bg-[color:var(--bg-soft)]"
               disabled={props.disabled}
               onClick={() =>
                 props.onPatch({
@@ -550,7 +550,7 @@ function AgentCard(props: {
             </button>
             <button
               type="button"
-              className="rounded border border-neutral-300 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 px-2 py-1 text-xs hover:bg-neutral-100 dark:hover:bg-neutral-700"
+              className="rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-2 py-1 text-xs hover:bg-[color:var(--bg-soft)]"
               disabled={props.disabled}
               onClick={() =>
                 props.onPatch({
@@ -563,7 +563,7 @@ function AgentCard(props: {
             </button>
             <button
               type="button"
-              className="rounded border border-red-300 bg-red-50 px-2 py-1 text-xs text-red-800 hover:bg-red-100"
+              className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 px-2 py-1 text-xs text-[color:var(--danger)] hover:bg-[color:var(--danger)]/8"
               disabled={props.disabled}
               onClick={() => {
                 if (confirm(t('deleteConfirm', { slug: agent.slug })))
@@ -577,16 +577,16 @@ function AgentCard(props: {
       </header>
 
       {expanded && (
-        <div className="border-t border-neutral-200 px-5 py-4">
+        <div className="border-t border-[color:var(--border)] px-5 py-4">
           {agent.description && (
-            <p className="mb-4 text-sm text-neutral-700 dark:text-neutral-200">{agent.description}</p>
+            <p className="mb-4 text-sm text-[color:var(--fg)]">{agent.description}</p>
           )}
 
           <div className="mb-4 flex flex-wrap items-center gap-2">
-            <span className="text-xs text-neutral-500 dark:text-neutral-400">{t('sessionsLabel')}</span>
+            <span className="text-xs text-[color:var(--fg-muted)]">{t('sessionsLabel')}</span>
             <button
               type="button"
-              className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-800 hover:bg-amber-100"
+              className="rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 px-2 py-1 text-xs text-[color:var(--warning)] hover:bg-[color:var(--warning)]/10"
               disabled={props.disabled}
               onClick={() => props.onDrain()}
               title={t('drainTooltip')}
@@ -595,7 +595,7 @@ function AgentCard(props: {
             </button>
             <button
               type="button"
-              className="rounded border border-red-300 bg-red-50 px-2 py-1 text-xs text-red-800 hover:bg-red-100"
+              className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 px-2 py-1 text-xs text-[color:var(--danger)] hover:bg-[color:var(--danger)]/8"
               disabled={props.disabled}
               onClick={() => {
                 if (confirm(t('killConfirm', { slug: agent.slug })))
@@ -611,7 +611,7 @@ function AgentCard(props: {
               {t('memoryScopeHeading')}
             </h4>
             {agent.memory_scope.length === 0 ? (
-              <p className="text-xs text-neutral-500 dark:text-neutral-400">
+              <p className="text-xs text-[color:var(--fg-muted)]">
                 {t('memoryScopeEmpty')}
               </p>
             ) : (
@@ -619,7 +619,7 @@ function AgentCard(props: {
                 {agent.memory_scope.map((s) => (
                   <li
                     key={s}
-                    className="rounded bg-neutral-100 dark:bg-neutral-800 px-2 py-0.5 text-neutral-700 dark:text-neutral-200"
+                    className="rounded bg-[color:var(--bg-soft)] px-2 py-0.5 text-[color:var(--fg)]"
                   >
                     {s}
                   </li>
@@ -629,7 +629,7 @@ function AgentCard(props: {
           </div>
 
           {props.isFallback && (
-            <div className="mb-3 rounded border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-900">
+            <div className="mb-3 rounded border border-[color:var(--accent)] bg-[color:var(--accent)]/10 px-3 py-2 text-xs text-[color:var(--accent)]">
               {t('fallbackStoreOnlyNotice')}
             </div>
           )}
@@ -643,7 +643,7 @@ function AgentCard(props: {
               onReplace={props.onReplacePlugins}
             />
           ) : (
-            <p className="text-xs text-neutral-500 dark:text-neutral-400">{t('catalogLoading')}</p>
+            <p className="text-xs text-[color:var(--fg-muted)]">{t('catalogLoading')}</p>
           )}
 
           <BindingsEditor
@@ -713,7 +713,7 @@ function BindingsEditor(props: {
         <span className="flex gap-2">
           <button
             type="button"
-            className="rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-0.5 text-xs hover:bg-neutral-50 dark:hover:bg-neutral-700"
+            className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-2 py-0.5 text-xs hover:bg-[color:var(--bg-soft)]"
             disabled={props.disabled}
             onClick={add}
           >
@@ -721,7 +721,7 @@ function BindingsEditor(props: {
           </button>
           <button
             type="button"
-            className="rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-0.5 text-xs hover:bg-neutral-50 dark:hover:bg-neutral-700"
+            className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-2 py-0.5 text-xs hover:bg-[color:var(--bg-soft)]"
             disabled={props.disabled}
             onClick={submit}
           >
@@ -730,7 +730,7 @@ function BindingsEditor(props: {
         </span>
       </h4>
       {rows.length === 0 ? (
-        <p className="text-xs text-neutral-500 dark:text-neutral-400">{t('bindingsEmpty')}</p>
+        <p className="text-xs text-[color:var(--fg-muted)]">{t('bindingsEmpty')}</p>
       ) : (
         <ul className="space-y-1.5">
           {rows.map((row, idx) => (
@@ -742,7 +742,7 @@ function BindingsEditor(props: {
                   onChange={(e) =>
                     update(idx, { channel_type: e.target.value })
                   }
-                  className="rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 text-xs"
+                  className="rounded border border-[color:var(--border)] px-2 py-1 text-xs"
                 >
                   {!props.channelTypes.includes(row.channel_type) && (
                     <option value={row.channel_type}>{row.channel_type}</option>
@@ -761,7 +761,7 @@ function BindingsEditor(props: {
                   onChange={(e) =>
                     update(idx, { channel_type: e.target.value })
                   }
-                  className="w-28 rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 text-xs"
+                  className="w-28 rounded border border-[color:var(--border)] px-2 py-1 text-xs"
                   placeholder="teams"
                 />
               )}
@@ -772,12 +772,12 @@ function BindingsEditor(props: {
                 onChange={(e) =>
                   update(idx, { channel_key: e.target.value })
                 }
-                className="flex-1 rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 font-mono text-xs"
+                className="flex-1 rounded border border-[color:var(--border)] px-2 py-1 font-mono text-xs"
                 placeholder="28:bot-id-or-@username"
               />
               <button
                 type="button"
-                className="rounded border border-red-300 bg-red-50 px-2 py-1 text-xs text-red-800 hover:bg-red-100"
+                className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 px-2 py-1 text-xs text-[color:var(--danger)] hover:bg-[color:var(--danger)]/8"
                 disabled={props.disabled}
                 onClick={() => remove(idx)}
               >
@@ -797,7 +797,7 @@ function Field(props: {
 }): React.ReactElement {
   return (
     <label className="flex flex-col gap-1">
-      <span className="text-xs uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+      <span className="text-xs uppercase tracking-wide text-[color:var(--fg-muted)]">
         {props.label}
       </span>
       {props.children}

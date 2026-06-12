@@ -127,7 +127,7 @@ export function AuditModeSwitch({
           <label
             key={m.value}
             className={[
-              'flex cursor-pointer items-start gap-3 rounded-[10px] border p-3',
+              'flex cursor-pointer items-start gap-3 rounded-md border p-3',
               mode === m.value
                 ? 'border-[color:var(--accent)]'
                 : 'border-[color:var(--rule)]',

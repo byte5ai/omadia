@@ -90,7 +90,7 @@ export function SimpleWorkspace({
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5, ease: EASE_OUT }}
-        className="b5-hero-bg relative overflow-hidden rounded-[22px] px-7 py-7 shadow-[var(--shadow-sm)]"
+        className="b5-hero-bg relative overflow-hidden rounded-lg px-7 py-7 shadow-[var(--shadow-sm)]"
       >
         <div
           aria-hidden
@@ -102,8 +102,7 @@ export function SimpleWorkspace({
         </span>
         <h2 className="font-display mt-3 text-[26px] leading-tight">
           {t('intro.title')}
-          <span className="b5-colon">:</span>
-        </h2>
+                  </h2>
         <p className="mt-1.5 max-w-[480px] text-[15px] leading-relaxed">
           {t('intro.subtitle')}
         </p>
@@ -186,7 +185,7 @@ export function SimpleWorkspace({
           </OverviewField>
 
           {hasBeenBuilt ? (
-            <div className="flex items-center gap-2.5 rounded-[14px] bg-[color:var(--bg-soft)] px-4 py-3 text-[14px] text-[color:var(--fg-muted)]">
+            <div className="flex items-center gap-2.5 rounded-lg bg-[color:var(--bg-soft)] px-4 py-3 text-[14px] text-[color:var(--fg-muted)]">
               <span className="inline-flex size-7 items-center justify-center rounded-full bg-[color:var(--success)]/12 text-[color:var(--success)]">
                 <Sparkles className="size-3.5" aria-hidden />
               </span>
@@ -197,7 +196,7 @@ export function SimpleWorkspace({
           ) : null}
 
           {/* Persona — opt-in, collapsed by default to keep things calm. */}
-          <div className="overflow-hidden rounded-[16px] border border-[color:var(--divider)]">
+          <div className="overflow-hidden rounded-lg border border-[color:var(--divider)]">
             <button
               type="button"
               onClick={() => setPersonaOpen((v) => !v)}
@@ -278,10 +277,10 @@ function SimpleStepCard({
       initial={{ opacity: 0, y: 16 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.5, ease: EASE_OUT, delay }}
-      className="overflow-hidden rounded-[22px] border border-[color:var(--divider)] bg-[color:var(--bg-elevated)] shadow-[var(--shadow-md)]"
+      className="overflow-hidden rounded-lg border border-[color:var(--divider)] bg-[color:var(--bg-elevated)] shadow-[var(--shadow-md)]"
     >
       <header className="flex items-center gap-4 border-b border-[color:var(--divider)] px-7 py-5">
-        <span className="relative inline-flex size-10 shrink-0 items-center justify-center rounded-full bg-[color:var(--accent)] text-white shadow-[var(--shadow-cta)]">
+        <span className="relative inline-flex size-10 shrink-0 items-center justify-center rounded-full bg-[color:var(--accent)] text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)]">
           <span className="font-display text-[16px] leading-none">{step}</span>
         </span>
         <div className="min-w-0 flex-1">

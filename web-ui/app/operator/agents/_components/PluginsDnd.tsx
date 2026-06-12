@@ -290,7 +290,7 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
         {t('pluginsHeading')}
         <button
           type="button"
-          className="rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-0.5 text-xs hover:bg-neutral-50 dark:hover:bg-neutral-700"
+          className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-2 py-0.5 text-xs hover:bg-[color:var(--bg-soft)]"
           disabled={props.disabled}
           onClick={submit}
         >
@@ -363,14 +363,14 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
               );
             })}
             {orphans.length > 0 && (
-              <div className="mt-3 border-t border-amber-200 pt-2">
+              <div className="mt-3 border-t border-[color:var(--warning)] pt-2">
                 <div className="mb-1 flex items-center justify-between">
-                  <p className="text-[10px] uppercase tracking-wide text-amber-700">
+                  <p className="text-[10px] uppercase tracking-wide text-[color:var(--warning)]">
                     {t('orphanPluginsHeading')} ({orphans.length})
                   </p>
                   <button
                     type="button"
-                    className="rounded border border-amber-300 bg-white dark:bg-neutral-900 px-1.5 py-0 text-[10px] text-amber-900 hover:bg-amber-100"
+                    className="rounded border border-[color:var(--warning)] bg-[color:var(--bg-elevated)] px-1.5 py-0 text-[10px] text-[color:var(--warning)] hover:bg-[color:var(--warning)]/10"
                     disabled={props.disabled}
                     onClick={clearAllOrphans}
                     title={t('orphanDetachAllTooltip')}
@@ -378,15 +378,15 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
                     {t('orphanDetachAll')}
                   </button>
                 </div>
-                <p className="mb-2 text-[10px] text-amber-800">
+                <p className="mb-2 text-[10px] text-[color:var(--warning)]">
                   {t('orphanExplain')}
                 </p>
                 {orphans.map((id) => (
                   <div
                     key={id}
-                    className="mb-1 flex items-center gap-2 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-xs"
+                    className="mb-1 flex items-center gap-2 rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 px-2 py-1 text-xs"
                   >
-                    <label className="flex items-center gap-1 text-[10px] text-amber-900">
+                    <label className="flex items-center gap-1 text-[10px] text-[color:var(--warning)]">
                       <input
                         type="checkbox"
                         checked={keptOrphans.has(id)}
@@ -395,13 +395,13 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
                       />
                       {t('orphanKeep')}
                     </label>
-                    <span className="font-mono text-amber-900">{id}</span>
-                    <span className="text-[10px] uppercase text-amber-800">
+                    <span className="font-mono text-[color:var(--warning)]">{id}</span>
+                    <span className="text-[10px] uppercase text-[color:var(--warning)]">
                       {t('orphanPluginBadge')}
                     </span>
                     <button
                       type="button"
-                      className="ml-auto rounded border border-amber-300 bg-white dark:bg-neutral-900 px-1.5 py-0 text-[10px] hover:bg-amber-100"
+                      className="ml-auto rounded border border-[color:var(--warning)] bg-[color:var(--bg-elevated)] px-1.5 py-0 text-[10px] hover:bg-[color:var(--warning)]/10"
                       disabled={props.disabled}
                       onClick={() => detach(id)}
                     >
@@ -415,9 +415,9 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
         </div>
         <DragOverlay>
           {activeEntry ? (
-            <div className="rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-1.5 text-xs shadow-lg">
+            <div className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-2 py-1.5 text-xs shadow-lg">
               <span className="font-medium">{activeEntry.name}</span>
-              <code className="ml-1 font-mono text-[10px] text-neutral-500 dark:text-neutral-400">
+              <code className="ml-1 font-mono text-[10px] text-[color:var(--fg-muted)]">
                 {activeEntry.id}
               </code>
             </div>
@@ -502,17 +502,17 @@ function Column(props: {
     <div
       ref={setNodeRef}
       className={[
-        'rounded border bg-neutral-50/40 dark:bg-neutral-900/40 p-2 transition-colors',
+        'rounded border bg-[color:var(--bg-soft)]/40 p-2 transition-colors',
         isOver
-          ? 'border-sky-400 bg-sky-50/60'
-          : 'border-neutral-200 dark:border-neutral-800',
+          ? 'border-[color:var(--accent)] bg-[color:var(--accent)]/10'
+          : 'border-[color:var(--border)]',
       ].join(' ')}
     >
       <div className="mb-2 flex items-center justify-between px-1">
-        <span className="text-xs font-medium uppercase tracking-wide text-neutral-600">
+        <span className="text-xs font-medium uppercase tracking-wide text-[color:var(--fg-muted)]">
           {props.title}
         </span>
-        <span className="text-[10px] text-neutral-500 dark:text-neutral-400">{props.count}</span>
+        <span className="text-[10px] text-[color:var(--fg-muted)]">{props.count}</span>
       </div>
       <SortableContext
         items={itemIds}
@@ -520,7 +520,7 @@ function Column(props: {
       >
         <div className="space-y-1.5">
           {props.count === 0 ? (
-            <p className="px-1 py-3 text-center text-xs text-neutral-400 dark:text-neutral-500 dark:text-neutral-400">
+            <p className="px-1 py-3 text-center text-xs text-[color:var(--fg-subtle)]">
               {props.emptyLabel}
             </p>
           ) : (
@@ -575,13 +575,13 @@ function DraggablePluginTile(props: {
 
   return (
     <div ref={setNodeRef} style={style} className="select-none">
-      <div className="rounded border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900">
+      <div className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)]">
         <div className="flex items-start gap-1.5 px-2 py-1.5">
           <button
             type="button"
             {...attributes}
             {...listeners}
-            className="mt-0.5 cursor-grab text-neutral-400 dark:text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:text-neutral-200 active:cursor-grabbing"
+            className="mt-0.5 cursor-grab text-[color:var(--fg-subtle)] hover:text-[color:var(--fg)] active:cursor-grabbing"
             title={t('dragHandle')}
             disabled={props.disabled}
           >
@@ -589,10 +589,10 @@ function DraggablePluginTile(props: {
           </button>
           <div className="flex-1 text-xs">
             <div className="flex flex-wrap items-center gap-1.5">
-              <span className="font-medium text-neutral-800 dark:text-neutral-100">
+              <span className="font-medium text-[color:var(--fg)]">
                 {entry.name}
               </span>
-              <code className="font-mono text-[10px] text-neutral-500 dark:text-neutral-400">
+              <code className="font-mono text-[10px] text-[color:var(--fg-muted)]">
                 {entry.id}
               </code>
               <KindBadge kind={entry.kind} />
@@ -602,13 +602,13 @@ function DraggablePluginTile(props: {
                     entry.multi_instance_justification ??
                     t('multiInstanceFalseBadge')
                   }
-                  className="rounded bg-amber-100 px-1.5 py-0 text-[10px] uppercase tracking-wide text-amber-800"
+                  className="rounded bg-[color:var(--warning)]/10 px-1.5 py-0 text-[10px] uppercase tracking-wide text-[color:var(--warning)]"
                 >
                   {t('multiInstanceFalseShort')}
                 </span>
               )}
               {isStrict && (
-                <span className="rounded bg-violet-100 px-1.5 py-0 text-[10px] uppercase tracking-wide text-violet-800">
+                <span className="rounded bg-[color:var(--accent)]/10 px-1.5 py-0 text-[10px] uppercase tracking-wide text-[color:var(--accent)]">
                   {t('privacyStrictBadge')}
                 </span>
               )}
@@ -617,13 +617,13 @@ function DraggablePluginTile(props: {
                   title={t('dependencyMissingTooltip', {
                     parent: entry.depends_on[0] ?? '',
                   })}
-                  className="rounded bg-rose-100 px-1.5 py-0 text-[10px] uppercase tracking-wide text-rose-800"
+                  className="rounded bg-[color:var(--danger)]/8 px-1.5 py-0 text-[10px] uppercase tracking-wide text-[color:var(--danger)]"
                 >
                   {t('dependencyMissingBadge')}
                 </span>
               )}
               {attached && (
-                <label className="ml-auto flex items-center gap-1 text-[10px] text-neutral-600">
+                <label className="ml-auto flex items-center gap-1 text-[10px] text-[color:var(--fg-muted)]">
                   <input
                     type="checkbox"
                     checked={props.selection?.enabled ?? false}
@@ -641,7 +641,7 @@ function DraggablePluginTile(props: {
                   <span
                     key={`r-${s}`}
                     title={t('memoryReadTooltip')}
-                    className="rounded bg-blue-50 px-1.5 py-0 text-[10px] text-blue-800"
+                    className="rounded bg-[color:var(--accent)]/10 px-1.5 py-0 text-[10px] text-[color:var(--accent)]"
                   >
                     r:{s}
                   </span>
@@ -650,7 +650,7 @@ function DraggablePluginTile(props: {
                   <span
                     key={`w-${s}`}
                     title={t('memoryWriteTooltip')}
-                    className="rounded bg-emerald-50 px-1.5 py-0 text-[10px] text-emerald-800"
+                    className="rounded bg-[color:var(--success)]/10 px-1.5 py-0 text-[10px] text-[color:var(--success)]"
                   >
                     w:{s}
                   </span>
@@ -658,7 +658,7 @@ function DraggablePluginTile(props: {
               </div>
             )}
             {entry.network_outbound.length > 0 && (
-              <p className="mt-1 truncate text-[10px] text-neutral-500 dark:text-neutral-400">
+              <p className="mt-1 truncate text-[10px] text-[color:var(--fg-muted)]">
                 {t('networkLabel')} {entry.network_outbound.join(', ')}
               </p>
             )}
@@ -667,7 +667,7 @@ function DraggablePluginTile(props: {
             {!attached ? (
               <button
                 type="button"
-                className="rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-1.5 py-0.5 text-[10px] hover:bg-neutral-100 dark:hover:bg-neutral-700"
+                className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-1.5 py-0.5 text-[10px] hover:bg-[color:var(--bg-soft)]"
                 disabled={props.disabled}
                 onClick={props.onAttach}
               >
@@ -679,14 +679,14 @@ function DraggablePluginTile(props: {
                   <button
                     type="button"
                     onClick={props.onToggleExpanded}
-                    className="rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-1.5 py-0.5 text-[10px] hover:bg-neutral-100 dark:hover:bg-neutral-700"
+                    className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-1.5 py-0.5 text-[10px] hover:bg-[color:var(--bg-soft)]"
                   >
                     {props.expanded ? t('configHide') : t('configShow')}
                   </button>
                 )}
                 <button
                   type="button"
-                  className="rounded border border-red-200 bg-red-50 px-1.5 py-0.5 text-[10px] text-red-800 hover:bg-red-100"
+                  className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 px-1.5 py-0.5 text-[10px] text-[color:var(--danger)] hover:bg-[color:var(--danger)]/8"
                   disabled={props.disabled}
                   onClick={props.onDetach}
                 >
@@ -711,12 +711,12 @@ function DraggablePluginTile(props: {
 
 function KindBadge({ kind }: { kind: string }): React.ReactElement {
   const cls = {
-    agent: 'bg-sky-100 text-sky-800',
-    integration: 'bg-emerald-100 text-emerald-800',
-    channel: 'bg-fuchsia-100 text-fuchsia-800',
-    tool: 'bg-neutral-200 text-neutral-700 dark:text-neutral-200',
-    extension: 'bg-orange-100 text-orange-800',
-  }[kind] ?? 'bg-neutral-200 text-neutral-700 dark:text-neutral-200';
+    agent: 'bg-[color:var(--accent)]/10 text-[color:var(--accent)]',
+    integration: 'bg-[color:var(--success)]/10 text-[color:var(--success)]',
+    channel: 'bg-[color:var(--accent)]/10 text-[color:var(--accent)]',
+    tool: 'bg-[color:var(--state-loading)] text-[color:var(--fg)]',
+    extension: 'bg-[color:var(--warning)]/10 text-[color:var(--warning)]',
+  }[kind] ?? 'bg-[color:var(--state-loading)] text-[color:var(--fg)]';
   return (
     <span
       className={`rounded px-1.5 py-0 text-[10px] uppercase tracking-wide ${cls}`}
@@ -736,7 +736,7 @@ function PluginConfigForm(props: {
   ) => void;
 }): React.ReactElement {
   return (
-    <div className="border-t border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-900/40 px-3 py-2">
+    <div className="border-t border-[color:var(--border)] bg-[color:var(--bg-soft)]/50 px-3 py-2">
       <div className="grid gap-2 sm:grid-cols-2">
         {props.fields.map((f) => (
           <PluginConfigField
@@ -767,10 +767,10 @@ function PluginConfigField(props: {
 
   return (
     <label className="flex flex-col gap-0.5">
-      <span className="text-[10px] uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+      <span className="text-[10px] uppercase tracking-wide text-[color:var(--fg-muted)]">
         {field.label}
         {field.help && (
-          <span className="ml-1 text-neutral-400 dark:text-neutral-500 dark:text-neutral-400">— {field.help}</span>
+          <span className="ml-1 text-[color:var(--fg-subtle)]">— {field.help}</span>
         )}
       </span>
       {isSecret ? (
@@ -780,7 +780,7 @@ function PluginConfigField(props: {
           disabled={disabled}
           onChange={(e) => onChange(e.target.value)}
           autoComplete="off"
-          className="rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 text-xs"
+          className="rounded border border-[color:var(--border)] px-2 py-1 text-xs"
           placeholder={typeof field.default === 'string' ? field.default : ''}
         />
       ) : isEnum ? (
@@ -788,7 +788,7 @@ function PluginConfigField(props: {
           value={typeof value === 'string' ? value : ''}
           disabled={disabled}
           onChange={(e) => onChange(e.target.value)}
-          className="rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 text-xs"
+          className="rounded border border-[color:var(--border)] px-2 py-1 text-xs"
         >
           <option value="">—</option>
           {field.enum?.map((opt) => (
@@ -819,7 +819,7 @@ function PluginConfigField(props: {
           onChange={(e) =>
             onChange(e.target.value === '' ? 0 : Number(e.target.value))
           }
-          className="rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 text-xs"
+          className="rounded border border-[color:var(--border)] px-2 py-1 text-xs"
         />
       ) : isHostList ? (
         <textarea
@@ -841,7 +841,7 @@ function PluginConfigField(props: {
           }
           rows={3}
           placeholder="hostname.example.com"
-          className="rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 font-mono text-xs"
+          className="rounded border border-[color:var(--border)] px-2 py-1 font-mono text-xs"
         />
       ) : (
         <input
@@ -850,7 +850,7 @@ function PluginConfigField(props: {
           disabled={disabled}
           onChange={(e) => onChange(e.target.value)}
           placeholder={typeof field.default === 'string' ? field.default : ''}
-          className="rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 text-xs"
+          className="rounded border border-[color:var(--border)] px-2 py-1 text-xs"
         />
       )}
     </label>

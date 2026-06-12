@@ -44,7 +44,7 @@ export function NodeShell({
   const accent = ACCENTS[kind];
   return (
     <div
-      className="relative min-w-[180px] max-w-[260px] overflow-hidden rounded-[12px] border bg-[color:var(--card)] text-left shadow-sm"
+      className="relative min-w-[180px] max-w-[260px] overflow-hidden rounded-lg border bg-[color:var(--card)] text-left shadow-sm"
       style={{
         borderColor: selected ? accent : 'var(--border)',
         boxShadow: selected ? `0 0 0 1px ${accent}` : undefined,

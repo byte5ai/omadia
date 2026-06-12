@@ -148,7 +148,7 @@ export default function AdminRegistriesPage(): React.ReactElement {
       </header>
 
       {/* Add form */}
-      <section className="mb-8 rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
+      <section className="mb-8 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
         <h2 className="mb-4 text-[15px] font-semibold text-[color:var(--fg-strong)]">
           Registry hinzufügen
         </h2>
@@ -182,7 +182,7 @@ export default function AdminRegistriesPage(): React.ReactElement {
             type="button"
             onClick={() => void onAdd()}
             disabled={!canAdd}
-            className="rounded-md bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-black disabled:opacity-50"
+            className="rounded-md bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-[color:var(--text-inverse)] disabled:opacity-50"
           >
             {adding ? '…' : 'Hinzufügen'}
           </button>
@@ -192,7 +192,7 @@ export default function AdminRegistriesPage(): React.ReactElement {
       {state.kind === 'loading' ? (
         <p className="text-sm opacity-70">Lädt …</p>
       ) : state.kind === 'error' ? (
-        <p className="text-sm text-red-500">Fehler beim Laden: {state.message}</p>
+        <p className="text-sm text-[color:var(--danger)]">Fehler beim Laden: {state.message}</p>
       ) : state.registries.length === 0 ? (
         <p className="text-sm text-[color:var(--fg-muted)]">
           Keine Registries konfiguriert.
@@ -202,7 +202,7 @@ export default function AdminRegistriesPage(): React.ReactElement {
           {state.registries.map((r) => (
             <li
               key={r.name}
-              className="rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5"
+              className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5"
             >
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div className="flex flex-1 flex-col gap-1">
@@ -231,7 +231,7 @@ export default function AdminRegistriesPage(): React.ReactElement {
                     type="button"
                     onClick={() => void onDelete(r)}
                     disabled={pending === r.name}
-                    className="rounded-md border border-[color:var(--border)] px-3 py-2 text-sm font-medium text-red-500 hover:bg-red-500/10 disabled:opacity-50"
+                    className="rounded-md border border-[color:var(--border)] px-3 py-2 text-sm font-medium text-[color:var(--danger)] hover:bg-[color:var(--danger)]/80/10 disabled:opacity-50"
                   >
                     {pending === r.name ? '…' : 'Entfernen'}
                   </button>
@@ -261,7 +261,7 @@ export default function AdminRegistriesPage(): React.ReactElement {
                       type="button"
                       onClick={() => void onSaveEdit(r)}
                       disabled={pending === r.name}
-                      className="rounded-md bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-black disabled:opacity-50"
+                      className="rounded-md bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-[color:var(--text-inverse)] disabled:opacity-50"
                     >
                       Speichern
                     </button>
@@ -283,7 +283,7 @@ export default function AdminRegistriesPage(): React.ReactElement {
         </ul>
       )}
 
-      {actionError && <p className="mt-4 text-sm text-red-500">{actionError}</p>}
+      {actionError && <p className="mt-4 text-sm text-[color:var(--danger)]">{actionError}</p>}
     </main>
   );
 }
@@ -314,7 +314,7 @@ function TokenBadge({ hasToken }: { hasToken: boolean }): React.ReactElement {
       className={[
         'inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] uppercase tracking-[0.16em]',
         hasToken
-          ? 'bg-emerald-500/10 text-emerald-500'
+          ? 'bg-[color:var(--success)]/100/10 text-[color:var(--success)]'
           : 'bg-[color:var(--border)]/40 text-[color:var(--fg-muted)]',
       ].join(' ')}
     >

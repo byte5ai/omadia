@@ -93,7 +93,7 @@ export function DraftRow({ draft, deleted = false }: DraftRowProps): React.React
   return (
     <div
       className={cn(
-        'group relative flex items-start gap-4 rounded-[14px] border border-[color:var(--divider)] bg-[color:var(--bg-elevated)] p-5 transition-[box-shadow] duration-[var(--dur-base)]',
+        'group relative flex items-start gap-4 rounded-lg border border-[color:var(--divider)] bg-[color:var(--bg-elevated)] p-5 transition-[box-shadow] duration-[var(--dur-base)]',
         'hover:shadow-[0_4px_14px_rgba(0,75,115,0.08)]',
         pending && 'opacity-60',
       )}
@@ -212,7 +212,7 @@ export function DraftRow({ draft, deleted = false }: DraftRowProps): React.React
             ) : null}
             <Link
               href={`/store/builder/${encodeURIComponent(draft.id)}`}
-              className="inline-flex items-center gap-1.5 rounded-md bg-[color:var(--accent)]/10 px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-[color:var(--accent)] transition-colors hover:bg-[color:var(--accent)] hover:text-white"
+              className="inline-flex items-center gap-1.5 rounded-md bg-[color:var(--accent)]/10 px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-[color:var(--accent)] transition-colors hover:bg-[color:var(--accent)] hover:text-[color:var(--fg-on-dark)]"
             >
               {t('workspace')}
               <ArrowRight className="size-3.5" aria-hidden />

@@ -91,7 +91,7 @@ export default function BuilderPage(): React.ReactElement {
           <p className="px-6 py-6 text-sm text-[color:var(--fg-muted)]">{t('loading')}</p>
         )}
         {state.kind === 'error' && (
-          <p className="px-6 py-6 text-sm text-red-500">
+          <p className="px-6 py-6 text-sm text-[color:var(--danger)]">
             {t('loadError')}: {state.message}
           </p>
         )}

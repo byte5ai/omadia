@@ -207,7 +207,7 @@ function ClusterDropdown({
           role="menu"
           className="absolute left-0 top-full z-50 min-w-[180px] pt-1"
         >
-          <div className="rounded border border-neutral-200 bg-white py-1 shadow-lg dark:border-neutral-800 dark:bg-neutral-900">
+          <div className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] py-1 shadow-lg">
             {cluster.children.map((child) => {
               const active = child.href === activeHref;
               return (
@@ -219,8 +219,8 @@ function ClusterDropdown({
                   className={[
                     'block px-3 py-1.5 text-[12px] uppercase tracking-[0.16em] transition-colors',
                     active
-                      ? 'bg-neutral-100 text-[color:var(--ink)] dark:bg-neutral-800'
-                      : 'text-[color:var(--muted-ink)] hover:bg-neutral-100 hover:text-[color:var(--ink)] dark:hover:bg-neutral-800',
+                      ? 'bg-[color:var(--bg-soft)] text-[color:var(--ink)]'
+                      : 'text-[color:var(--muted-ink)] hover:bg-[color:var(--bg-soft)] hover:text-[color:var(--ink)]',
                   ].join(' ')}
                 >
                   {renderChildLabel(child)}

@@ -82,15 +82,6 @@ body {
   line-height: 1.65;
 }
 
-/* The byte5 signature magenta colon is retired (Lume has no magenta device).
-   The class is kept so existing markup stays valid, but it no longer paints a
-   brand color — it inherits text color at a structural weight. */
-.b5-colon {
-  color: inherit;
-  font-weight: 600;
-  margin-right: 0.35em;
-}
-
 /* ------------------------------------------------------------------------ */
 /* Lume implementation primitives (spec §3) as composable utility classes.  */
 /* ------------------------------------------------------------------------ */

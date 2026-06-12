@@ -150,10 +150,10 @@ function StreamToast({
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
-            <div className="truncate text-xs font-semibold text-neutral-900 dark:text-neutral-100">
+            <div className="truncate text-xs font-semibold text-[color:var(--fg-strong)]">
               {phaseLabel}
               {record.toolName ? (
-                <span className="ml-1 font-mono text-[10px] font-normal text-neutral-500">
+                <span className="ml-1 font-mono text-[10px] font-normal text-[color:var(--fg-muted)]">
                   · {record.toolName}
                 </span>
               ) : null}
@@ -164,7 +164,7 @@ function StreamToast({
                 e.stopPropagation();
                 onDismiss();
               }}
-              className="rounded p-0.5 text-neutral-400 opacity-60 transition hover:bg-neutral-200 hover:text-neutral-700 group-hover:opacity-100 dark:hover:bg-neutral-700 dark:hover:text-neutral-200"
+              className="rounded p-0.5 text-[color:var(--fg-subtle)] opacity-60 transition hover:bg-[color:var(--state-loading)] hover:text-[color:var(--fg)] group-hover:opacity-100"
               aria-label={t('dismissAriaLabel')}
               title={t('dismissTitle')}
             >
@@ -172,11 +172,11 @@ function StreamToast({
             </button>
           </div>
           {record.previewTail && (
-            <div className="mt-1 line-clamp-3 text-[11px] leading-snug text-neutral-600 dark:text-neutral-400">
+            <div className="mt-1 line-clamp-3 text-[11px] leading-snug text-[color:var(--fg-muted)]">
               {record.previewTail}
             </div>
           )}
-          <div className="mt-1 flex items-center gap-2 text-[10px] text-neutral-500 dark:text-neutral-500">
+          <div className="mt-1 flex items-center gap-2 text-[10px] text-[color:var(--fg-muted)]">
             <span>{t('elapsedSec', { sec: elapsedSec })}</span>
             {typeof record.tokensIn === 'number' && record.tokensIn > 0 ? (
               <span
@@ -196,14 +196,14 @@ function StreamToast({
             ) : null}
             {typeof record.cacheTokens === 'number' && record.cacheTokens > 0 ? (
               <span
-                className="font-mono text-emerald-600 dark:text-emerald-400"
+                className="font-mono text-[color:var(--success)]"
                 title={t('cacheHitTitle', { n: record.cacheTokens })}
               >
                 · 🟢 {formatTokenCount(record.cacheTokens)}
               </span>
             ) : null}
             {record.error ? (
-              <span className="truncate text-red-600 dark:text-red-400">
+              <span className="truncate text-[color:var(--danger)]">
                 · {record.error}
               </span>
             ) : null}
@@ -221,7 +221,7 @@ function StreamToast({
             e.stopPropagation();
             setConfirming(true);
           }}
-          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-md border border-red-200 bg-red-50/60 px-2 py-1 text-[11px] font-medium text-red-700 transition hover:bg-red-100 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300 dark:hover:bg-red-950/70"
+          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-md border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 px-2 py-1 text-[11px] font-medium text-[color:var(--danger)] transition hover:bg-[color:var(--danger)]/8"
         >
           <Ban size={12} aria-hidden />
           {t('abortButton')}
@@ -276,7 +276,7 @@ function AbortConfirmModal({
 
   return createPortal(
     <motion.div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-[color:var(--bg-modal-overlay)] p-4"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
@@ -292,7 +292,7 @@ function AbortConfirmModal({
         aria-modal="true"
         aria-labelledby="stream-abort-title"
         aria-describedby="stream-abort-body"
-        className="w-full max-w-xs rounded-lg border border-neutral-200 bg-white p-4 shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
+        className="w-full max-w-xs rounded-lg border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-4 shadow-xl"
         initial={{ opacity: 0, scale: 0.95, y: 8 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.95, y: 8 }}
@@ -303,13 +303,13 @@ function AbortConfirmModal({
       >
         <h2
           id="stream-abort-title"
-          className="text-sm font-semibold text-neutral-900 dark:text-neutral-100"
+          className="text-sm font-semibold text-[color:var(--fg-strong)]"
         >
           {t('abortConfirmTitle')}
         </h2>
         <p
           id="stream-abort-body"
-          className="mt-1 text-xs leading-snug text-neutral-600 dark:text-neutral-400"
+          className="mt-1 text-xs leading-snug text-[color:var(--fg-muted)]"
         >
           {t('abortConfirmBody')}
         </p>
@@ -321,7 +321,7 @@ function AbortConfirmModal({
               e.stopPropagation();
               onCancel();
             }}
-            className="rounded-md border border-neutral-200 px-3 py-1.5 text-xs font-medium text-neutral-700 transition hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800"
+            className="rounded-md border border-[color:var(--border)] px-3 py-1.5 text-xs font-medium text-[color:var(--fg)] transition hover:bg-[color:var(--bg-soft)]"
           >
             {t('abortConfirmKeep')}
           </button>
@@ -331,7 +331,7 @@ function AbortConfirmModal({
               e.stopPropagation();
               onConfirm();
             }}
-            className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-red-700"
+            className="rounded-md bg-[color:var(--danger)] px-3 py-1.5 text-xs font-medium text-[color:var(--fg-on-dark)] transition hover:bg-[color:var(--danger)]"
           >
             {t('abortConfirmStop')}
           </button>
@@ -396,30 +396,30 @@ function paletteFor(phase: StreamPhase): {
   switch (phase) {
     case 'done':
       return {
-        border: 'border-emerald-300 dark:border-emerald-800',
-        bg: 'bg-emerald-50 dark:bg-emerald-950/60',
-        icon: 'text-emerald-700 dark:text-emerald-400',
+        border: 'border-[color:var(--success)]',
+        bg: 'bg-[color:var(--success)]/10',
+        icon: 'text-[color:var(--success)]',
         symbol: '✓',
       };
     case 'error':
       return {
-        border: 'border-red-300 dark:border-red-800',
-        bg: 'bg-red-50 dark:bg-red-950/60',
-        icon: 'text-red-700 dark:text-red-400',
+        border: 'border-[color:var(--danger-edge)]',
+        bg: 'bg-[color:var(--danger)]/8',
+        icon: 'text-[color:var(--danger)]',
         symbol: '✗',
       };
     case 'aborted':
       return {
-        border: 'border-neutral-300 dark:border-neutral-700',
-        bg: 'bg-neutral-50 dark:bg-neutral-900',
-        icon: 'text-neutral-500',
+        border: 'border-[color:var(--border)]',
+        bg: 'bg-[color:var(--bg-soft)]',
+        icon: 'text-[color:var(--fg-muted)]',
         symbol: '⏹',
       };
     default:
       return {
-        border: 'border-indigo-200 dark:border-indigo-800',
-        bg: 'bg-white dark:bg-neutral-900',
-        icon: 'text-indigo-600 dark:text-indigo-400',
+        border: 'border-[color:var(--accent)]',
+        bg: 'bg-[color:var(--bg-elevated)]',
+        icon: 'text-[color:var(--accent)]',
         symbol: '…',
       };
   }

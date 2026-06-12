@@ -592,7 +592,7 @@ export function PreviewChatPane({
               type="button"
               onClick={() => void onSend()}
               disabled={input.trim().length === 0}
-              className="inline-flex h-[44px] shrink-0 items-center gap-1.5 rounded-md bg-[color:var(--accent)] px-3 py-2 text-[12px] font-semibold text-white shadow-[var(--shadow-cta)] disabled:opacity-40"
+              className="inline-flex h-[44px] shrink-0 items-center gap-1.5 rounded-md bg-[color:var(--accent)] px-3 py-2 text-[12px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] disabled:opacity-40"
             >
               <Send className="size-4" aria-hidden />
               {t('send')}
@@ -721,9 +721,9 @@ function ChatItemView({ item }: { item: ChatItem }): React.ReactElement | null {
       <div className={cn('flex', isUser ? 'justify-end' : 'justify-start')}>
         <div
           className={cn(
-            'max-w-[88%] rounded-[12px] px-3 py-2 text-[13px] leading-snug',
+            'max-w-[88%] rounded-lg px-3 py-2 text-[13px] leading-snug',
             isUser
-              ? 'bg-[color:var(--accent)] text-white'
+              ? 'bg-[color:var(--accent)] text-[color:var(--fg-on-dark)]'
               : 'bg-[color:var(--bg-soft)] text-[color:var(--fg-strong)]',
           )}
         >
@@ -755,7 +755,7 @@ function ChatItemView({ item }: { item: ChatItem }): React.ReactElement | null {
           ? XCircle
           : Hammer;
     return (
-      <div className={cn('rounded-[10px] border px-3 py-2 text-[12px]', palette)}>
+      <div className={cn('rounded-md border px-3 py-2 text-[12px]', palette)}>
         <div className="flex items-center gap-2">
           <Icon className="size-3.5" aria-hidden />
           <span className="font-mono-num text-[10px] uppercase tracking-[0.16em]">
@@ -812,7 +812,7 @@ function ToolCard({
   const [expanded, setExpanded] = useState(false);
   const pending = item.output === null;
   return (
-    <div className="rounded-[10px] border border-[color:var(--divider)] bg-[color:var(--bg-soft)]/60 text-[12px]">
+    <div className="rounded-md border border-[color:var(--divider)] bg-[color:var(--bg-soft)]/60 text-[12px]">
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}

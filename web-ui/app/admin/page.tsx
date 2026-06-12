@@ -107,14 +107,14 @@ function AdminCard({
         href={href}
         className={
           danger
-            ? 'block rounded-[14px] border border-red-500/40 bg-red-500/5 p-5 transition-colors hover:border-red-500'
-            : 'block rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5 transition-colors hover:border-[color:var(--accent)]'
+            ? 'block rounded-lg border border-[color:var(--danger-edge)]/40 bg-[color:var(--danger)]/80/5 p-5 transition-colors hover:border-[color:var(--danger-edge)]'
+            : 'block rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5 transition-colors hover:border-[color:var(--accent)]'
         }
       >
         <div
           className={
             danger
-              ? 'text-[15px] font-semibold text-red-500'
+              ? 'text-[15px] font-semibold text-[color:var(--danger)]'
               : 'text-[15px] font-semibold text-[color:var(--fg-strong)]'
           }
         >

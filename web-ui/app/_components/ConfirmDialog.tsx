@@ -56,28 +56,28 @@ export function ConfirmDialog({
 
   const confirmCls =
     tone === 'danger'
-      ? 'bg-red-600 hover:bg-red-700 text-white border-red-600'
-      : 'bg-neutral-900 hover:bg-neutral-700 text-white border-neutral-900 dark:bg-neutral-100 dark:text-neutral-900 dark:border-neutral-100';
+      ? 'bg-[color:var(--danger)] hover:bg-[color:var(--danger)] text-[color:var(--fg-on-dark)] border-[color:var(--danger-edge)]'
+      : 'bg-[color:var(--bg-inverse)] hover:bg-[color:var(--fg-muted)] text-[color:var(--fg-on-dark)] border-[color:var(--border-strong)]';
 
   return (
     <div
       role="dialog"
       aria-modal="true"
       aria-labelledby="confirm-dialog-title"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-[color:var(--bg-modal-overlay)] p-4"
       onClick={(e) => {
         if (e.target === e.currentTarget) onCancel();
       }}
     >
-      <div className="w-full max-w-md rounded-lg border border-neutral-200 bg-white p-5 shadow-xl dark:border-neutral-700 dark:bg-neutral-900">
+      <div className="w-full max-w-md rounded-lg border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-5 shadow-xl">
         <h2
           id="confirm-dialog-title"
-          className="text-base font-semibold text-neutral-900 dark:text-neutral-100"
+          className="text-base font-semibold text-[color:var(--fg-strong)]"
         >
           {title}
         </h2>
         {body && (
-          <p className="mt-2 text-sm text-neutral-600 dark:text-neutral-400">
+          <p className="mt-2 text-sm text-[color:var(--fg-muted)]">
             {body}
           </p>
         )}
@@ -85,7 +85,7 @@ export function ConfirmDialog({
           <button
             type="button"
             onClick={onCancel}
-            className="rounded border border-neutral-300 bg-white px-4 py-1.5 text-sm font-medium text-neutral-700 transition hover:border-neutral-400 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200"
+            className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-4 py-1.5 text-sm font-medium text-[color:var(--fg)] transition hover:border-[color:var(--border-strong)]"
           >
             {cancelLabel}
           </button>

@@ -85,7 +85,7 @@ export default function BulkPromotePage(): React.ReactElement {
       <header className="mb-8">
         <Link
           href="/admin"
-          className="text-xs text-neutral-500 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100"
+          className="text-xs text-[color:var(--fg-muted)] hover:text-[color:var(--fg-strong)]"
         >
           ← /admin
         </Link>
@@ -99,34 +99,34 @@ export default function BulkPromotePage(): React.ReactElement {
         </p>
       </header>
 
-      <section className="mb-6 rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
-        <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+      <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
+        <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
           Vorschau
         </h2>
         {previewLoading && (
-          <p className="text-xs text-neutral-500">lädt…</p>
+          <p className="text-xs text-[color:var(--fg-muted)]">lädt…</p>
         )}
         {previewError !== null && (
-          <p className="border-l-2 border-red-400 px-2 py-1 text-xs text-red-700 dark:text-red-300">
+          <p className="border-l-2 border-[color:var(--danger-edge)] px-2 py-1 text-xs text-[color:var(--danger)]">
             Fehler: {previewError}
           </p>
         )}
         {preview !== null && previewError === null && (
           <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
-            <dt className="text-neutral-500">Turns ohne Significance</dt>
+            <dt className="text-[color:var(--fg-muted)]">Turns ohne Significance</dt>
             <dd className="font-mono">{preview.nullSignificanceCount}</dd>
-            <dt className="text-neutral-500">
+            <dt className="text-[color:var(--fg-muted)]">
               Eligible für Promotion (≥ {preview.threshold.toFixed(2)})
             </dt>
             <dd className="font-mono">{preview.eligibleForPromoteCount}</dd>
-            <dt className="text-neutral-500">Bereits promoted</dt>
+            <dt className="text-[color:var(--fg-muted)]">Bereits promoted</dt>
             <dd className="font-mono">{preview.alreadyPromotedCount}</dd>
-            <dt className="text-neutral-500">Scorer verfügbar</dt>
+            <dt className="text-[color:var(--fg-muted)]">Scorer verfügbar</dt>
             <dd>
               {preview.scorerAvailable ? (
-                <span className="text-green-600 dark:text-green-400">✓</span>
+                <span className="text-[color:var(--success)]">✓</span>
               ) : (
-                <span className="text-amber-600 dark:text-amber-400">
+                <span className="text-[color:var(--warning)]">
                   ✗ — ANTHROPIC_API_KEY nicht gesetzt
                 </span>
               )}
@@ -135,13 +135,13 @@ export default function BulkPromotePage(): React.ReactElement {
         )}
       </section>
 
-      <section className="mb-6 rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
-        <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+      <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
+        <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
           Parameter
         </h2>
         <div className="grid gap-3 sm:grid-cols-3">
           <label className="flex flex-col gap-1">
-            <span className="text-[11px] uppercase tracking-wider text-neutral-500">
+            <span className="text-[11px] uppercase tracking-wider text-[color:var(--fg-muted)]">
               Threshold
             </span>
             <input
@@ -152,11 +152,11 @@ export default function BulkPromotePage(): React.ReactElement {
               value={threshold}
               onChange={(e) => setThreshold(Number(e.target.value))}
               disabled={running}
-              className="rounded border border-neutral-300 px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-800"
+              className="rounded border border-[color:var(--border)] px-2 py-1 text-sm"
             />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-[11px] uppercase tracking-wider text-neutral-500">
+            <span className="text-[11px] uppercase tracking-wider text-[color:var(--fg-muted)]">
               Score-Limit
             </span>
             <input
@@ -166,11 +166,11 @@ export default function BulkPromotePage(): React.ReactElement {
               value={scoreLimit}
               onChange={(e) => setScoreLimit(Number(e.target.value))}
               disabled={running}
-              className="rounded border border-neutral-300 px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-800"
+              className="rounded border border-[color:var(--border)] px-2 py-1 text-sm"
             />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-[11px] uppercase tracking-wider text-neutral-500">
+            <span className="text-[11px] uppercase tracking-wider text-[color:var(--fg-muted)]">
               Promote-Limit
             </span>
             <input
@@ -180,7 +180,7 @@ export default function BulkPromotePage(): React.ReactElement {
               value={promoteLimit}
               onChange={(e) => setPromoteLimit(Number(e.target.value))}
               disabled={running}
-              className="rounded border border-neutral-300 px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-800"
+              className="rounded border border-[color:var(--border)] px-2 py-1 text-sm"
             />
           </label>
         </div>
@@ -189,7 +189,7 @@ export default function BulkPromotePage(): React.ReactElement {
             type="button"
             onClick={() => void loadPreview()}
             disabled={running || previewLoading}
-            className="rounded border border-neutral-300 px-3 py-1 text-xs hover:border-neutral-400 disabled:opacity-50 dark:border-neutral-700"
+            className="rounded border border-[color:var(--border)] px-3 py-1 text-xs hover:border-[color:var(--border-strong)] disabled:opacity-50"
           >
             Vorschau aktualisieren
           </button>
@@ -201,7 +201,7 @@ export default function BulkPromotePage(): React.ReactElement {
               preview === null ||
               !preview.scorerAvailable
             }
-            className="rounded bg-neutral-900 px-3 py-1 text-xs text-white hover:bg-neutral-700 disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+            className="rounded bg-[color:var(--bg-inverse)] px-3 py-1 text-xs text-[color:var(--fg-on-dark)] hover:bg-[color:var(--fg-muted)] disabled:opacity-50"
           >
             {running ? 'läuft…' : 'Bulk-Job starten'}
           </button>
@@ -209,51 +209,51 @@ export default function BulkPromotePage(): React.ReactElement {
       </section>
 
       {runError !== null && (
-        <section className="mb-6 rounded-[14px] border border-red-400 bg-red-50 p-5 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300">
+        <section className="mb-6 rounded-lg border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-5 text-sm text-[color:var(--danger)]">
           {runError}
         </section>
       )}
 
       {result !== null && (
-        <section className="rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
-          <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+        <section className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
+          <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
             Ergebnis ({result.durationMs} ms)
           </h2>
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-neutral-600 dark:text-neutral-400">
+              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
                 Phase 1 · SCORE
               </h3>
               <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-sm">
-                <dt className="text-neutral-500">scanned</dt>
+                <dt className="text-[color:var(--fg-muted)]">scanned</dt>
                 <dd className="font-mono">{result.scorePhase.scanned}</dd>
-                <dt className="text-neutral-500">scored</dt>
-                <dd className="font-mono text-green-600 dark:text-green-400">
+                <dt className="text-[color:var(--fg-muted)]">scored</dt>
+                <dd className="font-mono text-[color:var(--success)]">
                   {result.scorePhase.scored}
                 </dd>
-                <dt className="text-neutral-500">failed</dt>
-                <dd className="font-mono text-amber-600 dark:text-amber-400">
+                <dt className="text-[color:var(--fg-muted)]">failed</dt>
+                <dd className="font-mono text-[color:var(--warning)]">
                   {result.scorePhase.failed}
                 </dd>
               </dl>
             </div>
             <div>
-              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-neutral-600 dark:text-neutral-400">
+              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
                 Phase 2 · PROMOTE
               </h3>
               <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-sm">
-                <dt className="text-neutral-500">scanned</dt>
+                <dt className="text-[color:var(--fg-muted)]">scanned</dt>
                 <dd className="font-mono">{result.promotePhase.scanned}</dd>
-                <dt className="text-neutral-500">promoted</dt>
-                <dd className="font-mono text-green-600 dark:text-green-400">
+                <dt className="text-[color:var(--fg-muted)]">promoted</dt>
+                <dd className="font-mono text-[color:var(--success)]">
                   {result.promotePhase.promoted}
                 </dd>
-                <dt className="text-neutral-500">already</dt>
+                <dt className="text-[color:var(--fg-muted)]">already</dt>
                 <dd className="font-mono">{result.promotePhase.alreadyPromoted}</dd>
-                <dt className="text-neutral-500">below</dt>
+                <dt className="text-[color:var(--fg-muted)]">below</dt>
                 <dd className="font-mono">{result.promotePhase.belowThreshold}</dd>
-                <dt className="text-neutral-500">failed</dt>
-                <dd className="font-mono text-amber-600 dark:text-amber-400">
+                <dt className="text-[color:var(--fg-muted)]">failed</dt>
+                <dd className="font-mono text-[color:var(--warning)]">
                   {result.promotePhase.failed}
                 </dd>
               </dl>

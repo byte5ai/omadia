@@ -462,7 +462,7 @@ function EnumValuesEditor({
             setDraft('');
           }}
           disabled={!draft.trim()}
-          className="rounded bg-[color:var(--accent)] px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-40"
+          className="rounded bg-[color:var(--accent)] px-2 py-1 text-[11px] font-semibold text-[color:var(--fg-on-dark)] disabled:opacity-40"
         >
           +
         </button>

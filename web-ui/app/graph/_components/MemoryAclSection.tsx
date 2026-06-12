@@ -194,15 +194,15 @@ export default function MemoryAclSection({
   }, [memoryId, onDeleted, reason]);
 
   return (
-    <div className="mt-3 border-t border-neutral-200 pt-3 dark:border-neutral-800">
+    <div className="mt-3 border-t border-[color:var(--border)] pt-3">
       <div className="mb-2 flex gap-1 text-[10px] font-semibold uppercase tracking-wide">
         <button
           type="button"
           onClick={() => setTab('owners')}
           className={`rounded px-2 py-0.5 ${
             tab === 'owners'
-              ? 'bg-neutral-200 text-neutral-900 dark:bg-neutral-700 dark:text-neutral-100'
-              : 'text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300'
+              ? 'bg-[color:var(--state-loading)] text-[color:var(--fg-strong)]'
+              : 'text-[color:var(--fg-muted)] hover:text-[color:var(--fg)]'
           }`}
         >
           Owners ({owners.length})
@@ -212,8 +212,8 @@ export default function MemoryAclSection({
           onClick={() => setTab('audit')}
           className={`rounded px-2 py-0.5 ${
             tab === 'audit'
-              ? 'bg-neutral-200 text-neutral-900 dark:bg-neutral-700 dark:text-neutral-100'
-              : 'text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300'
+              ? 'bg-[color:var(--state-loading)] text-[color:var(--fg-strong)]'
+              : 'text-[color:var(--fg-muted)] hover:text-[color:var(--fg)]'
           }`}
         >
           Audit
@@ -223,7 +223,7 @@ export default function MemoryAclSection({
       {tab === 'owners' && (
         <div className="flex flex-col gap-2">
           {owners.length === 0 ? (
-            <div className="text-[11px] italic text-neutral-500">
+            <div className="text-[11px] italic text-[color:var(--fg-muted)]">
               Keine Owner — Memory ist Admin-only invisible.
             </div>
           ) : (
@@ -231,7 +231,7 @@ export default function MemoryAclSection({
               {owners.map((id) => (
                 <li
                   key={id}
-                  className="flex items-center gap-1 rounded border border-neutral-200 px-2 py-1 dark:border-neutral-700"
+                  className="flex items-center gap-1 rounded border border-[color:var(--border)] px-2 py-1"
                 >
                   <span className="grow truncate font-mono text-[10px]">
                     {id}
@@ -240,7 +240,7 @@ export default function MemoryAclSection({
                     type="button"
                     disabled={busy}
                     onClick={() => void removeOwner(id)}
-                    className="rounded border border-neutral-300 px-1 text-[10px] hover:border-red-400 hover:text-red-500 disabled:opacity-50 dark:border-neutral-700"
+                    className="rounded border border-[color:var(--border)] px-1 text-[10px] hover:border-[color:var(--danger-edge)] hover:text-[color:var(--danger)] disabled:opacity-50"
                     title="Owner entfernen"
                   >
                     ×
@@ -256,7 +256,7 @@ export default function MemoryAclSection({
               placeholder="omadiaUserId (uuid) hinzufügen"
               value={addInput}
               onChange={(e) => setAddInput(e.target.value)}
-              className="rounded border border-neutral-300 px-2 py-1 font-mono text-[10px] dark:border-neutral-700 dark:bg-neutral-800"
+              className="rounded border border-[color:var(--border)] px-2 py-1 font-mono text-[10px]"
               disabled={busy}
             />
             <input
@@ -264,7 +264,7 @@ export default function MemoryAclSection({
               placeholder="Grund (optional, im Audit-Log)"
               value={reason}
               onChange={(e) => setReason(e.target.value)}
-              className="rounded border border-neutral-300 px-2 py-1 text-[10px] dark:border-neutral-700 dark:bg-neutral-800"
+              className="rounded border border-[color:var(--border)] px-2 py-1 text-[10px]"
               disabled={busy}
             />
             <div className="flex gap-1">
@@ -272,7 +272,7 @@ export default function MemoryAclSection({
                 type="button"
                 onClick={() => void addOwner()}
                 disabled={busy || addInput.trim().length === 0}
-                className="grow rounded border border-neutral-300 px-2 py-1 text-[11px] hover:border-neutral-400 disabled:opacity-50 dark:border-neutral-700"
+                className="grow rounded border border-[color:var(--border)] px-2 py-1 text-[11px] hover:border-[color:var(--border-strong)] disabled:opacity-50"
               >
                 + Owner hinzufügen
               </button>
@@ -280,7 +280,7 @@ export default function MemoryAclSection({
                 type="button"
                 onClick={() => void deleteMemory()}
                 disabled={busy}
-                className="rounded border border-red-400 px-2 py-1 text-[11px] text-red-500 hover:bg-red-500/10 disabled:opacity-50"
+                className="rounded border border-[color:var(--danger-edge)] px-2 py-1 text-[11px] text-[color:var(--danger)] hover:bg-[color:var(--danger)]/80/10 disabled:opacity-50"
                 title="Memory hart löschen (Audit-Trail bleibt)"
               >
                 Delete
@@ -289,7 +289,7 @@ export default function MemoryAclSection({
           </div>
 
           {error && (
-            <div className="text-[11px] text-red-500">Fehler: {error}</div>
+            <div className="text-[11px] text-[color:var(--danger)]">Fehler: {error}</div>
           )}
         </div>
       )}
@@ -297,17 +297,17 @@ export default function MemoryAclSection({
       {tab === 'audit' && (
         <div className="flex flex-col gap-2">
           {auditError && (
-            <div className="text-[11px] text-red-500">
+            <div className="text-[11px] text-[color:var(--danger)]">
               Audit nicht lesbar: {auditError}
             </div>
           )}
           {audit === null && !auditError && (
-            <div className="text-[11px] italic text-neutral-500">
+            <div className="text-[11px] italic text-[color:var(--fg-muted)]">
               lädt Audit-Trail…
             </div>
           )}
           {audit?.length === 0 && !auditError && (
-            <div className="text-[11px] italic text-neutral-500">
+            <div className="text-[11px] italic text-[color:var(--fg-muted)]">
               Keine Audit-Einträge.
             </div>
           )}
@@ -316,44 +316,44 @@ export default function MemoryAclSection({
               {audit.map((e) => (
                 <li
                   key={e.id}
-                  className="rounded border border-neutral-200 p-2 dark:border-neutral-700"
+                  className="rounded border border-[color:var(--border)] p-2"
                 >
                   <div className="flex items-center gap-2 text-[10px]">
                     <span
                       className={
                         e.action === 'create'
-                          ? 'rounded bg-green-500/20 px-1 text-green-500'
+                          ? 'rounded bg-[color:var(--success)]/100/20 px-1 text-[color:var(--success)]'
                           : e.action === 'expand'
-                            ? 'rounded bg-cyan-500/20 px-1 text-cyan-500'
+                            ? 'rounded bg-[color:var(--accent)]/100/20 px-1 text-[color:var(--accent)]'
                             : e.action === 'shrink'
-                              ? 'rounded bg-amber-500/20 px-1 text-amber-500'
+                              ? 'rounded bg-[color:var(--warning)]/100/20 px-1 text-[color:var(--warning)]'
                               : e.action === 'edit'
-                                ? 'rounded bg-blue-500/20 px-1 text-blue-500'
+                                ? 'rounded bg-[color:var(--accent)]/100/20 px-1 text-[color:var(--accent)]'
                                 : e.action === 'edit_excerpt'
-                                  ? 'rounded bg-violet-500/20 px-1 text-violet-500'
-                                  : 'rounded bg-red-500/20 px-1 text-red-500'
+                                  ? 'rounded bg-[color:var(--accent)]/100/20 px-1 text-[color:var(--accent)]'
+                                  : 'rounded bg-[color:var(--danger)]/80/20 px-1 text-[color:var(--danger)]'
                       }
                     >
                       {e.action}
                     </span>
-                    <span className="text-neutral-400">
+                    <span className="text-[color:var(--fg-subtle)]">
                       {new Date(e.createdAt).toLocaleString()}
                     </span>
                   </div>
-                  <div className="mt-1 font-mono text-[10px] text-neutral-500">
+                  <div className="mt-1 font-mono text-[10px] text-[color:var(--fg-muted)]">
                     actor: {e.actorOmadiaUserId}
                   </div>
-                  <div className="font-mono text-[10px] text-neutral-500">
+                  <div className="font-mono text-[10px] text-[color:var(--fg-muted)]">
                     before: [{e.beforeOwners.join(', ') || '—'}]
                   </div>
-                  <div className="font-mono text-[10px] text-neutral-500">
+                  <div className="font-mono text-[10px] text-[color:var(--fg-muted)]">
                     after:{' '}
                     {e.afterOwners === null
                       ? '(deleted)'
                       : `[${e.afterOwners.join(', ') || '—'}]`}
                   </div>
                   {e.reason && (
-                    <div className="mt-1 text-[10px] italic text-neutral-600 dark:text-neutral-400">
+                    <div className="mt-1 text-[10px] italic text-[color:var(--fg-muted)]">
                       „{e.reason}“
                     </div>
                   )}

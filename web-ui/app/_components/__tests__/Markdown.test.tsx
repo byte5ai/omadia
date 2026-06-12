@@ -16,7 +16,7 @@ describe('<Markdown /> — Privacy Shield v4 highlight', () => {
         highlightTerms={['Marvin Vomberg']}
       />,
     );
-    const hit = container.querySelector('span.bg-violet-100');
+    const hit = container.querySelector('span[class*="bg-[color:var(--accent)]/10"]');
     expect(hit).not.toBeNull();
     expect(hit?.textContent).toBe('Marvin Vomberg');
   });
@@ -25,7 +25,7 @@ describe('<Markdown /> — Privacy Shield v4 highlight', () => {
     const { container } = render(
       <Markdown source={'Marvin Vomberg steht hier.'} />,
     );
-    expect(container.querySelector('span.bg-violet-100')).toBeNull();
+    expect(container.querySelector('span[class*="bg-[color:var(--accent)]/10"]')).toBeNull();
     expect(container.textContent).toContain('Marvin Vomberg steht hier.');
   });
 
@@ -36,7 +36,7 @@ describe('<Markdown /> — Privacy Shield v4 highlight', () => {
         highlightTerms={['Anna Rüsche']}
       />,
     );
-    expect(container.querySelectorAll('span.bg-violet-100').length).toBe(2);
+    expect(container.querySelectorAll('span[class*="bg-[color:var(--accent)]/10"]').length).toBe(2);
     expect(container.textContent).toContain('aber nicht Bob.');
   });
 
@@ -44,6 +44,6 @@ describe('<Markdown /> — Privacy Shield v4 highlight', () => {
     const { container } = render(
       <Markdown source={'Some answer text.'} highlightTerms={['', '  ']} />,
     );
-    expect(container.querySelector('span.bg-violet-100')).toBeNull();
+    expect(container.querySelector('span[class*="bg-[color:var(--accent)]/10"]')).toBeNull();
   });
 });

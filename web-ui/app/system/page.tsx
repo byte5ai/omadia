@@ -25,7 +25,7 @@ export default async function SystemPage(): Promise<React.ReactElement> {
 
   return (
     <main className="mx-auto max-w-[1280px] px-6 py-12 lg:px-10 lg:py-16">
-      <header className="b5-hero-bg relative -mx-6 rounded-[22px] border border-[color:var(--divider)] px-6 py-10 lg:-mx-10 lg:px-10 lg:py-14">
+      <header className="b5-hero-bg relative -mx-6 rounded-lg border border-[color:var(--divider)] px-6 py-10 lg:-mx-10 lg:px-10 lg:py-14">
         <div className="flex items-baseline gap-3 text-[12px] font-semibold uppercase tracking-[0.24em] text-[color:var(--accent)]">
           <span className="font-mono-num text-[color:var(--fg-subtle)]">
             03
@@ -46,7 +46,7 @@ export default async function SystemPage(): Promise<React.ReactElement> {
 
       <section className="mt-10 grid gap-6 lg:grid-cols-2">
         {loadError ? (
-          <div className="rounded-[18px] border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/5 p-6 text-sm text-[color:var(--danger)]">
+          <div className="rounded-lg border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/5 p-6 text-sm text-[color:var(--danger)]">
             <div className="font-semibold">Vault-Status nicht erreichbar</div>
             <div className="mt-2 font-mono text-xs">{loadError}</div>
           </div>

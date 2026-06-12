@@ -127,7 +127,7 @@ export function IssueReportCard({
       </div>
 
       {phase === 'done' && filed ? (
-        <div className="text-sm text-neutral-900 dark:text-neutral-100">
+        <div className="text-sm text-[color:var(--fg-strong)]">
           {t.rich('filed', {
             number: filed.number,
             issueLink: (chunks) => (
@@ -144,15 +144,15 @@ export function IssueReportCard({
         </div>
       ) : (
         <>
-          <div className="mb-2 text-sm font-medium text-neutral-900 dark:text-neutral-100">
+          <div className="mb-2 text-sm font-medium text-[color:var(--fg-strong)]">
             {report.title}
           </div>
-          <p className="mb-2 text-xs text-neutral-500 dark:text-neutral-400">
+          <p className="mb-2 text-xs text-[color:var(--fg-muted)]">
             {t.rich('publicWarning', {
               strong: (chunks) => <strong>{chunks}</strong>,
             })}
           </p>
-          <pre className="mb-3 max-h-48 overflow-auto rounded bg-neutral-100 p-2 text-[11px] leading-snug whitespace-pre-wrap text-neutral-800 dark:bg-neutral-900 dark:text-neutral-200">
+          <pre className="mb-3 max-h-48 overflow-auto rounded bg-[color:var(--bg-soft)] p-2 text-[11px] leading-snug whitespace-pre-wrap text-[color:var(--fg)]">
             {report.sanitizedBody}
           </pre>
 
@@ -197,7 +197,7 @@ export function IssueReportCard({
                   setIssueNumberInput(e.target.value);
                 }}
                 placeholder={t('issueNumberPlaceholder')}
-                className="w-28 rounded border border-neutral-300 bg-white px-2 py-1.5 text-xs text-neutral-800 dark:border-neutral-600 dark:bg-neutral-800 dark:text-neutral-100"
+                className="w-28 rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-2 py-1.5 text-xs text-[color:var(--fg)]"
               />
               <PrimaryButton
                 disabled={busy}
@@ -230,7 +230,7 @@ function PrimaryButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="rounded border border-[color:var(--warning)] bg-[color:var(--warning)] px-3 py-1.5 text-xs font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+      className="rounded border border-[color:var(--warning)] bg-[color:var(--warning)] px-3 py-1.5 text-xs font-medium text-[color:var(--fg-on-dark)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
     >
       {children}
     </button>
@@ -251,7 +251,7 @@ function SecondaryButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="rounded border border-neutral-300 bg-white px-3 py-1.5 text-xs font-medium text-neutral-700 transition hover:border-neutral-500 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-600 dark:bg-neutral-800 dark:text-neutral-200"
+      className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-3 py-1.5 text-xs font-medium text-[color:var(--fg)] transition hover:border-[color:var(--border-strong)] disabled:cursor-not-allowed disabled:opacity-40"
     >
       {children}
     </button>

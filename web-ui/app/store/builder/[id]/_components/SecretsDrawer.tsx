@@ -177,7 +177,7 @@ export function SecretsDrawer({
               </p>
 
               {fields.length === 0 ? (
-                <div className="rounded-[10px] border border-dashed border-[color:var(--divider)] p-4 text-center text-[12px] text-[color:var(--fg-muted)]">
+                <div className="rounded-md border border-dashed border-[color:var(--divider)] p-4 text-center text-[12px] text-[color:var(--fg-muted)]">
                   {t.rich('noFields', {
                     code: () => (
                       <span className="font-mono-num">setup_fields</span>
@@ -219,7 +219,7 @@ export function SecretsDrawer({
                 type="button"
                 onClick={() => void onSave()}
                 disabled={pending || fields.length === 0}
-                className="ml-auto inline-flex items-center gap-1.5 rounded-md bg-[color:var(--accent)] px-3 py-1.5 text-[12px] font-semibold text-white shadow-[var(--shadow-cta)] disabled:opacity-50"
+                className="ml-auto inline-flex items-center gap-1.5 rounded-md bg-[color:var(--accent)] px-3 py-1.5 text-[12px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] disabled:opacity-50"
               >
                 {pending ? (
                   <Loader2 className="size-3.5 animate-spin" aria-hidden />

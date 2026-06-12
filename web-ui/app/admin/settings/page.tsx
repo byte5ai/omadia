@@ -180,11 +180,11 @@ export default function AdminSettingsPage(): React.ReactElement {
       {state.kind === 'loading' ? (
         <p className="text-sm opacity-70">Lädt …</p>
       ) : state.kind === 'error' ? (
-        <p className="text-sm text-red-500">Fehler beim Laden: {state.message}</p>
+        <p className="text-sm text-[color:var(--danger)]">Fehler beim Laden: {state.message}</p>
       ) : (
         <div className="flex flex-col gap-8">
           {!state.vaultAvailable && (
-            <p className="rounded-[12px] border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-600 dark:text-amber-300">
+            <p className="rounded-lg border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/100/10 px-4 py-3 text-sm text-[color:var(--warning)]">
               Vault nicht verfügbar — Secrets können nicht bearbeitet werden.
             </p>
           )}
@@ -197,7 +197,7 @@ export default function AdminSettingsPage(): React.ReactElement {
                 {cat.settings.map((s) => (
                   <li
                     key={s.key}
-                    className="rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5"
+                    className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5"
                   >
                     <SettingRow
                       setting={s}
@@ -227,7 +227,7 @@ export default function AdminSettingsPage(): React.ReactElement {
             <li key={p.id}>
               <Link
                 href={`/store/${encodeURIComponent(p.id)}`}
-                className="flex items-center justify-between gap-3 rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 px-5 py-4 transition-colors hover:bg-[color:var(--card)]"
+                className="flex items-center justify-between gap-3 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 px-5 py-4 transition-colors hover:bg-[color:var(--card)]"
               >
                 <span className="flex items-center gap-2">
                   <span className="text-[14px] font-semibold text-[color:var(--fg-strong)]">
@@ -315,7 +315,7 @@ function SettingRow({
             className={[
               'inline-flex items-center rounded-full px-2 py-0.5 text-[11px] uppercase tracking-[0.16em]',
               s.isSet
-                ? 'bg-emerald-500/10 text-emerald-500'
+                ? 'bg-[color:var(--success)]/100/10 text-[color:var(--success)]'
                 : 'bg-[color:var(--border)]/40 text-[color:var(--fg-muted)]',
             ].join(' ')}
           >
@@ -356,7 +356,7 @@ function SettingRow({
           {s.help}
         </p>
       )}
-      {error && <p className="text-[12px] text-red-500">{error}</p>}
+      {error && <p className="text-[12px] text-[color:var(--danger)]">{error}</p>}
     </div>
   );
 }
@@ -365,8 +365,8 @@ function StatusChip({ status }: { status: FieldStatus }): React.ReactElement | n
   if (status === 'idle') return null;
   const map: Record<Exclude<FieldStatus, 'idle'>, { label: string; cls: string }> = {
     saving: { label: 'speichert …', cls: 'text-[color:var(--fg-muted)]' },
-    saved: { label: '✓ gespeichert', cls: 'text-emerald-500' },
-    error: { label: '✗ Fehler', cls: 'text-red-500' },
+    saved: { label: '✓ gespeichert', cls: 'text-[color:var(--success)]' },
+    error: { label: '✗ Fehler', cls: 'text-[color:var(--danger)]' },
   };
   const { label, cls } = map[status];
   return <span className={`text-[11px] ${cls}`}>{label}</span>;

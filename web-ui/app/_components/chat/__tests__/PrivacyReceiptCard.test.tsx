@@ -99,8 +99,8 @@ describe('<PrivacyReceiptCard />', () => {
       { locale: 'de' },
     );
     const root = container.querySelector('details');
-    expect(root?.className).toMatch(/red/);
-    expect(root?.className).not.toMatch(/emerald/);
+    expect(root?.className).toMatch(/danger/);
+    expect(root?.className).not.toMatch(/success/);
   });
 
   it('stays emerald when the user named nobody', () => {
@@ -109,8 +109,8 @@ describe('<PrivacyReceiptCard />', () => {
       { locale: 'de' },
     );
     const root = container.querySelector('details');
-    expect(root?.className).toMatch(/emerald/);
-    expect(root?.className).not.toMatch(/red/);
+    expect(root?.className).toMatch(/success/);
+    expect(root?.className).not.toMatch(/danger/);
   });
 
   it('never leaks a PII-shaped value — the receipt carries only counts', () => {

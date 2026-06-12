@@ -272,13 +272,13 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
       <button
         type="button"
         onClick={win.openWindow}
-        className="fixed bottom-6 right-6 z-40 flex items-center gap-2 rounded-full border border-indigo-300 bg-white/90 px-4 py-2 text-sm font-medium text-indigo-700 shadow-lg backdrop-blur transition hover:bg-white dark:border-indigo-700 dark:bg-neutral-900/90 dark:text-indigo-300 dark:hover:bg-neutral-900"
+        className="fixed bottom-6 right-6 z-40 flex items-center gap-2 rounded-full border border-[color:var(--accent)] bg-white/90 px-4 py-2 text-sm font-medium text-[color:var(--accent)] shadow-lg backdrop-blur transition hover:bg-[color:var(--bg-elevated)]"
         aria-label={t('openLabel')}
         title={t('openLabel')}
       >
         <Network size={16} aria-hidden />
         {t('openLabel')}
-        <span className="rounded bg-indigo-100 px-1.5 py-0.5 font-mono text-[10px] text-indigo-700 dark:bg-indigo-900/60 dark:text-indigo-300">
+        <span className="rounded bg-[color:var(--accent)]/10 px-1.5 py-0.5 font-mono text-[10px] text-[color:var(--accent)]">
           {totalNodes}
         </span>
       </button>
@@ -290,7 +290,7 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
 
   return (
     <section
-      className="fixed z-50 flex flex-col overflow-hidden rounded-xl border border-neutral-300 bg-neutral-950 text-neutral-200 shadow-2xl dark:border-neutral-700"
+      className="fixed z-50 flex flex-col overflow-hidden rounded-lg border border-[color:var(--border)] bg-[color:var(--bg-inverse)] text-[color:var(--fg-on-dark)] shadow-2xl"
       style={win.style}
       aria-label={t('title')}
     >
@@ -299,21 +299,21 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
         onPointerMove={win.headerHandlers.onPointerMove}
         onPointerUp={win.headerHandlers.onPointerUp}
         className={[
-          'flex items-center justify-between gap-2 border-b border-white/10 bg-neutral-900 px-3 py-2 select-none',
+          'flex items-center justify-between gap-2 border-b border-white/10 bg-[color:var(--bg-inverse)] px-3 py-2 select-none',
           win.maximized ? '' : 'cursor-move',
         ].join(' ')}
       >
         <div className="flex min-w-0 flex-col gap-0.5">
-          <span className="flex items-center gap-1.5 text-xs font-semibold tracking-wide text-neutral-100">
-            <Network size={13} aria-hidden className="text-indigo-400" />
+          <span className="flex items-center gap-1.5 text-xs font-semibold tracking-wide text-[color:var(--fg-on-dark)]">
+            <Network size={13} aria-hidden className="text-[color:var(--accent)]" />
             {t('title')}
           </span>
-          <span className="truncate text-[10px] text-neutral-500">
+          <span className="truncate text-[10px] text-[color:var(--fg-muted)]">
             {t('subtitle')}
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          <span className="flex gap-1 font-mono text-[10px] text-neutral-400">
+          <span className="flex gap-1 font-mono text-[10px] text-[color:var(--fg-subtle)]">
             <span className="rounded bg-white/10 px-1.5 py-0.5">
               {t('badgeNodes', { count: totalNodes })}
             </span>
@@ -321,7 +321,7 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
               {t('badgeHops', { count: maxHop })}
             </span>
             {insertedCount > 0 && (
-              <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-emerald-300">
+              <span className="rounded bg-[color:var(--success)]/100/20 px-1.5 py-0.5 text-[color:var(--success)]">
                 {t('badgeInserted', { count: insertedCount })}
               </span>
             )}
@@ -329,7 +329,7 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
           <button
             type="button"
             onClick={win.toggleMaximized}
-            className="rounded p-1 text-neutral-400 transition hover:bg-white/10 hover:text-neutral-100"
+            className="rounded p-1 text-[color:var(--fg-subtle)] transition hover:bg-white/10 hover:text-[color:var(--fg-on-dark)]"
             aria-label={win.maximized ? t('restore') : t('maximize')}
             title={win.maximized ? t('restore') : t('maximize')}
           >
@@ -342,7 +342,7 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
           <button
             type="button"
             onClick={win.close}
-            className="rounded p-1 text-neutral-400 transition hover:bg-white/10 hover:text-neutral-100"
+            className="rounded p-1 text-[color:var(--fg-subtle)] transition hover:bg-white/10 hover:text-[color:var(--fg-on-dark)]"
             aria-label={t('close')}
             title={t('close')}
           >
@@ -459,7 +459,7 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
         )}
 
         {/* Minimal legend, bottom-left of the canvas. */}
-        <div className="pointer-events-none absolute bottom-2 left-2 flex gap-3 rounded-md bg-black/40 px-2 py-1 text-[10px] text-neutral-300 backdrop-blur-sm">
+        <div className="pointer-events-none absolute bottom-2 left-2 flex gap-3 rounded-md bg-[color:var(--bg-modal-overlay)] px-2 py-1 text-[10px] text-[color:var(--fg-subtle)] backdrop-blur-sm">
           <span className="flex items-center gap-1">
             <span
               aria-hidden
@@ -490,13 +490,13 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
       </div>
 
       {/* Hop-details list — scrollable, grouped by hop. */}
-      <div className="min-h-0 flex-[2] overflow-y-auto border-t border-white/10 bg-neutral-900/60">
-        <div className="px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-neutral-500">
+      <div className="min-h-0 flex-[2] overflow-y-auto border-t border-white/10 bg-[color:var(--bg-inverse)]/60">
+        <div className="px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-[color:var(--fg-muted)]">
           {t('hopListHeader', { nodes: totalNodes, hops: maxHop })}
         </div>
         {hopGroups.map((group) => (
           <div key={group.hop} className="border-t border-white/5 px-3 py-1.5">
-            <div className="mb-1 text-[11px] font-semibold text-indigo-300">
+            <div className="mb-1 text-[11px] font-semibold text-[color:var(--accent)]">
               {group.hop === 0
                 ? t('hopHeaderRoots')
                 : t('hopHeader', { hop: group.hop })}
@@ -524,31 +524,31 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
                       className="inline-block h-2 w-2 shrink-0 rounded-full"
                       style={{ backgroundColor: kindColor(n.kind) }}
                     />
-                    <span className="shrink-0 rounded bg-white/10 px-1 py-0.5 font-mono text-[9px] text-neutral-400">
+                    <span className="shrink-0 rounded bg-white/10 px-1 py-0.5 font-mono text-[9px] text-[color:var(--fg-subtle)]">
                       {n.kind}
                     </span>
                     {n.inserted && (
-                      <span className="shrink-0 rounded bg-emerald-500/25 px-1 py-0.5 font-mono text-[9px] font-semibold text-emerald-300">
+                      <span className="shrink-0 rounded bg-[color:var(--success)]/100/25 px-1 py-0.5 font-mono text-[9px] font-semibold text-[color:var(--success)]">
                         {t('insertedTag')}
                       </span>
                     )}
                     <span
                       className={[
                         'truncate',
-                        n.inserted ? 'text-emerald-200' : 'text-neutral-200',
+                        n.inserted ? 'text-[color:var(--success)]' : 'text-[color:var(--fg-on-dark)]',
                       ].join(' ')}
                       title={n.name}
                     >
                       {truncateLabel(n.name, 40)}
                     </span>
                     {n.isRoot && n.score !== undefined && (
-                      <span className="ml-auto shrink-0 font-mono text-[9px] text-emerald-400">
+                      <span className="ml-auto shrink-0 font-mono text-[9px] text-[color:var(--success)]">
                         {n.score.toFixed(2)}
                       </span>
                     )}
                     {!n.isRoot && incoming && (
                       <span
-                        className="ml-auto shrink-0 truncate font-mono text-[9px] text-neutral-500"
+                        className="ml-auto shrink-0 truncate font-mono text-[9px] text-[color:var(--fg-muted)]"
                         title={`${incoming.fromLabel} → ${incoming.type}`}
                       >
                         ← {incoming.type}
@@ -573,7 +573,7 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
         >
           <svg
             viewBox="0 0 10 10"
-            className="h-full w-full text-neutral-500"
+            className="h-full w-full text-[color:var(--fg-muted)]"
             fill="none"
             stroke="currentColor"
             strokeWidth="1"

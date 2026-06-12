@@ -23,11 +23,11 @@ import {
 type TabKey = 'memories' | 'excerpts';
 
 const STATUS_BADGE: Record<MergeCandidateStatus, string> = {
-  open: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
+  open: 'bg-[color:var(--accent)]/10 text-[color:var(--accent)]',
   resolved:
-    'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
+    'bg-[color:var(--success)]/10 text-[color:var(--success)]',
   dismissed:
-    'bg-neutral-100 text-neutral-800 dark:bg-neutral-800 dark:text-neutral-300',
+    'bg-[color:var(--bg-soft)] text-[color:var(--fg)]',
 };
 
 const BULK_CONFIRM_THRESHOLD = 100;
@@ -204,7 +204,7 @@ export default function DuplicatesListPage(): React.ReactElement {
       <header className="mb-6">
         <Link
           href="/admin"
-          className="text-xs text-neutral-500 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100"
+          className="text-xs text-[color:var(--fg-muted)] hover:text-[color:var(--fg-strong)]"
         >
           ← /admin
         </Link>
@@ -231,7 +231,7 @@ export default function DuplicatesListPage(): React.ReactElement {
               '-mb-px rounded-t border-b-2 px-3 py-2 text-sm font-medium transition',
               tab === t
                 ? 'border-[color:var(--accent)] text-[color:var(--fg-strong)]'
-                : 'border-transparent text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200',
+                : 'border-transparent text-[color:var(--fg-muted)] hover:text-[color:var(--fg)]',
             ].join(' ')}
           >
             {t === 'memories' ? 'Memories' : 'Excerpts (Palaia)'}
@@ -243,7 +243,7 @@ export default function DuplicatesListPage(): React.ReactElement {
       <>
       <section
         aria-label="Bulk merge detect"
-        className="mb-6 rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4"
+        className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4"
       >
         <div className="mb-3 flex flex-wrap items-baseline gap-3">
           <h2 className="text-sm font-semibold text-[color:var(--fg-strong)]">
@@ -256,7 +256,7 @@ export default function DuplicatesListPage(): React.ReactElement {
         </div>
 
         {bulkPreviewError !== null && (
-          <p className="mb-2 text-xs text-red-600 dark:text-red-300">
+          <p className="mb-2 text-xs text-[color:var(--danger)]">
             Preview fehlgeschlagen: {bulkPreviewError}
           </p>
         )}
@@ -264,17 +264,17 @@ export default function DuplicatesListPage(): React.ReactElement {
         {bulkPreview !== null && (
           <dl className="mb-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
             <div>
-              <dt className="text-neutral-500">ungeprüft</dt>
+              <dt className="text-[color:var(--fg-muted)]">ungeprüft</dt>
               <dd className="font-mono text-base">{bulkPreview.unchecked}</dd>
             </div>
             <div>
-              <dt className="text-neutral-500">schon geprüft</dt>
+              <dt className="text-[color:var(--fg-muted)]">schon geprüft</dt>
               <dd className="font-mono text-base">
                 {bulkPreview.alreadyChecked}
               </dd>
             </div>
             <div>
-              <dt className="text-neutral-500">ohne Embedding</dt>
+              <dt className="text-[color:var(--fg-muted)]">ohne Embedding</dt>
               <dd className="font-mono text-base">
                 {bulkPreview.withoutEmbedding}
               </dd>
@@ -306,49 +306,49 @@ export default function DuplicatesListPage(): React.ReactElement {
             disabled={
               bulkRunning || (bulkPreview !== null && bulkPreview.unchecked === 0)
             }
-            className="rounded border border-neutral-900 bg-neutral-900 px-3 py-1 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50 dark:border-neutral-200 dark:bg-neutral-200 dark:text-neutral-900"
+            className="rounded border border-[color:var(--border-strong)] bg-[color:var(--bg-inverse)] px-3 py-1 text-xs text-[color:var(--fg-on-dark)] disabled:cursor-not-allowed disabled:opacity-50"
           >
             {bulkRunning ? 'läuft…' : 'Bulk-Detect starten'}
           </button>
           {bulkLimit > BULK_CONFIRM_THRESHOLD && (
-            <span className="text-[11px] text-amber-700 dark:text-amber-300">
+            <span className="text-[11px] text-[color:var(--warning)]">
               ⚠️ Confirm bei Limit &gt; {BULK_CONFIRM_THRESHOLD}
             </span>
           )}
         </div>
 
         {bulkError !== null && (
-          <p className="mt-3 text-xs text-red-600 dark:text-red-300">
+          <p className="mt-3 text-xs text-[color:var(--danger)]">
             Run fehlgeschlagen: {bulkError}
           </p>
         )}
 
         {bulkResult !== null && (
-          <div className="mt-3 rounded border border-[color:var(--border)] bg-black/5 p-3 text-xs dark:bg-white/5">
+          <div className="mt-3 rounded border border-[color:var(--border)] bg-black/5 p-3 text-xs">
             <p className="mb-2 font-medium">
               Ergebnis · {bulkResult.durationMs} ms
             </p>
             <dl className="grid grid-cols-2 gap-2 sm:grid-cols-5">
               <div>
-                <dt className="text-neutral-500">scanned</dt>
+                <dt className="text-[color:var(--fg-muted)]">scanned</dt>
                 <dd className="font-mono">{bulkResult.scanned}</dd>
               </div>
               <div>
-                <dt className="text-neutral-500">checked</dt>
+                <dt className="text-[color:var(--fg-muted)]">checked</dt>
                 <dd className="font-mono">{bulkResult.checked}</dd>
               </div>
               <div>
-                <dt className="text-neutral-500">neue Duplikate</dt>
+                <dt className="text-[color:var(--fg-muted)]">neue Duplikate</dt>
                 <dd className="font-mono">
                   {bulkResult.mergeCandidatesCreated}
                 </dd>
               </div>
               <div>
-                <dt className="text-neutral-500">ohne Embedding</dt>
+                <dt className="text-[color:var(--fg-muted)]">ohne Embedding</dt>
                 <dd className="font-mono">{bulkResult.skippedNoEmbedding}</dd>
               </div>
               <div>
-                <dt className="text-neutral-500">Fehler</dt>
+                <dt className="text-[color:var(--fg-muted)]">Fehler</dt>
                 <dd className="font-mono">{bulkResult.failed}</dd>
               </div>
             </dl>
@@ -365,8 +365,8 @@ export default function DuplicatesListPage(): React.ReactElement {
             className={[
               'rounded border px-3 py-1 text-xs',
               statusFilter === s
-                ? 'border-neutral-900 bg-neutral-900 text-white dark:border-neutral-200 dark:bg-neutral-200 dark:text-neutral-900'
-                : 'border-neutral-300 hover:border-neutral-400 dark:border-neutral-700',
+                ? 'border-[color:var(--border-strong)] bg-[color:var(--bg-inverse)] text-[color:var(--fg-on-dark)]'
+                : 'border-[color:var(--border)] hover:border-[color:var(--border-strong)]',
             ].join(' ')}
           >
             {s === 'all' ? 'alle' : s}
@@ -376,20 +376,20 @@ export default function DuplicatesListPage(): React.ReactElement {
           type="button"
           onClick={() => void load()}
           disabled={loading}
-          className="ml-auto rounded border border-neutral-300 px-3 py-1 text-xs hover:border-neutral-400 disabled:opacity-50 dark:border-neutral-700"
+          className="ml-auto rounded border border-[color:var(--border)] px-3 py-1 text-xs hover:border-[color:var(--border-strong)] disabled:opacity-50"
         >
           {loading ? 'lädt…' : 'aktualisieren'}
         </button>
       </div>
 
       {error !== null && (
-        <div className="mb-4 border-l-2 border-red-400 px-3 py-2 text-xs text-red-700 dark:text-red-300">
+        <div className="mb-4 border-l-2 border-[color:var(--danger-edge)] px-3 py-2 text-xs text-[color:var(--danger)]">
           Fehler: {error}
         </div>
       )}
 
       {sorted !== null && sorted.length === 0 && error === null && (
-        <p className="text-sm italic text-neutral-500">
+        <p className="text-sm italic text-[color:var(--fg-muted)]">
           Keine Duplikat-Kandidaten in dieser Auswahl.
         </p>
       )}
@@ -400,7 +400,7 @@ export default function DuplicatesListPage(): React.ReactElement {
             <li key={mc.id}>
               <Link
                 href={`/admin/duplicates/${encodeURIComponent(mc.id)}`}
-                className="block rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4 transition-colors hover:border-[color:var(--accent)]"
+                className="block rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4 transition-colors hover:border-[color:var(--accent)]"
               >
                 <div className="mb-2 flex flex-wrap items-center gap-2 text-[10px]">
                   <span
@@ -411,20 +411,20 @@ export default function DuplicatesListPage(): React.ReactElement {
                   >
                     {mc.props.status}
                   </span>
-                  <span className="rounded bg-violet-100 px-1.5 py-0.5 font-mono uppercase tracking-wider text-violet-800 dark:bg-violet-900/40 dark:text-violet-200">
+                  <span className="rounded bg-[color:var(--accent)]/10 px-1.5 py-0.5 font-mono uppercase tracking-wider text-[color:var(--accent)]">
                     cosine {mc.props.cosine_sim.toFixed(3)}
                   </span>
                   <time
-                    className="font-mono text-neutral-500"
+                    className="font-mono text-[color:var(--fg-muted)]"
                     dateTime={mc.props.created_at}
                   >
                     {new Date(mc.props.created_at).toLocaleString('de-DE')}
                   </time>
                 </div>
-                <p className="text-sm text-neutral-900 dark:text-neutral-100">
+                <p className="text-sm text-[color:var(--fg-strong)]">
                   {mc.mkA?.props.summary?.slice(0, 90) ?? '(MK A)'}
                 </p>
-                <p className="mt-1 text-xs text-neutral-700 dark:text-neutral-300">
+                <p className="mt-1 text-xs text-[color:var(--fg)]">
                   ↔ {mc.mkB?.props.summary?.slice(0, 90) ?? '(MK B)'}
                 </p>
               </Link>
@@ -440,7 +440,7 @@ export default function DuplicatesListPage(): React.ReactElement {
         {/* Slice 12 — Excerpt Bulk Detect panel */}
         <section
           aria-label="Bulk excerpt-merge detect"
-          className="mb-6 rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4"
+          className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4"
         >
           <div className="mb-3 flex flex-wrap items-baseline gap-3">
             <h2 className="text-sm font-semibold text-[color:var(--fg-strong)]">
@@ -452,7 +452,7 @@ export default function DuplicatesListPage(): React.ReactElement {
           </div>
 
           {excerptBulkPreviewError !== null && (
-            <p className="mb-2 text-xs text-red-600 dark:text-red-300">
+            <p className="mb-2 text-xs text-[color:var(--danger)]">
               Preview fehlgeschlagen: {excerptBulkPreviewError}
             </p>
           )}
@@ -460,19 +460,19 @@ export default function DuplicatesListPage(): React.ReactElement {
           {excerptBulkPreview !== null && (
             <dl className="mb-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
               <div>
-                <dt className="text-neutral-500">ungeprüft</dt>
+                <dt className="text-[color:var(--fg-muted)]">ungeprüft</dt>
                 <dd className="font-mono text-base">
                   {excerptBulkPreview.unchecked}
                 </dd>
               </div>
               <div>
-                <dt className="text-neutral-500">schon geprüft</dt>
+                <dt className="text-[color:var(--fg-muted)]">schon geprüft</dt>
                 <dd className="font-mono text-base">
                   {excerptBulkPreview.alreadyChecked}
                 </dd>
               </div>
               <div>
-                <dt className="text-neutral-500">ohne Embedding</dt>
+                <dt className="text-[color:var(--fg-muted)]">ohne Embedding</dt>
                 <dd className="font-mono text-base">
                   {excerptBulkPreview.withoutEmbedding}
                 </dd>
@@ -505,45 +505,45 @@ export default function DuplicatesListPage(): React.ReactElement {
                 excerptBulkRunning ||
                 (excerptBulkPreview !== null && excerptBulkPreview.unchecked === 0)
               }
-              className="rounded border border-neutral-900 bg-neutral-900 px-3 py-1 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50 dark:border-neutral-200 dark:bg-neutral-200 dark:text-neutral-900"
+              className="rounded border border-[color:var(--border-strong)] bg-[color:var(--bg-inverse)] px-3 py-1 text-xs text-[color:var(--fg-on-dark)] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {excerptBulkRunning ? 'läuft…' : 'Bulk-Detect starten'}
             </button>
             {excerptBulkLimit > BULK_CONFIRM_THRESHOLD && (
-              <span className="text-[11px] text-amber-700 dark:text-amber-300">
+              <span className="text-[11px] text-[color:var(--warning)]">
                 ⚠️ Confirm bei Limit &gt; {BULK_CONFIRM_THRESHOLD}
               </span>
             )}
           </div>
 
           {excerptBulkError !== null && (
-            <p className="mt-3 text-xs text-red-600 dark:text-red-300">
+            <p className="mt-3 text-xs text-[color:var(--danger)]">
               Run fehlgeschlagen: {excerptBulkError}
             </p>
           )}
 
           {excerptBulkResult !== null && (
-            <div className="mt-3 rounded border border-[color:var(--border)] bg-black/5 p-3 text-xs dark:bg-white/5">
+            <div className="mt-3 rounded border border-[color:var(--border)] bg-black/5 p-3 text-xs">
               <p className="mb-2 font-medium">
                 Ergebnis · {excerptBulkResult.durationMs} ms
               </p>
               <dl className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 <div>
-                  <dt className="text-neutral-500">scanned</dt>
+                  <dt className="text-[color:var(--fg-muted)]">scanned</dt>
                   <dd className="font-mono">{excerptBulkResult.scanned}</dd>
                 </div>
                 <div>
-                  <dt className="text-neutral-500">checked</dt>
+                  <dt className="text-[color:var(--fg-muted)]">checked</dt>
                   <dd className="font-mono">{excerptBulkResult.checked}</dd>
                 </div>
                 <div>
-                  <dt className="text-neutral-500">neue Duplikate</dt>
+                  <dt className="text-[color:var(--fg-muted)]">neue Duplikate</dt>
                   <dd className="font-mono">
                     {excerptBulkResult.excerptMergeCandidatesCreated}
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-neutral-500">Fehler</dt>
+                  <dt className="text-[color:var(--fg-muted)]">Fehler</dt>
                   <dd className="font-mono">{excerptBulkResult.failed}</dd>
                 </div>
               </dl>
@@ -561,8 +561,8 @@ export default function DuplicatesListPage(): React.ReactElement {
               className={[
                 'rounded border px-3 py-1 text-xs',
                 excerptStatusFilter === s
-                  ? 'border-neutral-900 bg-neutral-900 text-white dark:border-neutral-200 dark:bg-neutral-200 dark:text-neutral-900'
-                  : 'border-neutral-300 hover:border-neutral-400 dark:border-neutral-700',
+                  ? 'border-[color:var(--border-strong)] bg-[color:var(--bg-inverse)] text-[color:var(--fg-on-dark)]'
+                  : 'border-[color:var(--border)] hover:border-[color:var(--border-strong)]',
               ].join(' ')}
             >
               {s === 'all' ? 'alle' : s}
@@ -572,20 +572,20 @@ export default function DuplicatesListPage(): React.ReactElement {
             type="button"
             onClick={() => void loadExcerpts()}
             disabled={excerptLoading}
-            className="ml-auto rounded border border-neutral-300 px-3 py-1 text-xs hover:border-neutral-400 disabled:opacity-50 dark:border-neutral-700"
+            className="ml-auto rounded border border-[color:var(--border)] px-3 py-1 text-xs hover:border-[color:var(--border-strong)] disabled:opacity-50"
           >
             {excerptLoading ? 'lädt…' : 'aktualisieren'}
           </button>
         </div>
 
         {excerptError !== null && (
-          <div className="mb-4 border-l-2 border-red-400 px-3 py-2 text-xs text-red-700 dark:text-red-300">
+          <div className="mb-4 border-l-2 border-[color:var(--danger-edge)] px-3 py-2 text-xs text-[color:var(--danger)]">
             Fehler: {excerptError}
           </div>
         )}
 
         {excerptItems !== null && excerptItems.length === 0 && excerptError === null && (
-          <p className="text-sm italic text-neutral-500">
+          <p className="text-sm italic text-[color:var(--fg-muted)]">
             Keine Excerpt-Duplikate in dieser Auswahl.
           </p>
         )}
@@ -598,7 +598,7 @@ export default function DuplicatesListPage(): React.ReactElement {
                 <li key={mc.id}>
                   <Link
                     href={`/admin/duplicates/excerpt/${encodeURIComponent(mc.id)}`}
-                    className="block rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4 transition-colors hover:border-[color:var(--accent)]"
+                    className="block rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4 transition-colors hover:border-[color:var(--accent)]"
                   >
                     <div className="mb-2 flex flex-wrap items-center gap-2 text-[10px]">
                       <span
@@ -609,20 +609,20 @@ export default function DuplicatesListPage(): React.ReactElement {
                       >
                         {mc.props.status}
                       </span>
-                      <span className="rounded bg-orange-100 px-1.5 py-0.5 font-mono uppercase tracking-wider text-orange-800 dark:bg-orange-900/40 dark:text-orange-200">
+                      <span className="rounded bg-[color:var(--warning)]/10 px-1.5 py-0.5 font-mono uppercase tracking-wider text-[color:var(--warning)]">
                         cosine {mc.props.cosine_sim.toFixed(3)}
                       </span>
                       <time
-                        className="font-mono text-neutral-500"
+                        className="font-mono text-[color:var(--fg-muted)]"
                         dateTime={mc.props.created_at}
                       >
                         {new Date(mc.props.created_at).toLocaleString('de-DE')}
                       </time>
                     </div>
-                    <p className="text-sm text-neutral-900 dark:text-neutral-100">
+                    <p className="text-sm text-[color:var(--fg-strong)]">
                       {mc.excerptA?.props.text?.slice(0, 90) ?? '(Excerpt A)'}
                     </p>
-                    <p className="mt-1 text-xs text-neutral-700 dark:text-neutral-300">
+                    <p className="mt-1 text-xs text-[color:var(--fg)]">
                       ↔ {mc.excerptB?.props.text?.slice(0, 90) ?? '(Excerpt B)'}
                     </p>
                   </Link>

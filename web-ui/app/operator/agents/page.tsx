@@ -33,12 +33,12 @@ export default async function OperatorAgentsPage(): Promise<React.ReactElement> 
     <main className="mx-auto w-full max-w-[1400px] px-6 py-12 lg:px-10 lg:py-16">
       <header className="mb-10">
         <h1 className="text-3xl font-semibold tracking-tight">{t('title')}</h1>
-        <p className="mt-2 max-w-2xl text-sm text-neutral-600">
+        <p className="mt-2 max-w-2xl text-sm text-[color:var(--fg-muted)]">
           {t('subtitle')}
         </p>
       </header>
       {loadError ? (
-        <div className="rounded border border-red-400 bg-red-50 p-4 text-sm text-red-800">
+        <div className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-4 text-sm text-[color:var(--danger)]">
           {loadError}
         </div>
       ) : (

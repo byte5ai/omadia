@@ -28,15 +28,15 @@ export function ChoiceCard({
 }): React.ReactElement {
   const t = useTranslations('chat');
   return (
-    <div className="mt-3 rounded border border-indigo-200 bg-indigo-50/60 p-3 dark:border-indigo-800 dark:bg-indigo-950/40">
-      <div className="mb-1 text-xs font-semibold text-indigo-700 dark:text-indigo-300">
+    <div className="mt-3 rounded border border-[color:var(--accent)] bg-[color:var(--accent)]/10 p-3">
+      <div className="mb-1 text-xs font-semibold text-[color:var(--accent)]">
         {t('clarifyKicker')}
       </div>
-      <div className="mb-2 text-sm text-neutral-900 dark:text-neutral-100">
+      <div className="mb-2 text-sm text-[color:var(--fg-strong)]">
         {choice.question}
       </div>
       {choice.rationale && (
-        <div className="mb-2 text-xs text-neutral-500 italic dark:text-neutral-400">
+        <div className="mb-2 text-xs text-[color:var(--fg-muted)] italic">
           {choice.rationale}
         </div>
       )}
@@ -52,8 +52,8 @@ export function ChoiceCard({
             className={[
               'rounded border px-3 py-1.5 text-xs font-medium transition',
               idx === 0
-                ? 'border-indigo-600 bg-indigo-600 text-white hover:bg-indigo-700 dark:border-indigo-500 dark:bg-indigo-500 dark:hover:bg-indigo-600'
-                : 'border-neutral-300 bg-white text-neutral-700 hover:border-neutral-500 dark:border-neutral-600 dark:bg-neutral-800 dark:text-neutral-200',
+                ? 'border-[color:var(--accent)] bg-[color:var(--accent)] text-[color:var(--fg-on-dark)] hover:bg-[color:var(--accent)]'
+                : 'border-[color:var(--border)] bg-[color:var(--bg-elevated)] text-[color:var(--fg)] hover:border-[color:var(--border-strong)]',
               'disabled:cursor-not-allowed disabled:opacity-40',
             ].join(' ')}
           >

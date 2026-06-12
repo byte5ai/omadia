@@ -26,7 +26,7 @@ const sessionFetchLimit = createLimiter(4);
 const GraphCanvas = dynamic(() => import('./_components/GraphCanvas'), {
   ssr: false,
   loading: () => (
-    <div className="flex h-full items-center justify-center text-sm text-neutral-500">
+    <div className="flex h-full items-center justify-center text-sm text-[color:var(--fg-muted)]">
       lade Graph-Canvas…
     </div>
   ),
@@ -482,11 +482,11 @@ export default function GraphPage(): React.ReactElement {
 
   return (
     <main className="flex h-full">
-      <aside className="flex w-80 min-w-0 flex-col border-r border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
-        <div className="border-b border-neutral-200 px-3 py-3 text-xs dark:border-neutral-800">
+      <aside className="flex w-80 min-w-0 flex-col border-r border-[color:var(--border)] bg-[color:var(--bg-elevated)]">
+        <div className="border-b border-[color:var(--border)] px-3 py-3 text-xs">
           <div className="mb-1 font-semibold">Graph</div>
           {stats && (
-            <div className="space-y-0.5 font-mono text-[11px] text-neutral-500">
+            <div className="space-y-0.5 font-mono text-[11px] text-[color:var(--fg-muted)]">
               <div>
                 nodes={stats.nodes} · edges={stats.edges}
               </div>
@@ -508,7 +508,7 @@ export default function GraphPage(): React.ReactElement {
           <button
             type="button"
             onClick={() => void refresh()}
-            className="mt-2 text-[11px] text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100"
+            className="mt-2 text-[11px] text-[color:var(--fg-muted)] hover:text-[color:var(--fg-strong)]"
           >
             ↻ neu laden
           </button>
@@ -524,14 +524,14 @@ export default function GraphPage(): React.ReactElement {
           className={[
             'mx-2 mb-1 mt-2 flex items-center gap-2 rounded-md border px-3 py-2 text-left text-xs transition',
             selected === ALL
-              ? 'border-purple-400 bg-purple-50 text-purple-900 dark:border-purple-700 dark:bg-purple-900/30 dark:text-purple-100'
-              : 'border-neutral-200 hover:border-neutral-400 dark:border-neutral-700 dark:hover:border-neutral-500',
+              ? 'border-[color:var(--accent)] bg-[color:var(--accent)]/10 text-[color:var(--accent)]'
+              : 'border-[color:var(--border)] hover:border-[color:var(--border-strong)]',
           ].join(' ')}
         >
           <span className="text-base">🌐</span>
           <span className="flex flex-col">
             <span className="font-semibold">Alle Sessions</span>
-            <span className="text-[10px] text-neutral-500">
+            <span className="text-[10px] text-[color:var(--fg-muted)]">
               Gesamte Wolke · {allTotal} Sessions
             </span>
           </span>
@@ -547,14 +547,14 @@ export default function GraphPage(): React.ReactElement {
           className={[
             'mx-2 mb-2 flex items-center gap-2 rounded-md border px-3 py-2 text-left text-xs transition',
             selected === MEMORIES
-              ? 'border-fuchsia-400 bg-fuchsia-50 text-fuchsia-900 dark:border-fuchsia-700 dark:bg-fuchsia-900/30 dark:text-fuchsia-100'
-              : 'border-neutral-200 hover:border-neutral-400 dark:border-neutral-700 dark:hover:border-neutral-500',
+              ? 'border-[color:var(--accent)] bg-[color:var(--accent)]/10 text-[color:var(--accent)]'
+              : 'border-[color:var(--border)] hover:border-[color:var(--border-strong)]',
           ].join(' ')}
         >
           <span className="text-base">🧠</span>
           <span className="flex flex-col">
             <span className="font-semibold">Alle Memories</span>
-            <span className="text-[10px] text-neutral-500">
+            <span className="text-[10px] text-[color:var(--fg-muted)]">
               Palaia-Provenance · 2-Hops
             </span>
           </span>
@@ -566,24 +566,24 @@ export default function GraphPage(): React.ReactElement {
             placeholder="Sessions filtern…"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
-            className="w-full rounded border border-neutral-200 bg-white px-2 py-1 text-xs outline-none placeholder:text-neutral-400 focus:border-neutral-400 dark:border-neutral-700 dark:bg-neutral-800 dark:focus:border-neutral-500"
+            className="w-full rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-2 py-1 text-xs outline-none placeholder:text-[color:var(--fg-subtle)] focus:border-[color:var(--border-strong)]"
           />
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className="flex items-center justify-between px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-neutral-400">
+          <div className="flex items-center justify-between px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-[color:var(--fg-subtle)]">
             <span>
               Sessions ({filteredSessions.length}
               {filter ? `/${sessions.length}` : ''})
             </span>
           </div>
           {error && (
-            <div className="border-l-2 border-red-400 px-3 py-2 text-xs text-red-700 dark:text-red-300">
+            <div className="border-l-2 border-[color:var(--danger-edge)] px-3 py-2 text-xs text-[color:var(--danger)]">
               {error}
             </div>
           )}
           {sessions.length === 0 && !error && (
-            <div className="px-3 py-2 text-xs text-neutral-500">
+            <div className="px-3 py-2 text-xs text-[color:var(--fg-muted)]">
               keine — stell eine Frage im Chat
             </div>
           )}
@@ -602,12 +602,12 @@ export default function GraphPage(): React.ReactElement {
         </div>
       </aside>
 
-      <section className="flex min-w-0 flex-1 flex-col bg-neutral-50 dark:bg-neutral-950">
-        <div className="flex items-center gap-3 border-b border-neutral-200 bg-white px-4 py-2 text-xs dark:border-neutral-800 dark:bg-neutral-900">
-          <span className="truncate font-mono text-neutral-600 dark:text-neutral-400">
+      <section className="flex min-w-0 flex-1 flex-col bg-[color:var(--bg-soft)]">
+        <div className="flex items-center gap-3 border-b border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-4 py-2 text-xs">
+          <span className="truncate font-mono text-[color:var(--fg-muted)]">
             {headerTitle}
           </span>
-          <span className="text-[11px] text-neutral-500">
+          <span className="text-[11px] text-[color:var(--fg-muted)]">
             {selected === MEMORIES
               ? `${turnSum} Memor${turnSum === 1 ? 'y' : 'ies'}`
               : `${turnSum} Turn${turnSum === 1 ? '' : 's'}`}
@@ -682,7 +682,7 @@ export default function GraphPage(): React.ReactElement {
           )}
           <div
             className={[
-              'inline-flex overflow-hidden rounded border border-neutral-300 dark:border-neutral-700',
+              'inline-flex overflow-hidden rounded border border-[color:var(--border)]',
               mode === 'graph' ? '' : 'ml-auto',
             ].join(' ')}
           >
@@ -725,7 +725,7 @@ export default function GraphPage(): React.ReactElement {
                 dark={dark}
               />
             ) : (
-              <div className="flex h-full items-center justify-center text-sm text-neutral-500">
+              <div className="flex h-full items-center justify-center text-sm text-[color:var(--fg-muted)]">
                 lade Memories…
               </div>
             )}
@@ -750,7 +750,7 @@ export default function GraphPage(): React.ReactElement {
             />
           </div>
         ) : !activeView ? (
-          <div className="flex h-full items-center justify-center text-sm text-neutral-500">
+          <div className="flex h-full items-center justify-center text-sm text-[color:var(--fg-muted)]">
             lade Session…
           </div>
         ) : mode === 'memory' ? (
@@ -771,7 +771,7 @@ export default function GraphPage(): React.ReactElement {
                 dark={dark}
               />
             ) : (
-              <div className="flex h-full items-center justify-center text-sm text-neutral-500">
+              <div className="flex h-full items-center justify-center text-sm text-[color:var(--fg-muted)]">
                 lade Memories…
               </div>
             )}
@@ -865,11 +865,11 @@ function SessionCard({
       className={[
         'flex w-full flex-col gap-1 border-l-2 px-3 py-2 text-left transition',
         active
-          ? 'border-purple-500 bg-neutral-100 dark:bg-neutral-800'
-          : 'border-transparent hover:border-neutral-300 hover:bg-neutral-50 dark:hover:border-neutral-600 dark:hover:bg-neutral-800/50',
+          ? 'border-[color:var(--accent)] bg-[color:var(--bg-soft)]'
+          : 'border-transparent hover:border-[color:var(--border)] hover:bg-[color:var(--bg-soft)]',
       ].join(' ')}
     >
-      <div className="flex items-center gap-2 text-[10px] text-neutral-500">
+      <div className="flex items-center gap-2 text-[10px] text-[color:var(--fg-muted)]">
         <span className="font-mono">{relativeTime(summary.lastAt)}</span>
         <span className="ml-auto flex items-center gap-1">
           <Badge color="slate">💬 {summary.turnCount}</Badge>
@@ -879,11 +879,11 @@ function SessionCard({
         </span>
       </div>
       {firstUserMsg ? (
-        <div className="line-clamp-2 text-xs text-neutral-700 dark:text-neutral-300">
+        <div className="line-clamp-2 text-xs text-[color:var(--fg)]">
           {firstUserMsg}
         </div>
       ) : (
-        <div className="truncate font-mono text-[10px] text-neutral-400">
+        <div className="truncate font-mono text-[10px] text-[color:var(--fg-subtle)]">
           {summary.scope}
         </div>
       )}
@@ -892,13 +892,13 @@ function SessionCard({
           [...agents].slice(0, 3).map((a) => (
             <span
               key={a}
-              className="rounded-full bg-cyan-50 px-1.5 py-0.5 font-mono text-cyan-900 ring-1 ring-cyan-200 dark:bg-cyan-900/30 dark:text-cyan-100 dark:ring-cyan-800"
+              className="rounded-full bg-[color:var(--accent)]/10 px-1.5 py-0.5 font-mono text-[color:var(--accent)] ring-1 ring-[color:var(--accent)]"
             >
               🤖 {a}
             </span>
           ))}
         {view === 'loading' && (
-          <span className="text-[10px] text-neutral-400">lädt…</span>
+          <span className="text-[10px] text-[color:var(--fg-subtle)]">lädt…</span>
         )}
       </div>
     </button>
@@ -914,8 +914,8 @@ function Badge({
 }): React.ReactElement {
   const cls =
     color === 'emerald'
-      ? 'bg-emerald-50 text-emerald-900 ring-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-100 dark:ring-emerald-800'
-      : 'bg-neutral-100 text-neutral-700 ring-neutral-200 dark:bg-neutral-800 dark:text-neutral-200 dark:ring-neutral-700';
+      ? 'bg-[color:var(--success)]/10 text-[color:var(--success)] ring-[color:var(--success)]'
+      : 'bg-[color:var(--bg-soft)] text-[color:var(--fg)] ring-[color:var(--border-strong)]';
   return (
     <span
       className={`rounded-full px-1.5 py-0.5 font-mono text-[10px] ring-1 ${cls}`}
@@ -944,8 +944,8 @@ function ModeBtn({
       className={[
         'px-3 py-1 font-semibold disabled:cursor-not-allowed disabled:opacity-40',
         active
-          ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
-          : 'bg-white text-neutral-600 hover:bg-neutral-100 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800',
+          ? 'bg-[color:var(--bg-inverse)] text-[color:var(--fg-on-dark)]'
+          : 'bg-[color:var(--bg-elevated)] text-[color:var(--fg-muted)] hover:bg-[color:var(--bg-soft)]',
       ].join(' ')}
     >
       {label}
@@ -968,19 +968,19 @@ function FilterChip({
 }): React.ReactElement {
   const activeTone: Record<typeof tone, string> = {
     emerald:
-      'border-emerald-400 bg-emerald-50 text-emerald-900 dark:border-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-100',
+      'border-[color:var(--success)] bg-[color:var(--success)]/10 text-[color:var(--success)]',
     purple:
-      'border-purple-400 bg-purple-50 text-purple-900 dark:border-purple-700 dark:bg-purple-900/30 dark:text-purple-100',
+      'border-[color:var(--accent)] bg-[color:var(--accent)]/10 text-[color:var(--accent)]',
     slate:
-      'border-slate-400 bg-slate-100 text-slate-900 dark:border-slate-600 dark:bg-slate-800/60 dark:text-slate-100',
+      'border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] text-[color:var(--fg-strong)]',
     amber:
-      'border-amber-400 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-100',
+      'border-[color:var(--warning)] bg-[color:var(--warning)]/10 text-[color:var(--warning)]',
     fuchsia:
-      'border-fuchsia-400 bg-fuchsia-50 text-fuchsia-900 dark:border-fuchsia-700 dark:bg-fuchsia-900/30 dark:text-fuchsia-100',
+      'border-[color:var(--accent)] bg-[color:var(--accent)]/10 text-[color:var(--accent)]',
     teal:
-      'border-teal-400 bg-teal-50 text-teal-900 dark:border-teal-700 dark:bg-teal-900/30 dark:text-teal-100',
+      'border-[color:var(--accent)] bg-[color:var(--accent)]/10 text-[color:var(--accent)]',
     red:
-      'border-red-400 bg-red-50 text-red-900 dark:border-red-700 dark:bg-red-900/30 dark:text-red-100',
+      'border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 text-[color:var(--danger)]',
   };
   return (
     <button
@@ -991,7 +991,7 @@ function FilterChip({
         'rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition',
         active
           ? activeTone[tone]
-          : 'border-neutral-200 bg-white text-neutral-500 hover:border-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:border-neutral-500',
+          : 'border-[color:var(--border)] bg-[color:var(--bg-elevated)] text-[color:var(--fg-muted)] hover:border-[color:var(--border-strong)]',
       ].join(' ')}
     >
       {active ? '●' : '○'} {label}

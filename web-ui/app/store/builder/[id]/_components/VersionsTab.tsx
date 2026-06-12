@@ -99,7 +99,7 @@ export function VersionsTab({ draftId }: VersionsTabProps): React.ReactElement {
         <button
           type="button"
           onClick={() => setCaptureOpen(true)}
-          className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-white hover:opacity-90"
+          className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-[color:var(--fg-on-dark)] hover:opacity-90"
         >
           {t('createSnapshot')}
         </button>
@@ -175,7 +175,7 @@ export function VersionsTab({ draftId }: VersionsTabProps): React.ReactElement {
           role="status"
           className={`pointer-events-none fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-md px-4 py-2 text-sm ${
             toast.kind === 'error'
-              ? 'bg-[var(--danger)] text-white'
+              ? 'bg-[var(--danger)] text-[color:var(--fg-on-dark)]'
               : 'bg-[var(--fg)] text-[var(--bg)]'
           }`}
         >
@@ -392,7 +392,7 @@ function CaptureModal({
           type="button"
           onClick={() => void submit()}
           disabled={busy}
-          className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+          className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-[color:var(--fg-on-dark)] disabled:opacity-50"
         >
           {t('create')}
         </button>
@@ -582,7 +582,7 @@ function RollbackModal({
           type="button"
           onClick={() => void submit()}
           disabled={!matches || busy}
-          className="rounded-md bg-[var(--danger)] px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+          className="rounded-md bg-[var(--danger)] px-3 py-1.5 text-sm font-medium text-[color:var(--fg-on-dark)] disabled:opacity-50"
         >
           {t('rollbackExecute')}
         </button>
@@ -607,7 +607,7 @@ function ModalShell({
   const t = useTranslations('builder.versions');
   return (
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/55 p-6"
+      className="fixed inset-0 z-40 flex items-center justify-center bg-[color:var(--bg-modal-overlay)] p-6"
       role="dialog"
       aria-modal="true"
       onClick={(e) => {

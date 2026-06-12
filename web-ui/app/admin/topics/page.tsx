@@ -75,7 +75,7 @@ export default function TopicsListPage(): React.ReactElement {
       <header className="mb-8">
         <Link
           href="/admin"
-          className="text-xs text-neutral-500 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100"
+          className="text-xs text-[color:var(--fg-muted)] hover:text-[color:var(--fg-strong)]"
         >
           ← /admin
         </Link>
@@ -90,14 +90,14 @@ export default function TopicsListPage(): React.ReactElement {
 
       <section
         aria-label="Re-Cluster"
-        className="mb-6 rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4"
+        className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4"
       >
         <h2 className="mb-3 text-sm font-semibold text-[color:var(--fg-strong)]">
           Re-Cluster
         </h2>
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="block">
-            <span className="mb-1 block text-[11px] uppercase tracking-wider text-neutral-500">
+            <span className="mb-1 block text-[11px] uppercase tracking-wider text-[color:var(--fg-muted)]">
               Cosine-Threshold (0.3-0.95)
             </span>
             <input
@@ -114,7 +114,7 @@ export default function TopicsListPage(): React.ReactElement {
             />
           </label>
           <label className="block">
-            <span className="mb-1 block text-[11px] uppercase tracking-wider text-neutral-500">
+            <span className="mb-1 block text-[11px] uppercase tracking-wider text-[color:var(--fg-muted)]">
               Min Cluster-Größe (2-20)
             </span>
             <input
@@ -134,39 +134,39 @@ export default function TopicsListPage(): React.ReactElement {
           type="button"
           onClick={() => void triggerRecluster()}
           disabled={running}
-          className="mt-3 rounded border border-neutral-900 bg-neutral-900 px-3 py-1 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50 dark:border-neutral-200 dark:bg-neutral-200 dark:text-neutral-900"
+          className="mt-3 rounded border border-[color:var(--border-strong)] bg-[color:var(--bg-inverse)] px-3 py-1 text-xs text-[color:var(--fg-on-dark)] disabled:cursor-not-allowed disabled:opacity-50"
         >
           {running ? 'läuft…' : 'Re-Cluster starten'}
         </button>
         {runError !== null && (
-          <p className="mt-3 text-xs text-red-600 dark:text-red-300">
+          <p className="mt-3 text-xs text-[color:var(--danger)]">
             Fehler: {runError}
           </p>
         )}
         {runResult !== null && (
-          <div className="mt-3 rounded border border-[color:var(--border)] bg-black/5 p-3 text-xs dark:bg-white/5">
+          <div className="mt-3 rounded border border-[color:var(--border)] bg-black/5 p-3 text-xs">
             <p className="mb-2 font-medium">
               Ergebnis · {runResult.durationMs} ms
             </p>
             <dl className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               <div>
-                <dt className="text-neutral-500">scanned</dt>
+                <dt className="text-[color:var(--fg-muted)]">scanned</dt>
                 <dd className="font-mono">{runResult.totalMemoriesScanned}</dd>
               </div>
               <div>
-                <dt className="text-neutral-500">topics neu</dt>
+                <dt className="text-[color:var(--fg-muted)]">topics neu</dt>
                 <dd className="font-mono">{runResult.topicsCreated}</dd>
               </div>
               <div>
-                <dt className="text-neutral-500">topics weg</dt>
+                <dt className="text-[color:var(--fg-muted)]">topics weg</dt>
                 <dd className="font-mono">{runResult.topicsDeleted}</dd>
               </div>
               <div>
-                <dt className="text-neutral-500">ungeclustert</dt>
+                <dt className="text-[color:var(--fg-muted)]">ungeclustert</dt>
                 <dd className="font-mono">{runResult.unclusteredMemories}</dd>
               </div>
               <div>
-                <dt className="text-neutral-500">Haiku-Calls</dt>
+                <dt className="text-[color:var(--fg-muted)]">Haiku-Calls</dt>
                 <dd className="font-mono">{runResult.haikuCalls}</dd>
               </div>
             </dl>
@@ -175,15 +175,15 @@ export default function TopicsListPage(): React.ReactElement {
       </section>
 
       {error !== null && (
-        <div className="mb-4 border-l-2 border-red-400 px-3 py-2 text-xs text-red-700 dark:text-red-300">
+        <div className="mb-4 border-l-2 border-[color:var(--danger-edge)] px-3 py-2 text-xs text-[color:var(--danger)]">
           Fehler: {error}
         </div>
       )}
 
-      {loading && <p className="text-xs text-neutral-500">lädt…</p>}
+      {loading && <p className="text-xs text-[color:var(--fg-muted)]">lädt…</p>}
 
       {items !== null && items.length === 0 && error === null && (
-        <p className="text-sm italic text-neutral-500">
+        <p className="text-sm italic text-[color:var(--fg-muted)]">
           Keine Topics. Starte einen Re-Cluster oben.
         </p>
       )}
@@ -194,28 +194,28 @@ export default function TopicsListPage(): React.ReactElement {
             <li key={t.id}>
               <Link
                 href={`/admin/topics/${encodeURIComponent(t.id)}`}
-                className="block rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4 transition-colors hover:border-[color:var(--accent)]"
+                className="block rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4 transition-colors hover:border-[color:var(--accent)]"
               >
                 <div className="mb-2 flex flex-wrap items-center gap-2 text-[10px]">
-                  <span className="rounded bg-violet-100 px-1.5 py-0.5 font-mono uppercase tracking-wider text-violet-800 dark:bg-violet-900/40 dark:text-violet-200">
+                  <span className="rounded bg-[color:var(--accent)]/10 px-1.5 py-0.5 font-mono uppercase tracking-wider text-[color:var(--accent)]">
                     {t.props.member_count} Memories
                   </span>
                   {t.props.naming_source === 'fallback' && (
-                    <span className="rounded bg-amber-100 px-1.5 py-0.5 font-mono uppercase tracking-wider text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
+                    <span className="rounded bg-[color:var(--warning)]/10 px-1.5 py-0.5 font-mono uppercase tracking-wider text-[color:var(--warning)]">
                       fallback-name
                     </span>
                   )}
                   <time
-                    className="font-mono text-neutral-500"
+                    className="font-mono text-[color:var(--fg-muted)]"
                     dateTime={t.props.created_at}
                   >
                     {new Date(t.props.created_at).toLocaleString('de-DE')}
                   </time>
                 </div>
-                <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+                <h3 className="text-sm font-semibold text-[color:var(--fg-strong)]">
                   {t.props.name}
                 </h3>
-                <p className="mt-1 text-xs text-neutral-700 dark:text-neutral-300">
+                <p className="mt-1 text-xs text-[color:var(--fg)]">
                   {t.props.description}
                 </p>
               </Link>

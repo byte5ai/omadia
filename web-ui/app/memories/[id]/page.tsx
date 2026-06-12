@@ -35,22 +35,22 @@ const KIND_LABELS: Record<MemorableKind, string> = {
 
 const KIND_BADGE: Record<MemorableKind, string> = {
   decision:
-    'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
+    'bg-[color:var(--accent)]/10 text-[color:var(--accent)]',
   insight:
-    'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200',
+    'bg-[color:var(--warning)]/10 text-[color:var(--warning)]',
   preference:
-    'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
+    'bg-[color:var(--success)]/10 text-[color:var(--success)]',
   reference:
-    'bg-neutral-100 text-neutral-800 dark:bg-neutral-800 dark:text-neutral-300',
+    'bg-[color:var(--bg-soft)] text-[color:var(--fg)]',
 };
 
 const ACTION_BADGE: Record<MemorableAclAction, string> = {
-  create: 'bg-green-500/20 text-green-700 dark:text-green-300',
-  expand: 'bg-cyan-500/20 text-cyan-700 dark:text-cyan-300',
-  shrink: 'bg-amber-500/20 text-amber-700 dark:text-amber-300',
-  delete: 'bg-red-500/20 text-red-700 dark:text-red-300',
-  edit: 'bg-blue-500/20 text-blue-700 dark:text-blue-300',
-  edit_excerpt: 'bg-violet-500/20 text-violet-700 dark:text-violet-300',
+  create: 'bg-[color:var(--success)]/100/20 text-[color:var(--success)]',
+  expand: 'bg-[color:var(--accent)]/100/20 text-[color:var(--accent)]',
+  shrink: 'bg-[color:var(--warning)]/100/20 text-[color:var(--warning)]',
+  delete: 'bg-[color:var(--danger)]/80/20 text-[color:var(--danger)]',
+  edit: 'bg-[color:var(--accent)]/100/20 text-[color:var(--accent)]',
+  edit_excerpt: 'bg-[color:var(--accent)]/100/20 text-[color:var(--accent)]',
 };
 
 const ACTION_LABELS: Record<MemorableAclAction, string> = {
@@ -69,10 +69,10 @@ const SOURCE_LABELS: Record<ExcerptSource, string> = {
 };
 
 const SOURCE_BADGE: Record<ExcerptSource, string> = {
-  llm: 'bg-neutral-200 text-neutral-700 dark:bg-neutral-700 dark:text-neutral-200',
-  hint: 'bg-amber-200 text-amber-800 dark:bg-amber-800/40 dark:text-amber-200',
+  llm: 'bg-[color:var(--state-loading)] text-[color:var(--fg)]',
+  hint: 'bg-[color:var(--warning)] text-[color:var(--warning)]',
   fallback:
-    'bg-orange-200 text-orange-800 dark:bg-orange-900/40 dark:text-orange-200',
+    'bg-[color:var(--warning)] text-[color:var(--warning)]',
 };
 
 /**
@@ -300,25 +300,25 @@ export default function MemoryDetailPage(): React.ReactElement {
 
   return (
     <main className="flex h-full flex-col">
-      <header className="border-b border-neutral-200 bg-white px-6 py-4 dark:border-neutral-800 dark:bg-neutral-900">
+      <header className="border-b border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-6 py-4">
         <div className="flex items-center gap-3">
           <Link
             href="/memories"
-            className="text-xs text-neutral-500 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100"
+            className="text-xs text-[color:var(--fg-muted)] hover:text-[color:var(--fg-strong)]"
           >
             ← /memories
           </Link>
           <h1 className="text-lg font-medium">Memory</h1>
-          <span className="font-mono text-[10px] text-neutral-500">{id}</span>
+          <span className="font-mono text-[10px] text-[color:var(--fg-muted)]">{id}</span>
         </div>
       </header>
 
-      <section className="min-h-0 flex-1 overflow-y-auto bg-neutral-50 px-6 py-4 dark:bg-neutral-950">
+      <section className="min-h-0 flex-1 overflow-y-auto bg-[color:var(--bg-soft)] px-6 py-4">
         {loading && (
-          <div className="text-xs text-neutral-500">lädt…</div>
+          <div className="text-xs text-[color:var(--fg-muted)]">lädt…</div>
         )}
         {loadError !== null && (
-          <div className="border-l-2 border-red-400 px-3 py-2 text-xs text-red-700 dark:text-red-300">
+          <div className="border-l-2 border-[color:var(--danger-edge)] px-3 py-2 text-xs text-[color:var(--danger)]">
             {loadError === 'memory.not_found'
               ? 'Memory nicht gefunden oder du bist kein Owner.'
               : `Fehler: ${loadError}`}
@@ -326,7 +326,7 @@ export default function MemoryDetailPage(): React.ReactElement {
         )}
 
         {!loading && node !== null && (
-          <article className="mx-auto max-w-2xl rounded border border-neutral-200 bg-white p-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+          <article className="mx-auto max-w-2xl rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-5 shadow-sm">
             <div className="mb-3 flex items-center justify-between gap-3">
               {editing ? (
                 <div className="flex flex-wrap gap-1.5">
@@ -336,8 +336,8 @@ export default function MemoryDetailPage(): React.ReactElement {
                       className={[
                         'cursor-pointer rounded border px-2 py-1 text-xs transition',
                         kind === k
-                          ? 'border-neutral-900 bg-neutral-900 text-white dark:border-neutral-200 dark:bg-neutral-200 dark:text-neutral-900'
-                          : 'border-neutral-300 text-neutral-700 hover:border-neutral-400 dark:border-neutral-700 dark:text-neutral-300',
+                          ? 'border-[color:var(--border-strong)] bg-[color:var(--bg-inverse)] text-[color:var(--fg-on-dark)]'
+                          : 'border-[color:var(--border)] text-[color:var(--fg)] hover:border-[color:var(--border-strong)]',
                       ].join(' ')}
                     >
                       <input
@@ -364,7 +364,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                 </span>
               )}
               <time
-                className="font-mono text-[10px] text-neutral-500"
+                className="font-mono text-[10px] text-[color:var(--fg-muted)]"
                 dateTime={node.props.created_at}
               >
                 {new Date(node.props.created_at).toLocaleString('de-DE')}
@@ -372,7 +372,7 @@ export default function MemoryDetailPage(): React.ReactElement {
             </div>
 
             <div className="mb-4">
-              <label className="mb-1 block text-[11px] uppercase tracking-wider text-neutral-500">
+              <label className="mb-1 block text-[11px] uppercase tracking-wider text-[color:var(--fg-muted)]">
                 Zusammenfassung
               </label>
               {editing ? (
@@ -382,17 +382,17 @@ export default function MemoryDetailPage(): React.ReactElement {
                   disabled={busy}
                   maxLength={2000}
                   rows={3}
-                  className="w-full resize-y rounded border border-neutral-300 px-2 py-1.5 text-sm focus:border-neutral-500 focus:outline-none dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
+                  className="w-full resize-y rounded border border-[color:var(--border)] px-2 py-1.5 text-sm focus:border-[color:var(--border-strong)] focus:outline-none"
                 />
               ) : (
-                <p className="text-sm text-neutral-900 dark:text-neutral-100">
+                <p className="text-sm text-[color:var(--fg-strong)]">
                   {node.props.summary}
                 </p>
               )}
             </div>
 
             <div className="mb-4">
-              <label className="mb-1 block text-[11px] uppercase tracking-wider text-neutral-500">
+              <label className="mb-1 block text-[11px] uppercase tracking-wider text-[color:var(--fg-muted)]">
                 Begründung
               </label>
               {editing ? (
@@ -402,21 +402,21 @@ export default function MemoryDetailPage(): React.ReactElement {
                   disabled={busy}
                   maxLength={10000}
                   rows={3}
-                  className="w-full resize-y rounded border border-neutral-300 px-2 py-1.5 text-sm focus:border-neutral-500 focus:outline-none dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
+                  className="w-full resize-y rounded border border-[color:var(--border)] px-2 py-1.5 text-sm focus:border-[color:var(--border-strong)] focus:outline-none"
                   placeholder="(optional)"
                 />
               ) : node.props.rationale !== undefined ? (
-                <p className="text-xs text-neutral-700 dark:text-neutral-300">
+                <p className="text-xs text-[color:var(--fg)]">
                   {node.props.rationale}
                 </p>
               ) : (
-                <p className="text-xs text-neutral-400">— keine —</p>
+                <p className="text-xs text-[color:var(--fg-subtle)]">— keine —</p>
               )}
             </div>
 
             {editing && (
               <div className="mb-4">
-                <label className="mb-1 block text-[11px] uppercase tracking-wider text-neutral-500">
+                <label className="mb-1 block text-[11px] uppercase tracking-wider text-[color:var(--fg-muted)]">
                   Grund für die Änderung (optional, im Audit-Log)
                 </label>
                 <input
@@ -425,18 +425,18 @@ export default function MemoryDetailPage(): React.ReactElement {
                   onChange={(e) => setReason(e.target.value)}
                   disabled={busy}
                   maxLength={1000}
-                  className="w-full rounded border border-neutral-300 px-2 py-1 text-xs focus:border-neutral-500 focus:outline-none dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
+                  className="w-full rounded border border-[color:var(--border)] px-2 py-1 text-xs focus:border-[color:var(--border-strong)] focus:outline-none"
                 />
               </div>
             )}
 
-            <dl className="mb-4 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 font-mono text-[10px] text-neutral-500">
+            <dl className="mb-4 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 font-mono text-[10px] text-[color:var(--fg-muted)]">
               <dt>created_by</dt>
-              <dd className="text-neutral-700 dark:text-neutral-300">
+              <dd className="text-[color:var(--fg)]">
                 {node.props.created_by}
               </dd>
               <dt>owners</dt>
-              <dd className="text-neutral-700 dark:text-neutral-300">
+              <dd className="text-[color:var(--fg)]">
                 {node.props.acl_owners.length}
               </dd>
               {typeof node.props.significance === 'number' && (
@@ -448,7 +448,7 @@ export default function MemoryDetailPage(): React.ReactElement {
             </dl>
 
             {mutationError !== null && (
-              <div className="mb-3 border-l-2 border-red-400 px-2 py-1 text-xs text-red-700 dark:text-red-300">
+              <div className="mb-3 border-l-2 border-[color:var(--danger-edge)] px-2 py-1 text-xs text-[color:var(--danger)]">
                 Fehler: {mutationError}
               </div>
             )}
@@ -460,7 +460,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                     type="button"
                     onClick={cancelEdit}
                     disabled={busy}
-                    className="rounded border border-neutral-300 px-3 py-1 text-xs hover:border-neutral-400 disabled:opacity-50 dark:border-neutral-700"
+                    className="rounded border border-[color:var(--border)] px-3 py-1 text-xs hover:border-[color:var(--border-strong)] disabled:opacity-50"
                   >
                     Abbrechen
                   </button>
@@ -468,7 +468,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                     type="button"
                     onClick={() => void save()}
                     disabled={busy || summary.trim().length === 0}
-                    className="rounded bg-neutral-900 px-3 py-1 text-xs text-white hover:bg-neutral-700 disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+                    className="rounded bg-[color:var(--bg-inverse)] px-3 py-1 text-xs text-[color:var(--fg-on-dark)] hover:bg-[color:var(--fg-muted)] disabled:opacity-50"
                   >
                     {busy ? 'speichert…' : 'Speichern'}
                   </button>
@@ -479,7 +479,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                     type="button"
                     onClick={() => void discard()}
                     disabled={busy}
-                    className="rounded border border-red-400 px-3 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-900/30"
+                    className="rounded border border-[color:var(--danger-edge)] px-3 py-1 text-xs text-[color:var(--danger)] hover:bg-[color:var(--danger)]/8 disabled:opacity-50"
                   >
                     Löschen
                   </button>
@@ -487,7 +487,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                     type="button"
                     onClick={startEdit}
                     disabled={busy}
-                    className="rounded bg-neutral-900 px-3 py-1 text-xs text-white hover:bg-neutral-700 dark:bg-neutral-100 dark:text-neutral-900"
+                    className="rounded bg-[color:var(--bg-inverse)] px-3 py-1 text-xs text-[color:var(--fg-on-dark)] hover:bg-[color:var(--fg-muted)]"
                   >
                     Bearbeiten
                   </button>
@@ -500,26 +500,26 @@ export default function MemoryDetailPage(): React.ReactElement {
         {!loading && node !== null && (
           <section
             aria-label="Quellen-Snippets"
-            className="mx-auto mt-4 max-w-2xl rounded border border-neutral-200 bg-white p-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900"
+            className="mx-auto mt-4 max-w-2xl rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-5 shadow-sm"
           >
             <header className="mb-3 flex items-center justify-between">
               <div>
-                <h2 className="text-xs font-semibold uppercase tracking-wider text-neutral-500">
+                <h2 className="text-xs font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
                   Quellen-Snippets
                 </h2>
-                <p className="mt-0.5 text-[10px] text-neutral-500">
+                <p className="mt-0.5 text-[10px] text-[color:var(--fg-muted)]">
                   Verbatim aus dem ursprünglichen Turn — Provenance-Anker für die Memory.
                 </p>
               </div>
             </header>
 
             {excerptsError !== null && (
-              <div className="mb-2 border-l-2 border-red-400 px-2 py-1 text-xs text-red-700 dark:text-red-300">
+              <div className="mb-2 border-l-2 border-[color:var(--danger-edge)] px-2 py-1 text-xs text-[color:var(--danger)]">
                 Snippets nicht lesbar: {excerptsError}
               </div>
             )}
             {excerpts !== null && excerpts.length === 0 && excerptsError === null && (
-              <p className="text-xs italic text-neutral-500">
+              <p className="text-xs italic text-[color:var(--fg-muted)]">
                 Keine Quellen-Snippets — Memory wurde vor Slice 6.5 gespeichert oder
                 der Extractor lieferte keine Excerpts.
               </p>
@@ -532,11 +532,11 @@ export default function MemoryDetailPage(): React.ReactElement {
                   return (
                     <li
                       key={ex.id}
-                      className="rounded border border-neutral-200 px-3 py-2 dark:border-neutral-800"
+                      className="rounded border border-[color:var(--border)] px-3 py-2"
                     >
                       <div className="mb-1 flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2 text-[10px]">
-                          <span className="font-mono text-neutral-500">
+                          <span className="font-mono text-[color:var(--fg-muted)]">
                             #{ex.props.position + 1}
                           </span>
                           <span
@@ -553,7 +553,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                             <button
                               type="button"
                               onClick={() => void copyExcerpt(ex)}
-                              className="rounded border border-neutral-200 px-2 py-0.5 text-[10px] text-neutral-600 hover:border-neutral-400 hover:text-neutral-900 dark:border-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-100"
+                              className="rounded border border-[color:var(--border)] px-2 py-0.5 text-[10px] text-[color:var(--fg-muted)] hover:border-[color:var(--border-strong)] hover:text-[color:var(--fg-strong)]"
                               title="Snippet in die Zwischenablage kopieren"
                             >
                               {justCopied ? '✓ kopiert' : 'kopieren'}
@@ -561,7 +561,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                             <button
                               type="button"
                               onClick={() => startExcerptEdit(ex)}
-                              className="rounded border border-neutral-200 px-2 py-0.5 text-[10px] text-neutral-600 hover:border-neutral-400 hover:text-neutral-900 dark:border-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-100"
+                              className="rounded border border-[color:var(--border)] px-2 py-0.5 text-[10px] text-[color:var(--fg-muted)] hover:border-[color:var(--border-strong)] hover:text-[color:var(--fg-strong)]"
                             >
                               bearbeiten
                             </button>
@@ -577,10 +577,10 @@ export default function MemoryDetailPage(): React.ReactElement {
                             disabled={excerptBusy}
                             maxLength={300}
                             rows={3}
-                            className="w-full resize-y rounded border border-neutral-300 px-2 py-1 text-sm focus:border-neutral-500 focus:outline-none dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
+                            className="w-full resize-y rounded border border-[color:var(--border)] px-2 py-1 text-sm focus:border-[color:var(--border-strong)] focus:outline-none"
                           />
                           <div className="flex flex-wrap items-center gap-2">
-                            <label className="text-[10px] uppercase tracking-wider text-neutral-500">
+                            <label className="text-[10px] uppercase tracking-wider text-[color:var(--fg-muted)]">
                               Quelle:
                             </label>
                             {(['llm', 'hint', 'fallback'] as const).map((s) => (
@@ -589,8 +589,8 @@ export default function MemoryDetailPage(): React.ReactElement {
                                 className={[
                                   'cursor-pointer rounded border px-2 py-0.5 text-[10px]',
                                   excerptDraftSource === s
-                                    ? 'border-neutral-900 bg-neutral-900 text-white dark:border-neutral-200 dark:bg-neutral-200 dark:text-neutral-900'
-                                    : 'border-neutral-300 text-neutral-700 dark:border-neutral-700 dark:text-neutral-300',
+                                    ? 'border-[color:var(--border-strong)] bg-[color:var(--bg-inverse)] text-[color:var(--fg-on-dark)]'
+                                    : 'border-[color:var(--border)] text-[color:var(--fg)]',
                                 ].join(' ')}
                               >
                                 <input
@@ -610,7 +610,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                                 type="button"
                                 onClick={cancelExcerptEdit}
                                 disabled={excerptBusy}
-                                className="rounded border border-neutral-300 px-2 py-0.5 text-[10px] hover:border-neutral-400 disabled:opacity-50 dark:border-neutral-700"
+                                className="rounded border border-[color:var(--border)] px-2 py-0.5 text-[10px] hover:border-[color:var(--border-strong)] disabled:opacity-50"
                               >
                                 Abbrechen
                               </button>
@@ -620,7 +620,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                                 disabled={
                                   excerptBusy || excerptDraft.trim().length === 0
                                 }
-                                className="rounded bg-neutral-900 px-2 py-0.5 text-[10px] text-white hover:bg-neutral-700 disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+                                className="rounded bg-[color:var(--bg-inverse)] px-2 py-0.5 text-[10px] text-[color:var(--fg-on-dark)] hover:bg-[color:var(--fg-muted)] disabled:opacity-50"
                               >
                                 {excerptBusy ? 'speichert…' : 'Speichern'}
                               </button>
@@ -628,7 +628,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                           </div>
                         </div>
                       ) : (
-                        <p className="whitespace-pre-wrap text-sm text-neutral-800 dark:text-neutral-200">
+                        <p className="whitespace-pre-wrap text-sm text-[color:var(--fg)]">
                           {ex.props.text}
                         </p>
                       )}
@@ -638,7 +638,7 @@ export default function MemoryDetailPage(): React.ReactElement {
               </ol>
             )}
             {copiedPos === -1 && (
-              <p className="mt-2 text-[10px] italic text-amber-700 dark:text-amber-300">
+              <p className="mt-2 text-[10px] italic text-[color:var(--warning)]">
                 Kopieren fehlgeschlagen (Browser blockiert Clipboard).
               </p>
             )}
@@ -648,29 +648,29 @@ export default function MemoryDetailPage(): React.ReactElement {
         {!loading && node !== null && (
           <section
             aria-label="Audit-Verlauf"
-            className="mx-auto mt-4 max-w-2xl rounded border border-neutral-200 bg-white p-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-900"
+            className="mx-auto mt-4 max-w-2xl rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-5 shadow-sm"
           >
             <header className="mb-3 flex items-center justify-between">
-              <h2 className="text-xs font-semibold uppercase tracking-wider text-neutral-500">
+              <h2 className="text-xs font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
                 Verlauf
               </h2>
               <button
                 type="button"
                 onClick={() => void loadAudit()}
                 disabled={auditLoading}
-                className="text-[10px] text-neutral-500 underline-offset-2 hover:text-neutral-900 hover:underline disabled:opacity-50 dark:hover:text-neutral-100"
+                className="text-[10px] text-[color:var(--fg-muted)] underline-offset-2 hover:text-[color:var(--fg-strong)] hover:underline disabled:opacity-50"
               >
                 {auditLoading ? 'lädt…' : 'aktualisieren'}
               </button>
             </header>
 
             {auditError !== null && (
-              <div className="mb-2 border-l-2 border-red-400 px-2 py-1 text-xs text-red-700 dark:text-red-300">
+              <div className="mb-2 border-l-2 border-[color:var(--danger-edge)] px-2 py-1 text-xs text-[color:var(--danger)]">
                 Verlauf nicht lesbar: {auditError}
               </div>
             )}
             {audit !== null && audit.length === 0 && auditError === null && (
-              <p className="text-xs italic text-neutral-500">
+              <p className="text-xs italic text-[color:var(--fg-muted)]">
                 Keine Audit-Einträge.
               </p>
             )}
@@ -684,7 +684,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                   return (
                     <li
                       key={e.id}
-                      className="rounded border border-neutral-200 px-3 py-2 dark:border-neutral-800"
+                      className="rounded border border-[color:var(--border)] px-3 py-2"
                     >
                       <div className="flex flex-wrap items-center gap-2 text-[10px]">
                         <span
@@ -697,7 +697,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                         </span>
                         <time
                           dateTime={e.createdAt}
-                          className="font-mono text-neutral-500"
+                          className="font-mono text-[color:var(--fg-muted)]"
                         >
                           {new Date(e.createdAt).toLocaleString('de-DE')}
                         </time>
@@ -705,8 +705,8 @@ export default function MemoryDetailPage(): React.ReactElement {
                           <span
                             className={
                               ownersDelta > 0
-                                ? 'font-mono text-green-600 dark:text-green-400'
-                                : 'font-mono text-amber-600 dark:text-amber-400'
+                                ? 'font-mono text-[color:var(--success)]'
+                                : 'font-mono text-[color:var(--warning)]'
                             }
                           >
                             owners {ownersDelta > 0 ? '+' : ''}
@@ -714,19 +714,19 @@ export default function MemoryDetailPage(): React.ReactElement {
                           </span>
                         )}
                       </div>
-                      <div className="mt-1 font-mono text-[10px] text-neutral-500">
+                      <div className="mt-1 font-mono text-[10px] text-[color:var(--fg-muted)]">
                         actor: {e.actorOmadiaUserId}
                       </div>
                       {(e.action === 'expand' ||
                         e.action === 'shrink' ||
                         e.action === 'delete') && (
-                        <div className="mt-1 grid grid-cols-[max-content_1fr] gap-x-2 font-mono text-[10px] text-neutral-500">
+                        <div className="mt-1 grid grid-cols-[max-content_1fr] gap-x-2 font-mono text-[10px] text-[color:var(--fg-muted)]">
                           <span>before:</span>
-                          <span className="text-neutral-700 dark:text-neutral-300">
+                          <span className="text-[color:var(--fg)]">
                             [{e.beforeOwners.join(', ') || '—'}]
                           </span>
                           <span>after:</span>
-                          <span className="text-neutral-700 dark:text-neutral-300">
+                          <span className="text-[color:var(--fg)]">
                             {e.afterOwners === null
                               ? '(deleted)'
                               : `[${e.afterOwners.join(', ') || '—'}]`}
@@ -734,7 +734,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                         </div>
                       )}
                       {e.reason !== undefined && e.reason.length > 0 && (
-                        <p className="mt-1 text-xs italic text-neutral-600 dark:text-neutral-400">
+                        <p className="mt-1 text-xs italic text-[color:var(--fg-muted)]">
                           „{e.reason}“
                         </p>
                       )}

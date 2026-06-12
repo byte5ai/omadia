@@ -544,7 +544,7 @@ function ArrayField({
           type="button"
           onClick={submit}
           disabled={draft.trim().length === 0}
-          className="inline-flex items-center gap-1 rounded-md bg-[color:var(--accent)] px-2.5 py-1.5 text-[11px] font-semibold text-white shadow-[var(--shadow-cta)] disabled:opacity-40"
+          className="inline-flex items-center gap-1 rounded-md bg-[color:var(--accent)] px-2.5 py-1.5 text-[11px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] disabled:opacity-40"
         >
           <Plus className="size-3" aria-hidden />
           {t('array.add')}

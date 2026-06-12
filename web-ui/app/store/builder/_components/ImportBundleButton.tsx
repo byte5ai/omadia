@@ -129,7 +129,7 @@ function ImportBundleModal({
 
   return (
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/55 p-6"
+      className="fixed inset-0 z-40 flex items-center justify-center bg-[color:var(--bg-modal-overlay)] p-6"
       role="dialog"
       aria-modal="true"
       onClick={(e) => {
@@ -246,7 +246,7 @@ function ImportBundleModal({
             onClick={() => void onSubmit()}
             disabled={!file || busy}
             className={cn(
-              'rounded-md bg-[color:var(--accent)] px-3 py-1.5 text-sm font-medium text-white',
+              'rounded-md bg-[color:var(--accent)] px-3 py-1.5 text-sm font-medium text-[color:var(--fg-on-dark)]',
               'shadow-[var(--shadow-cta)] disabled:opacity-50',
             )}
           >

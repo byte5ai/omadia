@@ -21,7 +21,7 @@ export function PluginCard({ plugin }: PluginCardProps): React.ReactElement {
   return (
     <Link
       href={`/store/${encodeURIComponent(plugin.id)}`}
-      className="group relative flex flex-col rounded-[14px] bg-[color:var(--bg-elevated)] p-6 shadow-[0_2px_6px_rgba(0,75,115,0.08)] transition-[transform,box-shadow] duration-[var(--dur-base)] ease-[var(--ease-out)] hover:-translate-y-0.5 hover:shadow-[0_8px_24px_rgba(0,75,115,0.10)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--accent)]"
+      className="group relative flex flex-col rounded-lg bg-[color:var(--bg-elevated)] p-6 shadow-[0_2px_6px_rgba(0,75,115,0.08)] transition-[transform,box-shadow] duration-[var(--dur-base)] ease-[var(--ease-out)] hover:-translate-y-0.5 hover:shadow-[0_8px_24px_rgba(0,75,115,0.10)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--accent)]"
     >
       {/* Update "Störer" — prominent top-right sticker. Only on plugins where a
           configured registry advertises a newer version than the installed one
