@@ -288,6 +288,33 @@ body {
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.06) inset;
 }
 
+/* ---- Translucent cards: the `/40` wash keeps its transparency but gains
+   the gradient (color-mix folds the alpha into each stop). This is the most
+   frequent card pattern in the app. ---------------------------------------- */
+[class^='bg-[color:var(--card)]/'],
+[class*=' bg-[color:var(--card)]/'] {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--bg-surface-raised-top) 55%, transparent) 0%,
+    color-mix(in srgb, var(--bg-surface-raised-btm) 55%, transparent) 100%
+  );
+  border-color: var(--border-subtle-btm);
+  border-top-color: var(--border-subtle-top);
+}
+
+/* ---- Directional borders everywhere (§2.4): upgrade the flat token border
+   to the top-lit pair wherever components draw a full border. -------------- */
+[class^='border-[color:var(--border)]'],
+[class*=' border-[color:var(--border)]'] {
+  border-color: var(--border-subtle-btm);
+  border-top-color: var(--border-subtle-top);
+}
+[class^='border-[color:var(--border-strong)]'],
+[class*=' border-[color:var(--border-strong)]'] {
+  border-color: var(--border-default-btm);
+  border-top-color: var(--border-default-top);
+}
+
 /* ---- Sunken surfaces (depth 4+): bg-soft / surface-muted / bg-subtle ----- */
 [class^='bg-[color:var(--bg-soft)]']:not([class*='bg-[color:var(--bg-soft)]/']),
 [class*=' bg-[color:var(--bg-soft)]']:not([class*='bg-[color:var(--bg-soft)]/']),
