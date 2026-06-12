@@ -96,7 +96,7 @@ export function SimpleWorkspace({
           aria-hidden
           className="pointer-events-none absolute -right-8 -top-10 size-40 rounded-full bg-white/40 blur-2xl"
         />
-        <span className="inline-flex items-center gap-1.5 rounded-full bg-white/55 px-3 py-1 text-[12px] font-semibold text-[#004B73]">
+        <span className="inline-flex items-center gap-1.5 rounded-full bg-[color:var(--accent-subtle)] px-3 py-1 text-[12px] font-semibold text-[color:var(--accent)]">
           <Wand2 className="size-3.5" aria-hidden />
           {t('intro.badge')}
         </span>

@@ -7,8 +7,42 @@
 }
 
 /* -------------------------------------------------------------------------- */
-/* Global, token-driven baseline styles. The palette + typography live in     */
-/* _lib/theme.css so the byte5 Claude Design Kit swap is a single-file change.*/
+/* Tailwind token bridge (Lume). `inline` keeps these referencing the runtime  */
+/* CSS vars in _lib/theme.css, so utilities like `bg-accent` / `text-fg-muted` */
+/* follow the active palette + light/dark mode instead of freezing a value.    */
+/* This is the §2 / item-4 mapping: the design-system swap stays a single-file */
+/* change at the token tier.                                                    */
+/* -------------------------------------------------------------------------- */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-soft: var(--bg-soft);
+  --color-bg-elevated: var(--bg-elevated);
+  --color-surface: var(--surface);
+  --color-fg: var(--fg);
+  --color-fg-strong: var(--fg-strong);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-subtle: var(--fg-subtle);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-subtle: var(--accent-subtle);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-danger: var(--danger);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --font-serif: var(--font-serif);
+
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Global, token-driven baseline. Palette + typography live in _lib/theme.css  */
+/* so the design-system swap is a single-file change at the token tier.        */
 /* -------------------------------------------------------------------------- */
 
 html,
@@ -17,66 +51,110 @@ body {
 }
 
 body {
-  background: var(--bg);
+  /* Lume surface luminosity (§3.1): the workspace reads as condensed light. */
+  background: var(--surface-gradient);
+  background-attachment: fixed;
   color: var(--fg);
-  font-family: var(--font-text);
+  font-family: var(--font-sans);
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Utility: numeric monospace for versions, IDs, timestamps. */
+/* Utility: tabular monospace for versions, IDs, timestamps (Geist Mono). */
 .font-mono-num {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
 
-/* Utility: Days One display face for headlines (byte5 brand). */
+/* Utility: structural display heading (Geist 600). Replaces the byte5
+   Days One display face — Lume headings stay structural (§2.7). */
 .font-display {
-  font-family: var(--font-display);
-  font-weight: 400;
+  font-family: var(--font-sans);
+  font-weight: 600;
   letter-spacing: -0.01em;
 }
 
-/* byte5 signature colon — magenta heavy, used inline before short phrases. */
+/* Long-form agent prose register — Source Serif 4 (§2.7). */
+.font-prose {
+  font-family: var(--font-serif);
+  font-optical-sizing: auto;
+  line-height: 1.65;
+}
+
+/* The byte5 signature magenta colon is retired (Lume has no magenta device).
+   The class is kept so existing markup stays valid, but it no longer paints a
+   brand color — it inherits text color at a structural weight. */
 .b5-colon {
-  color: var(--highlight);
-  font-weight: 900;
+  color: inherit;
+  font-weight: 600;
   margin-right: 0.35em;
 }
 
-/* Soft cyan-biased hero wash — replaces the earlier editorial grain overlay.
-   Per byte5 brand, hero panels are ALWAYS the light cyan gradient with navy
-   text, regardless of the user's system color-scheme preference. We therefore
-   lock the token values within this scope so nested elements get the correct
-   contrast even when `@media (prefers-color-scheme: dark)` has flipped the
-   :root tokens to white-on-dark values.
-   Scoped via CSS custom-property overrides — no component edits required. */
+/* ------------------------------------------------------------------------ */
+/* Lume implementation primitives (spec §3) as composable utility classes.  */
+/* ------------------------------------------------------------------------ */
+@layer components {
+  /* §3.1 Surface gradient */
+  .lume-surface {
+    background: linear-gradient(180deg, var(--bg-surface-top) 0%, var(--bg-surface-btm) 100%);
+  }
+  .lume-surface-raised {
+    background: linear-gradient(180deg, var(--bg-surface-raised-top) 0%, var(--bg-surface-raised-btm) 100%);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.06) inset; /* top-edge highlight */
+  }
+  .lume-surface-sunken {
+    background: linear-gradient(180deg, var(--bg-surface-sunken-top) 0%, var(--bg-surface-sunken-btm) 100%);
+  }
+
+  /* §3.4 Directional border — top edge catches light from above */
+  .lume-border {
+    border: 1px solid var(--border-subtle-btm);
+    border-top-color: var(--border-subtle-top);
+  }
+  .lume-border-default {
+    border: 1px solid var(--border-default-btm);
+    border-top-color: var(--border-default-top);
+  }
+  .lume-border-strong {
+    border: 1px solid var(--border-strong-btm);
+    border-top-color: var(--border-strong-top);
+  }
+
+  /* §3.2 Two-stop glow — bright white-shifted core + accent-tinted corona */
+  .lume-glow {
+    box-shadow: 0 0 4px var(--accent-glow-core), 0 4px 12px var(--accent-glow);
+  }
+  .lume-glow-emphasis {
+    box-shadow: 0 0 6px var(--accent-glow-core), 0 6px 18px var(--accent-glow-strong);
+  }
+  /* Focus / selection — the two-stop glow on the focus ring */
+  .lume-focus:focus-visible {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow:
+      0 0 0 1px var(--accent),
+      0 0 6px var(--accent-glow-core),
+      0 6px 18px var(--accent-glow-strong);
+  }
+  /* Selected row / item — accent-subtle wash + soft corona (§2.5, §4) */
+  .lume-selected {
+    background: var(--accent-subtle);
+    box-shadow: 0 0 4px var(--accent-glow-core), 0 4px 12px var(--accent-glow);
+  }
+}
+
+/* Accent-washed hero / login surface. Lume keeps the agent's attention as
+   accent-tinted illumination; the byte5 cyan/navy hard-coded values are gone,
+   this now follows the active palette + mode through tokens. */
 .b5-hero-bg {
-  background: var(--surface-gradient-cyan);
-  color: #004B73;
-
-  --bg:            #FFFFFF;
-  --bg-soft:       #F4F7FA;
-  --bg-elevated:   #FFFFFF;
-
-  --fg:            #004B73;
-  --fg-strong:     #004B73;
-  --fg-muted:      #5F6E7B;
-  --fg-subtle:     #8A99A6;
-
-  --border:        #D3DDE5;
-  --border-strong: #B4C2CD;
-  --divider:       rgba(0, 75, 115, 0.12);
-
-  --accent:        #009FE3;
-  --accent-hover:  #0086C0;
-  --highlight:     #EA5172;
+  background: var(--surface-gradient-accent);
+  color: var(--fg);
 }
 
 /* ------------------------------------------------------------------------ */
 /* Markdown renderer — styles for content produced by react-markdown.       */
-/* Intentionally compact: this is a dev tool, not a blog.                    */
+/* Token-driven so it follows the Lume palette + light/dark mode.           */
 /* ------------------------------------------------------------------------ */
 .md-view {
   @apply text-sm leading-relaxed;
@@ -97,7 +175,8 @@ body {
   @apply my-3 text-base font-semibold;
 }
 .md-view h3 {
-  @apply my-2 text-sm font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400;
+  @apply my-2 text-sm font-semibold uppercase tracking-wide;
+  color: var(--fg-muted);
 }
 .md-view ul {
   @apply my-2 ml-5 list-disc space-y-1;
@@ -106,19 +185,28 @@ body {
   @apply my-2 ml-5 list-decimal space-y-1;
 }
 .md-view a {
-  @apply text-blue-600 underline underline-offset-2 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-200;
+  color: var(--accent);
+  @apply underline underline-offset-2;
+}
+.md-view a:hover {
+  color: var(--accent-hover);
 }
 .md-view code {
-  @apply rounded bg-neutral-100 px-1 py-0.5 font-mono text-[0.85em] dark:bg-neutral-800;
+  @apply rounded px-1 py-0.5 text-[0.85em];
+  font-family: var(--font-mono);
+  background: var(--bg-soft);
 }
 .md-view pre {
-  @apply my-3 overflow-x-auto rounded bg-neutral-100 p-3 text-xs dark:bg-neutral-800;
+  @apply my-3 overflow-x-auto rounded p-3 text-xs;
+  background: var(--bg-soft);
 }
 .md-view pre code {
   @apply bg-transparent p-0 text-xs;
 }
 .md-view blockquote {
-  @apply my-2 border-l-2 border-neutral-300 pl-3 text-neutral-600 dark:border-neutral-600 dark:text-neutral-400;
+  @apply my-2 pl-3;
+  border-left: 2px solid var(--border-strong);
+  color: var(--fg-muted);
 }
 /* Card-mode list (BuilderMarkdown ol-override) drops the ml-5/list-decimal
    reset so the strong leader prints flush inside the card. */
@@ -137,11 +225,29 @@ body {
 }
 .md-view th,
 .md-view td {
-  @apply border border-neutral-300 px-2 py-1 text-left align-top dark:border-neutral-700;
+  @apply px-2 py-1 text-left align-top;
+  border: 1px solid var(--border);
 }
 .md-view th {
-  @apply bg-neutral-100 font-semibold dark:bg-neutral-800;
+  @apply font-semibold;
+  background: var(--bg-soft);
 }
 .md-view hr {
-  @apply my-3 border-neutral-200 dark:border-neutral-800;
+  @apply my-3;
+  border-color: var(--divider);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Reduced motion (spec §2.11). Collapse animation/transition for users who   */
+/* request it — any new Lume motion degrades to a plain fade or nothing.      */
+/* ------------------------------------------------------------------------ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

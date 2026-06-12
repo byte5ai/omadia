@@ -1,16 +1,13 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import {
-  Days_One,
-  JetBrains_Mono,
-  Nunito_Sans,
-} from 'next/font/google';
+import { Geist, Geist_Mono, Source_Serif_4 } from 'next/font/google';
 import { NextIntlClientProvider } from 'next-intl';
 import { getLocale, getMessages, getTranslations } from 'next-intl/server';
 
 import { AuthBadge } from './_components/AuthBadge';
 import { LocaleSwitcher } from './_components/LocaleSwitcher';
 import { Nav } from './_components/Nav';
+import { ThemeControls } from './_components/ThemeControls';
 import { SessionWatcher } from './_components/SessionWatcher';
 import { StreamRunner } from './_components/StreamRunner';
 import { StreamToasts } from './_components/StreamToasts';
@@ -19,37 +16,41 @@ import { StreamStoreProvider } from './_lib/streamStore';
 import './globals.css';
 
 /**
- * Typography per byte5 Design System:
- *   - Days One (single weight) for display + logo only.
- *   - Nunito Sans as the web fallback for Avenir Next — body + UI.
- *   - JetBrains Mono for IDs / versions / entity URIs.
+ * Typography per the Lume spec (§2.7) — three registers, three variable
+ * families, all self-hosted by next/font (no runtime font-CDN requests):
+ *   - Geist          — structural register: UI, labels, headings, buttons.
+ *   - Source Serif 4 — prose register: long-form agent narration.
+ *   - Geist Mono     — data/code register: IDs, numbers, code, paths.
  *
- * The CSS variable names (--font-serif, --font-sans, --font-mono) are kept
- * for continuity with the first UI slice, even though the actual faces are
- * now Days One / Nunito Sans / JetBrains Mono. The compat aliases in
- * theme.css map the byte5-native names (--font-display, --font-text) onto
- * the same stacks.
+ * next/font assigns dedicated CSS variables (--font-geist, --font-source-serif,
+ * --font-geist-mono); _lib/theme.css composes them into --font-sans / --font-serif
+ * / --font-mono with platform-strongest fallbacks. Geist is preloaded for FCP;
+ * the prose + mono faces are deferred (§2.7 "Font loading").
  */
-const display = Days_One({
+const sans = Geist({
   subsets: ['latin'],
-  variable: '--font-serif',
+  variable: '--font-geist',
   display: 'swap',
-  weight: '400',
 });
 
-const text = Nunito_Sans({
+const serif = Source_Serif_4({
   subsets: ['latin'],
-  variable: '--font-sans',
+  variable: '--font-source-serif',
   display: 'swap',
-  weight: ['400', '600', '700', '900'],
+  preload: false,
 });
 
-const mono = JetBrains_Mono({
+const mono = Geist_Mono({
   subsets: ['latin'],
-  variable: '--font-mono',
+  variable: '--font-geist-mono',
   display: 'swap',
-  weight: ['400', '500', '600'],
+  preload: false,
 });
+
+/* Pre-hydration palette/theme application — sets data-palette + data-theme on
+   <html> from localStorage before first paint so there is no flash of the
+   default palette/mode. Mirrors the keys ThemeControls writes. */
+const THEME_BOOTSTRAP = `(function(){try{var d=document.documentElement;var p=localStorage.getItem('omadia-palette');d.setAttribute('data-palette',(p==='petrol'||p==='atelier'||p==='lagoon')?p:'lagoon');var t=localStorage.getItem('omadia-theme');if(t==='light'||t==='dark')d.setAttribute('data-theme',t);}catch(e){document.documentElement.setAttribute('data-palette','lagoon');}})();`;
 
 export async function generateMetadata(): Promise<Metadata> {
   const t = await getTranslations('layout');
@@ -70,9 +71,14 @@ export default async function RootLayout({
   return (
     <html
       lang={locale}
-      className={`${display.variable} ${text.variable} ${mono.variable}`}
+      className={`${sans.variable} ${serif.variable} ${mono.variable}`}
+      suppressHydrationWarning
     >
       <body className="flex h-full flex-col">
+        <script
+          // Runs before paint; sets palette/mode from localStorage (no FOUC).
+          dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP }}
+        />
         <NextIntlClientProvider locale={locale} messages={messages}>
           <ChatSessionsProvider>
             <StreamStoreProvider>
@@ -93,9 +99,6 @@ export default async function RootLayout({
                     </span>
                   </Link>
                   <span className="text-xs text-[color:var(--fg-muted)]">
-                    <span className="text-[color:var(--highlight)] font-[900]">
-                      :
-                    </span>{' '}
                     {t('subtitle')}
                   </span>
                   <div className="ml-auto flex items-center gap-5">
@@ -104,6 +107,7 @@ export default async function RootLayout({
                       className="hidden h-5 w-px bg-[color:var(--border)] sm:block"
                       aria-hidden
                     />
+                    <ThemeControls />
                     <LocaleSwitcher />
                     <AuthBadge />
                   </div>
