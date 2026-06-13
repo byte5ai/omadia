@@ -171,11 +171,12 @@ export function ToolTestModal({
           </div>
           <div className="flex items-center gap-2">
             {onSaveTestCase && outcome && !outcome.isError ? (
-              <button
-                type="button"
+              <Button
+                variant="secondary"
+                size="sm"
                 onClick={() => void onSave()}
                 disabled={savingTestCase}
-                className="inline-flex items-center gap-1 rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-1 text-[11px] font-semibold text-[color:var(--fg-strong)] hover:border-[color:var(--accent)] disabled:opacity-50"
+                className="text-[11px]"
               >
                 {savingTestCase ? (
                   <span className="lume-busy-dots" aria-hidden />
@@ -183,7 +184,7 @@ export function ToolTestModal({
                   <Save className="size-3" aria-hidden />
                 )}
                 {t('saveTestCase')}
-              </button>
+              </Button>
             ) : null}
             <Button
               variant="primary"

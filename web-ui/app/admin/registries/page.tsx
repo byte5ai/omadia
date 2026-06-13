@@ -226,14 +226,14 @@ export default function AdminRegistriesPage(): React.ReactElement {
                   >
                     {editing === r.name ? 'Abbrechen' : 'Bearbeiten'}
                   </Button>
-                  <button
-                    type="button"
+                  <Button
+                    variant="danger"
                     onClick={() => void onDelete(r)}
-                    disabled={pending === r.name}
-                    className="rounded-md border border-[color:var(--border)] px-3 py-2 text-sm font-medium text-[color:var(--danger)] hover:bg-[color:var(--danger)]/10 disabled:opacity-50"
+                    busy={pending === r.name}
+                    busyLabel="Entfernen"
                   >
-                    {pending === r.name ? '…' : 'Entfernen'}
-                  </button>
+                    Entfernen
+                  </Button>
                 </div>
               </div>
 

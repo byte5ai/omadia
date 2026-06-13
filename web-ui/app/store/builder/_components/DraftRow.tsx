@@ -17,6 +17,7 @@ import type {
   DraftSummary,
 } from '../../../_lib/builderTypes';
 import { cn } from '../../../_lib/cn';
+import { Button } from '@/app/_components/ui/Button';
 import { ExportDraftButton } from './ExportDraftButton';
 
 interface DraftRowProps {
@@ -196,15 +197,16 @@ export function DraftRow({ draft, deleted = false }: DraftRowProps): React.React
 
       <div className="flex items-center gap-1">
         {deleted ? (
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={onRestore}
             disabled={pending}
-            className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-[11px] font-semibold text-[color:var(--fg-muted)] hover:bg-[color:var(--bg-soft)] hover:text-[color:var(--fg-strong)] disabled:opacity-50"
+            className="text-[11px] font-semibold text-[color:var(--fg-muted)] hover:text-[color:var(--fg-strong)]"
           >
             <Undo2 className="size-3.5" aria-hidden />
             {t('restore')}
-          </button>
+          </Button>
         ) : (
           <>
             {draft.status === 'published' ? (

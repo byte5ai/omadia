@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { Markdown } from '../_components/Markdown';
+import { Button } from '@/app/_components/ui/Button';
 import { getMemoryBackend, type MemoryBackend } from '../_lib/api';
 
 interface Entry {
@@ -246,13 +247,14 @@ export default function MemoryPage(): React.ReactElement {
                 {selected}
               </span>
               <div className="ml-auto flex items-center gap-2">
-                <button
-                  type="button"
+                <Button
+                  variant="secondary"
+                  size="sm"
                   onClick={() => void loadFile(selected)}
-                  className="rounded border border-[color:var(--border)] px-2 py-0.5 hover:border-[color:var(--border-strong)]"
+                  className="px-2 py-0.5"
                 >
                   ↻
-                </button>
+                </Button>
               </div>
             </div>
             <div className="min-h-0 flex-1 overflow-auto px-6 py-4">

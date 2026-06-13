@@ -344,13 +344,15 @@ function RoutingTester(props: {
             className="rounded border border-[color:var(--border)] px-2 py-1 text-sm"
           />
         </label>
-        <button
+        <Button
           type="submit"
+          variant="primary"
           disabled={props.disabled || running || !type || !key}
-          className="rounded bg-[color:var(--bg-inverse)] px-4 py-2 text-sm text-[color:var(--fg-on-dark)] hover:bg-[color:var(--bg-inverse)] disabled:opacity-40"
+          busy={running}
+          busyLabel={t('routingTesterRunning')}
         >
-          {running ? t('routingTesterRunning') : t('routingTesterSubmit')}
-        </button>
+          {t('routingTesterSubmit')}
+        </Button>
       </form>
       {error && (
         <p className="mt-3 text-sm text-[color:var(--danger)]">{error}</p>
@@ -449,13 +451,13 @@ function CreateAgentForm(props: {
           </select>
         </Field>
         <div className="lg:col-span-4">
-          <button
+          <Button
             type="submit"
+            variant="primary"
             disabled={props.disabled || !slug || !name}
-            className="rounded bg-[color:var(--bg-inverse)] px-4 py-2 text-sm text-[color:var(--fg-on-dark)] hover:bg-[color:var(--bg-inverse)] disabled:opacity-40"
           >
             {t('createSubmit')}
-          </button>
+          </Button>
         </div>
       </form>
     </section>

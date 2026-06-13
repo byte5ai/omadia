@@ -89,15 +89,17 @@ export function RoutineActions({ routine }: Props): React.ReactElement {
   return (
     <div className="flex flex-col items-end gap-1">
       <div className="flex flex-wrap justify-end gap-2">
-        <button
-          type="button"
+        <Button
+          variant="primary"
+          size="sm"
+          pill
           onClick={handleTriggerNow}
           disabled={pending}
           title="Routine jetzt manuell auslösen — feuert einen Agent-Run und liefert das Ergebnis ins Channel."
-          className="rounded-full border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/5 px-3 py-1 text-[11px] font-semibold text-[color:var(--accent)] transition hover:border-[color:var(--accent)] disabled:opacity-50"
+          className="text-[11px] font-semibold"
         >
           Jetzt
-        </button>
+        </Button>
         <Button
           variant="secondary"
           size="sm"
@@ -107,14 +109,16 @@ export function RoutineActions({ routine }: Props): React.ReactElement {
         >
           {isPaused ? 'Resume' : 'Pause'}
         </Button>
-        <button
-          type="button"
+        <Button
+          variant="danger"
+          size="sm"
+          pill
           onClick={handleDelete}
           disabled={pending}
-          className="rounded-full border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/5 px-3 py-1 text-[11px] font-semibold text-[color:var(--danger)] transition hover:border-[color:var(--danger)] disabled:opacity-50"
+          className="text-[11px] font-semibold"
         >
           Delete
-        </button>
+        </Button>
       </div>
       {error ? (
         <div className="font-mono text-[10px] text-[color:var(--danger)]">

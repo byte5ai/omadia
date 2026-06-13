@@ -208,15 +208,15 @@ export function SecretsDrawer({
             </div>
 
             <footer className="flex items-center gap-2 border-t border-[color:var(--divider)] px-4 py-3">
-              <button
-                type="button"
+              <Button
+                variant="danger"
                 onClick={() => void onClearAll()}
                 disabled={pending || bufferedKeys.length === 0}
-                className="inline-flex items-center gap-2 rounded-md border border-[color:var(--danger)]/40 px-3 py-2 text-[11px] font-semibold text-[color:var(--danger)] transition-colors hover:bg-[color:var(--danger)]/10 disabled:opacity-40"
+                className="text-[11px]"
               >
                 <Trash2 className="size-3" aria-hidden />
                 {t('clearAll')}
-              </button>
+              </Button>
               <Button
                 variant="primary"
                 onClick={() => void onSave()}

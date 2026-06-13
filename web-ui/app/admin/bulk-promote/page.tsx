@@ -195,18 +195,16 @@ export default function BulkPromotePage(): React.ReactElement {
           >
             Vorschau aktualisieren
           </Button>
-          <button
-            type="button"
+          <Button
+            variant="primary"
+            size="sm"
             onClick={() => void trigger()}
-            disabled={
-              running ||
-              preview === null ||
-              !preview.scorerAvailable
-            }
-            className="rounded bg-[color:var(--bg-inverse)] px-3 py-1 text-xs text-[color:var(--fg-on-dark)] hover:bg-[color:var(--fg-muted)] disabled:opacity-50"
+            disabled={running || preview === null || !preview.scorerAvailable}
+            busy={running}
+            busyLabel="läuft"
           >
-            {running ? 'läuft…' : 'Bulk-Job starten'}
-          </button>
+            Bulk-Job starten
+          </Button>
         </div>
       </section>
 

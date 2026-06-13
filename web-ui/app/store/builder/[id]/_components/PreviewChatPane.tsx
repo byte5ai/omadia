@@ -579,14 +579,14 @@ export function PreviewChatPane({
             className="min-h-[44px] flex-1 resize-none rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-[13px] leading-snug text-[color:var(--fg-strong)] placeholder:text-[color:var(--fg-subtle)] focus:border-[color:var(--accent)] focus:outline-none disabled:opacity-60"
           />
           {inflight ? (
-            <button
-              type="button"
+            <Button
+              variant="danger"
               onClick={onStop}
-              className="inline-flex h-[44px] shrink-0 items-center gap-2 rounded-md border border-[color:var(--danger)]/40 px-3 py-2 text-[12px] font-semibold text-[color:var(--danger)] transition-colors hover:bg-[color:var(--danger)]/10"
+              className="h-[44px] shrink-0 text-[12px]"
             >
               <StopCircle className="size-4" aria-hidden />
               {t('stop')}
-            </button>
+            </Button>
           ) : (
             <Button
               variant="primary"
@@ -685,14 +685,15 @@ function RuntimeSmokeStrip({
           </ul>
         ) : null}
         {snap.phase === 'failed' && onFixWithBuilder ? (
-          <button
-            type="button"
+          <Button
+            variant="danger"
+            size="sm"
             onClick={onFixWithBuilder}
-            className="mt-2 inline-flex items-center gap-2 rounded-md border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/10 px-2 py-1 text-[11px] font-mono-num uppercase tracking-[0.18em] text-[color:var(--danger)] transition-colors hover:bg-[color:var(--danger)]/15"
+            className="mt-2 font-mono-num text-[11px] uppercase tracking-[0.18em]"
           >
             <Wrench className="size-3" aria-hidden />
             {t('fixWithBuilder')}
-          </button>
+          </Button>
         ) : null}
       </div>
     </div>

@@ -229,18 +229,20 @@ export default function InconsistenciesListPage(): React.ReactElement {
             }}
             className="w-20 rounded border border-[color:var(--border)] bg-transparent px-2 py-1 text-xs"
           />
-          <button
-            type="button"
+          <Button
+            variant="primary"
+            size="sm"
             onClick={() => void triggerBulkRun()}
             disabled={
               bulkRunning ||
               bulkPreview?.detectorAvailable === false ||
               (bulkPreview !== null && bulkPreview.unchecked === 0)
             }
-            className="rounded border border-[color:var(--border-strong)] bg-[color:var(--bg-inverse)] px-3 py-1 text-xs text-[color:var(--fg-on-dark)] disabled:cursor-not-allowed disabled:opacity-50"
+            busy={bulkRunning}
+            busyLabel="läuft"
           >
-            {bulkRunning ? 'läuft…' : 'Bulk-Detect starten'}
-          </button>
+            Bulk-Detect starten
+          </Button>
           {bulkLimit > BULK_CONFIRM_THRESHOLD && (
             <span className="text-[11px] text-[color:var(--warning)]">
               ⚠️ Cost-Confirm bei Limit &gt; {BULK_CONFIRM_THRESHOLD}

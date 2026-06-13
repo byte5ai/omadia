@@ -458,22 +458,24 @@ export default function MemoryDetailPage(): React.ReactElement {
             <div className="flex justify-end gap-2">
               {editing ? (
                 <>
-                  <button
-                    type="button"
+                  <Button
+                    variant="secondary"
+                    size="sm"
                     onClick={cancelEdit}
                     disabled={busy}
-                    className="rounded border border-[color:var(--border)] px-3 py-1 text-xs hover:border-[color:var(--border-strong)] disabled:opacity-50"
                   >
                     Abbrechen
-                  </button>
-                  <button
-                    type="button"
+                  </Button>
+                  <Button
+                    variant="primary"
+                    size="sm"
                     onClick={() => void save()}
                     disabled={busy || summary.trim().length === 0}
-                    className="rounded bg-[color:var(--bg-inverse)] px-3 py-1 text-xs text-[color:var(--fg-on-dark)] hover:bg-[color:var(--fg-muted)] disabled:opacity-50"
+                    busy={busy}
+                    busyLabel="speichert…"
                   >
-                    {busy ? 'speichert…' : 'Speichern'}
-                  </button>
+                    Speichern
+                  </Button>
                 </>
               ) : (
                 <>
@@ -485,14 +487,14 @@ export default function MemoryDetailPage(): React.ReactElement {
                   >
                     Löschen
                   </Button>
-                  <button
-                    type="button"
+                  <Button
+                    variant="primary"
+                    size="sm"
                     onClick={startEdit}
                     disabled={busy}
-                    className="rounded bg-[color:var(--bg-inverse)] px-3 py-1 text-xs text-[color:var(--fg-on-dark)] hover:bg-[color:var(--fg-muted)]"
                   >
                     Bearbeiten
-                  </button>
+                  </Button>
                 </>
               )}
             </div>
@@ -552,21 +554,23 @@ export default function MemoryDetailPage(): React.ReactElement {
                         </div>
                         {!isEditing && (
                           <div className="flex items-center gap-1">
-                            <button
-                              type="button"
+                            <Button
+                              variant="secondary"
+                              size="sm"
                               onClick={() => void copyExcerpt(ex)}
-                              className="rounded border border-[color:var(--border)] px-2 py-0.5 text-[10px] text-[color:var(--fg-muted)] hover:border-[color:var(--border-strong)] hover:text-[color:var(--fg-strong)]"
+                              className="px-2 py-0.5 text-[10px] text-[color:var(--fg-muted)]"
                               title="Snippet in die Zwischenablage kopieren"
                             >
                               {justCopied ? '✓ kopiert' : 'kopieren'}
-                            </button>
-                            <button
-                              type="button"
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              size="sm"
                               onClick={() => startExcerptEdit(ex)}
-                              className="rounded border border-[color:var(--border)] px-2 py-0.5 text-[10px] text-[color:var(--fg-muted)] hover:border-[color:var(--border-strong)] hover:text-[color:var(--fg-strong)]"
+                              className="px-2 py-0.5 text-[10px] text-[color:var(--fg-muted)]"
                             >
                               bearbeiten
-                            </button>
+                            </Button>
                           </div>
                         )}
                       </div>
@@ -608,24 +612,28 @@ export default function MemoryDetailPage(): React.ReactElement {
                               </label>
                             ))}
                             <div className="ml-auto flex gap-1">
-                              <button
-                                type="button"
+                              <Button
+                                variant="secondary"
+                                size="sm"
                                 onClick={cancelExcerptEdit}
                                 disabled={excerptBusy}
-                                className="rounded border border-[color:var(--border)] px-2 py-0.5 text-[10px] hover:border-[color:var(--border-strong)] disabled:opacity-50"
+                                className="px-2 py-0.5 text-[10px]"
                               >
                                 Abbrechen
-                              </button>
-                              <button
-                                type="button"
+                              </Button>
+                              <Button
+                                variant="primary"
+                                size="sm"
                                 onClick={() => void saveExcerptEdit()}
                                 disabled={
                                   excerptBusy || excerptDraft.trim().length === 0
                                 }
-                                className="rounded bg-[color:var(--bg-inverse)] px-2 py-0.5 text-[10px] text-[color:var(--fg-on-dark)] hover:bg-[color:var(--fg-muted)] disabled:opacity-50"
+                                busy={excerptBusy}
+                                busyLabel="speichert…"
+                                className="px-2 py-0.5 text-[10px]"
                               >
-                                {excerptBusy ? 'speichert…' : 'Speichern'}
-                              </button>
+                                Speichern
+                              </Button>
                             </div>
                           </div>
                         </div>

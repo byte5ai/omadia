@@ -133,15 +133,16 @@ export function CulturePresetDropdown({
             >
               {pending ? t('applying') : t('apply')}
             </Button>
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="sm"
               data-testid="culture-confirm-cancel"
               onClick={handleCancel}
               disabled={pending}
-              className="rounded border border-[color:var(--border)] px-3 py-1 text-sm"
+              className="text-sm"
             >
               {t('cancel')}
-            </button>
+            </Button>
           </div>
         </div>
       )}

@@ -269,14 +269,15 @@ export default function MemoryAclSection({
               disabled={busy}
             />
             <div className="flex gap-1">
-              <button
-                type="button"
+              <Button
+                variant="secondary"
+                size="sm"
                 onClick={() => void addOwner()}
                 disabled={busy || addInput.trim().length === 0}
-                className="grow rounded border border-[color:var(--border)] px-2 py-1 text-[11px] hover:border-[color:var(--border-strong)] disabled:opacity-50"
+                className="grow px-2 py-1 text-[11px]"
               >
                 + Owner hinzufügen
-              </button>
+              </Button>
               <Button
                 variant="danger"
                 size="sm"

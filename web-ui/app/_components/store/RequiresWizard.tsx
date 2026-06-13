@@ -196,13 +196,15 @@ export function RequiresWizard({
           <div className="flex items-center gap-2">
             {phase.kind === 'review' ? (
               <>
-                <button
-                  type="button"
+                <Button
+                  variant="secondary"
+                  pill
+                  size="sm"
                   onClick={onClose}
-                  className="rounded-full bg-[color:var(--bg)] px-4 py-2 text-[12px] font-semibold text-[color:var(--fg-muted)] ring-1 ring-inset ring-[color:var(--border)]"
+                  className="font-semibold text-[color:var(--fg-muted)]"
                 >
                   Abbrechen
-                </button>
+                </Button>
                 <Button
                   variant="primary"
                   pill
@@ -236,13 +238,15 @@ export function RequiresWizard({
                 Schließen
               </Button>
             ) : phase.kind === 'error' ? (
-              <button
-                type="button"
+              <Button
+                variant="secondary"
+                pill
+                size="sm"
                 onClick={onClose}
-                className="rounded-full bg-[color:var(--bg)] px-4 py-2 text-[12px] font-semibold text-[color:var(--fg-muted)] ring-1 ring-inset ring-[color:var(--border)]"
+                className="font-semibold text-[color:var(--fg-muted)]"
               >
                 Schließen
-              </button>
+              </Button>
             ) : null}
           </div>
         </footer>

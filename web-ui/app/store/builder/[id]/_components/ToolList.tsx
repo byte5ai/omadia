@@ -158,14 +158,15 @@ export function ToolList({
               <Plus className="size-3" aria-hidden />
               {t('addFirstTool')}
             </Button>
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={() => setTemplatesOpen(true)}
-              className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-[11px] font-semibold text-[color:var(--fg-strong)] hover:border-[color:var(--accent)]"
+              className="text-[11px]"
             >
               <Layers className="size-3" aria-hidden />
               {t('fromTemplate')}
-            </button>
+            </Button>
           </div>
         </div>
         {templatesOpen ? (
@@ -212,30 +213,33 @@ export function ToolList({
       </DndContext>
 
       <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="sm"
           onClick={onAdd}
-          className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-[11px] font-semibold text-[color:var(--fg-strong)] hover:border-[color:var(--accent)]"
+          className="text-[11px]"
         >
           <Plus className="size-3" aria-hidden />
           {t('addTool')}
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
           onClick={() => setTemplatesOpen(true)}
-          className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-[11px] font-semibold text-[color:var(--fg-strong)] hover:border-[color:var(--accent)]"
+          className="text-[11px]"
         >
           <Layers className="size-3" aria-hidden />
           {t('fromTemplate')}
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
           onClick={() => setImportOpen(true)}
-          className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-[11px] font-semibold text-[color:var(--fg-strong)] hover:border-[color:var(--accent)]"
+          className="text-[11px]"
         >
           <Upload className="size-3" aria-hidden />
           {t('import')}
-        </button>
+        </Button>
       </div>
       {templatesOpen ? (
         <ToolTemplatesModal

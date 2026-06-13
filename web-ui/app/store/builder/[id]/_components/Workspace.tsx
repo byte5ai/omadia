@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useTranslations } from 'next-intl';
 import { LayoutGroup } from 'framer-motion';
+
+import { Button } from '@/app/_components/ui/Button';
 import {
   ArrowLeft,
   MessageSquare,
@@ -1406,21 +1408,16 @@ function WorkspaceHeader({
         disabled={viewToggleDisabled}
       />
 
-      <button
-        type="button"
+      <Button
+        variant="primary"
         onClick={installEnabled ? onInstallClick : undefined}
         disabled={!installEnabled}
         title={installDisabledReason ?? undefined}
-        className={cn(
-          'inline-flex items-center gap-2 rounded-md px-4 py-2 text-[12px] font-semibold uppercase tracking-[0.18em] transition-opacity',
-          installEnabled
-            ? 'bg-[color:var(--accent)] text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] hover:opacity-90'
-            : 'cursor-not-allowed bg-[color:var(--bg-soft)] text-[color:var(--fg-subtle)]',
-        )}
+        className="text-[12px] uppercase tracking-[0.18em]"
       >
         <Rocket className="size-3.5" aria-hidden />
         {tw('publish')}
-      </button>
+      </Button>
     </header>
   );
 }
@@ -1992,14 +1989,15 @@ function BuildStatusStrip({
           </span>
         ) : null}
         {onFixWithBuilder ? (
-          <button
-            type="button"
+          <Button
+            variant="danger"
+            size="sm"
             onClick={onFixWithBuilder}
-            className="inline-flex items-center gap-2 rounded-md border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/10 px-2 py-1 font-mono-num text-[10px] uppercase tracking-[0.18em] text-[color:var(--danger)] transition-colors hover:bg-[color:var(--danger)]/15"
+            className="font-mono-num text-[10px] uppercase tracking-[0.18em]"
           >
             <Wrench className="size-3" aria-hidden />
             {tw('fixWithBuilder')}
-          </button>
+          </Button>
         ) : null}
         <span className="font-mono-num inline-flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
           <span className={`inline-block size-1.5 rounded-full ${busColor}`} />

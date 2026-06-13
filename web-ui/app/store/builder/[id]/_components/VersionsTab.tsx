@@ -105,13 +105,9 @@ export function VersionsTab({ draftId }: VersionsTabProps): React.ReactElement {
         >
           {t('createSnapshot')}
         </Button>
-        <button
-          type="button"
-          onClick={() => void refresh()}
-          className="rounded-md border border-[var(--border)] px-3 py-2 text-sm hover:border-current"
-        >
+        <Button variant="secondary" onClick={() => void refresh()}>
           {t('refresh')}
-        </button>
+        </Button>
       </div>
 
       {state.kind === 'loading' && <p className="text-sm opacity-70">{t('loading')}</p>}
@@ -383,13 +379,9 @@ function CaptureModal({
         {t('vendorBundleLabel')}
       </label>
       <div className="mt-4 flex justify-end gap-2">
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded-md border border-[var(--border)] px-3 py-2 text-sm"
-        >
+        <Button variant="secondary" onClick={onClose}>
           {t('cancel')}
-        </button>
+        </Button>
         <Button
           variant="primary"
           onClick={() => void submit()}
@@ -573,13 +565,9 @@ function RollbackModal({
         autoComplete="off"
       />
       <div className="mt-4 flex justify-end gap-2">
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded-md border border-[var(--border)] px-3 py-2 text-sm"
-        >
+        <Button variant="secondary" onClick={onClose}>
           {t('cancel')}
-        </button>
+        </Button>
         <button
           type="button"
           onClick={() => void submit()}

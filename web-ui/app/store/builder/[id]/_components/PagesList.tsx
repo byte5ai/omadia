@@ -192,14 +192,10 @@ export function PagesList({
           </ul>
         </SortableContext>
       </DndContext>
-      <button
-        type="button"
-        onClick={onAdd}
-        className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-[11px] font-semibold text-[color:var(--fg-strong)] hover:border-[color:var(--accent)]"
-      >
+      <Button variant="secondary" size="sm" onClick={onAdd} className="text-[11px]">
         <Plus className="size-3" aria-hidden />
         {t('addPage')}
-      </button>
+      </Button>
     </div>
   );
 }

@@ -250,16 +250,20 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
       ) : null}
 
       <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
+        <Button
+          variant="primary"
+          size="sm"
+          pill
           onClick={(): void => {
             void handleSave();
           }}
           disabled={saving || draftParseError !== null || !dirty}
-          className="rounded-full border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-[color:var(--accent)] transition hover:border-[color:var(--accent)] disabled:opacity-40"
+          busy={saving}
+          busyLabel="Speichert…"
+          className="text-[11px] font-semibold uppercase tracking-[0.16em]"
         >
-          {saving ? 'Speichert…' : 'Speichern'}
-        </button>
+          Speichern
+        </Button>
         <Button
           variant="secondary"
           size="sm"
@@ -338,16 +342,20 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button
-              type="button"
+            <Button
+              variant="primary"
+              size="sm"
+              pill
               onClick={(): void => {
                 void handlePreview();
               }}
               disabled={previewLoading}
-              className="rounded-full border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/5 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-[color:var(--accent)] transition hover:border-[color:var(--accent)] disabled:opacity-40"
+              busy={previewLoading}
+              busyLabel="Rendert…"
+              className="text-[11px] font-semibold uppercase tracking-[0.16em]"
             >
-              {previewLoading ? 'Rendert…' : 'Preview'}
-            </button>
+              Preview
+            </Button>
           </div>
           {previewError ? (
             <div className="rounded-md border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/5 p-2 text-[11px] text-[color:var(--danger)]">

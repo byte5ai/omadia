@@ -262,16 +262,11 @@ export function InstallDiffModal({
           >
             {t('back')}
           </button>
-          <button
-            type="button"
+          <Button
+            variant="primary"
             onClick={() => void handleInstall()}
             disabled={busy || phase.kind === 'succeeded'}
-            className={cn(
-              'inline-flex items-center gap-2 rounded-md px-4 py-2 text-[12px] font-semibold uppercase tracking-[0.18em]',
-              'bg-[color:var(--accent)] text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)]',
-              'transition-opacity',
-              'disabled:opacity-50 disabled:cursor-not-allowed',
-            )}
+            className="text-[12px] uppercase tracking-[0.18em]"
           >
             {busy ? (
               <>
@@ -286,7 +281,7 @@ export function InstallDiffModal({
             ) : (
               t('publish')
             )}
-          </button>
+          </Button>
         </footer>
       </div>
     </div>
@@ -564,13 +559,14 @@ function FailureBanner({
                 {t('bumpAndPublish', { current: currentVersion, next: bumped ?? '' })}
               </Button>
             ) : null}
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={onRetry}
-              className="inline-flex items-center gap-2 rounded-md border border-[color:var(--divider)] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-strong)] transition-colors hover:bg-[color:var(--bg-soft)]"
+              className="text-[11px] uppercase tracking-[0.16em]"
             >
               {t('retry')}
-            </button>
+            </Button>
           </div>
         </div>
       </div>

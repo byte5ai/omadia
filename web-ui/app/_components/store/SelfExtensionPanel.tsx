@@ -380,15 +380,17 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
                       <Check className="size-3.5" aria-hidden />
                       {t('approve')}
                     </Button>
-                    <button
-                      type="button"
+                    <Button
+                      variant="secondary"
+                      pill
+                      size="sm"
                       disabled={actionBusyId === p.id}
                       onClick={() => setDenyFor(p.id)}
-                      className="inline-flex items-center gap-2 rounded-full bg-[color:var(--bg-soft)] px-3 py-1 text-[12px] font-semibold text-[color:var(--fg-muted)] ring-1 ring-inset ring-[color:var(--border)]"
+                      className="font-semibold text-[color:var(--fg-muted)]"
                     >
                       <X className="size-3.5" aria-hidden />
                       {t('deny')}
-                    </button>
+                    </Button>
                   </div>
                 )
               ) : null}
