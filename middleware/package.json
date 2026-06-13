@@ -73,7 +73,7 @@
     "@types/ws": "^8.5.13",
     "@types/yazl": "^3.3.1",
     "nodemon": "^3.1.14",
-    "prettier": "^3.8.2",
+    "prettier": "^3.8.4",
     "ts-node": "^10.9.2",
     "tsx": "^4.22.4",
     "typescript": "^6.0.2"
