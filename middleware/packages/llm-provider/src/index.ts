@@ -33,3 +33,15 @@ export {
   type AnthropicClient,
   type AnthropicClientOptions,
 } from './anthropicClient.js';
+
+export {
+  classifyOpenAiError,
+  createOpenAiProvider,
+  type OpenAiProviderOptions,
+} from './openaiProvider.js';
+
+export {
+  createOpenAiClient,
+  type OpenAiClient,
+  type OpenAiClientOptions,
+} from './openaiClient.js';

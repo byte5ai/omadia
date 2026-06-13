@@ -5,14 +5,15 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "description": "Provider-agnostic LLM contract for the omadia middleware. Defines the neutral request/response DTOs (ChatMessage content parts, ToolSpec, FinishReason, usage incl. cache tokens), the LlmProvider interface (complete/stream/classifyError + capabilities), and ships the Anthropic reference adapter. Decoupling plan: docs/plans/llm-provider-interface-plan.md.",
+  "description": "Provider-agnostic LLM contract for the omadia middleware. Defines the neutral request/response DTOs (ChatMessage content parts, ToolSpec, FinishReason, usage incl. cache tokens), the LlmProvider interface (complete/stream/classifyError + capabilities), and ships the Anthropic and OpenAI (incl. OpenAI-compatible: Mistral/Ollama/vLLM/Azure) reference adapters. Decoupling plan: docs/plans/llm-provider-interface-plan.md.",
   "license": "MIT",
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "@anthropic-ai/sdk": "*"
+    "@anthropic-ai/sdk": "*",
+    "openai": "*"
   },
   "engines": {
     "node": ">=20"
