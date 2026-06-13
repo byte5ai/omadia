@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
+import { providerApiKeyVaultKey } from '@omadia/llm-provider';
 import { parseCapabilityRef } from '@omadia/plugin-api';
 
 import type { Config } from '../config.js';
@@ -297,6 +298,33 @@ async function migrateAnthropicKeyToVault(
   });
   log(
     `[bootstrap] ⚐ migrated anthropic_api_key for ${toolId}: installed.json config → vault (S+12.6 hardening)`,
+  );
+}
+
+/**
+ * Phase-4 credential-scheme migration: copy a legacy flat `anthropic_api_key`
+ * vault entry to the provider-namespaced canonical key
+ * `provider:anthropic/api_key`. Idempotent (skips when canonical already set)
+ * and NON-DESTRUCTIVE — the legacy key is intentionally retained as a read
+ * fallback (see `readProviderApiKey`), so an existing install can never lose
+ * its key even if this never runs. Runs every boot for installed plugins.
+ */
+async function migrateAnthropicKeyToCanonical(
+  deps: BootstrapDeps,
+  toolId: string,
+  log: (m: string) => void,
+): Promise<void> {
+  if (!deps.registry.has(toolId)) return;
+  const canonicalKey = providerApiKeyVaultKey('anthropic');
+  // Treat a blank/whitespace canonical value as absent (matches readProviderApiKey),
+  // so a previously-stored empty canonical never blocks migrating a real legacy key.
+  const existing = (await deps.vault.get(toolId, canonicalKey))?.trim();
+  if (existing !== undefined && existing.length > 0) return;
+  const legacy = (await deps.vault.get(toolId, 'anthropic_api_key'))?.trim();
+  if (legacy === undefined || legacy.length === 0) return;
+  await deps.vault.setMany(toolId, { [canonicalKey]: legacy });
+  log(
+    `[bootstrap] ⚐ migrated anthropic_api_key → ${canonicalKey} for ${toolId} (provider credential scheme; legacy key retained as fallback)`,
   );
 }
 
@@ -671,6 +699,8 @@ async function bootstrapOrchestratorExtrasFromEnv(
 
   // S+12.6: migrate pre-S+12.6 anthropic_api_key from config to vault.
   await migrateAnthropicKeyToVault(deps, ORCHESTRATOR_EXTRAS_TOOL_ID, log);
+  // Phase 4: copy legacy vault key → provider:anthropic/api_key (non-destructive).
+  await migrateAnthropicKeyToCanonical(deps, ORCHESTRATOR_EXTRAS_TOOL_ID, log);
 
   if (deps.registry.has(ORCHESTRATOR_EXTRAS_TOOL_ID)) return;
 
@@ -682,10 +712,10 @@ async function bootstrapOrchestratorExtrasFromEnv(
     return;
   }
 
-  // S+12.6: anthropic_api_key moves to the vault (matches database_url pattern).
+  // Phase 4: env key seeds the provider-namespaced canonical vault key.
   if (deps.config.ANTHROPIC_API_KEY) {
     await deps.vault.setMany(ORCHESTRATOR_EXTRAS_TOOL_ID, {
-      anthropic_api_key: deps.config.ANTHROPIC_API_KEY,
+      [providerApiKeyVaultKey('anthropic')]: deps.config.ANTHROPIC_API_KEY,
     });
   }
 
@@ -750,6 +780,8 @@ async function bootstrapVerifierFromEnv(
 
   // S+12.6: migrate pre-S+12.6 anthropic_api_key from config to vault.
   await migrateAnthropicKeyToVault(deps, VERIFIER_TOOL_ID, log);
+  // Phase 4: copy legacy vault key → provider:anthropic/api_key (non-destructive).
+  await migrateAnthropicKeyToCanonical(deps, VERIFIER_TOOL_ID, log);
 
   if (deps.registry.has(VERIFIER_TOOL_ID)) return;
 
@@ -761,10 +793,10 @@ async function bootstrapVerifierFromEnv(
     return;
   }
 
-  // S+12.6: anthropic_api_key moves to the vault.
+  // Phase 4: env key seeds the provider-namespaced canonical vault key.
   if (deps.config.ANTHROPIC_API_KEY) {
     await deps.vault.setMany(VERIFIER_TOOL_ID, {
-      anthropic_api_key: deps.config.ANTHROPIC_API_KEY,
+      [providerApiKeyVaultKey('anthropic')]: deps.config.ANTHROPIC_API_KEY,
     });
   }
 
@@ -820,6 +852,8 @@ async function bootstrapOrchestratorFromEnv(
 
   // S+12.6: migrate pre-S+12.6 anthropic_api_key from config to vault.
   await migrateAnthropicKeyToVault(deps, ORCHESTRATOR_TOOL_ID, log);
+  // Phase 4: copy legacy vault key → provider:anthropic/api_key (non-destructive).
+  await migrateAnthropicKeyToCanonical(deps, ORCHESTRATOR_TOOL_ID, log);
 
   if (deps.registry.has(ORCHESTRATOR_TOOL_ID)) return;
 
@@ -831,10 +865,10 @@ async function bootstrapOrchestratorFromEnv(
     return;
   }
 
-  // S+12.6: anthropic_api_key moves to the vault.
+  // Phase 4: env key seeds the provider-namespaced canonical vault key.
   if (deps.config.ANTHROPIC_API_KEY) {
     await deps.vault.setMany(ORCHESTRATOR_TOOL_ID, {
-      anthropic_api_key: deps.config.ANTHROPIC_API_KEY,
+      [providerApiKeyVaultKey('anthropic')]: deps.config.ANTHROPIC_API_KEY,
     });
   }
 

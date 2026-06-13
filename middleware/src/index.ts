@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   createAnthropicClient,
+  readProviderApiKey,
   type AnthropicClient,
 } from '@omadia/llm-provider';
 import express from 'express';
@@ -935,7 +936,10 @@ async function main(): Promise<void> {
     sourceAgentId: string = ANTHROPIC_SHARED_CLIENT_SOURCE,
   ): Promise<void> => {
     try {
-      const key = await secretVault.get(sourceAgentId, 'anthropic_api_key');
+      const key = await readProviderApiKey(
+        (k) => secretVault.get(sourceAgentId, k),
+        'anthropic',
+      );
       if (!key || key === sharedAnthropicKeyApplied) return;
       const refreshed = createAnthropicClient({ apiKey: key, maxRetries: 5 });
       serviceRegistry.replace('anthropicClient', refreshed);

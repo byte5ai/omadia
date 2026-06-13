@@ -2,6 +2,7 @@ import type { Pool } from 'pg';
 import {
   createAnthropicClient,
   createAnthropicProvider,
+  readProviderApiKey,
 } from '@omadia/llm-provider';
 import type { KnowledgeGraph } from '@omadia/plugin-api';
 import type { PluginContext } from '@omadia/plugin-api';
@@ -100,9 +101,11 @@ export async function activate(
     };
   }
 
-  // S+12.6: anthropic_api_key is vault-stored (matches database_url-pattern).
-  // Bootstrap migrates pre-S+12.6 entries automatically (config → vault).
-  const apiKey = ((await ctx.secrets.get('anthropic_api_key')) ?? '').trim();
+  // anthropic_api_key is vault-stored. Read the provider-namespaced canonical
+  // key (provider:anthropic/api_key) with a fallback to the legacy flat key, so
+  // pre-migration installs keep working (phase 4 credential scheme).
+  const apiKey =
+    (await readProviderApiKey((k) => ctx.secrets.get(k), 'anthropic')) ?? '';
   if (!apiKey) {
     ctx.log(
       '[harness-verifier] anthropic_api_key not set — plugin active but verifier@1 capability NOT published',

@@ -47,6 +47,12 @@ export {
 } from './openaiClient.js';
 
 export {
+  legacyProviderApiKeyVaultKey,
+  providerApiKeyVaultKey,
+  readProviderApiKey,
+} from './providerCredentials.js';
+
+export {
   getModel,
   isClassRef,
   listModels,

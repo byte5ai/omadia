@@ -3,6 +3,7 @@ import type { EmbeddingClient } from '@omadia/embeddings';
 import {
   createAnthropicClient,
   createAnthropicProvider,
+  readProviderApiKey,
 } from '@omadia/llm-provider';
 // Phase 5B: structural shim — `@omadia/integration-microsoft365` lives
 // in the byte5-plugins backup repo. The orchestrator types against a
@@ -204,11 +205,11 @@ export async function activate(
 ): Promise<OrchestratorPluginHandle> {
   ctx.log('activating orchestrator plugin');
 
-  // S+12.6: anthropic_api_key is vault-stored (matches database_url-pattern).
-  // Bootstrap writes it during installation; operator can override via setup-form
-  // post-install. Pre-S+12.6 entries are migrated automatically by
-  // bootstrapOrchestratorFromEnv on first boot (config → vault).
-  const apiKey = ((await ctx.secrets.get('anthropic_api_key')) ?? '').trim();
+  // anthropic_api_key is vault-stored. Read the provider-namespaced canonical
+  // key (provider:anthropic/api_key) with a fallback to the legacy flat key, so
+  // pre-migration installs keep working (phase 4 credential scheme).
+  const apiKey =
+    (await readProviderApiKey((k) => ctx.secrets.get(k), 'anthropic')) ?? '';
   if (!apiKey) {
     ctx.log(
       '[harness-orchestrator] anthropic_api_key not set — chatAgent@1 capability NOT published',
