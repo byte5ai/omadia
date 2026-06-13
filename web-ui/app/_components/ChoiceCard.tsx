@@ -3,6 +3,7 @@
 import type React from 'react';
 import { useTranslations } from 'next-intl';
 
+import { Button } from '@/app/_components/ui/Button';
 import type { PendingUserChoice } from '../_lib/chatSessions';
 
 export type { PendingUserChoice };
@@ -42,23 +43,17 @@ export function ChoiceCard({
       )}
       <div className="flex flex-wrap gap-2">
         {choice.options.map((opt, idx) => (
-          <button
+          <Button
             key={`${opt.value}-${String(idx)}`}
-            type="button"
+            variant={idx === 0 ? 'primary' : 'secondary'}
+            size="sm"
             onClick={() => {
               onChoose(opt.value);
             }}
             disabled={disabled}
-            className={[
-              'rounded border px-3 py-2 text-xs font-medium transition',
-              idx === 0
-                ? 'border-[color:var(--accent)] bg-[color:var(--accent)] text-[color:var(--fg-on-dark)] hover:bg-[color:var(--accent)]'
-                : 'border-[color:var(--border)] bg-[color:var(--bg-elevated)] text-[color:var(--fg)] hover:border-[color:var(--border-strong)]',
-              'disabled:cursor-not-allowed disabled:opacity-40',
-            ].join(' ')}
           >
             {opt.label}
-          </button>
+          </Button>
         ))}
       </div>
     </div>

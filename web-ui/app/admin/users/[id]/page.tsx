@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 
+import { Button } from '@/app/_components/ui/Button';
 import {
   AdminUser,
   ApiError,
@@ -210,13 +211,14 @@ export default function AdminUserEditPage(): React.ReactElement {
             <p className="text-sm text-[color:var(--success)]">{patchMessage}</p>
           )}
           {patchError && <p className="text-sm text-[color:var(--danger)]">{patchError}</p>}
-          <button
+          <Button
             type="submit"
+            variant="primary"
             disabled={savingPatch}
-            className="self-start rounded-md bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-[color:var(--text-inverse)] disabled:opacity-50"
+            className="self-start"
           >
             {savingPatch ? 'Speichere …' : 'Speichern'}
-          </button>
+          </Button>
         </form>
       </section>
 
@@ -240,14 +242,13 @@ export default function AdminUserEditPage(): React.ReactElement {
                 className="rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[color:var(--accent)]"
               />
             </label>
-            <button
-              type="button"
+            <Button
+              variant="secondary"
               onClick={() => void handleResetPassword()}
               disabled={resetting}
-              className="rounded-md border border-[color:var(--border)] px-4 py-2 text-sm font-medium hover:bg-[color:var(--card)] disabled:opacity-50"
             >
               {resetting ? 'Setze …' : 'Zurücksetzen'}
-            </button>
+            </Button>
           </div>
           {resetMessage && (
             <p className="mt-3 text-sm text-[color:var(--success)]">{resetMessage}</p>
@@ -265,14 +266,13 @@ export default function AdminUserEditPage(): React.ReactElement {
         <p className="mb-3 text-sm text-[color:var(--fg-muted)]">
           Löschen entfernt den Nutzer permanent. Audit-Log behält den Eintrag.
         </p>
-        <button
-          type="button"
+        <Button
+          variant="danger"
           onClick={() => void handleDelete()}
           disabled={deleting}
-          className="rounded-md border border-[color:var(--danger-edge)]/40 px-4 py-2 text-sm font-medium text-[color:var(--danger)] hover:bg-[color:var(--danger)]/10 disabled:opacity-50"
         >
           {deleting ? 'Lösche …' : 'Nutzer löschen'}
-        </button>
+        </Button>
         {deleteError && (
           <p className="mt-3 text-sm text-[color:var(--danger)]">{deleteError}</p>
         )}

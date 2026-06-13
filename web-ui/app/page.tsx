@@ -1480,18 +1480,19 @@ function FollowUpButtons({
       </div>
       <div className="flex flex-wrap gap-2">
         {options.map((opt, idx) => (
-          <button
+          <Button
             key={`${opt.label}-${String(idx)}`}
-            type="button"
+            variant="secondary"
+            size="sm"
+            pill
             onClick={() => {
               onChoose(opt.prompt);
             }}
             disabled={disabled}
             title={opt.prompt}
-            className="rounded-full border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-3 py-1 text-[11px] font-medium text-[color:var(--fg)] transition hover:border-[color:var(--border-strong)] hover:bg-[color:var(--bg-soft)] disabled:cursor-not-allowed disabled:opacity-40"
           >
             {opt.label}
-          </button>
+          </Button>
         ))}
       </div>
     </div>

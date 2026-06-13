@@ -3,6 +3,8 @@
 import { useTranslations } from 'next-intl';
 import { useCallback, useState, useTransition } from 'react';
 
+import { Button } from '@/app/_components/ui/Button';
+
 import { patchBuilderSpec, setPersonaConfig } from '../../../../_lib/api';
 import {
   PERSONA_TEMPLATES,
@@ -192,15 +194,16 @@ export function PersonaTemplateGallery({
           >
             {t('cancel')}
           </button>
-          <button
-            type="button"
+          <Button
+            variant="primary"
+            size="sm"
             data-testid="gallery-apply"
             onClick={handleApply}
             disabled={disabled || pending || !selected}
-            className="rounded bg-[color:var(--accent)] px-3 py-1 text-sm font-medium text-[color:var(--fg-on-dark)] disabled:opacity-50"
+            className="text-sm"
           >
             {pending ? t('applying') : t('apply')}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

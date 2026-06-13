@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { ApiError, uploadPackage } from '../../_lib/api';
 import type { UploadedPackage } from '../../_lib/storeTypes';
 import { cn } from '../../_lib/cn';
+import { Button } from '@/app/_components/ui/Button';
 
 type UploadState =
   | { kind: 'idle' }
@@ -159,18 +160,13 @@ export function UploadDropzone(): React.ReactElement {
 
           {state.kind === 'idle' && (
             <div className="mt-4 flex flex-wrap items-center gap-3">
-              <button
-                type="button"
+              <Button
+                variant="primary"
+                pill
                 onClick={() => fileInputRef.current?.click()}
-                className={cn(
-                  'inline-flex items-center gap-2 rounded-full px-4 py-2',
-                  'text-[13px] font-semibold',
-                  'bg-[color:var(--accent)] text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)]',
-                  'hover:brightness-110',
-                )}
               >
                 Datei wählen
-              </button>
+              </Button>
               <span className="text-[12px] text-[color:var(--fg-subtle)]">
                 oder per Drag & Drop
               </span>

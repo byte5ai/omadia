@@ -22,7 +22,11 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, './app'),
+      // Match tsconfig's `@/*` -> `./*` (web-ui root), so `@/app/...` resolves
+      // the same in vitest as in tsc and Next. (The previous `@` -> ./app
+      // diverged from tsconfig; it surfaced once the first `@/app/...` imports
+      // landed.)
+      '@': path.resolve(__dirname, '.'),
     },
   },
 });

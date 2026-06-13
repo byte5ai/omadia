@@ -16,6 +16,7 @@ import {
   type SkillNode,
   type SubAgentNode,
 } from '../../../_lib/agentBuilder';
+import { Button } from '@/app/_components/ui/Button';
 import type { BuilderNodeData } from '../nodes/types';
 import { Field, inputCls, SaveButton } from './InspectorControls';
 
@@ -40,13 +41,9 @@ export function InspectorPanel(props: InspectorPanelProps): React.ReactElement {
         <h2 className="text-[15px] font-semibold text-[color:var(--fg-strong)]">
           {t('inspector.title')}
         </h2>
-        <button
-          type="button"
-          onClick={props.onClose}
-          className="rounded-md border border-[color:var(--border)] px-2 py-1 text-xs text-[color:var(--fg-muted)] hover:bg-[color:var(--card)]"
-        >
+        <Button variant="secondary" size="sm" onClick={props.onClose}>
           {t('inspector.close')}
-        </button>
+        </Button>
       </div>
       <Editor {...props} />
     </aside>

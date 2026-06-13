@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
+import { Button } from '@/app/_components/ui/Button';
 import type { GraphNode } from './graphTypes';
 
 interface AclAuditEntry {
@@ -276,15 +277,15 @@ export default function MemoryAclSection({
               >
                 + Owner hinzufügen
               </button>
-              <button
-                type="button"
+              <Button
+                variant="danger"
+                size="sm"
                 onClick={() => void deleteMemory()}
                 disabled={busy}
-                className="rounded border border-[color:var(--danger-edge)] px-2 py-1 text-[11px] text-[color:var(--danger)] hover:bg-[color:var(--danger)]/10 disabled:opacity-50"
                 title="Memory hart löschen (Audit-Trail bleibt)"
               >
                 Delete
-              </button>
+              </Button>
             </div>
           </div>
 

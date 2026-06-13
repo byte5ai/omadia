@@ -7,6 +7,7 @@ import { useTranslations } from 'next-intl';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Ban, X } from 'lucide-react';
 
+import { Button } from '@/app/_components/ui/Button';
 import { useChatSessionsCtx } from '../_lib/chatSessionsContext';
 import {
   type StreamPhase,
@@ -325,16 +326,16 @@ function AbortConfirmModal({
           >
             {t('abortConfirmKeep')}
           </button>
-          <button
-            type="button"
+          <Button
+            variant="danger"
+            size="sm"
             onClick={(e) => {
               e.stopPropagation();
               onConfirm();
             }}
-            className="rounded-md border border-[color:var(--danger-edge)] bg-transparent px-3 py-2 text-xs font-medium text-[color:var(--danger)] transition hover:bg-[color:var(--danger)]/8"
           >
             {t('abortConfirmStop')}
-          </button>
+          </Button>
         </div>
       </motion.div>
     </motion.div>,

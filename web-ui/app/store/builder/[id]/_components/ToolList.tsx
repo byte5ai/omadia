@@ -1,5 +1,6 @@
 'use client';
 
+import { Button } from '@/app/_components/ui/Button';
 import {
   closestCenter,
   DndContext,
@@ -149,14 +150,14 @@ export function ToolList({
             {t('emptyState')}
           </p>
           <div className="mt-3 flex items-center justify-center gap-2">
-            <button
-              type="button"
+            <Button
+              variant="primary"
               onClick={onAdd}
-              className="inline-flex items-center gap-1 rounded-md bg-[color:var(--accent)] px-3 py-2 text-[11px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)]"
+              className="gap-1 text-[11px]"
             >
               <Plus className="size-3" aria-hidden />
               {t('addFirstTool')}
-            </button>
+            </Button>
             <button
               type="button"
               onClick={() => setTemplatesOpen(true)}

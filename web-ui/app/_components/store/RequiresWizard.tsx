@@ -19,6 +19,7 @@ import type {
 } from '../../_lib/storeTypes';
 import { Chip } from './Chip';
 import { FieldRow, extractValues } from './setupForm';
+import { Button } from '@/app/_components/ui/Button';
 
 /**
  * RequiresWizard — modal-dialog operator-flow for an
@@ -202,47 +203,38 @@ export function RequiresWizard({
                 >
                   Abbrechen
                 </button>
-                <button
-                  type="button"
+                <Button
+                  variant="primary"
+                  pill
                   onClick={runInstallChain}
                   disabled={!allResolved}
-                  className={cn(
-                    'inline-flex items-center gap-2 rounded-full px-4 py-2',
-                    'bg-[color:var(--accent)] text-[color:var(--accent-fg)] shadow-[var(--shadow-cta)]',
-                    'transition-[background,transform] duration-[var(--dur-fast)] ease-[var(--ease-out)]',
-                    'hover:bg-[color:var(--accent-hover)] active:translate-y-px',
-                    'disabled:cursor-not-allowed disabled:opacity-60',
-                  )}
                 >
                   <span className="text-[13px] font-semibold">
                     Alle installieren
                   </span>
-                </button>
+                </Button>
               </>
             ) : phase.kind === 'installing' && phase.requiresForm ? (
-              <button
-                type="button"
+              <Button
+                variant="primary"
+                pill
                 onClick={() => formRef.current?.requestSubmit()}
-                className={cn(
-                  'inline-flex items-center gap-2 rounded-full px-4 py-2',
-                  'bg-[color:var(--accent)] text-[color:var(--accent-fg)] shadow-[var(--shadow-cta)]',
-                )}
               >
                 <span className="text-[13px] font-semibold">
                   Schritt bestätigen
                 </span>
-              </button>
+              </Button>
             ) : phase.kind === 'success' ? (
-              <button
-                type="button"
+              <Button
+                variant="primary"
+                pill
                 onClick={() => {
                   onClose();
                   router.refresh();
                 }}
-                className="rounded-full bg-[color:var(--accent)] px-4 py-2 text-[13px] font-semibold text-[color:var(--accent-fg)]"
               >
                 Schließen
-              </button>
+              </Button>
             ) : phase.kind === 'error' ? (
               <button
                 type="button"

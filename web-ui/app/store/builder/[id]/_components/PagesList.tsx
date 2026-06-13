@@ -1,5 +1,6 @@
 'use client';
 
+import { Button } from '@/app/_components/ui/Button';
 import {
   closestCenter,
   DndContext,
@@ -138,14 +139,14 @@ export function PagesList({
             code: (chunks) => <code>{chunks}</code>,
           })}
         </p>
-        <button
-          type="button"
+        <Button
+          variant="primary"
           onClick={onAdd}
-          className="mt-3 inline-flex items-center gap-1 rounded-md bg-[color:var(--accent)] px-3 py-2 text-[11px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)]"
+          className="mt-3 gap-1 text-[11px]"
         >
           <Plus className="size-3" aria-hidden />
           {t('addFirstPage')}
-        </button>
+        </Button>
       </div>
     );
   }

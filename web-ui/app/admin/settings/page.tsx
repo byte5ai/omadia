@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useTranslations } from 'next-intl';
 
+import { Button } from '@/app/_components/ui/Button';
 import {
   getSettings,
   patchSettings,
@@ -330,14 +331,13 @@ function SettingRow({
             className={`${inputCls} flex-1 sm:min-w-[260px]`}
           />
           {s.isSet && (
-            <button
-              type="button"
+            <Button
+              variant="secondary"
               disabled={disabled}
               onClick={() => onImmediate(s.key, null)}
-              className="rounded-md border border-[color:var(--border)] px-3 py-2 text-sm font-medium text-[color:var(--fg-muted)] hover:bg-[color:var(--card)] disabled:opacity-50"
             >
               Entfernen
-            </button>
+            </Button>
           )}
         </div>
       ) : (

@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
+
+import { Button } from '@/app/_components/ui/Button';
 import { AnimatePresence, motion } from 'framer-motion';
 import { CheckCircle2, KeyRound, Trash2, X } from 'lucide-react';
 
@@ -215,11 +217,11 @@ export function SecretsDrawer({
                 <Trash2 className="size-3" aria-hidden />
                 {t('clearAll')}
               </button>
-              <button
-                type="button"
+              <Button
+                variant="primary"
                 onClick={() => void onSave()}
                 disabled={pending || fields.length === 0}
-                className="ml-auto inline-flex items-center gap-2 rounded-md bg-[color:var(--accent)] px-3 py-2 text-[12px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] disabled:opacity-50"
+                className="ml-auto text-[12px]"
               >
                 {pending ? (
                   <span className="lume-busy-dots" aria-hidden />
@@ -227,7 +229,7 @@ export function SecretsDrawer({
                   <CheckCircle2 className="size-3.5" aria-hidden />
                 )}
                 {t('apply')}
-              </button>
+              </Button>
             </footer>
           </motion.aside>
         </>

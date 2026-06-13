@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
+
+import { Button } from '@/app/_components/ui/Button';
 import { AlertCircle, Check, Plus, X } from 'lucide-react';
 
 import { ApiError, patchBuilderSpec } from '../../../../_lib/api';
@@ -540,15 +542,15 @@ function ArrayField({
             mono && 'font-mono-num',
           )}
         />
-        <button
-          type="button"
+        <Button
+          variant="primary"
           onClick={submit}
           disabled={draft.trim().length === 0}
-          className="inline-flex items-center gap-1 rounded-md bg-[color:var(--accent)] px-3 py-2 text-[11px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] disabled:opacity-40"
+          className="gap-1 text-[11px]"
         >
           <Plus className="size-3" aria-hidden />
           {t('array.add')}
-        </button>
+        </Button>
       </div>
     </div>
   );

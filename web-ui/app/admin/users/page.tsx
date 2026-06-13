@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 
+import { Button } from '@/app/_components/ui/Button';
 import {
   AdminUser,
   ApiError,
@@ -100,13 +101,12 @@ export default function AdminUsersPage(): React.ReactElement {
             Nutzer sich einmal über den IdP angemeldet hat.
           </p>
         </div>
-        <button
-          type="button"
+        <Button
+          variant="primary"
           onClick={() => setShowCreate((s) => !s)}
-          className="rounded-md bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-[color:var(--text-inverse)]"
         >
           {showCreate ? 'Abbrechen' : 'Neuen Nutzer anlegen'}
-        </button>
+        </Button>
       </header>
 
       {showCreate && (
@@ -147,13 +147,14 @@ export default function AdminUsersPage(): React.ReactElement {
           {createError && (
             <p className="text-sm text-[color:var(--danger)] sm:col-span-2">{createError}</p>
           )}
-          <button
+          <Button
             type="submit"
+            variant="primary"
             disabled={submitting}
-            className="rounded-md bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-[color:var(--text-inverse)] disabled:opacity-50 sm:col-span-2"
+            className="sm:col-span-2"
           >
             {submitting ? 'Lege an …' : 'Anlegen'}
-          </button>
+          </Button>
         </form>
       )}
 

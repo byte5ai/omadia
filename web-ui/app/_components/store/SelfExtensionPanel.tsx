@@ -6,6 +6,7 @@ import { useTranslations } from 'next-intl';
 import { AlertTriangle, Check, ShieldQuestion, Sparkles, X } from 'lucide-react';
 
 import { cn } from '../../_lib/cn';
+import { Button } from '@/app/_components/ui/Button';
 import {
   approveSelfExtensionProposal,
   denySelfExtensionProposal,
@@ -214,15 +215,17 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
         {composeError ? (
           <p className="font-mono-num mt-2 text-[11px] text-[color:var(--danger,#b03030)]">{composeError}</p>
         ) : null}
-        <button
-          type="button"
+        <Button
+          variant="primary"
+          pill
           onClick={() => void handlePropose()}
           disabled={composeBusy || rationale.trim().length === 0 || patchesText.trim().length === 0}
-          className="mt-2 inline-flex items-center gap-2 rounded-full bg-[color:var(--accent)] px-4 py-2 text-[12px] font-semibold text-[color:var(--accent-fg)] disabled:opacity-60"
+          busy={composeBusy}
+          busyLabel={t('proposing')}
+          className="mt-2"
         >
-          {composeBusy ? <span className="lume-busy-dots" aria-hidden /> : null}
-          {composeBusy ? t('proposing') : t('propose')}
-        </button>
+          {t('propose')}
+        </Button>
       </div>
 
       {/* template compose (standalone plugins that expose selfExtend templates) */}
@@ -265,15 +268,17 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
           {tplError ? (
             <p className="font-mono-num mt-2 text-[11px] text-[color:var(--danger,#b03030)]">{tplError}</p>
           ) : null}
-          <button
-            type="button"
+          <Button
+            variant="primary"
+            pill
             onClick={() => void handleProposeTemplate()}
             disabled={tplBusy || tplRationale.trim().length === 0 || tplId.length === 0}
-            className="mt-2 inline-flex items-center gap-2 rounded-full bg-[color:var(--accent)] px-4 py-2 text-[12px] font-semibold text-[color:var(--accent-fg)] disabled:opacity-60"
+            busy={tplBusy}
+            busyLabel={t('proposing')}
+            className="mt-2"
           >
-            {tplBusy ? <span className="lume-busy-dots" aria-hidden /> : null}
-            {tplBusy ? t('proposing') : t('proposeTemplate')}
-          </button>
+            {t('proposeTemplate')}
+          </Button>
         </div>
       ) : null}
 
@@ -363,15 +368,18 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
                   </div>
                 ) : (
                   <div className="mt-3 flex items-center gap-2">
-                    <button
-                      type="button"
+                    <Button
+                      variant="primary"
+                      pill
+                      size="sm"
                       disabled={actionBusyId === p.id}
                       onClick={() => void runAction(p.id, () => approveSelfExtensionProposal(p.id))}
-                      className="inline-flex items-center gap-2 rounded-full bg-[color:var(--accent)] px-3 py-1 text-[12px] font-semibold text-[color:var(--accent-fg)] disabled:opacity-60"
+                      busy={actionBusyId === p.id}
+                      busyLabel={t('approve')}
                     >
-                      {actionBusyId === p.id ? <span className="lume-busy-dots" aria-hidden /> : <Check className="size-3.5" aria-hidden />}
+                      <Check className="size-3.5" aria-hidden />
                       {t('approve')}
-                    </button>
+                    </Button>
                     <button
                       type="button"
                       disabled={actionBusyId === p.id}
@@ -386,8 +394,10 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
               ) : null}
 
               {p.status === 'approved' ? (
-                <button
-                  type="button"
+                <Button
+                  variant="primary"
+                  pill
+                  size="sm"
                   disabled={actionBusyId === p.id}
                   onClick={() =>
                     void runAction(p.id, async () => {
@@ -395,11 +405,12 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
                       router.refresh();
                     })
                   }
-                  className="mt-3 inline-flex items-center gap-2 rounded-full bg-[color:var(--accent)] px-3 py-1 text-[12px] font-semibold text-[color:var(--accent-fg)] disabled:opacity-60"
+                  busy={actionBusyId === p.id}
+                  busyLabel={t('installing')}
+                  className="mt-3"
                 >
-                  {actionBusyId === p.id ? <span className="lume-busy-dots" aria-hidden /> : null}
-                  {actionBusyId === p.id ? t('installing') : t('install')}
-                </button>
+                  {t('install')}
+                </Button>
               ) : null}
             </li>
           ))}

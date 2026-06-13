@@ -4,6 +4,7 @@ import type React from 'react';
 import { useState } from 'react';
 import { useTranslations } from 'next-intl';
 
+import { Button } from '@/app/_components/ui/Button';
 import {
   ApiError,
   confirmBuilderIssue,
@@ -247,13 +248,8 @@ function SecondaryButton({
   onClick: () => void;
 }): React.ReactElement {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-3 py-2 text-xs font-medium text-[color:var(--fg)] transition hover:border-[color:var(--border-strong)] disabled:cursor-not-allowed disabled:opacity-40"
-    >
+    <Button variant="secondary" size="sm" onClick={onClick} disabled={disabled}>
       {children}
-    </button>
+    </Button>
   );
 }

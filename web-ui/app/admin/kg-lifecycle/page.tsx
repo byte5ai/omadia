@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 
+import { Button } from '@/app/_components/ui/Button';
+
 /**
  * Admin → Knowledge-Graph Lifecycle (palaia Phase 4 / OB-73, Slice D).
  *
@@ -141,13 +143,9 @@ export default function KgLifecyclePage(): JSX.Element {
             cron schedule; the buttons below trigger them on demand.
           </p>
         </div>
-        <button
-          type="button"
-          className="rounded-md border border-[color:var(--border)] px-3 py-2 text-sm transition-colors hover:bg-[color:var(--border)]/30"
-          onClick={() => void reload()}
-        >
+        <Button variant="secondary" onClick={() => void reload()}>
           Refresh
-        </button>
+        </Button>
       </header>
 
       {error ? (

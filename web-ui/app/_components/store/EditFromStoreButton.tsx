@@ -5,8 +5,8 @@ import { useRouter } from 'next/navigation';
 import { AlertTriangle, Pencil } from 'lucide-react';
 
 import { cloneBuilderDraftFromInstalled } from '../../_lib/api';
-import { cn } from '../../_lib/cn';
 import type { CloneFromInstalledResponse } from '../../_lib/builderTypes';
+import { Button } from '@/app/_components/ui/Button';
 
 /**
  * Edit-from-Store action (B.6-3). Surfaces on the plugin detail page when
@@ -71,30 +71,18 @@ export function EditFromStoreButton({
 
   return (
     <div className="space-y-2">
-      <button
-        type="button"
+      <Button
+        variant="secondary"
+        fullWidth
         onClick={() => void handleClick()}
         disabled={busy}
-        className={cn(
-          'inline-flex w-full items-center justify-center gap-2 rounded-md px-4 py-2',
-          'text-[12px] font-semibold uppercase tracking-[0.18em]',
-          'border border-[color:var(--rule-strong)] bg-[color:var(--paper)] text-[color:var(--ink)]',
-          'transition-colors hover:bg-[color:var(--bg-soft)]',
-          'disabled:cursor-not-allowed disabled:opacity-60',
-        )}
+        busy={busy}
+        busyLabel="Klone Draft …"
+        className="text-[12px] uppercase tracking-[0.18em]"
       >
-        {busy ? (
-          <>
-            <span className="lume-busy-dots" aria-hidden />
-            Klone Draft …
-          </>
-        ) : (
-          <>
-            <Pencil className="size-3.5" aria-hidden />
-            Im Builder bearbeiten
-          </>
-        )}
-      </button>
+        <Pencil className="size-3.5" aria-hidden />
+        Im Builder bearbeiten
+      </Button>
       {phase.kind === 'failed' ? (
         <div className="rounded-md border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/6 px-3 py-2">
           <div className="flex items-start gap-2">

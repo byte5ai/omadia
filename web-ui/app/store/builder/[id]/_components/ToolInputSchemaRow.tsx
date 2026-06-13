@@ -2,6 +2,8 @@
 
 import { ChevronDown, ChevronRight, X } from 'lucide-react';
 import { useTranslations } from 'next-intl';
+
+import { Button } from '@/app/_components/ui/Button';
 import { useEffect, useId, useState } from 'react';
 
 import { cn } from '../../../../_lib/cn';
@@ -454,18 +456,19 @@ function EnumValuesEditor({
           placeholder={t('valueEnterPlaceholder')}
           className="flex-1 rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1 font-mono-num text-[11px] text-[color:var(--fg-strong)] focus:border-[color:var(--accent)] focus:outline-none"
         />
-        <button
-          type="button"
+        <Button
+          variant="primary"
+          size="sm"
           onClick={() => {
             if (!draft.trim()) return;
             onChange([...values, draft.trim()]);
             setDraft('');
           }}
           disabled={!draft.trim()}
-          className="rounded bg-[color:var(--accent)] px-2 py-1 text-[11px] font-semibold text-[color:var(--fg-on-dark)] disabled:opacity-40"
+          className="text-[11px]"
         >
           +
-        </button>
+        </Button>
       </div>
     </div>
   );

@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
+
+import { Button } from '@/app/_components/ui/Button';
 import { motion } from 'framer-motion';
 import { Send, Sparkles, StopCircle } from 'lucide-react';
 
@@ -316,15 +318,16 @@ export function SimpleIntakePane({
               {t('stop')}
             </button>
           ) : (
-            <button
-              type="button"
+            <Button
+              variant="primary"
+              pill
               onClick={() => void onSend()}
               disabled={input.trim().length === 0}
-              className="inline-flex h-[50px] shrink-0 items-center gap-2 rounded-full bg-[color:var(--accent)] px-4 text-[14px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] transition-all hover:opacity-90 disabled:opacity-40 disabled:shadow-none"
+              className="h-[50px] shrink-0 text-[14px]"
             >
               <Send className="size-4" aria-hidden />
               {t('send')}
-            </button>
+            </Button>
           )}
         </div>
       </div>

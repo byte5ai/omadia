@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 
+import { Button } from '@/app/_components/ui/Button';
+
 import {
   deleteMemory,
   getMemory,
@@ -475,14 +477,14 @@ export default function MemoryDetailPage(): React.ReactElement {
                 </>
               ) : (
                 <>
-                  <button
-                    type="button"
+                  <Button
+                    variant="danger"
+                    size="sm"
                     onClick={() => void discard()}
                     disabled={busy}
-                    className="rounded border border-[color:var(--danger-edge)] px-3 py-1 text-xs text-[color:var(--danger)] hover:bg-[color:var(--danger)]/8 disabled:opacity-50"
                   >
                     Löschen
-                  </button>
+                  </Button>
                   <button
                     type="button"
                     onClick={startEdit}

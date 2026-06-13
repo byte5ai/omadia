@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 
+import { Button } from '@/app/_components/ui/Button';
 import {
   ApiError,
   StoredRegistry,
@@ -178,14 +179,13 @@ export default function AdminRegistriesPage(): React.ReactElement {
               className={inputCls}
             />
           </Field>
-          <button
-            type="button"
+          <Button
+            variant="primary"
             onClick={() => void onAdd()}
             disabled={!canAdd}
-            className="rounded-md bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-[color:var(--text-inverse)] disabled:opacity-50"
           >
             {adding ? '…' : 'Hinzufügen'}
-          </button>
+          </Button>
         </div>
       </section>
 
@@ -217,16 +217,15 @@ export default function AdminRegistriesPage(): React.ReactElement {
                   </code>
                 </div>
                 <div className="flex items-center gap-2">
-                  <button
-                    type="button"
+                  <Button
+                    variant="secondary"
                     onClick={() =>
                       editing === r.name ? setEditing(null) : startEdit(r)
                     }
                     disabled={pending === r.name}
-                    className="rounded-md border border-[color:var(--border)] px-3 py-2 text-sm font-medium text-[color:var(--fg-strong)] hover:bg-[color:var(--card)] disabled:opacity-50"
                   >
                     {editing === r.name ? 'Abbrechen' : 'Bearbeiten'}
-                  </button>
+                  </Button>
                   <button
                     type="button"
                     onClick={() => void onDelete(r)}
@@ -257,23 +256,21 @@ export default function AdminRegistriesPage(): React.ReactElement {
                     />
                   </Field>
                   <div className="flex items-center gap-2">
-                    <button
-                      type="button"
+                    <Button
+                      variant="primary"
                       onClick={() => void onSaveEdit(r)}
                       disabled={pending === r.name}
-                      className="rounded-md bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-[color:var(--text-inverse)] disabled:opacity-50"
                     >
                       Speichern
-                    </button>
+                    </Button>
                     {r.has_token && (
-                      <button
-                        type="button"
+                      <Button
+                        variant="secondary"
                         onClick={() => void onClearToken(r)}
                         disabled={pending === r.name}
-                        className="rounded-md border border-[color:var(--border)] px-3 py-2 text-sm font-medium text-[color:var(--fg-muted)] hover:bg-[color:var(--card)] disabled:opacity-50"
                       >
                         Token entfernen
-                      </button>
+                      </Button>
                     )}
                   </div>
                 </div>

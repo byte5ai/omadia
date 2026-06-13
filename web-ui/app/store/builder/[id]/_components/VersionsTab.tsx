@@ -3,6 +3,8 @@
 import { useTranslations } from 'next-intl';
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 
+import { Button } from '@/app/_components/ui/Button';
+
 import {
   captureSnapshot,
   getSnapshotDiff,
@@ -96,13 +98,13 @@ export function VersionsTab({ draftId }: VersionsTabProps): React.ReactElement {
   return (
     <div className="flex h-full flex-col p-4 text-[var(--fg)]">
       <div className="mb-4 flex items-center gap-2">
-        <button
-          type="button"
+        <Button
+          variant="primary"
           onClick={() => setCaptureOpen(true)}
-          className="rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-[color:var(--fg-on-dark)] hover:opacity-90"
+          className="text-sm"
         >
           {t('createSnapshot')}
-        </button>
+        </Button>
         <button
           type="button"
           onClick={() => void refresh()}
@@ -388,14 +390,14 @@ function CaptureModal({
         >
           {t('cancel')}
         </button>
-        <button
-          type="button"
+        <Button
+          variant="primary"
           onClick={() => void submit()}
           disabled={busy}
-          className="rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-[color:var(--fg-on-dark)] disabled:opacity-50"
+          className="text-sm"
         >
           {t('create')}
-        </button>
+        </Button>
       </div>
     </ModalShell>
   );

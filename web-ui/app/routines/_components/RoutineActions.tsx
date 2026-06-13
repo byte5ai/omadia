@@ -3,6 +3,7 @@
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 
+import { Button } from '@/app/_components/ui/Button';
 import {
   deleteRoutine,
   setRoutineStatus,
@@ -97,14 +98,15 @@ export function RoutineActions({ routine }: Props): React.ReactElement {
         >
           Jetzt
         </button>
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="sm"
+          pill
           onClick={handleToggle}
           disabled={pending}
-          className="rounded-full border border-[color:var(--border)] bg-[color:var(--surface)] px-3 py-1 text-[11px] font-semibold text-[color:var(--fg-muted)] transition hover:border-[color:var(--accent)] hover:text-[color:var(--fg-strong)] disabled:opacity-50"
         >
           {isPaused ? 'Resume' : 'Pause'}
-        </button>
+        </Button>
         <button
           type="button"
           onClick={handleDelete}

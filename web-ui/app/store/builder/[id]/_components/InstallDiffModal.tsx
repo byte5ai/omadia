@@ -2,6 +2,8 @@
 
 import { useState } from 'react';
 import { useTranslations } from 'next-intl';
+
+import { Button } from '@/app/_components/ui/Button';
 import { useRouter } from 'next/navigation';
 import { AlertTriangle, CheckCircle2, ShieldCheck, X } from 'lucide-react';
 
@@ -553,13 +555,14 @@ function FailureBanner({
           <FailureDetails failure={failure} t={t} />
           <div className="mt-3 flex flex-wrap items-center gap-2">
             {canBump ? (
-              <button
-                type="button"
+              <Button
+                variant="primary"
+                size="sm"
                 onClick={() => void onBumpAndRetry()}
-                className="inline-flex items-center gap-2 rounded-md bg-[color:var(--accent)] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-on-dark)] shadow-sm transition-opacity hover:opacity-90"
+                className="text-[11px] uppercase tracking-[0.16em]"
               >
                 {t('bumpAndPublish', { current: currentVersion, next: bumped ?? '' })}
-              </button>
+              </Button>
             ) : null}
             <button
               type="button"

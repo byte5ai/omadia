@@ -6,6 +6,7 @@ import { useTranslations } from 'next-intl';
 
 import { ChevronDown, ChevronRight } from 'lucide-react';
 
+import { Button } from '@/app/_components/ui/Button';
 import { ApiError } from '../../../_lib/api';
 import {
   createOperatorAgent,
@@ -121,9 +122,9 @@ export function AgentsDashboard({
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-medium">{t('platformHeading')}</h2>
           <div className="flex gap-2">
-            <button
-              type="button"
-              className="rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-3 py-1 text-xs hover:bg-[color:var(--bg-soft)]"
+            <Button
+              variant="secondary"
+              size="sm"
               disabled={pending || !!busy || !fallbackSlug}
               onClick={() => {
                 if (!confirm(t('rehydrateConfirm'))) return;
@@ -140,15 +141,15 @@ export function AgentsDashboard({
               title={t('rehydrateTooltip')}
             >
               {t('actionRehydrateFallback')}
-            </button>
-            <button
-              type="button"
-              className="rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-3 py-1 text-xs hover:bg-[color:var(--bg-soft)]"
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
               disabled={pending || !!busy}
               onClick={() => run('reload', () => triggerAgentReload())}
             >
               {t('forceReload')}
-            </button>
+            </Button>
           </div>
         </div>
         <FallbackPicker
@@ -534,9 +535,9 @@ function AgentCard(props: {
         </button>
         <div className="flex flex-col items-end gap-2">
           <div className="flex gap-2">
-            <button
-              type="button"
-              className="rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-2 py-1 text-xs hover:bg-[color:var(--bg-soft)]"
+            <Button
+              variant="secondary"
+              size="sm"
               disabled={props.disabled}
               onClick={() =>
                 props.onPatch({
@@ -547,10 +548,10 @@ function AgentCard(props: {
               {agent.status === 'enabled'
                 ? t('actionDisable')
                 : t('actionEnable')}
-            </button>
-            <button
-              type="button"
-              className="rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-2 py-1 text-xs hover:bg-[color:var(--bg-soft)]"
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
               disabled={props.disabled}
               onClick={() =>
                 props.onPatch({
@@ -560,10 +561,10 @@ function AgentCard(props: {
               }
             >
               {t('actionTogglePrivacy')}
-            </button>
-            <button
-              type="button"
-              className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 px-2 py-1 text-xs text-[color:var(--danger)] hover:bg-[color:var(--danger)]/8"
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
               disabled={props.disabled}
               onClick={() => {
                 if (confirm(t('deleteConfirm', { slug: agent.slug })))
@@ -571,7 +572,7 @@ function AgentCard(props: {
               }}
             >
               {t('actionDelete')}
-            </button>
+            </Button>
           </div>
         </div>
       </header>
@@ -593,9 +594,9 @@ function AgentCard(props: {
             >
               {t('actionDrain')}
             </button>
-            <button
-              type="button"
-              className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 px-2 py-1 text-xs text-[color:var(--danger)] hover:bg-[color:var(--danger)]/8"
+            <Button
+              variant="danger"
+              size="sm"
               disabled={props.disabled}
               onClick={() => {
                 if (confirm(t('killConfirm', { slug: agent.slug })))
@@ -603,7 +604,7 @@ function AgentCard(props: {
               }}
             >
               {t('actionKill')}
-            </button>
+            </Button>
           </div>
 
           <div className="mb-6">
@@ -711,22 +712,22 @@ function BindingsEditor(props: {
       <h4 className="mb-2 flex items-center justify-between text-sm font-medium">
         {t('bindingsHeading')}
         <span className="flex gap-2">
-          <button
-            type="button"
-            className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-2 py-0.5 text-xs hover:bg-[color:var(--bg-soft)]"
+          <Button
+            variant="secondary"
+            size="sm"
             disabled={props.disabled}
             onClick={add}
           >
             {t('bindingsAdd')}
-          </button>
-          <button
-            type="button"
-            className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-2 py-0.5 text-xs hover:bg-[color:var(--bg-soft)]"
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
             disabled={props.disabled}
             onClick={submit}
           >
             {t('save')}
-          </button>
+          </Button>
         </span>
       </h4>
       {rows.length === 0 ? (
@@ -775,14 +776,14 @@ function BindingsEditor(props: {
                 className="flex-1 rounded border border-[color:var(--border)] px-2 py-1 font-mono text-xs"
                 placeholder="28:bot-id-or-@username"
               />
-              <button
-                type="button"
-                className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 px-2 py-1 text-xs text-[color:var(--danger)] hover:bg-[color:var(--danger)]/8"
+              <Button
+                variant="danger"
+                size="sm"
                 disabled={props.disabled}
                 onClick={() => remove(idx)}
               >
                 {t('bindingsRemove')}
-              </button>
+              </Button>
             </li>
           ))}
         </ul>

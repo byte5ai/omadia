@@ -25,6 +25,7 @@ import {
   patchInstalledSecrets,
 } from '../../_lib/api';
 import type { PluginSetupField } from '../../_lib/storeTypes';
+import { Button } from '@/app/_components/ui/Button';
 
 interface CredentialsEditorProps {
   pluginId: string;
@@ -354,19 +355,16 @@ export function CredentialsEditor({
       </ul>
 
       <div className="flex items-center gap-3">
-        <button
-          type="button"
+        <Button
+          variant="primary"
           onClick={() => void onSave()}
           disabled={saving || dirtyCount === 0}
-          className="inline-flex items-center gap-2 rounded-md bg-[color:var(--accent)] px-3 py-2 text-[12px] font-semibold text-[color:var(--fg-on-dark)] shadow-sm transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+          busy={saving}
+          busyLabel={`Speichern${dirtyCount > 0 ? ` (${String(dirtyCount)})` : ''}`}
         >
-          {saving ? (
-            <span className="lume-busy-dots" aria-hidden />
-          ) : (
-            <CheckCircle2 className="size-3.5" aria-hidden />
-          )}
+          <CheckCircle2 className="size-3.5" aria-hidden />
           Speichern{dirtyCount > 0 ? ` (${String(dirtyCount)})` : ''}
-        </button>
+        </Button>
         {savedAt !== null ? (
           <span className="text-[11px] text-[color:var(--muted-ink)]">
             ✓ Gespeichert

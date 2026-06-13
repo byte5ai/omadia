@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { useMemo, useState } from 'react';
 
+import { Button } from '@/app/_components/ui/Button';
 import {
   previewRoutineTemplate,
   setRoutineTemplate,
@@ -259,14 +260,16 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
         >
           {saving ? 'Speichert…' : 'Speichern'}
         </button>
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="sm"
+          pill
           onClick={handleReset}
           disabled={saving || !dirty}
-          className="rounded-full border border-[color:var(--border)] bg-[color:var(--surface)] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)] transition hover:border-[color:var(--accent)] hover:text-[color:var(--fg-strong)] disabled:opacity-40"
+          className="text-[11px] uppercase tracking-[0.16em]"
         >
           Verwerfen
-        </button>
+        </Button>
         <button
           type="button"
           onClick={handleClear}
