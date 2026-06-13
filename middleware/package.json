@@ -36,7 +36,7 @@
   "license": "MIT",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.101.0",
-    "@aws-sdk/client-s3": "^3.1057.0",
+    "@aws-sdk/client-s3": "^3.1068.0",
     "@azure/msal-node": "^5.2.2",
     "@microsoft/microsoft-graph-client": "^3.0.7",
     "@types/better-sqlite3": "^7.6.13",
