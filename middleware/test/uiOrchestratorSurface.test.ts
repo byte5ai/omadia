@@ -257,3 +257,46 @@ describe('canvasChatAgent surface synthesis — ID-addressed surface patch (9b-3
     assert.ok(!out.some((e) => e.type === 'surface_patch'));
   });
 });
+
+describe('privacy-guard raw-sentinel tap (takeRawSentinel)', () => {
+  const SENTINEL = JSON.stringify({
+    _pendingCanvasTree: {
+      prose: 'hi',
+      tree: { type: 'container', id: 'root', children: [] },
+    },
+  });
+
+  it('composes from the tapped raw result when the stream carries only the digest', async () => {
+    const queue = [SENTINEL];
+    const out = await collect(
+      synthesizeSurfaceEvents(
+        streamOf([
+          toolUse('t1', 'canvas_tool'),
+          // what the guard hands the LLM — sentinel interned away
+          toolResult('t1', 'Ergebnis intern verarbeitet (dataset ds_x, 61 Zeilen).'),
+        ]),
+        {
+          ...cfg(['canvas_tool']),
+          takeRawSentinel: (name) => (name === 'canvas_tool' ? queue.shift() : undefined),
+        },
+      ),
+    );
+    assert.ok(
+      out.some((e) => e.type === 'surface_snapshot'),
+      'digest stream + raw tap still synthesises the snapshot',
+    );
+  });
+
+  it('without a tap entry the digest stays a plain tool_result (no synthesis)', async () => {
+    const out = await collect(
+      synthesizeSurfaceEvents(
+        streamOf([
+          toolUse('t1', 'canvas_tool'),
+          toolResult('t1', 'Ergebnis intern verarbeitet.'),
+        ]),
+        { ...cfg(['canvas_tool']), takeRawSentinel: () => undefined },
+      ),
+    );
+    assert.ok(!out.some((e) => e.type === 'surface_snapshot'));
+  });
+});
