@@ -347,14 +347,15 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
                       placeholder={t('denyReasonPlaceholder')}
                       className="flex-1 rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-2 py-1 text-[12px] focus:outline-none focus:ring-1 focus:ring-[color:var(--accent)]"
                     />
-                    <button
-                      type="button"
+                    <Button
+                      variant="danger"
+                      pill
+                      size="sm"
                       disabled={actionBusyId === p.id || denyReason.trim().length === 0}
                       onClick={() => void runAction(p.id, () => denySelfExtensionProposal(p.id, denyReason))}
-                      className="rounded-full bg-[color:var(--danger,#b03030)] px-3 py-1 text-[12px] font-semibold text-[color:var(--fg-on-dark)] disabled:opacity-60"
                     >
                       {t('confirmDeny')}
-                    </button>
+                    </Button>
                     <button
                       type="button"
                       onClick={() => {

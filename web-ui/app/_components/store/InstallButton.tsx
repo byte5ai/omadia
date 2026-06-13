@@ -502,15 +502,11 @@ function InstalledPanel({
             </span>
           </label>
           <div className="mt-3 flex gap-2">
-            <button
-              type="button"
-              onClick={doUninstall}
-              className="rounded-full bg-[color:var(--danger,#b03030)] px-4 py-2 text-[12px] font-semibold text-[color:var(--fg-on-dark)]"
-            >
+            <Button variant="danger" pill onClick={doUninstall}>
               {alsoDeletePackage
                 ? 'Ja, deinstallieren + löschen'
                 : 'Ja, deinstallieren'}
-            </button>
+            </Button>
             <Button
               variant="secondary"
               pill
