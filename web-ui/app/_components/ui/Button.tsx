@@ -35,6 +35,10 @@ export type ButtonSize = 'sm' | 'md' | 'lg' | 'icon';
 export interface ButtonProps extends Omit<HTMLMotionProps<'button'>, 'children'> {
   variant?: ButtonVariant;
   size?: ButtonSize;
+  /** Pill radius (badge/CTA chips) instead of the default radius.md corner. */
+  pill?: boolean;
+  /** Stretch to the container width (form submits, full-width CTAs). */
+  fullWidth?: boolean;
   /** §7.3 in-flight: replaces the label with `busyLabel` + animated dots. */
   busy?: boolean;
   busyLabel?: string;
@@ -78,6 +82,8 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
   {
     variant = 'primary',
     size = 'md',
+    pill = false,
+    fullWidth = false,
     busy = false,
     busyLabel,
     disabled,
@@ -103,7 +109,14 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       whileTap={animate ? TAP : undefined}
       whileHover={animate ? HOVER : undefined}
       transition={FEEL_TRANSITION}
-      className={cn(BASE, VARIANT[variant], SIZE[size], className)}
+      className={cn(
+        BASE,
+        VARIANT[variant],
+        SIZE[size],
+        pill ? 'rounded-full' : 'rounded-md',
+        fullWidth && 'w-full',
+        className,
+      )}
       {...rest}
     >
       {busy ? (
