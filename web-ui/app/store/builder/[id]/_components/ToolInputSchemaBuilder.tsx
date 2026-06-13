@@ -109,7 +109,7 @@ export function ToolInputSchemaBuilder({
   }, [keys.length, properties, setProperty]);
 
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-2">
       {keys.length === 0 ? (
         <p className="rounded border border-dashed border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-[11px] italic text-[color:var(--fg-muted)]">
           {t('noProperties')}

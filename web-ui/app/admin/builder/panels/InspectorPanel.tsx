@@ -101,7 +101,7 @@ function useSaver(): {
 
 function ErrLine({ error }: { error: string | null }): React.ReactElement | null {
   if (!error) return null;
-  return <p className="text-xs text-red-500">{error}</p>;
+  return <p className="text-xs text-[color:var(--danger)]">{error}</p>;
 }
 
 // ── Agent ────────────────────────────────────────────────────────────────
@@ -240,7 +240,7 @@ function SkillEditor({
   return (
     <div className="flex flex-col gap-3">
       {readOnly && (
-        <p className="rounded-md bg-amber-500/10 px-2 py-1 text-xs text-amber-500">
+        <p className="rounded-md bg-[color:var(--warning)]/10 px-2 py-1 text-xs text-[color:var(--warning)]">
           {t('inspector.skillFileReadOnly')}
         </p>
       )}

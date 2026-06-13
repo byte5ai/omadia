@@ -68,19 +68,19 @@ function TurnCard({
   };
 
   return (
-    <div className="rounded-lg border border-neutral-200 bg-white p-4 text-sm shadow-sm dark:border-neutral-700 dark:bg-neutral-800">
-      <div className="mb-2 flex items-center gap-3 text-[11px] text-neutral-500">
+    <div className="rounded-lg border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-4 text-sm shadow-sm">
+      <div className="mb-2 flex items-center gap-3 text-[11px] text-[color:var(--fg-muted)]">
         <span className="font-mono">{time}</span>
         {tools !== undefined && <span>tools={String(tools)}</span>}
         <button
           type="button"
           onClick={toggle}
-          className="ml-auto rounded border border-neutral-300 px-2 py-0.5 font-mono hover:border-neutral-400 dark:border-neutral-700"
+          className="ml-auto rounded border border-[color:var(--border)] px-2 py-0.5 font-mono hover:border-[color:var(--border-strong)]"
         >
           {open ? '▾' : '▸'} Run-Trace
         </button>
       </div>
-      <div className="mb-2 whitespace-pre-wrap text-neutral-800 dark:text-neutral-200">
+      <div className="mb-2 whitespace-pre-wrap text-[color:var(--fg)]">
         {user}
       </div>
       {entities.length > 0 ? (
@@ -93,8 +93,8 @@ function TurnCard({
               className={[
                 'rounded-full px-2 py-0.5 font-mono text-[11px] transition',
                 e.type === 'ConfluencePage'
-                  ? 'bg-blue-50 text-blue-900 ring-1 ring-blue-200 hover:bg-blue-100 dark:bg-blue-900/30 dark:text-blue-100 dark:ring-blue-800'
-                  : 'bg-emerald-50 text-emerald-900 ring-1 ring-emerald-200 hover:bg-emerald-100 dark:bg-emerald-900/30 dark:text-emerald-100 dark:ring-emerald-800',
+                  ? 'bg-[color:var(--accent)]/10 text-[color:var(--accent)] ring-1 ring-[color:var(--accent)] hover:bg-[color:var(--accent)]/10'
+                  : 'bg-[color:var(--success)]/10 text-[color:var(--success)] ring-1 ring-[color:var(--success)] hover:bg-[color:var(--success)]/10',
               ].join(' ')}
               title={e.id}
             >
@@ -103,17 +103,17 @@ function TurnCard({
           ))}
         </div>
       ) : (
-        <div className="text-[11px] text-neutral-400">
+        <div className="text-[11px] text-[color:var(--fg-subtle)]">
           keine Entities in diesem Turn
         </div>
       )}
       {open && (
-        <div className="mt-3 border-t border-neutral-200 pt-3 dark:border-neutral-700">
+        <div className="mt-3 border-t border-[color:var(--border)] pt-3">
           {runState === 'loading' && (
-            <div className="text-[11px] text-neutral-500">lade Run…</div>
+            <div className="text-[11px] text-[color:var(--fg-muted)]">lade Run…</div>
           )}
           {runState === 'missing' && (
-            <div className="text-[11px] text-neutral-500">
+            <div className="text-[11px] text-[color:var(--fg-muted)]">
               keine Run-Trace erfasst
             </div>
           )}
@@ -140,7 +140,7 @@ function RunTracePanel({
 
   return (
     <div className="flex flex-col gap-2 text-xs">
-      <div className="flex items-center gap-2 font-mono text-[11px] text-neutral-500">
+      <div className="flex items-center gap-2 font-mono text-[11px] text-[color:var(--fg-muted)]">
         <StatusPill status={status} />
         <span>{formatMs(duration)}</span>
         <span>·</span>
@@ -154,8 +154,8 @@ function RunTracePanel({
       </div>
 
       {run.orchestratorToolCalls.length > 0 && (
-        <div className="flex flex-col gap-1 rounded border border-neutral-200 bg-neutral-50 p-2 dark:border-neutral-700 dark:bg-neutral-900/40">
-          <div className="text-[10px] font-semibold uppercase tracking-wide text-neutral-400">
+        <div className="flex flex-col gap-1 rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)] p-2">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-[color:var(--fg-subtle)]">
             Orchestrator-Tools
           </div>
           {run.orchestratorToolCalls.map((tc) => (
@@ -179,18 +179,18 @@ function RunTracePanel({
             className={[
               'flex flex-col gap-1 rounded border p-2',
               invStatus === 'error'
-                ? 'border-red-200 bg-red-50 dark:border-red-900/60 dark:bg-red-900/20'
-                : 'border-emerald-200 bg-emerald-50 dark:border-emerald-900/60 dark:bg-emerald-900/20',
+                ? 'border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8'
+                : 'border-[color:var(--success)] bg-[color:var(--success)]/10',
             ].join(' ')}
           >
             <div className="flex items-center gap-2 font-mono text-[11px]">
               <StatusPill status={invStatus} />
               <span className="font-semibold">🤖 {agentName}</span>
-              <span className="text-neutral-500">{formatMs(invDur)}</span>
-              <span className="text-neutral-500">·</span>
-              <span className="text-neutral-500">{subIter} iter</span>
-              <span className="text-neutral-500">·</span>
-              <span className="text-neutral-500">
+              <span className="text-[color:var(--fg-muted)]">{formatMs(invDur)}</span>
+              <span className="text-[color:var(--fg-muted)]">·</span>
+              <span className="text-[color:var(--fg-muted)]">{subIter} iter</span>
+              <span className="text-[color:var(--fg-muted)]">·</span>
+              <span className="text-[color:var(--fg-muted)]">
                 {inv.toolCalls.length} tool-call
                 {inv.toolCalls.length === 1 ? '' : 's'}
               </span>
@@ -212,7 +212,7 @@ function RunTracePanel({
 
       {run.orchestratorToolCalls.length === 0 &&
         run.agentInvocations.length === 0 && (
-          <div className="text-[11px] italic text-neutral-400">
+          <div className="text-[11px] italic text-[color:var(--fg-subtle)]">
             Run ohne Tool-Calls (reine Textantwort)
           </div>
         )}
@@ -234,21 +234,21 @@ function ToolCallRow({
     <div className="flex flex-wrap items-center gap-2 font-mono text-[11px]">
       <span
         className={
-          isError ? 'text-red-600' : 'text-neutral-700 dark:text-neutral-300'
+          isError ? 'text-[color:var(--danger)]' : 'text-[color:var(--fg)]'
         }
       >
         {isError ? '⚠' : '🔧'} {toolName}
       </span>
-      <span className="text-neutral-500">{formatMs(durationMs)}</span>
+      <span className="text-[color:var(--fg-muted)]">{formatMs(durationMs)}</span>
       {tc.producedEntities.length > 0 && (
         <span className="flex flex-wrap items-center gap-1">
-          <span className="text-neutral-400">↳</span>
+          <span className="text-[color:var(--fg-subtle)]">↳</span>
           {tc.producedEntities.map((e) => (
             <button
               key={e.id}
               type="button"
               onClick={() => onEntityClick(e.id)}
-              className="rounded bg-emerald-50 px-1.5 py-0.5 text-emerald-900 ring-1 ring-emerald-200 hover:bg-emerald-100 dark:bg-emerald-900/30 dark:text-emerald-100 dark:ring-emerald-800"
+              className="rounded bg-[color:var(--success)]/10 px-2 py-0.5 text-[color:var(--success)] ring-1 ring-[color:var(--success)] hover:bg-[color:var(--success)]/10"
               title={e.id}
             >
               {String(e.props['displayName'] ?? e.id)}
@@ -263,20 +263,20 @@ function ToolCallRow({
 function StatusPill({ status }: { status: string }): React.ReactElement {
   if (status === 'success') {
     return (
-      <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-900 dark:bg-emerald-900/50 dark:text-emerald-100">
+      <span className="rounded bg-[color:var(--success)]/10 px-2 py-0.5 text-[10px] font-semibold text-[color:var(--success)]">
         OK
       </span>
     );
   }
   if (status === 'error') {
     return (
-      <span className="rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-900 dark:bg-red-900/50 dark:text-red-100">
+      <span className="rounded bg-[color:var(--danger)]/8 px-2 py-0.5 text-[10px] font-semibold text-[color:var(--danger)]">
         FAIL
       </span>
     );
   }
   return (
-    <span className="rounded bg-neutral-200 px-1.5 py-0.5 text-[10px] font-semibold text-neutral-700 dark:bg-neutral-700 dark:text-neutral-200">
+    <span className="rounded bg-[color:var(--state-loading)] px-2 py-0.5 text-[10px] font-semibold text-[color:var(--fg)]">
       {status}
     </span>
   );

@@ -53,15 +53,15 @@ export function ChannelsDashboard({ initial }: Props): React.ReactElement {
     return (
       <div className="space-y-4">
         {error && (
-          <div className="rounded border border-red-400 bg-red-50 p-3 text-sm text-red-800">
+          <div className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-3 text-sm text-[color:var(--danger)]">
             {error}
           </div>
         )}
-        <div className="rounded border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-8 text-sm text-neutral-600 dark:text-neutral-300">
+        <div className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-8 text-sm text-[color:var(--fg-muted)]">
           <p className="mb-2 font-medium">{t('emptyHeading')}</p>
           <p>{t('emptyExplain')}</p>
           {initial.directory_types.length > 0 && (
-            <p className="mt-3 text-xs text-neutral-500 dark:text-neutral-400">
+            <p className="mt-3 text-xs text-[color:var(--fg-muted)]">
               {t('emptyDirectoriesKnown', {
                 types: initial.directory_types.join(', '),
               })}
@@ -75,11 +75,11 @@ export function ChannelsDashboard({ initial }: Props): React.ReactElement {
   return (
     <div className="space-y-6">
       {error && (
-        <div className="rounded border border-red-400 bg-red-50 p-3 text-sm text-red-800">
+        <div className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-3 text-sm text-[color:var(--danger)]">
           {error}
         </div>
       )}
-      <p className="text-xs text-neutral-500 dark:text-neutral-400">
+      <p className="text-xs text-[color:var(--fg-muted)]">
         {t('fallbackHint', {
           fallback: initial.fallback_slug ?? t('fallbackHintNone'),
         })}
@@ -87,39 +87,39 @@ export function ChannelsDashboard({ initial }: Props): React.ReactElement {
       {groups.map((group) => (
         <section
           key={group.type}
-          className="rounded border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900"
+          className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)]"
         >
-          <header className="border-b border-neutral-200 dark:border-neutral-800 px-5 py-3">
-            <h2 className="text-base font-semibold uppercase tracking-wide text-neutral-800 dark:text-neutral-100">
+          <header className="border-b border-[color:var(--border)] px-4 py-3">
+            <h2 className="text-base font-semibold uppercase tracking-wide text-[color:var(--fg)]">
               {group.type}{' '}
-              <span className="ml-1 text-xs font-normal text-neutral-500 dark:text-neutral-400">
+              <span className="ml-1 text-xs font-normal text-[color:var(--fg-muted)]">
                 ({group.channels.length})
               </span>
             </h2>
           </header>
-          <ul className="divide-y divide-neutral-200 dark:divide-neutral-800">
+          <ul className="divide-y divide-[color:var(--divider)]">
             {group.channels.map((c) => (
               <li
                 key={`${c.channel_type}:${c.channel_key}`}
-                className="flex flex-wrap items-center gap-3 px-5 py-3"
+                className="flex flex-wrap items-center gap-3 px-4 py-3"
               >
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-medium text-neutral-800 dark:text-neutral-100">
+                    <span className="font-medium text-[color:var(--fg)]">
                       {c.label}
                     </span>
                     {c.hint && (
-                      <span className="rounded bg-neutral-100 dark:bg-neutral-800 px-1.5 py-0 text-[11px] text-neutral-600 dark:text-neutral-300">
+                      <span className="rounded bg-[color:var(--bg-soft)] px-2 py-0 text-[11px] text-[color:var(--fg-muted)]">
                         {c.hint}
                       </span>
                     )}
                     {c.stale && (
-                      <span className="rounded bg-amber-100 px-1.5 py-0 text-[10px] uppercase tracking-wide text-amber-800">
+                      <span className="rounded bg-[color:var(--warning)]/10 px-2 py-0 text-[10px] uppercase tracking-wide text-[color:var(--warning)]">
                         {t('staleBadge')}
                       </span>
                     )}
                   </div>
-                  <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-neutral-500 dark:text-neutral-400">
+                  <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-[color:var(--fg-muted)]">
                     <code className="font-mono">{c.channel_key}</code>
                     {c.origin_plugin_id && (
                       <span>
@@ -129,7 +129,7 @@ export function ChannelsDashboard({ initial }: Props): React.ReactElement {
                     )}
                   </div>
                 </div>
-                <label className="flex items-center gap-2 text-xs text-neutral-600 dark:text-neutral-300">
+                <label className="flex items-center gap-2 text-xs text-[color:var(--fg-muted)]">
                   <span>{t('routesTo')}</span>
                   <select
                     value={c.bound_agent_slug ?? ''}
@@ -143,7 +143,7 @@ export function ChannelsDashboard({ initial }: Props): React.ReactElement {
                           : setChannelBinding(c.channel_type, c.channel_key, v),
                       );
                     }}
-                    className="rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-1 text-xs"
+                    className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-2 py-1 text-xs"
                   >
                     <option value="">
                       {t('routesToFallback', {
@@ -160,7 +160,7 @@ export function ChannelsDashboard({ initial }: Props): React.ReactElement {
                 {c.stale && (
                   <button
                     type="button"
-                    className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-800 hover:bg-amber-100"
+                    className="rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 px-2 py-1 text-xs text-[color:var(--warning)] hover:bg-[color:var(--warning)]/10"
                     disabled={pending || !!busy}
                     onClick={() => {
                       const key = `${c.channel_type}:${c.channel_key}`;

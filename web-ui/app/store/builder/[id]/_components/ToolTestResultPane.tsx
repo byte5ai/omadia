@@ -31,7 +31,7 @@ export function ToolTestResultPane({
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-2">
           {isError ? (
             <>
               <AlertCircle className="size-3.5 text-[color:var(--danger)]" aria-hidden />

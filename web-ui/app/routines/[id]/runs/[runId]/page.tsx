@@ -41,7 +41,7 @@ export default async function RoutineRunDetailPage({
   }
 
   return (
-    <main className="mx-auto w-full max-w-[1280px] px-6 py-12 lg:px-10 lg:py-16">
+    <main className="mx-auto w-full max-w-[1280px] px-6 py-12 lg:px-8 lg:py-16">
       <nav className="text-[12px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
         <Link href="/routines" className="hover:text-[color:var(--accent)]">
           Routinen
@@ -60,7 +60,7 @@ export default async function RoutineRunDetailPage({
       </nav>
 
       {loadError ? (
-        <div className="mt-8 rounded-[18px] border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/5 p-6 text-sm text-[color:var(--danger)]">
+        <div className="mt-8 rounded-lg border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/5 p-6 text-sm text-[color:var(--danger)]">
           <div className="font-semibold">Run nicht erreichbar</div>
           <div className="mt-2 font-mono text-xs">{loadError}</div>
         </div>
@@ -74,7 +74,7 @@ export default async function RoutineRunDetailPage({
 function RunDetail({ run }: { run: RoutineRunDetailDto }): React.ReactElement {
   return (
     <>
-      <header className="mt-6 rounded-[22px] border border-[color:var(--divider)] bg-[color:var(--surface)] p-6 lg:p-8">
+      <header className="mt-6 rounded-lg border border-[color:var(--divider)] bg-[color:var(--surface)] p-6 lg:p-8">
         <h1 className="font-display text-[clamp(1.75rem,3vw,2.5rem)] leading-[1.1] text-[color:var(--fg-strong)]">
           Run · {formatDate(run.startedAt)}
         </h1>
@@ -118,13 +118,13 @@ function RunDetail({ run }: { run: RoutineRunDetailDto }): React.ReactElement {
       </header>
 
       <section className="mt-8 grid gap-6 lg:grid-cols-2">
-        <div className="rounded-[22px] border border-[color:var(--divider)] bg-[color:var(--surface)] p-6">
+        <div className="rounded-lg border border-[color:var(--divider)] bg-[color:var(--surface)] p-6">
           <SectionTitle>Prompt</SectionTitle>
           <pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-[color:var(--surface-muted)] p-3 font-mono text-[12px] text-[color:var(--fg-muted)]">
             {run.prompt}
           </pre>
         </div>
-        <div className="rounded-[22px] border border-[color:var(--divider)] bg-[color:var(--surface)] p-6">
+        <div className="rounded-lg border border-[color:var(--divider)] bg-[color:var(--surface)] p-6">
           <SectionTitle>Antwort</SectionTitle>
           {run.answer ? (
             <div className="mt-3">
@@ -139,7 +139,7 @@ function RunDetail({ run }: { run: RoutineRunDetailDto }): React.ReactElement {
         </div>
       </section>
 
-      <section className="mt-8 rounded-[22px] border border-[color:var(--divider)] bg-[color:var(--surface)] p-6">
+      <section className="mt-8 rounded-lg border border-[color:var(--divider)] bg-[color:var(--surface)] p-6">
         <SectionTitle>Call-Stack · Run-Trace</SectionTitle>
         <p className="mt-2 text-[12px] text-[color:var(--fg-subtle)]">
           Vollständiger agentischer Trace dieses Runs — Iterationen,

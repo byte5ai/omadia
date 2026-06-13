@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { AlertTriangle, Loader2, Pencil } from 'lucide-react';
+import { AlertTriangle, Pencil } from 'lucide-react';
 
 import { cloneBuilderDraftFromInstalled } from '../../_lib/api';
 import { cn } from '../../_lib/cn';
@@ -85,7 +85,7 @@ export function EditFromStoreButton({
       >
         {busy ? (
           <>
-            <Loader2 className="size-3.5 animate-spin" aria-hidden />
+            <span className="lume-busy-dots" aria-hidden />
             Klone Draft …
           </>
         ) : (

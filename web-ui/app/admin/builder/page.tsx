@@ -73,7 +73,7 @@ export default function BuilderPage(): React.ReactElement {
             <select
               value={slug ?? ''}
               onChange={(e) => setSlug(e.target.value || null)}
-              className="rounded-md border border-[color:var(--border)] bg-transparent px-3 py-1.5 text-sm outline-none focus:border-[color:var(--accent)]"
+              className="rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[color:var(--accent)]"
             >
               {state.agents.length === 0 && <option value="">—</option>}
               {state.agents.map((a) => (
@@ -91,7 +91,7 @@ export default function BuilderPage(): React.ReactElement {
           <p className="px-6 py-6 text-sm text-[color:var(--fg-muted)]">{t('loading')}</p>
         )}
         {state.kind === 'error' && (
-          <p className="px-6 py-6 text-sm text-red-500">
+          <p className="px-6 py-6 text-sm text-[color:var(--danger)]">
             {t('loadError')}: {state.message}
           </p>
         )}

@@ -17,7 +17,7 @@ export function VaultStatusCard({ status }: Props): React.ReactElement {
     : 'muted';
 
   return (
-    <article className="rounded-[22px] border border-[color:var(--divider)] bg-[color:var(--surface)] p-6 shadow-sm">
+    <article className="rounded-lg border border-[color:var(--divider)] bg-[color:var(--surface)] p-6 shadow-sm">
       <header className="flex items-baseline justify-between gap-3">
         <div>
           <div className="text-[11px] uppercase tracking-[0.22em] text-[color:var(--fg-subtle)]">
@@ -143,12 +143,12 @@ function Row({ label, value, mono, tone = 'muted' }: RowProps): React.ReactEleme
 function StatusDot({ tone }: { tone: Tone }): React.ReactElement {
   const color =
     tone === 'ok'
-      ? 'bg-emerald-500'
+      ? 'bg-[color:var(--success)]/100'
       : tone === 'warn'
-        ? 'bg-amber-500'
+        ? 'bg-[color:var(--warning)]/100'
         : tone === 'danger'
-          ? 'bg-rose-500'
-          : 'bg-slate-400';
+          ? 'bg-[color:var(--danger)]/80'
+          : 'bg-[color:var(--fg-subtle)]';
   return (
     <span className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.22em] text-[color:var(--fg-subtle)]">
       <span className={`h-2 w-2 rounded-full ${color}`} />
@@ -168,9 +168,9 @@ function toneClass(tone: Tone): string {
     case 'ok':
       return 'text-[color:var(--fg-strong)]';
     case 'warn':
-      return 'text-amber-600';
+      return 'text-[color:var(--warning)]';
     case 'danger':
-      return 'text-rose-600';
+      return 'text-[color:var(--danger)]';
     default:
       return 'text-[color:var(--fg-strong)]';
   }

@@ -11,7 +11,7 @@ export function Field({
   children: React.ReactNode;
 }): React.ReactElement {
   return (
-    <label className="flex flex-col gap-1.5">
+    <label className="flex flex-col gap-2">
       <span className="text-[11px] uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
         {label}
       </span>
@@ -34,7 +34,7 @@ export function SaveButton({
       type="button"
       onClick={onClick}
       disabled={pending}
-      className="rounded-md bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-black disabled:opacity-50"
+      className="rounded-md bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-[color:var(--text-inverse)] disabled:opacity-50"
     >
       {pending ? '…' : label}
     </button>

@@ -108,7 +108,7 @@ export function AuthBadge(): React.ReactElement | null {
   if (state.kind === 'error') {
     return (
       <span
-        className="text-[11px] uppercase tracking-[0.18em] text-rose-600"
+        className="text-[11px] uppercase tracking-[0.18em] text-[color:var(--danger)]"
         title={state.message}
       >
         {t('authError')}
@@ -160,7 +160,7 @@ export function AuthBadge(): React.ReactElement | null {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -6 }}
             transition={{ duration: 0.15, ease: 'easeOut' }}
-            className="absolute right-0 top-full z-50 mt-2 w-64 rounded-2xl border border-[color:var(--divider)] bg-[color:var(--surface)] p-3 shadow-xl"
+            className="absolute right-0 top-full z-50 mt-2 w-64 rounded-lg border border-[color:var(--divider)] bg-[color:var(--surface)] p-3 shadow-xl"
           >
             <div className="px-2 pb-3">
               <div className="text-[10px] uppercase tracking-[0.22em] text-[color:var(--fg-subtle)]">
@@ -172,7 +172,7 @@ export function AuthBadge(): React.ReactElement | null {
               <div className="font-mono text-[11px] text-[color:var(--fg-muted)]">
                 {user.email}
               </div>
-              <div className="mt-2 flex items-center gap-1.5 text-[10px] uppercase tracking-[0.14em] text-[color:var(--fg-subtle)]">
+              <div className="mt-2 flex items-center gap-2 text-[10px] uppercase tracking-[0.14em] text-[color:var(--fg-subtle)]">
                 {tSession('expiresAtLabel')}
                 <span className="font-mono normal-case tracking-normal text-[color:var(--fg-muted)]">
                   {expiryLabel}

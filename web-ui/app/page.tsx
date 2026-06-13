@@ -441,15 +441,15 @@ export default function ChatPage(): React.ReactElement {
         disabled={sending}
       />
 
-      <div className="border-b border-neutral-200 bg-white/60 px-6 py-2 text-xs dark:border-neutral-800 dark:bg-neutral-900/60">
+      <div className="border-b border-[color:var(--border)] bg-[color:var(--bg-elevated)]/75 px-6 py-2 text-xs">
         <div className="mx-auto flex max-w-4xl flex-col gap-2">
           {/* Row 1 — stream info. Verlauf-Leeren wanderte 2026-05-26 als
               Eraser-Icon in den Composer (links neben Senden). */}
-          <div className="flex flex-wrap items-center gap-3 text-neutral-500">
+          <div className="flex flex-wrap items-center gap-3 text-[color:var(--fg-muted)]">
             <span>
               {t('streamLabel')} <code className="font-mono">/bot-api/chat/stream</code>
             </span>
-            <span className="truncate font-mono text-[11px] text-neutral-400">
+            <span className="truncate font-mono text-[11px] text-[color:var(--fg-subtle)]">
               {/* `activeId` is a client-only minted UUID — rendering it during
                   SSR produces a hydration mismatch (#95). Hold a placeholder
                   until `useChatSessions` finishes hydrating. */}
@@ -476,10 +476,10 @@ export default function ChatPage(): React.ReactElement {
               onClick={() => setKgWalkEnabled(!kgWalkEnabled)}
               title={t('kgWalk.toggleLabel')}
               className={[
-                'inline-flex select-none items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition',
+                'inline-flex select-none items-center gap-2 rounded-full border px-3 py-1 text-[11px] font-medium transition',
                 kgWalkEnabled
-                  ? 'border-indigo-300 bg-indigo-50 text-indigo-700 dark:border-indigo-600/60 dark:bg-indigo-500/15 dark:text-indigo-300'
-                  : 'border-neutral-300 bg-transparent text-neutral-400 hover:text-neutral-600 dark:border-neutral-700 dark:hover:text-neutral-300',
+                  ? 'border-[color:var(--accent)] bg-[color:var(--accent)]/10 text-[color:var(--accent)]'
+                  : 'border-[color:var(--border)] bg-transparent text-[color:var(--fg-subtle)] hover:text-[color:var(--fg-muted)]',
               ].join(' ')}
             >
               <Network size={12} aria-hidden />
@@ -489,8 +489,8 @@ export default function ChatPage(): React.ReactElement {
                 className={[
                   'inline-block h-1.5 w-1.5 rounded-full',
                   kgWalkEnabled
-                    ? 'bg-indigo-500'
-                    : 'bg-neutral-400 dark:bg-neutral-600',
+                    ? 'bg-[color:var(--accent)]/100'
+                    : 'bg-[color:var(--fg-subtle)]',
                 ].join(' ')}
               />
             </button>
@@ -501,10 +501,10 @@ export default function ChatPage(): React.ReactElement {
               onClick={() => setPlanDagEnabled(!planDagEnabled)}
               title={t('planDag.toggleLabel')}
               className={[
-                'inline-flex select-none items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition',
+                'inline-flex select-none items-center gap-2 rounded-full border px-3 py-1 text-[11px] font-medium transition',
                 planDagEnabled
-                  ? 'border-sky-300 bg-sky-50 text-sky-700 dark:border-sky-600/60 dark:bg-sky-500/15 dark:text-sky-300'
-                  : 'border-neutral-300 bg-transparent text-neutral-400 hover:text-neutral-600 dark:border-neutral-700 dark:hover:text-neutral-300',
+                  ? 'border-[color:var(--accent)] bg-[color:var(--accent)]/10 text-[color:var(--accent)]'
+                  : 'border-[color:var(--border)] bg-transparent text-[color:var(--fg-subtle)] hover:text-[color:var(--fg-muted)]',
               ].join(' ')}
             >
               <GitBranch size={12} aria-hidden />
@@ -514,8 +514,8 @@ export default function ChatPage(): React.ReactElement {
                 className={[
                   'inline-block h-1.5 w-1.5 rounded-full',
                   planDagEnabled
-                    ? 'bg-sky-500'
-                    : 'bg-neutral-400 dark:bg-neutral-600',
+                    ? 'bg-[color:var(--accent)]/100'
+                    : 'bg-[color:var(--fg-subtle)]',
                 ].join(' ')}
               />
             </button>
@@ -588,33 +588,35 @@ export default function ChatPage(): React.ReactElement {
           recent turn. Gated by its own header toggle. */}
       <PlanDagPane plan={planDagEnabled ? activePlan : null} />
 
-      <footer className="border-t border-neutral-200 bg-white/80 px-6 py-4 backdrop-blur dark:border-neutral-800 dark:bg-neutral-900/80">
-        <div className="mx-auto flex max-w-4xl flex-col gap-1.5">
+      <footer className="border-t border-[color:var(--border)] bg-[color:var(--bg-elevated)]/85 px-6 py-4 backdrop-blur">
+        <div className="mx-auto flex max-w-4xl flex-col gap-2">
           {/* Mid-turn steering hint / feedback — only while a turn streams. */}
           {sending && (
-            <div className="flex items-center gap-1.5 text-[11px]">
-              <Navigation size={11} aria-hidden className="text-amber-600 dark:text-amber-400" />
+            <div className="flex items-center gap-2 text-[11px]">
+              <Navigation size={11} aria-hidden className="text-[color:var(--warning)]" />
               {steerNotice === 'sent' ? (
-                <span className="text-amber-700 dark:text-amber-400">
+                <span className="text-[color:var(--warning)]">
                   {t('steerNoticeSent')}
                 </span>
               ) : steerNotice === 'ended' ? (
-                <span className="text-neutral-500 dark:text-neutral-400">
+                <span className="text-[color:var(--fg-muted)]">
                   {t('steerNoticeEnded')}
                 </span>
               ) : (
-                <span className="text-neutral-500 dark:text-neutral-400">
+                <span className="text-[color:var(--fg-muted)]">
                   {t('steerHint')}
                 </span>
               )}
             </div>
           )}
-          <div className="flex items-end gap-2">
+          {/* §5.3 Spotlight: the composer is the stage — radial accent glow
+              behind it, three-stop showcase glow on the focused input. */}
+          <div className="lume-spotlight-stage flex items-end gap-2">
             <button
               type="button"
               onClick={requestReset}
               disabled={!canReset}
-              className="rounded border border-neutral-300 bg-white p-2 text-neutral-500 transition hover:border-neutral-400 hover:text-neutral-700 disabled:cursor-not-allowed disabled:opacity-30 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-200"
+              className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-2 text-[color:var(--fg-muted)] transition hover:border-[color:var(--border-strong)] hover:text-[color:var(--fg)] disabled:cursor-not-allowed disabled:opacity-30"
               title={t('composerResetTitle')}
               aria-label={t('composerResetAriaLabel')}
             >
@@ -629,7 +631,7 @@ export default function ChatPage(): React.ReactElement {
               onKeyDown={onKeyDown}
               rows={2}
               placeholder={sending ? t('steerPlaceholder') : t('placeholder')}
-              className="flex-1 resize-none rounded border border-neutral-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-neutral-500 focus:outline-none dark:border-neutral-700 dark:bg-neutral-800"
+              className="flex-1 resize-none rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-3 py-2 text-sm shadow-sm focus:border-[color:var(--border-strong)] focus:outline-none"
               disabled={hydrating}
             />
             {sending ? (
@@ -641,7 +643,7 @@ export default function ChatPage(): React.ReactElement {
                   }}
                   disabled={input.trim().length === 0 || steerBusy || hydrating}
                   title={t('steerButtonTitle')}
-                  className="flex items-center gap-1.5 rounded border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-medium text-amber-800 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300 dark:hover:bg-amber-900"
+                  className="flex items-center gap-2 rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 px-4 py-2 text-sm font-medium text-[color:var(--warning)] transition hover:bg-[color:var(--warning)]/10 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <Navigation size={14} aria-hidden />
                   {t('steerButton')}
@@ -649,7 +651,7 @@ export default function ChatPage(): React.ReactElement {
                 <button
                   type="button"
                   onClick={abort}
-                  className="rounded border border-red-300 bg-red-50 px-4 py-2 text-sm font-medium text-red-700 transition hover:bg-red-100 dark:border-red-900 dark:bg-red-950 dark:text-red-300"
+                  className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 px-4 py-2 text-sm font-medium text-[color:var(--danger)] transition hover:bg-[color:var(--danger)]/8"
                 >
                   {t('stopButton')}
                 </button>
@@ -661,7 +663,7 @@ export default function ChatPage(): React.ReactElement {
                   send();
                 }}
                 disabled={input.trim().length === 0 || hydrating}
-                className="rounded bg-neutral-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
+                className="rounded-md bg-[color:var(--accent)] px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {t('sendButton')}
               </button>
@@ -698,16 +700,16 @@ function EmptyState({
   const t = useTranslations('chat');
   if (hydrating) {
     return (
-      <div className="rounded-lg border border-dashed border-neutral-300 p-8 text-center text-sm text-neutral-400 dark:border-neutral-700">
+      <div className="rounded-lg border border-dashed border-[color:var(--border)] p-8 text-center text-sm text-[color:var(--fg-subtle)]">
         {t('sessionsLoading')}
       </div>
     );
   }
   return (
-    <div className="rounded-lg border border-dashed border-neutral-300 p-8 text-center text-sm text-neutral-500 dark:border-neutral-700">
+    <div className="rounded-lg border border-dashed border-[color:var(--border)] p-8 text-center text-sm text-[color:var(--fg-muted)]">
       <div className="font-medium">{session.title}</div>
       <div className="mt-1">{t('emptyStatePrompt')}</div>
-      <div className="mt-2 text-xs text-neutral-400">
+      <div className="mt-2 text-xs text-[color:var(--fg-subtle)]">
         {t('emptyStateShortcut')}
       </div>
     </div>
@@ -751,12 +753,15 @@ function MessageRow({
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div
         className={[
-          'max-w-[85%] rounded-lg px-4 py-3 shadow-sm',
+          'max-w-[85%] rounded-lg px-4 py-3',
+          // §6.1: agent content condenses into existence; user bubbles are
+          // the user's own action and appear instantly.
+          isUser ? '' : 'lume-condense',
           isUser
-            ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
+            ? 'bg-[color:var(--bg-inverse)] text-[color:var(--fg-on-dark)]'
             : message.error
-              ? 'bg-red-50 text-red-900 ring-1 ring-red-200 dark:bg-red-900/30 dark:text-red-100 dark:ring-red-800'
-              : 'bg-white text-neutral-900 ring-1 ring-neutral-200 dark:bg-neutral-800 dark:text-neutral-100 dark:ring-neutral-700',
+              ? 'bg-[color:var(--danger)]/8 text-[color:var(--danger)] ring-1 ring-[color:var(--danger-edge)]'
+              : 'bg-[color:var(--bg-elevated)] text-[color:var(--fg-strong)] ring-1 ring-[color:var(--border)]',
         ].join(' ')}
       >
         {isUser ? (
@@ -783,10 +788,14 @@ function MessageRow({
               <SteerList steers={message.steers ?? []} />
             )}
             {message.content.length > 0 ? (
-              <Markdown
-                source={message.content}
-                highlightTerms={message.maskedValues}
-              />
+              /* §2.7: agent narration renders in the prose register
+                 (Source Serif 4); headings/tables/code stay structural. */
+              <div className="lume-prose">
+                <Markdown
+                  source={message.content}
+                  highlightTerms={message.maskedValues}
+                />
+              </div>
             ) : message.streaming ? (
               <StreamingDots />
             ) : null}
@@ -829,7 +838,7 @@ function MessageRow({
         )}
         {!isUser &&
           (message.telemetry || elapsed || message.turnId !== undefined) && (
-            <div className="mt-2 flex flex-wrap items-center border-t border-current/10 pt-2 text-[11px] text-neutral-500 dark:text-neutral-400">
+            <div className="mt-2 flex flex-wrap items-center border-t border-current/10 pt-2 text-[11px] text-[color:var(--fg-muted)]">
               {message.telemetry && (
                 <span>
                   tools={message.telemetry.tool_calls} · iterations=
@@ -838,7 +847,7 @@ function MessageRow({
               )}
               {message.model && (
                 <span
-                  className="ml-3 rounded bg-current/10 px-1.5 py-0.5 font-medium"
+                  className="ml-3 rounded bg-current/10 px-2 py-0.5 font-medium"
                   title={message.model}
                 >
                   {shortModelName(message.model)}
@@ -887,8 +896,8 @@ function MessageRow({
 function ToolTrace({ tools }: { tools: ToolEvent[] }): React.ReactElement {
   const t = useTranslations('chat');
   return (
-    <details className="mb-2 rounded bg-neutral-50 text-xs dark:bg-neutral-900/60" open>
-      <summary className="cursor-pointer px-2 py-1 font-medium text-neutral-600 select-none dark:text-neutral-400">
+    <details className="mb-2 rounded bg-[color:var(--bg-soft)] text-xs" open>
+      <summary className="cursor-pointer px-2 py-1 font-medium text-[color:var(--fg-muted)] select-none">
         {t('toolTraceHeading', { count: tools.length })}
       </summary>
       <div className="flex flex-col gap-1 px-2 pb-2">
@@ -923,11 +932,11 @@ function ToolRow({ tool }: { tool: ToolEvent }): React.ReactElement {
     (tool.startedAt !== undefined ? now - tool.startedAt : tool.liveElapsedMs ?? 0);
   const elapsedColor = pending
     ? elapsedMs > 60_000
-      ? 'text-orange-600 dark:text-orange-400'
+      ? 'text-[color:var(--warning)]'
       : elapsedMs > 30_000
-        ? 'text-amber-600 dark:text-amber-400'
-        : 'text-neutral-500'
-    : 'text-neutral-500';
+        ? 'text-[color:var(--warning)]'
+        : 'text-[color:var(--fg-muted)]'
+    : 'text-[color:var(--fg-muted)]';
 
   const subEvents = tool.subEvents ?? [];
 
@@ -936,12 +945,12 @@ function ToolRow({ tool }: { tool: ToolEvent }): React.ReactElement {
       className={[
         'rounded border text-[11px]',
         pending
-          ? 'border-neutral-300 dark:border-neutral-700'
+          ? 'border-[color:var(--border)]'
           : tool.isError
-            ? 'border-red-300 bg-red-50 dark:border-red-800 dark:bg-red-950/40'
+            ? 'border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8'
             : isKG
-              ? 'border-indigo-200 bg-indigo-50 dark:border-indigo-800 dark:bg-indigo-950/40'
-              : 'border-neutral-200 bg-white dark:border-neutral-700 dark:bg-neutral-800',
+              ? 'border-[color:var(--accent)] bg-[color:var(--accent)]/10'
+              : 'border-[color:var(--border)] bg-[color:var(--bg-elevated)]',
       ].join(' ')}
       open={pending}
     >
@@ -951,14 +960,14 @@ function ToolRow({ tool }: { tool: ToolEvent }): React.ReactElement {
         <span className="font-semibold">{tool.name}</span>
         {inputPreview && (
           <span
-            className="max-w-[40ch] truncate font-normal text-neutral-500 dark:text-neutral-400"
+            className="max-w-[40ch] truncate font-normal text-[color:var(--fg-muted)]"
             title={inputPreview}
           >
             · {inputPreview}
           </span>
         )}
         {subEvents.length > 0 && (
-          <span className="rounded bg-neutral-200 px-1 font-normal text-neutral-600 dark:bg-neutral-700 dark:text-neutral-300">
+          <span className="rounded bg-[color:var(--state-loading)] px-1 font-normal text-[color:var(--fg-muted)]">
             {t('subCallCount', {
               count: subEvents.filter((e) => e.kind === 'tool_use').length,
             })}
@@ -970,8 +979,8 @@ function ToolRow({ tool }: { tool: ToolEvent }): React.ReactElement {
           </span>
         )}
       </summary>
-      <div className="border-t border-neutral-200 px-2 py-1 dark:border-neutral-700">
-        <div className="text-neutral-500">{t('inputLabel')}</div>
+      <div className="border-t border-[color:var(--border)] px-2 py-1">
+        <div className="text-[color:var(--fg-muted)]">{t('inputLabel')}</div>
         <pre className="overflow-x-auto font-mono">
           {JSON.stringify(tool.input, null, 2)}
         </pre>
@@ -1028,34 +1037,34 @@ function TriageBadge({
   const verdict: Record<typeof routing.bucket, { label: string; cls: string }> = {
     simple: {
       label: 'einfach',
-      cls: 'bg-emerald-500/10 text-emerald-600 ring-emerald-500/30 dark:text-emerald-400',
+      cls: 'bg-[color:var(--success)]/10 text-[color:var(--success)] ring-[color:var(--success)]',
     },
     complex: {
       label: 'komplex',
-      cls: 'bg-violet-500/10 text-violet-600 ring-violet-500/30 dark:text-violet-400',
+      cls: 'bg-[color:var(--accent)]/10 text-[color:var(--accent)] ring-[color:var(--accent)]',
     },
     fallback: {
       label: 'Fallback',
-      cls: 'bg-amber-500/10 text-amber-600 ring-amber-500/30 dark:text-amber-400',
+      cls: 'bg-[color:var(--warning)]/10 text-[color:var(--warning)] ring-[color:var(--warning)]',
     },
   };
   const v = verdict[routing.bucket];
   return (
     <div
-      className="mb-2 inline-flex flex-wrap items-center gap-1.5 text-[11px] text-neutral-500 dark:text-neutral-400"
+      className="mb-2 inline-flex flex-wrap items-center gap-2 text-[11px] text-[color:var(--fg-muted)]"
       title={`Triage-Klassifizierer: ${routing.classifierModel} → ${routing.bucket} → ${routing.model}`}
     >
       <span className="font-medium uppercase tracking-[0.12em]">Triage</span>
-      <span className="text-neutral-400 dark:text-neutral-500">
+      <span className="text-[color:var(--fg-subtle)]">
         {shortModelName(routing.classifierModel)} →
       </span>
       <span
-        className={`inline-flex items-center rounded-full px-1.5 py-0.5 font-medium uppercase tracking-[0.08em] ring-1 ${v.cls}`}
+        className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium uppercase tracking-[0.08em] ring-1 ${v.cls}`}
       >
         {v.label}
       </span>
-      <span className="text-neutral-400 dark:text-neutral-500">→</span>
-      <span className="rounded bg-current/10 px-1.5 py-0.5 font-medium">
+      <span className="text-[color:var(--fg-subtle)]">→</span>
+      <span className="rounded bg-current/10 px-2 py-0.5 font-medium">
         {shortModelName(routing.model)}
       </span>
     </div>
@@ -1067,7 +1076,7 @@ function ToolOutputWithNudge({ output }: { output: string }): React.ReactElement
   const { cleaned } = parseNudgeBlock(output);
   return (
     <>
-      <div className="mt-2 text-neutral-500">{t('outputLabel')}</div>
+      <div className="mt-2 text-[color:var(--fg-muted)]">{t('outputLabel')}</div>
       <pre className="max-h-64 overflow-auto whitespace-pre-wrap font-mono">
         {cleaned}
       </pre>
@@ -1126,7 +1135,7 @@ function SteerList({ steers }: { steers: string[] }): React.ReactElement {
       {steers.map((text, i) => (
         <div
           key={`${String(i)}:${text.slice(0, 24)}`}
-          className="flex items-start gap-1.5 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-800 dark:border-amber-900 dark:bg-amber-950/50 dark:text-amber-300"
+          className="flex items-start gap-2 rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 px-2 py-1 text-[11px] text-[color:var(--warning)]"
         >
           <Navigation size={11} aria-hidden className="mt-0.5 shrink-0" />
           <span>
@@ -1198,14 +1207,14 @@ function SubTrace({
   }
 
   return (
-    <div className="mt-2 space-y-1 border-l-2 border-neutral-300 pl-2 dark:border-neutral-600">
-      <div className="text-neutral-500">{t('subAgentTrace')}</div>
+    <div className="mt-2 space-y-1 border-l-2 border-[color:var(--border)] pl-2">
+      <div className="text-[color:var(--fg-muted)]">{t('subAgentTrace')}</div>
       {rows.map((row, idx) => {
         if (row.kind === 'iteration') {
           return (
             <div
               key={`iter-${String(idx)}`}
-              className="text-[10px] text-neutral-500"
+              className="text-[10px] text-[color:var(--fg-muted)]"
             >
               {t('iterationLabel', { n: row.iteration })}
             </div>
@@ -1221,10 +1230,10 @@ function SubTrace({
             className={[
               'rounded border text-[10px]',
               pending
-                ? 'border-neutral-300 dark:border-neutral-600'
+                ? 'border-[color:var(--border)]'
                 : row.result?.isError
-                  ? 'border-red-300 bg-red-50/60 dark:border-red-800 dark:bg-red-950/40'
-                  : 'border-neutral-200 bg-white/60 dark:border-neutral-700 dark:bg-neutral-900/40',
+                  ? 'border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8'
+                  : 'border-[color:var(--border)] bg-[color:var(--bg-elevated)]/75',
             ].join(' ')}
           >
             <summary className="flex cursor-pointer items-center gap-2 px-2 py-0.5 font-mono select-none">
@@ -1234,17 +1243,17 @@ function SubTrace({
               <span className="font-semibold">{row.name ?? '?'}</span>
               {previewInput(row.input) && (
                 <span
-                  className="max-w-[36ch] truncate font-normal text-neutral-500"
+                  className="max-w-[36ch] truncate font-normal text-[color:var(--fg-muted)]"
                   title={previewInput(row.input) ?? ''}
                 >
                   · {previewInput(row.input)}
                 </span>
               )}
-              <span className="ml-auto text-neutral-500">
+              <span className="ml-auto text-[color:var(--fg-muted)]">
                 {formatMs(elapsedMs)}
               </span>
             </summary>
-            <div className="border-t border-neutral-200 px-2 py-1 dark:border-neutral-700">
+            <div className="border-t border-[color:var(--border)] px-2 py-1">
               <pre className="overflow-x-auto font-mono">
                 {JSON.stringify(row.input, null, 2)}
               </pre>
@@ -1365,7 +1374,7 @@ function AttachmentGrid({
           href={att.url}
           target="_blank"
           rel="noreferrer"
-          className="block overflow-hidden rounded border border-neutral-200 bg-white p-2 transition hover:border-neutral-400 dark:border-neutral-700 dark:bg-neutral-900"
+          className="block overflow-hidden rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-2 transition hover:border-[color:var(--border-strong)]"
           title={t('attachmentTitle', {
             kind: att.diagramKind,
             cachedSuffix: att.cacheHit ? t('attachmentCachedSuffix') : '',
@@ -1379,7 +1388,7 @@ function AttachmentGrid({
             alt={att.altText}
             className="mx-auto max-h-[500px] w-auto"
           />
-          <div className="mt-1 text-[10px] text-neutral-500">
+          <div className="mt-1 text-[10px] text-[color:var(--fg-muted)]">
             {att.diagramKind}
             {att.cacheHit && ' · cached'}
             {' · '}
@@ -1411,19 +1420,19 @@ function FileAttachmentList({
           download={file.altText}
           target="_blank"
           rel="noreferrer"
-          className="flex items-center gap-3 rounded border border-neutral-200 bg-white p-3 transition hover:border-neutral-400 dark:border-neutral-700 dark:bg-neutral-900"
+          className="flex items-center gap-3 rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-3 transition hover:border-[color:var(--border-strong)]"
         >
           <span aria-hidden className="text-xl">
             {fileGlyph(file)}
           </span>
           <span className="flex min-w-0 flex-col">
             <span className="truncate text-sm font-medium">{file.altText}</span>
-            <span className="text-[10px] uppercase text-neutral-500">
+            <span className="text-[10px] uppercase text-[color:var(--fg-muted)]">
               {fileExt(file.altText)}
               {file.sizeBytes ? ` · ${formatFileSize(file.sizeBytes)}` : ''}
             </span>
           </span>
-          <span className="ml-auto text-sm text-neutral-400" aria-hidden>
+          <span className="ml-auto text-sm text-[color:var(--fg-subtle)]" aria-hidden>
             ↓
           </span>
         </a>
@@ -1470,11 +1479,11 @@ function FollowUpButtons({
 }): React.ReactElement {
   const t = useTranslations('chat');
   return (
-    <div className="mt-3 border-t border-neutral-200 pt-2 dark:border-neutral-700">
-      <div className="mb-1.5 text-[10px] font-medium tracking-wide text-neutral-500 uppercase dark:text-neutral-400">
+    <div className="mt-3 border-t border-[color:var(--border)] pt-2">
+      <div className="mb-2 text-[10px] font-medium tracking-wide text-[color:var(--fg-muted)] uppercase">
         {t('followUpsLabel')}
       </div>
-      <div className="flex flex-wrap gap-1.5">
+      <div className="flex flex-wrap gap-2">
         {options.map((opt, idx) => (
           <button
             key={`${opt.label}-${String(idx)}`}
@@ -1484,7 +1493,7 @@ function FollowUpButtons({
             }}
             disabled={disabled}
             title={opt.prompt}
-            className="rounded-full border border-neutral-300 bg-white px-3 py-1 text-[11px] font-medium text-neutral-700 transition hover:border-neutral-500 hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-600 dark:bg-neutral-800 dark:text-neutral-200 dark:hover:bg-neutral-700"
+            className="rounded-full border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-3 py-1 text-[11px] font-medium text-[color:var(--fg)] transition hover:border-[color:var(--border-strong)] hover:bg-[color:var(--bg-soft)] disabled:cursor-not-allowed disabled:opacity-40"
           >
             {opt.label}
           </button>
@@ -1496,7 +1505,7 @@ function FollowUpButtons({
 
 function StreamingDots(): React.ReactElement {
   return (
-    <span className="inline-flex items-center gap-1 text-neutral-500">
+    <span className="inline-flex items-center gap-1 text-[color:var(--fg-muted)]">
       {[0, 150, 300].map((delay) => (
         <span
           key={delay}
@@ -1533,10 +1542,10 @@ function LivenessRow({
   return (
     <div
       className={[
-        'mt-2 inline-flex flex-wrap items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.18em]',
+        'mt-2 inline-flex flex-wrap items-center gap-2 font-mono text-[10px] uppercase tracking-[0.18em]',
         stuck
-          ? 'text-red-600 dark:text-red-400'
-          : 'text-neutral-500 dark:text-neutral-400',
+          ? 'text-[color:var(--danger)]'
+          : 'text-[color:var(--fg-muted)]',
       ].join(' ')}
     >
       {showInlineDots && <StreamingDots />}
@@ -1556,7 +1565,7 @@ function LivenessRow({
         </span>
       ) : null}
       {lastUsage && lastUsage.cacheReadInputTokens > 0 ? (
-        <span className="text-emerald-600 dark:text-emerald-400">
+        <span className="text-[color:var(--success)]">
           {t('cacheBadge', { tokens: lastUsage.cacheReadInputTokens })}
         </span>
       ) : null}
@@ -1580,16 +1589,16 @@ function phasePillClass(
   phase: 'thinking' | 'streaming' | 'tool_running' | 'idle',
 ): string {
   const base =
-    'inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.16em]';
+    'inline-flex items-center rounded px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.16em]';
   switch (phase) {
     case 'streaming':
-      return `${base} bg-indigo-500/15 text-indigo-600 dark:text-indigo-400`;
+      return `${base} bg-[color:var(--accent)]/15 text-[color:var(--accent)]`;
     case 'tool_running':
-      return `${base} bg-amber-500/15 text-amber-600 dark:text-amber-400`;
+      return `${base} bg-[color:var(--warning)]/15 text-[color:var(--warning)]`;
     case 'thinking':
     case 'idle':
     default:
-      return `${base} bg-neutral-200 text-neutral-600 dark:bg-neutral-700 dark:text-neutral-300`;
+      return `${base} bg-[color:var(--state-loading)] text-[color:var(--fg-muted)]`;
   }
 }
 

@@ -141,7 +141,7 @@ export function PagesList({
         <button
           type="button"
           onClick={onAdd}
-          className="mt-3 inline-flex items-center gap-1 rounded-md bg-[color:var(--accent)] px-2.5 py-1.5 text-[11px] font-semibold text-white shadow-[var(--shadow-cta)]"
+          className="mt-3 inline-flex items-center gap-1 rounded-md bg-[color:var(--accent)] px-3 py-2 text-[11px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)]"
         >
           <Plus className="size-3" aria-hidden />
           {t('addFirstPage')}
@@ -158,7 +158,7 @@ export function PagesList({
         onDragEnd={onDragEnd}
       >
         <SortableContext items={ids} strategy={verticalListSortingStrategy}>
-          <ul className="space-y-1.5">
+          <ul className="space-y-2">
             {uiRoutes.map((route, index) => {
               const isExpanded = expandedId === route.id;
               return (
@@ -194,7 +194,7 @@ export function PagesList({
       <button
         type="button"
         onClick={onAdd}
-        className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2.5 py-1.5 text-[11px] font-semibold text-[color:var(--fg-strong)] hover:border-[color:var(--accent)]"
+        className="inline-flex items-center gap-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-[11px] font-semibold text-[color:var(--fg-strong)] hover:border-[color:var(--accent)]"
       >
         <Plus className="size-3" aria-hidden />
         {t('addPage')}
@@ -232,7 +232,8 @@ function SortableRow({
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
-    opacity: isDragging ? 0.6 : 1,
+    opacity: isDragging ? 0.5 : 1,
+    boxShadow: isDragging ? 'var(--shadow-drag)' : undefined,
   };
   void index;
 
@@ -271,7 +272,7 @@ function SortableRow({
         <button
           type="button"
           onClick={onRemove}
-          className="rounded p-1 text-[color:var(--fg-muted)] hover:bg-rose-50 hover:text-rose-700"
+          className="rounded p-1 text-[color:var(--fg-muted)] hover:bg-[color:var(--danger)]/8 hover:text-[color:var(--danger)]"
           aria-label={t('deleteAriaLabel')}
         >
           <Trash2 className="size-3" />
@@ -295,15 +296,15 @@ function SortableRow({
 function ModeBadge({ mode }: { mode: UiRoute['render_mode'] }): React.ReactElement {
   const color =
     mode === 'library'
-      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+      ? 'bg-[color:var(--success)]/10 text-[color:var(--success)] border-[color:var(--success)]'
       : mode === 'react-ssr'
-        ? 'bg-sky-50 text-sky-700 border-sky-200'
-        : 'bg-amber-50 text-amber-700 border-amber-200';
+        ? 'bg-[color:var(--accent)]/10 text-[color:var(--accent)] border-[color:var(--accent)]'
+        : 'bg-[color:var(--warning)]/10 text-[color:var(--warning)] border-[color:var(--warning)]';
   const label =
     mode === 'library' ? 'Library' : mode === 'react-ssr' ? 'React SSR' : 'Free-form HTML';
   return (
     <span
-      className={`rounded-md border px-1.5 py-0.5 text-[10px] font-medium ${color}`}
+      className={`rounded-md border px-2 py-0.5 text-[10px] font-medium ${color}`}
     >
       {label}
     </span>

@@ -88,7 +88,7 @@ export default function AdminUsersPage(): React.ReactElement {
   }
 
   return (
-    <main className="mx-auto max-w-[1080px] px-6 py-12 lg:px-10 lg:py-16">
+    <main className="mx-auto max-w-[1080px] px-6 py-12 lg:px-8 lg:py-16">
       <header className="mb-8 flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="font-display text-[clamp(1.75rem,3.5vw,2.5rem)] leading-[1.1] text-[color:var(--fg-strong)]">
@@ -103,7 +103,7 @@ export default function AdminUsersPage(): React.ReactElement {
         <button
           type="button"
           onClick={() => setShowCreate((s) => !s)}
-          className="rounded-md bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-black"
+          className="rounded-md bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-[color:var(--text-inverse)]"
         >
           {showCreate ? 'Abbrechen' : 'Neuen Nutzer anlegen'}
         </button>
@@ -112,7 +112,7 @@ export default function AdminUsersPage(): React.ReactElement {
       {showCreate && (
         <form
           onSubmit={handleCreate}
-          className="mb-8 grid gap-4 rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5 sm:grid-cols-2"
+          className="mb-8 grid gap-4 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4 sm:grid-cols-2"
         >
           <label className="flex flex-col gap-1 text-sm">
             <span className="font-medium">Email</span>
@@ -145,12 +145,12 @@ export default function AdminUsersPage(): React.ReactElement {
             />
           </label>
           {createError && (
-            <p className="text-sm text-red-500 sm:col-span-2">{createError}</p>
+            <p className="text-sm text-[color:var(--danger)] sm:col-span-2">{createError}</p>
           )}
           <button
             type="submit"
             disabled={submitting}
-            className="rounded-md bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-black disabled:opacity-50 sm:col-span-2"
+            className="rounded-md bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-[color:var(--text-inverse)] disabled:opacity-50 sm:col-span-2"
           >
             {submitting ? 'Lege an …' : 'Anlegen'}
           </button>
@@ -160,11 +160,11 @@ export default function AdminUsersPage(): React.ReactElement {
       {state.kind === 'loading' ? (
         <p className="text-sm opacity-70">Lädt …</p>
       ) : state.kind === 'error' ? (
-        <p className="text-sm text-red-500">
+        <p className="text-sm text-[color:var(--danger)]">
           Fehler beim Laden: {state.message}
         </p>
       ) : (
-        <div className="overflow-x-auto rounded-[14px] border border-[color:var(--border)]">
+        <div className="overflow-x-auto rounded-lg border border-[color:var(--border)]">
           <table className="w-full text-left text-sm">
             <thead className="bg-[color:var(--card)]/40 text-[12px] uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
               <tr>
@@ -197,10 +197,10 @@ export default function AdminUsersPage(): React.ReactElement {
                   <td className="px-4 py-3">
                     <span
                       className={[
-                        'inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] uppercase tracking-[0.16em]',
+                        'inline-flex items-center gap-2 rounded-full px-2 py-0.5 text-[11px] uppercase tracking-[0.16em]',
                         u.status === 'active'
-                          ? 'bg-emerald-500/10 text-emerald-500'
-                          : 'bg-amber-500/10 text-amber-500',
+                          ? 'bg-[color:var(--success)]/10 text-[color:var(--success)]'
+                          : 'bg-[color:var(--warning)]/10 text-[color:var(--warning)]',
                       ].join(' ')}
                     >
                       {u.status}

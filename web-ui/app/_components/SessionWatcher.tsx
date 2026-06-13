@@ -193,7 +193,7 @@ function SessionWarningCard({
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: 24 }}
       transition={{ duration: 0.2, ease: 'easeOut' }}
-      className="fixed bottom-5 right-5 z-[90] w-[min(92vw,22rem)] border border-[color:var(--rule-strong)] bg-[color:var(--paper)] p-5 shadow-[0_24px_60px_-20px_rgba(0,0,0,0.45)]"
+      className="fixed bottom-5 right-5 z-[90] w-[min(92vw,22rem)] border border-[color:var(--rule-strong)] bg-[color:var(--paper)] p-4 shadow-[0_24px_60px_-20px_rgba(0,0,0,0.45)]"
     >
       <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.2em] text-[color:var(--accent)]">
         <Clock className="size-3.5" aria-hidden />
@@ -247,7 +247,7 @@ function SessionExpiredOverlay(): React.ReactElement {
         initial={{ opacity: 0, scale: 0.96, y: 8 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         transition={{ duration: 0.2, ease: 'easeOut' }}
-        className="relative z-10 w-full max-w-md border border-[color:var(--rule-strong)] bg-[color:var(--paper)] p-7 shadow-[0_30px_80px_-20px_rgba(0,0,0,0.5)]"
+        className="relative z-10 w-full max-w-md border border-[color:var(--rule-strong)] bg-[color:var(--paper)] p-6 shadow-[0_30px_80px_-20px_rgba(0,0,0,0.5)]"
       >
         <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.2em] text-[color:var(--accent)]">
           <Clock className="size-3.5" aria-hidden />
@@ -263,7 +263,7 @@ function SessionExpiredOverlay(): React.ReactElement {
           ref={ctaRef}
           type="button"
           onClick={relogin}
-          className="mt-5 flex w-full items-center justify-center gap-2 border border-[color:var(--ink)] bg-[color:var(--ink)] px-4 py-2.5 text-[12px] uppercase tracking-[0.16em] text-[color:var(--paper)] transition hover:border-[color:var(--accent)] hover:bg-[color:var(--accent)]"
+          className="mt-4 flex w-full items-center justify-center gap-2 border border-[color:var(--ink)] bg-[color:var(--ink)] px-4 py-3 text-[12px] uppercase tracking-[0.16em] text-[color:var(--paper)] transition hover:border-[color:var(--accent)] hover:bg-[color:var(--accent)]"
         >
           <LogIn className="size-3.5" aria-hidden />
           {t('expiredCta')}

@@ -31,11 +31,11 @@ export function RecalledContextCard({
   }
 
   return (
-    <details className="mb-2 rounded-md border border-sky-200 bg-sky-50/50 text-xs dark:border-sky-900/50 dark:bg-sky-950/20">
-      <summary className="flex cursor-pointer items-center gap-2 px-2.5 py-1.5 font-medium text-sky-700 dark:text-sky-300">
+    <details className="mb-2 rounded-md border border-[color:var(--accent)] bg-[color:var(--accent)]/10 text-xs">
+      <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 font-medium text-[color:var(--accent)]">
         <span aria-hidden>🧠</span>
         <span>{t('heading')}</span>
-        <span className="font-normal text-sky-500 dark:text-sky-400">
+        <span className="font-normal text-[color:var(--accent)]">
           {t('summary', {
             plans: plans.length,
             processes: processes.length,
@@ -43,20 +43,20 @@ export function RecalledContextCard({
           })}
         </span>
       </summary>
-      <div className="flex flex-col gap-2 px-2.5 pb-2 pt-0.5">
+      <div className="flex flex-col gap-2 px-3 pb-2 pt-0.5">
         {plans.length > 0 && (
           <section>
-            <h4 className="text-[10px] uppercase tracking-wide text-sky-600 dark:text-sky-400">
+            <h4 className="text-[10px] uppercase tracking-wide text-[color:var(--accent)]">
               {t('plansHeading')}
             </h4>
             <ul className="flex flex-col gap-0.5">
               {plans.map((p) => (
                 <li
                   key={p.planId}
-                  className="text-neutral-700 dark:text-neutral-300"
+                  className="text-[color:var(--fg)]"
                 >
                   {p.strategy ? `${p.strategy} — ` : ''}
-                  <span className="text-neutral-400 dark:text-neutral-500">
+                  <span className="text-[color:var(--fg-subtle)]">
                     {t('stepsProgress', {
                       done: p.doneCount,
                       total: p.totalCount,
@@ -75,17 +75,17 @@ export function RecalledContextCard({
         )}
         {processes.length > 0 && (
           <section>
-            <h4 className="text-[10px] uppercase tracking-wide text-sky-600 dark:text-sky-400">
+            <h4 className="text-[10px] uppercase tracking-wide text-[color:var(--accent)]">
               {t('processesHeading')}
             </h4>
             <ul className="flex flex-col gap-0.5">
               {processes.map((pr) => (
                 <li
                   key={pr.id}
-                  className="text-neutral-700 dark:text-neutral-300"
+                  className="text-[color:var(--fg)]"
                 >
                   {pr.title}{' '}
-                  <span className="text-neutral-400 dark:text-neutral-500">
+                  <span className="text-[color:var(--fg-subtle)]">
                     ({t('stepCount', { count: pr.stepCount })})
                   </span>
                 </li>
@@ -95,16 +95,16 @@ export function RecalledContextCard({
         )}
         {insights.length > 0 && (
           <section>
-            <h4 className="text-[10px] uppercase tracking-wide text-sky-600 dark:text-sky-400">
+            <h4 className="text-[10px] uppercase tracking-wide text-[color:var(--accent)]">
               {t('insightsHeading')}
             </h4>
             <ul className="flex flex-col gap-0.5">
               {insights.map((ins) => (
                 <li
                   key={ins.mkId}
-                  className="text-neutral-700 dark:text-neutral-300"
+                  className="text-[color:var(--fg)]"
                 >
-                  <span className="text-neutral-400 dark:text-neutral-500">
+                  <span className="text-[color:var(--fg-subtle)]">
                     {ins.kind}:
                   </span>{' '}
                   {ins.summary}

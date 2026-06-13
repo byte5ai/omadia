@@ -38,7 +38,7 @@ export function ChatTabs({
   const t = useTranslations('chatTabs');
   return (
     <div
-      className="flex items-center gap-1 overflow-x-auto border-b border-neutral-200 bg-neutral-50 px-2 py-1 text-xs dark:border-neutral-800 dark:bg-neutral-950"
+      className="flex items-center gap-1 overflow-x-auto border-b border-[color:var(--border)] bg-[color:var(--bg-soft)] px-2 py-1 text-xs"
       role="tablist"
     >
       {sessions.map((session) => (
@@ -62,7 +62,7 @@ export function ChatTabs({
       <button
         type="button"
         onClick={onCreate}
-        className="ml-1 shrink-0 rounded border border-neutral-300 px-2 py-1 font-medium text-neutral-700 transition hover:border-neutral-500 hover:bg-white dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+        className="ml-1 shrink-0 rounded border border-[color:var(--border)] px-2 py-1 font-medium text-[color:var(--fg)] transition hover:border-[color:var(--border-strong)] hover:bg-[color:var(--bg-elevated)]"
         title={t('newChatTitle')}
       >
         + {t('newChat')}
@@ -141,9 +141,10 @@ function Tab({
       }}
       className={[
         'group flex shrink-0 cursor-pointer items-center gap-1 rounded px-2 py-1 transition',
+        // §4.2 tabs: the active tab carries the lit accent underline.
         active
-          ? 'bg-white font-semibold text-neutral-900 ring-1 ring-neutral-300 dark:bg-neutral-800 dark:text-neutral-100 dark:ring-neutral-700'
-          : 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-900',
+          ? 'lume-tab-active bg-[color:var(--bg-elevated)] font-semibold'
+          : 'text-[color:var(--fg-muted)] hover:bg-[color:var(--bg-soft)]',
       ].join(' ')}
       title={`${session.title}\n${t('tabTitleSuffix', { id: session.id })}`}
     >
@@ -159,7 +160,7 @@ function Tab({
           onClick={(e) => {
             e.stopPropagation();
           }}
-          className="w-40 rounded border border-neutral-300 bg-white px-1 text-xs dark:border-neutral-600 dark:bg-neutral-900"
+          className="w-40 rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-1 text-xs"
           maxLength={120}
         />
       ) : (
@@ -170,7 +171,7 @@ function Tab({
           type="button"
           onClick={onClickClose}
           disabled={disabled}
-          className="ml-1 rounded px-1 text-neutral-400 opacity-0 transition group-hover:opacity-100 hover:bg-neutral-200 hover:text-neutral-800 disabled:cursor-not-allowed disabled:opacity-30 dark:hover:bg-neutral-700 dark:hover:text-neutral-100"
+          className="ml-1 rounded px-1 text-[color:var(--fg-subtle)] opacity-0 transition group-hover:opacity-100 hover:bg-[color:var(--state-loading)] hover:text-[color:var(--fg)] disabled:cursor-not-allowed disabled:opacity-30"
           aria-label={t('closeAriaLabel', { title: session.title })}
           title={disabled ? t('closeWhileBusyTitle') : t('closeTitle')}
         >

@@ -22,12 +22,12 @@ import {
 // so they stay readable on a dark theme (without it, the page's light
 // foreground inherits and the text disappears against the light pastel).
 const KIND_BG: Record<PreviewPromptSection['kind'], string> = {
-  header: 'bg-slate-50 text-slate-900',
-  persona: 'bg-amber-50 text-amber-950',
-  custom_notes: 'bg-amber-50/70 text-amber-950',
-  boundaries: 'bg-rose-50 text-rose-950',
-  sycophancy: 'bg-violet-50 text-violet-950',
-  skill: 'bg-emerald-50 text-emerald-950',
+  header: 'bg-[color:var(--bg-soft)] text-[color:var(--fg-strong)]',
+  persona: 'bg-[color:var(--warning)]/10 text-[color:var(--warning)]',
+  custom_notes: 'bg-[color:var(--warning)]/10 text-[color:var(--warning)]',
+  boundaries: 'bg-[color:var(--danger)]/8 text-[color:var(--danger)]',
+  sycophancy: 'bg-[color:var(--accent)]/10 text-[color:var(--accent)]',
+  skill: 'bg-[color:var(--success)]/10 text-[color:var(--success)]',
 };
 
 const KIND_LABEL: Record<PreviewPromptSection['kind'], string> = {
@@ -42,10 +42,10 @@ const KIND_LABEL: Record<PreviewPromptSection['kind'], string> = {
 type TokenHealthLevel = 'good' | 'medium' | 'high' | 'critical';
 
 function tokenHealth(tokens: number): { color: string; level: TokenHealthLevel } {
-  if (tokens < 2000) return { color: 'text-emerald-600', level: 'good' };
-  if (tokens < 3500) return { color: 'text-amber-600', level: 'medium' };
-  if (tokens < 5000) return { color: 'text-orange-600', level: 'high' };
-  return { color: 'text-red-600', level: 'critical' };
+  if (tokens < 2000) return { color: 'text-[color:var(--success)]', level: 'good' };
+  if (tokens < 3500) return { color: 'text-[color:var(--warning)]', level: 'medium' };
+  if (tokens < 5000) return { color: 'text-[color:var(--warning)]', level: 'high' };
+  return { color: 'text-[color:var(--danger)]', level: 'critical' };
 }
 
 export interface PreviewPromptPanelProps {
@@ -157,7 +157,7 @@ export function PreviewPromptPanel({
       </header>
 
       {error && (
-        <div role="alert" className="text-xs text-red-600" data-testid="preview-prompt-error">
+        <div role="alert" className="text-xs text-[color:var(--danger)]" data-testid="preview-prompt-error">
           {error}
         </div>
       )}

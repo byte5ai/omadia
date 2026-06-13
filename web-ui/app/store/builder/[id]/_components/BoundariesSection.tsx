@@ -119,7 +119,7 @@ export function BoundariesSection({
         <div
           data-testid="boundaries-unknown-warning"
           role="alert"
-          className="rounded border border-amber-400 bg-amber-50 px-2 py-1 text-xs text-amber-900"
+          className="rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 px-2 py-1 text-xs text-[color:var(--warning)]"
         >
           {t('unknownPresets', { ids: unknownIds.join(', ') })}
         </div>
@@ -172,7 +172,7 @@ export function BoundariesSection({
       </div>
 
       {error && (
-        <div role="alert" className="text-xs text-red-600">
+        <div role="alert" className="text-xs text-[color:var(--danger)]">
           {error}
         </div>
       )}
@@ -182,7 +182,7 @@ export function BoundariesSection({
           type="button"
           onClick={handleSave}
           disabled={disabled || pending}
-          className="rounded bg-[color:var(--accent)] px-3 py-1 text-sm font-medium text-white disabled:opacity-50"
+          className="rounded bg-[color:var(--accent)] px-3 py-1 text-sm font-medium text-[color:var(--fg-on-dark)] disabled:opacity-50"
           data-testid="boundaries-save"
         >
           {pending ? t('saving') : t('save')}

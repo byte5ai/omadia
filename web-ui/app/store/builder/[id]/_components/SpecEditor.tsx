@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { AlertCircle, Check, Loader2, Plus, X } from 'lucide-react';
+import { AlertCircle, Check, Plus, X } from 'lucide-react';
 
 import { ApiError, patchBuilderSpec } from '../../../../_lib/api';
 import type {
@@ -194,7 +194,7 @@ export function SpecEditor({ draftId, spec, agentStuck }: SpecEditorProps): Reac
   return (
     <div className="flex h-full min-h-0">
       <div className="flex h-full min-h-0 flex-1 flex-col">
-      <div className="flex-1 space-y-6 overflow-y-auto px-5 py-5">
+      <div className="flex-1 space-y-6 overflow-y-auto px-4 py-4">
         <FieldGroup title={t('groups.identity')}>
           <ScalarField
             label={t('fields.agentId')}
@@ -492,7 +492,7 @@ function ArrayField({
         {label}
       </label>
       {items.length > 0 ? (
-        <ul className="mb-2 flex flex-wrap gap-1.5">
+        <ul className="mb-2 flex flex-wrap gap-2">
           {items.map((item, i) => {
             const labelText = coerceArrayLabel(item);
             const malformed = typeof item !== 'string';
@@ -521,7 +521,7 @@ function ArrayField({
           })}
         </ul>
       ) : null}
-      <div className="flex gap-1.5">
+      <div className="flex gap-2">
         <input
           id={inputId}
           type="text"
@@ -535,7 +535,7 @@ function ArrayField({
             }
           }}
           className={cn(
-            'flex-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-1.5 text-[12px] text-[color:var(--fg-strong)] placeholder:text-[color:var(--fg-subtle)]',
+            'flex-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-[12px] text-[color:var(--fg-strong)] placeholder:text-[color:var(--fg-subtle)]',
             'focus:border-[color:var(--accent)] focus:outline-none',
             mono && 'font-mono-num',
           )}
@@ -544,7 +544,7 @@ function ArrayField({
           type="button"
           onClick={submit}
           disabled={draft.trim().length === 0}
-          className="inline-flex items-center gap-1 rounded-md bg-[color:var(--accent)] px-2.5 py-1.5 text-[11px] font-semibold text-white shadow-[var(--shadow-cta)] disabled:opacity-40"
+          className="inline-flex items-center gap-1 rounded-md bg-[color:var(--accent)] px-3 py-2 text-[11px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] disabled:opacity-40"
         >
           <Plus className="size-3" aria-hidden />
           {t('array.add')}
@@ -560,7 +560,7 @@ function SaveBadge({ status }: { status: SaveStatus }): React.ReactElement {
     if (status.kind === 'pending') {
       return (
         <>
-          <Loader2 className="size-3 animate-spin" aria-hidden />
+          <span className="lume-busy-dots" aria-hidden />
           <span>{t('save.saving')}</span>
         </>
       );
@@ -587,8 +587,8 @@ function SaveBadge({ status }: { status: SaveStatus }): React.ReactElement {
   }, [status, t]);
   if (status.kind === 'idle') return <></>;
   return (
-    <div className="border-t border-[color:var(--divider)] px-5 py-2">
-      <div className="font-mono-num inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-muted)]">
+    <div className="border-t border-[color:var(--divider)] px-4 py-2">
+      <div className="font-mono-num inline-flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-muted)]">
         {content}
       </div>
     </div>

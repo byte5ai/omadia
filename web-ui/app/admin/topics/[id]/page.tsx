@@ -36,19 +36,19 @@ export default function TopicDetailPage(): React.ReactElement {
   }, [id, load]);
 
   return (
-    <main className="mx-auto max-w-[960px] px-6 py-12 lg:px-10 lg:py-16">
+    <main className="mx-auto max-w-[960px] px-6 py-12 lg:px-8 lg:py-16">
       <header className="mb-8">
         <Link
           href="/admin/topics"
-          className="text-xs text-neutral-500 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100"
+          className="text-xs text-[color:var(--fg-muted)] hover:text-[color:var(--fg-strong)]"
         >
           ← /admin/topics
         </Link>
       </header>
 
-      {loading && <p className="text-xs text-neutral-500">lädt…</p>}
+      {loading && <p className="text-xs text-[color:var(--fg-muted)]">lädt…</p>}
       {error !== null && (
-        <div className="border-l-2 border-red-400 px-3 py-2 text-xs text-red-700 dark:text-red-300">
+        <div className="border-l-2 border-[color:var(--danger-edge)] px-3 py-2 text-xs text-[color:var(--danger)]">
           Fehler: {error}
         </div>
       )}
@@ -62,19 +62,19 @@ export default function TopicDetailPage(): React.ReactElement {
             {detail.props.description}
           </p>
           <div className="mb-6 flex flex-wrap gap-2 text-[10px]">
-            <span className="rounded bg-violet-100 px-1.5 py-0.5 font-mono uppercase tracking-wider text-violet-800 dark:bg-violet-900/40 dark:text-violet-200">
+            <span className="rounded bg-[color:var(--accent)]/10 px-2 py-0.5 font-mono uppercase tracking-wider text-[color:var(--accent)]">
               {detail.props.member_count} Memories
             </span>
-            <span className="rounded bg-neutral-100 px-1.5 py-0.5 font-mono uppercase tracking-wider text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
+            <span className="rounded bg-[color:var(--bg-soft)] px-2 py-0.5 font-mono uppercase tracking-wider text-[color:var(--fg)]">
               {detail.props.naming_source}
             </span>
           </div>
 
-          <h2 className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-neutral-500">
+          <h2 className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
             Mitglieder
           </h2>
           {detail.members.length === 0 && (
-            <p className="text-sm italic text-neutral-500">
+            <p className="text-sm italic text-[color:var(--fg-muted)]">
               Keine sichtbaren Mitglieder (oder ACL verbirgt sie).
             </p>
           )}
@@ -83,12 +83,12 @@ export default function TopicDetailPage(): React.ReactElement {
               <li key={mk.id}>
                 <Link
                   href={`/memories/${encodeURIComponent(mk.id)}`}
-                  className="block rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-3 transition-colors hover:border-[color:var(--accent)]"
+                  className="block rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-3 transition-colors hover:border-[color:var(--accent)]"
                 >
-                  <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+                  <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
                     {String(mk.props['kind'])}
                   </div>
-                  <p className="text-sm text-neutral-900 dark:text-neutral-100">
+                  <p className="text-sm text-[color:var(--fg-strong)]">
                     {String(mk.props['summary'])}
                   </p>
                 </Link>

@@ -7,8 +7,50 @@
 }
 
 /* -------------------------------------------------------------------------- */
-/* Global, token-driven baseline styles. The palette + typography live in     */
-/* _lib/theme.css so the byte5 Claude Design Kit swap is a single-file change.*/
+/* Tailwind token bridge (Lume). `inline` keeps these referencing the runtime  */
+/* CSS vars in _lib/theme.css, so utilities like `bg-accent` / `text-fg-muted` */
+/* follow the active palette + light/dark mode instead of freezing a value.    */
+/* This is the §2 / item-4 mapping: the design-system swap stays a single-file */
+/* change at the token tier.                                                    */
+/* -------------------------------------------------------------------------- */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-soft: var(--bg-soft);
+  --color-bg-elevated: var(--bg-elevated);
+  --color-surface: var(--surface);
+  --color-fg: var(--fg);
+  --color-fg-strong: var(--fg-strong);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-subtle: var(--fg-subtle);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-subtle: var(--accent-subtle);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-danger: var(--danger);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --font-serif: var(--font-serif);
+
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+
+  /* Elevation (§2.10): route the stock shadow-sm/md/lg utilities through the
+     Lume elevation tokens, so every existing `shadow-md` popover and
+     `shadow-lg` modal in the codebase gets elev.popover / elev.modal
+     (including the accent-glow components) without per-component edits. */
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Global, token-driven baseline. Palette + typography live in _lib/theme.css  */
+/* so the design-system swap is a single-file change at the token tier.        */
 /* -------------------------------------------------------------------------- */
 
 html,
@@ -17,66 +59,360 @@ body {
 }
 
 body {
-  background: var(--bg);
+  /* Lume surface luminosity (§3.1): the workspace reads as condensed light. */
+  background: var(--surface-gradient);
+  background-attachment: fixed;
   color: var(--fg);
-  font-family: var(--font-text);
+  font-family: var(--font-sans);
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Utility: numeric monospace for versions, IDs, timestamps. */
+/* Utility: tabular monospace for versions, IDs, timestamps (Geist Mono). */
 .font-mono-num {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
 
-/* Utility: Days One display face for headlines (byte5 brand). */
+/* Utility: structural display heading (Geist 600). Replaces the byte5
+   Days One display face — Lume headings stay structural (§2.7). */
 .font-display {
-  font-family: var(--font-display);
-  font-weight: 400;
+  font-family: var(--font-sans);
+  font-weight: 600;
   letter-spacing: -0.01em;
 }
 
-/* byte5 signature colon — magenta heavy, used inline before short phrases. */
-.b5-colon {
-  color: var(--highlight);
-  font-weight: 900;
-  margin-right: 0.35em;
+/* Long-form agent prose register — Source Serif 4 (§2.7). */
+.font-prose {
+  font-family: var(--font-serif);
+  font-optical-sizing: auto;
+  line-height: 1.65;
 }
 
-/* Soft cyan-biased hero wash — replaces the earlier editorial grain overlay.
-   Per byte5 brand, hero panels are ALWAYS the light cyan gradient with navy
-   text, regardless of the user's system color-scheme preference. We therefore
-   lock the token values within this scope so nested elements get the correct
-   contrast even when `@media (prefers-color-scheme: dark)` has flipped the
-   :root tokens to white-on-dark values.
-   Scoped via CSS custom-property overrides — no component edits required. */
+/* §2.7 prose-vs-structure protocol applied to rendered agent markdown:
+   narration reads in the prose register (type.prose — 1rem/1.65, serif with
+   optical sizing); headings, tables and code stay structural/mono — they are
+   structural elements even inside a prose pane. */
+.lume-prose .md-view {
+  font-family: var(--font-serif);
+  font-optical-sizing: auto;
+  font-size: 1rem;
+  line-height: 1.65;
+}
+.lume-prose .md-view h1,
+.lume-prose .md-view h2,
+.lume-prose .md-view h3,
+.lume-prose .md-view table,
+.lume-prose .md-view th,
+.lume-prose .md-view td {
+  font-family: var(--font-sans);
+}
+.lume-prose .md-view table {
+  font-size: 0.75rem; /* type.caption — data stays compact */
+}
+
+/* ------------------------------------------------------------------------ */
+/* Lume implementation primitives (spec §3) as composable utility classes.  */
+/* ------------------------------------------------------------------------ */
+@layer components {
+  /* §3.1 Surface gradient */
+  .lume-surface {
+    background: linear-gradient(180deg, var(--bg-surface-top) 0%, var(--bg-surface-btm) 100%);
+  }
+  .lume-surface-raised {
+    background: linear-gradient(180deg, var(--bg-surface-raised-top) 0%, var(--bg-surface-raised-btm) 100%);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.06) inset; /* top-edge highlight */
+  }
+  .lume-surface-sunken {
+    background: linear-gradient(180deg, var(--bg-surface-sunken-top) 0%, var(--bg-surface-sunken-btm) 100%);
+  }
+
+  /* §3.4 Directional border — top edge catches light from above */
+  .lume-border {
+    border: 1px solid var(--border-subtle-btm);
+    border-top-color: var(--border-subtle-top);
+  }
+  .lume-border-default {
+    border: 1px solid var(--border-default-btm);
+    border-top-color: var(--border-default-top);
+  }
+  .lume-border-strong {
+    border: 1px solid var(--border-strong-btm);
+    border-top-color: var(--border-strong-top);
+  }
+
+  /* §3.2 Two-stop glow — bright white-shifted core + accent-tinted corona */
+  .lume-glow {
+    box-shadow: 0 0 4px var(--accent-glow-core), 0 4px 12px var(--accent-glow);
+  }
+  .lume-glow-emphasis {
+    box-shadow: 0 0 6px var(--accent-glow-core), 0 6px 18px var(--accent-glow-strong);
+  }
+  /* Focus / selection — the two-stop glow on the focus ring */
+  .lume-focus:focus-visible {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow:
+      0 0 0 1px var(--accent),
+      0 0 6px var(--accent-glow-core),
+      0 6px 18px var(--accent-glow-strong);
+  }
+  /* Selected row / item — accent-subtle wash + soft corona (§2.5, §4) */
+  .lume-selected {
+    background: var(--accent-subtle);
+    box-shadow: 0 0 4px var(--accent-glow-core), 0 4px 12px var(--accent-glow);
+  }
+}
+
+/* ------------------------------------------------------------------------ */
+/* Lume per-primitive recipes (§3.5, §4.2, §5.3, §7.2)                       */
+/* ------------------------------------------------------------------------ */
+@layer components {
+  /* §7.2 / §3.5 — skeleton: state.loading gradient with a linear shimmer.
+     Replaces opacity-pulse skeletons; reduced-motion freezes to static fill. */
+  .lume-skeleton {
+    background: linear-gradient(
+      100deg,
+      var(--state-loading) 35%,
+      var(--state-loading-hi) 50%,
+      var(--state-loading) 65%
+    );
+    background-size: 220% 100%;
+    animation: lume-shimmer 1.6s var(--easing-linear) infinite;
+  }
+
+  /* §3.5 / §6.1 — patch condensation, all three components:
+     1. content materialisation (opacity/scale/blur, front-loaded),
+     2. bloom collapse (radial accent pulse converging onto the content),
+     3. sweep bar (1px accent stroke laying down the content's bottom edge).
+     Reduced-motion drops 2+3 and collapses 1 to a plain fade (global rule).
+     Rapid-stream throttling (>5 patches/s, §3.5) is N/A at chat cadence —
+     each message node mounts exactly once. */
+  .lume-condense {
+    position: relative;
+    animation: lume-condense var(--motion-condense) var(--easing-emphasis) both;
+  }
+  .lume-condense::before {
+    /* bloom collapse — light converging onto the new content */
+    content: '';
+    position: absolute;
+    inset: -10%;
+    pointer-events: none;
+    border-radius: inherit;
+    background: radial-gradient(ellipse at center, var(--accent-glow-strong) 0%, transparent 70%);
+    animation: lume-bloom var(--motion-condense) var(--easing-emphasis) both;
+  }
+  .lume-condense::after {
+    /* sweep bar — the agent's stroke along the bottom edge */
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 1px;
+    pointer-events: none;
+    background: var(--accent);
+    box-shadow: 0 0 4px var(--accent-glow);
+    transform-origin: left;
+    animation: lume-sweep 500ms var(--easing-emphasis) both;
+  }
+
+  /* §3.3 donut glow — for surfaces with a centered glyph: the glyph sits in
+     a clean accent-subtle pocket, the bright ring radiates outward (a lit
+     lampshade, not a bulb). Used by wizard current-step dots (§5.2),
+     center-glyph chips, active tool buttons. */
+  .lume-donut {
+    background: radial-gradient(
+      circle at center,
+      var(--accent-subtle) 0%,
+      var(--accent-subtle) 35%,
+      var(--accent-glow-core) 75%,
+      transparent 100%
+    );
+    box-shadow:
+      0 0 12px var(--accent-glow-core),
+      0 0 22px -4px var(--accent-glow-strong);
+  }
+
+  /* §2.7 type scale — the structural/prose/mono registers as composable
+     classes. Components adopt them in place of ad-hoc text-* stacks. */
+  .type-display       { font-size: 1.75rem;   line-height: 1.2;  font-weight: 600; letter-spacing: -0.01em; }
+  .type-heading-1     { font-size: 1.375rem;  line-height: 1.25; font-weight: 600; letter-spacing: -0.005em; }
+  .type-heading-2     { font-size: 1.125rem;  line-height: 1.3;  font-weight: 600; }
+  .type-heading-3     { font-size: 0.9375rem; line-height: 1.35; font-weight: 600; }
+  .type-body          { font-size: 0.875rem;  line-height: 1.5;  font-weight: 400; }
+  .type-body-strong   { font-size: 0.875rem;  line-height: 1.5;  font-weight: 600; }
+  .type-body-compact  { font-size: 0.8125rem; line-height: 1.45; font-weight: 400; }
+  .type-caption       { font-size: 0.75rem;   line-height: 1.4;  font-weight: 400; letter-spacing: 0.005em; }
+  .type-caption-strong{ font-size: 0.75rem;   line-height: 1.4;  font-weight: 600; letter-spacing: 0.02em; }
+  .type-prose         { font-family: var(--font-serif); font-optical-sizing: auto; font-size: 1rem; line-height: 1.65; font-weight: 400; }
+  .type-mono-data     { font-family: var(--font-mono); font-size: 0.8125rem; line-height: 1.45; font-weight: 450; font-feature-settings: 'tnum'; }
+  .type-mono-code     { font-family: var(--font-mono); font-size: 0.8125rem; line-height: 1.55; font-weight: 400; }
+
+  /* §7.3 button-in-flight — the single spinner exception: verb + animated
+     dots. No spinner glyph, no spinning ring. Period. */
+  .lume-busy-dots::after {
+    content: '.';
+    display: inline-block;
+    width: 1.2em;
+    text-align: left;
+    animation: lume-dots 1.2s steps(1, end) infinite;
+  }
+
+  /* §4.2 list/tree — full selection recipe: the row is a lit pocket; the
+     accent left bar is the edge of the pocket, not a paint stroke. */
+  .lume-selected {
+    position: relative;
+    background:
+      radial-gradient(ellipse at 30% 50%, var(--accent-glow-core) 0%, var(--accent-glow) 20%, transparent 70%),
+      linear-gradient(180deg, var(--accent-subtle), transparent);
+    box-shadow:
+      0 0 12px -2px var(--accent-glow-core),
+      0 0 24px -6px var(--accent-glow-strong);
+  }
+  .lume-selected::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 4px;
+    bottom: 4px;
+    width: 2px;
+    background: var(--accent);
+    border-radius: 2px;
+    box-shadow: 0 0 6px var(--accent-glow-strong);
+  }
+
+  /* §6.7 drop target — 2px dashed accent, fades in over motion.quick. */
+  .lume-drop-target {
+    outline: 2px dashed var(--accent);
+    outline-offset: 2px;
+    transition: outline-color var(--motion-quick) var(--easing-standard);
+  }
+
+  /* §4.2 tabs — the active tab's underline is lit, not just colored. */
+  .lume-tab-active {
+    position: relative;
+    color: var(--fg-strong);
+  }
+  .lume-tab-active::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -1px;
+    height: 2px;
+    border-radius: 2px;
+    background: var(--accent);
+    box-shadow:
+      0 1px 6px var(--accent-glow),
+      0 0 4px var(--accent-glow-core);
+  }
+
+  /* §5.3 Spotlight — the composer stage: a radial accent-glow behind the
+     input leads the eye before the user reads it. The input itself gets the
+     three-stop showcase glow on focus. */
+  .lume-spotlight-stage {
+    position: relative;
+  }
+  .lume-spotlight-stage::before {
+    content: '';
+    position: absolute;
+    inset: -24px -12px -16px;
+    pointer-events: none;
+    background: radial-gradient(ellipse at 50% 60%, var(--accent-glow) 0%, transparent 65%);
+    opacity: 0.5;
+    transition: opacity var(--motion-smooth) var(--easing-standard);
+  }
+  .lume-spotlight-stage:focus-within::before {
+    opacity: 1;
+  }
+  .lume-spotlight-stage textarea:focus,
+  .lume-spotlight-stage input:focus {
+    border-color: var(--accent);
+    box-shadow:
+      0 0 0 4px var(--accent-glow),
+      0 0 16px var(--accent-glow-core),
+      0 12px 40px var(--accent-glow-strong);
+  }
+}
+
+@keyframes lume-dots {
+  0% {
+    content: '.';
+  }
+  33% {
+    content: '..';
+  }
+  66% {
+    content: '...';
+  }
+}
+
+@keyframes lume-shimmer {
+  from {
+    background-position: 120% 0;
+  }
+  to {
+    background-position: -120% 0;
+  }
+}
+
+@keyframes lume-condense {
+  0% {
+    opacity: 0;
+    transform: scale(1.03);
+    filter: blur(2px);
+  }
+  40% {
+    opacity: 0.92;
+    transform: scale(1.004);
+    filter: blur(0.3px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes lume-bloom {
+  0% {
+    opacity: 1;
+    transform: scale(1.2);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+}
+
+@keyframes lume-sweep {
+  0% {
+    opacity: 1;
+    transform: scaleX(0);
+  }
+  70% {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scaleX(1);
+  }
+}
+
+/* Accent-washed hero / login surface. Lume keeps the agent's attention as
+   accent-tinted illumination; the byte5 cyan/navy hard-coded values are gone,
+   this now follows the active palette + mode through tokens. */
 .b5-hero-bg {
-  background: var(--surface-gradient-cyan);
-  color: #004B73;
-
-  --bg:            #FFFFFF;
-  --bg-soft:       #F4F7FA;
-  --bg-elevated:   #FFFFFF;
-
-  --fg:            #004B73;
-  --fg-strong:     #004B73;
-  --fg-muted:      #5F6E7B;
-  --fg-subtle:     #8A99A6;
-
-  --border:        #D3DDE5;
-  --border-strong: #B4C2CD;
-  --divider:       rgba(0, 75, 115, 0.12);
-
-  --accent:        #009FE3;
-  --accent-hover:  #0086C0;
-  --highlight:     #EA5172;
+  background: var(--surface-gradient-accent);
+  color: var(--fg);
 }
 
 /* ------------------------------------------------------------------------ */
 /* Markdown renderer — styles for content produced by react-markdown.       */
-/* Intentionally compact: this is a dev tool, not a blog.                    */
+/* Token-driven so it follows the Lume palette + light/dark mode.           */
 /* ------------------------------------------------------------------------ */
 .md-view {
   @apply text-sm leading-relaxed;
@@ -97,30 +433,42 @@ body {
   @apply my-3 text-base font-semibold;
 }
 .md-view h3 {
-  @apply my-2 text-sm font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400;
+  @apply my-2 text-sm font-semibold uppercase tracking-wide;
+  color: var(--fg-muted);
 }
 .md-view ul {
-  @apply my-2 ml-5 list-disc space-y-1;
+  @apply my-2 ml-4 list-disc space-y-1;
 }
 .md-view ol {
-  @apply my-2 ml-5 list-decimal space-y-1;
+  @apply my-2 ml-4 list-decimal space-y-1;
 }
 .md-view a {
-  @apply text-blue-600 underline underline-offset-2 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-200;
+  color: var(--accent);
+  @apply underline underline-offset-2;
+}
+.md-view a:hover {
+  color: var(--accent-hover);
 }
 .md-view code {
-  @apply rounded bg-neutral-100 px-1 py-0.5 font-mono text-[0.85em] dark:bg-neutral-800;
+  @apply rounded px-1 py-0.5 text-[0.85em];
+  font-family: var(--font-mono);
+  background: linear-gradient(180deg, var(--bg-surface-sunken-top) 0%, var(--bg-surface-sunken-btm) 100%);
 }
 .md-view pre {
-  @apply my-3 overflow-x-auto rounded bg-neutral-100 p-3 text-xs dark:bg-neutral-800;
+  @apply my-3 overflow-x-auto rounded-md p-3 text-xs;
+  background: linear-gradient(180deg, var(--bg-surface-sunken-top) 0%, var(--bg-surface-sunken-btm) 100%);
+  border: 1px solid var(--border-subtle-btm);
+  border-top-color: var(--border-subtle-top);
 }
 .md-view pre code {
   @apply bg-transparent p-0 text-xs;
 }
 .md-view blockquote {
-  @apply my-2 border-l-2 border-neutral-300 pl-3 text-neutral-600 dark:border-neutral-600 dark:text-neutral-400;
+  @apply my-2 pl-3;
+  border-left: 2px solid var(--border-strong);
+  color: var(--fg-muted);
 }
-/* Card-mode list (BuilderMarkdown ol-override) drops the ml-5/list-decimal
+/* Card-mode list (BuilderMarkdown ol-override) drops the ml-4/list-decimal
    reset so the strong leader prints flush inside the card. */
 .md-view-card > p:first-child {
   margin-top: 0;
@@ -137,11 +485,239 @@ body {
 }
 .md-view th,
 .md-view td {
-  @apply border border-neutral-300 px-2 py-1 text-left align-top dark:border-neutral-700;
+  @apply px-2 py-1 text-left align-top;
+  border: 1px solid var(--border);
 }
 .md-view th {
-  @apply bg-neutral-100 font-semibold dark:bg-neutral-800;
+  @apply font-semibold;
+  background: var(--bg-soft);
 }
 .md-view hr {
-  @apply my-3 border-neutral-200 dark:border-neutral-800;
+  @apply my-3;
+  border-color: var(--divider);
+}
+
+/* ========================================================================== */
+/* Lume material layer — auto-applied (spec §4.1).                            */
+/*                                                                            */
+/* The component code paints flat token fills (`bg-[color:var(--card)]`,      */
+/* `bg-[color:var(--accent)]`, ...). Lume's material is not flat: surfaces    */
+/* are gradient pairs, borders are directional, accent fills emit light.      */
+/* Rather than editing 300+ call sites, this layer matches the existing       */
+/* utility class *strings* and upgrades them to the §3 recipes. These rules   */
+/* are intentionally UN-layered: in Tailwind v4 utilities live in             */
+/* `@layer utilities`, and un-layered author CSS wins the cascade — so the    */
+/* material applies on top of every existing component without touching it.  */
+/*                                                                            */
+/* Pattern notes:                                                             */
+/*   [class^='X'], [class*=' X']  → matches X as a *base* utility only        */
+/*     (not `hover:X`, which would otherwise substring-match).                */
+/*   :not([class*='X/'])          → skips translucent variants (`X/40`),      */
+/*     which components use deliberately for washes and scrims.               */
+/* ========================================================================== */
+
+/* ---- Pane surfaces (ladder depth 1): bg / paper → bg.surface gradient ---- */
+[class^='bg-[color:var(--bg)]']:not([class*='bg-[color:var(--bg)]/']),
+[class*=' bg-[color:var(--bg)]']:not([class*='bg-[color:var(--bg)]/']),
+[class^='bg-[color:var(--paper)]']:not([class*='bg-[color:var(--paper)]/']),
+[class*=' bg-[color:var(--paper)]']:not([class*='bg-[color:var(--paper)]/']) {
+  background: linear-gradient(180deg, var(--bg-surface-top) 0%, var(--bg-surface-btm) 100%);
+}
+
+/* ---- Raised surfaces (depth 3): card / surface / bg-elevated ------------- */
+[class^='bg-[color:var(--card)]']:not([class*='bg-[color:var(--card)]/']),
+[class*=' bg-[color:var(--card)]']:not([class*='bg-[color:var(--card)]/']),
+[class^='bg-[color:var(--surface)]']:not([class*='bg-[color:var(--surface)]/']),
+[class*=' bg-[color:var(--surface)]']:not([class*='bg-[color:var(--surface)]/']),
+[class^='bg-[color:var(--bg-elevated)]']:not([class*='bg-[color:var(--bg-elevated)]/']),
+[class*=' bg-[color:var(--bg-elevated)]']:not([class*='bg-[color:var(--bg-elevated)]/']) {
+  background: linear-gradient(180deg, var(--bg-surface-raised-top) 0%, var(--bg-surface-raised-btm) 100%);
+  border-color: var(--border-subtle-btm);
+  border-top-color: var(--border-subtle-top);
+}
+/* Inset top-edge highlight (§3.4) — only when the element doesn't manage its
+   own shadow stack (modals carry elev tokens that already include it). */
+[class^='bg-[color:var(--card)]']:not([class*='bg-[color:var(--card)]/']):not([class*='shadow-']),
+[class*=' bg-[color:var(--card)]']:not([class*='bg-[color:var(--card)]/']):not([class*='shadow-']),
+[class^='bg-[color:var(--surface)]']:not([class*='bg-[color:var(--surface)]/']):not([class*='shadow-']),
+[class*=' bg-[color:var(--surface)]']:not([class*='bg-[color:var(--surface)]/']):not([class*='shadow-']),
+[class^='bg-[color:var(--bg-elevated)]']:not([class*='bg-[color:var(--bg-elevated)]/']):not([class*='shadow-']),
+[class*=' bg-[color:var(--bg-elevated)]']:not([class*='bg-[color:var(--bg-elevated)]/']):not([class*='shadow-']) {
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.06) inset;
+}
+
+/* ---- Translucent cards: the `/40` wash keeps its transparency but gains
+   the gradient (color-mix folds the alpha into each stop). This is the most
+   frequent card pattern in the app. ---------------------------------------- */
+[class^='bg-[color:var(--card)]/'],
+[class*=' bg-[color:var(--card)]/'] {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--bg-surface-raised-top) 55%, transparent) 0%,
+    color-mix(in srgb, var(--bg-surface-raised-btm) 55%, transparent) 100%
+  );
+  border-color: var(--border-subtle-btm);
+  border-top-color: var(--border-subtle-top);
+}
+
+/* ---- Directional borders everywhere (§2.4): upgrade the flat token border
+   to the top-lit pair wherever components draw a full border. -------------- */
+[class^='border-[color:var(--border)]'],
+[class*=' border-[color:var(--border)]'] {
+  border-color: var(--border-subtle-btm);
+  border-top-color: var(--border-subtle-top);
+}
+[class^='border-[color:var(--border-strong)]'],
+[class*=' border-[color:var(--border-strong)]'] {
+  border-color: var(--border-default-btm);
+  border-top-color: var(--border-default-top);
+}
+
+/* ---- Sunken surfaces (depth 4+): bg-soft / surface-muted / bg-subtle ----- */
+[class^='bg-[color:var(--bg-soft)]']:not([class*='bg-[color:var(--bg-soft)]/']),
+[class*=' bg-[color:var(--bg-soft)]']:not([class*='bg-[color:var(--bg-soft)]/']),
+[class^='bg-[color:var(--surface-muted)]']:not([class*='bg-[color:var(--surface-muted)]/']),
+[class*=' bg-[color:var(--surface-muted)]']:not([class*='bg-[color:var(--surface-muted)]/']),
+[class^='bg-[color:var(--bg-subtle)]']:not([class*='bg-[color:var(--bg-subtle)]/']),
+[class*=' bg-[color:var(--bg-subtle)]']:not([class*='bg-[color:var(--bg-subtle)]/']) {
+  background: linear-gradient(180deg, var(--bg-surface-sunken-top) 0%, var(--bg-surface-sunken-btm) 100%);
+}
+
+/* ---- Hover wash for interactive surfaces ---------------------------------
+   The base rules above out-cascade `hover:bg-*` utilities, so interactive
+   elements would lose hover feedback. Restore it the Lume way: the agent's
+   attention as an accent-subtle tint over the gradient (inset-spread trick
+   tints without replacing the background). */
+a:hover[class*='bg-[color:var(--'],
+button:hover[class*='bg-[color:var(--']:not([class*='bg-[color:var(--accent)]']):not(:disabled),
+[role='button']:hover[class*='bg-[color:var(--']:not([class*='bg-[color:var(--accent)]']) {
+  box-shadow: inset 0 0 0 999px var(--accent-subtle);
+}
+
+/* ---- Accent fills: the lit elements (§4.2 button-primary) ---------------- */
+[class^='bg-[color:var(--accent)]']:not([class*='bg-[color:var(--accent)]/']),
+[class*=' bg-[color:var(--accent)]']:not([class*='bg-[color:var(--accent)]/']) {
+  background: linear-gradient(180deg, var(--accent) 0%, var(--accent-hover) 100%);
+  border-color: var(--accent-hover);
+  border-top-color: rgba(255, 255, 255, 0.18);
+  color: var(--accent-fg);
+  box-shadow: 0 0 4px var(--accent-glow-core), 0 4px 12px var(--accent-glow);
+  transition:
+    box-shadow var(--motion-quick) var(--easing-standard),
+    filter var(--motion-quick) var(--easing-standard);
+}
+a[class^='bg-[color:var(--accent)]']:hover,
+a[class*=' bg-[color:var(--accent)]']:hover,
+button[class^='bg-[color:var(--accent)]']:hover:not(:disabled),
+button[class*=' bg-[color:var(--accent)]']:hover:not(:disabled) {
+  box-shadow: 0 0 6px var(--accent-glow-core), 0 6px 18px var(--accent-glow-strong);
+  filter: brightness(1.04);
+}
+button[class^='bg-[color:var(--accent)]']:active:not(:disabled),
+button[class*=' bg-[color:var(--accent)]']:active:not(:disabled) {
+  background: var(--accent-active);
+  filter: none;
+}
+/* Focus on accent fills: §4.2 layered ring on top of the two-stop glow. */
+[class^='bg-[color:var(--accent)]']:focus-visible,
+[class*=' bg-[color:var(--accent)]']:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px var(--bg),
+    0 0 0 4px var(--accent),
+    0 0 4px var(--accent-glow-core),
+    0 4px 12px var(--accent-glow);
+}
+
+/* ---- Inputs (§4.2 input): raised gradient, directional border, lit focus - */
+input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']):not([type='color']):not([type='hidden']),
+select,
+textarea {
+  background: linear-gradient(180deg, var(--bg-surface-raised-top) 0%, var(--bg-surface-raised-btm) 100%);
+  border-color: var(--border-default-btm);
+  border-top-color: var(--border-default-top);
+  transition:
+    border-color var(--motion-quick) var(--easing-standard),
+    box-shadow var(--motion-quick) var(--easing-standard);
+}
+input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']):not([type='color']):not([type='hidden']):focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  border-top-color: var(--accent);
+  box-shadow:
+    0 0 0 1px var(--accent),
+    0 0 0 4px var(--accent-glow),
+    0 0 12px var(--accent-glow-core);
+}
+/* Checked choice controls emit a small glow (§4.2 choice/toggle). */
+input[type='checkbox']:checked,
+input[type='radio']:checked {
+  accent-color: var(--accent);
+  box-shadow: 0 0 3px var(--accent-glow-core), 0 0 6px var(--accent-glow);
+}
+input[type='checkbox'],
+input[type='radio'] {
+  accent-color: var(--accent);
+}
+
+/* ---- Focus emits light, everywhere (§4.1) -------------------------------- */
+button:focus-visible,
+a:focus-visible,
+summary:focus-visible,
+[role='button']:focus-visible,
+[tabindex]:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent), 0 0 0 6px var(--accent-glow);
+}
+
+/* ---- Tables (§4.2): sunken header, accent-washed row hover, aria-sort ---- */
+table:not(.md-view table) thead th {
+  background: linear-gradient(180deg, var(--bg-surface-sunken-top) 0%, var(--bg-surface-sunken-btm) 100%);
+}
+table:not(.md-view table) tbody tr:hover {
+  background: var(--accent-subtle);
+}
+th[aria-sort='ascending'],
+th[aria-sort='descending'] {
+  color: var(--accent); /* sort-active header: accent text, no glow (§4.2) */
+}
+
+/* ---- Text selection: a lit pocket ----------------------------------------- */
+::selection {
+  background: var(--accent-glow);
+  color: var(--fg-strong);
+}
+
+/* ---- Scrollbars follow the material --------------------------------------- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+/* ---- App header: pane-class chrome with directional bottom edge ----------- */
+.app-header {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--bg-surface-top) 90%, transparent) 0%,
+    color-mix(in srgb, var(--bg-surface-btm) 90%, transparent) 100%
+  );
+  border-bottom: 1px solid var(--border-subtle-btm);
+  box-shadow: 0 1px 0 var(--border-subtle-top) inset;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Reduced motion (spec §2.11). Collapse animation/transition for users who   */
+/* request it — any new Lume motion degrades to a plain fade or nothing.      */
+/* ------------------------------------------------------------------------ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
