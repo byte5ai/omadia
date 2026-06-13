@@ -2,6 +2,8 @@
 
 import { useEffect, useRef } from 'react';
 
+import { Button } from './ui/Button';
+
 /**
  * Minimal modal-confirm. No portal, no library — just a fixed-position
  * overlay with focus-trap basics. We keep it generic (title/body/labels)
@@ -56,14 +58,6 @@ export function ConfirmDialog({
 
   if (!open) return null;
 
-  // §4.2 button variants: danger is transparent + error edge + error text
-  // (the error is the signal — no fill, no glow); neutral confirm is the
-  // Lume primary (accent fill → gradient + glow via the material layer).
-  const confirmCls =
-    tone === 'danger'
-      ? 'border-[color:var(--danger-edge)] bg-transparent text-[color:var(--danger)] hover:bg-[color:var(--danger)]/8'
-      : 'border-transparent bg-[color:var(--accent)]';
-
   return (
     <div
       role="dialog"
@@ -87,21 +81,16 @@ export function ConfirmDialog({
           </p>
         )}
         <div className="mt-4 flex justify-end gap-2">
-          <button
-            ref={cancelRef}
-            type="button"
-            onClick={onCancel}
-            className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-4 py-2 text-sm font-medium text-[color:var(--fg)] transition hover:border-[color:var(--border-strong)]"
-          >
+          {/* §7.5: focus opens on Cancel (deliberate friction). */}
+          <Button ref={cancelRef} variant="secondary" onClick={onCancel}>
             {cancelLabel}
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant={tone === 'danger' ? 'danger' : 'primary'}
             onClick={onConfirm}
-            className={`rounded border px-4 py-2 text-sm font-medium transition ${confirmCls}`}
           >
             {confirmLabel}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
