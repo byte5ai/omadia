@@ -100,12 +100,12 @@ export function CulturePresetDropdown({
           data-testid="culture-confirm-modal"
           role="dialog"
           aria-label={t('modalLabel')}
-          className="space-y-2 rounded border border-amber-400 bg-amber-50 p-3"
+          className="space-y-2 rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 p-3"
         >
-          <div className="text-sm font-medium text-amber-900">
+          <div className="text-sm font-medium text-[color:var(--warning)]">
             {t('overwriteNotice')}
           </div>
-          <ul className="space-y-0.5 text-xs text-amber-900" data-testid="culture-diff-list">
+          <ul className="space-y-0.5 text-xs text-[color:var(--warning)]" data-testid="culture-diff-list">
             {diff.map((d) => (
               <li key={d.axis} data-testid={`culture-diff-${d.axis}`}>
                 <code>{d.axis}</code>: {d.before ?? t('unset')} → {d.after}
@@ -116,7 +116,7 @@ export function CulturePresetDropdown({
             )}
           </ul>
           {error && (
-            <div role="alert" className="text-xs text-red-600">
+            <div role="alert" className="text-xs text-[color:var(--danger)]">
               {error}
             </div>
           )}
@@ -126,7 +126,7 @@ export function CulturePresetDropdown({
               data-testid="culture-confirm-apply"
               onClick={handleConfirm}
               disabled={disabled || pending || diff.length === 0}
-              className="rounded bg-[color:var(--accent)] px-3 py-1 text-sm font-medium text-white disabled:opacity-50"
+              className="rounded bg-[color:var(--accent)] px-3 py-1 text-sm font-medium text-[color:var(--fg-on-dark)] disabled:opacity-50"
             >
               {pending ? t('applying') : t('apply')}
             </button>

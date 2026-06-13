@@ -21,7 +21,7 @@ export function PluginCard({ plugin }: PluginCardProps): React.ReactElement {
   return (
     <Link
       href={`/store/${encodeURIComponent(plugin.id)}`}
-      className="group relative flex flex-col rounded-[14px] bg-[color:var(--bg-elevated)] p-6 shadow-[0_2px_6px_rgba(0,75,115,0.08)] transition-[transform,box-shadow] duration-[var(--dur-base)] ease-[var(--ease-out)] hover:-translate-y-0.5 hover:shadow-[0_8px_24px_rgba(0,75,115,0.10)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--accent)]"
+      className="group relative flex flex-col rounded-lg bg-[color:var(--bg-elevated)] p-6 shadow-[0_2px_6px_rgba(0,75,115,0.08)] transition-[transform,box-shadow] duration-[var(--dur-base)] ease-[var(--ease-out)] hover:-translate-y-0.5 hover:shadow-[0_8px_24px_rgba(0,75,115,0.10)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--accent)]"
     >
       {/* Update "Störer" — prominent top-right sticker. Only on plugins where a
           configured registry advertises a newer version than the installed one
@@ -64,13 +64,13 @@ export function PluginCard({ plugin }: PluginCardProps): React.ReactElement {
         </div>
       </div>
 
-      <p className="mt-5 line-clamp-3 text-[14px] leading-relaxed text-[color:var(--fg-muted)]">
+      <p className="mt-4 line-clamp-3 text-[14px] leading-relaxed text-[color:var(--fg-muted)]">
         {plugin.description || <em>Keine Beschreibung hinterlegt.</em>}
       </p>
 
       {/* Metadata row. An update-available plugin IS installed — show that
           inline; the update itself is the top-right Störer. */}
-      <div className="mt-5 flex flex-wrap items-center gap-1.5">
+      <div className="mt-4 flex flex-wrap items-center gap-2">
         <StateBadge
           state={hasUpdate ? 'installed' : plugin.install_state}
           isLegacy={isLegacy}
@@ -93,7 +93,7 @@ export function PluginCard({ plugin }: PluginCardProps): React.ReactElement {
 
       {/* Integrations pinned at bottom */}
       {visibleIntegrations.length > 0 ? (
-        <div className="mt-5 border-t border-[color:var(--divider)] pt-3">
+        <div className="mt-4 border-t border-[color:var(--divider)] pt-3">
           <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[11px]">
             <span className="uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
               Integration

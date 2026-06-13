@@ -301,7 +301,7 @@ function CanvasInner({ slug }: BuilderCanvasProps): React.ReactElement {
           <Controls />
         </ReactFlow>
         {actionError && (
-          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-md border border-red-500/40 bg-red-500/10 px-4 py-2 text-sm text-red-400">
+          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-md border border-[color:var(--danger-edge)]/40 bg-[color:var(--danger)]/10 px-4 py-2 text-sm text-[color:var(--danger)]">
             {actionError}
           </div>
         )}
@@ -383,7 +383,7 @@ function Centered({
 }): React.ReactElement {
   return (
     <div
-      className={`flex h-full w-full items-center justify-center text-sm ${tone === 'error' ? 'text-red-500' : 'text-[color:var(--fg-muted)]'}`}
+      className={`flex h-full w-full items-center justify-center text-sm ${tone === 'error' ? 'text-[color:var(--danger)]' : 'text-[color:var(--fg-muted)]'}`}
     >
       {text}
     </div>

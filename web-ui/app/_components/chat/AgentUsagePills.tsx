@@ -46,7 +46,7 @@ export function AgentUsagePills({
     <>
       <motion.div
         className={cn(
-          'flex flex-wrap items-center gap-1.5',
+          'flex flex-wrap items-center gap-2',
           className,
         )}
         aria-label={t('ariaLabel')}
@@ -73,17 +73,17 @@ export function AgentUsagePills({
               onClick={() => setSelectedAgentId(agent.id)}
               title={t('pillTitle', { id: agent.id })}
               className={cn(
-                'inline-flex items-center gap-1.5 rounded-full px-3 py-1',
-                'text-[11px] font-semibold text-white',
-                'focus:outline-none focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[color:var(--bg)]',
+                'inline-flex items-center gap-2 rounded-full px-3 py-1',
+                'text-[11px] font-semibold',
+                'focus:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[color:var(--bg)]',
                 TONE_CLASS[agent.tone],
               )}
             >
               <span>{agent.label}</span>
               <span
                 className={cn(
-                  'font-mono-num tabular-nums inline-flex min-w-[1.25rem] justify-center rounded-full px-1.5',
-                  'bg-white/25 text-white text-[10px] leading-[1.1rem]',
+                  'font-mono-num tabular-nums inline-flex min-w-[1.25rem] justify-center rounded-full px-2',
+                  'bg-[color:var(--accent)] text-[color:var(--accent-fg)] text-[10px] leading-[1.1rem]',
                 )}
               >
                 {count}
@@ -147,14 +147,21 @@ function collectToolNames(rows: AggregateRow[], agentId: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// byte5 brand solid fills — fixed hex so contrast stays correct in dark mode
+// Lume pill fill — single accent material (spec §2.5). Lume has one accent
+// slot, so agents differentiate by label, not by hue. Every tone resolves to
+// the same accent-subtle chip with an accent-tinted glow on hover; the chip
+// follows the active palette + light/dark mode through the token layer.
 // ---------------------------------------------------------------------------
 
+const LUME_PILL =
+  'bg-[color:var(--accent-subtle)] text-[color:var(--accent)] ' +
+  'hover:shadow-[0_0_4px_var(--accent-glow-core),0_4px_12px_var(--accent-glow)]';
+
 const TONE_CLASS: Record<AgentMeta['tone'], string> = {
-  cyan:    'bg-[#009FE3] hover:bg-[#0086C0] shadow-[0_6px_16px_rgba(0,159,227,0.25)]',
-  navy:    'bg-[#004B73] hover:bg-[#003957] shadow-[0_6px_16px_rgba(0,75,115,0.22)]',
-  magenta: 'bg-[#EA5172] hover:bg-[#D43A5C] shadow-[0_6px_16px_rgba(234,81,114,0.25)]',
-  warning: 'bg-[#E0A82E] hover:bg-[#C6921F] shadow-[0_6px_16px_rgba(224,168,46,0.25)]',
+  cyan: LUME_PILL,
+  navy: LUME_PILL,
+  magenta: LUME_PILL,
+  warning: LUME_PILL,
 };
 
 // ---------------------------------------------------------------------------

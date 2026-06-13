@@ -110,19 +110,19 @@ export function NudgeCard({
   return (
     <div
       className={[
-        'mt-2 rounded-md border bg-amber-50/70 px-3 py-2 text-[12px]',
-        'border-amber-200 ring-1 ring-amber-100',
-        'dark:border-amber-900/60 dark:bg-amber-950/30 dark:ring-amber-900/40',
+        'mt-2 rounded-md border bg-[color:var(--warning)]/10 px-3 py-2 text-[12px]',
+        'border-[color:var(--warning)] ring-1 ring-[color:var(--warning)]',
+        '',
       ].join(' ')}
     >
-      <div className="mb-1 flex items-center gap-1 text-[11px] font-semibold tracking-wide text-amber-700 uppercase dark:text-amber-300">
+      <div className="mb-1 flex items-center gap-1 text-[11px] font-semibold tracking-wide text-[color:var(--warning)] uppercase">
         <span>💡</span>
         <span>{t('kicker')}</span>
-        <span className="ml-auto font-mono text-[10px] font-normal text-amber-600/80 dark:text-amber-400/80">
+        <span className="ml-auto font-mono text-[10px] font-normal text-[color:var(--warning)]/80">
           {nudge.id}
         </span>
       </div>
-      <p className="whitespace-pre-wrap text-amber-900 dark:text-amber-100">
+      <p className="whitespace-pre-wrap text-[color:var(--warning)]">
         {nudge.text}
       </p>
       <div className="mt-2 flex items-center gap-2">
@@ -136,9 +136,9 @@ export function NudgeCard({
               onCtaClick?.(nudge.cta);
             }}
             className={[
-              'rounded bg-amber-600 px-2 py-1 text-[11px] font-medium text-white',
-              'transition-colors hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-60',
-              'dark:bg-amber-500 dark:hover:bg-amber-400',
+              'rounded bg-[color:var(--warning)] px-2 py-1 text-[11px] font-medium text-[color:var(--fg-on-dark)]',
+              'transition-colors hover:bg-[color:var(--warning)] disabled:cursor-not-allowed disabled:opacity-60',
+              '',
             ].join(' ')}
           >
             {acknowledged ? t('ackTriggered') : nudge.cta.label}
@@ -147,13 +147,13 @@ export function NudgeCard({
         <button
           type="button"
           onClick={() => onSuppressClick?.(nudge.id)}
-          className="text-[11px] text-amber-700 underline-offset-2 hover:underline dark:text-amber-300"
+          className="text-[11px] text-[color:var(--warning)] underline-offset-2 hover:underline"
         >
           {t('suppress')}
         </button>
         {nudge.cta ? (
           <span
-            className="ml-auto truncate font-mono text-[10px] text-amber-600/80 dark:text-amber-400/80"
+            className="ml-auto truncate font-mono text-[10px] text-[color:var(--warning)]/80"
             title={`${nudge.cta.toolName}(${JSON.stringify(nudge.cta.args)})`}
           >
             → {nudge.cta.toolName}

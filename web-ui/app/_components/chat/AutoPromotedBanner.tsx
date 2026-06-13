@@ -67,7 +67,7 @@ export function AutoPromotedBanner({
   }, [mkId, t, onDiscarded]);
 
   return (
-    <span className="ml-3 inline-flex items-center gap-2 rounded border border-green-300 bg-green-50 px-2 py-0.5 text-[11px] text-green-800 dark:border-green-800 dark:bg-green-900/30 dark:text-green-200">
+    <span className="ml-3 inline-flex items-center gap-2 rounded border border-[color:var(--success)] bg-[color:var(--success)]/10 px-2 py-0.5 text-[11px] text-[color:var(--success)]">
       <span aria-hidden>✓</span>
       <span>{t('label', { kind: t(`kind.${kind}`) })}</span>
       <span className="font-mono text-[10px] opacity-60" title={mkId}>
@@ -75,7 +75,7 @@ export function AutoPromotedBanner({
       </span>
       <a
         href={`/memories/${encodeURIComponent(mkId)}`}
-        className="rounded border border-green-300 px-1 py-0.5 text-[10px] hover:bg-green-100 dark:border-green-700 dark:hover:bg-green-900/40"
+        className="rounded border border-[color:var(--success)] px-1 py-0.5 text-[10px] hover:bg-[color:var(--success)]/10"
         title={t('viewTitle')}
       >
         {t('view')}
@@ -84,13 +84,13 @@ export function AutoPromotedBanner({
         type="button"
         onClick={() => void discard()}
         disabled={busy}
-        className="rounded border border-red-300 px-1 py-0.5 text-[10px] text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-900/30"
+        className="rounded border border-[color:var(--danger-edge)] px-1 py-0.5 text-[10px] text-[color:var(--danger)] hover:bg-[color:var(--danger)]/8 disabled:opacity-50"
         title={t('discardTitle')}
       >
         {busy ? t('discarding') : t('discard')}
       </button>
       {error !== null && (
-        <span className="text-red-600 dark:text-red-400">⚠ {error}</span>
+        <span className="text-[color:var(--danger)]">⚠ {error}</span>
       )}
     </span>
   );

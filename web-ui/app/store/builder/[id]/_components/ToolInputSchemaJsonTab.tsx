@@ -82,7 +82,7 @@ export function ToolInputSchemaJsonTab({
   );
 
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-2">
       <div className="overflow-hidden rounded-md border border-[color:var(--border)]">
         <MonacoEditor
           height="240px"

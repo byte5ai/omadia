@@ -236,7 +236,7 @@ export function SimpleIntakePane({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto px-6 py-5">
+      <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto px-6 py-4">
         {empty && !inflight ? (
           <IntakeHero onPick={(text) => void onSend(text)} />
         ) : (
@@ -250,10 +250,10 @@ export function SimpleIntakePane({
             >
               <div
                 className={cn(
-                  'max-w-[86%] px-4 py-2.5 text-[14.5px] leading-relaxed',
+                  'max-w-[86%] px-4 py-3 text-[14.5px] leading-relaxed',
                   m.role === 'user'
-                    ? 'rounded-[18px] rounded-br-[6px] bg-[color:var(--accent)] text-white shadow-[var(--shadow-sm)]'
-                    : 'rounded-[18px] rounded-bl-[6px] bg-[color:var(--bg-soft)] text-[color:var(--fg-strong)]',
+                    ? 'rounded-lg rounded-br-sm bg-[color:var(--accent)] text-[color:var(--fg-on-dark)] shadow-[var(--shadow-sm)]'
+                    : 'rounded-lg rounded-bl-sm bg-[color:var(--bg-soft)] text-[color:var(--fg-strong)]',
                 )}
               >
                 {m.role === 'user' ? (
@@ -286,7 +286,7 @@ export function SimpleIntakePane({
       </div>
 
       {error ? (
-        <div className="mx-6 mb-2 flex items-start gap-2 rounded-[12px] border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/8 px-3.5 py-2.5 text-[13px] text-[color:var(--danger)]">
+        <div className="mx-6 mb-2 flex items-start gap-2 rounded-lg border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/8 px-3 py-3 text-[13px] text-[color:var(--danger)]">
           <span className="break-words">{error}</span>
         </div>
       ) : null}
@@ -295,7 +295,7 @@ export function SimpleIntakePane({
         <label className="sr-only" htmlFor={inputId}>
           {t('inputLabel')}
         </label>
-        <div className="flex items-end gap-2.5">
+        <div className="flex items-end gap-3">
           <textarea
             id={inputId}
             value={input}
@@ -304,13 +304,13 @@ export function SimpleIntakePane({
             onKeyDown={onKeyDown}
             rows={2}
             placeholder={inflight ? t('placeholderBusy') : t('placeholderIdle')}
-            className="min-h-[50px] flex-1 resize-none rounded-[16px] border border-[color:var(--border)] bg-[color:var(--bg)] px-4 py-3 text-[14.5px] leading-snug text-[color:var(--fg-strong)] placeholder:text-[color:var(--fg-subtle)] transition-colors focus:border-[color:var(--accent)] focus:outline-none focus:ring-4 focus:ring-[color:var(--accent)]/10 disabled:opacity-60"
+            className="min-h-[50px] flex-1 resize-none rounded-lg border border-[color:var(--border)] bg-[color:var(--bg)] px-4 py-3 text-[14.5px] leading-snug text-[color:var(--fg-strong)] placeholder:text-[color:var(--fg-subtle)] transition-colors focus:border-[color:var(--accent)] focus:outline-none focus:ring-4 focus:ring-[color:var(--accent)]/10 disabled:opacity-60"
           />
           {inflight ? (
             <button
               type="button"
               onClick={onStop}
-              className="inline-flex h-[50px] shrink-0 items-center gap-1.5 rounded-full border border-[color:var(--danger)]/40 px-4 text-[13px] font-semibold text-[color:var(--danger)] transition-colors hover:bg-[color:var(--danger)]/10"
+              className="inline-flex h-[50px] shrink-0 items-center gap-2 rounded-full border border-[color:var(--danger)]/40 px-4 text-[13px] font-semibold text-[color:var(--danger)] transition-colors hover:bg-[color:var(--danger)]/10"
             >
               <StopCircle className="size-4" aria-hidden />
               {t('stop')}
@@ -320,7 +320,7 @@ export function SimpleIntakePane({
               type="button"
               onClick={() => void onSend()}
               disabled={input.trim().length === 0}
-              className="inline-flex h-[50px] shrink-0 items-center gap-2 rounded-full bg-[color:var(--accent)] px-5 text-[14px] font-semibold text-white shadow-[var(--shadow-cta)] transition-all hover:opacity-90 disabled:opacity-40 disabled:shadow-none"
+              className="inline-flex h-[50px] shrink-0 items-center gap-2 rounded-full bg-[color:var(--accent)] px-4 text-[14px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] transition-all hover:opacity-90 disabled:opacity-40 disabled:shadow-none"
             >
               <Send className="size-4" aria-hidden />
               {t('send')}
@@ -378,7 +378,7 @@ function friendlyStatusKey(ev: BuilderTurnEvent): StatusKey | null {
 
 function LoadingLine({ status }: { status: string }): React.ReactElement {
   return (
-    <div className="flex items-center gap-3 rounded-[16px] bg-[color:var(--bg-soft)] px-4 py-3.5">
+    <div className="flex items-center gap-3 rounded-lg bg-[color:var(--bg-soft)] px-4 py-3">
       <BreathingDots />
       <span className="text-[13.5px] text-[color:var(--fg-muted)]" aria-live="polite">
         {status}

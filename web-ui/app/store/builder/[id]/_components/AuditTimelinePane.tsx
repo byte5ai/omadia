@@ -128,7 +128,7 @@ export function AuditTimelinePane({ draftId }: AuditTimelinePaneProps): React.Re
       </header>
 
       {error && (
-        <div role="alert" className="text-xs text-red-600" data-testid="audit-error">
+        <div role="alert" className="text-xs text-[color:var(--danger)]" data-testid="audit-error">
           {error}
         </div>
       )}

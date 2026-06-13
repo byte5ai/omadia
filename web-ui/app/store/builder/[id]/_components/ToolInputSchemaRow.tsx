@@ -77,7 +77,7 @@ export function ToolInputSchemaRow({
         depth > 0 && 'ml-3',
       )}
     >
-      <div className="flex flex-wrap items-center gap-1.5 px-2 py-1.5">
+      <div className="flex flex-wrap items-center gap-2 px-2 py-2">
         <button
           type="button"
           onClick={() => setExpanded((p) => !p)}
@@ -110,7 +110,7 @@ export function ToolInputSchemaRow({
           aria-label={t('propertyType')}
           value={nodeType}
           onChange={(e) => changeType(e.target.value as SupportedType)}
-          className="rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-1.5 py-1 text-[11px] font-mono-num text-[color:var(--fg-strong)] focus:border-[color:var(--accent)] focus:outline-none"
+          className="rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1 text-[11px] font-mono-num text-[color:var(--fg-strong)] focus:border-[color:var(--accent)] focus:outline-none"
         >
           <option value="string">string</option>
           <option value="number">number</option>
@@ -226,7 +226,7 @@ function DescriptionInput({
                   onChange(`${head}\`${m.$id}\``);
                 }}
                 title={m.summary ?? t('entityTitle', { name: m.name, version: m.version })}
-                className="inline-flex items-center gap-1 rounded border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/8 px-1.5 py-0.5 font-mono-num text-[10px] text-[color:var(--accent)] hover:bg-[color:var(--accent)]/15"
+                className="inline-flex items-center gap-1 rounded border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/8 px-2 py-0.5 font-mono-num text-[10px] text-[color:var(--accent)] hover:bg-[color:var(--accent)]/15"
               >
                 {m.$id}
               </button>
@@ -462,7 +462,7 @@ function EnumValuesEditor({
             setDraft('');
           }}
           disabled={!draft.trim()}
-          className="rounded bg-[color:var(--accent)] px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-40"
+          className="rounded bg-[color:var(--accent)] px-2 py-1 text-[11px] font-semibold text-[color:var(--fg-on-dark)] disabled:opacity-40"
         >
           +
         </button>
@@ -484,7 +484,7 @@ function ArrayItemsEditor({
   const items = (node.items as JsonSchemaNode | undefined) ?? { type: 'string' };
   const itemType = detectType(items);
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-2">
       <div className="flex items-center gap-2">
         <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
           {t('itemType')}
@@ -495,7 +495,7 @@ function ArrayItemsEditor({
             const next = blankNodeForType(e.target.value as SupportedType);
             onChange({ ...node, items: next });
           }}
-          className="rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-1.5 py-1 text-[11px] font-mono-num text-[color:var(--fg-strong)] focus:border-[color:var(--accent)] focus:outline-none"
+          className="rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1 text-[11px] font-mono-num text-[color:var(--fg-strong)] focus:border-[color:var(--accent)] focus:outline-none"
         >
           <option value="string">string</option>
           <option value="number">number</option>

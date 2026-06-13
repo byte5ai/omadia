@@ -25,7 +25,7 @@ export function SpecOverview({ spec, slots }: SpecOverviewProps): React.ReactEle
   const networkCount = spec.network?.outbound?.length ?? 0;
 
   return (
-    <div className="grid grid-cols-1 gap-4 p-5 md:grid-cols-2">
+    <div className="grid grid-cols-1 gap-4 p-4 md:grid-cols-2">
       <Field label={t('fields.agentId')} value={spec.id || '—'} mono />
       <Field label={t('fields.name')} value={spec.name || '—'} />
       <Field label={t('fields.author')} value={spec.author || '—'} />
@@ -78,7 +78,7 @@ export function SpecOverview({ spec, slots }: SpecOverviewProps): React.ReactEle
           <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[color:var(--fg-subtle)]">
             {t('slotKeys')}
           </p>
-          <ul className="mt-2 flex flex-wrap gap-1.5">
+          <ul className="mt-2 flex flex-wrap gap-2">
             {slotKeys.map((key) => (
               <li
                 key={key}

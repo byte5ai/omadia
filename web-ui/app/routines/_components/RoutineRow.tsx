@@ -299,7 +299,7 @@ function RunHistoryPanel({
           type="button"
           onClick={onRefresh}
           disabled={loading}
-          className="rounded-full border border-[color:var(--border)] bg-[color:var(--surface)] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)] transition hover:border-[color:var(--accent)] hover:text-[color:var(--fg-strong)] disabled:opacity-50"
+          className="rounded-full border border-[color:var(--border)] bg-[color:var(--surface)] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)] transition hover:border-[color:var(--accent)] hover:text-[color:var(--fg-strong)] disabled:opacity-50"
         >
           {loading ? 'Lädt…' : 'Refresh'}
         </button>
@@ -366,7 +366,7 @@ function RunHistoryPanel({
                   <td className="whitespace-nowrap px-3 py-2 text-right">
                     <Link
                       href={`/routines/${routineId}/runs/${run.id}`}
-                      className="rounded-full border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/5 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--accent)] transition hover:border-[color:var(--accent)]"
+                      className="rounded-full border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/5 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--accent)] transition hover:border-[color:var(--accent)]"
                     >
                       Trace →
                     </Link>
@@ -390,7 +390,7 @@ function StatusBadge({
   const colorVar = tone === 'ok' ? '--ok' : '--warn';
   return (
     <span
-      className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em]"
+      className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em]"
       style={{
         color: `var(${colorVar})`,
         backgroundColor: `color-mix(in oklab, var(${colorVar}) 12%, transparent)`,
@@ -440,7 +440,7 @@ function RunStatusPill({
     status === 'ok' ? '--ok' : status === 'error' ? '--danger' : '--warn';
   return (
     <span
-      className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em]"
+      className="inline-flex items-center gap-2 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em]"
       style={{
         color: `var(${colorVar})`,
         backgroundColor: `color-mix(in oklab, var(${colorVar}) 12%, transparent)`,

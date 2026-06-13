@@ -93,7 +93,7 @@ export default async function PluginDetailPage({
     : null;
 
   return (
-    <main className="mx-auto max-w-[1280px] px-6 py-10 lg:px-10 lg:py-14">
+    <main className="mx-auto max-w-[1280px] px-6 py-8 lg:px-8 lg:py-12">
       <Link
         href="/store"
         className="inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg-muted)] transition hover:text-[color:var(--accent)]"
@@ -103,7 +103,7 @@ export default async function PluginDetailPage({
       </Link>
 
       {/* Hero */}
-      <header className="b5-hero-bg relative mt-6 -mx-6 rounded-[22px] border border-[color:var(--divider)] px-6 py-10 lg:-mx-10 lg:px-10 lg:py-12">
+      <header className="b5-hero-bg relative mt-6 -mx-6 rounded-lg border border-[color:var(--divider)] px-6 py-8 lg:-mx-8 lg:px-8 lg:py-12">
         <div className="flex flex-col items-start gap-8 lg:flex-row lg:items-end lg:justify-between">
           <div className="flex items-start gap-6">
             <PluginIcon
@@ -152,8 +152,7 @@ export default async function PluginDetailPage({
             <p className="text-[18px] font-semibold leading-[1.6] text-[color:var(--fg)]">
               {plugin.description ? (
                 <>
-                  <span className="b5-colon">:</span>
-                  {plugin.description}
+                                    {plugin.description}
                 </>
               ) : (
                 <span className="text-[color:var(--fg-muted)]">
@@ -333,7 +332,7 @@ export default async function PluginDetailPage({
           {visibleCategories.length > 0 ? (
             <div>
               <SideLabel>Kategorien</SideLabel>
-              <div className="mt-2 flex flex-wrap gap-1.5">
+              <div className="mt-2 flex flex-wrap gap-2">
                 {visibleCategories.map((cat) => (
                   <Chip key={cat} tone="muted">
                     {cat}
@@ -343,7 +342,7 @@ export default async function PluginDetailPage({
             </div>
           ) : null}
 
-          <dl className="space-y-4 border-y border-[color:var(--rule)] py-5">
+          <dl className="space-y-4 border-y border-[color:var(--rule)] py-4">
             <MetaRow label="Lizenz" value={plugin.license} />
             <MetaRow label="Core-Kompatibilität" value={plugin.compat_core} mono />
             <MetaRow label="Aktuelle Version" value={`v${plugin.version}`} mono />
@@ -359,7 +358,7 @@ export default async function PluginDetailPage({
           {plugin.authors.length > 0 ? (
             <div>
               <SideLabel>Autor:innen</SideLabel>
-              <ul className="mt-2 space-y-1.5 text-sm">
+              <ul className="mt-2 space-y-2 text-sm">
                 {plugin.authors.map((a, idx) => (
                   <li key={idx} className="text-[color:var(--ink)]">
                     {a.url ? (
@@ -389,7 +388,7 @@ export default async function PluginDetailPage({
       </AdminUiProvider>
 
       {/* Footer crumb */}
-      <footer className="mt-20 flex items-center justify-between border-t border-[color:var(--rule)] pt-5 text-[11px] uppercase tracking-[0.18em] text-[color:var(--faint-ink)]">
+      <footer className="mt-20 flex items-center justify-between border-t border-[color:var(--rule)] pt-4 text-[11px] uppercase tracking-[0.18em] text-[color:var(--faint-ink)]">
         <span className="flex items-center gap-2">
           <BookCheck className="size-3.5" aria-hidden />
           Manifest: {isLegacy ? 'Legacy' : 'Schema v1'}
@@ -512,14 +511,14 @@ function PermissionsBlock({
   }
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       {active.map((group) => (
         <div key={group.label}>
           <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[color:var(--muted-ink)]">
             {group.icon}
             {group.label}
           </div>
-          <ul className="mt-2 flex flex-wrap gap-1.5">
+          <ul className="mt-2 flex flex-wrap gap-2">
             {group.items.map((item) => (
               <Chip
                 key={item}
@@ -602,7 +601,7 @@ function CapabilitiesBlock({
             Keine Capabilities deklariert.
           </p>
         ) : (
-          <ul className="mt-2 flex flex-wrap gap-1.5">
+          <ul className="mt-2 flex flex-wrap gap-2">
             {provides.map((cap) => (
               <li key={cap}>
                 <Chip tone="accent" className="font-mono-num normal-case tracking-normal">
@@ -623,7 +622,7 @@ function CapabilitiesBlock({
           </p>
         ) : (
           <>
-            <ul className="mt-2 flex flex-wrap gap-1.5">
+            <ul className="mt-2 flex flex-wrap gap-2">
               {requires.map((cap) => (
                 <li key={cap}>
                   <Chip tone="muted" className="font-mono-num normal-case tracking-normal">

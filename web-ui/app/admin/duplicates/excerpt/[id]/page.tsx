@@ -88,11 +88,11 @@ export default function ExcerptDuplicateDetailPage(): React.ReactElement {
   );
 
   return (
-    <main className="mx-auto max-w-[1100px] px-6 py-12 lg:px-10 lg:py-16">
+    <main className="mx-auto max-w-[1100px] px-6 py-12 lg:px-8 lg:py-16">
       <header className="mb-8">
         <Link
           href="/admin/duplicates"
-          className="text-xs text-neutral-500 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100"
+          className="text-xs text-[color:var(--fg-muted)] hover:text-[color:var(--fg-strong)]"
         >
           ← /admin/duplicates
         </Link>
@@ -101,17 +101,17 @@ export default function ExcerptDuplicateDetailPage(): React.ReactElement {
         </h1>
       </header>
 
-      {loading && <p className="text-xs text-neutral-500">lädt…</p>}
+      {loading && <p className="text-xs text-[color:var(--fg-muted)]">lädt…</p>}
       {loadError !== null && (
-        <div className="border-l-2 border-red-400 px-3 py-2 text-xs text-red-700 dark:text-red-300">
+        <div className="border-l-2 border-[color:var(--danger-edge)] px-3 py-2 text-xs text-[color:var(--danger)]">
           Fehler: {loadError}
         </div>
       )}
 
       {detail !== null && (
         <>
-          <section className="mb-6 rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
-            <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+          <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
+            <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
               Detector-Befund
             </h2>
             <p className="text-sm">
@@ -120,11 +120,11 @@ export default function ExcerptDuplicateDetailPage(): React.ReactElement {
               — Excerpts sind fast wörtlich identisch.
             </p>
             <dl className="mt-3 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-[11px]">
-              <dt className="text-neutral-500">Status</dt>
+              <dt className="text-[color:var(--fg-muted)]">Status</dt>
               <dd className="font-mono">{detail.props.status}</dd>
               {detail.props.resolution && (
                 <>
-                  <dt className="text-neutral-500">Resolution</dt>
+                  <dt className="text-[color:var(--fg-muted)]">Resolution</dt>
                   <dd className="font-mono">{detail.props.resolution}</dd>
                 </>
               )}
@@ -145,12 +145,12 @@ export default function ExcerptDuplicateDetailPage(): React.ReactElement {
           </div>
 
           {detail.props.status === 'open' && (
-            <section className="mt-6 rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
-              <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+            <section className="mt-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
+              <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
                 Auflösung
               </h2>
               <label className="mb-3 block">
-                <span className="mb-1 block text-[11px] uppercase tracking-wider text-neutral-500">
+                <span className="mb-1 block text-[11px] uppercase tracking-wider text-[color:var(--fg-muted)]">
                   Begründung (optional, im Audit-Log)
                 </span>
                 <input
@@ -159,11 +159,11 @@ export default function ExcerptDuplicateDetailPage(): React.ReactElement {
                   onChange={(e) => setReason(e.target.value)}
                   disabled={busy}
                   maxLength={1000}
-                  className="w-full rounded border border-neutral-300 px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-800"
+                  className="w-full rounded border border-[color:var(--border)] px-2 py-1 text-sm"
                 />
               </label>
               {mutationError !== null && (
-                <p className="mb-3 border-l-2 border-red-400 px-2 py-1 text-xs text-red-700 dark:text-red-300">
+                <p className="mb-3 border-l-2 border-[color:var(--danger-edge)] px-2 py-1 text-xs text-[color:var(--danger)]">
                   Fehler: {mutationError}
                 </p>
               )}
@@ -177,12 +177,12 @@ export default function ExcerptDuplicateDetailPage(): React.ReactElement {
                     className={[
                       'rounded border px-3 py-2 text-left text-xs disabled:opacity-50',
                       r === 'keep_a' || r === 'keep_b'
-                        ? 'border-red-400 hover:bg-red-50 dark:border-red-800 dark:hover:bg-red-900/30'
-                        : 'border-neutral-300 hover:border-neutral-400 dark:border-neutral-700',
+                        ? 'border-[color:var(--danger-edge)] hover:bg-[color:var(--danger)]/8'
+                        : 'border-[color:var(--border)] hover:border-[color:var(--border-strong)]',
                     ].join(' ')}
                   >
                     <div className="font-semibold">{RESOLUTION_LABEL[r]}</div>
-                    <div className="mt-1 text-[10px] text-neutral-500">
+                    <div className="mt-1 text-[10px] text-[color:var(--fg-muted)]">
                       {RESOLUTION_DESCRIPTION[r]}
                     </div>
                   </button>
@@ -206,35 +206,35 @@ function ExcerptCard({
   parentMk: ExcerptMergeDetailDto['mkA'];
 }): React.ReactElement {
   return (
-    <article className="rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
+    <article className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
       <header className="mb-3 flex items-center justify-between">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
           {label}
         </span>
         {parentMk && (
           <Link
             href={`/memories/${encodeURIComponent(parentMk.id)}`}
-            className="text-[10px] text-neutral-500 underline-offset-2 hover:underline"
+            className="text-[10px] text-[color:var(--fg-muted)] underline-offset-2 hover:underline"
           >
             zur Parent-Memory →
           </Link>
         )}
       </header>
       {!excerpt && (
-        <p className="text-xs italic text-neutral-500">
+        <p className="text-xs italic text-[color:var(--fg-muted)]">
           Excerpt nicht zugänglich (gelöscht oder kein Owner).
         </p>
       )}
       {excerpt && (
         <>
-          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-neutral-500">
+          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
             Position {excerpt.props.position} · {excerpt.props.source}
           </div>
-          <p className="text-sm text-neutral-900 dark:text-neutral-100">
+          <p className="text-sm text-[color:var(--fg-strong)]">
             „{excerpt.props.text}&ldquo;
           </p>
           {parentMk && (
-            <p className="mt-3 text-[11px] text-neutral-500">
+            <p className="mt-3 text-[11px] text-[color:var(--fg-muted)]">
               Parent-Memory: {String(parentMk.props.summary)}
             </p>
           )}

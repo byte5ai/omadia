@@ -64,7 +64,7 @@ export function AgentDetailsModal({
             type="button"
             onClick={onClose}
             aria-label={t('ariaCloseBackdrop')}
-            className="absolute inset-0 bg-black/45 backdrop-blur-[2px]"
+            className="absolute inset-0 bg-[color:var(--bg-modal-overlay)] backdrop-blur-[2px]"
             variants={BACKDROP_VARIANTS}
             transition={TRANSITION_FAST}
           />
@@ -74,20 +74,20 @@ export function AgentDetailsModal({
             transition={TRANSITION_BASE}
             className={cn(
               'relative z-10 flex max-h-[85vh] w-full max-w-2xl flex-col',
-              'rounded-t-[22px] sm:rounded-[22px]',
-              'bg-white text-[#004B73]',
-              'shadow-[0_18px_40px_rgba(0,75,115,0.20)]',
+              'rounded-t-lg sm:rounded-lg',
+              'bg-[color:var(--bg-elevated)] text-[color:var(--fg)]',
+              'shadow-[var(--shadow-lg)]',
             )}
           >
-            <header className="flex items-start justify-between gap-4 border-b border-[#D3DDE5] px-6 py-5">
+            <header className="flex items-start justify-between gap-4 border-b border-[color:var(--border)] px-6 py-4">
               <div>
-                <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[#8A99A6]">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[color:var(--fg-subtle)]">
                   {t('agentLabel')}
                 </div>
-                <h3 className="font-display mt-1 text-[26px] leading-[1.1] text-[#004B73]">
+                <h3 className="font-display mt-1 text-[26px] leading-[1.1] text-[color:var(--fg-strong)]">
                   {agent.label}
                 </h3>
-                <p className="font-mono-num mt-1 text-[11px] text-[#5F6E7B]">
+                <p className="font-mono-num mt-1 text-[11px] text-[color:var(--fg-muted)]">
                   {agent.id} · {t('callCount', { count: calls.length })}
                 </p>
               </div>
@@ -95,15 +95,15 @@ export function AgentDetailsModal({
                 type="button"
                 onClick={onClose}
                 aria-label={t('ariaClose')}
-                className="rounded-full p-2 text-[#5F6E7B] transition-colors duration-[140ms] ease-[cubic-bezier(0.22,0.61,0.36,1)] hover:bg-[#F4F7FA] hover:text-[#004B73]"
+                className="rounded-full p-2 text-[color:var(--fg-muted)] transition-colors duration-[100ms] ease-[var(--easing-standard)] hover:bg-[color:var(--bg-soft)] hover:text-[color:var(--fg-strong)]"
               >
                 <X className="size-4" aria-hidden />
               </button>
             </header>
 
-            <div className="flex-1 overflow-y-auto px-6 py-5">
+            <div className="flex-1 overflow-y-auto px-6 py-4">
               {calls.length === 0 ? (
-                <p className="text-sm italic text-[#5F6E7B]">
+                <p className="text-sm italic text-[color:var(--fg-muted)]">
                   {t('noCallsInSession')}
                 </p>
               ) : (
@@ -119,15 +119,14 @@ export function AgentDetailsModal({
               )}
             </div>
 
-            <footer className="flex items-center justify-between gap-3 border-t border-[#D3DDE5] bg-[#F4F7FA] px-6 py-3">
-              <p className="text-[11px] leading-relaxed text-[#5F6E7B]">
-                <span className="b5-colon">:</span>
-                {t('footerNote')}
+            <footer className="flex items-center justify-between gap-3 border-t border-[color:var(--border)] bg-[color:var(--bg-soft)] px-6 py-3">
+              <p className="text-[11px] leading-relaxed text-[color:var(--fg-muted)]">
+                                {t('footerNote')}
               </p>
               <button
                 type="button"
                 onClick={onClose}
-                className="rounded-full px-4 py-1.5 text-[12px] font-semibold text-[#004B73] transition-colors duration-[140ms] ease-[cubic-bezier(0.22,0.61,0.36,1)] hover:bg-white"
+                className="rounded-full px-4 py-2 text-[12px] font-semibold text-[color:var(--fg-strong)] transition-colors duration-[100ms] ease-[var(--easing-standard)] hover:bg-[color:var(--bg-elevated)]"
               >
                 {t('closeButton')}
               </button>
@@ -203,29 +202,29 @@ function ToolCallRow({
   const outputPreview = formatOutputPreview(event.output);
 
   return (
-    <li className="rounded-[14px] border border-[#E8EEF3] bg-[#F4F7FA] p-4">
+    <li className="rounded-lg border border-[color:var(--border)] bg-[color:var(--bg-soft)] p-4">
       <header className="flex items-center gap-3">
-        <span className="font-mono-num inline-flex size-6 items-center justify-center rounded-full bg-white text-[10px] font-semibold text-[#004B73]">
+        <span className="font-mono-num inline-flex size-6 items-center justify-center rounded-full bg-[color:var(--bg-elevated)] text-[10px] font-semibold text-[color:var(--fg-strong)]">
           {index}
         </span>
-        <span className="font-mono-num text-[12px] text-[#004B73]">
+        <span className="font-mono-num text-[12px] text-[color:var(--fg-strong)]">
           {event.name}
         </span>
-        <span className="font-mono-num text-[10px] text-[#8A99A6]">
+        <span className="font-mono-num text-[10px] text-[color:var(--fg-subtle)]">
           {relativeLabel}
         </span>
         <span className="ml-auto flex items-center gap-2">
           {event.isError ? (
-            <span className="rounded-full bg-[#D9354C]/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#D9354C]">
+            <span className="px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[color:var(--danger)]">
               {t('statusError')}
             </span>
           ) : (
-            <span className="rounded-full bg-[#15A06B]/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#15A06B]">
+            <span className="px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[color:var(--success)]">
               {t('statusOk')}
             </span>
           )}
           {typeof event.durationMs === 'number' ? (
-            <span className="font-mono-num text-[10px] text-[#5F6E7B]">
+            <span className="font-mono-num text-[10px] text-[color:var(--fg-muted)]">
               {formatMs(event.durationMs)}
             </span>
           ) : null}
@@ -234,10 +233,10 @@ function ToolCallRow({
 
       {inputPreview ? (
         <div className="mt-3">
-          <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#8A99A6]">
+          <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[color:var(--fg-subtle)]">
             {t('inputLabel')}
           </div>
-          <pre className="font-mono-num mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-[8px] bg-white p-2 text-[11px] leading-relaxed text-[#283540]">
+          <pre className="font-mono-num mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-md bg-[color:var(--bg-elevated)] p-2 text-[11px] leading-relaxed text-[color:var(--fg)]">
             {inputPreview}
           </pre>
         </div>
@@ -245,19 +244,18 @@ function ToolCallRow({
 
       {outputPreview ? (
         <div className="mt-3">
-          <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#8A99A6]">
+          <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[color:var(--fg-subtle)]">
             {t('outputLabel')}
           </div>
-          <pre className="font-mono-num mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-[8px] bg-white p-2 text-[11px] leading-relaxed text-[#283540]">
+          <pre className="font-mono-num mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-[color:var(--bg-elevated)] p-2 text-[11px] leading-relaxed text-[color:var(--fg)]">
             {outputPreview}
           </pre>
         </div>
       ) : null}
 
       {event.subEvents && event.subEvents.length > 0 ? (
-        <div className="mt-3 text-[11px] text-[#5F6E7B]">
-          <span className="b5-colon">:</span>
-          {t('subIterations', { count: event.subEvents.length })}
+        <div className="mt-3 text-[11px] text-[color:var(--fg-muted)]">
+                    {t('subIterations', { count: event.subEvents.length })}
         </div>
       ) : null}
     </li>

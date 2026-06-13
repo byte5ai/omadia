@@ -66,7 +66,7 @@ export function ToolTemplatesModal({
       role="dialog"
       aria-modal="true"
       aria-label={t('dialogLabel')}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-10"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-[color:var(--bg-modal-overlay)] px-4 py-8"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -89,7 +89,7 @@ export function ToolTemplatesModal({
           </button>
         </header>
 
-        <div className="flex-1 space-y-1.5 overflow-y-auto px-4 py-3">
+        <div className="flex-1 space-y-2 overflow-y-auto px-4 py-3">
           {all.length === 0 ? (
             <p className="rounded border border-dashed border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-4 text-center text-[12px] text-[color:var(--fg-muted)]">
               {t('empty')}
@@ -113,7 +113,7 @@ export function ToolTemplatesModal({
                     {tpl.label}
                   </span>
                   {tpl.source === 'personal' ? (
-                    <span className="rounded bg-[color:var(--accent)]/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.18em] text-[color:var(--accent)]">
+                    <span className="rounded bg-[color:var(--accent)]/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.18em] text-[color:var(--accent)]">
                       {t('personalBadge')}
                     </span>
                   ) : null}

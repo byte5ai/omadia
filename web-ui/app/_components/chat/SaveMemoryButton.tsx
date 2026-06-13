@@ -174,7 +174,7 @@ export function SaveMemoryButton({
           if (saved !== null) reset();
           setOpen(true);
         }}
-        className="ml-3 rounded border border-neutral-300 px-1.5 py-0.5 text-[11px] text-neutral-600 transition hover:border-neutral-400 hover:text-neutral-900 dark:border-neutral-700 dark:text-neutral-400 dark:hover:border-neutral-500 dark:hover:text-neutral-100"
+        className="ml-3 rounded border border-[color:var(--border)] px-2 py-0.5 text-[11px] text-[color:var(--fg-muted)] transition hover:border-[color:var(--border-strong)] hover:text-[color:var(--fg-strong)]"
         title={t('buttonTitle')}
       >
         {saved !== null ? `✓ ${t('savedShort')}` : t('buttonLabel')}
@@ -185,27 +185,27 @@ export function SaveMemoryButton({
           role="dialog"
           aria-modal="true"
           aria-labelledby="save-memory-title"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[color:var(--bg-modal-overlay)] p-4"
           onClick={(e) => {
             if (e.target === e.currentTarget && !busy) close();
           }}
         >
-          <div className="w-full max-w-lg rounded-lg bg-white p-5 shadow-xl dark:bg-neutral-900">
+          <div className="w-full max-w-lg rounded-lg bg-[color:var(--bg-elevated)] p-4 shadow-xl">
             <div className="mb-3 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <h2
                   id="save-memory-title"
-                  className="text-sm font-medium text-neutral-900 dark:text-neutral-100"
+                  className="text-sm font-medium text-[color:var(--fg-strong)]"
                 >
                   {t('dialogTitle')}
                 </h2>
                 {palaiaExcerpt && (
                   <span
                     className={[
-                      'rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wider',
+                      'rounded px-2 py-0.5 text-[10px] uppercase tracking-wider',
                       palaiaExcerpt.source === 'hint'
-                        ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200'
-                        : 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300',
+                        ? 'bg-[color:var(--warning)]/10 text-[color:var(--warning)]'
+                        : 'bg-[color:var(--accent)]/10 text-[color:var(--accent)]',
                     ].join(' ')}
                     title={t(`source.${palaiaExcerpt.source}Title`)}
                   >
@@ -217,7 +217,7 @@ export function SaveMemoryButton({
                 type="button"
                 onClick={close}
                 disabled={busy}
-                className="text-neutral-500 hover:text-neutral-900 disabled:opacity-50 dark:text-neutral-400 dark:hover:text-neutral-100"
+                className="text-[color:var(--fg-muted)] hover:text-[color:var(--fg-strong)] disabled:opacity-50"
                 aria-label={t('closeAriaLabel')}
               >
                 ✕
@@ -227,18 +227,18 @@ export function SaveMemoryButton({
             {saved === null ? (
               <>
                 <fieldset className="mb-3">
-                  <legend className="mb-1 text-[11px] uppercase tracking-wider text-neutral-500">
+                  <legend className="mb-1 text-[11px] uppercase tracking-wider text-[color:var(--fg-muted)]">
                     {t('kindLabel')}
                   </legend>
-                  <div className="flex flex-wrap gap-1.5">
+                  <div className="flex flex-wrap gap-2">
                     {KINDS.map((k) => (
                       <label
                         key={k}
                         className={[
                           'cursor-pointer rounded border px-2 py-1 text-xs transition',
                           kind === k
-                            ? 'border-neutral-900 bg-neutral-900 text-white dark:border-neutral-200 dark:bg-neutral-200 dark:text-neutral-900'
-                            : 'border-neutral-300 text-neutral-700 hover:border-neutral-400 dark:border-neutral-700 dark:text-neutral-300 dark:hover:border-neutral-500',
+                            ? 'border-[color:var(--border-strong)] bg-[color:var(--bg-inverse)] text-[color:var(--fg-on-dark)]'
+                            : 'border-[color:var(--border)] text-[color:var(--fg)] hover:border-[color:var(--border-strong)]',
                         ].join(' ')}
                       >
                         <input
@@ -257,7 +257,7 @@ export function SaveMemoryButton({
                 </fieldset>
 
                 <label className="mb-3 block">
-                  <span className="mb-1 block text-[11px] uppercase tracking-wider text-neutral-500">
+                  <span className="mb-1 block text-[11px] uppercase tracking-wider text-[color:var(--fg-muted)]">
                     {t('summaryLabel')}
                   </span>
                   <textarea
@@ -267,19 +267,19 @@ export function SaveMemoryButton({
                     disabled={busy}
                     maxLength={2000}
                     rows={3}
-                    className="w-full resize-y rounded border border-neutral-300 px-2 py-1.5 text-sm text-neutral-900 focus:border-neutral-500 focus:outline-none dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
+                    className="w-full resize-y rounded border border-[color:var(--border)] px-2 py-2 text-sm text-[color:var(--fg-strong)] focus:border-[color:var(--border-strong)] focus:outline-none"
                     placeholder={t('summaryPlaceholder')}
                   />
-                  <span className="mt-0.5 block text-right text-[10px] text-neutral-500">
+                  <span className="mt-0.5 block text-right text-[10px] text-[color:var(--fg-muted)]">
                     {summary.length} / 2000
                   </span>
                 </label>
 
                 {palaiaExcerpt && palaiaExcerpt.excerpts.length > 0 && (
                   <div className="mb-3">
-                    <div className="mb-1 flex items-center justify-between text-[11px] uppercase tracking-wider text-neutral-500">
+                    <div className="mb-1 flex items-center justify-between text-[11px] uppercase tracking-wider text-[color:var(--fg-muted)]">
                       <span>{t('excerptsLabel')}</span>
-                      <span className="text-[10px] normal-case tracking-normal text-neutral-400">
+                      <span className="text-[10px] normal-case tracking-normal text-[color:var(--fg-subtle)]">
                         {t('excerptsHint')}
                       </span>
                     </div>
@@ -290,10 +290,10 @@ export function SaveMemoryButton({
                             type="button"
                             onClick={() => insertExcerpt(excerpt)}
                             disabled={busy}
-                            className="group w-full rounded border border-neutral-200 bg-neutral-50 px-2 py-1 text-left text-xs text-neutral-700 transition hover:border-indigo-300 hover:bg-indigo-50 disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-800/60 dark:text-neutral-300 dark:hover:border-indigo-700 dark:hover:bg-indigo-900/20"
+                            className="group w-full rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-2 py-1 text-left text-xs text-[color:var(--fg)] transition hover:border-[color:var(--accent)] hover:bg-[color:var(--accent)]/10 disabled:opacity-50"
                             title={t('excerptInsertTitle')}
                           >
-                            <span className="mr-1 text-neutral-400 group-hover:text-indigo-400">
+                            <span className="mr-1 text-[color:var(--fg-subtle)] group-hover:text-[color:var(--accent)]">
                               +
                             </span>
                             {excerpt}
@@ -305,7 +305,7 @@ export function SaveMemoryButton({
                 )}
 
                 <label className="mb-3 block">
-                  <span className="mb-1 block text-[11px] uppercase tracking-wider text-neutral-500">
+                  <span className="mb-1 block text-[11px] uppercase tracking-wider text-[color:var(--fg-muted)]">
                     {t('rationaleLabel')}
                   </span>
                   <textarea
@@ -314,17 +314,17 @@ export function SaveMemoryButton({
                     disabled={busy}
                     maxLength={10000}
                     rows={2}
-                    className="w-full resize-y rounded border border-neutral-300 px-2 py-1.5 text-sm text-neutral-900 focus:border-neutral-500 focus:outline-none dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
+                    className="w-full resize-y rounded border border-[color:var(--border)] px-2 py-2 text-sm text-[color:var(--fg-strong)] focus:border-[color:var(--border-strong)] focus:outline-none"
                     placeholder={t('rationalePlaceholder')}
                   />
                 </label>
 
-                <div className="mb-3 font-mono text-[10px] text-neutral-500">
+                <div className="mb-3 font-mono text-[10px] text-[color:var(--fg-muted)]">
                   {t('linkedToTurn', { turnId })}
                 </div>
 
                 {error !== null && (
-                  <div className="mb-3 border-l-2 border-red-400 px-2 py-1 text-xs text-red-700 dark:text-red-300">
+                  <div className="mb-3 border-l-2 border-[color:var(--danger-edge)] px-2 py-1 text-xs text-[color:var(--danger)]">
                     {t('errorPrefix')} {error}
                   </div>
                 )}
@@ -334,7 +334,7 @@ export function SaveMemoryButton({
                     type="button"
                     onClick={close}
                     disabled={busy}
-                    className="rounded border border-neutral-300 px-3 py-1 text-xs hover:border-neutral-400 disabled:opacity-50 dark:border-neutral-700 dark:hover:border-neutral-500"
+                    className="rounded border border-[color:var(--border)] px-3 py-1 text-xs hover:border-[color:var(--border-strong)] disabled:opacity-50"
                   >
                     {t('cancel')}
                   </button>
@@ -342,7 +342,7 @@ export function SaveMemoryButton({
                     type="button"
                     onClick={() => void submit()}
                     disabled={busy || summary.trim().length === 0}
-                    className="rounded bg-neutral-900 px-3 py-1 text-xs text-white hover:bg-neutral-700 disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
+                    className="rounded bg-[color:var(--bg-inverse)] px-3 py-1 text-xs text-[color:var(--fg-on-dark)] hover:bg-[color:var(--fg-muted)] disabled:opacity-50"
                   >
                     {busy ? t('saving') : t('save')}
                   </button>
@@ -350,32 +350,32 @@ export function SaveMemoryButton({
               </>
             ) : (
               <>
-                <div className="mb-3 border-l-2 border-green-400 px-2 py-1.5 text-xs text-neutral-700 dark:text-neutral-300">
+                <div className="mb-3 border-l-2 border-[color:var(--success)] px-2 py-2 text-xs text-[color:var(--fg)]">
                   {t('successHeadline')}
                 </div>
                 <dl className="mb-4 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 font-mono text-[11px]">
-                  <dt className="text-neutral-500">id</dt>
-                  <dd className="text-neutral-900 dark:text-neutral-100">
+                  <dt className="text-[color:var(--fg-muted)]">id</dt>
+                  <dd className="text-[color:var(--fg-strong)]">
                     {saved.memorableKnowledgeNodeId}
                   </dd>
-                  <dt className="text-neutral-500">{t('skippedInvolved')}</dt>
+                  <dt className="text-[color:var(--fg-muted)]">{t('skippedInvolved')}</dt>
                   <dd>{saved.skippedInvolved}</dd>
-                  <dt className="text-neutral-500">{t('skippedRequired')}</dt>
+                  <dt className="text-[color:var(--fg-muted)]">{t('skippedRequired')}</dt>
                   <dd>{saved.skippedRequired}</dd>
-                  <dt className="text-neutral-500">{t('skippedDerivedFrom')}</dt>
+                  <dt className="text-[color:var(--fg-muted)]">{t('skippedDerivedFrom')}</dt>
                   <dd>{saved.skippedDerivedFrom}</dd>
                 </dl>
                 <div className="flex justify-end gap-2">
                   <a
                     href={`/memories/${encodeURIComponent(saved.memorableKnowledgeNodeId)}`}
-                    className="rounded border border-neutral-300 px-3 py-1 text-xs hover:border-neutral-400 dark:border-neutral-700 dark:hover:border-neutral-500"
+                    className="rounded border border-[color:var(--border)] px-3 py-1 text-xs hover:border-[color:var(--border-strong)]"
                   >
                     {t('openDetail')}
                   </a>
                   <button
                     type="button"
                     onClick={close}
-                    className="rounded bg-neutral-900 px-3 py-1 text-xs text-white hover:bg-neutral-700 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
+                    className="rounded bg-[color:var(--bg-inverse)] px-3 py-1 text-xs text-[color:var(--fg-on-dark)] hover:bg-[color:var(--fg-muted)]"
                   >
                     {t('close')}
                   </button>

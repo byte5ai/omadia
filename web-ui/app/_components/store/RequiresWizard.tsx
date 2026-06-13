@@ -2,7 +2,7 @@
 
 import { useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Check, Loader2, X } from 'lucide-react';
+import { Check, X } from 'lucide-react';
 
 import { cn } from '../../_lib/cn';
 import {
@@ -126,7 +126,7 @@ export function RequiresWizard({
           'max-h-[90vh] overflow-hidden',
         )}
       >
-        <header className="flex items-start justify-between gap-6 border-b border-[color:var(--rule)] px-7 py-5">
+        <header className="flex items-start justify-between gap-6 border-b border-[color:var(--rule)] px-6 py-4">
           <div className="min-w-0">
             <div className="text-[11px] uppercase tracking-[0.22em] text-[color:var(--faint-ink)]">
               Voraussetzungen
@@ -151,7 +151,7 @@ export function RequiresWizard({
           </button>
         </header>
 
-        <div className="flex-1 overflow-y-auto px-7 py-6">
+        <div className="flex-1 overflow-y-auto px-6 py-6">
           {phase.kind === 'review' ? (
             <ReviewBody
               selections={selections}
@@ -182,7 +182,7 @@ export function RequiresWizard({
           )}
         </div>
 
-        <footer className="flex items-center justify-between gap-3 border-t border-[color:var(--rule)] bg-[color:var(--paper-soft)] px-7 py-4">
+        <footer className="flex items-center justify-between gap-3 border-t border-[color:var(--rule)] bg-[color:var(--paper-soft)] px-6 py-4">
           <p className="text-[11px] leading-relaxed text-[color:var(--faint-ink)]">
             {phase.kind === 'review'
               ? `${selections.length} Voraussetzung${selections.length === 1 ? '' : 'en'} → ${targetPluginName}`
@@ -207,7 +207,7 @@ export function RequiresWizard({
                   onClick={runInstallChain}
                   disabled={!allResolved}
                   className={cn(
-                    'inline-flex items-center gap-2 rounded-full px-5 py-2',
+                    'inline-flex items-center gap-2 rounded-full px-4 py-2',
                     'bg-[color:var(--accent)] text-[color:var(--accent-fg)] shadow-[var(--shadow-cta)]',
                     'transition-[background,transform] duration-[var(--dur-fast)] ease-[var(--ease-out)]',
                     'hover:bg-[color:var(--accent-hover)] active:translate-y-px',
@@ -224,7 +224,7 @@ export function RequiresWizard({
                 type="button"
                 onClick={() => formRef.current?.requestSubmit()}
                 className={cn(
-                  'inline-flex items-center gap-2 rounded-full px-5 py-2',
+                  'inline-flex items-center gap-2 rounded-full px-4 py-2',
                   'bg-[color:var(--accent)] text-[color:var(--accent-fg)] shadow-[var(--shadow-cta)]',
                 )}
               >
@@ -239,7 +239,7 @@ export function RequiresWizard({
                   onClose();
                   router.refresh();
                 }}
-                className="rounded-full bg-[color:var(--accent)] px-5 py-2 text-[13px] font-semibold text-[color:var(--accent-fg)]"
+                className="rounded-full bg-[color:var(--accent)] px-4 py-2 text-[13px] font-semibold text-[color:var(--accent-fg)]"
               >
                 Schließen
               </button>
@@ -355,7 +355,7 @@ function ReviewBody({
   onChange: (idx: number, providerId: string | null) => void;
 }): React.ReactElement {
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       {selections.map((sel, idx) => (
         <ProviderPickRow
           key={sel.capability}
@@ -478,9 +478,9 @@ function InstallingBody({
   const fields: InstallSetupField[] = phase.currentJob?.setup_schema?.fields ?? [];
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <div className="flex items-center gap-3">
-        <Loader2 className="size-5 animate-spin text-[color:var(--accent)]" aria-hidden />
+        <span className="lume-busy-dots" aria-hidden />
         <div>
           <div className="text-[11px] uppercase tracking-[0.18em] text-[color:var(--faint-ink)]">
             Schritt {phase.stepIndex + 1} / {phase.stepCount}
@@ -541,7 +541,7 @@ function SuccessBody({
 }): React.ReactElement {
   return (
     <div className="flex flex-col items-center gap-3 py-6 text-center">
-      <div className="flex size-12 items-center justify-center rounded-full bg-[color:var(--success)]/10 text-[color:var(--success)]">
+      <div className="flex size-12 items-center justify-center text-[color:var(--success)]">
         <Check className="size-6" aria-hidden />
       </div>
       <div className="font-display text-xl text-[color:var(--ink)]">

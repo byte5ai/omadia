@@ -30,19 +30,19 @@ export function CaptureDisclosure({
   return (
     <details
       className={[
-        'mt-2 rounded bg-emerald-50/60 text-xs ring-1 ring-emerald-100',
-        'dark:bg-emerald-950/30 dark:ring-emerald-900/60',
+        'mt-2 rounded bg-[color:var(--success)]/10 text-xs ring-1 ring-[color:var(--success)]',
+        '',
         className ?? '',
       ].join(' ')}
     >
-      <summary className="cursor-pointer select-none px-2 py-1 font-medium text-emerald-800 dark:text-emerald-200">
+      <summary className="cursor-pointer select-none px-2 py-1 font-medium text-[color:var(--success)]">
         🧠 Memory-Auswirkung · {summary}
       </summary>
-      <div className="space-y-2 px-2 pb-2 pt-1 text-emerald-900 dark:text-emerald-100">
+      <div className="space-y-2 px-2 pb-2 pt-1 text-[color:var(--success)]">
         <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1">
           {facts.map((fact) => (
             <div key={fact.title} className="contents">
-              <dt className="text-[10px] font-semibold uppercase tracking-wider text-emerald-700/80 dark:text-emerald-300/80">
+              <dt className="text-[10px] font-semibold uppercase tracking-wider text-[color:var(--success)]/80">
                 {fact.title}
               </dt>
               <dd className="font-mono-num tabular-nums">{fact.value}</dd>
@@ -51,14 +51,14 @@ export function CaptureDisclosure({
         </dl>
         {disclosure.reasons.length > 0 && (
           <div>
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-emerald-700/80 dark:text-emerald-300/80">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-[color:var(--success)]/80">
               Begründung
             </div>
             <ul className="mt-1 space-y-0.5">
               {disclosure.reasons.map((reason, i) => (
                 <li
                   key={`${reason}-${String(i)}`}
-                  className="font-mono text-[11px] text-emerald-900/80 dark:text-emerald-200/90"
+                  className="font-mono text-[11px] text-[color:var(--success)]/80"
                 >
                   • {reason}
                 </li>
@@ -68,14 +68,14 @@ export function CaptureDisclosure({
         )}
         {disclosure.graphRefs && disclosure.graphRefs.entityNodeIds.length > 0 && (
           <div>
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-emerald-700/80 dark:text-emerald-300/80">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-[color:var(--success)]/80">
               Verknüpfte Entitäten ({disclosure.graphRefs.entityNodeIds.length})
             </div>
             <ul className="mt-1 max-h-32 space-y-0.5 overflow-y-auto">
               {disclosure.graphRefs.entityNodeIds.map((id) => (
                 <li
                   key={id}
-                  className="font-mono text-[11px] text-emerald-900/80 dark:text-emerald-200/90"
+                  className="font-mono text-[11px] text-[color:var(--success)]/80"
                 >
                   • {id}
                 </li>

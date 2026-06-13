@@ -16,7 +16,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { Loader2, ShieldAlert } from 'lucide-react';
+import { ShieldAlert } from 'lucide-react';
 
 import { ApiError, listInstalledSecretKeys, setAuditMode } from '../../_lib/api';
 import type { AuditMode } from '../../_lib/storeTypes';
@@ -127,7 +127,7 @@ export function AuditModeSwitch({
           <label
             key={m.value}
             className={[
-              'flex cursor-pointer items-start gap-3 rounded-[10px] border p-3',
+              'flex cursor-pointer items-start gap-3 rounded-md border p-3',
               mode === m.value
                 ? 'border-[color:var(--accent)]'
                 : 'border-[color:var(--rule)]',
@@ -155,13 +155,13 @@ export function AuditModeSwitch({
       </div>
       <div className="min-h-[20px] text-[12px]">
         {status.kind === 'loading' && (
-          <span className="inline-flex items-center gap-1.5 text-[color:var(--fg-muted)]">
-            <Loader2 className="size-3 animate-spin" aria-hidden /> lädt …
+          <span className="inline-flex items-center gap-2 text-[color:var(--fg-muted)]">
+            <span className="lume-busy-dots" aria-hidden /> lädt …
           </span>
         )}
         {status.kind === 'saving' && (
-          <span className="inline-flex items-center gap-1.5 text-[color:var(--fg-muted)]">
-            <Loader2 className="size-3 animate-spin" aria-hidden /> speichert …
+          <span className="inline-flex items-center gap-2 text-[color:var(--fg-muted)]">
+            <span className="lume-busy-dots" aria-hidden /> speichert …
           </span>
         )}
         {status.kind === 'saved' && (

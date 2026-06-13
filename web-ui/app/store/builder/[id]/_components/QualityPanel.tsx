@@ -18,9 +18,9 @@ import {
  */
 
 function scoreColor(score: number): string {
-  if (score >= 70) return 'bg-emerald-500';
-  if (score >= 40) return 'bg-amber-500';
-  return 'bg-red-500';
+  if (score >= 70) return 'bg-[color:var(--success)]/100';
+  if (score >= 40) return 'bg-[color:var(--warning)]/100';
+  return 'bg-[color:var(--danger)]/80';
 }
 
 export interface QualityPanelProps {
@@ -110,7 +110,7 @@ export function QualityPanel({ draftId, refetchKey }: QualityPanelProps): React.
       </header>
 
       {error && (
-        <div role="alert" className="text-xs text-red-600" data-testid="quality-error">
+        <div role="alert" className="text-xs text-[color:var(--danger)]" data-testid="quality-error">
           {error}
         </div>
       )}

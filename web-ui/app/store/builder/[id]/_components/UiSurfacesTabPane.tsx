@@ -80,7 +80,7 @@ export function UiSurfacesTabPane({
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col">
-      <div className="flex-1 space-y-6 overflow-y-auto px-5 py-5">
+      <div className="flex-1 space-y-6 overflow-y-auto px-4 py-4">
         <header className="space-y-1">
           <h2 className="text-[14px] font-semibold text-[color:var(--fg-strong)]">
             {t('heading')}
@@ -109,10 +109,10 @@ function SaveBadge({ status }: { status: SaveStatus }): React.ReactElement | nul
   if (status.kind === 'idle') return null;
   const cls =
     status.kind === 'error'
-      ? 'bg-rose-50 text-rose-900 border-rose-200'
+      ? 'bg-[color:var(--danger)]/8 text-[color:var(--danger)] border-[color:var(--danger-edge)]'
       : status.kind === 'saved'
-        ? 'bg-emerald-50 text-emerald-900 border-emerald-200'
-        : 'bg-slate-50 text-slate-700 border-slate-200';
+        ? 'bg-[color:var(--success)]/10 text-[color:var(--success)] border-[color:var(--success)]'
+        : 'bg-[color:var(--bg-soft)] text-[color:var(--fg)] border-[color:var(--border)]';
   const label =
     status.kind === 'pending'
       ? t('saving')
@@ -121,7 +121,7 @@ function SaveBadge({ status }: { status: SaveStatus }): React.ReactElement | nul
         : t('error', { message: status.message });
   return (
     <div
-      className={`mx-5 mb-3 rounded-md border px-3 py-1.5 text-[11px] ${cls}`}
+      className={`mx-4 mb-3 rounded-md border px-3 py-2 text-[11px] ${cls}`}
     >
       {label}
     </div>

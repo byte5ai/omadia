@@ -17,8 +17,7 @@ import {
   CircleDashed,
   CircleDot,
   FileCode2,
-  Loader2,
-  Save,
+    Save,
   Sparkles,
 } from 'lucide-react';
 
@@ -382,7 +381,7 @@ export function SlotEditor({
         activeSlot={active}
       />
 
-      <div className="flex items-center gap-3 border-b border-[color:var(--divider)] px-5 py-3">
+      <div className="flex items-center gap-3 border-b border-[color:var(--divider)] px-4 py-3">
         <label
           htmlFor={selectId}
           className="font-mono-num text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]"
@@ -406,7 +405,7 @@ export function SlotEditor({
           type="button"
           onClick={() => void flush()}
           disabled={status.kind === 'pending'}
-          className="ml-auto inline-flex items-center gap-1.5 rounded-md bg-[color:var(--accent)] px-2.5 py-1 text-[11px] font-semibold text-white shadow-[var(--shadow-cta)] disabled:opacity-50"
+          className="ml-auto inline-flex items-center gap-2 rounded-md bg-[color:var(--accent)] px-3 py-1 text-[11px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] disabled:opacity-50"
         >
           <Save className="size-3" aria-hidden />
           {t('save')}
@@ -435,7 +434,7 @@ export function SlotEditor({
           }}
           loading={
             <div className="flex h-full items-center justify-center text-[color:var(--fg-muted)]">
-              <Loader2 className="size-4 animate-spin" aria-hidden />
+              <span className="lume-busy-dots" aria-hidden />
             </div>
           }
         />
@@ -473,15 +472,15 @@ function TemplateSlotsPanel({
       open={missingRequired.length > 0}
       className="group border-b border-[color:var(--divider)] bg-[color:var(--bg-soft)]/30"
     >
-      <summary className="flex cursor-pointer items-center gap-2 px-5 py-2 text-[11px] text-[color:var(--fg-muted)] hover:bg-[color:var(--bg-soft)]">
+      <summary className="flex cursor-pointer items-center gap-2 px-4 py-2 text-[11px] text-[color:var(--fg-muted)] hover:bg-[color:var(--bg-soft)]">
         <span className="font-mono-num text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
           {t('templateRequired.heading')}
         </span>
         <span
           className={cn(
-            'font-mono-num rounded-full px-1.5 text-[10px] font-semibold',
+            'font-mono-num rounded-full px-2 text-[10px] font-semibold',
             missingRequired.length > 0
-              ? 'bg-[color:var(--danger)] text-white'
+              ? 'text-[color:var(--danger)]'
               : 'bg-[color:var(--success)]/15 text-[color:var(--success)]',
           )}
         >
@@ -490,7 +489,7 @@ function TemplateSlotsPanel({
             : t('templateRequired.missing', { count: missingRequired.length })}
         </span>
       </summary>
-      <ul className="space-y-1 px-5 pb-3 pt-1">
+      <ul className="space-y-1 px-4 pb-3 pt-1">
         {templateSlots.map((slot) => {
           const filled = filledSet.has(slot.key);
           const isActive = slot.key === activeSlot;
@@ -498,7 +497,7 @@ function TemplateSlotsPanel({
             <li
               key={slot.key}
               className={cn(
-                'flex items-start gap-2 rounded-md px-2 py-1.5 transition-colors',
+                'flex items-start gap-2 rounded-md px-2 py-2 transition-colors',
                 filled && onSelectSlot && 'cursor-pointer hover:bg-[color:var(--bg-soft)]',
                 isActive && 'bg-[color:var(--bg-soft)]',
               )}
@@ -583,7 +582,7 @@ function SaveBadge({ status }: { status: SaveStatus }): React.ReactElement | nul
         status.kind === 'dirty' && 'text-[color:var(--warning)]',
       )}
     >
-      {status.kind === 'pending' && <Loader2 className="size-3 animate-spin" aria-hidden />}
+      {status.kind === 'pending' && <span className="lume-busy-dots" aria-hidden />}
       {status.kind === 'saved' && <Check className="size-3" aria-hidden />}
       {status.kind === 'dirty' && <span className="size-1.5 rounded-full bg-current" />}
       {status.kind === 'error' && <AlertCircle className="size-3" aria-hidden />}

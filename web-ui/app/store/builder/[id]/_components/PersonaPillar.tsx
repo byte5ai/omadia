@@ -159,7 +159,7 @@ export function PersonaPillar({
 
   return (
     <section
-      className="space-y-5 p-5"
+      className="space-y-4 p-4"
       data-testid="persona-pillar"
       aria-labelledby="persona-pillar-heading"
     >
@@ -261,7 +261,7 @@ export function PersonaPillar({
       />
 
       {/* Template (Phase-4-aware placeholder) */}
-      <div className="space-y-1.5">
+      <div className="space-y-2">
         <label
           className="block text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]"
           htmlFor="persona-template"
@@ -349,7 +349,7 @@ export function PersonaPillar({
       </div>
 
       {/* Custom notes */}
-      <div className="space-y-1.5">
+      <div className="space-y-2">
         <label
           htmlFor="persona-custom-notes"
           className="block text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]"
@@ -409,7 +409,7 @@ export function PersonaPillar({
             onClick={handleReset}
             disabled={!dirty || pending || disabled}
             className={cn(
-              'rounded-md border border-[color:var(--border)] px-3 py-1.5 text-sm',
+              'rounded-md border border-[color:var(--border)] px-3 py-2 text-sm',
               'text-[color:var(--fg)] disabled:opacity-50',
             )}
           >
@@ -420,7 +420,7 @@ export function PersonaPillar({
             onClick={handleSave}
             disabled={!dirty || pending || disabled}
             className={cn(
-              'rounded-md bg-[color:var(--accent)] px-3 py-1.5 text-sm font-medium text-white',
+              'rounded-md bg-[color:var(--accent)] px-3 py-2 text-sm font-medium text-[color:var(--fg-on-dark)]',
               'shadow-[var(--shadow-cta)] disabled:opacity-50',
             )}
           >

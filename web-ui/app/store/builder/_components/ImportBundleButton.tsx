@@ -129,14 +129,14 @@ function ImportBundleModal({
 
   return (
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/55 p-6"
+      className="fixed inset-0 z-40 flex items-center justify-center bg-[color:var(--bg-modal-overlay)] p-6"
       role="dialog"
       aria-modal="true"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="w-full max-w-md rounded-lg border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-5 text-[color:var(--fg)] shadow-xl">
+      <div className="w-full max-w-md rounded-lg border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-4 text-[color:var(--fg)] shadow-xl">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-base font-semibold text-[color:var(--fg-strong)]">
             {t('modal.title')}
@@ -237,7 +237,7 @@ function ImportBundleModal({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md border border-[color:var(--border)] px-3 py-1.5 text-sm text-[color:var(--fg)]"
+            className="rounded-md border border-[color:var(--border)] px-3 py-2 text-sm text-[color:var(--fg)]"
           >
             {t('modal.cancel')}
           </button>
@@ -246,7 +246,7 @@ function ImportBundleModal({
             onClick={() => void onSubmit()}
             disabled={!file || busy}
             className={cn(
-              'rounded-md bg-[color:var(--accent)] px-3 py-1.5 text-sm font-medium text-white',
+              'rounded-md bg-[color:var(--accent)] px-3 py-2 text-sm font-medium text-[color:var(--fg-on-dark)]',
               'shadow-[var(--shadow-cta)] disabled:opacity-50',
             )}
           >

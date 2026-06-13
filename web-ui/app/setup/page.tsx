@@ -161,7 +161,7 @@ function SetupPageInner(): React.ReactElement {
   if (state.kind === 'error') {
     return (
       <PageShell>
-        <p className="text-sm text-red-500">
+        <p className="text-sm text-[color:var(--danger)]">
           {t('errorPrefix')} {state.message}
         </p>
       </PageShell>
@@ -245,12 +245,12 @@ function SetupPageInner(): React.ReactElement {
           <span className="text-xs opacity-60">{t('anthropicKeyHelp')}</span>
         </label>
         {submitError && (
-          <p className="text-sm text-red-500">{submitError}</p>
+          <p className="text-sm text-[color:var(--danger)]">{submitError}</p>
         )}
         <button
           type="submit"
           disabled={submitting}
-          className="rounded-md bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-black disabled:opacity-50"
+          className="rounded-md bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-[color:var(--text-inverse)] disabled:opacity-50"
         >
           {submitting ? t('submitting') : t('submit')}
         </button>

@@ -136,7 +136,7 @@ export default function KgPrioritiesPage(): React.ReactElement {
   );
 
   return (
-    <main className="mx-auto max-w-[1200px] px-6 py-12 lg:px-10 lg:py-16">
+    <main className="mx-auto max-w-[1200px] px-6 py-12 lg:px-8 lg:py-16">
       <header className="mb-8">
         <h1 className="font-display text-[clamp(2rem,4vw,3rem)] leading-[1.1] text-[color:var(--fg-strong)]">
           Knowledge-Graph Priorities
@@ -149,7 +149,7 @@ export default function KgPrioritiesPage(): React.ReactElement {
         </p>
       </header>
 
-      <section className="mb-8 rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
+      <section className="mb-8 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
         <label className="block text-sm font-semibold text-[color:var(--fg-strong)]">
           Agent-ID
         </label>
@@ -172,12 +172,12 @@ export default function KgPrioritiesPage(): React.ReactElement {
       </section>
 
       {error !== null ? (
-        <div className="mb-6 rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-400">
+        <div className="mb-6 rounded-md border border-[color:var(--danger-edge)]/40 bg-[color:var(--danger)]/10 p-3 text-sm text-[color:var(--danger)]">
           {error}
         </div>
       ) : null}
 
-      <section className="mb-8 rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
+      <section className="mb-8 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
         <h2 className="text-lg font-semibold text-[color:var(--fg-strong)]">
           Neuer Eintrag
         </h2>
@@ -233,7 +233,7 @@ export default function KgPrioritiesPage(): React.ReactElement {
         </div>
       </section>
 
-      <section className="rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 overflow-x-auto">
+      <section className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="border-b border-[color:var(--border)] text-left text-[color:var(--fg-muted)]">
             <tr>
@@ -268,8 +268,8 @@ export default function KgPrioritiesPage(): React.ReactElement {
                     <span
                       className={
                         r.action === 'block'
-                          ? 'rounded-full bg-red-500/20 px-2 py-0.5 text-xs font-medium text-red-400'
-                          : 'rounded-full bg-emerald-500/20 px-2 py-0.5 text-xs font-medium text-emerald-400'
+                          ? 'px-2 py-0.5 text-xs font-medium text-[color:var(--danger)]'
+                          : 'px-2 py-0.5 text-xs font-medium text-[color:var(--success)]'
                       }
                     >
                       {r.action}
@@ -289,7 +289,7 @@ export default function KgPrioritiesPage(): React.ReactElement {
                       type="button"
                       onClick={() => { void handleRemove(r.entryExternalId); }}
                       disabled={busy === `remove:${r.entryExternalId}`}
-                      className="rounded-md border border-[color:var(--border)] px-3 py-1 text-xs text-[color:var(--fg-strong)] hover:bg-red-500/20 disabled:opacity-40"
+                      className="rounded-md border border-[color:var(--border)] px-3 py-1 text-xs text-[color:var(--fg-strong)] hover:bg-[color:var(--danger)]/20 disabled:opacity-40"
                     >
                       {busy === `remove:${r.entryExternalId}` ? '…' : 'Remove'}
                     </button>
