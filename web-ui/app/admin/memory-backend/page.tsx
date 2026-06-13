@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 
+import { Button } from '@/app/_components/ui/Button';
 import {
   ApiError,
   getMemoryBackend,
@@ -216,14 +217,13 @@ export default function MemoryBackendPage(): React.ReactElement {
             </div>
 
             <div className="mt-4 flex items-center justify-end">
-              <button
-                type="button"
+              <Button
+                variant="primary"
                 onClick={() => void onSave()}
                 disabled={!canSave}
-                className="rounded bg-[color:var(--accent)] px-4 py-2 text-xs font-semibold text-[color:var(--fg-on-dark)] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {saving ? 'speichert…' : 'Auswahl speichern'}
-              </button>
+              </Button>
             </div>
           </section>
 

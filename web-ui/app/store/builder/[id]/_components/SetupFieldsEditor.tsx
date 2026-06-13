@@ -2,6 +2,8 @@
 
 import { useCallback, useId, useMemo, useState } from 'react';
 import { useTranslations } from 'next-intl';
+
+import { Button } from '@/app/_components/ui/Button';
 import { Plus, Trash2 } from 'lucide-react';
 
 import { ApiError, patchBuilderSpec } from '../../../../_lib/api';
@@ -314,8 +316,8 @@ function NewFieldForm({
             {t('required.on')}
           </span>
         </label>
-        <button
-          type="button"
+        <Button
+          variant="primary"
           onClick={() => {
             if (!valid) return;
             onSubmit({ key: trimmed, type, required });
@@ -323,11 +325,11 @@ function NewFieldForm({
             setRequired(false);
           }}
           disabled={!valid}
-          className="ml-auto inline-flex items-center gap-1 rounded-md bg-[color:var(--accent)] px-3 py-2 text-[11px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] disabled:opacity-40"
+          className="ml-auto gap-1 text-[11px]"
         >
           <Plus className="size-3" aria-hidden />
           {t('add')}
-        </button>
+        </Button>
       </div>
       {key && !valid ? (
         <p className="mt-1 text-[10px] text-[color:var(--danger)]">

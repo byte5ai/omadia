@@ -4,6 +4,8 @@ import { useTranslations } from 'next-intl';
 import { useCallback, useMemo, useState, useTransition } from 'react';
 import { ChevronDown, ChevronRight, Sparkles } from 'lucide-react';
 
+import { Button } from '@/app/_components/ui/Button';
+
 import { ApiError, setPersonaConfig } from '../../../../_lib/api';
 import type { QualityConfig } from '../../../../_lib/builderTypes';
 import { cn } from '../../../../_lib/cn';
@@ -201,15 +203,15 @@ export function PersonaPillar({
               : t('templateBadge', { template: persona.template })
             : t('templateBadgeNone')}
         </span>
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="sm"
           data-testid="persona-template-open"
           onClick={() => setGalleryOpen(true)}
           disabled={disabled || pending}
-          className="rounded border border-[color:var(--border)] px-2 py-1 text-xs"
         >
           {t('applyTemplate')}
-        </button>
+        </Button>
       </div>
       {galleryOpen && (
         <PersonaTemplateGallery
@@ -404,28 +406,20 @@ export function PersonaPillar({
           ) : null}
         </div>
         <div className="flex items-center gap-2">
-          <button
-            type="button"
+          <Button
+            variant="secondary"
             onClick={handleReset}
             disabled={!dirty || pending || disabled}
-            className={cn(
-              'rounded-md border border-[color:var(--border)] px-3 py-2 text-sm',
-              'text-[color:var(--fg)] disabled:opacity-50',
-            )}
           >
             {t('reset')}
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="primary"
             onClick={handleSave}
             disabled={!dirty || pending || disabled}
-            className={cn(
-              'rounded-md bg-[color:var(--accent)] px-3 py-2 text-sm font-medium text-[color:var(--fg-on-dark)]',
-              'shadow-[var(--shadow-cta)] disabled:opacity-50',
-            )}
           >
             {pending ? t('saving') : t('save')}
-          </button>
+          </Button>
         </div>
       </div>
 

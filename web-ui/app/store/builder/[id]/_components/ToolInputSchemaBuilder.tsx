@@ -4,6 +4,8 @@ import { Plus } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { useCallback, useMemo } from 'react';
 
+import { Button } from '@/app/_components/ui/Button';
+
 import {
   detectType,
   ensureTopLevelObject,
@@ -167,14 +169,10 @@ export function ToolInputSchemaBuilder({
           );
         })
       )}
-      <button
-        type="button"
-        onClick={addProperty}
-        className="inline-flex items-center gap-1 rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1 text-[11px] font-semibold text-[color:var(--fg-strong)] hover:border-[color:var(--accent)]"
-      >
+      <Button variant="secondary" size="sm" onClick={addProperty}>
         <Plus className="size-3" aria-hidden />
         {t('addProperty')}
-      </button>
+      </Button>
     </div>
   );
 }

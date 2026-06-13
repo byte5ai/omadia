@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useCallback, useState } from 'react';
 
+import { Button } from '@/app/_components/ui/Button';
 import {
   listRoutineRuns,
   type RoutineDto,
@@ -295,14 +296,16 @@ function RunHistoryPanel({
         <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
           Letzte {HISTORY_LIMIT} Runs
         </div>
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="sm"
+          pill
           onClick={onRefresh}
           disabled={loading}
-          className="rounded-full border border-[color:var(--border)] bg-[color:var(--surface)] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)] transition hover:border-[color:var(--accent)] hover:text-[color:var(--fg-strong)] disabled:opacity-50"
+          className="text-[10px] uppercase tracking-[0.16em]"
         >
           {loading ? 'Lädt…' : 'Refresh'}
-        </button>
+        </Button>
       </div>
       {error ? (
         <div className="rounded-md border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/5 p-3 text-[12px] text-[color:var(--danger)]">

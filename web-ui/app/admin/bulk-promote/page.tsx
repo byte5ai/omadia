@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 
+import { Button } from '@/app/_components/ui/Button';
+
 import {
   ApiError,
   previewBulkPromote,
@@ -185,26 +187,24 @@ export default function BulkPromotePage(): React.ReactElement {
           </label>
         </div>
         <div className="mt-4 flex items-center justify-end gap-2">
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => void loadPreview()}
             disabled={running || previewLoading}
-            className="rounded border border-[color:var(--border)] px-3 py-1 text-xs hover:border-[color:var(--border-strong)] disabled:opacity-50"
           >
             Vorschau aktualisieren
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
             onClick={() => void trigger()}
-            disabled={
-              running ||
-              preview === null ||
-              !preview.scorerAvailable
-            }
-            className="rounded bg-[color:var(--bg-inverse)] px-3 py-1 text-xs text-[color:var(--fg-on-dark)] hover:bg-[color:var(--fg-muted)] disabled:opacity-50"
+            disabled={running || preview === null || !preview.scorerAvailable}
+            busy={running}
+            busyLabel="läuft"
           >
-            {running ? 'läuft…' : 'Bulk-Job starten'}
-          </button>
+            Bulk-Job starten
+          </Button>
         </div>
       </section>
 

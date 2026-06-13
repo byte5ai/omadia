@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import Link from 'next/link';
 
+import { Button } from '@/app/_components/ui/Button';
 import {
   listMemories,
   type MemorableKind,
@@ -80,13 +81,13 @@ export default function MemoriesPage(): React.ReactElement {
               Kuratiertes Wissen — ACL-gefiltert auf dich als Owner.
             </p>
           </div>
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => void load()}
-            className="rounded border border-[color:var(--border)] px-2 py-1 text-xs hover:border-[color:var(--border-strong)]"
           >
             ↻ neu laden
-          </button>
+          </Button>
         </div>
         <div className="mt-3 flex flex-wrap gap-2">
           {KIND_FILTERS.map((k) => {

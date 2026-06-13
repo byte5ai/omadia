@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 
+import { Button } from '@/app/_components/ui/Button';
 import {
   listExcerptMergeCandidates,
   listMergeCandidates,
@@ -300,16 +301,18 @@ export default function DuplicatesListPage(): React.ReactElement {
             }}
             className="w-20 rounded border border-[color:var(--border)] bg-transparent px-2 py-1 text-xs"
           />
-          <button
-            type="button"
+          <Button
+            variant="primary"
+            size="sm"
             onClick={() => void triggerBulkRun()}
             disabled={
               bulkRunning || (bulkPreview !== null && bulkPreview.unchecked === 0)
             }
-            className="rounded border border-[color:var(--border-strong)] bg-[color:var(--bg-inverse)] px-3 py-1 text-xs text-[color:var(--fg-on-dark)] disabled:cursor-not-allowed disabled:opacity-50"
+            busy={bulkRunning}
+            busyLabel="läuft"
           >
-            {bulkRunning ? 'läuft…' : 'Bulk-Detect starten'}
-          </button>
+            Bulk-Detect starten
+          </Button>
           {bulkLimit > BULK_CONFIRM_THRESHOLD && (
             <span className="text-[11px] text-[color:var(--warning)]">
               ⚠️ Confirm bei Limit &gt; {BULK_CONFIRM_THRESHOLD}
@@ -372,14 +375,15 @@ export default function DuplicatesListPage(): React.ReactElement {
             {s === 'all' ? 'alle' : s}
           </button>
         ))}
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="sm"
           onClick={() => void load()}
           disabled={loading}
-          className="ml-auto rounded border border-[color:var(--border)] px-3 py-1 text-xs hover:border-[color:var(--border-strong)] disabled:opacity-50"
+          className="ml-auto"
         >
           {loading ? 'lädt…' : 'aktualisieren'}
-        </button>
+        </Button>
       </div>
 
       {error !== null && (
@@ -498,17 +502,19 @@ export default function DuplicatesListPage(): React.ReactElement {
               }}
               className="w-20 rounded border border-[color:var(--border)] bg-transparent px-2 py-1 text-xs"
             />
-            <button
-              type="button"
+            <Button
+              variant="primary"
+              size="sm"
               onClick={() => void triggerExcerptBulkRun()}
               disabled={
                 excerptBulkRunning ||
                 (excerptBulkPreview !== null && excerptBulkPreview.unchecked === 0)
               }
-              className="rounded border border-[color:var(--border-strong)] bg-[color:var(--bg-inverse)] px-3 py-1 text-xs text-[color:var(--fg-on-dark)] disabled:cursor-not-allowed disabled:opacity-50"
+              busy={excerptBulkRunning}
+              busyLabel="läuft"
             >
-              {excerptBulkRunning ? 'läuft…' : 'Bulk-Detect starten'}
-            </button>
+              Bulk-Detect starten
+            </Button>
             {excerptBulkLimit > BULK_CONFIRM_THRESHOLD && (
               <span className="text-[11px] text-[color:var(--warning)]">
                 ⚠️ Confirm bei Limit &gt; {BULK_CONFIRM_THRESHOLD}
@@ -568,14 +574,15 @@ export default function DuplicatesListPage(): React.ReactElement {
               {s === 'all' ? 'alle' : s}
             </button>
           ))}
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => void loadExcerpts()}
             disabled={excerptLoading}
-            className="ml-auto rounded border border-[color:var(--border)] px-3 py-1 text-xs hover:border-[color:var(--border-strong)] disabled:opacity-50"
+            className="ml-auto"
           >
             {excerptLoading ? 'lädt…' : 'aktualisieren'}
-          </button>
+          </Button>
         </div>
 
         {excerptError !== null && (

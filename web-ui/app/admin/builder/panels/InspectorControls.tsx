@@ -1,5 +1,7 @@
 'use client';
 
+import { Button } from '@/app/_components/ui/Button';
+
 export const inputCls =
   'w-full rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[color:var(--accent)]';
 
@@ -30,13 +32,12 @@ export function SaveButton({
   label: string;
 }): React.ReactElement {
   return (
-    <button
-      type="button"
+    <Button
+      variant="primary"
       onClick={onClick}
       disabled={pending}
-      className="rounded-md bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-[color:var(--text-inverse)] disabled:opacity-50"
     >
       {pending ? '…' : label}
-    </button>
+    </Button>
   );
 }

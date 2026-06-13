@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
+import { Button } from '@/app/_components/ui/Button';
+
 /**
  * Admin → Knowledge-Graph Priorities (palaia Phase 5 / OB-74 Slice 5).
  *
@@ -161,13 +163,9 @@ export default function KgPrioritiesPage(): React.ReactElement {
             placeholder="de.byte5.agent.calendar oder orchestrator-default"
             className="flex-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-sm text-[color:var(--fg-strong)]"
           />
-          <button
-            type="button"
-            onClick={() => { void reload(); }}
-            className="rounded-md border border-[color:var(--border)] px-4 py-2 text-sm font-medium text-[color:var(--fg-strong)] hover:bg-[color:var(--card)]"
-          >
+          <Button variant="secondary" onClick={() => { void reload(); }}>
             Laden
-          </button>
+          </Button>
         </div>
       </section>
 
@@ -214,8 +212,8 @@ export default function KgPrioritiesPage(): React.ReactElement {
             placeholder="Reason (optional)"
             className="lg:col-span-3 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-sm text-[color:var(--fg-strong)]"
           />
-          <button
-            type="button"
+          <Button
+            variant="secondary"
             onClick={() => {
               const w = Number.parseFloat(draftWeight);
               void handleUpsert(
@@ -226,10 +224,10 @@ export default function KgPrioritiesPage(): React.ReactElement {
               );
             }}
             disabled={busy !== null}
-            className="lg:col-span-1 rounded-md border border-[color:var(--border)] px-4 py-2 text-sm font-medium text-[color:var(--fg-strong)] hover:bg-[color:var(--card)] disabled:opacity-40"
+            className="lg:col-span-1"
           >
             {busy === 'upsert' ? '…' : 'Add'}
-          </button>
+          </Button>
         </div>
       </section>
 
@@ -285,14 +283,14 @@ export default function KgPrioritiesPage(): React.ReactElement {
                     {new Date(r.updatedAt).toLocaleString('de-DE')}
                   </td>
                   <td className="px-4 py-3 text-right">
-                    <button
-                      type="button"
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       onClick={() => { void handleRemove(r.entryExternalId); }}
                       disabled={busy === `remove:${r.entryExternalId}`}
-                      className="rounded-md border border-[color:var(--border)] px-3 py-1 text-xs text-[color:var(--fg-strong)] hover:bg-[color:var(--danger)]/20 disabled:opacity-40"
                     >
                       {busy === `remove:${r.entryExternalId}` ? '…' : 'Remove'}
-                    </button>
+                    </Button>
                   </td>
                 </tr>
               ))

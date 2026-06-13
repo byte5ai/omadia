@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
+
+import { Button } from '@/app/_components/ui/Button';
 import { motion } from 'framer-motion';
 import { Send, Sparkles, StopCircle } from 'lucide-react';
 
@@ -307,24 +309,26 @@ export function SimpleIntakePane({
             className="min-h-[50px] flex-1 resize-none rounded-lg border border-[color:var(--border)] bg-[color:var(--bg)] px-4 py-3 text-[14.5px] leading-snug text-[color:var(--fg-strong)] placeholder:text-[color:var(--fg-subtle)] transition-colors focus:border-[color:var(--accent)] focus:outline-none focus:ring-4 focus:ring-[color:var(--accent)]/10 disabled:opacity-60"
           />
           {inflight ? (
-            <button
-              type="button"
+            <Button
+              variant="danger"
+              pill
               onClick={onStop}
-              className="inline-flex h-[50px] shrink-0 items-center gap-2 rounded-full border border-[color:var(--danger)]/40 px-4 text-[13px] font-semibold text-[color:var(--danger)] transition-colors hover:bg-[color:var(--danger)]/10"
+              className="h-[50px] shrink-0 text-[13px]"
             >
               <StopCircle className="size-4" aria-hidden />
               {t('stop')}
-            </button>
+            </Button>
           ) : (
-            <button
-              type="button"
+            <Button
+              variant="primary"
+              pill
               onClick={() => void onSend()}
               disabled={input.trim().length === 0}
-              className="inline-flex h-[50px] shrink-0 items-center gap-2 rounded-full bg-[color:var(--accent)] px-4 text-[14px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] transition-all hover:opacity-90 disabled:opacity-40 disabled:shadow-none"
+              className="h-[50px] shrink-0 text-[14px]"
             >
               <Send className="size-4" aria-hidden />
               {t('send')}
-            </button>
+            </Button>
           )}
         </div>
       </div>
@@ -437,14 +441,15 @@ function IntakeHero({
           {t('examplesLabel')}
         </p>
         {examples.map((prompt) => (
-          <button
+          <Button
             key={prompt}
-            type="button"
+            variant="secondary"
+            pill
             onClick={() => onPick(prompt)}
-            className="rounded-full border border-[color:var(--divider)] bg-[color:var(--bg)] px-4 py-2 text-[13.5px] text-[color:var(--fg-default)] transition-colors hover:border-[color:var(--accent)] hover:bg-[color:var(--accent)]/5 hover:text-[color:var(--fg-strong)]"
+            className="text-[13.5px]"
           >
             {prompt}
-          </button>
+          </Button>
         ))}
       </div>
     </div>

@@ -1,5 +1,6 @@
 'use client';
 
+import { Button } from '@/app/_components/ui/Button';
 import {
   useCallback,
   useEffect,
@@ -593,24 +594,24 @@ export function BuilderChatPane({
             className="min-h-[44px] flex-1 resize-none rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-[13px] leading-snug text-[color:var(--fg-strong)] placeholder:text-[color:var(--fg-subtle)] focus:border-[color:var(--accent)] focus:outline-none disabled:opacity-60"
           />
           {inflight ? (
-            <button
-              type="button"
+            <Button
+              variant="danger"
               onClick={onStop}
-              className="inline-flex h-[44px] shrink-0 items-center gap-2 rounded-md border border-[color:var(--danger)]/40 px-3 py-2 text-[12px] font-semibold text-[color:var(--danger)] transition-colors hover:bg-[color:var(--danger)]/10"
+              className="h-[44px] shrink-0 text-[12px]"
             >
               <StopCircle className="size-4" aria-hidden />
               {t('button.stop')}
-            </button>
+            </Button>
           ) : (
-            <button
-              type="button"
+            <Button
+              variant="primary"
               onClick={() => void onSend()}
               disabled={input.trim().length === 0}
-              className="inline-flex h-[44px] shrink-0 items-center gap-2 rounded-md bg-[color:var(--accent)] px-3 py-2 text-[12px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] transition-opacity hover:opacity-90 disabled:opacity-40"
+              className="h-[44px] shrink-0 text-[12px]"
             >
               <Send className="size-4" aria-hidden />
               {t('button.send')}
-            </button>
+            </Button>
           )}
         </div>
         {inflight ? (

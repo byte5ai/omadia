@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 
+import { Button } from '@/app/_components/ui/Button';
 import {
   listTopics,
   reclusterTopics,
@@ -130,14 +131,17 @@ export default function TopicsListPage(): React.ReactElement {
             />
           </label>
         </div>
-        <button
-          type="button"
+        <Button
+          variant="primary"
+          size="sm"
           onClick={() => void triggerRecluster()}
           disabled={running}
-          className="mt-3 rounded border border-[color:var(--border-strong)] bg-[color:var(--bg-inverse)] px-3 py-1 text-xs text-[color:var(--fg-on-dark)] disabled:cursor-not-allowed disabled:opacity-50"
+          busy={running}
+          busyLabel="läuft"
+          className="mt-3"
         >
-          {running ? 'läuft…' : 'Re-Cluster starten'}
-        </button>
+          Re-Cluster starten
+        </Button>
         {runError !== null && (
           <p className="mt-3 text-xs text-[color:var(--danger)]">
             Fehler: {runError}

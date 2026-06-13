@@ -4,6 +4,8 @@ import { Save } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { useEffect, useId, useRef, useState } from 'react';
 
+import { Button } from '@/app/_components/ui/Button';
+
 import type { JsonPatch, ToolSpec } from '../../../../_lib/builderTypes';
 import { cn } from '../../../../_lib/cn';
 import { savePersonalTemplate } from '../../../../_lib/toolTemplates';
@@ -255,8 +257,9 @@ function SavePersonalTemplateButton({
   const [stamp, setStamp] = useState<'idle' | 'saved'>('idle');
   return (
     <div className="border-t border-[color:var(--border)] pt-2">
-      <button
-        type="button"
+      <Button
+        variant="secondary"
+        size="sm"
         onClick={() => {
           const label = window.prompt(
             t('templateNamePrompt'),
@@ -267,11 +270,10 @@ function SavePersonalTemplateButton({
           setStamp('saved');
           window.setTimeout(() => setStamp('idle'), 1400);
         }}
-        className="inline-flex items-center gap-1 rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1 text-[11px] font-semibold text-[color:var(--fg-strong)] hover:border-[color:var(--accent)]"
       >
         <Save className="size-3" aria-hidden />
         {t('saveAsTemplate')}
-      </button>
+      </Button>
       {stamp === 'saved' ? (
         <span className="ml-2 text-[10px] text-[color:var(--fg-muted)]">
           {t('saved')}

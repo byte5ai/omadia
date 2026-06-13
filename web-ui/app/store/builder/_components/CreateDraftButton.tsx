@@ -7,7 +7,7 @@ import { Plus } from 'lucide-react';
 
 import { ApiError, createBuilderDraft } from '../../../_lib/api';
 import type { DraftQuotaSnapshot } from '../../../_lib/builderTypes';
-import { cn } from '../../../_lib/cn';
+import { Button } from '@/app/_components/ui/Button';
 
 /**
  * Primary "neuer Agent"-Action. One click creates a draft row via POST
@@ -50,22 +50,16 @@ export function CreateDraftButton({
 
   return (
     <div className="flex flex-col items-end gap-2">
-      <button
-        type="button"
+      <Button
+        variant="primary"
+        pill
         onClick={onClick}
         disabled={disabled}
-        className={cn(
-          'inline-flex items-center gap-2 rounded-full px-4 py-2 text-[13px] font-semibold',
-          'shadow-[var(--shadow-cta)] transition-transform duration-[var(--dur-base)]',
-          'bg-[color:var(--accent)] text-[color:var(--fg-on-dark)] hover:-translate-y-0.5',
-          'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--accent)]',
-          'disabled:translate-y-0 disabled:opacity-50 disabled:hover:translate-y-0',
-        )}
         title={quota.exceeded ? t('quotaReachedTooltip') : undefined}
       >
         <Plus className="size-4" aria-hidden />
         {pending ? t('pending') : t('label')}
-      </button>
+      </Button>
       {error ? (
         <p className="max-w-xs text-right text-[11px] text-[color:var(--danger)]">
           {error}

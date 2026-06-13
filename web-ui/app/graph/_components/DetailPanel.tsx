@@ -1,5 +1,6 @@
 'use client';
 
+import { Button } from '@/app/_components/ui/Button';
 import {
   type GraphNode,
   type MemoryWithAncestors,
@@ -92,14 +93,18 @@ export default function DetailPanel({
             </div>
           ))}
         </div>
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="sm"
+          fullWidth
           onClick={() => onExpand(node.id)}
           disabled={loadingNeighbors}
-          className="w-full rounded border border-[color:var(--border)] px-2 py-1 text-[11px] font-semibold hover:border-[color:var(--border-strong)] disabled:opacity-50"
+          busy={loadingNeighbors}
+          busyLabel="lade Nachbarn…"
+          className="text-[11px] font-semibold"
         >
-          {loadingNeighbors ? 'lade Nachbarn…' : '↔ Nachbarn expandieren'}
-        </button>
+          ↔ Nachbarn expandieren
+        </Button>
 
         {node.type === 'MemorableKnowledge' && (
           <MemoryAclSection
@@ -119,11 +124,12 @@ export default function DetailPanel({
             </div>
             <div className="flex flex-col gap-1">
               {neighbors.map((n) => (
-                <button
+                <Button
                   key={n.id}
-                  type="button"
+                  variant="secondary"
+                  size="sm"
                   onClick={() => onSelect(n)}
-                  className="flex items-start gap-2 rounded border border-[color:var(--border)] px-2 py-1 text-left hover:border-[color:var(--border-strong)]"
+                  className="items-start justify-start px-2 py-1 text-left"
                 >
                   <span
                     className="mt-1 h-2 w-2 shrink-0 rounded-full"
@@ -145,7 +151,7 @@ export default function DetailPanel({
                       )}
                     </span>
                   </span>
-                </button>
+                </Button>
               ))}
             </div>
           </div>
@@ -258,11 +264,12 @@ function ProvenanceList({
       </div>
       <div className="mt-1 flex flex-col gap-1">
         {nodes.map((n) => (
-          <button
+          <Button
             key={n.id}
-            type="button"
+            variant="secondary"
+            size="sm"
             onClick={() => onSelect(n)}
-            className="flex items-start gap-2 rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-2 py-1 text-left hover:border-[color:var(--accent)]"
+            className="items-start justify-start px-2 py-1 text-left hover:border-[color:var(--accent)]"
           >
             <span
               className="mt-1 h-2 w-2 shrink-0 rounded-full"
@@ -283,7 +290,7 @@ function ProvenanceList({
                 )}
               </span>
             </span>
-          </button>
+          </Button>
         ))}
       </div>
     </div>
