@@ -1,6 +1,10 @@
-import Anthropic from '@anthropic-ai/sdk';
 import type { ChatAgent } from '@omadia/channel-sdk';
 import type { EmbeddingClient } from '@omadia/embeddings';
+import {
+  createAnthropicClient,
+  createAnthropicProvider,
+  readProviderApiKey,
+} from '@omadia/llm-provider';
 // Phase 5B: structural shim — `@omadia/integration-microsoft365` lives
 // in the byte5-plugins backup repo. The orchestrator types against a
 // narrow accessor shape that matches what the plugin publishes under
@@ -201,11 +205,11 @@ export async function activate(
 ): Promise<OrchestratorPluginHandle> {
   ctx.log('activating orchestrator plugin');
 
-  // S+12.6: anthropic_api_key is vault-stored (matches database_url-pattern).
-  // Bootstrap writes it during installation; operator can override via setup-form
-  // post-install. Pre-S+12.6 entries are migrated automatically by
-  // bootstrapOrchestratorFromEnv on first boot (config → vault).
-  const apiKey = ((await ctx.secrets.get('anthropic_api_key')) ?? '').trim();
+  // anthropic_api_key is vault-stored. Read the provider-namespaced canonical
+  // key (provider:anthropic/api_key) with a fallback to the legacy flat key, so
+  // pre-migration installs keep working (phase 4 credential scheme).
+  const apiKey =
+    (await readProviderApiKey((k) => ctx.secrets.get(k), 'anthropic')) ?? '';
   if (!apiKey) {
     ctx.log(
       '[harness-orchestrator] anthropic_api_key not set — chatAgent@1 capability NOT published',
@@ -420,7 +424,9 @@ export async function activate(
   // exponential backoff. The SDK default is 2; bumped to 5 so a transient
   // `overloaded_error` (HTTP 529) burst is far more likely to ride out
   // inside the SDK instead of surfacing as a failed turn. (Merged from main.)
-  const client = new Anthropic({ apiKey, maxRetries: 5 });
+  const provider = createAnthropicProvider({
+    client: createAnthropicClient({ apiKey, maxRetries: 5 }),
+  });
 
   // OB-77 (Palaia Phase 8) — Nudge-Pipeline. Publish a fresh in-memory
   // registry, then drain `nudgeProviders@1` (side-channel for plugins
@@ -504,7 +510,7 @@ export async function activate(
   // (US4) calls the same factory once per configured Agent against the
   // same `deps`.
   const orchestratorDeps: OrchestratorDeps = {
-    client,
+    provider,
     knowledgeGraph,
     memoryStore,
     entityRefBus,

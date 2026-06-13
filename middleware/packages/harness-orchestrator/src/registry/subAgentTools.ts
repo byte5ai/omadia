@@ -1,4 +1,4 @@
-import type Anthropic from '@anthropic-ai/sdk';
+import type { LlmProvider } from '@omadia/llm-provider';
 import type { LocalSubAgentTool } from '@omadia/plugin-api';
 
 import { LocalSubAgent } from '../localSubAgent.js';
@@ -38,7 +38,7 @@ export interface SubAgentGraph {
 }
 
 export interface SubAgentToolDeps {
-  readonly client: Anthropic;
+  readonly provider: LlmProvider;
   readonly defaultModel: string;
   readonly defaultMaxTokens: number;
   readonly defaultMaxIterations: number;
@@ -83,7 +83,7 @@ export function buildSubAgentDomainTools(
 
     const local = new LocalSubAgent({
       name: sub.name,
-      client: deps.client,
+      provider: deps.provider,
       model: sub.model ?? deps.defaultModel,
       maxTokens: sub.maxTokens ?? deps.defaultMaxTokens,
       maxIterations: sub.maxIterations ?? deps.defaultMaxIterations,

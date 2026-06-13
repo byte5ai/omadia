@@ -14,20 +14,23 @@ const cfg = {
   complexModel: 'claude-opus-4-8',
 };
 
-// Minimal structural stub for the Anthropic client — only `.messages.create`
-// is exercised. No `usage` field → the recorder is never touched.
+// Minimal structural stub for the neutral LlmProvider — only `.complete()`
+// is exercised. `usage` is required: the router records it (no-op without a
+// wired recorder pool, as in tests) after every classification call.
 function clientReturning(text: string) {
   return {
-    messages: {
-      create: () => Promise.resolve({ content: [{ type: 'text', text }] }),
-    },
+    complete: () =>
+      Promise.resolve({
+        content: [{ type: 'text', text }],
+        finishReason: 'stop',
+        model: 'claude-haiku-4-5',
+        usage: { inputTokens: 0, outputTokens: 0 },
+      }),
   };
 }
 function clientThrowing() {
   return {
-    messages: {
-      create: () => Promise.reject(new Error('boom')),
-    },
+    complete: () => Promise.reject(new Error('boom')),
   };
 }
 
@@ -59,11 +62,14 @@ describe('routeTurnModel', () => {
   it('empty message → complex without calling the classifier', async () => {
     let called = false;
     const client = {
-      messages: {
-        create: () => {
-          called = true;
-          return Promise.resolve({ content: [] });
-        },
+      complete: () => {
+        called = true;
+        return Promise.resolve({
+          content: [],
+          finishReason: 'stop',
+          model: 'claude-haiku-4-5',
+          usage: { inputTokens: 0, outputTokens: 0 },
+        });
       },
     };
     const r = await routeTurnModel(client as never, cfg, '   ', 'fb');

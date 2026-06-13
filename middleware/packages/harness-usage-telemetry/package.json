@@ -11,8 +11,10 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit"
   },
+  "dependencies": {
+    "@omadia/llm-provider": "*"
+  },
   "peerDependencies": {
-    "@anthropic-ai/sdk": "*",
     "pg": "^8.13.0"
   },
   "engines": {

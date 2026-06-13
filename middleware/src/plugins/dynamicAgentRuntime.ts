@@ -2,7 +2,10 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import type Anthropic from '@anthropic-ai/sdk';
+import {
+  createAnthropicProvider,
+  type AnthropicClient,
+} from '@omadia/llm-provider';
 import type { z } from 'zod';
 
 import { canvasOutputToolIds } from '../platform/canvasOutputRegistry.js';
@@ -129,7 +132,7 @@ export interface DynamicAgentRuntimeDeps {
    *  same `agentId`, the uploaded package wins — lets an operator override
    *  a built-in by uploading a newer zip. */
   builtInStore?: BuiltInPackageStore;
-  anthropic: Anthropic;
+  anthropic: AnthropicClient;
   subAgentModel: string;
   subAgentMaxTokens: number;
   subAgentMaxIterations: number;
@@ -411,12 +414,12 @@ export class DynamicAgentRuntime {
     // late-resolve contract (index.ts ~295) — and fall back to the injected
     // client only when no provider override is registered (env-key path).
     const liveAnthropic =
-      this.deps.serviceRegistry.get<Anthropic>('anthropicClient') ??
+      this.deps.serviceRegistry.get<AnthropicClient>('anthropicClient') ??
       this.deps.anthropic;
 
     const subAgent = new LocalSubAgent({
       name: shortName,
-      client: liveAnthropic,
+      provider: createAnthropicProvider({ client: liveAnthropic }),
       model: effectiveModel,
       maxTokens: this.deps.subAgentMaxTokens,
       maxIterations: this.deps.subAgentMaxIterations,

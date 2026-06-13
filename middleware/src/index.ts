@@ -1,7 +1,11 @@
 import { execSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import Anthropic from '@anthropic-ai/sdk';
+import {
+  createAnthropicClient,
+  readProviderApiKey,
+  type AnthropicClient,
+} from '@omadia/llm-provider';
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import { config, parseRegistries } from './config.js';
@@ -319,7 +323,7 @@ async function main(): Promise<void> {
   // inner calls / Teams) is only reachable AFTER the orchestrator has
   // activated — which in turn requires the key. Falling back to '' here
   // keeps the SDK constructor happy on cold boots.
-  const client = new Anthropic({
+  const client = createAnthropicClient({
     apiKey: config.ANTHROPIC_API_KEY ?? '',
     maxRetries: 5,
   });
@@ -337,8 +341,8 @@ async function main(): Promise<void> {
   // never this const. Host-side consumers (BuilderAgent, PreviewChatService)
   // therefore take this accessor and re-resolve the current client per turn
   // instead of capturing the boot instance.
-  const currentAnthropicClient = (): Anthropic =>
-    serviceRegistry.get<Anthropic>('anthropicClient') ?? client;
+  const currentAnthropicClient = (): AnthropicClient =>
+    serviceRegistry.get<AnthropicClient>('anthropicClient') ?? client;
 
   // OB-29-3 — wrap the Anthropic client as an `llm` ServiceRegistry
   // provider so plugins that declare `permissions.llm.models_allowed`
@@ -932,9 +936,12 @@ async function main(): Promise<void> {
     sourceAgentId: string = ANTHROPIC_SHARED_CLIENT_SOURCE,
   ): Promise<void> => {
     try {
-      const key = await secretVault.get(sourceAgentId, 'anthropic_api_key');
+      const key = await readProviderApiKey(
+        (k) => secretVault.get(sourceAgentId, k),
+        'anthropic',
+      );
       if (!key || key === sharedAnthropicKeyApplied) return;
-      const refreshed = new Anthropic({ apiKey: key, maxRetries: 5 });
+      const refreshed = createAnthropicClient({ apiKey: key, maxRetries: 5 });
       serviceRegistry.replace('anthropicClient', refreshed);
       serviceRegistry.replace(
         'llm',

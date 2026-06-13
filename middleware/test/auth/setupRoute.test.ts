@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import type { AddressInfo } from 'node:net';
 import { after, before, describe, it } from 'node:test';
 
+import { providerApiKeyVaultKey } from '@omadia/llm-provider';
 import express from 'express';
 
 import { LocalPasswordProvider } from '../../src/auth/providers/LocalPasswordProvider.js';
@@ -242,7 +243,10 @@ describe('POST /api/v1/auth/setup (OB-61)', () => {
       '@omadia/verifier',
     ]);
     for (const w of writes) {
-      assert.equal(w.entries['anthropic_api_key'], 'sk-ant-api03-validlooking-key');
+      assert.equal(
+        w.entries[providerApiKeyVaultKey('anthropic')],
+        'sk-ant-api03-validlooking-key',
+      );
     }
 
     // Reactivate fired once per consumer, in the same order

@@ -20,7 +20,8 @@
  * re-classification.
  */
 
-import type Anthropic from '@anthropic-ai/sdk';
+import type { LlmProvider, LlmResponse } from '@omadia/llm-provider';
+import { collectText, textMessage } from '@omadia/llm-provider';
 import type {
   EntryType,
   MemorableKind,
@@ -30,7 +31,8 @@ import type {
 } from '@omadia/plugin-api';
 
 export interface HaikuPalaiaExcerptExtractorOptions {
-  anthropic: Anthropic;
+  /** Provider-agnostic LLM (Anthropic adapter today). Was `anthropic` pre-phase-2. */
+  llm: LlmProvider;
   /** Anthropic model id. Default: `claude-haiku-4-5-20251001`. */
   model?: string;
   /** Token budget for the response. 512 fits 3-5 excerpts + summary + rationale. */
@@ -114,13 +116,13 @@ export function createHaikuPalaiaExcerptExtractor(
           ? `<user>\n${userBlock}\n</user>\n<assistant>\n${cleanedAnswer}\n</assistant>`
           : `<assistant>\n${cleanedAnswer}\n</assistant>`;
 
-      let response: Anthropic.Messages.Message;
+      let response: LlmResponse;
       try {
-        response = await opts.anthropic.messages.create({
+        response = await opts.llm.complete({
           model,
-          max_tokens: maxTokens,
+          maxTokens,
           system: SYSTEM_PROMPT,
-          messages: [{ role: 'user', content: turnPayload }],
+          messages: [textMessage('user', turnPayload)],
         });
       } catch (err) {
         log(
@@ -129,7 +131,7 @@ export function createHaikuPalaiaExcerptExtractor(
         return undefined;
       }
 
-      const replyText = extractFirstText(response.content);
+      const replyText = collectText(response.content);
       if (!replyText) {
         log('[excerpt-extractor] empty response from Haiku');
         return undefined;
@@ -221,18 +223,6 @@ function isMemorableKind(v: unknown): v is MemorableKind {
 function clipText(s: string, max: number): string {
   if (s.length <= max) return s;
   return `${s.slice(0, max - 1).trimEnd()}…`;
-}
-
-function extractFirstText(
-  content: Anthropic.Messages.ContentBlock[] | undefined,
-): string | null {
-  if (!content) return null;
-  for (const block of content) {
-    if (block.type === 'text' && typeof block.text === 'string') {
-      return block.text;
-    }
-  }
-  return null;
 }
 
 function parseJsonStrict(raw: string): unknown {

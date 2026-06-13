@@ -31,11 +31,11 @@ export interface BulkInconsistencyDeps {
    *  `{ code: 'bulk.detector_unavailable' }` and `preview` returns
    *  `detectorAvailable: false`. Same shape as Slice-8 `bulk.scorer_unavailable`. */
   detector?: InconsistencyDetectorService;
-  /** True if the detector's Anthropic judgement pass is wired. Mirrors
+  /** True if the detector's LLM judgement pass is wired. Mirrors
    *  the detector's runtime state — used by `preview()` to surface the
    *  503-gate condition. Defaults to `detector !== undefined` for the
    *  common case, but the plugin can override (e.g. when a detector
-   *  was constructed but lacks an `anthropic` client). */
+   *  was constructed but lacks an `llm` provider). */
   judgementAvailable?: boolean;
   log?: (msg: string) => void;
 }

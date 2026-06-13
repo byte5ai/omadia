@@ -1,7 +1,13 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 
-import type Anthropic from '@anthropic-ai/sdk';
+import type {
+  ContentPart,
+  LlmProvider,
+  LlmRequest,
+  LlmResponse,
+  LlmStreamEvent,
+} from '@omadia/llm-provider';
 import {
   NativeToolRegistry,
   Orchestrator,
@@ -14,6 +20,55 @@ import {
 type AnyEvent = any;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyMessage = any;
+
+const providerCapabilities = {
+  tools: true,
+  vision: true,
+  streaming: true,
+  promptCaching: true,
+  forcedToolChoice: true,
+  parallelToolCalls: true,
+} as const;
+
+/** Map an Anthropic-shaped scripted message ({ content blocks, stop_reason,
+ *  usage }) to a neutral `LlmResponse` — the create-path fake returns this and
+ *  the orchestrator reads it back via `fromLlmResponse`. */
+function toLlmResponse(msg: AnyMessage): LlmResponse {
+  const content: ContentPart[] = (msg.content as AnyEvent[]).map((block) => {
+    if (block.type === 'text') {
+      return { type: 'text', text: block.text as string };
+    }
+    if (block.type === 'tool_use') {
+      return {
+        type: 'tool_call',
+        id: block.id as string,
+        name: block.name as string,
+        input: block.input,
+      };
+    }
+    throw new Error(`Unsupported stub block type: ${String(block.type)}`);
+  });
+  const stopReason = msg.stop_reason as string;
+  return {
+    content,
+    finishReason:
+      stopReason === 'tool_use'
+        ? 'tool_calls'
+        : stopReason === 'max_tokens'
+          ? 'max_tokens'
+          : 'stop',
+    providerFinishReason: stopReason,
+    model: (msg.model as string | undefined) ?? 'test',
+    usage: {
+      inputTokens: (msg.usage?.input_tokens as number | undefined) ?? 0,
+      outputTokens: (msg.usage?.output_tokens as number | undefined) ?? 0,
+      cacheReadTokens:
+        (msg.usage?.cache_read_input_tokens as number | undefined) ?? 0,
+      cacheWriteTokens:
+        (msg.usage?.cache_creation_input_tokens as number | undefined) ?? 0,
+    },
+  };
+}
 
 const minimalSpec = (name: string): Record<string, unknown> => ({
   name,
@@ -43,12 +98,12 @@ function recordingRunner(): Recorder {
 }
 
 function buildOrchestrator(
-  client: Anthropic,
+  provider: LlmProvider,
   registry: NativeToolRegistry,
   runner: TurnHookRunner,
 ): Orchestrator {
   return new Orchestrator({
-    client,
+    provider,
     model: 'test',
     maxTokens: 1024,
     maxToolIterations: 5,
@@ -61,121 +116,94 @@ function buildOrchestrator(
 // --- streaming fakes (mirror test/orchestrator/parallelTool.test.ts) ---------
 
 interface ScriptedStream {
-  events: AnyEvent[];
-  finalMessage: AnyMessage;
+  events: LlmStreamEvent[];
 }
 
-function fakeStreamClient(streams: ScriptedStream[]): Anthropic {
+function fakeStreamProvider(streams: ScriptedStream[]): LlmProvider {
   let idx = 0;
-  const client = {
-    messages: {
-      stream: (_req: AnyMessage): AnyMessage => {
-        const fake = streams[idx]!;
-        idx += 1;
-        return {
-          async *[Symbol.asyncIterator]() {
-            for (const ev of fake.events) yield ev;
-          },
-          async finalMessage() {
-            return fake.finalMessage;
-          },
-        };
-      },
+  const provider = {
+    id: 'anthropic',
+    capabilities: providerCapabilities,
+    complete: async (): Promise<LlmResponse> => {
+      throw new Error('fakeStreamProvider: complete() not scripted');
     },
+    stream: (_req: LlmRequest): AsyncIterable<LlmStreamEvent> => {
+      const fake = streams[idx]!;
+      idx += 1;
+      return {
+        async *[Symbol.asyncIterator]() {
+          for (const ev of fake.events) yield ev;
+        },
+      };
+    },
+    classifyError: () => ({ retryable: false, kind: 'other' as const }),
   };
-  return client as unknown as Anthropic;
+  return provider as unknown as LlmProvider;
 }
 
 function streamWithTool(id: string, name: string): ScriptedStream {
   return {
     events: [
+      { type: 'tool_use_start' },
+      { type: 'tool_input_delta', text: '{}' },
       {
-        type: 'message_start',
-        message: { id: 'm-tools', usage: { input_tokens: 50, output_tokens: 0 } },
+        type: 'final',
+        response: {
+          content: [{ type: 'tool_call', id, name, input: {} }],
+          finishReason: 'tool_calls',
+          providerFinishReason: 'tool_use',
+          model: 'test',
+          usage: {
+            inputTokens: 50,
+            outputTokens: 4,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+          },
+        },
       },
-      {
-        type: 'content_block_start',
-        index: 0,
-        content_block: { type: 'tool_use', id, name, input: {} },
-      },
-      {
-        type: 'content_block_delta',
-        index: 0,
-        delta: { type: 'input_json_delta', partial_json: '{}' },
-      },
-      { type: 'content_block_stop', index: 0 },
-      {
-        type: 'message_delta',
-        delta: { stop_reason: 'tool_use' },
-        usage: { output_tokens: 4 },
-      },
-      { type: 'message_stop' },
     ],
-    finalMessage: {
-      id: 'm-tools',
-      type: 'message',
-      role: 'assistant',
-      content: [{ type: 'tool_use', id, name, input: {} }],
-      stop_reason: 'tool_use',
-      usage: {
-        input_tokens: 50,
-        output_tokens: 4,
-        cache_read_input_tokens: 0,
-        cache_creation_input_tokens: 0,
-      },
-    },
   };
 }
 
 const finalTextStream: ScriptedStream = {
   events: [
+    { type: 'text_delta', text: 'done' },
     {
-      type: 'message_start',
-      message: { id: 'm-text', usage: { input_tokens: 100, output_tokens: 0 } },
+      type: 'final',
+      response: {
+        content: [{ type: 'text', text: 'done' }],
+        finishReason: 'stop',
+        providerFinishReason: 'end_turn',
+        model: 'test',
+        usage: {
+          inputTokens: 100,
+          outputTokens: 1,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+        },
+      },
     },
-    { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
-    {
-      type: 'content_block_delta',
-      index: 0,
-      delta: { type: 'text_delta', text: 'done' },
-    },
-    { type: 'content_block_stop', index: 0 },
-    {
-      type: 'message_delta',
-      delta: { stop_reason: 'end_turn' },
-      usage: { output_tokens: 1 },
-    },
-    { type: 'message_stop' },
   ],
-  finalMessage: {
-    id: 'm-text',
-    type: 'message',
-    role: 'assistant',
-    content: [{ type: 'text', text: 'done' }],
-    stop_reason: 'end_turn',
-    usage: {
-      input_tokens: 100,
-      output_tokens: 1,
-      cache_read_input_tokens: 0,
-      cache_creation_input_tokens: 0,
-    },
-  },
 };
 
 // --- non-streaming fakes -----------------------------------------------------
 
-function fakeCreateClient(messages: AnyMessage[]): Anthropic {
+function fakeCreateProvider(messages: AnyMessage[]): LlmProvider {
   let idx = 0;
-  const client = {
-    messages: {
-      create: async (_req: AnyMessage, _opts?: AnyMessage): Promise<AnyMessage> => {
-        const m = messages[idx];
-        idx += 1;
-        return m;
-      },
+  const provider = {
+    id: 'anthropic',
+    capabilities: providerCapabilities,
+    complete: async (_req: LlmRequest): Promise<LlmResponse> => {
+      const m = messages[idx];
+      idx += 1;
+      return toLlmResponse(m);
     },
+    stream: (): AsyncIterable<LlmStreamEvent> => {
+      throw new Error('fakeCreateProvider: stream() not scripted');
+    },
+    classifyError: () => ({ retryable: false, kind: 'other' as const }),
   };
-  return client as unknown as Anthropic;
+  return provider as unknown as LlmProvider;
 }
 
 const msgWithTool = (id: string, name: string): AnyMessage => ({
@@ -214,12 +242,12 @@ describe('Orchestrator turn hooks (#133 E0)', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       spec: minimalSpec('only_tool') as any,
     });
-    const client = fakeStreamClient([
+    const provider = fakeStreamProvider([
       streamWithTool('use-1', 'only_tool'),
       finalTextStream,
     ]);
     const { runner, points, payloads } = recordingRunner();
-    const orch = buildOrchestrator(client, registry, runner);
+    const orch = buildOrchestrator(provider, registry, runner);
 
     for await (const _ of orch.chatStream({ userMessage: 'go' })) {
       void _;
@@ -235,7 +263,7 @@ describe('Orchestrator turn hooks (#133 E0)', () => {
 
   it('streaming: emits a turn_annotation event (first) for a hook annotation (#133 E9)', async () => {
     const registry = new NativeToolRegistry();
-    const client = fakeStreamClient([finalTextStream]);
+    const provider = fakeStreamProvider([finalTextStream]);
     const runner: TurnHookRunner = {
       async run(point): Promise<TurnAnnotation[]> {
         return point === 'onBeforeTurn'
@@ -243,7 +271,7 @@ describe('Orchestrator turn hooks (#133 E0)', () => {
           : [];
       },
     };
-    const orch = buildOrchestrator(client, registry, runner);
+    const orch = buildOrchestrator(provider, registry, runner);
 
     const events: AnyEvent[] = [];
     for await (const e of orch.chatStream({ userMessage: 'go' })) events.push(e);
@@ -264,12 +292,12 @@ describe('Orchestrator turn hooks (#133 E0)', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       spec: minimalSpec('only_tool') as any,
     });
-    const client = fakeCreateClient([
+    const provider = fakeCreateProvider([
       msgWithTool('u1', 'only_tool'),
       msgWithText('done'),
     ]);
     const { runner, points, payloads } = recordingRunner();
-    const orch = buildOrchestrator(client, registry, runner);
+    const orch = buildOrchestrator(provider, registry, runner);
 
     const result = await orch.runTurn({ userMessage: 'go' });
 
@@ -292,10 +320,10 @@ describe('Orchestrator turn hooks (#133 E0)', () => {
     } as unknown as ConstructorParameters<typeof Orchestrator>[0]['sessionLogger'];
 
     const registry = new NativeToolRegistry();
-    const client = fakeCreateClient([msgWithText('done')]);
+    const provider = fakeCreateProvider([msgWithText('done')]);
     const { runner, points, payloads } = recordingRunner();
     const orch = new Orchestrator({
-      client,
+      provider,
       model: 'test',
       maxTokens: 1024,
       maxToolIterations: 5,
@@ -314,9 +342,9 @@ describe('Orchestrator turn hooks (#133 E0)', () => {
 
   it('no registry: turn runs normally, no hooks fired', async () => {
     const registry = new NativeToolRegistry();
-    const client = fakeCreateClient([msgWithText('hi')]);
+    const provider = fakeCreateProvider([msgWithText('hi')]);
     const orch = new Orchestrator({
-      client,
+      provider,
       model: 'test',
       maxTokens: 1024,
       maxToolIterations: 5,

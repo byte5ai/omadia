@@ -2,7 +2,10 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-import type Anthropic from '@anthropic-ai/sdk';
+import {
+  createAnthropicProvider,
+  type AnthropicClient,
+} from '@omadia/llm-provider';
 import {
   LocalSubAgent,
   type AskObserver,
@@ -68,7 +71,7 @@ interface Askable {
 
 export interface SubAgentBuildOptions {
   name: string;
-  client: Anthropic;
+  client: AnthropicClient;
   model: string;
   maxTokens: number;
   maxIterations: number;
@@ -80,7 +83,7 @@ export interface PreviewChatServiceDeps {
   /** Accessor (not a captured instance) — same rationale as
    *  BuilderAgentDeps.anthropic: the shared client is hot-swapped on
    *  Setup-Wizard key entry (OB-61), so resolve it per turn. */
-  anthropic: () => Anthropic;
+  anthropic: () => AnthropicClient;
   draftStore: DraftStore;
   /**
    * Custom system-prompt-loader. Default: read `<previewDir>/skills/*.md`,
@@ -124,7 +127,7 @@ export interface DirectToolResult {
 }
 
 export class PreviewChatService {
-  private readonly anthropic: () => Anthropic;
+  private readonly anthropic: () => AnthropicClient;
   private readonly draftStore: DraftStore;
   private readonly systemPromptFor: NonNullable<
     PreviewChatServiceDeps['systemPromptFor']
@@ -342,7 +345,7 @@ function bridgePreviewTool(td: PreviewToolDescriptor): LocalSubAgentTool {
 function defaultBuildSubAgent(opts: SubAgentBuildOptions): Askable {
   return new LocalSubAgent({
     name: opts.name,
-    client: opts.client,
+    provider: createAnthropicProvider({ client: opts.client }),
     model: opts.model,
     maxTokens: opts.maxTokens,
     maxIterations: opts.maxIterations,

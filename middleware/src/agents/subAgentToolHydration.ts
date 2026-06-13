@@ -12,7 +12,10 @@
  *     a top-level native tool that was granted to it).
  */
 
-import type Anthropic from '@anthropic-ai/sdk';
+import {
+  createAnthropicProvider,
+  type AnthropicClient,
+} from '@omadia/llm-provider';
 import type { LocalSubAgentTool } from '@omadia/plugin-api';
 import {
   buildSubAgentDomainTools,
@@ -41,7 +44,7 @@ export interface SubAgentGraphSlice {
 }
 
 export interface HydrateDeps {
-  readonly client: Anthropic;
+  readonly client: AnthropicClient;
   readonly nativeToolRegistry: NativeToolRegistry;
   readonly mcpManager: McpManager;
   readonly mcpServers: readonly McpServerRow[];
@@ -103,7 +106,7 @@ export function registerDbSubAgentTools(
     deps.mcpServers.map((r) => [r.id, mcpRowToConfig(r)]),
   );
   const tools = buildSubAgentDomainTools(slice, {
-    client: deps.client,
+    provider: createAnthropicProvider({ client: deps.client }),
     defaultModel: deps.defaultModel,
     defaultMaxTokens: deps.defaultMaxTokens ?? 4096,
     defaultMaxIterations: deps.defaultMaxIterations ?? 8,

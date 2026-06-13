@@ -1,4 +1,5 @@
-import type Anthropic from '@anthropic-ai/sdk';
+import type { LlmProvider } from '@omadia/llm-provider';
+import { collectText, textMessage } from '@omadia/llm-provider';
 import type { ConversationTurn } from '@omadia/plugin-api';
 import {
   cosineSimilarity,
@@ -69,7 +70,7 @@ export class TopicDetector {
 
   constructor(
     private readonly embeddings: EmbeddingClient,
-    private readonly anthropic: Anthropic,
+    private readonly llm: LlmProvider,
     opts: TopicDetectorOptions = {},
   ) {
     this.opts = { ...DEFAULTS, ...opts };
@@ -187,30 +188,17 @@ ${truncate(lastTurn.assistantAnswer, 400)}
 NEW user message:
 ${truncate(input.userMessage, 400)}`;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const response: any = await this.anthropic.messages.create({
+    const response = await this.llm.complete({
       model: this.opts.classifierModel,
-      max_tokens: this.opts.classifierMaxTokens,
+      maxTokens: this.opts.classifierMaxTokens,
       system,
-      messages: [{ role: 'user', content: user }],
+      messages: [textMessage('user', user)],
     });
-    const raw = collectFirstText(response).toLowerCase().trim();
+    const raw = collectText(response.content).toLowerCase().trim();
     if (raw.startsWith('continue')) return 'continue';
     if (raw.startsWith('reset')) return 'reset';
     return 'unsure';
   }
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function collectFirstText(message: any): string {
-  const content = message?.content;
-  if (!Array.isArray(content)) return '';
-  for (const block of content) {
-    if (block?.type === 'text' && typeof block.text === 'string') {
-      return block.text;
-    }
-  }
-  return '';
 }
 
 function truncate(value: string, max: number): string {

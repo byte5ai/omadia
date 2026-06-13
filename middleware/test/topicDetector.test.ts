@@ -24,12 +24,10 @@ function stubEmbeddings(topicMap: Record<string, number[]>): EmbeddingClient {
 
 function stubAnthropic(verdict: string): unknown {
   return {
-    messages: {
-      create: () =>
-        Promise.resolve({
-          content: [{ type: 'text', text: verdict }],
-        }),
-    },
+    complete: () =>
+      Promise.resolve({
+        content: [{ type: 'text', text: verdict }],
+      }),
   };
 }
 

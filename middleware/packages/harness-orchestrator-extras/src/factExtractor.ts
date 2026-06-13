@@ -1,4 +1,5 @@
-import type Anthropic from '@anthropic-ai/sdk';
+import type { LlmProvider } from '@omadia/llm-provider';
+import { collectText, textMessage } from '@omadia/llm-provider';
 import {
   factNodeId,
   type EntityRef,
@@ -23,7 +24,8 @@ import {
  */
 
 export interface FactExtractorOptions {
-  anthropic: Anthropic;
+  /** Provider-agnostic LLM (Anthropic adapter today). Was `anthropic` pre-phase-2. */
+  llm: LlmProvider;
   graph: KnowledgeGraph;
   /** Haiku model id. Cheap + fast; we pay one call per completed turn. */
   model?: string;
@@ -65,15 +67,15 @@ const DEFAULTS = {
 };
 
 export class FactExtractor {
-  private readonly opts: Required<Omit<FactExtractorOptions, 'anthropic' | 'graph' | 'log'>> & {
-    anthropic: Anthropic;
+  private readonly opts: Required<Omit<FactExtractorOptions, 'llm' | 'graph' | 'log'>> & {
+    llm: LlmProvider;
     graph: KnowledgeGraph;
     log: (msg: string) => void;
   };
 
   constructor(opts: FactExtractorOptions) {
     this.opts = {
-      anthropic: opts.anthropic,
+      llm: opts.llm,
       graph: opts.graph,
       model: opts.model ?? DEFAULTS.model,
       maxFactsPerTurn: opts.maxFactsPerTurn ?? DEFAULTS.maxFactsPerTurn,
@@ -153,14 +155,13 @@ ${truncate(input.userMessage, 2000)}
 ASSISTANT ANSWER:
 ${truncate(input.assistantAnswer, 4000)}`;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const response: any = await this.opts.anthropic.messages.create({
+    const response = await this.opts.llm.complete({
       model: this.opts.model,
-      max_tokens: this.opts.maxTokens,
+      maxTokens: this.opts.maxTokens,
       system,
-      messages: [{ role: 'user', content: user }],
+      messages: [textMessage('user', user)],
     });
-    const raw = firstText(response).trim();
+    const raw = collectText(response.content).trim();
     if (raw.length === 0) return [];
 
     // Strip accidental code fences (Haiku is usually clean but defensive
@@ -207,18 +208,6 @@ function asConfidence(v: unknown): number {
   if (v < 0) return 0;
   if (v > 1) return 1;
   return v;
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function firstText(message: any): string {
-  const content = message?.content;
-  if (!Array.isArray(content)) return '';
-  for (const block of content) {
-    if (block?.type === 'text' && typeof block.text === 'string') {
-      return block.text;
-    }
-  }
-  return '';
 }
 
 function truncate(value: string, max: number): string {

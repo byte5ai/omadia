@@ -1,3 +1,4 @@
+import { providerApiKeyVaultKey } from '@omadia/llm-provider';
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
@@ -439,7 +440,7 @@ export function createAuthRouter(deps: AuthDeps): Router {
       for (const agentId of consumers) {
         try {
           await deps.vault.setMany(agentId, {
-            anthropic_api_key: anthropicApiKey,
+            [providerApiKeyVaultKey('anthropic')]: anthropicApiKey,
           });
           if (deps.reactivate) {
             await deps.reactivate(agentId);

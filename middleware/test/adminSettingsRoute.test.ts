@@ -1,5 +1,9 @@
 import { describe, it, afterEach } from 'node:test';
 import { strict as assert } from 'node:assert';
+import {
+  legacyProviderApiKeyVaultKey,
+  providerApiKeyVaultKey,
+} from '@omadia/llm-provider';
 import express from 'express';
 import type { Express } from 'express';
 import type { Server } from 'node:http';
@@ -141,7 +145,9 @@ describe('admin settings route — GET /', () => {
 
   it('reports secret set/unset without leaking the value', async () => {
     h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
-    await h.vault.setMany(ORCH, { anthropic_api_key: 'sk-ant-supersecret' });
+    await h.vault.setMany(ORCH, {
+      [providerApiKeyVaultKey('anthropic')]: 'sk-ant-supersecret',
+    });
     const body = await getSettings(h);
     const key = findSetting(body, 'ANTHROPIC_API_KEY');
     assert.equal(key?.isSet, true);
@@ -163,21 +169,57 @@ describe('admin settings route — PATCH /', () => {
     assert.equal(status, 200);
     for (const scope of [ORCH, VERIFIER, EXTRAS]) {
       const keys = await h.vault.listKeys(scope);
-      assert.ok(keys.includes('anthropic_api_key'), `missing in ${scope}`);
+      assert.ok(
+        keys.includes(providerApiKeyVaultKey('anthropic')),
+        `missing in ${scope}`,
+      );
     }
     assert.deepEqual(h.reactivated.sort(), [ORCH, EXTRAS, VERIFIER].sort());
   });
 
-  it('clears the Anthropic secret from every scope on an empty value', async () => {
+  it('clears BOTH canonical and legacy keys from every scope on an empty value', async () => {
+    // Seed an existing install: canonical + the retained legacy fallback. A
+    // clear must remove BOTH, else readProviderApiKey keeps resolving the stale
+    // legacy key and the revoke is ineffective (Forge S4a #1).
+    const legacy = legacyProviderApiKeyVaultKey('anthropic');
+    assert.ok(legacy !== undefined);
     h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
     for (const scope of [ORCH, VERIFIER, EXTRAS]) {
-      await h.vault.setMany(scope, { anthropic_api_key: 'sk-ant-old' });
+      await h.vault.setMany(scope, {
+        [providerApiKeyVaultKey('anthropic')]: 'sk-ant-canonical',
+        [legacy]: 'sk-ant-legacy',
+      });
     }
     const { status } = await patch(h, [{ key: 'ANTHROPIC_API_KEY', value: null }]);
     assert.equal(status, 200);
     for (const scope of [ORCH, VERIFIER, EXTRAS]) {
       const keys = await h.vault.listKeys(scope);
-      assert.ok(!keys.includes('anthropic_api_key'), `still set in ${scope}`);
+      assert.ok(
+        !keys.includes(providerApiKeyVaultKey('anthropic')),
+        `canonical still set in ${scope}`,
+      );
+      assert.ok(!keys.includes(legacy), `legacy still set in ${scope}`);
+    }
+  });
+
+  it('setting the key deletes the now-redundant legacy key (convergence)', async () => {
+    const legacy = legacyProviderApiKeyVaultKey('anthropic');
+    assert.ok(legacy !== undefined);
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
+    for (const scope of [ORCH, VERIFIER, EXTRAS]) {
+      await h.vault.setMany(scope, { [legacy]: 'sk-ant-stale-legacy' });
+    }
+    const { status } = await patch(h, [
+      { key: 'ANTHROPIC_API_KEY', value: 'sk-ant-fresh' },
+    ]);
+    assert.equal(status, 200);
+    for (const scope of [ORCH, VERIFIER, EXTRAS]) {
+      const keys = await h.vault.listKeys(scope);
+      assert.ok(
+        keys.includes(providerApiKeyVaultKey('anthropic')),
+        `canonical missing in ${scope}`,
+      );
+      assert.ok(!keys.includes(legacy), `stale legacy survived in ${scope}`);
     }
   });
 

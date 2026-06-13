@@ -1,146 +1,121 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 
-import type Anthropic from '@anthropic-ai/sdk';
+import type {
+  LlmProvider,
+  LlmRequest,
+  LlmResponse,
+  LlmStreamEvent,
+} from '@omadia/llm-provider';
 import type { ChatStreamEvent } from '@omadia/channel-sdk';
 import { NativeToolRegistry, Orchestrator } from '@omadia/orchestrator';
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnyEvent = any;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnyMessage = any;
-
+/** A scripted stream: the ordered neutral `LlmStreamEvent`s the fake provider
+ *  yields for one `stream()` call. The terminal `final` event carries the full
+ *  `LlmResponse` (no `finalMessage()` on the neutral contract). */
 interface ScriptedStream {
-  events: AnyEvent[];
-  finalMessage: AnyMessage;
+  events: LlmStreamEvent[];
 }
 
-function fakeStreamClient(streams: ScriptedStream[]): Anthropic {
+const providerCapabilities = {
+  tools: true,
+  vision: true,
+  streaming: true,
+  promptCaching: true,
+  forcedToolChoice: true,
+  parallelToolCalls: true,
+} as const;
+
+function fakeStreamProvider(streams: ScriptedStream[]): LlmProvider {
   let idx = 0;
-  const client = {
-    messages: {
-      stream: (_req: AnyMessage): AnyMessage => {
-        if (idx >= streams.length) {
-          throw new Error(
-            `fakeStreamClient: no scripted stream for call ${String(idx + 1)}`,
-          );
-        }
-        const fake = streams[idx]!;
-        idx += 1;
-        return {
-          async *[Symbol.asyncIterator]() {
-            for (const ev of fake.events) yield ev;
-          },
-          async finalMessage() {
-            return fake.finalMessage;
-          },
-        };
-      },
+  const provider = {
+    id: 'anthropic',
+    capabilities: providerCapabilities,
+    complete: async (): Promise<LlmResponse> => {
+      throw new Error('fakeStreamProvider: complete() not scripted');
     },
+    stream: (_req: LlmRequest): AsyncIterable<LlmStreamEvent> => {
+      if (idx >= streams.length) {
+        throw new Error(
+          `fakeStreamProvider: no scripted stream for call ${String(idx + 1)}`,
+        );
+      }
+      const fake = streams[idx]!;
+      idx += 1;
+      return {
+        async *[Symbol.asyncIterator]() {
+          for (const ev of fake.events) yield ev;
+        },
+      };
+    },
+    classifyError: () => ({ retryable: false, kind: 'other' as const }),
   };
-  return client as unknown as Anthropic;
+  return provider as unknown as LlmProvider;
 }
 
 function streamWithTools(
   toolUses: Array<{ id: string; name: string; input: unknown }>,
 ): ScriptedStream {
-  const events: AnyEvent[] = [
-    {
-      type: 'message_start',
-      message: { id: 'm-tools', usage: { input_tokens: 50, output_tokens: 0 } },
-    },
-  ];
-  toolUses.forEach((u, i) => {
+  const events: LlmStreamEvent[] = [];
+  toolUses.forEach((u) => {
     events.push(
-      {
-        type: 'content_block_start',
-        index: i,
-        content_block: { type: 'tool_use', id: u.id, name: u.name, input: {} },
-      },
-      {
-        type: 'content_block_delta',
-        index: i,
-        delta: { type: 'input_json_delta', partial_json: JSON.stringify(u.input) },
-      },
-      { type: 'content_block_stop', index: i },
+      { type: 'tool_use_start' },
+      { type: 'tool_input_delta', text: JSON.stringify(u.input) },
     );
   });
-  events.push(
-    {
-      type: 'message_delta',
-      delta: { stop_reason: 'tool_use' },
-      usage: { output_tokens: 4 },
-    },
-    { type: 'message_stop' },
-  );
-  return {
-    events,
-    finalMessage: {
-      id: 'm-tools',
-      type: 'message',
-      role: 'assistant',
+  // The terminal `final` carries EVERY tool_call (with real inputs) so the
+  // orchestrator sees all tool_use blocks in the response and dispatches them
+  // in parallel — matching the old `finalMessage.content`.
+  events.push({
+    type: 'final',
+    response: {
       content: toolUses.map((u) => ({
-        type: 'tool_use',
+        type: 'tool_call',
         id: u.id,
         name: u.name,
         input: u.input,
       })),
-      stop_reason: 'tool_use',
+      finishReason: 'tool_calls',
+      providerFinishReason: 'tool_use',
+      model: 'test',
       usage: {
-        input_tokens: 50,
-        output_tokens: 4,
-        cache_read_input_tokens: 0,
-        cache_creation_input_tokens: 0,
+        inputTokens: 50,
+        outputTokens: 4,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
       },
     },
-  };
+  });
+  return { events };
 }
 
 const finalTextStream: ScriptedStream = {
   events: [
+    { type: 'text_delta', text: 'done' },
     {
-      type: 'message_start',
-      message: { id: 'm-text', usage: { input_tokens: 100, output_tokens: 0 } },
+      type: 'final',
+      response: {
+        content: [{ type: 'text', text: 'done' }],
+        finishReason: 'stop',
+        providerFinishReason: 'end_turn',
+        model: 'test',
+        usage: {
+          inputTokens: 100,
+          outputTokens: 1,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+        },
+      },
     },
-    {
-      type: 'content_block_start',
-      index: 0,
-      content_block: { type: 'text', text: '' },
-    },
-    {
-      type: 'content_block_delta',
-      index: 0,
-      delta: { type: 'text_delta', text: 'done' },
-    },
-    { type: 'content_block_stop', index: 0 },
-    {
-      type: 'message_delta',
-      delta: { stop_reason: 'end_turn' },
-      usage: { output_tokens: 1 },
-    },
-    { type: 'message_stop' },
   ],
-  finalMessage: {
-    id: 'm-text',
-    type: 'message',
-    role: 'assistant',
-    content: [{ type: 'text', text: 'done' }],
-    stop_reason: 'end_turn',
-    usage: {
-      input_tokens: 100,
-      output_tokens: 1,
-      cache_read_input_tokens: 0,
-      cache_creation_input_tokens: 0,
-    },
-  },
 };
 
 function buildOrchestrator(
-  client: Anthropic,
+  provider: LlmProvider,
   registry: NativeToolRegistry,
 ): Orchestrator {
   return new Orchestrator({
-    client,
+    provider,
     model: 'test',
     maxTokens: 1024,
     maxToolIterations: 5,
@@ -182,8 +157,8 @@ describe('Orchestrator parallel tool dispatch', () => {
       { id: 'use-slow', name: 'slow_tool', input: {} },
       { id: 'use-fast', name: 'fast_tool', input: {} },
     ]);
-    const client = fakeStreamClient([stream0, finalTextStream]);
-    const orchestrator = buildOrchestrator(client, registry);
+    const provider = fakeStreamProvider([stream0, finalTextStream]);
+    const orchestrator = buildOrchestrator(provider, registry);
 
     const events: ChatStreamEvent[] = [];
     for await (const ev of orchestrator.chatStream({ userMessage: 'go' })) {
@@ -244,8 +219,8 @@ describe('Orchestrator parallel tool dispatch', () => {
     const stream0 = streamWithTools([
       { id: 'use-1', name: 'only_tool', input: {} },
     ]);
-    const client = fakeStreamClient([stream0, finalTextStream]);
-    const orchestrator = buildOrchestrator(client, registry);
+    const provider = fakeStreamProvider([stream0, finalTextStream]);
+    const orchestrator = buildOrchestrator(provider, registry);
 
     const events: ChatStreamEvent[] = [];
     for await (const ev of orchestrator.chatStream({ userMessage: 'go' })) {
@@ -289,8 +264,8 @@ describe('Orchestrator parallel tool dispatch', () => {
       { id: 'use-a', name: 'tool_a', input: {} },
       { id: 'use-b', name: 'tool_b', input: {} },
     ]);
-    const client = fakeStreamClient([stream0, finalTextStream]);
-    const orchestrator = buildOrchestrator(client, registry);
+    const provider = fakeStreamProvider([stream0, finalTextStream]);
+    const orchestrator = buildOrchestrator(provider, registry);
 
     const before = Date.now();
     const events: ChatStreamEvent[] = [];

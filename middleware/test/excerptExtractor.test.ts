@@ -18,30 +18,31 @@ function makeFakeAnthropic(opts: {
   throwOnCall?: boolean;
   rawText?: string;
 }): {
-  client: { messages: { create: (req: unknown) => Promise<unknown> } };
+  client: { complete: (req: unknown) => Promise<unknown> };
   calls: CapturedCall[];
 } {
   const calls: CapturedCall[] = [];
   const client = {
-    messages: {
-      async create(req: unknown): Promise<unknown> {
-        if (opts.throwOnCall) throw new Error('haiku-down');
-        const r = req as {
-          model: string;
-          max_tokens: number;
-          system: string;
-          messages: ReadonlyArray<{ role: string; content: string }>;
-        };
-        calls.push({
-          model: r.model,
-          maxTokens: r.max_tokens,
-          system: r.system,
-          userContent: r.messages[0]?.content ?? '',
-        });
-        return {
-          content: [{ type: 'text', text: opts.rawText ?? opts.reply ?? '' }],
-        };
-      },
+    async complete(req: unknown): Promise<unknown> {
+      if (opts.throwOnCall) throw new Error('haiku-down');
+      const r = req as {
+        model: string;
+        maxTokens: number;
+        system: string;
+        messages: ReadonlyArray<{
+          role: string;
+          content: ReadonlyArray<{ type: string; text?: string }>;
+        }>;
+      };
+      calls.push({
+        model: r.model,
+        maxTokens: r.maxTokens,
+        system: r.system,
+        userContent: r.messages[0]?.content[0]?.text ?? '',
+      });
+      return {
+        content: [{ type: 'text', text: opts.rawText ?? opts.reply ?? '' }],
+      };
     },
   };
   return { client, calls };
@@ -50,7 +51,7 @@ function makeFakeAnthropic(opts: {
 function makeExtractor(opts: { reply?: string; throwOnCall?: boolean; rawText?: string }) {
   const fake = makeFakeAnthropic(opts);
   const extractor = createHaikuPalaiaExcerptExtractor({
-    anthropic: fake.client as never,
+    llm: fake.client as never,
     log: () => {},
   });
   return { extractor, calls: fake.calls };

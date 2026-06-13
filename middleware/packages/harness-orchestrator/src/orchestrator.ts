@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import type Anthropic from '@anthropic-ai/sdk';
 import type { Pool } from 'pg';
 import {
   toSemanticAnswer,
@@ -12,6 +11,7 @@ import {
   type SemanticAnswer,
 } from '@omadia/channel-sdk';
 import type { EmbeddingClient } from '@omadia/embeddings';
+import type { LlmProvider } from '@omadia/llm-provider';
 import type {
   ContextRetriever,
   FactExtractor,
@@ -111,6 +111,7 @@ import {
   type RoutingBucket,
   routeTurnModel,
 } from './modelRouter.js';
+import { fromLlmResponse, toLlmRequest } from './llmProviderSeam.js';
 import { streamMessageEvents } from './streaming.js';
 import { steeringBus } from './steeringBus.js';
 import { buildDateHeader, today, turnContext } from './turnContext.js';
@@ -160,7 +161,7 @@ export interface OrchestratorOptions {
    * (`buildOrchestratorForAgent`) always sets it. Defaults to `'default'`.
    */
   agentId?: string;
-  client: Anthropic;
+  provider: LlmProvider;
   model: string;
   /**
    * When set, each turn is routed by a Haiku classifier to either
@@ -851,7 +852,7 @@ export function parseToolEmittedRoutineList(
 export class Orchestrator {
   /** The Agent (orchestrator instance) this object serves. */
   readonly agentId: string;
-  private readonly client: Anthropic;
+  private readonly provider: LlmProvider;
   private readonly model: string;
   private readonly modelRouting: ModelRoutingConfig | undefined;
   private readonly maxTokens: number;
@@ -920,7 +921,7 @@ export class Orchestrator {
 
   constructor(options: OrchestratorOptions) {
     this.agentId = options.agentId ?? 'default';
-    this.client = options.client;
+    this.provider = options.provider;
     this.model = options.model;
     this.modelRouting = options.modelRouting;
     this.maxTokens = options.maxTokens;
@@ -1814,7 +1815,7 @@ export class Orchestrator {
   }> {
     if (!this.modelRouting) return { model: this.model };
     const r = await routeTurnModel(
-      this.client,
+      this.provider,
       this.modelRouting,
       userMessage,
       this.model,
@@ -1947,9 +1948,10 @@ export class Orchestrator {
         // invalid JSON. See ensureWellFormedParams.
         const safeParams = ensureWellFormedParams(baseParams);
 
-        const response: Message = await this.client.messages.create(
-          safeParams,
-          { headers: { 'anthropic-beta': MEMORY_BETA_HEADER } },
+        const response: Message = fromLlmResponse(
+          await this.provider.complete(
+            toLlmRequest(safeParams, [MEMORY_BETA_HEADER]),
+          ),
         );
 
         messages.push({ role: 'assistant', content: response.content });
@@ -2522,7 +2524,7 @@ export class Orchestrator {
 
         let finalMessage: Message | undefined;
         for await (const ev of streamMessageEvents({
-          client: this.client,
+          provider: this.provider,
           params: {
             model: turnModel,
             max_tokens: this.maxTokens,
@@ -2537,9 +2539,7 @@ export class Orchestrator {
           observer,
           iteration,
           streamLabel: 'orchestrator',
-          requestOptions: {
-            headers: { 'anthropic-beta': MEMORY_BETA_HEADER },
-          },
+          betas: [MEMORY_BETA_HEADER],
         })) {
           if (ev.type === 'text_delta') {
             yield { type: 'text_delta', text: ev.text };

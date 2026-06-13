@@ -14,9 +14,9 @@
  * than once in one process.
  */
 
-import type Anthropic from '@anthropic-ai/sdk';
 import type { ChatAgent } from '@omadia/channel-sdk';
 import type { EmbeddingClient } from '@omadia/embeddings';
+import type { LlmProvider } from '@omadia/llm-provider';
 import type {
   ContextRetriever,
   FactExtractor,
@@ -85,7 +85,7 @@ export interface AgentRuntimeConfig {
  * building).
  */
 export interface OrchestratorDeps {
-  readonly client: Anthropic;
+  readonly provider: LlmProvider;
   readonly knowledgeGraph: KnowledgeGraph;
   readonly memoryStore: MemoryStore;
   readonly entityRefBus: EntityRefBus;
@@ -198,7 +198,7 @@ export function buildOrchestratorForAgent(
   // post-activate via `dynamicAgentRuntime.attachOrchestrator(bundle.raw)`.
   const orchestrator = new Orchestrator({
     agentId: config.agentId,
-    client: deps.client,
+    provider: deps.provider,
     model: config.model,
     ...(config.modelRouting ? { modelRouting: config.modelRouting } : {}),
     maxTokens: config.maxTokens,

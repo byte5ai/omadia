@@ -15,31 +15,29 @@ interface RecordedVerdict {
   rationale?: string;
 }
 
-function stubAnthropic(sequence: RecordedVerdict[]): {
-  anthropic: unknown;
+function stubProvider(sequence: RecordedVerdict[]): {
+  llm: unknown;
   callCount: () => number;
 } {
   let i = 0;
-  const client = {
-    messages: {
-      create(): Promise<{ content: unknown[] }> {
-        const v = sequence[i] ?? sequence[sequence.length - 1];
-        i += 1;
-        return Promise.resolve({
-          content: [
-            {
-              type: 'tool_use',
-              name: 'record_verdict',
-              id: 'toolu_x',
-              input: v,
-            },
-          ],
-        });
-      },
+  const provider = {
+    complete(): Promise<{ content: unknown[] }> {
+      const v = sequence[i] ?? sequence[sequence.length - 1];
+      i += 1;
+      return Promise.resolve({
+        content: [
+          {
+            type: 'tool_call',
+            name: 'record_verdict',
+            id: 'toolu_x',
+            input: v,
+          },
+        ],
+      });
     },
   };
   return {
-    anthropic: client,
+    llm: provider,
     callCount: () => i,
   };
 }
@@ -74,9 +72,9 @@ const SNIPPET: EvidenceSnippet = {
 
 describe('verifier/evidenceJudge', () => {
   it('returns unverified when no evidence is found', async () => {
-    const { anthropic } = stubAnthropic([{ verdict: 'verified' }]);
+    const { llm } = stubProvider([{ verdict: 'verified' }]);
     const judge = new EvidenceJudge({
-      anthropic: anthropic as never,
+      llm: llm as never,
       fetcher: stubFetcher([]),
     });
     const verdict = await judge.check(makeSoftClaim());
@@ -84,11 +82,11 @@ describe('verifier/evidenceJudge', () => {
   });
 
   it('verifies when judge says verified with node id', async () => {
-    const { anthropic, callCount } = stubAnthropic([
+    const { llm, callCount } = stubProvider([
       { verdict: 'verified', evidence_node_id: 'person:john-doe' },
     ]);
     const judge = new EvidenceJudge({
-      anthropic: anthropic as never,
+      llm: llm as never,
       fetcher: stubFetcher([SNIPPET]),
     });
     const verdict = await judge.check(makeSoftClaim());
@@ -97,9 +95,9 @@ describe('verifier/evidenceJudge', () => {
   });
 
   it('downgrades "verified" without node id to unverified', async () => {
-    const { anthropic } = stubAnthropic([{ verdict: 'verified' }]);
+    const { llm } = stubProvider([{ verdict: 'verified' }]);
     const judge = new EvidenceJudge({
-      anthropic: anthropic as never,
+      llm: llm as never,
       fetcher: stubFetcher([SNIPPET]),
       log: (): void => {
         /* silent */
@@ -110,12 +108,12 @@ describe('verifier/evidenceJudge', () => {
   });
 
   it('confirms contradiction only when second judge call agrees', async () => {
-    const { anthropic, callCount } = stubAnthropic([
+    const { llm, callCount } = stubProvider([
       { verdict: 'contradicted', evidence_node_id: 'person:john-doe', rationale: 'not senior' },
       { verdict: 'contradicted', evidence_node_id: 'person:john-doe', rationale: 'not senior' },
     ]);
     const judge = new EvidenceJudge({
-      anthropic: anthropic as never,
+      llm: llm as never,
       fetcher: stubFetcher([SNIPPET]),
     });
     const verdict = await judge.check(makeSoftClaim());
@@ -124,12 +122,12 @@ describe('verifier/evidenceJudge', () => {
   });
 
   it('downgrades flaky contradiction to unverified when recheck disagrees', async () => {
-    const { anthropic, callCount } = stubAnthropic([
+    const { llm, callCount } = stubProvider([
       { verdict: 'contradicted', evidence_node_id: 'person:john-doe' },
       { verdict: 'unverified' },
     ]);
     const judge = new EvidenceJudge({
-      anthropic: anthropic as never,
+      llm: llm as never,
       fetcher: stubFetcher([SNIPPET]),
       log: (): void => {
         /* silent */
@@ -142,14 +140,12 @@ describe('verifier/evidenceJudge', () => {
 
   it('returns unverified when API call fails', async () => {
     const client = {
-      messages: {
-        create(): Promise<unknown> {
-          return Promise.reject(new Error('rate limit'));
-        },
+      complete(): Promise<unknown> {
+        return Promise.reject(new Error('rate limit'));
       },
     };
     const judge = new EvidenceJudge({
-      anthropic: client as never,
+      llm: client as never,
       fetcher: stubFetcher([SNIPPET]),
       log: (): void => {
         /* silent */
@@ -160,14 +156,14 @@ describe('verifier/evidenceJudge', () => {
   });
 
   it('returns unverified when fetcher throws', async () => {
-    const { anthropic } = stubAnthropic([{ verdict: 'verified' }]);
+    const { llm } = stubProvider([{ verdict: 'verified' }]);
     const fetcher: EvidenceFetcher = {
       fetch(): Promise<EvidenceSnippet[]> {
         return Promise.reject(new Error('graph down'));
       },
     };
     const judge = new EvidenceJudge({
-      anthropic: anthropic as never,
+      llm: llm as never,
       fetcher,
       log: (): void => {
         /* silent */
@@ -178,11 +174,11 @@ describe('verifier/evidenceJudge', () => {
   });
 
   it('handles unverified verdict from judge', async () => {
-    const { anthropic } = stubAnthropic([
+    const { llm } = stubProvider([
       { verdict: 'unverified', rationale: 'evidence silent' },
     ]);
     const judge = new EvidenceJudge({
-      anthropic: anthropic as never,
+      llm: llm as never,
       fetcher: stubFetcher([SNIPPET]),
     });
     const verdict = await judge.check(makeSoftClaim());

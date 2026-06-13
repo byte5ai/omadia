@@ -3,7 +3,10 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-import type Anthropic from '@anthropic-ai/sdk';
+import {
+  createAnthropicProvider,
+  type AnthropicClient,
+} from '@omadia/llm-provider';
 import {
   LocalSubAgent,
   type AskObserver,
@@ -186,7 +189,7 @@ interface Askable {
 
 export interface BuilderSubAgentBuildOptions {
   name: string;
-  client: Anthropic;
+  client: AnthropicClient;
   model: string;
   maxTokens: number;
   maxIterations: number;
@@ -209,7 +212,7 @@ export interface BuilderAgentDeps {
    *  secrets (OB-61), so it must be re-resolved per turn. A captured
    *  boot-time client stays unauthenticated forever on vault-only installs
    *  and every ask fails with builder.ask_failed. */
-  anthropic: () => Anthropic;
+  anthropic: () => AnthropicClient;
   draftStore: DraftStore;
   bus: SpecEventBus;
   rebuildScheduler: RebuildScheduler;
@@ -337,7 +340,7 @@ export interface RunBuilderTurnOptions {
 }
 
 export class BuilderAgent {
-  private readonly anthropic: () => Anthropic;
+  private readonly anthropic: () => AnthropicClient;
   private readonly draftStore: DraftStore;
   private readonly bus: SpecEventBus;
   private readonly rebuildScheduler: RebuildScheduler;
@@ -873,7 +876,7 @@ function bridgeBuilderTool(
 function defaultBuildSubAgent(opts: BuilderSubAgentBuildOptions): Askable {
   return new LocalSubAgent({
     name: opts.name,
-    client: opts.client,
+    provider: createAnthropicProvider({ client: opts.client }),
     model: opts.model,
     maxTokens: opts.maxTokens,
     maxIterations: opts.maxIterations,

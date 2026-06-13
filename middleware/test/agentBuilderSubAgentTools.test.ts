@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import type Anthropic from '@anthropic-ai/sdk';
+import type { LlmProvider } from '@omadia/llm-provider';
 import type { LocalSubAgentTool } from '@omadia/plugin-api';
 
 import {
@@ -25,7 +25,7 @@ import {
   subAgentToolName,
 } from '../packages/harness-orchestrator/src/registry/subAgentTools.js';
 
-const fakeClient = {} as unknown as Anthropic;
+const fakeProvider = {} as unknown as LlmProvider;
 
 function sub(overrides: Partial<SubAgentRow> = {}): SubAgentRow {
   return {
@@ -86,7 +86,7 @@ test('builds one DomainTool per enabled sub-agent with sanitised name+domain', (
   const tools = buildSubAgentDomainTools(
     { subAgents: [sub()], toolGrants: [nativeGrant()], skills: [skill()] },
     {
-      client: fakeClient,
+      provider: fakeProvider,
       defaultModel: 'claude-sonnet-4-6',
       defaultMaxTokens: 2048,
       defaultMaxIterations: 6,
@@ -101,7 +101,7 @@ test('builds one DomainTool per enabled sub-agent with sanitised name+domain', (
 test('disabled sub-agents are skipped', () => {
   const tools = buildSubAgentDomainTools(
     { subAgents: [sub({ status: 'disabled' })], toolGrants: [], skills: [] },
-    { client: fakeClient, defaultModel: 'm', defaultMaxTokens: 1, defaultMaxIterations: 1 },
+    { provider: fakeProvider, defaultModel: 'm', defaultMaxTokens: 1, defaultMaxIterations: 1 },
   );
   assert.equal(tools.length, 0);
 });

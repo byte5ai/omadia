@@ -19,6 +19,7 @@ const fakeLlm = (text: string) => ({
     model: 'claude-haiku-4-5',
     inputTokens: 10,
     outputTokens: 5,
+    finishReason: 'stop' as const,
     stopReason: 'end_turn' as const,
   }),
 });

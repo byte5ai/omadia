@@ -1,8 +1,15 @@
-import Anthropic from '@anthropic-ai/sdk';
 import type { Pool } from 'pg';
+import {
+  createAnthropicClient,
+  createAnthropicProvider,
+  readProviderApiKey,
+} from '@omadia/llm-provider';
 import type { KnowledgeGraph } from '@omadia/plugin-api';
 import type { PluginContext } from '@omadia/plugin-api';
-import { initUsageRecorder, withUsageTracking } from '@omadia/usage-telemetry';
+import {
+  initUsageRecorder,
+  withProviderUsageTracking,
+} from '@omadia/usage-telemetry';
 
 import { ClaimExtractor } from './claimExtractor.js';
 import { DeterministicChecker, type OdooReader } from './deterministicChecker.js';
@@ -94,9 +101,11 @@ export async function activate(
     };
   }
 
-  // S+12.6: anthropic_api_key is vault-stored (matches database_url-pattern).
-  // Bootstrap migrates pre-S+12.6 entries automatically (config → vault).
-  const apiKey = ((await ctx.secrets.get('anthropic_api_key')) ?? '').trim();
+  // anthropic_api_key is vault-stored. Read the provider-namespaced canonical
+  // key (provider:anthropic/api_key) with a fallback to the legacy flat key, so
+  // pre-migration installs keep working (phase 4 credential scheme).
+  const apiKey =
+    (await readProviderApiKey((k) => ctx.secrets.get(k), 'anthropic')) ?? '';
   if (!apiKey) {
     ctx.log(
       '[harness-verifier] anthropic_api_key not set — plugin active but verifier@1 capability NOT published',
@@ -156,15 +165,18 @@ export async function activate(
     (ctx.config.get<string>('graph_tenant_id') ?? '').trim() ||
     DEFAULT_TENANT;
 
-  // Wrapped so ClaimExtractor + EvidenceJudge `.messages.create` calls are
-  // recorded for cost telemetry (the streaming path is captured separately).
-  const anthropic = withUsageTracking(new Anthropic({ apiKey }), {
-    source: 'verifier',
-    tenantId: tenant,
-  });
+  // Wrapped so ClaimExtractor + EvidenceJudge `complete()` calls are recorded
+  // for cost telemetry (the streaming path is captured separately).
+  const llm = withProviderUsageTracking(
+    createAnthropicProvider({ client: createAnthropicClient({ apiKey }) }),
+    {
+      source: 'verifier',
+      tenantId: tenant,
+    },
+  );
 
   const extractor = new ClaimExtractor({
-    anthropic,
+    llm,
     model,
     maxClaims,
   });
@@ -175,7 +187,7 @@ export async function activate(
   });
   const fetcher = new GraphEvidenceFetcher({ graph: knowledgeGraph });
   const judge = new EvidenceJudge({
-    anthropic,
+    llm,
     fetcher,
     model,
   });

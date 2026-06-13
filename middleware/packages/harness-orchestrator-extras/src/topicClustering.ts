@@ -15,7 +15,8 @@
  * naming keeps the feature operable without paid LLM access.
  */
 
-import type Anthropic from '@anthropic-ai/sdk';
+import type { LlmProvider } from '@omadia/llm-provider';
+import { collectText, textMessage } from '@omadia/llm-provider';
 import type {
   GraphNode,
   KnowledgeGraph,
@@ -30,7 +31,7 @@ import type {
 export interface TopicClusteringDeps {
   kg: KnowledgeGraph;
   /** Optional. When absent, naming falls back to "Cluster <n>". */
-  anthropic?: Anthropic;
+  llm?: LlmProvider;
   /** Haiku model id. Default 'claude-haiku-4-5-20251001'. */
   model?: string;
   log?: (msg: string) => void;
@@ -167,7 +168,7 @@ export function createTopicClusteringService(
     summaries: string[],
     fallbackIndex: number,
   ): Promise<{ name: string; description: string; source: TopicNamingSource }> {
-    if (!deps.anthropic) {
+    if (!deps.llm) {
       return {
         name: `Cluster ${String(fallbackIndex + 1)}`,
         description: summaries.slice(0, 3).join(' · ').slice(0, 200),
@@ -179,14 +180,13 @@ export function createTopicClusteringService(
         .slice(0, TOP_K_FOR_NAMING)
         .map((s, i) => `${String(i + 1)}. ${s}`)
         .join('\n');
-      const response = await deps.anthropic.messages.create({
+      const response = await deps.llm.complete({
         model,
-        max_tokens: 250,
+        maxTokens: 250,
         system: NAMING_PROMPT,
-        messages: [{ role: 'user', content: body }],
+        messages: [textMessage('user', body)],
       });
-      const block = response.content[0];
-      const text = block && block.type === 'text' ? block.text : '';
+      const text = collectText(response.content);
       const parsed = parseNaming(text);
       if (!parsed) {
         log(`[topic-clustering] unparseable naming output: ${text.slice(0, 200)}`);

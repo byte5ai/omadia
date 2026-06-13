@@ -12,9 +12,9 @@
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "@anthropic-ai/sdk": "*",
     "@omadia/channel-sdk": "*",
     "@omadia/embeddings": "*",
+    "@omadia/llm-provider": "*",
     "@omadia/memory": "*",
     "@omadia/orchestrator-extras": "*",
     "@omadia/plugin-api": "*",
