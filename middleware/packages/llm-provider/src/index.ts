@@ -12,6 +12,7 @@ export type {
   LlmStreamEvent,
   LlmUsage,
   ProviderCapabilities,
+  SystemBlock,
   TextPart,
   ToolCallPart,
   ToolChoice,
@@ -26,3 +27,9 @@ export {
   createAnthropicProvider,
   type AnthropicProviderOptions,
 } from './anthropicProvider.js';
+
+export {
+  createAnthropicClient,
+  type AnthropicClient,
+  type AnthropicClientOptions,
+} from './anthropicClient.js';

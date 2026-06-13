@@ -1,4 +1,5 @@
-import type Anthropic from '@anthropic-ai/sdk';
+import type { LlmProvider, LlmResponse, ToolSpec } from '@omadia/llm-provider';
+import { textMessage, toolCalls } from '@omadia/llm-provider';
 import type { ClaimVerdict, SoftClaim } from './claimTypes.js';
 
 /**
@@ -33,7 +34,9 @@ export interface EvidenceFetcher {
 }
 
 export interface EvidenceJudgeOptions {
-  anthropic: Anthropic;
+  /** Provider-agnostic LLM (Anthropic adapter today). Was `anthropic` before
+   *  the provider-decoupling migration (phase 2). */
+  llm: LlmProvider;
   fetcher: EvidenceFetcher;
   model?: string;
   maxTokens?: number;
@@ -47,11 +50,11 @@ const DEFAULTS = {
 
 const TOOL_NAME = 'record_verdict';
 
-const toolSpec = {
+const toolSpec: ToolSpec = {
   name: TOOL_NAME,
   description:
     'Record your verdict on whether the claim is supported by the evidence. Use verified only when the evidence directly confirms the claim; unverified when the evidence is silent or ambiguous; contradicted ONLY when the evidence explicitly states something incompatible with the claim.',
-  input_schema: {
+  inputSchema: {
     type: 'object' as const,
     properties: {
       verdict: {
@@ -81,14 +84,14 @@ interface RawVerdict {
 type PrimitiveVerdict = 'verified' | 'unverified' | 'contradicted';
 
 export class EvidenceJudge {
-  private readonly anthropic: Anthropic;
+  private readonly llm: LlmProvider;
   private readonly fetcher: EvidenceFetcher;
   private readonly model: string;
   private readonly maxTokens: number;
   private readonly log: (msg: string) => void;
 
   constructor(opts: EvidenceJudgeOptions) {
-    this.anthropic = opts.anthropic;
+    this.llm = opts.llm;
     this.fetcher = opts.fetcher;
     this.model = opts.model ?? DEFAULTS.model;
     this.maxTokens = opts.maxTokens ?? DEFAULTS.maxTokens;
@@ -188,15 +191,15 @@ RELATED: ${claim.relatedEntities.join(', ') || '(none)'}
 EVIDENCE:
 ${evidenceBlock}`;
 
-    let response: Anthropic.Messages.Message;
+    let response: LlmResponse;
     try {
-      response = await this.anthropic.messages.create({
+      response = await this.llm.complete({
         model: this.model,
-        max_tokens: this.maxTokens,
+        maxTokens: this.maxTokens,
         system,
         tools: [toolSpec],
-        tool_choice: { type: 'tool', name: TOOL_NAME },
-        messages: [{ role: 'user', content: user }],
+        toolChoice: { type: 'tool', name: TOOL_NAME },
+        messages: [textMessage('user', user)],
       });
     } catch (err) {
       this.log(`[verifier/judge] API FAIL: ${errMsg(err)}`);
@@ -209,15 +212,17 @@ ${evidenceBlock}`;
 
 // ---------------- helpers ----------------
 
-function parseVerdict(response: Anthropic.Messages.Message): {
+function parseVerdict(response: LlmResponse): {
   verdict: PrimitiveVerdict;
   evidenceNodeId?: string;
   rationale?: string;
 } | null {
+  // Defensive: the contract guarantees `content` is an array, but keep the
+  // historical never-throws behavior against malformed input.
   if (!Array.isArray(response.content)) return null;
-  for (const block of response.content) {
-    if (block.type !== 'tool_use' || block.name !== TOOL_NAME) continue;
-    const raw = block.input as RawVerdict;
+  for (const call of toolCalls(response.content)) {
+    if (call.name !== TOOL_NAME) continue;
+    const raw = call.input as RawVerdict;
     const verdict = normaliseVerdict(raw.verdict);
     if (!verdict) return null;
     const nodeId =

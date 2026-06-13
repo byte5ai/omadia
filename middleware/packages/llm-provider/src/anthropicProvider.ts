@@ -195,25 +195,31 @@ function mapResponse(message: Anthropic.Message): LlmResponse {
   };
 }
 
+/** Maps the neutral `system` (plain string or structured blocks) to the
+ *  Anthropic `system` arg. A plain string honours `cacheHints.system`; a block
+ *  array carries its own per-block cache breakpoints (cacheHints ignored). */
+function buildSystem(req: LlmRequest): unknown {
+  const { system } = req;
+  if (system === undefined) return undefined;
+  if (typeof system === 'string') {
+    return req.cacheHints?.system === true
+      ? [{ type: 'text', text: system, cache_control: CACHE_EPHEMERAL }]
+      : system;
+  }
+  return system.map((b) => ({
+    type: 'text',
+    text: b.text,
+    ...(b.cache === true ? { cache_control: CACHE_EPHEMERAL } : {}),
+  }));
+}
+
 function buildParams(req: LlmRequest): Record<string, unknown> {
+  const system = buildSystem(req);
   return {
     model: req.model,
     max_tokens: req.maxTokens,
     messages: toAnthropicMessages(req.messages),
-    ...(req.system !== undefined
-      ? {
-          system:
-            req.cacheHints?.system === true
-              ? [
-                  {
-                    type: 'text',
-                    text: req.system,
-                    cache_control: CACHE_EPHEMERAL,
-                  },
-                ]
-              : req.system,
-        }
-      : {}),
+    ...(system !== undefined ? { system } : {}),
     ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
     ...(req.tools !== undefined && req.tools.length > 0
       ? { tools: toAnthropicTools(req.tools, req.cacheHints) }
@@ -222,6 +228,17 @@ function buildParams(req: LlmRequest): Record<string, unknown> {
       ? { tool_choice: toAnthropicToolChoice(req.toolChoice) }
       : {}),
   };
+}
+
+/** Beta opt-ins → SDK request options (`anthropic-beta` header). Returns
+ *  undefined when there are none, so callers pass nothing extra (preserving
+ *  the no-options call shape for the common path). */
+function toRequestOptions(
+  req: LlmRequest,
+): { headers: Record<string, string> } | undefined {
+  return req.betas !== undefined && req.betas.length > 0
+    ? { headers: { 'anthropic-beta': req.betas.join(',') } }
+    : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -317,11 +334,13 @@ export function createAnthropicProvider(
 
     async complete(req: LlmRequest): Promise<LlmResponse> {
       const started = Date.now();
-      const response = await client.messages.create(
-        buildParams(req) as unknown as Parameters<
-          typeof client.messages.create
-        >[0],
-      );
+      const params = buildParams(req) as unknown as Parameters<
+        typeof client.messages.create
+      >[0];
+      const options = toRequestOptions(req);
+      const response = await (options !== undefined
+        ? client.messages.create(params, options)
+        : client.messages.create(params));
       const mapped = mapResponse(response as Anthropic.Message);
       log(
         `complete ok model=${mapped.model} in=${String(mapped.usage.inputTokens)} out=${String(mapped.usage.outputTokens)} ms=${String(Date.now() - started)}`,
@@ -330,17 +349,25 @@ export function createAnthropicProvider(
     },
 
     async *stream(req: LlmRequest): AsyncIterable<LlmStreamEvent> {
-      const stream = client.messages.stream(
-        buildParams(req) as unknown as Parameters<
-          typeof client.messages.stream
-        >[0],
-      );
+      const params = buildParams(req) as unknown as Parameters<
+        typeof client.messages.stream
+      >[0];
+      const options = toRequestOptions(req);
+      const stream = options !== undefined
+        ? client.messages.stream(params, options)
+        : client.messages.stream(params);
       for await (const event of stream) {
         if (
-          event.type === 'content_block_delta' &&
-          event.delta.type === 'text_delta'
+          event.type === 'content_block_start' &&
+          event.content_block.type === 'tool_use'
         ) {
-          yield { type: 'text_delta', text: event.delta.text };
+          yield { type: 'tool_use_start' };
+        } else if (event.type === 'content_block_delta') {
+          if (event.delta.type === 'text_delta') {
+            yield { type: 'text_delta', text: event.delta.text };
+          } else if (event.delta.type === 'input_json_delta') {
+            yield { type: 'tool_input_delta', text: event.delta.partial_json };
+          }
         }
       }
       const final = await stream.finalMessage();

@@ -12,7 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "@anthropic-ai/sdk": "*",
+    "@omadia/llm-provider": "*",
     "@omadia/plugin-api": "*",
     "@omadia/usage-telemetry": "*",
     "zod": "^4.0.0",

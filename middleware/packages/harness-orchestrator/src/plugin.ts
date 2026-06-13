@@ -1,6 +1,9 @@
-import Anthropic from '@anthropic-ai/sdk';
 import type { ChatAgent } from '@omadia/channel-sdk';
 import type { EmbeddingClient } from '@omadia/embeddings';
+import {
+  createAnthropicClient,
+  createAnthropicProvider,
+} from '@omadia/llm-provider';
 // Phase 5B: structural shim — `@omadia/integration-microsoft365` lives
 // in the byte5-plugins backup repo. The orchestrator types against a
 // narrow accessor shape that matches what the plugin publishes under
@@ -420,7 +423,9 @@ export async function activate(
   // exponential backoff. The SDK default is 2; bumped to 5 so a transient
   // `overloaded_error` (HTTP 529) burst is far more likely to ride out
   // inside the SDK instead of surfacing as a failed turn. (Merged from main.)
-  const client = new Anthropic({ apiKey, maxRetries: 5 });
+  const provider = createAnthropicProvider({
+    client: createAnthropicClient({ apiKey, maxRetries: 5 }),
+  });
 
   // OB-77 (Palaia Phase 8) — Nudge-Pipeline. Publish a fresh in-memory
   // registry, then drain `nudgeProviders@1` (side-channel for plugins
@@ -504,7 +509,7 @@ export async function activate(
   // (US4) calls the same factory once per configured Agent against the
   // same `deps`.
   const orchestratorDeps: OrchestratorDeps = {
-    client,
+    provider,
     knowledgeGraph,
     memoryStore,
     entityRefBus,

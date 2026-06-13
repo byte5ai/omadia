@@ -13,12 +13,11 @@
  * v1 plugin contract promises. The surface stays narrow (no streaming,
  * no tools — the orchestrator handles tool-loops itself).
  */
-import type Anthropic from '@anthropic-ai/sdk';
-
 import {
   collectText,
   createAnthropicProvider,
   textMessage,
+  type AnthropicClient,
 } from '@omadia/llm-provider';
 import type {
   LlmCompleteRequest,
@@ -27,7 +26,7 @@ import type {
 } from '@omadia/plugin-api';
 
 export interface AnthropicLlmProviderOptions {
-  readonly client: Anthropic;
+  readonly client: AnthropicClient;
   readonly log?: (...args: unknown[]) => void;
 }
 
@@ -82,6 +81,7 @@ export function createAnthropicLlmProvider(
         model: response.model,
         inputTokens: response.usage.inputTokens,
         outputTokens: response.usage.outputTokens,
+        finishReason: response.finishReason,
         stopReason: toLegacyStopReason(
           response.finishReason,
           response.providerFinishReason,

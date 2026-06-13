@@ -20,30 +20,31 @@ function makeFakeAnthropic(opts: {
   reply?: string;
   throwOnCall?: boolean;
 }): {
-  client: { messages: { create: (req: unknown) => Promise<unknown> } };
+  client: { complete: (req: unknown) => Promise<unknown> };
   calls: CapturedCall[];
 } {
   const calls: CapturedCall[] = [];
   const client = {
-    messages: {
-      async create(req: unknown): Promise<unknown> {
-        if (opts.throwOnCall) throw new Error('haiku-down');
-        const r = req as {
-          model: string;
-          max_tokens: number;
-          system: string;
-          messages: ReadonlyArray<{ role: string; content: string }>;
-        };
-        calls.push({
-          model: r.model,
-          maxTokens: r.max_tokens,
-          system: r.system,
-          userContent: r.messages[0]?.content ?? '',
-        });
-        return {
-          content: [{ type: 'text', text: opts.reply ?? '' }],
-        };
-      },
+    async complete(req: unknown): Promise<unknown> {
+      if (opts.throwOnCall) throw new Error('haiku-down');
+      const r = req as {
+        model: string;
+        maxTokens: number;
+        system: string;
+        messages: ReadonlyArray<{
+          role: string;
+          content: ReadonlyArray<{ type: string; text?: string }>;
+        }>;
+      };
+      calls.push({
+        model: r.model,
+        maxTokens: r.maxTokens,
+        system: r.system,
+        userContent: r.messages[0]?.content[0]?.text ?? '',
+      });
+      return {
+        content: [{ type: 'text', text: opts.reply ?? '' }],
+      };
     },
   };
   return { client, calls };
@@ -53,7 +54,7 @@ describe('createHaikuSessionSummaryGenerator', () => {
   it('skips the LLM call when there are no turns', async () => {
     const { client, calls } = makeFakeAnthropic({ reply: 'should-not-show' });
     const gen = createHaikuSessionSummaryGenerator({
-      anthropic: client as never,
+      llm: client as never,
       log: () => {},
     });
     const out = await gen.generate({ scope: 'chat-1', turns: [] });
@@ -64,7 +65,7 @@ describe('createHaikuSessionSummaryGenerator', () => {
   it('skips the LLM call when all turns carry the session-summary marker', async () => {
     const { client, calls } = makeFakeAnthropic({ reply: 'should-not-show' });
     const gen = createHaikuSessionSummaryGenerator({
-      anthropic: client as never,
+      llm: client as never,
       log: () => {},
     });
     const out = await gen.generate({
@@ -87,7 +88,7 @@ describe('createHaikuSessionSummaryGenerator', () => {
 - Offen: Doku ergänzen`;
     const { client, calls } = makeFakeAnthropic({ reply: `\n${reply}\n` });
     const gen = createHaikuSessionSummaryGenerator({
-      anthropic: client as never,
+      llm: client as never,
       log: () => {},
     });
     const out = await gen.generate({
@@ -122,7 +123,7 @@ describe('createHaikuSessionSummaryGenerator', () => {
     const { client } = makeFakeAnthropic({ throwOnCall: true });
     const logs: string[] = [];
     const gen = createHaikuSessionSummaryGenerator({
-      anthropic: client as never,
+      llm: client as never,
       log: (msg: string) => { logs.push(msg); },
     });
     const out = await gen.generate({
@@ -142,7 +143,7 @@ describe('createHaikuSessionSummaryGenerator', () => {
   it('truncates very long turn bodies before sending to Haiku', async () => {
     const { client, calls } = makeFakeAnthropic({ reply: '- ok' });
     const gen = createHaikuSessionSummaryGenerator({
-      anthropic: client as never,
+      llm: client as never,
       log: () => {},
     });
     await gen.generate({
@@ -165,7 +166,7 @@ describe('createHaikuSessionSummaryGenerator', () => {
   it('drops empty turns from the prompt input', async () => {
     const { client, calls } = makeFakeAnthropic({ reply: '- ok' });
     const gen = createHaikuSessionSummaryGenerator({
-      anthropic: client as never,
+      llm: client as never,
       log: () => {},
     });
     await gen.generate({

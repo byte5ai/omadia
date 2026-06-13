@@ -994,14 +994,24 @@ export interface LlmCompleteRequest {
 }
 
 export interface LlmCompleteResult {
-  /** Concatenated text content of the assistant turn. Tool-use stop reasons
-   *  produce empty `text` — plugins should branch on `stopReason` if they
+  /** Concatenated text content of the assistant turn. Tool-use finish reasons
+   *  produce empty `text` — plugins should branch on `finishReason` if they
    *  enable tool-use (which is uncommon at the plugin layer; the orchestrator
    *  handles tool-loops itself). */
   readonly text: string;
   readonly model: string;
   readonly inputTokens: number;
   readonly outputTokens: number;
+  /** Provider-neutral completion-end signal — branch on THIS, not the legacy
+   *  vendor `stopReason`. `end_turn`/`stop_sequence` collapse to `'stop'`;
+   *  `tool_use` → `'tool_calls'`. Always populated by the host. */
+  readonly finishReason: 'stop' | 'tool_calls' | 'max_tokens';
+  /**
+   * @deprecated Anthropic-specific stop reason, kept for v1 back-compat. Use
+   * `finishReason` instead — it is provider-neutral. Still populated by the
+   * host (the Anthropic adapter passes its raw value through) and remains
+   * valid for installs pinned to Anthropic.
+   */
   readonly stopReason:
     | 'end_turn'
     | 'max_tokens'
@@ -1012,7 +1022,7 @@ export interface LlmCompleteResult {
 export class LlmServiceUnavailableError extends Error {
   constructor(callerAgentId: string) {
     super(
-      `plugin '${callerAgentId}' has ctx.llm but no 'llm' provider is registered — host needs ANTHROPIC_API_KEY configured at boot`,
+      `plugin '${callerAgentId}' has ctx.llm but no 'llm' provider is registered — the host needs an LLM provider connected (e.g. via the admin provider/setup flow)`,
     );
     this.name = 'LlmServiceUnavailableError';
   }

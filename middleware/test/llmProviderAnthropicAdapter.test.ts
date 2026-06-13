@@ -316,6 +316,67 @@ test('stream() rethrows mid-stream vendor errors to the caller', async () => {
   });
 });
 
+test('stream() maps tool_use block start + input_json deltas to neutral events', async () => {
+  const fakeStream = {
+    async *[Symbol.asyncIterator]() {
+      yield {
+        type: 'content_block_delta',
+        delta: { type: 'text_delta', text: 'Moment.' },
+      };
+      // Anthropic opens a tool_use content block, then streams its args JSON.
+      yield {
+        type: 'content_block_start',
+        content_block: { type: 'tool_use', id: 'toolu_1', name: 'lookup' },
+      };
+      yield {
+        type: 'content_block_delta',
+        delta: { type: 'input_json_delta', partial_json: '{"q":' },
+      };
+      yield {
+        type: 'content_block_delta',
+        delta: { type: 'input_json_delta', partial_json: '"x"}' },
+      };
+    },
+    finalMessage: async () =>
+      textResponse({
+        content: [
+          { type: 'tool_use', id: 'toolu_1', name: 'lookup', input: { q: 'x' } },
+        ],
+        stop_reason: 'tool_use',
+      }),
+  };
+  const client = {
+    messages: { stream: () => fakeStream },
+  } as unknown as Anthropic;
+
+  const provider = createAnthropicProvider({ client });
+  const seen: LlmStreamEvent[] = [];
+  for await (const ev of provider.stream({
+    model: 'claude-sonnet-4-6',
+    maxTokens: 64,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  })) {
+    seen.push(ev);
+  }
+
+  // text delta forwarded, tool block signalled, args deltas surfaced (not as
+  // answer text), and exactly one terminal final carrying the tool call.
+  assert.deepEqual(seen.slice(0, 4), [
+    { type: 'text_delta', text: 'Moment.' },
+    { type: 'tool_use_start' },
+    { type: 'tool_input_delta', text: '{"q":' },
+    { type: 'tool_input_delta', text: '"x"}' },
+  ]);
+  const final = seen.at(-1);
+  assert.equal(final?.type, 'final');
+  if (final?.type === 'final') {
+    assert.equal(final.response.finishReason, 'tool_calls');
+    const calls = toolCalls(final.response.content);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.name, 'lookup');
+  }
+});
+
 test('toolChoice disableParallel maps to disable_parallel_tool_use', async () => {
   const captured: Captured = {};
   const provider = createAnthropicProvider({
@@ -332,6 +393,62 @@ test('toolChoice disableParallel maps to disable_parallel_tool_use', async () =>
     type: 'auto',
     disable_parallel_tool_use: true,
   });
+});
+
+test('structured system blocks map to per-block cache_control', async () => {
+  const captured: Captured = {};
+  const provider = createAnthropicProvider({
+    client: mockClient(captured, textResponse()),
+  });
+  await provider.complete({
+    model: 'claude-opus-4-8',
+    maxTokens: 64,
+    system: [
+      { text: 'stable domain prompt', cache: true },
+      { text: 'per-turn date header' },
+    ],
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  assert.deepEqual((captured.params as Record<string, unknown>)['system'], [
+    {
+      type: 'text',
+      text: 'stable domain prompt',
+      cache_control: { type: 'ephemeral' },
+    },
+    { type: 'text', text: 'per-turn date header' },
+  ]);
+});
+
+test('betas map to the anthropic-beta header; absence sends no options', async () => {
+  const calls: Array<{ params: unknown; options: unknown }> = [];
+  const client = {
+    messages: {
+      create: async (params: unknown, options?: unknown) => {
+        calls.push({ params, options });
+        return textResponse();
+      },
+    },
+  } as unknown as Anthropic;
+  const provider = createAnthropicProvider({ client });
+
+  await provider.complete({
+    model: 'claude-opus-4-8',
+    maxTokens: 64,
+    betas: ['context-management-2025-06-27'],
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  assert.deepEqual(calls[0]?.options, {
+    headers: { 'anthropic-beta': 'context-management-2025-06-27' },
+  });
+
+  await provider.complete({
+    model: 'claude-opus-4-8',
+    maxTokens: 64,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  // No betas → second arg omitted entirely (preserves the historical
+  // single-arg create() call shape).
+  assert.equal(calls[1]?.options, undefined);
 });
 
 test('classifyAnthropicError covers the historical retry taxonomy', () => {
@@ -394,6 +511,8 @@ test('legacy plugin wrapper keeps the v1 contract shape', async () => {
     model: 'claude-opus-4-8',
     inputTokens: 100,
     outputTokens: 20,
+    // phase-2 additive: neutral finishReason alongside the legacy stopReason
+    finishReason: 'stop',
     stopReason: 'end_turn',
   });
   // v1 default max_tokens stays 4096

@@ -13,8 +13,9 @@
  * classifier's own token usage is recorded as source 'model-router' so its
  * cost is visible in the dashboard and can be weighed against the savings.
  */
-import type Anthropic from '@anthropic-ai/sdk';
-import { normalizeUsage, recordUsage } from '@omadia/usage-telemetry';
+import type { LlmProvider } from '@omadia/llm-provider';
+import { collectText, textMessage } from '@omadia/llm-provider';
+import { recordUsage } from '@omadia/usage-telemetry';
 
 export interface ModelRoutingConfig {
   /** Haiku-tier model used for the classification call itself. */
@@ -33,19 +34,6 @@ const CLASSIFIER_SYSTEM = [
   '  planning, or where reasoning quality clearly matters.',
   'When unsure, answer COMPLEX. Reply with ONLY the single word SIMPLE or COMPLEX.',
 ].join('\n');
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function firstText(message: any): string {
-  const content = message?.content;
-  if (Array.isArray(content)) {
-    for (const block of content) {
-      if (block?.type === 'text' && typeof block.text === 'string') {
-        return block.text;
-      }
-    }
-  }
-  return '';
-}
 
 /** The bucket the classifier (or the fallback) landed on. `fallback` means the
  *  classifier call failed and the caller's fallback model was used. */
@@ -66,7 +54,7 @@ export interface RouteResult {
  * Best-effort: returns `fallbackModel` (bucket `fallback`) on any failure.
  */
 export async function routeTurnModel(
-  client: Anthropic,
+  provider: LlmProvider,
   cfg: ModelRoutingConfig,
   userMessage: string,
   fallbackModel: string,
@@ -81,22 +69,21 @@ export async function routeTurnModel(
     };
   }
   try {
-    const res = await client.messages.create({
+    const res = await provider.complete({
       model: cfg.classifierModel,
-      max_tokens: 8,
+      maxTokens: 8,
       system: CLASSIFIER_SYSTEM,
-      messages: [{ role: 'user', content: text }],
+      messages: [textMessage('user', text)],
     });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const usage = (res as any)?.usage;
-    if (usage) {
-      recordUsage({
-        source: 'model-router',
-        model: cfg.classifierModel,
-        ...normalizeUsage(usage),
-      });
-    }
-    const verdict = firstText(res).toUpperCase();
+    recordUsage({
+      source: 'model-router',
+      model: cfg.classifierModel,
+      inputTokens: res.usage.inputTokens,
+      outputTokens: res.usage.outputTokens,
+      cacheReadTokens: res.usage.cacheReadTokens ?? 0,
+      cacheCreationTokens: res.usage.cacheWriteTokens ?? 0,
+    });
+    const verdict = collectText(res.content).toUpperCase();
     if (verdict.includes('SIMPLE')) {
       return {
         model: cfg.simpleModel,

@@ -1,5 +1,6 @@
-import type Anthropic from '@anthropic-ai/sdk';
-import { normalizeUsage, recordUsage } from '@omadia/usage-telemetry';
+import type { LlmProvider } from '@omadia/llm-provider';
+import { recordUsage } from '@omadia/usage-telemetry';
+import { fromLlmResponse, toLlmRequest } from './llmProviderSeam.js';
 import type { AskObserver } from './tools/domainQueryTool.js';
 import { ensureWellFormedParams } from './privacyHandle.js';
 
@@ -10,8 +11,8 @@ type Message = any;
  * One event yielded by `streamMessageEvents`. `text_delta` lets the caller
  * forward partial answer text to its UI while the stream is still in flight.
  * The terminal `final` carries the assistant `Message` reconstructed from
- * `stream.finalMessage()` so callers downstream can keep working on the same
- * shape `messages.create` used to return.
+ * the provider's neutral final event so callers downstream can keep working
+ * on the same shape the old Anthropic `messages.create` path used to return.
  */
 export type StreamMessageEvent =
   | { type: 'text_delta'; text: string }
@@ -85,16 +86,16 @@ const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Streams a single iteration through `client.messages.stream` and yields
+ * Streams a single iteration through `provider.stream(...)` and yields
  * progress events. Phase transitions (`thinking` → `streaming` →
  * `tool_running`) and token counters are emitted via the optional
  * `AskObserver`. The terminal `idle` phase is the caller's responsibility
  * (the caller knows when the whole turn is done).
  *
  * Per-chunk token counts are approximated as `ceil(text.length / 4)` because
- * the SDK does not deliver per-delta token counts. The authoritative usage
- * block is read off `finalMessage()` and forwarded via `onIterationUsage`
- * so the iteration's totals reconcile.
+ * the stream does not deliver per-delta token counts. The authoritative usage
+ * block is read off the neutral final event and forwarded via
+ * `onIterationUsage` so the iteration's totals reconcile.
  *
  * `streamLabel` is used as the prefix for observer-callback warnings so the
  * caller (sub-agent vs. orchestrator) can be identified in logs.
@@ -110,16 +111,15 @@ const sleep = (ms: number): Promise<void> =>
  * so the streamed assistant text needs no token restoration.
  */
 export async function* streamMessageEvents(args: {
-  client: Anthropic;
+  provider: LlmProvider;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   params: any;
   observer: AskObserver | undefined;
   iteration: number;
   streamLabel: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  requestOptions?: any;
+  betas?: ReadonlyArray<string>;
 }): AsyncGenerator<StreamMessageEvent> {
-  const { client, observer, iteration, streamLabel, requestOptions } = args;
+  const { provider, observer, iteration, streamLabel, betas } = args;
   const safe = (fn: () => void, hookName: string): void => {
     try {
       fn();
@@ -145,10 +145,7 @@ export async function* streamMessageEvents(args: {
         'onIterationPhase',
       );
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const stream: any = requestOptions
-        ? client.messages.stream(params, requestOptions)
-        : client.messages.stream(params);
+      const events = provider.stream(toLlmRequest(params, betas));
 
       let cumulativeApprox = 0;
       let windowStart = Date.now();
@@ -156,20 +153,39 @@ export async function* streamMessageEvents(args: {
       let lastTokensPerSec = 0;
       let phase: 'thinking' | 'streaming' | 'tool_running' = 'thinking';
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      for await (const event of stream as AsyncIterable<any>) {
-        if (event?.type === 'message_start') {
-          if (phase === 'thinking') {
-            phase = 'streaming';
-            safe(
-              () =>
-                observer?.onIterationPhase?.({ iteration, phase: 'streaming' }),
-              'onIterationPhase',
-            );
-          }
-        } else if (event?.type === 'content_block_start') {
-          const block = event.content_block;
-          if (block?.type === 'tool_use' && phase !== 'tool_running') {
+      const emitTokenChunk = (deltaText: string): void => {
+        const deltaTokens = Math.ceil(deltaText.length / 4);
+        cumulativeApprox += deltaTokens;
+        windowTokens += deltaTokens;
+        const now = Date.now();
+        const windowMs = now - windowStart;
+        if (windowMs >= 500) {
+          lastTokensPerSec = (windowTokens / windowMs) * 1000;
+          windowStart = now;
+          windowTokens = 0;
+        }
+        safe(
+          () =>
+            observer?.onTokenChunk?.({
+              iteration,
+              deltaTokens,
+              cumulativeOutputTokens: cumulativeApprox,
+              tokensPerSec: lastTokensPerSec,
+            }),
+          'onTokenChunk',
+        );
+      };
+
+      for await (const ev of events) {
+        if (phase === 'thinking') {
+          phase = 'streaming';
+          safe(
+            () => observer?.onIterationPhase?.({ iteration, phase: 'streaming' }),
+            'onIterationPhase',
+          );
+        }
+        if (ev.type === 'tool_use_start') {
+          if (phase !== 'tool_running') {
             phase = 'tool_running';
             safe(
               () =>
@@ -180,100 +196,53 @@ export async function* streamMessageEvents(args: {
               'onIterationPhase',
             );
           }
-        } else if (event?.type === 'content_block_delta') {
-          const delta = event.delta;
-          let deltaText = '';
-          if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
-            deltaText = delta.text;
-          } else if (
-            delta?.type === 'input_json_delta' &&
-            typeof delta.partial_json === 'string'
-          ) {
-            deltaText = delta.partial_json;
-          }
-          if (deltaText.length > 0) {
-            const deltaTokens = Math.ceil(deltaText.length / 4);
-            cumulativeApprox += deltaTokens;
-            windowTokens += deltaTokens;
-            const now = Date.now();
-            const windowMs = now - windowStart;
-            if (windowMs >= 500) {
-              lastTokensPerSec = (windowTokens / windowMs) * 1000;
-              windowStart = now;
-              windowTokens = 0;
-            }
-            safe(
-              () =>
-                observer?.onTokenChunk?.({
-                  iteration,
-                  deltaTokens,
-                  cumulativeOutputTokens: cumulativeApprox,
-                  tokensPerSec: lastTokensPerSec,
-                }),
-              'onTokenChunk',
-            );
-          }
-          // Forward only assistant-text deltas to the caller; tool-use input
-          // JSON deltas are intentionally swallowed (the full `tool_use` block
-          // is emitted once the content block closes, which is both cheaper
-          // and more usable for the UI).
-          if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
-            forwardedText = true;
-            yield { type: 'text_delta', text: delta.text };
-          }
+          continue;
+        }
+        if (ev.type === 'text_delta') {
+          if (ev.text.length > 0) emitTokenChunk(ev.text);
+          forwardedText = true;
+          yield { type: 'text_delta', text: ev.text };
+          continue;
+        }
+        if (ev.type === 'tool_input_delta') {
+          if (ev.text.length > 0) emitTokenChunk(ev.text);
+          continue;
+        }
+        if (ev.type === 'final') {
+          const message = fromLlmResponse(ev.response);
+          safe(
+            () =>
+              observer?.onIterationUsage?.({
+                iteration,
+                inputTokens: ev.response.usage.inputTokens,
+                outputTokens: ev.response.usage.outputTokens,
+                cacheReadInputTokens: ev.response.usage.cacheReadTokens ?? 0,
+                cacheCreationInputTokens:
+                  ev.response.usage.cacheWriteTokens ?? 0,
+              }),
+            'onIterationUsage',
+          );
+
+          recordUsage({
+            source: streamLabel,
+            model: ev.response.model,
+            inputTokens: ev.response.usage.inputTokens,
+            outputTokens: ev.response.usage.outputTokens,
+            cacheReadTokens: ev.response.usage.cacheReadTokens ?? 0,
+            cacheCreationTokens: ev.response.usage.cacheWriteTokens ?? 0,
+          });
+
+          yield { type: 'final', message };
+          return;
         }
       }
-
-      const response: Message = await stream.finalMessage();
-
-      const usage = response?.usage;
-      if (usage) {
-        safe(
-          () =>
-            observer?.onIterationUsage?.({
-              iteration,
-              inputTokens:
-                typeof usage.input_tokens === 'number' ? usage.input_tokens : 0,
-              outputTokens:
-                typeof usage.output_tokens === 'number'
-                  ? usage.output_tokens
-                  : 0,
-              cacheReadInputTokens:
-                typeof usage.cache_read_input_tokens === 'number'
-                  ? usage.cache_read_input_tokens
-                  : 0,
-              cacheCreationInputTokens:
-                typeof usage.cache_creation_input_tokens === 'number'
-                  ? usage.cache_creation_input_tokens
-                  : 0,
-            }),
-          'onIterationUsage',
-        );
-
-        // Cost telemetry: persist this iteration's usage. `streamLabel`
-        // distinguishes orchestrator vs sub-agent; `params.model` is the
-        // model the request was actually sent to. recordUsage never throws
-        // and no-ops until a graphPool has been wired, so this is safe on the
-        // hot path. Covers BOTH the orchestrator and every sub-agent that
-        // streams through this helper — the background Haiku callers
-        // (extras/verifier) are captured via their wrapped clients instead.
-        recordUsage({
-          source: streamLabel,
-          model:
-            typeof params?.model === 'string' ? params.model : 'unknown',
-          ...normalizeUsage(usage),
-        });
-      }
-
-      yield { type: 'final', message: response };
-      return;
     } catch (err) {
       // Non-retryable, retries exhausted, or text already streamed to the
       // UI → propagate. The orchestrator's catch logs + surfaces it.
       if (
         forwardedText ||
         attempt >= MAX_STREAM_ATTEMPTS ||
-        !isRetryableStreamError(err)
+        !provider.classifyError(err).retryable
       ) {
         throw err;
       }
@@ -294,7 +263,7 @@ export async function* streamMessageEvents(args: {
  * `Message`. Used by sub-agents that don't forward partial text to a UI.
  */
 export async function streamMessageWithObserver(
-  client: Anthropic,
+  provider: LlmProvider,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   params: any,
   observer: AskObserver | undefined,
@@ -302,7 +271,7 @@ export async function streamMessageWithObserver(
   streamLabel: string,
 ): Promise<Message> {
   for await (const ev of streamMessageEvents({
-    client,
+    provider,
     params,
     observer,
     iteration,

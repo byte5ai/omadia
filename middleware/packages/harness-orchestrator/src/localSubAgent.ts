@@ -1,4 +1,4 @@
-import type Anthropic from '@anthropic-ai/sdk';
+import type { LlmProvider } from '@omadia/llm-provider';
 import type {
   LocalSubAgentTool,
   LocalSubAgentToolResult,
@@ -25,7 +25,7 @@ export type {
 interface LocalSubAgentOptions {
   /** Label used in logs — typically the domain, e.g. `odoo-hr`. */
   name: string;
-  client: Anthropic;
+  provider: LlmProvider;
   model: string;
   maxTokens: number;
   maxIterations: number;
@@ -76,7 +76,7 @@ type Message = any;
  */
 export class LocalSubAgent {
   private readonly name: string;
-  private readonly client: Anthropic;
+  private readonly provider: LlmProvider;
   private readonly model: string;
   private readonly maxTokens: number;
   private readonly maxIterations: number;
@@ -86,7 +86,7 @@ export class LocalSubAgent {
 
   constructor(options: LocalSubAgentOptions) {
     this.name = options.name;
-    this.client = options.client;
+    this.provider = options.provider;
     this.model = options.model;
     this.maxTokens = options.maxTokens;
     this.maxIterations = options.maxIterations;
@@ -200,7 +200,7 @@ export class LocalSubAgent {
         }
 
         const response: Message = await streamMessageWithObserver(
-          this.client,
+          this.provider,
           {
             model: this.model,
             max_tokens: this.maxTokens,

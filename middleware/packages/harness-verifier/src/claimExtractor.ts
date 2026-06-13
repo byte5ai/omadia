@@ -1,4 +1,5 @@
-import type Anthropic from '@anthropic-ai/sdk';
+import type { LlmProvider, LlmResponse, ToolSpec } from '@omadia/llm-provider';
+import { textMessage, toolCalls } from '@omadia/llm-provider';
 import type {
   Aggregation,
   Claim,
@@ -26,7 +27,9 @@ import type {
  */
 
 export interface ClaimExtractorOptions {
-  anthropic: Anthropic;
+  /** Provider-agnostic LLM (Anthropic adapter today). Was `anthropic` before
+   *  the provider-decoupling migration (phase 2). */
+  llm: LlmProvider;
   /** Haiku model id. Defaults to the latest Haiku 4.5. */
   model?: string;
   /** Cap on claims returned. Haiku usually stays well below this. */
@@ -67,11 +70,11 @@ const CLAIM_SOURCES: readonly ClaimSource[] = [
 
 const AGGREGATIONS: readonly Aggregation[] = ['sum', 'count', 'avg', 'max', 'min'];
 
-const toolSpec = {
+const toolSpec: ToolSpec = {
   name: TOOL_NAME,
   description:
     'Record every factual claim made in the assistant answer. One entry per claim. Only include claims whose text appears VERBATIM in the answer. Do not invent, summarise, or paraphrase. If the answer contains no factual claims, return an empty array.',
-  input_schema: {
+  inputSchema: {
     type: 'object' as const,
     properties: {
       claims: {
@@ -149,15 +152,15 @@ interface RawClaim {
 
 export class ClaimExtractor {
   private readonly opts: Required<
-    Omit<ClaimExtractorOptions, 'anthropic' | 'log'>
+    Omit<ClaimExtractorOptions, 'llm' | 'log'>
   > & {
-    anthropic: Anthropic;
+    llm: LlmProvider;
     log: (msg: string) => void;
   };
 
   constructor(opts: ClaimExtractorOptions) {
     this.opts = {
-      anthropic: opts.anthropic,
+      llm: opts.llm,
       model: opts.model ?? DEFAULTS.model,
       maxClaims: opts.maxClaims ?? DEFAULTS.maxClaims,
       maxTokens: opts.maxTokens ?? DEFAULTS.maxTokens,
@@ -193,15 +196,15 @@ ${truncate(input.userMessage, 2000)}
 ASSISTANT ANSWER:
 ${truncate(answer, 6000)}`;
 
-    let response: Anthropic.Messages.Message;
+    let response: LlmResponse;
     try {
-      response = await this.opts.anthropic.messages.create({
+      response = await this.opts.llm.complete({
         model: this.opts.model,
-        max_tokens: this.opts.maxTokens,
+        maxTokens: this.opts.maxTokens,
         system,
         tools: [toolSpec],
-        tool_choice: { type: 'tool', name: TOOL_NAME },
-        messages: [{ role: 'user', content: user }],
+        toolChoice: { type: 'tool', name: TOOL_NAME },
+        messages: [textMessage('user', user)],
       });
     } catch (err) {
       this.opts.log(
@@ -252,11 +255,13 @@ function tail(value: string, max: number): string {
   return value.length <= max ? value : value.slice(value.length - max);
 }
 
-function readToolClaims(response: Anthropic.Messages.Message): unknown[] | null {
+function readToolClaims(response: LlmResponse): unknown[] | null {
+  // Defensive: the contract guarantees `content` is an array, but keep the
+  // historical "never throws; returns []" invariant against malformed input.
   if (!Array.isArray(response.content)) return null;
-  for (const block of response.content) {
-    if (block.type !== 'tool_use' || block.name !== TOOL_NAME) continue;
-    const input = block.input as { claims?: unknown };
+  for (const call of toolCalls(response.content)) {
+    if (call.name !== TOOL_NAME) continue;
+    const input = call.input as { claims?: unknown };
     if (!input || !Array.isArray(input.claims)) return [];
     return input.claims;
   }

@@ -112,6 +112,7 @@ function makeFakeLlm(calls: LlmCalls): LlmProvider {
         model: req.model,
         inputTokens: 10,
         outputTokens: 5,
+        finishReason: 'stop',
         stopReason: 'end_turn',
       };
     },

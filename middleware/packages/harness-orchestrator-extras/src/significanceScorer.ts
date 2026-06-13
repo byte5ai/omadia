@@ -10,13 +10,15 @@
  * and let the caller do the policy.
  */
 
-import type Anthropic from '@anthropic-ai/sdk';
+import type { LlmProvider } from '@omadia/llm-provider';
+import { collectText, textMessage } from '@omadia/llm-provider';
 import type { EntryType } from '@omadia/plugin-api';
 
 import type { SignificanceScorer } from './captureFilter.js';
 
 export interface HaikuSignificanceScorerOptions {
-  anthropic: Anthropic;
+  /** Provider-agnostic LLM (Anthropic adapter today). Was `anthropic` pre-phase-2. */
+  llm: LlmProvider;
   /** Anthropic model id. Default: `claude-haiku-4-5-20251001`. */
   model?: string;
   /** Max tokens budget for the scoring response. Tiny — JSON only. */
@@ -71,19 +73,14 @@ export function createHaikuSignificanceScorer(
         return { score: 0 };
       }
 
-      const response = await opts.anthropic.messages.create({
+      const response = await opts.llm.complete({
         model,
-        max_tokens: maxTokens,
+        maxTokens,
         system: SYSTEM_PROMPT,
-        messages: [
-          {
-            role: 'user',
-            content: `<turn>\n${trimmed}\n</turn>`,
-          },
-        ],
+        messages: [textMessage('user', `<turn>\n${trimmed}\n</turn>`)],
       });
 
-      const replyText = extractFirstText(response.content);
+      const replyText = collectText(response.content);
       if (!replyText) {
         log('[significance-scorer] empty response from Haiku');
         return { score: 0 };
@@ -111,18 +108,6 @@ export function createHaikuSignificanceScorer(
       return { score, suggestedEntryType };
     },
   };
-}
-
-function extractFirstText(
-  content: Anthropic.Messages.ContentBlock[] | undefined,
-): string | null {
-  if (!content) return null;
-  for (const block of content) {
-    if (block.type === 'text' && typeof block.text === 'string') {
-      return block.text;
-    }
-  }
-  return null;
 }
 
 /** Parse strict JSON; tolerate a leading/trailing fence the model might

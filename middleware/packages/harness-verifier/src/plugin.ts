@@ -1,8 +1,14 @@
-import Anthropic from '@anthropic-ai/sdk';
 import type { Pool } from 'pg';
+import {
+  createAnthropicClient,
+  createAnthropicProvider,
+} from '@omadia/llm-provider';
 import type { KnowledgeGraph } from '@omadia/plugin-api';
 import type { PluginContext } from '@omadia/plugin-api';
-import { initUsageRecorder, withUsageTracking } from '@omadia/usage-telemetry';
+import {
+  initUsageRecorder,
+  withProviderUsageTracking,
+} from '@omadia/usage-telemetry';
 
 import { ClaimExtractor } from './claimExtractor.js';
 import { DeterministicChecker, type OdooReader } from './deterministicChecker.js';
@@ -156,15 +162,18 @@ export async function activate(
     (ctx.config.get<string>('graph_tenant_id') ?? '').trim() ||
     DEFAULT_TENANT;
 
-  // Wrapped so ClaimExtractor + EvidenceJudge `.messages.create` calls are
-  // recorded for cost telemetry (the streaming path is captured separately).
-  const anthropic = withUsageTracking(new Anthropic({ apiKey }), {
-    source: 'verifier',
-    tenantId: tenant,
-  });
+  // Wrapped so ClaimExtractor + EvidenceJudge `complete()` calls are recorded
+  // for cost telemetry (the streaming path is captured separately).
+  const llm = withProviderUsageTracking(
+    createAnthropicProvider({ client: createAnthropicClient({ apiKey }) }),
+    {
+      source: 'verifier',
+      tenantId: tenant,
+    },
+  );
 
   const extractor = new ClaimExtractor({
-    anthropic,
+    llm,
     model,
     maxClaims,
   });
@@ -175,7 +184,7 @@ export async function activate(
   });
   const fetcher = new GraphEvidenceFetcher({ graph: knowledgeGraph });
   const judge = new EvidenceJudge({
-    anthropic,
+    llm,
     fetcher,
     model,
   });

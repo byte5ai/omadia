@@ -19,7 +19,8 @@
  * attempted.
  */
 
-import type Anthropic from '@anthropic-ai/sdk';
+import type { LlmProvider } from '@omadia/llm-provider';
+import { collectText, textMessage } from '@omadia/llm-provider';
 
 export interface SessionSummaryInput {
   /** Session scope (e.g. 'chat-1', 'teams-…'). Pure diagnostic field
@@ -42,7 +43,8 @@ export interface SessionSummaryGenerator {
 }
 
 export interface HaikuSessionSummaryGeneratorOptions {
-  anthropic: Anthropic;
+  /** Provider-agnostic LLM (Anthropic adapter today). Was `anthropic` pre-phase-2. */
+  llm: LlmProvider;
   /** Anthropic model id. Default: `claude-haiku-4-5-20251001`. */
   model?: string;
   /** Max tokens for the summary. Deliberately small — a briefing
@@ -107,18 +109,15 @@ export function createHaikuSessionSummaryGenerator(
         .join('\n\n');
 
       try {
-        const response = await opts.anthropic.messages.create({
+        const response = await opts.llm.complete({
           model,
-          max_tokens: maxTokens,
+          maxTokens,
           system: SYSTEM_PROMPT,
           messages: [
-            {
-              role: 'user',
-              content: `<session scope="${input.scope}">\n${transcript}\n</session>`,
-            },
+            textMessage('user', `<session scope="${input.scope}">\n${transcript}\n</session>`),
           ],
         });
-        const text = extractFirstText(response.content);
+        const text = collectText(response.content);
         if (!text) {
           log(`[session-summary] empty response from Haiku (scope=${input.scope})`);
           return '';
@@ -131,18 +130,6 @@ export function createHaikuSessionSummaryGenerator(
       }
     },
   };
-}
-
-function extractFirstText(
-  content: Anthropic.Messages.ContentBlock[] | undefined,
-): string | null {
-  if (!content) return null;
-  for (const block of content) {
-    if (block.type === 'text' && typeof block.text === 'string') {
-      return block.text;
-    }
-  }
-  return null;
 }
 
 function truncate(s: string, max: number): string {

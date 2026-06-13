@@ -7,7 +7,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import Anthropic from '@anthropic-ai/sdk';
+import {
+  createAnthropicClient,
+  createAnthropicProvider,
+} from '@omadia/llm-provider';
 import { InMemoryNudgeRegistry } from '@omadia/plugin-api';
 import type {
   EntityRefBus,
@@ -36,7 +39,9 @@ function fakeNativeToolRegistry(): NativeToolRegistry {
 
 function deps(): OrchestratorDeps {
   return {
-    client: new Anthropic({ apiKey: 'test-key' }),
+    provider: createAnthropicProvider({
+      client: createAnthropicClient({ apiKey: 'test-key' }),
+    }),
     knowledgeGraph: {} as KnowledgeGraph,
     memoryStore: {} as MemoryStore,
     entityRefBus: {} as EntityRefBus,

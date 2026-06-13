@@ -95,18 +95,41 @@ export interface CacheHints {
   readonly tools?: boolean;
 }
 
+/** One block of a structured system prompt. The structured form exists so a
+ *  caller can place prompt-cache breakpoints PRECISELY: the orchestrator caches
+ *  its stable domain prompt + prior-context block but leaves the per-turn date
+ *  and retry-hint blocks uncached, so the cache survives across turns. A single
+ *  `string` system (with `cacheHints.system`) caches all-or-nothing and cannot
+ *  express that. Providers without prompt caching concatenate the `text`s and
+ *  ignore `cache`. */
+export interface SystemBlock {
+  readonly text: string;
+  /** Mark an ephemeral prompt-cache breakpoint at this block (Anthropic
+   *  `cache_control`). Everything up to and including it is cached. */
+  readonly cache?: boolean;
+}
+
 export interface LlmRequest {
   /** Bare vendor model id (e.g. `claude-opus-4-8`, `gpt-4.1`). Resolving
    *  registry refs (`anthropic:…`, `class:frontier`) happens BEFORE the
    *  adapter — adapters only see their own vendor's ids. */
   readonly model: string;
-  readonly system?: string;
+  /** Plain string (use `cacheHints.system` to cache it whole) OR structured
+   *  blocks that carry their own per-block cache breakpoints (then
+   *  `cacheHints.system` is ignored — the blocks are authoritative). */
+  readonly system?: string | ReadonlyArray<SystemBlock>;
   readonly messages: ReadonlyArray<ChatMessage>;
   readonly maxTokens: number;
   readonly temperature?: number;
   readonly tools?: ReadonlyArray<ToolSpec>;
   readonly toolChoice?: ToolChoice;
   readonly cacheHints?: CacheHints;
+  /** Provider-specific preview/beta opt-ins. The Anthropic adapter maps these
+   *  to the `anthropic-beta` request header (e.g. the orchestrator opts into
+   *  `context-management-2025-06-27`); adapters without a beta channel ignore
+   *  them. The one sanctioned escape hatch for vendor preview features — keep
+   *  it short and provider-neutral at the call site (pass a documented const). */
+  readonly betas?: ReadonlyArray<string>;
 }
 
 /** Neutral completion-end signal. `stop_sequence` and other vendor
@@ -134,8 +157,30 @@ export interface LlmResponse {
   readonly usage: LlmUsage;
 }
 
+/**
+ * One event from a streamed completion. The minimal neutral set a caller
+ * needs to drive a live UI + token meter without seeing vendor SSE shapes:
+ *
+ *  - `text_delta`     — assistant answer text arrived; forward to the UI.
+ *  - `tool_use_start` — the model began emitting a tool call (Anthropic
+ *                       `content_block_start` of type `tool_use`; OpenAI the
+ *                       first `tool_calls` delta). Lets the caller flip a
+ *                       "running tool" phase indicator. Carries no payload —
+ *                       the resolved call lands in the `final` response.
+ *  - `tool_input_delta` — partial tool-argument JSON. NOT answer text, so it
+ *                       is never forwarded to the UI, but callers approximating
+ *                       a live token count want it. Adapters whose vendor does
+ *                       not surface partial tool args simply never emit it.
+ *  - `final`          — exactly one terminal event with the full response.
+ *
+ * `text_delta` + `final` are the original phase-1 pair; `tool_use_start` and
+ * `tool_input_delta` were added in phase 2 for the orchestrator streaming path
+ * and are OPTIONAL to emit — a caller that ignores them still works.
+ */
 export type LlmStreamEvent =
   | { readonly type: 'text_delta'; readonly text: string }
+  | { readonly type: 'tool_use_start' }
+  | { readonly type: 'tool_input_delta'; readonly text: string }
   | { readonly type: 'final'; readonly response: LlmResponse };
 
 // ---------------------------------------------------------------------------

@@ -2,7 +2,7 @@
  * @omadia/usage-telemetry — LLM token-usage + cost capture and aggregation.
  *
  * Write path:  initUsageRecorder(pool) once → recordUsage(...) per call, or
- *              wrap a client with withUsageTracking(client, {source}).
+ *              wrap an LlmProvider with withProviderUsageTracking(provider, {source}).
  * Read path:   getUsageDashboard(pool, window) for the cost dashboard.
  */
 export {
@@ -24,10 +24,7 @@ export {
   shutdownUsageRecorder,
 } from './recorder.js';
 
-export {
-  type UsageTrackingOptions,
-  withUsageTracking,
-} from './withUsageTracking.js';
+export { withProviderUsageTracking } from './withProviderUsageTracking.js';
 
 export {
   type UsageWindow,

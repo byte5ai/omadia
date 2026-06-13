@@ -12,8 +12,8 @@
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "@anthropic-ai/sdk": "*",
     "@omadia/embeddings": "*",
+    "@omadia/llm-provider": "*",
     "@omadia/plugin-api": "*",
     "@omadia/usage-telemetry": "*",
     "pg": "^8.13.0"

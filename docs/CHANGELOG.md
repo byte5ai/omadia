@@ -9,7 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_Nothing yet — changes land here before the next tagged release._
+- `@omadia/orchestrator`: migrated the orchestrator and local-sub-agent LLM
+  boundary off direct `@anthropic-ai/sdk` calls onto the neutral
+  `@omadia/llm-provider` seam. Internal loops still build Anthropic-shaped
+  params and read Anthropic-shaped responses; only the boundary call path now
+  translates through `llmProviderSeam`, including streaming final-event usage
+  telemetry and provider-based retry classification.
 
 ---
 

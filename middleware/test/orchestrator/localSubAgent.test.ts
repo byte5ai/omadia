@@ -1,7 +1,13 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 
-import type Anthropic from '@anthropic-ai/sdk';
+import type {
+  ContentPart,
+  LlmProvider,
+  LlmRequest,
+  LlmResponse,
+  LlmStreamEvent,
+} from '@omadia/llm-provider';
 import { LocalSubAgent } from '@omadia/orchestrator';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -12,102 +18,109 @@ type AnyMessage = any;
 interface StubResponse {
   content: AnyContent[];
   stop_reason: 'tool_use' | 'end_turn' | 'stop_sequence' | 'max_tokens';
+  model?: string;
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  };
 }
 
 interface StubClientCapture {
-  calls: AnyMessage[];
-  client: Anthropic;
+  calls: LlmRequest[];
+  provider: LlmProvider;
 }
 
-function stubAnthropic(responses: StubResponse[]): StubClientCapture {
-  const calls: AnyMessage[] = [];
-  let idx = 0;
-  const client = {
-    messages: {
-      stream: (req: AnyMessage): AnyMessage => {
-        calls.push(req);
-        if (idx >= responses.length) {
-          throw new Error(
-            `stubAnthropic: no scripted response for call ${String(idx + 1)} (only ${String(responses.length)} provided)`,
-          );
-        }
-        const response = responses[idx]!;
-        idx += 1;
-        return makeFakeStream(response);
-      },
-    },
-  } as unknown as Anthropic;
-  return { calls, client };
-}
+const providerCapabilities = {
+  tools: true,
+  vision: true,
+  streaming: true,
+  promptCaching: true,
+  forcedToolChoice: true,
+  parallelToolCalls: true,
+} as const;
 
-/**
- * Builds a fake Anthropic `MessageStream`-shaped object from a scripted
- * `StubResponse`. Fragments the response content into the canonical event
- * sequence (message_start → content_block_start/_delta/_stop per block →
- * message_delta → message_stop) so the production stream-helper drives its
- * phase + token-chunk emissions exactly the same way it would against a
- * real SDK stream.
- */
-function makeFakeStream(response: StubResponse): AnyMessage {
-  const events: AnyMessage[] = [
-    {
-      type: 'message_start',
-      message: { id: 'm-stub', usage: { input_tokens: 0, output_tokens: 0 } },
-    },
-  ];
-  let blockIdx = 0;
-  for (const block of response.content) {
-    events.push({
-      type: 'content_block_start',
-      index: blockIdx,
-      content_block: block,
-    });
-    if (block.type === 'text' && typeof block.text === 'string') {
-      events.push({
-        type: 'content_block_delta',
-        index: blockIdx,
-        delta: { type: 'text_delta', text: block.text },
-      });
-    } else if (block.type === 'tool_use' && block.input !== undefined) {
-      events.push({
-        type: 'content_block_delta',
-        index: blockIdx,
-        delta: {
-          type: 'input_json_delta',
-          partial_json: JSON.stringify(block.input),
-        },
-      });
+function toLlmResponse(response: StubResponse): LlmResponse {
+  const content: ContentPart[] = response.content.map((block) => {
+    if (block.type === 'text') {
+      return { type: 'text', text: block.text as string };
     }
-    events.push({ type: 'content_block_stop', index: blockIdx });
-    blockIdx += 1;
-  }
-  events.push({
-    type: 'message_delta',
-    delta: { stop_reason: response.stop_reason },
-    usage: { output_tokens: 0, cache_read_input_tokens: 0 },
+    if (block.type === 'tool_use') {
+      return {
+        type: 'tool_call',
+        id: block.id as string,
+        name: block.name as string,
+        input: block.input,
+      };
+    }
+    throw new Error(`Unsupported stub block type: ${String(block.type)}`);
   });
-  events.push({ type: 'message_stop' });
-
-  const finalMessage: AnyMessage = {
-    id: 'm-stub',
-    type: 'message',
-    role: 'assistant',
-    content: response.content,
-    stop_reason: response.stop_reason,
+  return {
+    content,
+    finishReason:
+      response.stop_reason === 'tool_use'
+        ? 'tool_calls'
+        : response.stop_reason === 'max_tokens'
+          ? 'max_tokens'
+          : 'stop',
+    providerFinishReason: response.stop_reason,
+    model: response.model ?? 'claude-haiku',
     usage: {
-      input_tokens: 0,
-      output_tokens: 0,
-      cache_read_input_tokens: 0,
-      cache_creation_input_tokens: 0,
+      inputTokens: response.usage?.input_tokens ?? 0,
+      outputTokens: response.usage?.output_tokens ?? 0,
+      cacheReadTokens: response.usage?.cache_read_input_tokens ?? 0,
+      cacheWriteTokens: response.usage?.cache_creation_input_tokens ?? 0,
     },
   };
+}
 
+function stubProvider(responses: StubResponse[]): StubClientCapture {
+  const calls: LlmRequest[] = [];
+  let idx = 0;
+  const nextResponse = (): StubResponse => {
+    if (idx >= responses.length) {
+      throw new Error(
+        `stubProvider: no scripted response for call ${String(idx + 1)} (only ${String(responses.length)} provided)`,
+      );
+    }
+    const response = responses[idx]!;
+    idx += 1;
+    return response;
+  };
+  const provider = {
+    id: 'anthropic',
+    capabilities: providerCapabilities,
+    complete: async (req: LlmRequest): Promise<LlmResponse> => {
+      calls.push(req);
+      return toLlmResponse(nextResponse());
+    },
+    stream: (req: LlmRequest): AsyncIterable<LlmStreamEvent> => {
+      calls.push(req);
+      return makeFakeStream(nextResponse());
+    },
+    classifyError: () => ({ retryable: false, kind: 'other' as const }),
+  } as unknown as LlmProvider;
+  return { calls, provider };
+}
+
+function makeFakeStream(response: StubResponse): AsyncIterable<LlmStreamEvent> {
   return {
     async *[Symbol.asyncIterator]() {
-      for (const ev of events) yield ev;
-    },
-    async finalMessage() {
-      return finalMessage;
+      for (const block of response.content) {
+        if (block.type === 'text' && typeof block.text === 'string') {
+          yield { type: 'text_delta', text: block.text };
+          continue;
+        }
+        if (block.type === 'tool_use') {
+          yield { type: 'tool_use_start' };
+          yield {
+            type: 'tool_input_delta',
+            text: JSON.stringify(block.input),
+          };
+        }
+      }
+      yield { type: 'final', response: toLlmResponse(response) };
     },
   };
 }
@@ -132,7 +145,7 @@ const baseToolSpec = {
 
 describe('LocalSubAgent.ask', () => {
   it('returns immediately when the model emits text on the first iteration', async () => {
-    const { client, calls } = stubAnthropic([
+    const { provider, calls } = stubProvider([
       {
         content: [textBlock('all done, here is the answer')],
         stop_reason: 'end_turn',
@@ -140,7 +153,7 @@ describe('LocalSubAgent.ask', () => {
     ]);
     const agent = new LocalSubAgent({
       name: 'test',
-      client,
+      provider,
       model: 'claude-haiku',
       maxTokens: 1024,
       maxIterations: 5,
@@ -156,7 +169,7 @@ describe('LocalSubAgent.ask', () => {
     assert.equal(answer, 'all done, here is the answer');
     assert.equal(calls.length, 1);
     // Happy-path call must NOT carry tool_choice:none
-    assert.equal(calls[0]?.tool_choice, undefined);
+    assert.equal(calls[0]?.toolChoice, undefined);
   });
 
   it('forces tool_choice:none after 3 identical-and-failing tool calls', async () => {
@@ -165,7 +178,7 @@ describe('LocalSubAgent.ask', () => {
     // tool_choice:none and the model can finalize. Detection threshold
     // is 3, so termination triggers at iteration 3 (the 4th call).
     const dupInput = { patches: [{ op: 'add', path: '/x', value: 1 }] };
-    const { client, calls } = stubAnthropic([
+    const { provider, calls } = stubProvider([
       { content: [toolUse('t1', 'patch_spec', dupInput)], stop_reason: 'tool_use' },
       { content: [toolUse('t2', 'patch_spec', dupInput)], stop_reason: 'tool_use' },
       { content: [toolUse('t3', 'patch_spec', dupInput)], stop_reason: 'tool_use' },
@@ -176,7 +189,7 @@ describe('LocalSubAgent.ask', () => {
     ]);
     const agent = new LocalSubAgent({
       name: 'test',
-      client,
+      provider,
       model: 'claude-haiku',
       maxTokens: 1024,
       maxIterations: 20,
@@ -195,16 +208,17 @@ describe('LocalSubAgent.ask', () => {
     for (let i = 0; i < 3; i++) {
       assert.equal(
         calls[i]?.tool_choice,
+        calls[i]?.toolChoice,
         undefined,
         `iteration ${String(i)} should not carry tool_choice`,
       );
     }
     // 4th call: forced text-only.
-    assert.deepEqual(calls[3]?.tool_choice, { type: 'none' });
+    assert.deepEqual(calls[3]?.toolChoice, { type: 'none' });
     // 4th call's system trailer carries the repeat-failure addendum
     // (in German — the agent operates in German) so the model knows
     // why it's been stripped of tools.
-    const sys = calls[3]?.system as Array<{ type: string; text: string }>;
+    const sys = calls[3]?.system as Array<{ text: string; cache?: boolean }>;
     assert.ok(Array.isArray(sys));
     const trailer = sys[1]?.text ?? '';
     assert.match(trailer, /Tool-Call.*identischem Input.*mehrfach/i);
@@ -213,7 +227,7 @@ describe('LocalSubAgent.ask', () => {
   it('does NOT trigger early termination when inputs vary across calls', async () => {
     // 3 tool_uses that all error, BUT each with a different input. The
     // agent might be exploring — we shouldn't shut it down.
-    const { client, calls } = stubAnthropic([
+    const { provider, calls } = stubProvider([
       { content: [toolUse('t1', 'patch_spec', { patches: [{ op: 'a', path: '/x' }] })], stop_reason: 'tool_use' },
       { content: [toolUse('t2', 'patch_spec', { patches: [{ op: 'a', path: '/y' }] })], stop_reason: 'tool_use' },
       { content: [toolUse('t3', 'patch_spec', { patches: [{ op: 'a', path: '/z' }] })], stop_reason: 'tool_use' },
@@ -221,7 +235,7 @@ describe('LocalSubAgent.ask', () => {
     ]);
     const agent = new LocalSubAgent({
       name: 'test',
-      client,
+      provider,
       model: 'claude-haiku',
       maxTokens: 1024,
       maxIterations: 20,
@@ -234,7 +248,7 @@ describe('LocalSubAgent.ask', () => {
     assert.equal(answer, 'still exploring, here is what I have');
     // 4th call is the one we'd inspect for tool_choice — it must be
     // unconstrained because the 3 prior calls had DIFFERENT inputs.
-    assert.equal(calls[3]?.tool_choice, undefined);
+    assert.equal(calls[3]?.toolChoice, undefined);
   });
 
   it('does NOT trigger when an intermediate call succeeds', async () => {
@@ -243,7 +257,7 @@ describe('LocalSubAgent.ask', () => {
     // termination guard should NOT fire on iteration 4.
     const failInput = { patches: [{ op: 'a', path: '/x' }] };
     let failCount = 0;
-    const { client, calls } = stubAnthropic([
+    const { provider, calls } = stubProvider([
       { content: [toolUse('t1', 'patch_spec', failInput)], stop_reason: 'tool_use' },
       { content: [toolUse('t2', 'patch_spec', failInput)], stop_reason: 'tool_use' },
       { content: [toolUse('t3', 'patch_spec', failInput)], stop_reason: 'tool_use' },
@@ -252,7 +266,7 @@ describe('LocalSubAgent.ask', () => {
     ]);
     const agent = new LocalSubAgent({
       name: 'test',
-      client,
+      provider,
       model: 'claude-haiku',
       maxTokens: 1024,
       maxIterations: 20,
@@ -275,13 +289,13 @@ describe('LocalSubAgent.ask', () => {
     // 5th call (index 4) is the text-only final emitted naturally; the
     // 4th call (index 3) — where termination would have struck if the
     // streak had been unbroken — must remain unconstrained.
-    assert.equal(calls[3]?.tool_choice, undefined);
+    assert.equal(calls[3]?.toolChoice, undefined);
   });
 
   it('uses canonical key-order so reordered inputs are recognised as identical', async () => {
     // Same logical payload, different JSON key order. The detector
     // should see all three calls as identical and trigger.
-    const { client, calls } = stubAnthropic([
+    const { provider, calls } = stubProvider([
       { content: [toolUse('t1', 'patch_spec', { a: 1, b: 2 })], stop_reason: 'tool_use' },
       { content: [toolUse('t2', 'patch_spec', { b: 2, a: 1 })], stop_reason: 'tool_use' },
       { content: [toolUse('t3', 'patch_spec', { a: 1, b: 2 })], stop_reason: 'tool_use' },
@@ -289,7 +303,7 @@ describe('LocalSubAgent.ask', () => {
     ]);
     const agent = new LocalSubAgent({
       name: 'test',
-      client,
+      provider,
       model: 'claude-haiku',
       maxTokens: 1024,
       maxIterations: 20,
@@ -299,7 +313,7 @@ describe('LocalSubAgent.ask', () => {
       ],
     });
     await agent.ask('try');
-    assert.deepEqual(calls[3]?.tool_choice, { type: 'none' });
+    assert.deepEqual(calls[3]?.toolChoice, { type: 'none' });
   });
 });
 
@@ -329,7 +343,7 @@ describe('LocalSubAgent.ask — OB-31 expectedTurnToolUse escalation', () => {
     //         tool_choice forcing fill_slot.
     // Iter 1: model finally calls fill_slot (because tool_choice forces).
     // Iter 2: model wraps up with text.
-    const { client, calls } = stubAnthropic([
+    const { provider, calls } = stubProvider([
       {
         content: [textBlock('Jetzt baue ich durch ohne Unterbrechung.')],
         stop_reason: 'end_turn',
@@ -344,7 +358,7 @@ describe('LocalSubAgent.ask — OB-31 expectedTurnToolUse escalation', () => {
     ]);
     const agent = new LocalSubAgent({
       name: 'test',
-      client,
+      provider,
       model: 'claude-haiku',
       maxTokens: 1024,
       maxIterations: 20,
@@ -363,20 +377,24 @@ describe('LocalSubAgent.ask — OB-31 expectedTurnToolUse escalation', () => {
     assert.match(answer, /done/);
     assert.equal(calls.length, 3);
     // Iter 0: no tool_choice (auto).
-    assert.equal(calls[0]?.tool_choice, undefined);
+    assert.equal(calls[0]?.toolChoice, undefined);
     // Iter 1: forced fill_slot — this is the OB-31 escalation.
-    assert.deepEqual(calls[1]?.tool_choice, { type: 'tool', name: 'fill_slot' });
+    assert.deepEqual(calls[1]?.toolChoice, { type: 'tool', name: 'fill_slot' });
     // Iter 2: tool_choice released back to auto (escalation was one-shot).
-    assert.equal(calls[2]?.tool_choice, undefined);
+    assert.equal(calls[2]?.toolChoice, undefined);
     // The synthetic user reminder must be present in the messages array
     // sent on iter 1 so the model knows why it was poked.
-    const iter1Messages = calls[1]?.messages as Array<{ role: string; content: unknown }>;
+    const iter1Messages = calls[1]?.messages as Array<{
+      role: string;
+      content: ContentPart[];
+    }>;
     assert.ok(Array.isArray(iter1Messages));
     const reminderMsg = iter1Messages.find(
       (m) =>
         m.role === 'user' &&
-        typeof m.content === 'string' &&
-        m.content.includes('fill_slot'),
+        m.content.some(
+          (part) => part.type === 'text' && part.text.includes('fill_slot'),
+        ),
     );
     assert.ok(
       reminderMsg,
@@ -388,7 +406,7 @@ describe('LocalSubAgent.ask — OB-31 expectedTurnToolUse escalation', () => {
     // Happy build path: model calls fill_slot in iter 0, then exits with
     // text in iter 1. The obligation is fulfilled — no synthetic reminder,
     // no forced tool_choice on the exit iteration.
-    const { client, calls } = stubAnthropic([
+    const { provider, calls } = stubProvider([
       {
         content: [
           toolUse('t1', 'fill_slot', { slotKey: 'a', source: 'export const x = 1;' }),
@@ -399,7 +417,7 @@ describe('LocalSubAgent.ask — OB-31 expectedTurnToolUse escalation', () => {
     ]);
     const agent = new LocalSubAgent({
       name: 'test',
-      client,
+      provider,
       model: 'claude-haiku',
       maxTokens: 1024,
       maxIterations: 20,
@@ -412,18 +430,24 @@ describe('LocalSubAgent.ask — OB-31 expectedTurnToolUse escalation', () => {
     assert.equal(answer, 'all slots filled, done');
     assert.equal(calls.length, 2);
     // Both iterations must remain unconstrained.
-    assert.equal(calls[0]?.tool_choice, undefined);
-    assert.equal(calls[1]?.tool_choice, undefined);
+    assert.equal(calls[0]?.toolChoice, undefined);
+    assert.equal(calls[1]?.toolChoice, undefined);
     // No synthetic reminder appended by the loop. Messages on iter 1 are
     // [user-question, assistant-iter0-content, tool_results]. No extra
     // user-string reminder.
-    const iter1Messages = calls[1]?.messages as Array<{ role: string; content: unknown }>;
+    const iter1Messages = calls[1]?.messages as Array<{
+      role: string;
+      content: ContentPart[];
+    }>;
     const reminders = iter1Messages.filter(
       (m) =>
         m.role === 'user' &&
-        typeof m.content === 'string' &&
-        m.content.includes('fill_slot') &&
-        m.content.includes('Du hast den Turn beendet'),
+        m.content.some(
+          (part) =>
+            part.type === 'text' &&
+            part.text.includes('fill_slot') &&
+            part.text.includes('Du hast den Turn beendet'),
+        ),
     );
     assert.equal(reminders.length, 0);
   });
@@ -434,7 +458,7 @@ describe('LocalSubAgent.ask — OB-31 expectedTurnToolUse escalation', () => {
     // simulate it for safety — the escalation budget defaults to 1, so
     // after one escalation the loop must accept the stop_reason and
     // return whatever text is on the table).
-    const { client, calls } = stubAnthropic([
+    const { provider, calls } = stubProvider([
       {
         content: [textBlock('ich werde gleich bauen')],
         stop_reason: 'end_turn',
@@ -447,7 +471,7 @@ describe('LocalSubAgent.ask — OB-31 expectedTurnToolUse escalation', () => {
     ]);
     const agent = new LocalSubAgent({
       name: 'test',
-      client,
+      provider,
       model: 'claude-haiku',
       maxTokens: 1024,
       maxIterations: 20,
@@ -463,7 +487,7 @@ describe('LocalSubAgent.ask — OB-31 expectedTurnToolUse escalation', () => {
     // Only ONE escalation iteration happened — no third call.
     assert.equal(calls.length, 2);
     // Iter 1 carried the forced tool_choice (the one-shot escalation).
-    assert.deepEqual(calls[1]?.tool_choice, { type: 'tool', name: 'fill_slot' });
+    assert.deepEqual(calls[1]?.toolChoice, { type: 'tool', name: 'fill_slot' });
   });
 
   it('does NOT escalate when stop_reason is non-tool_use but content has tool_use blocks (max_tokens mid-call edge case)', async () => {
@@ -476,7 +500,7 @@ describe('LocalSubAgent.ask — OB-31 expectedTurnToolUse escalation', () => {
     // without tool_result blocks immediately after`. The defensive
     // hasPendingToolUse check must keep the loop on the dispatch path
     // so tool_results land in messages.
-    const { client, calls } = stubAnthropic([
+    const { provider, calls } = stubProvider([
       // Iter 0: tool_use block but stop_reason='max_tokens' (the bug-trigger).
       {
         content: [
@@ -491,7 +515,7 @@ describe('LocalSubAgent.ask — OB-31 expectedTurnToolUse escalation', () => {
     ]);
     const agent = new LocalSubAgent({
       name: 'test',
-      client,
+      provider,
       model: 'claude-haiku',
       maxTokens: 1024,
       maxIterations: 20,
@@ -537,8 +561,12 @@ describe('LocalSubAgent.ask — OB-31 expectedTurnToolUse escalation', () => {
     const reminderCount = iter1Messages.filter(
       (m) =>
         m.role === 'user' &&
-        typeof m.content === 'string' &&
-        m.content.includes('Du hast den Turn beendet'),
+        Array.isArray(m.content) &&
+        m.content.some(
+          (part) =>
+            part.type === 'text' &&
+            part.text.includes('Du hast den Turn beendet'),
+        ),
     ).length;
     assert.equal(reminderCount, 0);
   });
@@ -547,12 +575,12 @@ describe('LocalSubAgent.ask — OB-31 expectedTurnToolUse escalation', () => {
     // Spec-Phase scenario: BuilderAgent did NOT pass expectedTurnToolUse
     // because the user message was a question, not a build command.
     // Loop must behave identically to the legacy path.
-    const { client, calls } = stubAnthropic([
+    const { provider, calls } = stubProvider([
       { content: [textBlock('hier ist die antwort')], stop_reason: 'end_turn' },
     ]);
     const agent = new LocalSubAgent({
       name: 'test',
-      client,
+      provider,
       model: 'claude-haiku',
       maxTokens: 1024,
       maxIterations: 5,
@@ -562,6 +590,6 @@ describe('LocalSubAgent.ask — OB-31 expectedTurnToolUse escalation', () => {
     const answer = await agent.ask('was macht fill_slot eigentlich?');
     assert.equal(answer, 'hier ist die antwort');
     assert.equal(calls.length, 1);
-    assert.equal(calls[0]?.tool_choice, undefined);
+    assert.equal(calls[0]?.toolChoice, undefined);
   });
 });

@@ -20,7 +20,8 @@
  * mutation pipeline is never blocked by a degraded detector.
  */
 
-import type Anthropic from '@anthropic-ai/sdk';
+import type { LlmProvider, LlmResponse } from '@omadia/llm-provider';
+import { collectText, textMessage } from '@omadia/llm-provider';
 import type { EmbeddingClient } from '@omadia/embeddings';
 import type {
   GraphNode,
@@ -38,7 +39,7 @@ export interface InconsistencyDetectorDeps {
   /** Optional. Without an Anthropic client the detector skips the
    *  judgement pass — `detectFor` returns the candidate count but
    *  creates 0 inconsistencies. */
-  anthropic?: Anthropic;
+  llm?: LlmProvider;
   /** Haiku model id. Default 'claude-haiku-4-5-20251001' to match the
    *  fact-extractor / significance-scorer / excerpt-extractor. */
   model?: string;
@@ -129,7 +130,7 @@ export function createInconsistencyDetector(
   async function detectFor(
     memorableKnowledgeNodeId: string,
   ): Promise<{ candidatesScanned: number; inconsistenciesCreated: number }> {
-    if (!deps.embeddingClient || !deps.anthropic) {
+    if (!deps.embeddingClient || !deps.llm) {
       return { candidatesScanned: 0, inconsistenciesCreated: 0 };
     }
     let source: GraphNode | null;
@@ -192,13 +193,13 @@ export function createInconsistencyDetector(
     let created = 0;
 
     for (const candidate of filtered) {
-      let response;
+      let response: LlmResponse;
       try {
-        response = await deps.anthropic.messages.create({
+        response = await deps.llm.complete({
           model,
-          max_tokens: 200,
+          maxTokens: 200,
           system: PROMPT,
-          messages: [{ role: 'user', content: buildUserMessage(source, candidate.mk) }],
+          messages: [textMessage('user', buildUserMessage(source, candidate.mk))],
         });
       } catch (err) {
         log(
@@ -206,9 +207,7 @@ export function createInconsistencyDetector(
         );
         continue;
       }
-      const block = response.content[0];
-      const text =
-        block && block.type === 'text' ? block.text : '';
+      const text = collectText(response.content);
       const judgement = parseJudgement(text);
       if (!judgement) {
         log(
