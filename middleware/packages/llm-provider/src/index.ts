@@ -45,3 +45,19 @@ export {
   type OpenAiClient,
   type OpenAiClientOptions,
 } from './openaiClient.js';
+
+export {
+  getModel,
+  isClassRef,
+  listModels,
+  listModelsByClass,
+  listModelsByProvider,
+  modelForClass,
+  resolveModelRef,
+  resolveRole,
+  ROLE_DEFAULT_CLASS,
+  type ModelClass,
+  type ModelInfo,
+  type ModelRole,
+  type ProviderId,
+} from './modelRegistry.js';

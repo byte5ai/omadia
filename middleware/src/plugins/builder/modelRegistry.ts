@@ -1,3 +1,5 @@
+import { resolveModelRef } from '@omadia/llm-provider';
+
 import type { BuilderModel, BuilderModelId } from './types.js';
 
 /**
@@ -5,30 +7,53 @@ import type { BuilderModel, BuilderModelId } from './types.js';
  * + display labels. Single source of truth for the builder dropdowns (both
  * codegen-model and preview-model).
  *
- * Model IDs follow the convention documented in the repo's global CLAUDE.md
- * (Claude 4.x line). Bumping a model here is safe: drafts persist the choice
- * as the literal slug (`'sonnet'`), so re-pointing it to the next Sonnet
- * revision needs no draft migration.
+ * The vendor model id is now sourced from the global `@omadia/llm-provider`
+ * registry (the slugs are registered there as aliases), so bumping a model
+ * happens in ONE place. The builder still owns its UI metadata (label,
+ * description) and its per-slug output budget (`maxTokens`) — those are a
+ * builder-workflow concern, distinct from the model's capability ceiling.
+ * Drafts persist the choice as the literal slug (`'sonnet'`), so re-pointing
+ * a slug to a new revision needs no draft migration.
  */
+function vendorId(slug: BuilderModelId): string {
+  const info = resolveModelRef(slug);
+  if (info === undefined) {
+    // A boot-time invariant: every builder slug must be a registered alias.
+    throw new Error(
+      `builder model slug '${slug}' is not registered in the global model registry`,
+    );
+  }
+  // The field is `anthropicModelId` and flows into Anthropic-only client paths
+  // (builderChat/builderPreview/index). Guard the slug→Anthropic contract here
+  // so a future registry edit can never route a non-Anthropic id into the
+  // Anthropic SDK — fail fast at boot instead.
+  if (info.provider !== 'anthropic') {
+    throw new Error(
+      `builder model slug '${slug}' resolved to non-Anthropic provider '${info.provider}'; builder model ids must be Anthropic`,
+    );
+  }
+  return info.modelId;
+}
+
 const MODELS: Record<BuilderModelId, BuilderModel> = {
   haiku: {
     id: 'haiku',
     label: 'Haiku 4.5',
-    anthropicModelId: 'claude-haiku-4-5-20251001',
+    anthropicModelId: vendorId('haiku'),
     maxTokens: 8192,
     description: 'Schnell. Für kleine Spec-Patches und Slot-Regens.',
   },
   sonnet: {
     id: 'sonnet',
     label: 'Sonnet 4.6',
-    anthropicModelId: 'claude-sonnet-4-6',
+    anthropicModelId: vendorId('sonnet'),
     maxTokens: 16_384,
     description: 'Ausbalanciert. Default für Full-Agent-Generation.',
   },
   opus: {
     id: 'opus',
     label: 'Opus 4.8',
-    anthropicModelId: 'claude-opus-4-8',
+    anthropicModelId: vendorId('opus'),
     maxTokens: 16_384,
     description: 'Am kräftigsten. Für komplexe Tools und schwierige Lints.',
   },
