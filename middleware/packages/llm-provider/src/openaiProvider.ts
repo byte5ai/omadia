@@ -23,8 +23,10 @@
  *  - `betas` (no beta-header channel) and `cacheHints` (OpenAI caches automatically,
  *    not via hints) are ignored; `promptCaching` capability is reported `false` so
  *    callers know the hints are no-ops here.
- *  - `maxTokens` → `max_tokens` (universally accepted by OpenAI-compatible servers;
- *    `max_completion_tokens` is OpenAI-reasoning-model-only and would break them).
+ *  - `maxTokens` → `max_completion_tokens` on native OpenAI (GPT-5 / o-series
+ *    REQUIRE it and reject `max_tokens`; gpt-4.x accept it too) and `max_tokens`
+ *    on OpenAI-compatible servers (Mistral / Ollama / vLLM / Azure only speak
+ *    the legacy param). Discriminated by the adapter id (`openai` vs not).
  */
 import type OpenAI from 'openai';
 import { APIConnectionError, APIConnectionTimeoutError } from 'openai';
@@ -242,6 +244,7 @@ function disablesParallel(choice: ToolChoice | undefined): boolean {
 function buildParams(
   req: LlmRequest,
   strictTools: boolean,
+  nativeOpenAi: boolean,
 ): Record<string, unknown> {
   const messages: OpenAiMessageParam[] = [];
   if (req.system !== undefined) {
@@ -254,7 +257,12 @@ function buildParams(
   return {
     model: req.model,
     messages,
-    max_tokens: req.maxTokens,
+    // Native OpenAI requires `max_completion_tokens` (GPT-5 / o-series reject
+    // `max_tokens`; gpt-4.x accept it too). OpenAI-compatible servers
+    // (Mistral / Ollama / vLLM / Azure) only speak the legacy `max_tokens`.
+    ...(nativeOpenAi
+      ? { max_completion_tokens: req.maxTokens }
+      : { max_tokens: req.maxTokens }),
     ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
     ...(hasTools ? { tools: toOpenAiTools(tools, strictTools) } : {}),
     // tool_choice (incl. parallel_tool_calls) is only valid alongside tools —
@@ -486,7 +494,7 @@ export function createOpenAiProvider(opts: OpenAiProviderOptions): LlmProvider {
   const strictTools = opts.strictTools === true;
 
   const paramsFor = (req: LlmRequest): Record<string, unknown> =>
-    buildParams(req, strictTools);
+    buildParams(req, strictTools, id === 'openai');
 
   return {
     id,
