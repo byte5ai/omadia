@@ -46,10 +46,27 @@ export {
 export {
   legacyProviderApiKeyVaultKey,
   providerApiKeyVaultKey,
+  providerOAuthVaultKeys,
   readProviderApiKey,
+  readProviderOAuthTokens,
+  writeProviderOAuthTokens,
 } from './providerCredentials.js';
 
 // ---- Runtime: provider resolution (registry lookup) ----
+export {
+  OPENAI_CODEX_OAUTH,
+  exchangeAuthorizationCode,
+  isAccessTokenExpired,
+  pollDeviceToken,
+  refreshAccessToken,
+  requestUserCode,
+  type FetchLike,
+  type OAuthClientConfig,
+  type OAuthTokens,
+  type PollResult,
+  type UserCodeGrant,
+} from './oauthDeviceFlow.js';
+
 export {
   knownProviderBaseUrl,
   resolveLlmProvider,
