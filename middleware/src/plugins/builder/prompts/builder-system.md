@@ -599,7 +599,11 @@ Modell-Whitelist + Per-Call Token-Cap zwingend.
 ```typescript
 if (ctx.llm) {
   const out = await ctx.llm.complete({
-    model: 'claude-haiku-4-5',
+    // Bevorzugt eine Klasse statt eines Vendor-Modells: der Host löst sie zur
+    // Laufzeit auf das Modell des aktiven Providers auf (Anthropic-Default:
+    // claude-haiku; OpenAI: gpt-4.1-nano). Muss zur `models_allowed`-Klasse
+    // unten passen. Konkrete Vendor-Ids bleiben erlaubt (vendor-gelockt).
+    model: 'class:fast',
     system: 'Du extrahierst nur strukturiert genannte Personen-Namen.',
     messages: [{ role: 'user', content: turnText }],
     maxTokens: 512,

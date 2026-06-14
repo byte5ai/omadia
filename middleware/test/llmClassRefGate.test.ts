@@ -15,7 +15,10 @@
 import { strict as assert } from 'node:assert';
 import { describe, it, beforeEach } from 'node:test';
 
-import { LlmModelNotAllowedError } from '@omadia/plugin-api';
+import {
+  LlmModelNotAllowedError,
+  LlmServiceUnavailableError,
+} from '@omadia/plugin-api';
 import type { LlmProvider } from '@omadia/plugin-api';
 import { modelForClass } from '@omadia/llm-provider';
 
@@ -52,14 +55,21 @@ const stubJobScheduler = {
  */
 function makeRegistry(
   provider: string | undefined,
+  pluginPin?: string,
 ): Parameters<typeof createPluginContext>[0]['registry'] {
   return {
     has: () => true,
     list: () => [],
-    get: (id: string) =>
-      id === '@omadia/orchestrator' && provider !== undefined
-        ? { config: { llm_provider: provider } }
-        : undefined,
+    get: (id: string) => {
+      // Per-plugin pin on the caller wins over the global orchestrator default.
+      if (id === 'caller' && pluginPin !== undefined) {
+        return { config: { llm_provider: pluginPin } };
+      }
+      if (id === '@omadia/orchestrator' && provider !== undefined) {
+        return { config: { llm_provider: provider } };
+      }
+      return undefined;
+    },
     getOrThrow: () => {
       throw new Error('not used');
     },
@@ -134,17 +144,20 @@ function makeFakeLlm(calls: Calls): LlmProvider {
   };
 }
 
-/** Build a wired ctx for `models` whitelist with `provider` active. */
+/** Build a wired ctx for `models` whitelist with `provider` as the global
+ *  default and an optional per-plugin pin on the caller. */
 function makeCtx(
   models: string[],
   provider: string | undefined,
   registry: ServiceRegistry,
+  pluginPin?: string,
+  vault: Parameters<typeof createPluginContext>[0]['vault'] = stubVault,
 ) {
   const catalog = makeFakeCatalog([makePlugin('caller', models)]);
   return createPluginContext({
     agentId: 'caller',
-    vault: stubVault,
-    registry: makeRegistry(provider),
+    vault,
+    registry: makeRegistry(provider, pluginPin),
     catalog,
     serviceRegistry: registry,
     nativeToolRegistry: stubNativeToolRegistry,
@@ -186,16 +199,24 @@ describe('S4 — class-ref LLM whitelist gate', () => {
     assert.equal(calls.count, 1);
   });
 
-  it('class:fast permits the OpenAI fast model when openai is the active provider', async () => {
+  it('class:fast PERMITS the OpenAI fast model when openai is active (gate passes; build needs a key)', async () => {
     const fast = modelForClass('fast', 'openai');
     assert.equal(fast?.modelId, 'gpt-4.1-nano');
+    // With openai active, ctx.llm is built from the vault key via the factory,
+    // NOT the shared anthropic 'llm' service. The stub vault has no openai key,
+    // so a PERMITTED request fails closed at provider-build with
+    // ServiceUnavailable — distinct from ModelNotAllowed, which proves the gate
+    // let it through. (The actual openai serving path is verified live via the
+    // running stack, not in this unit test.)
     const ctx = makeCtx(['class:fast'], 'openai', registry);
-    await ctx.llm!.complete({
-      model: fast!.modelId,
-      messages: [{ role: 'user', content: 'x' }],
-    });
-    assert.equal(calls.count, 1);
-    assert.equal(calls.lastModel, 'gpt-4.1-nano');
+    await assert.rejects(
+      ctx.llm!.complete({
+        model: fast!.modelId,
+        messages: [{ role: 'user', content: 'x' }],
+      }),
+      LlmServiceUnavailableError,
+    );
+    assert.equal(calls.count, 0); // the fake anthropic 'llm' is never used for openai
   });
 
   it('class:fast does NOT leak the OTHER provider model (anthropic active rejects gpt-4.1-nano)', async () => {
@@ -242,28 +263,51 @@ describe('S4 — class-ref LLM whitelist gate', () => {
     );
   });
 
-  it('class:frontier resolves to gpt-4.1 when openai is active', async () => {
+  it('class:frontier permits gpt-4.1 when openai is active (gate passes; build needs a key)', async () => {
     const frontier = modelForClass('frontier', 'openai');
     assert.equal(frontier?.modelId, 'gpt-4.1');
     const ctx = makeCtx(['class:frontier'], 'openai', registry);
-    await ctx.llm!.complete({
-      model: 'gpt-4.1',
-      messages: [{ role: 'user', content: 'x' }],
-    });
-    assert.equal(calls.count, 1);
+    await assert.rejects(
+      ctx.llm!.complete({
+        model: 'gpt-4.1',
+        messages: [{ role: 'user', content: 'x' }],
+      }),
+      LlmServiceUnavailableError,
+    );
+    assert.equal(calls.count, 0);
   });
 
   // ── Back-compat: concrete ids + wildcards gate EXACTLY as before ──────────
 
-  it('back-compat: wildcard claude-haiku-4-5* matches the dated id, regardless of active provider', async () => {
-    // Even with openai active, a concrete/wildcard string is matched raw —
-    // an existing installed agent behaves identically to today.
+  it('back-compat: wildcard claude-haiku-4-5* still MATCHES at the gate regardless of active provider', async () => {
+    // The gate-level back-compat: a concrete/wildcard string is matched raw
+    // against the candidate, independent of the active provider. With openai
+    // active the request gets PAST the gate (so it fails at provider-build with
+    // ServiceUnavailable — no openai key — NOT ModelNotAllowed). Serving is now
+    // provider-aware, so an openai-pinned plugin no longer borrows the anthropic
+    // service; that's the intended new behavior.
     const ctx = makeCtx(['claude-haiku-4-5*'], 'openai', registry);
+    await assert.rejects(
+      ctx.llm!.complete({
+        model: 'claude-haiku-4-5-20251001',
+        messages: [{ role: 'user', content: 'x' }],
+      }),
+      LlmServiceUnavailableError,
+    );
+    assert.equal(calls.count, 0);
+  });
+
+  it('back-compat: wildcard claude-haiku-4-5* serves via the shared service on the Anthropic default', async () => {
+    // The real back-compat case: existing installed agents on the Anthropic
+    // default (no pin) keep being served by the shared 'llm' service, identical
+    // to today.
+    const ctx = makeCtx(['claude-haiku-4-5*'], undefined, registry);
     await ctx.llm!.complete({
       model: 'claude-haiku-4-5-20251001',
       messages: [{ role: 'user', content: 'x' }],
     });
     assert.equal(calls.count, 1);
+    assert.equal(calls.lastModel, 'claude-haiku-4-5-20251001');
   });
 
   it('back-compat: wildcard claude-haiku-4-5* still rejects a non-matching id', async () => {
@@ -305,5 +349,120 @@ describe('S4 — class-ref LLM whitelist gate', () => {
       messages: [{ role: 'user', content: 'x' }],
     });
     assert.equal(calls.count, 2);
+  });
+
+  // ── Provider-aware serving + coercion + per-plugin pinning ────────────────
+
+  it('requesting model:"class:fast" is coerced to the served Anthropic model', async () => {
+    // New builder-generated plugins request a class ref as the model; under the
+    // Anthropic default it is coerced to the concrete served model.
+    const ctx = makeCtx(['class:fast'], undefined, registry);
+    await ctx.llm!.complete({
+      model: 'class:fast',
+      messages: [{ role: 'user', content: 'x' }],
+    });
+    assert.equal(calls.count, 1);
+    assert.equal(calls.lastModel, 'claude-haiku-4-5-20251001');
+  });
+
+  it('Anthropic default is served by the shared "llm" service (not the factory)', async () => {
+    // The fake 'llm' provider IS used (calls.count increments) — proving the
+    // env/vault-armed shared service path is untouched for the Anthropic default.
+    const ctx = makeCtx(['class:frontier'], 'anthropic', registry);
+    await ctx.llm!.complete({
+      model: 'class:frontier',
+      messages: [{ role: 'user', content: 'x' }],
+    });
+    assert.equal(calls.count, 1);
+    assert.equal(calls.lastModel, 'claude-opus-4-8');
+  });
+
+  it('per-plugin pin to openai overrides the anthropic global default', async () => {
+    // global default anthropic, but this plugin is pinned to openai → the gate
+    // resolves class:fast against openai (permits gpt-4.1-nano → ServiceUnavailable
+    // because the stub vault has no openai key) and rejects a claude model.
+    const ctx = makeCtx(['class:fast'], undefined, registry, 'openai');
+    await assert.rejects(
+      ctx.llm!.complete({
+        model: 'gpt-4.1-nano',
+        messages: [{ role: 'user', content: 'x' }],
+      }),
+      LlmServiceUnavailableError, // gate passed; build failed (no openai key)
+    );
+    await assert.rejects(
+      ctx.llm!.complete({
+        model: 'claude-haiku-4-5-20251001',
+        messages: [{ role: 'user', content: 'x' }],
+      }),
+      LlmModelNotAllowedError, // openai class:fast ≠ claude → gate rejects
+    );
+    assert.equal(calls.count, 0); // never falls back to the anthropic 'llm'
+  });
+
+  it('per-plugin pin to anthropic overrides an openai global default (served locally)', async () => {
+    const ctx = makeCtx(['class:fast'], 'openai', registry, 'anthropic');
+    await ctx.llm!.complete({
+      model: 'class:fast',
+      messages: [{ role: 'user', content: 'x' }],
+    });
+    assert.equal(calls.count, 1);
+    assert.equal(calls.lastModel, 'claude-haiku-4-5-20251001');
+  });
+
+  it('concurrent first OpenAI calls share one provider build and both succeed', async (t) => {
+    let buildCalls = 0;
+    const vault = {
+      get: async (_agentId: string, key: string) => {
+        if (key === 'provider:openai/api_key') {
+          buildCalls += 1;
+          return 'sk-openai';
+        }
+        return undefined;
+      },
+      list: async () => [],
+    } as unknown as Parameters<typeof createPluginContext>[0]['vault'];
+    t.mock.method(globalThis, 'fetch', async () =>
+      new Response(
+        JSON.stringify({
+          id: 'chatcmpl_test',
+          object: 'chat.completion',
+          created: 0,
+          model: 'gpt-4.1-nano',
+          choices: [
+            {
+              index: 0,
+              finish_reason: 'stop',
+              message: { role: 'assistant', content: 'Hallo Welt', refusal: null },
+            },
+          ],
+          usage: {
+            prompt_tokens: 3,
+            completion_tokens: 2,
+            total_tokens: 5,
+          },
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        },
+      ),
+    );
+    const ctx = makeCtx(['class:fast'], 'openai', registry, undefined, vault);
+
+    const [first, second] = await Promise.all([
+      ctx.llm!.complete({
+        model: 'class:fast',
+        messages: [{ role: 'user', content: 'x' }],
+      }),
+      ctx.llm!.complete({
+        model: 'class:fast',
+        messages: [{ role: 'user', content: 'y' }],
+      }),
+    ]);
+
+    assert.equal(first.text, 'Hallo Welt');
+    assert.equal(second.text, 'Hallo Welt');
+    assert.equal(buildCalls, 1);
+    assert.equal(calls.count, 0);
   });
 });

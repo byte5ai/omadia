@@ -18,6 +18,7 @@ import {
   createAnthropicProvider,
   textMessage,
   type AnthropicClient,
+  type LlmProvider as NeutralLlmProvider,
 } from '@omadia/llm-provider';
 import type {
   LlmCompleteRequest,
@@ -55,15 +56,23 @@ function toLegacyStopReason(
   }
 }
 
-export function createAnthropicLlmProvider(
-  opts: AnthropicLlmProviderOptions,
+/**
+ * Bridge ANY neutral `@omadia/llm-provider` provider (Anthropic, OpenAI,
+ * openai-compatible) to the narrow plugin-facing `LlmProvider` the v1 plugin
+ * contract promises. The translation (plain-string messages → neutral parts,
+ * neutral `finishReason` → legacy `stopReason`) is provider-agnostic; only the
+ * construction of the underlying neutral provider differs per provider. Used by
+ * the kernel's `'llm'` service (Anthropic) and by `ctx.llm` when a plugin is
+ * pinned to a non-Anthropic provider (see pluginContext.createLlmAccessor).
+ */
+export function createLlmProviderFromNeutral(
+  neutral: NeutralLlmProvider,
+  log: (...args: unknown[]) => void = (...args) => console.log('[llm]', ...args),
 ): LlmProvider {
-  const log = opts.log ?? ((...args) => console.log('[llm]', ...args));
-  const provider = createAnthropicProvider({ client: opts.client });
   return {
     async complete(req: LlmCompleteRequest): Promise<LlmCompleteResult> {
       const started = Date.now();
-      const response = await provider.complete({
+      const response = await neutral.complete({
         model: req.model,
         maxTokens: req.maxTokens ?? 4096,
         ...(req.system !== undefined ? { system: req.system } : {}),
@@ -89,4 +98,14 @@ export function createAnthropicLlmProvider(
       };
     },
   };
+}
+
+export function createAnthropicLlmProvider(
+  opts: AnthropicLlmProviderOptions,
+): LlmProvider {
+  const log = opts.log ?? ((...args) => console.log('[llm]', ...args));
+  return createLlmProviderFromNeutral(
+    createAnthropicProvider({ client: opts.client }),
+    log,
+  );
 }
