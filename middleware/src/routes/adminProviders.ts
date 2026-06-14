@@ -204,7 +204,7 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
       return;
     }
     // Resolve against the CHOSEN provider so class refs (`class:frontier`),
-    // provider-qualified ids (`openai:gpt-4.1`) and legacy aliases (`opus`) all
+    // provider-qualified ids (`openai:gpt-5.5`) and legacy aliases (`opus`) all
     // disambiguate to it. Guard the classic mistake: a known model that belongs
     // to a DIFFERENT provider (e.g. claude-* assigned to openai). Unknown models
     // (custom / openai-compatible) are allowed through.

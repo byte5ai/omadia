@@ -123,7 +123,7 @@ describe('admin providers route — GET /', () => {
     const openai = body.providers.find((p) => p.id === 'openai');
     assert.ok(anthropic && openai);
     assert.ok(anthropic.models.some((m) => m.modelId === 'claude-opus-4-8'));
-    assert.ok(openai.models.some((m) => m.modelId === 'gpt-4.1'));
+    assert.ok(openai.models.some((m) => m.modelId === 'gpt-5.5'));
     // nothing connected yet
     assert.equal(anthropic.connected, false);
     assert.equal(openai.connected, false);
@@ -148,14 +148,14 @@ describe('admin providers route — GET /', () => {
 
   it('reflects a configured assignment', async () => {
     h = await makeHarness([
-      { id: ORCH, config: { llm_provider: 'openai', orchestrator_model: 'gpt-4.1' } },
+      { id: ORCH, config: { llm_provider: 'openai', orchestrator_model: 'gpt-5.5' } },
       { id: VERIFIER },
       { id: EXTRAS },
     ]);
     const body = await getProviders(h);
     const orch = body.assignments.find((a) => a.pluginId === ORCH);
     assert.equal(orch?.provider, 'openai');
-    assert.equal(orch?.model, 'gpt-4.1');
+    assert.equal(orch?.model, 'gpt-5.5');
   });
 });
 
@@ -174,12 +174,12 @@ describe('admin providers route — POST /assignment', () => {
     const { status, json } = await assign(h, {
       pluginId: ORCH,
       provider: 'openai',
-      model: 'gpt-4.1',
+      model: 'gpt-5.5',
     });
     assert.equal(status, 200, JSON.stringify(json));
     const cfg = h.registry.get(ORCH)?.config ?? {};
     assert.equal(cfg['llm_provider'], 'openai');
-    assert.equal(cfg['orchestrator_model'], 'gpt-4.1');
+    assert.equal(cfg['orchestrator_model'], 'gpt-5.5');
     // non-anthropic → per-turn routing forced off
     assert.equal(cfg['orchestrator_model_routing'], 'false');
     assert.deepEqual(h.reactivated, [ORCH]);
@@ -190,12 +190,12 @@ describe('admin providers route — POST /assignment', () => {
     const { status } = await assign(h, {
       pluginId: EXTRAS,
       provider: 'openai',
-      model: 'gpt-4.1-nano',
+      model: 'gpt-5.4-mini',
     });
     assert.equal(status, 200);
     const cfg = h.registry.get(EXTRAS)?.config ?? {};
-    assert.equal(cfg['fact_extractor_model'], 'gpt-4.1-nano');
-    assert.equal(cfg['topic_classifier_model'], 'gpt-4.1-nano');
+    assert.equal(cfg['fact_extractor_model'], 'gpt-5.4-mini');
+    assert.equal(cfg['topic_classifier_model'], 'gpt-5.4-mini');
   });
 
   it('keeps anthropic routing untouched on an anthropic assignment', async () => {
@@ -248,23 +248,23 @@ describe('admin providers route — POST /assignment', () => {
       { id: VERIFIER },
       { id: EXTRAS },
     ]);
-    const { status } = await assign(h, { pluginId: ORCH, provider: 'openai', model: 'gpt-4.1' });
+    const { status } = await assign(h, { pluginId: ORCH, provider: 'openai', model: 'gpt-5.5' });
     assert.equal(status, 200);
     const cfg = h.registry.get(ORCH)?.config ?? {};
     assert.equal(cfg['orchestrator_max_tokens'], '8192', 'max_tokens dropped');
     assert.equal(cfg['assistant_identity'], 'Lucy', 'identity dropped');
-    assert.equal(cfg['orchestrator_model'], 'gpt-4.1');
+    assert.equal(cfg['orchestrator_model'], 'gpt-5.5');
     assert.equal(cfg['llm_provider'], 'openai');
   });
 
   it('normalises provider-qualified ids, class refs and aliases to the bare vendor id', async () => {
     h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
     // provider-qualified id
-    await assign(h, { pluginId: ORCH, provider: 'openai', model: 'openai:gpt-4.1' });
-    assert.equal(h.registry.get(ORCH)?.config['orchestrator_model'], 'gpt-4.1');
+    await assign(h, { pluginId: ORCH, provider: 'openai', model: 'openai:gpt-5.5' });
+    assert.equal(h.registry.get(ORCH)?.config['orchestrator_model'], 'gpt-5.5');
     // class ref resolves against the chosen provider
     await assign(h, { pluginId: ORCH, provider: 'openai', model: 'class:frontier' });
-    assert.equal(h.registry.get(ORCH)?.config['orchestrator_model'], 'gpt-4.1');
+    assert.equal(h.registry.get(ORCH)?.config['orchestrator_model'], 'gpt-5.5');
     // legacy alias under anthropic
     await assign(h, { pluginId: ORCH, provider: 'anthropic', model: 'opus' });
     assert.equal(h.registry.get(ORCH)?.config['orchestrator_model'], 'claude-opus-4-8');
@@ -272,10 +272,10 @@ describe('admin providers route — POST /assignment', () => {
 
   it('400 for a non-LLM plugin, 404 for not-installed', async () => {
     h = await makeHarness([{ id: VERIFIER }, { id: EXTRAS }]);
-    const unknown = await assign(h, { pluginId: '@omadia/diagrams', provider: 'openai', model: 'gpt-4.1' });
+    const unknown = await assign(h, { pluginId: '@omadia/diagrams', provider: 'openai', model: 'gpt-5.5' });
     assert.equal(unknown.status, 400);
     assert.equal(unknown.json['code'], 'providers.unknown_plugin');
-    const notInstalled = await assign(h, { pluginId: ORCH, provider: 'openai', model: 'gpt-4.1' });
+    const notInstalled = await assign(h, { pluginId: ORCH, provider: 'openai', model: 'gpt-5.5' });
     assert.equal(notInstalled.status, 404);
     assert.equal(notInstalled.json['code'], 'providers.not_installed');
   });

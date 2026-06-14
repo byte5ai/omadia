@@ -674,7 +674,7 @@ function extractLlmPermissions(
  *    resolves (with the active provider as default) to a model owned by the
  *    active provider with the same `modelId` — e.g. the legacy alias `haiku`
  *    under anthropic. A bare id that the registry attributes to a DIFFERENT
- *    provider (e.g. `gpt-4.1-nano` while anthropic is active) does NOT match,
+ *    provider (e.g. `gpt-5.4-mini` while anthropic is active) does NOT match,
  *    so a `class:fast` lock permits the active provider's fast model and
  *    nothing else. On the Anthropic default this resolves to
  *    `claude-haiku-4-5-20251001` (class `fast`), `claude-sonnet-4-6`

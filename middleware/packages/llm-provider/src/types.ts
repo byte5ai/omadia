@@ -110,7 +110,7 @@ export interface SystemBlock {
 }
 
 export interface LlmRequest {
-  /** Bare vendor model id (e.g. `claude-opus-4-8`, `gpt-4.1`). Resolving
+  /** Bare vendor model id (e.g. `claude-opus-4-8`, `gpt-5.5`). Resolving
    *  registry refs (`anthropic:…`, `class:frontier`) happens BEFORE the
    *  adapter — adapters only see their own vendor's ids. */
   readonly model: string;

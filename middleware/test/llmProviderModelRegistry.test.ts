@@ -41,15 +41,15 @@ test('resolveModelRef: class refs resolve per provider (default anthropic)', () 
   // from the classDefault marker, NOT array order.
   assert.equal(
     resolveModelRef('class:frontier', { defaultProvider: 'openai' })?.id,
-    'openai:gpt-4.1',
+    'openai:gpt-5.5',
   );
   assert.equal(
     resolveModelRef('class:balanced', { defaultProvider: 'openai' })?.id,
-    'openai:gpt-4.1-mini',
+    'openai:gpt-5.4',
   );
   assert.equal(
     resolveModelRef('class:fast', { defaultProvider: 'openai' })?.id,
-    'openai:gpt-4.1-nano',
+    'openai:gpt-5.4-mini',
   );
   // unknown class → undefined (and does NOT swallow a would-be concrete ref)
   assert.equal(resolveModelRef('class:genius'), undefined);
@@ -59,21 +59,21 @@ test('resolveModelRef: class refs resolve per provider (default anthropic)', () 
 });
 
 test('resolveModelRef: provider-qualified id, legacy alias, and bare vendor id', () => {
-  assert.equal(resolveModelRef('openai:gpt-4.1')?.modelId, 'gpt-4.1');
+  assert.equal(resolveModelRef('openai:gpt-5.5')?.modelId, 'gpt-5.5');
   // legacy builder slugs
   assert.equal(resolveModelRef('opus')?.modelId, 'claude-opus-4-8');
   assert.equal(resolveModelRef('sonnet')?.modelId, 'claude-sonnet-4-6');
   assert.equal(resolveModelRef('haiku')?.modelId, 'claude-haiku-4-5-20251001');
   // bare vendor ids
   assert.equal(resolveModelRef('claude-opus-4-8')?.id, 'anthropic:claude-opus-4-8');
-  assert.equal(resolveModelRef('gpt-4o-mini')?.id, 'openai:gpt-4o-mini');
+  assert.equal(resolveModelRef('gpt-5.4-nano')?.id, 'openai:gpt-5.4-nano');
   // unknown
   assert.equal(resolveModelRef('totally-unknown-model'), undefined);
 });
 
 test('modelForClass returns the canonical model per provider', () => {
   assert.equal(modelForClass('fast', 'anthropic')?.modelId, 'claude-haiku-4-5-20251001');
-  assert.equal(modelForClass('frontier', 'openai')?.modelId, 'gpt-4.1');
+  assert.equal(modelForClass('frontier', 'openai')?.modelId, 'gpt-5.5');
   assert.equal(modelForClass('frontier', 'nonexistent-provider'), undefined);
 });
 
@@ -87,8 +87,8 @@ test('resolveRole maps role → default class → model', () => {
   // preview is balanced
   assert.equal(resolveRole('preview', 'anthropic')?.modelId, 'claude-sonnet-4-6');
   // same roles resolve to OpenAI models when pinned to openai
-  assert.equal(resolveRole('orchestrator', 'openai')?.modelId, 'gpt-4.1');
-  assert.equal(resolveRole('classifier', 'openai')?.modelId, 'gpt-4.1-nano');
+  assert.equal(resolveRole('orchestrator', 'openai')?.modelId, 'gpt-5.5');
+  assert.equal(resolveRole('classifier', 'openai')?.modelId, 'gpt-5.4-mini');
 });
 
 test('ROLE_DEFAULT_CLASS preserves the historical Anthropic defaults', () => {
@@ -107,7 +107,7 @@ test('listModelsByProvider / listModelsByClass filter correctly', () => {
   assert.ok(anthropic.every((m) => m.provider === 'anthropic'));
   const frontier = listModelsByClass('frontier');
   assert.ok(frontier.some((m) => m.id === 'anthropic:claude-opus-4-8'));
-  assert.ok(frontier.some((m) => m.id === 'openai:gpt-4.1'));
+  assert.ok(frontier.some((m) => m.id === 'openai:gpt-5.5'));
 });
 
 test('isClassRef distinguishes class refs from concrete refs', () => {
@@ -144,16 +144,16 @@ test('INVARIANT: every model has a positive contextWindow and maxTokens', () => 
 
 test('coerceModelToProvider remaps a model to the target provider by class', () => {
   // a Claude frontier/fast model running on OpenAI → OpenAI's same-class model
-  assert.equal(coerceModelToProvider('claude-opus-4-8', 'openai'), 'gpt-4.1');
+  assert.equal(coerceModelToProvider('claude-opus-4-8', 'openai'), 'gpt-5.5');
   assert.equal(
     coerceModelToProvider('claude-haiku-4-5-20251001', 'openai'),
-    'gpt-4.1-nano',
+    'gpt-5.4-mini',
   );
   // legacy alias resolves then remaps
-  assert.equal(coerceModelToProvider('opus', 'openai'), 'gpt-4.1');
+  assert.equal(coerceModelToProvider('opus', 'openai'), 'gpt-5.5');
   // already the target provider → bare vendor id (qualified id normalised)
-  assert.equal(coerceModelToProvider('gpt-4.1', 'openai'), 'gpt-4.1');
-  assert.equal(coerceModelToProvider('openai:gpt-4o', 'openai'), 'gpt-4o');
+  assert.equal(coerceModelToProvider('gpt-5.5', 'openai'), 'gpt-5.5');
+  assert.equal(coerceModelToProvider('openai:gpt-5.4', 'openai'), 'gpt-5.4');
   // anthropic stays anthropic (zero change on the default path)
   assert.equal(
     coerceModelToProvider('claude-opus-4-8', 'anthropic'),
