@@ -2,6 +2,8 @@
 
 import { Play, Save, X } from 'lucide-react';
 import { useTranslations } from 'next-intl';
+
+import { Button } from '@/app/_components/ui/Button';
 import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 
 import { ApiError, runBuilderPreviewToolCall } from '../../../../_lib/api';
@@ -169,11 +171,12 @@ export function ToolTestModal({
           </div>
           <div className="flex items-center gap-2">
             {onSaveTestCase && outcome && !outcome.isError ? (
-              <button
-                type="button"
+              <Button
+                variant="secondary"
+                size="sm"
                 onClick={() => void onSave()}
                 disabled={savingTestCase}
-                className="inline-flex items-center gap-1 rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-1 text-[11px] font-semibold text-[color:var(--fg-strong)] hover:border-[color:var(--accent)] disabled:opacity-50"
+                className="text-[11px]"
               >
                 {savingTestCase ? (
                   <span className="lume-busy-dots" aria-hidden />
@@ -181,13 +184,14 @@ export function ToolTestModal({
                   <Save className="size-3" aria-hidden />
                 )}
                 {t('saveTestCase')}
-              </button>
+              </Button>
             ) : null}
-            <button
-              type="button"
+            <Button
+              variant="primary"
+              size="sm"
               onClick={() => void onRun()}
               disabled={pending}
-              className="inline-flex items-center gap-1 rounded bg-[color:var(--accent)] px-3 py-1 text-[11px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] disabled:opacity-50"
+              className="gap-1 text-[11px]"
             >
               {pending ? (
                 <span className="lume-busy-dots" aria-hidden />
@@ -195,7 +199,7 @@ export function ToolTestModal({
                 <Play className="size-3" aria-hidden />
               )}
               {t('run')}
-            </button>
+            </Button>
           </div>
         </footer>
       </div>

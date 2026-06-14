@@ -1,6 +1,8 @@
 'use client';
 
 import { useState } from 'react';
+
+import { Button } from '@/app/_components/ui/Button';
 import type {
   GraphNode,
   NodeType,
@@ -72,13 +74,14 @@ function TurnCard({
       <div className="mb-2 flex items-center gap-3 text-[11px] text-[color:var(--fg-muted)]">
         <span className="font-mono">{time}</span>
         {tools !== undefined && <span>tools={String(tools)}</span>}
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="sm"
           onClick={toggle}
-          className="ml-auto rounded border border-[color:var(--border)] px-2 py-0.5 font-mono hover:border-[color:var(--border-strong)]"
+          className="ml-auto px-2 py-0.5 font-mono"
         >
           {open ? '▾' : '▸'} Run-Trace
-        </button>
+        </Button>
       </div>
       <div className="mb-2 whitespace-pre-wrap text-[color:var(--fg)]">
         {user}

@@ -3,6 +3,8 @@
 import { useTranslations } from 'next-intl';
 import { useCallback, useMemo, useState, useTransition } from 'react';
 
+import { Button } from '@/app/_components/ui/Button';
+
 import { setPersonaConfig } from '../../../../_lib/api';
 import {
   CULTURE_PRESETS,
@@ -121,24 +123,26 @@ export function CulturePresetDropdown({
             </div>
           )}
           <div className="flex gap-2">
-            <button
-              type="button"
+            <Button
+              variant="primary"
+              size="sm"
               data-testid="culture-confirm-apply"
               onClick={handleConfirm}
               disabled={disabled || pending || diff.length === 0}
-              className="rounded bg-[color:var(--accent)] px-3 py-1 text-sm font-medium text-[color:var(--fg-on-dark)] disabled:opacity-50"
+              className="text-sm"
             >
               {pending ? t('applying') : t('apply')}
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
               data-testid="culture-confirm-cancel"
               onClick={handleCancel}
               disabled={pending}
-              className="rounded border border-[color:var(--border)] px-3 py-1 text-sm"
+              className="text-sm"
             >
               {t('cancel')}
-            </button>
+            </Button>
           </div>
         </div>
       )}

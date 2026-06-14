@@ -23,6 +23,7 @@ import { GripVertical } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { useTranslations } from 'next-intl';
 
+import { Button } from '@/app/_components/ui/Button';
 import type {
   OperatorAgentDto,
   PluginCatalogEntryDto,
@@ -288,14 +289,14 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
     <div>
       <h4 className="mb-2 flex items-center justify-between text-sm font-medium">
         {t('pluginsHeading')}
-        <button
-          type="button"
-          className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-2 py-0.5 text-xs hover:bg-[color:var(--bg-soft)]"
+        <Button
+          variant="secondary"
+          size="sm"
           disabled={props.disabled}
           onClick={submit}
         >
           {t('save')}
-        </button>
+        </Button>
       </h4>
       <DndContext
         sensors={sensors}
@@ -666,33 +667,33 @@ function DraggablePluginTile(props: {
           </div>
           <div className="flex flex-col items-end gap-1">
             {!attached ? (
-              <button
-                type="button"
-                className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-2 py-0.5 text-[10px] hover:bg-[color:var(--bg-soft)]"
+              <Button
+                variant="secondary"
+                size="sm"
                 disabled={props.disabled}
                 onClick={props.onAttach}
               >
                 {t('attach')}
-              </button>
+              </Button>
             ) : (
               <>
                 {hasFields && (
-                  <button
-                    type="button"
+                  <Button
+                    variant="secondary"
+                    size="sm"
                     onClick={props.onToggleExpanded}
-                    className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-2 py-0.5 text-[10px] hover:bg-[color:var(--bg-soft)]"
                   >
                     {props.expanded ? t('configHide') : t('configShow')}
-                  </button>
+                  </Button>
                 )}
-                <button
-                  type="button"
-                  className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 px-2 py-0.5 text-[10px] text-[color:var(--danger)] hover:bg-[color:var(--danger)]/8"
+                <Button
+                  variant="danger"
+                  size="sm"
                   disabled={props.disabled}
                   onClick={props.onDetach}
                 >
                   {t('detach')}
-                </button>
+                </Button>
               </>
             )}
           </div>

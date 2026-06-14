@@ -12,6 +12,7 @@ import {
 import { useTranslations } from 'next-intl';
 import { Eraser, GitBranch, Navigation, Network } from 'lucide-react';
 import { ChatTabs } from './_components/ChatTabs';
+import { Button } from './_components/ui/Button';
 import { AgentPicker } from './_components/AgentPicker';
 import { AgentUnavailableBanner } from './_components/AgentUnavailableBanner';
 import { AgentUsagePills } from './_components/chat/AgentUsagePills';
@@ -648,25 +649,19 @@ export default function ChatPage(): React.ReactElement {
                   <Navigation size={14} aria-hidden />
                   {t('steerButton')}
                 </button>
-                <button
-                  type="button"
-                  onClick={abort}
-                  className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 px-4 py-2 text-sm font-medium text-[color:var(--danger)] transition hover:bg-[color:var(--danger)]/8"
-                >
+                <Button variant="danger" onClick={abort}>
                   {t('stopButton')}
-                </button>
+                </Button>
               </>
             ) : (
-              <button
-                type="button"
+              <Button
                 onClick={() => {
                   send();
                 }}
                 disabled={input.trim().length === 0 || hydrating}
-                className="rounded-md bg-[color:var(--accent)] px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {t('sendButton')}
-              </button>
+              </Button>
             )}
           </div>
         </div>
@@ -1485,18 +1480,19 @@ function FollowUpButtons({
       </div>
       <div className="flex flex-wrap gap-2">
         {options.map((opt, idx) => (
-          <button
+          <Button
             key={`${opt.label}-${String(idx)}`}
-            type="button"
+            variant="secondary"
+            size="sm"
+            pill
             onClick={() => {
               onChoose(opt.prompt);
             }}
             disabled={disabled}
             title={opt.prompt}
-            className="rounded-full border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-3 py-1 text-[11px] font-medium text-[color:var(--fg)] transition hover:border-[color:var(--border-strong)] hover:bg-[color:var(--bg-soft)] disabled:cursor-not-allowed disabled:opacity-40"
           >
             {opt.label}
-          </button>
+          </Button>
         ))}
       </div>
     </div>

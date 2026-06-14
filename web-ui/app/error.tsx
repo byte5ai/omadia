@@ -3,6 +3,8 @@
 import { useEffect } from 'react';
 import { useTranslations } from 'next-intl';
 
+import { Button } from '@/app/_components/ui/Button';
+
 /**
  * Route-level error boundary. Without it, a thrown error during render of the
  * chat page (e.g. a chat session persisted by an older schema, whose drifted
@@ -62,13 +64,9 @@ export default function Error({
           >
             {t('reload')}
           </button>
-          <button
-            type="button"
-            onClick={resetLocalData}
-            className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-4 py-2 text-sm font-medium text-[color:var(--fg)] transition hover:border-[color:var(--border-strong)] hover:bg-[color:var(--bg-soft)]"
-          >
+          <Button variant="secondary" onClick={resetLocalData}>
             {t('resetData')}
-          </button>
+          </Button>
         </div>
         <p className="mt-1 text-xs text-[color:var(--fg-muted)]">
           {t('resetDataHint')}

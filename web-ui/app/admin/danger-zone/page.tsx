@@ -3,6 +3,8 @@
 import { useCallback, useMemo, useState } from 'react';
 import Link from 'next/link';
 
+import { Button } from '@/app/_components/ui/Button';
+
 import {
   ApiError,
   previewMemoryPurge,
@@ -248,18 +250,18 @@ export default function DangerZonePage(): React.ReactElement {
         )}
 
         <div className="mt-4 flex items-center justify-end">
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => void loadPreview()}
             disabled={
               previewLoading ||
               deleting ||
               (requiresSelector && trimmedSelector.length === 0)
             }
-            className="rounded border border-[color:var(--border)] px-3 py-1 text-xs hover:border-[color:var(--border-strong)] disabled:opacity-50"
           >
             {previewLoading ? 'lädt…' : 'Vorschau'}
-          </button>
+          </Button>
         </div>
       </section>
 
@@ -316,14 +318,13 @@ export default function DangerZonePage(): React.ReactElement {
               className="w-full rounded border border-[color:var(--danger-edge)] px-2 py-2 text-sm font-mono"
             />
             <div className="mt-4 flex items-center justify-end">
-              <button
-                type="button"
+              <Button
+                variant="danger"
                 onClick={() => void runDelete()}
                 disabled={!canDelete}
-                className="rounded-md border border-[color:var(--danger-edge)] bg-transparent px-4 py-2 text-xs font-semibold text-[color:var(--danger)] transition hover:bg-[color:var(--danger)]/8 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {deleting ? 'löscht…' : 'Unwiderruflich löschen'}
-              </button>
+              </Button>
             </div>
           </>
         )}

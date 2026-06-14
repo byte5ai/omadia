@@ -3,6 +3,8 @@
 import { useTranslations } from 'next-intl';
 import { useCallback, useEffect, useState } from 'react';
 
+import { Button } from '@/app/_components/ui/Button';
+
 import {
   fetchBuilderQuality,
   type BuilderQualityResult,
@@ -95,17 +97,17 @@ export function QualityPanel({ draftId, refetchKey }: QualityPanelProps): React.
               {t('tokensPrefix')} {tokenHealthLabel(data.tokenHealth)}
             </span>
           )}
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="sm"
             data-testid="quality-refresh"
             onClick={() => {
               void load();
             }}
             disabled={loading}
-            className="rounded border border-[color:var(--border)] px-2 py-1"
           >
             {loading ? t('loading') : t('refresh')}
-          </button>
+          </Button>
         </div>
       </header>
 

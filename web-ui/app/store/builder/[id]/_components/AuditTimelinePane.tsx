@@ -3,6 +3,8 @@
 import { useTranslations } from 'next-intl';
 import { useCallback, useEffect, useState } from 'react';
 
+import { Button } from '@/app/_components/ui/Button';
+
 import { listBuilderAudit, type BuilderAuditEvent } from '../../../../_lib/api';
 
 /**
@@ -164,17 +166,17 @@ export function AuditTimelinePane({ draftId }: AuditTimelinePaneProps): React.Re
       </ul>
 
       {hasMore && (
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="sm"
           data-testid="audit-load-more"
           onClick={() => {
             void loadPage(offset, true);
           }}
           disabled={loading}
-          className="rounded border border-[color:var(--border)] px-3 py-1 text-xs"
         >
           {loading ? t('loading') : t('loadMore')}
-        </button>
+        </Button>
       )}
     </section>
   );

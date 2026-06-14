@@ -513,6 +513,18 @@ export class LocalSubAgent {
         }
         return { output: result, ...(postcondition ? { postcondition } : {}) };
       }
+      // Canvas sentinel tap — sub-tools (e.g. an agent plugin's deterministic
+      // canvas tree) emit `_pending*` directives too; the synthesis needs the
+      // raw form while the LLM keeps the digest. Same contract as the main
+      // dispatch site.
+      const sentinelSink = turnContext.current()?.canvasSentinelSink;
+      if (sentinelSink !== undefined && result.includes('"_pending')) {
+        try {
+          sentinelSink(toolName, result);
+        } catch (err) {
+          console.warn(`[sub-agent ${this.name}] canvasSentinelSink threw on '${toolName}':`, err);
+        }
+      }
       // Intern the raw result server-side and hand the LLM only the
       // identity-free digest — the raw rows never reach the LLM wire.
       try {

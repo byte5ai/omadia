@@ -4,6 +4,8 @@ import { Suspense, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 
+import { Button } from '@/app/_components/ui/Button';
+
 import {
   ApiError,
   getAuthProviders,
@@ -218,13 +220,9 @@ function SetupPageInner(): React.ReactElement {
         {submitError && (
           <p className="text-sm text-[color:var(--danger)]">{submitError}</p>
         )}
-        <button
-          type="submit"
-          disabled={submitting}
-          className="rounded-md bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-[color:var(--text-inverse)] disabled:opacity-50"
-        >
-          {submitting ? t('submitting') : t('submit')}
-        </button>
+        <Button type="submit" busy={submitting} busyLabel={t('submitting')}>
+          {t('submit')}
+        </Button>
       </form>
     </PageShell>
   );

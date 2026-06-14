@@ -8,6 +8,7 @@ import { Upload, FileArchive } from 'lucide-react';
 import { ApiError, importProfileBundle } from '../../../_lib/api';
 import type { ImportBundleSuccess } from '../../../_lib/profileTypes';
 import { cn } from '../../../_lib/cn';
+import { Button } from '@/app/_components/ui/Button';
 
 /**
  * Phase 2.4 (OB-66) — Bundle-Import-Button + Drag-Drop-Modal.
@@ -28,20 +29,10 @@ export function ImportBundleButton(): React.ReactElement {
 
   return (
     <>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className={cn(
-          'inline-flex items-center gap-2 rounded-full px-4 py-2 text-[12px] font-semibold',
-          'border border-[color:var(--border)] bg-[color:var(--bg-soft)] text-[color:var(--fg)]',
-          'transition-colors duration-[var(--dur-base)]',
-          'hover:bg-[color:var(--gray-100)] hover:text-[color:var(--fg-strong)]',
-          'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--accent)]',
-        )}
-      >
+      <Button variant="secondary" pill onClick={() => setOpen(true)}>
         <Upload className="size-4" aria-hidden />
         {t('button')}
-      </button>
+      </Button>
       {open ? (
         <ImportBundleModal
           onClose={() => setOpen(false)}
@@ -234,24 +225,18 @@ function ImportBundleModal({
         ) : null}
 
         <div className="mt-4 flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-md border border-[color:var(--border)] px-3 py-2 text-sm text-[color:var(--fg)]"
-          >
+          <Button variant="secondary" onClick={onClose}>
             {t('modal.cancel')}
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="primary"
             onClick={() => void onSubmit()}
             disabled={!file || busy}
-            className={cn(
-              'rounded-md bg-[color:var(--accent)] px-3 py-2 text-sm font-medium text-[color:var(--fg-on-dark)]',
-              'shadow-[var(--shadow-cta)] disabled:opacity-50',
-            )}
+            busy={busy}
+            busyLabel={t('modal.importing')}
           >
-            {busy ? t('modal.importing') : t('modal.import')}
-          </button>
+            {t('modal.import')}
+          </Button>
         </div>
       </div>
     </div>

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 
+import { Button } from '@/app/_components/ui/Button';
 import {
   AdminAuthProvider,
   ApiError,
@@ -126,23 +127,14 @@ export default function AdminAuthPage(): React.ReactElement {
                   {p.active ? 'aktiv' : 'inaktiv'}
                 </span>
               </div>
-              <button
-                type="button"
+              <Button
+                variant={p.active ? 'secondary' : 'primary'}
                 onClick={() => void toggle(p)}
-                disabled={pendingId === p.id}
-                className={[
-                  'rounded-md px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50',
-                  p.active
-                    ? 'border border-[color:var(--border)] text-[color:var(--fg-strong)] hover:bg-[color:var(--card)]'
-                    : 'bg-[color:var(--accent)] text-[color:var(--text-inverse)]',
-                ].join(' ')}
+                busy={pendingId === p.id}
+                busyLabel={p.active ? 'Deaktivieren' : 'Aktivieren'}
               >
-                {pendingId === p.id
-                  ? '…'
-                  : p.active
-                  ? 'Deaktivieren'
-                  : 'Aktivieren'}
-              </button>
+                {p.active ? 'Deaktivieren' : 'Aktivieren'}
+              </Button>
             </li>
           ))}
         </ul>

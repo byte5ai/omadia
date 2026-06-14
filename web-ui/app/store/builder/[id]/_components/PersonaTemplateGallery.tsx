@@ -3,6 +3,8 @@
 import { useTranslations } from 'next-intl';
 import { useCallback, useState, useTransition } from 'react';
 
+import { Button } from '@/app/_components/ui/Button';
+
 import { patchBuilderSpec, setPersonaConfig } from '../../../../_lib/api';
 import {
   PERSONA_TEMPLATES,
@@ -99,15 +101,16 @@ export function PersonaTemplateGallery({
           <h2 className="text-lg font-semibold text-[color:var(--fg-strong)]">
             {t('title')}
           </h2>
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="sm"
             data-testid="gallery-close"
             onClick={onClose}
             disabled={pending}
-            className="rounded border border-[color:var(--border)] px-2 py-1 text-sm text-[color:var(--fg-muted)] hover:bg-[color:var(--accent-bg)]"
+            className="text-sm"
           >
             {t('close')}
-          </button>
+          </Button>
         </header>
 
         <div className="grid grid-cols-1 gap-3 md:grid-cols-3" data-testid="gallery-grid">
@@ -183,24 +186,26 @@ export function PersonaTemplateGallery({
         )}
 
         <div className="mt-3 flex justify-end gap-2">
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="sm"
             data-testid="gallery-cancel"
             onClick={onClose}
             disabled={pending}
-            className="rounded border border-[color:var(--border)] px-3 py-1 text-sm"
+            className="text-sm"
           >
             {t('cancel')}
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
             data-testid="gallery-apply"
             onClick={handleApply}
             disabled={disabled || pending || !selected}
-            className="rounded bg-[color:var(--accent)] px-3 py-1 text-sm font-medium text-[color:var(--fg-on-dark)] disabled:opacity-50"
+            className="text-sm"
           >
             {pending ? t('applying') : t('apply')}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

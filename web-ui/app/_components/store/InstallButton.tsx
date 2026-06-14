@@ -34,6 +34,7 @@ import { pickLocalized } from '../../_lib/localized';
 import { RequiresWizard } from './RequiresWizard';
 import { FieldRow, extractValues } from './setupForm';
 import { Markdown } from '../Markdown';
+import { Button } from '@/app/_components/ui/Button';
 
 interface InstallButtonProps {
   pluginId: string;
@@ -108,14 +109,12 @@ export function InstallButton({
   if (!enabled) {
     return (
       <div className="flex flex-col gap-3">
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          pill
+          fullWidth
           disabled
-          className={cn(
-            'group flex w-full items-center justify-between gap-3 rounded-full px-6 py-3',
-            'bg-[color:var(--bg-soft)] ring-1 ring-inset ring-[color:var(--border)]',
-            'cursor-not-allowed text-[color:var(--fg-subtle)]',
-          )}
+          className="justify-between gap-3 px-6 py-3 text-[color:var(--fg-subtle)]"
           aria-describedby={`install-${pluginId}-reason`}
         >
           <span className="flex items-center gap-3">
@@ -124,7 +123,7 @@ export function InstallButton({
               Installation blockiert
             </span>
           </span>
-        </button>
+        </Button>
         {blockingReasons?.length ? (
           <ul
             id={`install-${pluginId}-reason`}
@@ -148,18 +147,13 @@ export function InstallButton({
 
   return (
     <>
-      <button
-        type="button"
+      <Button
+        variant="primary"
+        pill
+        fullWidth
         onClick={handleOpen}
         aria-label={`${pluginName} installieren`}
-        className={cn(
-          'group flex w-full items-center justify-between gap-3 rounded-full px-6 py-3',
-          'bg-[color:var(--accent)] text-[color:var(--accent-fg)] shadow-[var(--shadow-cta)]',
-          'transition-[background,transform] duration-[var(--dur-fast)] ease-[var(--ease-out)]',
-          'hover:bg-[color:var(--accent-hover)] active:translate-y-px active:bg-[color:var(--accent-press)]',
-          'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--accent)]',
-          'disabled:cursor-not-allowed disabled:opacity-70',
-        )}
+        className="group justify-between gap-3 px-6 py-3"
         disabled={phase.kind === 'creating' || phase.kind === 'success'}
       >
         <span className="text-[15px] font-semibold">
@@ -173,7 +167,7 @@ export function InstallButton({
             aria-hidden
           />
         )}
-      </button>
+      </Button>
 
       {drawerOpen ? (
         <InstallDrawer
@@ -426,15 +420,16 @@ function InstalledPanel({
                 {update.from ? `${update.from} → ${update.to}` : `→ ${update.to}`}
               </span>
             </span>
-            <button
-              type="button"
+            <Button
+              variant="primary"
+              pill
               onClick={() => void doUpdate()}
               disabled={updating}
-              className="inline-flex items-center gap-2 rounded-full bg-[color:var(--accent)] px-4 py-2 text-[12px] font-semibold text-[color:var(--accent-fg)] disabled:opacity-60"
+              busy={updating}
+              busyLabel="Aktualisiere …"
             >
-              {updating ? <span className="lume-busy-dots" aria-hidden /> : null}
-              {updating ? 'Aktualisiere …' : 'Aktualisieren'}
-            </button>
+              Aktualisieren
+            </Button>
           </div>
           {updateError ? (
             <p className="font-mono-num mt-2 text-[11px] text-[color:var(--danger,#b03030)]">
@@ -507,22 +502,20 @@ function InstalledPanel({
             </span>
           </label>
           <div className="mt-3 flex gap-2">
-            <button
-              type="button"
-              onClick={doUninstall}
-              className="rounded-full bg-[color:var(--danger,#b03030)] px-4 py-2 text-[12px] font-semibold text-[color:var(--fg-on-dark)]"
-            >
+            <Button variant="danger" pill onClick={doUninstall}>
               {alsoDeletePackage
                 ? 'Ja, deinstallieren + löschen'
                 : 'Ja, deinstallieren'}
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              variant="secondary"
+              pill
+              size="sm"
               onClick={() => setState({ kind: 'idle' })}
-              className="rounded-full bg-[color:var(--bg)] px-4 py-2 text-[12px] font-semibold text-[color:var(--fg-muted)] ring-1 ring-inset ring-[color:var(--border)]"
+              className="font-semibold text-[color:var(--fg-muted)]"
             >
               Abbrechen
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -693,24 +686,19 @@ function InstallDrawer({
                 <br />
                 Andere Werte landen in der Instanz-Konfiguration.
               </p>
-              <button
+              <Button
                 type="submit"
+                variant="primary"
+                pill
+                size="lg"
                 disabled={submitting}
-                className={cn(
-                  'inline-flex items-center gap-2 rounded-full px-6 py-3',
-                  'bg-[color:var(--accent)] text-[color:var(--accent-fg)] shadow-[var(--shadow-cta)]',
-                  'transition-[background,transform] duration-[var(--dur-fast)] ease-[var(--ease-out)]',
-                  'hover:bg-[color:var(--accent-hover)] active:translate-y-px',
-                  'disabled:cursor-wait disabled:opacity-70',
-                )}
+                busy={submitting}
+                busyLabel="Wird installiert …"
               >
-                {submitting ? (
-                  <span className="lume-busy-dots" aria-hidden />
-                ) : null}
                 <span className="text-[15px] font-semibold">
-                  {submitting ? 'Wird installiert …' : 'Installation bestätigen'}
+                  Installation bestätigen
                 </span>
-              </button>
+              </Button>
             </footer>
           </form>
         )}

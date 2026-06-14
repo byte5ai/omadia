@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 
+import { Button } from '@/app/_components/ui/Button';
+
 import {
   fetchBuilderPreviewPrompt,
   type BuilderPreviewPrompt,
@@ -133,26 +135,26 @@ export function PreviewPromptPanel({
               })}
             </span>
           )}
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="sm"
             data-testid="preview-prompt-refresh"
             onClick={() => {
               void load();
             }}
             disabled={loading}
-            className="rounded border border-[color:var(--border)] px-2 py-1"
           >
             {loading ? t('loading') : t('refresh')}
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
             data-testid="preview-prompt-copy"
             onClick={handleCopy}
             disabled={!data || loading}
-            className="rounded border border-[color:var(--border)] px-2 py-1"
           >
             {copied ? t('copied') : t('copy')}
-          </button>
+          </Button>
         </div>
       </header>
 

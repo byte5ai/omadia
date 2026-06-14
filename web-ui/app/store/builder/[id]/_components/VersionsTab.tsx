@@ -3,6 +3,8 @@
 import { useTranslations } from 'next-intl';
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 
+import { Button } from '@/app/_components/ui/Button';
+
 import {
   captureSnapshot,
   getSnapshotDiff,
@@ -96,20 +98,16 @@ export function VersionsTab({ draftId }: VersionsTabProps): React.ReactElement {
   return (
     <div className="flex h-full flex-col p-4 text-[var(--fg)]">
       <div className="mb-4 flex items-center gap-2">
-        <button
-          type="button"
+        <Button
+          variant="primary"
           onClick={() => setCaptureOpen(true)}
-          className="rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-[color:var(--fg-on-dark)] hover:opacity-90"
+          className="text-sm"
         >
           {t('createSnapshot')}
-        </button>
-        <button
-          type="button"
-          onClick={() => void refresh()}
-          className="rounded-md border border-[var(--border)] px-3 py-2 text-sm hover:border-current"
-        >
+        </Button>
+        <Button variant="secondary" onClick={() => void refresh()}>
           {t('refresh')}
-        </button>
+        </Button>
       </div>
 
       {state.kind === 'loading' && <p className="text-sm opacity-70">{t('loading')}</p>}
@@ -381,21 +379,17 @@ function CaptureModal({
         {t('vendorBundleLabel')}
       </label>
       <div className="mt-4 flex justify-end gap-2">
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded-md border border-[var(--border)] px-3 py-2 text-sm"
-        >
+        <Button variant="secondary" onClick={onClose}>
           {t('cancel')}
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          variant="primary"
           onClick={() => void submit()}
           disabled={busy}
-          className="rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-[color:var(--fg-on-dark)] disabled:opacity-50"
+          className="text-sm"
         >
           {t('create')}
-        </button>
+        </Button>
       </div>
     </ModalShell>
   );
@@ -571,13 +565,9 @@ function RollbackModal({
         autoComplete="off"
       />
       <div className="mt-4 flex justify-end gap-2">
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded-md border border-[var(--border)] px-3 py-2 text-sm"
-        >
+        <Button variant="secondary" onClick={onClose}>
           {t('cancel')}
-        </button>
+        </Button>
         <button
           type="button"
           onClick={() => void submit()}

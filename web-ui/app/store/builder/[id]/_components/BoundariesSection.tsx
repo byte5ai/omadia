@@ -3,6 +3,8 @@
 import { useTranslations } from 'next-intl';
 import { useCallback, useMemo, useState, useTransition } from 'react';
 
+import { Button } from '@/app/_components/ui/Button';
+
 import { setQualityConfig } from '../../../../_lib/api';
 import {
   BOUNDARY_CATEGORY_LABELS_DE,
@@ -178,15 +180,16 @@ export function BoundariesSection({
       )}
 
       <div className="flex items-center gap-2">
-        <button
-          type="button"
+        <Button
+          variant="primary"
+          size="sm"
           onClick={handleSave}
           disabled={disabled || pending}
-          className="rounded bg-[color:var(--accent)] px-3 py-1 text-sm font-medium text-[color:var(--fg-on-dark)] disabled:opacity-50"
+          className="text-sm"
           data-testid="boundaries-save"
         >
           {pending ? t('saving') : t('save')}
-        </button>
+        </Button>
         {savedAt && (
           <span className="text-xs text-[color:var(--fg-muted)]">
             {t('saved')}

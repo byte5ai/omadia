@@ -1,5 +1,6 @@
 'use client';
 
+import { Button } from '@/app/_components/ui/Button';
 import {
   useCallback,
   useEffect,
@@ -401,15 +402,16 @@ export function SlotEditor({
           ))}
         </select>
         <SaveBadge status={status} />
-        <button
-          type="button"
+        <Button
+          variant="primary"
+          size="sm"
           onClick={() => void flush()}
           disabled={status.kind === 'pending'}
-          className="ml-auto inline-flex items-center gap-2 rounded-md bg-[color:var(--accent)] px-3 py-1 text-[11px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] disabled:opacity-50"
+          className="ml-auto text-[11px]"
         >
           <Save className="size-3" aria-hidden />
           {t('save')}
-        </button>
+        </Button>
       </div>
 
       <div className="flex-1 min-h-0 overflow-hidden">

@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
+
+import { Button } from '@/app/_components/ui/Button';
 import { AnimatePresence, motion } from 'framer-motion';
 import { CheckCircle2, KeyRound, Trash2, X } from 'lucide-react';
 
@@ -206,20 +208,20 @@ export function SecretsDrawer({
             </div>
 
             <footer className="flex items-center gap-2 border-t border-[color:var(--divider)] px-4 py-3">
-              <button
-                type="button"
+              <Button
+                variant="danger"
                 onClick={() => void onClearAll()}
                 disabled={pending || bufferedKeys.length === 0}
-                className="inline-flex items-center gap-2 rounded-md border border-[color:var(--danger)]/40 px-3 py-2 text-[11px] font-semibold text-[color:var(--danger)] transition-colors hover:bg-[color:var(--danger)]/10 disabled:opacity-40"
+                className="text-[11px]"
               >
                 <Trash2 className="size-3" aria-hidden />
                 {t('clearAll')}
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                variant="primary"
                 onClick={() => void onSave()}
                 disabled={pending || fields.length === 0}
-                className="ml-auto inline-flex items-center gap-2 rounded-md bg-[color:var(--accent)] px-3 py-2 text-[12px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] disabled:opacity-50"
+                className="ml-auto text-[12px]"
               >
                 {pending ? (
                   <span className="lume-busy-dots" aria-hidden />
@@ -227,7 +229,7 @@ export function SecretsDrawer({
                   <CheckCircle2 className="size-3.5" aria-hidden />
                 )}
                 {t('apply')}
-              </button>
+              </Button>
             </footer>
           </motion.aside>
         </>

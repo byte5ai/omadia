@@ -385,3 +385,91 @@ describe('omadia-ui-orchestrator manifest', () => {
     assert.deepEqual(entry.plugin.requires, ['chatAgent@^1']);
   });
 });
+
+describe('canvas_publish_rows — privacy-shield datasetId publishes', () => {
+  const dataset = {
+    rowCount: 3,
+    columns: [
+      { path: 'invoice', type: 'string' },
+      { path: 'amount', type: 'number' },
+    ],
+    rows: [
+      { invoice: 'INV-1', amount: 100 },
+      { invoice: 'INV-2', amount: 250.5 },
+      { invoice: 'INV-3', amount: 7 },
+    ],
+  };
+
+  it('resolves a datasetId server-side and publishes the real rows', async () => {
+    const out = await handleCanvasPublishRows(
+      { containerId: 'invoices', datasetId: 'ds_abc123', prose: '' },
+      (id) => (id === 'ds_abc123' ? dataset : undefined),
+    );
+    const payload = parseToolEmittedStructuredPayload(out);
+    assert.ok(payload, 'dataset publish emits the sentinel');
+    const data = payload.data as { rows?: Array<Record<string, unknown>> };
+    assert.equal(data.rows?.length, 3);
+    assert.deepEqual(data.rows?.[0], { invoice: 'INV-1', amount: 100 });
+    assert.match(payload.prose, /3 row\(s\) from dataset ds_abc123/);
+  });
+
+  it('rejects datasetId combined with rows or fields', async () => {
+    const out = await handleCanvasPublishRows(
+      { containerId: 'invoices', datasetId: 'ds_abc123', rows: [{ a: 1 }] },
+      () => dataset,
+    );
+    assert.match(out, /^Error: .*EITHER datasetId OR rows/);
+  });
+
+  it('reports an unknown/expired datasetId with same-turn guidance', async () => {
+    const out = await handleCanvasPublishRows(
+      { containerId: 'invoices', datasetId: 'ds_gone' },
+      () => undefined,
+    );
+    assert.match(out, /^Error: unknown or expired datasetId/);
+    assert.match(out, /SAME turn/);
+  });
+
+  it('reports dataset support as unavailable without a privacy provider', async () => {
+    const viaSentinel = await handleCanvasPublishRows(
+      { containerId: 'invoices', datasetId: 'ds_abc123' },
+      () => 'unavailable',
+    );
+    assert.match(viaSentinel, /^Error: dataset publishing is unavailable/);
+    const withoutResolver = await handleCanvasPublishRows({
+      containerId: 'invoices',
+      datasetId: 'ds_abc123',
+    });
+    assert.match(withoutResolver, /^Error: dataset publishing is unavailable/);
+  });
+
+  it('turns a dataset reference smuggled into rows into a self-correcting error', async () => {
+    const byKey = await handleCanvasPublishRows({
+      containerId: 'invoices',
+      rows: [{ datasetId: 'ds_abc123' }],
+    });
+    assert.match(byKey, /^Error: that rows array contains a dataset REFERENCE/);
+    const byValue = await handleCanvasPublishRows({
+      containerId: 'invoices',
+      rows: [{ data: 'ds_5239d8b1-b0fc-4cf6-838f-bdcdcbf13aa3' }],
+    });
+    assert.match(byValue, /^Error: that rows array contains a dataset REFERENCE/);
+  });
+
+  it('caps oversized dataset publishes and says so in the prose', async () => {
+    const big = {
+      rowCount: 750,
+      columns: [{ path: 'n', type: 'number' }],
+      rows: Array.from({ length: 750 }, (_, i) => ({ n: i })),
+    };
+    const out = await handleCanvasPublishRows(
+      { containerId: 'invoices', datasetId: 'ds_big' },
+      () => big,
+    );
+    const payload = parseToolEmittedStructuredPayload(out);
+    assert.ok(payload);
+    const data = payload.data as { rows?: unknown[] };
+    assert.equal(data.rows?.length, 500);
+    assert.match(payload.prose, /Truncated from 750 rows/);
+  });
+});
