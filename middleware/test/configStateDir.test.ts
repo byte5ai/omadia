@@ -16,6 +16,10 @@ describe('resolveStateDir — persistent-state dir precedence', () => {
   const SAVED = {
     UPLOADED_PACKAGES_DIR: process.env['UPLOADED_PACKAGES_DIR'],
     PLATFORM_DATA_DIR: process.env['PLATFORM_DATA_DIR'],
+    // `src/config.ts` runs dotenv with `override: true`, so a developer's local
+    // `.env` (which sets `MEMORY_DIR=./.memory`) leaks into process.env at import
+    // and would otherwise be read as an explicit override below. Isolate it too.
+    MEMORY_DIR: process.env['MEMORY_DIR'],
   };
   afterEach(() => {
     for (const [k, v] of Object.entries(SAVED)) {
@@ -35,6 +39,7 @@ describe('resolveStateDir — persistent-state dir precedence', () => {
 
   it('defaults UNDER PLATFORM_DATA_DIR when no explicit override', () => {
     delete process.env['UPLOADED_PACKAGES_DIR'];
+    delete process.env['MEMORY_DIR'];
     process.env['PLATFORM_DATA_DIR'] = '/data';
     assert.equal(
       resolveStateDir('UPLOADED_PACKAGES_DIR', './.uploaded-packages', '.uploaded-packages'),
