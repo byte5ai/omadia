@@ -228,9 +228,15 @@ const SubAgentsPermissionSchema = z
 
 const LlmPermissionSchema = z
   .object({
-    /** Anthropic model whitelist. Supports `*`-suffix wildcards
-     *  (`'claude-haiku-4-5*'`). Empty list = no LLM access at runtime
-     *  (ctx.llm stays undefined). */
+    /** LLM model whitelist. Prefer provider-agnostic CLASS refs
+     *  (`'class:fast' | 'class:balanced' | 'class:frontier'`) so the agent
+     *  runs on whichever provider the operator has active — a class ref
+     *  resolves to that provider's model for the class at runtime (Anthropic
+     *  default: fast→claude-haiku-4-5, balanced→claude-sonnet-4-6,
+     *  frontier→claude-opus-4-8). Concrete vendor ids and `*`-suffix wildcards
+     *  (`'claude-haiku-4-5*'`) are still accepted for back-compat but lock the
+     *  agent to one vendor. Empty list = no LLM access at runtime (ctx.llm
+     *  stays undefined). */
     models_allowed: z.array(z.string().min(1)).default([]),
     /** Per-tool-handler invocation cap. Default 5 in kernel. */
     calls_per_invocation: z.number().int().positive().max(50).optional(),

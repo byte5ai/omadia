@@ -42,6 +42,13 @@ import {
 } from '@omadia/plugin-api';
 import type { DomainTool } from '@omadia/orchestrator';
 import { turnContext } from '@omadia/orchestrator';
+import {
+  isClassRef,
+  modelForClass,
+  resolveModelRef,
+  type ModelClass,
+  type ProviderId,
+} from '@omadia/llm-provider';
 
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { JobScheduler } from '../plugins/jobScheduler.js';
@@ -404,6 +411,7 @@ export function createPluginContext(
     callerAgentId: agentId,
     permissions: extractLlmPermissions(agentId, catalog),
     serviceRegistry,
+    activeProvider: resolveActiveProvider(registry),
   });
 
   return {
@@ -597,6 +605,20 @@ interface LlmPermissions {
   readonly maxTokensPerCall: number;
 }
 
+/**
+ * The LLM provider the runtime currently serves `ctx.llm` from — read from the
+ * orchestrator's `llm_provider` config, exactly as the kernel's dynamic
+ * sub-agent wiring does (`hostProviderId()` in src/index.ts). Defaults to
+ * `'anthropic'` when unset, so the Anthropic default path is unchanged. Used to
+ * resolve `class:*` whitelist entries against the active provider's models.
+ */
+function resolveActiveProvider(registry: InstalledRegistry): ProviderId {
+  const raw = registry.get('@omadia/orchestrator')?.config?.['llm_provider'];
+  return typeof raw === 'string' && raw.trim().length > 0
+    ? raw.trim()
+    : 'anthropic';
+}
+
 function extractLlmPermissions(
   agentId: string,
   catalog: PluginCatalog,
@@ -614,13 +636,58 @@ function extractLlmPermissions(
 }
 
 /**
- * Glob-style match for LLM model names.
- *   - `'claude-haiku-4-5'` matches exact only
- *   - `'claude-haiku-4-5*'` matches anything starting with that prefix
- *     (e.g. `'claude-haiku-4-5-20251001'`)
- *   - `'*'` matches anything (use sparingly — sidesteps the whitelist)
+ * Match a single whitelist entry against the requested model id, where
+ * `activeProvider` is the LLM provider the runtime is currently serving
+ * `ctx.llm` from (see `resolveActiveProvider`).
+ *
+ * Two entry shapes are supported:
+ *
+ * 1. Concrete / wildcard (back-compat, provider-agnostic strings) — unchanged
+ *    glob semantics, matched against the raw requested id:
+ *      - `'claude-haiku-4-5'`  → exact match only
+ *      - `'claude-haiku-4-5*'` → prefix match (`'claude-haiku-4-5-20251001'`)
+ *      - `'*'`                 → matches anything (sidesteps the whitelist)
+ *    Existing installed agents that lock to `['claude-haiku-4-5*']` keep
+ *    gating EXACTLY as before, on every provider.
+ *
+ * 2. Class ref (`class:fast|balanced|frontier`) — provider-agnostic. The class
+ *    is resolved against the ACTIVE provider via `modelForClass(cls,
+ *    activeProvider)`; the request is permitted ONLY when it denotes THAT model
+ *    on the active provider. We accept the resolved bare `modelId`, the
+ *    provider-qualified id (`<provider>:<modelId>`), and any registry ref that
+ *    resolves (with the active provider as default) to a model owned by the
+ *    active provider with the same `modelId` — e.g. the legacy alias `haiku`
+ *    under anthropic. A bare id that the registry attributes to a DIFFERENT
+ *    provider (e.g. `gpt-4.1-nano` while anthropic is active) does NOT match,
+ *    so a `class:fast` lock permits the active provider's fast model and
+ *    nothing else. On the Anthropic default this resolves to
+ *    `claude-haiku-4-5-20251001` (class `fast`), `claude-sonnet-4-6`
+ *    (`balanced`), `claude-opus-4-8` (`frontier`) — byte-identical gating to a
+ *    concrete Anthropic lock today.
  */
-function modelMatch(pattern: string, candidate: string): boolean {
+function modelMatch(
+  pattern: string,
+  candidate: string,
+  activeProvider: ProviderId,
+): boolean {
+  if (isClassRef(pattern)) {
+    const cls = pattern.slice('class:'.length) as ModelClass;
+    const target = modelForClass(cls, activeProvider);
+    // Unknown class on this provider → no match (fail closed, never throws).
+    if (target === undefined) return false;
+    if (candidate === target.modelId || candidate === target.id) return true;
+    // Accept registry refs (e.g. the legacy alias `haiku`) that resolve to the
+    // SAME active-provider model. Resolution is pinned to the active provider
+    // and must land on that provider — a cross-provider id never leaks through.
+    const resolved = resolveModelRef(candidate, {
+      defaultProvider: activeProvider,
+    });
+    return (
+      resolved !== undefined &&
+      resolved.provider === activeProvider &&
+      resolved.modelId === target.modelId
+    );
+  }
   if (pattern === '*') return true;
   if (pattern.endsWith('*')) {
     const prefix = pattern.slice(0, -1);
@@ -633,12 +700,16 @@ interface LlmAccessorOptions {
   callerAgentId: string;
   permissions: LlmPermissions | undefined;
   serviceRegistry: ServiceRegistry;
+  /** Provider the runtime currently serves `ctx.llm` from. Class refs in the
+   *  whitelist resolve against this provider so a provider-agnostic
+   *  `class:fast` lock matches the active provider's fast model. */
+  activeProvider: ProviderId;
 }
 
 function createLlmAccessor(
   opts: LlmAccessorOptions,
 ): LlmAccessor | undefined {
-  const { callerAgentId, permissions, serviceRegistry } = opts;
+  const { callerAgentId, permissions, serviceRegistry, activeProvider } = opts;
   if (!permissions) return undefined;
 
   let callsUsed = 0;
@@ -655,7 +726,7 @@ function createLlmAccessor(
         );
       }
       const allowed = permissions.modelsAllowed.some((p) =>
-        modelMatch(p, req.model),
+        modelMatch(p, req.model, activeProvider),
       );
       if (!allowed) {
         throw new LlmModelNotAllowedError(callerAgentId, req.model);

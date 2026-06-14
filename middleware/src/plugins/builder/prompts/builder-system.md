@@ -612,16 +612,24 @@ if (ctx.llm) {
 ```
 patch_spec({ patches: [
   { op: 'add', path: '/permissions/llm', value: {
-    models_allowed: ['claude-haiku-4-5*'],
+    models_allowed: ['class:fast'],
     calls_per_invocation: 2,
     max_tokens_per_call: 1024,
   }}
 ]})
 ```
 
-`models_allowed` supports `*`-Suffix-Wildcards. Defaults bei Auslassung:
-5 calls / 4096 tokens. **Strategie:** Haiku für extract/classify (billig),
-Sonnet nur wenn echte Reasoning-Tiefe gebraucht ist.
+`models_allowed` nutzt bevorzugt **provider-agnostische Klassen**:
+`'class:fast' | 'class:balanced' | 'class:frontier'`. Eine Klasse wird zur
+Laufzeit gegen den **aktiven** Provider aufgelöst — `class:fast` matcht das
+Fast-Modell des aktiven Providers (Anthropic-Default: `claude-haiku-4-5`;
+OpenAI: `gpt-4.1-nano`). So läuft der Agent auf jedem konfigurierten Provider,
+ohne ihn an einen Vendor zu binden. Konkrete Vendor-Ids und `*`-Suffix-
+Wildcards (`'claude-haiku-4-5*'`) bleiben für Back-Compat erlaubt, locken den
+Agent aber auf einen Vendor — bevorzuge daher Klassen. Defaults bei Auslassung:
+5 calls / 4096 tokens. **Strategie:** `class:fast` für extract/classify
+(billig), `class:balanced`/`class:frontier` nur wenn echte Reasoning-Tiefe
+gebraucht ist.
 
 ### `ctx.knowledgeGraph` — Namespaced Graph-Ingest + Lookup
 
