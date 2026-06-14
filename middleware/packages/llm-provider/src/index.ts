@@ -58,6 +58,7 @@ export {
 } from './providerFactory.js';
 
 export {
+  coerceModelToProvider,
   getModel,
   isClassRef,
   listModels,

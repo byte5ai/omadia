@@ -3,8 +3,11 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import {
+  coerceModelToProvider,
   createAnthropicProvider,
+  resolveLlmProvider,
   type AnthropicClient,
+  type LlmProvider,
 } from '@omadia/llm-provider';
 import type { z } from 'zod';
 
@@ -136,6 +139,12 @@ export interface DynamicAgentRuntimeDeps {
   subAgentModel: string;
   subAgentMaxTokens: number;
   subAgentMaxIterations: number;
+  /** The host's configured LLM provider id for dynamic sub-agents (default
+   *  `anthropic`). Late-bound so a post-boot provider switch is picked up. */
+  hostProviderId?: () => string;
+  /** Read a host-scope vault secret (the orchestrator scope) — used to build a
+   *  non-Anthropic provider for sub-agents via the provider factory. */
+  hostGetSecret?: (key: string) => Promise<string | undefined>;
   serviceRegistry: ServiceRegistry;
   /** Shared registry for plugin-contributed top-level native tools. Activated
    *  plugins register handlers here via `ctx.tools.register(...)`. */
@@ -413,14 +422,46 @@ export class DynamicAgentRuntime {
     // the live, vault-armed client from the registry — matching the documented
     // late-resolve contract (index.ts ~295) — and fall back to the injected
     // client only when no provider override is registered (env-key path).
-    const liveAnthropic =
-      this.deps.serviceRegistry.get<AnthropicClient>('anthropicClient') ??
-      this.deps.anthropic;
+    // Provider-agnostic sub-agents: run on the host's configured provider
+    // (default Anthropic, so the existing path is byte-identical). For Anthropic
+    // we keep the live, vault-armed shared client (the OB-61 late-resolve). For
+    // any other provider we build it from the host vault key via the factory and
+    // coerce the configured model to that provider (a Claude model maps to the
+    // provider's same-class model) — this is what lets the stack run with no
+    // Anthropic key at all.
+    const liveAnthropicProvider = (): LlmProvider =>
+      createAnthropicProvider({
+        client:
+          this.deps.serviceRegistry.get<AnthropicClient>('anthropicClient') ??
+          this.deps.anthropic,
+      });
+    const hostProviderId = this.deps.hostProviderId?.() ?? 'anthropic';
+    let provider: LlmProvider;
+    let subAgentModel = effectiveModel;
+    if (hostProviderId === 'anthropic') {
+      provider = liveAnthropicProvider();
+    } else {
+      const resolved = this.deps.hostGetSecret
+        ? await resolveLlmProvider({
+            providerId: hostProviderId,
+            getSecret: this.deps.hostGetSecret,
+          })
+        : undefined;
+      if (resolved === undefined) {
+        // No key for the configured non-Anthropic provider — fall back to the
+        // shared client so construction does not throw; a real auth error only
+        // surfaces if the sub-agent is actually invoked.
+        provider = liveAnthropicProvider();
+      } else {
+        provider = resolved;
+        subAgentModel = coerceModelToProvider(effectiveModel, hostProviderId);
+      }
+    }
 
     const subAgent = new LocalSubAgent({
       name: shortName,
-      provider: createAnthropicProvider({ client: liveAnthropic }),
-      model: effectiveModel,
+      provider,
+      model: subAgentModel,
       maxTokens: this.deps.subAgentMaxTokens,
       maxIterations: this.deps.subAgentMaxIterations,
       systemPrompt,

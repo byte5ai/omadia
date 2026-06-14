@@ -571,6 +571,18 @@ async function main(): Promise<void> {
     subAgentModel: config.SUB_AGENT_MODEL,
     subAgentMaxTokens: config.SUB_AGENT_MAX_TOKENS,
     subAgentMaxIterations: config.SUB_AGENT_MAX_ITERATIONS,
+    // Dynamic sub-agents inherit the orchestrator's configured provider so the
+    // stack runs on any provider (incl. OpenAI-only, no Anthropic key). Both are
+    // late-bound: a post-boot provider/key change is picked up on next build.
+    hostProviderId: () => {
+      const raw = installedRegistry.get('@omadia/orchestrator')?.config?.[
+        'llm_provider'
+      ];
+      return typeof raw === 'string' && raw.trim().length > 0
+        ? raw.trim()
+        : 'anthropic';
+    },
+    hostGetSecret: (key: string) => secretVault.get('@omadia/orchestrator', key),
     serviceRegistry,
     nativeToolRegistry,
     pluginRouteRegistry,

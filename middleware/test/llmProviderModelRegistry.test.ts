@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+  coerceModelToProvider,
   getModel,
   isClassRef,
   listModels,
@@ -139,4 +140,28 @@ test('INVARIANT: every model has a positive contextWindow and maxTokens', () => 
     assert.ok(m.maxTokens > 0, `${m.id} maxTokens`);
     assert.ok(m.id === `${m.provider}:${m.modelId}`, `${m.id} id format`);
   }
+});
+
+test('coerceModelToProvider remaps a model to the target provider by class', () => {
+  // a Claude frontier/fast model running on OpenAI → OpenAI's same-class model
+  assert.equal(coerceModelToProvider('claude-opus-4-8', 'openai'), 'gpt-4.1');
+  assert.equal(
+    coerceModelToProvider('claude-haiku-4-5-20251001', 'openai'),
+    'gpt-4.1-nano',
+  );
+  // legacy alias resolves then remaps
+  assert.equal(coerceModelToProvider('opus', 'openai'), 'gpt-4.1');
+  // already the target provider → bare vendor id (qualified id normalised)
+  assert.equal(coerceModelToProvider('gpt-4.1', 'openai'), 'gpt-4.1');
+  assert.equal(coerceModelToProvider('openai:gpt-4o', 'openai'), 'gpt-4o');
+  // anthropic stays anthropic (zero change on the default path)
+  assert.equal(
+    coerceModelToProvider('claude-opus-4-8', 'anthropic'),
+    'claude-opus-4-8',
+  );
+  // unknown/custom model → passed through unchanged
+  assert.equal(
+    coerceModelToProvider('mistral-large-latest', 'openai-compatible'),
+    'mistral-large-latest',
+  );
 });
