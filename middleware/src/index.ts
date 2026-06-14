@@ -70,6 +70,7 @@ import { createPackagesRouter } from './routes/packages.js';
 import { createRegistryInstallRouter } from './routes/registryInstall.js';
 import { createRuntimeRouter } from './routes/runtime.js';
 import { createAdminSettingsRouter } from './routes/adminSettings.js';
+import { createAdminProvidersRouter } from './routes/adminProviders.js';
 import { createVaultStatusRouter } from './routes/vaultStatus.js';
 import { createBuilderRouter } from './routes/builder.js';
 import {
@@ -2323,6 +2324,20 @@ async function main(): Promise<void> {
     }),
   );
   console.log('[middleware] settings overview endpoint ready at /api/v1/admin/settings (auth: required)');
+
+  // Dedicated models/providers admin (S6) — providers + registry models +
+  // per-plugin provider/model selection. Separate from the settings catalog so
+  // many providers/models can be managed on their own page.
+  app.use(
+    '/api/v1/admin/providers',
+    requireAuth,
+    createAdminProvidersRouter({
+      installedRegistry,
+      vault: secretVault,
+      reactivate: reactivateAgent,
+    }),
+  );
+  console.log('[middleware] providers admin endpoint ready at /api/v1/admin/providers (auth: required)');
 
   // ── Agent-Builder drafts (B.0) ────────────────────────────────────────────
   // SQLite-backed draft store; persists alongside the vault so redeploys

@@ -538,7 +538,14 @@ export async function activate(
   // is true, a Haiku classifier picks the model per turn: simple → Sonnet,
   // complex → Opus. Models default to the existing orchestrator/sub-agent/
   // classifier config so it works out of the box once the flag is set.
+  //
+  // Provider-gated: per-turn routing assumes a single provider serving the
+  // Claude model family (its defaults/fallbacks are claude-* ids). It is only
+  // valid for Anthropic — under any other provider the one configured provider
+  // would receive Claude model ids. Cross-provider per-turn routing is future
+  // work; until then routing is suppressed for non-Anthropic providers.
   const modelRoutingEnabled =
+    providerId === 'anthropic' &&
     (ctx.config.get<string>('orchestrator_model_routing') ?? '')
       .trim()
       .toLowerCase() === 'true';
