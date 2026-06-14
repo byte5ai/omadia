@@ -13,6 +13,9 @@ import { SESSION_COOKIE } from '../auth/requireAuth.js';
 import { verifySession } from '../auth/sessionJwt.js';
 import type { EmailWhitelist } from '../auth/whitelist.js';
 
+/** Heartbeat cadence — comfortably under the Fly edge proxy's ~60s idle-close. */
+const WS_HEARTBEAT_MS = 30_000;
+
 /**
  * Per-channel WebSocket mount — the upgrade-level counterpart to
  * {@link ExpressRouteRegistry}. The kernel owns the single `ws` server (in
@@ -59,6 +62,13 @@ export class WebSocketRegistry {
   private readonly liveByChannel = new Map<string, Set<WebSocket>>();
   private readonly wss = new WebSocketServer({ noServer: true });
   private attached = false;
+  // WS keepalive: with no frames flowing, the Fly edge proxy closes an idle
+  // canvas socket after ~60s of silence — the client then sees a mid-session
+  // drop (reported while just typing a prompt). A standard ws ping/pong
+  // heartbeat keeps frames flowing both ways AND reaps genuinely dead sockets.
+  // Liveness is tracked off the ws object (WeakSet) to avoid type augmentation.
+  private readonly aliveSockets = new WeakSet<WebSocket>();
+  private heartbeat: ReturnType<typeof setInterval> | null = null;
 
   constructor(private readonly deps: WebSocketRegistryDeps) {}
 
@@ -110,6 +120,7 @@ export class WebSocketRegistry {
   attach(server: HttpServer): void {
     if (this.attached) return;
     this.attached = true;
+    this.startHeartbeat();
     // SINGLE-OWNER INVARIANT: this registry is the process's only `upgrade`
     // consumer (no other subsystem hosts a WebSocket today). An upgrade to an
     // unregistered path is rejected with 404. A future second WS consumer must
@@ -178,9 +189,47 @@ export class WebSocketRegistry {
     this.wss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
       const live = this.liveByChannel.get(route.channelId);
       live?.add(ws);
-      ws.on('close', () => live?.delete(ws));
+      // Keepalive bookkeeping: fresh socket is alive; every pong (the client's
+      // ws auto-responds to our ping) re-arms it. The heartbeat tick pings and
+      // reaps — see startHeartbeat().
+      this.aliveSockets.add(ws);
+      ws.on('pong', () => this.aliveSockets.add(ws));
+      ws.on('close', () => {
+        live?.delete(ws);
+        this.aliveSockets.delete(ws);
+      });
       route.handler(wrapSocket(ws, req), session);
     });
+  }
+
+  /** Single process-wide heartbeat: every WS_HEARTBEAT_MS, ping each live
+   *  socket and terminate any that missed the previous round's pong. Keeps
+   *  idle canvas sockets alive through the Fly proxy and reaps dead ones. */
+  private startHeartbeat(): void {
+    if (this.heartbeat) return;
+    this.heartbeat = setInterval(() => this.heartbeatTick(), WS_HEARTBEAT_MS);
+    // Don't keep the event loop alive just for the heartbeat.
+    this.heartbeat.unref?.();
+  }
+
+  /** One heartbeat round: ping each live socket, terminate any that missed
+   *  the previous round's pong. Exposed for tests; the interval drives it in
+   *  production. */
+  heartbeatTick(): void {
+    for (const live of this.liveByChannel.values()) {
+      for (const ws of live) {
+        if (!this.aliveSockets.has(ws)) {
+          ws.terminate();
+          continue;
+        }
+        this.aliveSockets.delete(ws);
+        try {
+          ws.ping();
+        } catch {
+          ws.terminate();
+        }
+      }
+    }
   }
 }
 

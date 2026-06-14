@@ -148,4 +148,20 @@ describe('WebSocketRegistry — auth before upgrade', () => {
     const [err] = (await once(ws, 'error')) as [Error];
     assert.match(err.message, /503|unexpected server response/i);
   });
+
+  // Keepalive (Fly idle-close fix): the heartbeat pings live sockets so an
+  // idle canvas connection keeps frames flowing through the edge proxy.
+  it('heartbeat pings live sockets (keepalive frames flow)', async () => {
+    registry.register('ch.hb', '/canvas-hb', () => {
+      /* handler not needed — we observe the server's ping client-side */
+    });
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/canvas-hb`, {
+      headers: { cookie: await authCookie() },
+    });
+    await once(ws, 'open');
+    const pinged = once(ws, 'ping');
+    registry.heartbeatTick();
+    await pinged; // server sent a ping this round — the keepalive is live
+    ws.close();
+  });
 });
