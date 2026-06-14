@@ -105,10 +105,27 @@ test('complete() maps a text response to neutral content + usage', async () => {
     cacheReadTokens: 10,
   });
   assert.equal(captured.params?.['model'], 'gpt-4.1');
-  assert.equal(captured.params?.['max_tokens'], 512);
+  // Native OpenAI → max_completion_tokens (GPT-5/o-series reject max_tokens).
+  assert.equal(captured.params?.['max_completion_tokens'], 512);
+  assert.equal(captured.params?.['max_tokens'], undefined);
   const messages = captured.params?.['messages'] as Array<Record<string, unknown>>;
   assert.deepEqual(messages[0], { role: 'system', content: 'Sei knapp.' });
   assert.deepEqual(messages[1], { role: 'user', content: 'Hi' });
+});
+
+test('complete() uses legacy max_tokens for openai-compatible servers', async () => {
+  const captured: Captured = {};
+  const provider = createOpenAiProvider({
+    client: mockClient(captured, completion()),
+    id: 'openai-compatible',
+  });
+  await provider.complete({
+    model: 'mistral-large',
+    maxTokens: 256,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  assert.equal(captured.params?.['max_tokens'], 256);
+  assert.equal(captured.params?.['max_completion_tokens'], undefined);
 });
 
 test('complete() maps tool_calls to tool_calls finishReason + parsed ToolCallPart', async () => {
