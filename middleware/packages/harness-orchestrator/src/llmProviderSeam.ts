@@ -194,14 +194,47 @@ export function toLlmRequest(
 // Inbound: neutral LlmResponse → the Anthropic-shaped message the loop reads
 // ---------------------------------------------------------------------------
 
-/** Neutral finishReason → Anthropic stop_reason. The raw vendor value
- *  (providerFinishReason) wins when present so `end_turn`/`stop_sequence`
- *  survive the round-trip; otherwise map from the neutral enum. */
+/** The Anthropic `stop_reason` vocabulary the orchestrator/sub-agent loop reads
+ *  back. The Anthropic adapter's `providerFinishReason` is already one of these,
+ *  so it round-trips unchanged (preserving `end_turn` vs `stop_sequence`). A raw
+ *  value NOT in this set — e.g. OpenAI's `tool_calls`/`length`/`stop` — is a
+ *  FOREIGN vocabulary and must NOT pass through: the loop dispatches tools only
+ *  on `stop_reason === 'tool_use'`, so a raw `tool_calls` would make every
+ *  OpenAI tool call silently drop (empty answer). Normalise those via the
+ *  neutral enum instead.
+ *
+ *  This is the COMPLETE set of genuine Anthropic stop_reasons, kept so the
+ *  Anthropic path is byte-for-byte what it was before the seam existed. The
+ *  loop only *acts* on `tool_use` (dispatch) and `end_turn` (clean finalize);
+ *  the rest (`pause_turn`/`refusal`/`stop_sequence`/`model_context_window_
+ *  exceeded`) finalize the turn — unchanged from the pre-seam behavior. Loop
+ *  handling of those values (e.g. resume-on-`pause_turn`) is a pre-existing
+ *  orchestrator concern, deliberately out of scope for this provider-vocabulary
+ *  normalization. */
+const ANTHROPIC_STOP_REASONS = new Set<string>([
+  'end_turn',
+  'max_tokens',
+  'stop_sequence',
+  'tool_use',
+  'pause_turn',
+  'refusal',
+  'model_context_window_exceeded',
+]);
+
+/** Neutral finishReason → Anthropic stop_reason. A vendor value already in the
+ *  Anthropic vocabulary wins (keeps `end_turn`/`stop_sequence` distinct);
+ *  anything else is normalised from the neutral enum so cross-provider tool
+ *  calls reach the loop's `tool_use` dispatch. */
 function toStopReason(
   finishReason: FinishReason,
   providerFinishReason: string | undefined,
 ): string {
-  if (providerFinishReason !== undefined) return providerFinishReason;
+  if (
+    providerFinishReason !== undefined &&
+    ANTHROPIC_STOP_REASONS.has(providerFinishReason)
+  ) {
+    return providerFinishReason;
+  }
   switch (finishReason) {
     case 'tool_calls':
       return 'tool_use';
@@ -209,6 +242,15 @@ function toStopReason(
       return 'max_tokens';
     case 'stop':
       return 'end_turn';
+    default: {
+      // Exhaustive over the 3-member FinishReason union. A future enum member
+      // reaching here is a COMPILE error (the `never` assignment) rather than a
+      // silent `undefined` stop_reason — which, being neither 'tool_use' nor
+      // 'end_turn', would re-create the exact silent-finalize bug this function
+      // guards against.
+      const exhaustive: never = finishReason;
+      throw new Error(`unhandled FinishReason: ${String(exhaustive)}`);
+    }
   }
 }
 

@@ -198,3 +198,96 @@ test('fromLlmResponse derives stop_reason from finishReason when no provider val
   assert.equal(usage.cache_creation_input_tokens, undefined);
   assert.equal(usage.cache_read_input_tokens, undefined);
 });
+
+test('fromLlmResponse normalises FOREIGN provider finish reasons (OpenAI) instead of passing them through', () => {
+  const base = {
+    content: [{ type: 'text' as const, text: 'x' }],
+    model: 'gpt-5.5',
+    usage: { inputTokens: 1, outputTokens: 1 },
+  };
+  // Regression: OpenAI's raw `finish_reason` is a foreign vocabulary. Passing
+  // `tool_calls` straight through made the orchestrator's `stop_reason ===
+  // 'tool_use'` dispatch never fire → every OpenAI tool call silently dropped
+  // (empty answer). It MUST normalise to Anthropic `tool_use`.
+  assert.equal(
+    fromLlmResponse({
+      ...base,
+      finishReason: 'tool_calls',
+      providerFinishReason: 'tool_calls',
+    }).stop_reason,
+    'tool_use',
+  );
+  // Legacy `function_call` (still emitted by the OpenAI adapter) → `tool_use`.
+  assert.equal(
+    fromLlmResponse({
+      ...base,
+      finishReason: 'tool_calls',
+      providerFinishReason: 'function_call',
+    }).stop_reason,
+    'tool_use',
+  );
+  // OpenAI `length` → `max_tokens`; `stop`/`content_filter` → `end_turn`.
+  assert.equal(
+    fromLlmResponse({
+      ...base,
+      finishReason: 'max_tokens',
+      providerFinishReason: 'length',
+    }).stop_reason,
+    'max_tokens',
+  );
+  assert.equal(
+    fromLlmResponse({
+      ...base,
+      finishReason: 'stop',
+      providerFinishReason: 'stop',
+    }).stop_reason,
+    'end_turn',
+  );
+  assert.equal(
+    fromLlmResponse({
+      ...base,
+      finishReason: 'stop',
+      providerFinishReason: 'content_filter',
+    }).stop_reason,
+    'end_turn',
+  );
+  // The critical path: the OpenAI adapter forces finishReason='tool_calls' when
+  // tool calls are present even if the server labelled the raw finish 'stop'.
+  // The benign Anthropic-looking raw 'stop' is NOT in the allow-set, so the
+  // neutral enum wins → 'tool_use'. A regression here would drop a real tool
+  // call carrying a 'stop' finish reason.
+  assert.equal(
+    fromLlmResponse({
+      ...base,
+      finishReason: 'tool_calls',
+      providerFinishReason: 'stop',
+    }).stop_reason,
+    'tool_use',
+  );
+});
+
+test('fromLlmResponse preserves native Anthropic stop reasons verbatim (allow-set passthrough)', () => {
+  const base = {
+    content: [{ type: 'text' as const, text: 'x' }],
+    model: 'claude-opus-4-8',
+    usage: { inputTokens: 1, outputTokens: 1 },
+  };
+  // Anthropic's own vocabulary round-trips unchanged — `stop_sequence` stays
+  // distinct from a plain `end_turn`, and `pause_turn` is not flattened.
+  assert.equal(
+    fromLlmResponse({
+      ...base,
+      finishReason: 'stop',
+      providerFinishReason: 'stop_sequence',
+    }).stop_reason,
+    'stop_sequence',
+  );
+  assert.equal(
+    fromLlmResponse({
+      ...base,
+      finishReason: 'stop',
+      providerFinishReason: 'pause_turn',
+    }).stop_reason,
+    'pause_turn',
+  );
+});
