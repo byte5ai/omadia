@@ -18,6 +18,7 @@ import { createAnthropicClient } from './anthropicClient.js';
 import { createAnthropicProvider } from './anthropicProvider.js';
 import type { ProviderId } from './modelRegistry.js';
 import { createOpenAiProvider } from './openaiProvider.js';
+import type { LlmProviderCatalog } from './providerCatalog.js';
 import { readProviderApiKey } from './providerCredentials.js';
 import type { LlmProvider } from './types.js';
 
@@ -27,10 +28,15 @@ export interface ResolveLlmProviderOptions {
   /** Scope-bound vault read — `(k) => ctx.secrets.get(k)` or
    *  `(k) => vault.get(agentId, k)`. */
   readonly getSecret: (key: string) => Promise<string | undefined>;
-  /** Base URL for OpenAI-compatible servers (Mistral/Ollama/vLLM/Azure). */
+  /** Base URL for OpenAI-compatible servers (Mistral/Ollama/vLLM/Azure).
+   *  Overrides a catalog descriptor's `baseURL` when both are present. */
   readonly baseURL?: string;
   /** SDK auto-retry count (the orchestrator uses 5; others keep the SDK default). */
   readonly maxRetries?: number;
+  /** Plugin-contributed provider catalog. When `providerId` is found here, its
+   *  `baseURL` + quirks drive the OpenAI-compatible adapter — this is how a
+   *  declarative provider plugin (e.g. MiniMax) becomes resolvable. */
+  readonly catalog?: LlmProviderCatalog;
   readonly log?: (...args: unknown[]) => void;
 }
 
@@ -64,16 +70,32 @@ export async function resolveLlmProvider(
   // to api.openai.com). Any other id without a baseURL would silently send a
   // non-OpenAI key to api.openai.com and fail opaquely at request time — fail
   // loudly at build time instead.
-  if (opts.providerId !== 'openai' && opts.baseURL === undefined) {
+  // A plugin-contributed provider supplies its baseURL + quirks via the catalog;
+  // an explicit opts.baseURL still wins (per-scope override).
+  const descriptor = opts.catalog?.get(opts.providerId);
+  const baseURL = opts.baseURL ?? descriptor?.baseURL;
+  const quirks = descriptor?.quirks;
+
+  if (opts.providerId !== 'openai' && baseURL === undefined) {
     throw new Error(
       `LLM provider '${opts.providerId}' requires a baseURL (an OpenAI-compatible endpoint); only 'openai' may omit it.`,
     );
   }
   return createOpenAiProvider({
     apiKey,
-    ...(opts.baseURL !== undefined ? { baseURL: opts.baseURL } : {}),
+    ...(baseURL !== undefined ? { baseURL } : {}),
     ...(opts.maxRetries !== undefined ? { maxRetries: opts.maxRetries } : {}),
     ...(opts.providerId !== 'openai' ? { id: opts.providerId } : {}),
+    ...(quirks?.maxTokensField !== undefined
+      ? { maxTokensField: quirks.maxTokensField }
+      : {}),
+    ...(quirks?.dropToolChoice !== undefined
+      ? { dropToolChoice: quirks.dropToolChoice }
+      : {}),
+    ...(quirks?.checkBaseResp !== undefined
+      ? { checkBaseResp: quirks.checkBaseResp }
+      : {}),
+    ...(quirks?.extraBody !== undefined ? { extraBody: quirks.extraBody } : {}),
     ...(opts.log !== undefined ? { log: opts.log } : {}),
   });
 }

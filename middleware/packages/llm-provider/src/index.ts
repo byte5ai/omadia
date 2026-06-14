@@ -58,6 +58,13 @@ export {
 } from './providerFactory.js';
 
 export {
+  LlmProviderCatalog,
+  type LlmProviderDescriptor,
+  type ProviderQuirks,
+} from './providerCatalog.js';
+
+export {
+  clearExternalModels,
   coerceModelToProvider,
   getModel,
   isClassRef,
@@ -65,6 +72,7 @@ export {
   listModelsByClass,
   listModelsByProvider,
   modelForClass,
+  registerExternalModels,
   resolveModelRef,
   resolveRole,
   ROLE_DEFAULT_CLASS,
