@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   createAnthropicClient,
+  LlmProviderCatalog,
   readProviderApiKey,
   type AnthropicClient,
 } from '@omadia/llm-provider';
@@ -176,6 +177,7 @@ import { LocalDevPackageStore } from './plugins/localDevPackageStore.js';
 import { FileSecretVault, resolveMasterKey } from './secrets/fileVault.js';
 import { VaultBackupService } from './secrets/vaultBackup.js';
 import { createAnthropicLlmProvider } from './platform/anthropicLlmProvider.js';
+import { parseLlmProviderManifestBlock } from './platform/llmProviderManifest.js';
 import { BackgroundJobRegistry } from './platform/backgroundJobRegistry.js';
 import { ChatAgentWrapRegistry } from './platform/chatAgentWrapRegistry.js';
 import { PromptContributionRegistry } from './platform/promptContributionRegistry.js';
@@ -273,6 +275,12 @@ async function main(): Promise<void> {
   // plugin would miss those registrations.
   const nativeToolRegistry = new NativeToolRegistry();
   serviceRegistry.provide('nativeToolRegistry', nativeToolRegistry);
+  // LLM provider catalog: kernel-owned registry of plugin-contributed providers
+  // (e.g. @omadia/plugin-llm-minimax). Published pre-activate and populated from
+  // installed plugins' `llm_provider` manifest blocks below, so the orchestrator
+  // can resolve a plugin-contributed provider at its own activation.
+  const llmProviderCatalog = new LlmProviderCatalog();
+  serviceRegistry.provide('llmProviderCatalog', llmProviderCatalog);
   // Canvas-output autodiscovery (declare → resolve → derive): plugins declare
   // `canvas_output: true` per manifest capability, the agent runtime resolves
   // those into this registry on (de)activation, and the ui-orchestrator
@@ -491,6 +499,44 @@ async function main(): Promise<void> {
     INSTALLED_REGISTRY_PATH,
   );
   await installedRegistry.load();
+
+  // Populate the LLM provider catalog from INSTALLED plugins that declare an
+  // `llm_provider` manifest block (provider-plugin seam). Done BEFORE
+  // `toolPluginRuntime.activateAllInstalled()` so the orchestrator resolves a
+  // plugin-contributed provider at its own activate(). A malformed block is
+  // logged and skipped — never fatal at boot.
+  for (const entry of pluginCatalog.list()) {
+    if (!installedRegistry.has(entry.plugin.id)) continue;
+    const block = (entry.manifest as { llm_provider?: unknown } | null)
+      ?.llm_provider;
+    if (block === undefined || block === null) continue;
+    try {
+      const descriptor = parseLlmProviderManifestBlock(block);
+      // Resolve a per-install baseURL override (e.g. MiniMax China endpoint).
+      // The override config key lives in the PROVIDER plugin's own config scope,
+      // so it is resolved here (where we have that scope) and baked into the
+      // descriptor — the orchestrator then just uses descriptor.baseURL.
+      let baseURL = descriptor.baseURL;
+      if (descriptor.baseUrlConfigKey !== undefined) {
+        const cfg = installedRegistry.get(entry.plugin.id)?.config ?? {};
+        const override = (cfg as Record<string, unknown>)[
+          descriptor.baseUrlConfigKey
+        ];
+        if (typeof override === 'string' && override.trim().length > 0) {
+          baseURL = override.trim();
+        }
+      }
+      llmProviderCatalog.register({ ...descriptor, baseURL });
+      console.log(
+        `[middleware] llm provider '${descriptor.id}' registered from ${entry.plugin.id} (${String(descriptor.models.length)} model(s), baseURL ${baseURL})`,
+      );
+    } catch (err) {
+      console.warn(
+        `[middleware] skipped llm_provider block in ${entry.plugin.id}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
 
   // Phase B (B1) — publish `pluginCapabilities@1` so the orchestrator's
   // first-boot onboarding (`ensureFallbackAgent`) can hydrate the fallback
@@ -2333,6 +2379,7 @@ async function main(): Promise<void> {
       installedRegistry,
       vault: secretVault,
       reactivate: reactivateAgent,
+      llmProviderCatalog,
     }),
   );
   console.log('[middleware] settings overview endpoint ready at /api/v1/admin/settings (auth: required)');
@@ -2347,6 +2394,7 @@ async function main(): Promise<void> {
       installedRegistry,
       vault: secretVault,
       reactivate: reactivateAgent,
+      llmProviderCatalog,
     }),
   );
   console.log('[middleware] providers admin endpoint ready at /api/v1/admin/providers (auth: required)');

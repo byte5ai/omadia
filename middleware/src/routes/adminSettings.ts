@@ -4,8 +4,8 @@ import type { Request, Response } from 'express';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { SecretVault } from '../secrets/vault.js';
 import {
-  SETTINGS_CATALOG,
   SETTINGS_CATEGORY_ORDER,
+  buildSettingsCatalog,
   findSetting,
   settingPluginIds,
   type SettingDef,
@@ -29,6 +29,11 @@ interface AdminSettingsDeps {
   vault?: SecretVault;
   /** Tears down + re-activates a plugin so it re-reads fresh config/secrets. */
   reactivate?: (agentId: string) => Promise<void>;
+  /** Plugin-contributed providers — adds a per-provider API-key setting so they
+   *  can be connected on the overview (structural to avoid a hard dep). */
+  llmProviderCatalog?: {
+    list(): ReadonlyArray<{ readonly id: string; readonly label: string }>;
+  };
 }
 
 interface ResolvedSetting {
@@ -56,6 +61,11 @@ function stringifyConfigValue(v: unknown): string | null {
 
 export function createAdminSettingsRouter(deps: AdminSettingsDeps): Router {
   const router = Router();
+
+  // Static cross-plugin settings + per-provider API-key settings contributed by
+  // plugin providers (e.g. MiniMax). Computed once per router; provider plugins
+  // are registered at boot before routes are mounted.
+  const catalog = buildSettingsCatalog(deps.llmProviderCatalog?.list() ?? []);
 
   const allInstalled = (def: SettingDef): boolean =>
     settingPluginIds(def).every((id) => deps.installedRegistry.has(id));
@@ -104,7 +114,7 @@ export function createAdminSettingsRouter(deps: AdminSettingsDeps): Router {
     try {
       const keyCache = new Map<string, Set<string>>();
       const resolved = await Promise.all(
-        SETTINGS_CATALOG.map((def) => resolve(def, keyCache)),
+        catalog.map((def) => resolve(def, keyCache)),
       );
       const byCategory = new Map<string, ResolvedSetting[]>();
       for (const r of resolved) {
@@ -156,7 +166,7 @@ export function createAdminSettingsRouter(deps: AdminSettingsDeps): Router {
         errors.push({ key: '<unknown>', message: 'missing key' });
         continue;
       }
-      const def = findSetting(key);
+      const def = findSetting(key, catalog);
       if (!def) {
         errors.push({ key, message: 'unknown setting' });
         continue;
@@ -291,7 +301,7 @@ export function createAdminSettingsRouter(deps: AdminSettingsDeps): Router {
           .filter((k): k is string => typeof k === 'string'),
       );
       const updated = await Promise.all(
-        SETTINGS_CATALOG.filter((d) => touchedKeys.has(d.key)).map((d) =>
+        catalog.filter((d) => touchedKeys.has(d.key)).map((d) =>
           resolve(d, keyCache),
         ),
       );
