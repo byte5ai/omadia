@@ -147,6 +147,41 @@ test('complete() uses legacy max_tokens for a first-class mistral provider', asy
   assert.equal(captured.params?.['max_completion_tokens'], undefined);
 });
 
+test('complete() emits a valid empty parameters schema for a no-inputSchema tool (Mistral 422 guard)', async () => {
+  // A tool whose inputSchema is absent at runtime (the orchestrator's `memory`
+  // tool) must still send a valid JSON Schema object. OpenAI tolerates an
+  // omitted `parameters`, but stricter compatible servers (Mistral) reject a
+  // function with no parameters object with a bare 422 (no body).
+  const captured: Captured = {};
+  const provider = createOpenAiProvider({
+    client: mockClient(captured, completion()),
+    id: 'mistral',
+  });
+  await provider.complete({
+    model: 'mistral-large-latest',
+    maxTokens: 64,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+    tools: [
+      {
+        name: 'memory',
+        description: 'no-arg tool',
+        // Simulates the runtime reality: the neutral type says inputSchema is
+        // required, but the orchestrator seam passes undefined for a tool that
+        // declared no input_schema.
+        inputSchema: undefined as unknown as Record<string, unknown>,
+      },
+    ],
+  });
+  const tools = captured.params?.['tools'] as Array<{
+    function: { name: string; parameters: unknown };
+  }>;
+  assert.equal(tools[0]?.function.name, 'memory');
+  assert.deepEqual(tools[0]?.function.parameters, {
+    type: 'object',
+    properties: {},
+  });
+});
+
 test('complete() maps tool_calls to tool_calls finishReason + parsed ToolCallPart', async () => {
   const provider = createOpenAiProvider({
     client: mockClient(
