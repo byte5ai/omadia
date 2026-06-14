@@ -16,8 +16,13 @@
  * break the Anthropic default path.
  */
 
+import type { OAuthTokens } from './oauthDeviceFlow.js';
+
 const PROVIDER_KEY_NAMESPACE = 'provider:';
 const API_KEY_LEAF = 'api_key';
+const OAUTH_ACCESS_LEAF = 'oauth_access_token';
+const OAUTH_REFRESH_LEAF = 'oauth_refresh_token';
+const OAUTH_EXPIRES_LEAF = 'oauth_expires_at';
 
 /** Canonical vault key for a provider's API key: `provider:anthropic/api_key`. */
 export function providerApiKeyVaultKey(providerId: string): string {
@@ -55,4 +60,70 @@ export async function readProviderApiKey(
     if (legacy !== undefined && legacy.length > 0) return legacy;
   }
   return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// OAuth tokens (phase 4b — "Sign in with ChatGPT"). Stored alongside the
+// api_key under the same provider namespace so a provider can be connected
+// either way. EXPERIMENTAL — see oauthDeviceFlow.ts for the ToS/audience caveat.
+// ---------------------------------------------------------------------------
+
+/** Canonical vault keys for a provider's OAuth tokens. */
+export function providerOAuthVaultKeys(providerId: string): {
+  access: string;
+  refresh: string;
+  expiresAt: string;
+} {
+  const base = `${PROVIDER_KEY_NAMESPACE}${providerId}`;
+  return {
+    access: `${base}/${OAUTH_ACCESS_LEAF}`,
+    refresh: `${base}/${OAUTH_REFRESH_LEAF}`,
+    expiresAt: `${base}/${OAUTH_EXPIRES_LEAF}`,
+  };
+}
+
+/** Read a provider's stored OAuth tokens, or `undefined` when no access token
+ *  is present. `get` is the scope-bound vault read. */
+export async function readProviderOAuthTokens(
+  get: (key: string) => Promise<string | undefined>,
+  providerId: string,
+): Promise<OAuthTokens | undefined> {
+  const keys = providerOAuthVaultKeys(providerId);
+  const accessToken = (await get(keys.access))?.trim();
+  if (accessToken === undefined || accessToken.length === 0) return undefined;
+  const refreshToken = (await get(keys.refresh))?.trim();
+  const expiresRaw = (await get(keys.expiresAt))?.trim();
+  const expiresAt =
+    expiresRaw !== undefined && expiresRaw.length > 0
+      ? Number.parseInt(expiresRaw, 10)
+      : undefined;
+  return {
+    accessToken,
+    ...(refreshToken !== undefined && refreshToken.length > 0
+      ? { refreshToken }
+      : {}),
+    ...(expiresAt !== undefined && Number.isFinite(expiresAt) ? { expiresAt } : {}),
+  };
+}
+
+/** Persist a provider's OAuth tokens. `set` is the scope-bound vault write.
+ *  Optional fields are blanked when absent so stale refresh/expiry values do not
+ *  survive a later rewrite and get read back as current tokens. */
+export async function writeProviderOAuthTokens(
+  set: (key: string, value: string) => Promise<void>,
+  providerId: string,
+  tokens: OAuthTokens,
+): Promise<void> {
+  const keys = providerOAuthVaultKeys(providerId);
+  await set(keys.access, tokens.accessToken);
+  if (tokens.refreshToken !== undefined) {
+    await set(keys.refresh, tokens.refreshToken);
+  } else {
+    await set(keys.refresh, '');
+  }
+  if (tokens.expiresAt !== undefined) {
+    await set(keys.expiresAt, String(tokens.expiresAt));
+  } else {
+    await set(keys.expiresAt, '');
+  }
 }
