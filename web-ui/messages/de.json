@@ -1486,5 +1486,33 @@
         "integrations": "Integrationen (Microsoft, Teams, Telegram)"
       }
     }
+  },
+  "adminProviders": {
+    "title": "LLM-Provider",
+    "intro": "Verbinde LLM-Provider und lege fest, mit welchem jeder Agent läuft. Schlüssel werden verschlüsselt im Vault gespeichert (Eingabe auf der Konfigurationsseite) und verlassen deinen Server nie. Anthropic ist der Standard; ein Provider-Wechsel pro Agent wirkt sofort.",
+    "loading": "Lädt …",
+    "loadError": "Fehler beim Laden: {message}",
+    "vaultUnavailable": "Vault nicht verfügbar — Provider-Schlüssel können nicht gelesen werden.",
+    "providers": {
+      "heading": "Provider",
+      "modelCount": "{count, plural, one {# Modell} other {# Modelle}}",
+      "connected": "verbunden",
+      "notConnected": "kein Schlüssel",
+      "addKey": "Schlüssel hinterlegen"
+    },
+    "assignments": {
+      "heading": "Zuordnung pro Agent",
+      "intro": "Ordne jedem LLM-fähigen Plugin einen Provider und ein Modell zu. Beim Speichern wird das Plugin neu aktiviert, sodass die Änderung sofort greift.",
+      "notInstalled": "nicht installiert",
+      "providerLabel": "Provider",
+      "modelLabel": "Modell",
+      "pickModel": "Modell wählen …",
+      "avvDisclosure": "Wird dieser Agent auf {provider} umgestellt, werden seine Prompt-Daten an einen Drittanbieter (Auftragsverarbeiter) übermittelt. Stelle sicher, dass ein Auftragsverarbeitungsvertrag (DSGVO Art. 28) vorliegt, bevor du ihn für personenbezogene Daten nutzt."
+    },
+    "status": {
+      "saving": "speichert …",
+      "saved": "✓ gespeichert",
+      "errorChip": "✗ Fehler"
+    }
   }
 }

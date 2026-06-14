@@ -30,6 +30,11 @@ export default function AdminIndexPage(): React.ReactElement {
           description="Alle .env-basierten Werte (Modelle & Routing, Verifier, Embeddings, Integrationen), die in Config-Store/Vault landen — direkt editierbar. Auto-Save, wirkt sofort ohne Neustart."
         />
         <AdminCard
+          href="/admin/providers"
+          title="LLM-Provider"
+          description="Provider verbinden (Anthropic, OpenAI) und pro Agent Provider + Modell zuordnen. Schlüssel liegen verschlüsselt im Vault. AVV-Hinweis beim Wechsel auf einen Drittanbieter. Wirkt sofort."
+        />
+        <AdminCard
           href="/admin/auth"
           title="Authentifizierungs-Provider"
           description="Lokale Anmeldung und Entra-ID aktivieren oder deaktivieren. Änderungen wirken ohne Neustart."

@@ -1486,5 +1486,33 @@
         "integrations": "Integrations (Microsoft, Teams, Telegram)"
       }
     }
+  },
+  "adminProviders": {
+    "title": "LLM providers",
+    "intro": "Connect LLM providers and choose which one each agent runs on. Keys are stored encrypted in the vault (added on the Settings page) and never leave your server. Anthropic is the default; switching an agent to another provider takes effect live.",
+    "loading": "Loading …",
+    "loadError": "Failed to load: {message}",
+    "vaultUnavailable": "Vault unavailable — provider keys cannot be read.",
+    "providers": {
+      "heading": "Providers",
+      "modelCount": "{count, plural, one {# model} other {# models}}",
+      "connected": "connected",
+      "notConnected": "no key",
+      "addKey": "Add key"
+    },
+    "assignments": {
+      "heading": "Per-agent assignment",
+      "intro": "Pin each LLM-capable plugin to a provider and model. Saving re-activates the plugin so the change applies immediately.",
+      "notInstalled": "not installed",
+      "providerLabel": "Provider",
+      "modelLabel": "Model",
+      "pickModel": "Select a model …",
+      "avvDisclosure": "Routing this agent to {provider} sends its prompt data to a third-party processor. Ensure a data-processing agreement (DSGVO Art. 28) is in place before using it for personal data."
+    },
+    "status": {
+      "saving": "saving …",
+      "saved": "✓ saved",
+      "errorChip": "✗ error"
+    }
   }
 }

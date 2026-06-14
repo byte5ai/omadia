@@ -254,6 +254,72 @@ export async function patchSettings(
 }
 
 // -----------------------------------------------------------------------------
+// LLM providers — connect/select admin (/api/v1/admin/providers). Lists the
+// known providers (with vault-connection status + their models) and the
+// per-plugin provider/model assignment; POST /assignment pins a plugin.
+// -----------------------------------------------------------------------------
+
+export type ModelClass = 'fast' | 'balanced' | 'frontier';
+
+export interface AdminProviderModel {
+  id: string;
+  modelId: string;
+  label: string;
+  class: ModelClass;
+  contextWindow: number;
+  maxTokens: number;
+  vision: boolean;
+}
+
+export interface AdminProvider {
+  id: string;
+  label: string;
+  /** True when an API key for this provider is present in the vault. */
+  connected: boolean;
+  models: AdminProviderModel[];
+}
+
+export interface ProviderAssignment {
+  pluginId: string;
+  label: string;
+  installed: boolean;
+  provider: string;
+  model: string | null;
+  modelKey: string;
+  /** Orchestrator only: per-turn model-routing flag ('true' | 'false'). */
+  modelRouting?: string;
+}
+
+export interface ProvidersResponse {
+  providers: AdminProvider[];
+  assignments: ProviderAssignment[];
+  vault_available: boolean;
+}
+
+export interface AssignProviderRequest {
+  pluginId: string;
+  provider: string;
+  model: string;
+}
+
+export interface AssignProviderResponse {
+  ok: boolean;
+  pluginId: string;
+  provider: string;
+  model: string;
+}
+
+export async function getProviders(): Promise<ProvidersResponse> {
+  return getJson<ProvidersResponse>('/v1/admin/providers');
+}
+
+export async function assignProvider(
+  body: AssignProviderRequest,
+): Promise<AssignProviderResponse> {
+  return postJson<AssignProviderResponse>('/v1/admin/providers/assignment', body);
+}
+
+// -----------------------------------------------------------------------------
 // NDJSON helper — yields parsed JSON objects from a `application/x-ndjson`
 // stream. Tolerates LF and CRLF line endings, ignores blank lines, and
 // surfaces JSON parse errors with line context so the caller can decide to
