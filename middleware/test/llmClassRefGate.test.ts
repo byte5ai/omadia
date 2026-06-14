@@ -201,7 +201,7 @@ describe('S4 — class-ref LLM whitelist gate', () => {
 
   it('class:fast PERMITS the OpenAI fast model when openai is active (gate passes; build needs a key)', async () => {
     const fast = modelForClass('fast', 'openai');
-    assert.equal(fast?.modelId, 'gpt-4.1-nano');
+    assert.equal(fast?.modelId, 'gpt-5.4-mini');
     // With openai active, ctx.llm is built from the vault key via the factory,
     // NOT the shared anthropic 'llm' service. The stub vault has no openai key,
     // so a PERMITTED request fails closed at provider-build with
@@ -219,11 +219,11 @@ describe('S4 — class-ref LLM whitelist gate', () => {
     assert.equal(calls.count, 0); // the fake anthropic 'llm' is never used for openai
   });
 
-  it('class:fast does NOT leak the OTHER provider model (anthropic active rejects gpt-4.1-nano)', async () => {
+  it('class:fast does NOT leak the OTHER provider model (anthropic active rejects gpt-5.4-mini)', async () => {
     const ctx = makeCtx(['class:fast'], 'anthropic', registry);
     await assert.rejects(
       ctx.llm!.complete({
-        model: 'gpt-4.1-nano',
+        model: 'gpt-5.4-mini',
         messages: [{ role: 'user', content: 'x' }],
       }),
       LlmModelNotAllowedError,
@@ -263,13 +263,13 @@ describe('S4 — class-ref LLM whitelist gate', () => {
     );
   });
 
-  it('class:frontier permits gpt-4.1 when openai is active (gate passes; build needs a key)', async () => {
+  it('class:frontier permits gpt-5.5 when openai is active (gate passes; build needs a key)', async () => {
     const frontier = modelForClass('frontier', 'openai');
-    assert.equal(frontier?.modelId, 'gpt-4.1');
+    assert.equal(frontier?.modelId, 'gpt-5.5');
     const ctx = makeCtx(['class:frontier'], 'openai', registry);
     await assert.rejects(
       ctx.llm!.complete({
-        model: 'gpt-4.1',
+        model: 'gpt-5.5',
         messages: [{ role: 'user', content: 'x' }],
       }),
       LlmServiceUnavailableError,
@@ -379,12 +379,12 @@ describe('S4 — class-ref LLM whitelist gate', () => {
 
   it('per-plugin pin to openai overrides the anthropic global default', async () => {
     // global default anthropic, but this plugin is pinned to openai → the gate
-    // resolves class:fast against openai (permits gpt-4.1-nano → ServiceUnavailable
+    // resolves class:fast against openai (permits gpt-5.4-mini → ServiceUnavailable
     // because the stub vault has no openai key) and rejects a claude model.
     const ctx = makeCtx(['class:fast'], undefined, registry, 'openai');
     await assert.rejects(
       ctx.llm!.complete({
-        model: 'gpt-4.1-nano',
+        model: 'gpt-5.4-mini',
         messages: [{ role: 'user', content: 'x' }],
       }),
       LlmServiceUnavailableError, // gate passed; build failed (no openai key)
@@ -427,7 +427,7 @@ describe('S4 — class-ref LLM whitelist gate', () => {
           id: 'chatcmpl_test',
           object: 'chat.completion',
           created: 0,
-          model: 'gpt-4.1-nano',
+          model: 'gpt-5.4-mini',
           choices: [
             {
               index: 0,

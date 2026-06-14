@@ -13,17 +13,17 @@
  *    (`cache_creation_input_tokens`) bill at ~1.25× (CACHE_WRITE_MULTIPLIER).
  *    All components sum without double-counting.
  *  - OpenAI: `prompt_tokens` INCLUDES the cached portion, and cached input has
- *    its own absolute rate (`cachedInputPerMTok`, ~0.25× for GPT-4.1, ~0.5× for
- *    GPT-4o). Entries set `cacheIncludedInInput: true` so the cached tokens are
+ *    its own absolute rate (`cachedInputPerMTok`, ~0.1× of input for GPT-5.x).
+ *    Entries set `cacheIncludedInInput: true` so the cached tokens are
  *    subtracted from the full-rate input before being billed at the cached rate
  *    — otherwise the cached portion would be billed twice. OpenAI has no cache
  *    write, so `cacheCreationTokens` is 0 on that path.
  *
  * Model matching is by id first, then by family keyword (opus/sonnet/haiku,
- * gpt-4.1 and gpt-4o variants) so dated snapshots (e.g. `claude-haiku-4-5-20251001`,
- * `gpt-4.1-2025-04-14`) and future point releases resolve without a code change.
+ * gpt-5.x variants) so dated snapshots (e.g. `claude-haiku-4-5-20251001`,
+ * `gpt-5.4-mini-2026-…`) and future point releases resolve without a code change.
  * Family keywords are ordered most-specific-first because matching is by
- * substring `includes` (`gpt-4.1-mini` must win before `gpt-4.1`). Unknown
+ * substring `includes` (`gpt-5.4-mini` must win before `gpt-5.4`). Unknown
  * models price at 0 and are logged once so the dashboard surfaces a "0 cost"
  * anomaly instead of crashing.
  */
@@ -60,12 +60,11 @@ const EXACT_PRICES: Readonly<Record<string, ModelPrice>> = {
   'claude-sonnet-4-6': { inputPerMTok: 3, outputPerMTok: 15 },
   'claude-sonnet-4-5': { inputPerMTok: 3, outputPerMTok: 15 },
   'claude-haiku-4-5': { inputPerMTok: 1, outputPerMTok: 5 },
-  // --- OpenAI (prompt_tokens includes cached; absolute cached rate) ----------
-  'gpt-4.1': { inputPerMTok: 2, outputPerMTok: 8, cachedInputPerMTok: 0.5, cacheIncludedInInput: true },
-  'gpt-4.1-mini': { inputPerMTok: 0.4, outputPerMTok: 1.6, cachedInputPerMTok: 0.1, cacheIncludedInInput: true },
-  'gpt-4.1-nano': { inputPerMTok: 0.1, outputPerMTok: 0.4, cachedInputPerMTok: 0.025, cacheIncludedInInput: true },
-  'gpt-4o': { inputPerMTok: 2.5, outputPerMTok: 10, cachedInputPerMTok: 1.25, cacheIncludedInInput: true },
-  'gpt-4o-mini': { inputPerMTok: 0.15, outputPerMTok: 0.6, cachedInputPerMTok: 0.075, cacheIncludedInInput: true },
+  // --- OpenAI (current GPT-5.x; prompt_tokens includes cached, ~0.1x cached) -
+  'gpt-5.5': { inputPerMTok: 5, outputPerMTok: 30, cachedInputPerMTok: 0.5, cacheIncludedInInput: true },
+  'gpt-5.4': { inputPerMTok: 2.5, outputPerMTok: 15, cachedInputPerMTok: 0.25, cacheIncludedInInput: true },
+  'gpt-5.4-mini': { inputPerMTok: 0.75, outputPerMTok: 4.5, cachedInputPerMTok: 0.075, cacheIncludedInInput: true },
+  'gpt-5.4-nano': { inputPerMTok: 0.2, outputPerMTok: 1.25, cachedInputPerMTok: 0.02, cacheIncludedInInput: true },
 };
 
 /** Family-keyword fallback for dated snapshots / future point releases.
@@ -74,11 +73,10 @@ const FAMILY_PRICES: ReadonlyArray<readonly [keyword: string, price: ModelPrice]
   ['opus', { inputPerMTok: 5, outputPerMTok: 25 }],
   ['sonnet', { inputPerMTok: 3, outputPerMTok: 15 }],
   ['haiku', { inputPerMTok: 1, outputPerMTok: 5 }],
-  ['gpt-4.1-nano', { inputPerMTok: 0.1, outputPerMTok: 0.4, cachedInputPerMTok: 0.025, cacheIncludedInInput: true }],
-  ['gpt-4.1-mini', { inputPerMTok: 0.4, outputPerMTok: 1.6, cachedInputPerMTok: 0.1, cacheIncludedInInput: true }],
-  ['gpt-4.1', { inputPerMTok: 2, outputPerMTok: 8, cachedInputPerMTok: 0.5, cacheIncludedInInput: true }],
-  ['gpt-4o-mini', { inputPerMTok: 0.15, outputPerMTok: 0.6, cachedInputPerMTok: 0.075, cacheIncludedInInput: true }],
-  ['gpt-4o', { inputPerMTok: 2.5, outputPerMTok: 10, cachedInputPerMTok: 1.25, cacheIncludedInInput: true }],
+  ['gpt-5.4-nano', { inputPerMTok: 0.2, outputPerMTok: 1.25, cachedInputPerMTok: 0.02, cacheIncludedInInput: true }],
+  ['gpt-5.4-mini', { inputPerMTok: 0.75, outputPerMTok: 4.5, cachedInputPerMTok: 0.075, cacheIncludedInInput: true }],
+  ['gpt-5.4', { inputPerMTok: 2.5, outputPerMTok: 15, cachedInputPerMTok: 0.25, cacheIncludedInInput: true }],
+  ['gpt-5.5', { inputPerMTok: 5, outputPerMTok: 30, cachedInputPerMTok: 0.5, cacheIncludedInInput: true }],
 ];
 
 const UNKNOWN_PRICE: ModelPrice = { inputPerMTok: 0, outputPerMTok: 0 };
