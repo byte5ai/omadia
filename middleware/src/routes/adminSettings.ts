@@ -194,6 +194,16 @@ export function createAdminSettingsRouter(deps: AdminSettingsDeps): Router {
           errors.push({ key, message: 'Anthropic-Keys beginnen mit "sk-ant-"' });
           continue;
         }
+        if (
+          def.key === 'OPENAI_API_KEY' &&
+          (!value.startsWith('sk-') || value.startsWith('sk-ant-'))
+        ) {
+          errors.push({
+            key,
+            message: 'OpenAI-Keys beginnen mit "sk-" (nicht "sk-ant-")',
+          });
+          continue;
+        }
       }
 
       if (def.secret) {

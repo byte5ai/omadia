@@ -1,10 +1,6 @@
 import type { ChatAgent } from '@omadia/channel-sdk';
 import type { EmbeddingClient } from '@omadia/embeddings';
-import {
-  createAnthropicClient,
-  createAnthropicProvider,
-  readProviderApiKey,
-} from '@omadia/llm-provider';
+import { resolveLlmProvider } from '@omadia/llm-provider';
 // Phase 5B: structural shim — `@omadia/integration-microsoft365` lives
 // in the byte5-plugins backup repo. The orchestrator types against a
 // narrow accessor shape that matches what the plugin publishes under
@@ -205,14 +201,24 @@ export async function activate(
 ): Promise<OrchestratorPluginHandle> {
   ctx.log('activating orchestrator plugin');
 
-  // anthropic_api_key is vault-stored. Read the provider-namespaced canonical
-  // key (provider:anthropic/api_key) with a fallback to the legacy flat key, so
-  // pre-migration installs keep working (phase 4 credential scheme).
-  const apiKey =
-    (await readProviderApiKey((k) => ctx.secrets.get(k), 'anthropic')) ?? '';
-  if (!apiKey) {
+  // Build the configured LLM provider (default Anthropic) from the vault —
+  // shared across every Agent built from this plugin. The factory reads the
+  // provider-namespaced key (with the legacy fallback for Anthropic); undefined
+  // means no key is configured for the chosen provider.
+  //
+  // maxRetries: 5 — the SDK auto-retries 408/409/429/500/529 with exponential
+  // backoff (default 2); bumped to 5 so a transient overloaded_error (HTTP 529)
+  // burst is far more likely to ride out inside the SDK than fail a turn.
+  const providerId =
+    (ctx.config.get<string>('llm_provider') ?? '').trim() || 'anthropic';
+  const provider = await resolveLlmProvider({
+    providerId,
+    getSecret: (k) => ctx.secrets.get(k),
+    maxRetries: 5,
+  });
+  if (!provider) {
     ctx.log(
-      '[harness-orchestrator] anthropic_api_key not set — chatAgent@1 capability NOT published',
+      `[harness-orchestrator] no API key for provider '${providerId}' — chatAgent@1 capability NOT published`,
     );
     return {
       async close(): Promise<void> {
@@ -418,15 +424,7 @@ export async function activate(
   // this just ensures the recorder has a pool to flush to. Idempotent.
   if (graphPool) initUsageRecorder(graphPool);
 
-  // Anthropic client — shared across every Agent built from this plugin.
-  //
-  // maxRetries: the Anthropic SDK auto-retries 408/409/429/500/529 with
-  // exponential backoff. The SDK default is 2; bumped to 5 so a transient
-  // `overloaded_error` (HTTP 529) burst is far more likely to ride out
-  // inside the SDK instead of surfacing as a failed turn. (Merged from main.)
-  const provider = createAnthropicProvider({
-    client: createAnthropicClient({ apiKey, maxRetries: 5 }),
-  });
+  // (LLM provider built above from the configured provider id.)
 
   // OB-77 (Palaia Phase 8) — Nudge-Pipeline. Publish a fresh in-memory
   // registry, then drain `nudgeProviders@1` (side-channel for plugins
@@ -441,12 +439,12 @@ export async function activate(
   const queuedNudgeProviders =
     ctx.services.get<readonly NudgeProvider[]>(NUDGE_PROVIDERS_SERVICE_NAME) ??
     [];
-  for (const provider of queuedNudgeProviders) {
+  for (const nudgeProvider of queuedNudgeProviders) {
     try {
-      nudgeRegistry.register(provider);
+      nudgeRegistry.register(nudgeProvider);
     } catch (err) {
       ctx.log(
-        `[harness-orchestrator] failed to register queued nudge provider "${provider.id}": ${err instanceof Error ? err.message : String(err)}`,
+        `[harness-orchestrator] failed to register queued nudge provider "${nudgeProvider.id}": ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }

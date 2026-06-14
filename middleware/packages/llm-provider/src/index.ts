@@ -53,6 +53,11 @@ export {
 } from './providerCredentials.js';
 
 export {
+  resolveLlmProvider,
+  type ResolveLlmProviderOptions,
+} from './providerFactory.js';
+
+export {
   getModel,
   isClassRef,
   listModels,

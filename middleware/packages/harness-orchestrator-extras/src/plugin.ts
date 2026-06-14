@@ -1,9 +1,5 @@
 import type { LlmProvider } from '@omadia/llm-provider';
-import {
-  createAnthropicClient,
-  createAnthropicProvider,
-  readProviderApiKey,
-} from '@omadia/llm-provider';
+import { resolveLlmProvider } from '@omadia/llm-provider';
 import type { PluginContext } from '@omadia/plugin-api';
 import type { EmbeddingClient } from '@omadia/embeddings';
 import type {
@@ -136,11 +132,14 @@ export async function activate(
     };
   }
 
-  // anthropic_api_key is vault-stored. Read the provider-namespaced canonical
-  // key (provider:anthropic/api_key) with a fallback to the legacy flat key, so
-  // pre-migration installs keep working (phase 4 credential scheme).
-  const apiKey =
-    (await readProviderApiKey((k) => ctx.secrets.get(k), 'anthropic')) ?? '';
+  // Build the configured LLM provider (default Anthropic) from the vault.
+  // undefined → no key for the chosen provider; the Haiku scorers stay off.
+  const providerId =
+    (ctx.config.get<string>('llm_provider') ?? '').trim() || 'anthropic';
+  const baseProvider = await resolveLlmProvider({
+    providerId,
+    getSecret: (k) => ctx.secrets.get(k),
+  });
   const factModel =
     (ctx.config.get<string>('fact_extractor_model') ?? '').trim() ||
     DEFAULT_HAIKU_MODEL;
@@ -272,11 +271,8 @@ export async function activate(
   if (usagePool) initUsageRecorder(usagePool);
 
   let llm: LlmProvider | undefined;
-  if (apiKey) {
-    llm = withProviderUsageTracking(
-      createAnthropicProvider({ client: createAnthropicClient({ apiKey }) }),
-      { source: 'extras' },
-    );
+  if (baseProvider) {
+    llm = withProviderUsageTracking(baseProvider, { source: 'extras' });
   }
 
   // ---------------------------------------------------------------------

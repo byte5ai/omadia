@@ -1,9 +1,5 @@
 import type { Pool } from 'pg';
-import {
-  createAnthropicClient,
-  createAnthropicProvider,
-  readProviderApiKey,
-} from '@omadia/llm-provider';
+import { resolveLlmProvider } from '@omadia/llm-provider';
 import type { KnowledgeGraph } from '@omadia/plugin-api';
 import type { PluginContext } from '@omadia/plugin-api';
 import {
@@ -101,14 +97,18 @@ export async function activate(
     };
   }
 
-  // anthropic_api_key is vault-stored. Read the provider-namespaced canonical
-  // key (provider:anthropic/api_key) with a fallback to the legacy flat key, so
-  // pre-migration installs keep working (phase 4 credential scheme).
-  const apiKey =
-    (await readProviderApiKey((k) => ctx.secrets.get(k), 'anthropic')) ?? '';
-  if (!apiKey) {
+  // Build the configured LLM provider (default Anthropic) from the vault. The
+  // factory reads the provider-namespaced key (with the legacy fallback for
+  // Anthropic); undefined means no key is configured for the chosen provider.
+  const providerId =
+    (ctx.config.get<string>('llm_provider') ?? '').trim() || 'anthropic';
+  const baseProvider = await resolveLlmProvider({
+    providerId,
+    getSecret: (k) => ctx.secrets.get(k),
+  });
+  if (!baseProvider) {
     ctx.log(
-      '[harness-verifier] anthropic_api_key not set — plugin active but verifier@1 capability NOT published',
+      `[harness-verifier] no API key for provider '${providerId}' — plugin active but verifier@1 capability NOT published`,
     );
     return {
       async close(): Promise<void> {
@@ -167,13 +167,10 @@ export async function activate(
 
   // Wrapped so ClaimExtractor + EvidenceJudge `complete()` calls are recorded
   // for cost telemetry (the streaming path is captured separately).
-  const llm = withProviderUsageTracking(
-    createAnthropicProvider({ client: createAnthropicClient({ apiKey }) }),
-    {
-      source: 'verifier',
-      tenantId: tenant,
-    },
-  );
+  const llm = withProviderUsageTracking(baseProvider, {
+    source: 'verifier',
+    tenantId: tenant,
+  });
 
   const extractor = new ClaimExtractor({
     llm,

@@ -102,6 +102,19 @@ export const SETTINGS_CATALOG: readonly SettingDef[] = [
       scopes: [ORCHESTRATOR, VERIFIER, ORCHESTRATOR_EXTRAS],
     },
   },
+  {
+    key: 'OPENAI_API_KEY',
+    label: 'OpenAI API-Key',
+    help: 'Optional. Für Provider-Auswahl "openai" (pro Plugin via llm_provider). Beginnt mit "sk-". Bestehender Wert wird nie angezeigt. Wird in alle drei Plugin-Vaults geschrieben.',
+    category: C_MODELS,
+    type: 'secret',
+    placeholder: 'sk-…',
+    secret: {
+      // OpenAI is canonical-only (no legacy flat key).
+      vaultKey: providerApiKeyVaultKey('openai'),
+      scopes: [ORCHESTRATOR, VERIFIER, ORCHESTRATOR_EXTRAS],
+    },
+  },
 ];
 
 /** Lookup by `.env` key. */
