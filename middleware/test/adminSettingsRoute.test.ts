@@ -177,6 +177,37 @@ describe('admin settings route — PATCH /', () => {
     assert.deepEqual(h.reactivated.sort(), [ORCH, EXTRAS, VERIFIER].sort());
   });
 
+  it('writes the Mistral secret to every scope and accepts a key with no special prefix', async () => {
+    // Mistral keys have no public sk-/sk-ant- prefix, so the handler must NOT
+    // prefix-validate them — any non-empty value is accepted and fans out to
+    // provider:mistral/api_key in all three scopes.
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
+    const { status, body } = await patch(h, [
+      { key: 'MISTRAL_API_KEY', value: 'aB3xY7qP9random32charMistralKeyValue' },
+    ]);
+    assert.equal(status, 200, JSON.stringify(body));
+    for (const scope of [ORCH, VERIFIER, EXTRAS]) {
+      const keys = await h.vault.listKeys(scope);
+      assert.ok(
+        keys.includes(providerApiKeyVaultKey('mistral')),
+        `missing in ${scope}`,
+      );
+    }
+    assert.deepEqual(h.reactivated.sort(), [ORCH, EXTRAS, VERIFIER].sort());
+  });
+
+  it('exposes the Mistral key as set/unset without leaking its value', async () => {
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
+    await h.vault.setMany(ORCH, {
+      [providerApiKeyVaultKey('mistral')]: 'mistral-super-secret-value',
+    });
+    const body = await getSettings(h);
+    const key = findSetting(body, 'MISTRAL_API_KEY');
+    assert.equal(key?.type, 'secret');
+    assert.equal(key?.isSet, true);
+    assert.ok(!JSON.stringify(body).includes('mistral-super-secret-value'));
+  });
+
   it('clears BOTH canonical and legacy keys from every scope on an empty value', async () => {
     // Seed an existing install: canonical + the retained legacy fallback. A
     // clear must remove BOTH, else readProviderApiKey keeps resolving the stale
