@@ -52,7 +52,9 @@ export {
   providerOAuthVaultKeys,
   readProviderApiKey,
   readProviderOAuthTokens,
+  resolveProviderOAuthBearer,
   writeProviderOAuthTokens,
+  type ResolveOAuthBearerOptions,
 } from './providerCredentials.js';
 
 export {

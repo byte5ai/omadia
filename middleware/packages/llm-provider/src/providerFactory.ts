@@ -17,8 +17,12 @@
 import { createAnthropicClient } from './anthropicClient.js';
 import { createAnthropicProvider } from './anthropicProvider.js';
 import type { ProviderId } from './modelRegistry.js';
+import type { FetchLike, NowMs, OAuthClientConfig } from './oauthDeviceFlow.js';
 import { createOpenAiProvider } from './openaiProvider.js';
-import { readProviderApiKey } from './providerCredentials.js';
+import {
+  readProviderApiKey,
+  resolveProviderOAuthBearer,
+} from './providerCredentials.js';
 import type { LlmProvider } from './types.js';
 
 export interface ResolveLlmProviderOptions {
@@ -32,6 +36,20 @@ export interface ResolveLlmProviderOptions {
   /** SDK auto-retry count (the orchestrator uses 5; others keep the SDK default). */
   readonly maxRetries?: number;
   readonly log?: (...args: unknown[]) => void;
+  /**
+   * Optional "Sign in with ChatGPT" path (4b, experimental). When provided AND
+   * the provider has stored OAuth tokens, the resolved (auto-refreshed) access
+   * token is used as the bearer INSTEAD of the api_key. Absent OAuth tokens →
+   * the api_key path is taken unchanged, so existing installs are unaffected.
+   * The token's audience is OpenAI's Codex/ChatGPT backend — set `baseURL`
+   * accordingly (see oauthDeviceFlow.ts).
+   */
+  readonly oauth?: {
+    readonly set: (key: string, value: string) => Promise<void>;
+    readonly fetchImpl: FetchLike;
+    readonly config: OAuthClientConfig;
+    readonly nowMs: NowMs;
+  };
 }
 
 /**
@@ -43,7 +61,23 @@ export interface ResolveLlmProviderOptions {
 export async function resolveLlmProvider(
   opts: ResolveLlmProviderOptions,
 ): Promise<LlmProvider | undefined> {
-  const apiKey = await readProviderApiKey(opts.getSecret, opts.providerId);
+  // OAuth ("Sign in with ChatGPT") takes precedence when configured AND the
+  // provider actually has stored tokens; otherwise fall back to the api_key
+  // path (byte-identical for installs without OAuth). The resolved value is the
+  // bearer either way.
+  const oauthBearer =
+    opts.oauth !== undefined
+      ? await resolveProviderOAuthBearer({
+          get: opts.getSecret,
+          set: opts.oauth.set,
+          providerId: opts.providerId,
+          fetchImpl: opts.oauth.fetchImpl,
+          config: opts.oauth.config,
+          nowMs: opts.oauth.nowMs,
+        })
+      : undefined;
+  const apiKey =
+    oauthBearer ?? (await readProviderApiKey(opts.getSecret, opts.providerId));
   if (apiKey === undefined) return undefined;
 
   if (opts.providerId === 'anthropic') {

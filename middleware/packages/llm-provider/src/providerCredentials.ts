@@ -16,7 +16,14 @@
  * break the Anthropic default path.
  */
 
-import type { OAuthTokens } from './oauthDeviceFlow.js';
+import {
+  isAccessTokenExpired,
+  refreshAccessToken,
+  type FetchLike,
+  type NowMs,
+  type OAuthClientConfig,
+  type OAuthTokens,
+} from './oauthDeviceFlow.js';
 
 const PROVIDER_KEY_NAMESPACE = 'provider:';
 const API_KEY_LEAF = 'api_key';
@@ -126,4 +133,38 @@ export async function writeProviderOAuthTokens(
   } else {
     await set(keys.expiresAt, '');
   }
+}
+
+export interface ResolveOAuthBearerOptions {
+  readonly get: (key: string) => Promise<string | undefined>;
+  readonly set: (key: string, value: string) => Promise<void>;
+  readonly providerId: string;
+  readonly fetchImpl: FetchLike;
+  readonly config: OAuthClientConfig;
+  readonly nowMs: NowMs;
+}
+
+/**
+ * Resolve a usable OAuth access token for a provider, refreshing it first when
+ * it is expired (and a refresh token is available) and persisting the rotated
+ * tokens. Returns `undefined` when the provider has no stored OAuth tokens, so
+ * the caller falls back to the api_key path. When the token is expired but no
+ * refresh token is stored, the (likely-dead) access token is returned anyway so
+ * the downstream 401 surfaces the real problem rather than masking it.
+ */
+export async function resolveProviderOAuthBearer(
+  opts: ResolveOAuthBearerOptions,
+): Promise<string | undefined> {
+  const tokens = await readProviderOAuthTokens(opts.get, opts.providerId);
+  if (tokens === undefined) return undefined;
+  if (!isAccessTokenExpired(tokens, opts.nowMs())) return tokens.accessToken;
+  if (tokens.refreshToken === undefined) return tokens.accessToken;
+  const refreshed = await refreshAccessToken(
+    opts.fetchImpl,
+    opts.config,
+    tokens.refreshToken,
+    opts.nowMs,
+  );
+  await writeProviderOAuthTokens(opts.set, opts.providerId, refreshed);
+  return refreshed.accessToken;
 }
