@@ -32,7 +32,7 @@ export default function AdminIndexPage(): React.ReactElement {
         <AdminCard
           href="/admin/providers"
           title="LLM-Provider"
-          description="Provider verbinden (Anthropic, OpenAI) und pro Agent Provider + Modell zuordnen. Schlüssel liegen verschlüsselt im Vault. AVV-Hinweis beim Wechsel auf einen Drittanbieter. Wirkt sofort."
+          description="Provider verbinden (Anthropic, OpenAI, Mistral) und pro Agent Provider + Modell zuordnen. Schlüssel liegen verschlüsselt im Vault. AVV-Hinweis beim Wechsel auf einen Drittanbieter. Wirkt sofort."
         />
         <AdminCard
           href="/admin/auth"
