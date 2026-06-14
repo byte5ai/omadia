@@ -70,6 +70,18 @@ export interface TurnContextValue {
    */
   captureRawToolResult?: (toolName: string, rawResult: string) => void;
   /**
+   * Canvas sentinel tap (Omadia UI). Set by the ui-orchestrator around a
+   * canvas turn: every dispatch site hands a sentinel-bearing RAW tool
+   * result (`_pending*` canvas directives) here BEFORE the privacy guard
+   * interns it. The surface synthesis then composes patches from ground
+   * truth — including server-side resolved dataset rows the LLM must never
+   * see — while the LLM keeps receiving only the interned digest.
+   * Undefined outside canvas turns (and on guard-less servers the streamed
+   * result still carries the sentinel anyway); dispatch then behaves
+   * byte-identically to before.
+   */
+  canvasSentinelSink?: (toolName: string, rawResult: string) => void;
+  /**
    * Privacy Shield v4 — sub-agent data-plane bridge. Set by the
    * orchestrator in a nested scope around a single domain-tool dispatch
    * (one per call, so concurrent sub-agents each get their own array via
@@ -150,6 +162,9 @@ export const turnContext = {
         ...(prev?.privacyHandle ? { privacyHandle: prev.privacyHandle } : {}),
         ...(prev?.captureRawToolResult
           ? { captureRawToolResult: prev.captureRawToolResult }
+          : {}),
+        ...(prev?.canvasSentinelSink
+          ? { canvasSentinelSink: prev.canvasSentinelSink }
           : {}),
       },
       fn,

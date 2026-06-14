@@ -56,6 +56,15 @@ export interface SurfaceSynthesisConfig {
   baseTree?: unknown;
   /** the [canvas-context] requirement contract — payload→container mapping. */
   dataRequirements?: readonly DataRequirement[];
+  /**
+   * Privacy Shield: with an active guard the STREAMED tool output is the
+   * interned digest — the raw sentinel was tapped pre-interning into the
+   * turn's `canvasSentinelSink`. This FIFO lookup (per tool name, dispatch
+   * order) returns that raw result so synthesis composes from ground truth.
+   * Undefined on guard-less servers — the streamed output then still
+   * carries the sentinel itself.
+   */
+  takeRawSentinel?: (toolName: string) => string | undefined;
   /** observability: every skipped (unmappable) payload states why. */
   log?: (message: string) => void;
   /** deterministic refresh (omadia-ui#5): containers whose FIRST publish in
@@ -167,6 +176,11 @@ export async function* synthesizeSurfaceEvents(
   ): AsyncGenerator<ChatStreamEvent> {
     const name = toolNameById.get(id);
     if (name === undefined || !config.authorizedToolNames.has(name)) return;
+
+    // Privacy Shield: prefer the pre-interning raw sentinel for this call —
+    // the streamed output may be the guard's digest (sentinel gone).
+    const raw = config.takeRawSentinel?.(name);
+    if (raw !== undefined) output = raw;
 
     const parsedTree = parseToolEmittedCanvasTree(output);
     if (parsedTree) {

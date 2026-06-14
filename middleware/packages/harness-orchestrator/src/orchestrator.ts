@@ -1664,6 +1664,12 @@ export class Orchestrator {
         ...(parent?.captureRawToolResult
           ? { captureRawToolResult: parent.captureRawToolResult }
           : {}),
+        // Canvas sentinel tap — installed by the ui-orchestrator in its
+        // OUTER scope before this turn scope exists; must survive into the
+        // turn so dispatchTool can hand raw sentinels past the privacy guard.
+        ...(parent?.canvasSentinelSink
+          ? { canvasSentinelSink: parent.canvasSentinelSink }
+          : {}),
       },
       async () => {
         let result = await this.chatInContext(input, turnId);
@@ -2288,6 +2294,11 @@ export class Orchestrator {
       ...(privacyHandle ? { privacyHandle } : {}),
       ...(parent?.captureRawToolResult
         ? { captureRawToolResult: parent.captureRawToolResult }
+        : {}),
+      // Canvas sentinel tap — canvas turns ARE streaming turns; without this
+      // carry-over the ui-orchestrator's sink dies exactly here.
+      ...(parent?.canvasSentinelSink
+        ? { canvasSentinelSink: parent.canvasSentinelSink }
         : {}),
     });
 
@@ -3154,6 +3165,18 @@ export class Orchestrator {
       // mask the synthesis the user actually asked for. Pass raw.
       if (subAgentBypassFlag.value && subAgentSink.length === 0) {
         return result;
+      }
+      // Canvas sentinel tap: interning is about the LLM wire — the surface
+      // synthesis is server-side and must compose from the RAW directive
+      // (incl. dataset rows resolved server-side that the LLM never sees).
+      // Tap before interning; the LLM still gets only the digest below.
+      const sentinelSink = turnContext.current()?.canvasSentinelSink;
+      if (sentinelSink !== undefined && result.includes('"_pending')) {
+        try {
+          sentinelSink(name, result);
+        } catch (err) {
+          console.warn(`[orchestrator.dispatchTool:${name}] canvasSentinelSink threw:`, err);
+        }
       }
       // Intern the raw result server-side and hand the LLM only the
       // identity-free digest — the raw rows never reach the LLM wire.
