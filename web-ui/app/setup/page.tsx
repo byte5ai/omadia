@@ -17,18 +17,19 @@ type State =
   | { kind: 'error'; message: string };
 
 /**
- * First-user-setup wizard (OB-49 + OB-61).
+ * First-user-setup wizard (OB-49; v2 / S4 — no key step).
  *
  * Pre-flight: GET /api/v1/auth/providers — if `setup_required` is false,
  * the wizard has already run; redirect to /login. Otherwise render a form
- * that POSTs `{email, password, display_name, anthropic_api_key?}` to
- * /api/v1/auth/setup.
+ * that POSTs `{email, password, display_name}` to /api/v1/auth/setup.
  *
- * OB-61: the `anthropic_api_key` field is optional but strongly
- * recommended — when supplied, the server seeds it into every consumer
- * plugin's vault (orchestrator / orchestrator-extras / verifier) and
- * reactivates the plugins so the LLM-bound capabilities go live without
- * a server restart.
+ * S4 (provider v2): the LLM-key step is GONE — provider connection now lives on
+ * its own admin page (/admin/providers), where any provider (Anthropic, OpenAI,
+ * …) is connected and assigned per agent. Setup is just "create the first admin
+ * → redirect"; the operator wires up a provider afterwards. (Supersedes OB-61's
+ * optional-key field, which predated the dedicated provider admin. The setup
+ * endpoint still accepts an `anthropic_api_key` for back-compat; the wizard no
+ * longer sends one.)
  *
  * On success the server mints + sets the session cookie itself, so we
  * just bounce the browser to the originally-requested path.
@@ -68,7 +69,6 @@ function SetupPageInner(): React.ReactElement {
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [displayName, setDisplayName] = useState('');
-  const [anthropicKey, setAnthropicKey] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
@@ -109,20 +109,12 @@ function SetupPageInner(): React.ReactElement {
       setSubmitError(t('passwordTooShort'));
       return;
     }
-    // OB-61 — client-side sanity check; server validates authoritatively
-    // by pinging the Anthropic API before persisting.
-    const trimmedKey = anthropicKey.trim();
-    if (trimmedKey.length > 0 && !trimmedKey.startsWith('sk-ant-')) {
-      setSubmitError(t('anthropicKeyInvalid'));
-      return;
-    }
     setSubmitting(true);
     try {
       await postAuthSetup({
         email,
         password,
         ...(displayName.length > 0 ? { display_name: displayName } : {}),
-        ...(trimmedKey.length > 0 ? { anthropic_api_key: trimmedKey } : {}),
       });
       window.location.href = returnPath;
     } catch (err) {
@@ -130,20 +122,8 @@ function SetupPageInner(): React.ReactElement {
         setSubmitError(t('alreadyLocked'));
         setTimeout(() => router.replace('/login'), 1500);
       } else if (err instanceof ApiError && err.status === 400) {
-        // The server splits invalid-email/password vs. anthropic-key
-        // errors into distinct `code` values; surface the matching i18n
-        // string when the body parses cleanly, falling back to the
-        // generic "credentialsRejected" otherwise. `err.body` is the
-        // raw response text (see ApiError); parse defensively because
-        // some 400s may not be JSON at all.
-        const code = parseErrorCode(err.body);
-        if (code === 'auth.setup_invalid_anthropic_key') {
-          setSubmitError(t('anthropicKeyInvalid'));
-        } else if (code === 'auth.setup_anthropic_key_rejected') {
-          setSubmitError(t('anthropicKeyRejected'));
-        } else {
-          setSubmitError(t('credentialsRejected'));
-        }
+        // No key step in v2 — any 400 here is an invalid email/password.
+        setSubmitError(t('credentialsRejected'));
       } else {
         setSubmitError(err instanceof Error ? err.message : String(err));
       }
@@ -229,21 +209,12 @@ function SetupPageInner(): React.ReactElement {
             className="rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[color:var(--accent)]"
           />
         </label>
-        {/* OB-61 — operator-supplied Anthropic key. Stored encrypted in
-            the per-plugin vault, not in .env. Server validates by
-            pinging the Anthropic API before persisting. */}
-        <label className="flex flex-col gap-1 text-sm">
-          <span className="font-medium">{t('anthropicKeyLabel')}</span>
-          <input
-            type="password"
-            autoComplete="off"
-            value={anthropicKey}
-            onChange={(e) => setAnthropicKey(e.target.value)}
-            placeholder="sk-ant-…"
-            className="rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 font-mono text-sm outline-none focus:border-[color:var(--accent)]"
-          />
-          <span className="text-xs opacity-60">{t('anthropicKeyHelp')}</span>
-        </label>
+        {/* S4 / v2 — no key step here. The operator connects an LLM provider
+            (Anthropic, OpenAI, …) afterwards on the dedicated provider admin
+            page; setup just creates the first admin account. */}
+        <p className="rounded-md border border-[color:var(--border)] bg-[color:var(--card)]/40 px-3 py-2 text-xs leading-[1.5] opacity-70">
+          {t('providerHint')}
+        </p>
         {submitError && (
           <p className="text-sm text-[color:var(--danger)]">{submitError}</p>
         )}
@@ -269,20 +240,4 @@ function PageShell({ children }: { children: React.ReactNode }): React.ReactElem
       </div>
     </main>
   );
-}
-
-/** Extracts `body.code` from an ApiError body string. Returns undefined
- *  when the body is empty, not JSON, or has no `code` field. */
-function parseErrorCode(body: string): string | undefined {
-  if (!body) return undefined;
-  try {
-    const parsed = JSON.parse(body) as unknown;
-    if (parsed && typeof parsed === 'object' && 'code' in parsed) {
-      const code = (parsed as { code: unknown }).code;
-      return typeof code === 'string' ? code : undefined;
-    }
-  } catch {
-    // Non-JSON body — fall through to undefined.
-  }
-  return undefined;
 }

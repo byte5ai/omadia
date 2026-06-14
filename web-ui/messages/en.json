@@ -200,7 +200,8 @@
     "anthropicKeyLabel": "Anthropic API Key (optional)",
     "anthropicKeyHelp": "Starts with sk-ant-…. Get one at console.anthropic.com. Stored encrypted in the per-plugin vault — never in .env. Leave empty to add later via Admin → Runtime → Secrets.",
     "anthropicKeyInvalid": "Anthropic API keys start with \"sk-ant-\". Double-check the value from console.anthropic.com.",
-    "anthropicKeyRejected": "The server rejected this Anthropic key (401/403). Verify it at console.anthropic.com → API keys."
+    "anthropicKeyRejected": "The server rejected this Anthropic key (401/403). Verify it at console.anthropic.com → API keys.",
+    "providerHint": "No LLM key needed here. After you create the admin account, connect a provider (Anthropic, OpenAI, …) under Admin → LLM providers."
   },
   "onboarding": {
     "ariaLabel": "First-time setup",
