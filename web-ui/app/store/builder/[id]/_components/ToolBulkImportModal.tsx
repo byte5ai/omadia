@@ -1,6 +1,6 @@
 'use client';
 
-import { AlertTriangle, Check, Loader2, Upload, X } from 'lucide-react';
+import { AlertTriangle, Check, Upload, X } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { useMemo, useState } from 'react';
 
@@ -88,7 +88,7 @@ export function ToolBulkImportModal({
       role="dialog"
       aria-modal="true"
       aria-label={t('dialogLabel')}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-10"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-[color:var(--bg-modal-overlay)] px-4 py-8"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -167,10 +167,10 @@ export function ToolBulkImportModal({
               result.tools.length === 0 ||
               result.tools.length === collisions.length
             }
-            className="inline-flex items-center gap-1 rounded bg-[color:var(--accent)] px-3 py-1 text-[11px] font-semibold text-white shadow-[var(--shadow-cta)] disabled:opacity-50"
+            className="inline-flex items-center gap-1 rounded bg-[color:var(--accent)] px-3 py-1 text-[11px] font-semibold text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] disabled:opacity-50"
           >
             {pending ? (
-              <Loader2 className="size-3 animate-spin" aria-hidden />
+              <span className="lume-busy-dots" aria-hidden />
             ) : (
               <Check className="size-3" aria-hidden />
             )}
@@ -196,7 +196,7 @@ function TabBtn({
       type="button"
       onClick={onClick}
       className={cn(
-        'rounded-t border-x border-t px-3 py-1.5 text-[11px] font-semibold',
+        'rounded-t border-x border-t px-3 py-2 text-[11px] font-semibold',
         active
           ? 'border-[color:var(--border)] bg-[color:var(--bg)] text-[color:var(--fg-strong)]'
           : 'border-transparent text-[color:var(--fg-subtle)] hover:text-[color:var(--fg-strong)]',

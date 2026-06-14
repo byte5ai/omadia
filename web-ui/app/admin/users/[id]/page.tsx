@@ -146,7 +146,7 @@ export default function AdminUserEditPage(): React.ReactElement {
   if (state.kind === 'error') {
     return (
       <main className="mx-auto max-w-[720px] px-6 py-12">
-        <p className="text-sm text-red-500">
+        <p className="text-sm text-[color:var(--danger)]">
           Fehler beim Laden: {state.message}
         </p>
         <Link
@@ -179,7 +179,7 @@ export default function AdminUserEditPage(): React.ReactElement {
         </p>
       </header>
 
-      <section className="mb-8 rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
+      <section className="mb-8 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
         <h2 className="mb-3 text-[15px] font-semibold text-[color:var(--fg-strong)]">
           Profil
         </h2>
@@ -207,13 +207,13 @@ export default function AdminUserEditPage(): React.ReactElement {
             </select>
           </label>
           {patchMessage && (
-            <p className="text-sm text-emerald-500">{patchMessage}</p>
+            <p className="text-sm text-[color:var(--success)]">{patchMessage}</p>
           )}
-          {patchError && <p className="text-sm text-red-500">{patchError}</p>}
+          {patchError && <p className="text-sm text-[color:var(--danger)]">{patchError}</p>}
           <button
             type="submit"
             disabled={savingPatch}
-            className="self-start rounded-md bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-black disabled:opacity-50"
+            className="self-start rounded-md bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-[color:var(--text-inverse)] disabled:opacity-50"
           >
             {savingPatch ? 'Speichere …' : 'Speichern'}
           </button>
@@ -221,7 +221,7 @@ export default function AdminUserEditPage(): React.ReactElement {
       </section>
 
       {isLocal && (
-        <section className="mb-8 rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
+        <section className="mb-8 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
           <h2 className="mb-3 text-[15px] font-semibold text-[color:var(--fg-strong)]">
             Passwort zurücksetzen
           </h2>
@@ -250,16 +250,16 @@ export default function AdminUserEditPage(): React.ReactElement {
             </button>
           </div>
           {resetMessage && (
-            <p className="mt-3 text-sm text-emerald-500">{resetMessage}</p>
+            <p className="mt-3 text-sm text-[color:var(--success)]">{resetMessage}</p>
           )}
           {resetError && (
-            <p className="mt-3 text-sm text-red-500">{resetError}</p>
+            <p className="mt-3 text-sm text-[color:var(--danger)]">{resetError}</p>
           )}
         </section>
       )}
 
-      <section className="rounded-[14px] border border-red-500/30 bg-red-500/5 p-5">
-        <h2 className="mb-2 text-[15px] font-semibold text-red-500">
+      <section className="rounded-lg border border-[color:var(--danger-edge)]/30 bg-[color:var(--danger)]/5 p-4">
+        <h2 className="mb-2 text-[15px] font-semibold text-[color:var(--danger)]">
           Gefahrenzone
         </h2>
         <p className="mb-3 text-sm text-[color:var(--fg-muted)]">
@@ -269,12 +269,12 @@ export default function AdminUserEditPage(): React.ReactElement {
           type="button"
           onClick={() => void handleDelete()}
           disabled={deleting}
-          className="rounded-md border border-red-500/40 px-4 py-2 text-sm font-medium text-red-500 hover:bg-red-500/10 disabled:opacity-50"
+          className="rounded-md border border-[color:var(--danger-edge)]/40 px-4 py-2 text-sm font-medium text-[color:var(--danger)] hover:bg-[color:var(--danger)]/10 disabled:opacity-50"
         >
           {deleting ? 'Lösche …' : 'Nutzer löschen'}
         </button>
         {deleteError && (
-          <p className="mt-3 text-sm text-red-500">{deleteError}</p>
+          <p className="mt-3 text-sm text-[color:var(--danger)]">{deleteError}</p>
         )}
       </section>
     </main>

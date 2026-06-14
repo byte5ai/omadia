@@ -114,7 +114,7 @@ export default function UsageDashboardPage(): React.ReactElement {
   );
 
   return (
-    <main className="mx-auto max-w-[1080px] px-6 py-12 lg:px-10 lg:py-16">
+    <main className="mx-auto max-w-[1080px] px-6 py-12 lg:px-8 lg:py-16">
       <header className="mb-8 flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="font-display text-[clamp(2rem,4vw,3rem)] leading-[1.1] text-[color:var(--fg-strong)]">
@@ -125,15 +125,15 @@ export default function UsageDashboardPage(): React.ReactElement {
             Anthropic-Call — Orchestrator, Sub-Agents und die Haiku-Background-Tasks.
           </p>
         </div>
-        <div className="flex gap-1 rounded-[12px] border border-[color:var(--border)] p-1">
+        <div className="flex gap-1 rounded-lg border border-[color:var(--border)] p-1">
           {RANGES.map((r) => (
             <button
               key={r.key}
               type="button"
               onClick={() => selectRange(r.key)}
-              className={`rounded-[8px] px-3 py-1.5 text-sm transition-colors ${
+              className={`rounded-md px-3 py-2 text-sm transition-colors ${
                 range === r.key
-                  ? 'bg-[color:var(--accent)] text-white'
+                  ? 'bg-[color:var(--accent)] text-[color:var(--fg-on-dark)]'
                   : 'text-[color:var(--fg-muted)] hover:text-[color:var(--fg-strong)]'
               }`}
             >
@@ -144,7 +144,7 @@ export default function UsageDashboardPage(): React.ReactElement {
       </header>
 
       {error && (
-        <div className="mb-6 rounded-[12px] border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+        <div className="mb-6 rounded-lg border border-[color:var(--danger-edge)]/40 bg-[color:var(--danger)]/10 px-4 py-3 text-sm text-[color:var(--danger)]">
           Fehler beim Laden: {error}
         </div>
       )}
@@ -204,17 +204,17 @@ export default function UsageDashboardPage(): React.ReactElement {
 
 function Kpi({ label, value, hint }: { label: string; value: string; hint?: string }): React.ReactElement {
   return (
-    <div className="rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
+    <div className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
       <div className="text-xs uppercase tracking-wide text-[color:var(--fg-muted)]">{label}</div>
       <div className="mt-2 font-display text-[28px] leading-none text-[color:var(--fg-strong)]">{value}</div>
-      {hint && <div className="mt-1.5 text-xs text-[color:var(--fg-muted)]">{hint}</div>}
+      {hint && <div className="mt-2 text-xs text-[color:var(--fg-muted)]">{hint}</div>}
     </div>
   );
 }
 
 function Panel({ title, children }: { title: string; children: React.ReactNode }): React.ReactElement {
   return (
-    <section className="rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5">
+    <section className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
       <h2 className="mb-4 text-[15px] font-semibold text-[color:var(--fg-strong)]">{title}</h2>
       {children}
     </section>

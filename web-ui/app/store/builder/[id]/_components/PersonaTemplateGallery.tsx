@@ -92,7 +92,7 @@ export function PersonaTemplateGallery({
       role="dialog"
       aria-modal="true"
       aria-label={t('title')}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-[color:var(--bg-modal-overlay)] p-4"
     >
       <div className="max-h-full w-full max-w-3xl overflow-y-auto rounded-lg border border-[color:var(--border)] bg-[color:var(--bg-elevated,var(--bg))] p-4 text-[color:var(--fg)] shadow-xl">
         <header className="mb-3 flex items-baseline justify-between">
@@ -177,7 +177,7 @@ export function PersonaTemplateGallery({
         )}
 
         {error && (
-          <div role="alert" className="mt-3 text-sm text-red-600" data-testid="gallery-error">
+          <div role="alert" className="mt-3 text-sm text-[color:var(--danger)]" data-testid="gallery-error">
             {error}
           </div>
         )}
@@ -197,7 +197,7 @@ export function PersonaTemplateGallery({
             data-testid="gallery-apply"
             onClick={handleApply}
             disabled={disabled || pending || !selected}
-            className="rounded bg-[color:var(--accent)] px-3 py-1 text-sm font-medium text-white disabled:opacity-50"
+            className="rounded bg-[color:var(--accent)] px-3 py-1 text-sm font-medium text-[color:var(--fg-on-dark)] disabled:opacity-50"
           >
             {pending ? t('applying') : t('apply')}
           </button>

@@ -55,9 +55,9 @@ export function CreateDraftButton({
         onClick={onClick}
         disabled={disabled}
         className={cn(
-          'inline-flex items-center gap-2 rounded-full px-5 py-2 text-[13px] font-semibold',
+          'inline-flex items-center gap-2 rounded-full px-4 py-2 text-[13px] font-semibold',
           'shadow-[var(--shadow-cta)] transition-transform duration-[var(--dur-base)]',
-          'bg-[color:var(--accent)] text-white hover:-translate-y-0.5',
+          'bg-[color:var(--accent)] text-[color:var(--fg-on-dark)] hover:-translate-y-0.5',
           'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--accent)]',
           'disabled:translate-y-0 disabled:opacity-50 disabled:hover:translate-y-0',
         )}

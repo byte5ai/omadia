@@ -75,8 +75,8 @@ export default function AdminDomainsPage(): React.ReactElement {
   }, []);
 
   return (
-    <main className="mx-auto max-w-[960px] px-6 py-12 lg:px-10 lg:py-16">
-      <header className="mb-10">
+    <main className="mx-auto max-w-[960px] px-6 py-12 lg:px-8 lg:py-16">
+      <header className="mb-8">
         <h1 className="font-display text-[clamp(2rem,4vw,3rem)] leading-[1.1] text-[color:var(--fg-strong)]">
           Plugin-Domains
         </h1>
@@ -93,7 +93,7 @@ export default function AdminDomainsPage(): React.ReactElement {
       {loading ? (
         <p className="text-[color:var(--fg-muted)]">Lade …</p>
       ) : error ? (
-        <p className="rounded-md border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-300">
+        <p className="rounded-md border border-[color:var(--danger-edge)]/40 bg-[color:var(--danger)]/10 p-4 text-sm text-[color:var(--danger)]">
           Fehler beim Laden: {error}
         </p>
       ) : data ? (
@@ -131,11 +131,11 @@ function Content({ data }: { data: DomainsResponse }): React.ReactElement {
       )}
 
       {data.totals.fallbackDomains > 0 ? (
-        <p className="mt-8 rounded-md border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-200">
+        <p className="mt-8 rounded-md border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/10 p-4 text-sm text-[color:var(--warning)]">
           {data.totals.fallbackDomains} Plugin
           {data.totals.fallbackDomains === 1 ? '' : 's'} ohne deklarierte
           Domain — auto-fallback auf{' '}
-          <code className="text-amber-100">unknown.&lt;id&gt;</code>. Füge
+          <code className="text-[color:var(--warning)]">unknown.&lt;id&gt;</code>. Füge
           dem Manifest eine <code>identity.domain</code>-Zeile hinzu (z.B.
           <code> &quot;confluence&quot;</code>,{' '}
           <code>&quot;odoo.hr&quot;</code>) oder lade den Agent über den
@@ -155,15 +155,15 @@ function DomainSection({
     <li
       className={
         bucket.isFallback
-          ? 'rounded-[14px] border border-amber-500/40 bg-amber-500/5 p-5'
-          : 'rounded-[14px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-5'
+          ? 'rounded-lg border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/5 p-4'
+          : 'rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4'
       }
     >
       <header className="mb-4 flex items-baseline justify-between gap-3">
         <h2
           className={
             bucket.isFallback
-              ? 'font-mono text-[15px] text-amber-200'
+              ? 'font-mono text-[15px] text-[color:var(--warning)]'
               : 'font-mono text-[15px] text-[color:var(--fg-strong)]'
           }
         >
@@ -211,8 +211,8 @@ function Stat({
     <div
       className={
         warn
-          ? 'rounded-[12px] border border-amber-500/40 bg-amber-500/5 p-4'
-          : 'rounded-[12px] border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4'
+          ? 'rounded-lg border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/5 p-4'
+          : 'rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4'
       }
     >
       <div className="text-[12px] uppercase tracking-wider text-[color:var(--fg-muted)]">
@@ -221,7 +221,7 @@ function Stat({
       <div
         className={
           warn
-            ? 'mt-1 font-display text-[28px] text-amber-200'
+            ? 'mt-1 font-display text-[28px] text-[color:var(--warning)]'
             : 'mt-1 font-display text-[28px] text-[color:var(--fg-strong)]'
         }
       >

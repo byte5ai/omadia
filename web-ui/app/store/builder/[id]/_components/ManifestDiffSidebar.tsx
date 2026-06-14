@@ -1,6 +1,6 @@
 'use client';
 
-import { ChevronLeft, ChevronRight, Loader2, RefreshCcw } from 'lucide-react';
+import { ChevronLeft, ChevronRight, RefreshCcw } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -88,7 +88,7 @@ export function ManifestDiffSidebar({
             manifest.yaml
           </span>
           {pending ? (
-            <Loader2 className="size-3 animate-spin text-[color:var(--fg-muted)]" aria-hidden />
+            <span className="lume-busy-dots" aria-hidden />
           ) : null}
         </div>
         <div className="flex items-center gap-1">

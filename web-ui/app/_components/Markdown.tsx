@@ -34,12 +34,12 @@ interface HastNode {
  * literal array so the Tailwind JIT picks the classes up from this file.
  */
 const PII_REVEALED_CLASS: readonly string[] = [
-  'rounded-[3px]',
-  'bg-violet-100',
+  'rounded-sm',
+  'bg-[color:var(--accent)]/10',
   'px-1',
-  'text-violet-950',
-  'dark:bg-violet-400/25',
-  'dark:text-violet-50',
+  'text-[color:var(--accent)]',
+  '',
+  '',
 ];
 
 /**

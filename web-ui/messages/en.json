@@ -151,6 +151,20 @@
   "localeSwitcher": {
     "ariaLabel": "Switch language"
   },
+  "themeControls": {
+    "paletteAriaLabel": "Accent palette",
+    "appearanceAriaLabel": "Appearance",
+    "palette": {
+      "lagoon": "Lagoon",
+      "petrol": "Petrol",
+      "atelier": "Atelier"
+    },
+    "appearance": {
+      "system": "System",
+      "light": "Light",
+      "dark": "Dark"
+    }
+  },
   "login": {
     "title": "Sign in to Omadia",
     "shellLoading": "Loading login…",

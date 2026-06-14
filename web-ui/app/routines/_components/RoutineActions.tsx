@@ -87,13 +87,13 @@ export function RoutineActions({ routine }: Props): React.ReactElement {
 
   return (
     <div className="flex flex-col items-end gap-1">
-      <div className="flex flex-wrap justify-end gap-1.5">
+      <div className="flex flex-wrap justify-end gap-2">
         <button
           type="button"
           onClick={handleTriggerNow}
           disabled={pending}
           title="Routine jetzt manuell auslösen — feuert einen Agent-Run und liefert das Ergebnis ins Channel."
-          className="rounded-full border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/5 px-2.5 py-1 text-[11px] font-semibold text-[color:var(--accent)] transition hover:border-[color:var(--accent)] disabled:opacity-50"
+          className="rounded-full border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/5 px-3 py-1 text-[11px] font-semibold text-[color:var(--accent)] transition hover:border-[color:var(--accent)] disabled:opacity-50"
         >
           Jetzt
         </button>
@@ -101,7 +101,7 @@ export function RoutineActions({ routine }: Props): React.ReactElement {
           type="button"
           onClick={handleToggle}
           disabled={pending}
-          className="rounded-full border border-[color:var(--border)] bg-[color:var(--surface)] px-2.5 py-1 text-[11px] font-semibold text-[color:var(--fg-muted)] transition hover:border-[color:var(--accent)] hover:text-[color:var(--fg-strong)] disabled:opacity-50"
+          className="rounded-full border border-[color:var(--border)] bg-[color:var(--surface)] px-3 py-1 text-[11px] font-semibold text-[color:var(--fg-muted)] transition hover:border-[color:var(--accent)] hover:text-[color:var(--fg-strong)] disabled:opacity-50"
         >
           {isPaused ? 'Resume' : 'Pause'}
         </button>
@@ -109,7 +109,7 @@ export function RoutineActions({ routine }: Props): React.ReactElement {
           type="button"
           onClick={handleDelete}
           disabled={pending}
-          className="rounded-full border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/5 px-2.5 py-1 text-[11px] font-semibold text-[color:var(--danger)] transition hover:border-[color:var(--danger)] disabled:opacity-50"
+          className="rounded-full border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/5 px-3 py-1 text-[11px] font-semibold text-[color:var(--danger)] transition hover:border-[color:var(--danger)] disabled:opacity-50"
         >
           Delete
         </button>

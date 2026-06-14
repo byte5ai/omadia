@@ -157,20 +157,20 @@ export function PrivacyReceiptCard({
 
 const PALETTE_OK = {
   container:
-    'bg-emerald-50/60 ring-emerald-100 dark:bg-emerald-950/30 dark:ring-emerald-900/60',
-  summary: 'text-emerald-800 dark:text-emerald-200',
-  body: 'text-emerald-900 dark:text-emerald-100',
-  label: 'text-emerald-700/80 dark:text-emerald-300/80',
-  muted: 'text-emerald-900/80 dark:text-emerald-200/90',
+    'bg-[color:var(--success)]/10 ring-[color:var(--success)]',
+  summary: 'text-[color:var(--success)]',
+  body: 'text-[color:var(--success)]',
+  label: 'text-[color:var(--success)]/80',
+  muted: 'text-[color:var(--success)]/80',
 } as const;
 
 const PALETTE_BREACH = {
   container:
-    'bg-red-50/80 ring-red-300 dark:bg-red-950/40 dark:ring-red-800/70',
-  summary: 'font-semibold text-red-800 dark:text-red-200',
-  body: 'text-red-900 dark:text-red-100',
-  label: 'text-red-700/80 dark:text-red-300/80',
-  muted: 'text-red-900/80 dark:text-red-200/90',
+    'bg-[color:var(--danger)]/8 ring-[color:var(--danger-edge)]',
+  summary: 'font-semibold text-[color:var(--danger)]',
+  body: 'text-[color:var(--danger)]',
+  label: 'text-[color:var(--danger)]/80',
+  muted: 'text-[color:var(--danger)]/80',
 } as const;
 
 // Slice 2.5 — operator opted into bypass on at least one plugin this turn.
@@ -179,11 +179,11 @@ const PALETTE_BREACH = {
 // should still see it loud enough to notice.
 const PALETTE_BYPASS = {
   container:
-    'bg-amber-50/70 ring-amber-200 dark:bg-amber-950/30 dark:ring-amber-800/60',
-  summary: 'font-medium text-amber-800 dark:text-amber-200',
-  body: 'text-amber-900 dark:text-amber-100',
-  label: 'text-amber-700/80 dark:text-amber-300/80',
-  muted: 'text-amber-900/80 dark:text-amber-200/90',
+    'bg-[color:var(--warning)]/10 ring-[color:var(--warning)]',
+  summary: 'font-medium text-[color:var(--warning)]',
+  body: 'text-[color:var(--warning)]',
+  label: 'text-[color:var(--warning)]/80',
+  muted: 'text-[color:var(--warning)]/80',
 } as const;
 
 /**

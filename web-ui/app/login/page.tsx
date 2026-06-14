@@ -139,7 +139,7 @@ function LoginPageInner(): React.ReactElement {
   if (state.kind === 'error') {
     return (
       <PageShell>
-        <p className="text-sm text-red-500">
+        <p className="text-sm text-[color:var(--danger)]">
           {t('errorPrefix')} {state.message}
         </p>
       </PageShell>
@@ -149,7 +149,7 @@ function LoginPageInner(): React.ReactElement {
   if (state.kind === 'no-providers') {
     return (
       <PageShell>
-        <p className="text-sm text-amber-500">
+        <p className="text-sm text-[color:var(--warning)]">
           {t.rich('noProviders', {
             envVar: () => <code>AUTH_PROVIDERS</code>,
           })}
@@ -190,12 +190,12 @@ function LoginPageInner(): React.ReactElement {
             />
           </label>
           {submitError && (
-            <p className="text-sm text-red-500">{submitError}</p>
+            <p className="text-sm text-[color:var(--danger)]">{submitError}</p>
           )}
           <button
             type="submit"
             disabled={submitting}
-            className="rounded-md bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-black disabled:opacity-50"
+            className="rounded-md bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-[color:var(--text-inverse)] disabled:opacity-50"
           >
             {submitting ? t('submitting') : t('submit')}
           </button>
@@ -235,12 +235,14 @@ function LoginPageInner(): React.ReactElement {
 function PageShell({ children }: { children: React.ReactNode }): React.ReactElement {
   return (
     <main className="flex min-h-screen items-center justify-center px-4">
-      <div className="w-full max-w-sm rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-6 shadow-sm">
+      {/* Lume modal-class surface: the login card is the lit object (§2.10
+          elev.modal carries the accent-glow components). */}
+      <div className="lume-surface-raised lume-border w-full max-w-sm rounded-lg p-6 shadow-[var(--shadow-lg)]">
         <header className="mb-6 flex flex-col leading-none">
           <h1 className="font-display text-3xl text-[color:var(--fg-strong)]">
             Omadia
           </h1>
-          <span className="mt-1.5 text-[11px] uppercase tracking-[0.18em] text-[color:var(--fg-muted)]">
+          <span className="mt-2 text-[11px] uppercase tracking-[0.18em] text-[color:var(--fg-muted)]">
             an Agentic OS
           </span>
         </header>

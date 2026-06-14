@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Check, Loader2, Sparkles, X } from 'lucide-react';
+import { Check, Sparkles, X } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
 import { applyProfile, ApiError, profileExportUrl } from '../../_lib/api';
@@ -105,7 +105,7 @@ export function OnboardingModal({
           'max-h-[90vh] overflow-hidden',
         )}
       >
-        <header className="flex items-start justify-between gap-6 border-b border-[color:var(--rule)] px-7 py-5">
+        <header className="flex items-start justify-between gap-6 border-b border-[color:var(--rule)] px-6 py-4">
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.22em] text-[color:var(--accent)]">
               <Sparkles className="size-3.5" aria-hidden />
@@ -129,7 +129,7 @@ export function OnboardingModal({
           </button>
         </header>
 
-        <div className="flex-1 overflow-y-auto px-7 py-6">
+        <div className="flex-1 overflow-y-auto px-6 py-6">
           {phase.kind === 'done' ? (
             <OutcomeBody outcome={phase.outcome} />
           ) : phase.kind === 'errored' ? (
@@ -150,7 +150,7 @@ export function OnboardingModal({
           )}
         </div>
 
-        <footer className="flex items-center justify-between gap-4 border-t border-[color:var(--rule)] px-7 py-4 text-[11px] text-[color:var(--muted-ink)]">
+        <footer className="flex items-center justify-between gap-4 border-t border-[color:var(--rule)] px-6 py-4 text-[11px] text-[color:var(--muted-ink)]">
           <div>
             {t('exportPrefix')}{' '}
             <a
@@ -165,7 +165,7 @@ export function OnboardingModal({
             <button
               type="button"
               onClick={() => setDismissed(true)}
-              className="border border-[color:var(--rule-strong)] bg-[color:var(--paper)] px-4 py-1.5 text-[11px] uppercase tracking-[0.16em] text-[color:var(--ink)] transition hover:bg-[color:var(--ink)] hover:text-[color:var(--paper)]"
+              className="border border-[color:var(--rule-strong)] bg-[color:var(--paper)] px-4 py-2 text-[11px] uppercase tracking-[0.16em] text-[color:var(--ink)] transition hover:bg-[color:var(--ink)] hover:text-[color:var(--paper)]"
             >
               {t('done')}
             </button>
@@ -198,7 +198,7 @@ function ProfileGrid({
           <article
             key={profile.id}
             className={cn(
-              'flex flex-col border border-[color:var(--rule)] bg-[color:var(--paper)] p-5 transition',
+              'flex flex-col border border-[color:var(--rule)] bg-[color:var(--paper)] p-4 transition',
               !busy && 'hover:border-[color:var(--accent)]',
               isActive && 'border-[color:var(--accent)]',
             )}
@@ -229,7 +229,7 @@ function ProfileGrid({
             >
               {isActive ? (
                 <>
-                  <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                  <span className="lume-busy-dots" aria-hidden />
                   {t('applying')}
                 </>
               ) : (
@@ -251,13 +251,13 @@ function OutcomeBody({
   const t = useTranslations('onboarding');
   const hasErrors = outcome.errored.length > 0;
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <div
         className={cn(
           'flex items-center gap-3 border px-4 py-3',
           hasErrors
-            ? 'border-amber-500/50 bg-amber-50/40 text-amber-900'
-            : 'border-emerald-500/50 bg-emerald-50/40 text-emerald-900',
+            ? 'border-[color:var(--warning)]/50 bg-[color:var(--warning)]/10 text-[color:var(--warning)]'
+            : 'border-[color:var(--success)]/50 bg-[color:var(--success)]/10 text-[color:var(--success)]',
         )}
       >
         {hasErrors ? (
@@ -313,7 +313,7 @@ function OutcomeBody({
             {outcome.errored.map((p) => (
               <li
                 key={p.id}
-                className="border border-amber-500/40 bg-amber-50/30 px-3 py-2 text-amber-900"
+                className="border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/10 px-3 py-2 text-[color:var(--warning)]"
               >
                 <div className="font-mono text-[11px]">{p.id}</div>
                 <div className="mt-0.5 text-[10px] uppercase tracking-[0.16em]">
@@ -350,7 +350,7 @@ function ErrorBody({
   const t = useTranslations('onboarding');
   return (
     <div className="space-y-4">
-      <div className="flex items-start gap-3 border border-rose-500/50 bg-rose-50/40 px-4 py-3 text-rose-900">
+      <div className="flex items-start gap-3 border border-[color:var(--danger-edge)]/50 bg-[color:var(--danger)]/8 px-4 py-3 text-[color:var(--danger)]">
         <span aria-hidden>✗</span>
         <div className="text-[12px]">
           <div className="font-medium">
@@ -364,7 +364,7 @@ function ErrorBody({
       <button
         type="button"
         onClick={onRetry}
-        className="border border-[color:var(--rule-strong)] bg-[color:var(--paper)] px-4 py-1.5 text-[12px] uppercase tracking-[0.16em] text-[color:var(--ink)] transition hover:bg-[color:var(--ink)] hover:text-[color:var(--paper)]"
+        className="border border-[color:var(--rule-strong)] bg-[color:var(--paper)] px-4 py-2 text-[12px] uppercase tracking-[0.16em] text-[color:var(--ink)] transition hover:bg-[color:var(--ink)] hover:text-[color:var(--paper)]"
       >
         {t('tryAnother')}
       </button>

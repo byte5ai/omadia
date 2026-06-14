@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
-import { AlertTriangle, Check, Loader2, ShieldQuestion, Sparkles, X } from 'lucide-react';
+import { AlertTriangle, Check, ShieldQuestion, Sparkles, X } from 'lucide-react';
 
 import { cn } from '../../_lib/cn';
 import {
@@ -192,7 +192,7 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
       <p className="text-[12px] leading-relaxed text-[color:var(--fg-muted)]">{t('intro')}</p>
 
       {/* compose */}
-      <div className="rounded-[10px] border border-[color:var(--border)] bg-[color:var(--bg-soft)] p-3">
+      <div className="rounded-md border border-[color:var(--border)] bg-[color:var(--bg-soft)] p-3">
         <label className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
           <Sparkles className="size-3.5" aria-hidden />
           {t('composeTitle')}
@@ -202,32 +202,32 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
           value={rationale}
           onChange={(e) => setRationale(e.target.value)}
           placeholder={t('rationalePlaceholder')}
-          className="mt-2 w-full rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1.5 text-[13px] focus:outline-none focus:ring-1 focus:ring-[color:var(--accent)]"
+          className="mt-2 w-full rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-2 text-[13px] focus:outline-none focus:ring-1 focus:ring-[color:var(--accent)]"
         />
         <textarea
           value={patchesText}
           onChange={(e) => setPatchesText(e.target.value)}
           placeholder={t('patchesPlaceholder')}
           rows={4}
-          className="font-mono-num mt-2 w-full rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1.5 text-[12px] focus:outline-none focus:ring-1 focus:ring-[color:var(--accent)]"
+          className="font-mono-num mt-2 w-full rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-2 text-[12px] focus:outline-none focus:ring-1 focus:ring-[color:var(--accent)]"
         />
         {composeError ? (
-          <p className="font-mono-num mt-1.5 text-[11px] text-[color:var(--danger,#b03030)]">{composeError}</p>
+          <p className="font-mono-num mt-2 text-[11px] text-[color:var(--danger,#b03030)]">{composeError}</p>
         ) : null}
         <button
           type="button"
           onClick={() => void handlePropose()}
           disabled={composeBusy || rationale.trim().length === 0 || patchesText.trim().length === 0}
-          className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-[color:var(--accent)] px-4 py-1.5 text-[12px] font-semibold text-[color:var(--accent-fg)] disabled:opacity-60"
+          className="mt-2 inline-flex items-center gap-2 rounded-full bg-[color:var(--accent)] px-4 py-2 text-[12px] font-semibold text-[color:var(--accent-fg)] disabled:opacity-60"
         >
-          {composeBusy ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : null}
+          {composeBusy ? <span className="lume-busy-dots" aria-hidden /> : null}
           {composeBusy ? t('proposing') : t('propose')}
         </button>
       </div>
 
       {/* template compose (standalone plugins that expose selfExtend templates) */}
       {templates.length > 0 ? (
-        <div className="rounded-[10px] border border-[color:var(--border)] bg-[color:var(--bg-soft)] p-3">
+        <div className="rounded-md border border-[color:var(--border)] bg-[color:var(--bg-soft)] p-3">
           <label className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
             <Sparkles className="size-3.5" aria-hidden />
             {t('templateComposeTitle')}
@@ -235,7 +235,7 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
           <select
             value={tplId}
             onChange={(e) => setTplId(e.target.value)}
-            className="mt-2 w-full rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1.5 text-[13px] focus:outline-none focus:ring-1 focus:ring-[color:var(--accent)]"
+            className="mt-2 w-full rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-2 text-[13px] focus:outline-none focus:ring-1 focus:ring-[color:var(--accent)]"
           >
             {templates.map((tpl) => (
               <option key={tpl.id} value={tpl.id}>
@@ -244,7 +244,7 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
             ))}
           </select>
           {templates.find((x) => x.id === tplId)?.description ? (
-            <p className="mt-1.5 text-[11px] leading-relaxed text-[color:var(--fg-subtle)]">
+            <p className="mt-2 text-[11px] leading-relaxed text-[color:var(--fg-subtle)]">
               {templates.find((x) => x.id === tplId)?.description}
             </p>
           ) : null}
@@ -253,25 +253,25 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
             value={tplRationale}
             onChange={(e) => setTplRationale(e.target.value)}
             placeholder={t('rationalePlaceholder')}
-            className="mt-2 w-full rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1.5 text-[13px] focus:outline-none focus:ring-1 focus:ring-[color:var(--accent)]"
+            className="mt-2 w-full rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-2 text-[13px] focus:outline-none focus:ring-1 focus:ring-[color:var(--accent)]"
           />
           <textarea
             value={tplParamsText}
             onChange={(e) => setTplParamsText(e.target.value)}
             placeholder={t('templateParamsPlaceholder')}
             rows={3}
-            className="font-mono-num mt-2 w-full rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1.5 text-[12px] focus:outline-none focus:ring-1 focus:ring-[color:var(--accent)]"
+            className="font-mono-num mt-2 w-full rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-2 text-[12px] focus:outline-none focus:ring-1 focus:ring-[color:var(--accent)]"
           />
           {tplError ? (
-            <p className="font-mono-num mt-1.5 text-[11px] text-[color:var(--danger,#b03030)]">{tplError}</p>
+            <p className="font-mono-num mt-2 text-[11px] text-[color:var(--danger,#b03030)]">{tplError}</p>
           ) : null}
           <button
             type="button"
             onClick={() => void handleProposeTemplate()}
             disabled={tplBusy || tplRationale.trim().length === 0 || tplId.length === 0}
-            className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-[color:var(--accent)] px-4 py-1.5 text-[12px] font-semibold text-[color:var(--accent-fg)] disabled:opacity-60"
+            className="mt-2 inline-flex items-center gap-2 rounded-full bg-[color:var(--accent)] px-4 py-2 text-[12px] font-semibold text-[color:var(--accent-fg)] disabled:opacity-60"
           >
-            {tplBusy ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : null}
+            {tplBusy ? <span className="lume-busy-dots" aria-hidden /> : null}
             {tplBusy ? t('proposing') : t('proposeTemplate')}
           </button>
         </div>
@@ -280,7 +280,7 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
       {/* list */}
       {proposals === null ? (
         <div className="inline-flex items-center gap-2 text-[12px] text-[color:var(--fg-subtle)]">
-          <Loader2 className="size-3.5 animate-spin" aria-hidden />
+          <span className="lume-busy-dots" aria-hidden />
           {t('loading')}
         </div>
       ) : loadError ? (
@@ -290,7 +290,7 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
       ) : (
         <ul className="space-y-3">
           {proposals.map((p) => (
-            <li key={p.id} className="rounded-[10px] border border-[color:var(--border)] bg-[color:var(--bg)] p-3">
+            <li key={p.id} className="rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <DecisionBadge decision={p.decision} status={p.status} t={t} />
                 <span className="font-mono-num text-[10px] text-[color:var(--fg-subtle)]">
@@ -301,7 +301,7 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
 
               {p.escalations.length > 0 ? (
                 <div className="mt-2 rounded border border-[color:var(--danger,#b03030)]/40 bg-[color:var(--danger,#b03030)]/6 p-2">
-                  <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--danger,#b03030)]">
+                  <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--danger,#b03030)]">
                     <AlertTriangle className="size-3.5" aria-hidden />
                     {t('escalationsTitle')}
                   </div>
@@ -346,7 +346,7 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
                       type="button"
                       disabled={actionBusyId === p.id || denyReason.trim().length === 0}
                       onClick={() => void runAction(p.id, () => denySelfExtensionProposal(p.id, denyReason))}
-                      className="rounded-full bg-[color:var(--danger,#b03030)] px-3 py-1 text-[12px] font-semibold text-white disabled:opacity-60"
+                      className="rounded-full bg-[color:var(--danger,#b03030)] px-3 py-1 text-[12px] font-semibold text-[color:var(--fg-on-dark)] disabled:opacity-60"
                     >
                       {t('confirmDeny')}
                     </button>
@@ -367,16 +367,16 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
                       type="button"
                       disabled={actionBusyId === p.id}
                       onClick={() => void runAction(p.id, () => approveSelfExtensionProposal(p.id))}
-                      className="inline-flex items-center gap-1.5 rounded-full bg-[color:var(--accent)] px-3 py-1 text-[12px] font-semibold text-[color:var(--accent-fg)] disabled:opacity-60"
+                      className="inline-flex items-center gap-2 rounded-full bg-[color:var(--accent)] px-3 py-1 text-[12px] font-semibold text-[color:var(--accent-fg)] disabled:opacity-60"
                     >
-                      {actionBusyId === p.id ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <Check className="size-3.5" aria-hidden />}
+                      {actionBusyId === p.id ? <span className="lume-busy-dots" aria-hidden /> : <Check className="size-3.5" aria-hidden />}
                       {t('approve')}
                     </button>
                     <button
                       type="button"
                       disabled={actionBusyId === p.id}
                       onClick={() => setDenyFor(p.id)}
-                      className="inline-flex items-center gap-1.5 rounded-full bg-[color:var(--bg-soft)] px-3 py-1 text-[12px] font-semibold text-[color:var(--fg-muted)] ring-1 ring-inset ring-[color:var(--border)]"
+                      className="inline-flex items-center gap-2 rounded-full bg-[color:var(--bg-soft)] px-3 py-1 text-[12px] font-semibold text-[color:var(--fg-muted)] ring-1 ring-inset ring-[color:var(--border)]"
                     >
                       <X className="size-3.5" aria-hidden />
                       {t('deny')}
@@ -395,9 +395,9 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
                       router.refresh();
                     })
                   }
-                  className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-[color:var(--accent)] px-3 py-1 text-[12px] font-semibold text-[color:var(--accent-fg)] disabled:opacity-60"
+                  className="mt-3 inline-flex items-center gap-2 rounded-full bg-[color:var(--accent)] px-3 py-1 text-[12px] font-semibold text-[color:var(--accent-fg)] disabled:opacity-60"
                 >
-                  {actionBusyId === p.id ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : null}
+                  {actionBusyId === p.id ? <span className="lume-busy-dots" aria-hidden /> : null}
                   {actionBusyId === p.id ? t('installing') : t('install')}
                 </button>
               ) : null}
@@ -427,7 +427,7 @@ function DecisionBadge({
           ? 'text-[color:var(--danger,#b03030)] border-[color:var(--danger,#b03030)]/40 bg-[color:var(--danger,#b03030)]/6'
           : 'text-[color:var(--fg-muted)] border-[color:var(--border)] bg-[color:var(--bg-soft)]';
   return (
-    <span className={cn('inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold', tone)}>
+    <span className={cn('inline-flex items-center gap-2 rounded-full border px-3 py-0.5 text-[11px] font-semibold', tone)}>
       <ShieldQuestion className="size-3.5" aria-hidden />
       {t(`status_${status}`)} · {t(`decision_${decision}`)}
     </span>

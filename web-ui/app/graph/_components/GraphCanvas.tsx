@@ -912,7 +912,7 @@ export default function GraphCanvas({
       />
       <div className="pointer-events-none absolute inset-0 flex items-start justify-between p-3">
         <Legend dark={dark} filter={filter} />
-        <div className="pointer-events-auto flex flex-col gap-1.5 rounded-lg border border-neutral-200 bg-white/90 p-1.5 shadow-sm backdrop-blur dark:border-neutral-700 dark:bg-neutral-900/80">
+        <div className="pointer-events-auto flex flex-col gap-2 rounded-lg border border-[color:var(--border)] bg-[color:var(--bg-elevated)]/90 p-2 shadow-sm backdrop-blur">
           <IconBtn title="Zoom in" onClick={zoomIn}>＋</IconBtn>
           <IconBtn title="Zoom out" onClick={zoomOut}>−</IconBtn>
           <IconBtn title="Fit" onClick={fit}>⤢</IconBtn>
@@ -920,11 +920,11 @@ export default function GraphCanvas({
         </div>
       </div>
       {elements.length === 0 && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-neutral-500">
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-[color:var(--fg-muted)]">
           keine Knoten — Session links wählen oder Filter anpassen
         </div>
       )}
-      <div className="pointer-events-none absolute bottom-2 left-3 text-[10px] text-neutral-500">
+      <div className="pointer-events-none absolute bottom-2 left-3 text-[10px] text-[color:var(--fg-muted)]">
         Klick = Auswählen · Doppelklick = Nachbarn laden · Rad = Zoom · Ziehen = Pan
       </div>
     </div>
@@ -945,7 +945,7 @@ function IconBtn({
       type="button"
       title={title}
       onClick={onClick}
-      className="flex h-7 w-7 items-center justify-center rounded font-mono text-sm text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
+      className="flex h-7 w-7 items-center justify-center rounded font-mono text-sm text-[color:var(--fg-muted)] hover:bg-[color:var(--bg-soft)]"
     >
       {children}
     </button>
@@ -1013,10 +1013,10 @@ function Legend({
   return (
     <div
       className={[
-        'pointer-events-auto flex flex-col gap-1 rounded-lg border px-2 py-1.5 text-[10px] shadow-sm backdrop-blur',
+        'pointer-events-auto flex flex-col gap-1 rounded-lg border px-2 py-2 text-[10px] shadow-sm backdrop-blur',
         dark
-          ? 'border-neutral-700 bg-neutral-900/80 text-neutral-300'
-          : 'border-neutral-200 bg-white/90 text-neutral-600',
+          ? 'border-[color:var(--border-strong)] bg-[color:var(--bg-inverse)]/80 text-[color:var(--fg-subtle)]'
+          : 'border-[color:var(--border)] bg-[color:var(--bg-elevated)]/90 text-[color:var(--fg-muted)]',
       ].join(' ')}
     >
       {items.map(([t, label]) => (
@@ -1028,7 +1028,7 @@ function Legend({
           <span>{label}</span>
         </div>
       ))}
-      <div className="my-1 h-px bg-neutral-300/50 dark:bg-neutral-700/60" />
+      <div className="my-1 h-px bg-[color:var(--state-loading)]/50" />
       {edgeRows.map(([color, label]) => (
         <div key={label} className="flex items-center gap-2">
           <span

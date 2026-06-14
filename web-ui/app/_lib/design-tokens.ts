@@ -1,95 +1,97 @@
 /**
- * Harness Platform — Design Tokens (TypeScript mirror of byte5 brand)
+ * omadia operator UI — Design Tokens (TypeScript mirror of the Lume tokens)
  * ---------------------------------------------------------------------------
- * The authoritative source is `theme.css`. This mirror exists for cases
- * where CSS var() isn't an option (Cytoscape canvas styles, chart libs,
- * canvas-drawn components). KEEP IN SYNC with theme.css.
+ * The authoritative source is `theme.css` (Lume, omadia visual spec v0.4).
+ * This mirror exists for the few cases where CSS `var()` isn't reachable —
+ * Cytoscape canvas styles, chart libs, canvas-drawn components. KEEP IN SYNC
+ * with theme.css.
  *
- * Brand summary (per byte5 README):
- *   - Core palette: only 5 colours (Blau, Blau dunkel, Weiss, Schwarz, Magenta).
- *   - Magenta is reserved for the signature ":" device — no state / UI chrome.
- *   - Typography: Days One for display/logo only; Nunito Sans for body.
- *   - Radii: pill (9999px) for CTAs + small (8–14px) for cards. No mid radii.
+ * Note on palette + mode: theme.css resolves three accent palettes (Petrol,
+ * Atelier, Lagoon) across light/dark via `light-dark()` + `[data-palette]`.
+ * This static mirror can only hold one snapshot, so it carries the **Lagoon
+ * light** defaults (the spec's default palette, §2.5.3). Canvas/chart surfaces
+ * that must follow the live palette/mode should read the CSS custom properties
+ * off `getComputedStyle(document.documentElement)` instead of these constants.
  */
 
 export const tokens = {
-  /** CORE — the five brand-official colours. */
-  brand: {
-    blau:        '#009FE3',
-    blauDunkel:  '#004B73',
-    weiss:       '#FFFFFF',
-    schwarz:     '#000000',
-    magenta:     '#EA5172',
+  /** Accent — the three Lume palettes' base fills (light mode, spec §2.5). */
+  accentPalette: {
+    lagoon:  '#1F8FA3',
+    petrol:  '#0F7AB8',
+    atelier: '#B36B2E',
   },
 
-  /** SYSTEM — grayscale + semantic roles derived to harmonise with core. */
+  /** SYSTEM — semantic roles (Lagoon light snapshot). */
   color: {
     // bg / fg semantic roles (light mode)
-    bg:            '#FFFFFF',
-    bgSoft:        '#F4F7FA',
+    bg:            '#F7F8FB',
+    bgSoft:        '#F2F3F7',
     bgElevated:    '#FFFFFF',
-    bgInverse:     '#004B73',
+    bgInverse:     '#1B1D24',
 
-    fg:            '#004B73',
-    fgStrong:      '#004B73',
-    fgMuted:       '#5F6E7B',
-    fgSubtle:      '#8A99A6',
-    fgOnDark:      '#FFFFFF',
-    fgOnAccent:    '#FFFFFF',
+    fg:            '#1B1D24',
+    fgStrong:      '#1B1D24',
+    fgMuted:       '#5B5F6B',
+    fgSubtle:      '#8D9099',
+    fgOnDark:      '#FCFCFD',
+    fgOnAccent:    '#FCFCFD',
 
-    accent:        '#009FE3',
-    accentHover:   '#0086C0',
-    accentPress:   '#006C9C',
+    accent:        '#1F8FA3',
+    accentHover:   '#197D90',
+    accentPress:   '#146B7C',
 
-    highlight:     '#EA5172',
+    highlight:     '#1F8FA3',
 
-    border:        '#D3DDE5',
-    borderStrong:  '#B4C2CD',
+    border:        '#E3E4E8',
+    borderStrong:  '#CDCED4',
 
-    success:       '#15A06B',
-    warning:       '#E0A82E',
-    danger:        '#D9354C',
-    info:          '#009FE3',
+    success:       '#3F7A55',
+    warning:       '#8C6A1F',
+    danger:        '#A8443B',
+    info:          '#1F8FA3',
   },
 
-  /** Grayscale ramp (50…900). */
+  /** Neutral ramp (50…900), hue ~250 to match the Lume surface family. */
   gray: {
-    50:  '#F4F7FA',
-    100: '#E8EEF3',
-    200: '#D3DDE5',
-    300: '#B4C2CD',
-    400: '#8A99A6',
-    500: '#5F6E7B',
-    600: '#3F4D59',
-    700: '#283540',
-    800: '#15212B',
-    900: '#0A1420',
+    50:  '#F7F8FB',
+    100: '#ECEDF2',
+    200: '#DCDEE3',
+    300: '#BFC1C6',
+    400: '#8D9099',
+    500: '#5B5F6B',
+    600: '#3E414C',
+    700: '#2A2D38',
+    800: '#1F2127',
+    900: '#16181E',
   },
 
   typography: {
-    displayFamily:
-      "'Days One', 'Nunito Sans', system-ui, sans-serif",
-    textFamily:
-      "'Nunito Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif",
+    sansFamily:
+      "'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif",
+    serifFamily:
+      "'Source Serif 4', Charter, 'Iowan Old Style', Georgia, serif",
     monoFamily:
-      "'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace",
+      "'Geist Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace",
   },
 
+  /** Lume radius scale (spec §2.9). */
   radii: {
-    xs:     '4px',
-    sm:     '8px',
-    md:     '14px',
-    lg:     '22px',
-    pill:   '9999px',
+    none:   '0',
+    sm:     '6px',
+    md:     '8px',
+    lg:     '12px',
+    pill:   '999px',
     circle: '50%',
   },
 
+  /** Lume motion tokens (spec §2.11). */
   motion: {
-    easeOut:   'cubic-bezier(0.22, 0.61, 0.36, 1)',
-    easeInOut: 'cubic-bezier(0.65, 0, 0.35, 1)',
-    durFast:   '140ms',
-    durBase:   '220ms',
-    durSlow:   '360ms',
+    standard: 'cubic-bezier(0.22, 0.61, 0.36, 1)',
+    emphasis: 'cubic-bezier(0.4, 0, 0.2, 1)',
+    quick:    '100ms',
+    smooth:   '200ms',
+    deliberate: '320ms',
   },
 } as const;
 

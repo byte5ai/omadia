@@ -1,167 +1,331 @@
 /* ==========================================================================
-   Harness Platform — Design Tokens (CSS source of truth)
+   omadia operator UI — Design Tokens (CSS source of truth)
    --------------------------------------------------------------------------
-   byte5 Design System applied. Tokens are split into three tiers:
+   Design language: **Lume** (omadia visual spec v0.4).
+   Spec: byte5ai/omadia-ui · docs/visual-spec.md
 
-     1. CORE — the five official byte5 brand colours + typography/motion.
-        Source: ~/Downloads/byte5 Design System/colors_and_type.css.
-        Do not add non-brand values here.
-     2. SYSTEM — grayscale, semantic roles, surface gradients. Harmonic
-        with core; not part of the brand palette.
-     3. COMPAT — aliases matching the older "editorial" names used by the
-        first UI slice (`--paper`, `--ink`, `--oxblood`, etc). These remap
-        onto byte5 tokens so every existing `var(--paper)` etc. in
-        component code keeps working. Prefer the CORE / SYSTEM names in
-        new code.
+   Lume treats light as the material: UI reads as condensed out of light, with
+   the agent's attention visible as accent-tinted illumination. Four recipes
+   sit on top of a semantic token set:
 
-   Brand reference: README.md in the design system export. Key rules:
-   - Magenta `:` is a typographic device, not a state/UI colour.
-   - Pill radius (9999px) for CTAs; small radius (8–14px) for cards.
-   - Shadows are soft and blue-tinted, never neutral gray.
+     1. Surface luminosity — every surface is a 180° gradient between a
+        `.top` and `.btm` token (~1.5% lightness delta).
+     2. Accent as illumination — one accent slot with a fill plus three glow
+        sub-tokens (glow / glow-strong / glow-core) for focus, selection,
+        active states.
+     3. Directional borders — the border's top edge is lighter than the rest,
+        so edges read as catching light from above.
+     4. Soft corners — radius scale 6/8/12, hard radius-0 for editor surfaces.
+
+   Token tiers in this file:
+
+     1. PRIMITIVE — Lume raw tokens (spec §2): surface pairs, text, directional
+        border pairs, accent + glow (per active palette), semantic states.
+        Light/dark resolved with the CSS `light-dark()` function, driven by the
+        `color-scheme` property (system default, or forced via `[data-theme]`).
+     2. SEMANTIC — role names consumed by components (`--bg`, `--fg`,
+        `--accent`, `--border`, ...). These map onto the primitives.
+     3. COMPAT — editorial aliases the first UI slice used (`--paper`, `--ink`,
+        `--oxblood`, `--card`, ...). Remapped onto Lume so existing component
+        code keeps working without a per-component edit. Prefer SEMANTIC names
+        in new code.
+
+   Palette: three curated accents (Petrol, Atelier, Lagoon) bind to the single
+   accent slot via `[data-palette]` on <html>. Default: Lagoon (spec §2.5.3).
    ========================================================================== */
 
 :root {
   color-scheme: light dark;
 
   /* ============================================================
-     1. CORE — byte5 brand (official, five colours only)
+     1. PRIMITIVE — Lume surface tokens (spec §2.2)
+        Each surface is a top/btm pair, consumed as a 180° gradient.
+        light-dark(<light>, <dark>).
      ============================================================ */
-  --b5-blau:        #009FE3;   /* byte5-Blau — primary, Pantone Cyan C */
-  --b5-blau-dunkel: #004B73;   /* Blau dunkel — secondary, Pantone 3025 C */
-  --b5-weiss:       #FFFFFF;
-  --b5-schwarz:     #000000;
-  --b5-magenta:     #EA5172;   /* accent — SPARING use, signature ":" mark */
+  --bg-canvas-top:         light-dark(#FDFDFE, #232631);
+  --bg-canvas-btm:         light-dark(#F7F8FB, #1B1D24);
+  --bg-surface-top:        light-dark(#FFFFFF, #2A2D38);
+  --bg-surface-btm:        light-dark(#FAFAFD, #23262F);
+  --bg-surface-raised-top: light-dark(#FFFFFF, #303440);
+  --bg-surface-raised-btm: light-dark(#FCFCFE, #292C37);
+  --bg-surface-sunken-top: light-dark(#F2F3F7, #1D1F26);
+  --bg-surface-sunken-btm: light-dark(#ECEDF2, #16181E);
+  --bg-modal-surface-top:  light-dark(#FFFFFF, #303440);
+  --bg-modal-surface-btm:  light-dark(#FBFBFE, #292C37);
+  --bg-modal-overlay:      light-dark(rgba(20, 30, 50, 0.40), rgba(0, 0, 0, 0.60));
+
+  /* ---- Text tokens (spec §2.3) ---- */
+  --text-primary:   light-dark(#1B1D24, #EEEFF3);
+  --text-secondary: light-dark(#5B5F6B, #B6B9C3);
+  --text-tertiary:  light-dark(#8D9099, #888B95);
+  --text-disabled:  light-dark(#BFC1C6, #525561);
+  --text-inverse:   light-dark(#FCFCFD, #1F2127);
+
+  /* ---- Directional border pairs (spec §2.4) ----
+     Rendered as `1px solid <btm>` + `border-top-color: <top>` via the
+     `.lume-border*` recipes. Light from above in both modes. */
+  --border-subtle-top:  light-dark(rgba(20, 24, 36, 0.05), rgba(255, 255, 255, 0.06));
+  --border-subtle-btm:  light-dark(rgba(20, 24, 36, 0.09), rgba(0, 0, 0, 0.40));
+  --border-default-top: light-dark(rgba(20, 24, 36, 0.08), rgba(255, 255, 255, 0.10));
+  --border-default-btm: light-dark(rgba(20, 24, 36, 0.14), rgba(0, 0, 0, 0.50));
+  --border-strong-top:  light-dark(rgba(20, 24, 36, 0.16), rgba(255, 255, 255, 0.18));
+  --border-strong-btm:  light-dark(rgba(20, 24, 36, 0.26), rgba(0, 0, 0, 0.60));
+
+  /* ---- Semantic state tokens (spec §2.6) — text-only, never filled pills ---- */
+  --state-loading:     light-dark(#DCDEE3, #3E414C);
+  --state-loading-hi:  light-dark(#EFEFF2, #525561);
+  --state-error-fg:    light-dark(#A8443B, #E08577);
+  --state-error-edge:  light-dark(#C45A50, #C5685A);
+  --state-success-fg:  light-dark(#3F7A55, #88C499);
+  --state-warning-fg:  light-dark(#8C6A1F, #D6B468);
 
   /* ============================================================
-     2. SYSTEM — extended tokens (grays, semantics, surfaces)
+     Accent — active palette. Default = Lagoon (spec §2.5.3).
+     Overridden by [data-palette="petrol"|"atelier"|"lagoon"] below.
+     Seven sub-tokens per spec §2.5; light/dark via light-dark().
      ============================================================ */
-  --gray-50:  #F4F7FA;
-  --gray-100: #E8EEF3;
-  --gray-200: #D3DDE5;
-  --gray-300: #B4C2CD;
-  --gray-400: #8A99A6;
-  --gray-500: #5F6E7B;
-  --gray-600: #3F4D59;
-  --gray-700: #283540;
-  --gray-800: #15212B;
-  --gray-900: #0A1420;
-
-  --surface-gradient:      linear-gradient(180deg, #F1F5F9 0%, #E3ECF3 100%);
-  --surface-gradient-cyan: radial-gradient(120% 80% at 0% 0%, #B7E5F8 0%, #E8F2F8 60%, #F4F7FA 100%);
-
-  /* Semantic roles */
-  --bg:            var(--b5-weiss);
-  --bg-soft:       var(--gray-50);
-  --bg-elevated:   var(--b5-weiss);
-  --bg-inverse:    var(--b5-blau-dunkel);
-  --bg-tinted:     var(--surface-gradient);
-
-  --fg:            var(--b5-blau-dunkel);
-  --fg-strong:     var(--b5-blau-dunkel);
-  --fg-muted:      var(--gray-500);
-  --fg-subtle:     var(--gray-400);
-  --fg-on-dark:    var(--b5-weiss);
-  --fg-on-accent:  var(--b5-weiss);
-
-  --accent:        var(--b5-blau);      /* interactive accent / primary CTA */
-  --accent-fg:     var(--b5-weiss);
-  --accent-hover:  #0086C0;
-  --accent-press:  #006C9C;
-
-  --highlight:     var(--b5-magenta);   /* the ":" pop colour */
-  --highlight-fg:  var(--b5-weiss);
-
-  --border:        var(--gray-200);
-  --border-strong: var(--gray-300);
-  --divider:       rgba(0, 75, 115, 0.12);
-
-  --success:       #15A06B;
-  --warning:       #E0A82E;
-  --danger:        #D9354C;
-  --info:          var(--b5-blau);
+  --accent:            light-dark(#1F8FA3, #6FC8D6);
+  --accent-hover:      light-dark(#197D90, #88D2DE);
+  --accent-active:     light-dark(#146B7C, #A1DCE6);
+  --accent-subtle:     light-dark(rgba(31, 143, 163, 0.12), rgba(111, 200, 214, 0.20));
+  --accent-glow:       light-dark(rgba(60, 175, 195, 0.32), rgba(111, 200, 214, 0.32));
+  --accent-glow-strong:light-dark(rgba(60, 175, 195, 0.48), rgba(111, 200, 214, 0.48));
+  --accent-glow-core:  light-dark(rgba(180, 238, 248, 0.60), rgba(210, 245, 250, 0.50));
 
   /* ============================================================
-     3. COMPAT — aliases for the first-slice editorial names
-        so pre-existing component code reads the byte5 palette
-        without touching every file.
+     2. SEMANTIC — role names consumed across components.
+     ============================================================ */
+  --bg:           var(--bg-canvas-btm);
+  --bg-soft:      var(--bg-surface-sunken-top);
+  --bg-elevated:  var(--bg-surface-raised-top);
+  --bg-inverse:   light-dark(#1B1D24, #EEEFF3);
+  --bg-tinted:    var(--surface-gradient);
+
+  --fg:           var(--text-primary);
+  --fg-strong:    var(--text-primary);
+  --fg-muted:     var(--text-secondary);
+  --fg-subtle:    var(--text-tertiary);
+  --fg-disabled:  var(--text-disabled);
+  /* Text on an inverse-colored surface (--bg-inverse). The inverse surface
+     flips per mode (dark chip in light mode, light chip in dark mode), so its
+     text must flip with it — pinning this to white breaks dark mode. */
+  --fg-on-dark:   var(--text-inverse);
+  --fg-on-accent: var(--text-inverse);
+
+  --accent-fg:    var(--text-inverse);
+  --accent-press: var(--accent-active);
+
+  --highlight:    var(--accent);          /* byte5 magenta retired → accent */
+  --highlight-fg: var(--accent-fg);
+
+  /* Single-color border fallback for components that paint one border color
+     on all four sides. A faint light-from-above hairline, visible in both
+     modes. The directional pair tokens above drive the `.lume-border` recipe
+     where the full top/btm treatment is wanted. */
+  --border:        light-dark(rgba(20, 24, 36, 0.10), rgba(255, 255, 255, 0.10));
+  --border-strong: light-dark(rgba(20, 24, 36, 0.18), rgba(255, 255, 255, 0.16));
+  --divider:       light-dark(rgba(20, 24, 36, 0.07), rgba(255, 255, 255, 0.07));
+
+  --success:      var(--state-success-fg);
+  --warning:      var(--state-warning-fg);
+  --danger:       var(--state-error-fg);
+  --danger-edge:  var(--state-error-edge);
+  --info:         var(--accent);
+
+  /* Surface gradients (spec §3.1) for token-driven backgrounds. */
+  --surface-gradient:
+      linear-gradient(180deg, var(--bg-canvas-top) 0%, var(--bg-canvas-btm) 100%);
+  --surface-gradient-accent:
+      radial-gradient(120% 80% at 0% 0%,
+        var(--accent-subtle) 0%, var(--bg-soft) 55%, var(--bg) 100%);
+  --surface-gradient-cyan: var(--surface-gradient-accent); /* compat alias */
+
+  /* ============================================================
+     3. COMPAT — editorial aliases used by the first UI slice so
+        pre-existing `var(--paper)` etc. keep resolving on Lume.
      ============================================================ */
   --paper:       var(--bg);
-  --paper-soft:  var(--gray-50);
-  --paper-sink:  var(--gray-100);
+  --paper-soft:  var(--bg-soft);
+  --paper-sink:  light-dark(#ECEDF2, #16181E);
 
   --ink:         var(--fg);
   --muted-ink:   var(--fg-muted);
   --faint-ink:   var(--fg-subtle);
+  --fg-default:  var(--fg);
 
   --rule:        var(--border);
   --rule-strong: var(--border-strong);
 
-  --oxblood:     var(--accent);         /* primary CTA → byte5-Blau */
+  --oxblood:     var(--accent);
   --oxblood-ink: var(--accent-hover);
   --forest:      var(--success);
   --amber:       var(--warning);
-  --sky:         var(--b5-blau-dunkel);
+  --sky:         var(--accent);
+  --ok:          var(--success);
+  --warn:        var(--warning);
+
+  --card:           var(--bg-elevated);
+  --surface:        var(--bg-elevated);
+  --surface-muted:  var(--bg-soft);
+  --bg-subtle:      var(--bg-soft);
+  --bg-hover:       light-dark(#F2F3F7, #1D1F26);
+  --accent-bg:      var(--accent-subtle);
+
+  --nav-h: 56px;
 
   /* ============================================================
-     Typography — families
-     (Next/font loads Days One, Nunito Sans and JetBrains Mono via
-     layout.tsx and assigns the matching --font-* CSS variables at
-     :root. The fallbacks below keep the stack valid even when the
-     next/font variables haven't hydrated yet.)
+     Typography — families (spec §2.7)
+     next/font (layout.tsx) self-hosts Geist, Geist Mono and
+     Source Serif 4, assigning --font-geist / --font-geist-mono /
+     --font-source-serif. The stacks below add the platform-strongest
+     fallbacks and stay valid before next/font hydrates.
      ============================================================ */
-  --font-display:  'Days One', 'Nunito Sans', system-ui, sans-serif;
-  --font-text:     'Nunito Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --font-serif:    var(--font-display);  /* compat with old name */
-  --font-sans:     var(--font-text);     /* compat with old name */
-  --font-mono:     'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --font-sans:  var(--font-geist), system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono:  var(--font-geist-mono), ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  --font-serif: var(--font-source-serif), Charter, 'Iowan Old Style', Georgia, serif;
+  /* Compat names from the first slice. Structural register is Geist; the old
+     display face (Days One) is retired — headings are Geist 600. */
+  --font-text:    var(--font-sans);
+  --font-display: var(--font-sans);
 
   /* ============================================================
-     Radii, shadows, motion (from byte5 kit)
+     Spacing — 4pt grid, closed set (spec §2.8)
      ============================================================ */
-  --radius-xs:     4px;
-  --radius-sm:     8px;
-  --radius-md:     14px;
-  --radius-lg:     22px;
-  --radius-pill:   9999px;
+  --space-0: 0;
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 8px;
+  --space-4: 12px;
+  --space-5: 16px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 48px;
+  --space-9: 64px;
+
+  /* ============================================================
+     Radii — Lume scale (spec §2.9). radius-0 for editor surfaces.
+     ============================================================ */
+  --radius-0:      0;
+  --radius-xs:     6px;   /* legacy name → sm */
+  --radius-sm:     6px;
+  --radius-md:     8px;
+  --radius-lg:     12px;
+  --radius-pill:   999px;
   --radius-circle: 50%;
 
-  --shadow-xs:      0 1px 2px   rgba(0, 75, 115, 0.06);
-  --shadow-sm:      0 2px 6px   rgba(0, 75, 115, 0.08);
-  --shadow-md:      0 8px 24px  rgba(0, 75, 115, 0.10);
-  --shadow-lg:      0 18px 40px rgba(0, 75, 115, 0.14);
-  --shadow-cta:     0 12px 28px rgba(0, 159, 227, 0.30);
-  --shadow-magenta: 0 12px 28px rgba(234, 81, 114, 0.28);
+  /* ============================================================
+     Elevation (spec §2.10). Cards get NO shadow — they are
+     differentiated by border + radius + surface luminosity.
+     Modals carry an accent-glow component (the lit object).
+     ============================================================ */
+  /* light-dark() is a <color> function — it may only sit in the COLOR
+     position of a shadow layer, never wrap the whole layer (that parses as
+     invalid and drops the declaration). */
+  --shadow-xs: 0 1px 2px light-dark(rgba(20, 24, 36, 0.04), rgba(0, 0, 0, 0.30));
+  --shadow-sm: 0 1px 2px light-dark(rgba(20, 24, 36, 0.04), rgba(0, 0, 0, 0.30));
+  --shadow-md:
+      0 1px 2px light-dark(rgba(20, 24, 36, 0.04), rgba(0, 0, 0, 0.30)),
+      0 8px 24px light-dark(rgba(20, 24, 36, 0.06), rgba(0, 0, 0, 0.45));
+  --shadow-lg:
+      0 4px 16px light-dark(rgba(20, 24, 36, 0.06), rgba(0, 0, 0, 0.55)),
+      0 24px 48px light-dark(rgba(20, 24, 36, 0.12), rgba(0, 0, 0, 0.65)),
+      0 0 32px var(--accent-glow-core),
+      0 0 96px var(--accent-glow);
+  /* elev.drag (§2.10) — drag-in-flight ghost. No accent glow: drag is an
+     operation, not an active state (§6.7). */
+  --shadow-drag: 0 8px 24px light-dark(rgba(20, 24, 36, 0.16), rgba(0, 0, 0, 0.55));
+  /* Accent emphasis on CTAs uses the two-stop Lume glow (spec §3.2), not a
+     drop shadow. */
+  --shadow-cta:     0 0 4px var(--accent-glow-core), 0 4px 12px var(--accent-glow);
+  --shadow-magenta: var(--shadow-cta); /* compat alias */
 
-  --ease-out:    cubic-bezier(0.22, 0.61, 0.36, 1);
+  /* ============================================================
+     Motion (spec §2.11)
+     ============================================================ */
+  --motion-instant:    0ms;
+  --motion-quick:      100ms;
+  --motion-smooth:     200ms;
+  --motion-deliberate: 320ms;
+  --motion-condense:   800ms;
+  /* compat duration names */
+  --dur-fast: var(--motion-quick);
+  --dur-base: var(--motion-smooth);
+  --dur-slow: var(--motion-deliberate);
+
+  --easing-standard: cubic-bezier(0.22, 0.61, 0.36, 1.00);
+  --easing-emphasis: cubic-bezier(0.40, 0.00, 0.20, 1.00);
+  --easing-linear:   linear;
+  /* compat easing names */
+  --ease-out:    var(--easing-standard);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
-  --dur-fast:    140ms;
-  --dur-base:    220ms;
-  --dur-slow:    360ms;
 }
 
 /* ============================================================
-   Dark mode — inverse surfaces use Blau dunkel per brand guide.
+   Explicit light/dark override. By default `color-scheme: light dark`
+   follows the OS (`prefers-color-scheme`). A `[data-theme]` on <html>
+   pins the scheme so light-dark() resolves to the chosen mode.
    ============================================================ */
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg:            #0B1A24;             /* deeper than Blau dunkel for admin comfort */
-    --bg-soft:       #102533;
-    --bg-elevated:   #15303F;
+:root[data-theme='light'] { color-scheme: light; }
+:root[data-theme='dark']  { color-scheme: dark; }
 
-    --fg:            #E8F2F8;
-    --fg-strong:     #FFFFFF;
-    --fg-muted:      #A4B4C2;
-    --fg-subtle:     #768796;
+/* ============================================================
+   Accent palettes (spec §2.5). Bind one to the accent slot via
+   [data-palette] on <html>. Each carries light + dark via light-dark().
+   `lagoon` is also the :root default above.
+   ============================================================ */
+/* ============================================================
+   §6.6 Palette-switch crossfade. Registering the accent sub-tokens as
+   typed <color> properties lets the browser interpolate them — which
+   animates every gradient, glow and fill that consumes them. The
+   transition is gated on a transient .lume-xfade class (set by
+   ThemeControls for ~250ms around a palette change) so that the
+   light/dark THEME switch stays motion.instant per §2.11.
+   ============================================================ */
+@property --accent            { syntax: '<color>'; inherits: true; initial-value: #1F8FA3; }
+@property --accent-hover      { syntax: '<color>'; inherits: true; initial-value: #197D90; }
+@property --accent-active     { syntax: '<color>'; inherits: true; initial-value: #146B7C; }
+@property --accent-subtle     { syntax: '<color>'; inherits: true; initial-value: rgba(31, 143, 163, 0.12); }
+@property --accent-glow       { syntax: '<color>'; inherits: true; initial-value: rgba(60, 175, 195, 0.32); }
+@property --accent-glow-strong{ syntax: '<color>'; inherits: true; initial-value: rgba(60, 175, 195, 0.48); }
+@property --accent-glow-core  { syntax: '<color>'; inherits: true; initial-value: rgba(180, 238, 248, 0.60); }
 
-    --border:        rgba(255, 255, 255, 0.10);
-    --border-strong: rgba(255, 255, 255, 0.18);
-    --divider:       rgba(255, 255, 255, 0.10);
+html.lume-xfade {
+  transition:
+    --accent 200ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    --accent-hover 200ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    --accent-active 200ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    --accent-subtle 200ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    --accent-glow 200ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    --accent-glow-strong 200ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    --accent-glow-core 200ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
 
-    --surface-gradient:
-        linear-gradient(180deg, #0E1F2A 0%, #162C3B 100%);
+:root[data-palette='lagoon'] {
+  --accent:            light-dark(#1F8FA3, #6FC8D6);
+  --accent-hover:      light-dark(#197D90, #88D2DE);
+  --accent-active:     light-dark(#146B7C, #A1DCE6);
+  --accent-subtle:     light-dark(rgba(31, 143, 163, 0.12), rgba(111, 200, 214, 0.20));
+  --accent-glow:       light-dark(rgba(60, 175, 195, 0.32), rgba(111, 200, 214, 0.32));
+  --accent-glow-strong:light-dark(rgba(60, 175, 195, 0.48), rgba(111, 200, 214, 0.48));
+  --accent-glow-core:  light-dark(rgba(180, 238, 248, 0.60), rgba(210, 245, 250, 0.50));
+}
 
-    /* byte5 core colours keep their hex; hover adapts so it stays visible. */
-    --accent-hover:  #33B0E8;
-    --accent-press:  #66C1ED;
-  }
+:root[data-palette='petrol'] {
+  --accent:            light-dark(#0F7AB8, #52B0E2);
+  --accent-hover:      light-dark(#0C6CA8, #74C0E8);
+  --accent-active:     light-dark(#0A5E94, #90CFEE);
+  --accent-subtle:     light-dark(rgba(15, 122, 184, 0.10), rgba(82, 176, 226, 0.16));
+  --accent-glow:       light-dark(rgba(15, 122, 184, 0.22), rgba(82, 176, 226, 0.28));
+  --accent-glow-strong:light-dark(rgba(15, 122, 184, 0.36), rgba(82, 176, 226, 0.44));
+  --accent-glow-core:  light-dark(rgba(165, 215, 240, 0.55), rgba(197, 229, 245, 0.45));
+}
+
+:root[data-palette='atelier'] {
+  --accent:            light-dark(#B36B2E, #E0A26B);
+  --accent-hover:      light-dark(#9F5C26, #E5B080);
+  --accent-active:     light-dark(#8A4E1F, #EBBE93);
+  --accent-subtle:     light-dark(rgba(179, 107, 46, 0.10), rgba(224, 162, 107, 0.18));
+  --accent-glow:       light-dark(rgba(179, 107, 46, 0.24), rgba(224, 162, 107, 0.30));
+  --accent-glow-strong:light-dark(rgba(179, 107, 46, 0.38), rgba(224, 162, 107, 0.46));
+  --accent-glow-core:  light-dark(rgba(245, 215, 175, 0.55), rgba(250, 228, 200, 0.45));
 }

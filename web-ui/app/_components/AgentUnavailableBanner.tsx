@@ -69,18 +69,18 @@ export function AgentUnavailableBanner(
   }
 
   return (
-    <div className="mx-auto mt-4 max-w-4xl rounded border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
+    <div className="mx-auto mt-4 max-w-4xl rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 p-4 text-sm text-[color:var(--warning)]">
       <p className="font-medium">{t('unavailableTitle')}</p>
-      <p className="mt-1 text-amber-800">
+      <p className="mt-1 text-[color:var(--warning)]">
         {t('unavailableBody', { slug: props.unavailableSlug })}
       </p>
       {error && (
-        <p className="mt-2 text-red-800">{error}</p>
+        <p className="mt-2 text-[color:var(--danger)]">{error}</p>
       )}
       <div className="mt-3 flex gap-2">
         <button
           type="button"
-          className="rounded border border-amber-400 bg-white px-3 py-1 text-xs font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+          className="rounded border border-[color:var(--warning)] bg-[color:var(--bg-elevated)] px-3 py-1 text-xs font-medium text-[color:var(--warning)] hover:bg-[color:var(--warning)]/10 disabled:opacity-50"
           disabled={!!busy}
           onClick={() => void reSnapshot()}
         >
@@ -88,7 +88,7 @@ export function AgentUnavailableBanner(
         </button>
         <button
           type="button"
-          className="rounded border border-red-400 bg-white px-3 py-1 text-xs font-medium text-red-800 hover:bg-red-50 disabled:opacity-50"
+          className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--bg-elevated)] px-3 py-1 text-xs font-medium text-[color:var(--danger)] hover:bg-[color:var(--danger)]/8 disabled:opacity-50"
           disabled={!!busy}
           onClick={() => void deleteSession()}
         >

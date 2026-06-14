@@ -6,8 +6,7 @@ import { useLocale } from 'next-intl';
 import {
   ArrowRight,
   Check,
-  Loader2,
-  Lock,
+    Lock,
   RefreshCw,
   Shield,
   Trash2,
@@ -113,7 +112,7 @@ export function InstallButton({
           type="button"
           disabled
           className={cn(
-            'group flex w-full items-center justify-between gap-3 rounded-full px-6 py-3.5',
+            'group flex w-full items-center justify-between gap-3 rounded-full px-6 py-3',
             'bg-[color:var(--bg-soft)] ring-1 ring-inset ring-[color:var(--border)]',
             'cursor-not-allowed text-[color:var(--fg-subtle)]',
           )}
@@ -154,7 +153,7 @@ export function InstallButton({
         onClick={handleOpen}
         aria-label={`${pluginName} installieren`}
         className={cn(
-          'group flex w-full items-center justify-between gap-3 rounded-full px-6 py-3.5',
+          'group flex w-full items-center justify-between gap-3 rounded-full px-6 py-3',
           'bg-[color:var(--accent)] text-[color:var(--accent-fg)] shadow-[var(--shadow-cta)]',
           'transition-[background,transform] duration-[var(--dur-fast)] ease-[var(--ease-out)]',
           'hover:bg-[color:var(--accent-hover)] active:translate-y-px active:bg-[color:var(--accent-press)]',
@@ -167,7 +166,7 @@ export function InstallButton({
           {phase.kind === 'success' ? 'Installation erfolgreich' : 'Jetzt installieren'}
         </span>
         {phase.kind === 'creating' ? (
-          <Loader2 className="size-5 animate-spin" aria-hidden />
+          <span className="lume-busy-dots" aria-hidden />
         ) : (
           <ArrowRight
             className="size-5 transition-transform group-hover:translate-x-0.5"
@@ -418,7 +417,7 @@ function InstalledPanel({
   return (
     <div className="space-y-3">
       {update ? (
-        <div className="rounded-[10px] border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/5 px-4 py-3">
+        <div className="rounded-md border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/5 px-4 py-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <span className="flex items-center gap-2 text-[13px] text-[color:var(--fg)]">
               <RefreshCw className="size-4 text-[color:var(--accent)]" aria-hidden />
@@ -431,9 +430,9 @@ function InstalledPanel({
               type="button"
               onClick={() => void doUpdate()}
               disabled={updating}
-              className="inline-flex items-center gap-1.5 rounded-full bg-[color:var(--accent)] px-4 py-1.5 text-[12px] font-semibold text-[color:var(--accent-fg)] disabled:opacity-60"
+              className="inline-flex items-center gap-2 rounded-full bg-[color:var(--accent)] px-4 py-2 text-[12px] font-semibold text-[color:var(--accent-fg)] disabled:opacity-60"
             >
-              {updating ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : null}
+              {updating ? <span className="lume-busy-dots" aria-hidden /> : null}
               {updating ? 'Aktualisiere …' : 'Aktualisieren'}
             </button>
           </div>
@@ -446,7 +445,7 @@ function InstalledPanel({
       ) : null}
       <div
         className={cn(
-          'flex w-full items-center gap-3 rounded-full px-6 py-3.5',
+          'flex w-full items-center gap-3 rounded-full px-6 py-3',
           'bg-[color:var(--success)]/10 ring-1 ring-inset ring-[color:var(--success)]/40',
           'text-[color:var(--success)]',
         )}
@@ -483,7 +482,7 @@ function InstalledPanel({
       )}
 
       {state.kind === 'confirming' && (
-        <div className="rounded-[10px] border border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] p-3">
+        <div className="rounded-md border border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] p-3">
           <p className="text-[12px] leading-relaxed text-[color:var(--fg)]">
             <strong>{pluginName}</strong> entfernen? Tool wird sofort aus dem
             Orchestrator abgebaut, der Vault-Namespace wird geleert, Registry-
@@ -511,7 +510,7 @@ function InstalledPanel({
             <button
               type="button"
               onClick={doUninstall}
-              className="rounded-full bg-[color:var(--danger,#b03030)] px-4 py-1.5 text-[12px] font-semibold text-white"
+              className="rounded-full bg-[color:var(--danger,#b03030)] px-4 py-2 text-[12px] font-semibold text-[color:var(--fg-on-dark)]"
             >
               {alsoDeletePackage
                 ? 'Ja, deinstallieren + löschen'
@@ -520,7 +519,7 @@ function InstalledPanel({
             <button
               type="button"
               onClick={() => setState({ kind: 'idle' })}
-              className="rounded-full bg-[color:var(--bg)] px-4 py-1.5 text-[12px] font-semibold text-[color:var(--fg-muted)] ring-1 ring-inset ring-[color:var(--border)]"
+              className="rounded-full bg-[color:var(--bg)] px-4 py-2 text-[12px] font-semibold text-[color:var(--fg-muted)] ring-1 ring-inset ring-[color:var(--border)]"
             >
               Abbrechen
             </button>
@@ -530,13 +529,13 @@ function InstalledPanel({
 
       {working && (
         <div className="inline-flex items-center gap-2 text-[12px] text-[color:var(--fg-muted)]">
-          <Loader2 className="size-3.5 animate-spin" aria-hidden />
+          <span className="lume-busy-dots" aria-hidden />
           Wird deinstalliert …
         </div>
       )}
 
       {state.kind === 'error' && (
-        <div className="rounded-[10px] border border-[color:var(--danger,#b03030)]/40 bg-[color:var(--danger,#b03030)]/6 px-3 py-2">
+        <div className="rounded-md border border-[color:var(--danger,#b03030)]/40 bg-[color:var(--danger,#b03030)]/6 px-3 py-2">
           <p className="text-[12px] text-[color:var(--danger,#b03030)]">
             Deinstallation fehlgeschlagen: {state.message}
           </p>
@@ -635,12 +634,12 @@ function InstallDrawer({
         </header>
 
         {phase.kind === 'creating' ? (
-          <div className="flex flex-1 flex-col items-center justify-center gap-3 p-10 text-[color:var(--muted-ink)]">
-            <Loader2 className="size-8 animate-spin" aria-hidden />
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-[color:var(--muted-ink)]">
+            <span className="lume-busy-dots" aria-hidden />
             <span className="text-sm">Job wird erstellt …</span>
           </div>
         ) : phase.kind === 'error' && !jobFromPhase ? (
-          <div className="min-h-0 flex-1 overflow-y-auto p-10">
+          <div className="min-h-0 flex-1 overflow-y-auto p-8">
             <InstallErrorBlock message={phase.message} />
           </div>
         ) : (
@@ -670,7 +669,7 @@ function InstallDrawer({
                   Installation rechts unten.
                 </p>
               ) : (
-                <div className="space-y-5">
+                <div className="space-y-4">
                   {fields.map((field) => (
                     <FieldRow
                       key={field.key}
@@ -688,7 +687,7 @@ function InstallDrawer({
               ) : null}
             </div>
 
-            <footer className="flex items-center justify-between gap-3 border-t border-[color:var(--rule)] bg-[color:var(--paper-soft)] px-8 py-5">
+            <footer className="flex items-center justify-between gap-3 border-t border-[color:var(--rule)] bg-[color:var(--paper-soft)] px-8 py-4">
               <p className="text-[11px] leading-relaxed text-[color:var(--muted-ink)]">
                 Secrets werden ausschließlich im per-Agent-Vault abgelegt.
                 <br />
@@ -706,7 +705,7 @@ function InstallDrawer({
                 )}
               >
                 {submitting ? (
-                  <Loader2 className="size-4 animate-spin" aria-hidden />
+                  <span className="lume-busy-dots" aria-hidden />
                 ) : null}
                 <span className="text-[15px] font-semibold">
                   {submitting ? 'Wird installiert …' : 'Installation bestätigen'}
@@ -847,9 +846,9 @@ function PrivacyModePicker({
 
   if (!loaded) {
     return (
-      <div className="rounded-[10px] border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-3 py-2.5">
+      <div className="rounded-md border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-3 py-3">
         <div className="flex items-center gap-2 text-[11px] text-[color:var(--fg-subtle)]">
-          <Loader2 className="size-3.5 animate-spin" aria-hidden />
+          <span className="lume-busy-dots" aria-hidden />
           Privacy-Mode wird geladen …
         </div>
       </div>
@@ -857,7 +856,7 @@ function PrivacyModePicker({
   }
   if (mode === null) {
     return (
-      <div className="rounded-[10px] border border-[color:var(--danger,#b03030)]/40 bg-[color:var(--danger,#b03030)]/5 px-3 py-2">
+      <div className="rounded-md border border-[color:var(--danger,#b03030)]/40 bg-[color:var(--danger,#b03030)]/5 px-3 py-2">
         <p className="text-[12px] text-[color:var(--danger,#b03030)]">
           Privacy-Mode konnte nicht geladen werden{error ? `: ${error}` : '.'}
         </p>
@@ -867,11 +866,11 @@ function PrivacyModePicker({
 
   const tone =
     mode === 'bypass'
-      ? 'border-amber-300 bg-amber-50/50 dark:border-amber-800/60 dark:bg-amber-950/20'
+      ? 'border-[color:var(--warning)] bg-[color:var(--warning)]/10'
       : 'border-[color:var(--border)] bg-[color:var(--bg-soft)]';
 
   return (
-    <div className={cn('rounded-[10px] border px-3 py-2.5', tone)}>
+    <div className={cn('rounded-md border px-3 py-3', tone)}>
       <label
         htmlFor={`privacy-mode-${pluginId}`}
         className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]"
@@ -885,7 +884,7 @@ function PrivacyModePicker({
         disabled={saving}
         onChange={(e) => void handleChange(e.target.value as PrivacyMode)}
         className={cn(
-          'mt-1.5 w-full rounded border px-2 py-1.5 text-[13px]',
+          'mt-2 w-full rounded border px-2 py-2 text-[13px]',
           'border-[color:var(--border)] bg-[color:var(--bg)]',
           'focus:outline-none focus:ring-1 focus:ring-[color:var(--accent)]',
           saving ? 'opacity-60' : '',
@@ -899,7 +898,7 @@ function PrivacyModePicker({
           ),
         )}
       </select>
-      <p className="mt-1.5 text-[11px] leading-relaxed text-[color:var(--fg-subtle)]">
+      <p className="mt-2 text-[11px] leading-relaxed text-[color:var(--fg-subtle)]">
         {mode === 'guarded'
           ? 'Tool-Ergebnisse werden serverseitig hinter dem Privacy Shield v4 maskiert; der LLM sieht nur identitätsfreie Digests.'
           : mode === 'bypass'
@@ -907,13 +906,13 @@ function PrivacyModePicker({
             : 'Per-Tool-Whitelist: nur explizit gelistete Tools werden bypassed. Liste über das Feld `_privacy_bypass_scopes` setzen (Komma-getrennt).'}
       </p>
       {saving && (
-        <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-[color:var(--fg-subtle)]">
-          <Loader2 className="size-3 animate-spin" aria-hidden />
+        <div className="mt-2 flex items-center gap-2 text-[11px] text-[color:var(--fg-subtle)]">
+          <span className="lume-busy-dots" aria-hidden />
           Speichere …
         </div>
       )}
       {error && (
-        <p className="font-mono-num mt-1.5 text-[11px] text-[color:var(--danger,#b03030)]">
+        <p className="font-mono-num mt-2 text-[11px] text-[color:var(--danger,#b03030)]">
           {error}
         </p>
       )}

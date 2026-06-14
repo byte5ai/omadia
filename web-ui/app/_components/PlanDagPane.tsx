@@ -85,13 +85,13 @@ export function PlanDagPane({ plan }: Props): React.ReactElement | null {
       <button
         type="button"
         onClick={openWindow}
-        className="fixed bottom-6 left-6 z-40 flex items-center gap-2 rounded-full border border-sky-300 bg-white/90 px-4 py-2 text-sm font-medium text-sky-700 shadow-lg backdrop-blur transition hover:bg-white dark:border-sky-700 dark:bg-neutral-900/90 dark:text-sky-300 dark:hover:bg-neutral-900"
+        className="fixed bottom-6 left-6 z-40 flex items-center gap-2 rounded-full border border-[color:var(--accent)] bg-[color:var(--bg-elevated)]/90 px-4 py-2 text-sm font-medium text-[color:var(--accent)] shadow-lg backdrop-blur transition hover:bg-[color:var(--bg-elevated)]"
         aria-label={t('openLabel')}
         title={t('openLabel')}
       >
         <GitBranch size={16} aria-hidden />
         {t('openLabel')}
-        <span className="rounded bg-sky-100 px-1.5 py-0.5 font-mono text-[10px] text-sky-700 dark:bg-sky-900/60 dark:text-sky-300">
+        <span className="rounded bg-[color:var(--accent)]/10 px-2 py-0.5 font-mono text-[10px] text-[color:var(--accent)]">
           {doneCount}/{totalSteps}
         </span>
       </button>
@@ -102,7 +102,7 @@ export function PlanDagPane({ plan }: Props): React.ReactElement | null {
 
   return (
     <section
-      className="fixed z-50 flex flex-col overflow-hidden rounded-xl border border-neutral-300 bg-neutral-950 text-neutral-200 shadow-2xl dark:border-neutral-700"
+      className="fixed z-50 flex flex-col overflow-hidden rounded-lg border border-[color:var(--border)] bg-[color:var(--bg-inverse)] text-[color:var(--fg-on-dark)] shadow-2xl"
       style={style}
       aria-label={t('title')}
     >
@@ -111,29 +111,29 @@ export function PlanDagPane({ plan }: Props): React.ReactElement | null {
         onPointerMove={headerHandlers.onPointerMove}
         onPointerUp={headerHandlers.onPointerUp}
         className={[
-          'flex items-center justify-between gap-2 border-b border-white/10 bg-neutral-900 px-3 py-2 select-none',
+          'flex items-center justify-between gap-2 border-b border-white/10 bg-[color:var(--bg-inverse)] px-3 py-2 select-none',
           maximized ? '' : 'cursor-move',
         ].join(' ')}
       >
         <div className="flex min-w-0 flex-col gap-0.5">
-          <span className="flex items-center gap-1.5 text-xs font-semibold tracking-wide text-neutral-100">
-            <GitBranch size={13} aria-hidden className="text-sky-400" />
+          <span className="flex items-center gap-2 text-xs font-semibold tracking-wide text-[color:var(--fg-on-dark)]">
+            <GitBranch size={13} aria-hidden className="text-[color:var(--accent)]" />
             {t('title')}
           </span>
-          <span className="truncate text-[10px] text-neutral-500">
+          <span className="truncate text-[10px] text-[color:var(--fg-muted)]">
             {t('subtitle')}
           </span>
         </div>
-        <div className="flex shrink-0 items-center gap-1.5">
-          <span className="flex gap-1 font-mono text-[10px] text-neutral-400">
-            <span className="rounded bg-white/10 px-1.5 py-0.5">
+        <div className="flex shrink-0 items-center gap-2">
+          <span className="flex gap-1 font-mono text-[10px] text-[color:var(--fg-subtle)]">
+            <span className="rounded bg-white/10 px-2 py-0.5">
               {t('badgeProgress', { done: doneCount, total: totalSteps })}
             </span>
           </span>
           <button
             type="button"
             onClick={toggleMaximized}
-            className="rounded p-1 text-neutral-400 transition hover:bg-white/10 hover:text-neutral-100"
+            className="rounded p-1 text-[color:var(--fg-subtle)] transition hover:bg-white/10 hover:text-[color:var(--fg-on-dark)]"
             aria-label={maximized ? t('restore') : t('maximize')}
             title={maximized ? t('restore') : t('maximize')}
           >
@@ -146,7 +146,7 @@ export function PlanDagPane({ plan }: Props): React.ReactElement | null {
           <button
             type="button"
             onClick={close}
-            className="rounded p-1 text-neutral-400 transition hover:bg-white/10 hover:text-neutral-100"
+            className="rounded p-1 text-[color:var(--fg-subtle)] transition hover:bg-white/10 hover:text-[color:var(--fg-on-dark)]"
             aria-label={t('close')}
             title={t('close')}
           >
@@ -157,7 +157,7 @@ export function PlanDagPane({ plan }: Props): React.ReactElement | null {
 
       {/* Step list — the whole body. Ordered, scrollable, shows each goal. */}
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="sticky top-0 z-10 bg-neutral-950/95 px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-neutral-500 backdrop-blur">
+        <div className="sticky top-0 z-10 bg-[color:var(--bg-inverse)]/95 px-3 py-2 text-[10px] font-medium uppercase tracking-wide text-[color:var(--fg-muted)] backdrop-blur">
           {t('listHeader', { done: doneCount, total: totalSteps })}
         </div>
         <ul className="flex flex-col">
@@ -165,12 +165,12 @@ export function PlanDagPane({ plan }: Props): React.ReactElement | null {
             <li
               key={s.stepExternalId}
               className={[
-                'flex items-center gap-2.5 border-t border-white/5 px-3 py-2 text-[12px] transition hover:bg-white/5',
-                s.status === 'in_progress' ? 'bg-amber-500/10' : '',
+                'flex items-center gap-3 border-t border-white/5 px-3 py-2 text-[12px] transition hover:bg-white/5',
+                s.status === 'in_progress' ? 'bg-[color:var(--warning)]/10' : '',
               ].join(' ')}
             >
               <span
-                className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full font-mono text-[10px] font-semibold text-neutral-950"
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full font-mono text-[10px] font-semibold text-[color:var(--fg-strong)]"
                 style={{ backgroundColor: statusColor(s.status) }}
               >
                 {s.order + 1}
@@ -179,17 +179,17 @@ export function PlanDagPane({ plan }: Props): React.ReactElement | null {
                 className={[
                   'min-w-0 flex-1 truncate',
                   s.status === 'done'
-                    ? 'text-neutral-400 line-through'
+                    ? 'text-[color:var(--fg-subtle)] line-through'
                     : s.status === 'skipped'
-                      ? 'text-neutral-500'
-                      : 'text-neutral-200',
+                      ? 'text-[color:var(--fg-muted)]'
+                      : 'text-[color:var(--fg-on-dark)]',
                 ].join(' ')}
                 title={s.goal}
               >
                 {s.goal}
               </span>
               <span
-                className="shrink-0 rounded px-1.5 py-0.5 font-mono text-[9px]"
+                className="shrink-0 rounded px-2 py-0.5 font-mono text-[9px]"
                 style={{
                   backgroundColor: `${statusColor(s.status)}26`,
                   color: statusColor(s.status),
@@ -213,7 +213,7 @@ export function PlanDagPane({ plan }: Props): React.ReactElement | null {
         >
           <svg
             viewBox="0 0 10 10"
-            className="h-full w-full text-neutral-500"
+            className="h-full w-full text-[color:var(--fg-muted)]"
             fill="none"
             stroke="currentColor"
             strokeWidth="1"

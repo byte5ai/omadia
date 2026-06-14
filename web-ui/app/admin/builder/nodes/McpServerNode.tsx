@@ -19,7 +19,7 @@ export function McpServerNodeView({
       selected={selected}
       hasTarget
     >
-      <div className="mt-1.5 text-[10px] text-[color:var(--fg-muted)]">
+      <div className="mt-2 text-[10px] text-[color:var(--fg-muted)]">
         {toolCount} {labels['tools']}
       </div>
     </NodeShell>

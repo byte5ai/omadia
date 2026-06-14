@@ -94,19 +94,19 @@ export function VersionsTab({ draftId }: VersionsTabProps): React.ReactElement {
   );
 
   return (
-    <div className="flex h-full flex-col p-5 text-[var(--fg)]">
+    <div className="flex h-full flex-col p-4 text-[var(--fg)]">
       <div className="mb-4 flex items-center gap-2">
         <button
           type="button"
           onClick={() => setCaptureOpen(true)}
-          className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-white hover:opacity-90"
+          className="rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-[color:var(--fg-on-dark)] hover:opacity-90"
         >
           {t('createSnapshot')}
         </button>
         <button
           type="button"
           onClick={() => void refresh()}
-          className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm hover:border-current"
+          className="rounded-md border border-[var(--border)] px-3 py-2 text-sm hover:border-current"
         >
           {t('refresh')}
         </button>
@@ -175,7 +175,7 @@ export function VersionsTab({ draftId }: VersionsTabProps): React.ReactElement {
           role="status"
           className={`pointer-events-none fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-md px-4 py-2 text-sm ${
             toast.kind === 'error'
-              ? 'bg-[var(--danger)] text-white'
+              ? 'bg-[var(--danger)] text-[color:var(--fg-on-dark)]'
               : 'bg-[var(--fg)] text-[var(--bg)]'
           }`}
         >
@@ -245,7 +245,7 @@ function SnapshotTable({
               </tr>
               <tr>
                 <td colSpan={5} className="px-3 pb-3 pt-1">
-                  <div className="flex flex-wrap items-center gap-1.5">
+                  <div className="flex flex-wrap items-center gap-2">
                     <SmallButton onClick={() => onDiff(s)}>
                       {t('diffVsLive')}
                     </SmallButton>
@@ -289,7 +289,7 @@ function StatusPills({ snapshot }: { snapshot: SnapshotSummary }): React.ReactEl
   return (
     <div className="flex flex-wrap gap-1">
       {snapshot.is_deploy_ready ? (
-        <span className="rounded-full border border-[var(--success)] bg-[color-mix(in_srgb,var(--success)_12%,transparent)] px-2 py-0.5 text-xs font-medium text-[var(--success)]">
+        <span className="text-xs font-medium text-[var(--success)]">
           deploy-ready
         </span>
       ) : null}
@@ -384,7 +384,7 @@ function CaptureModal({
         <button
           type="button"
           onClick={onClose}
-          className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm"
+          className="rounded-md border border-[var(--border)] px-3 py-2 text-sm"
         >
           {t('cancel')}
         </button>
@@ -392,7 +392,7 @@ function CaptureModal({
           type="button"
           onClick={() => void submit()}
           disabled={busy}
-          className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+          className="rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-[color:var(--fg-on-dark)] disabled:opacity-50"
         >
           {t('create')}
         </button>
@@ -574,7 +574,7 @@ function RollbackModal({
         <button
           type="button"
           onClick={onClose}
-          className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm"
+          className="rounded-md border border-[var(--border)] px-3 py-2 text-sm"
         >
           {t('cancel')}
         </button>
@@ -582,7 +582,7 @@ function RollbackModal({
           type="button"
           onClick={() => void submit()}
           disabled={!matches || busy}
-          className="rounded-md bg-[var(--danger)] px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+          className="rounded-md bg-[var(--danger)] px-3 py-2 text-sm font-medium text-[color:var(--fg-on-dark)] disabled:opacity-50"
         >
           {t('rollbackExecute')}
         </button>
@@ -607,7 +607,7 @@ function ModalShell({
   const t = useTranslations('builder.versions');
   return (
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/55 p-6"
+      className="fixed inset-0 z-40 flex items-center justify-center bg-[color:var(--bg-modal-overlay)] p-6"
       role="dialog"
       aria-modal="true"
       onClick={(e) => {
@@ -615,7 +615,7 @@ function ModalShell({
       }}
     >
       <div
-        className={`max-h-[80vh] overflow-auto rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] p-5 text-[var(--fg)] shadow-xl ${
+        className={`max-h-[80vh] overflow-auto rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] p-4 text-[var(--fg)] shadow-xl ${
           wide ? 'w-full max-w-3xl' : 'w-full max-w-md'
         }`}
       >

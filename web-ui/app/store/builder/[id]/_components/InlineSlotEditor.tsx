@@ -107,10 +107,10 @@ export function InlineSlotEditor({
 
   return (
     <div className="rounded-md border border-[color:var(--border)] bg-[color:var(--bg)]">
-      <div className="flex items-center gap-2 border-b border-[color:var(--border)] bg-[color:var(--bg-subtle)] px-3 py-1.5 text-[11px]">
+      <div className="flex items-center gap-2 border-b border-[color:var(--border)] bg-[color:var(--bg-subtle)] px-3 py-2 text-[11px]">
         <span className="font-medium text-[color:var(--fg-strong)]">{label}</span>
         {hint ? <span className="text-[color:var(--fg-muted)]">{hint}</span> : null}
-        <code className="ml-2 rounded bg-[color:var(--bg)] px-1.5 py-0.5 text-[10px] text-[color:var(--fg-muted)]">
+        <code className="ml-2 rounded bg-[color:var(--bg)] px-2 py-0.5 text-[10px] text-[color:var(--fg-muted)]">
           {slotKey}
         </code>
         <span className="ml-auto">
@@ -145,7 +145,7 @@ function StatusBadge({ status }: { status: SaveStatus }): React.ReactElement | n
     case 'idle':
       return null;
     case 'dirty':
-      return <span className="text-amber-700">{t('inline.status.dirty')}</span>;
+      return <span className="text-[color:var(--warning)]">{t('inline.status.dirty')}</span>;
     case 'saving':
       return (
         <span className="text-[color:var(--fg-muted)]">
@@ -153,10 +153,10 @@ function StatusBadge({ status }: { status: SaveStatus }): React.ReactElement | n
         </span>
       );
     case 'saved':
-      return <span className="text-emerald-700">{t('inline.status.saved')}</span>;
+      return <span className="text-[color:var(--success)]">{t('inline.status.saved')}</span>;
     case 'error':
       return (
-        <span className="text-rose-700" title={status.message}>
+        <span className="text-[color:var(--danger)]" title={status.message}>
           {t('inline.status.error')}
         </span>
       );
