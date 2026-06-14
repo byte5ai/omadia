@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — pluggable LLM provider (OpenAI as an admin-selectable provider)
+
+- **`@omadia/llm-provider`**: a neutral LLM provider contract with Anthropic and
+  OpenAI adapters (the OpenAI adapter also serves OpenAI-compatible endpoints —
+  Mistral / Ollama / vLLM / Azure — via a `baseURL`), a global provider-qualified
+  model registry (`anthropic:…` / `openai:…`, capability classes
+  `fast|balanced|frontier`, role defaults), and a `resolveLlmProvider` factory
+  that builds the right adapter from vault credentials.
+- **Provider-namespaced vault credentials** (`provider:<id>/api_key`) with an
+  idempotent migration off the legacy flat `anthropic_api_key`, plus a
+  config-driven provider-selection runtime.
+- **Class-based LLM whitelisting in agent manifests**: agents declare
+  `permissions.llm.models_allowed` with provider-agnostic class refs
+  (`class:fast|balanced|frontier`); the runtime gate resolves them against the
+  active provider. Concrete vendor ids and `*`-wildcards still work (back-compat).
+- **Provider-aware `ctx.llm` with per-plugin pinning**: each plugin's host-LLM
+  runs on its assigned provider (per-plugin pin → global default → Anthropic),
+  resolved consistently for both the whitelist gate and execution. The Anthropic
+  default path is byte-identical.
+- **Provider admin**: `GET/POST /api/v1/admin/providers` (connection status,
+  per-agent provider+model assignment) and a `/admin/providers` operator page
+  with an AVV / data-flow disclosure (DSGVO Art. 28) on non-Anthropic selection.
+- **Usage telemetry**: OpenAI model pricing tables with provider-aware,
+  double-count-safe cost computation (OpenAI cached-input semantics differ from
+  Anthropic's).
 - `@omadia/orchestrator`: migrated the orchestrator and local-sub-agent LLM
   boundary off direct `@anthropic-ai/sdk` calls onto the neutral
   `@omadia/llm-provider` seam. Internal loops still build Anthropic-shaped
