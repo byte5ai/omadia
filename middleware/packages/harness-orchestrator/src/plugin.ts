@@ -468,6 +468,11 @@ export async function activate(
   // `this.nativeTools.get(name).handler` and the getTools() call picks
   // the spec live into the LLM-tool list. No orchestrator code touch.
   const disposeProcessMemoryTools: Array<() => void> = [];
+  // Service-provider disposers, released on deactivate so a reactivate (e.g. a
+  // provider switch via /admin/providers) can re-publish chatAgent@1 et al.
+  // without a "duplicate provider" error. Without this, reactivating an already-
+  // active orchestrator throws and leaves chat down.
+  const disposeServices: Array<() => void> = [];
   if (processMemory) {
     disposeProcessMemoryTools.push(
       nativeToolRegistry.register(WRITE_PROCESS_TOOL_NAME, {
@@ -588,7 +593,7 @@ export async function activate(
     },
     orchestratorDeps,
   );
-  ctx.services.provide(CHAT_AGENT_SERVICE, built.bundle);
+  disposeServices.push(ctx.services.provide(CHAT_AGENT_SERVICE, built.bundle));
 
   // US4 — multi-orchestrator registry. Optional: only when a Postgres pool
   // is available (test/in-memory boots skip it). The registry runs its own
@@ -612,7 +617,7 @@ export async function activate(
       // can perform writes without re-instantiating its own store
       // (singleton; cheaper than reconnecting, and write events flow
       // through the same trigger → reload-bus pipeline).
-      ctx.services.provide(CONFIG_STORE_SERVICE, store);
+      disposeServices.push(ctx.services.provide(CONFIG_STORE_SERVICE, store));
 
       // US7 / T029 — first-boot fallback Agent seed. Runs before the
       // registry's `start()` so the very first boot already has a fallback
@@ -650,7 +655,9 @@ export async function activate(
           ),
       });
       await registry.start();
-      ctx.services.provide(ORCHESTRATOR_REGISTRY_SERVICE, registry);
+      disposeServices.push(
+        ctx.services.provide(ORCHESTRATOR_REGISTRY_SERVICE, registry),
+      );
       ctx.log(
         `[harness-orchestrator] orchestratorRegistry@1 published (agents=${String(registry.size())})`,
       );
@@ -665,7 +672,9 @@ export async function activate(
             `[harness-orchestrator] ${msg}${fields ? ' ' + JSON.stringify(fields) : ''}`,
           ),
       });
-      ctx.services.provide(CHANNEL_RESOLVER_SERVICE, resolver);
+      disposeServices.push(
+        ctx.services.provide(CHANNEL_RESOLVER_SERVICE, resolver),
+      );
       ctx.log('[harness-orchestrator] channelResolver@1 published');
 
       // US5 / T021 — LISTEN/NOTIFY hot-reload bus. Bound to the same pool
@@ -712,6 +721,16 @@ export async function activate(
         // best-effort
       }
       for (const dispose of disposeProcessMemoryTools) {
+        try {
+          dispose();
+        } catch {
+          // best-effort
+        }
+      }
+      // Release published services (chatAgent@1, orchestratorRegistry@1,
+      // configStore, channelResolver) so a subsequent reactivate can re-publish
+      // them — otherwise the provider switch fails with "duplicate provider".
+      for (const dispose of disposeServices) {
         try {
           dispose();
         } catch {
