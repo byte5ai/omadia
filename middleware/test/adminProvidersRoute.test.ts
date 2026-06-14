@@ -121,9 +121,14 @@ describe('admin providers route — GET /', () => {
     const body = await getProviders(h);
     const anthropic = body.providers.find((p) => p.id === 'anthropic');
     const openai = body.providers.find((p) => p.id === 'openai');
-    assert.ok(anthropic && openai);
+    const mistral = body.providers.find((p) => p.id === 'mistral');
+    assert.ok(anthropic && openai && mistral);
     assert.ok(anthropic.models.some((m) => m.modelId === 'claude-opus-4-8'));
     assert.ok(openai.models.some((m) => m.modelId === 'gpt-5.5'));
+    // Mistral is registry-driven too: listed with a clean label + its models.
+    assert.equal(mistral.label, 'Mistral');
+    assert.ok(mistral.models.some((m) => m.modelId === 'mistral-large-latest'));
+    assert.equal(mistral.connected, false);
     // nothing connected yet
     assert.equal(anthropic.connected, false);
     assert.equal(openai.connected, false);
@@ -227,12 +232,46 @@ describe('admin providers route — POST /assignment', () => {
 
   it('allows an unknown (custom/openai-compatible) model id', async () => {
     h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
+    // A genuinely-unregistered model id passes through (custom/self-hosted).
+    // (`mistral-large-latest` is now a first-class registry model, so it would
+    // correctly mismatch provider 'openai-compatible' — see the Mistral test.)
     const { status } = await assign(h, {
       pluginId: ORCH,
       provider: 'openai-compatible',
-      model: 'mistral-large-latest',
+      model: 'llama-3.3-70b-instruct',
     });
     assert.equal(status, 200);
+  });
+
+  it('assigns a Mistral model by class ref, stores the bare id, disables routing', async () => {
+    h = await makeHarness([
+      { id: ORCH, config: { orchestrator_model_routing: 'true' } },
+      { id: VERIFIER },
+      { id: EXTRAS },
+    ]);
+    // class:frontier resolves against the chosen provider → mistral-large-latest.
+    const { status, json } = await assign(h, {
+      pluginId: ORCH,
+      provider: 'mistral',
+      model: 'class:frontier',
+    });
+    assert.equal(status, 200, JSON.stringify(json));
+    const cfg = h.registry.get(ORCH)?.config ?? {};
+    assert.equal(cfg['llm_provider'], 'mistral');
+    assert.equal(cfg['orchestrator_model'], 'mistral-large-latest');
+    // non-anthropic → per-turn Claude routing forced off
+    assert.equal(cfg['orchestrator_model_routing'], 'false');
+  });
+
+  it('rejects a Mistral model assigned to the wrong provider', async () => {
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
+    const { status, json } = await assign(h, {
+      pluginId: ORCH,
+      provider: 'openai',
+      model: 'mistral-large-latest',
+    });
+    assert.equal(status, 400);
+    assert.equal(json['code'], 'providers.model_provider_mismatch');
   });
 
   it('preserves unrelated config keys across an assignment (merge, no key loss)', async () => {

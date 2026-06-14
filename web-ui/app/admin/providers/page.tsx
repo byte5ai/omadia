@@ -298,6 +298,11 @@ function AssignmentRow({
           {t('assignments.avvDisclosure', { provider: selectedProvider?.label ?? a.provider })}
         </p>
       )}
+      {a.provider === 'mistral' && (
+        <p className="rounded-md border border-[color:var(--border)] bg-[color:var(--border)]/10 px-3 py-2 text-[12px] leading-[1.5] text-[color:var(--fg-muted)]">
+          {t('assignments.euHostedNote')}
+        </p>
+      )}
       {error && <p className="text-[12px] text-[color:var(--danger)]">{error}</p>}
     </div>
   );
