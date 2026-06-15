@@ -53,11 +53,20 @@ export {
 } from './providerCredentials.js';
 
 export {
+  knownProviderBaseUrl,
   resolveLlmProvider,
   type ResolveLlmProviderOptions,
 } from './providerFactory.js';
 
 export {
+  LlmProviderCatalog,
+  type LlmProviderDescriptor,
+  type ProviderPolicy,
+  type ProviderQuirks,
+} from './providerCatalog.js';
+
+export {
+  clearExternalModels,
   coerceModelToProvider,
   getModel,
   isClassRef,
@@ -65,6 +74,7 @@ export {
   listModelsByClass,
   listModelsByProvider,
   modelForClass,
+  registerExternalModels,
   resolveModelRef,
   resolveRole,
   ROLE_DEFAULT_CLASS,

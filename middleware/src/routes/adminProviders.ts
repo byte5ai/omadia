@@ -32,6 +32,19 @@ export interface AdminProvidersDeps {
   readonly vault?: SecretVault;
   /** Tear down + re-activate a plugin so it re-reads its config. */
   readonly reactivate?: (agentId: string) => Promise<void>;
+  /** Provider catalog — supplies display labels + data-protection policy hints
+   *  for the admin UI (structural, to avoid a hard dep on the catalog class). */
+  readonly llmProviderCatalog?: {
+    get(id: string):
+      | {
+          readonly label: string;
+          readonly policy?: {
+            readonly requiresAvvDisclosure?: boolean;
+            readonly euHosted?: boolean;
+          };
+        }
+      | undefined;
+  };
 }
 
 /**
@@ -80,6 +93,8 @@ function providerLabel(id: ProviderId): string {
       return 'OpenAI';
     case 'openai-compatible':
       return 'OpenAI-compatible';
+    case 'mistral':
+      return 'Mistral';
     default:
       return id;
   }
@@ -129,10 +144,16 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
     try {
       const providerIds = [...new Set(listModels().map((m) => m.provider))];
       const providers = await Promise.all(
-        providerIds.map(async (id) => ({
+        providerIds.map(async (id) => {
+          const descriptor = deps.llmProviderCatalog?.get(id);
+          return {
           id,
-          label: providerLabel(id),
+          label: descriptor?.label ?? providerLabel(id),
           connected: await isConnected(deps.vault, id),
+          // Data-protection hints for the operator UI (data-driven, no id checks).
+          // Safe defaults for an unknown provider: third-party, non-EU.
+          requiresAvvDisclosure: descriptor?.policy?.requiresAvvDisclosure ?? true,
+          euHosted: descriptor?.policy?.euHosted ?? false,
           models: listModelsByProvider(id).map((m) => ({
             id: m.id,
             modelId: m.modelId,
@@ -142,7 +163,8 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
             maxTokens: m.maxTokens,
             vision: m.vision,
           })),
-        })),
+          };
+        }),
       );
 
       const assignments = LLM_PLUGINS.map((p) => {

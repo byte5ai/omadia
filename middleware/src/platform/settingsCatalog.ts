@@ -115,11 +115,65 @@ export const SETTINGS_CATALOG: readonly SettingDef[] = [
       scopes: [ORCHESTRATOR, VERIFIER, ORCHESTRATOR_EXTRAS],
     },
   },
+  {
+    key: 'MISTRAL_API_KEY',
+    label: 'Mistral API-Key',
+    help: 'Optional. Für Provider-Auswahl "mistral" (pro Plugin via llm_provider). Mistral ist EU-gehostet (Frankreich) — keine Drittlandübermittlung. Bestehender Wert wird nie angezeigt. Wird in alle drei Plugin-Vaults geschrieben.',
+    category: C_MODELS,
+    type: 'secret',
+    placeholder: 'API-Key aus console.mistral.ai …',
+    secret: {
+      // Mistral is canonical-only (no legacy flat key), like OpenAI.
+      vaultKey: providerApiKeyVaultKey('mistral'),
+      scopes: [ORCHESTRATOR, VERIFIER, ORCHESTRATOR_EXTRAS],
+    },
+  },
 ];
 
-/** Lookup by `.env` key. */
-export function findSetting(key: string): SettingDef | undefined {
-  return SETTINGS_CATALOG.find((s) => s.key === key);
+/** Provider ids already covered by the static catalog entries above. */
+const STATIC_PROVIDER_IDS = new Set(['anthropic', 'openai']);
+
+/** Build per-provider API-key settings for plugin-contributed providers (e.g.
+ *  MiniMax) so the operator connects them on the same admin overview as the
+ *  built-in keys. The secret fans out to the same three LLM-plugin scopes.
+ *  Providers already covered statically (anthropic/openai) are skipped. */
+export function providerKeySettings(
+  providers: ReadonlyArray<{ readonly id: string; readonly label: string }>,
+): SettingDef[] {
+  const seen = new Set<string>();
+  const out: SettingDef[] = [];
+  for (const p of providers) {
+    if (STATIC_PROVIDER_IDS.has(p.id) || seen.has(p.id)) continue;
+    seen.add(p.id);
+    out.push({
+      key: `${p.id.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`,
+      label: `${p.label} API-Key`,
+      help: `Optional. Für Provider-Auswahl "${p.id}" (pro Plugin via llm_provider). Bestehender Wert wird nie angezeigt. Wird in alle drei Plugin-Vaults geschrieben.`,
+      category: C_MODELS,
+      type: 'secret',
+      secret: {
+        vaultKey: providerApiKeyVaultKey(p.id),
+        scopes: [ORCHESTRATOR, VERIFIER, ORCHESTRATOR_EXTRAS],
+      },
+    });
+  }
+  return out;
+}
+
+/** The effective catalog: static cross-plugin settings + per-provider API-key
+ *  settings for plugin-contributed providers. */
+export function buildSettingsCatalog(
+  providers: ReadonlyArray<{ readonly id: string; readonly label: string }> = [],
+): readonly SettingDef[] {
+  return [...SETTINGS_CATALOG, ...providerKeySettings(providers)];
+}
+
+/** Lookup by `.env` key over a given catalog (defaults to the static one). */
+export function findSetting(
+  key: string,
+  catalog: readonly SettingDef[] = SETTINGS_CATALOG,
+): SettingDef | undefined {
+  return catalog.find((s) => s.key === key);
 }
 
 /** Distinct plugin ids a setting touches (config plugin + all secret scopes). */

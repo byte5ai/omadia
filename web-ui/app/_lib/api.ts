@@ -276,6 +276,11 @@ export interface AdminProvider {
   label: string;
   /** True when an API key for this provider is present in the vault. */
   connected: boolean;
+  /** Data-protection hints for the UI (data-driven; defaulted server-side).
+   *  `requiresAvvDisclosure`: show the Art. 28 DSGVO third-party disclosure.
+   *  `euHosted`: provider is hosted in the EU (no third-country transfer). */
+  requiresAvvDisclosure?: boolean;
+  euHosted?: boolean;
   models: AdminProviderModel[];
 }
 

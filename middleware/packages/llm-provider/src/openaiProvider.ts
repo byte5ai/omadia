@@ -75,6 +75,22 @@ export interface OpenAiProviderOptions {
    *  required, which most tool schemas (and most OpenAI-compatible servers) do not
    *  satisfy. Opt in only when every tool schema is strict-clean. */
   readonly strictTools?: boolean;
+  /** Quirk (OpenAI-compatible servers vary): which field carries the output-token
+   *  cap. Defaults to `max_completion_tokens` for native OpenAI and `max_tokens`
+   *  otherwise. MiniMax's modern endpoint deprecates `max_tokens` → set
+   *  `max_completion_tokens`. */
+  readonly maxTokensField?: 'max_tokens' | 'max_completion_tokens';
+  /** Quirk: omit `tool_choice` / `parallel_tool_calls` from requests. Some
+   *  OpenAI-compatible servers (e.g. MiniMax) don't accept them and decide tool
+   *  use autonomously; forwarding them risks a rejection. */
+  readonly dropToolChoice?: boolean;
+  /** Quirk: extra fields merged into every request body (e.g. MiniMax
+   *  `{ reasoning_split: true }`). Merged last, so it can set vendor-only keys. */
+  readonly extraBody?: Record<string, unknown>;
+  /** Quirk: some servers (e.g. MiniMax) report errors via a `base_resp.status_code`
+   *  field even on HTTP 200. When set, a non-zero `status_code` is thrown as a
+   *  classified error instead of being mapped to a (wrong) clean response. */
+  readonly checkBaseResp?: boolean;
   readonly log?: (...args: unknown[]) => void;
 }
 
@@ -203,6 +219,13 @@ function toOpenAiMessages(
   return out;
 }
 
+/** Canonical empty parameters schema for a no-argument tool. OpenAI tolerates
+ *  an omitted/undefined `parameters`, but stricter OpenAI-compatible servers
+ *  (Mistral) reject a function with no valid `parameters` object with a bare
+ *  422 — so always emit a valid JSON Schema object. A no-arg tool is identical
+ *  to omitting `parameters` on native OpenAI, so this is behavior-preserving. */
+const EMPTY_TOOL_PARAMETERS = { type: 'object', properties: {} } as const;
+
 function toOpenAiTools(
   tools: ReadonlyArray<ToolSpec>,
   strict: boolean,
@@ -212,7 +235,7 @@ function toOpenAiTools(
     function: {
       name: t.name,
       description: t.description,
-      parameters: t.inputSchema,
+      parameters: t.inputSchema ?? EMPTY_TOOL_PARAMETERS,
       ...(strict ? { strict: true } : {}),
     },
   }));
@@ -241,10 +264,17 @@ function disablesParallel(choice: ToolChoice | undefined): boolean {
   );
 }
 
+interface BuildParamsQuirks {
+  readonly maxTokensField?: 'max_tokens' | 'max_completion_tokens';
+  readonly dropToolChoice?: boolean;
+  readonly extraBody?: Record<string, unknown>;
+}
+
 function buildParams(
   req: LlmRequest,
   strictTools: boolean,
   nativeOpenAi: boolean,
+  quirks?: BuildParamsQuirks,
 ): Record<string, unknown> {
   const messages: OpenAiMessageParam[] = [];
   if (req.system !== undefined) {
@@ -254,26 +284,32 @@ function buildParams(
 
   const tools = req.tools;
   const hasTools = tools !== undefined && tools.length > 0;
+  // Native OpenAI requires `max_completion_tokens` (GPT-5 / o-series reject
+  // `max_tokens`; gpt-4.x accept it too). OpenAI-compatible servers
+  // (Mistral / Ollama / vLLM / Azure) only speak the legacy `max_tokens`. A
+  // provider may override the field explicitly (MiniMax → max_completion_tokens).
+  const maxTokensKey =
+    quirks?.maxTokensField ??
+    (nativeOpenAi ? 'max_completion_tokens' : 'max_tokens');
+  const dropToolChoice = quirks?.dropToolChoice === true;
   return {
     model: req.model,
     messages,
-    // Native OpenAI requires `max_completion_tokens` (GPT-5 / o-series reject
-    // `max_tokens`; gpt-4.x accept it too). OpenAI-compatible servers
-    // (Mistral / Ollama / vLLM / Azure) only speak the legacy `max_tokens`.
-    ...(nativeOpenAi
-      ? { max_completion_tokens: req.maxTokens }
-      : { max_tokens: req.maxTokens }),
+    [maxTokensKey]: req.maxTokens,
     ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
     ...(hasTools ? { tools: toOpenAiTools(tools, strictTools) } : {}),
     // tool_choice (incl. parallel_tool_calls) is only valid alongside tools —
     // OpenAI rejects 'required'/named/`parallel_tool_calls` with no tools, so a
     // tool choice without tools is dropped rather than forwarded as an error.
-    ...(hasTools && req.toolChoice !== undefined
+    // Some compatible servers (MiniMax) reject these fields entirely → dropped.
+    ...(!dropToolChoice && hasTools && req.toolChoice !== undefined
       ? { tool_choice: toOpenAiToolChoice(req.toolChoice) }
       : {}),
-    ...(hasTools && disablesParallel(req.toolChoice)
+    ...(!dropToolChoice && hasTools && disablesParallel(req.toolChoice)
       ? { parallel_tool_calls: false }
       : {}),
+    // Vendor-only request fields (e.g. MiniMax `reasoning_split`). Merged last.
+    ...(quirks?.extraBody ?? {}),
   };
 }
 
@@ -465,6 +501,46 @@ export function classifyOpenAiError(err: unknown): LlmErrorClassification {
 }
 
 // ---------------------------------------------------------------------------
+// base_resp quirk (MiniMax): an in-body status that can flag an error on HTTP 200
+// ---------------------------------------------------------------------------
+
+interface BaseResp {
+  status_code?: number;
+  status_msg?: string;
+}
+
+/** Map a MiniMax `base_resp.status_code` onto an HTTP-ish status so the existing
+ *  `classifyOpenAiError` routes retry/auth correctly. Codes per MiniMax docs. */
+const BASE_RESP_STATUS: Readonly<Record<number, number>> = {
+  1002: 429, // rate limit → retryable
+  1004: 401, // auth failed → non-retryable auth
+  1008: 401, // insufficient balance → non-retryable auth
+  1013: 500, // internal error → retryable
+  1000: 500, // unknown → retryable
+  1001: 503, // timeout → retryable
+  1039: 400, // token limit exceeded → non-retryable
+  2013: 400, // parameter error → non-retryable
+  1027: 400, // output content error → non-retryable
+};
+
+/** Return a classified Error for a non-zero `base_resp`, or `undefined` when the
+ *  call succeeded (`status_code` 0 / absent). The returned error carries a
+ *  numeric `.status` so `classifyOpenAiError` can route it. */
+function baseRespError(
+  base: BaseResp | undefined | null,
+): (Error & { status?: number; code?: string }) | undefined {
+  const code = base?.status_code;
+  if (typeof code !== 'number' || code === 0) return undefined;
+  const err = new Error(
+    `MiniMax base_resp error ${String(code)}${base?.status_msg ? `: ${base.status_msg}` : ''}`,
+  ) as Error & { status?: number; code?: string };
+  const mapped = BASE_RESP_STATUS[code];
+  if (mapped !== undefined) err.status = mapped;
+  err.code = `base_resp_${String(code)}`;
+  return err;
+}
+
+// ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------
 
@@ -492,9 +568,19 @@ export function createOpenAiProvider(opts: OpenAiProviderOptions): LlmProvider {
     ...(opts.capabilities ?? {}),
   };
   const strictTools = opts.strictTools === true;
+  const checkBaseResp = opts.checkBaseResp === true;
+  const quirks: BuildParamsQuirks = {
+    ...(opts.maxTokensField !== undefined
+      ? { maxTokensField: opts.maxTokensField }
+      : {}),
+    ...(opts.dropToolChoice !== undefined
+      ? { dropToolChoice: opts.dropToolChoice }
+      : {}),
+    ...(opts.extraBody !== undefined ? { extraBody: opts.extraBody } : {}),
+  };
 
   const paramsFor = (req: LlmRequest): Record<string, unknown> =>
-    buildParams(req, strictTools, id === 'openai');
+    buildParams(req, strictTools, id === 'openai', quirks);
 
   return {
     id,
@@ -508,6 +594,12 @@ export function createOpenAiProvider(opts: OpenAiProviderOptions): LlmProvider {
       const completion = (await client.chat.completions.create(
         params,
       )) as OpenAI.Chat.Completions.ChatCompletion;
+      if (checkBaseResp) {
+        const be = baseRespError(
+          (completion as unknown as { base_resp?: BaseResp }).base_resp,
+        );
+        if (be) throw be;
+      }
       const mapped = mapResponse(completion);
       log(
         `complete ok id=${id} model=${mapped.model} in=${String(mapped.usage.inputTokens)} out=${String(mapped.usage.outputTokens)} ms=${String(Date.now() - started)}`,
@@ -532,12 +624,17 @@ export function createOpenAiProvider(opts: OpenAiProviderOptions): LlmProvider {
       let model = req.model;
       let rawFinish: string | null = null;
       let usage: OpenAiUsageShape | null | undefined;
+      let baseResp: BaseResp | undefined;
       const toolAcc = new Map<number, ToolAcc>();
       const started = new Set<number>();
 
       for await (const chunk of stream) {
         if (chunk.model) model = chunk.model;
         if (chunk.usage) usage = chunk.usage as OpenAiUsageShape;
+        if (checkBaseResp) {
+          const br = (chunk as unknown as { base_resp?: BaseResp }).base_resp;
+          if (br) baseResp = br;
+        }
         // Optional-chain `choices`: OpenAI-compatible servers (Mistral/Ollama/
         // vLLM/Azure) often send the trailing include_usage chunk with NO
         // `choices` key at all, not just an empty array — `choices[0]` would throw.
@@ -570,6 +667,13 @@ export function createOpenAiProvider(opts: OpenAiProviderOptions): LlmProvider {
           }
         }
         if (choice.finish_reason) rawFinish = choice.finish_reason;
+      }
+
+      // A non-zero base_resp (MiniMax) flags an error even when the stream
+      // completed — surface it so the caller's retry/error path engages.
+      if (checkBaseResp) {
+        const be = baseRespError(baseResp);
+        if (be) throw be;
       }
 
       const content: ContentPart[] = [];

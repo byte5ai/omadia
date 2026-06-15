@@ -1,6 +1,9 @@
 import type { ChatAgent } from '@omadia/channel-sdk';
 import type { EmbeddingClient } from '@omadia/embeddings';
-import { resolveLlmProvider } from '@omadia/llm-provider';
+import {
+  resolveLlmProvider,
+  type LlmProviderCatalog,
+} from '@omadia/llm-provider';
 // Phase 5B: structural shim — `@omadia/integration-microsoft365` lives
 // in the byte5-plugins backup repo. The orchestrator types against a
 // narrow accessor shape that matches what the plugin publishes under
@@ -211,10 +214,19 @@ export async function activate(
   // burst is far more likely to ride out inside the SDK than fail a turn.
   const providerId =
     (ctx.config.get<string>('llm_provider') ?? '').trim() || 'anthropic';
+  // Plugin-contributed providers (e.g. MiniMax) supply their baseURL + quirks
+  // via the kernel's LlmProviderCatalog; passing it lets the factory resolve a
+  // provider id that isn't built in. Absent for the Anthropic/OpenAI defaults.
+  const llmProviderCatalog = ctx.services.get<LlmProviderCatalog>(
+    'llmProviderCatalog',
+  );
   const provider = await resolveLlmProvider({
     providerId,
     getSecret: (k) => ctx.secrets.get(k),
     maxRetries: 5,
+    ...(llmProviderCatalog !== undefined
+      ? { catalog: llmProviderCatalog }
+      : {}),
   });
   if (!provider) {
     ctx.log(

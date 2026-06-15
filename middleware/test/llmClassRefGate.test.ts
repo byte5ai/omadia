@@ -29,6 +29,11 @@ import type {
 } from '../src/plugins/manifestLoader.js';
 import { ServiceRegistry } from '../src/platform/serviceRegistry.js';
 import { createPluginContext } from '../src/platform/pluginContext.js';
+import { useBuiltinProviders } from './_helpers/builtinProviders.js';
+
+// Class/role/alias resolution needs real models; the registry is empty by
+// default now, so register the bundled built-ins (anthropic/openai/mistral).
+useBuiltinProviders();
 
 const stubVault = {
   get: async () => undefined,

@@ -65,6 +65,15 @@ const EXACT_PRICES: Readonly<Record<string, ModelPrice>> = {
   'gpt-5.4': { inputPerMTok: 2.5, outputPerMTok: 15, cachedInputPerMTok: 0.25, cacheIncludedInInput: true },
   'gpt-5.4-mini': { inputPerMTok: 0.75, outputPerMTok: 4.5, cachedInputPerMTok: 0.075, cacheIncludedInInput: true },
   'gpt-5.4-nano': { inputPerMTok: 0.2, outputPerMTok: 1.25, cachedInputPerMTok: 0.02, cacheIncludedInInput: true },
+  // --- Mistral (OpenAI-compatible API; per the live mistral.ai/pricing page,
+  //     reviewed 2026-06-14). `-latest` maps large→Large 3, medium→Medium 3.5,
+  //     small→Small 4. `usage` reports prompt/completion tokens with no
+  //     separate cached-read billing, so no cachedInputPerMTok /
+  //     cacheIncludedInInput (cached reads resolve to 0). Note Mistral prices
+  //     Medium 3.5 ABOVE Large 3 — not a typo. -----------------------------
+  'mistral-large-latest': { inputPerMTok: 0.5, outputPerMTok: 1.5 },
+  'mistral-medium-latest': { inputPerMTok: 1.5, outputPerMTok: 7.5 },
+  'mistral-small-latest': { inputPerMTok: 0.2, outputPerMTok: 0.6 },
 };
 
 /** Family-keyword fallback for dated snapshots / future point releases.
@@ -77,6 +86,10 @@ const FAMILY_PRICES: ReadonlyArray<readonly [keyword: string, price: ModelPrice]
   ['gpt-5.4-mini', { inputPerMTok: 0.75, outputPerMTok: 4.5, cachedInputPerMTok: 0.075, cacheIncludedInInput: true }],
   ['gpt-5.4', { inputPerMTok: 2.5, outputPerMTok: 15, cachedInputPerMTok: 0.25, cacheIncludedInInput: true }],
   ['gpt-5.5', { inputPerMTok: 5, outputPerMTok: 30, cachedInputPerMTok: 0.5, cacheIncludedInInput: true }],
+  // Mistral dated snapshots / non-`-latest` variants (e.g. mistral-large-3-25-12).
+  ['mistral-large', { inputPerMTok: 0.5, outputPerMTok: 1.5 }],
+  ['mistral-medium', { inputPerMTok: 1.5, outputPerMTok: 7.5 }],
+  ['mistral-small', { inputPerMTok: 0.2, outputPerMTok: 0.6 }],
 ];
 
 const UNKNOWN_PRICE: ModelPrice = { inputPerMTok: 0, outputPerMTok: 0 };

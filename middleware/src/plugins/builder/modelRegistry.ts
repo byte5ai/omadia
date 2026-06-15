@@ -15,49 +15,59 @@ import type { BuilderModel, BuilderModelId } from './types.js';
  * Drafts persist the choice as the literal slug (`'sonnet'`), so re-pointing
  * a slug to a new revision needs no draft migration.
  */
+/** Known slug→Anthropic vendor id, used as a fallback when the registry can't
+ *  resolve the slug. Anthropic is now an installable provider PLUGIN that
+ *  registers its models (with the opus/sonnet/haiku aliases) into the runtime
+ *  overlay at boot — it is no longer a static core model. So the registry may
+ *  not resolve these slugs at module-load time (this file is imported before the
+ *  boot-time provider registration). The builder is Anthropic-by-design, so this
+ *  stable map keeps it working before/without the anthropic plugin overlay
+ *  instead of throwing at import (which would abort middleware startup). */
+const SLUG_FALLBACK: Readonly<Record<BuilderModelId, string>> = {
+  haiku: 'claude-haiku-4-5-20251001',
+  sonnet: 'claude-sonnet-4-6',
+  opus: 'claude-opus-4-8',
+};
+
+/** Resolve a builder slug to its Anthropic vendor id — registry first (so a
+ *  model bump in the anthropic plugin flows through), then the stable fallback.
+ *  Resolved LAZILY (per get/list call), never at module load, and never throws. */
 function vendorId(slug: BuilderModelId): string {
   const info = resolveModelRef(slug);
-  if (info === undefined) {
-    // A boot-time invariant: every builder slug must be a registered alias.
-    throw new Error(
-      `builder model slug '${slug}' is not registered in the global model registry`,
-    );
-  }
-  // The field is `anthropicModelId` and flows into Anthropic-only client paths
-  // (builderChat/builderPreview/index). Guard the slug→Anthropic contract here
-  // so a future registry edit can never route a non-Anthropic id into the
-  // Anthropic SDK — fail fast at boot instead.
-  if (info.provider !== 'anthropic') {
-    throw new Error(
-      `builder model slug '${slug}' resolved to non-Anthropic provider '${info.provider}'; builder model ids must be Anthropic`,
-    );
-  }
-  return info.modelId;
+  if (info !== undefined && info.provider === 'anthropic') return info.modelId;
+  return SLUG_FALLBACK[slug];
 }
 
-const MODELS: Record<BuilderModelId, BuilderModel> = {
+/** UI metadata per slug (label/maxTokens/description) — a builder-workflow
+ *  concern, distinct from the model's capability ceiling. The Anthropic vendor
+ *  id is attached lazily by `builderModel()` so there is no load-time registry
+ *  dependency. */
+const MODEL_META: Readonly<
+  Record<BuilderModelId, Omit<BuilderModel, 'anthropicModelId'>>
+> = {
   haiku: {
     id: 'haiku',
     label: 'Haiku 4.5',
-    anthropicModelId: vendorId('haiku'),
     maxTokens: 8192,
     description: 'Schnell. Für kleine Spec-Patches und Slot-Regens.',
   },
   sonnet: {
     id: 'sonnet',
     label: 'Sonnet 4.6',
-    anthropicModelId: vendorId('sonnet'),
     maxTokens: 16_384,
     description: 'Ausbalanciert. Default für Full-Agent-Generation.',
   },
   opus: {
     id: 'opus',
     label: 'Opus 4.8',
-    anthropicModelId: vendorId('opus'),
     maxTokens: 16_384,
     description: 'Am kräftigsten. Für komplexe Tools und schwierige Lints.',
   },
 };
+
+function builderModel(id: BuilderModelId): BuilderModel {
+  return { ...MODEL_META[id], anthropicModelId: vendorId(id) };
+}
 
 // John pre-deploy request 2026-05-06: builder code-gen default switched to
 // Opus 4.7 (previously Sonnet 4.6). Rationale: builder generation is the
@@ -82,11 +92,11 @@ export const DEFAULT_BUILDER_MODEL: BuilderModelId =
 
 export const BuilderModelRegistry = {
   list(): BuilderModel[] {
-    return Object.values(MODELS);
+    return (Object.keys(MODEL_META) as BuilderModelId[]).map(builderModel);
   },
 
   get(id: BuilderModelId): BuilderModel {
-    return MODELS[id];
+    return builderModel(id);
   },
 
   has(id: string): id is BuilderModelId {

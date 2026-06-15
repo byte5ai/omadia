@@ -3,13 +3,22 @@ import { strict as assert } from 'node:assert';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
-import { providerApiKeyVaultKey } from '@omadia/llm-provider';
+import {
+  LlmProviderCatalog,
+  clearExternalModels,
+  providerApiKeyVaultKey,
+} from '@omadia/llm-provider';
 import express from 'express';
 import type { Express } from 'express';
 
 import { createAdminProvidersRouter } from '../src/routes/adminProviders.js';
 import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
 import { InMemorySecretVault } from '../src/secrets/vault.js';
+import { registerBuiltinLlmProviders } from '../src/platform/builtinLlmProviders.js';
+
+// The registry ships no static models now; makeHarness registers the bundled
+// built-ins (anthropic/openai/mistral) into a catalog passed to the route, so it
+// lists them + their data-protection policy exactly as production wires it.
 
 /**
  * /api/v1/admin/providers (S6) — the dedicated models/providers admin backend.
@@ -46,6 +55,11 @@ async function makeHarness(
       config: p.config ?? {},
     });
   }
+  // Register the bundled built-ins into a fresh catalog (also populates the
+  // global model overlay) so the route lists providers/models + their policy.
+  clearExternalModels();
+  const llmProviderCatalog = new LlmProviderCatalog();
+  registerBuiltinLlmProviders(llmProviderCatalog);
   const reactivated: string[] = [];
   const app: Express = express();
   app.use(express.json());
@@ -57,6 +71,7 @@ async function makeHarness(
       reactivate: async (id: string) => {
         reactivated.push(id);
       },
+      llmProviderCatalog,
     }),
   );
   const server: Server = await new Promise((resolve) => {
@@ -80,6 +95,8 @@ interface ProvidersResponse {
     id: string;
     label: string;
     connected: boolean;
+    requiresAvvDisclosure?: boolean;
+    euHosted?: boolean;
     models: Array<{ id: string; modelId: string; class: string }>;
   }>;
   assignments: Array<{
@@ -114,6 +131,9 @@ describe('admin providers route — GET /', () => {
   let h: Harness;
   afterEach(async () => {
     if (h) await h.close();
+    // Clear the global model overlay so concurrent test files don't see our
+    // built-ins (and we don't see theirs) — keeps the full-suite run clean.
+    clearExternalModels();
   });
 
   it('lists providers + registry models and per-plugin assignments', async () => {
@@ -121,9 +141,21 @@ describe('admin providers route — GET /', () => {
     const body = await getProviders(h);
     const anthropic = body.providers.find((p) => p.id === 'anthropic');
     const openai = body.providers.find((p) => p.id === 'openai');
-    assert.ok(anthropic && openai);
+    const mistral = body.providers.find((p) => p.id === 'mistral');
+    assert.ok(anthropic && openai && mistral);
     assert.ok(anthropic.models.some((m) => m.modelId === 'claude-opus-4-8'));
     assert.ok(openai.models.some((m) => m.modelId === 'gpt-5.5'));
+    // Mistral is registry-driven too: listed with a clean label + its models.
+    assert.equal(mistral.label, 'Mistral');
+    assert.ok(mistral.models.some((m) => m.modelId === 'mistral-large-latest'));
+    assert.equal(mistral.connected, false);
+    // Data-protection policy flags are data-driven from the provider descriptor
+    // (replaces the old hard-coded `provider !== 'anthropic'` / `=== 'mistral'`).
+    assert.equal(anthropic.requiresAvvDisclosure, false);
+    assert.equal(openai.requiresAvvDisclosure, true);
+    assert.equal(mistral.requiresAvvDisclosure, true);
+    assert.equal(mistral.euHosted, true);
+    assert.equal(anthropic.euHosted, false);
     // nothing connected yet
     assert.equal(anthropic.connected, false);
     assert.equal(openai.connected, false);
@@ -163,6 +195,9 @@ describe('admin providers route — POST /assignment', () => {
   let h: Harness;
   afterEach(async () => {
     if (h) await h.close();
+    // Clear the global model overlay so concurrent test files don't see our
+    // built-ins (and we don't see theirs) — keeps the full-suite run clean.
+    clearExternalModels();
   });
 
   it('sets provider + model, disables routing for the orchestrator, reactivates', async () => {
@@ -227,12 +262,46 @@ describe('admin providers route — POST /assignment', () => {
 
   it('allows an unknown (custom/openai-compatible) model id', async () => {
     h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
+    // A genuinely-unregistered model id passes through (custom/self-hosted).
+    // (`mistral-large-latest` is now a first-class registry model, so it would
+    // correctly mismatch provider 'openai-compatible' — see the Mistral test.)
     const { status } = await assign(h, {
       pluginId: ORCH,
       provider: 'openai-compatible',
-      model: 'mistral-large-latest',
+      model: 'llama-3.3-70b-instruct',
     });
     assert.equal(status, 200);
+  });
+
+  it('assigns a Mistral model by class ref, stores the bare id, disables routing', async () => {
+    h = await makeHarness([
+      { id: ORCH, config: { orchestrator_model_routing: 'true' } },
+      { id: VERIFIER },
+      { id: EXTRAS },
+    ]);
+    // class:frontier resolves against the chosen provider → mistral-large-latest.
+    const { status, json } = await assign(h, {
+      pluginId: ORCH,
+      provider: 'mistral',
+      model: 'class:frontier',
+    });
+    assert.equal(status, 200, JSON.stringify(json));
+    const cfg = h.registry.get(ORCH)?.config ?? {};
+    assert.equal(cfg['llm_provider'], 'mistral');
+    assert.equal(cfg['orchestrator_model'], 'mistral-large-latest');
+    // non-anthropic → per-turn Claude routing forced off
+    assert.equal(cfg['orchestrator_model_routing'], 'false');
+  });
+
+  it('rejects a Mistral model assigned to the wrong provider', async () => {
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
+    const { status, json } = await assign(h, {
+      pluginId: ORCH,
+      provider: 'openai',
+      model: 'mistral-large-latest',
+    });
+    assert.equal(status, 400);
+    assert.equal(json['code'], 'providers.model_provider_mismatch');
   });
 
   it('preserves unrelated config keys across an assignment (merge, no key loss)', async () => {
