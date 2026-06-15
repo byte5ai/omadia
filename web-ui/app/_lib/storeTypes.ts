@@ -199,6 +199,7 @@ export interface InstallSetupField {
   provider?: string;
   scopes?: string[];
   pattern?: string;
+  multiline?: boolean;
 }
 
 export interface InstallSetupSchema {

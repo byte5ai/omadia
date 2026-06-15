@@ -89,6 +89,21 @@ export function FieldRow({
             }
             className={common}
           />
+        ) : field.multiline &&
+          (field.type === 'string' || field.type === 'secret') ? (
+          <textarea
+            id={id}
+            name={field.key}
+            rows={6}
+            required={field.required}
+            placeholder={field.type === 'secret' ? '••••••••' : undefined}
+            defaultValue={
+              typeof field.default === 'string' ? field.default : ''
+            }
+            className={cn(common, 'resize-y font-mono text-xs leading-relaxed')}
+            autoComplete="off"
+            spellCheck={false}
+          />
         ) : (
           <input
             id={id}
