@@ -32,10 +32,11 @@ import { synthesizeSurfaceEvents } from './surfaceSynthesis.js';
  * the bundle a canvas channel reaches via `channel.dispatch_service` (PR-6).
  *
  * For a **canvas turn** (one that carries `input.canvasSessionId`) the agent now
- * runs the Haiku composition step before delegating:
+ * runs the cheapest-class composition step before delegating:
  *
- *   1. **Skeleton-first** — `composeSkeleton` (fast model from
- *      `ui_orchestrator_model`, validator-gated with one repair retry,
+ *   1. **Skeleton-first** — `composeSkeleton` (cheapest fast-class model —
+ *      `class:fast` by default, overridable via `ui_orchestrator_model`;
+ *      validator-gated with one repair retry,
  *      deterministic fallback) yields a `surface_snapshot` (revision "0")
  *      BEFORE the slow main turn starts.
  *   2. **Requirement handoff** — the delegated main turn's user message carries
@@ -70,7 +71,13 @@ export const CANVAS_CHAT_AGENT_SERVICE = 'canvasChatAgent';
 
 const CANVAS_PROTOCOL_VERSION = '1.0';
 const OPS_CATALOG_VERSION = '1.0';
-const DEFAULT_COMPOSITION_MODEL = 'claude-haiku-4-5';
+// Skeleton composition is a low-stakes structural placeholder, so it ALWAYS
+// runs on the cheapest tier — the `class:fast` ref resolves (in createLlmAccessor)
+// to the active provider's fast/cheapest model: anthropic→claude-haiku, openai→
+// gpt-5.4-mini, mistral→mistral-small. Provider-agnostic: pin a concrete id or a
+// bigger class via the `ui_orchestrator_model` config only if the tree-validity
+// gate (<95% first-attempt schema-valid) demands it.
+const DEFAULT_COMPOSITION_MODEL = 'class:fast';
 
 export interface UiOrchestratorPluginHandle {
   close(): Promise<void>;
