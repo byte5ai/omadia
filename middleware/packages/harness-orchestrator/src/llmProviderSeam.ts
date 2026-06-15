@@ -131,10 +131,26 @@ function toToolSpecs(tools: AnthropicBlock[]): {
   let cacheTools = false;
   const specs = tools.map((tool) => {
     if (tool['cache_control'] !== undefined) cacheTools = true;
+    const inputSchema = tool['input_schema'] as
+      | Record<string, unknown>
+      | undefined;
+    // Provider-native server tools (Anthropic memory `memory_20250818`,
+    // web_search, …) carry a `type` discriminator and NO `input_schema` —
+    // the vendor owns the schema. Preserve `type` so the adapter re-emits
+    // the server-tool shape; dropping it produced a custom tool with a
+    // missing input_schema → 400 `tools.0.custom.input_schema: Field required`.
+    if (inputSchema === undefined && typeof tool['type'] === 'string') {
+      return {
+        name: tool['name'] as string,
+        description: (tool['description'] ?? '') as string,
+        inputSchema: {} as Record<string, unknown>,
+        serverType: tool['type'] as string,
+      };
+    }
     return {
       name: tool['name'] as string,
       description: (tool['description'] ?? '') as string,
-      inputSchema: tool['input_schema'] as Record<string, unknown>,
+      inputSchema: inputSchema as Record<string, unknown>,
     };
   });
   return { tools: specs, cacheTools };

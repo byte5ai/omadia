@@ -195,6 +195,39 @@ test('request mapping: image, tool_result, cacheHints, toolChoice', async () => 
   });
 });
 
+test('request mapping: server tool (memory) emits {type,name}, no input_schema', async () => {
+  // Regression for the live 400 `tools.0.custom.input_schema: Field required`:
+  // a ToolSpec carrying `serverType` is a provider-native server tool whose
+  // schema lives server side. It must be sent as `{ type, name }`, never as a
+  // custom tool with an `input_schema`.
+  const captured: Captured = {};
+  const provider = createAnthropicProvider({
+    client: mockClient(captured, textResponse()),
+  });
+
+  await provider.complete({
+    model: 'claude-sonnet-4-6',
+    maxTokens: 256,
+    tools: [
+      {
+        name: 'memory',
+        description: '',
+        inputSchema: {},
+        serverType: 'memory_20250818',
+      },
+      { name: 'a', description: 'A', inputSchema: { type: 'object' } },
+    ],
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+
+  const p = captured.params as Record<string, unknown>;
+  const tools = p['tools'] as Array<Record<string, unknown>>;
+  assert.deepEqual(tools[0], { type: 'memory_20250818', name: 'memory' });
+  assert.equal('input_schema' in (tools[0] ?? {}), false);
+  // the custom tool still carries its schema
+  assert.deepEqual(tools[1]?.['input_schema'], { type: 'object' });
+});
+
 test('stream() yields text deltas then a final response', async () => {
   const events = [
     { type: 'message_start' },

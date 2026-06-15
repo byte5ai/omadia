@@ -67,6 +67,14 @@ export interface ToolSpec {
   /** JSON Schema for the tool input. Adapters validate vendor-specific
    *  restrictions (e.g. OpenAI strict mode) and throw early. */
   readonly inputSchema: Record<string, unknown>;
+  /** Provider-native server/built-in tool discriminator (e.g. Anthropic's
+   *  memory tool `memory_20250818`, web_search, …). When set, the tool has
+   *  NO author-supplied `inputSchema` — the vendor owns the schema server
+   *  side — and the owning adapter must emit the `{ type, name }` server-tool
+   *  shape instead of a custom tool. Adapters that cannot honor the server
+   *  tool (OpenAI, Mistral) MUST skip it rather than send a malformed custom
+   *  function. */
+  readonly serverType?: string;
 }
 
 export type ToolChoice =

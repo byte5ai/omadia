@@ -64,6 +64,32 @@ test('toLlmRequest maps tools (cache on last → cacheHints.tools) + tool_choice
   assert.deepEqual(req.toolChoice, { type: 'required', disableParallel: true });
 });
 
+test('toLlmRequest preserves server tools (memory) via serverType, not custom', () => {
+  // Regression: the orchestrator's first tool is the Anthropic memory tool
+  // `{ type: 'memory_20250818', name: 'memory' }` — a server tool with NO
+  // input_schema. Dropping `type` rebuilt it as a custom tool with a missing
+  // input_schema → 400 `tools.0.custom.input_schema: Field required`.
+  const params: AnthropicParams = {
+    model: 'claude-sonnet-4-6',
+    max_tokens: 1024,
+    messages: [{ role: 'user', content: 'go' }],
+    tools: [
+      { type: 'memory_20250818', name: 'memory' },
+      { name: 'a', description: 'A', input_schema: { type: 'object' } },
+    ],
+  };
+  const req = toLlmRequest(params);
+  assert.deepEqual(req.tools, [
+    {
+      name: 'memory',
+      description: '',
+      inputSchema: {},
+      serverType: 'memory_20250818',
+    },
+    { name: 'a', description: 'A', inputSchema: { type: 'object' } },
+  ]);
+});
+
 test('toLlmRequest maps tool_use echo + tool_result + image blocks', () => {
   const params: AnthropicParams = {
     model: 'claude-opus-4-8',

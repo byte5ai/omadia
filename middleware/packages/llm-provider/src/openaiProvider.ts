@@ -230,15 +230,20 @@ function toOpenAiTools(
   tools: ReadonlyArray<ToolSpec>,
   strict: boolean,
 ): OpenAiMessageParam[] {
-  return tools.map((t) => ({
-    type: 'function',
-    function: {
-      name: t.name,
-      description: t.description,
-      parameters: t.inputSchema ?? EMPTY_TOOL_PARAMETERS,
-      ...(strict ? { strict: true } : {}),
-    },
-  }));
+  return tools
+    // Provider-native server tools (e.g. Anthropic's memory tool) have no
+    // OpenAI equivalent — skip them rather than emit a bogus empty-param
+    // function the model would never be able to call correctly.
+    .filter((t) => t.serverType === undefined)
+    .map((t) => ({
+      type: 'function',
+      function: {
+        name: t.name,
+        description: t.description,
+        parameters: t.inputSchema ?? EMPTY_TOOL_PARAMETERS,
+        ...(strict ? { strict: true } : {}),
+      },
+    }));
 }
 
 function toOpenAiToolChoice(choice: ToolChoice): unknown {

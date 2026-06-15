@@ -96,16 +96,26 @@ function toAnthropicTools(
   tools: ReadonlyArray<ToolSpec>,
   cacheHints: CacheHints | undefined,
 ): AnthropicContentBlockParam[] {
-  return tools.map((tool, i) => ({
-    name: tool.name,
-    description: tool.description,
-    input_schema: tool.inputSchema,
+  return tools.map((tool, i) => {
     // Caching the LAST tool caches everything up to that point — the
     // stable prefix across tool-loop iterations (localSubAgent convention).
-    ...(cacheHints?.tools === true && i === tools.length - 1
-      ? { cache_control: CACHE_EPHEMERAL }
-      : {}),
-  }));
+    const cache =
+      cacheHints?.tools === true && i === tools.length - 1
+        ? { cache_control: CACHE_EPHEMERAL }
+        : {};
+    // Provider-native server tool (memory, web_search, …): typed, schema
+    // owned server side. Emit the `{ type, name }` shape — a custom-tool
+    // `input_schema` would be rejected by the API for these.
+    if (tool.serverType !== undefined) {
+      return { type: tool.serverType, name: tool.name, ...cache };
+    }
+    return {
+      name: tool.name,
+      description: tool.description,
+      input_schema: tool.inputSchema,
+      ...cache,
+    };
+  });
 }
 
 function toAnthropicToolChoice(
