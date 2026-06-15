@@ -50,7 +50,8 @@ export const CANVAS_PATH = '/omadia-ui/canvas';
  *  inline so the channel plugin keeps zero runtime deps on the kernel. */
 function absoluteCanvasWsUrl(req: {
   headers: Record<string, string | string[] | undefined>;
-  socket?: { encrypted?: boolean };
+  /** `req.socket.encrypted` (tls.TLSSocket) — true on a direct TLS connection. */
+  encrypted?: boolean;
 }): string {
   const first = (name: string): string | undefined => {
     const v = req.headers[name];
@@ -58,7 +59,7 @@ function absoluteCanvasWsUrl(req: {
     return raw?.split(',')[0]?.trim() || undefined;
   };
   const xfProto = first('x-forwarded-proto');
-  const secure = xfProto ? xfProto === 'https' : Boolean(req.socket?.encrypted);
+  const secure = xfProto ? xfProto === 'https' : Boolean(req.encrypted);
   const host = first('x-forwarded-host') ?? first('host') ?? 'localhost';
   return `${secure ? 'wss' : 'ws'}://${host}${CANVAS_PATH}`;
 }
@@ -77,7 +78,14 @@ export async function activate(
     // still gets a connect-ready URL without hand-assembling scheme + host +
     // path. The canonical, auth-aware descriptor lives at
     // `/.well-known/omadia-ui` (served by the kernel).
-    const wsUrl = wsAvailable ? absoluteCanvasWsUrl(req) : undefined;
+    const wsUrl = wsAvailable
+      ? absoluteCanvasWsUrl({
+          headers: req.headers,
+          encrypted: Boolean(
+            (req.socket as { encrypted?: boolean } | undefined)?.encrypted,
+          ),
+        })
+      : undefined;
     res.json({
       channel: ctx.agentId,
       protocolVersions: [CANVAS_PROTOCOL_VERSION],
