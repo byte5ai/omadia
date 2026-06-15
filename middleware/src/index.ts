@@ -1661,7 +1661,13 @@ async function main(): Promise<void> {
   app.get(WELL_KNOWN_PATH, (req, res) => {
     res.json(
       buildPairingDescriptor(
-        { headers: req.headers, encrypted: Boolean(req.socket?.encrypted) },
+        {
+          headers: req.headers,
+          // `encrypted` lives on tls.TLSSocket, not the base net.Socket type.
+          encrypted: Boolean(
+            (req.socket as { encrypted?: boolean } | undefined)?.encrypted,
+          ),
+        },
         {
           instanceName: config.OMADIA_UI_INSTANCE_NAME,
           publicWsUrl: config.OMADIA_UI_PUBLIC_WS_URL,
