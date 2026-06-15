@@ -2,7 +2,10 @@ import { createHash, randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
-import { providerApiKeyVaultKey } from '@omadia/llm-provider';
+import {
+  legacyProviderApiKeyVaultKey,
+  providerApiKeyVaultKey,
+} from '@omadia/llm-provider';
 import { parseCapabilityRef } from '@omadia/plugin-api';
 
 import type { Config } from '../config.js';
@@ -21,6 +24,9 @@ const MEMORY_POSTGRES_ID = '@omadia/memory-postgres';
 const ORCHESTRATOR_TOOL_ID = '@omadia/orchestrator';
 const ORCHESTRATOR_EXTRAS_TOOL_ID = '@omadia/orchestrator-extras';
 const VERIFIER_TOOL_ID = '@omadia/verifier';
+const UI_ORCHESTRATOR_TOOL_ID = '@omadia/ui-orchestrator';
+/** Providers whose API keys are mirrored into the canvas plugin's scope. */
+const MIRRORED_PROVIDERS = ['anthropic', 'openai', 'mistral'] as const;
 
 // S+11-2b: KG providers are operator-managed (RequiresWizard / install UI).
 // Both sibling plugins declare `provides: knowledgeGraph@1` —
@@ -256,6 +262,10 @@ export async function runLegacyBootstrap(deps: BootstrapDeps): Promise<void> {
   await bootstrapOrchestratorExtrasFromEnv(deps);
   await bootstrapVerifierFromEnv(deps);
   await bootstrapOrchestratorFromEnv(deps);
+  // Canvas plugin makes its own ctx.llm call but has no provider key of its own
+  // — mirror the orchestrator's keys into its scope (must run AFTER the
+  // orchestrator bootstrap so the source keys exist).
+  await mirrorProviderKeysToUiOrchestrator(deps);
   if (deps.builtInStore) {
     await bootstrapBuiltInPackages(deps);
   }
@@ -845,6 +855,49 @@ async function bootstrapVerifierFromEnv(
  * Idempotent: once the registry entry exists we never overwrite the
  * operator's settings.
  */
+/**
+ * The canvas Tier-2 composer (@omadia/ui-orchestrator) makes its OWN per-agent
+ * `ctx.llm` skeleton call. But provider API keys are entered per-plugin (they
+ * land in the orchestrator's vault scope) and vaults have NO shared fallback
+ * (see secrets/vault.ts) — and the canvas plugin has no provider-key setup
+ * field and was absent from every key-distribution list. Net effect: the canvas
+ * never had ANY provider key in its scope, so every canvas turn failed with
+ * "no 'llm' provider is registered" → empty fallback skeleton, even with the
+ * provider showing CONNECTED in the admin UI.
+ *
+ * Mirror the orchestrator's connected provider keys into the canvas plugin's
+ * scope. Non-destructive (skips a key the canvas already holds); no plaintext
+ * ever leaves the kernel (vault → vault copy). Runs each boot so a provider
+ * connected later propagates on the next restart.
+ */
+async function mirrorProviderKeysToUiOrchestrator(
+  deps: BootstrapDeps,
+): Promise<void> {
+  const log = deps.log ?? ((m) => console.log(m));
+  const vaultKeys: string[] = [];
+  for (const provider of MIRRORED_PROVIDERS) {
+    vaultKeys.push(providerApiKeyVaultKey(provider));
+    const legacy = legacyProviderApiKeyVaultKey(provider);
+    if (legacy !== undefined) vaultKeys.push(legacy);
+  }
+  const updates: Record<string, string> = {};
+  for (const key of vaultKeys) {
+    const existing = await deps.vault.get(UI_ORCHESTRATOR_TOOL_ID, key);
+    if (typeof existing === 'string' && existing.trim().length > 0) continue;
+    const source = await deps.vault.get(ORCHESTRATOR_TOOL_ID, key);
+    if (typeof source === 'string' && source.trim().length > 0) {
+      updates[key] = source;
+    }
+  }
+  const count = Object.keys(updates).length;
+  if (count > 0) {
+    await deps.vault.setMany(UI_ORCHESTRATOR_TOOL_ID, updates);
+    log(
+      `[bootstrap] mirrored ${String(count)} provider key(s) → ${UI_ORCHESTRATOR_TOOL_ID} (canvas LLM enablement)`,
+    );
+  }
+}
+
 async function bootstrapOrchestratorFromEnv(
   deps: BootstrapDeps,
 ): Promise<void> {
