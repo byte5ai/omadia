@@ -66,15 +66,27 @@ export interface ResolveLlmProviderOptions {
 export async function resolveLlmProvider(
   opts: ResolveLlmProviderOptions,
 ): Promise<LlmProvider | undefined> {
-  const apiKey = await readProviderApiKey(opts.getSecret, opts.providerId);
-  if (apiKey === undefined) return undefined;
+  // Resolve the catalog descriptor first — it tells us whether this provider
+  // even needs a key. A plugin-contributed provider (the catalog) declares its
+  // wireFormat; the built-in `anthropic` default keeps the Anthropic wire format
+  // with no descriptor.
+  const descriptor = opts.catalog?.get(opts.providerId);
 
-  // Resolve the wire format + baseURL once. A plugin-contributed provider (the
-  // catalog) declares its wireFormat; the built-in `anthropic` default keeps the
-  // Anthropic wire format with no descriptor. baseURL precedence: explicit
+  const apiKey = await readProviderApiKey(opts.getSecret, opts.providerId);
+  // Local / self-hosted providers (e.g. Ollama) declare `policy.requiresApiKey:
+  // false` and run without credentials — build them with an empty key. For every
+  // other provider, a missing key means "not connected" → no provider.
+  const keyless = descriptor?.policy?.requiresApiKey === false;
+  if (apiKey === undefined && !keyless) return undefined;
+  // The OpenAI/Anthropic SDK constructors reject a falsy apiKey, so a keyless
+  // provider (no credential by design — Ollama ignores the Authorization header)
+  // gets a non-empty placeholder instead of ''. Only reached when apiKey is
+  // genuinely absent AND the provider declared requiresApiKey:false.
+  const resolvedKey = apiKey ?? 'no-key-required';
+
+  // Resolve the wire format + baseURL once. baseURL precedence: explicit
   // opts.baseURL (self-hosted gateway / Azure) > catalog descriptor > a well-known
   // default (knownProviderBaseUrl, e.g. mistral) so the operator never types it.
-  const descriptor = opts.catalog?.get(opts.providerId);
   const wireFormat =
     descriptor?.wireFormat ??
     (opts.providerId === 'anthropic' ? 'anthropic' : 'openai-compatible');
@@ -87,7 +99,7 @@ export async function resolveLlmProvider(
     // anthropic default). Quirks are openai-only and do not apply here.
     return createAnthropicProvider({
       client: createAnthropicClient({
-        apiKey,
+        apiKey: resolvedKey,
         ...(opts.maxRetries !== undefined ? { maxRetries: opts.maxRetries } : {}),
         ...(baseURL !== undefined ? { baseURL } : {}),
       }),
@@ -110,7 +122,7 @@ export async function resolveLlmProvider(
     );
   }
   return createOpenAiProvider({
-    apiKey,
+    apiKey: resolvedKey,
     ...(baseURL !== undefined ? { baseURL } : {}),
     ...(opts.maxRetries !== undefined ? { maxRetries: opts.maxRetries } : {}),
     ...(opts.providerId !== 'openai' ? { id: opts.providerId } : {}),
