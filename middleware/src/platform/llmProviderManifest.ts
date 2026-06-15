@@ -11,6 +11,7 @@
  * `registerExternalModels`; this layer only enforces shape + required fields.
  */
 import type {
+  LlmProviderCatalog,
   LlmProviderDescriptor,
   ModelInfo,
   ProviderQuirks,
@@ -138,4 +139,55 @@ export function parseLlmProviderManifestBlock(
     ...(quirks !== undefined ? { quirks } : {}),
     models: modelsRaw.map(parseModel),
   };
+}
+
+/** Read a plugin manifest's `llm_provider` block and register the resulting
+ *  provider (and its models) into `catalog`. Resolves a per-install `baseURL`
+ *  override from the plugin's own config scope when the descriptor declares a
+ *  `base_url_config_key`. Returns the registered descriptor (with the resolved
+ *  baseURL) so the caller can log it, or `undefined` when the manifest declares
+ *  no provider. Throws on a MALFORMED block — the caller logs + skips.
+ *
+ *  Shared by the boot-time registration loop and the hot-install path
+ *  (InstallService.onInstalled) so a provider plugin installed at runtime lands
+ *  in the catalog + model registry — and thus the admin Providers page —
+ *  WITHOUT a middleware restart. Idempotent: `catalog.register` replaces an
+ *  existing same-id entry (disposing the old models). */
+export function registerPluginLlmProvider(
+  manifest: unknown,
+  config: Record<string, unknown> | undefined,
+  catalog: LlmProviderCatalog,
+): LlmProviderDescriptor | undefined {
+  const block = (manifest as { llm_provider?: unknown } | null | undefined)
+    ?.llm_provider;
+  if (block === undefined || block === null) return undefined;
+  const descriptor = parseLlmProviderManifestBlock(block);
+  let baseURL = descriptor.baseURL;
+  if (descriptor.baseUrlConfigKey !== undefined) {
+    const override = (config ?? {})[descriptor.baseUrlConfigKey];
+    if (typeof override === 'string' && override.trim().length > 0) {
+      baseURL = override.trim();
+    }
+  }
+  const resolved = { ...descriptor, baseURL };
+  catalog.register(resolved);
+  return resolved;
+}
+
+/** Counterpart to {@link registerPluginLlmProvider}: drop a plugin's contributed
+ *  provider (and its models) from `catalog`. Returns the unregistered provider
+ *  id, or `undefined` when the manifest declares no provider OR the provider was
+ *  not registered. Throws only on a malformed block (which never registered) —
+ *  the caller ignores. */
+export function unregisterPluginLlmProvider(
+  manifest: unknown,
+  catalog: LlmProviderCatalog,
+): string | undefined {
+  const block = (manifest as { llm_provider?: unknown } | null | undefined)
+    ?.llm_provider;
+  if (block === undefined || block === null) return undefined;
+  const { id } = parseLlmProviderManifestBlock(block);
+  if (!catalog.has(id)) return undefined;
+  catalog.unregister(id);
+  return id;
 }
