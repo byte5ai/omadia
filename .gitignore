@@ -173,6 +173,14 @@ middleware/packages/harness-integration-confluence/
 middleware/packages/harness-integration-microsoft365/
 middleware/packages/harness-integration-odoo/
 
+# ─── Hub-distributed plugins ──────────────────────────────────────────────
+# GitHub integration + agent. Distributed via the Omadia Hub
+# (hub.omadia.ai), not committed here — the published .zip is the source of
+# truth. Kept on disk as a working-dev copy for local build/test/publish.
+middleware/packages/integration-github/
+middleware/packages/agent-github/
+middleware/test/integration-github/
+
 # Local-only screencast pipeline (Playwright recorder + GIF conversion).
 # Tooling for the README demo GIF; not part of the repo.
 /screencast/
