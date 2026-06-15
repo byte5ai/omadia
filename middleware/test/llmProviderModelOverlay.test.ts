@@ -44,8 +44,9 @@ const M25: ModelInfo = {
 
 beforeEach(() => clearExternalModels());
 
-test('overlay models appear in lookups; core registry is unaffected', () => {
-  const anthropicBefore = listModelsByProvider('anthropic').length;
+test('overlay models appear in lookups; the frozen core ships zero static models', () => {
+  // The llm-provider package is provider-agnostic now — no static built-in models.
+  assert.equal(listModels().length, 0);
   assert.equal(listModelsByProvider('minimax').length, 0);
 
   registerExternalModels([M3, M25]);
@@ -55,9 +56,8 @@ test('overlay models appear in lookups; core registry is unaffected', () => {
   assert.equal(resolveModelRef('minimax:MiniMax-M3')?.modelId, 'MiniMax-M3');
   assert.equal(resolveModelRef('MiniMax-M3')?.provider, 'minimax');
   assert.equal(modelForClass('frontier', 'minimax')?.id, 'minimax:MiniMax-M3');
-  // core untouched
-  assert.equal(listModelsByProvider('anthropic').length, anthropicBefore);
-  assert.ok(listModels().some((m) => m.id === 'anthropic:claude-opus-4-8'));
+  // exactly the overlay fixtures are visible — nothing else
+  assert.equal(listModels().length, 2);
 });
 
 test('dispose removes exactly the registered overlay models', () => {
@@ -68,17 +68,13 @@ test('dispose removes exactly the registered overlay models', () => {
   assert.equal(getModel('minimax:MiniMax-M3'), undefined);
 });
 
-test('overlay validates against the combined set (rejects core id collision)', () => {
+test('overlay validates against the combined set (rejects duplicate id vs already-registered)', () => {
+  // First registration succeeds; a second batch re-using an id collides against
+  // the COMBINED set (core + already-registered external), proving the overlay
+  // validates against everything, not just within its own batch.
+  registerExternalModels([M3]);
   assert.throws(
-    () =>
-      registerExternalModels([
-        {
-          ...M3,
-          id: 'anthropic:claude-opus-4-8',
-          provider: 'anthropic',
-          modelId: 'claude-opus-4-8',
-        },
-      ]),
+    () => registerExternalModels([{ ...M25, id: 'minimax:MiniMax-M3', modelId: 'MiniMax-M3' }]),
     /duplicate id/,
   );
 });

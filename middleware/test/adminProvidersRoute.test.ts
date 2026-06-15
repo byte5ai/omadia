@@ -10,6 +10,11 @@ import type { Express } from 'express';
 import { createAdminProvidersRouter } from '../src/routes/adminProviders.js';
 import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
 import { InMemorySecretVault } from '../src/secrets/vault.js';
+import { useBuiltinProviders } from './_helpers/builtinProviders.js';
+
+// The registry ships no static models now; register the bundled built-ins
+// (anthropic/openai/mistral) so the route lists them as before.
+useBuiltinProviders();
 
 /**
  * /api/v1/admin/providers (S6) — the dedicated models/providers admin backend.
