@@ -178,6 +178,7 @@ import { FileSecretVault, resolveMasterKey } from './secrets/fileVault.js';
 import { VaultBackupService } from './secrets/vaultBackup.js';
 import { createAnthropicLlmProvider } from './platform/anthropicLlmProvider.js';
 import { parseLlmProviderManifestBlock } from './platform/llmProviderManifest.js';
+import { registerBuiltinLlmProviders } from './platform/builtinLlmProviders.js';
 import { BackgroundJobRegistry } from './platform/backgroundJobRegistry.js';
 import { ChatAgentWrapRegistry } from './platform/chatAgentWrapRegistry.js';
 import { PromptContributionRegistry } from './platform/promptContributionRegistry.js';
@@ -281,6 +282,18 @@ async function main(): Promise<void> {
   // can resolve a plugin-contributed provider at its own activation.
   const llmProviderCatalog = new LlmProviderCatalog();
   serviceRegistry.provide('llmProviderCatalog', llmProviderCatalog);
+  // Bundled built-in providers (anthropic/openai/mistral). The llm-provider
+  // package ships ZERO static models now; these register into the catalog +
+  // overlay HERE — before plugin activation and before the builder/orchestrator
+  // resolve a model — so a fresh install is functional out of the box. Installed
+  // provider PLUGINS (e.g. MiniMax) register additionally, further below.
+  registerBuiltinLlmProviders(llmProviderCatalog);
+  console.log(
+    `[middleware] ${String(llmProviderCatalog.list().length)} built-in LLM provider(s) registered: ${llmProviderCatalog
+      .list()
+      .map((p) => p.id)
+      .join(', ')}`,
+  );
   // Canvas-output autodiscovery (declare → resolve → derive): plugins declare
   // `canvas_output: true` per manifest capability, the agent runtime resolves
   // those into this registry on (de)activation, and the ui-orchestrator
