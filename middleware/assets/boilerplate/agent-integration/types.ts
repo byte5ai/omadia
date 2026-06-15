@@ -96,6 +96,14 @@ export interface PluginContext {
    *  per-call max-tokens-clamp are enforced by the manifest. */
   readonly llm?: LlmAccessor;
 
+  /** Spec 004 — redirect/callback flow toolkit. Present iff the manifest
+   *  declares `permissions.flows: true`. `publicUrl(rel)` resolves this
+   *  plugin's own browser-facing callback URL; `signState`/`verifyState`
+   *  mint and check a CSRF-safe, plugin-audience-bound state token (the
+   *  signing key stays kernel-side). Guard with `if (ctx.flows)` — an older
+   *  core may not provide it. */
+  readonly flows?: FlowsAccessor;
+
   /** Per-plugin memory store, scoped to `/memories/agents/<agentId>/`.
    *  All paths are RELATIVE — `notes.md` resolves to
    *  `/memories/agents/<agentId>/notes.md` under the hood. Plugins cannot
@@ -146,6 +154,30 @@ export interface MemoryEntryInfo {
   readonly relPath: string;
   readonly isDirectory: boolean;
   readonly sizeBytes: number;
+}
+
+/**
+ * Spec 004 — flow toolkit (mirror of `FlowsAccessor` from
+ * `@omadia/plugin-api`). For plugins that run a redirect/callback flow on
+ * their own route. The kernel owns the public-URL topology and the HS512
+ * state-signing key; the plugin owns its route handler. The state token's
+ * audience is auto-bound to this plugin id, so it cannot be replayed against
+ * another plugin's callback.
+ */
+export interface FlowsAccessor {
+  /** Resolve this plugin's browser-facing callback URL (for an IdP
+   *  `redirect_url`). A route registered at `/api/<…>` is reached via the
+   *  `/bot-api/* → /api/*` proxy, so the leading `/api` is dropped. Pass
+   *  `opts.prefix` only when the plugin registered several routes. */
+  publicUrl(relPath: string, opts?: { prefix?: string }): string;
+  /** Sign arbitrary claims into a short-lived (10-min default) state token. */
+  signState(
+    claims: Record<string, unknown>,
+    opts?: { ttl?: string },
+  ): Promise<string>;
+  /** Verify a returned state token; throws on bad signature, wrong audience,
+   *  or expiry. Returns the decoded claims. */
+  verifyState(token: string): Promise<Record<string, unknown>>;
 }
 
 /**

@@ -157,6 +157,9 @@ export interface DynamicAgentRuntimeDeps {
   /** Kernel-wide background-job scheduler. Plugin-contributed jobs register
    *  here via `ctx.jobs.register(spec, handler)`. */
   jobScheduler: JobScheduler;
+  /** Spec 004 — key + origin for the `ctx.flows` toolkit (optional in tests). */
+  flowSigningKey?: Uint8Array;
+  flowPublicBaseUrl?: string;
   /** Canvas-output autodiscovery: manifest capability entries declaring
    *  `canvas_output: true` are resolved into this registry on (de)activation
    *  so the ui-orchestrator can derive its sentinel allow-set without
@@ -339,6 +342,8 @@ export class DynamicAgentRuntime {
       notificationRouter: this.deps.notificationRouter,
       uiRouteCatalog: this.deps.uiRouteCatalog,
       jobScheduler: this.deps.jobScheduler,
+      flowSigningKey: this.deps.flowSigningKey,
+      flowPublicBaseUrl: this.deps.flowPublicBaseUrl,
       logger: (...args) => console.log(`[${agentId}]`, ...args),
     });
 

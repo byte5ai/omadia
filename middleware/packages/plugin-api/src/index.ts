@@ -1,4 +1,7 @@
 export * from './pluginContext.js';
+// Spec 004 FR-B4 — PKCE (RFC 7636) helpers as pure SDK functions, for plugins
+// running their own redirect/OAuth flows alongside `ctx.flows`.
+export * from './pkce.js';
 export * from './conversation.js';
 export * from './limitSignal.js';
 export * from './selfExtend.js';

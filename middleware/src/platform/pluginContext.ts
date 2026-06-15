@@ -18,6 +18,7 @@ import {
   type EntityIngestResult,
   type FactIngest,
   type FactIngestResult,
+  type FlowsAccessor,
   type HttpAccessor,
   type JobsAccessor,
   type KnowledgeGraph,
@@ -62,6 +63,7 @@ import type { PluginRouteRegistry } from './pluginRouteRegistry.js';
 import type { NotificationRouter } from './notificationRouter.js';
 import type { UiRouteCatalog } from './uiRouteCatalog.js';
 import { createHttpAccessor, isAuditMode, type AuditMode } from './httpAccessor.js';
+import { signFlowState, verifyFlowState } from './flowState.js';
 import { createMemoryAccessor } from './memoryAccessor.js';
 import { SCRATCH_DIR } from './paths.js';
 import type { ServiceRegistry } from './serviceRegistry.js';
@@ -125,6 +127,16 @@ export interface CreatePluginContextOptions {
    *  delegates here; consumers (channel-teams Hub + Tab-Config) query
    *  it at request time via the `uiRouteCatalog` service. */
   uiRouteCatalog: UiRouteCatalog;
+  /** Spec 004 (FR-B3) — symmetric key used to sign/verify `ctx.flows` state
+   *  tokens (the same `auth/sessionSigningKey`). Held by the kernel; the
+   *  `flows` accessor closes over it and never exposes it. Optional: when
+   *  absent, `ctx.flows` is not built even if the manifest declares
+   *  `permissions.flows` (migration/test contexts don't run flows). */
+  flowSigningKey?: Uint8Array;
+  /** Spec 004 (FR-B5) — browser-facing origin the flow callback URLs resolve
+   *  against (`FLOW_PUBLIC_BASE_URL`, defaulting to `PUBLIC_BASE_URL`). No
+   *  trailing slash. Required alongside `flowSigningKey` for `ctx.flows`. */
+  flowPublicBaseUrl?: string;
   logger?: (...args: unknown[]) => void;
 }
 
@@ -404,6 +416,73 @@ export function createPluginContext(
     },
   };
 
+  // Spec 004 (FR-B2..B5) — flow toolkit. Present iff the manifest declares
+  // `permissions.flows` AND the kernel threaded both the signing key and the
+  // public base URL (production always does; migration/test contexts may not,
+  // so we degrade to `undefined` rather than throw). The plugin uses this to
+  // run a redirect/callback round-trip on its OWN route.
+  const flowsDeclared =
+    catalog.get(agentId)?.plugin.permissions_summary.flows === true;
+  const flowSigningKey = opts.flowSigningKey;
+  const flowPublicBaseUrl = opts.flowPublicBaseUrl;
+  const flows: FlowsAccessor | undefined =
+    flowsDeclared && flowSigningKey && flowPublicBaseUrl
+      ? {
+          publicUrl(relPath: string, urlOpts?: { prefix?: string }): string {
+            // Resolve which of the plugin's registered route prefixes to mount
+            // against. Explicit `opts.prefix` wins; otherwise the plugin's sole
+            // live registration is used. Ambiguity / absence is a loud error —
+            // a wrong redirect_url silently breaks the whole flow.
+            let prefix = urlOpts?.prefix;
+            if (!prefix) {
+              const own = opts.routeRegistry
+                .list()
+                .filter((e) => e.source === agentId && !e.disposed)
+                .map((e) => e.prefix);
+              const unique = Array.from(new Set(own));
+              if (unique.length === 0) {
+                throw new Error(
+                  `flows.publicUrl: ${agentId} has no registered route — call ctx.routes.register(...) first or pass opts.prefix`,
+                );
+              }
+              if (unique.length > 1) {
+                throw new Error(
+                  `flows.publicUrl: ${agentId} registered multiple routes (${unique.join(', ')}) — pass opts.prefix to disambiguate`,
+                );
+              }
+              prefix = unique[0]!;
+            }
+            if (!prefix.startsWith('/')) {
+              throw new Error(
+                `flows.publicUrl: prefix must start with '/' (got '${prefix}')`,
+              );
+            }
+            // The plugin route is mounted under `/api/<…>`; the browser reaches
+            // it through the `/bot-api/* → /api/*` proxy. Strip a leading `/api`
+            // segment exactly as the store-detail iframe does
+            // (web-ui store/[id]/page.tsx) so the two stay in lockstep.
+            const mountPath = prefix.replace(/^\/api(?=\/|$)/, '');
+            const base = flowPublicBaseUrl.replace(/\/+$/, '');
+            const rel = relPath.replace(/^\/+/, '');
+            return `${base}/bot-api${mountPath}/${rel}`;
+          },
+          async signState(
+            claims: Record<string, unknown>,
+            stateOpts?: { ttl?: string },
+          ): Promise<string> {
+            return await signFlowState(
+              agentId,
+              claims,
+              flowSigningKey,
+              stateOpts?.ttl,
+            );
+          },
+          async verifyState(token: string): Promise<Record<string, unknown>> {
+            return await verifyFlowState(agentId, token, flowSigningKey);
+          },
+        }
+      : undefined;
+
   // Jobs accessor: hands programmatic registrations to the kernel scheduler,
   // which keys them by (agentId, name). The runtime owns bulk teardown via
   // scheduler.stopForPlugin(agentId) on deactivate, so a leaked dispose from
@@ -483,6 +562,7 @@ export function createPluginContext(
     ...(subAgent ? { subAgent } : {}),
     ...(knowledgeGraph ? { knowledgeGraph } : {}),
     ...(llm ? { llm } : {}),
+    ...(flows ? { flows } : {}),
     log,
   };
 }

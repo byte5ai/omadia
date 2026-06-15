@@ -39,6 +39,9 @@ export interface ChannelRegistryDeps {
   notificationRouter: NotificationRouter;
   uiRouteCatalog: UiRouteCatalog;
   jobScheduler: JobScheduler;
+  /** Spec 004 — key + origin for the `ctx.flows` toolkit (optional in tests). */
+  flowSigningKey?: Uint8Array;
+  flowPublicBaseUrl?: string;
   resolver: ChannelPluginResolver;
   coreApi: CoreApi;
   routes: ExpressRouteRegistry;
@@ -101,6 +104,8 @@ export class DefaultChannelRegistry implements ChannelRegistry {
       notificationRouter: this.deps.notificationRouter,
       uiRouteCatalog: this.deps.uiRouteCatalog,
       jobScheduler: this.deps.jobScheduler,
+      flowSigningKey: this.deps.flowSigningKey,
+      flowPublicBaseUrl: this.deps.flowPublicBaseUrl,
     });
 
     const handle = await impl.activate(ctx, this.deps.coreApi);

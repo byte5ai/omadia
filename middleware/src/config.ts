@@ -122,6 +122,11 @@ const ConfigSchema = z.object({
     .string()
     .url()
     .default('http://localhost:3979'),
+  // Spec 004 (FR-B5) — browser-facing origin that plugin flow-callback URLs
+  // (`ctx.flows.publicUrl`) resolve against. Defaults to PUBLIC_BASE_URL; set
+  // it only when flow callbacks must land on a different origin than the rest
+  // of the admin UI (rare). Mirrors the AUTH_REDIRECT_URI precedent.
+  FLOW_PUBLIC_BASE_URL: z.string().url().optional(),
   // Absolute URL Azure AD redirects to after login. MUST be registered
   // verbatim in the MS365 App Registration. In prod: middleware's own
   // /api/v1/auth/callback. In dev: http://localhost:3000/bot-api/v1/auth/callback

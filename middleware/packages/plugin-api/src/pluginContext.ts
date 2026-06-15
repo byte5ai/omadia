@@ -143,6 +143,17 @@ export interface PluginContext {
    *  rephrasing) without managing API keys themselves — the host pays. */
   readonly llm?: LlmAccessor;
 
+  /** Spec 004 — redirect/callback flow toolkit. Present iff the manifest
+   *  declares `permissions.flows: true`. Supplies the three things a plugin
+   *  needs to run a credential-acquisition round-trip on its OWN route:
+   *  the public callback URL (`publicUrl`), and a CSRF-safe, plugin-audience-
+   *  bound state token (`signState`/`verifyState`). The signing key is held by
+   *  the kernel and never reaches plugin code — a token signed for plugin A
+   *  fails `verifyState` in plugin B. Used by the GitHub App-Manifest flow;
+   *  re-usable by any future device/OAuth dance. Guard with `if (ctx.flows)` —
+   *  a Hub plugin may land on an older core that lacks it. */
+  readonly flows?: FlowsAccessor;
+
   log(...args: unknown[]): void;
 }
 
@@ -486,6 +497,54 @@ export interface ToolRegistrationOptions {
  */
 export interface RoutesAccessor {
   register(prefix: string, router: unknown): () => void;
+}
+
+/**
+ * Spec 004 — toolkit for plugins that run a redirect/callback flow on their
+ * own route (`permissions.flows: true`). The kernel owns the public-URL
+ * topology and the state-signing key; the plugin owns its route handler and
+ * the provider-specific logic (what to POST, how to parse the response).
+ *
+ * Threat model: the state token is the CSRF guard for the whole round-trip.
+ * The kernel auto-binds its audience to the calling plugin id, so a token
+ * minted by (or for) one plugin cannot be replayed against another's
+ * callback. The HS512 signing key is kernel-held; `signState`/`verifyState`
+ * close over it without ever exposing it.
+ */
+export interface FlowsAccessor {
+  /**
+   * Resolve the browser-facing absolute URL for one of this plugin's own
+   * routes — the value to hand an external IdP as a `redirect_url`.
+   *
+   * Mirrors how the store-detail page reaches a plugin's admin UI: the
+   * plugin's route is mounted on the middleware under `/api/<…>`, and the
+   * browser reaches it through the `/bot-api/*` → `/api/*` proxy. So a route
+   * registered at prefix `/api/github` with `relPath = 'flow/callback'`
+   * resolves to `{FLOW_PUBLIC_BASE_URL}/bot-api/github/flow/callback`.
+   *
+   * The prefix is the plugin's sole registered route prefix; when the plugin
+   * registered several, pass `opts.prefix` to disambiguate. `relPath` is
+   * relative (a leading slash is tolerated). Throws if no route is registered
+   * yet (register the route before calling) or if the prefix is ambiguous.
+   */
+  publicUrl(relPath: string, opts?: { prefix?: string }): string;
+  /**
+   * Sign arbitrary claims into a short-lived (10-min default) HS512 state
+   * token. The kernel sets `iss=omadia`, `aud=plugin:<thisPluginId>`, and the
+   * issued-at/expiry — the plugin only supplies its own claims (e.g. a nonce,
+   * a return path). Use the result as the `state` query-param of the flow.
+   */
+  signState(
+    claims: Record<string, unknown>,
+    opts?: { ttl?: string },
+  ): Promise<string>;
+  /**
+   * Verify a state token returned on the callback. Rejects (throws) a token
+   * whose signature is invalid, whose `aud` is not this plugin, or whose TTL
+   * has expired. Returns the decoded claims (including the standard `iss`,
+   * `aud`, `iat`, `exp`) on success.
+   */
+  verifyState(token: string): Promise<Record<string, unknown>>;
 }
 
 /**

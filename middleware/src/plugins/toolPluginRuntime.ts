@@ -78,6 +78,11 @@ export interface ToolPluginRuntimeDeps {
   notificationRouter: NotificationRouter;
   uiRouteCatalog: UiRouteCatalog;
   jobScheduler: JobScheduler;
+  /** Spec 004 — key + origin for the `ctx.flows` toolkit, threaded straight
+   *  into every `createPluginContext`. Optional so test harnesses can omit
+   *  them (flows simply stays unavailable). */
+  flowSigningKey?: Uint8Array;
+  flowPublicBaseUrl?: string;
   /**
    * Fired after a plugin's activate() succeeds and it is recorded active.
    * Used to register the plugin's manifest-declared `service_types` into the
@@ -240,6 +245,8 @@ export class ToolPluginRuntime {
       notificationRouter: this.deps.notificationRouter,
       uiRouteCatalog: this.deps.uiRouteCatalog,
       jobScheduler: this.deps.jobScheduler,
+      flowSigningKey: this.deps.flowSigningKey,
+      flowPublicBaseUrl: this.deps.flowPublicBaseUrl,
       logger: (...args) => console.log(`[${agentId}]`, ...args),
     });
 
