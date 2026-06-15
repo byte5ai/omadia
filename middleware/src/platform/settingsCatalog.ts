@@ -115,6 +115,19 @@ export const SETTINGS_CATALOG: readonly SettingDef[] = [
       scopes: [ORCHESTRATOR, VERIFIER, ORCHESTRATOR_EXTRAS],
     },
   },
+  {
+    key: 'MISTRAL_API_KEY',
+    label: 'Mistral API-Key',
+    help: 'Optional. Für Provider-Auswahl "mistral" (pro Plugin via llm_provider). Mistral ist EU-gehostet (Frankreich) — keine Drittlandübermittlung. Bestehender Wert wird nie angezeigt. Wird in alle drei Plugin-Vaults geschrieben.',
+    category: C_MODELS,
+    type: 'secret',
+    placeholder: 'API-Key aus console.mistral.ai …',
+    secret: {
+      // Mistral is canonical-only (no legacy flat key), like OpenAI.
+      vaultKey: providerApiKeyVaultKey('mistral'),
+      scopes: [ORCHESTRATOR, VERIFIER, ORCHESTRATOR_EXTRAS],
+    },
+  },
 ];
 
 /** Provider ids already covered by the static catalog entries above. */

@@ -51,11 +51,23 @@ test('resolveModelRef: class refs resolve per provider (default anthropic)', () 
     resolveModelRef('class:fast', { defaultProvider: 'openai' })?.id,
     'openai:gpt-5.4-mini',
   );
+  // Mistral pins resolve to its own models (one per class).
+  assert.equal(
+    resolveModelRef('class:frontier', { defaultProvider: 'mistral' })?.id,
+    'mistral:mistral-large-latest',
+  );
+  assert.equal(
+    resolveModelRef('class:fast', { defaultProvider: 'mistral' })?.id,
+    'mistral:mistral-small-latest',
+  );
   // unknown class → undefined (and does NOT swallow a would-be concrete ref)
   assert.equal(resolveModelRef('class:genius'), undefined);
   assert.equal(resolveModelRef('class:'), undefined);
   // a provider with no model of that class
-  assert.equal(resolveModelRef('class:frontier', { defaultProvider: 'mistral' }), undefined);
+  assert.equal(
+    resolveModelRef('class:frontier', { defaultProvider: 'no-such-provider' }),
+    undefined,
+  );
 });
 
 test('resolveModelRef: provider-qualified id, legacy alias, and bare vendor id', () => {
@@ -164,4 +176,24 @@ test('coerceModelToProvider remaps a model to the target provider by class', () 
     coerceModelToProvider('mistral-large-latest', 'openai-compatible'),
     'mistral-large-latest',
   );
+});
+
+test('Mistral: first-class provider resolves by class, role, and cross-provider coercion', () => {
+  // one model per class (large/medium/small)
+  assert.equal(modelForClass('frontier', 'mistral')?.modelId, 'mistral-large-latest');
+  assert.equal(modelForClass('balanced', 'mistral')?.modelId, 'mistral-medium-latest');
+  assert.equal(modelForClass('fast', 'mistral')?.modelId, 'mistral-small-latest');
+  // role → class → model
+  assert.equal(resolveRole('orchestrator', 'mistral')?.modelId, 'mistral-large-latest');
+  assert.equal(resolveRole('verifier', 'mistral')?.modelId, 'mistral-small-latest');
+  // provider-qualified + bare vendor id both resolve
+  assert.equal(resolveModelRef('mistral:mistral-medium-latest')?.provider, 'mistral');
+  assert.equal(resolveModelRef('mistral-small-latest')?.id, 'mistral:mistral-small-latest');
+  // a Claude/OpenAI model running on Mistral → Mistral's same-class model
+  assert.equal(coerceModelToProvider('claude-opus-4-8', 'mistral'), 'mistral-large-latest');
+  assert.equal(coerceModelToProvider('gpt-5.4', 'mistral'), 'mistral-medium-latest');
+  // three Mistral models registered, ids well-formed
+  const mistral = listModelsByProvider('mistral');
+  assert.equal(mistral.length, 3);
+  assert.ok(mistral.every((m) => m.id === `mistral:${m.modelId}`));
 });

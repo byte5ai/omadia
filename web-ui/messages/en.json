@@ -1508,7 +1508,8 @@
       "providerLabel": "Provider",
       "modelLabel": "Model",
       "pickModel": "Select a model …",
-      "avvDisclosure": "Routing this agent to {provider} sends its prompt data to a third-party processor. Ensure a data-processing agreement (DSGVO Art. 28) is in place before using it for personal data."
+      "avvDisclosure": "Routing this agent to {provider} sends its prompt data to a third-party processor. Ensure a data-processing agreement (DSGVO Art. 28) is in place before using it for personal data.",
+      "euHostedNote": "Mistral is hosted in the EU (France). An Art. 28 DSGVO processing agreement is still required, but there is no third-country transfer — unlike US-based providers."
     },
     "status": {
       "saving": "saving …",

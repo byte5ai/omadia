@@ -22,6 +22,23 @@ import type { LlmProviderCatalog } from './providerCatalog.js';
 import { readProviderApiKey } from './providerCredentials.js';
 import type { LlmProvider } from './types.js';
 
+/**
+ * Default API base URLs for well-known OpenAI-compatible providers, so an
+ * operator who selects e.g. `mistral` never has to type the endpoint. The
+ * registry deliberately holds no baseURL (resolution metadata only), so this
+ * is the single source for "where does provider X's API live". `openai` is
+ * intentionally absent — the SDK defaults it to api.openai.com.
+ */
+const KNOWN_PROVIDER_BASE_URLS: Readonly<Record<string, string>> = {
+  mistral: 'https://api.mistral.ai/v1',
+};
+
+/** The default API base URL for a well-known compatible provider, or
+ *  `undefined` for `openai`/`anthropic`/unknown ids (caller must supply one). */
+export function knownProviderBaseUrl(providerId: string): string | undefined {
+  return KNOWN_PROVIDER_BASE_URLS[providerId];
+}
+
 export interface ResolveLlmProviderOptions {
   /** `anthropic` | `openai` | `openai-compatible` | a custom compatible id. */
   readonly providerId: ProviderId;
@@ -66,16 +83,19 @@ export async function resolveLlmProvider(
   // OpenAI Chat Completions wire format via the same adapter. A non-openai id
   // with a baseURL becomes an openai-compatible provider carrying that id.
   //
-  // Guard the footgun: only the literal 'openai' may omit a baseURL (it defaults
-  // to api.openai.com). Any other id without a baseURL would silently send a
-  // non-OpenAI key to api.openai.com and fail opaquely at request time — fail
-  // loudly at build time instead.
-  // A plugin-contributed provider supplies its baseURL + quirks via the catalog;
-  // an explicit opts.baseURL still wins (per-scope override).
+  // baseURL precedence: an explicit opts.baseURL wins (self-hosted gateway /
+  // Azure), then a plugin-contributed catalog descriptor, then a well-known
+  // default (knownProviderBaseUrl, e.g. mistral) so the operator never types the
+  // endpoint. A plugin descriptor also carries the OpenAI-adapter quirks.
   const descriptor = opts.catalog?.get(opts.providerId);
-  const baseURL = opts.baseURL ?? descriptor?.baseURL;
+  const baseURL =
+    opts.baseURL ?? descriptor?.baseURL ?? knownProviderBaseUrl(opts.providerId);
   const quirks = descriptor?.quirks;
 
+  // Guard the footgun: only the literal 'openai' may omit a baseURL (it defaults
+  // to api.openai.com). Any other id without a (default or explicit) baseURL
+  // would silently send a non-OpenAI key to api.openai.com and fail opaquely at
+  // request time — fail loudly at build time instead.
   if (opts.providerId !== 'openai' && baseURL === undefined) {
     throw new Error(
       `LLM provider '${opts.providerId}' requires a baseURL (an OpenAI-compatible endpoint); only 'openai' may omit it.`,

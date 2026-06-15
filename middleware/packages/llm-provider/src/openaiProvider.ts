@@ -219,6 +219,13 @@ function toOpenAiMessages(
   return out;
 }
 
+/** Canonical empty parameters schema for a no-argument tool. OpenAI tolerates
+ *  an omitted/undefined `parameters`, but stricter OpenAI-compatible servers
+ *  (Mistral) reject a function with no valid `parameters` object with a bare
+ *  422 — so always emit a valid JSON Schema object. A no-arg tool is identical
+ *  to omitting `parameters` on native OpenAI, so this is behavior-preserving. */
+const EMPTY_TOOL_PARAMETERS = { type: 'object', properties: {} } as const;
+
 function toOpenAiTools(
   tools: ReadonlyArray<ToolSpec>,
   strict: boolean,
@@ -228,7 +235,7 @@ function toOpenAiTools(
     function: {
       name: t.name,
       description: t.description,
-      parameters: t.inputSchema,
+      parameters: t.inputSchema ?? EMPTY_TOOL_PARAMETERS,
       ...(strict ? { strict: true } : {}),
     },
   }));

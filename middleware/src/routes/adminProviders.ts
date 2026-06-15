@@ -85,6 +85,8 @@ function providerLabel(id: ProviderId): string {
       return 'OpenAI';
     case 'openai-compatible':
       return 'OpenAI-compatible';
+    case 'mistral':
+      return 'Mistral';
     default:
       return id;
   }

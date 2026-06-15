@@ -53,6 +53,7 @@ export {
 } from './providerCredentials.js';
 
 export {
+  knownProviderBaseUrl,
   resolveLlmProvider,
   type ResolveLlmProviderOptions,
 } from './providerFactory.js';

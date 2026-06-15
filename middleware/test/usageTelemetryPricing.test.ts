@@ -56,6 +56,47 @@ describe('pricing — OpenAI table', () => {
   });
 });
 
+describe('pricing — Mistral table', () => {
+  it('prices every registry Mistral model exactly (live mistral.ai/pricing, no cache fields)', () => {
+    // Mistral prices Medium 3.5 ABOVE Large 3 — the table must preserve that
+    // rank (a regression once shipped them inverted).
+    assert.deepEqual(priceForModel('mistral-large-latest'), {
+      inputPerMTok: 0.5,
+      outputPerMTok: 1.5,
+    });
+    assert.deepEqual(priceForModel('mistral-medium-latest'), {
+      inputPerMTok: 1.5,
+      outputPerMTok: 7.5,
+    });
+    assert.deepEqual(priceForModel('mistral-small-latest'), {
+      inputPerMTok: 0.2,
+      outputPerMTok: 0.6,
+    });
+    assert.ok(
+      priceForModel('mistral-medium-latest').outputPerMTok >
+        priceForModel('mistral-large-latest').outputPerMTok,
+      'Medium 3.5 must price above Large 3',
+    );
+  });
+
+  it('family fallback resolves Mistral dated snapshots', () => {
+    assert.equal(priceForModel('mistral-large-3-25-12').outputPerMTok, 1.5);
+    assert.equal(priceForModel('mistral-medium-3-5-26-04').inputPerMTok, 1.5);
+    assert.equal(priceForModel('mistral-small-4-0-26-03').inputPerMTok, 0.2);
+  });
+
+  it('computes a non-zero cost (plain in*rate + out*rate, no cached billing)', () => {
+    // mistral-small: 1000 in @ $0.2/Mtok + 500 out @ $0.6/Mtok.
+    const cost = computeCostUsd(
+      'mistral-small-latest',
+      noUsage({ inputTokens: 1000, outputTokens: 500 }),
+    );
+    const expected = (1000 * 0.2) / 1e6 + (500 * 0.6) / 1e6;
+    assert.equal(cost, Math.round(expected * 1e8) / 1e8);
+    assert.ok(cost > 0);
+  });
+});
+
 describe('computeCostUsd — OpenAI cache semantics (no double-count)', () => {
   it('subtracts cached tokens from full-rate input, bills them at cached rate', () => {
     // gpt-5.5: input $5/Mtok, output $30/Mtok, cached $0.5/Mtok.

@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { resolveLlmProvider } from '@omadia/llm-provider';
+import { knownProviderBaseUrl, resolveLlmProvider } from '@omadia/llm-provider';
 
 function vaultGet(store: Record<string, string>) {
   return (key: string): Promise<string | undefined> =>
@@ -65,22 +65,41 @@ test('openai-compatible: baseURL yields the openai-compatible id', async () => {
 
 test('custom compatible id is preserved on the provider', async () => {
   const p = await resolveLlmProvider({
+    providerId: 'my-local-llm',
+    getSecret: vaultGet({ 'provider:my-local-llm/api_key': 'x' }),
+    baseURL: 'http://localhost:8000/v1',
+  });
+  assert.equal(p?.id, 'my-local-llm');
+});
+
+test('knownProviderBaseUrl: mistral has a default endpoint; openai/anthropic/unknown do not', () => {
+  assert.equal(knownProviderBaseUrl('mistral'), 'https://api.mistral.ai/v1');
+  assert.equal(knownProviderBaseUrl('openai'), undefined);
+  assert.equal(knownProviderBaseUrl('anthropic'), undefined);
+  assert.equal(knownProviderBaseUrl('totally-custom'), undefined);
+});
+
+test('mistral: builds WITHOUT an explicit baseURL (known default is applied)', async () => {
+  const p = await resolveLlmProvider({
     providerId: 'mistral',
     getSecret: vaultGet({ 'provider:mistral/api_key': 'x' }),
-    baseURL: 'https://api.mistral.ai/v1',
+  });
+  // No baseURL passed, yet it resolves (default api.mistral.ai/v1) and keeps
+  // its own id — it routes to the OpenAI-compatible adapter, not Anthropic.
+  assert.equal(p?.id, 'mistral');
+});
+
+test('an explicit baseURL still overrides the known default (self-hosted gateway)', async () => {
+  const p = await resolveLlmProvider({
+    providerId: 'mistral',
+    getSecret: vaultGet({ 'provider:mistral/api_key': 'x' }),
+    baseURL: 'https://mistral.internal.acme.example/v1',
   });
   assert.equal(p?.id, 'mistral');
 });
 
-test('non-openai provider without a baseURL throws (no silent api.openai.com)', async () => {
-  await assert.rejects(
-    () =>
-      resolveLlmProvider({
-        providerId: 'mistral',
-        getSecret: vaultGet({ 'provider:mistral/api_key': 'x' }),
-      }),
-    /requires a baseURL/,
-  );
+test('a non-openai id with NO known baseURL default still throws (no silent api.openai.com)', async () => {
+  // openai-compatible and arbitrary custom ids have no default → must throw.
   await assert.rejects(
     () =>
       resolveLlmProvider({
@@ -89,12 +108,20 @@ test('non-openai provider without a baseURL throws (no silent api.openai.com)', 
       }),
     /requires a baseURL/,
   );
+  await assert.rejects(
+    () =>
+      resolveLlmProvider({
+        providerId: 'my-local-llm',
+        getSecret: vaultGet({ 'provider:my-local-llm/api_key': 'x' }),
+      }),
+    /requires a baseURL/,
+  );
 });
 
 test('a missing key short-circuits before the baseURL guard', async () => {
   // No key configured → undefined (skip), never reaching the baseURL check.
   const p = await resolveLlmProvider({
-    providerId: 'mistral',
+    providerId: 'openai-compatible',
     getSecret: vaultGet({}),
   });
   assert.equal(p, undefined);
