@@ -188,7 +188,10 @@ import { LocalDevPackageStore } from './plugins/localDevPackageStore.js';
 import { FileSecretVault, resolveMasterKey } from './secrets/fileVault.js';
 import { VaultBackupService } from './secrets/vaultBackup.js';
 import { createAnthropicLlmProvider } from './platform/anthropicLlmProvider.js';
-import { parseLlmProviderManifestBlock } from './platform/llmProviderManifest.js';
+import {
+  registerPluginLlmProvider,
+  unregisterPluginLlmProvider,
+} from './platform/llmProviderManifest.js';
 import { registerBuiltinLlmProviders } from './platform/builtinLlmProviders.js';
 import { BackgroundJobRegistry } from './platform/backgroundJobRegistry.js';
 import { ChatAgentWrapRegistry } from './platform/chatAgentWrapRegistry.js';
@@ -524,42 +527,54 @@ async function main(): Promise<void> {
   );
   await installedRegistry.load();
 
-  // Populate the LLM provider catalog from INSTALLED plugins that declare an
-  // `llm_provider` manifest block (provider-plugin seam). Done BEFORE
-  // `toolPluginRuntime.activateAllInstalled()` so the orchestrator resolves a
-  // plugin-contributed provider at its own activate(). A malformed block is
-  // logged and skipped — never fatal at boot.
-  for (const entry of pluginCatalog.list()) {
-    if (!installedRegistry.has(entry.plugin.id)) continue;
-    const block = (entry.manifest as { llm_provider?: unknown } | null)
-      ?.llm_provider;
-    if (block === undefined || block === null) continue;
+  // Register/unregister a plugin's `llm_provider` block into the catalog (which
+  // also overlays its models into the model-registry the admin Providers page
+  // reads). Thin wrappers over the shared platform helpers — they add the
+  // config-scope lookup, logging, and never-fatal error handling. Used by BOTH
+  // the boot loop AND the hot-install path (InstallService.onInstalled/
+  // onUninstall) so a provider plugin installed at runtime appears WITHOUT a
+  // restart.
+  const registerProviderFromPlugin = (pluginId: string): void => {
     try {
-      const descriptor = parseLlmProviderManifestBlock(block);
-      // Resolve a per-install baseURL override (e.g. MiniMax China endpoint).
-      // The override config key lives in the PROVIDER plugin's own config scope,
-      // so it is resolved here (where we have that scope) and baked into the
-      // descriptor — the orchestrator then just uses descriptor.baseURL.
-      let baseURL = descriptor.baseURL;
-      if (descriptor.baseUrlConfigKey !== undefined) {
-        const cfg = installedRegistry.get(entry.plugin.id)?.config ?? {};
-        const override = (cfg as Record<string, unknown>)[
-          descriptor.baseUrlConfigKey
-        ];
-        if (typeof override === 'string' && override.trim().length > 0) {
-          baseURL = override.trim();
-        }
-      }
-      llmProviderCatalog.register({ ...descriptor, baseURL });
-      console.log(
-        `[middleware] llm provider '${descriptor.id}' registered from ${entry.plugin.id} (${String(descriptor.models.length)} model(s), baseURL ${baseURL})`,
+      const descriptor = registerPluginLlmProvider(
+        pluginCatalog.get(pluginId)?.manifest,
+        installedRegistry.get(pluginId)?.config,
+        llmProviderCatalog,
       );
+      if (descriptor !== undefined) {
+        console.log(
+          `[middleware] llm provider '${descriptor.id}' registered from ${pluginId} (${String(descriptor.models.length)} model(s), baseURL ${descriptor.baseURL})`,
+        );
+      }
     } catch (err) {
       console.warn(
-        `[middleware] skipped llm_provider block in ${entry.plugin.id}:`,
+        `[middleware] skipped llm_provider block in ${pluginId}:`,
         err instanceof Error ? err.message : err,
       );
     }
+  };
+  const unregisterProviderFromPlugin = (pluginId: string): void => {
+    try {
+      const id = unregisterPluginLlmProvider(
+        pluginCatalog.get(pluginId)?.manifest,
+        llmProviderCatalog,
+      );
+      if (id !== undefined) {
+        console.log(
+          `[middleware] llm provider '${id}' unregistered (plugin ${pluginId} uninstalled)`,
+        );
+      }
+    } catch {
+      // malformed block never registered — nothing to clean up
+    }
+  };
+
+  // Populate the LLM provider catalog from INSTALLED plugins at boot. Done
+  // BEFORE `toolPluginRuntime.activateAllInstalled()` so the orchestrator
+  // resolves a plugin-contributed provider at its own activate().
+  for (const entry of pluginCatalog.list()) {
+    if (!installedRegistry.has(entry.plugin.id)) continue;
+    registerProviderFromPlugin(entry.plugin.id);
   }
 
   // Phase B (B1) — publish `pluginCapabilities@1` so the orchestrator's
@@ -933,6 +948,12 @@ async function main(): Promise<void> {
     registry: installedRegistry,
     vault: secretVault,
     onInstalled: async (agentId) => {
+      // A plugin may contribute an `llm_provider` block regardless of its kind
+      // (provider plugins ship as `extension`). Register it FIRST — mirroring
+      // the boot-time loop — so a runtime-installed provider lands in the
+      // catalog + model registry and appears on the admin Providers page
+      // without a restart. No-ops when the manifest declares no provider.
+      registerProviderFromPlugin(agentId);
       // Dispatch by manifest.identity.kind. Without this, every uploaded
       // package — channels, integrations, tools — is fed to the agent
       // runtime, which crashes (channel: wrong handle shape; integration:
@@ -963,6 +984,10 @@ async function main(): Promise<void> {
       }
     },
     onUninstall: async (agentId) => {
+      // Symmetric to onInstalled: drop a contributed provider + its models so
+      // an uninstalled provider plugin disappears from the admin Providers page
+      // without a restart. Runs BEFORE runtime deactivation/registry removal.
+      unregisterProviderFromPlugin(agentId);
       const kind = pluginCatalog.get(agentId)?.plugin.kind ?? 'agent';
       switch (kind) {
         case 'channel':
