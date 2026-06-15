@@ -150,6 +150,9 @@ permissions:
   hat (sonst silent override).
 - `setup.fields[].type`: `string | url | secret | oauth | enum | boolean | integer | host_list`.
   `enum` braucht `enum: [{value,label}]`, `oauth` braucht `provider` + `scopes`.
+- `string`/`secret`-Felder können `multiline: true` setzen → Install-Drawer rendert
+  eine Textarea (z.B. für PEM-Keys). Ältere Cores ignorieren das Flag (Fallback:
+  Wert base64-encoden und im Plugin dekodieren).
 
 ---
 

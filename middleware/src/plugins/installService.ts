@@ -455,6 +455,9 @@ export function extractSetupSchema(
     if (f['default'] !== undefined) field.default = f['default'];
     const pattern = asString(f['pattern']);
     if (pattern) field.pattern = pattern;
+    if ((type === 'string' || type === 'secret') && f['multiline'] === true) {
+      field.multiline = true;
+    }
     if (type === 'enum') {
       const enumRaw = f['enum'];
       if (Array.isArray(enumRaw)) {

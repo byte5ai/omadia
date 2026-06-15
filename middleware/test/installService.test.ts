@@ -7,10 +7,14 @@ import type {
   InstalledRegistry,
 } from '../src/plugins/installedRegistry.js';
 import {
+  extractSetupSchema,
   InstallError,
   InstallService,
 } from '../src/plugins/installService.js';
-import type { PluginCatalog } from '../src/plugins/manifestLoader.js';
+import type {
+  PluginCatalog,
+  PluginCatalogEntry,
+} from '../src/plugins/manifestLoader.js';
 import type { SecretVault } from '../src/secrets/vault.js';
 
 /**
@@ -431,5 +435,66 @@ describe('InstallError.details', () => {
   it('leaves details undefined when not provided (backward compat)', () => {
     const err = new InstallError('x', 'msg', 409);
     assert.equal(err.details, undefined);
+  });
+});
+
+describe('extractSetupSchema — multiline flag', () => {
+  function makeEntry(fields: unknown[]): PluginCatalogEntry {
+    return {
+      plugin: makePlugin({
+        id: 'multiline-test',
+        provides: [],
+        requires: [],
+        depends_on: [],
+      }),
+      manifest: { setup: { fields } },
+      source_path: '<test>/multiline-test.manifest.yaml',
+      source_kind: 'manifest-v1',
+    } as unknown as PluginCatalogEntry;
+  }
+
+  function fieldByKey(
+    schema: ReturnType<typeof extractSetupSchema>,
+    key: string,
+  ) {
+    return schema?.fields.find((f) => f.key === key);
+  }
+
+  it('passes multiline: true through for secret and string fields', () => {
+    const schema = extractSetupSchema(
+      makeEntry([
+        { key: 'private_key', type: 'secret', label: 'Key', multiline: true },
+        { key: 'notes', type: 'string', label: 'Notes', multiline: true },
+      ]),
+    );
+    assert.equal(fieldByKey(schema, 'private_key')?.multiline, true);
+    assert.equal(fieldByKey(schema, 'notes')?.multiline, true);
+  });
+
+  it('leaves multiline undefined when the manifest does not set it', () => {
+    const schema = extractSetupSchema(
+      makeEntry([{ key: 'token', type: 'secret', label: 'Token' }]),
+    );
+    assert.equal(fieldByKey(schema, 'token')?.multiline, undefined);
+  });
+
+  it('ignores multiline on non-text field types', () => {
+    const schema = extractSetupSchema(
+      makeEntry([
+        { key: 'count', type: 'integer', label: 'Count', multiline: true },
+        { key: 'endpoint', type: 'url', label: 'URL', multiline: true },
+      ]),
+    );
+    assert.equal(fieldByKey(schema, 'count')?.multiline, undefined);
+    assert.equal(fieldByKey(schema, 'endpoint')?.multiline, undefined);
+  });
+
+  it('ignores non-boolean multiline values', () => {
+    const schema = extractSetupSchema(
+      makeEntry([
+        { key: 'pem', type: 'secret', label: 'PEM', multiline: 'yes' },
+      ]),
+    );
+    assert.equal(fieldByKey(schema, 'pem')?.multiline, undefined);
   });
 });

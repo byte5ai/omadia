@@ -391,6 +391,10 @@ export interface InstallSetupField {
   provider?: string;
   scopes?: string[];
   pattern?: string;
+  /** Render as multi-row textarea (string/secret only) — for values that
+   *  contain newlines, e.g. PEM private keys. Older UIs ignore the flag
+   *  and fall back to a single-line input. */
+  multiline?: boolean;
 }
 
 export interface InstallSetupSchema {
