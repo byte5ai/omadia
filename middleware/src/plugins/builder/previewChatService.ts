@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import {
   createAnthropicProvider,
   type AnthropicClient,
-} from '@omadia/llm-provider';
+} from '@omadia/llm-adapter-anthropic';
 import {
   LocalSubAgent,
   type AskObserver,

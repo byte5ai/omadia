@@ -3,9 +3,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   createAnthropicClient,
+  registerAnthropicAdapter,
+  type AnthropicClient,
+} from '@omadia/llm-adapter-anthropic';
+import { registerOpenAiAdapter } from '@omadia/llm-adapter-openai';
+import {
+  defaultLlmAdapters,
   LlmProviderCatalog,
   readProviderApiKey,
-  type AnthropicClient,
 } from '@omadia/llm-provider';
 import express from 'express';
 import cookieParser from 'cookie-parser';
@@ -296,6 +301,20 @@ async function main(): Promise<void> {
   // can resolve a plugin-contributed provider at its own activation.
   const llmProviderCatalog = new LlmProviderCatalog();
   serviceRegistry.provide('llmProviderCatalog', llmProviderCatalog);
+  // Bundled wire-format adapters (issue #298): the llm-provider runtime resolves
+  // a provider by looking up the adapter for its wire format. The concrete
+  // adapters + their SDKs live in @omadia/llm-adapter-*; register them into the
+  // process-default registry HERE, before any provider is resolved, so the core
+  // package itself imports no vendor SDK. A third-party wire format would add
+  // another register*Adapter call here (or a plugin registering at activate).
+  registerAnthropicAdapter(defaultLlmAdapters);
+  registerOpenAiAdapter(defaultLlmAdapters);
+  console.log(
+    `[middleware] ${String(defaultLlmAdapters.list().length)} LLM wire-format adapter(s) registered: ${defaultLlmAdapters
+      .list()
+      .map((a) => a.wireFormat)
+      .join(', ')}`,
+  );
   // Bundled built-in providers (anthropic/openai/mistral). The llm-provider
   // package ships ZERO static models now; these register into the catalog +
   // overlay HERE — before plugin activation and before the builder/orchestrator

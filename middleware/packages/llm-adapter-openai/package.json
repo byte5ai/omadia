@@ -1,0 +1,23 @@
+{
+  "name": "@omadia/llm-adapter-openai",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "OpenAI Chat Completions wire-format adapter for the omadia LLM provider seam (covers the OpenAI-compatible family: Mistral/Ollama/vLLM/Azure/MiniMax via baseURL + quirks). Implements the @omadia/llm-provider-api LlmAdapter contract (wireFormat 'openai-compatible') and confines all openai SDK knowledge here. Register it into an LlmAdapterRegistry at boot via registerOpenAiAdapter. See docs/plans/issue-298-provider-plugins.md.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@omadia/llm-provider-api": "*"
+  },
+  "peerDependencies": {
+    "openai": "*"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

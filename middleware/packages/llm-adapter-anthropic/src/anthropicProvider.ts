@@ -23,7 +23,7 @@ import type {
   TextPart,
   ToolChoice,
   ToolSpec,
-} from './types.js';
+} from '@omadia/llm-provider-api';
 
 export interface AnthropicProviderOptions {
   readonly client: Anthropic;

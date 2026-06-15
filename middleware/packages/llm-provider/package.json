@@ -5,15 +5,14 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "description": "Provider-agnostic LLM contract for the omadia middleware. Defines the neutral request/response DTOs (ChatMessage content parts, ToolSpec, FinishReason, usage incl. cache tokens), the LlmProvider interface (complete/stream/classifyError + capabilities), and ships the Anthropic and OpenAI (incl. OpenAI-compatible: Mistral/Ollama/vLLM/Azure) reference adapters. Decoupling plan: docs/plans/llm-provider-interface-plan.md.",
+  "description": "SDK-free runtime for the omadia LLM provider seam. Re-exports the @omadia/llm-provider-api contract and adds the runtime: model registry, provider catalog, credential resolution, the wire-format adapter registry, and resolveLlmProvider (a pure registry lookup). Contains no concrete adapter and imports no vendor SDK - the Anthropic/OpenAI adapters live in @omadia/llm-adapter-*. See docs/plans/issue-298-provider-plugins.md.",
   "license": "MIT",
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit"
   },
-  "peerDependencies": {
-    "@anthropic-ai/sdk": "*",
-    "openai": "*"
+  "dependencies": {
+    "@omadia/llm-provider-api": "*"
   },
   "engines": {
     "node": ">=20"

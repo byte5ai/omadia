@@ -6,7 +6,19 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { knownProviderBaseUrl, resolveLlmProvider } from '@omadia/llm-provider';
+import { registerAnthropicAdapter } from '@omadia/llm-adapter-anthropic';
+import { registerOpenAiAdapter } from '@omadia/llm-adapter-openai';
+import {
+  defaultLlmAdapters,
+  knownProviderBaseUrl,
+  resolveLlmProvider,
+} from '@omadia/llm-provider';
+
+// resolveLlmProvider resolves via the wire-format adapter registry; the app
+// registers the bundled adapters at boot. Tests run without boot, so register
+// them into the process-default registry here (idempotent).
+registerAnthropicAdapter(defaultLlmAdapters);
+registerOpenAiAdapter(defaultLlmAdapters);
 
 function vaultGet(store: Record<string, string>) {
   return (key: string): Promise<string | undefined> =>

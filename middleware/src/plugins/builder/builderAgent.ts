@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import {
   createAnthropicProvider,
   type AnthropicClient,
-} from '@omadia/llm-provider';
+} from '@omadia/llm-adapter-anthropic';
 import {
   LocalSubAgent,
   type AskObserver,

@@ -1,9 +1,25 @@
+/**
+ * `@omadia/llm-provider` — the SDK-free runtime for the LLM provider seam.
+ *
+ * The neutral CONTRACT (DTOs, `LlmProvider`, model + descriptor + adapter types)
+ * lives in `@omadia/llm-provider-api` and is re-exported here so existing
+ * consumers keep importing from `@omadia/llm-provider` unchanged. This package
+ * adds the RUNTIME: the model registry, the provider catalog, credential
+ * resolution, the wire-format adapter registry, and `resolveLlmProvider`. It
+ * imports NO vendor SDK and contains NO concrete adapter — those live in
+ * `@omadia/llm-adapter-anthropic` / `@omadia/llm-adapter-openai` (issue #298).
+ */
+
+// ---- Contract (re-exported from the versioned contract package) ----
 export type {
   CacheHints,
   ChatMessage,
   ContentPart,
   FinishReason,
   ImagePart,
+  LlmAdapter,
+  LlmAdapterBuildOptions,
+  LlmAdapterRegistry,
   LlmErrorClassification,
   LlmErrorKind,
   LlmProvider,
@@ -18,53 +34,44 @@ export type {
   ToolChoice,
   ToolResultPart,
   ToolSpec,
-} from './types.js';
-
-export { collectText, textMessage, toolCalls } from './types.js';
-
+} from '@omadia/llm-provider-api';
 export {
-  classifyAnthropicError,
-  createAnthropicProvider,
-  type AnthropicProviderOptions,
-} from './anthropicProvider.js';
+  collectText,
+  LLM_PROVIDER_API_VERSION,
+  textMessage,
+  toolCalls,
+} from '@omadia/llm-provider-api';
 
-export {
-  createAnthropicClient,
-  type AnthropicClient,
-  type AnthropicClientOptions,
-} from './anthropicClient.js';
-
-export {
-  classifyOpenAiError,
-  createOpenAiProvider,
-  type OpenAiProviderOptions,
-} from './openaiProvider.js';
-
-export {
-  createOpenAiClient,
-  type OpenAiClient,
-  type OpenAiClientOptions,
-} from './openaiClient.js';
-
+// ---- Runtime: credentials ----
 export {
   legacyProviderApiKeyVaultKey,
   providerApiKeyVaultKey,
   readProviderApiKey,
 } from './providerCredentials.js';
 
+// ---- Runtime: provider resolution (registry lookup) ----
 export {
   knownProviderBaseUrl,
   resolveLlmProvider,
   type ResolveLlmProviderOptions,
 } from './providerFactory.js';
 
+// ---- Runtime: wire-format adapter registry ----
+export {
+  defaultLlmAdapters,
+  LlmAdapterRegistryImpl,
+} from './adapterRegistry.js';
+
+// ---- Runtime: provider catalog (+ re-exported descriptor contract types) ----
 export {
   LlmProviderCatalog,
   type LlmProviderDescriptor,
   type ProviderPolicy,
   type ProviderQuirks,
+  type WireFormat,
 } from './providerCatalog.js';
 
+// ---- Runtime: model registry (+ re-exported model contract types) ----
 export {
   clearExternalModels,
   coerceModelToProvider,

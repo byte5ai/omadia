@@ -15,7 +15,7 @@
 import {
   createAnthropicProvider,
   type AnthropicClient,
-} from '@omadia/llm-provider';
+} from '@omadia/llm-adapter-anthropic';
 import type { LocalSubAgentTool } from '@omadia/plugin-api';
 import {
   buildSubAgentDomainTools,

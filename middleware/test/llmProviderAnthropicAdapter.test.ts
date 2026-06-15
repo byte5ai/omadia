@@ -12,8 +12,10 @@ import type Anthropic from '@anthropic-ai/sdk';
 
 import {
   classifyAnthropicError,
-  collectText,
   createAnthropicProvider,
+} from '@omadia/llm-adapter-anthropic';
+import {
+  collectText,
   toolCalls,
   type LlmStreamEvent,
 } from '@omadia/llm-provider';
