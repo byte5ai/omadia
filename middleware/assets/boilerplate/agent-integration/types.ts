@@ -14,10 +14,17 @@ export interface PluginContext {
     get(key: string): Promise<string | undefined>;
     require(key: string): Promise<string>;
     keys(): Promise<string[]>;
+    /** Spec 004 — present only with `permissions.secrets.runtime_write`.
+     *  Writes to THIS plugin's namespace; guard with `if (ctx.secrets.set)`. */
+    set?(key: string, value: string): Promise<void>;
+    delete?(key: string): Promise<void>;
   };
   readonly config: {
     get<T = unknown>(key: string): T | undefined;
     require<T = unknown>(key: string): T;
+    /** Spec 004 — persist a non-secret declared setup field. Present only
+     *  with `permissions.secrets.runtime_write`. */
+    set?(key: string, value: unknown): Promise<void>;
   };
   /** Cross-plugin service registry. Used by `spec.external_reads` (Theme A)
    *  to consume typed surfaces from depends_on plugins (e.g.

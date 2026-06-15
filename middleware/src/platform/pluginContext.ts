@@ -248,6 +248,16 @@ export function createPluginContext(
         })
       : undefined;
 
+  // Spec 004 — runtime credential write. When the manifest declares
+  // `permissions.secrets.runtime_write`, the plugin gets write methods on its
+  // OWN vault namespace + config (never the depends_on chain). Used by
+  // credential-acquisition flows (e.g. the GitHub App-Manifest conversion) to
+  // persist what they obtain. Absent otherwise, mirroring how ctx.http /
+  // ctx.memory are gated.
+  const runtimeWrite =
+    catalog.get(agentId)?.plugin.permissions_summary.secrets_runtime_write ===
+    true;
+
   const secrets: SecretsAccessor = {
     async get(key) {
       for (const id of chain) {
@@ -277,6 +287,18 @@ export function createPluginContext(
       }
       return out;
     },
+    ...(runtimeWrite
+      ? {
+          async set(key: string, value: string): Promise<void> {
+            log(`[secrets:write] ${agentId} set ${key}`);
+            await vault.set(agentId, key, value);
+          },
+          async delete(key: string): Promise<void> {
+            log(`[secrets:write] ${agentId} delete ${key}`);
+            await vault.deleteKey(agentId, key);
+          },
+        }
+      : {}),
   };
 
   const config: ConfigAccessor = {
@@ -298,6 +320,31 @@ export function createPluginContext(
       }
       return v;
     },
+    ...(runtimeWrite
+      ? {
+          async set(key: string, value: unknown): Promise<void> {
+            // Only declared, non-secret setup fields may be written as config —
+            // secrets must go through secrets.set so they land in the vault.
+            const field = catalog
+              .get(agentId)
+              ?.plugin.setup_fields?.find((f) => f.key === key);
+            if (!field) {
+              throw new Error(
+                `config.set: "${key}" is not a declared setup field of ${agentId}`,
+              );
+            }
+            if (field.type === 'secret' || field.type === 'oauth') {
+              throw new Error(
+                `config.set: "${key}" is a ${field.type} field — use ctx.secrets.set`,
+              );
+            }
+            // Write to the plugin's OWN config (not the inherited chain).
+            const current = registry.get(agentId)?.config ?? {};
+            log(`[config:write] ${agentId} set ${key}`);
+            await registry.updateConfig(agentId, { ...current, [key]: value });
+          },
+        }
+      : {}),
   };
 
   // Tools accessor: funnel plugin-contributed tool registrations into the

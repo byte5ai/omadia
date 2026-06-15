@@ -761,6 +761,15 @@ export interface SecretsAccessor {
   require(key: string): Promise<string>;
   /** Keys present in the vault for this plugin. Never returns values. */
   keys(): Promise<string[]>;
+  /** Spec 004 — create or overwrite a secret in THIS plugin's namespace.
+   *  Present only when the manifest declares `permissions.secrets.runtime_write`
+   *  (otherwise `undefined`). Used by runtime credential-acquisition flows to
+   *  persist an acquired secret (e.g. a GitHub App private key). Cannot reach
+   *  another plugin's namespace. Guard with `if (ctx.secrets.set)`. */
+  set?(key: string, value: string): Promise<void>;
+  /** Spec 004 — remove a secret from this plugin's namespace. No-op if absent.
+   *  Present only with `permissions.secrets.runtime_write`. */
+  delete?(key: string): Promise<void>;
 }
 
 /**
@@ -781,6 +790,12 @@ export interface ConfigAccessor {
   get<T = unknown>(key: string): T | undefined;
   /** Returns the config value, or throws a MissingConfigError. */
   require<T = unknown>(key: string): T;
+  /** Spec 004 — persist a NON-secret config value to this plugin's own
+   *  installed-registry config. The key MUST be a declared, non-secret setup
+   *  field (secrets go through `secrets.set`). Present only when the manifest
+   *  declares `permissions.secrets.runtime_write`. Guard with
+   *  `if (ctx.config.set)`. */
+  set?(key: string, value: unknown): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------

@@ -43,6 +43,11 @@ export interface PluginPermissionsSummary {
    *  reach arbitrary public hosts (gated by the operator-selected
    *  `audit_mode`). Optional: absent on pre-#91 store payloads. */
   network_web_scanner?: boolean;
+  /** Spec 004 — plugin may write its own vault secrets + config at runtime.
+   *  Surfaced as a store-detail permission chip. */
+  secrets_runtime_write?: boolean;
+  /** Spec 004 — plugin runs credential-acquisition flows on its own routes. */
+  flows?: boolean;
 }
 
 export type PluginInstallState =

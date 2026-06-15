@@ -502,7 +502,24 @@ function PermissionsBlock({
   ];
 
   const active = groups.filter((g) => g.items.length > 0);
-  if (active.length === 0) {
+
+  // Spec 004 — boolean capability flags (no string list). Surfaced so an
+  // operator reviewing a Hub plugin sees its runtime-credential powers.
+  const flags: Array<{ label: string; icon: React.ReactNode }> = [];
+  if (perms.secrets_runtime_write) {
+    flags.push({
+      label: 'Schreibt eigene Credentials zur Laufzeit',
+      icon: <KeyRound className="size-3.5" aria-hidden />,
+    });
+  }
+  if (perms.flows) {
+    flags.push({
+      label: 'Führt Credential-Flows auf eigenen Routes aus',
+      icon: <ShieldAlert className="size-3.5" aria-hidden />,
+    });
+  }
+
+  if (active.length === 0 && flags.length === 0) {
     return (
       <p className="text-sm italic text-[color:var(--faint-ink)]">
         Keine Berechtigungen deklariert.
@@ -512,6 +529,25 @@ function PermissionsBlock({
 
   return (
     <div className="space-y-4">
+      {flags.length > 0 ? (
+        <div>
+          <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[color:var(--muted-ink)]">
+            <KeyRound className="size-3.5" aria-hidden />
+            Laufzeit-Credentials
+          </div>
+          <ul className="mt-2 flex flex-wrap gap-2">
+            {flags.map((flag) => (
+              <Chip
+                key={flag.label}
+                tone="accent"
+                className="normal-case tracking-normal"
+              >
+                {flag.label}
+              </Chip>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       {active.map((group) => (
         <div key={group.label}>
           <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[color:var(--muted-ink)]">

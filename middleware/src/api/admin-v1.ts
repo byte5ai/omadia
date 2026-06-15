@@ -110,6 +110,15 @@ export interface PluginPermissionsSummary {
   /** OB-29-3: hard-cap on `LlmCompleteRequest.maxTokens`. Plugin-side
    *  larger values are silently clamped, not rejected. Default 4096. */
   llm_max_tokens_per_call?: number;
+  /** Spec 004: plugin may write its OWN vault secrets + config at runtime
+   *  (`ctx.secrets.set`/`delete`, `ctx.config.set`). Namespace-locked — a
+   *  plugin can never reach another's secrets. Surfaced as a store-detail
+   *  chip. Loader defaults to `false`. */
+  secrets_runtime_write?: boolean;
+  /** Spec 004: plugin runs credential-acquisition flows on its own routes —
+   *  the `ctx.flows` accessor (public-callback-URL resolution + kernel-held
+   *  state signing) is provisioned. Loader defaults to `false`. */
+  flows?: boolean;
 }
 
 export type PluginInstallState =
