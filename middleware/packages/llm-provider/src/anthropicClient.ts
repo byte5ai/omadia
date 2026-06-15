@@ -25,11 +25,15 @@ export interface AnthropicClientOptions {
   readonly apiKey: string;
   /** SDK auto-retry count for 408/409/429/500/529. Omit to keep the SDK default (2). */
   readonly maxRetries?: number;
+  /** Override the API base URL (e.g. an Anthropic-compatible gateway, or the
+   *  baseURL a provider plugin declares). Omit to use the SDK default. */
+  readonly baseURL?: string;
 }
 
 export function createAnthropicClient(opts: AnthropicClientOptions): Anthropic {
   return new Anthropic({
     apiKey: opts.apiKey,
     ...(opts.maxRetries !== undefined ? { maxRetries: opts.maxRetries } : {}),
+    ...(opts.baseURL !== undefined ? { baseURL: opts.baseURL } : {}),
   });
 }

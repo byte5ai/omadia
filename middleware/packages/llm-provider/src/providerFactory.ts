@@ -18,6 +18,7 @@ import { createAnthropicClient } from './anthropicClient.js';
 import { createAnthropicProvider } from './anthropicProvider.js';
 import type { ProviderId } from './modelRegistry.js';
 import { createOpenAiProvider } from './openaiProvider.js';
+import type { LlmProviderCatalog } from './providerCatalog.js';
 import { readProviderApiKey } from './providerCredentials.js';
 import type { LlmProvider } from './types.js';
 
@@ -44,10 +45,15 @@ export interface ResolveLlmProviderOptions {
   /** Scope-bound vault read — `(k) => ctx.secrets.get(k)` or
    *  `(k) => vault.get(agentId, k)`. */
   readonly getSecret: (key: string) => Promise<string | undefined>;
-  /** Base URL for OpenAI-compatible servers (Mistral/Ollama/vLLM/Azure). */
+  /** Base URL for OpenAI-compatible servers (Mistral/Ollama/vLLM/Azure).
+   *  Overrides a catalog descriptor's `baseURL` when both are present. */
   readonly baseURL?: string;
   /** SDK auto-retry count (the orchestrator uses 5; others keep the SDK default). */
   readonly maxRetries?: number;
+  /** Plugin-contributed provider catalog. When `providerId` is found here, its
+   *  `baseURL` + quirks drive the OpenAI-compatible adapter — this is how a
+   *  declarative provider plugin (e.g. MiniMax) becomes resolvable. */
+  readonly catalog?: LlmProviderCatalog;
   readonly log?: (...args: unknown[]) => void;
 }
 
@@ -63,24 +69,36 @@ export async function resolveLlmProvider(
   const apiKey = await readProviderApiKey(opts.getSecret, opts.providerId);
   if (apiKey === undefined) return undefined;
 
-  if (opts.providerId === 'anthropic') {
+  // Resolve the wire format + baseURL once. A plugin-contributed provider (the
+  // catalog) declares its wireFormat; the built-in `anthropic` default keeps the
+  // Anthropic wire format with no descriptor. baseURL precedence: explicit
+  // opts.baseURL (self-hosted gateway / Azure) > catalog descriptor > a well-known
+  // default (knownProviderBaseUrl, e.g. mistral) so the operator never types it.
+  const descriptor = opts.catalog?.get(opts.providerId);
+  const wireFormat =
+    descriptor?.wireFormat ??
+    (opts.providerId === 'anthropic' ? 'anthropic' : 'openai-compatible');
+  const baseURL =
+    opts.baseURL ?? descriptor?.baseURL ?? knownProviderBaseUrl(opts.providerId);
+
+  if (wireFormat === 'anthropic') {
+    // Anthropic Messages wire format (Claude, or an Anthropic-compatible
+    // gateway). No baseURL → SDK default (zero-behavior-change for the built-in
+    // anthropic default). Quirks are openai-only and do not apply here.
     return createAnthropicProvider({
       client: createAnthropicClient({
         apiKey,
         ...(opts.maxRetries !== undefined ? { maxRetries: opts.maxRetries } : {}),
+        ...(baseURL !== undefined ? { baseURL } : {}),
       }),
       ...(opts.log !== undefined ? { log: opts.log } : {}),
     });
   }
 
   // openai, openai-compatible, and any custom compatible id all speak the
-  // OpenAI Chat Completions wire format via the same adapter. A non-openai id
-  // with a baseURL becomes an openai-compatible provider carrying that id.
-  //
-  // A well-known compatible provider (e.g. `mistral`) supplies its own default
-  // baseURL, so the operator never types the endpoint. An explicit baseURL
-  // still wins (self-hosted gateway / Azure deployment).
-  const baseURL = opts.baseURL ?? knownProviderBaseUrl(opts.providerId);
+  // OpenAI Chat Completions wire format via the same adapter. A plugin descriptor
+  // also carries the OpenAI-adapter quirks.
+  const quirks = descriptor?.quirks;
 
   // Guard the footgun: only the literal 'openai' may omit a baseURL (it defaults
   // to api.openai.com). Any other id without a (default or explicit) baseURL
@@ -96,6 +114,16 @@ export async function resolveLlmProvider(
     ...(baseURL !== undefined ? { baseURL } : {}),
     ...(opts.maxRetries !== undefined ? { maxRetries: opts.maxRetries } : {}),
     ...(opts.providerId !== 'openai' ? { id: opts.providerId } : {}),
+    ...(quirks?.maxTokensField !== undefined
+      ? { maxTokensField: quirks.maxTokensField }
+      : {}),
+    ...(quirks?.dropToolChoice !== undefined
+      ? { dropToolChoice: quirks.dropToolChoice }
+      : {}),
+    ...(quirks?.checkBaseResp !== undefined
+      ? { checkBaseResp: quirks.checkBaseResp }
+      : {}),
+    ...(quirks?.extraBody !== undefined ? { extraBody: quirks.extraBody } : {}),
     ...(opts.log !== undefined ? { log: opts.log } : {}),
   });
 }

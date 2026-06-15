@@ -21,6 +21,13 @@ import {
   ROLE_DEFAULT_CLASS,
 } from '@omadia/llm-provider';
 
+import { useBuiltinProviders } from './_helpers/builtinProviders.js';
+
+// The package ships zero static models now; these resolution/alias/builder-slug
+// invariants are exercised against the bundled built-ins (anthropic/openai/
+// mistral) registered into the overlay — the same data the old RAW_MODELS held.
+useBuiltinProviders();
+
 test('getModel resolves an exact provider-qualified id', () => {
   const m = getModel('anthropic:claude-opus-4-8');
   assert.equal(m?.modelId, 'claude-opus-4-8');

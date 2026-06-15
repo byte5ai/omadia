@@ -32,6 +32,11 @@ export interface AdminProvidersDeps {
   readonly vault?: SecretVault;
   /** Tear down + re-activate a plugin so it re-reads its config. */
   readonly reactivate?: (agentId: string) => Promise<void>;
+  /** Plugin-contributed providers — supplies display labels for ids that are
+   *  not built in (structural to avoid a hard dep on the catalog class). */
+  readonly llmProviderCatalog?: {
+    get(id: string): { readonly label: string } | undefined;
+  };
 }
 
 /**
@@ -133,7 +138,7 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
       const providers = await Promise.all(
         providerIds.map(async (id) => ({
           id,
-          label: providerLabel(id),
+          label: deps.llmProviderCatalog?.get(id)?.label ?? providerLabel(id),
           connected: await isConnected(deps.vault, id),
           models: listModelsByProvider(id).map((m) => ({
             id: m.id,
