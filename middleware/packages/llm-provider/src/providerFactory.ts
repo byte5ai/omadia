@@ -77,15 +77,27 @@ export interface ResolveLlmProviderOptions {
 export async function resolveLlmProvider(
   opts: ResolveLlmProviderOptions,
 ): Promise<LlmProvider | undefined> {
-  const apiKey = await readProviderApiKey(opts.getSecret, opts.providerId);
-  if (apiKey === undefined) return undefined;
-
-  // Resolve the wire format + baseURL once. A plugin-contributed provider (the
-  // catalog) declares its wireFormat; the built-in `anthropic` default keeps the
-  // Anthropic wire format with no descriptor. baseURL precedence: explicit
-  // opts.baseURL (self-hosted gateway / Azure) > catalog descriptor > a well-known
-  // default (knownProviderBaseUrl, e.g. mistral) so the operator never types it.
+  // Resolve the catalog descriptor first — it tells us whether this provider even
+  // needs a key, and which wire format to resolve. A plugin-contributed provider
+  // declares its wireFormat; the built-in `anthropic` default keeps the Anthropic
+  // wire format with no descriptor.
   const descriptor = opts.catalog?.get(opts.providerId);
+
+  const apiKey = await readProviderApiKey(opts.getSecret, opts.providerId);
+  // Local / self-hosted providers (e.g. Ollama) declare `policy.requiresApiKey:
+  // false` and run without credentials. For every other provider, a missing key
+  // means "not connected" → no provider (caller skips publishing its capability).
+  const keyless = descriptor?.policy?.requiresApiKey === false;
+  if (apiKey === undefined && !keyless) return undefined;
+  // The SDK constructors reject a falsy apiKey, so a keyless provider (no
+  // credential by design — Ollama ignores the Authorization header) gets a
+  // non-empty placeholder instead of ''. Only reached when apiKey is genuinely
+  // absent AND the provider declared requiresApiKey:false.
+  const resolvedKey = apiKey ?? 'no-key-required';
+
+  // baseURL precedence: explicit opts.baseURL (self-hosted gateway / Azure) >
+  // catalog descriptor > a well-known default (knownProviderBaseUrl, e.g. mistral)
+  // so the operator never types it.
   const wireFormat =
     descriptor?.wireFormat ??
     (opts.providerId === 'anthropic' ? 'anthropic' : 'openai-compatible');
@@ -120,7 +132,7 @@ export async function resolveLlmProvider(
   // 'openai' and the anthropic adapter use their own fixed id. `quirks` apply to
   // the openai-compatible adapter only; other adapters ignore them.
   return adapter.build({
-    apiKey,
+    apiKey: resolvedKey,
     ...(baseURL !== undefined ? { baseURL } : {}),
     ...(opts.maxRetries !== undefined ? { maxRetries: opts.maxRetries } : {}),
     ...(opts.providerId !== 'openai' ? { id: opts.providerId } : {}),

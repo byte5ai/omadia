@@ -14,6 +14,7 @@ import type {
   LlmProviderCatalog,
   LlmProviderDescriptor,
   ModelInfo,
+  ProviderPolicy,
   ProviderQuirks,
 } from '@omadia/llm-provider';
 
@@ -110,6 +111,25 @@ function parseQuirks(raw: unknown): ProviderQuirks | undefined {
   };
 }
 
+/** Parse the optional `policy` block (operator-UI compliance hints + the
+ *  keyless flag). All fields optional; non-booleans are ignored so a typo can't
+ *  flip a default. */
+function parsePolicy(raw: unknown): ProviderPolicy | undefined {
+  if (raw === undefined) return undefined;
+  const rec = asRecord(raw);
+  return {
+    ...(typeof rec['requires_avv_disclosure'] === 'boolean'
+      ? { requiresAvvDisclosure: rec['requires_avv_disclosure'] }
+      : {}),
+    ...(typeof rec['eu_hosted'] === 'boolean'
+      ? { euHosted: rec['eu_hosted'] }
+      : {}),
+    ...(typeof rec['requires_api_key'] === 'boolean'
+      ? { requiresApiKey: rec['requires_api_key'] }
+      : {}),
+  };
+}
+
 /** Map a raw `llm_provider` manifest block to a typed descriptor, or throw. */
 export function parseLlmProviderManifestBlock(
   raw: unknown,
@@ -128,6 +148,7 @@ export function parseLlmProviderManifestBlock(
   // Quirks are openai-only; ignore any declared on an anthropic-wire provider.
   const quirks =
     wireFormat === 'openai-compatible' ? parseQuirks(rec['quirks']) : undefined;
+  const policy = parsePolicy(rec['policy']);
   return {
     id: reqString(rec, 'id'),
     label: reqString(rec, 'label'),
@@ -137,6 +158,7 @@ export function parseLlmProviderManifestBlock(
       ? { baseUrlConfigKey: optString(rec, 'base_url_config_key') }
       : {}),
     ...(quirks !== undefined ? { quirks } : {}),
+    ...(policy !== undefined ? { policy } : {}),
     models: modelsRaw.map(parseModel),
   };
 }
