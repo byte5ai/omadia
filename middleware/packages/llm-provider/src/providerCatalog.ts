@@ -56,6 +56,11 @@ export interface ProviderPolicy {
   /** Provider is hosted in the EU (no third-country transfer) — surfaces a note.
    *  Default (omitted) = false. */
   readonly euHosted?: boolean;
+  /** Whether this provider needs an API key to be usable. Local / self-hosted
+   *  providers (e.g. Ollama) run without credentials — set `false` so the
+   *  factory builds the provider with an empty key instead of treating the
+   *  missing key as "not connected". Default (omitted) = true. */
+  readonly requiresApiKey?: boolean;
 }
 
 export class LlmProviderCatalog {
