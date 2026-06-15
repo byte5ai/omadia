@@ -18,6 +18,11 @@ import {
   type TurnSearchHit,
 } from '@omadia/plugin-api';
 
+import type {
+  RecallCandidate,
+  RecallRelevanceJudge,
+} from './recallRelevanceJudge.js';
+
 export interface ContextRetrieverOptions {
   /** Verbatim tail depth (most recent turns of the active chat). */
   tailSize?: number;
@@ -101,6 +106,14 @@ export interface ContextRetrieverOptions {
    * `kg_recall_require_terms=false` to restore the always-on behaviour.
    */
   recallRequiresTerms?: boolean;
+  /**
+   * Disable the LLM relevance re-rank even when a judge is wired. Default
+   * false (= judge runs whenever one is provided). The judge adds ONE cheap
+   * fast-model call per turn that has cross-session candidates; set
+   * `kg_recall_relevance_judge_enabled=false` to fall back to the cosine /
+   * lexical floors only.
+   */
+  recallRelevanceJudgeDisabled?: boolean;
 }
 
 export interface ContextBuildInput {
@@ -296,6 +309,7 @@ const DEFAULTS: Required<
   processLimit: 3,
   processMinScore: 0.45,
   recallRequiresTerms: true,
+  recallRelevanceJudgeDisabled: false,
 };
 
 // Tiny, language-agnostic stopword list. We keep it short because the real
@@ -376,6 +390,12 @@ export class ContextRetriever {
      *  a stored-process recall leg (semantic query over the `processes`
      *  store). Absent → the leg is skipped, plan + memory legs still run. */
     private readonly processMemory?: ProcessMemoryService,
+    /** Relevance re-rank — optional. When wired (and not disabled via
+     *  `recallRelevanceJudgeDisabled`), the cross-session candidates
+     *  (plans / processes / insights) are filtered by an LLM relevance pass
+     *  against the current message before they surface. Absent → cosine /
+     *  lexical floors are the only gate (prior behaviour). */
+    private readonly relevanceJudge?: RecallRelevanceJudge,
   ) {
     this.opts = { ...DEFAULTS, ...opts };
   }
@@ -624,15 +644,56 @@ export class ContextRetriever {
     // tail reservation is capped so a pathological giant turn can't starve
     // recall entirely. When every recall leg is empty the blocks render to ''
     // and the turn budget is untouched (byte-identical to pre-probe behaviour).
-    const insights: RecalledInsight[] = memoryHits.map((h) => ({
+    // Relevance re-rank — precision stage on top of the cheap recall legs.
+    // Cosine / lexical overlap can let a generic note out-score a specific
+    // on-topic fact, so a score threshold alone can't separate signal from
+    // noise. The judge drops candidates that aren't actually useful for THIS
+    // message. It FAILS OPEN (keeps everything on any error), so a degraded
+    // judge never silently hides recall the cheaper legs already surfaced.
+    let judgedPlans = planHits;
+    let judgedProcesses = processHits;
+    let judgedMemory = memoryHits;
+    if (
+      runCrossSessionRecall &&
+      this.relevanceJudge &&
+      !this.opts.recallRelevanceJudgeDisabled &&
+      (planHits.length > 0 || processHits.length > 0 || memoryHits.length > 0)
+    ) {
+      const candidates: RecallCandidate[] = [
+        ...planHits.map((p) => ({
+          id: p.planId,
+          kind: 'plan' as const,
+          text: `${p.strategy ?? ''} ${p.openStepGoals.join('; ')}`,
+        })),
+        ...processHits.map((p) => ({
+          id: p.id,
+          kind: 'process' as const,
+          text: p.title,
+        })),
+        ...memoryHits.map((h) => ({
+          id: h.mk.id,
+          kind: 'insight' as const,
+          text: String(h.mk.props['summary'] ?? ''),
+        })),
+      ];
+      const keep = await this.relevanceJudge.filterRelevant(
+        input.userMessage,
+        candidates,
+      );
+      judgedPlans = planHits.filter((p) => keep.has(p.planId));
+      judgedProcesses = processHits.filter((p) => keep.has(p.id));
+      judgedMemory = memoryHits.filter((h) => keep.has(h.mk.id));
+    }
+
+    const insights: RecalledInsight[] = judgedMemory.map((h) => ({
       mkId: h.mk.id,
       kind: String(h.mk.props['kind'] ?? 'memory'),
       summary: truncate(String(h.mk.props['summary'] ?? ''), 300),
       score: h.score,
     }));
     const recalled: RecalledContext = {
-      plans: planHits,
-      processes: processHits,
+      plans: judgedPlans,
+      processes: judgedProcesses,
       insights,
     };
     const tailReserveCapChars = Math.floor(budgetChars * 0.6);
@@ -697,13 +758,13 @@ export class ContextRetriever {
       `[context:assembled] scope=${scope} agent=${input.agentId} pool=${String(filtered.length)} included=${String(included.length)} excluded=${String(excluded.length)} compact=${String(compactMode)} plans=${String(recalled.plans.length)} processes=${String(recalled.processes.length)} insights=${String(recalled.insights.length)} tokens=${String(tokensUsed)}/${String(budgetTokens)}`,
     );
     // Per-item recall trace — lets us see WHY something surfaced (and tune the
-    // floors empirically) instead of guessing from aggregate counts. Only
-    // emitted when the probe actually surfaced something.
-    if (
-      recalled.plans.length > 0 ||
-      recalled.processes.length > 0 ||
-      recalled.insights.length > 0
-    ) {
+    // floors / judge empirically) instead of guessing from aggregate counts.
+    // Emitted whenever the cheap legs fetched any candidate, so a judge that
+    // dropped everything is still visible (pre→post counts).
+    const preCount = planHits.length + processHits.length + memoryHits.length;
+    if (preCount > 0) {
+      const judgeOn =
+        !!this.relevanceJudge && !this.opts.recallRelevanceJudgeDisabled;
       const plansTrace = recalled.plans.map((p) => p.planId).join(',');
       const procTrace = recalled.processes
         .map((p) => `${p.id}:${p.score.toFixed(2)}`)
@@ -711,8 +772,10 @@ export class ContextRetriever {
       const insTrace = recalled.insights
         .map((i) => `${i.kind}:${i.score.toFixed(2)}`)
         .join(',');
+      const pre = `${planHits.length}/${processHits.length}/${memoryHits.length}`;
+      const post = `${recalled.plans.length}/${recalled.processes.length}/${recalled.insights.length}`;
       console.error(
-        `[context:recall] scope=${scope} gate=${runCrossSessionRecall ? 'open' : 'closed'} terms=[${extractedTerms.join(',')}] plans=[${plansTrace}] processes=[${procTrace}] insights=[${insTrace}]`,
+        `[context:recall] scope=${scope} gate=${runCrossSessionRecall ? 'open' : 'closed'} judge=${judgeOn ? 'on' : 'off'} pre(p/pr/i)=${pre} post=${post} terms=[${extractedTerms.join(',')}] plans=[${plansTrace}] processes=[${procTrace}] insights=[${insTrace}]`,
       );
     }
 

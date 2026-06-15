@@ -5,7 +5,12 @@ import { toSemanticAnswer } from '@omadia/channel-sdk';
 import type { ChatTurnResult } from '@omadia/channel-sdk';
 import type { EmbeddingClient } from '@omadia/embeddings';
 import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
-import { ContextRetriever } from '@omadia/orchestrator-extras';
+import {
+  ContextRetriever,
+  createRecallRelevanceJudge,
+} from '@omadia/orchestrator-extras';
+import type { RecallRelevanceJudge } from '@omadia/orchestrator-extras';
+import type { LlmProvider } from '@omadia/llm-provider';
 import type {
   ProcessMemoryService,
   ProcessQueryHit,
@@ -655,5 +660,147 @@ describe('T1 · toSemanticAnswer forwards recalled (non-stream / Teams path)', (
   it('omits recalled when absent', () => {
     const result: ChatTurnResult = { answer: 'hi', toolCalls: 0, iterations: 1 };
     assert.equal(toSemanticAnswer(result).recalled, undefined);
+  });
+});
+
+/** Minimal LlmProvider stub: `complete` returns a fixed text body (or throws). */
+function stubLlm(reply: string | (() => never)): LlmProvider {
+  return {
+    async complete(): Promise<unknown> {
+      if (typeof reply === 'function') return reply();
+      return { content: [{ type: 'text', text: reply }] };
+    },
+  } as unknown as LlmProvider;
+}
+
+describe('R8 · recall relevance judge (LLM-agnostic)', () => {
+  const cands = [
+    { id: 'plan:a', kind: 'plan' as const, text: 'about billing migration' },
+    { id: 'process:b', kind: 'process' as const, text: 'deploy to staging' },
+    { id: 'mk:c', kind: 'insight' as const, text: 'generic odoo access note' },
+  ];
+
+  it('keeps only the ids the model returns', async () => {
+    const judge = createRecallRelevanceJudge({
+      llm: stubLlm(JSON.stringify({ relevant: ['plan:a', 'process:b'] })),
+      model: 'fast-test',
+    });
+    const keep = await judge.filterRelevant('how do I deploy billing?', cands);
+    assert.deepEqual([...keep].sort(), ['plan:a', 'process:b']);
+  });
+
+  it('ignores hallucinated ids not among the candidates', async () => {
+    const judge = createRecallRelevanceJudge({
+      llm: stubLlm(JSON.stringify({ relevant: ['plan:a', 'mk:GHOST'] })),
+      model: 'fast-test',
+    });
+    const keep = await judge.filterRelevant('deploy', cands);
+    assert.deepEqual([...keep], ['plan:a']);
+  });
+
+  it('FAILS OPEN (keeps all) on a non-JSON reply', async () => {
+    const judge = createRecallRelevanceJudge({
+      llm: stubLlm('sorry, I cannot do that'),
+      model: 'fast-test',
+    });
+    const keep = await judge.filterRelevant('deploy', cands);
+    assert.equal(keep.size, 3);
+  });
+
+  it('FAILS OPEN (keeps all) when the provider throws', async () => {
+    const judge = createRecallRelevanceJudge({
+      llm: stubLlm(() => {
+        throw new Error('provider down');
+      }),
+      model: 'fast-test',
+    });
+    const keep = await judge.filterRelevant('deploy', cands);
+    assert.equal(keep.size, 3);
+  });
+
+  it('keeps everything when there are no candidates', async () => {
+    const judge = createRecallRelevanceJudge({
+      llm: stubLlm('{"relevant":[]}'),
+      model: 'fast-test',
+    });
+    const keep = await judge.filterRelevant('deploy', []);
+    assert.equal(keep.size, 0);
+  });
+});
+
+describe('R9 · ContextRetriever applies the relevance judge to recalled', () => {
+  async function seedPlanAndInsight(kg: InMemoryKnowledgeGraph): Promise<void> {
+    await kg.ingestPlan({
+      planId: 'prior',
+      scope: 'sess-prior',
+      strategy: 'Migrate the billing module',
+      createdAt: '2026-06-01T10:00:00.000Z',
+    });
+    await kg.upsertPlanStep({
+      stepId: 'prior-s1',
+      planId: 'prior',
+      scope: 'sess-prior',
+      goal: 'run billing migration in staging',
+      order: 0,
+      status: 'pending',
+    });
+    const mk = await kg.createMemorableKnowledge({
+      kind: 'reference',
+      summary: 'generic note about billing access',
+      createdBy: 'web:bob',
+      involvedOmadiaUserIds: [],
+      aclOwners: ['bob'],
+    });
+    kg.setEmbedding(mk.memorableKnowledgeNodeId, ALIGNED);
+  }
+
+  // A judge that drops every INSIGHT (mk:*) but keeps plans/processes.
+  const dropInsights: RecallRelevanceJudge = {
+    async filterRelevant(_msg, candidates): Promise<Set<string>> {
+      return new Set(
+        candidates.filter((c) => c.kind !== 'insight').map((c) => c.id),
+      );
+    },
+  };
+
+  it('drops the candidates the judge rejects (insight filtered, plan kept)', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    await seedPlanAndInsight(kg);
+    const retriever = new ContextRetriever(
+      kg,
+      { teamVisibility: true },
+      stubEmbedder,
+      undefined,
+      undefined,
+      dropInsights,
+    );
+    const result = await retriever.assembleForBudget({
+      userMessage: 'how do I run the billing migration in staging?',
+      agentId: 'test-agent',
+      sessionScope: 'sess-now',
+      userId: 'alice',
+    });
+    assert.equal(result.recalled.plans.length, 1, 'relevant plan kept');
+    assert.equal(result.recalled.insights.length, 0, 'insight judged out');
+  });
+
+  it('recallRelevanceJudgeDisabled=true bypasses the judge', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    await seedPlanAndInsight(kg);
+    const retriever = new ContextRetriever(
+      kg,
+      { teamVisibility: true, recallRelevanceJudgeDisabled: true },
+      stubEmbedder,
+      undefined,
+      undefined,
+      dropInsights,
+    );
+    const result = await retriever.assembleForBudget({
+      userMessage: 'how do I run the billing migration in staging?',
+      agentId: 'test-agent',
+      sessionScope: 'sess-now',
+      userId: 'alice',
+    });
+    assert.equal(result.recalled.insights.length, 1, 'judge bypassed → insight stays');
   });
 });

@@ -1,5 +1,5 @@
-import type { LlmProvider } from '@omadia/llm-provider';
-import { resolveLlmProvider } from '@omadia/llm-provider';
+import type { LlmProvider, ProviderId } from '@omadia/llm-provider';
+import { resolveLlmProvider, resolveModelRef } from '@omadia/llm-provider';
 import type { PluginContext } from '@omadia/plugin-api';
 import type { EmbeddingClient } from '@omadia/embeddings';
 import type {
@@ -29,6 +29,7 @@ import {
 } from './captureFilter.js';
 import { CaptureFilteringKnowledgeGraph } from './captureFilteringKnowledgeGraph.js';
 import { ContextRetriever } from './contextRetriever.js';
+import { createRecallRelevanceJudge } from './recallRelevanceJudge.js';
 import type { Pool } from 'pg';
 import {
   initUsageRecorder,
@@ -294,6 +295,34 @@ export async function activate(
     llm = withProviderUsageTracking(baseProvider, { source: 'extras' });
   }
 
+  // Recall relevance judge (LLM-agnostic). Re-ranks the cross-session recall
+  // candidates with the provider's FAST model class: a cosine / lexical score
+  // can't separate a specific on-topic fact from a generic note that happens
+  // to score higher, so this is the precision stage. Default ON when an LLM is
+  // available — one cheap fast-model call per turn that actually has
+  // candidates. Disable with kg_recall_relevance_judge_enabled=false; falls
+  // back to the cosine/lexical floors when no LLM or no fast model resolves.
+  const recallJudgeEnabledRaw =
+    ctx.config.get<unknown>('kg_recall_relevance_judge_enabled') ??
+    process.env['KG_RECALL_RELEVANCE_JUDGE_ENABLED'];
+  const recallRelevanceJudgeDisabled =
+    typeof recallJudgeEnabledRaw === 'string'
+      ? recallJudgeEnabledRaw.toLowerCase() === 'false'
+      : recallJudgeEnabledRaw === false;
+  const recallJudgeModel =
+    (ctx.config.get<string>('kg_recall_relevance_judge_model') ?? '').trim() ||
+    resolveModelRef('class:fast', {
+      defaultProvider: providerId as ProviderId,
+    })?.modelId;
+  const relevanceJudge =
+    llm && !recallRelevanceJudgeDisabled && recallJudgeModel
+      ? createRecallRelevanceJudge({
+          llm,
+          model: recallJudgeModel,
+          log: ctx.log,
+        })
+      : undefined;
+
   // ---------------------------------------------------------------------
   // OB-71 — palaia capture-filter wiring.
   //
@@ -436,13 +465,15 @@ export async function activate(
       processLimit,
       processMinScore,
       recallRequiresTerms,
+      recallRelevanceJudgeDisabled,
     },
     embeddingClient,
     agentPriorities,
     processMemory,
+    relevanceJudge,
   );
   ctx.log(
-    `[harness-orchestrator-extras] context-assembler ready (budget=${String(contextDefaultBudgetTokens)}tk, chars/tk=${String(contextCharsPerToken)}, manual-boost=${contextManualBoostFactor.toFixed(2)}, compact>${String(contextCompactModeThreshold)}, agentPriorities=${agentPriorities ? 'on' : 'off'}, memoryRecall=${embeddingClient && !memoryRecallDisabled ? `on(limit=${String(memoryLimit)},excerpts=${String(memoryExcerptsPerMemory)},minSim=${memoryMinSimilarity.toFixed(2)})` : 'off'}, teamVisibility=${teamVisibility ? 'on' : 'off'}, planRecall=${planRecallDisabled ? 'off' : `on(limit=${String(planLimit)})`}, processRecall=${processMemory && !processRecallDisabled ? `on(limit=${String(processLimit)},minScore=${processMinScore.toFixed(2)})` : 'off'}, recallGate=${recallRequiresTerms ? 'require-terms' : 'off'})`,
+    `[harness-orchestrator-extras] context-assembler ready (budget=${String(contextDefaultBudgetTokens)}tk, chars/tk=${String(contextCharsPerToken)}, manual-boost=${contextManualBoostFactor.toFixed(2)}, compact>${String(contextCompactModeThreshold)}, agentPriorities=${agentPriorities ? 'on' : 'off'}, memoryRecall=${embeddingClient && !memoryRecallDisabled ? `on(limit=${String(memoryLimit)},excerpts=${String(memoryExcerptsPerMemory)},minSim=${memoryMinSimilarity.toFixed(2)})` : 'off'}, teamVisibility=${teamVisibility ? 'on' : 'off'}, planRecall=${planRecallDisabled ? 'off' : `on(limit=${String(planLimit)})`}, processRecall=${processMemory && !processRecallDisabled ? `on(limit=${String(processLimit)},minScore=${processMinScore.toFixed(2)})` : 'off'}, recallGate=${recallRequiresTerms ? 'require-terms' : 'off'}, recallJudge=${relevanceJudge ? `on(${recallJudgeModel ?? '?'})` : 'off'})`,
   );
   const disposeContext = ctx.services.provide(
     CONTEXT_RETRIEVER_SERVICE,
