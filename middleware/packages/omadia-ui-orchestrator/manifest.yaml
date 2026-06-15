@@ -41,9 +41,9 @@ setup:
     - key: "ui_orchestrator_model"
       type: "string"
       label: "Composition model"
-      help: "Fast-tier model for the skeleton composition call. Pin to a Sonnet id if the spike tree-validity gate (<95% first-attempt schema-valid) fails — implementation-plan §8 risk #1."
+      help: "Skeleton composition model. Default 'class:fast' = always the cheapest tier on whatever LLM provider is active (anthropic→haiku, openai→gpt-mini, mistral→small). Pin a concrete id or 'class:balanced' only if the tree-validity gate (<95% first-attempt schema-valid) fails — implementation-plan §8 risk #1."
       required: false
-      default: "claude-haiku-4-5"
+      default: "class:fast"
     - key: "canvas_output_tools"
       type: "string"
       label: "Canvas-output tool allow-set"
@@ -54,14 +54,18 @@ setup:
 permissions:
   filesystem:
     scratch: false
-  # The skeleton composition call (composeSkeleton): fast tier by default,
-  # Sonnet allowed as the documented fallback when the validity gate fails.
+  # The skeleton composition call (composeSkeleton): cheapest tier by default.
+  # Provider-agnostic class refs — resolved against the ACTIVE provider in
+  # createLlmAccessor, so this gate is byte-identical to the old anthropic lock
+  # (class:fast→claude-haiku, class:balanced→claude-sonnet) AND works on
+  # openai/mistral without edits. class:balanced stays allowed as the documented
+  # fallback when the validity gate fails.
   # Per turn: 1 composition call + at most 1 repair retry; the cap of 8 leaves
   # headroom for later 9b slices (patch recomposition, suggestedActions).
   llm:
     models_allowed:
-      - "claude-haiku-4-5*"
-      - "claude-sonnet-4-*"
+      - "class:fast"
+      - "class:balanced"
     # NOTE: the LlmAccessor's calls counter is scoped to the plugin CONTEXT,
     # which for an extension plugin is created once per activation — so this
     # cap is effectively a LIFETIME budget, not per-invocation. With the old
