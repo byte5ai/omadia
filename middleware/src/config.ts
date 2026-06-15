@@ -133,6 +133,28 @@ const ConfigSchema = z.object({
   // landing page.
   AUTH_DEFAULT_RETURN_PATH: z.string().default('/'),
 
+  // Friction-free desktop pairing (#293). The server owns the mapping
+  // "human-facing URL → canvas transport URL"; these knobs let one config
+  // serve every deployment shape without code-level topology lock-in.
+  //
+  // OMADIA_UI_PUBLIC_WS_URL — absolute `wss://…/omadia-ui/canvas` the desktop
+  // app should connect to. Leave unset for LAN / single-service hosts (the
+  // discovery endpoint derives it from the request origin). Set it in a SPLIT
+  // deployment where the operator front and the canvas transport are on
+  // different hosts (e.g. the Fly operator/middleware split) so discovery
+  // hands the client the transport host it cannot otherwise guess.
+  OMADIA_UI_PUBLIC_WS_URL: optionalNonEmpty(z.string().url()),
+  // Human label advertised over mDNS + returned in the pairing descriptor.
+  // Defaults to the request host when unset.
+  OMADIA_UI_INSTANCE_NAME: optionalNonEmpty(z.string()),
+  // Advertise `_omadia._tcp` on the LAN for zero-config discovery. On by
+  // default for self-hosters; harmless to leave on where there is no LAN
+  // reachability (Fly), but set to `false` to silence the responder there.
+  OMADIA_UI_MDNS_ENABLED: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default(true),
+
   // Local-dev endpoints (unauthenticated memory browser, …). Keep this OFF in
   // any deployed environment — the router mounts under /api/dev and exposes
   // raw memory contents without auth. Only enable when iterating on the

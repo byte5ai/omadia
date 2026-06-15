@@ -44,6 +44,25 @@ export const INFO_PATH = '/omadia-ui/info';
 /** Bidirectional canvas WebSocket path (registered via CoreApi.registerWebSocket). */
 export const CANVAS_PATH = '/omadia-ui/canvas';
 
+/** Derive an absolute `ws(s)://host/omadia-ui/canvas` from the discovery
+ *  request, honouring the reverse-proxy `x-forwarded-*` headers the Fly edge
+ *  (and any proxy) sets. Mirrors the kernel's `resolveScheme` (#293) but stays
+ *  inline so the channel plugin keeps zero runtime deps on the kernel. */
+function absoluteCanvasWsUrl(req: {
+  headers: Record<string, string | string[] | undefined>;
+  socket?: { encrypted?: boolean };
+}): string {
+  const first = (name: string): string | undefined => {
+    const v = req.headers[name];
+    const raw = Array.isArray(v) ? v[0] : v;
+    return raw?.split(',')[0]?.trim() || undefined;
+  };
+  const xfProto = first('x-forwarded-proto');
+  const secure = xfProto ? xfProto === 'https' : Boolean(req.socket?.encrypted);
+  const host = first('x-forwarded-host') ?? first('host') ?? 'localhost';
+  return `${secure ? 'wss' : 'ws'}://${host}${CANVAS_PATH}`;
+}
+
 export async function activate(
   ctx: PluginContext,
   core: CoreApi,
@@ -52,7 +71,13 @@ export async function activate(
 
   const wsAvailable = typeof core.registerWebSocket === 'function';
 
-  core.registerRoute(ctx.agentId, 'GET', INFO_PATH, (_req, res) => {
+  core.registerRoute(ctx.agentId, 'GET', INFO_PATH, (req, res) => {
+    // Back-compat discovery alias. Returns the same legacy fields plus an
+    // ABSOLUTE canvas `wsUrl` (#293) so a client that only knows this endpoint
+    // still gets a connect-ready URL without hand-assembling scheme + host +
+    // path. The canonical, auth-aware descriptor lives at
+    // `/.well-known/omadia-ui` (served by the kernel).
+    const wsUrl = wsAvailable ? absoluteCanvasWsUrl(req) : undefined;
     res.json({
       channel: ctx.agentId,
       protocolVersions: [CANVAS_PROTOCOL_VERSION],
@@ -60,7 +85,10 @@ export async function activate(
       capabilities: ['text', 'canvas'],
       dispatchService: 'canvasChatAgent',
       transport: 'websocket',
+      // Legacy relative path kept for older clients; `wsUrl` is the absolute
+      // form new clients should prefer.
       websocket: wsAvailable ? CANVAS_PATH : 'unavailable',
+      ...(wsUrl ? { wsUrl } : {}),
     });
   });
   ctx.log(`[omadia-ui-channel] discovery endpoint at GET ${INFO_PATH}`);

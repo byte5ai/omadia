@@ -117,6 +117,17 @@ import { BuilderModelRegistry } from './plugins/builder/modelRegistry.js';
 import { SlotTypecheckPipeline } from './plugins/builder/slotTypecheckPipeline.js';
 import { BuildQueue } from './plugins/builder/buildQueue.js';
 import { createAuthRouter } from './routes/auth.js';
+import {
+  buildPairingDescriptor,
+  CANVAS_WS_PATH,
+  WELL_KNOWN_PATH,
+  PAIRING_PROTOCOL_VERSION,
+  type ProviderSummaryLike,
+} from './pairing/discovery.js';
+import {
+  startMdnsAdvertiser,
+  type MdnsAdvertisement,
+} from './pairing/mdns.js';
 import { createRequireAuth } from './auth/requireAuth.js';
 import { OAuthClient } from './auth/oauthClient.js';
 import { RefreshStore } from './auth/refreshStore.js';
@@ -1578,6 +1589,30 @@ async function main(): Promise<void> {
     res.json({ status: 'ok' });
   });
 
+  // Friction-free pairing discovery (#293). Public-by-design (lives outside
+  // the `/api` requireAuth mount): a desktop client GETs this on whatever
+  // origin the user knows and gets back a source-agnostic descriptor with an
+  // ABSOLUTE canvas `wsUrl` and the auth providers — no scheme juggling, no
+  // `/omadia-ui/canvas` suffix to hand-type. `pairingProviders` is populated
+  // once the auth registry is ready during boot (well before `listen`); the
+  // handler reads it at request time, so a `let` capture is sufficient and
+  // the route still answers (`auth.mode: 'none'`) when auth is disabled.
+  let pairingProviders: ProviderSummaryLike[] | undefined;
+  let mdnsAdvertisement: MdnsAdvertisement | undefined;
+  app.get(WELL_KNOWN_PATH, (req, res) => {
+    res.json(
+      buildPairingDescriptor(
+        { headers: req.headers, encrypted: Boolean(req.socket?.encrypted) },
+        {
+          instanceName: config.OMADIA_UI_INSTANCE_NAME,
+          publicWsUrl: config.OMADIA_UI_PUBLIC_WS_URL,
+          providers: pairingProviders,
+        },
+      ),
+    );
+  });
+  console.log(`[middleware] pairing discovery at GET ${WELL_KNOWN_PATH}`);
+
   // Harness shared assets — currently the admin-UI baseline stylesheet
   // that plugin-bundled admin UIs `<link>` into their HTML. No auth: the
   // CSS is static and operator-agnostic. See PLAN-admin-ui-theming.md.
@@ -1942,6 +1977,8 @@ async function main(): Promise<void> {
         bootstrapResult.setupRequired ? ' — /setup wizard unlocked' : ''
       }`,
     );
+    // Surface the active providers to the public pairing descriptor (#293).
+    pairingProviders = providerRegistry.summaries();
 
     app.use(
       '/api/v1/auth',
@@ -3201,6 +3238,33 @@ async function main(): Promise<void> {
   // dual-stack '::' bind serves WS upgrades too. Idempotent; inert until a
   // channel registers a socket path via CoreApi.registerWebSocket.
   webSocketRegistry.attach(server);
+
+  // LAN zero-config discovery (#293): advertise `_omadia._tcp` so a desktop
+  // client on the same network can pair with zero typing. Best-effort — a host
+  // with no LAN reachability (Fly) simply never gets discovered this way.
+  if (config.OMADIA_UI_MDNS_ENABLED) {
+    const advertisedAuthMode: 'none' | 'password' | 'oidc' = pairingProviders
+      ?.length
+      ? pairingProviders.some((p) => p.kind === 'oidc')
+        ? 'oidc'
+        : 'password'
+      : 'none';
+    void startMdnsAdvertiser({
+      port: config.PORT,
+      name: config.OMADIA_UI_INSTANCE_NAME ?? 'omadia',
+      canvasPath: CANVAS_WS_PATH,
+      protocolVersion: PAIRING_PROTOCOL_VERSION,
+      authMode: advertisedAuthMode,
+      log: (msg) => console.log(msg),
+    }).then((adv) => {
+      mdnsAdvertisement = adv;
+    });
+    const stopMdns = (): void => {
+      void mdnsAdvertisement?.stop();
+    };
+    process.once('SIGTERM', stopMdns);
+    process.once('SIGINT', stopMdns);
+  }
 
   // Fast-fail on EADDRINUSE: without this, hot-reload or a stale `npm run dev`
   // boots the whole stack silently while the port is held by a zombie tsx
