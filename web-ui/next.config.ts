@@ -44,6 +44,15 @@ const nextConfig: NextConfig = {
         source: '/bot-api/:path*',
         destination: `${middlewareUrl}/api/:path*`,
       },
+      // Friction-free pairing discovery (#293). `.well-known` segments are
+      // ignored by the App Router file system, so the canonical public path is
+      // served by the `/pairing-discovery` route handler via this rewrite. The
+      // desktop app GETs the operator URL it already knows and gets back a
+      // connect-ready descriptor (absolute wsUrl + auth).
+      {
+        source: '/.well-known/omadia-ui',
+        destination: '/pairing-discovery',
+      },
       // Plugin-served UI surfaces. Plugins register Express routers under
       // /p/<pluginId>/... via ctx.routes.register; iframes embedded in
       // Teams Tabs hit this rewrite so the browser only ever sees the
