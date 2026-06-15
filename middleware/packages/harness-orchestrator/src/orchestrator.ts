@@ -112,6 +112,11 @@ import {
   routeTurnModel,
 } from './modelRouter.js';
 import { fromLlmResponse, toLlmRequest } from './llmProviderSeam.js';
+import type {
+  AnthropicBlock,
+  AnthropicParams,
+  SeamMessage,
+} from './llmProviderSeam.js';
 import { streamMessageEvents } from './streaming.js';
 import { steeringBus } from './steeringBus.js';
 import { buildDateHeader, today, turnContext } from './turnContext.js';
@@ -1349,6 +1354,87 @@ export class Orchestrator {
   }
 
   /**
+   * Card-router pass for providers that don't interleave text + tool calls
+   * (`capabilities.interleavedToolUse === false`, e.g. Mistral / any
+   * OpenAI-compatible server). Those models emit the CONTENT of a choice card
+   * or follow-up buttons as PROSE in their answer instead of calling
+   * `ask_user_choice` / `suggest_follow_ups` — the Chat Completions API returns
+   * `content` OR `tool_calls`, never both. This runs ONE extra forced-tool call
+   * over {question, answer} so the intent is routed through the existing tool
+   * handlers; the normal `drainPendingChoice` / `drainFollowUps` sites then pick
+   * up whatever was scheduled.
+   *
+   * No-op (and zero extra cost) when: neither card tool is installed, the
+   * provider already interleaves, the model ALREADY scheduled a card this turn,
+   * or the answer is too short to warrant one. Best-effort — any failure is
+   * swallowed so a router hiccup never blocks the user's answer.
+   */
+  private async maybeRouteCardsFromText(
+    userMessage: string,
+    answer: string,
+    model: string,
+  ): Promise<void> {
+    if (this.provider.capabilities.interleavedToolUse !== false) return;
+    const wantsChoice = this.askUserChoiceTool !== undefined;
+    const wantsFollowUps = this.suggestFollowUpsTool !== undefined;
+    if (!wantsChoice && !wantsFollowUps) return;
+    // The model routed correctly on its own this turn — don't double-fire.
+    if (this.askUserChoiceTool?.hasPending() === true) return;
+    if (this.suggestFollowUpsTool?.hasPending() === true) return;
+    const trimmed = answer.trim();
+    // Trivial replies (confirmations, one-line facts) never warrant a card;
+    // skip them to avoid a needless extra LLM call on every short turn.
+    if (trimmed.length < 40) return;
+
+    const tools: AnthropicBlock[] = [];
+    if (wantsChoice) tools.push(askUserChoiceToolSpec);
+    if (wantsFollowUps) tools.push(suggestFollowUpsToolSpec);
+    tools.push(noCardToolSpec);
+
+    const params: AnthropicParams = {
+      model,
+      max_tokens: 1024,
+      system: CARD_ROUTER_SYSTEM,
+      tools,
+      // Force exactly one tool so the model can't slip back into prose.
+      tool_choice: { type: 'any' },
+      messages: [
+        { role: 'user', content: `Ursprüngliche User-Frage:\n${userMessage}` },
+        { role: 'assistant', content: trimmed },
+        { role: 'user', content: CARD_ROUTER_INSTRUCTION },
+      ],
+    };
+
+    let routed: SeamMessage;
+    try {
+      routed = fromLlmResponse(await this.provider.complete(toLlmRequest(params)));
+    } catch (err) {
+      console.error(
+        '[orchestrator] card-router pass failed (continuing without card):',
+        err instanceof Error ? err.message : err,
+      );
+      return;
+    }
+
+    const call = routed.content.find((b) => b['type'] === 'tool_use');
+    if (!call || call['name'] === NO_CARD_TOOL_NAME) return;
+    const name = call['name'] as string;
+    const inputArg = call['input'];
+    try {
+      if (name === ASK_USER_CHOICE_TOOL_NAME) {
+        await this.askUserChoiceTool?.handle(inputArg);
+      } else if (name === SUGGEST_FOLLOW_UPS_TOOL_NAME) {
+        await this.suggestFollowUpsTool?.handle(inputArg);
+      }
+    } catch (err) {
+      console.error(
+        '[orchestrator] card-router handler failed (continuing without card):',
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  /**
    * Collect a pending slot-picker card scheduled by `find_free_slots` during
    * the current turn and clear the tool's buffer. Sidecar pattern — does
    * NOT terminate the turn. Mirrors `drainFollowUps`.
@@ -2062,6 +2148,15 @@ export class Orchestrator {
               });
             }
           }
+          // Non-interleaving providers (Mistral/OpenAI-compatible) emit card
+          // intent as prose; route it through the existing handlers before the
+          // drains below pick it up. No-op on Anthropic and on trivial answers.
+          await this.maybeRouteCardsFromText(
+            input.userMessage,
+            answer,
+            turnModel,
+          );
+          const pendingUserChoice = this.drainPendingChoice();
           const followUpOptions = this.drainFollowUps();
           const pendingSlotCard = this.drainPendingSlotCard();
           const pendingRoutineList = this.drainPendingRoutineList();
@@ -2074,6 +2169,7 @@ export class Orchestrator {
             ...(runTrace ? { runTrace } : {}),
             ...(attachments ? { attachments } : {}),
             ...(fileAttachments ? { fileAttachments } : {}),
+            ...(pendingUserChoice ? { pendingUserChoice } : {}),
             ...(followUpOptions ? { followUpOptions } : {}),
             ...(pendingSlotCard ? { pendingSlotCard } : {}),
             ...(pendingRoutineList ? { pendingRoutineList } : {}),
@@ -2646,6 +2742,15 @@ export class Orchestrator {
               );
             }
           }
+          // Non-interleaving providers (Mistral/OpenAI-compatible) emit card
+          // intent as prose; route it through the existing handlers before the
+          // drains below pick it up. No-op on Anthropic and on trivial answers.
+          await this.maybeRouteCardsFromText(
+            input.userMessage,
+            answer,
+            turnModel,
+          );
+          const pendingUserChoice = this.drainPendingChoice();
           const followUpOptions = this.drainFollowUps();
           const pendingSlotCard = this.drainPendingSlotCard();
           const pendingRoutineList = this.drainPendingRoutineList();
@@ -2686,6 +2791,7 @@ export class Orchestrator {
             ...(attachments ? { attachments } : {}),
             ...(fileAttachments ? { fileAttachments } : {}),
             ...(runTrace ? { runTrace } : {}),
+            ...(pendingUserChoice ? { pendingUserChoice } : {}),
             ...(followUpOptions ? { followUpOptions } : {}),
             ...(pendingSlotCard ? { pendingSlotCard } : {}),
             ...(pendingRoutineList ? { pendingRoutineList } : {}),
@@ -3641,6 +3747,38 @@ const FILE_RETRY_NUDGE =
  */
 const FINALIZE_DIRECTIVE =
   'Du hast das Tool-Budget für diesen Turn aufgebraucht und kannst KEINE weiteren Tools aufrufen. Fasse zusammen, was du bereits herausgefunden hast, und gib JETZT die bestmögliche Antwort mit den vorhandenen Informationen. Wenn etwas unklar oder unvollständig bleibt, sag dem User in einem Satz klar, was noch offen ist. Beschreibe keine weiteren geplanten Tool-Aufrufe.';
+
+// ---------------------------------------------------------------------------
+// Card-router pass (non-interleaving providers, e.g. Mistral / OpenAI-compatible)
+// ---------------------------------------------------------------------------
+//
+// Such models can't emit assistant text AND a tool call in one completion, so
+// the model expresses a choice card or follow-up buttons as PROSE in its answer
+// instead of calling `ask_user_choice` / `suggest_follow_ups`. This second pass
+// re-reads {question, answer} and, with one forced-tool call, routes that intent
+// through the EXISTING tool handlers so the normal drain sites pick it up.
+// `no_card` is the escape hatch so the forced choice can decline.
+
+const NO_CARD_TOOL_NAME = 'no_card';
+
+const noCardToolSpec = {
+  name: NO_CARD_TOOL_NAME,
+  description:
+    'Wähle dies, wenn die Antwort KEINE interaktive Karte braucht — also weder eine echte Rückfrage mit kleiner Optionsmenge noch naheliegende 1-Klick-Varianten desselben Reports.',
+  input_schema: { type: 'object' as const, properties: {} },
+};
+
+const CARD_ROUTER_SYSTEM =
+  'Du bist ein Klassifizierer, der NACH einer fertigen Assistenten-Antwort entscheidet, ob unter die Antwort eine interaktive Karte gehört. Du beantwortest NICHTS neu und schreibst KEINEN Fließtext — du rufst genau EIN Tool auf.\n' +
+  '\n' +
+  '- `ask_user_choice`: NUR wenn die Antwort selbst eine **Rückfrage** ist, weil die ursprüngliche Eingabe genuin mehrdeutig war UND es eine **kleine, endliche Menge** klarer Optionen gibt (die in der Antwort meist schon als Liste genannt sind). Extrahiere die Frage und 2–4 kurze, einzigartige Labels.\n' +
+  '- `suggest_follow_ups`: NUR wenn die Antwort eine **vollständige, inhaltliche Antwort** ist (z. B. Top-N / Ranking / Trend / Aggregat), zu der es naheliegende Varianten desselben Reports gibt. Jedes `prompt` ist eine vollständige, eigenständige Folgefrage.\n' +
+  '- `no_card`: in ALLEN anderen Fällen (Trivial-Antworten, reine Fakten, kein klarer Varianten- oder Optionsraum).\n' +
+  '\n' +
+  'Im Zweifel `no_card`. Erfinde keine Optionen, die nicht zur Antwort passen.';
+
+const CARD_ROUTER_INSTRUCTION =
+  'Entscheide jetzt für die obige Assistenten-Antwort: Rufe genau eines von `ask_user_choice`, `suggest_follow_ups` oder `no_card` auf.';
 
 /** Compose the per-iteration system hint, appending the finalize directive on
  *  the final tools-disabled pass. Kept as a free function so both tool loops

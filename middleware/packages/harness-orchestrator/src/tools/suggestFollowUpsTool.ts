@@ -133,4 +133,8 @@ export class SuggestFollowUpsTool {
     this.pending = undefined;
     return p;
   }
+
+  hasPending(): boolean {
+    return this.pending !== undefined;
+  }
 }
