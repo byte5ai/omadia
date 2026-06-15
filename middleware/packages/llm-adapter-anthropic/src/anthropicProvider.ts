@@ -340,6 +340,10 @@ export function createAnthropicProvider(
       promptCaching: true,
       forcedToolChoice: true,
       parallelToolCalls: true,
+      // Claude emits natural-language text alongside tool_use in one assistant
+      // message, so sidecar tools (suggest_follow_ups) fire inline — no
+      // post-turn card-router pass needed.
+      interleavedToolUse: true,
     },
 
     async complete(req: LlmRequest): Promise<LlmResponse> {

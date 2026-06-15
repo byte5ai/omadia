@@ -88,6 +88,13 @@ export type {
 } from './captureFilter.js';
 export { createHaikuSignificanceScorer } from './significanceScorer.js';
 export type { HaikuSignificanceScorerOptions } from './significanceScorer.js';
+export { createRecallRelevanceJudge } from './recallRelevanceJudge.js';
+export type {
+  RecallRelevanceJudge,
+  RecallRelevanceJudgeOptions,
+  RecallCandidate,
+  RecallCandidateKind,
+} from './recallRelevanceJudge.js';
 export { CaptureFilteringKnowledgeGraph } from './captureFilteringKnowledgeGraph.js';
 export type { CaptureFilteringKnowledgeGraphOptions } from './captureFilteringKnowledgeGraph.js';
 

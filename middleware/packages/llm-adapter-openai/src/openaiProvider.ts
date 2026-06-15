@@ -108,6 +108,11 @@ const DEFAULT_CAPABILITIES: ProviderCapabilities = {
   promptCaching: false,
   forcedToolChoice: true,
   parallelToolCalls: true,
+  // Chat Completions returns assistant `content` OR `tool_calls` per
+  // completion, never both — so a sidecar tool the model is asked to call
+  // alongside its answer (suggest_follow_ups) won't fire here. The orchestrator
+  // reads this to run a post-turn card-router pass instead.
+  interleavedToolUse: false,
 };
 
 // ---------------------------------------------------------------------------

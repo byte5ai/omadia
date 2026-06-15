@@ -17,9 +17,11 @@ import OpenAI from 'openai';
 export type OpenAiClient = OpenAI;
 
 export interface OpenAiClientOptions {
-  /** May be empty on cold boots before a provider is connected — the SDK
-   *  constructor tolerates it; the first real call fails with an auth error
-   *  (classified non-retryable). */
+  /** Must be non-empty: the OpenAI SDK constructor REJECTS a falsy apiKey
+   *  ("Missing credentials… set OPENAI_API_KEY"). Keyless providers (local
+   *  self-hosted, e.g. Ollama) pass a placeholder via resolveLlmProvider; the
+   *  server ignores the Authorization header. A wrong key fails at first call
+   *  with an auth error (classified non-retryable). */
   readonly apiKey: string;
   /** Override the API base URL for OpenAI-compatible servers (Mistral, Ollama,
    *  vLLM, Azure OpenAI). Omit for api.openai.com. */
