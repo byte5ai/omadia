@@ -27,11 +27,14 @@ export interface ProviderQuirks {
   readonly extraBody?: Record<string, unknown>;
 }
 
-/** A plugin-contributed provider. `wireFormat` is openai-compatible only for now. */
+/** A plugin-contributed provider. `openai-compatible` speaks the OpenAI Chat
+ *  Completions wire format (most providers); `anthropic` speaks the Anthropic
+ *  Messages wire format (Claude, or an Anthropic-compatible gateway). `quirks`
+ *  only apply to the openai-compatible adapter. */
 export interface LlmProviderDescriptor {
   readonly id: string;
   readonly label: string;
-  readonly wireFormat: 'openai-compatible';
+  readonly wireFormat: 'openai-compatible' | 'anthropic';
   /** Default API base URL (e.g. `https://api.minimax.io/v1`). */
   readonly baseURL: string;
   /** Optional config key an operator can set to override `baseURL` per scope. */

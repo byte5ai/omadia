@@ -115,20 +115,22 @@ export function parseLlmProviderManifestBlock(
 ): LlmProviderDescriptor {
   const rec = asRecord(raw);
   const wireFormat = reqString(rec, 'wire_format');
-  if (wireFormat !== 'openai-compatible') {
+  if (wireFormat !== 'openai-compatible' && wireFormat !== 'anthropic') {
     throw new Error(
-      `wire_format '${wireFormat}' unsupported — only 'openai-compatible' today`,
+      `wire_format '${wireFormat}' unsupported — use 'openai-compatible' or 'anthropic'`,
     );
   }
   const modelsRaw = rec['models'];
   if (!Array.isArray(modelsRaw) || modelsRaw.length === 0) {
     throw new Error("'models' must be a non-empty array");
   }
-  const quirks = parseQuirks(rec['quirks']);
+  // Quirks are openai-only; ignore any declared on an anthropic-wire provider.
+  const quirks =
+    wireFormat === 'openai-compatible' ? parseQuirks(rec['quirks']) : undefined;
   return {
     id: reqString(rec, 'id'),
     label: reqString(rec, 'label'),
-    wireFormat: 'openai-compatible',
+    wireFormat,
     baseURL: reqString(rec, 'default_base_url'),
     ...(optString(rec, 'base_url_config_key') !== undefined
       ? { baseUrlConfigKey: optString(rec, 'base_url_config_key') }

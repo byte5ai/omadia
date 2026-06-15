@@ -69,27 +69,35 @@ export async function resolveLlmProvider(
   const apiKey = await readProviderApiKey(opts.getSecret, opts.providerId);
   if (apiKey === undefined) return undefined;
 
-  if (opts.providerId === 'anthropic') {
+  // Resolve the wire format + baseURL once. A plugin-contributed provider (the
+  // catalog) declares its wireFormat; the built-in `anthropic` default keeps the
+  // Anthropic wire format with no descriptor. baseURL precedence: explicit
+  // opts.baseURL (self-hosted gateway / Azure) > catalog descriptor > a well-known
+  // default (knownProviderBaseUrl, e.g. mistral) so the operator never types it.
+  const descriptor = opts.catalog?.get(opts.providerId);
+  const wireFormat =
+    descriptor?.wireFormat ??
+    (opts.providerId === 'anthropic' ? 'anthropic' : 'openai-compatible');
+  const baseURL =
+    opts.baseURL ?? descriptor?.baseURL ?? knownProviderBaseUrl(opts.providerId);
+
+  if (wireFormat === 'anthropic') {
+    // Anthropic Messages wire format (Claude, or an Anthropic-compatible
+    // gateway). No baseURL → SDK default (zero-behavior-change for the built-in
+    // anthropic default). Quirks are openai-only and do not apply here.
     return createAnthropicProvider({
       client: createAnthropicClient({
         apiKey,
         ...(opts.maxRetries !== undefined ? { maxRetries: opts.maxRetries } : {}),
+        ...(baseURL !== undefined ? { baseURL } : {}),
       }),
       ...(opts.log !== undefined ? { log: opts.log } : {}),
     });
   }
 
   // openai, openai-compatible, and any custom compatible id all speak the
-  // OpenAI Chat Completions wire format via the same adapter. A non-openai id
-  // with a baseURL becomes an openai-compatible provider carrying that id.
-  //
-  // baseURL precedence: an explicit opts.baseURL wins (self-hosted gateway /
-  // Azure), then a plugin-contributed catalog descriptor, then a well-known
-  // default (knownProviderBaseUrl, e.g. mistral) so the operator never types the
-  // endpoint. A plugin descriptor also carries the OpenAI-adapter quirks.
-  const descriptor = opts.catalog?.get(opts.providerId);
-  const baseURL =
-    opts.baseURL ?? descriptor?.baseURL ?? knownProviderBaseUrl(opts.providerId);
+  // OpenAI Chat Completions wire format via the same adapter. A plugin descriptor
+  // also carries the OpenAI-adapter quirks.
   const quirks = descriptor?.quirks;
 
   // Guard the footgun: only the literal 'openai' may omit a baseURL (it defaults
