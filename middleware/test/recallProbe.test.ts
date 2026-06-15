@@ -472,18 +472,147 @@ describe('R6 · relevance-filtered plan recall', () => {
     assert.equal(result.recalled.plans[0]!.planId, 'plan:two'); // 3 terms > 1
   });
 
-  it('falls back to recency when the message has no candidate terms', async () => {
+  it('does NOT surface plans when the message has no candidate terms', async () => {
     const kg = new InMemoryKnowledgeGraph();
     await seedVacationPlan(kg);
     const retriever = new ContextRetriever(kg, { teamVisibility: true });
-    // "ok" / punctuation only → no extractable terms → recency fallback.
+    // "ok?" → no extractable terms. The old recency fallback dumped the latest
+    // open plan regardless of topic (the reported bug); the turn-level gate now
+    // suppresses cross-session recall entirely on term-less turns.
     const result = await retriever.assembleForBudget({
       userMessage: 'ok?',
       agentId: 'test-agent',
       sessionScope: 'sess-now',
       userId: 'alice',
     });
-    assert.equal(result.recalled.plans.length, 1);
+    assert.equal(result.recalled.plans.length, 0);
+  });
+});
+
+describe('R7 · turn-level recall gate (plans + processes + insights)', () => {
+  it('a term-less turn surfaces NO processes or insights', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    // A team insight + a strongly-matching process would both surface if the
+    // gate were open — they must NOT on a term-less greeting.
+    const mk = await kg.createMemorableKnowledge({
+      kind: 'reference',
+      summary: 'unrelated prior-session insight',
+      createdBy: 'web:bob',
+      involvedOmadiaUserIds: [],
+      aclOwners: ['bob'],
+    });
+    kg.setEmbedding(mk.memorableKnowledgeNodeId, ALIGNED);
+    const processMemory = stubProcessMemory([
+      {
+        record: {
+          id: 'process:sess-x:deploy',
+          scope: 'sess-x',
+          title: 'Deploy',
+          steps: ['build'],
+          visibility: 'team',
+          version: 1,
+          createdAt: '2026-06-01T09:00:00.000Z',
+          updatedAt: '2026-06-01T09:00:00.000Z',
+        },
+        score: 0.99,
+      },
+    ]);
+    const retriever = new ContextRetriever(
+      kg,
+      { teamVisibility: true },
+      stubEmbedder,
+      undefined,
+      processMemory,
+    );
+    const result = await retriever.assembleForBudget({
+      userMessage: 'danke!',
+      agentId: 'test-agent',
+      sessionScope: 'sess-now',
+      userId: 'alice',
+    });
+    assert.deepEqual(result.recalled, {
+      plans: [],
+      processes: [],
+      insights: [],
+    });
+  });
+
+  it('drops a process scoring below the raised default floor (0.45)', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    const processMemory = stubProcessMemory([
+      {
+        record: {
+          id: 'process:sess-x:weak',
+          scope: 'sess-x',
+          title: 'Weakly related',
+          steps: ['x'],
+          visibility: 'team',
+          version: 1,
+          createdAt: '2026-06-01T09:00:00.000Z',
+          updatedAt: '2026-06-01T09:00:00.000Z',
+        },
+        score: 0.4, // ≥ old 0.3 default, < new 0.45 default
+      },
+    ]);
+    const retriever = new ContextRetriever(
+      kg,
+      { teamVisibility: true },
+      stubEmbedder,
+      undefined,
+      processMemory,
+    );
+    const result = await retriever.assembleForBudget({
+      userMessage: 'how do I run the deployment process?',
+      agentId: 'test-agent',
+      sessionScope: 'sess-now',
+      userId: 'alice',
+    });
+    assert.equal(result.recalled.processes.length, 0);
+  });
+
+  it('recallRequiresTerms=false re-opens the gate for the semantic legs on a term-less turn', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    const mk = await kg.createMemorableKnowledge({
+      kind: 'reference',
+      summary: 'aligned prior-session insight',
+      createdBy: 'web:bob',
+      involvedOmadiaUserIds: [],
+      aclOwners: ['bob'],
+    });
+    kg.setEmbedding(mk.memorableKnowledgeNodeId, ALIGNED);
+    // …also seed an open plan: even with the gate open, plans must NOT return
+    // on a term-less turn — that recency dump is the bug, never restored.
+    await kg.ingestPlan({
+      planId: 'open-plan',
+      scope: 'sess-prior',
+      strategy: 'Urlaubsregeln zusammenfassen',
+      createdAt: '2026-06-01T10:00:00.000Z',
+    });
+    await kg.upsertPlanStep({
+      stepId: 'op-s1',
+      planId: 'open-plan',
+      scope: 'sess-prior',
+      goal: 'Punkte herausarbeiten',
+      order: 0,
+      status: 'pending',
+    });
+    const retriever = new ContextRetriever(
+      kg,
+      { teamVisibility: true, recallRequiresTerms: false },
+      stubEmbedder,
+    );
+    const result = await retriever.assembleForBudget({
+      userMessage: 'ok?',
+      agentId: 'test-agent',
+      sessionScope: 'sess-now',
+      userId: 'alice',
+    });
+    assert.equal(
+      result.recalled.insights.length,
+      1,
+      'gate open → insight surfaces',
+    );
+    assert.equal(result.recalled.plans.length, 0, 'plans never recency-dump');
   });
 });
 

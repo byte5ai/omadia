@@ -58,9 +58,10 @@ export interface ContextRetrieverOptions {
   memoryLimit?: number;
   /** Max excerpt-quotes rendered per surfaced MK. Default 2. */
   excerptsPerMemory?: number;
-  /** Min cosine similarity for both MK and excerpt search. Default 0.5
-   *  — higher than Turn-search (0.3) because curated memory should
-   *  surface only on a strong match. */
+  /** Min cosine similarity for both MK and excerpt search. Default 0.6
+   *  — raised from 0.5 so curated memory surfaces only on a strong match
+   *  (loosely-related insights were leaking into the "earlier sessions"
+   *  panel). Higher than Turn-search (0.3). */
   memoryMinSimilarity?: number;
   /** Score multiplier for memory-origin hits in the assembler. Default
    *  1.2 — curated memory ranks above raw FTS hits at similar cosine. */
@@ -85,8 +86,21 @@ export interface ContextRetrieverOptions {
   processRecallDisabled?: boolean;
   /** Max stored processes surfaced per turn. Default 3. */
   processLimit?: number;
-  /** Min hybrid score for a process to be surfaced. Default 0.3. */
+  /** Min hybrid score for a process to be surfaced. Default 0.45 —
+   *  raised from 0.3 so weakly-related processes no longer surface in the
+   *  "earlier sessions" panel. */
   processMinScore?: number;
+  /**
+   * Turn-level recall gate. When true (default), the three CROSS-SESSION
+   * recall legs (plans / processes / insights) only run when the user
+   * message yields at least one candidate term (`extractCandidateTerms`).
+   * Greetings, acknowledgements and bare continuations ("ok", "weiter",
+   * "danke") carry no term → the legs are skipped entirely and the panel
+   * stays empty, instead of dumping the most-recent-N regardless of topic.
+   * In-session tail / entity / FTS recall is unaffected. Disable with
+   * `kg_recall_require_terms=false` to restore the always-on behaviour.
+   */
+  recallRequiresTerms?: boolean;
 }
 
 export interface ContextBuildInput {
@@ -271,7 +285,7 @@ const DEFAULTS: Required<
   memoryRecallDisabled: false,
   memoryLimit: 3,
   excerptsPerMemory: 2,
-  memoryMinSimilarity: 0.5,
+  memoryMinSimilarity: 0.6,
   memoryBoostFactor: 1.2,
   // Cross-session recall probe defaults.
   teamVisibility: false,
@@ -280,7 +294,8 @@ const DEFAULTS: Required<
   planOpenOnly: true,
   processRecallDisabled: false,
   processLimit: 3,
-  processMinScore: 0.3,
+  processMinScore: 0.45,
+  recallRequiresTerms: true,
 };
 
 // Tiny, language-agnostic stopword list. We keep it short because the real
@@ -465,6 +480,17 @@ export class ContextRetriever {
         : {}),
     };
 
+    // Turn-level recall gate. The three CROSS-SESSION legs only fire when the
+    // message carries a topical anchor; a term-less turn (greeting / ack / bare
+    // continuation) would otherwise surface the most-recent-N plans/processes/
+    // insights regardless of relevance — the "earlier sessions" panel showing
+    // unrelated content. In-session recall (tail / entity / FTS) is unaffected.
+    const runCrossSessionRecall =
+      !this.opts.recallRequiresTerms || extractedTerms.length > 0;
+    const emptyPlans: Promise<RecalledPlan[]> = Promise.resolve([]);
+    const emptyProcesses: Promise<RecalledProcess[]> = Promise.resolve([]);
+    const emptyMemory: Promise<MemoryRecallHit[]> = Promise.resolve([]);
+
     const [
       tail,
       entityHits,
@@ -478,9 +504,9 @@ export class ContextRetriever {
       this.loadEntityHits(buildInput, extractedTerms),
       this.loadFtsHits(buildInput),
       this.loadAgentPriorities(input.agentId),
-      this.loadPlanHits(buildInput),
-      this.loadProcessHits(buildInput),
-      this.loadMemoryHits(buildInput),
+      runCrossSessionRecall ? this.loadPlanHits(buildInput) : emptyPlans,
+      runCrossSessionRecall ? this.loadProcessHits(buildInput) : emptyProcesses,
+      runCrossSessionRecall ? this.loadMemoryHits(buildInput) : emptyMemory,
     ]);
 
     // Build candidate pool. Tail first (chronological → fills first).
@@ -670,6 +696,25 @@ export class ContextRetriever {
     console.error(
       `[context:assembled] scope=${scope} agent=${input.agentId} pool=${String(filtered.length)} included=${String(included.length)} excluded=${String(excluded.length)} compact=${String(compactMode)} plans=${String(recalled.plans.length)} processes=${String(recalled.processes.length)} insights=${String(recalled.insights.length)} tokens=${String(tokensUsed)}/${String(budgetTokens)}`,
     );
+    // Per-item recall trace — lets us see WHY something surfaced (and tune the
+    // floors empirically) instead of guessing from aggregate counts. Only
+    // emitted when the probe actually surfaced something.
+    if (
+      recalled.plans.length > 0 ||
+      recalled.processes.length > 0 ||
+      recalled.insights.length > 0
+    ) {
+      const plansTrace = recalled.plans.map((p) => p.planId).join(',');
+      const procTrace = recalled.processes
+        .map((p) => `${p.id}:${p.score.toFixed(2)}`)
+        .join(',');
+      const insTrace = recalled.insights
+        .map((i) => `${i.kind}:${i.score.toFixed(2)}`)
+        .join(',');
+      console.error(
+        `[context:recall] scope=${scope} gate=${runCrossSessionRecall ? 'open' : 'closed'} terms=[${extractedTerms.join(',')}] plans=[${plansTrace}] processes=[${procTrace}] insights=[${insTrace}]`,
+      );
+    }
 
     return {
       text,
@@ -810,6 +855,12 @@ export class ContextRetriever {
     const terms = extractCandidateTerms(input.userMessage).map((t) =>
       t.toLowerCase(),
     );
+    // Term-less turns (greeting / ack / bare continuation) get NO plan recall:
+    // without a topical anchor the only ranking signal is recency, which dumps
+    // the latest open plans regardless of topic — the reported "earlier
+    // sessions" bug. The turn-level gate in `assembleForBudget` normally
+    // prevents this path being reached; this is the defensive floor.
+    if (terms.length === 0) return [];
     try {
       // Over-fetch a wider candidate window so the relevance filter has
       // something to choose from (recency-only would pick the latest N).
@@ -849,13 +900,10 @@ export class ContextRetriever {
         // Relevance = how many query terms appear in strategy + step goals.
         const haystack =
           `${String(p.props['strategy'] ?? '')} ${goalTexts.join(' ')}`.toLowerCase();
-        const score =
-          terms.length === 0
-            ? 0
-            : terms.filter((t) => haystack.includes(t)).length;
-        // Drop topically-unrelated plans. With no query terms (bare
-        // continuation) every plan scores 0 → keep the recency fallback.
-        if (terms.length > 0 && score === 0) continue;
+        const score = terms.filter((t) => haystack.includes(t)).length;
+        // Drop topically-unrelated plans (no shared term). `terms` is
+        // guaranteed non-empty here (early return above).
+        if (score === 0) continue;
         scored.push({
           hit: {
             planId: p.id,

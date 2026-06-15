@@ -221,7 +221,7 @@ export async function activate(
   );
   const memoryMinSimilarity = parseNumberOrDefault(
     ctx.config.get<unknown>('kg_acl_memory_recall_min_similarity'),
-    0.5,
+    0.6,
   );
   const memoryBoostFactor = parseNumberOrDefault(
     ctx.config.get<unknown>('kg_acl_memory_recall_boost_factor'),
@@ -264,6 +264,25 @@ export async function activate(
     ctx.config.get<unknown>('kg_recall_process_limit'),
     3,
   );
+  // Min hybrid score for a stored process to surface. Raised from the old
+  // hardcoded 0.3 → 0.45 so weakly-related processes stop appearing in the
+  // "earlier sessions" panel. Tune via kg_recall_process_min_score.
+  const processMinScore = parseNumberOrDefault(
+    ctx.config.get<unknown>('kg_recall_process_min_score'),
+    0.45,
+  );
+  // Turn-level recall gate (default ON): cross-session plan/process/insight
+  // recall only fires when the message carries a candidate term, so greetings
+  // and bare continuations no longer surface unrelated prior-session context.
+  // Set kg_recall_require_terms=false (or KG_RECALL_REQUIRE_TERMS=false) to
+  // restore the always-on behaviour.
+  const recallRequiresTermsRaw =
+    ctx.config.get<unknown>('kg_recall_require_terms') ??
+    process.env['KG_RECALL_REQUIRE_TERMS'];
+  const recallRequiresTerms =
+    typeof recallRequiresTermsRaw === 'string'
+      ? recallRequiresTermsRaw.toLowerCase() !== 'false'
+      : recallRequiresTermsRaw !== false;
 
   // Cost telemetry: wire the recorder to the shared graph pool and wrap the
   // client so the background Haiku scorers/extractors record their usage.
@@ -415,13 +434,15 @@ export async function activate(
       planLimit,
       processRecallDisabled,
       processLimit,
+      processMinScore,
+      recallRequiresTerms,
     },
     embeddingClient,
     agentPriorities,
     processMemory,
   );
   ctx.log(
-    `[harness-orchestrator-extras] context-assembler ready (budget=${String(contextDefaultBudgetTokens)}tk, chars/tk=${String(contextCharsPerToken)}, manual-boost=${contextManualBoostFactor.toFixed(2)}, compact>${String(contextCompactModeThreshold)}, agentPriorities=${agentPriorities ? 'on' : 'off'}, memoryRecall=${embeddingClient && !memoryRecallDisabled ? `on(limit=${String(memoryLimit)},excerpts=${String(memoryExcerptsPerMemory)},minSim=${memoryMinSimilarity.toFixed(2)})` : 'off'}, teamVisibility=${teamVisibility ? 'on' : 'off'}, planRecall=${planRecallDisabled ? 'off' : `on(limit=${String(planLimit)})`}, processRecall=${processMemory && !processRecallDisabled ? `on(limit=${String(processLimit)})` : 'off'})`,
+    `[harness-orchestrator-extras] context-assembler ready (budget=${String(contextDefaultBudgetTokens)}tk, chars/tk=${String(contextCharsPerToken)}, manual-boost=${contextManualBoostFactor.toFixed(2)}, compact>${String(contextCompactModeThreshold)}, agentPriorities=${agentPriorities ? 'on' : 'off'}, memoryRecall=${embeddingClient && !memoryRecallDisabled ? `on(limit=${String(memoryLimit)},excerpts=${String(memoryExcerptsPerMemory)},minSim=${memoryMinSimilarity.toFixed(2)})` : 'off'}, teamVisibility=${teamVisibility ? 'on' : 'off'}, planRecall=${planRecallDisabled ? 'off' : `on(limit=${String(planLimit)})`}, processRecall=${processMemory && !processRecallDisabled ? `on(limit=${String(processLimit)},minScore=${processMinScore.toFixed(2)})` : 'off'}, recallGate=${recallRequiresTerms ? 'require-terms' : 'off'})`,
   );
   const disposeContext = ctx.services.provide(
     CONTEXT_RETRIEVER_SERVICE,
