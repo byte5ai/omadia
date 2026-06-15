@@ -25,6 +25,9 @@ export const BUILTIN_LLM_PROVIDERS: ReadonlyArray<LlmProviderDescriptor> = [
     label: 'Anthropic',
     wireFormat: 'anthropic',
     baseURL: 'https://api.anthropic.com',
+    // Preserves the previous hard-coded behaviour (`provider !== 'anthropic'`):
+    // the AVV third-party disclosure is suppressed for Anthropic.
+    policy: { requiresAvvDisclosure: false },
     models: [
       {
         id: 'anthropic:claude-opus-4-8',
@@ -118,6 +121,8 @@ export const BUILTIN_LLM_PROVIDERS: ReadonlyArray<LlmProviderDescriptor> = [
     label: 'Mistral',
     wireFormat: 'openai-compatible',
     baseURL: 'https://api.mistral.ai/v1',
+    // EU-hosted (France) — surfaces the no-third-country-transfer note.
+    policy: { euHosted: true },
     // No quirk: Mistral's OpenAI-compatible layer uses the legacy `max_tokens`,
     // which is exactly what the adapter emits for a non-openai id by default.
     models: [

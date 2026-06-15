@@ -1509,7 +1509,7 @@
       "modelLabel": "Modell",
       "pickModel": "Modell wählen …",
       "avvDisclosure": "Wird dieser Agent auf {provider} umgestellt, werden seine Prompt-Daten an einen Drittanbieter (Auftragsverarbeiter) übermittelt. Stelle sicher, dass ein Auftragsverarbeitungsvertrag (DSGVO Art. 28) vorliegt, bevor du ihn für personenbezogene Daten nutzt.",
-      "euHostedNote": "Mistral wird in der EU (Frankreich) gehostet. Ein Auftragsverarbeitungsvertrag nach DSGVO Art. 28 ist weiterhin erforderlich, aber es findet keine Drittlandübermittlung statt — anders als bei US-Anbietern."
+      "euHostedNote": "{provider} wird in der EU gehostet. Ein Auftragsverarbeitungsvertrag nach DSGVO Art. 28 ist weiterhin erforderlich, aber es findet keine Drittlandübermittlung statt — anders als bei US-Anbietern."
     },
     "status": {
       "saving": "speichert …",

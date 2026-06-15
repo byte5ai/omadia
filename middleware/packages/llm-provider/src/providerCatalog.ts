@@ -40,7 +40,22 @@ export interface LlmProviderDescriptor {
   /** Optional config key an operator can set to override `baseURL` per scope. */
   readonly baseUrlConfigKey?: string;
   readonly quirks?: ProviderQuirks;
+  /** Operator-UI compliance hints (not LLM behaviour) surfaced on the admin
+   *  providers page so the view stays data-driven instead of hard-coding ids. */
+  readonly policy?: ProviderPolicy;
   readonly models: ReadonlyArray<ModelInfo>;
+}
+
+/** Provider data-protection hints for the operator UI. Defaults are the safe
+ *  conservative choice: a provider with no policy is treated as a third-party,
+ *  non-EU processor (disclosure shown, no EU-hosting note). */
+export interface ProviderPolicy {
+  /** Show the AVV / Art. 28 DSGVO third-party-processing disclosure before
+   *  routing an agent to this provider. Default (omitted) = true. */
+  readonly requiresAvvDisclosure?: boolean;
+  /** Provider is hosted in the EU (no third-country transfer) — surfaces a note.
+   *  Default (omitted) = false. */
+  readonly euHosted?: boolean;
 }
 
 export class LlmProviderCatalog {

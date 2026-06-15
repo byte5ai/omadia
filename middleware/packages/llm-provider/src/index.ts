@@ -61,6 +61,7 @@ export {
 export {
   LlmProviderCatalog,
   type LlmProviderDescriptor,
+  type ProviderPolicy,
   type ProviderQuirks,
 } from './providerCatalog.js';
 

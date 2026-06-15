@@ -225,9 +225,10 @@ function AssignmentRow({
     providers.find((p) => p.id === a.provider) ?? providers[0];
   const models = selectedProvider?.models ?? [];
   const disabled = !a.installed;
-  // The disclosure is relevant whenever the plugin is (or would be) on a
-  // non-Anthropic provider — i.e. data leaves the default in-house path.
-  const showDisclosure = a.provider !== 'anthropic';
+  // Data-driven: surface the AVV / Art. 28 third-party disclosure unless the
+  // provider opts out via its policy (the server defaults unknown providers to
+  // requiring it). Replaces the previous hard-coded `!== 'anthropic'` check.
+  const showDisclosure = selectedProvider?.requiresAvvDisclosure ?? true;
 
   const onProvider = (providerId: string): void => {
     const next = providers.find((p) => p.id === providerId);
@@ -298,9 +299,11 @@ function AssignmentRow({
           {t('assignments.avvDisclosure', { provider: selectedProvider?.label ?? a.provider })}
         </p>
       )}
-      {a.provider === 'mistral' && (
+      {selectedProvider?.euHosted && (
         <p className="rounded-md border border-[color:var(--border)] bg-[color:var(--border)]/10 px-3 py-2 text-[12px] leading-[1.5] text-[color:var(--fg-muted)]">
-          {t('assignments.euHostedNote')}
+          {t('assignments.euHostedNote', {
+            provider: selectedProvider?.label ?? a.provider,
+          })}
         </p>
       )}
       {error && <p className="text-[12px] text-[color:var(--danger)]">{error}</p>}
