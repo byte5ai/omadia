@@ -154,6 +154,14 @@ export interface PluginContext {
    *  a Hub plugin may land on an older core that lacks it. */
   readonly flows?: FlowsAccessor;
 
+  /** Report an operator-facing action status (e.g. "not connected yet"). The
+   *  kernel holds the latest value per plugin and the admin UI renders it as a
+   *  badge on the plugin card + a banner on the detail page that clears when
+   *  the plugin reports `ok`. Always present, ungated — a plugin reports only
+   *  its OWN status. In-memory: re-report on `activate()` so it self-heals
+   *  after a restart. */
+  readonly status: StatusAccessor;
+
   log(...args: unknown[]): void;
 }
 
@@ -545,6 +553,36 @@ export interface FlowsAccessor {
    * `aud`, `iat`, `exp`) on success.
    */
   verifyState(token: string): Promise<Record<string, unknown>>;
+}
+
+/**
+ * Normalized, operator-facing health of a plugin. `ok` = nothing to do;
+ * `needs_action` = a required setup/connection step is pending (rendered as an
+ * amber badge + banner with a call-to-action toward the plugin's admin UI);
+ * `error` = misconfigured/failing (red). The kernel maps these to the UI;
+ * `title`/`detail` let the plugin phrase the specifics ("Nicht verbunden" /
+ * "Erstelle die GitHub App in der Admin-UI").
+ */
+export type PluginActionState = 'ok' | 'needs_action' | 'error';
+
+export interface PluginActionStatus {
+  readonly state: PluginActionState;
+  /** Short label for the badge/banner (e.g. "Nicht verbunden"). */
+  readonly title?: string;
+  /** One-line detail / next step (e.g. "Verbindung in der Admin-UI herstellen"). */
+  readonly detail?: string;
+}
+
+/**
+ * Push-based status reporter. A plugin calls `report(...)` whenever its
+ * operator-facing state changes (typically from its discovery/health check),
+ * and `clear()` once everything is fine. The kernel keeps only the latest
+ * value per plugin; there is no history. Reporting another plugin's status is
+ * impossible — the accessor is bound to the calling plugin's id.
+ */
+export interface StatusAccessor {
+  report(status: PluginActionStatus): void;
+  clear(): void;
 }
 
 /**

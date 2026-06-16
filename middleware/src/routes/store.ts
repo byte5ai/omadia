@@ -10,6 +10,7 @@ import type {
 } from '../api/admin-v1.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
+import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
 import type {
   RegistryClient,
   ResolvedRegistryPlugin,
@@ -23,6 +24,19 @@ interface StoreDeps {
    *  operator can install from the hub. A local plugin of the same id wins;
    *  a registry fetch failure never breaks the local listing. */
   client?: RegistryClient;
+  /** Spec 004 — read-only access to plugins' pushed `ctx.status` so the list
+   *  and detail responses can carry `action_status` for the badge/banner. */
+  pluginStatusRegistry?: PluginStatusRegistry;
+}
+
+/** Overlay the live `ctx.status` value (if any) onto a plugin record. Returns
+ *  the input unchanged when no status is reported (the common case). */
+function withActionStatus(
+  plugin: Plugin,
+  statusRegistry: PluginStatusRegistry | undefined,
+): Plugin {
+  const status = statusRegistry?.get(plugin.id);
+  return status ? { ...plugin, action_status: status } : plugin;
 }
 
 /**
@@ -105,7 +119,7 @@ export function createStoreRouter(deps: StoreDeps): Router {
       }
 
       const body: StoreListResponse = {
-        items,
+        items: items.map((p) => withActionStatus(p, deps.pluginStatusRegistry)),
         next_cursor: null,
         total: items.length,
       };
@@ -179,6 +193,7 @@ export function createStoreRouter(deps: StoreDeps): Router {
         }
       }
       const installAvailable = plugin.install_state === 'available';
+      plugin = withActionStatus(plugin, deps.pluginStatusRegistry);
       const body: StoreGetResponse = {
         plugin,
         manifest: entry.manifest,

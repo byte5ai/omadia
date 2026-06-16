@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { ArrowUpRight, RefreshCw, Store } from 'lucide-react';
+import { AlertTriangle, ArrowUpRight, RefreshCw, Store } from 'lucide-react';
 
 import type { Plugin } from '../../_lib/storeTypes';
 import { Chip } from './Chip';
@@ -75,6 +75,23 @@ export function PluginCard({ plugin }: PluginCardProps): React.ReactElement {
           state={hasUpdate ? 'installed' : plugin.install_state}
           isLegacy={isLegacy}
         />
+        {/* Spec 004 — operator-action signal pushed by the active plugin via
+            ctx.status. Persists across visits and clears once the plugin
+            reports `ok`. Amber = needs_action, red = error. */}
+        {plugin.action_status &&
+        plugin.action_status.state !== 'ok' ? (
+          <span
+            className={
+              plugin.action_status.state === 'error'
+                ? 'inline-flex items-center gap-1 rounded-full bg-[color:var(--danger)]/12 px-2.5 py-0.5 text-[11px] font-semibold text-[color:var(--danger)]'
+                : 'inline-flex items-center gap-1 rounded-full bg-[color:var(--warning)]/12 px-2.5 py-0.5 text-[11px] font-semibold text-[color:var(--warning)]'
+            }
+            title={plugin.action_status.detail ?? undefined}
+          >
+            <AlertTriangle className="size-3" aria-hidden />
+            {plugin.action_status.title ?? 'Aktion erforderlich'}
+          </span>
+        ) : null}
         {/* Origin marker — present only on remote-registry (Hub) entries that
             are not yet ingested locally. Lets the Hub view distinguish a
             hub-sourced plugin from a local catalog package at a glance. */}

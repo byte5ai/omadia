@@ -576,7 +576,13 @@ function InstallDrawer({
           ? phase.job
           : null;
 
-  const fields = jobFromPhase?.setup_schema?.fields ?? [];
+  // `install_hidden` fields (flow-managed credentials, e.g. a key populated by
+  // a one-click OAuth/App flow) are omitted from the install flyout to keep
+  // first-time setup minimal. They stay editable later via the store-detail
+  // setup editor.
+  const fields = (jobFromPhase?.setup_schema?.fields ?? []).filter(
+    (f) => !f.install_hidden,
+  );
   const submitting = phase.kind === 'submitting';
 
   return (

@@ -49,6 +49,13 @@ middleware/fly-memory-pull
 middleware/packages/*/dist
 middleware/packages/*/tsconfig.tsbuildinfo
 middleware/packages/*/node_modules
+# Hub-distributed plugins (gitignored): these ship via the Hub / zip-upload,
+# never baked into the core image. Without this their source is copied and the
+# catalog registers them as BUILT-IN entries — but the middleware build chain
+# never compiles their dist/, so activation fails ("entry file not readable")
+# and the operator upload path 409s on a built-in id conflict. Keep them out.
+middleware/packages/integration-github
+middleware/packages/agent-github
 middleware/scripts
 # Re-include the build-asset copier — it runs as part of `npm run build`
 # inside the Docker builder stage.

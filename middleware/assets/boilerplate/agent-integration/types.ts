@@ -104,6 +104,12 @@ export interface PluginContext {
    *  core may not provide it. */
   readonly flows?: FlowsAccessor;
 
+  /** Spec 004 — report an operator-facing action status (e.g. "not connected
+   *  yet"). The admin UI renders it as a badge on the plugin card + a banner
+   *  on the detail page, clearing when the plugin reports `ok`. Always present,
+   *  ungated; re-report on `activate()` (in-memory, self-heals on restart). */
+  readonly status: StatusAccessor;
+
   /** Per-plugin memory store, scoped to `/memories/agents/<agentId>/`.
    *  All paths are RELATIVE — `notes.md` resolves to
    *  `/memories/agents/<agentId>/notes.md` under the hood. Plugins cannot
@@ -178,6 +184,20 @@ export interface FlowsAccessor {
   /** Verify a returned state token; throws on bad signature, wrong audience,
    *  or expiry. Returns the decoded claims. */
   verifyState(token: string): Promise<Record<string, unknown>>;
+}
+
+/** Operator-facing plugin health (mirror of `@omadia/plugin-api`). */
+export type PluginActionState = 'ok' | 'needs_action' | 'error';
+
+export interface PluginActionStatus {
+  readonly state: PluginActionState;
+  readonly title?: string;
+  readonly detail?: string;
+}
+
+export interface StatusAccessor {
+  report(status: PluginActionStatus): void;
+  clear(): void;
 }
 
 /**

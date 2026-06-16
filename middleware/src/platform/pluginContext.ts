@@ -33,10 +33,12 @@ import {
   type NotificationsAccessor,
   type PluginContext,
   type RoutesAccessor,
+  type PluginActionStatus,
   type ScratchDirAccessor,
   type SecretsAccessor,
   type SecretsReadWriteAccessor,
   type ServicesAccessor,
+  type StatusAccessor,
   type SubAgentAccessor,
   type UiRoutesAccessor,
   type ToolsAccessor,
@@ -64,6 +66,7 @@ import type { NotificationRouter } from './notificationRouter.js';
 import type { UiRouteCatalog } from './uiRouteCatalog.js';
 import { createHttpAccessor, isAuditMode, type AuditMode } from './httpAccessor.js';
 import { signFlowState, verifyFlowState } from './flowState.js';
+import type { PluginStatusRegistry } from './pluginStatusRegistry.js';
 import { createMemoryAccessor } from './memoryAccessor.js';
 import { SCRATCH_DIR } from './paths.js';
 import type { ServiceRegistry } from './serviceRegistry.js';
@@ -137,6 +140,9 @@ export interface CreatePluginContextOptions {
    *  against (`FLOW_PUBLIC_BASE_URL`, defaulting to `PUBLIC_BASE_URL`). No
    *  trailing slash. Required alongside `flowSigningKey` for `ctx.flows`. */
   flowPublicBaseUrl?: string;
+  /** Spec 004 — kernel store backing `ctx.status`. Optional: when absent the
+   *  accessor is a no-op (test/migration contexts don't surface status). */
+  pluginStatusRegistry?: PluginStatusRegistry;
   logger?: (...args: unknown[]) => void;
 }
 
@@ -483,6 +489,35 @@ export function createPluginContext(
         }
       : undefined;
 
+  // Status accessor (spec 004): the plugin pushes its operator-facing action
+  // status to the kernel registry. Self-scoped to this plugin id — a plugin
+  // cannot report another's status. No-op when no registry was threaded
+  // (migration/test contexts). `clear()` and `report({state:'ok'})` both leave
+  // no badge; the value is normalized to guard against malformed input.
+  const statusRegistry = opts.pluginStatusRegistry;
+  const status: StatusAccessor = {
+    report(next) {
+      if (!statusRegistry) return;
+      const state =
+        next?.state === 'ok' || next?.state === 'needs_action' || next?.state === 'error'
+          ? next.state
+          : 'needs_action';
+      const normalized: PluginActionStatus = {
+        state,
+        ...(typeof next?.title === 'string' ? { title: next.title } : {}),
+        ...(typeof next?.detail === 'string' ? { detail: next.detail } : {}),
+      };
+      if (state === 'ok') {
+        statusRegistry.clear(agentId);
+        return;
+      }
+      statusRegistry.set(agentId, normalized);
+    },
+    clear() {
+      statusRegistry?.clear(agentId);
+    },
+  };
+
   // Jobs accessor: hands programmatic registrations to the kernel scheduler,
   // which keys them by (agentId, name). The runtime owns bulk teardown via
   // scheduler.stopForPlugin(agentId) on deactivate, so a leaked dispose from
@@ -563,6 +598,7 @@ export function createPluginContext(
     ...(knowledgeGraph ? { knowledgeGraph } : {}),
     ...(llm ? { llm } : {}),
     ...(flows ? { flows } : {}),
+    status,
     log,
   };
 }

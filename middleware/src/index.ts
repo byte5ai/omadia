@@ -199,6 +199,7 @@ import { PromptContributionRegistry } from './platform/promptContributionRegistr
 import { installProcessGuards } from './platform/processGuards.js';
 import { PluginRouteRegistry } from './platform/pluginRouteRegistry.js';
 import { NotificationRouter } from './platform/notificationRouter.js';
+import { PluginStatusRegistry } from './platform/pluginStatusRegistry.js';
 import { UiRouteCatalog } from './platform/uiRouteCatalog.js';
 import { CanvasOutputRegistry } from './platform/canvasOutputRegistry.js';
 import { DeterministicActionRegistry } from './platform/deterministicActionRegistry.js';
@@ -341,6 +342,10 @@ async function main(): Promise<void> {
   // 'uiRouteCatalog')`. Published BEFORE any plugin activates so the
   // service is available the moment a consumer asks for it.
   serviceRegistry.provide('uiRouteCatalog', uiRouteCatalog);
+
+  // Spec 004 — kernel store of plugin action statuses (ctx.status). Read by the
+  // admin API to surface "Aktion erforderlich" badges/banners in the store UI.
+  const pluginStatusRegistry = new PluginStatusRegistry();
 
   // Shared Anthropic client used by sub-agents (LocalSubAgent inner Claude
   // calls) and the Teams channel (anthropicClient dep). The orchestrator-
@@ -687,6 +692,7 @@ async function main(): Promise<void> {
     jobScheduler,
     flowSigningKey: sessionSigningKey,
     flowPublicBaseUrl,
+    pluginStatusRegistry,
     canvasOutputRegistry,
     deterministicActionRegistry,
     log: (...a) => console.log(...a),
@@ -757,6 +763,7 @@ async function main(): Promise<void> {
     jobScheduler,
     flowSigningKey: sessionSigningKey,
     flowPublicBaseUrl,
+    pluginStatusRegistry,
     selfExtendRegistry,
     extensionStore,
     // When an integration plugin activates — at boot OR via a live hot-
@@ -2226,6 +2233,7 @@ async function main(): Promise<void> {
       catalog: pluginCatalog,
       registry: installedRegistry,
       client: registryClient,
+      pluginStatusRegistry,
     }),
   );
   console.log('[middleware] plugin store endpoints ready at /api/v1/store/plugins (auth: required)');
@@ -3277,6 +3285,7 @@ async function main(): Promise<void> {
     jobScheduler,
     flowSigningKey: sessionSigningKey,
     flowPublicBaseUrl,
+    pluginStatusRegistry,
     resolver: channelPluginResolver,
     coreApi: channelCoreApi,
     routes: routeRegistry,

@@ -28,6 +28,7 @@ import {
   AdminUiProvider,
   AdminUiToggle,
 } from '../../_components/store/AdminUiPanel';
+import { ActionStatusBanner } from '../../_components/store/ActionStatusBanner';
 import { Chip } from '../../_components/store/Chip';
 import { AuditModeSwitch } from '../../_components/store/AuditModeSwitch';
 import { CredentialsEditor } from '../../_components/store/CredentialsEditor';
@@ -138,6 +139,12 @@ export default async function PluginDetailPage({
           </div>
         </div>
       </header>
+
+      {/* Spec 004 — operator-action banner (auto-clears once the plugin reports
+          ok, e.g. after connecting via the admin UI below). */}
+      <div className="mt-8">
+        <ActionStatusBanner pluginId={plugin.id} initial={plugin.action_status} />
+      </div>
 
       {/* Two-column body */}
       <AdminUiProvider>
