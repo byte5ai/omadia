@@ -24,6 +24,7 @@ import {
   parseRefreshSource,
 } from './refreshRecipes.js';
 import { synthesizeSurfaceEvents } from './surfaceSynthesis.js';
+import { resolveReferenceLumen } from './referenceLumens.js';
 
 /**
  * @omadia/ui-orchestrator — Omadia UI Tier-2 orchestrator (PR-9b-2).
@@ -319,6 +320,35 @@ export async function handleCanvasPublishChoice(input: unknown): Promise<string>
   });
 }
 
+// omadia-canvas-protocol/1.1 — Lumens (Live Interactivity) producer tool.
+export const CANVAS_LUMEN_TOOL = 'canvas_publish_lumen';
+
+/** NativeToolHandler for {@link CANVAS_LUMEN_TOOL}: emits a full-tree
+ *  `_pendingCanvasTree` snapshot whose content is a vetted reference Lumen
+ *  (chosen by `variant`: arcade game · interactive map · defrag animation). The
+ *  synthesis layer turns it into a `surface_snapshot`; the Tier-1 client
+ *  validates and runs it (the interpreter ships in the host app). */
+export async function handleCanvasPublishLumen(input: unknown): Promise<string> {
+  const args = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>;
+  const ref = resolveReferenceLumen(args['variant']);
+  const title =
+    typeof args['title'] === 'string' && args['title'].trim().length > 0 ? args['title'].trim() : ref.title;
+  const tree = {
+    type: 'container',
+    id: 'lumen-demo',
+    layout: 'stack',
+    title,
+    children: [
+      { type: 'heading', id: 'lumen-demo-h', level: 2, content: title },
+      { type: 'text', id: 'lumen-demo-hint', content: ref.hint },
+      ref.lumen,
+    ],
+  };
+  // The sentinel shape parseToolEmittedCanvasTree expects is
+  // { _pendingCanvasTree: { tree } } — the tree wrapped under a `tree` key.
+  return JSON.stringify({ _pendingCanvasTree: { tree } });
+}
+
 export async function activate(
   ctx: PluginContext,
 ): Promise<UiOrchestratorPluginHandle> {
@@ -335,6 +365,7 @@ export async function activate(
   const configuredCanvasOutputTools: ReadonlySet<string> = new Set([
     CANVAS_PUBLISH_TOOL,
     CANVAS_CHOICE_TOOL,
+    CANVAS_LUMEN_TOOL,
     ...(ctx.config?.get<string>('canvas_output_tools') ?? '')
       .split(',')
       .map((s) => s.trim())
@@ -364,12 +395,16 @@ export async function activate(
   // here still goes through the agent loop. Operator override via the
   // `deterministic_action_tools` config field; `deterministicActionRegistry`
   // is the forward-compat manifest-autodiscovery hook (absent today = no-op).
-  const configuredDeterministicActionTools: ReadonlySet<string> = new Set(
-    (ctx.config?.get<string>('deterministic_action_tools') ?? '')
+  const configuredDeterministicActionTools: ReadonlySet<string> = new Set([
+    // A Lumen publish is fully plugin-determined (no data/LLM needed) — when a
+    // canvas action names it, dispatch it DIRECTLY so a click renders the Lumen
+    // with no model turn (also sidesteps LLM tool-call reliability).
+    CANVAS_LUMEN_TOOL,
+    ...(ctx.config?.get<string>('deterministic_action_tools') ?? '')
       .split(',')
       .map((s) => s.trim())
       .filter((s) => s.length > 0),
-  );
+  ]);
   const deterministicActionTools: { has(name: string): boolean } = {
     has: (name: string): boolean =>
       configuredDeterministicActionTools.has(name) ||
@@ -554,8 +589,40 @@ export async function activate(
     },
     handleCanvasPublishChoice,
   );
+  const disposeLumenTool: (() => void) | undefined = toolsAccessor?.register(
+    {
+      name: CANVAS_LUMEN_TOOL,
+      description:
+        'Render an interactive LUMEN (Live Interactivity, omadia-canvas-protocol/1.1) on the ' +
+        'Omadia UI canvas: a small live mini-app — a game, an animated/interactive visualization, ' +
+        'or a "live artifact" — that runs Tier-1-fast on the client (60fps, no per-frame server ' +
+        'round-trip), as declarative data run by a shipped deterministic interpreter (no arbitrary ' +
+        'code). Call this when the user asks to SEE or BUILD something interactive/animated/playable ' +
+        'on the canvas, a mini-game, or "show me what Lumens / live artifacts can do". Pick the ' +
+        '`variant` that best fits the request: "arcade" (a playable bouncing-ball game — tick loop + ' +
+        'tap/key events), "map" (an interactive map — tap markers to select, +/- to zoom), or ' +
+        '"defrag" (an animated data visualisation — blocks compacting each tick). The interactive ' +
+        'element renders directly into the canvas; do not also describe it as a static table.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          variant: {
+            type: 'string',
+            enum: ['arcade', 'map', 'defrag'],
+            description:
+              'which reference Lumen to instantiate: arcade (game), map (interactive selection + zoom), defrag (tick animation). Defaults to arcade.',
+          },
+          title: {
+            type: 'string',
+            description: 'optional heading shown above the Lumen, in the user’s language',
+          },
+        },
+      },
+    },
+    handleCanvasPublishLumen,
+  );
   ctx.log(
-    `[omadia-ui-orchestrator] producer tools ${CANVAS_PUBLISH_TOOL}+${CANVAS_CHOICE_TOOL} ${
+    `[omadia-ui-orchestrator] producer tools ${CANVAS_PUBLISH_TOOL}+${CANVAS_CHOICE_TOOL}+${CANVAS_LUMEN_TOOL} ${
       disposeTool ? 'registered' : 'NOT registered (no tools accessor in this context)'
     }`,
   );
@@ -1103,6 +1170,7 @@ export async function activate(
       ctx.log('deactivating omadia-ui-orchestrator');
       disposeTool?.();
       disposeChoiceTool?.();
+      disposeLumenTool?.();
       dispose();
     },
   };

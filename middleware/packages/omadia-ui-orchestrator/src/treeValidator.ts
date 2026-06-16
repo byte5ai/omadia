@@ -30,6 +30,12 @@ for (const file of [
   'handshake.schema.json',
   'sentinels.schema.json',
   'surface-events.schema.json',
+  // omadia-canvas-protocol/1.1 — Lumens (Live Interactivity), additive.
+  'lx-ast.schema.json',
+  'scene.schema.json',
+  'ports-wires.schema.json',
+  'capability-manifest.schema.json',
+  'lumen.schema.json',
 ]) {
   ajv.addSchema(loadSchema(file));
 }
@@ -42,7 +48,26 @@ function mustGetSchema(id: string): ValidateFunction {
   return validate as ValidateFunction;
 }
 
-const treeValidate = mustGetSchema('https://omadia.ai/protocol/1.0/canvas-tree.schema.json');
+// omadia-canvas-protocol/1.1 tree validator: the 1.0 canvas-tree with `scene`
+// and `lumen` added to the `primitive` oneOf. Additive — every 1.0 tree still
+// validates; 1.1 nodes are now accepted wherever a primitive is allowed. Built
+// by cloning the 1.0 schema so the canonical file stays untouched.
+const tree11Id = (() => {
+  const base = loadSchema('canvas-tree.schema.json') as {
+    $id: string;
+    $defs: { primitive: { oneOf: { $ref: string }[] } };
+  };
+  const clone = JSON.parse(JSON.stringify(base)) as typeof base;
+  clone.$id = 'https://omadia.ai/protocol/1.1/canvas-tree.schema.json';
+  clone.$defs.primitive.oneOf.push(
+    { $ref: 'https://omadia.ai/protocol/1.1/scene.schema.json' },
+    { $ref: 'https://omadia.ai/protocol/1.1/lumen.schema.json' },
+  );
+  ajv.addSchema(clone);
+  return clone.$id;
+})();
+
+const treeValidate = mustGetSchema(tree11Id);
 
 export interface TreeValidationResult {
   ok: boolean;
