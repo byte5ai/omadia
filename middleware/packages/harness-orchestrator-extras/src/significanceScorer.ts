@@ -44,10 +44,18 @@ Definitions:
                 0.0 = trivial chit-chat, weather, "thanks", repeated greetings.
                 0.5 = useful answer, but no new fact about the user/world.
                 1.0 = high-signal: a decision, deadline, name, address, password
-                      hint, customer-specific quirk, recurring pattern.
+                      hint, customer-specific quirk, recurring pattern, OR
+                      **learned data-model / schema / domain conventions**
+                      (which table/entity holds which data, field names and
+                      meaning, entity-set names, how to filter/join). This
+                      reusable structure must survive across sessions so the
+                      agent never re-discovers it — score it HIGH (>=0.85).
+                      (A time-bound data snapshot like "29 courses next week"
+                      is mid-signal ~0.5, NOT high.)
   entry_type
     "memory"  — A general fact, preference, or note (default).
-    "process" — A repeatable how-to / SOP / workflow description.
+    "process" — A repeatable how-to / SOP / workflow description, OR a stable
+                 data-model / schema / convention (entities, fields, lookups).
     "task"    — Something the user explicitly asked to be done or
                  tracked ("remind me", "add to my list", "follow up").
 

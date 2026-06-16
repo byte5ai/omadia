@@ -73,7 +73,18 @@ Definitions:
     "decision"   — A choice was made or recommended ("we will use X", "go with Y").
     "insight"    — A non-obvious finding or learning ("turns out the API caps at 100/min").
     "preference" — A stated user/team preference ("always reply in German first").
-    "reference"  — Stable how-to / SOP / lookup material ("to deploy: run X then Y").
+    "reference"  — Stable, reusable lookup material that does NOT change per
+                   request: how-to / SOP ("to deploy: run X then Y"), AND —
+                   importantly — **data-model / schema / domain conventions**:
+                   which table or entity holds which data, field names and
+                   their meaning, entity-set names, how to filter/join, naming
+                   rules. E.g. "Courses live in the Dynamics table ud_tutorial
+                   (entitySet ud_tutorials); fields ud_name, ud_coursenumber,
+                   ud_startdatetime; bookings in ud_booking". This kind of
+                   learned structure is long-lived knowledge the agent must NOT
+                   re-discover every session — classify it as "reference".
+                   (A time-bound DATA snapshot — "29 courses next week" — is an
+                   "insight", NOT a reference.)
   summary  — Stand-alone sentence(s) the user could read in /memories years later.
               Do NOT start with "The user asked about…" — describe the answer's substance.
   rationale — Why it matters / preconditions / caveats. Use null when redundant with summary.
