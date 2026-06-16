@@ -55,7 +55,10 @@ jobs:
           load: true
           tags: omadia-middleware:ci-${{ github.sha }}
           cache-from: type=gha,scope=middleware
-          cache-to: type=gha,scope=middleware,mode=max
+          # ignore-error: a GitHub Actions cache-export hiccup ("error writing
+          # layer blob: not_found") must not fail an otherwise-successful image
+          # build. The cache is an optimization, not a build gate.
+          cache-to: type=gha,scope=middleware,mode=max,ignore-error=true
 
       - name: Image size + layer summary
         run: |
@@ -86,7 +89,8 @@ jobs:
           build-args: |
             MIDDLEWARE_URL=http://middleware:8080
           cache-from: type=gha,scope=web-ui
-          cache-to: type=gha,scope=web-ui,mode=max
+          # See the middleware job: a cache-export error is non-fatal.
+          cache-to: type=gha,scope=web-ui,mode=max,ignore-error=true
 
       - name: Image size + layer summary
         run: |
