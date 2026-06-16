@@ -2,10 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-import {
-  createAnthropicProvider,
-  type AnthropicClient,
-} from '@omadia/llm-provider';
+import type { LlmProvider } from '@omadia/llm-provider';
 import {
   LocalSubAgent,
   type AskObserver,
@@ -20,7 +17,10 @@ import { composePersonaSection } from '../personaCompose.js';
 import { compileSycophancyGuard } from '../sycophancyGuard.js';
 import { zodToJsonSchema } from '../zodToJsonSchema.js';
 import { compileBoundariesSection } from './boundaryPresets.js';
-import { composeContextualMessage } from './builderAgent.js';
+import {
+  composeContextualMessage,
+  type BuilderProviderResolver,
+} from './builderAgent.js';
 import type { DraftStore } from './draftStore.js';
 import type { PreviewHandle, PreviewToolDescriptor } from './previewRuntime.js';
 import type { AgentSpecSkeleton, TranscriptEntry } from './types.js';
@@ -71,7 +71,7 @@ interface Askable {
 
 export interface SubAgentBuildOptions {
   name: string;
-  client: AnthropicClient;
+  provider: LlmProvider;
   model: string;
   maxTokens: number;
   maxIterations: number;
@@ -80,10 +80,7 @@ export interface SubAgentBuildOptions {
 }
 
 export interface PreviewChatServiceDeps {
-  /** Accessor (not a captured instance) — same rationale as
-   *  BuilderAgentDeps.anthropic: the shared client is hot-swapped on
-   *  Setup-Wizard key entry (OB-61), so resolve it per turn. */
-  anthropic: () => AnthropicClient;
+  resolveProvider: BuilderProviderResolver;
   draftStore: DraftStore;
   /**
    * Custom system-prompt-loader. Default: read `<previewDir>/skills/*.md`,
@@ -111,7 +108,6 @@ export interface RunTurnOptions {
   handle: PreviewHandle;
   userEmail: string;
   userMessage: string;
-  /** Anthropic model id — e.g. `claude-haiku-4-5-20251001`. */
   modelChoice: string;
 }
 
@@ -127,7 +123,7 @@ export interface DirectToolResult {
 }
 
 export class PreviewChatService {
-  private readonly anthropic: () => AnthropicClient;
+  private readonly resolveProvider: BuilderProviderResolver;
   private readonly draftStore: DraftStore;
   private readonly systemPromptFor: NonNullable<
     PreviewChatServiceDeps['systemPromptFor']
@@ -140,7 +136,7 @@ export class PreviewChatService {
   private readonly log: (...args: unknown[]) => void;
 
   constructor(deps: PreviewChatServiceDeps) {
-    this.anthropic = deps.anthropic;
+    this.resolveProvider = deps.resolveProvider;
     this.draftStore = deps.draftStore;
     this.systemPromptFor = deps.systemPromptFor ?? loadPreviewSystemPrompt;
     this.buildSubAgent = deps.buildSubAgent ?? defaultBuildSubAgent;
@@ -172,17 +168,19 @@ export class PreviewChatService {
       previewTranscript: transcriptWithUser,
     });
 
+    const resolved = await this.resolveProvider(opts.modelChoice);
+
     const tools = opts.handle.toolkit.tools.map(bridgePreviewTool);
     const systemPrompt = await this.systemPromptFor(
       opts.handle,
       draft.spec,
-      opts.modelChoice,
+      resolved.modelId,
     );
 
     const subAgent = this.buildSubAgent({
       name: `preview-${opts.handle.agentId}`,
-      client: this.anthropic(),
-      model: opts.modelChoice,
+      provider: resolved.provider,
+      model: resolved.modelId,
       maxTokens: this.maxTokens,
       maxIterations: this.maxIterations,
       systemPrompt,
@@ -345,7 +343,7 @@ function bridgePreviewTool(td: PreviewToolDescriptor): LocalSubAgentTool {
 function defaultBuildSubAgent(opts: SubAgentBuildOptions): Askable {
   return new LocalSubAgent({
     name: opts.name,
-    provider: createAnthropicProvider({ client: opts.client }),
+    provider: opts.provider,
     model: opts.model,
     maxTokens: opts.maxTokens,
     maxIterations: opts.maxIterations,

@@ -122,6 +122,10 @@ export interface BuilderRouterDeps {
    *  surface (draftStore / buildPipeline / packageUploadService) so an approved
    *  self-extension installs and reactivates exactly like an operator upload. */
   selfExtension?: SelfExtensionRouteDeps;
+  /** Resolve the set of provider ids the builder can actually run on (an API
+   *  key is configured, or the provider is keyless). When omitted, the model
+   *  picker lists every registered model regardless of connection. */
+  connectedProviders?: () => Promise<ReadonlySet<string>>;
 }
 
 export function createBuilderRouter(deps: BuilderRouterDeps): Router {
@@ -282,16 +286,22 @@ export function createBuilderRouter(deps: BuilderRouterDeps): Router {
   );
 
   // ── GET /models ─────────────────────────────────────────────────────────
-  router.get('/models', (_req: Request, res: Response) => {
-    res.json({
-      models: BuilderModelRegistry.list().map((m) => ({
+  router.get('/models', async (_req: Request, res: Response) => {
+    const connected = deps.connectedProviders
+      ? await deps.connectedProviders()
+      : null;
+    const models = BuilderModelRegistry.list()
+      .filter((m) => connected === null || connected.has(m.provider))
+      .map((m) => ({
         id: m.id,
         label: m.label,
+        provider: m.provider,
+        model_class: m.modelClass,
+        vision: m.vision,
         description: m.description,
         max_tokens: m.maxTokens,
-      })),
-      default: BuilderModelRegistry.default(),
-    });
+      }));
+    res.json({ models, default: BuilderModelRegistry.default() });
   });
 
   // ── GET /drafts ─────────────────────────────────────────────────────────

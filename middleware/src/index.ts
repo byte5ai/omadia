@@ -3,8 +3,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   createAnthropicClient,
+  createAnthropicProvider,
   LlmProviderCatalog,
   readProviderApiKey,
+  resolveLlmProvider,
   type AnthropicClient,
 } from '@omadia/llm-provider';
 import express from 'express';
@@ -88,7 +90,10 @@ import { PreviewCache } from './plugins/builder/previewCache.js';
 import { PreviewSecretBuffer } from './plugins/builder/previewSecretBuffer.js';
 import { PreviewRebuildScheduler } from './plugins/builder/previewRebuildScheduler.js';
 import { PreviewChatService } from './plugins/builder/previewChatService.js';
-import { BuilderAgent } from './plugins/builder/builderAgent.js';
+import {
+  BuilderAgent,
+  type BuilderProviderResolver,
+} from './plugins/builder/builderAgent.js';
 import { BuilderTriageLog } from './plugins/builder/builderTriageLog.js';
 import { GithubIssueCache } from './plugins/builder/githubIssueCache.js';
 import { GithubIssueCreator } from './plugins/builder/githubIssueCreator.js';
@@ -2699,8 +2704,62 @@ async function main(): Promise<void> {
     `[middleware] bootstrap profile endpoints ready at /api/v1/profiles (auth: required, live-storage: ${liveProfileStorage ? 'on' : 'off'}, snapshots: ${snapshotService ? 'on' : 'off'})`,
   );
 
+  const resolveBuilderProvider: BuilderProviderResolver = async (modelRef) => {
+    const { provider: providerId, modelId } =
+      BuilderModelRegistry.resolve(modelRef);
+    if (providerId === 'anthropic') {
+      return {
+        provider: createAnthropicProvider({ client: currentAnthropicClient() }),
+        modelId,
+      };
+    }
+    const provider = await resolveLlmProvider({
+      providerId,
+      getSecret: (k) => secretVault.get(ANTHROPIC_SHARED_CLIENT_SOURCE, k),
+      maxRetries: 5,
+      catalog: llmProviderCatalog,
+    });
+    if (!provider) {
+      throw new Error(
+        `Builder-Modell '${modelRef}' nutzt Provider '${providerId}', für den kein ` +
+          `API-Key hinterlegt ist. Konfiguriere den Provider auf der Modelle-Seite ` +
+          `und versuche es erneut.`,
+      );
+    }
+    return { provider, modelId };
+  };
+
+  const builderConnectedProviders = async (): Promise<ReadonlySet<string>> => {
+    const providerIds = new Set(
+      BuilderModelRegistry.list().map((m) => m.provider),
+    );
+    const connected = new Set<string>();
+    for (const providerId of providerIds) {
+      const descriptor = llmProviderCatalog.get(providerId);
+      if (descriptor?.policy?.requiresApiKey === false) {
+        connected.add(providerId);
+        continue;
+      }
+      const key = await readProviderApiKey(
+        (k) => secretVault.get(ANTHROPIC_SHARED_CLIENT_SOURCE, k),
+        providerId,
+      );
+      if (key) {
+        connected.add(providerId);
+        continue;
+      }
+      if (
+        providerId === 'anthropic' &&
+        (config.ANTHROPIC_API_KEY ?? '').trim().length > 0
+      ) {
+        connected.add(providerId);
+      }
+    }
+    return connected;
+  };
+
   const previewChatService = new PreviewChatService({
-    anthropic: currentAnthropicClient,
+    resolveProvider: resolveBuilderProvider,
     draftStore,
     logger: () => {},
   });
@@ -2918,7 +2977,7 @@ async function main(): Promise<void> {
     `${builderPlatformPkg.version ?? '0.0.0'} (process booted ${new Date().toISOString()})`;
 
   const builderAgent = new BuilderAgent({
-    anthropic: currentAnthropicClient,
+    resolveProvider: resolveBuilderProvider,
     draftStore,
     bus: builderSpecBus,
     rebuildScheduler: {
@@ -2972,8 +3031,7 @@ async function main(): Promise<void> {
     bus: builderSpecBus,
     draftStore,
     builderAgent,
-    defaultModel: BuilderModelRegistry.get(BuilderModelRegistry.default()).anthropicModelId,
-    resolveModelId: (id) => BuilderModelRegistry.get(id).anthropicModelId,
+    defaultModel: BuilderModelRegistry.default(),
     turnRingBuffer: builderTurnRingBuffer,
     logger: (...args: unknown[]) => {
       console.log('[builder/auto-fix]', ...args);
@@ -3011,6 +3069,7 @@ async function main(): Promise<void> {
     createBuilderRouter({
       store: draftStore,
       quota: draftQuota,
+      connectedProviders: builderConnectedProviders,
       preview: {
         draftStore,
         previewCache,

@@ -4,8 +4,8 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import type Anthropic from '@anthropic-ai/sdk';
 import type { AskObserver } from '@omadia/orchestrator';
+import type { LlmProvider } from '@omadia/llm-provider';
 
 import { DraftStore } from '../../src/plugins/builder/draftStore.js';
 import type { SlotTypecheckService } from '../../src/plugins/builder/slotTypecheckPipeline.js';
@@ -16,6 +16,7 @@ import {
   composeContextualMessage,
   detectBuildIntent,
   type BuilderEvent,
+  type BuilderProviderResolver,
   type BuilderSubAgentBuildOptions,
 } from '../../src/plugins/builder/builderAgent.js';
 import {
@@ -25,6 +26,12 @@ import {
   readReferenceTool,
   type BuilderTool,
 } from '../../src/plugins/builder/tools/index.js';
+
+const FAKE_MODEL_ID = 'claude-haiku-4-5-20251001';
+const fakeResolveProvider: BuilderProviderResolver = async () => ({
+  provider: {} as LlmProvider,
+  modelId: FAKE_MODEL_ID,
+});
 
 interface ScriptedToolCall {
   id: string;
@@ -93,7 +100,7 @@ interface Harness {
     script?: FakeAskScript;
     tools?: BuilderTool<unknown, unknown>[];
     slotTypechecker?: SlotTypecheckService;
-    anthropic?: () => Anthropic;
+    resolveProvider?: BuilderProviderResolver;
     buildSubAgent?: (
       opts: BuilderSubAgentBuildOptions,
     ) => { ask: (q: string, observer?: AskObserver) => Promise<string> };
@@ -117,8 +124,6 @@ async function createHarness(): Promise<Harness> {
   const bus = new SpecEventBus();
   const rebuilds: Array<{ userEmail: string; draftId: string }> = [];
 
-  const fakeAnthropic = {} as Anthropic;
-
   return {
     draftStore,
     bus,
@@ -130,7 +135,7 @@ async function createHarness(): Promise<Harness> {
     tmpRoot,
     agentFor(overrides) {
       return new BuilderAgent({
-        anthropic: overrides?.anthropic ?? (() => fakeAnthropic),
+        resolveProvider: overrides?.resolveProvider ?? fakeResolveProvider,
         draftStore,
         bus,
         rebuildScheduler: {
@@ -221,16 +226,16 @@ describe('BuilderAgent.runTurn', () => {
   // BuilderAgent used to capture the unauthenticated boot client at
   // construction and never see the swap. The accessor must be re-resolved
   // on every turn.
-  it('resolves the anthropic client per turn, picking up a post-construction hot-swap', async () => {
-    const bootClient = { kind: 'boot' } as unknown as Anthropic;
-    const vaultClient = { kind: 'vault' } as unknown as Anthropic;
-    let current = bootClient;
-    const seenClients: Anthropic[] = [];
+  it('resolves the provider per turn, picking up a post-construction hot-swap', async () => {
+    const bootProvider = { kind: 'boot' } as unknown as LlmProvider;
+    const vaultProvider = { kind: 'vault' } as unknown as LlmProvider;
+    let current = bootProvider;
+    const seenProviders: LlmProvider[] = [];
     const inner = makeFakeBuildSubAgent({ finalText: 'ok' });
     const agent = harness.agentFor({
-      anthropic: () => current,
+      resolveProvider: async () => ({ provider: current, modelId: FAKE_MODEL_ID }),
       buildSubAgent: (opts) => {
-        seenClients.push(opts.client);
+        seenProviders.push(opts.provider);
         return inner(opts);
       },
     });
@@ -243,7 +248,7 @@ describe('BuilderAgent.runTurn', () => {
         modelChoice: 'claude-haiku-4-5-20251001',
       }),
     );
-    current = vaultClient; // Setup-Wizard key entry swaps the shared client
+    current = vaultProvider; // Setup-Wizard key entry swaps the shared provider
     await collect(
       agent.runTurn({
         draftId: harness.draftId,
@@ -253,9 +258,9 @@ describe('BuilderAgent.runTurn', () => {
       }),
     );
 
-    assert.equal(seenClients.length, 2);
-    assert.equal(seenClients[0], bootClient);
-    assert.equal(seenClients[1], vaultClient);
+    assert.equal(seenProviders.length, 2);
+    assert.equal(seenProviders[0], bootProvider);
+    assert.equal(seenProviders[1], vaultProvider);
   });
 
   it('reuses an explicit turnId in turn_started + turn_done when caller passes opts.turnId', async () => {
@@ -331,7 +336,7 @@ describe('BuilderAgent.runTurn', () => {
     });
 
     const agent = new BuilderAgent({
-      anthropic: () => ({}) as Anthropic,
+      resolveProvider: fakeResolveProvider,
       draftStore: harness.draftStore,
       bus: harness.bus,
       rebuildScheduler: { schedule: () => {} },
@@ -368,7 +373,7 @@ describe('BuilderAgent.runTurn', () => {
   it('passes the bare user message through when the transcript is empty', async () => {
     let captured: string | null = null;
     const agent = new BuilderAgent({
-      anthropic: () => ({}) as Anthropic,
+      resolveProvider: fakeResolveProvider,
       draftStore: harness.draftStore,
       bus: harness.bus,
       rebuildScheduler: { schedule: () => {} },
@@ -747,7 +752,7 @@ describe('BuilderAgent — B.8 manifest-linter E2E', () => {
 
     const knownIds = ['de.byte5.integration.openweather'];
     const agent = new BuilderAgent({
-      anthropic: () => ({}) as Anthropic,
+      resolveProvider: fakeResolveProvider,
       draftStore: harness.draftStore,
       bus: harness.bus,
       rebuildScheduler: { schedule: () => {} },
@@ -825,7 +830,7 @@ describe('BuilderAgent — B.8 manifest-linter E2E', () => {
     });
 
     const agent = new BuilderAgent({
-      anthropic: () => ({}) as Anthropic,
+      resolveProvider: fakeResolveProvider,
       draftStore: harness.draftStore,
       bus: harness.bus,
       rebuildScheduler: { schedule: () => {} },
@@ -912,7 +917,7 @@ describe('BuilderAgent.runTurn — OB-31 askOptions wiring', () => {
       },
     });
     const agent = new BuilderAgent({
-      anthropic: () => ({}) as Anthropic,
+      resolveProvider: fakeResolveProvider,
       draftStore: harness.draftStore,
       bus: harness.bus,
       rebuildScheduler: {

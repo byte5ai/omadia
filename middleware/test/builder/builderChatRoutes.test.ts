@@ -90,7 +90,10 @@ async function createTestApp(opts: {
 
   const fakeAnthropic = {} as Anthropic;
   const builderAgent = new BuilderAgent({
-    anthropic: () => fakeAnthropic,
+    resolveProvider: async () => ({
+      provider: fakeAnthropic as never,
+      modelId: 'claude-haiku-4-5-20251001',
+    }),
     draftStore,
     bus,
     rebuildScheduler: {

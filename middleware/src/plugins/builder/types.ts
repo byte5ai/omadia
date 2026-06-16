@@ -9,14 +9,16 @@
 
 export type DraftStatus = 'draft' | 'published' | 'archived';
 
-export type BuilderModelId = 'haiku' | 'sonnet' | 'opus';
+export type BuilderModelId = string;
 
 export interface BuilderModel {
   id: BuilderModelId;
   label: string;
-  anthropicModelId: string;
+  provider: string;
+  modelId: string;
+  modelClass: string;
+  vision: boolean;
   maxTokens: number;
-  /** Short hint shown under the dropdown option. */
   description: string;
 }
 

@@ -19,11 +19,14 @@ export interface QualityConfig {
   };
 }
 
-export type BuilderModelId = 'haiku' | 'sonnet' | 'opus';
+export type BuilderModelId = string;
 
 export interface BuilderModelInfo {
   id: BuilderModelId;
   label: string;
+  provider: string;
+  model_class: string;
+  vision: boolean;
   description: string;
   max_tokens: number;
 }

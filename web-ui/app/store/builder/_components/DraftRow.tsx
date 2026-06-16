@@ -26,11 +26,16 @@ interface DraftRowProps {
   deleted?: boolean;
 }
 
-const MODEL_LABEL: Record<BuilderModelId, string> = {
+const SLUG_LABEL: Record<string, string> = {
   haiku: 'Haiku',
   sonnet: 'Sonnet',
   opus: 'Opus',
 };
+
+function modelShortLabel(id: BuilderModelId): string {
+  if (SLUG_LABEL[id]) return SLUG_LABEL[id];
+  return id.includes(':') ? id.slice(id.indexOf(':') + 1) : id;
+}
 
 export function DraftRow({ draft, deleted = false }: DraftRowProps): React.ReactElement {
   const t = useTranslations('builder.drafts.row');
@@ -178,7 +183,7 @@ export function DraftRow({ draft, deleted = false }: DraftRowProps): React.React
             </span>
           </span>
           <span className="font-mono-num">
-            {MODEL_LABEL[draft.codegenModel]}
+            {modelShortLabel(draft.codegenModel)}
           </span>
           <span className="font-mono-num">
             {t('lastUpdated', { relative: formatRelative(draft.updatedAt, t) })}
