@@ -347,9 +347,21 @@ export async function handleCanvasPublishLumen(
 
   const datasetId =
     typeof args['datasetId'] === 'string' && args['datasetId'].trim().length > 0 ? args['datasetId'].trim() : undefined;
+  const dataRows = Array.isArray(args['data'])
+    ? (args['data'] as unknown[]).filter(
+        (r): r is Record<string, unknown> => typeof r === 'object' && r !== null && !Array.isArray(r),
+      )
+    : undefined;
   const authored = args['lumen'];
 
-  if (datasetId !== undefined) {
+  if (datasetId === undefined && dataRows !== undefined && dataRows.length > 0) {
+    // Rows the agent already holds (e.g. an unshielded fetch) → build the data
+    // Lumen deterministically here, no LX-authoring required of the model.
+    const labelField = typeof args['labelField'] === 'string' ? args['labelField'] : undefined;
+    const valueField = typeof args['valueField'] === 'string' ? args['valueField'] : undefined;
+    lumen = buildDatasetLumen(dataRows, { labelField, valueField });
+    if (title === '') title = 'Live Interactivity — Data Lumen';
+  } else if (datasetId !== undefined) {
     const resolved = resolveDataset === undefined ? 'unavailable' : resolveDataset(datasetId);
     if (resolved === 'unavailable') {
       return (
@@ -655,11 +667,11 @@ export async function activate(
         'run by a shipped deterministic interpreter (no arbitrary code). PREFER authoring a custom ' +
         '`lumen` tailored to the user’s request (see its schema for the grammar + example); the host ' +
         'validates it (whitelist + bounds + determinism) and returns an error for you to fix if it is ' +
-        'malformed, so author freely. To visualise the user’s REAL data (e.g. Dynamics records behind ' +
-        'the Privacy Shield), pass a `datasetId` a data tool returned THIS turn instead of authoring — ' +
-        'the server resolves the real rows and builds an interactive, tappable data Lumen (you never ' +
-        'see the unmasked values). Use `variant` only for a quick canned demo. The element renders ' +
-        'directly into the canvas — do not also describe it as a static table.',
+        'malformed, so author freely. To visualise the user’s REAL data (e.g. Dynamics records): if you ' +
+        'can SEE the rows you fetched, pass them as `data` (an array of row objects) — the server builds ' +
+        'an interactive tappable data Lumen for you; if the values are MASKED/shielded, pass the ' +
+        '`datasetId` instead and the server resolves them. Use `variant` only for a quick canned demo. ' +
+        'The element renders directly into the canvas — do not also describe it as a static table.',
       input_schema: {
         type: 'object',
         properties: {
@@ -679,10 +691,16 @@ export async function activate(
               'Colours are THEME TOKENS only: accent, accent.glow, surface, surface-raised, surface-sunken, text, text-muted, success, warning, danger. ' +
               'EXAMPLE (tap counter): {"type":"lumen","id":"counter","state":{"n":{"type":"int","min":0,"init":0}},"transitions":{"inc":{"set":{"n":{"+":[{"state":"n"},{"lit":1}]}}}},"view":{"record":{"type":{"lit":"scene"},"width":{"lit":220},"height":{"lit":80},"draw":{"list":[{"record":{"kind":{"lit":"text"},"x":{"lit":14},"y":{"lit":46},"text":{"call":"concat","args":[{"lit":"taps "},{"call":"fmt","args":[{"state":"n"}]}]},"fill":{"lit":"text"},"id":{"lit":"label"}}}]}}},"events":[{"on":"tap","run":"inc"}]}',
           },
+          data: {
+            type: 'array',
+            items: { type: 'object' },
+            description:
+              'Build a Lumen from data you ALREADY HOLD: an array of row objects you fetched this turn (e.g. Dynamics records you can see). The server builds an interactive, tappable data Lumen from them — no LX authoring needed. Prefer this for "visualise my data" requests when the rows are visible to you. AT MOST 20 rows are shown.',
+          },
           datasetId: {
             type: 'string',
             description:
-              'Build a Lumen from REAL privacy-shielded data: a dataset id (ds_…) a data tool (e.g. dynamics_describe / dynamics_fetchxml) returned THIS turn. The server resolves the real rows and builds an interactive tappable data Lumen — you never see the unmasked values. Use INSTEAD of `lumen` when the user wants their actual data visualised.',
+              'Build a Lumen from REAL but PRIVACY-SHIELDED data: a dataset id (ds_…) a data tool returned THIS turn whose values are masked to you. The server resolves the real rows server-side and builds the Lumen — you never see the unmasked values. Use this (NOT `data`) only when the rows you got are masked/shielded.',
           },
           labelField: {
             type: 'string',
