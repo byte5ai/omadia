@@ -69,6 +69,14 @@ const tree11Id = (() => {
 
 const treeValidate = mustGetSchema(tree11Id);
 
+// Structural whitelist validator for a single authored Lumen (the agent-
+// generated case): the omadia-canvas-protocol/1.1 lumen schema. This is the
+// safety net that makes LLM-authored Lumens publishable — malformed state / LX
+// / events are rejected with a path-pointed error the agent can fix. (Semantic
+// bounds — transition/path/var coherence — are additionally enforced Tier-1 by
+// the shipped interpreter, which halts a bad Lumen with surface_error.)
+const lumenValidate = mustGetSchema('https://omadia.ai/protocol/1.1/lumen.schema.json');
+
 export interface TreeValidationResult {
   ok: boolean;
   /** human-readable Ajv error summary; null when ok */
@@ -83,5 +91,16 @@ export function validateTree(tree: unknown): TreeValidationResult {
     errors: ok
       ? null
       : (treeValidate.errors ?? []).map((e) => `${e.instancePath} ${e.message}`).join('; '),
+  };
+}
+
+/** Structural whitelist parser for a single authored Lumen (§1.1). */
+export function validateLumenNode(lumen: unknown): TreeValidationResult {
+  const ok = lumenValidate(lumen) as boolean;
+  return {
+    ok,
+    errors: ok
+      ? null
+      : (lumenValidate.errors ?? []).map((e) => `${e.instancePath} ${e.message}`).join('; '),
   };
 }
