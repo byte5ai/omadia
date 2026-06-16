@@ -1,0 +1,1 @@
+{ "call": "map", "args": [ { "state": "cells" }, { "call": "clamp", "args": [ { "event": "v" }, { "lit": 0 }, { "lit": 9 } ] } ] }

@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omadia.ai/protocol/1.1/ports-wires.schema.json",
+  "title": "Ports, expose & wires — cross-element interaction",
+  "description": "omadia-canvas-protocol/1.1 (lumens-spec.md §7): typed ports for explicit wiring, a published read-only `expose` interface (ambient-by-declaration, not ambient-by-default), and `wire` routing by stable id. Least-privilege: a node reads ONLY what is wired or expose-published to it. All declared data, whitelist-validated, resolved by stable id ⇒ deterministic, replayable, shared-canvas-safe.",
+
+  "$defs": {
+    "portType": {
+      "description": "the typed contract carried over a port / expose / wire",
+      "enum": ["selection", "viewport", "int", "number", "bool", "string", "enum", "list", "record", "grid", "dataRef", "any"]
+    },
+
+    "portSpec": {
+      "type": "object", "additionalProperties": false, "required": ["name", "dir", "type"],
+      "properties": {
+        "name": { "type": "string" },
+        "dir": { "enum": ["in", "out"] },
+        "type": { "$ref": "#/$defs/portType" }
+      }
+    },
+
+    "exposeSpec": {
+      "type": "object", "additionalProperties": false, "required": ["name", "type"],
+      "description": "published read-only view-state, bindable by shared id WITHOUT a wire. Un-exposed state stays private.",
+      "properties": {
+        "name": { "type": "string" },
+        "type": { "$ref": "#/$defs/portType" }
+      }
+    },
+
+    "wire": {
+      "type": "object", "additionalProperties": false, "required": ["from", "to"],
+      "description": "routes a node's typed `out` port to another's `in` port by stable id; the host resolves and propagates at Tier 1 (Class A).",
+      "properties": {
+        "from": { "$ref": "#/$defs/wireEnd" },
+        "to": { "$ref": "#/$defs/wireEnd" }
+      }
+    },
+
+    "wireEnd": {
+      "type": "object", "additionalProperties": false, "required": ["ref", "port"],
+      "properties": {
+        "ref": { "$ref": "https://omadia.ai/protocol/1.0/target-ref.schema.json" },
+        "port": { "type": "string" }
+      }
+    },
+
+    "portsList":  { "type": "array", "items": { "$ref": "#/$defs/portSpec" } },
+    "exposeList": { "type": "array", "items": { "$ref": "#/$defs/exposeSpec" } },
+    "wiresList":  { "type": "array", "items": { "$ref": "#/$defs/wire" } }
+  }
+}

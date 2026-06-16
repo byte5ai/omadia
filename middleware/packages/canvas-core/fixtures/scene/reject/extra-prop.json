@@ -1,0 +1,1 @@
+{ "type": "scene", "width": 10, "height": 10, "draw": [ { "kind": "circle", "cx": 1, "cy": 1, "r": 1, "onClick": "x" } ] }

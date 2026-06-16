@@ -1,0 +1,1 @@
+{ "type": "lumen", "id": "x", "state": {}, "transitions": {}, "view": { "lit": 1 }, "events": [ { "on": "tick", "rate": 120, "run": "step" } ] }

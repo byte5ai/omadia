@@ -1,0 +1,1 @@
+{ "call": "map", "args": [ { "state": "rows" }, { "get": { "var": "it" }, "key": { "lit": "label" } } ] }

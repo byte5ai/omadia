@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omadia.ai/protocol/1.1/lumen.schema.json",
+  "title": "Lumen — Live Interactivity unit",
+  "description": "omadia-canvas-protocol/1.1 (lumens-spec.md §1): a self-contained interactive unit on the canvas — declarative DATA, not code. Delivered as tree content inside an ordinary surface_snapshot/surface_patch (no new transport). A Lumen is valid iff its state conforms to §1.1, every LXNode passes the §2 AST whitelist + static bounds check, every EventBinding names a declared transition + §4 event, every CapabilityRequest names a §6 catalog capability, and every PortSpec/ExposeSpec is §7-typed. Any failure ⇒ rejected wholesale with surface_error (it never partially renders). This schema enforces the STRUCTURAL contract; the L1 static validator enforces semantics JSON Schema cannot (path resolution, gas/iteration bounds, transition/event coherence).",
+
+  "$ref": "#/$defs/lumen",
+
+  "$defs": {
+    "lumen": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "state", "transitions", "view", "events"],
+      "properties": {
+        "type": { "const": "lumen" },
+        "id": { "type": "string", "description": "stable; patches/wires/beam target it" },
+        "state": { "$ref": "#/$defs/stateSchema" },
+        "transitions": {
+          "type": "object",
+          "description": "TransitionName → pure (state,event)->state LX expression",
+          "additionalProperties": { "$ref": "https://omadia.ai/protocol/1.1/lx-ast.schema.json" }
+        },
+        "view": {
+          "$ref": "https://omadia.ai/protocol/1.1/lx-ast.schema.json",
+          "description": "pure state -> primitive/scene tree (an LX expression; a static view is {lit: <tree>})"
+        },
+        "events": { "type": "array", "items": { "$ref": "#/$defs/eventBinding" } },
+        "cadence": { "$ref": "#/$defs/cadenceSpec" },
+        "capabilities": { "$ref": "https://omadia.ai/protocol/1.1/capability-manifest.schema.json#/$defs/capabilityList" },
+        "ports": { "$ref": "https://omadia.ai/protocol/1.1/ports-wires.schema.json#/$defs/portsList" },
+        "expose": { "$ref": "https://omadia.ai/protocol/1.1/ports-wires.schema.json#/$defs/exposeList" },
+        "preset": { "$ref": "#/$defs/presetRef" }
+      }
+    },
+
+    "stateSchema": {
+      "type": "object",
+      "description": "a typed, CLOSED record (§1.1). Total serialised size is capped (default 256 KB, spike-tunable) — enforced by L1.",
+      "additionalProperties": { "$ref": "#/$defs/stateLeaf" }
+    },
+
+    "stateLeaf": {
+      "type": "object",
+      "oneOf": [
+        { "additionalProperties": false, "required": ["type", "init"],
+          "properties": { "type": { "enum": ["int", "number"] }, "min": { "type": "number" }, "max": { "type": "number" }, "init": { "type": "number" } } },
+        { "additionalProperties": false, "required": ["type", "init"],
+          "properties": { "type": { "const": "bool" }, "init": { "type": "boolean" } } },
+        { "additionalProperties": false, "required": ["type", "maxLength", "init"],
+          "properties": { "type": { "const": "string" }, "maxLength": { "type": "integer", "minimum": 0 }, "init": { "type": "string" } } },
+        { "additionalProperties": false, "required": ["type", "values", "init"],
+          "properties": { "type": { "const": "enum" }, "values": { "type": "array", "items": { "type": "string" }, "minItems": 1 }, "init": { "type": "string" } } },
+        { "additionalProperties": false, "required": ["type", "of", "maxLen", "init"],
+          "properties": { "type": { "const": "list" }, "of": { "$ref": "#/$defs/stateLeaf" }, "maxLen": { "type": "integer", "minimum": 0 }, "init": { "type": "array" } } },
+        { "additionalProperties": false, "required": ["type", "fields", "init"],
+          "properties": { "type": { "const": "record" }, "fields": { "$ref": "#/$defs/stateSchema" }, "init": { "type": "object" } } },
+        { "additionalProperties": false, "required": ["type", "w", "h", "of"],
+          "properties": { "type": { "const": "grid" }, "w": { "type": "integer", "minimum": 1 }, "h": { "type": "integer", "minimum": 1 }, "of": { "$ref": "#/$defs/stateLeaf" }, "init": {} } },
+        { "additionalProperties": false, "required": ["type"],
+          "properties": { "type": { "const": "dataRef" }, "init": { "$ref": "https://omadia.ai/protocol/1.0/data-ref.schema.json" } } }
+      ]
+    },
+
+    "eventBinding": {
+      "type": "object", "additionalProperties": false, "required": ["on", "run"],
+      "properties": {
+        "on": { "enum": ["tap", "longPress", "drag", "pinch", "swipe", "pointerMove", "key", "tick", "timer", "wire"] },
+        "target": { "$ref": "https://omadia.ai/protocol/1.0/target-ref.schema.json" },
+        "key": { "type": "string", "description": "for 'key' — declared keys only (e.g. 'ArrowLeft','Space')" },
+        "rate": { "type": "number", "exclusiveMinimum": 0, "maximum": 60, "description": "for 'tick' — declared, capped ≤60 Hz (§5)" },
+        "everyMs": { "type": "number", "exclusiveMinimum": 0, "description": "for 'timer' — enforced minimum period; combined tick+timer wakeup budget is capped (§4)" },
+        "captureLongPress": { "type": "boolean", "description": "claim longPress over host context-invoke (§4)" },
+        "run": { "type": "string", "description": "the transition to evaluate" }
+      }
+    },
+
+    "cadenceSpec": {
+      "description": "declared per node/region, not globally (§5). default 'reactive'.",
+      "oneOf": [
+        { "enum": ["static", "reactive"] },
+        { "type": "object", "additionalProperties": false, "required": ["tick"],
+          "properties": { "tick": { "type": "number", "exclusiveMinimum": 0, "maximum": 60, "description": "Hz, ≤60" } } }
+      ]
+    },
+
+    "presetRef": {
+      "type": "object", "additionalProperties": false, "required": ["id"],
+      "description": "provenance if instantiated/forked (§8)",
+      "properties": {
+        "id": { "type": "string", "pattern": "^preset-[0-9a-f]{16}$", "description": "content-addressed preset-<sha256(spec)[:16]>" },
+        "parent": { "type": "string", "pattern": "^preset-[0-9a-f]{16}$", "description": "fork lineage" },
+        "params": { "type": "object", "additionalProperties": true }
+      }
+    }
+  }
+}

@@ -1,0 +1,1 @@
+{ "type": "scene", "width": 10, "height": 10, "draw": [ { "kind": "rect", "x": 0, "y": 0, "w": 1, "h": 1, "fill": "#ff0000" } ] }

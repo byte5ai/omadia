@@ -1,0 +1,1 @@
+{ "type": "lumen", "id": "x", "state": {}, "transitions": {}, "view": { "lit": 1 }, "events": [], "preset": { "id": "my-preset" } }

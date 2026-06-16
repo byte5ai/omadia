@@ -1,0 +1,19 @@
+{
+  "type": "lumen", "id": "pong",
+  "state": {
+    "x": { "type": "number", "min": 0, "max": 320, "init": 16 },
+    "vx": { "type": "number", "init": 2 },
+    "score": { "type": "int", "min": 0, "init": 0 },
+    "mode": { "type": "enum", "values": [ "run", "over" ], "init": "run" }
+  },
+  "transitions": {
+    "step": { "set": { "x": { "+": [ { "state": "x" }, { "state": "vx" } ] } } },
+    "left": { "set": { "vx": { "-": [ { "lit": 0 }, { "lit": 2 } ] } } }
+  },
+  "view": { "lit": { "type": "scene", "width": 320, "height": 200, "draw": [ { "kind": "circle", "cx": 16, "cy": 100, "r": 8, "fill": "accent" } ] } },
+  "events": [
+    { "on": "tick", "rate": 60, "run": "step" },
+    { "on": "key", "key": "ArrowLeft", "run": "left" }
+  ],
+  "cadence": { "tick": 60 }
+}

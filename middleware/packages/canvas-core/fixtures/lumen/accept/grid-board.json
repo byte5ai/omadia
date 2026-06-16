@@ -1,0 +1,8 @@
+{
+  "type": "lumen", "id": "life",
+  "state": { "board": { "type": "grid", "w": 16, "h": 16, "of": { "type": "bool", "init": false } } },
+  "transitions": { "toggle": { "set": { "board": { "lit": true } } } },
+  "view": { "lit": { "type": "scene", "width": 256, "height": 256, "draw": [] } },
+  "events": [ { "on": "tap", "run": "toggle" }, { "on": "tick", "rate": 8, "run": "toggle" } ],
+  "cadence": { "tick": 8 }
+}

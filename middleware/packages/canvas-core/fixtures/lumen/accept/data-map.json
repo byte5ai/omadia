@@ -1,0 +1,15 @@
+{
+  "type": "lumen", "id": "map-viz",
+  "state": { "tiles": { "type": "dataRef" }, "sel": { "type": "string", "maxLength": 64, "init": "" } },
+  "transitions": { "pick": { "set": { "sel": { "event": "id" } } } },
+  "view": { "lit": { "type": "scene", "width": 256, "height": 256, "draw": [] } },
+  "events": [ { "on": "tap", "run": "pick" } ],
+  "cadence": "reactive",
+  "capabilities": [
+    { "cap": "loadData", "scope": { "dataRef": "tiles" } },
+    { "cap": "tiles", "effect": "internal", "scope": { "provider": "osm" } }
+  ],
+  "ports": [ { "name": "selection", "dir": "out", "type": "selection" } ],
+  "expose": [ { "name": "selection", "type": "selection" } ],
+  "preset": { "id": "preset-0123456789abcdef", "parent": "preset-fedcba9876543210", "params": { "zoom": 4 } }
+}

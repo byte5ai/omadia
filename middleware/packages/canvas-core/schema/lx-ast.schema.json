@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omadia.ai/protocol/1.1/lx-ast.schema.json",
+  "title": "Lume Expressions (LX) — JSON AST",
+  "description": "omadia-canvas-protocol/1.1 (lumens-spec.md §2): the pure, total expression language of a Lumen's `transitions` and `view`, delivered as a JSON AST (never source text). This schema is the STRUCTURAL whitelist — every node must be one of the §2.2 forms and every `call` target one of the §2.3 std-lib names. Semantic guarantees that JSON Schema cannot express (gas ceiling, bounded iteration, state/event path resolution, totality of `if`/`match`) are enforced by the L1 static validator + interpreter. Unknown node shapes are hard-rejected (whitelist parser discipline, §0.1).",
+
+  "$ref": "#/$defs/lxNode",
+
+  "$defs": {
+    "lxNode": {
+      "type": "object",
+      "oneOf": [
+        { "$ref": "#/$defs/lx_lit" },
+        { "$ref": "#/$defs/lx_state" },
+        { "$ref": "#/$defs/lx_event" },
+        { "$ref": "#/$defs/lx_var" },
+        { "$ref": "#/$defs/lx_let" },
+        { "$ref": "#/$defs/lx_add" },
+        { "$ref": "#/$defs/lx_sub" },
+        { "$ref": "#/$defs/lx_mul" },
+        { "$ref": "#/$defs/lx_div" },
+        { "$ref": "#/$defs/lx_mod" },
+        { "$ref": "#/$defs/lx_gt" },
+        { "$ref": "#/$defs/lx_gte" },
+        { "$ref": "#/$defs/lx_lt" },
+        { "$ref": "#/$defs/lx_lte" },
+        { "$ref": "#/$defs/lx_eq" },
+        { "$ref": "#/$defs/lx_neq" },
+        { "$ref": "#/$defs/lx_and" },
+        { "$ref": "#/$defs/lx_or" },
+        { "$ref": "#/$defs/lx_not" },
+        { "$ref": "#/$defs/lx_if" },
+        { "$ref": "#/$defs/lx_match" },
+        { "$ref": "#/$defs/lx_record" },
+        { "$ref": "#/$defs/lx_list" },
+        { "$ref": "#/$defs/lx_get" },
+        { "$ref": "#/$defs/lx_set" },
+        { "$ref": "#/$defs/lx_call" }
+      ]
+    },
+
+    "lx_lit":   { "type": "object", "required": ["lit"], "additionalProperties": false,
+      "properties": { "lit": { "description": "any JSON literal: int/number/bool/string/list/record" } } },
+
+    "lx_state": { "type": "object", "required": ["state"], "additionalProperties": false,
+      "properties": {
+        "state": { "type": "string", "description": "dotted path into the declared state schema" },
+        "at": { "type": "array", "description": "grid access [x,y]; each an LX expr", "items": { "$ref": "#/$defs/lxNode" }, "minItems": 2, "maxItems": 2 }
+      } },
+
+    "lx_event": { "type": "object", "required": ["event"], "additionalProperties": false,
+      "properties": { "event": { "type": "string", "description": "field of the triggering event" } } },
+
+    "lx_var":   { "type": "object", "required": ["var"], "additionalProperties": false,
+      "properties": { "var": { "type": "string", "description": "read a lexical binding: a `let` name, or an iteration binding (`it`/`idx`/`acc`) introduced by map/filter/fold (§2.3). Unbound ⇒ reject." } } },
+
+    "lx_let":   { "type": "object", "required": ["let", "in"], "additionalProperties": false,
+      "properties": {
+        "let": { "type": "object", "minProperties": 1, "maxProperties": 1, "additionalProperties": { "$ref": "#/$defs/lxNode" }, "description": "single immutable, lexically-scoped binding {name: expr}; read with {var:name}" },
+        "in": { "$ref": "#/$defs/lxNode" }
+      } },
+
+    "lx_add": { "type": "object", "required": ["+"],   "additionalProperties": false, "properties": { "+":   { "$ref": "#/$defs/argsNary" } } },
+    "lx_sub": { "type": "object", "required": ["-"],   "additionalProperties": false, "properties": { "-":   { "$ref": "#/$defs/argsNary" } } },
+    "lx_mul": { "type": "object", "required": ["*"],   "additionalProperties": false, "properties": { "*":   { "$ref": "#/$defs/argsNary" } } },
+    "lx_div": { "type": "object", "required": ["/"],   "additionalProperties": false, "properties": { "/":   { "$ref": "#/$defs/argsBinary" } } },
+    "lx_mod": { "type": "object", "required": ["mod"], "additionalProperties": false, "properties": { "mod": { "$ref": "#/$defs/argsBinary" } } },
+
+    "lx_gt":  { "type": "object", "required": [">"],  "additionalProperties": false, "properties": { ">":  { "$ref": "#/$defs/argsBinary" } } },
+    "lx_gte": { "type": "object", "required": [">="], "additionalProperties": false, "properties": { ">=": { "$ref": "#/$defs/argsBinary" } } },
+    "lx_lt":  { "type": "object", "required": ["<"],  "additionalProperties": false, "properties": { "<":  { "$ref": "#/$defs/argsBinary" } } },
+    "lx_lte": { "type": "object", "required": ["<="], "additionalProperties": false, "properties": { "<=": { "$ref": "#/$defs/argsBinary" } } },
+    "lx_eq":  { "type": "object", "required": ["=="], "additionalProperties": false, "properties": { "==": { "$ref": "#/$defs/argsBinary" } } },
+    "lx_neq": { "type": "object", "required": ["!="], "additionalProperties": false, "properties": { "!=": { "$ref": "#/$defs/argsBinary" } } },
+
+    "lx_and": { "type": "object", "required": ["and"], "additionalProperties": false, "properties": { "and": { "$ref": "#/$defs/argsNary" } } },
+    "lx_or":  { "type": "object", "required": ["or"],  "additionalProperties": false, "properties": { "or":  { "$ref": "#/$defs/argsNary" } } },
+    "lx_not": { "type": "object", "required": ["not"], "additionalProperties": false, "properties": { "not": { "$ref": "#/$defs/lxNode" } } },
+
+    "lx_if":  { "type": "object", "required": ["if", "then", "else"], "additionalProperties": false,
+      "properties": { "if": { "$ref": "#/$defs/lxNode" }, "then": { "$ref": "#/$defs/lxNode" }, "else": { "$ref": "#/$defs/lxNode" } } },
+
+    "lx_match": { "type": "object", "required": ["match", "cases", "else"], "additionalProperties": false,
+      "properties": {
+        "match": { "$ref": "#/$defs/lxNode" },
+        "cases": { "type": "array", "items": { "type": "object", "required": ["when", "then"], "additionalProperties": false,
+          "properties": { "when": { "$ref": "#/$defs/lxNode" }, "then": { "$ref": "#/$defs/lxNode" } } } },
+        "else": { "$ref": "#/$defs/lxNode" }
+      } },
+
+    "lx_record": { "type": "object", "required": ["record"], "additionalProperties": false,
+      "properties": { "record": { "type": "object", "additionalProperties": { "$ref": "#/$defs/lxNode" } } } },
+
+    "lx_list":   { "type": "object", "required": ["list"], "additionalProperties": false,
+      "properties": { "list": { "type": "array", "items": { "$ref": "#/$defs/lxNode" } } } },
+
+    "lx_get":    { "type": "object", "required": ["get", "key"], "additionalProperties": false,
+      "properties": {
+        "get": { "$ref": "#/$defs/lxNode", "description": "a record or list expression" },
+        "key": { "$ref": "#/$defs/lxNode", "description": "a string (record field) or int (list/grid-row index) expression" }
+      } },
+
+    "lx_set":    { "type": "object", "required": ["set"], "additionalProperties": false,
+      "properties": { "set": { "type": "object", "minProperties": 1, "additionalProperties": { "$ref": "#/$defs/lxNode" }, "description": "functional update {path: expr} → a NEW state (no mutation)" } } },
+
+    "lx_call":   { "type": "object", "required": ["call", "args"], "additionalProperties": false,
+      "properties": {
+        "call": { "$ref": "#/$defs/stdlibName" },
+        "args": { "type": "array", "items": { "$ref": "#/$defs/lxNode" } }
+      } },
+
+    "argsBinary": { "type": "array", "items": { "$ref": "#/$defs/lxNode" }, "minItems": 2, "maxItems": 2 },
+    "argsNary":   { "type": "array", "items": { "$ref": "#/$defs/lxNode" }, "minItems": 2 },
+
+    "stdlibName": {
+      "description": "lumens-spec.md §2.3 std-lib whitelist (bounded). map/filter/fold/range iterate only over state-bounded collections, making the gas bound static. No `while`, no general recursion. `random`/`now` read host-seeded context.",
+      "enum": [
+        "map", "filter", "fold", "range", "len", "min", "max", "clamp",
+        "abs", "floor", "ceil", "round", "sqrt", "sign", "pow",
+        "concat", "slice", "contains", "indexOf", "keys", "values",
+        "upper", "lower", "pad", "fmt",
+        "random", "now"
+      ]
+    }
+  }
+}

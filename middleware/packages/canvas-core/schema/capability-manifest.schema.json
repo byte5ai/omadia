@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omadia.ai/protocol/1.1/capability-manifest.schema.json",
+  "title": "Capability manifest — the mediated doors",
+  "description": "omadia-canvas-protocol/1.1 (lumens-spec.md §6): default-deny. Each capability is declared, effect-classified (local/internal/external-effect), granted by Tier 2, and BROKERED — a Lumen never performs the effect directly. The agent owns capability REQUESTS; grants are Tier-2 policy + user consent (§0.5) — a patch can ask, never self-grant. Imported/shared Lumens surface this manifest for consent before first run.",
+
+  "$ref": "#/$defs/capabilityList",
+
+  "$defs": {
+    "capabilityName": {
+      "description": "lumens-spec.md §6 catalog",
+      "enum": ["persist", "loadData", "writeData", "tiles", "fetch", "generateAsset", "clipboard", "share", "savePreset"]
+    },
+
+    "effectClass": {
+      "description": "CONCEPT.md §Security Surface effect classes. Egress carrying state/DataRef-derived data is external-effect (per-call confirmation) unless pre-approved at grant (§6).",
+      "enum": ["local", "internal", "external-effect"]
+    },
+
+    "capabilityRequest": {
+      "type": "object", "additionalProperties": false, "required": ["cap"],
+      "properties": {
+        "cap": { "$ref": "#/$defs/capabilityName" },
+        "effect": { "$ref": "#/$defs/effectClass", "description": "agent's declared/expected class; Tier 2 re-derives and may upgrade (never downgrade)" },
+        "scope": {
+          "type": "object",
+          "description": "per-capability scope (spike-tunable). e.g. {namespace} for persist; {dataRef} for loadData; {endpoints:[...], shape} for fetch; {provider} for tiles; {kind} for generateAsset; {writeCapabilities} for writeData.",
+          "additionalProperties": true
+        }
+      }
+    },
+
+    "capabilityList": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/capabilityRequest" }
+    }
+  }
+}
