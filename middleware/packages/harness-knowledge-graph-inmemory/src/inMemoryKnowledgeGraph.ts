@@ -140,6 +140,18 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     this.embeddings.set(externalId, [...vector]);
   }
 
+  /** Test/seed helper to flip the top-level `manuallyAuthored` marker on an
+   *  existing node. Mirrors the production DB column `manually_authored`,
+   *  which the in-memory backend otherwise only defaults (false on Turn
+   *  ingest). The durable-recall tier keys off this flag, so durable-tier
+   *  fixtures seed it here after `createMemorableKnowledge`. No-op if the
+   *  node does not exist; callers are tests in control of the substrate. */
+  setManuallyAuthored(externalId: string, value: boolean): void {
+    const node = this.nodes.get(externalId);
+    if (!node) return;
+    this.nodes.set(externalId, { ...node, manuallyAuthored: value });
+  }
+
   async ingestTurn(turn: TurnIngest): Promise<TurnIngestResult> {
     const sessionId = sessionNodeId(turn.scope);
     const turnId = turnNodeId(turn.scope, turn.time);
@@ -858,6 +870,11 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       ...(input.visibility !== undefined
         ? { visibility: input.visibility }
         : {}),
+      // Durable-curation marker — mirrors the Neon `manually_authored` column.
+      // Top-level GraphNode field (not props); keys the durable recall tier.
+      ...(input.manuallyAuthored !== undefined
+        ? { manuallyAuthored: input.manuallyAuthored }
+        : {}),
       props: {
         kind: input.kind,
         summary: input.summary,
@@ -1414,6 +1431,9 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     const hits: MemorableKnowledgeHit[] = [];
     for (const node of this.nodes.values()) {
       if (node.type !== 'MemorableKnowledge') continue;
+      // Durable-tier filter — mirror neon: rank only manually-authored MK.
+      if (opts.manuallyAuthoredOnly === true && node.manuallyAuthored !== true)
+        continue;
       const owners = Array.isArray(node.props['acl_owners'])
         ? (node.props['acl_owners'] as string[])
         : [];

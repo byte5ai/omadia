@@ -44,6 +44,7 @@ import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import type { ModelRoutingConfig } from './modelRouter.js';
 import { Orchestrator } from './orchestrator.js';
 import { OrchestratorMemoryNamespacer } from './orchestratorMemoryNamespacer.js';
+import { DurableRulesMemoryStore } from './durableRulesMemoryStore.js';
 import {
   ScopedMemoryStore,
   orchestratorMemoryScope,
@@ -170,9 +171,31 @@ export function buildOrchestratorForAgent(
     chatSessionStore,
     config.agentId,
   );
-  const memoryToolHandler = new MemoryToolHandler(
-    new OrchestratorMemoryNamespacer(config.agentId, scopedStore),
+  // Trigger T1 — durable-rules live hook. Wrap the (shared-passthrough)
+  // namespacer so writes to `/memories/_rules/` auto-promote into curated
+  // durable MemorableKnowledge. Needs the graph pool; gated off when absent or
+  // via KG_DURABLE_RULES_HOOK=false. Decorator sits OUTSIDE the namespacer so
+  // it sees the model-facing `_rules/` path (namespacer passes `_` through).
+  const namespacedStore: MemoryStore = new OrchestratorMemoryNamespacer(
+    config.agentId,
+    scopedStore,
   );
+  const durableRulesHookEnabled =
+    process.env['KG_DURABLE_RULES_HOOK'] !== 'false' && !!deps.graphPool;
+  const memoryToolStore: MemoryStore = durableRulesHookEnabled
+    ? new DurableRulesMemoryStore(namespacedStore, {
+        pool: deps.graphPool!,
+        kg: deps.knowledgeGraph,
+        tenantId: deps.graphTenantId ?? 'default',
+        ...(deps.embeddingClient
+          ? { embeddingClient: deps.embeddingClient }
+          : {}),
+        log: (msg): void => {
+          console.error(msg);
+        },
+      })
+    : namespacedStore;
+  const memoryToolHandler = new MemoryToolHandler(memoryToolStore);
 
   // Native-tool instances (channel-coupled UI cards + calendar). The calendar
   // tools are present only when the Microsoft 365 accessor is available.

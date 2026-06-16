@@ -66,6 +66,16 @@ export interface PromoteTurnInput {
    * cross-agent). Omit on legacy / single-agent boots.
    */
   originAgent?: string;
+  /**
+   * Trigger T3 — durable auto-promotion. When set, an auto-promoted MK is
+   * additionally marked `manuallyAuthored=true` (→ always-surface durable
+   * recall tier) iff `significance >= durableMinSignificance`, its `kind` is in
+   * `durableKinds`, and it passes the narration/snapshot hygiene check. Undefined
+   * → never auto-mark durable (pre-T3 behaviour). Re-pollution guard.
+   */
+  durableMinSignificance?: number;
+  /** Kinds eligible for durable auto-promotion. Default `['reference']`. */
+  durableKinds?: MemorableKind[];
   /** Optional log sink. Defaults to `console.error`. */
   log?: (msg: string) => void;
 }
@@ -166,11 +176,23 @@ export async function promoteTurnIfSignificant(
       input.fallbackAssistantAnswer,
     );
 
+    // Trigger T3 — durable auto-promotion gate. Conservative by design: only
+    // high-significance reference knowledge that survives the hygiene check is
+    // marked durable, so conversational narration + time-bound snapshots never
+    // re-pollute the always-surface tier.
+    const durableKinds = input.durableKinds ?? ['reference'];
+    const durable =
+      input.durableMinSignificance !== undefined &&
+      significance >= input.durableMinSignificance &&
+      durableKinds.includes(kind) &&
+      passesDurableHygiene(summary, rationale);
+
     const result = await input.kg.createMemorableKnowledge({
       kind,
       summary,
       ...(rationale !== undefined ? { rationale } : {}),
       significance,
+      ...(durable ? { manuallyAuthored: true } : {}),
       createdBy: `auto:${input.userId}`,
       involvedOmadiaUserIds: [input.userId],
       aclOwners: [input.userId],
@@ -192,7 +214,7 @@ export async function promoteTurnIfSignificant(
     });
 
     log(
-      `[promotion] PROMOTED turn=${input.turnId} mk=${result.memorableKnowledgeNodeId} significance=${significance.toFixed(2)} kind=${kind}`,
+      `[promotion] PROMOTED turn=${input.turnId} mk=${result.memorableKnowledgeNodeId} significance=${significance.toFixed(2)} kind=${kind} durable=${durable ? 'yes' : 'no'}`,
     );
     return {
       promoted: true,
@@ -206,6 +228,24 @@ export async function promoteTurnIfSignificant(
     );
     return { promoted: false, reason: 'error', significance: null };
   }
+}
+
+/**
+ * Hygiene gate for durable auto-promotion (Trigger T3). Rejects the two
+ * pollution classes observed in the live KG — first-person agent narration
+ * ("Ich schaue zuerst in den Memory…") and trivially short fragments — so they
+ * stay in the fuzzy tier instead of re-polluting the always-surface durable
+ * tier. Conservative: returns false when unsure.
+ */
+function passesDurableHygiene(summary: string, rationale?: string): boolean {
+  const head = summary.trim();
+  const full = `${summary} ${rationale ?? ''}`.trim();
+  if (full.length < 40) return false;
+  // First-person agent narration / meta-process preambles.
+  const NARRATION =
+    /^(ich\s+(schaue|schau|prüfe|pruefe|sehe|gucke|lese|checke|werde|muss)|lass\s+mich|du\s+hast\s+recht|moment\b|kurz\b|let me\b|i\s+will\b|i'?ll\b|looking\b|checking\b)/i;
+  if (NARRATION.test(head)) return false;
+  return true;
 }
 
 function buildPayload(

@@ -77,6 +77,7 @@ import { extractAttachmentText } from './attachmentExtract.js';
 import type {
   EntityRefBus,
   KnowledgeGraph,
+  MemorableKind,
   NudgeRegistry,
   NudgeStateStore,
   PalaiaExcerpt,
@@ -381,6 +382,11 @@ export interface OrchestratorOptions {
    */
   autoPromote?: boolean;
   autoPromoteThreshold?: number;
+  /** Trigger T3 — when set, auto-promoted MK at/above this significance whose
+   *  kind is in `autoPromoteDurableKinds` (and passing hygiene) is marked
+   *  `manuallyAuthored=true` (durable always-surface tier). Undefined → off. */
+  autoPromoteDurableMinSignificance?: number;
+  autoPromoteDurableKinds?: MemorableKind[];
   graphPool?: Pool;
   graphTenantId?: string;
   /**
@@ -909,6 +915,8 @@ export class Orchestrator {
   private readonly knowledgeGraph: KnowledgeGraph | undefined;
   private readonly autoPromote: boolean;
   private readonly autoPromoteThreshold: number;
+  private readonly autoPromoteDurableMinSignificance: number | undefined;
+  private readonly autoPromoteDurableKinds: MemorableKind[] | undefined;
   private readonly graphPool: Pool | undefined;
   private readonly graphTenantId: string | undefined;
   /** Operator persona — first line(s) of the system prompt. See
@@ -962,6 +970,9 @@ export class Orchestrator {
     this.excerptExtractor = options.excerptExtractor;
     this.autoPromote = options.autoPromote ?? false;
     this.autoPromoteThreshold = options.autoPromoteThreshold ?? 0.7;
+    this.autoPromoteDurableMinSignificance =
+      options.autoPromoteDurableMinSignificance;
+    this.autoPromoteDurableKinds = options.autoPromoteDurableKinds;
     this.graphPool = options.graphPool;
     this.graphTenantId = options.graphTenantId;
     this.assistantIdentity =
@@ -1038,6 +1049,15 @@ export class Orchestrator {
       // Per-orchestrator isolation: stamp the producing Agent so auto-promoted
       // MK default-isolates to it (team/public promotion stays cross-agent).
       originAgent: this.agentId,
+      // Trigger T3 — durable auto-promotion gate (undefined → off).
+      ...(this.autoPromoteDurableMinSignificance !== undefined
+        ? {
+            durableMinSignificance: this.autoPromoteDurableMinSignificance,
+          }
+        : {}),
+      ...(this.autoPromoteDurableKinds !== undefined
+        ? { durableKinds: this.autoPromoteDurableKinds }
+        : {}),
       ...(opts.palaiaExcerpt ? { palaiaExcerpt: opts.palaiaExcerpt } : {}),
     };
     try {
