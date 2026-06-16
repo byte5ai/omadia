@@ -26,6 +26,7 @@ import {
 import { synthesizeSurfaceEvents } from './surfaceSynthesis.js';
 import { resolveReferenceLumen } from './referenceLumens.js';
 import { validateLumenNode } from './treeValidator.js';
+import { buildDatasetLumen } from './datasetLumen.js';
 
 /**
  * @omadia/ui-orchestrator — Omadia UI Tier-2 orchestrator (PR-9b-2).
@@ -324,23 +325,52 @@ export async function handleCanvasPublishChoice(input: unknown): Promise<string>
 // omadia-canvas-protocol/1.1 — Lumens (Live Interactivity) producer tool.
 export const CANVAS_LUMEN_TOOL = 'canvas_publish_lumen';
 
-/** NativeToolHandler for {@link CANVAS_LUMEN_TOOL}. Two paths:
- *   - AUTHORED (preferred): the agent passes a full `lumen` it wrote FOR THIS
- *     request. It is hard-validated (validateLumenFull = structural whitelist +
- *     semantic bounds); an invalid Lumen is rejected with an actionable error so
- *     the agent self-corrects, and never partially renders. This is precisely
+/** NativeToolHandler for {@link CANVAS_LUMEN_TOOL}. Three paths, in order:
+ *   - DATA-BOUND: the agent passes a privacy-shield `datasetId` (from a data tool
+ *     THIS turn). The real rows resolve SERVER-SIDE (never through the LLM — so
+ *     shielded data stays masked to the model) and an interactive data Lumen is
+ *     built deterministically here. This is the L5 "loadData" pattern.
+ *   - AUTHORED: the agent passes a full `lumen` it wrote → hard-validated
+ *     (validateLumenNode); invalid → actionable error so it self-corrects. This is
  *     what makes LLM-generated interactivity SAFE: the model proposes declarative
  *     data, the host PROVES it bounded/total/deterministic before it ever runs.
- *   - PRESET (fallback): no `lumen` → instantiate a vetted reference by `variant`.
- *  The valid Lumen is emitted as a full-tree `_pendingCanvasTree` snapshot; the
- *  synthesis layer turns it into a `surface_snapshot`. */
-export async function handleCanvasPublishLumen(input: unknown): Promise<string> {
+ *   - PRESET (fallback): neither → a vetted reference by `variant`.
+ *  The valid Lumen is emitted as a full-tree `_pendingCanvasTree` snapshot. */
+export async function handleCanvasPublishLumen(
+  input: unknown,
+  resolveDataset?: CanvasDatasetResolver,
+): Promise<string> {
   const args = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>;
-  const authored = args['lumen'];
   let lumen: Record<string, unknown>;
-  let title: string;
+  let title = typeof args['title'] === 'string' && args['title'].trim().length > 0 ? args['title'].trim() : '';
   let hint: string | undefined;
-  if (authored && typeof authored === 'object' && !Array.isArray(authored)) {
+
+  const datasetId =
+    typeof args['datasetId'] === 'string' && args['datasetId'].trim().length > 0 ? args['datasetId'].trim() : undefined;
+  const authored = args['lumen'];
+
+  if (datasetId !== undefined) {
+    const resolved = resolveDataset === undefined ? 'unavailable' : resolveDataset(datasetId);
+    if (resolved === 'unavailable') {
+      return (
+        'Error: dataset-bound Lumens are unavailable on this server (no privacy provider with dataset ' +
+        'support active). Author a `lumen` directly instead.'
+      );
+    }
+    if (resolved === undefined) {
+      return (
+        `Error: unknown or expired datasetId "${datasetId}" — dataset ids are only valid within the turn ` +
+        'that interned them; re-run the data tool and publish in the SAME turn.'
+      );
+    }
+    const labelField = typeof args['labelField'] === 'string' ? args['labelField'] : undefined;
+    const valueField = typeof args['valueField'] === 'string' ? args['valueField'] : undefined;
+    lumen = buildDatasetLumen(
+      resolved.rows.map((r) => ({ ...r })),
+      { labelField, valueField },
+    );
+    if (title === '') title = 'Live Interactivity — Data Lumen';
+  } else if (authored && typeof authored === 'object' && !Array.isArray(authored)) {
     const verdict = validateLumenNode(authored);
     if (!verdict.ok) {
       return (
@@ -352,15 +382,11 @@ export async function handleCanvasPublishLumen(input: unknown): Promise<string> 
       );
     }
     lumen = authored as Record<string, unknown>;
-    title =
-      typeof args['title'] === 'string' && args['title'].trim().length > 0
-        ? args['title'].trim()
-        : 'Live Interactivity — Lumen';
+    if (title === '') title = 'Live Interactivity — Lumen';
   } else {
     const ref = resolveReferenceLumen(args['variant']);
     lumen = ref.lumen;
-    title =
-      typeof args['title'] === 'string' && args['title'].trim().length > 0 ? args['title'].trim() : ref.title;
+    if (title === '') title = ref.title;
     hint = ref.hint;
   }
   const tree = {
@@ -629,9 +655,11 @@ export async function activate(
         'run by a shipped deterministic interpreter (no arbitrary code). PREFER authoring a custom ' +
         '`lumen` tailored to the user’s request (see its schema for the grammar + example); the host ' +
         'validates it (whitelist + bounds + determinism) and returns an error for you to fix if it is ' +
-        'malformed, so author freely. Use `variant` only for a quick canned demo when the user just ' +
-        'wants to see an example. The element renders directly into the canvas — do not also describe ' +
-        'it as a static table.',
+        'malformed, so author freely. To visualise the user’s REAL data (e.g. Dynamics records behind ' +
+        'the Privacy Shield), pass a `datasetId` a data tool returned THIS turn instead of authoring — ' +
+        'the server resolves the real rows and builds an interactive, tappable data Lumen (you never ' +
+        'see the unmasked values). Use `variant` only for a quick canned demo. The element renders ' +
+        'directly into the canvas — do not also describe it as a static table.',
       input_schema: {
         type: 'object',
         properties: {
@@ -651,11 +679,24 @@ export async function activate(
               'Colours are THEME TOKENS only: accent, accent.glow, surface, surface-raised, surface-sunken, text, text-muted, success, warning, danger. ' +
               'EXAMPLE (tap counter): {"type":"lumen","id":"counter","state":{"n":{"type":"int","min":0,"init":0}},"transitions":{"inc":{"set":{"n":{"+":[{"state":"n"},{"lit":1}]}}}},"view":{"record":{"type":{"lit":"scene"},"width":{"lit":220},"height":{"lit":80},"draw":{"list":[{"record":{"kind":{"lit":"text"},"x":{"lit":14},"y":{"lit":46},"text":{"call":"concat","args":[{"lit":"taps "},{"call":"fmt","args":[{"state":"n"}]}]},"fill":{"lit":"text"},"id":{"lit":"label"}}}]}}},"events":[{"on":"tap","run":"inc"}]}',
           },
+          datasetId: {
+            type: 'string',
+            description:
+              'Build a Lumen from REAL privacy-shielded data: a dataset id (ds_…) a data tool (e.g. dynamics_describe / dynamics_fetchxml) returned THIS turn. The server resolves the real rows and builds an interactive tappable data Lumen — you never see the unmasked values. Use INSTEAD of `lumen` when the user wants their actual data visualised.',
+          },
+          labelField: {
+            type: 'string',
+            description: 'with datasetId: which field is the row label (defaults to the first text field).',
+          },
+          valueField: {
+            type: 'string',
+            description: 'with datasetId: which field is the numeric value (defaults to the first numeric field).',
+          },
           variant: {
             type: 'string',
             enum: ['arcade', 'map', 'defrag'],
             description:
-              'Quick canned demo if you are NOT authoring a custom `lumen`: arcade (game), map (interactive selection + zoom), defrag (tick animation).',
+              'Quick canned demo if you are NOT authoring a custom `lumen` or binding a `datasetId`: arcade (game), map (interactive selection + zoom), defrag (tick animation).',
           },
           title: {
             type: 'string',
@@ -664,7 +705,17 @@ export async function activate(
         },
       },
     },
-    handleCanvasPublishLumen,
+    (input) =>
+      handleCanvasPublishLumen(input, (datasetId) => {
+        const turnId = turnContext.current()?.turnId;
+        const privacy = (
+          ctx.services as PluginContext['services'] | undefined
+        )?.get<PrivacyGuardService>(PRIVACY_REDACT_SERVICE_NAME);
+        if (turnId === undefined || privacy?.resolveDatasetForRender === undefined) {
+          return 'unavailable';
+        }
+        return privacy.resolveDatasetForRender(turnId, datasetId);
+      }),
   );
   ctx.log(
     `[omadia-ui-orchestrator] producer tools ${CANVAS_PUBLISH_TOOL}+${CANVAS_CHOICE_TOOL}+${CANVAS_LUMEN_TOOL} ${
