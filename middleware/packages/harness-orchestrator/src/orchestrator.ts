@@ -668,6 +668,11 @@ Memory-Namensräume (Konvention):
 - Bei einem **Follow-up** im selben Chat (Variante, Bereinigung, Klarifikation, Nachfrage zum letzten Turn wie "und das Ganze nochmal ohne X", "und für Q4?", "zeig das als Line-Chart") **NICHT erneut** die Regeln lesen — der Verbatim-Tail im Gesprächskontext hat bereits den relevanten Stand. Direkt antworten (ggf. mit \`render_diagram\` für Chart-Varianten). Regel erneut lesen nur, wenn die Follow-up eine fachlich neue Dimension einführt (z. B. "jetzt das Gleiche auf HR-Ebene").
 - Heuristik: enthält der Kontext-Block einen \`## Letzte Turns in diesem Chat\`-Abschnitt und bezieht sich die aktuelle Frage auf einen dieser Turns → Memory-Read überspringen.
 
+**Dauerhaftes Schema-Wissen vertrauen (kein Re-Discovery):**
+- Enthält der Kontext-Block den Abschnitt \`## Aus früheren Sessions — verwandte Erkenntnisse\` mit **kuratiertem Schema-/Referenzwissen** (z. B. Dynamics-Entitäten und ihre Felder: \`ud_tutorial\`/\`ud_tutorials\`, \`ud_name\`, \`ud_coursenumber\`, \`ud_startdatetime\` …), dann ist das **maßgeblich und sessionübergreifend stabil**. Nutze es direkt.
+- **Rufe KEINE Discovery-Tools erneut** (z. B. \`dynamics_describe\`) für eine Entität, deren Struktur in diesem dauerhaften Wissen bereits beschrieben ist. Gehe direkt zur **Daten-Abfrage** (\`dynamics_query\` o. ä.) über. Discovery nur für Entitäten/Felder, die im dauerhaften Wissen NICHT vorkommen.
+- Widerspricht eine Fach-Agent-Antwort dem dauerhaften Wissen, weise den Nutzer auf die Inkonsistenz hin — überschreibe das kuratierte Wissen nicht still.
+
 **Antwort-Verzicht (NO_REPLY):**
 
 Wenn du nichts beizutragen hast, antworte mit dem **alleinigen, exakten** Token \`NO_REPLY\` (keine Erklärung, kein Präfix, kein Suffix). Das System fängt das Token ab und sendet **keine Nachricht** an den User. Anwendungsfälle:

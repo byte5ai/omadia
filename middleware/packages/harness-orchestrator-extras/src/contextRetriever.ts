@@ -710,7 +710,7 @@ export class ContextRetriever {
     const seenInsightIds = new Set<string>();
     const insights: RecalledInsight[] = [];
     for (const hit of durableHits) {
-      const insight = toRecalledInsight(hit);
+      const insight = toRecalledInsight(hit, true);
       if (seenInsightIds.has(insight.mkId)) continue;
       seenInsightIds.add(insight.mkId);
       insights.push(insight);
@@ -1479,7 +1479,12 @@ function renderRecallBlocks(
   if (recalled.insights.length > 0 && budget > 200) {
     push('\n## Aus früheren Sessions — verwandte Erkenntnisse');
     for (const ins of recalled.insights) {
-      const chunk = `- ${ins.kind}: ${truncate(ins.summary, 300)} (score ${ins.score.toFixed(2)})`;
+      // Durable (curated schema/reference) insights render in full so the
+      // agent can rely on them instead of re-running discovery tools; fuzzy
+      // insights stay capped. `ins.summary` is already bounded upstream by
+      // toRecalledInsight (durable → 2000, fuzzy → 300).
+      const rendered = ins.durable ? ins.summary : truncate(ins.summary, 300);
+      const chunk = `- ${ins.kind}: ${rendered} (score ${ins.score.toFixed(2)})`;
       if (!push(chunk)) break;
     }
   }
@@ -1487,12 +1492,25 @@ function renderRecallBlocks(
   return parts.join('\n');
 }
 
-function toRecalledInsight(hit: MemoryRecallHit): RecalledInsight {
+/** Full render length for DURABLE insights — curated schema/reference
+ *  knowledge must reach the agent complete, or it re-discovers (e.g. re-runs
+ *  `dynamics_describe`) what it already knows. Fuzzy insights stay capped. */
+const DURABLE_SUMMARY_MAX_CHARS = 2000;
+const FUZZY_SUMMARY_MAX_CHARS = 300;
+
+function toRecalledInsight(
+  hit: MemoryRecallHit,
+  durable = false,
+): RecalledInsight {
   return {
     mkId: hit.mk.id,
     kind: String(hit.mk.props['kind'] ?? 'memory'),
-    summary: truncate(String(hit.mk.props['summary'] ?? ''), 300),
+    summary: truncate(
+      String(hit.mk.props['summary'] ?? ''),
+      durable ? DURABLE_SUMMARY_MAX_CHARS : FUZZY_SUMMARY_MAX_CHARS,
+    ),
     score: hit.score,
+    ...(durable ? { durable: true } : {}),
   };
 }
 
