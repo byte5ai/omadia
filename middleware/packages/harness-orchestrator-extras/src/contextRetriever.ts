@@ -71,6 +71,22 @@ export interface ContextRetrieverOptions {
   /** Score multiplier for memory-origin hits in the assembler. Default
    *  1.2 — curated memory ranks above raw FTS hits at similar cosine. */
   memoryBoostFactor?: number;
+  /** Additive durable-curation tier. When enabled (default), manual-authored
+   *  MemorableKnowledge of the configured `durableKinds` ALWAYS surfaces in
+   *  recall: independent of the turn-term gate, with its own low/no cosine
+   *  floor, outside the fuzzy `memoryLimit`, and never sent to the judge.
+   *  Set `kg_durable_tier_enabled=false` to restore the exact pre-tier
+   *  behaviour. */
+  durableTierDisabled?: boolean;
+  /** Reserved slots for durable curated MK, additive to `memoryLimit`.
+   *  Default 2. */
+  durableReservedSlots?: number;
+  /** MemorableKnowledge kinds admitted to the durable tier. Default
+   *  `reference,decision`. */
+  durableKinds?: string[];
+  /** Min cosine for the durable tier. Default 0.0 on purpose: curated,
+   *  manual-authored long-term knowledge must survive paraphrase. */
+  durableMinSimilarity?: number;
 
   // Cross-session recall probe — Plan + Process + team-scoped insights.
   /**
@@ -300,6 +316,10 @@ const DEFAULTS: Required<
   excerptsPerMemory: 2,
   memoryMinSimilarity: 0.6,
   memoryBoostFactor: 1.2,
+  durableTierDisabled: false,
+  durableReservedSlots: 2,
+  durableKinds: ['reference', 'decision'],
+  durableMinSimilarity: 0,
   // Cross-session recall probe defaults.
   teamVisibility: false,
   planRecallDisabled: false,
@@ -519,6 +539,7 @@ export class ContextRetriever {
       planHits,
       processHits,
       memoryHits,
+      durableHits,
     ] = await Promise.all([
       this.loadTail(buildInput),
       this.loadEntityHits(buildInput, extractedTerms),
@@ -527,6 +548,7 @@ export class ContextRetriever {
       runCrossSessionRecall ? this.loadPlanHits(buildInput) : emptyPlans,
       runCrossSessionRecall ? this.loadProcessHits(buildInput) : emptyProcesses,
       runCrossSessionRecall ? this.loadMemoryHits(buildInput) : emptyMemory,
+      this.loadDurableHits(buildInput),
     ]);
 
     // Build candidate pool. Tail first (chronological → fills first).
@@ -685,12 +707,20 @@ export class ContextRetriever {
       judgedMemory = memoryHits.filter((h) => keep.has(h.mk.id));
     }
 
-    const insights: RecalledInsight[] = judgedMemory.map((h) => ({
-      mkId: h.mk.id,
-      kind: String(h.mk.props['kind'] ?? 'memory'),
-      summary: truncate(String(h.mk.props['summary'] ?? ''), 300),
-      score: h.score,
-    }));
+    const seenInsightIds = new Set<string>();
+    const insights: RecalledInsight[] = [];
+    for (const hit of durableHits) {
+      const insight = toRecalledInsight(hit);
+      if (seenInsightIds.has(insight.mkId)) continue;
+      seenInsightIds.add(insight.mkId);
+      insights.push(insight);
+    }
+    for (const hit of judgedMemory) {
+      const insight = toRecalledInsight(hit);
+      if (seenInsightIds.has(insight.mkId)) continue;
+      seenInsightIds.add(insight.mkId);
+      insights.push(insight);
+    }
     const recalled: RecalledContext = {
       plans: judgedPlans,
       processes: judgedProcesses,
@@ -761,7 +791,11 @@ export class ContextRetriever {
     // floors / judge empirically) instead of guessing from aggregate counts.
     // Emitted whenever the cheap legs fetched any candidate, so a judge that
     // dropped everything is still visible (pre→post counts).
-    const preCount = planHits.length + processHits.length + memoryHits.length;
+    const preCount =
+      planHits.length +
+      processHits.length +
+      memoryHits.length +
+      durableHits.length;
     if (preCount > 0) {
       const judgeOn =
         !!this.relevanceJudge && !this.opts.recallRelevanceJudgeDisabled;
@@ -775,7 +809,7 @@ export class ContextRetriever {
       const pre = `${planHits.length}/${processHits.length}/${memoryHits.length}`;
       const post = `${recalled.plans.length}/${recalled.processes.length}/${recalled.insights.length}`;
       console.error(
-        `[context:recall] scope=${scope} gate=${runCrossSessionRecall ? 'open' : 'closed'} judge=${judgeOn ? 'on' : 'off'} pre(p/pr/i)=${pre} post=${post} terms=[${extractedTerms.join(',')}] plans=[${plansTrace}] processes=[${procTrace}] insights=[${insTrace}]`,
+        `[context:recall] scope=${scope} gate=${runCrossSessionRecall ? 'open' : 'closed'} judge=${judgeOn ? 'on' : 'off'} durable=${String(durableHits.length)} pre(p/pr/i)=${pre} post=${post} terms=[${extractedTerms.join(',')}] plans=[${plansTrace}] processes=[${procTrace}] insights=[${insTrace}]`,
       );
     }
 
@@ -1158,6 +1192,78 @@ export class ContextRetriever {
     return merged.slice(0, this.opts.memoryLimit);
   }
 
+  /**
+   * Additive durable tier for manual-authored long-term knowledge.
+   *
+   * Deliberately separate from the fuzzy memory leg: it ignores the turn-term
+   * gate, uses its own low/no cosine floor so paraphrases still hit, bypasses
+   * the fuzzy `memoryLimit`, and NEVER enters the relevance judge's candidate
+   * set. Failures degrade to [] — same discipline as `loadMemoryHits`.
+   */
+  private async loadDurableHits(
+    input: ContextBuildInput,
+  ): Promise<MemoryRecallHit[]> {
+    if (this.opts.durableTierDisabled) return [];
+    if (!this.embeddingClient || !input.userId) return [];
+
+    const reservedSlots = Math.max(0, this.opts.durableReservedSlots);
+    if (reservedSlots === 0) return [];
+
+    let queryVector: number[];
+    try {
+      queryVector = await this.embeddingClient.embed(input.userMessage);
+    } catch (err) {
+      console.error(
+        '[context:durable] query embed failed — skipping durable recall:',
+        err instanceof Error ? err.message : err,
+      );
+      return [];
+    }
+    if (queryVector.length === 0) return [];
+
+    const durableKinds = new Set(
+      this.opts.durableKinds.map((kind) => kind.toLowerCase()),
+    );
+    const overshoot = Math.max(reservedSlots * 4, 8);
+
+    let mkHits: MemorableKnowledgeHit[];
+    try {
+      mkHits = await this.graph.searchMemorableKnowledgeByEmbedding({
+        queryEmbedding: queryVector,
+        viewerOmadiaUserId: input.userId,
+        limit: overshoot,
+        minSimilarity: this.opts.durableMinSimilarity,
+        teamVisibility: this.opts.teamVisibility,
+        // Rank durable MK among itself at the SQL level — otherwise higher-cosine
+        // session noise crowds durable knowledge out of the over-fetch window.
+        manuallyAuthoredOnly: true,
+        ...(input.agentSlug ? { viewerAgentSlug: input.agentSlug } : {}),
+      });
+    } catch (err) {
+      console.error(
+        '[context:durable] backend search failed — skipping durable recall:',
+        err instanceof Error ? err.message : err,
+      );
+      return [];
+    }
+
+    const durableHits: MemoryRecallHit[] = [];
+    for (const hit of mkHits) {
+      const kind = String(hit.mk.props['kind'] ?? '').toLowerCase();
+      // Durable marker lives on the GraphNode (column `manually_authored`),
+      // hydrated by rowToNode — NOT in the `props` JSONB blob.
+      if (hit.mk.manuallyAuthored !== true) continue;
+      if (!durableKinds.has(kind)) continue;
+      durableHits.push({
+        mk: hit.mk,
+        excerpts: [],
+        score: hit.cosineSim,
+      });
+    }
+    durableHits.sort((a, b) => b.score - a.score);
+    return durableHits.slice(0, reservedSlots);
+  }
+
   private async loadFtsHits(input: ContextBuildInput): Promise<TurnSearchHit[]> {
     // Vector search first when we have an embedding client + the backend
     // supports it. Semantic recall catches paraphrases ("kredite" ↔ "darlehen")
@@ -1379,6 +1485,15 @@ function renderRecallBlocks(
   }
 
   return parts.join('\n');
+}
+
+function toRecalledInsight(hit: MemoryRecallHit): RecalledInsight {
+  return {
+    mkId: hit.mk.id,
+    kind: String(hit.mk.props['kind'] ?? 'memory'),
+    summary: truncate(String(hit.mk.props['summary'] ?? ''), 300),
+    score: hit.score,
+  };
 }
 
 // ---------------------------------------------------------------------------

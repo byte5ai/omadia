@@ -1904,6 +1904,11 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         ...(input.visibility !== undefined
           ? { visibility: input.visibility }
           : {}),
+        // Durable-curation marker → top-level `manually_authored` column.
+        // Set by the durable-promotion pipeline; defaults to false otherwise.
+        ...(input.manuallyAuthored !== undefined
+          ? { manuallyAuthored: input.manuallyAuthored }
+          : {}),
       });
 
       // INVOLVED edges — resolve omadiaUserId → user-cluster external_id
@@ -2703,6 +2708,9 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       WHERE tenant_id = $2
         AND type = 'MemorableKnowledge'
         AND embedding IS NOT NULL
+        -- Durable-tier filter: when set, rank only manually-authored MK among
+        -- itself (so the always-surface leg isn't crowded out by session noise).
+        AND ($7::boolean IS NOT TRUE OR manually_authored = true)
         AND (
           -- team/public-promoted MK stays shareable across Agents.
           ($5::boolean AND COALESCE(visibility, 'team') IN ('team', 'public'))
@@ -2728,6 +2736,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       limit,
       opts.teamVisibility === true,
       opts.viewerAgentSlug ?? null,
+      opts.manuallyAuthoredOnly === true,
     ]);
     return rows.rows
       .filter((r) => Number(r.cosine_sim) >= minSimilarity)
@@ -4729,23 +4738,30 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       entryType?: string;
       visibility?: string;
       significance?: number | null;
+      // Durable-curation marker → top-level `manually_authored` column. When
+      // undefined, the schema default (false) takes over on insert and the row
+      // is left unchanged on conflict. When provided, it overwrites the column
+      // so the durable-promotion pipeline can flip an existing MK to durable.
+      manuallyAuthored?: boolean;
     },
   ): Promise<string> {
     const palaiaSet = [
       params.entryType !== undefined ? `entry_type = $8` : null,
       params.visibility !== undefined ? `visibility = $9` : null,
       params.significance !== undefined ? `significance = $10` : null,
+      params.manuallyAuthored !== undefined ? `manually_authored = $11` : null,
     ]
       .filter((s): s is string => s !== null)
       .join(', ');
     const updateClause = palaiaSet ? `, ${palaiaSet}` : '';
     const result = await client.query<{ id: string }>(
       `
-      INSERT INTO graph_nodes (external_id, type, tenant_id, scope, user_id, properties, entry_type, visibility, significance)
+      INSERT INTO graph_nodes (external_id, type, tenant_id, scope, user_id, properties, entry_type, visibility, significance, manually_authored)
       VALUES ($1, $2, $3, $4, $5, $6::jsonb,
               COALESCE($8::text, 'memory'),
               COALESCE($9::text, 'team'),
-              $10::real)
+              $10::real,
+              COALESCE($11::boolean, false))
       ON CONFLICT (tenant_id, external_id) DO UPDATE
         SET properties = graph_nodes.properties || EXCLUDED.properties || $7::jsonb,
             scope = COALESCE(EXCLUDED.scope, graph_nodes.scope),
@@ -4763,6 +4779,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         params.entryType ?? null,
         params.visibility ?? null,
         params.significance ?? null,
+        params.manuallyAuthored ?? null,
       ],
     );
     const id = result.rows[0]?.id;

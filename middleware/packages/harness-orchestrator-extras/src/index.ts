@@ -115,6 +115,15 @@ export type { HaikuPalaiaExcerptExtractorOptions } from './excerptExtractor.js';
 // declines all promotions with reason='no-significance'.
 export { promoteTurnIfSignificant } from './promotion.js';
 export type { PromoteTurnInput, PromoteTurnResult } from './promotion.js';
+export {
+  promoteRuleFileToDurable,
+  isDurableRulePath,
+  DURABLE_RULES_PREFIX,
+} from './promoteDurableRule.js';
+export type {
+  PromoteRuleInput,
+  PromoteRuleResult,
+} from './promoteDurableRule.js';
 
 // KG-ACL Slice 8 — operator-triggered retrospective bulk score +
 // promotion. Two-phase pass over historical Turns: (1) Haiku-score

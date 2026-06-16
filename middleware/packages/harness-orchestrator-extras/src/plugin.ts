@@ -285,6 +285,38 @@ export async function activate(
       ? recallRequiresTermsRaw.toLowerCase() !== 'false'
       : recallRequiresTermsRaw !== false;
 
+  // Durable-curation tier. Manual-authored MemorableKnowledge of the
+  // configured kinds ALWAYS surfaces — independent of the turn-term gate,
+  // with its own low/no cosine floor, outside the fuzzy memoryLimit, and never
+  // sent to the relevance judge. Default ON. Set kg_durable_tier_enabled=false
+  // (or env KG_DURABLE_TIER_ENABLED=false) to restore the pre-tier behaviour.
+  const durableTierEnabledRaw =
+    ctx.config.get<unknown>('kg_durable_tier_enabled') ??
+    process.env['KG_DURABLE_TIER_ENABLED'];
+  const durableTierDisabled =
+    typeof durableTierEnabledRaw === 'string'
+      ? durableTierEnabledRaw.toLowerCase() === 'false'
+      : durableTierEnabledRaw === false;
+  const durableReservedSlots = parseNumberOrDefault(
+    ctx.config.get<unknown>('kg_durable_reserved_slots'),
+    2,
+  );
+  // Comma-separated MK kinds admitted to the durable tier. Empty/blank → fall
+  // back to the ContextRetriever default (reference,decision).
+  const durableKindsRaw = (
+    ctx.config.get<string>('kg_durable_kinds') ?? ''
+  ).trim();
+  const durableKinds = durableKindsRaw
+    ? durableKindsRaw
+        .split(',')
+        .map((kind) => kind.trim().toLowerCase())
+        .filter((kind) => kind.length > 0)
+    : undefined;
+  const durableMinSimilarity = parseNumberOrDefault(
+    ctx.config.get<unknown>('kg_durable_min_similarity'),
+    0,
+  );
+
   // Cost telemetry: wire the recorder to the shared graph pool and wrap the
   // client so the background Haiku scorers/extractors record their usage.
   const usagePool = ctx.services.get<Pool>('graphPool');
@@ -466,6 +498,11 @@ export async function activate(
       processMinScore,
       recallRequiresTerms,
       recallRelevanceJudgeDisabled,
+      // Durable-curation tier.
+      durableTierDisabled,
+      durableReservedSlots,
+      durableMinSimilarity,
+      ...(durableKinds ? { durableKinds } : {}),
     },
     embeddingClient,
     agentPriorities,
@@ -473,7 +510,7 @@ export async function activate(
     relevanceJudge,
   );
   ctx.log(
-    `[harness-orchestrator-extras] context-assembler ready (budget=${String(contextDefaultBudgetTokens)}tk, chars/tk=${String(contextCharsPerToken)}, manual-boost=${contextManualBoostFactor.toFixed(2)}, compact>${String(contextCompactModeThreshold)}, agentPriorities=${agentPriorities ? 'on' : 'off'}, memoryRecall=${embeddingClient && !memoryRecallDisabled ? `on(limit=${String(memoryLimit)},excerpts=${String(memoryExcerptsPerMemory)},minSim=${memoryMinSimilarity.toFixed(2)})` : 'off'}, teamVisibility=${teamVisibility ? 'on' : 'off'}, planRecall=${planRecallDisabled ? 'off' : `on(limit=${String(planLimit)})`}, processRecall=${processMemory && !processRecallDisabled ? `on(limit=${String(processLimit)},minScore=${processMinScore.toFixed(2)})` : 'off'}, recallGate=${recallRequiresTerms ? 'require-terms' : 'off'}, recallJudge=${relevanceJudge ? `on(${recallJudgeModel ?? '?'})` : 'off'})`,
+    `[harness-orchestrator-extras] context-assembler ready (budget=${String(contextDefaultBudgetTokens)}tk, chars/tk=${String(contextCharsPerToken)}, manual-boost=${contextManualBoostFactor.toFixed(2)}, compact>${String(contextCompactModeThreshold)}, agentPriorities=${agentPriorities ? 'on' : 'off'}, memoryRecall=${embeddingClient && !memoryRecallDisabled ? `on(limit=${String(memoryLimit)},excerpts=${String(memoryExcerptsPerMemory)},minSim=${memoryMinSimilarity.toFixed(2)})` : 'off'}, teamVisibility=${teamVisibility ? 'on' : 'off'}, planRecall=${planRecallDisabled ? 'off' : `on(limit=${String(planLimit)})`}, processRecall=${processMemory && !processRecallDisabled ? `on(limit=${String(processLimit)},minScore=${processMinScore.toFixed(2)})` : 'off'}, recallGate=${recallRequiresTerms ? 'require-terms' : 'off'}, recallJudge=${relevanceJudge ? `on(${recallJudgeModel ?? '?'})` : 'off'}, durableTier=${durableTierDisabled ? 'off' : `on(slots=${String(durableReservedSlots)},kinds=${(durableKinds ?? ['reference', 'decision']).join('+')},minSim=${durableMinSimilarity.toFixed(2)})`})`,
   );
   const disposeContext = ctx.services.provide(
     CONTEXT_RETRIEVER_SERVICE,

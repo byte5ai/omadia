@@ -425,6 +425,20 @@ export async function activate(
     process.env['KG_ACL_AUTO_PROMOTE_THRESHOLD'],
     0.7,
   );
+  // Trigger T3 — durable auto-promotion: high-significance reference MK is
+  // marked manuallyAuthored (always-surface durable tier). Default ON at 0.85;
+  // set KG_DURABLE_AUTOPROMOTE=false to disable. Kinds default to ['reference']
+  // inside promoteTurnIfSignificant.
+  const durableAutoPromoteEnabled =
+    process.env['KG_DURABLE_AUTOPROMOTE'] === undefined
+      ? true
+      : parseBooleanEnv(process.env['KG_DURABLE_AUTOPROMOTE']);
+  const autoPromoteDurableMinSignificance = durableAutoPromoteEnabled
+    ? parseNumberOrDefault(
+        process.env['KG_DURABLE_AUTOPROMOTE_MIN_SIGNIFICANCE'],
+        0.85,
+      )
+    : undefined;
   const graphPool = ctx.services.get<Pool>(GRAPH_POOL_SERVICE);
   const graphTenantId =
     process.env['GRAPH_TENANT_ID'] ??
@@ -545,6 +559,9 @@ export async function activate(
     ...(processMemory ? { processMemory } : {}),
     autoPromote,
     autoPromoteThreshold,
+    ...(autoPromoteDurableMinSignificance !== undefined
+      ? { autoPromoteDurableMinSignificance }
+      : {}),
     ...(graphPool ? { graphPool } : {}),
     graphTenantId,
     ...(assistantIdentity ? { assistantIdentity } : {}),
@@ -714,7 +731,7 @@ export async function activate(
   }
 
   ctx.log(
-    `[harness-orchestrator] chatAgent@1 published (model=${model}, maxTokens=${String(maxTokens)}, maxIter=${String(maxIterations)}, verifier=${verifierBundle ? 'on' : 'off'}, calendar=${microsoft365 ? 'on' : 'off'}, contextRetriever=${contextRetriever ? 'on' : 'off'}, factExtractor=${factExtractor ? 'on' : 'off'}, palaiaExcerpt=${excerptExtractor ? 'on' : 'off'}, autoPromote=${autoPromote ? `on@${autoPromoteThreshold.toFixed(2)}` : 'off'}, embeddingClient=${embeddingClient ? 'on' : 'off'}, responseGuard=late-bound)`,
+    `[harness-orchestrator] chatAgent@1 published (model=${model}, maxTokens=${String(maxTokens)}, maxIter=${String(maxIterations)}, verifier=${verifierBundle ? 'on' : 'off'}, calendar=${microsoft365 ? 'on' : 'off'}, contextRetriever=${contextRetriever ? 'on' : 'off'}, factExtractor=${factExtractor ? 'on' : 'off'}, palaiaExcerpt=${excerptExtractor ? 'on' : 'off'}, autoPromote=${autoPromote ? `on@${autoPromoteThreshold.toFixed(2)}` : 'off'}, durableAutoPromote=${autoPromoteDurableMinSignificance !== undefined ? `on@${autoPromoteDurableMinSignificance.toFixed(2)}` : 'off'}, embeddingClient=${embeddingClient ? 'on' : 'off'}, responseGuard=late-bound)`,
   );
 
   return {
