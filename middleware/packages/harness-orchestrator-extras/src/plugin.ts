@@ -437,11 +437,36 @@ export async function activate(
   // order: capture-filter → inconsistency-trigger → merge-trigger
   // (outermost). Cosine-only, no Anthropic dependency. Always active
   // when embeddingClient is wired.
+  // Slice 13 — AUTOMATIC dedup. When enabled (default on), the merge detector
+  // RESOLVES high-confidence duplicate MK pairs itself (retires the duplicate;
+  // durable `manuallyAuthored` nodes are never deleted) instead of only
+  // flagging for an operator — so re-learned knowledge stops accumulating on
+  // ANY deployment without a manual cleanup pass. Aggressive default 0.90 so
+  // paraphrased re-statements also merge. The detector's flag floor is lowered
+  // to the same threshold so sub-0.95 near-dups actually surface to be merged.
+  // Disable with kg_auto_merge_enabled=false (reverts to flag-only at 0.95).
+  const autoMergeEnabledRaw =
+    ctx.config.get<unknown>('kg_auto_merge_enabled') ??
+    process.env['KG_AUTO_MERGE_ENABLED'];
+  const autoMergeDisabled =
+    typeof autoMergeEnabledRaw === 'string'
+      ? autoMergeEnabledRaw.toLowerCase() === 'false'
+      : autoMergeEnabledRaw === false;
+  const autoMergeThreshold = parseNumberOrDefault(
+    ctx.config.get<unknown>('kg_auto_merge_threshold'),
+    0.9,
+  );
   const mergeCandidateDetector = createMergeCandidateDetector({
     graph: inconsistencyWrappedKg,
     ...(embeddingClient ? { embeddingClient } : {}),
+    ...(autoMergeDisabled
+      ? {}
+      : { autoMergeThreshold, minSimilarity: autoMergeThreshold }),
     log: (msg) => { console.error(msg); },
   });
+  ctx.log(
+    `[harness-orchestrator-extras] auto-merge ${autoMergeDisabled ? 'off (flag-only @0.95)' : `on (resolve >= ${autoMergeThreshold.toFixed(2)}, durable-protected)`}`,
+  );
   const disposeMergeCandidateDetector = ctx.services.provide(
     MERGE_CANDIDATE_DETECTOR_SERVICE_NAME,
     mergeCandidateDetector,

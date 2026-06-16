@@ -302,4 +302,47 @@ describe('Slice 4b · promoteTurnIfSignificant', () => {
     });
     assert.ok(createCalls[0]!.summary.length <= 500);
   });
+
+  it('skips agent-narration turns (ingest hygiene) even above threshold', async () => {
+    const { pool } = makeFakePool({
+      significanceRows: [{ significance: 0.85 }],
+      idempotencyRows: [],
+    });
+    const { kg, createCalls } = makeFakeKg({});
+    const out = await promoteTurnIfSignificant({
+      pool: pool as never,
+      tenantId: 'byte5',
+      kg,
+      turnId: TURN_ID,
+      userId: USER_ID,
+      threshold: 0.7,
+      // First-person agent narration — high significance but pure meta-process.
+      fallbackAssistantAnswer:
+        'Ich schaue kurz in den Memory für Konventionen und ob es schon Detail-Befunde gibt.',
+      log: () => {},
+    });
+    assert.equal(out.promoted, false);
+    assert.equal(out.reason, 'hygiene-skip');
+    assert.equal(createCalls.length, 0, 'narration must NOT be stored as MK');
+  });
+
+  it('still stores short factual turns (length is not a gate for fuzzy)', async () => {
+    const { pool } = makeFakePool({
+      significanceRows: [{ significance: 0.85 }],
+      idempotencyRows: [],
+    });
+    const { kg, createCalls } = makeFakeKg({});
+    const out = await promoteTurnIfSignificant({
+      pool: pool as never,
+      tenantId: 'byte5',
+      kg,
+      turnId: TURN_ID,
+      userId: USER_ID,
+      threshold: 0.7,
+      fallbackAssistantAnswer: 'Preis 1200 EUR.',
+      log: () => {},
+    });
+    assert.equal(out.promoted, true);
+    assert.equal(createCalls.length, 1);
+  });
 });

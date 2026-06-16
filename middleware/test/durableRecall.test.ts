@@ -257,4 +257,39 @@ describe('B1 · durable-curation tier surfaces manual MK', () => {
     });
     assert.equal(result.recalled.insights.length, 0, 'wrong kind not admitted');
   });
+
+  it('(e) durable insight renders FULL-length (not truncated to the fuzzy 300 cap)', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    // A long curated schema (>300 chars) — must reach the agent complete so it
+    // doesn't re-run discovery tools for fields it already has.
+    const longSchema =
+      '# Dynamics: Kurse / Seminare liegen in ud_tutorial (entitySet ud_tutorials). ' +
+      'Felder: ud_name (Name), ud_coursenumber (Kursnummer), ud_startdatetime (Start), ' +
+      'ud_enddatetime (Ende), ud_msa_city (Ort), ud_maxparticipants (Kapazität), ' +
+      'ud_price (Preis). Buchungen: ud_booking. Teilnehmer: ud_participant. ' +
+      'Registrierungen: ud_registration. Filter für Zeiträume über ud_startdatetime.';
+    assert.ok(longSchema.length > 300, 'fixture must exceed fuzzy cap');
+    const mkId = await seedDurableMk(kg, 'reference', longSchema);
+    const retriever = new ContextRetriever(
+      kg,
+      { teamVisibility: true },
+      queryEmbedder,
+    );
+    const result = await retriever.assembleForBudget({
+      userMessage: 'Welche Kurse finden nächste Woche statt?',
+      agentId: 'test-agent',
+      sessionScope: 'sess-now',
+      userId: 'alice',
+    });
+    assert.equal(result.recalled.insights.length, 1);
+    const ins = result.recalled.insights[0]!;
+    assert.equal(ins.mkId, mkId);
+    assert.equal(ins.durable, true, 'flagged durable');
+    assert.ok(
+      ins.summary.length > 300,
+      `durable summary must NOT be cut to 300 (got ${String(ins.summary.length)})`,
+    );
+    // The full schema text reaches the rendered recall block (agent prompt).
+    assert.match(result.text, /ud_participant/);
+  });
 });

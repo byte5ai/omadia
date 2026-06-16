@@ -24,6 +24,7 @@ import type {
 import type {
   EntityRefBus,
   KnowledgeGraph,
+  MemorableKind,
   MemoryStore,
   NudgeRegistry,
   NudgeStateStore,
@@ -118,6 +119,11 @@ export interface OrchestratorDeps {
   /** Merged from main 2026-05-26: KG-ACL auto-promotion env flags. */
   readonly autoPromote?: boolean;
   readonly autoPromoteThreshold?: number;
+  /** Trigger T3 — durable auto-promotion. Threaded here so dynamic / registry
+   *  agents self-curate the durable tier too (not just the static chatAgent@1).
+   *  Undefined → durable auto-promotion off for this agent. */
+  readonly autoPromoteDurableMinSignificance?: number;
+  readonly autoPromoteDurableKinds?: MemorableKind[];
   /** Shared Postgres pool the Orchestrator may use for direct KG writes. */
   readonly graphPool?: Pool;
   readonly graphTenantId?: string;
@@ -264,6 +270,15 @@ export function buildOrchestratorForAgent(
     ...(deps.autoPromote !== undefined ? { autoPromote: deps.autoPromote } : {}),
     ...(deps.autoPromoteThreshold !== undefined
       ? { autoPromoteThreshold: deps.autoPromoteThreshold }
+      : {}),
+    ...(deps.autoPromoteDurableMinSignificance !== undefined
+      ? {
+          autoPromoteDurableMinSignificance:
+            deps.autoPromoteDurableMinSignificance,
+        }
+      : {}),
+    ...(deps.autoPromoteDurableKinds !== undefined
+      ? { autoPromoteDurableKinds: deps.autoPromoteDurableKinds }
       : {}),
     ...(deps.graphPool ? { graphPool: deps.graphPool } : {}),
     ...(deps.graphTenantId ? { graphTenantId: deps.graphTenantId } : {}),

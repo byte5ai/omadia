@@ -888,6 +888,11 @@ export interface RecalledInsight {
   kind: string;
   summary: string;
   score: number;
+  /** True when this insight comes from the always-surface DURABLE tier
+   *  (curated `manuallyAuthored` reference/decision knowledge). Durable
+   *  insights render at full length (not the fuzzy cap) so the agent can
+   *  trust recalled schema instead of re-discovering it via tools. */
+  durable?: boolean;
 }
 
 /** What the cross-session probe surfaced this turn. Empty arrays when a leg
