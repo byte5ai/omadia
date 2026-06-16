@@ -214,6 +214,17 @@ export interface ProviderCapabilities {
   /** Supports `toolChoice: { type: 'required' | 'tool' }`. */
   readonly forcedToolChoice: boolean;
   readonly parallelToolCalls: boolean;
+  /** Whether the model emits assistant text AND tool calls in the SAME
+   *  message (Anthropic) versus one-or-the-other per completion (the OpenAI
+   *  Chat Completions family — Mistral/Ollama/vLLM/Azure — where a turn returns
+   *  either `content` or `tool_calls`, never both). Callers that rely on a
+   *  non-blocking "sidecar" tool the model is asked to call *alongside* its
+   *  prose answer (e.g. `suggest_follow_ups`) only get it on interleaving
+   *  providers; on non-interleaving ones the model tends to express the same
+   *  intent as PROSE instead, so the orchestrator compensates with a post-turn
+   *  pass. Optional; treated as `true` (interleaves) when unset, preserving
+   *  pre-existing behaviour for every provider that doesn't set it. */
+  readonly interleavedToolUse?: boolean;
 }
 
 export interface LlmProvider {
