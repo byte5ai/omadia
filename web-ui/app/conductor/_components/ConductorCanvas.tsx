@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import {
   addEdge,
@@ -129,7 +129,23 @@ interface ValidationError {
   message: string;
 }
 
-function CanvasInner({ workflows, onSaved }: { workflows: ConductorWorkflow[]; onSaved: () => void }): React.JSX.Element {
+// A request from the parent (e.g. the "Edit" button in the workflows list) to load a
+// workflow into the canvas. The nonce changes on every click so re-editing the same
+// workflow reloads it even though the slug is unchanged.
+export interface CanvasEditRequest {
+  slug: string;
+  nonce: number;
+}
+
+function CanvasInner({
+  workflows,
+  onSaved,
+  editRequest,
+}: {
+  workflows: ConductorWorkflow[];
+  onSaved: () => void;
+  editRequest: CanvasEditRequest | null;
+}): React.JSX.Element {
   const t = useTranslations('conductor');
   const [nodes, setNodes] = useState<StepNode[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
@@ -353,6 +369,12 @@ function CanvasInner({ workflows, onSaved }: { workflows: ConductorWorkflow[]; o
       setSaveError(err instanceof ApiError ? err.message : String(err));
     }
   }, []);
+
+  // Load the workflow the parent asked us to edit. The parent hands us a fresh
+  // object (new nonce) on every "Edit" click, so this fires once per click.
+  useEffect(() => {
+    if (editRequest?.slug) void loadWorkflow(editRequest.slug);
+  }, [editRequest, loadWorkflow]);
 
   const handleRun = useCallback(async () => {
     if (!slug) return;
@@ -676,10 +698,14 @@ function CanvasInner({ workflows, onSaved }: { workflows: ConductorWorkflow[]; o
   );
 }
 
-export function ConductorCanvas(props: { workflows: ConductorWorkflow[]; onSaved: () => void }): React.JSX.Element {
+export function ConductorCanvas(props: {
+  workflows: ConductorWorkflow[];
+  onSaved: () => void;
+  editRequest?: CanvasEditRequest | null;
+}): React.JSX.Element {
   return (
     <ReactFlowProvider>
-      <CanvasInner {...props} />
+      <CanvasInner {...props} editRequest={props.editRequest ?? null} />
     </ReactFlowProvider>
   );
 }

@@ -142,6 +142,7 @@
     "publishButton": "Publish",
     "publishing": "Publishing…",
     "runButton": "Run",
+    "editButton": "Edit",
     "running": "Running…",
     "refreshButton": "Refresh",
     "statusLabel": "Status",

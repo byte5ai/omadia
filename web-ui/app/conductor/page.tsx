@@ -46,6 +46,10 @@ export default function ConductorPage(): React.JSX.Element {
   // Swallows a double-fired click (synthetic input / accidental double-click) so one intent
   // never starts two runs or sends two responses.
   const lastAction = useRef(0);
+  // Edit flow: clicking "Edit" on a workflow loads it into the designer canvas below and
+  // scrolls there. The nonce changes per click so editing the same workflow twice reloads it.
+  const [editRequest, setEditRequest] = useState<{ slug: string; nonce: number } | null>(null);
+  const designerRef = useRef<HTMLElement>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -106,6 +110,11 @@ export default function ConductorPage(): React.JSX.Element {
     },
     [reload],
   );
+
+  const handleEdit = useCallback((wfSlug: string) => {
+    setEditRequest({ slug: wfSlug, nonce: Date.now() });
+    designerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, []);
 
   useEffect(() => {
     void reload();
@@ -199,14 +208,19 @@ export default function ConductorPage(): React.JSX.Element {
                     {wf.slug} · {t('statusLabel')}: {wf.status}
                   </div>
                 </div>
-                <Button
-                  variant="primary"
-                  busy={runningSlug === wf.slug}
-                  disabled={runningSlug !== null}
-                  onClick={() => void handleRun(wf.slug)}
-                >
-                  {runningSlug === wf.slug ? t('running') : t('runButton')}
-                </Button>
+                <div className="flex shrink-0 gap-2">
+                  <Button variant="secondary" disabled={runningSlug !== null} onClick={() => handleEdit(wf.slug)}>
+                    {t('editButton')}
+                  </Button>
+                  <Button
+                    variant="primary"
+                    busy={runningSlug === wf.slug}
+                    disabled={runningSlug !== null}
+                    onClick={() => void handleRun(wf.slug)}
+                  >
+                    {runningSlug === wf.slug ? t('running') : t('runButton')}
+                  </Button>
+                </div>
               </li>
             ))}
           </ul>
@@ -354,12 +368,12 @@ export default function ConductorPage(): React.JSX.Element {
       )}
 
       {/* Visual designer */}
-      <section>
+      <section ref={designerRef}>
         <h2 className="mb-1 text-[13px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
           {t('designerHeading')}
         </h2>
         <p className="mb-4 max-w-2xl text-[13px] text-[color:var(--fg-muted)]">{t('designerHint')}</p>
-        <ConductorCanvas workflows={workflows} onSaved={() => void reload()} />
+        <ConductorCanvas workflows={workflows} editRequest={editRequest} onSaved={() => void reload()} />
       </section>
     </main>
   );
