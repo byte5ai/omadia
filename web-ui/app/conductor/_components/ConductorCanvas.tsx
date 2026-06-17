@@ -352,6 +352,9 @@ function CanvasInner({ workflows, onSaved }: { workflows: ConductorWorkflow[]; o
 
   const handleRun = useCallback(async () => {
     if (!slug) return;
+    const now = Date.now();
+    if (now - lastAction.current < 600) return;
+    lastAction.current = now;
     setBusy(true);
     setRunResult(null);
     try {

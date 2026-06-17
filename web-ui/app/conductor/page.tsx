@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
@@ -28,6 +28,9 @@ export default function ConductorPage(): React.JSX.Element {
   const [runError, setRunError] = useState<string | null>(null);
   const [awaits, setAwaits] = useState<ConductorAwait[]>([]);
   const [awaitBusy, setAwaitBusy] = useState<string | null>(null);
+  // Swallows a double-fired click (synthetic input / accidental double-click) so one intent
+  // never starts two runs or sends two responses.
+  const lastAction = useRef(0);
 
   const reload = useCallback(async () => {
     try {
@@ -42,6 +45,9 @@ export default function ConductorPage(): React.JSX.Element {
 
   const handleRespond = useCallback(
     async (awaitId: string, approved: boolean) => {
+      const now = Date.now();
+      if (now - lastAction.current < 600) return;
+      lastAction.current = now;
       setAwaitBusy(awaitId);
       try {
         await respondToAwait(awaitId, { approved });
@@ -61,6 +67,9 @@ export default function ConductorPage(): React.JSX.Element {
 
   const handleRun = useCallback(
     async (wfSlug: string) => {
+      const now = Date.now();
+      if (now - lastAction.current < 600) return;
+      lastAction.current = now;
       setRunningSlug(wfSlug);
       setRunError(null);
       setRunResult(null);
