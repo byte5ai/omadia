@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import {
   addEdge,
@@ -140,7 +140,9 @@ function CanvasInner({ workflows, onSaved }: { workflows: ConductorWorkflow[]; o
   const [triggerEventId, setTriggerEventId] = useState('');
   const [triggerCron, setTriggerCron] = useState('');
 
-  const [counter, setCounter] = useState(1);
+  // Monotonic id source — guarantees unique node/edge ids even if a click double-fires.
+  const nextId = useRef(0);
+  const lastAction = useRef(0);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [validationErrors, setValidationErrors] = useState<ValidationError[]>([]);
@@ -155,26 +157,30 @@ function CanvasInner({ workflows, onSaved }: { workflows: ConductorWorkflow[]; o
   }, []);
   const onConnect = useCallback((c: Connection) => {
     if (!c.source || !c.target) return;
-    setEdges((es) => addEdge({ ...c, id: `t-${String(es.length + 1)}-${String(Date.now() % 10000)}`, data: { guard: '' } }, es));
+    nextId.current += 1;
+    const id = `t-${String(nextId.current)}`;
+    setEdges((es) => addEdge({ ...c, id, data: { guard: '' } }, es));
   }, []);
 
-  const addStep = useCallback(
-    (kind: StepKind) => {
-      const n = counter;
-      setCounter((c) => c + 1);
-      const id = `n${String(n)}-${String(Date.now() % 10000)}`;
-      setNodes((ns) => [
-        ...ns,
-        {
-          id,
-          type: 'step',
-          position: { x: 80 + (ns.length % 4) * 200, y: 80 + Math.floor(ns.length / 4) * 130 },
-          data: { ...emptyData(kind, n), isEntry: ns.length === 0 },
-        },
-      ]);
-    },
-    [counter],
-  );
+  const addStep = useCallback((kind: StepKind) => {
+    // Swallow a double-fired click (synthetic input / accidental double-click) so a
+    // single intent never produces two nodes.
+    const now = Date.now();
+    if (now - lastAction.current < 350) return;
+    lastAction.current = now;
+    nextId.current += 1;
+    const n = nextId.current;
+    const id = `node-${String(n)}`;
+    setNodes((ns) => [
+      ...ns,
+      {
+        id,
+        type: 'step',
+        position: { x: 80 + (ns.length % 4) * 200, y: 80 + Math.floor(ns.length / 4) * 130 },
+        data: { ...emptyData(kind, n), isEntry: ns.length === 0 },
+      },
+    ]);
+  }, []);
 
   const patchNode = useCallback((nodeId: string, patch: Partial<StepNodeData>) => {
     setNodes((ns) => ns.map((node) => (node.id === nodeId ? { ...node, data: { ...node.data, ...patch } } : node)));
@@ -332,6 +338,7 @@ function CanvasInner({ workflows, onSaved }: { workflows: ConductorWorkflow[]; o
       }));
       setNodes(newNodes);
       setEdges(newEdges);
+      nextId.current += g.steps.length + g.transitions.length;
       const trig = g.triggers?.[0];
       if (trig) {
         setTriggerKind((trig.kind as 'manual' | 'event' | 'cron') ?? 'manual');
