@@ -2030,7 +2030,16 @@ async function main(): Promise<void> {
 
     // Conductor (Spec 005) — deterministic workflow engine. Migrations + stores +
     // run executor + operator API, all behind the graphPool (inert in-memory).
-    await wireConductor({ pool: graphPool, app, requireAuth, log: (m) => console.log(m) });
+    // Agent steps run real turns on Agents (orchestrator instances) resolved by slug
+    // from the registry; action steps invoke real connector tools.
+    await wireConductor({
+      pool: graphPool,
+      app,
+      requireAuth,
+      getRegistry,
+      invokeAction: (toolId, input) => dynamicAgentRuntime.invokeAgentTool(toolId, input),
+      log: (m) => console.log(m),
+    });
     console.log('[middleware] conductor wired at /api/v1/operator/conductors/* (auth-gated)');
     const userStore = new UserStore(graphPool);
 

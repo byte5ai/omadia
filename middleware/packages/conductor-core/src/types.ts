@@ -118,10 +118,17 @@ export interface CanvasPosition {
 export interface Step {
   id: string;
   kind: StepKind;
-  /** required when kind='agent'. */
+  /** required when kind='agent'. The **slug of an Agent (orchestrator instance)** in the
+   *  multi-orchestrator registry (e.g. "fallback") — NOT a sub-agent or a bare model. The
+   *  Conductor resolves it live via the registry and runs a real turn on that orchestrator. */
   agentId?: string;
-  /** required when kind='action'. */
+  /** required when kind='action'. The deterministic-action / connector tool id to invoke. */
   actionId?: string;
+  /** kind='agent': the message sent to the orchestrator turn. Supports `{{ctx.path}}` /
+   *  `{{steps.stepId.field}}` interpolation against the run context. */
+  prompt?: string;
+  /** kind='action': the input object passed to the connector action. */
+  input?: JsonObject;
   /** required when kind='human'. */
   human?: HumanStepConfig;
   /** the step's exit postcondition; absent ≡ always met. */

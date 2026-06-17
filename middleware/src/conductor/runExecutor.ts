@@ -106,8 +106,8 @@ export class ConductorRunExecutor {
       let exec;
       try {
         exec = step.kind === 'agent'
-          ? await this.effects.runAgentStep(step, context)
-          : await this.effects.runActionStep(step, context);
+          ? await this.effects.runAgentStep(step, context, { runId: run.id })
+          : await this.effects.runActionStep(step, context, { runId: run.id });
       } catch (err) {
         this.log(`[conductor] run ${run.id} step '${stepId}' threw: ${err instanceof Error ? err.message : String(err)}`);
         await this.runStore.recordStepAndAdvance({

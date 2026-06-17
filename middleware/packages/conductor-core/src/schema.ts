@@ -29,6 +29,8 @@ export const conductorGraphSchema = {
         kind: { enum: ['agent', 'action', 'human'] },
         agentId: { type: 'string' },
         actionId: { type: 'string' },
+        prompt: { type: 'string' },
+        input: { type: 'object' },
         human: { $ref: '#/$defs/human' },
         postcondition: { $ref: '#/$defs/predicate' },
         fallbackTransitionId: { type: 'string' },

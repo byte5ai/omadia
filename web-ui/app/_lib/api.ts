@@ -3516,3 +3516,71 @@ export async function installSelfExtensionProposal(
     proposal: resp.proposal,
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Conductor (Spec 005) — deterministic workflow engine operator API.
+// Backed by the middleware /api/v1/operator/conductors router (cookie auth).
+// ─────────────────────────────────────────────────────────────────────────
+
+export interface ConductorWorkflow {
+  id: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  status: 'enabled' | 'disabled';
+  activeVersionId: string | null;
+}
+
+export interface ConductorRun {
+  id: string;
+  workflowVersionId: string;
+  status: 'running' | 'waiting' | 'completed' | 'failed';
+  currentStepId: string | null;
+  context: unknown;
+  triggerKind: string;
+  startedAt: string;
+  endedAt: string | null;
+}
+
+export interface ConductorRunStep {
+  id: string;
+  runId: string;
+  stepId: string;
+  seq: number;
+  actor: unknown;
+  postconditionOutcome: string | null;
+  transitionTaken: string | null;
+}
+
+export interface ConductorRunResult {
+  run: ConductorRun;
+  steps: ConductorRunStep[];
+}
+
+const CONDUCTOR_BASE = '/v1/operator/conductors';
+
+export async function listConductorWorkflows(): Promise<{ workflows: ConductorWorkflow[] }> {
+  return getJson(CONDUCTOR_BASE);
+}
+
+export async function publishConductorWorkflow(body: {
+  slug: string;
+  name: string;
+  description?: string;
+  graph: unknown;
+  enable?: boolean;
+}): Promise<{ workflow: ConductorWorkflow; version: { id: string; version: number } }> {
+  return postJson(CONDUCTOR_BASE, body);
+}
+
+export async function startConductorRun(slug: string, payload: unknown): Promise<ConductorRunResult> {
+  return postJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/runs`, { payload });
+}
+
+export async function listConductorRuns(slug: string): Promise<{ runs: ConductorRun[] }> {
+  return getJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/runs`);
+}
+
+export async function getConductorRun(slug: string, runId: string): Promise<ConductorRunResult> {
+  return getJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/runs/${encodeURIComponent(runId)}`);
+}

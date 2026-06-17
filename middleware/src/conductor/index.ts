@@ -1,11 +1,12 @@
 import type { Express, RequestHandler } from 'express';
 import type { Pool } from 'pg';
+import type { OrchestratorRegistry } from '@omadia/orchestrator';
 
 import { runConductorMigrations } from './migrator.js';
 import { ConductorWorkflowStore } from './workflowStore.js';
 import { ConductorRunStore } from './runStore.js';
 import { ConductorRunExecutor } from './runExecutor.js';
-import { StubStepEffects } from './stepEffects.js';
+import { RealStepEffects } from './realStepEffects.js';
 import { createConductorRouter } from './routes.js';
 
 export { runConductorMigrations } from './migrator.js';
@@ -13,7 +14,8 @@ export { ConductorWorkflowStore } from './workflowStore.js';
 export { ConductorRunStore } from './runStore.js';
 export { ConductorRunExecutor } from './runExecutor.js';
 export { StubStepEffects } from './stepEffects.js';
-export type { StepEffects, StepExecution } from './stepEffects.js';
+export { RealStepEffects } from './realStepEffects.js';
+export type { StepEffects, StepExecution, StepMeta } from './stepEffects.js';
 export { createConductorRouter } from './routes.js';
 
 export interface ConductorWiring {
@@ -32,6 +34,10 @@ export async function wireConductor(deps: {
   pool: Pool;
   app: Express;
   requireAuth: RequestHandler;
+  /** resolves an Agent (orchestrator instance) by slug for agent steps. */
+  getRegistry: () => OrchestratorRegistry | undefined;
+  /** invokes a deterministic-action / connector tool by id for action steps. */
+  invokeAction?: (toolId: string, input: unknown) => Promise<string | undefined>;
   log?: (msg: string) => void;
 }): Promise<ConductorWiring> {
   const log = deps.log ?? (() => undefined);
@@ -42,7 +48,11 @@ export async function wireConductor(deps: {
   const executor = new ConductorRunExecutor({
     workflowStore,
     runStore,
-    effects: new StubStepEffects(),
+    effects: new RealStepEffects({
+      getRegistry: deps.getRegistry,
+      ...(deps.invokeAction ? { invokeAction: deps.invokeAction } : {}),
+      log,
+    }),
     log,
   });
 

@@ -7,14 +7,20 @@ export interface StepExecution {
   actor: JsonValue;
 }
 
+/** Per-call context the executor passes to effects (for session bucketing / tracing). */
+export interface StepMeta {
+  runId: string;
+}
+
 /**
  * The I/O side of step execution, injected into the run executor. Production wires real
- * orchestrator turns / connector actions; preview (US8) and tests wire fakes. This is the
- * seam that lets the deterministic engine stay pure while the executor performs side effects.
+ * orchestrator turns / connector actions (RealStepEffects); preview (US8) and tests wire fakes.
+ * This is the seam that lets the deterministic engine stay pure while the executor performs
+ * side effects.
  */
 export interface StepEffects {
-  runAgentStep(step: Step, context: JsonObject): Promise<StepExecution>;
-  runActionStep(step: Step, context: JsonObject): Promise<StepExecution>;
+  runAgentStep(step: Step, context: JsonObject, meta: StepMeta): Promise<StepExecution>;
+  runActionStep(step: Step, context: JsonObject, meta: StepMeta): Promise<StepExecution>;
 }
 
 /**
@@ -24,14 +30,14 @@ export interface StepEffects {
  * connector-action execution replace these two methods in a later phase.
  */
 export class StubStepEffects implements StepEffects {
-  async runAgentStep(step: Step, _context: JsonObject): Promise<StepExecution> {
+  async runAgentStep(step: Step, _context: JsonObject, _meta: StepMeta): Promise<StepExecution> {
     return {
       result: { stub: true, kind: 'agent', agentId: step.agentId ?? null },
       actor: { kind: 'agent', agentId: step.agentId ?? null },
     };
   }
 
-  async runActionStep(step: Step, _context: JsonObject): Promise<StepExecution> {
+  async runActionStep(step: Step, _context: JsonObject, _meta: StepMeta): Promise<StepExecution> {
     return {
       result: { stub: true, kind: 'action', actionId: step.actionId ?? null },
       actor: { kind: 'action', actionId: step.actionId ?? null },
