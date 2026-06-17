@@ -10,13 +10,24 @@ import { test } from 'node:test';
 
 import type OpenAI from 'openai';
 
+import { registerAnthropicAdapter } from '@omadia/llm-adapter-anthropic';
 import {
   classifyOpenAiError,
   createOpenAiProvider,
+  registerOpenAiAdapter,
+} from '@omadia/llm-adapter-openai';
+import {
+  defaultLlmAdapters,
   LlmProviderCatalog,
   resolveLlmProvider,
   type LlmRequest,
 } from '@omadia/llm-provider';
+
+// resolveLlmProvider resolves via the wire-format adapter registry (registered
+// at boot in the app). Tests run without boot — register into the process-default
+// registry here (idempotent).
+registerAnthropicAdapter(defaultLlmAdapters);
+registerOpenAiAdapter(defaultLlmAdapters);
 
 interface Captured {
   params?: Record<string, unknown>;

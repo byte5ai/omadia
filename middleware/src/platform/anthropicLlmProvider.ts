@@ -14,10 +14,12 @@
  * no tools — the orchestrator handles tool-loops itself).
  */
 import {
-  collectText,
   createAnthropicProvider,
-  textMessage,
   type AnthropicClient,
+} from '@omadia/llm-adapter-anthropic';
+import {
+  collectText,
+  textMessage,
   type LlmProvider as NeutralLlmProvider,
 } from '@omadia/llm-provider';
 import type {

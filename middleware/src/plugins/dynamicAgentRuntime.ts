@@ -3,10 +3,12 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import {
-  coerceModelToProvider,
   createAnthropicProvider,
-  resolveLlmProvider,
   type AnthropicClient,
+} from '@omadia/llm-adapter-anthropic';
+import {
+  coerceModelToProvider,
+  resolveLlmProvider,
   type LlmProvider,
 } from '@omadia/llm-provider';
 import type { z } from 'zod';

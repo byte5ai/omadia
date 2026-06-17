@@ -15,8 +15,10 @@ import { APIConnectionError, APIConnectionTimeoutError } from 'openai';
 
 import {
   classifyOpenAiError,
-  collectText,
   createOpenAiProvider,
+} from '@omadia/llm-adapter-openai';
+import {
+  collectText,
   toolCalls,
   type LlmStreamEvent,
 } from '@omadia/llm-provider';

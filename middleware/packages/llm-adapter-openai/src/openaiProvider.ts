@@ -48,7 +48,7 @@ import type {
   ToolChoice,
   ToolResultPart,
   ToolSpec,
-} from './types.js';
+} from '@omadia/llm-provider-api';
 
 /** Provide EITHER a ready-made `client` OR an `apiKey` (+ optional `baseURL`) for
  *  the adapter to build one via `createOpenAiClient`. At least one is required;

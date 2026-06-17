@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import {
   createAnthropicClient,
   createAnthropicProvider,
-} from '@omadia/llm-provider';
+} from '@omadia/llm-adapter-anthropic';
 import { InMemoryNudgeRegistry } from '@omadia/plugin-api';
 import type {
   EntityRefBus,

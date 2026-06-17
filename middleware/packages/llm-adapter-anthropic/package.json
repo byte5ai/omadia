@@ -1,0 +1,23 @@
+{
+  "name": "@omadia/llm-adapter-anthropic",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "Anthropic Messages wire-format adapter for the omadia LLM provider seam. Implements the @omadia/llm-provider-api LlmAdapter contract (wireFormat 'anthropic') and confines all @anthropic-ai/sdk knowledge here. Register it into an LlmAdapterRegistry at boot via registerAnthropicAdapter. See docs/plans/issue-298-provider-plugins.md.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@omadia/llm-provider-api": "*"
+  },
+  "peerDependencies": {
+    "@anthropic-ai/sdk": "*"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
