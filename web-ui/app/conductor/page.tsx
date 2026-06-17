@@ -7,6 +7,7 @@ import { useTranslations } from 'next-intl';
 import { Button } from '@/app/_components/ui/Button';
 import {
   ApiError,
+  getConductorRun,
   listConductorWorkflows,
   publishConductorWorkflow,
   startConductorRun,
@@ -110,8 +111,16 @@ export default function ConductorPage(): React.JSX.Element {
       setRunError(null);
       setRunResult(null);
       try {
-        const res = await startConductorRun(wfSlug, {});
-        setRunResult(res);
+        const started = await startConductorRun(wfSlug, {});
+        setRunResult(started);
+        const runId = started.run.id;
+        // The run drives in the background (real agent turns are slow). Poll the trace.
+        for (let i = 0; i < 60; i += 1) {
+          await new Promise((r) => setTimeout(r, 2000));
+          const latest = await getConductorRun(wfSlug, runId);
+          setRunResult(latest);
+          if (latest.run.status !== 'running') break;
+        }
         await reload();
       } catch (err) {
         setRunError(err instanceof ApiError ? err.message : String(err));

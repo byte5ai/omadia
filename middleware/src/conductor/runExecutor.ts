@@ -45,6 +45,8 @@ export class ConductorRunExecutor {
     triggerKind?: TriggerKind;
     triggerSource?: JsonValue | null;
     isDryRun?: boolean;
+    /** drive the run to completion before returning (default false = background). */
+    awaitCompletion?: boolean;
   }): Promise<ConductorRun> {
     const wf = await this.workflowStore.getBySlug(input.slug);
     if (!wf) throw new WorkflowNotFoundError(`workflow '${input.slug}' not found`);
@@ -67,7 +69,17 @@ export class ConductorRunExecutor {
       isDryRun: input.isDryRun ?? false,
     });
 
-    return this.drive(run, version.graph);
+    // Real agent/action steps can take many seconds — drive the run in the background and
+    // return immediately. The run is durable; callers observe progress via the run/trace API
+    // (FR-004). Pass `awaitCompletion` to drive synchronously (tests, fast deterministic steps).
+    if (input.awaitCompletion) {
+      return this.drive(run, version.graph);
+    }
+    const graph = version.graph;
+    void this.drive(run, graph).catch((err) => {
+      this.log(`[conductor] run ${run.id} drive crashed: ${err instanceof Error ? err.message : String(err)}`);
+    });
+    return run;
   }
 
   private async drive(run: ConductorRun, graph: WorkflowGraph): Promise<ConductorRun> {

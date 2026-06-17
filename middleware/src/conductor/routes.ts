@@ -79,6 +79,7 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
         version: { id: out.version.id, version: out.version.version },
       });
     } catch (err) {
+      console.error('[conductor] publish failed:', err);
       res.status(500).json({ code: 'conductor.publish_failed', message: errMsg(err) });
     }
   });
@@ -103,9 +104,11 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
     const slug = paramStr(req.params.slug);
     const payload = asObject(asObject(req.body).payload);
     try {
+      // Async: the run is created + driven in the background (real agent turns are slow).
+      // 202 Accepted; the client polls GET /:slug/runs/:runId for the final status + trace.
       const run = await deps.executor.startRun({ slug, payload, triggerKind: 'manual' });
       const steps = await deps.runStore.stepsForRun(run.id);
-      res.status(201).json({ run, steps });
+      res.status(202).json({ run, steps });
     } catch (err) {
       if (err instanceof WorkflowNotFoundError) {
         res.status(404).json({ code: 'conductor.not_found', message: err.message });
@@ -114,6 +117,7 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       } else if (err instanceof WorkflowNotPublishedError) {
         res.status(409).json({ code: 'conductor.not_published', message: err.message });
       } else {
+        console.error('[conductor] run start failed:', err);
         res.status(500).json({ code: 'conductor.run_failed', message: errMsg(err) });
       }
     }
