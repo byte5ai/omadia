@@ -21,6 +21,12 @@ function asObject(v: unknown): JsonObject {
   return typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as JsonObject) : {};
 }
 
+function paramStr(v: string | string[] | undefined): string {
+  if (typeof v === 'string') return v;
+  if (Array.isArray(v)) return v[0] ?? '';
+  return '';
+}
+
 export interface ConductorRouterDeps {
   workflowStore: ConductorWorkflowStore;
   runStore: ConductorRunStore;
@@ -54,7 +60,7 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       res.status(400).json({ code: 'conductor.invalid_input', message: 'slug and name are required' });
       return;
     }
-    const graph = body.graph as WorkflowGraph;
+    const graph = body.graph as unknown as WorkflowGraph;
     const result = validate(graph);
     if (!result.ok) {
       res.status(400).json({ code: 'conductor.invalid_graph', errors: result.errors });
@@ -85,7 +91,7 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       return;
     }
     try {
-      await deps.workflowStore.setStatus(req.params.slug ?? '', status);
+      await deps.workflowStore.setStatus(paramStr(req.params.slug), status);
       res.status(204).end();
     } catch (err) {
       res.status(500).json({ code: 'conductor.status_failed', message: errMsg(err) });
@@ -94,7 +100,7 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
 
   // Start a manual run; returns the (synchronously driven) run plus its step trace.
   router.post('/:slug/runs', async (req: Request, res: Response): Promise<void> => {
-    const slug = req.params.slug ?? '';
+    const slug = paramStr(req.params.slug);
     const payload = asObject(asObject(req.body).payload);
     try {
       const run = await deps.executor.startRun({ slug, payload, triggerKind: 'manual' });
@@ -116,7 +122,7 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
   // List runs for a workflow's active version.
   router.get('/:slug/runs', async (req: Request, res: Response): Promise<void> => {
     try {
-      const wf = await deps.workflowStore.getBySlug(req.params.slug ?? '');
+      const wf = await deps.workflowStore.getBySlug(paramStr(req.params.slug));
       if (!wf || !wf.activeVersionId) {
         res.status(404).json({ code: 'conductor.not_found', message: 'workflow or active version missing' });
         return;
@@ -130,7 +136,7 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
   // Single run with its ordered step trace (audit / US9 surface).
   router.get('/:slug/runs/:runId', async (req: Request, res: Response): Promise<void> => {
     try {
-      const run = await deps.runStore.get(req.params.runId ?? '');
+      const run = await deps.runStore.get(paramStr(req.params.runId));
       if (!run) {
         res.status(404).json({ code: 'conductor.not_found', message: 'run not found' });
         return;

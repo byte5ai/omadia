@@ -91,7 +91,11 @@ export class ConductorRunExecutor {
       if (step.kind === 'human') {
         await this.runStore.recordStepAndAdvance({
           runId: run.id, seq, stepId,
-          actor: { kind: 'human', principal: step.human?.principal ?? null },
+          actor: {
+            kind: 'human',
+            principalKind: step.human?.principal.kind ?? null,
+            principalRef: step.human?.principal.ref ?? null,
+          },
           postconditionOutcome: 'n/a', transitionTaken: null,
           nextStepId: stepId, context, status: 'waiting',
         });
