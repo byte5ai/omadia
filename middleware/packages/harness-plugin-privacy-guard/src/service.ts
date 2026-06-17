@@ -78,6 +78,61 @@ interface V4ReceiptAccum {
   pseudonymProjectionUsed: boolean;
 }
 
+const V4_RENDER_NOTE =
+  '[privacy-shield-v4] Final answer rendered server-side for the user. ' +
+  'The turn is complete — do not restate the answer.';
+
+interface PendingCanvasTreeEnvelope {
+  readonly _pendingCanvasTree: {
+    readonly tree: {
+      readonly type: 'container';
+      readonly id: 'pg-render';
+      readonly layout: 'stack';
+      readonly children: readonly [
+        {
+          readonly type: 'table';
+          readonly id: 'pg-render-table';
+          readonly columns: readonly {
+            readonly fieldKey: string;
+            readonly label: string;
+            readonly type?: string;
+            readonly privacy?: 'guard-protected';
+          }[];
+          readonly rows: readonly {
+            readonly rowKey: string;
+            readonly cells: Record<string, unknown>;
+          }[];
+        },
+      ];
+    };
+  };
+  readonly _note: string;
+}
+
+function buildRenderSnapshotResultText(
+  structuredTable: NonNullable<ReturnType<typeof materialize>['structuredTable']>,
+): string {
+  const payload: PendingCanvasTreeEnvelope = {
+    _pendingCanvasTree: {
+      tree: {
+        type: 'container',
+        id: 'pg-render',
+        layout: 'stack',
+        children: [
+          {
+            type: 'table',
+            id: 'pg-render-table',
+            columns: structuredTable.columns,
+            rows: structuredTable.rows,
+          },
+        ],
+      },
+    },
+    _note: V4_RENDER_NOTE,
+  };
+  return JSON.stringify(payload);
+}
+
 export function createPrivacyGuardService(deps?: {
   /**
    * Host-LLM accessor (`ctx.llm.complete`) for Slice-2 schema-level PII
@@ -255,8 +310,9 @@ export function createPrivacyGuardService(deps?: {
           );
           return {
             resultText:
-              '[privacy-shield-v4] Final answer rendered server-side for ' +
-              'the user. The turn is complete — do not restate the answer.',
+              rendered.structuredTable !== undefined
+                ? buildRenderSnapshotResultText(rendered.structuredTable)
+                : V4_RENDER_NOTE,
           };
         }
         const engine = createVerbEngine({

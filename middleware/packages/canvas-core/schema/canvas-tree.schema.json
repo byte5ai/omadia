@@ -95,7 +95,8 @@
       "type": "object", "additionalProperties": false, "required": ["fieldKey", "label"],
       "properties": {
         "fieldKey": { "type": "string" }, "label": { "type": "string" },
-        "type": { "type": "string" }, "dataClass": { "type": "string" }
+        "type": { "type": "string" }, "dataClass": { "type": "string" },
+        "privacy": { "enum": ["guard-protected"], "description": "set when this column was masked from the LLM by the Privacy Guard (classification 'sensitive-masked') and its real values were materialized server-side. The renderer marks the column as never-seen-by-an-LLM. Absent = ordinary column." }
       }
     },
 

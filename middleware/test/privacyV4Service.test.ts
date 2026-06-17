@@ -78,6 +78,47 @@ describe('PrivacyGuardService.v4ToolSpecs', () => {
 });
 
 describe('PrivacyGuardService.runV4Tool — end-to-end data path', () => {
+  it('returns a canvas-table sentinel envelope for table renders', async () => {
+    const svc = createPrivacyGuardService();
+    const turnId = 't-table-envelope';
+    const interned = await svc.internToolResultV4({
+      sessionId: 's',
+      turnId,
+      toolName: 'hr.leave',
+      rawResult: JSON.stringify(HR_LEAVE),
+    });
+
+    const rendered = await svc.runV4Tool({
+      sessionId: 's',
+      turnId,
+      toolName: 'v4_render_answer',
+      input: {
+        datasetId: datasetIdOf(interned.digestText),
+        columns: ['employee', 'days'],
+        format: 'table',
+      },
+    });
+
+    const payload = JSON.parse(rendered.resultText) as {
+      _pendingCanvasTree: {
+        tree: {
+          children: Array<{
+            type: string;
+            columns: Array<{ fieldKey: string; privacy?: string }>;
+            rows: Array<{ rowKey: string; cells: Record<string, unknown> }>;
+          }>;
+        };
+      };
+    };
+    const table = payload._pendingCanvasTree.tree.children[0];
+    assert.equal(table?.type, 'table');
+    assert.equal(
+      table?.columns.find((column) => column.fieldKey === 'employee')?.privacy,
+      'guard-protected',
+    );
+    assert.equal(table?.rows[0]?.cells.employee, 'Marvin Vomberg');
+  });
+
   it('intern → verb → render → takeRenderedAnswer yields a real answer', async () => {
     const svc = createPrivacyGuardService();
     const turnId = 't-e2e';

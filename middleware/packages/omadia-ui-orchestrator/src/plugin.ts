@@ -93,6 +93,12 @@ export interface UiOrchestratorPluginHandle {
  *  skeleton as a deterministic `surface_patch`. Always in the allow-set. */
 export const CANVAS_PUBLISH_TOOL = 'canvas_publish_rows';
 
+/** Privacy Shield v4 table renders publish a full `_pendingCanvasTree`
+ *  snapshot in the streamed `tool_result` itself: v4 tools bypass the
+ *  orchestrator's pre-intern canvas-sentinel tap, so this tool must be
+ *  authorised on the direct-output path. */
+export const V4_RENDER_TOOL = 'v4_render_answer';
+
 /** Resolves a privacy-shield datasetId to its real rows within the current
  *  turn. Returns `'unavailable'` when no privacy provider with dataset
  *  support is active (or no turn context exists), `undefined` for an
@@ -116,11 +122,12 @@ const looksLikeDatasetRef = (rows: ReadonlyArray<Record<string, unknown>>): bool
 const MAX_DATASET_PUBLISH_ROWS = 500;
 
 /** Install the canvas sentinel tap and return the FIFO lookup for
- *  `synthesizeSurfaceEvents`. On privacy-guard servers every tool result
- *  reaching the stream is the interned digest — the guard's dispatch sites
- *  hand the RAW sentinel-bearing result to this sink BEFORE interning, so
- *  synthesis composes from ground truth (incl. server-side resolved dataset
- *  rows the LLM never sees). The sink is set on the CURRENT (outer) scope —
+ *  `synthesizeSurfaceEvents`. On privacy-guard servers most sentinel-bearing
+ *  tool results reaching the stream are interned digests, so the guard's
+ *  dispatch sites hand the RAW sentinel-bearing result to this sink BEFORE
+ *  interning; `v4_render_answer` is the deliberate exception, publishing its
+ *  full `_pendingCanvasTree` snapshot directly in the streamed output. The
+ *  sink is set on the CURRENT (outer) scope —
  *  the orchestrator's turn scope carries it inward (same merge contract as
  *  `captureRawToolResult`); when no scope exists yet (canvas channel
  *  dispatch), one is entered with placeholder identity, exactly like
@@ -434,6 +441,10 @@ export async function activate(
     CANVAS_PUBLISH_TOOL,
     CANVAS_CHOICE_TOOL,
     CANVAS_LUMEN_TOOL,
+    // Privacy Shield v4 table renders stream a full `_pendingCanvasTree`
+    // snapshot themselves; synthesis must therefore authorise this tool even
+    // though it bypasses the normal pre-intern raw-sentinel sink.
+    V4_RENDER_TOOL,
     ...(ctx.config?.get<string>('canvas_output_tools') ?? '')
       .split(',')
       .map((s) => s.trim())
