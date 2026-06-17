@@ -93,28 +93,20 @@ export class ConductorWorkflowStore {
     try {
       await client.query('BEGIN');
 
-      const existing = await client.query<WorkflowRow>(
-        'SELECT id, slug, name, description, status, active_version_id FROM conductor_workflows WHERE slug = $1 FOR UPDATE',
-        [input.slug],
+      // Idempotent upsert — race-safe under concurrent/double-submitted publishes of the
+      // same slug (a SELECT-then-INSERT would let two requests both pass the check and one
+      // hit the unique-constraint). Status is only set on first create, never changed here.
+      const upserted = await client.query<{ id: string }>(
+        `INSERT INTO conductor_workflows (slug, name, description, status)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (slug) DO UPDATE
+           SET name = EXCLUDED.name, description = EXCLUDED.description, updated_at = now()
+         RETURNING id`,
+        [input.slug, input.name, input.description ?? null, input.enable ? 'enabled' : 'disabled'],
       );
-
-      let workflowId: string;
-      if (existing.rows[0]) {
-        workflowId = existing.rows[0].id;
-        await client.query(
-          `UPDATE conductor_workflows
-             SET name = $2, description = $3, updated_at = now()
-           WHERE id = $1`,
-          [workflowId, input.name, input.description ?? null],
-        );
-      } else {
-        const created = await client.query<{ id: string }>(
-          `INSERT INTO conductor_workflows (slug, name, description, status)
-           VALUES ($1, $2, $3, $4) RETURNING id`,
-          [input.slug, input.name, input.description ?? null, input.enable ? 'enabled' : 'disabled'],
-        );
-        workflowId = created.rows[0]!.id;
-      }
+      const workflowId = upserted.rows[0]!.id;
+      // Serialize concurrent publishes of the same workflow so version numbering can't collide.
+      await client.query('SELECT id FROM conductor_workflows WHERE id = $1 FOR UPDATE', [workflowId]);
 
       const next = await client.query<{ next: number }>(
         `SELECT COALESCE(MAX(version), 0) + 1 AS next
