@@ -43,9 +43,15 @@ export interface ComposedPatch {
 interface TableNode {
   type: 'table';
   loading?: string;
-  columns?: Array<{ fieldKey: string; label: string }>;
+  columns?: Array<{ fieldKey: string; label: string; privacy?: 'guard-protected' }>;
   rows: Array<{ rowKey: string; cells: Record<string, unknown> }>;
   [key: string]: unknown;
+}
+
+interface PublishedTableColumn {
+  fieldKey: string;
+  label: string;
+  privacy?: 'guard-protected';
 }
 
 function escapePointerSegment(seg: string): string {
@@ -80,6 +86,17 @@ function findNodeById(
 
 function isTableNode(node: Record<string, unknown>): node is TableNode {
   return node['type'] === 'table' && Array.isArray(node['rows']);
+}
+
+function isPublishedTableColumn(value: unknown): value is PublishedTableColumn {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const column = value as { fieldKey?: unknown; label?: unknown; privacy?: unknown };
+  return (
+    typeof column.fieldKey === 'string' &&
+    column.fieldKey.length > 0 &&
+    typeof column.label === 'string' &&
+    (column.privacy === undefined || column.privacy === 'guard-protected')
+  );
 }
 
 interface ChartNode {
@@ -452,9 +469,28 @@ export function composeStructuredPayloadPatch(opts: {
   if (!isTableNode(hit.node)) return null;
   const table: { node: TableNode; path: string } = { node: hit.node, path: hit.path };
 
-  // Cells are mapped against the SKELETON's own columns — the contract the
-  // [canvas-context] handoff asked Tier 3 to fill.
-  const fieldKeys = (table.node.columns ?? []).map((c) => c.fieldKey);
+  const existingSkeletonColumns = table.node.columns ?? [];
+  const dataCols = (data as { columns?: unknown }).columns;
+  const publishedColumns =
+    Array.isArray(dataCols) &&
+    dataCols.length > 0 &&
+    dataCols.every((column): column is PublishedTableColumn => isPublishedTableColumn(column))
+      ? dataCols
+      : undefined;
+  // Agent-authored rows still map against the skeleton columns exactly as
+  // before. Dataset publishes swap in the dataset's OWN paths and reconcile
+  // only the human labels by position.
+  const tableColumns = publishedColumns
+    ? publishedColumns.map((column, i) => {
+        const privacy = column.privacy;
+        return {
+          fieldKey: column.fieldKey,
+          label: existingSkeletonColumns[i]?.label ?? column.label,
+          ...(privacy ? { privacy } : {}),
+        };
+      })
+    : existingSkeletonColumns;
+  const fieldKeys = tableColumns.map((c) => c.fieldKey);
   if (fieldKeys.length === 0) {
     opts.log?.(`[patch-composition] skip: table ${String(table.node['id'])} has no columns`);
     return null;
@@ -468,17 +504,35 @@ export function composeStructuredPayloadPatch(opts: {
         const cell =
           v === undefined || v === null
             ? ''
-            : typeof v === 'object'
-              ? JSON.stringify(v)
-              : typeof v === 'string'
-                ? stripInlineMarkdown(v)
-                : (v as number | boolean);
+            : Array.isArray(v)
+              ? // Odoo many2one fields arrive as a [id, "Display Name"] pair —
+                // render the label, not the raw [198,"…"] tuple. A remaining
+                // array of scalars (tags/codes) joins; anything else falls back.
+                v.length === 2 && typeof v[0] === 'number' && typeof v[1] === 'string'
+                ? stripInlineMarkdown(v[1])
+                : v.every(
+                      (e) =>
+                        e === null ||
+                        typeof e === 'string' ||
+                        typeof e === 'number' ||
+                        typeof e === 'boolean',
+                    )
+                  ? stripInlineMarkdown(v.map((e) => (e == null ? '' : String(e))).join(', '))
+                  : JSON.stringify(v)
+              : typeof v === 'object'
+                ? JSON.stringify(v)
+                : typeof v === 'string'
+                  ? stripInlineMarkdown(v)
+                  : (v as number | boolean);
         return [k, cell];
       }),
     ),
   }));
 
   const patches: TreePatchOp[] = [];
+  if (publishedColumns) {
+    patches.push({ op: 'replace', path: `${table.path}/columns`, value: tableColumns });
+  }
   if (table.node.loading === 'skeleton') {
     patches.push({ op: 'replace', path: `${table.path}/loading`, value: 'none' });
   }
@@ -530,6 +584,7 @@ export function composeStructuredPayloadPatch(opts: {
   const nextTree = structuredClone(opts.baseTree);
   const cloneHit = findNodeById(nextTree, table.node['id'] as string, '');
   if (!cloneHit || !isTableNode(cloneHit.node)) return null;
+  if (publishedColumns) cloneHit.node.columns = tableColumns;
   if (cloneHit.node.loading === 'skeleton') cloneHit.node['loading'] = 'none';
   if (replaceRows) cloneHit.node.rows.splice(0, cloneHit.node.rows.length, ...mapped);
   else cloneHit.node.rows.push(...mapped);
