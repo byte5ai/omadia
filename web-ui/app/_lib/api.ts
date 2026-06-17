@@ -3563,6 +3563,12 @@ export async function listConductorWorkflows(): Promise<{ workflows: ConductorWo
   return getJson(CONDUCTOR_BASE);
 }
 
+export async function getConductorWorkflowGraph(
+  slug: string,
+): Promise<{ workflow: ConductorWorkflow; graph: unknown }> {
+  return getJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}`);
+}
+
 export async function publishConductorWorkflow(body: {
   slug: string;
   name: string;

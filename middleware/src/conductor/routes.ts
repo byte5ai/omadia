@@ -84,6 +84,21 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
     }
   });
 
+  // Fetch a workflow + its active version graph (for the visual editor to load).
+  router.get('/:slug', async (req: Request, res: Response): Promise<void> => {
+    try {
+      const wf = await deps.workflowStore.getBySlug(paramStr(req.params.slug));
+      if (!wf || !wf.activeVersionId) {
+        res.status(404).json({ code: 'conductor.not_found', message: 'workflow or active version missing' });
+        return;
+      }
+      const version = await deps.workflowStore.getVersion(wf.activeVersionId);
+      res.json({ workflow: wf, graph: version?.graph ?? null });
+    } catch (err) {
+      res.status(500).json({ code: 'conductor.get_failed', message: errMsg(err) });
+    }
+  });
+
   // Enable / disable a workflow.
   router.post('/:slug/status', async (req: Request, res: Response): Promise<void> => {
     const status = asObject(req.body).status;
