@@ -1,0 +1,1 @@
+{ "match": { "state": "mode" }, "cases": [ { "when": { "lit": "run" }, "then": { "lit": 1 } } ], "else": { "lit": 0 } }

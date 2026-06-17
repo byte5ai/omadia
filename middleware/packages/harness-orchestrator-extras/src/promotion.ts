@@ -66,6 +66,16 @@ export interface PromoteTurnInput {
    * cross-agent). Omit on legacy / single-agent boots.
    */
   originAgent?: string;
+  /**
+   * Trigger T3 — durable auto-promotion. When set, an auto-promoted MK is
+   * additionally marked `manuallyAuthored=true` (→ always-surface durable
+   * recall tier) iff `significance >= durableMinSignificance`, its `kind` is in
+   * `durableKinds`, and it passes the narration/snapshot hygiene check. Undefined
+   * → never auto-mark durable (pre-T3 behaviour). Re-pollution guard.
+   */
+  durableMinSignificance?: number;
+  /** Kinds eligible for durable auto-promotion. Default `['reference']`. */
+  durableKinds?: MemorableKind[];
   /** Optional log sink. Defaults to `console.error`. */
   log?: (msg: string) => void;
 }
@@ -76,6 +86,7 @@ export interface PromoteTurnResult {
     | 'promoted'
     | 'below-threshold'
     | 'no-significance'
+    | 'hygiene-skip'
     | 'already-promoted'
     | 'missing-user'
     | 'missing-turn'
@@ -166,11 +177,35 @@ export async function promoteTurnIfSignificant(
       input.fallbackAssistantAnswer,
     );
 
+    // Ingest hygiene — applied to ALL auto-harvest, not just the durable tier.
+    // First-person agent narration ("Ich schaue kurz in den Memory…") and
+    // trivially short fragments scored high enough to clear the significance
+    // threshold and were being stored as fuzzy MK every session, re-polluting
+    // recall. Drop them entirely so they never enter the KG.
+    if (!passesIngestHygiene(summary)) {
+      log(
+        `[promotion] skip turn=${input.turnId} reason=hygiene (agent narration) significance=${significance.toFixed(2)}`,
+      );
+      return { promoted: false, reason: 'hygiene-skip', significance };
+    }
+
+    // Trigger T3 — durable auto-promotion gate. Conservative by design: only
+    // high-significance, substantial reference knowledge is marked durable, so
+    // time-bound snapshots / short fragments never reach the always-surface
+    // tier (narration is already dropped above).
+    const durableKinds = input.durableKinds ?? ['reference'];
+    const durable =
+      input.durableMinSignificance !== undefined &&
+      significance >= input.durableMinSignificance &&
+      durableKinds.includes(kind) &&
+      isDurableContentLengthOk(summary, rationale);
+
     const result = await input.kg.createMemorableKnowledge({
       kind,
       summary,
       ...(rationale !== undefined ? { rationale } : {}),
       significance,
+      ...(durable ? { manuallyAuthored: true } : {}),
       createdBy: `auto:${input.userId}`,
       involvedOmadiaUserIds: [input.userId],
       aclOwners: [input.userId],
@@ -192,7 +227,7 @@ export async function promoteTurnIfSignificant(
     });
 
     log(
-      `[promotion] PROMOTED turn=${input.turnId} mk=${result.memorableKnowledgeNodeId} significance=${significance.toFixed(2)} kind=${kind}`,
+      `[promotion] PROMOTED turn=${input.turnId} mk=${result.memorableKnowledgeNodeId} significance=${significance.toFixed(2)} kind=${kind} durable=${durable ? 'yes' : 'no'}`,
     );
     return {
       promoted: true,
@@ -206,6 +241,28 @@ export async function promoteTurnIfSignificant(
     );
     return { promoted: false, reason: 'error', significance: null };
   }
+}
+
+/**
+ * Ingest hygiene gate for ALL auto-harvested MemorableKnowledge (not just the
+ * durable tier). Rejects first-person agent narration / meta-process preambles
+ * ("Ich schaue zuerst in den Memory…") — the dominant pollution class observed
+ * in the live KG — so they never enter the KG and re-pollute recall every
+ * session. Deliberately does NOT reject on length: short FACTS ("Preis 1200€",
+ * "Migration 0007 ist live.") are legitimate. The durable tier adds its own
+ * length floor. Conservative: returns false when unsure.
+ */
+function passesIngestHygiene(summary: string): boolean {
+  const head = summary.trim();
+  const NARRATION =
+    /^(ich\s+(schaue|schau|prüfe|pruefe|sehe|gucke|lese|checke|werde|muss)|lass\s+mich|du\s+hast\s+recht|moment\b|kurz\b|let me\b|i\s+will\b|i'?ll\b|looking\b|checking\b)/i;
+  if (NARRATION.test(head)) return false;
+  return true;
+}
+
+/** Durable tier requires substantial content on top of ingest hygiene. */
+function isDurableContentLengthOk(summary: string, rationale?: string): boolean {
+  return `${summary} ${rationale ?? ''}`.trim().length >= 40;
 }
 
 function buildPayload(

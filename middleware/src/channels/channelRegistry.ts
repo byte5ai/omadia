@@ -1,6 +1,7 @@
 import { createPluginContext } from '../platform/pluginContext.js';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
 import type { NotificationRouter } from '../platform/notificationRouter.js';
+import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
 import type { UiRouteCatalog } from '../platform/uiRouteCatalog.js';
 import type { ServiceRegistry } from '../platform/serviceRegistry.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
@@ -39,6 +40,11 @@ export interface ChannelRegistryDeps {
   notificationRouter: NotificationRouter;
   uiRouteCatalog: UiRouteCatalog;
   jobScheduler: JobScheduler;
+  /** Spec 004 — key + origin for the `ctx.flows` toolkit (optional in tests). */
+  flowSigningKey?: Uint8Array;
+  flowPublicBaseUrl?: string;
+  /** Spec 004 — backing store for `ctx.status`; cleared on deactivate. */
+  pluginStatusRegistry?: PluginStatusRegistry;
   resolver: ChannelPluginResolver;
   coreApi: CoreApi;
   routes: ExpressRouteRegistry;
@@ -101,6 +107,9 @@ export class DefaultChannelRegistry implements ChannelRegistry {
       notificationRouter: this.deps.notificationRouter,
       uiRouteCatalog: this.deps.uiRouteCatalog,
       jobScheduler: this.deps.jobScheduler,
+      flowSigningKey: this.deps.flowSigningKey,
+      flowPublicBaseUrl: this.deps.flowPublicBaseUrl,
+      pluginStatusRegistry: this.deps.pluginStatusRegistry,
     });
 
     const handle = await impl.activate(ctx, this.deps.coreApi);
@@ -125,6 +134,7 @@ export class DefaultChannelRegistry implements ChannelRegistry {
     // would otherwise outlive its plugin in the catalogue and surface
     // a stale entry in channel-teams' Hub + Tab-Config dropdown.
     this.deps.uiRouteCatalog.disposeBySource(agentId);
+    this.deps.pluginStatusRegistry?.clear(agentId);
     if (!handle) return;
     this.handles.delete(agentId);
     try {

@@ -5,6 +5,7 @@ import { promises as fs } from 'node:fs';
 import { createPluginContext } from '../platform/pluginContext.js';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
 import type { NotificationRouter } from '../platform/notificationRouter.js';
+import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
 import type { UiRouteCatalog } from '../platform/uiRouteCatalog.js';
 import type { ServiceRegistry } from '../platform/serviceRegistry.js';
 import type { SecretVault } from '../secrets/vault.js';
@@ -78,6 +79,13 @@ export interface ToolPluginRuntimeDeps {
   notificationRouter: NotificationRouter;
   uiRouteCatalog: UiRouteCatalog;
   jobScheduler: JobScheduler;
+  /** Spec 004 — key + origin for the `ctx.flows` toolkit, threaded straight
+   *  into every `createPluginContext`. Optional so test harnesses can omit
+   *  them (flows simply stays unavailable). */
+  flowSigningKey?: Uint8Array;
+  flowPublicBaseUrl?: string;
+  /** Spec 004 — backing store for `ctx.status`; cleared on deactivate. */
+  pluginStatusRegistry?: PluginStatusRegistry;
   /**
    * Fired after a plugin's activate() succeeds and it is recorded active.
    * Used to register the plugin's manifest-declared `service_types` into the
@@ -240,6 +248,9 @@ export class ToolPluginRuntime {
       notificationRouter: this.deps.notificationRouter,
       uiRouteCatalog: this.deps.uiRouteCatalog,
       jobScheduler: this.deps.jobScheduler,
+      flowSigningKey: this.deps.flowSigningKey,
+      flowPublicBaseUrl: this.deps.flowPublicBaseUrl,
+      pluginStatusRegistry: this.deps.pluginStatusRegistry,
       logger: (...args) => console.log(`[${agentId}]`, ...args),
     });
 
@@ -335,6 +346,7 @@ export class ToolPluginRuntime {
     // its plugin's lifecycle.
     this.deps.jobScheduler.stopForPlugin(agentId);
     this.deps.uiRouteCatalog.disposeBySource(agentId);
+    this.deps.pluginStatusRegistry?.clear(agentId);
     this.active.delete(agentId);
 
     if (this.deps.onDeactivated) {

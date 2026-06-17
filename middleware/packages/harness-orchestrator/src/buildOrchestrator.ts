@@ -24,6 +24,7 @@ import type {
 import type {
   EntityRefBus,
   KnowledgeGraph,
+  MemorableKind,
   MemoryStore,
   NudgeRegistry,
   NudgeStateStore,
@@ -44,6 +45,7 @@ import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import type { ModelRoutingConfig } from './modelRouter.js';
 import { Orchestrator } from './orchestrator.js';
 import { OrchestratorMemoryNamespacer } from './orchestratorMemoryNamespacer.js';
+import { DurableRulesMemoryStore } from './durableRulesMemoryStore.js';
 import {
   ScopedMemoryStore,
   orchestratorMemoryScope,
@@ -117,6 +119,11 @@ export interface OrchestratorDeps {
   /** Merged from main 2026-05-26: KG-ACL auto-promotion env flags. */
   readonly autoPromote?: boolean;
   readonly autoPromoteThreshold?: number;
+  /** Trigger T3 — durable auto-promotion. Threaded here so dynamic / registry
+   *  agents self-curate the durable tier too (not just the static chatAgent@1).
+   *  Undefined → durable auto-promotion off for this agent. */
+  readonly autoPromoteDurableMinSignificance?: number;
+  readonly autoPromoteDurableKinds?: MemorableKind[];
   /** Shared Postgres pool the Orchestrator may use for direct KG writes. */
   readonly graphPool?: Pool;
   readonly graphTenantId?: string;
@@ -170,9 +177,31 @@ export function buildOrchestratorForAgent(
     chatSessionStore,
     config.agentId,
   );
-  const memoryToolHandler = new MemoryToolHandler(
-    new OrchestratorMemoryNamespacer(config.agentId, scopedStore),
+  // Trigger T1 — durable-rules live hook. Wrap the (shared-passthrough)
+  // namespacer so writes to `/memories/_rules/` auto-promote into curated
+  // durable MemorableKnowledge. Needs the graph pool; gated off when absent or
+  // via KG_DURABLE_RULES_HOOK=false. Decorator sits OUTSIDE the namespacer so
+  // it sees the model-facing `_rules/` path (namespacer passes `_` through).
+  const namespacedStore: MemoryStore = new OrchestratorMemoryNamespacer(
+    config.agentId,
+    scopedStore,
   );
+  const durableRulesHookEnabled =
+    process.env['KG_DURABLE_RULES_HOOK'] !== 'false' && !!deps.graphPool;
+  const memoryToolStore: MemoryStore = durableRulesHookEnabled
+    ? new DurableRulesMemoryStore(namespacedStore, {
+        pool: deps.graphPool!,
+        kg: deps.knowledgeGraph,
+        tenantId: deps.graphTenantId ?? 'default',
+        ...(deps.embeddingClient
+          ? { embeddingClient: deps.embeddingClient }
+          : {}),
+        log: (msg): void => {
+          console.error(msg);
+        },
+      })
+    : namespacedStore;
+  const memoryToolHandler = new MemoryToolHandler(memoryToolStore);
 
   // Native-tool instances (channel-coupled UI cards + calendar). The calendar
   // tools are present only when the Microsoft 365 accessor is available.
@@ -241,6 +270,15 @@ export function buildOrchestratorForAgent(
     ...(deps.autoPromote !== undefined ? { autoPromote: deps.autoPromote } : {}),
     ...(deps.autoPromoteThreshold !== undefined
       ? { autoPromoteThreshold: deps.autoPromoteThreshold }
+      : {}),
+    ...(deps.autoPromoteDurableMinSignificance !== undefined
+      ? {
+          autoPromoteDurableMinSignificance:
+            deps.autoPromoteDurableMinSignificance,
+        }
+      : {}),
+    ...(deps.autoPromoteDurableKinds !== undefined
+      ? { autoPromoteDurableKinds: deps.autoPromoteDurableKinds }
       : {}),
     ...(deps.graphPool ? { graphPool: deps.graphPool } : {}),
     ...(deps.graphTenantId ? { graphTenantId: deps.graphTenantId } : {}),

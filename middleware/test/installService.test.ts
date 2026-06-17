@@ -498,3 +498,46 @@ describe('extractSetupSchema — multiline flag', () => {
     assert.equal(fieldByKey(schema, 'pem')?.multiline, undefined);
   });
 });
+
+describe('extractSetupSchema — install_hidden flag', () => {
+  function makeEntry(fields: unknown[]): PluginCatalogEntry {
+    return {
+      plugin: makePlugin({
+        id: 'install-hidden-test',
+        provides: [],
+        requires: [],
+        depends_on: [],
+      }),
+      manifest: { setup: { fields } },
+      source_path: '<test>/install-hidden-test.manifest.yaml',
+      source_kind: 'manifest-v1',
+    } as unknown as PluginCatalogEntry;
+  }
+
+  function fieldByKey(
+    schema: ReturnType<typeof extractSetupSchema>,
+    key: string,
+  ) {
+    return schema?.fields.find((f) => f.key === key);
+  }
+
+  it('passes install_hidden: true through (any field type)', () => {
+    const schema = extractSetupSchema(
+      makeEntry([
+        { key: 'app_id', type: 'string', label: 'App ID', install_hidden: true },
+        { key: 'org', type: 'string', label: 'Org' },
+      ]),
+    );
+    assert.equal(fieldByKey(schema, 'app_id')?.install_hidden, true);
+    assert.equal(fieldByKey(schema, 'org')?.install_hidden, undefined);
+  });
+
+  it('ignores non-boolean install_hidden values', () => {
+    const schema = extractSetupSchema(
+      makeEntry([
+        { key: 'app_id', type: 'string', label: 'App ID', install_hidden: 'yes' },
+      ]),
+    );
+    assert.equal(fieldByKey(schema, 'app_id')?.install_hidden, undefined);
+  });
+});

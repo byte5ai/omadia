@@ -43,6 +43,11 @@ export interface PluginPermissionsSummary {
    *  reach arbitrary public hosts (gated by the operator-selected
    *  `audit_mode`). Optional: absent on pre-#91 store payloads. */
   network_web_scanner?: boolean;
+  /** Spec 004 — plugin may write its own vault secrets + config at runtime.
+   *  Surfaced as a store-detail permission chip. */
+  secrets_runtime_write?: boolean;
+  /** Spec 004 — plugin runs credential-acquisition flows on its own routes. */
+  flows?: boolean;
 }
 
 export type PluginInstallState =
@@ -99,6 +104,15 @@ export interface PluginJobSpec {
   overlap?: 'skip' | 'queue';
 }
 
+/** Spec 004 — operator-facing plugin health (mirror of middleware admin-v1). */
+export type PluginActionState = 'ok' | 'needs_action' | 'error';
+
+export interface PluginActionStatus {
+  state: PluginActionState;
+  title?: string;
+  detail?: string;
+}
+
 export interface Plugin {
   id: string;
   kind: PluginKind;
@@ -140,6 +154,10 @@ export interface Plugin {
    * channel-SDK's `core.registerRouter`.
    */
   admin_ui_path?: string;
+  /** Spec 004 — operator-facing action status the active plugin pushed via
+   *  `ctx.status`. Present only while `needs_action` / `error`; absent for
+   *  `ok` or inactive. Drives the card badge + detail-page banner. */
+  action_status?: PluginActionStatus;
   /** Present only for entries sourced from a remote registry that are not yet
    *  ingested locally. Drives the remote-install flow (fetch-then-ingest
    *  before the normal install job). Mirrors middleware admin-v1. */
@@ -200,6 +218,8 @@ export interface InstallSetupField {
   scopes?: string[];
   pattern?: string;
   multiline?: boolean;
+  /** Omitted from the install flyout (flow-managed / editable later). */
+  install_hidden?: boolean;
 }
 
 export interface InstallSetupSchema {

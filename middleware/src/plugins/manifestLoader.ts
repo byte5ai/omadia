@@ -599,6 +599,8 @@ function extractPermissions(
     typeof llmTokensRaw === 'number' && Number.isFinite(llmTokensRaw)
       ? Math.max(1, Math.floor(llmTokensRaw))
       : 4096;
+  // Spec 004 — runtime credential write + flow toolkit gates.
+  const secretsBlock = asRecord(permissions?.['secrets']);
   return {
     memory_reads: extractStringArray(memory?.['reads']),
     memory_writes: extractStringArray(memory?.['writes']),
@@ -618,6 +620,8 @@ function extractPermissions(
     llm_models_allowed: llmModelsAllowed,
     llm_calls_per_invocation: llmCallsPerInvocation,
     llm_max_tokens_per_call: llmMaxTokensPerCall,
+    secrets_runtime_write: secretsBlock?.['runtime_write'] === true,
+    flows: permissions?.['flows'] === true,
   };
 }
 

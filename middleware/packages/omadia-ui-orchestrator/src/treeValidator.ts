@@ -30,6 +30,12 @@ for (const file of [
   'handshake.schema.json',
   'sentinels.schema.json',
   'surface-events.schema.json',
+  // omadia-canvas-protocol/1.1 — Lumens (Live Interactivity), additive.
+  'lx-ast.schema.json',
+  'scene.schema.json',
+  'ports-wires.schema.json',
+  'capability-manifest.schema.json',
+  'lumen.schema.json',
 ]) {
   ajv.addSchema(loadSchema(file));
 }
@@ -42,7 +48,34 @@ function mustGetSchema(id: string): ValidateFunction {
   return validate as ValidateFunction;
 }
 
-const treeValidate = mustGetSchema('https://omadia.ai/protocol/1.0/canvas-tree.schema.json');
+// omadia-canvas-protocol/1.1 tree validator: the 1.0 canvas-tree with `scene`
+// and `lumen` added to the `primitive` oneOf. Additive — every 1.0 tree still
+// validates; 1.1 nodes are now accepted wherever a primitive is allowed. Built
+// by cloning the 1.0 schema so the canonical file stays untouched.
+const tree11Id = (() => {
+  const base = loadSchema('canvas-tree.schema.json') as {
+    $id: string;
+    $defs: { primitive: { oneOf: { $ref: string }[] } };
+  };
+  const clone = JSON.parse(JSON.stringify(base)) as typeof base;
+  clone.$id = 'https://omadia.ai/protocol/1.1/canvas-tree.schema.json';
+  clone.$defs.primitive.oneOf.push(
+    { $ref: 'https://omadia.ai/protocol/1.1/scene.schema.json' },
+    { $ref: 'https://omadia.ai/protocol/1.1/lumen.schema.json' },
+  );
+  ajv.addSchema(clone);
+  return clone.$id;
+})();
+
+const treeValidate = mustGetSchema(tree11Id);
+
+// Structural whitelist validator for a single authored Lumen (the agent-
+// generated case): the omadia-canvas-protocol/1.1 lumen schema. This is the
+// safety net that makes LLM-authored Lumens publishable — malformed state / LX
+// / events are rejected with a path-pointed error the agent can fix. (Semantic
+// bounds — transition/path/var coherence — are additionally enforced Tier-1 by
+// the shipped interpreter, which halts a bad Lumen with surface_error.)
+const lumenValidate = mustGetSchema('https://omadia.ai/protocol/1.1/lumen.schema.json');
 
 export interface TreeValidationResult {
   ok: boolean;
@@ -58,5 +91,16 @@ export function validateTree(tree: unknown): TreeValidationResult {
     errors: ok
       ? null
       : (treeValidate.errors ?? []).map((e) => `${e.instancePath} ${e.message}`).join('; '),
+  };
+}
+
+/** Structural whitelist parser for a single authored Lumen (§1.1). */
+export function validateLumenNode(lumen: unknown): TreeValidationResult {
+  const ok = lumenValidate(lumen) as boolean;
+  return {
+    ok,
+    errors: ok
+      ? null
+      : (lumenValidate.errors ?? []).map((e) => `${e.instancePath} ${e.message}`).join('; '),
   };
 }

@@ -285,6 +285,38 @@ export async function activate(
       ? recallRequiresTermsRaw.toLowerCase() !== 'false'
       : recallRequiresTermsRaw !== false;
 
+  // Durable-curation tier. Manual-authored MemorableKnowledge of the
+  // configured kinds ALWAYS surfaces — independent of the turn-term gate,
+  // with its own low/no cosine floor, outside the fuzzy memoryLimit, and never
+  // sent to the relevance judge. Default ON. Set kg_durable_tier_enabled=false
+  // (or env KG_DURABLE_TIER_ENABLED=false) to restore the pre-tier behaviour.
+  const durableTierEnabledRaw =
+    ctx.config.get<unknown>('kg_durable_tier_enabled') ??
+    process.env['KG_DURABLE_TIER_ENABLED'];
+  const durableTierDisabled =
+    typeof durableTierEnabledRaw === 'string'
+      ? durableTierEnabledRaw.toLowerCase() === 'false'
+      : durableTierEnabledRaw === false;
+  const durableReservedSlots = parseNumberOrDefault(
+    ctx.config.get<unknown>('kg_durable_reserved_slots'),
+    2,
+  );
+  // Comma-separated MK kinds admitted to the durable tier. Empty/blank → fall
+  // back to the ContextRetriever default (reference,decision).
+  const durableKindsRaw = (
+    ctx.config.get<string>('kg_durable_kinds') ?? ''
+  ).trim();
+  const durableKinds = durableKindsRaw
+    ? durableKindsRaw
+        .split(',')
+        .map((kind) => kind.trim().toLowerCase())
+        .filter((kind) => kind.length > 0)
+    : undefined;
+  const durableMinSimilarity = parseNumberOrDefault(
+    ctx.config.get<unknown>('kg_durable_min_similarity'),
+    0,
+  );
+
   // Cost telemetry: wire the recorder to the shared graph pool and wrap the
   // client so the background Haiku scorers/extractors record their usage.
   const usagePool = ctx.services.get<Pool>('graphPool');
@@ -405,11 +437,36 @@ export async function activate(
   // order: capture-filter → inconsistency-trigger → merge-trigger
   // (outermost). Cosine-only, no Anthropic dependency. Always active
   // when embeddingClient is wired.
+  // Slice 13 — AUTOMATIC dedup. When enabled (default on), the merge detector
+  // RESOLVES high-confidence duplicate MK pairs itself (retires the duplicate;
+  // durable `manuallyAuthored` nodes are never deleted) instead of only
+  // flagging for an operator — so re-learned knowledge stops accumulating on
+  // ANY deployment without a manual cleanup pass. Aggressive default 0.90 so
+  // paraphrased re-statements also merge. The detector's flag floor is lowered
+  // to the same threshold so sub-0.95 near-dups actually surface to be merged.
+  // Disable with kg_auto_merge_enabled=false (reverts to flag-only at 0.95).
+  const autoMergeEnabledRaw =
+    ctx.config.get<unknown>('kg_auto_merge_enabled') ??
+    process.env['KG_AUTO_MERGE_ENABLED'];
+  const autoMergeDisabled =
+    typeof autoMergeEnabledRaw === 'string'
+      ? autoMergeEnabledRaw.toLowerCase() === 'false'
+      : autoMergeEnabledRaw === false;
+  const autoMergeThreshold = parseNumberOrDefault(
+    ctx.config.get<unknown>('kg_auto_merge_threshold'),
+    0.9,
+  );
   const mergeCandidateDetector = createMergeCandidateDetector({
     graph: inconsistencyWrappedKg,
     ...(embeddingClient ? { embeddingClient } : {}),
+    ...(autoMergeDisabled
+      ? {}
+      : { autoMergeThreshold, minSimilarity: autoMergeThreshold }),
     log: (msg) => { console.error(msg); },
   });
+  ctx.log(
+    `[harness-orchestrator-extras] auto-merge ${autoMergeDisabled ? 'off (flag-only @0.95)' : `on (resolve >= ${autoMergeThreshold.toFixed(2)}, durable-protected)`}`,
+  );
   const disposeMergeCandidateDetector = ctx.services.provide(
     MERGE_CANDIDATE_DETECTOR_SERVICE_NAME,
     mergeCandidateDetector,
@@ -466,6 +523,11 @@ export async function activate(
       processMinScore,
       recallRequiresTerms,
       recallRelevanceJudgeDisabled,
+      // Durable-curation tier.
+      durableTierDisabled,
+      durableReservedSlots,
+      durableMinSimilarity,
+      ...(durableKinds ? { durableKinds } : {}),
     },
     embeddingClient,
     agentPriorities,
@@ -473,7 +535,7 @@ export async function activate(
     relevanceJudge,
   );
   ctx.log(
-    `[harness-orchestrator-extras] context-assembler ready (budget=${String(contextDefaultBudgetTokens)}tk, chars/tk=${String(contextCharsPerToken)}, manual-boost=${contextManualBoostFactor.toFixed(2)}, compact>${String(contextCompactModeThreshold)}, agentPriorities=${agentPriorities ? 'on' : 'off'}, memoryRecall=${embeddingClient && !memoryRecallDisabled ? `on(limit=${String(memoryLimit)},excerpts=${String(memoryExcerptsPerMemory)},minSim=${memoryMinSimilarity.toFixed(2)})` : 'off'}, teamVisibility=${teamVisibility ? 'on' : 'off'}, planRecall=${planRecallDisabled ? 'off' : `on(limit=${String(planLimit)})`}, processRecall=${processMemory && !processRecallDisabled ? `on(limit=${String(processLimit)},minScore=${processMinScore.toFixed(2)})` : 'off'}, recallGate=${recallRequiresTerms ? 'require-terms' : 'off'}, recallJudge=${relevanceJudge ? `on(${recallJudgeModel ?? '?'})` : 'off'})`,
+    `[harness-orchestrator-extras] context-assembler ready (budget=${String(contextDefaultBudgetTokens)}tk, chars/tk=${String(contextCharsPerToken)}, manual-boost=${contextManualBoostFactor.toFixed(2)}, compact>${String(contextCompactModeThreshold)}, agentPriorities=${agentPriorities ? 'on' : 'off'}, memoryRecall=${embeddingClient && !memoryRecallDisabled ? `on(limit=${String(memoryLimit)},excerpts=${String(memoryExcerptsPerMemory)},minSim=${memoryMinSimilarity.toFixed(2)})` : 'off'}, teamVisibility=${teamVisibility ? 'on' : 'off'}, planRecall=${planRecallDisabled ? 'off' : `on(limit=${String(planLimit)})`}, processRecall=${processMemory && !processRecallDisabled ? `on(limit=${String(processLimit)},minScore=${processMinScore.toFixed(2)})` : 'off'}, recallGate=${recallRequiresTerms ? 'require-terms' : 'off'}, recallJudge=${relevanceJudge ? `on(${recallJudgeModel ?? '?'})` : 'off'}, durableTier=${durableTierDisabled ? 'off' : `on(slots=${String(durableReservedSlots)},kinds=${(durableKinds ?? ['reference', 'decision']).join('+')},minSim=${durableMinSimilarity.toFixed(2)})`})`,
   );
   const disposeContext = ctx.services.provide(
     CONTEXT_RETRIEVER_SERVICE,

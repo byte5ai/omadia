@@ -110,6 +110,15 @@ export interface PluginPermissionsSummary {
   /** OB-29-3: hard-cap on `LlmCompleteRequest.maxTokens`. Plugin-side
    *  larger values are silently clamped, not rejected. Default 4096. */
   llm_max_tokens_per_call?: number;
+  /** Spec 004: plugin may write its OWN vault secrets + config at runtime
+   *  (`ctx.secrets.set`/`delete`, `ctx.config.set`). Namespace-locked — a
+   *  plugin can never reach another's secrets. Surfaced as a store-detail
+   *  chip. Loader defaults to `false`. */
+  secrets_runtime_write?: boolean;
+  /** Spec 004: plugin runs credential-acquisition flows on its own routes —
+   *  the `ctx.flows` accessor (public-callback-URL resolution + kernel-held
+   *  state signing) is provisioned. Loader defaults to `false`. */
+  flows?: boolean;
 }
 
 export type PluginInstallState =
@@ -196,6 +205,19 @@ export interface ChannelManifestBlock {
  * picks the active locale and falls back to another when it is missing.
  */
 export type LocalizedMarkdown = Record<string, string>;
+
+/**
+ * Spec 004 — operator-facing plugin health, pushed by the plugin via
+ * `ctx.status` (mirror of `@omadia/plugin-api`'s `PluginActionStatus`, kept
+ * inline so this type contract stays dependency-free).
+ */
+export type PluginActionState = 'ok' | 'needs_action' | 'error';
+
+export interface PluginActionStatus {
+  state: PluginActionState;
+  title?: string;
+  detail?: string;
+}
 
 export interface Plugin {
   id: AgentId;
@@ -285,6 +307,14 @@ export interface Plugin {
    * Path includes a leading slash, e.g. `/api/telegram/admin/ui/`.
    */
   admin_ui_path?: string;
+  /**
+   * Spec 004 — operator-facing action status the (active) plugin pushed via
+   * `ctx.status`. Present only while it reports `needs_action` / `error`;
+   * absent for `ok` or an inactive plugin. The web-ui renders it as a badge on
+   * the plugin card + a banner on the detail page, both clearing when the
+   * plugin reports `ok`.
+   */
+  action_status?: PluginActionStatus;
   /**
    * OB-29-0 marker. When `true`, this plugin is a Builder-Reference
    * (Pattern-Quelle für den BuilderAgent) and MUST NOT appear in the
@@ -395,6 +425,12 @@ export interface InstallSetupField {
    *  contain newlines, e.g. PEM private keys. Older UIs ignore the flag
    *  and fall back to a single-line input. */
   multiline?: boolean;
+  /** Omit this field from the initial install flyout to keep first-time setup
+   *  minimal. The field stays declared (so a runtime flow may write it via
+   *  `ctx.config.set`) and editable later via the store-detail setup editor —
+   *  it just isn't shown at install time. For flow-populated credentials.
+   *  Older UIs ignore the flag and render the field as usual. */
+  install_hidden?: boolean;
 }
 
 export interface InstallSetupSchema {

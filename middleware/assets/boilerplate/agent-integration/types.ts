@@ -14,10 +14,17 @@ export interface PluginContext {
     get(key: string): Promise<string | undefined>;
     require(key: string): Promise<string>;
     keys(): Promise<string[]>;
+    /** Spec 004 — present only with `permissions.secrets.runtime_write`.
+     *  Writes to THIS plugin's namespace; guard with `if (ctx.secrets.set)`. */
+    set?(key: string, value: string): Promise<void>;
+    delete?(key: string): Promise<void>;
   };
   readonly config: {
     get<T = unknown>(key: string): T | undefined;
     require<T = unknown>(key: string): T;
+    /** Spec 004 — persist a non-secret declared setup field. Present only
+     *  with `permissions.secrets.runtime_write`. */
+    set?(key: string, value: unknown): Promise<void>;
   };
   /** Cross-plugin service registry. Used by `spec.external_reads` (Theme A)
    *  to consume typed surfaces from depends_on plugins (e.g.
@@ -89,6 +96,20 @@ export interface PluginContext {
    *  per-call max-tokens-clamp are enforced by the manifest. */
   readonly llm?: LlmAccessor;
 
+  /** Spec 004 — redirect/callback flow toolkit. Present iff the manifest
+   *  declares `permissions.flows: true`. `publicUrl(rel)` resolves this
+   *  plugin's own browser-facing callback URL; `signState`/`verifyState`
+   *  mint and check a CSRF-safe, plugin-audience-bound state token (the
+   *  signing key stays kernel-side). Guard with `if (ctx.flows)` — an older
+   *  core may not provide it. */
+  readonly flows?: FlowsAccessor;
+
+  /** Spec 004 — report an operator-facing action status (e.g. "not connected
+   *  yet"). The admin UI renders it as a badge on the plugin card + a banner
+   *  on the detail page, clearing when the plugin reports `ok`. Always present,
+   *  ungated; re-report on `activate()` (in-memory, self-heals on restart). */
+  readonly status: StatusAccessor;
+
   /** Per-plugin memory store, scoped to `/memories/agents/<agentId>/`.
    *  All paths are RELATIVE — `notes.md` resolves to
    *  `/memories/agents/<agentId>/notes.md` under the hood. Plugins cannot
@@ -139,6 +160,44 @@ export interface MemoryEntryInfo {
   readonly relPath: string;
   readonly isDirectory: boolean;
   readonly sizeBytes: number;
+}
+
+/**
+ * Spec 004 — flow toolkit (mirror of `FlowsAccessor` from
+ * `@omadia/plugin-api`). For plugins that run a redirect/callback flow on
+ * their own route. The kernel owns the public-URL topology and the HS512
+ * state-signing key; the plugin owns its route handler. The state token's
+ * audience is auto-bound to this plugin id, so it cannot be replayed against
+ * another plugin's callback.
+ */
+export interface FlowsAccessor {
+  /** Resolve this plugin's browser-facing callback URL (for an IdP
+   *  `redirect_url`). A route registered at `/api/<…>` is reached via the
+   *  `/bot-api/* → /api/*` proxy, so the leading `/api` is dropped. Pass
+   *  `opts.prefix` only when the plugin registered several routes. */
+  publicUrl(relPath: string, opts?: { prefix?: string }): string;
+  /** Sign arbitrary claims into a short-lived (10-min default) state token. */
+  signState(
+    claims: Record<string, unknown>,
+    opts?: { ttl?: string },
+  ): Promise<string>;
+  /** Verify a returned state token; throws on bad signature, wrong audience,
+   *  or expiry. Returns the decoded claims. */
+  verifyState(token: string): Promise<Record<string, unknown>>;
+}
+
+/** Operator-facing plugin health (mirror of `@omadia/plugin-api`). */
+export type PluginActionState = 'ok' | 'needs_action' | 'error';
+
+export interface PluginActionStatus {
+  readonly state: PluginActionState;
+  readonly title?: string;
+  readonly detail?: string;
+}
+
+export interface StatusAccessor {
+  report(status: PluginActionStatus): void;
+  clear(): void;
 }
 
 /**

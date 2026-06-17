@@ -1,0 +1,1 @@
+{ "set": { "score": { "+": [ { "state": "score" }, { "lit": 1 } ] } } }

@@ -14,6 +14,7 @@ import {
   activate,
   CANVAS_CHAT_AGENT_SERVICE,
   CANVAS_CHOICE_TOOL,
+  CANVAS_LUMEN_TOOL,
   CANVAS_PUBLISH_TOOL,
   handleCanvasPublishChoice,
   handleCanvasPublishRows,
@@ -363,9 +364,9 @@ describe('canvas_publish_choice producer tool', () => {
       },
     } as unknown as PluginContext;
     const handle = await activate(ctx);
-    assert.deepEqual(registered, [CANVAS_PUBLISH_TOOL, CANVAS_CHOICE_TOOL]);
+    assert.deepEqual(registered, [CANVAS_PUBLISH_TOOL, CANVAS_CHOICE_TOOL, CANVAS_LUMEN_TOOL]);
     await handle.close();
-    assert.equal(disposed, 2);
+    assert.equal(disposed, 3);
   });
 });
 

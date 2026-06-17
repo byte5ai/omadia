@@ -21,13 +21,21 @@ const load = (name: string): object =>
   JSON.parse(readFileSync(join(schemaDir, `${name}.schema.json`), 'utf8')) as object;
 
 const ajv = new Ajv2020({ allErrors: true, strict: false, code: { source: true, esm: true } });
-for (const name of ['data-ref', 'target-ref', 'canvas-tree', 'handshake', 'sentinels', 'surface-events']) {
+for (const name of [
+  'data-ref', 'target-ref', 'canvas-tree', 'handshake', 'sentinels', 'surface-events',
+  // omadia-canvas-protocol/1.1 — Lumens (Live Interactivity), additive (lumens-spec.md).
+  'lx-ast', 'scene', 'ports-wires', 'capability-manifest', 'lumen',
+]) {
   ajv.addSchema(load(name));
 }
 
 let code = standaloneCode(ajv, {
   validateTree: 'https://omadia.ai/protocol/1.0/canvas-tree.schema.json',
   validateSurfaceEvent: 'https://omadia.ai/protocol/1.0/surface-events.schema.json',
+  // 1.1 — the Lumen whitelist parser (structural; L1 adds the semantic bounds check).
+  validateLumen: 'https://omadia.ai/protocol/1.1/lumen.schema.json',
+  validateScene: 'https://omadia.ai/protocol/1.1/scene.schema.json',
+  validateLxNode: 'https://omadia.ai/protocol/1.1/lx-ast.schema.json',
 });
 
 // Ajv emits ESM exports but still pulls runtime helpers via require() —

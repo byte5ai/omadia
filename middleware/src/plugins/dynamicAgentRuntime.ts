@@ -18,6 +18,7 @@ import { deterministicActionToolIds } from '../platform/deterministicActionRegis
 import { createPluginContext } from '../platform/pluginContext.js';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
 import type { NotificationRouter } from '../platform/notificationRouter.js';
+import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
 import type { UiRouteCatalog } from '../platform/uiRouteCatalog.js';
 import type { ServiceRegistry } from '../platform/serviceRegistry.js';
 import type { SecretVault } from '../secrets/vault.js';
@@ -159,6 +160,11 @@ export interface DynamicAgentRuntimeDeps {
   /** Kernel-wide background-job scheduler. Plugin-contributed jobs register
    *  here via `ctx.jobs.register(spec, handler)`. */
   jobScheduler: JobScheduler;
+  /** Spec 004 — key + origin for the `ctx.flows` toolkit (optional in tests). */
+  flowSigningKey?: Uint8Array;
+  flowPublicBaseUrl?: string;
+  /** Spec 004 — backing store for `ctx.status`; cleared on deactivate. */
+  pluginStatusRegistry?: PluginStatusRegistry;
   /** Canvas-output autodiscovery: manifest capability entries declaring
    *  `canvas_output: true` are resolved into this registry on (de)activation
    *  so the ui-orchestrator can derive its sentinel allow-set without
@@ -341,6 +347,9 @@ export class DynamicAgentRuntime {
       notificationRouter: this.deps.notificationRouter,
       uiRouteCatalog: this.deps.uiRouteCatalog,
       jobScheduler: this.deps.jobScheduler,
+      flowSigningKey: this.deps.flowSigningKey,
+      flowPublicBaseUrl: this.deps.flowPublicBaseUrl,
+      pluginStatusRegistry: this.deps.pluginStatusRegistry,
       logger: (...args) => console.log(`[${agentId}]`, ...args),
     });
 
@@ -590,6 +599,7 @@ export class DynamicAgentRuntime {
     // teardown comment.
     this.deps.jobScheduler.stopForPlugin(agentId);
     this.deps.uiRouteCatalog.disposeBySource(agentId);
+    this.deps.pluginStatusRegistry?.clear(agentId);
     this.active.delete(agentId);
     log(`[dynamic-runtime] DEACTIVATED ${agentId}`);
     return true;

@@ -8,3 +8,7 @@ export type StandaloneValidate = ((data: unknown) => boolean) & {
 
 export declare const validateTree: StandaloneValidate;
 export declare const validateSurfaceEvent: StandaloneValidate;
+// omadia-canvas-protocol/1.1 — Lumens
+export declare const validateLumen: StandaloneValidate;
+export declare const validateScene: StandaloneValidate;
+export declare const validateLxNode: StandaloneValidate;

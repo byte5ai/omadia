@@ -59,10 +59,23 @@ describe('office xlsx renderer', () => {
     assert.match(ws.getCell('C2').numFmt ?? '', /€/);
   });
 
-  it('is deterministic — same descriptor yields identical bytes', async () => {
-    const a = await renderXlsx(descriptor);
-    const b = await renderXlsx(descriptor);
-    assert.ok(a.buffer.equals(b.buffer), 'pinned metadata → byte-identical');
+  it('is deterministic — same descriptor yields identical bytes', async (t) => {
+    // exceljs stamps the ZIP entry mtimes with the wall clock (DOS 2-second
+    // granularity) and exposes no API to pin them, so two renders that straddle
+    // a 2s boundary differ even though the logical workbook + pinned
+    // created/modified are identical — a timing flake in slow CI (passes
+    // locally where both renders land in the same window). Freeze the clock
+    // across both renders so the byte-equality verifies renderer determinism
+    // rather than wall-clock timing. (Freezing Date globally inside the
+    // renderer itself would be unsafe under concurrent async on the server.)
+    t.mock.timers.enable({ apis: ['Date'], now: 1_700_000_000_000 });
+    try {
+      const a = await renderXlsx(descriptor);
+      const b = await renderXlsx(descriptor);
+      assert.ok(a.buffer.equals(b.buffer), 'pinned metadata → byte-identical');
+    } finally {
+      t.mock.timers.reset();
+    }
   });
 
   it('counts rowsWritten across sheets', async () => {

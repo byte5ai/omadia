@@ -485,7 +485,7 @@ body {
 }
 .md-view th,
 .md-view td {
-  @apply px-2 py-1 text-left align-top;
+  @apply px-3 py-2 text-left align-top tabular-nums;
   border: 1px solid var(--border);
 }
 .md-view th {

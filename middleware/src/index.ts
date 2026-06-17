@@ -204,6 +204,7 @@ import { PromptContributionRegistry } from './platform/promptContributionRegistr
 import { installProcessGuards } from './platform/processGuards.js';
 import { PluginRouteRegistry } from './platform/pluginRouteRegistry.js';
 import { NotificationRouter } from './platform/notificationRouter.js';
+import { PluginStatusRegistry } from './platform/pluginStatusRegistry.js';
 import { UiRouteCatalog } from './platform/uiRouteCatalog.js';
 import { CanvasOutputRegistry } from './platform/canvasOutputRegistry.js';
 import { DeterministicActionRegistry } from './platform/deterministicActionRegistry.js';
@@ -360,6 +361,10 @@ async function main(): Promise<void> {
   // 'uiRouteCatalog')`. Published BEFORE any plugin activates so the
   // service is available the moment a consumer asks for it.
   serviceRegistry.provide('uiRouteCatalog', uiRouteCatalog);
+
+  // Spec 004 — kernel store of plugin action statuses (ctx.status). Read by the
+  // admin API to surface "Aktion erforderlich" badges/banners in the store UI.
+  const pluginStatusRegistry = new PluginStatusRegistry();
 
   // Shared Anthropic client used by sub-agents (LocalSubAgent inner Claude
   // calls) and the Teams channel (anthropicClient dep). The orchestrator-
@@ -541,6 +546,17 @@ async function main(): Promise<void> {
 
   const secretVault = new FileSecretVault(VAULT_PATH, masterKey.key);
   await secretVault.load();
+
+  // Session signing key lives in the vault (`core:auth` scope). First boot
+  // generates; every subsequent boot reuses the same key so outstanding
+  // cookies stay valid across deploys. Resolved here (before the plugin
+  // runtimes are constructed) because it doubles as the key the `ctx.flows`
+  // toolkit signs plugin-flow state with (spec 004 FR-B3).
+  const sessionSigningKey = await resolveSessionSigningKey(secretVault);
+  // Spec 004 (FR-B5) — origin plugin flow callbacks resolve against.
+  const flowPublicBaseUrl =
+    config.FLOW_PUBLIC_BASE_URL ?? config.PUBLIC_BASE_URL;
+
   const installedRegistry = new FileInstalledRegistry(
     INSTALLED_REGISTRY_PATH,
   );
@@ -693,6 +709,9 @@ async function main(): Promise<void> {
     notificationRouter,
     uiRouteCatalog,
     jobScheduler,
+    flowSigningKey: sessionSigningKey,
+    flowPublicBaseUrl,
+    pluginStatusRegistry,
     canvasOutputRegistry,
     deterministicActionRegistry,
     log: (...a) => console.log(...a),
@@ -761,6 +780,9 @@ async function main(): Promise<void> {
     notificationRouter,
     uiRouteCatalog,
     jobScheduler,
+    flowSigningKey: sessionSigningKey,
+    flowPublicBaseUrl,
+    pluginStatusRegistry,
     selfExtendRegistry,
     extensionStore,
     // When an integration plugin activates — at boot OR via a live hot-
@@ -1169,10 +1191,8 @@ async function main(): Promise<void> {
   });
 
   // ── Admin auth (A.1) ──────────────────────────────────────────────────────
-  // Session signing key lives in the vault (`core:auth` scope). First boot
-  // generates; every subsequent boot reuses the same key so outstanding
-  // cookies stay valid across deploys.
-  const sessionSigningKey = await resolveSessionSigningKey(secretVault);
+  // `sessionSigningKey` is resolved earlier (right after the vault loads) so
+  // the plugin runtimes can also use it for `ctx.flows` state signing.
   const emailWhitelist = new EmailWhitelist(config.ADMIN_ALLOWED_EMAILS);
   if (emailWhitelist.isEmpty()) {
     console.warn(
@@ -2232,6 +2252,7 @@ async function main(): Promise<void> {
       catalog: pluginCatalog,
       registry: installedRegistry,
       client: registryClient,
+      pluginStatusRegistry,
     }),
   );
   console.log('[middleware] plugin store endpoints ready at /api/v1/store/plugins (auth: required)');
@@ -3281,6 +3302,9 @@ async function main(): Promise<void> {
     notificationRouter,
     uiRouteCatalog,
     jobScheduler,
+    flowSigningKey: sessionSigningKey,
+    flowPublicBaseUrl,
+    pluginStatusRegistry,
     resolver: channelPluginResolver,
     coreApi: channelCoreApi,
     routes: routeRegistry,

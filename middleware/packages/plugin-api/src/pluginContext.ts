@@ -143,6 +143,25 @@ export interface PluginContext {
    *  rephrasing) without managing API keys themselves — the host pays. */
   readonly llm?: LlmAccessor;
 
+  /** Spec 004 — redirect/callback flow toolkit. Present iff the manifest
+   *  declares `permissions.flows: true`. Supplies the three things a plugin
+   *  needs to run a credential-acquisition round-trip on its OWN route:
+   *  the public callback URL (`publicUrl`), and a CSRF-safe, plugin-audience-
+   *  bound state token (`signState`/`verifyState`). The signing key is held by
+   *  the kernel and never reaches plugin code — a token signed for plugin A
+   *  fails `verifyState` in plugin B. Used by the GitHub App-Manifest flow;
+   *  re-usable by any future device/OAuth dance. Guard with `if (ctx.flows)` —
+   *  a Hub plugin may land on an older core that lacks it. */
+  readonly flows?: FlowsAccessor;
+
+  /** Report an operator-facing action status (e.g. "not connected yet"). The
+   *  kernel holds the latest value per plugin and the admin UI renders it as a
+   *  badge on the plugin card + a banner on the detail page that clears when
+   *  the plugin reports `ok`. Always present, ungated — a plugin reports only
+   *  its OWN status. In-memory: re-report on `activate()` so it self-heals
+   *  after a restart. */
+  readonly status: StatusAccessor;
+
   log(...args: unknown[]): void;
 }
 
@@ -489,6 +508,84 @@ export interface RoutesAccessor {
 }
 
 /**
+ * Spec 004 — toolkit for plugins that run a redirect/callback flow on their
+ * own route (`permissions.flows: true`). The kernel owns the public-URL
+ * topology and the state-signing key; the plugin owns its route handler and
+ * the provider-specific logic (what to POST, how to parse the response).
+ *
+ * Threat model: the state token is the CSRF guard for the whole round-trip.
+ * The kernel auto-binds its audience to the calling plugin id, so a token
+ * minted by (or for) one plugin cannot be replayed against another's
+ * callback. The HS512 signing key is kernel-held; `signState`/`verifyState`
+ * close over it without ever exposing it.
+ */
+export interface FlowsAccessor {
+  /**
+   * Resolve the browser-facing absolute URL for one of this plugin's own
+   * routes — the value to hand an external IdP as a `redirect_url`.
+   *
+   * Mirrors how the store-detail page reaches a plugin's admin UI: the
+   * plugin's route is mounted on the middleware under `/api/<…>`, and the
+   * browser reaches it through the `/bot-api/*` → `/api/*` proxy. So a route
+   * registered at prefix `/api/github` with `relPath = 'flow/callback'`
+   * resolves to `{FLOW_PUBLIC_BASE_URL}/bot-api/github/flow/callback`.
+   *
+   * The prefix is the plugin's sole registered route prefix; when the plugin
+   * registered several, pass `opts.prefix` to disambiguate. `relPath` is
+   * relative (a leading slash is tolerated). Throws if no route is registered
+   * yet (register the route before calling) or if the prefix is ambiguous.
+   */
+  publicUrl(relPath: string, opts?: { prefix?: string }): string;
+  /**
+   * Sign arbitrary claims into a short-lived (10-min default) HS512 state
+   * token. The kernel sets `iss=omadia`, `aud=plugin:<thisPluginId>`, and the
+   * issued-at/expiry — the plugin only supplies its own claims (e.g. a nonce,
+   * a return path). Use the result as the `state` query-param of the flow.
+   */
+  signState(
+    claims: Record<string, unknown>,
+    opts?: { ttl?: string },
+  ): Promise<string>;
+  /**
+   * Verify a state token returned on the callback. Rejects (throws) a token
+   * whose signature is invalid, whose `aud` is not this plugin, or whose TTL
+   * has expired. Returns the decoded claims (including the standard `iss`,
+   * `aud`, `iat`, `exp`) on success.
+   */
+  verifyState(token: string): Promise<Record<string, unknown>>;
+}
+
+/**
+ * Normalized, operator-facing health of a plugin. `ok` = nothing to do;
+ * `needs_action` = a required setup/connection step is pending (rendered as an
+ * amber badge + banner with a call-to-action toward the plugin's admin UI);
+ * `error` = misconfigured/failing (red). The kernel maps these to the UI;
+ * `title`/`detail` let the plugin phrase the specifics ("Nicht verbunden" /
+ * "Erstelle die GitHub App in der Admin-UI").
+ */
+export type PluginActionState = 'ok' | 'needs_action' | 'error';
+
+export interface PluginActionStatus {
+  readonly state: PluginActionState;
+  /** Short label for the badge/banner (e.g. "Nicht verbunden"). */
+  readonly title?: string;
+  /** One-line detail / next step (e.g. "Verbindung in der Admin-UI herstellen"). */
+  readonly detail?: string;
+}
+
+/**
+ * Push-based status reporter. A plugin calls `report(...)` whenever its
+ * operator-facing state changes (typically from its discovery/health check),
+ * and `clear()` once everything is fine. The kernel keeps only the latest
+ * value per plugin; there is no history. Reporting another plugin's status is
+ * impossible — the accessor is bound to the calling plugin's id.
+ */
+export interface StatusAccessor {
+  report(status: PluginActionStatus): void;
+  clear(): void;
+}
+
+/**
  * Plugin-served UI surface registry. Plugins call
  * `uiRoutes.register({routeId, path, title})` from their `activate()`
  * to publish a clickable surface (Teams Tab, Hub card, web link).
@@ -761,6 +858,15 @@ export interface SecretsAccessor {
   require(key: string): Promise<string>;
   /** Keys present in the vault for this plugin. Never returns values. */
   keys(): Promise<string[]>;
+  /** Spec 004 — create or overwrite a secret in THIS plugin's namespace.
+   *  Present only when the manifest declares `permissions.secrets.runtime_write`
+   *  (otherwise `undefined`). Used by runtime credential-acquisition flows to
+   *  persist an acquired secret (e.g. a GitHub App private key). Cannot reach
+   *  another plugin's namespace. Guard with `if (ctx.secrets.set)`. */
+  set?(key: string, value: string): Promise<void>;
+  /** Spec 004 — remove a secret from this plugin's namespace. No-op if absent.
+   *  Present only with `permissions.secrets.runtime_write`. */
+  delete?(key: string): Promise<void>;
 }
 
 /**
@@ -781,6 +887,12 @@ export interface ConfigAccessor {
   get<T = unknown>(key: string): T | undefined;
   /** Returns the config value, or throws a MissingConfigError. */
   require<T = unknown>(key: string): T;
+  /** Spec 004 — persist a NON-secret config value to this plugin's own
+   *  installed-registry config. The key MUST be a declared, non-secret setup
+   *  field (secrets go through `secrets.set`). Present only when the manifest
+   *  declares `permissions.secrets.runtime_write`. Guard with
+   *  `if (ctx.config.set)`. */
+  set?(key: string, value: unknown): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------

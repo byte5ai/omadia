@@ -458,6 +458,9 @@ export function extractSetupSchema(
     if ((type === 'string' || type === 'secret') && f['multiline'] === true) {
       field.multiline = true;
     }
+    if (f['install_hidden'] === true) {
+      field.install_hidden = true;
+    }
     if (type === 'enum') {
       const enumRaw = f['enum'];
       if (Array.isArray(enumRaw)) {

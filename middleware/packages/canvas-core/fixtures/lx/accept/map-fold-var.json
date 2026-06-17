@@ -1,0 +1,5 @@
+{ "call": "fold", "args": [
+  { "call": "map", "args": [ { "state": "cells" }, { "*": [ { "var": "it" }, { "lit": 2 } ] } ] },
+  { "lit": 0 },
+  { "+": [ { "var": "acc" }, { "var": "it" } ] }
+] }

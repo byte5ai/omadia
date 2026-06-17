@@ -18,6 +18,7 @@ import {
   type EntityIngestResult,
   type FactIngest,
   type FactIngestResult,
+  type FlowsAccessor,
   type HttpAccessor,
   type JobsAccessor,
   type KnowledgeGraph,
@@ -32,10 +33,12 @@ import {
   type NotificationsAccessor,
   type PluginContext,
   type RoutesAccessor,
+  type PluginActionStatus,
   type ScratchDirAccessor,
   type SecretsAccessor,
   type SecretsReadWriteAccessor,
   type ServicesAccessor,
+  type StatusAccessor,
   type SubAgentAccessor,
   type UiRoutesAccessor,
   type ToolsAccessor,
@@ -62,6 +65,8 @@ import type { PluginRouteRegistry } from './pluginRouteRegistry.js';
 import type { NotificationRouter } from './notificationRouter.js';
 import type { UiRouteCatalog } from './uiRouteCatalog.js';
 import { createHttpAccessor, isAuditMode, type AuditMode } from './httpAccessor.js';
+import { signFlowState, verifyFlowState } from './flowState.js';
+import type { PluginStatusRegistry } from './pluginStatusRegistry.js';
 import { createMemoryAccessor } from './memoryAccessor.js';
 import { SCRATCH_DIR } from './paths.js';
 import type { ServiceRegistry } from './serviceRegistry.js';
@@ -125,6 +130,19 @@ export interface CreatePluginContextOptions {
    *  delegates here; consumers (channel-teams Hub + Tab-Config) query
    *  it at request time via the `uiRouteCatalog` service. */
   uiRouteCatalog: UiRouteCatalog;
+  /** Spec 004 (FR-B3) — symmetric key used to sign/verify `ctx.flows` state
+   *  tokens (the same `auth/sessionSigningKey`). Held by the kernel; the
+   *  `flows` accessor closes over it and never exposes it. Optional: when
+   *  absent, `ctx.flows` is not built even if the manifest declares
+   *  `permissions.flows` (migration/test contexts don't run flows). */
+  flowSigningKey?: Uint8Array;
+  /** Spec 004 (FR-B5) — browser-facing origin the flow callback URLs resolve
+   *  against (`FLOW_PUBLIC_BASE_URL`, defaulting to `PUBLIC_BASE_URL`). No
+   *  trailing slash. Required alongside `flowSigningKey` for `ctx.flows`. */
+  flowPublicBaseUrl?: string;
+  /** Spec 004 — kernel store backing `ctx.status`. Optional: when absent the
+   *  accessor is a no-op (test/migration contexts don't surface status). */
+  pluginStatusRegistry?: PluginStatusRegistry;
   logger?: (...args: unknown[]) => void;
 }
 
@@ -248,6 +266,16 @@ export function createPluginContext(
         })
       : undefined;
 
+  // Spec 004 — runtime credential write. When the manifest declares
+  // `permissions.secrets.runtime_write`, the plugin gets write methods on its
+  // OWN vault namespace + config (never the depends_on chain). Used by
+  // credential-acquisition flows (e.g. the GitHub App-Manifest conversion) to
+  // persist what they obtain. Absent otherwise, mirroring how ctx.http /
+  // ctx.memory are gated.
+  const runtimeWrite =
+    catalog.get(agentId)?.plugin.permissions_summary.secrets_runtime_write ===
+    true;
+
   const secrets: SecretsAccessor = {
     async get(key) {
       for (const id of chain) {
@@ -277,6 +305,18 @@ export function createPluginContext(
       }
       return out;
     },
+    ...(runtimeWrite
+      ? {
+          async set(key: string, value: string): Promise<void> {
+            log(`[secrets:write] ${agentId} set ${key}`);
+            await vault.set(agentId, key, value);
+          },
+          async delete(key: string): Promise<void> {
+            log(`[secrets:write] ${agentId} delete ${key}`);
+            await vault.deleteKey(agentId, key);
+          },
+        }
+      : {}),
   };
 
   const config: ConfigAccessor = {
@@ -298,6 +338,31 @@ export function createPluginContext(
       }
       return v;
     },
+    ...(runtimeWrite
+      ? {
+          async set(key: string, value: unknown): Promise<void> {
+            // Only declared, non-secret setup fields may be written as config —
+            // secrets must go through secrets.set so they land in the vault.
+            const field = catalog
+              .get(agentId)
+              ?.plugin.setup_fields?.find((f) => f.key === key);
+            if (!field) {
+              throw new Error(
+                `config.set: "${key}" is not a declared setup field of ${agentId}`,
+              );
+            }
+            if (field.type === 'secret' || field.type === 'oauth') {
+              throw new Error(
+                `config.set: "${key}" is a ${field.type} field — use ctx.secrets.set`,
+              );
+            }
+            // Write to the plugin's OWN config (not the inherited chain).
+            const current = registry.get(agentId)?.config ?? {};
+            log(`[config:write] ${agentId} set ${key}`);
+            await registry.updateConfig(agentId, { ...current, [key]: value });
+          },
+        }
+      : {}),
   };
 
   // Tools accessor: funnel plugin-contributed tool registrations into the
@@ -354,6 +419,102 @@ export function createPluginContext(
   const routes: RoutesAccessor = {
     register(prefix, router) {
       return opts.routeRegistry.register(prefix, router, agentId);
+    },
+  };
+
+  // Spec 004 (FR-B2..B5) — flow toolkit. Present iff the manifest declares
+  // `permissions.flows` AND the kernel threaded both the signing key and the
+  // public base URL (production always does; migration/test contexts may not,
+  // so we degrade to `undefined` rather than throw). The plugin uses this to
+  // run a redirect/callback round-trip on its OWN route.
+  const flowsDeclared =
+    catalog.get(agentId)?.plugin.permissions_summary.flows === true;
+  const flowSigningKey = opts.flowSigningKey;
+  const flowPublicBaseUrl = opts.flowPublicBaseUrl;
+  const flows: FlowsAccessor | undefined =
+    flowsDeclared && flowSigningKey && flowPublicBaseUrl
+      ? {
+          publicUrl(relPath: string, urlOpts?: { prefix?: string }): string {
+            // Resolve which of the plugin's registered route prefixes to mount
+            // against. Explicit `opts.prefix` wins; otherwise the plugin's sole
+            // live registration is used. Ambiguity / absence is a loud error —
+            // a wrong redirect_url silently breaks the whole flow.
+            let prefix = urlOpts?.prefix;
+            if (!prefix) {
+              const own = opts.routeRegistry
+                .list()
+                .filter((e) => e.source === agentId && !e.disposed)
+                .map((e) => e.prefix);
+              const unique = Array.from(new Set(own));
+              if (unique.length === 0) {
+                throw new Error(
+                  `flows.publicUrl: ${agentId} has no registered route — call ctx.routes.register(...) first or pass opts.prefix`,
+                );
+              }
+              if (unique.length > 1) {
+                throw new Error(
+                  `flows.publicUrl: ${agentId} registered multiple routes (${unique.join(', ')}) — pass opts.prefix to disambiguate`,
+                );
+              }
+              prefix = unique[0]!;
+            }
+            if (!prefix.startsWith('/')) {
+              throw new Error(
+                `flows.publicUrl: prefix must start with '/' (got '${prefix}')`,
+              );
+            }
+            // The plugin route is mounted under `/api/<…>`; the browser reaches
+            // it through the `/bot-api/* → /api/*` proxy. Strip a leading `/api`
+            // segment exactly as the store-detail iframe does
+            // (web-ui store/[id]/page.tsx) so the two stay in lockstep.
+            const mountPath = prefix.replace(/^\/api(?=\/|$)/, '');
+            const base = flowPublicBaseUrl.replace(/\/+$/, '');
+            const rel = relPath.replace(/^\/+/, '');
+            return `${base}/bot-api${mountPath}/${rel}`;
+          },
+          async signState(
+            claims: Record<string, unknown>,
+            stateOpts?: { ttl?: string },
+          ): Promise<string> {
+            return await signFlowState(
+              agentId,
+              claims,
+              flowSigningKey,
+              stateOpts?.ttl,
+            );
+          },
+          async verifyState(token: string): Promise<Record<string, unknown>> {
+            return await verifyFlowState(agentId, token, flowSigningKey);
+          },
+        }
+      : undefined;
+
+  // Status accessor (spec 004): the plugin pushes its operator-facing action
+  // status to the kernel registry. Self-scoped to this plugin id — a plugin
+  // cannot report another's status. No-op when no registry was threaded
+  // (migration/test contexts). `clear()` and `report({state:'ok'})` both leave
+  // no badge; the value is normalized to guard against malformed input.
+  const statusRegistry = opts.pluginStatusRegistry;
+  const status: StatusAccessor = {
+    report(next) {
+      if (!statusRegistry) return;
+      const state =
+        next?.state === 'ok' || next?.state === 'needs_action' || next?.state === 'error'
+          ? next.state
+          : 'needs_action';
+      const normalized: PluginActionStatus = {
+        state,
+        ...(typeof next?.title === 'string' ? { title: next.title } : {}),
+        ...(typeof next?.detail === 'string' ? { detail: next.detail } : {}),
+      };
+      if (state === 'ok') {
+        statusRegistry.clear(agentId);
+        return;
+      }
+      statusRegistry.set(agentId, normalized);
+    },
+    clear() {
+      statusRegistry?.clear(agentId);
     },
   };
 
@@ -436,6 +597,8 @@ export function createPluginContext(
     ...(subAgent ? { subAgent } : {}),
     ...(knowledgeGraph ? { knowledgeGraph } : {}),
     ...(llm ? { llm } : {}),
+    ...(flows ? { flows } : {}),
+    status,
     log,
   };
 }

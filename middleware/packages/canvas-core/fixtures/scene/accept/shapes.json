@@ -1,0 +1,12 @@
+{ "type": "scene", "id": "s1", "width": 320, "height": 200,
+  "camera": { "x": 0, "y": 0, "zoom": 1 },
+  "draw": [
+    { "kind": "rect", "x": 8, "y": 8, "w": 64, "h": 32, "r": 6, "fill": "surface-raised", "stroke": "accent", "strokeW": 2, "id": "card" },
+    { "kind": "circle", "cx": 160, "cy": 100, "r": 24, "fill": "accent.glow", "id": "ball" },
+    { "kind": "line", "x1": 0, "y1": 0, "x2": 320, "y2": 200, "stroke": "text-faint" },
+    { "kind": "path", "points": [ [0,0], [10,20], [20,0] ], "closed": true, "fill": "success" },
+    { "kind": "text", "x": 12, "y": 24, "text": "Score 42", "size": 14, "weight": 600, "register": "mono", "fill": "text", "id": "score" },
+    { "kind": "group", "transform": { "x": 100, "y": 100, "scale": 1.5, "rotate": 0 }, "children": [
+      { "kind": "rect", "x": 0, "y": 0, "w": 8, "h": 8, "fill": "danger" }
+    ] }
+  ] }

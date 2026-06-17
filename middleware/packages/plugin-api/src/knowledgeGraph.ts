@@ -806,6 +806,14 @@ export interface MemorableKnowledgeSearchOptions {
    * callers → no agent constraint.
    */
   viewerAgentSlug?: string;
+  /**
+   * Durable-tier filter. When true, only `manually_authored = true` MK are
+   * returned — applied at the SQL level so the always-surface durable recall
+   * leg ranks durable knowledge among itself, instead of over-fetching from
+   * the general pool (where higher-cosine session noise would crowd it out).
+   * Default false.
+   */
+  manuallyAuthoredOnly?: boolean;
 }
 
 /** Slice 7 — single MK hit from semantic search. */
@@ -880,6 +888,11 @@ export interface RecalledInsight {
   kind: string;
   summary: string;
   score: number;
+  /** True when this insight comes from the always-surface DURABLE tier
+   *  (curated `manuallyAuthored` reference/decision knowledge). Durable
+   *  insights render at full length (not the fuzzy cap) so the agent can
+   *  trust recalled schema instead of re-discovering it via tools. */
+  durable?: boolean;
 }
 
 /** What the cross-session probe surfaced this turn. Empty arrays when a leg
@@ -1217,6 +1230,15 @@ export interface MemorableKnowledgeIngest {
    * and editable via {@link KnowledgeGraph.updateExcerpt}.
    */
   palaiaExcerpts?: PalaiaExcerptInput;
+  /**
+   * Durable-curation marker. When `true`, the new MK is written with the
+   * top-level `manually_authored` column set, which makes it eligible for the
+   * always-surface durable recall tier (see ContextRetriever durable leg).
+   * Default `false` → ordinary fuzzy/session MK. Set by the durable-promotion
+   * pipeline (the `_rules/`-write hook and high-significance auto-promotion),
+   * never by raw auto-harvesting.
+   */
+  manuallyAuthored?: boolean;
 }
 
 /**

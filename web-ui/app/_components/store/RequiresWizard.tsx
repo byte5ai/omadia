@@ -471,7 +471,11 @@ function InstallingBody({
   formRef: React.MutableRefObject<HTMLFormElement | null>;
   onFormSubmit: (values: Record<string, unknown>) => void;
 }): React.ReactElement {
-  const fields: InstallSetupField[] = phase.currentJob?.setup_schema?.fields ?? [];
+  // Mirror the install drawer: flow-managed `install_hidden` fields are kept
+  // out of the setup form (editable later via the store-detail editor).
+  const fields: InstallSetupField[] = (
+    phase.currentJob?.setup_schema?.fields ?? []
+  ).filter((f) => !f.install_hidden);
 
   return (
     <div className="space-y-4">
