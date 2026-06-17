@@ -6,7 +6,9 @@ import type { JsonObject, WorkflowGraph } from '@omadia/conductor-core';
 
 import type { ConductorWorkflowStore } from './workflowStore.js';
 import type { ConductorRunStore } from './runStore.js';
+import type { ConductorAwaitStore } from './awaitStore.js';
 import {
+  AwaitNotPendingError,
   ConductorRunExecutor,
   WorkflowDisabledError,
   WorkflowNotFoundError,
@@ -30,6 +32,7 @@ function paramStr(v: string | string[] | undefined): string {
 export interface ConductorRouterDeps {
   workflowStore: ConductorWorkflowStore;
   runStore: ConductorRunStore;
+  awaitStore: ConductorAwaitStore;
   executor: ConductorRunExecutor;
 }
 
@@ -81,6 +84,33 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
     } catch (err) {
       console.error('[conductor] publish failed:', err);
       res.status(500).json({ code: 'conductor.publish_failed', message: errMsg(err) });
+    }
+  });
+
+  // Operator inbox — all pending human awaits across runs.
+  router.get('/awaits/pending', async (_req: Request, res: Response): Promise<void> => {
+    try {
+      res.json({ awaits: await deps.awaitStore.listWaiting() });
+    } catch (err) {
+      res.status(500).json({ code: 'conductor.awaits_failed', message: errMsg(err) });
+    }
+  });
+
+  // Answer a pending human await — records the response, resolves the await, resumes the run.
+  router.post('/awaits/:awaitId/respond', async (req: Request, res: Response): Promise<void> => {
+    const awaitId = paramStr(req.params.awaitId);
+    const responder = req.session?.sub ?? 'operator';
+    const response = asObject(req.body).response ?? asObject(req.body);
+    try {
+      const run = await deps.executor.resolveAwait(awaitId, responder, response);
+      res.json({ run });
+    } catch (err) {
+      if (err instanceof AwaitNotPendingError) {
+        res.status(409).json({ code: 'conductor.await_not_pending', message: err.message });
+      } else {
+        console.error('[conductor] respond failed:', err);
+        res.status(500).json({ code: 'conductor.respond_failed', message: errMsg(err) });
+      }
     }
   });
 

@@ -5,14 +5,18 @@ import type { OrchestratorRegistry } from '@omadia/orchestrator';
 import { runConductorMigrations } from './migrator.js';
 import { ConductorWorkflowStore } from './workflowStore.js';
 import { ConductorRunStore } from './runStore.js';
+import { ConductorAwaitStore } from './awaitStore.js';
 import { ConductorRunExecutor } from './runExecutor.js';
+import { ConductorAwaitWorker } from './awaitWorker.js';
 import { RealStepEffects } from './realStepEffects.js';
 import { createConductorRouter } from './routes.js';
 
 export { runConductorMigrations } from './migrator.js';
 export { ConductorWorkflowStore } from './workflowStore.js';
 export { ConductorRunStore } from './runStore.js';
+export { ConductorAwaitStore } from './awaitStore.js';
 export { ConductorRunExecutor } from './runExecutor.js';
+export { ConductorAwaitWorker } from './awaitWorker.js';
 export { StubStepEffects } from './stepEffects.js';
 export { RealStepEffects } from './realStepEffects.js';
 export type { StepEffects, StepExecution, StepMeta } from './stepEffects.js';
@@ -21,7 +25,9 @@ export { createConductorRouter } from './routes.js';
 export interface ConductorWiring {
   workflowStore: ConductorWorkflowStore;
   runStore: ConductorRunStore;
+  awaitStore: ConductorAwaitStore;
   executor: ConductorRunExecutor;
+  awaitWorker: ConductorAwaitWorker;
 }
 
 /**
@@ -45,9 +51,11 @@ export async function wireConductor(deps: {
 
   const workflowStore = new ConductorWorkflowStore(deps.pool);
   const runStore = new ConductorRunStore(deps.pool);
+  const awaitStore = new ConductorAwaitStore(deps.pool);
   const executor = new ConductorRunExecutor({
     workflowStore,
     runStore,
+    awaitStore,
     effects: new RealStepEffects({
       getRegistry: deps.getRegistry,
       ...(deps.invokeAction ? { invokeAction: deps.invokeAction } : {}),
@@ -56,11 +64,15 @@ export async function wireConductor(deps: {
     log,
   });
 
+  // Deadline worker — fires the in-graph fallback when a human await times out.
+  const awaitWorker = new ConductorAwaitWorker({ awaitStore, executor, log });
+  awaitWorker.start();
+
   deps.app.use(
     '/api/v1/operator/conductors',
     deps.requireAuth,
-    createConductorRouter({ workflowStore, runStore, executor }),
+    createConductorRouter({ workflowStore, runStore, awaitStore, executor }),
   );
 
-  return { workflowStore, runStore, executor };
+  return { workflowStore, runStore, awaitStore, executor, awaitWorker };
 }

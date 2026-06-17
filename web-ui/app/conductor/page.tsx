@@ -8,7 +8,10 @@ import {
   ApiError,
   getConductorRun,
   listConductorWorkflows,
+  listPendingAwaits,
+  respondToAwait,
   startConductorRun,
+  type ConductorAwait,
   type ConductorRunResult,
   type ConductorWorkflow,
 } from '@/app/_lib/api';
@@ -23,16 +26,34 @@ export default function ConductorPage(): React.JSX.Element {
   const [runningSlug, setRunningSlug] = useState<string | null>(null);
   const [runResult, setRunResult] = useState<ConductorRunResult | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
+  const [awaits, setAwaits] = useState<ConductorAwait[]>([]);
+  const [awaitBusy, setAwaitBusy] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     try {
       setLoadError(null);
-      const res = await listConductorWorkflows();
-      setWorkflows(res.workflows);
+      const [wfRes, awRes] = await Promise.all([listConductorWorkflows(), listPendingAwaits()]);
+      setWorkflows(wfRes.workflows);
+      setAwaits(awRes.awaits);
     } catch (err) {
       setLoadError(err instanceof ApiError ? err.message : String(err));
     }
   }, []);
+
+  const handleRespond = useCallback(
+    async (awaitId: string, approved: boolean) => {
+      setAwaitBusy(awaitId);
+      try {
+        await respondToAwait(awaitId, { approved });
+        await reload();
+      } catch (err) {
+        setRunError(err instanceof ApiError ? err.message : String(err));
+      } finally {
+        setAwaitBusy(null);
+      }
+    },
+    [reload],
+  );
 
   useEffect(() => {
     void reload();
@@ -121,6 +142,36 @@ export default function ConductorPage(): React.JSX.Element {
           </div>
         )}
       </section>
+
+      {/* Pending human awaits (operator inbox) */}
+      {awaits.length > 0 && (
+        <section className="mb-10">
+          <h2 className="mb-3 text-[13px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
+            {t('awaitsHeading')}
+          </h2>
+          <ul className="grid gap-3">
+            {awaits.map((aw) => (
+              <li key={aw.id} className={`${card} flex items-center justify-between gap-4`}>
+                <div>
+                  <div className="text-[15px] text-[color:var(--fg-strong)]">{aw.message || aw.stepId}</div>
+                  <div className="font-mono text-[12px] text-[color:var(--fg-muted)]">
+                    {aw.principalKind}:{aw.principalRef} · {aw.channelType}
+                    {aw.deadlineAt ? ` · deadline ${new Date(aw.deadlineAt).toLocaleString()}` : ''}
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="primary" busy={awaitBusy === aw.id} disabled={awaitBusy !== null} onClick={() => void handleRespond(aw.id, true)}>
+                    {t('approve')}
+                  </Button>
+                  <Button variant="ghost" busy={awaitBusy === aw.id} disabled={awaitBusy !== null} onClick={() => void handleRespond(aw.id, false)}>
+                    {t('reject')}
+                  </Button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {/* Visual designer */}
       <section>

@@ -175,6 +175,14 @@ export class ConductorRunStore {
     }
   }
 
+  /** Park a run as `waiting` at a step (a durable human await is open) without a step record. */
+  async park(runId: string, stepId: string, context: JsonObject): Promise<void> {
+    await this.pool.query(
+      `UPDATE conductor_runs SET status = 'waiting', current_step_id = $2, context = $3::jsonb WHERE id = $1`,
+      [runId, stepId, JSON.stringify(context)],
+    );
+  }
+
   async stepsForRun(runId: string): Promise<ConductorRunStep[]> {
     const r = await this.pool.query<StepRow>(
       `SELECT ${STEP_COLS} FROM conductor_run_steps WHERE run_id = $1 ORDER BY seq ASC`,

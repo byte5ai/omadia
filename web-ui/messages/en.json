@@ -183,7 +183,10 @@
     "fallbackLabel": "Fallback transition",
     "entryLabel": "Entry step",
     "transitionLabel": "Transition",
-    "guardLabel": "Guard (JSON, optional)"
+    "guardLabel": "Guard (JSON, optional)",
+    "awaitsHeading": "Pending human steps",
+    "approve": "Approve",
+    "reject": "Reject"
   },
   "operatorChannels": {
     "title": "Channels",

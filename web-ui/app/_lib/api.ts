@@ -3569,6 +3569,27 @@ export async function getConductorWorkflowGraph(
   return getJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}`);
 }
 
+export interface ConductorAwait {
+  id: string;
+  runId: string;
+  stepId: string;
+  principalKind: 'user' | 'role';
+  principalRef: string;
+  channelType: string;
+  message: string;
+  quorum: 'any' | 'all';
+  deadlineAt: string | null;
+  status: string;
+}
+
+export async function listPendingAwaits(): Promise<{ awaits: ConductorAwait[] }> {
+  return getJson(`${CONDUCTOR_BASE}/awaits/pending`);
+}
+
+export async function respondToAwait(awaitId: string, response: unknown): Promise<{ run: ConductorRun }> {
+  return postJson(`${CONDUCTOR_BASE}/awaits/${encodeURIComponent(awaitId)}/respond`, { response });
+}
+
 export async function publishConductorWorkflow(body: {
   slug: string;
   name: string;
