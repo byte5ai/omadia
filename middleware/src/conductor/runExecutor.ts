@@ -11,6 +11,21 @@ export class WorkflowDisabledError extends Error {}
 export class WorkflowNotPublishedError extends Error {}
 export class AwaitNotPendingError extends Error {}
 
+export interface PreviewStep {
+  stepId: string;
+  kind: 'agent' | 'action' | 'human';
+  actor: string;
+  postcondition: string;
+  transition: string | null;
+  result: JsonValue;
+}
+
+export interface PreviewResult {
+  status: 'completed' | 'failed';
+  steps: PreviewStep[];
+  context: JsonObject;
+}
+
 const MAX_STEPS = 1000;
 
 function asObject(v: JsonValue | undefined): JsonObject {
@@ -177,6 +192,71 @@ export class ConductorRunExecutor {
     });
     this.log(`[conductor] await ${awaitId} timed out → fallback '${fallback.id}' (run ${aw.runId})`);
     await this.driveFrom(aw.runId, graph, fallback.target, run.context);
+  }
+
+  /**
+   * Dry-run / preview (US8 / FR-029): simulate the workflow path in memory with NO persistence
+   * and NO side effects — no conductor_runs/awaits rows, no real notification, no durable await.
+   * Human steps are answered inline (supplied `humanResponses[stepId]`, default `{approved:true}`);
+   * agent steps run a real turn; action steps are stubbed (irreversible connector actions are not
+   * executed). Returns the full simulated step path so the operator gains confidence before activating.
+   */
+  async previewRun(slug: string, payload: JsonObject, humanResponses: Record<string, JsonValue> = {}): Promise<PreviewResult> {
+    const wf = await this.workflowStore.getBySlug(slug);
+    if (!wf) throw new WorkflowNotFoundError(`workflow '${slug}' not found`);
+    if (!wf.activeVersionId) throw new WorkflowNotPublishedError(`workflow '${slug}' has no active version`);
+    const version = await this.workflowStore.getVersion(wf.activeVersionId);
+    if (!version) throw new WorkflowNotPublishedError(`active version of '${slug}' missing`);
+    const graph = version.graph;
+
+    let context: JsonObject = { ...payload };
+    let currentStepId: string | null = graph.entryStepId;
+    const steps: PreviewStep[] = [];
+    let status: 'completed' | 'failed' = 'completed';
+    let guard = MAX_STEPS;
+
+    while (currentStepId && guard-- > 0) {
+      const stepId: string = currentStepId;
+      const step = graph.steps.find((s) => s.id === stepId);
+      if (!step) {
+        status = 'failed';
+        break;
+      }
+
+      let result: JsonValue;
+      let actor: string;
+      if (step.kind === 'human') {
+        result = humanResponses[stepId] ?? { approved: true };
+        actor = 'human (inline)';
+      } else if (step.kind === 'agent') {
+        const exec = await this.effects.runAgentStep(step, context, { runId: `preview:${slug}` });
+        result = exec.result;
+        actor = `agent:${step.agentId ?? '?'}`;
+      } else {
+        result = { simulated: true, actionId: step.actionId ?? null };
+        actor = `action (stubbed):${step.actionId ?? '?'}`;
+      }
+
+      const decision = nextStep(graph, stepId, result, context);
+      context = this.accumulate(context, stepId, result);
+      steps.push({
+        stepId,
+        kind: step.kind,
+        actor,
+        postcondition: decision.postcondition,
+        transition: decision.kind === 'advance' ? decision.transitionId : null,
+        result,
+      });
+
+      if (decision.kind === 'advance') {
+        currentStepId = decision.targetStepId;
+      } else {
+        status = decision.kind === 'complete' ? 'completed' : 'failed';
+        currentStepId = null;
+      }
+    }
+
+    return { status, steps, context };
   }
 
   // ── helpers ────────────────────────────────────────────────────────────────

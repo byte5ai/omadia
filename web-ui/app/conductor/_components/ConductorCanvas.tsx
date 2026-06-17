@@ -27,8 +27,10 @@ import {
   ApiError,
   getConductorRun,
   getConductorWorkflowGraph,
+  previewConductorWorkflow,
   publishConductorWorkflow,
   startConductorRun,
+  type ConductorPreviewResult,
   type ConductorRunResult,
   type ConductorWorkflow,
 } from '@/app/_lib/api';
@@ -148,6 +150,8 @@ function CanvasInner({ workflows, onSaved }: { workflows: ConductorWorkflow[]; o
   const [validationErrors, setValidationErrors] = useState<ValidationError[]>([]);
   const [runResult, setRunResult] = useState<ConductorRunResult | null>(null);
   const [busy, setBusy] = useState(false);
+  const [previewResult, setPreviewResult] = useState<ConductorPreviewResult | null>(null);
+  const [previewing, setPreviewing] = useState(false);
 
   const onNodesChange = useCallback((changes: NodeChange[]) => {
     setNodes((ns) => applyNodeChanges(changes, ns) as StepNode[]);
@@ -373,6 +377,22 @@ function CanvasInner({ workflows, onSaved }: { workflows: ConductorWorkflow[]; o
     }
   }, [slug]);
 
+  const handlePreview = useCallback(async () => {
+    if (!slug) return;
+    const now = Date.now();
+    if (now - lastAction.current < 600) return;
+    lastAction.current = now;
+    setPreviewing(true);
+    setPreviewResult(null);
+    try {
+      setPreviewResult(await previewConductorWorkflow(slug, {}));
+    } catch (err) {
+      setSaveError(err instanceof ApiError ? err.message : String(err));
+    } finally {
+      setPreviewing(false);
+    }
+  }, [slug]);
+
   const sel = useMemo(() => nodes.find((n) => n.id === selectedNode) ?? null, [nodes, selectedNode]);
   const selEdge = useMemo(() => edges.find((e) => e.id === selectedEdge) ?? null, [edges, selectedEdge]);
 
@@ -428,6 +448,9 @@ function CanvasInner({ workflows, onSaved }: { workflows: ConductorWorkflow[]; o
         </Button>
         <Button variant="secondary" busy={busy} disabled={busy || !slug} onClick={() => void handleRun()}>
           {busy ? t('running') : t('runButton')}
+        </Button>
+        <Button variant="ghost" busy={previewing} disabled={previewing || !slug} onClick={() => void handlePreview()}>
+          {previewing ? t('previewing') : t('dryRunButton')}
         </Button>
       </div>
 
@@ -618,6 +641,35 @@ function CanvasInner({ workflows, onSaved }: { workflows: ConductorWorkflow[]; o
           <pre className="overflow-x-auto rounded-md bg-black/20 p-3 text-[12px] text-[color:var(--fg-strong)]">
             {JSON.stringify(runResult.run.context, null, 2)}
           </pre>
+        </div>
+      )}
+
+      {previewResult && (
+        <div className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-3">
+          <div className="mb-2 text-[14px] text-[color:var(--fg-strong)]">
+            {t('dryRunHeading')} · {t('statusLabel')}: <span className="font-mono">{previewResult.status}</span>
+          </div>
+          <p className="mb-2 text-[12px] text-[color:var(--fg-muted)]">{t('dryRunHint')}</p>
+          <table className="w-full text-left text-[13px]">
+            <thead className="text-[color:var(--fg-muted)]">
+              <tr>
+                <th className="py-1 pr-3">{t('colStep')}</th>
+                <th className="py-1 pr-3">actor</th>
+                <th className="py-1 pr-3">{t('colPostcondition')}</th>
+                <th className="py-1">{t('colTransition')}</th>
+              </tr>
+            </thead>
+            <tbody className="font-mono">
+              {previewResult.steps.map((s, i) => (
+                <tr key={i} className="border-t border-[color:var(--border)]">
+                  <td className="py-1 pr-3">{s.stepId}</td>
+                  <td className="py-1 pr-3 text-[11px]">{s.actor}</td>
+                  <td className="py-1 pr-3">{s.postcondition}</td>
+                  <td className="py-1">{s.transition ?? '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
     </div>

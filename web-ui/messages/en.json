@@ -191,7 +191,11 @@
     "emitHint": "Fire a domain event — every enabled workflow with a matching event trigger (id + payload filter) starts a run. This is the Conductor Surface a connector calls.",
     "payloadLabel": "Payload (JSON)",
     "emitButton": "Emit",
-    "emitResult": "Matched {matched} workflow(s), started {started} run(s)."
+    "emitResult": "Matched {matched} workflow(s), started {started} run(s).",
+    "dryRunButton": "Dry-run",
+    "previewing": "Simulating…",
+    "dryRunHeading": "Dry-run preview",
+    "dryRunHint": "Simulated — human steps auto-approved inline, connector actions stubbed, no durable awaits or notifications."
   },
   "operatorChannels": {
     "title": "Channels",

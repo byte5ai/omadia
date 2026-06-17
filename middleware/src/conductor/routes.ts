@@ -164,6 +164,25 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
     }
   });
 
+  // Dry-run / preview (US8): simulate the path with no side effects, no durable awaits.
+  router.post('/:slug/preview', async (req: Request, res: Response): Promise<void> => {
+    const slug = paramStr(req.params.slug);
+    const body = asObject(req.body);
+    try {
+      const result = await deps.executor.previewRun(slug, asObject(body.payload), asObject(body.humanResponses));
+      res.json(result);
+    } catch (err) {
+      if (err instanceof WorkflowNotFoundError) {
+        res.status(404).json({ code: 'conductor.not_found', message: err.message });
+      } else if (err instanceof WorkflowNotPublishedError) {
+        res.status(409).json({ code: 'conductor.not_published', message: err.message });
+      } else {
+        console.error('[conductor] preview failed:', err);
+        res.status(500).json({ code: 'conductor.preview_failed', message: errMsg(err) });
+      }
+    }
+  });
+
   // Start a manual run; returns the (synchronously driven) run plus its step trace.
   router.post('/:slug/runs', async (req: Request, res: Response): Promise<void> => {
     const slug = paramStr(req.params.slug);

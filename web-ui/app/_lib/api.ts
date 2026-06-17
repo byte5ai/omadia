@@ -3614,6 +3614,25 @@ export async function startConductorRun(slug: string, payload: unknown): Promise
   return postJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/runs`, { payload });
 }
 
+export interface ConductorPreviewStep {
+  stepId: string;
+  kind: string;
+  actor: string;
+  postcondition: string;
+  transition: string | null;
+  result: unknown;
+}
+
+export interface ConductorPreviewResult {
+  status: string;
+  steps: ConductorPreviewStep[];
+  context: unknown;
+}
+
+export async function previewConductorWorkflow(slug: string, payload: unknown): Promise<ConductorPreviewResult> {
+  return postJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/preview`, { payload });
+}
+
 export async function listConductorRuns(slug: string): Promise<{ runs: ConductorRun[] }> {
   return getJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/runs`);
 }

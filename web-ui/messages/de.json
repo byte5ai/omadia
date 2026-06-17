@@ -191,7 +191,11 @@
     "emitHint": "Löse ein Domain-Event aus — jeder aktivierte Workflow mit passendem Event-Trigger (ID + Payload-Filter) startet einen Run. Das ist die Conductor Surface, die ein Connector aufruft.",
     "payloadLabel": "Payload (JSON)",
     "emitButton": "Auslösen",
-    "emitResult": "{matched} Workflow(s) passend, {started} Run(s) gestartet."
+    "emitResult": "{matched} Workflow(s) passend, {started} Run(s) gestartet.",
+    "dryRunButton": "Probelauf",
+    "previewing": "Simuliere…",
+    "dryRunHeading": "Probelauf-Vorschau",
+    "dryRunHint": "Simuliert — Human-Steps inline auto-freigegeben, Connector-Actions gestubbt, keine durable Awaits oder Notifications."
   },
   "operatorChannels": {
     "title": "Channels",
