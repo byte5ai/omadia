@@ -6,12 +6,14 @@ import { useTranslations } from 'next-intl';
 import { Button } from '@/app/_components/ui/Button';
 import {
   ApiError,
+  emitConductorEvent,
   getConductorRun,
   listConductorWorkflows,
   listPendingAwaits,
   respondToAwait,
   startConductorRun,
   type ConductorAwait,
+  type ConductorEmitResult,
   type ConductorRunResult,
   type ConductorWorkflow,
 } from '@/app/_lib/api';
@@ -28,6 +30,11 @@ export default function ConductorPage(): React.JSX.Element {
   const [runError, setRunError] = useState<string | null>(null);
   const [awaits, setAwaits] = useState<ConductorAwait[]>([]);
   const [awaitBusy, setAwaitBusy] = useState<string | null>(null);
+  const [eventId, setEventId] = useState('github.pull_request.merged');
+  const [eventPayload, setEventPayload] = useState('{ "base": "main" }');
+  const [emitting, setEmitting] = useState(false);
+  const [emitResult, setEmitResult] = useState<ConductorEmitResult | null>(null);
+  const [emitError, setEmitError] = useState<string | null>(null);
   // Swallows a double-fired click (synthetic input / accidental double-click) so one intent
   // never starts two runs or sends two responses.
   const lastAction = useRef(0);
@@ -93,6 +100,32 @@ export default function ConductorPage(): React.JSX.Element {
     [reload],
   );
 
+  const handleEmit = useCallback(async () => {
+    const now = Date.now();
+    if (now - lastAction.current < 600) return;
+    lastAction.current = now;
+    setEmitting(true);
+    setEmitError(null);
+    setEmitResult(null);
+    let payload: unknown;
+    try {
+      payload = eventPayload.trim() ? JSON.parse(eventPayload) : {};
+    } catch {
+      setEmitError('Payload is not valid JSON');
+      setEmitting(false);
+      return;
+    }
+    try {
+      const res = await emitConductorEvent(eventId, payload);
+      setEmitResult(res);
+      await reload();
+    } catch (err) {
+      setEmitError(err instanceof ApiError ? err.message : String(err));
+    } finally {
+      setEmitting(false);
+    }
+  }, [eventId, eventPayload, reload]);
+
   const card = 'rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4';
 
   return (
@@ -150,6 +183,43 @@ export default function ConductorPage(): React.JSX.Element {
             </pre>
           </div>
         )}
+      </section>
+
+      {/* Emit a domain event (test the Conductor Surface) */}
+      <section className="mb-10">
+        <h2 className="mb-1 text-[13px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
+          {t('emitHeading')}
+        </h2>
+        <p className="mb-4 max-w-2xl text-[13px] text-[color:var(--fg-muted)]">{t('emitHint')}</p>
+        <div className={`${card} grid gap-3`}>
+          <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+            <label className="grid gap-1 text-[13px] text-[color:var(--fg-muted)]">
+              {t('eventIdLabel')}
+              <input
+                className="w-full rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-[14px] text-[color:var(--fg-strong)]"
+                value={eventId}
+                onChange={(e) => setEventId(e.target.value)}
+              />
+            </label>
+            <label className="grid gap-1 text-[13px] text-[color:var(--fg-muted)]">
+              {t('payloadLabel')}
+              <input
+                className="w-full rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 font-mono text-[12px] text-[color:var(--fg-strong)]"
+                value={eventPayload}
+                onChange={(e) => setEventPayload(e.target.value)}
+              />
+            </label>
+            <Button variant="primary" busy={emitting} disabled={emitting} onClick={() => void handleEmit()}>
+              {t('emitButton')}
+            </Button>
+          </div>
+          {emitError && <p className="text-[14px] text-[color:var(--danger,#e5484d)]">{emitError}</p>}
+          {emitResult && (
+            <p className="text-[13px] text-[color:var(--fg-muted)]">
+              {t('emitResult', { matched: emitResult.matchedWorkflows, started: emitResult.startedRuns.length })}
+            </p>
+          )}
+        </div>
       </section>
 
       {/* Pending human awaits (operator inbox) */}

@@ -8,6 +8,7 @@ import { ConductorRunStore } from './runStore.js';
 import { ConductorAwaitStore } from './awaitStore.js';
 import { ConductorRunExecutor } from './runExecutor.js';
 import { ConductorAwaitWorker } from './awaitWorker.js';
+import { ConductorEventRouter } from './eventRouter.js';
 import { RealStepEffects } from './realStepEffects.js';
 import { createConductorRouter } from './routes.js';
 
@@ -17,6 +18,7 @@ export { ConductorRunStore } from './runStore.js';
 export { ConductorAwaitStore } from './awaitStore.js';
 export { ConductorRunExecutor } from './runExecutor.js';
 export { ConductorAwaitWorker } from './awaitWorker.js';
+export { ConductorEventRouter } from './eventRouter.js';
 export { StubStepEffects } from './stepEffects.js';
 export { RealStepEffects } from './realStepEffects.js';
 export type { StepEffects, StepExecution, StepMeta } from './stepEffects.js';
@@ -28,6 +30,7 @@ export interface ConductorWiring {
   awaitStore: ConductorAwaitStore;
   executor: ConductorRunExecutor;
   awaitWorker: ConductorAwaitWorker;
+  eventRouter: ConductorEventRouter;
 }
 
 /**
@@ -68,11 +71,14 @@ export async function wireConductor(deps: {
   const awaitWorker = new ConductorAwaitWorker({ awaitStore, executor, log });
   awaitWorker.start();
 
+  // Event router — a domain event starts every subscribed workflow's run (US4).
+  const eventRouter = new ConductorEventRouter({ workflowStore, executor, log });
+
   deps.app.use(
     '/api/v1/operator/conductors',
     deps.requireAuth,
-    createConductorRouter({ workflowStore, runStore, awaitStore, executor }),
+    createConductorRouter({ workflowStore, runStore, awaitStore, executor, eventRouter }),
   );
 
-  return { workflowStore, runStore, awaitStore, executor, awaitWorker };
+  return { workflowStore, runStore, awaitStore, executor, awaitWorker, eventRouter };
 }

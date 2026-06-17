@@ -186,7 +186,12 @@
     "guardLabel": "Guard (JSON, optional)",
     "awaitsHeading": "Pending human steps",
     "approve": "Approve",
-    "reject": "Reject"
+    "reject": "Reject",
+    "emitHeading": "Emit an event",
+    "emitHint": "Fire a domain event — every enabled workflow with a matching event trigger (id + payload filter) starts a run. This is the Conductor Surface a connector calls.",
+    "payloadLabel": "Payload (JSON)",
+    "emitButton": "Emit",
+    "emitResult": "Matched {matched} workflow(s), started {started} run(s)."
   },
   "operatorChannels": {
     "title": "Channels",

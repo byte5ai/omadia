@@ -186,7 +186,12 @@
     "guardLabel": "Guard (JSON, optional)",
     "awaitsHeading": "Wartende Human-Steps",
     "approve": "Freigeben",
-    "reject": "Ablehnen"
+    "reject": "Ablehnen",
+    "emitHeading": "Event auslösen",
+    "emitHint": "Löse ein Domain-Event aus — jeder aktivierte Workflow mit passendem Event-Trigger (ID + Payload-Filter) startet einen Run. Das ist die Conductor Surface, die ein Connector aufruft.",
+    "payloadLabel": "Payload (JSON)",
+    "emitButton": "Auslösen",
+    "emitResult": "{matched} Workflow(s) passend, {started} Run(s) gestartet."
   },
   "operatorChannels": {
     "title": "Channels",

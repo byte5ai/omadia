@@ -7,6 +7,7 @@ import type { JsonObject, WorkflowGraph } from '@omadia/conductor-core';
 import type { ConductorWorkflowStore } from './workflowStore.js';
 import type { ConductorRunStore } from './runStore.js';
 import type { ConductorAwaitStore } from './awaitStore.js';
+import type { ConductorEventRouter } from './eventRouter.js';
 import {
   AwaitNotPendingError,
   ConductorRunExecutor,
@@ -34,6 +35,7 @@ export interface ConductorRouterDeps {
   runStore: ConductorRunStore;
   awaitStore: ConductorAwaitStore;
   executor: ConductorRunExecutor;
+  eventRouter: ConductorEventRouter;
 }
 
 /**
@@ -84,6 +86,24 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
     } catch (err) {
       console.error('[conductor] publish failed:', err);
       res.status(500).json({ code: 'conductor.publish_failed', message: errMsg(err) });
+    }
+  });
+
+  // Emit a domain event — starts a run for every workflow with a matching event trigger (US4).
+  // The kernel-side seam a connector calls; exposed here so the operator can fire/test events.
+  router.post('/emit', async (req: Request, res: Response): Promise<void> => {
+    const body = asObject(req.body);
+    const eventId = typeof body.eventId === 'string' ? body.eventId : '';
+    if (!eventId) {
+      res.status(400).json({ code: 'conductor.invalid_input', message: 'eventId is required' });
+      return;
+    }
+    try {
+      const result = await deps.eventRouter.emit(eventId, asObject(body.payload));
+      res.status(202).json(result);
+    } catch (err) {
+      console.error('[conductor] emit failed:', err);
+      res.status(500).json({ code: 'conductor.emit_failed', message: errMsg(err) });
     }
   });
 
