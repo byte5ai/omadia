@@ -17,6 +17,7 @@ import { createMemoryPurgeRouter } from './routes/memoryPurge.js';
 import { createMemoryBackendRouter } from './routes/memoryBackend.js';
 import { createChatRouter } from './routes/chat.js';
 import { createOperatorAgentsRouter } from './routes/operatorAgents.js';
+import { wireConductor } from './conductor/index.js';
 import { createOperatorChannelsRouter } from './routes/operatorChannels.js';
 import { createAgentBuilderRouter } from './routes/agentBuilder.js';
 import { ScheduleWorker } from './scheduler/scheduleWorker.js';
@@ -2026,6 +2027,11 @@ async function main(): Promise<void> {
     await runAuthMigrations(graphPool, (m) => console.log(m));
     await runProfileStorageMigrations(graphPool, (m) => console.log(m));
     await runProfileSnapshotMigrations(graphPool, (m) => console.log(m));
+
+    // Conductor (Spec 005) — deterministic workflow engine. Migrations + stores +
+    // run executor + operator API, all behind the graphPool (inert in-memory).
+    await wireConductor({ pool: graphPool, app, requireAuth, log: (m) => console.log(m) });
+    console.log('[middleware] conductor wired at /api/v1/operator/conductors/* (auth-gated)');
     const userStore = new UserStore(graphPool);
 
     const bootstrapResult = await runAuthBootstrap({
