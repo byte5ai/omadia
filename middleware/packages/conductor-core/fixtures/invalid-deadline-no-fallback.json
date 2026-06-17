@@ -1,0 +1,20 @@
+{
+  "entryStepId": "s1",
+  "steps": [
+    {
+      "id": "s1",
+      "kind": "human",
+      "human": {
+        "principal": { "kind": "user", "ref": "11111111-1111-1111-1111-111111111111" },
+        "channel": "teams",
+        "message": "Approve?",
+        "deadline": "PT24H"
+      }
+    },
+    { "id": "s2", "kind": "action", "actionId": "act.done" }
+  ],
+  "transitions": [
+    { "id": "t1", "source": "s1", "target": "s2", "guard": { "op": "eq", "path": "stepResult.approved", "value": true } }
+  ],
+  "triggers": [{ "id": "tr1", "kind": "manual" }]
+}
