@@ -6,14 +6,18 @@ import { useTranslations } from 'next-intl';
 import { Button } from '@/app/_components/ui/Button';
 import {
   ApiError,
+  assignRoleHolder,
+  createConductorRole,
   emitConductorEvent,
   getConductorRun,
+  listConductorRoles,
   listConductorWorkflows,
   listPendingAwaits,
   respondToAwait,
   startConductorRun,
   type ConductorAwait,
   type ConductorEmitResult,
+  type ConductorRole,
   type ConductorRunResult,
   type ConductorWorkflow,
 } from '@/app/_lib/api';
@@ -35,6 +39,10 @@ export default function ConductorPage(): React.JSX.Element {
   const [emitting, setEmitting] = useState(false);
   const [emitResult, setEmitResult] = useState<ConductorEmitResult | null>(null);
   const [emitError, setEmitError] = useState<string | null>(null);
+  const [roles, setRoles] = useState<ConductorRole[]>([]);
+  const [newRoleKey, setNewRoleKey] = useState('');
+  const [newRoleLabel, setNewRoleLabel] = useState('');
+  const [holderInputs, setHolderInputs] = useState<Record<string, string>>({});
   // Swallows a double-fired click (synthetic input / accidental double-click) so one intent
   // never starts two runs or sends two responses.
   const lastAction = useRef(0);
@@ -42,9 +50,14 @@ export default function ConductorPage(): React.JSX.Element {
   const reload = useCallback(async () => {
     try {
       setLoadError(null);
-      const [wfRes, awRes] = await Promise.all([listConductorWorkflows(), listPendingAwaits()]);
+      const [wfRes, awRes, roleRes] = await Promise.all([
+        listConductorWorkflows(),
+        listPendingAwaits(),
+        listConductorRoles(),
+      ]);
       setWorkflows(wfRes.workflows);
       setAwaits(awRes.awaits);
+      setRoles(roleRes.roles);
     } catch (err) {
       setLoadError(err instanceof ApiError ? err.message : String(err));
     }
@@ -63,6 +76,32 @@ export default function ConductorPage(): React.JSX.Element {
         setRunError(err instanceof ApiError ? err.message : String(err));
       } finally {
         setAwaitBusy(null);
+      }
+    },
+    [reload],
+  );
+
+  const handleCreateRole = useCallback(async () => {
+    if (!newRoleKey || !newRoleLabel) return;
+    try {
+      await createConductorRole(newRoleKey, newRoleLabel);
+      setNewRoleKey('');
+      setNewRoleLabel('');
+      await reload();
+    } catch (err) {
+      setLoadError(err instanceof ApiError ? err.message : String(err));
+    }
+  }, [newRoleKey, newRoleLabel, reload]);
+
+  const handleAssign = useCallback(
+    async (key: string, action: 'add' | 'remove', holderId: string) => {
+      if (!holderId) return;
+      try {
+        await assignRoleHolder(key, holderId, action);
+        setHolderInputs((m) => ({ ...m, [key]: '' }));
+        await reload();
+      } catch (err) {
+        setLoadError(err instanceof ApiError ? err.message : String(err));
       }
     },
     [reload],
@@ -185,6 +224,63 @@ export default function ConductorPage(): React.JSX.Element {
         )}
       </section>
 
+      {/* Roles & the baton (US6) */}
+      <section className="mb-10">
+        <h2 className="mb-1 text-[13px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
+          {t('rolesHeading')}
+        </h2>
+        <p className="mb-4 max-w-2xl text-[13px] text-[color:var(--fg-muted)]">{t('rolesHint')}</p>
+        <div className="grid gap-3">
+          {roles.map((role) => (
+            <div key={role.key} className={card}>
+              <div className="text-[15px] text-[color:var(--fg-strong)]">
+                {role.label} <span className="font-mono text-[12px] text-[color:var(--fg-muted)]">{role.key}</span>
+              </div>
+              <div className="font-mono text-[12px] text-[color:var(--fg-muted)]">
+                {t('holdersLabel')}: {role.holders.length ? role.holders.join(', ') : '—'}
+              </div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <input
+                  className="rounded-md border border-[color:var(--border)] bg-transparent px-2 py-1 text-[13px] text-[color:var(--fg-strong)]"
+                  placeholder="holder@email"
+                  value={holderInputs[role.key] ?? ''}
+                  onChange={(e) => setHolderInputs((m) => ({ ...m, [role.key]: e.target.value }))}
+                />
+                <Button variant="primary" onClick={() => void handleAssign(role.key, 'add', holderInputs[role.key] ?? '')}>
+                  {t('assignButton')}
+                </Button>
+                {role.holders.map((h) => (
+                  <button
+                    key={h}
+                    className="rounded-md border border-[color:var(--border)] px-2 py-1 font-mono text-[11px] text-[color:var(--fg-muted)]"
+                    onClick={() => void handleAssign(role.key, 'remove', h)}
+                  >
+                    ✕ {h}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+          <div className={`${card} flex flex-wrap items-end gap-2`}>
+            <input
+              className="rounded-md border border-[color:var(--border)] bg-transparent px-2 py-1 font-mono text-[13px] text-[color:var(--fg-strong)]"
+              placeholder="approver.release"
+              value={newRoleKey}
+              onChange={(e) => setNewRoleKey(e.target.value)}
+            />
+            <input
+              className="rounded-md border border-[color:var(--border)] bg-transparent px-2 py-1 text-[13px] text-[color:var(--fg-strong)]"
+              placeholder="Release approver"
+              value={newRoleLabel}
+              onChange={(e) => setNewRoleLabel(e.target.value)}
+            />
+            <Button variant="ghost" onClick={() => void handleCreateRole()}>
+              {t('createRoleButton')}
+            </Button>
+          </div>
+        </div>
+      </section>
+
       {/* Emit a domain event (test the Conductor Surface) */}
       <section className="mb-10">
         <h2 className="mb-1 text-[13px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
@@ -234,7 +330,12 @@ export default function ConductorPage(): React.JSX.Element {
                 <div>
                   <div className="text-[15px] text-[color:var(--fg-strong)]">{aw.message || aw.stepId}</div>
                   <div className="font-mono text-[12px] text-[color:var(--fg-muted)]">
-                    {aw.principalKind}:{aw.principalRef} · {aw.channelType}
+                    {aw.principalKind}:{aw.principalRef}
+                    {aw.principalKind === 'role'
+                      ? ` → ${aw.resolvedHolders && aw.resolvedHolders.length ? aw.resolvedHolders.join(', ') : t('noHolder')}`
+                      : ''}
+                    {' · '}
+                    {aw.channelType}
                     {aw.deadlineAt ? ` · deadline ${new Date(aw.deadlineAt).toLocaleString()}` : ''}
                   </div>
                 </div>

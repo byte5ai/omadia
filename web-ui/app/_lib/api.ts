@@ -3580,10 +3580,31 @@ export interface ConductorAwait {
   quorum: 'any' | 'all';
   deadlineAt: string | null;
   status: string;
+  resolvedHolders?: string[];
 }
 
 export async function listPendingAwaits(): Promise<{ awaits: ConductorAwait[] }> {
   return getJson(`${CONDUCTOR_BASE}/awaits/pending`);
+}
+
+export interface ConductorRole {
+  key: string;
+  label: string;
+  description: string | null;
+  scope: string | null;
+  holders: string[];
+}
+
+export async function listConductorRoles(): Promise<{ roles: ConductorRole[] }> {
+  return getJson(`${CONDUCTOR_BASE}/roles`);
+}
+
+export async function createConductorRole(key: string, label: string): Promise<void> {
+  return postJson(`${CONDUCTOR_BASE}/roles`, { key, label });
+}
+
+export async function assignRoleHolder(key: string, holderId: string, action: 'add' | 'remove'): Promise<{ holders: string[] }> {
+  return postJson(`${CONDUCTOR_BASE}/roles/${encodeURIComponent(key)}/holders`, { holderId, action });
 }
 
 export interface ConductorEmitResult {

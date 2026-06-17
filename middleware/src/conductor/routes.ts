@@ -7,6 +7,7 @@ import type { JsonObject, WorkflowGraph } from '@omadia/conductor-core';
 import type { ConductorWorkflowStore } from './workflowStore.js';
 import type { ConductorRunStore } from './runStore.js';
 import type { ConductorAwaitStore } from './awaitStore.js';
+import type { ConductorRoleStore } from './roleStore.js';
 import type { ConductorEventRouter } from './eventRouter.js';
 import {
   AwaitNotPendingError,
@@ -34,6 +35,7 @@ export interface ConductorRouterDeps {
   workflowStore: ConductorWorkflowStore;
   runStore: ConductorRunStore;
   awaitStore: ConductorAwaitStore;
+  roleStore: ConductorRoleStore;
   executor: ConductorRunExecutor;
   eventRouter: ConductorEventRouter;
 }
@@ -107,10 +109,61 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
     }
   });
 
-  // Operator inbox — all pending human awaits across runs.
+  // Roles + baton management (US6).
+  router.get('/roles', async (_req: Request, res: Response): Promise<void> => {
+    try {
+      res.json({ roles: await deps.roleStore.listRoles() });
+    } catch (err) {
+      res.status(500).json({ code: 'conductor.roles_failed', message: errMsg(err) });
+    }
+  });
+
+  router.post('/roles', async (req: Request, res: Response): Promise<void> => {
+    const body = asObject(req.body);
+    const key = typeof body.key === 'string' ? body.key : '';
+    const label = typeof body.label === 'string' ? body.label : '';
+    if (!key || !label) {
+      res.status(400).json({ code: 'conductor.invalid_input', message: 'key and label are required' });
+      return;
+    }
+    try {
+      await deps.roleStore.createRole({ key, label, description: typeof body.description === 'string' ? body.description : null });
+      res.status(201).json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ code: 'conductor.role_create_failed', message: errMsg(err) });
+    }
+  });
+
+  // Assign (add) or move (unassign) a baton holder.
+  router.post('/roles/:key/holders', async (req: Request, res: Response): Promise<void> => {
+    const body = asObject(req.body);
+    const holderId = typeof body.holderId === 'string' ? body.holderId : '';
+    const action = body.action === 'remove' ? 'remove' : 'add';
+    if (!holderId) {
+      res.status(400).json({ code: 'conductor.invalid_input', message: 'holderId is required' });
+      return;
+    }
+    try {
+      const key = paramStr(req.params.key);
+      if (action === 'remove') await deps.roleStore.removeHolder(key, holderId);
+      else await deps.roleStore.addHolder(key, holderId);
+      res.status(200).json({ holders: await deps.roleStore.resolve(key) });
+    } catch (err) {
+      res.status(500).json({ code: 'conductor.role_assign_failed', message: errMsg(err) });
+    }
+  });
+
+  // Operator inbox — all pending human awaits across runs, with role principals resolved live.
   router.get('/awaits/pending', async (_req: Request, res: Response): Promise<void> => {
     try {
-      res.json({ awaits: await deps.awaitStore.listWaiting() });
+      const awaits = await deps.awaitStore.listWaiting();
+      const enriched = await Promise.all(
+        awaits.map(async (aw) => ({
+          ...aw,
+          resolvedHolders: aw.principalKind === 'role' ? await deps.roleStore.resolve(aw.principalRef) : [aw.principalRef],
+        })),
+      );
+      res.json({ awaits: enriched });
     } catch (err) {
       res.status(500).json({ code: 'conductor.awaits_failed', message: errMsg(err) });
     }

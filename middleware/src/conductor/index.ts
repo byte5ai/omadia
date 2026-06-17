@@ -6,6 +6,7 @@ import { runConductorMigrations } from './migrator.js';
 import { ConductorWorkflowStore } from './workflowStore.js';
 import { ConductorRunStore } from './runStore.js';
 import { ConductorAwaitStore } from './awaitStore.js';
+import { ConductorRoleStore } from './roleStore.js';
 import { ConductorRunExecutor } from './runExecutor.js';
 import { ConductorAwaitWorker } from './awaitWorker.js';
 import { ConductorEventRouter } from './eventRouter.js';
@@ -16,6 +17,7 @@ export { runConductorMigrations } from './migrator.js';
 export { ConductorWorkflowStore } from './workflowStore.js';
 export { ConductorRunStore } from './runStore.js';
 export { ConductorAwaitStore } from './awaitStore.js';
+export { ConductorRoleStore } from './roleStore.js';
 export { ConductorRunExecutor } from './runExecutor.js';
 export { ConductorAwaitWorker } from './awaitWorker.js';
 export { ConductorEventRouter } from './eventRouter.js';
@@ -28,6 +30,7 @@ export interface ConductorWiring {
   workflowStore: ConductorWorkflowStore;
   runStore: ConductorRunStore;
   awaitStore: ConductorAwaitStore;
+  roleStore: ConductorRoleStore;
   executor: ConductorRunExecutor;
   awaitWorker: ConductorAwaitWorker;
   eventRouter: ConductorEventRouter;
@@ -55,6 +58,7 @@ export async function wireConductor(deps: {
   const workflowStore = new ConductorWorkflowStore(deps.pool);
   const runStore = new ConductorRunStore(deps.pool);
   const awaitStore = new ConductorAwaitStore(deps.pool);
+  const roleStore = new ConductorRoleStore(deps.pool);
   const executor = new ConductorRunExecutor({
     workflowStore,
     runStore,
@@ -77,8 +81,8 @@ export async function wireConductor(deps: {
   deps.app.use(
     '/api/v1/operator/conductors',
     deps.requireAuth,
-    createConductorRouter({ workflowStore, runStore, awaitStore, executor, eventRouter }),
+    createConductorRouter({ workflowStore, runStore, awaitStore, roleStore, executor, eventRouter }),
   );
 
-  return { workflowStore, runStore, awaitStore, executor, awaitWorker, eventRouter };
+  return { workflowStore, runStore, awaitStore, roleStore, executor, awaitWorker, eventRouter };
 }

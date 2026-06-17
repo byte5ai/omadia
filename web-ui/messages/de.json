@@ -195,7 +195,13 @@
     "dryRunButton": "Probelauf",
     "previewing": "Simuliere…",
     "dryRunHeading": "Probelauf-Vorschau",
-    "dryRunHint": "Simuliert — Human-Steps inline auto-freigegeben, Connector-Actions gestubbt, keine durable Awaits oder Notifications."
+    "dryRunHint": "Simuliert — Human-Steps inline auto-freigegeben, Connector-Actions gestubbt, keine durable Awaits oder Notifications.",
+    "rolesHeading": "Rollen & der Baton",
+    "rolesHint": "Ein Human-Step kann eine Rolle adressieren (role:<key>) statt einer festen Person. Die Rolle wird live zum aktuellen Holder aufgelöst — den Baton verschieben routet wartende und künftige Awaits um.",
+    "holdersLabel": "Holder",
+    "assignButton": "Zuweisen",
+    "createRoleButton": "Rolle anlegen",
+    "noHolder": "kein Holder"
   },
   "operatorChannels": {
     "title": "Channels",
