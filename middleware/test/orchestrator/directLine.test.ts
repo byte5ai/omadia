@@ -367,6 +367,60 @@ describe('#332 Layer 2 — Direct Line (strict passthrough, non-streaming/Teams)
   });
 });
 
+// Minimal privacy-guard service stub — enough for runTurn's post-turn block
+// (takeRenderedAnswerV4 + finalizeTurn). Direct-line never interns, so the
+// other methods are not exercised.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const fakePrivacyGuard = (): any => () =>
+  ({
+    internToolResultV4: async () => ({ digest: '', datasetId: '' }),
+    subAgentResultV4: async (i: { narration: string }) => ({
+      resultText: i.narration,
+    }),
+    takeRenderedAnswerV4: async () => undefined,
+    finalizeTurn: async () => undefined,
+  }) as any;
+
+describe('#332 Layer 2 — guarded-additive mode', () => {
+  it('appends an attributed note but keeps the verbatim block byte-for-byte (no-redaction)', async () => {
+    const tool = strategistTool(async () => 'VERBATIM-X');
+    // provider.complete is called once, for the note generation.
+    const { provider } = scriptedCompleteProvider([
+      textResponse('cross-domain caveat'),
+    ]);
+    const orch = new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [tool],
+      nativeToolRegistry: new NativeToolRegistry(),
+      directLineMode: 'guarded',
+    });
+    const sa = await orch.chat({ userMessage: '#strategist plan?', sessionScope: 'g1' });
+    assert.equal(sa.delegatedAnswer?.text, 'VERBATIM-X'); // intact, independent
+    assert.match(sa.text, /VERBATIM-X/);
+    assert.match(sa.text, /▸ omadia note: cross-domain caveat/);
+  });
+
+  it('degrades to strict (no note LLM call) when a privacy guard is active — no PII to the provider', async () => {
+    const tool = strategistTool(async () => 'VERBATIM-Y');
+    const orch = new Orchestrator({
+      provider: neverCalledProvider(), // throws if the note LLM is invoked
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [tool],
+      nativeToolRegistry: new NativeToolRegistry(),
+      directLineMode: 'guarded',
+      privacyGuard: fakePrivacyGuard(),
+    });
+    const sa = await orch.chat({ userMessage: '#strategist plan?', sessionScope: 'g2' });
+    assert.equal(sa.delegatedAnswer?.text, 'VERBATIM-Y');
+    assert.equal(sa.text, 'VERBATIM-Y'); // no note appended → no provider call
+  });
+});
+
 describe('#332 Layer 3 — forced-delegation obligation (non-streaming)', () => {
   it('forces a consult when the model would end the turn without it', async () => {
     const captured: { q?: string } = {};

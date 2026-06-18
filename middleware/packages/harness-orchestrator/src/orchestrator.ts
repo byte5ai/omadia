@@ -1968,7 +1968,18 @@ export class Orchestrator {
     // verbatim block in `delegatedAnswer` stays intact regardless (the
     // no-redaction invariant is structural).
     let answer = verbatim;
-    if (this.directLineMode === 'guarded' && status === 'success') {
+    // Guarded-additive note runs an extra LLM completion over the verbatim
+    // answer. That direct `provider.complete` is NOT routed through the privacy
+    // interning path, so when a privacy guard is active the raw payload/answer
+    // could carry un-masked PII to the model provider. To avoid that leak we
+    // degrade to strict passthrough whenever a privacy guard is installed; the
+    // verbatim block is still delivered intact. (A privacy-aware note that
+    // interns its input first is a follow-up.)
+    if (
+      this.directLineMode === 'guarded' &&
+      status === 'success' &&
+      this.privacyGuard?.() === undefined
+    ) {
       const note = await this.maybeDirectLineNote(
         candidate.label,
         directive.payload,
@@ -2001,6 +2012,20 @@ export class Orchestrator {
           err instanceof Error ? err.message : err,
         );
       }
+    }
+
+    // Fact extraction parity (#332 review follow-up): a direct-line turn skips
+    // chatInContext*, so without this the KG would never learn from a delegated
+    // answer. Fire-and-forget against Haiku, after the session log lands so the
+    // Fact → Turn edge has an anchor. Never awaited; entityRefs are empty (the
+    // relay issues no orchestrator-level tool calls of its own).
+    if (this.factExtractor && persistedTurnId) {
+      void this.factExtractor.extractAndIngest({
+        turnId: persistedTurnId,
+        userMessage: input.userMessage,
+        assistantAnswer: answer,
+        entityRefs: [],
+      });
     }
 
     return {
