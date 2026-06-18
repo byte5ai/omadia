@@ -113,6 +113,25 @@ describe('PreviewSecretBuffer (in-memory mode)', () => {
   it('persistent flag is false without a vault', () => {
     assert.equal(buf.persistent, false);
   });
+
+  // Regression — the Test-Credentials drawer's "Übernehmen" sends only the
+  // fields typed THIS session. With `set` (replace) every sibling not
+  // re-typed was wiped ("values set higher up vanish on every apply").
+  // `merge` must keep them.
+  it('merge() updates only the given keys and preserves siblings', async () => {
+    await buf.merge('a@x', 'd1', { LLM_MODEL: 'claude' });
+    await buf.merge('a@x', 'd1', { WHITELIST: 'host.example' });
+    await buf.merge('a@x', 'd1', { LLM_MODEL: 'claude-opus' }); // update one
+    assert.deepEqual(buf.get('a@x', 'd1'), {
+      LLM_MODEL: 'claude-opus',
+      WHITELIST: 'host.example',
+    });
+  });
+
+  it('merge() on an empty buffer behaves like a plain set', async () => {
+    await buf.merge('a@x', 'd1', { K: 'v' });
+    assert.deepEqual(buf.get('a@x', 'd1'), { K: 'v' });
+  });
 });
 
 describe('PreviewSecretBuffer (vault-backed mode)', () => {
@@ -205,5 +224,26 @@ describe('PreviewSecretBuffer (vault-backed mode)', () => {
       await altVault.listKeys('core.builder-preview:a@x:d1'),
       [],
     );
+  });
+
+  it('merge() persists new keys without purging existing vault siblings', async () => {
+    await buf.set('a@x', 'd1', { LLM_MODEL: 'claude' });
+    await buf.merge('a@x', 'd1', { WHITELIST: 'host.example' });
+    // Both survive in heap AND vault (no purge on merge).
+    assert.deepEqual(buf.get('a@x', 'd1'), {
+      LLM_MODEL: 'claude',
+      WHITELIST: 'host.example',
+    });
+    assert.deepEqual(
+      (await vault.listKeys('core.builder-preview:a@x:d1')).slice().sort(),
+      ['LLM_MODEL', 'WHITELIST'],
+    );
+    // A fresh buffer re-reads both from the vault (survives restart).
+    const fresh = new PreviewSecretBuffer({ vault });
+    await fresh.warm('a@x', 'd1');
+    assert.deepEqual(fresh.get('a@x', 'd1'), {
+      LLM_MODEL: 'claude',
+      WHITELIST: 'host.example',
+    });
   });
 });
