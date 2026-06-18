@@ -15,6 +15,7 @@ import {
   PreviewRuntime,
   type PreviewAgentHandle,
   type PreviewHostServices,
+  type PreviewLlmCompleteRequest,
   type PreviewPluginContext,
 } from '../../src/plugins/builder/previewRuntime.js';
 import { PreviewStore } from '../../src/plugins/builder/previewStore.js';
@@ -302,6 +303,150 @@ describe('PreviewRuntime', () => {
       assert.equal(host.has('local.only'), false);
       dispose();
       assert.equal(captured!.services.get('local.only'), undefined);
+    });
+
+    // ── ctx.llm (host-backed, manifest-gated) ─────────────────────────────
+    // Regression: previewRuntime built no `llm` accessor, so any agent whose
+    // activate-body calls `ctx.llm.complete(...)` hit its own
+    // `if (!ctx.llm) throw` guard and failed preview-chat with "ctx.llm
+    // unavailable", even though it works post-install. Preview now serves real
+    // completions through the wired host 'llm' provider, gated on the same
+    // manifest field the kernel checks.
+    const LLM_MANIFEST = [
+      'schema_version: "1"',
+      'identity:',
+      '  id: "@omadia/agent-test"',
+      'permissions:',
+      '  llm:',
+      '    models_allowed: ["claude-sonnet-4-6"]',
+      '    calls_per_invocation: 1',
+      '    max_tokens_per_call: 100',
+      '',
+    ].join('\n');
+
+    function llmHost(received: PreviewLlmCompleteRequest[]): PreviewHostServices {
+      const provider = {
+        complete: async (req: PreviewLlmCompleteRequest) => {
+          received.push(req);
+          return {
+            text: 'preview-answer',
+            model: req.model,
+            inputTokens: 3,
+            outputTokens: 5,
+            stopReason: 'end_turn' as const,
+          };
+        },
+      };
+      return {
+        get: <T,>(name: string): T | undefined =>
+          name === 'llm' ? (provider as T) : undefined,
+        has: (name: string): boolean => name === 'llm',
+      };
+    }
+
+    it('exposes ctx.llm backed by the host provider when manifest + host are present', async () => {
+      const received: PreviewLlmCompleteRequest[] = [];
+      let captured: PreviewPluginContext | undefined;
+      const runtime = buildRuntime({
+        previewsRoot: freshRoot('llm-present'),
+        serviceRegistry: llmHost(received),
+        manifestYaml: LLM_MANIFEST,
+        onActivate: (ctx) => {
+          captured = ctx;
+        },
+      });
+      await runtime.activate({
+        zipBuffer: Buffer.alloc(0),
+        draftId: 'd1',
+        rev: 1,
+        configValues: {},
+        secretValues: {},
+      });
+      assert.ok(captured?.llm, 'ctx.llm must be present');
+      assert.deepEqual(captured!.llm!.modelsAllowed, ['claude-sonnet-4-6']);
+
+      const res = await captured!.llm!.complete({
+        model: 'claude-sonnet-4-6',
+        messages: [{ role: 'user', content: 'hi' }],
+        maxTokens: 5000, // above manifest cap → must clamp
+      });
+      assert.equal(res.text, 'preview-answer');
+      assert.equal(received.length, 1);
+      // Delegated to the real host provider, with maxTokens clamped to the cap.
+      assert.equal(received[0]!.maxTokens, 100);
+    });
+
+    it('ctx.llm enforces the model whitelist and the per-invocation budget', async () => {
+      const received: PreviewLlmCompleteRequest[] = [];
+      let captured: PreviewPluginContext | undefined;
+      const runtime = buildRuntime({
+        previewsRoot: freshRoot('llm-guards'),
+        serviceRegistry: llmHost(received),
+        manifestYaml: LLM_MANIFEST,
+        onActivate: (ctx) => {
+          captured = ctx;
+        },
+      });
+      await runtime.activate({
+        zipBuffer: Buffer.alloc(0),
+        draftId: 'd1',
+        rev: 1,
+        configValues: {},
+        secretValues: {},
+      });
+      const llm = captured!.llm!;
+      // Not in models_allowed → rejected before any host call.
+      await assert.rejects(
+        () => llm.complete({ model: 'gpt-4o', messages: [] }),
+        /is not in agent/,
+      );
+      // First allowed call OK; second exceeds calls_per_invocation: 1.
+      await llm.complete({ model: 'claude-sonnet-4-6', messages: [] });
+      await assert.rejects(
+        () => llm.complete({ model: 'claude-sonnet-4-6', messages: [] }),
+        /LLM call budget/,
+      );
+      assert.equal(received.length, 1, 'only the one allowed call reached host');
+    });
+
+    it('ctx.llm is absent when the manifest declares no llm permission', async () => {
+      let captured: PreviewPluginContext | undefined;
+      const runtime = buildRuntime({
+        previewsRoot: freshRoot('llm-no-manifest'),
+        serviceRegistry: llmHost([]),
+        manifestYaml: MEMORY_MANIFEST, // declares memory, not llm
+        onActivate: (ctx) => {
+          captured = ctx;
+        },
+      });
+      await runtime.activate({
+        zipBuffer: Buffer.alloc(0),
+        draftId: 'd1',
+        rev: 1,
+        configValues: {},
+        secretValues: {},
+      });
+      assert.equal(captured!.llm, undefined);
+    });
+
+    it('ctx.llm is absent when no host llm provider is wired (faithful to install)', async () => {
+      let captured: PreviewPluginContext | undefined;
+      const runtime = buildRuntime({
+        previewsRoot: freshRoot('llm-no-host'),
+        // no serviceRegistry → host 'llm' not resolvable
+        manifestYaml: LLM_MANIFEST,
+        onActivate: (ctx) => {
+          captured = ctx;
+        },
+      });
+      await runtime.activate({
+        zipBuffer: Buffer.alloc(0),
+        draftId: 'd1',
+        rev: 1,
+        configValues: {},
+        secretValues: {},
+      });
+      assert.equal(captured!.llm, undefined);
     });
 
     it('exposes ctx.memory when the manifest declares memory permissions, backed by an ephemeral store', async () => {

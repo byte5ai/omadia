@@ -87,6 +87,50 @@ export interface PreviewUiRouteDescriptorInput {
   readonly order?: number;
 }
 
+/** Mirror of `LlmCompleteRequest` from the boilerplate contract. Inline-copied
+ *  to keep previewRuntime self-contained (no plugin-api import). */
+export interface PreviewLlmCompleteRequest {
+  readonly model: string;
+  readonly system?: string;
+  readonly messages: ReadonlyArray<{
+    readonly role: 'user' | 'assistant';
+    readonly content: string;
+  }>;
+  readonly maxTokens?: number;
+  readonly temperature?: number;
+}
+
+/** Mirror of `LlmCompleteResult` from the boilerplate contract. */
+export interface PreviewLlmCompleteResult {
+  readonly text: string;
+  readonly model: string;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly stopReason: 'end_turn' | 'max_tokens' | 'stop_sequence' | 'tool_use';
+}
+
+/** Plugin-facing LLM accessor surface (mirror of `LlmAccessor`). */
+export interface PreviewLlmAccessor {
+  complete(req: PreviewLlmCompleteRequest): Promise<PreviewLlmCompleteResult>;
+  readonly modelsAllowed: readonly string[];
+}
+
+/** Structural subset of the host `'llm'` service the kernel registers — only
+ *  the `complete` the preview accessor delegates to. Resolved from the wired
+ *  ServiceRegistry via `hostServices.get('llm')`. */
+export interface PreviewHostLlmProvider {
+  complete(req: PreviewLlmCompleteRequest): Promise<PreviewLlmCompleteResult>;
+}
+
+/** LLM permission extracted from the package manifest, mirroring the kernel's
+ *  `extractLlmPermissions`. Empty `modelsAllowed` means the agent declared no
+ *  LLM access → `ctx.llm` stays absent. */
+export interface PreviewLlmConfig {
+  readonly modelsAllowed: readonly string[];
+  readonly callsPerInvocation: number;
+  readonly maxTokensPerCall: number;
+}
+
 /** Mirror of `JobSchedule` from the boilerplate contract
  *  (`agent-integration/types.ts`). Inline-copied to keep previewRuntime
  *  self-contained. */
@@ -193,6 +237,18 @@ export interface PreviewPluginContext {
    *  preview the same way it would fail a real install — no false
    *  "works in preview" signal. */
   readonly http?: HttpAccessor;
+  /** Host-LLM accessor, present exactly when the manifest declares
+   *  `permissions.llm.models_allowed` with ≥1 entry AND the runtime is wired
+   *  with a host `'llm'` provider (the same two-part gate the kernel applies
+   *  post-install). Backed by the SAME host `'llm'` service the kernel serves
+   *  `ctx.llm` from (Anthropic default), so an agent that calls
+   *  `ctx.llm.complete(...)` is testable in preview with real completions —
+   *  model-whitelist, per-invocation call-budget and max-tokens clamp behave
+   *  like install. Absent when the manifest declares no `models_allowed` (or no
+   *  host provider is wired, e.g. unit tests), so an agent that forgot to
+   *  declare the permission fails preview the same way it would fail install —
+   *  no false "works in preview" signal. */
+  readonly llm?: PreviewLlmAccessor;
   readonly smokeMode: boolean;
   log(...args: unknown[]): void;
 }
@@ -460,6 +516,30 @@ export class PreviewRuntime {
           })
         : undefined;
 
+    // ctx.llm is gated on the manifest's `permissions.llm.models_allowed`
+    // exactly like the kernel's `extractLlmPermissions`, AND on a wired host
+    // `'llm'` provider (the second half of the kernel's two-part gate). When
+    // both hold, the preview serves REAL completions through the same host
+    // service the kernel uses post-install (Anthropic default), so an agent
+    // that calls `ctx.llm.complete(...)` is testable in the builder instead of
+    // crashing with "ctx.llm unavailable". When the manifest omits the
+    // permission (or no host provider is wired, e.g. unit tests), `ctx.llm`
+    // stays absent — same failure mode as a real install.
+    const llmConfig = await manifestLlmConfig(packageRoot);
+    const hostLlm =
+      llmConfig && this.hostServices
+        ? this.hostServices.get<PreviewHostLlmProvider>('llm')
+        : undefined;
+    const llm: PreviewLlmAccessor | undefined =
+      llmConfig && hostLlm
+        ? createPreviewLlmAccessor({
+            agentId,
+            config: llmConfig,
+            provider: hostLlm,
+            log: (...args) => this.log(`[${agentId}/llm]`, ...args),
+          })
+        : undefined;
+
     const routeCaptures: PreviewRouteCapture[] = [];
     const jobCaptures: PreviewJobCapture[] = [];
     const statusReports: PreviewStatusInput[] = [];
@@ -474,6 +554,7 @@ export class PreviewRuntime {
       hostServices: this.hostServices,
       provideMemory,
       ...(http ? { http } : {}),
+      ...(llm ? { llm } : {}),
       logger: (...args) => this.log(`[${agentId}]`, ...args),
     });
 
@@ -588,6 +669,110 @@ async function manifestNetworkConfig(
   return { outbound, webScanner };
 }
 
+/**
+ * Reads the package's `manifest.yaml` and extracts the LLM permission the
+ * kernel uses to gate `ctx.llm`: the `permissions.llm.models_allowed` whitelist
+ * plus the optional per-invocation call budget and max-tokens cap. Mirrors
+ * `pluginContext.ts:extractLlmPermissions` so preview and production agree on
+ * when `ctx.llm` is present. Returns `undefined` when the manifest is missing,
+ * unparsable, declares no `permissions.llm`, or lists an empty `models_allowed`
+ * — the same "no LLM access" outcome the kernel produces. Defaults
+ * (`calls_per_invocation: 5`, `max_tokens_per_call: 4096`) match the kernel.
+ */
+async function manifestLlmConfig(
+  packageRoot: string,
+): Promise<PreviewLlmConfig | undefined> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(path.join(packageRoot, 'manifest.yaml'), 'utf-8');
+  } catch {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = yaml.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return undefined;
+  const permissions = (parsed as Record<string, unknown>)['permissions'];
+  if (typeof permissions !== 'object' || permissions === null) return undefined;
+  const llm = (permissions as Record<string, unknown>)['llm'];
+  if (typeof llm !== 'object' || llm === null) return undefined;
+  const rawModels = (llm as Record<string, unknown>)['models_allowed'];
+  const modelsAllowed = Array.isArray(rawModels)
+    ? rawModels.filter((m): m is string => typeof m === 'string' && m.length > 0)
+    : [];
+  if (modelsAllowed.length === 0) return undefined;
+  const callsRaw = (llm as Record<string, unknown>)['calls_per_invocation'];
+  const tokensRaw = (llm as Record<string, unknown>)['max_tokens_per_call'];
+  return {
+    modelsAllowed,
+    callsPerInvocation:
+      typeof callsRaw === 'number' && callsRaw > 0 ? callsRaw : 5,
+    maxTokensPerCall:
+      typeof tokensRaw === 'number' && tokensRaw > 0 ? tokensRaw : 4096,
+  };
+}
+
+/**
+ * Builds the preview `ctx.llm` accessor. Delegates real completions to the
+ * wired host `'llm'` provider (the same service the kernel serves `ctx.llm`
+ * from — Anthropic default), while replicating the three guardrails the kernel
+ * applies in `createLlmAccessor`:
+ *
+ *   - **call budget** — at most `callsPerInvocation` completions per preview
+ *     activation (the preview handle is one "invocation");
+ *   - **model whitelist** — the requested model must match an entry in
+ *     `models_allowed`. Concrete ids match exactly; `*` and `class:*` refs are
+ *     allowed through (the host default provider resolves class refs the same
+ *     way the kernel does), matching the kernel's intent without re-importing
+ *     its provider-coupling logic;
+ *   - **max-tokens clamp** — silently clamped to `maxTokensPerCall`.
+ *
+ * Preview does NOT thread non-Anthropic provider pins or the vault; it always
+ * serves on the host default `'llm'` provider, which is the common case and
+ * keeps the preview decoupled from the kernel's ServiceRegistry/vault types.
+ */
+function createPreviewLlmAccessor(opts: {
+  agentId: string;
+  config: PreviewLlmConfig;
+  provider: PreviewHostLlmProvider;
+  log: (...args: unknown[]) => void;
+}): PreviewLlmAccessor {
+  const { agentId, config, provider, log } = opts;
+  let callsUsed = 0;
+  return {
+    modelsAllowed: config.modelsAllowed,
+    async complete(
+      req: PreviewLlmCompleteRequest,
+    ): Promise<PreviewLlmCompleteResult> {
+      if (callsUsed >= config.callsPerInvocation) {
+        throw new Error(
+          `preview: agent '${agentId}' exceeded its LLM call budget ` +
+            `(${String(config.callsPerInvocation)} per invocation).`,
+        );
+      }
+      const allowed = config.modelsAllowed.some(
+        (m) => m === req.model || m === '*' || m.startsWith('class:'),
+      );
+      if (!allowed) {
+        throw new Error(
+          `preview: model '${req.model}' is not in agent '${agentId}' ` +
+            `permissions.llm.models_allowed (${config.modelsAllowed.join(', ')}).`,
+        );
+      }
+      const requested = req.maxTokens ?? config.maxTokensPerCall;
+      const effective = Math.min(requested, config.maxTokensPerCall);
+      if (effective < requested) {
+        log(`clamped maxTokens ${String(requested)} → ${String(effective)} (manifest cap)`);
+      }
+      callsUsed += 1;
+      return provider.complete({ ...req, maxTokens: effective });
+    },
+  };
+}
+
 function createStubContext(opts: {
   agentId: string;
   configValues: Readonly<Record<string, unknown>>;
@@ -599,6 +784,7 @@ function createStubContext(opts: {
   hostServices?: PreviewHostServices;
   provideMemory: boolean;
   http?: HttpAccessor;
+  llm?: PreviewLlmAccessor;
   logger: (...args: unknown[]) => void;
 }): PreviewPluginContext {
   // Services the previewed agent provides itself stay isolated to this
@@ -750,6 +936,7 @@ function createStubContext(opts: {
     // `http: undefined` — when the manifest declares no egress, matching the
     // kernel's optional `ctx.http`.
     ...(opts.http ? { http: opts.http } : {}),
+    ...(opts.llm ? { llm: opts.llm } : {}),
     smokeMode: opts.smokeMode,
     log: opts.logger,
   };
