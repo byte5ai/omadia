@@ -140,6 +140,21 @@ export type {
 export { Orchestrator, parseToolEmittedChoice } from './orchestrator.js';
 export type { OrchestratorOptions } from './orchestrator.js';
 
+// #332 Layer 2 — Direct Line directive parsing & target resolution (exported
+// for unit coverage and reuse by deterministic routers / the Conductor).
+export {
+  parseDirectLineDirective,
+  resolveDirectLineTarget,
+  directLineLabel,
+  DEFAULT_DIRECTIVE_PREFIX,
+} from './directLine.js';
+export type {
+  DirectLineDirective,
+  DirectLineCandidate,
+  DirectLineResolution,
+  DirectLineMode,
+} from './directLine.js';
+
 // Round-loop guard — exported so it can be unit-tested in isolation and reused
 // by other agentic loops (e.g. the Builder).
 export { LoopGuard, canonicalize } from './loopGuard.js';

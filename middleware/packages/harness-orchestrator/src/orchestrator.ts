@@ -5,6 +5,7 @@ import {
   type ChatStreamEvent,
   type ChatTurnInput,
   type ChatTurnResult,
+  type DelegatedAnswer,
   type DiagramAttachment,
   type OutgoingFileAttachment,
   type PendingRoutineList,
@@ -104,6 +105,13 @@ import {
   ensureWellFormedParams,
 } from './privacyHandle.js';
 import { RunTraceCollector, type InvocationHandle } from './runTraceCollector.js';
+import {
+  parseDirectLineDirective,
+  resolveDirectLineTarget,
+  directLineLabel,
+  type DirectLineCandidate,
+  type DirectLineMode,
+} from './directLine.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import { isInternExemptTool } from './privacyInternPolicy.js';
 import { graphScopeFor, type SessionLogger } from './sessionLogger.js';
@@ -196,6 +204,19 @@ export interface OrchestratorOptions {
   maxTurnSeconds?: number;
   /** One delegation tool per Managed Agent domain (accounting, hr, …). */
   domainTools: DomainTool[];
+  /**
+   * #332 Layer 2 — Direct Line delivery policy. `'strict'` (default) relays a
+   * directed specialist's verbatim answer with no orchestrator generation;
+   * `'guarded'` additionally lets the orchestrator append an attributed,
+   * additive note (never a redaction). Absent → `'strict'`.
+   */
+  directLineMode?: DirectLineMode;
+  /**
+   * #332 Layer 2 — directive prefix the user puts before a specialist name
+   * (`@omadia #strategist …`). Absent → `'#'`. Must survive the channel's own
+   * mention/markup parsing (see directLine.ts).
+   */
+  directLinePrefix?: string;
   /** Kernel-shared native-tool registry. Created once at boot and shared
    *  between the orchestrator and the plugin-activation pipeline so plugin-
    *  contributed tools land in the same dispatch map as the kernel's own. */
@@ -881,6 +902,10 @@ export class Orchestrator {
   /** Per-Agent scoped memory-tool handler; overrides the global one. */
   private readonly memoryToolHandler: MemoryToolHandler | undefined;
   private readonly domainToolsByName: Map<string, DomainTool>;
+  /** #332 Layer 2 — Direct Line delivery policy (default `'strict'`). */
+  private readonly directLineMode: DirectLineMode;
+  /** #332 Layer 2 — directive prefix (default `'#'`). */
+  private readonly directLinePrefix: string;
   // systemPrompt is rebuilt live per turn from `buildSystemPrompt()` —
   // so hot-registered DomainTools show up in the preamble. Prompt caching
   // still applies within stable phases (between two register/unregister
@@ -952,6 +977,8 @@ export class Orchestrator {
         : 0;
     this.memoryToolHandler = options.memoryToolHandler;
     this.domainToolsByName = new Map(options.domainTools.map((t) => [t.name, t]));
+    this.directLineMode = options.directLineMode ?? 'strict';
+    this.directLinePrefix = options.directLinePrefix ?? '#';
     this.knowledgeGraph = options.knowledgeGraph;
     this.knowledgeGraphTool = options.knowledgeGraph
       ? new KnowledgeGraphTool(options.knowledgeGraph, options.embeddingClient)
@@ -1784,7 +1811,13 @@ export class Orchestrator {
           : {}),
       },
       async () => {
-        let result = await this.chatInContext(input, turnId);
+        // #332 Layer 2 — Direct Line short-circuit (non-streaming / Teams
+        // path). A user-directed specialist turn is dispatched deterministically
+        // by the harness; the orchestrator LLM never runs. Still flows through
+        // the privacy-finalize block below so the verbatim answer is PII-masked
+        // (Pitfall 3) and a receipt is attached.
+        const direct = await this.executeDirectLine(input, turnId);
+        let result = direct ?? (await this.chatInContext(input, turnId));
         // Privacy Shield v4 — when a v4_render_answer call produced the
         // answer this turn it is final and already safe (real values
         // materialized server-side from ground truth). Swap it in.
@@ -1816,6 +1849,230 @@ export class Orchestrator {
         return result;
       },
     );
+  }
+
+  /**
+   * #332 Layer 2 — Direct Line. When the USER directs input at a named
+   * specialist (`@omadia #strategist <payload>`), the HARNESS — not the LLM —
+   * binds the sub-agent's input to the verbatim payload, dispatches it through
+   * the deterministic choke point, captures the verbatim answer, and delivers
+   * it as a harness-owned, attributed `delegatedAnswer` the orchestrator can
+   * neither suppress nor reword.
+   *
+   * Returns a finished `ChatTurnResult` for a direct-line turn (so both the
+   * non-streaming `runTurn`/Teams path and the streaming `chatStream`/web-ui
+   * path can short-circuit), or `undefined` for an ordinary turn (the caller
+   * proceeds with the normal LLM loop).
+   *
+   * Awareness (the orchestrator "stays aware"): the verbatim block becomes the
+   * turn's `answer`, so it is persisted as the assistant turn and re-enters the
+   * orchestrator's context on the next turn via the channel's prior-turn
+   * history — no hidden generation needed (Pitfall 5).
+   */
+  private async executeDirectLine(
+    input: ChatTurnInput,
+    turnId: string,
+    observer?: AskObserver,
+  ): Promise<ChatTurnResult | undefined> {
+    const directive = parseDirectLineDirective(
+      input.userMessage,
+      this.directLinePrefix,
+    );
+    if (!directive) return undefined; // ordinary turn — proceed with the LLM.
+
+    // Candidates = THIS orchestrator's whitelisted sub-agents (OB-29-1 gating).
+    const candidates: DirectLineCandidate[] = Array.from(
+      this.domainToolsByName.values(),
+    ).map((t) => ({
+      toolName: t.name,
+      ...(t.agentId ? { agentId: t.agentId } : {}),
+      label: directLineLabel(t.agentId ?? t.name),
+    }));
+
+    if (directive.payload.length === 0) {
+      return this.directLineNotice(
+        `You addressed a specialist but didn't include a question. Try \`${this.directLinePrefix}${directive.token} <your question>\`.`,
+      );
+    }
+
+    const resolution = resolveDirectLineTarget(directive.token, candidates);
+    if (resolution.kind === 'unknown') {
+      const available =
+        candidates.map((c) => c.label).join(', ') || '(none configured)';
+      return this.directLineNotice(
+        `No specialist named "${directive.token}" is available here. Available: ${available}.`,
+      );
+    }
+    if (resolution.kind === 'ambiguous') {
+      const names = resolution.matches.map((c) => c.label).join(', ');
+      return this.directLineNotice(
+        `"${directive.token}" is ambiguous — it matches ${names}. Please name one specifically.`,
+      );
+    }
+
+    const candidate = resolution.candidate;
+    const tool = this.domainToolsByName.get(candidate.toolName);
+    if (!tool) {
+      return this.directLineNotice(
+        `Specialist "${candidate.label}" is no longer available.`,
+      );
+    }
+
+    // Deterministic harness invocation through the choke point. Input is bound
+    // to the verbatim user payload — the orchestrator cannot reshape it.
+    const collector = new RunTraceCollector({
+      scope: input.sessionScope ?? turnId,
+      ...(input.userId ? { userId: input.userId } : {}),
+    });
+    const handle = collector.beginInvocation(tool.name);
+    const startedAt = Date.now();
+    let verbatim: string;
+    let status: 'success' | 'error';
+    try {
+      // The domain-tool contract takes `{ question }` (see createDomainTool);
+      // bind it to the user's VERBATIM payload — the orchestrator never
+      // reshapes it.
+      verbatim = await tool.handle(
+        { question: directive.payload },
+        handle.observer,
+      );
+      // `createDomainTool.handle` does not throw on a sub-agent failure — it
+      // returns an `Error …` string. Treat that as a faithful failure too.
+      status = /^error\b/i.test(verbatim.trimStart()) ? 'error' : 'success';
+    } catch (err) {
+      // Faithful failure — never a cover-up or a hallucinated answer.
+      verbatim = `${candidate.label} could not respond: ${
+        err instanceof Error ? err.message : String(err)
+      }`;
+      status = 'error';
+    }
+    handle.finish({ durationMs: Date.now() - startedAt, status });
+    const runTrace = collector.finish({ iterations: 1, status });
+
+    // Harness-owned, attributed segment — byte-for-byte the sub-agent's words.
+    const delegatedAnswer: DelegatedAnswer = {
+      agentId: candidate.agentId ?? candidate.toolName,
+      label: candidate.label,
+      text: verbatim,
+      status,
+    };
+
+    // `answer` carries the verbatim block so even connectors that don't yet
+    // know `delegatedAnswer` show the specialist's words (graceful degrade).
+    // In strict passthrough the orchestrator LLM never runs → nothing can
+    // distort it. In guarded mode we MAY append an attributed note; the
+    // verbatim block in `delegatedAnswer` stays intact regardless (the
+    // no-redaction invariant is structural).
+    let answer = verbatim;
+    if (this.directLineMode === 'guarded' && status === 'success') {
+      const note = await this.maybeDirectLineNote(
+        candidate.label,
+        directive.payload,
+        verbatim,
+      );
+      if (note) answer = `${verbatim}\n\n▸ omadia note: ${note}`;
+    }
+
+    return {
+      answer,
+      toolCalls: 1,
+      iterations: 1,
+      runTrace,
+      delegatedAnswer,
+    };
+  }
+
+  /**
+   * #332 Layer 2 — a faithful, non-dispatching direct-line response (empty
+   * payload, unknown / ambiguous specialist). No sub-agent ran, so there is no
+   * `delegatedAnswer` and the consulted-footer stays empty. Never silently
+   * routes to the wrong agent (Pitfall 7).
+   */
+  private directLineNotice(text: string): ChatTurnResult {
+    return { answer: text, toolCalls: 0, iterations: 0 };
+  }
+
+  /**
+   * #332 Layer 3 — resolve the per-turn forced-delegation obligation. Returns
+   * the obligation tool name (only when it is one of THIS orchestrator's
+   * whitelisted sub-agents — unknown names are ignored) and the matching
+   * `tool_choice` payload to force it. Shared by both the streaming and
+   * non-streaming loops.
+   */
+  private directLineObligationState(input: ChatTurnInput): {
+    obligationTool: string | undefined;
+    forceObligation: { type: 'tool'; name: string } | undefined;
+  } {
+    const tool =
+      input.expectedDomainTool &&
+      this.domainToolsByName.has(input.expectedDomainTool)
+        ? input.expectedDomainTool
+        : undefined;
+    return {
+      obligationTool: tool,
+      ...(tool
+        ? { forceObligation: { type: 'tool' as const, name: tool } }
+        : { forceObligation: undefined }),
+    };
+  }
+
+  /** #332 Layer 3 — synthetic reminder pushed when an obligation is unmet. */
+  private obligationReminder(toolName: string): string {
+    return (
+      `IMPORTANT: Du hast den Turn beendet, ohne den erwarteten Spezialisten ` +
+      `(\`${toolName}\`) zu konsultieren. Dieser Consult ist für diesen Turn ` +
+      `verpflichtend. Rufe \`${toolName}\` jetzt auf, bevor du dem Nutzer antwortest.`
+    );
+  }
+
+  /**
+   * #332 Layer 2 (guarded mode) — best-effort, bounded single-shot completion
+   * that lets the orchestrator add a SHORT attributed cross-cutting note to a
+   * specialist's verbatim answer. Additive only: the caller keeps the verbatim
+   * block intact. Fail-open (any error / empty → no note). Mirrors the
+   * self-contained extra-pass shape of `maybeRouteCardsFromText`.
+   */
+  private async maybeDirectLineNote(
+    label: string,
+    userPayload: string,
+    verbatimAnswer: string,
+  ): Promise<string | undefined> {
+    const params: AnthropicParams = {
+      model: this.model,
+      max_tokens: 512,
+      system:
+        'You are the omadia orchestrator. A specialist sub-agent has ALREADY ' +
+        'answered the user directly and their verbatim answer is delivered ' +
+        'independently — you cannot edit or remove it. Your ONLY option is to ' +
+        'OPTIONALLY add a SHORT (max 2 sentences) cross-cutting note when you ' +
+        'see a concrete cross-domain risk, policy concern, or missing prior ' +
+        'context the specialist could not see. If you have nothing material to ' +
+        'add, reply with exactly an empty message. Never restate or contradict ' +
+        'the specialist; only add.',
+      messages: [
+        {
+          role: 'user',
+          content: `User asked the ${label} specialist:\n${userPayload}\n\n${label}'s verbatim answer:\n${verbatimAnswer}\n\nYour optional additive note (or empty):`,
+        },
+      ],
+    };
+    try {
+      const response = fromLlmResponse(
+        await this.provider.complete(toLlmRequest(params)),
+      );
+      const text = response.content
+        .filter((b) => b['type'] === 'text')
+        .map((b) => String(b['text'] ?? ''))
+        .join('')
+        .trim();
+      return text.length > 0 ? text : undefined;
+    } catch (err) {
+      console.error(
+        '[orchestrator] direct-line guarded-note pass failed (continuing without note):',
+        err instanceof Error ? err.message : err,
+      );
+      return undefined;
+    }
   }
 
   /**
@@ -2034,6 +2291,16 @@ export class Orchestrator {
     const turnStartedAt = Date.now();
     let forceFinalize = false;
 
+    // #332 Layer 3 — forced-delegation obligation (OB-31 ported to the
+    // orchestrator). When the input names a whitelisted sub-agent that MUST be
+    // consulted, the harness escalates ONCE with a forced tool_choice + a
+    // synthetic reminder if the turn would otherwise end without it.
+    const { obligationTool, forceObligation: forceObligationFor } =
+      this.directLineObligationState(input);
+    let obligationMet = obligationTool === undefined;
+    let obligationEscalationsUsed = 0;
+    let forceObligationNext = false;
+
     // Per-turn model routing (no-op unless configured). Resolved once so the
     // whole turn — every tool-loop iteration — runs on one model. The
     // non-streaming path has no event channel, so the routing decision is
@@ -2049,15 +2316,25 @@ export class Orchestrator {
           forceFinalize ||
           iteration === this.maxIterations - 1 ||
           this.turnBudgetExceeded(turnStartedAt);
+        // #332 Layer 3 — this iteration forces the obligation tool. One-shot:
+        // consumed here so a still-mute model only re-escalates within budget.
+        const forceObligation = forceObligationNext && !obligationMet;
+        forceObligationNext = false;
         const baseParams = {
           model: turnModel,
           max_tokens: this.maxTokens,
           system: buildSystemBlocks(
             this.composeStableSystemPrompt(prependRules),
             priorContext,
-            withFinalizeHint(effectiveExtraSystemHint, finalizeThisIter),
+            withFinalizeHint(
+              effectiveExtraSystemHint,
+              finalizeThisIter && !forceObligation,
+            ),
           ),
-          tools: finalizeThisIter ? [] : this.buildToolsList(),
+          tools: finalizeThisIter && !forceObligation ? [] : this.buildToolsList(),
+          ...(forceObligation && obligationTool
+            ? { tool_choice: forceObligationFor }
+            : {}),
           messages,
         };
         // Last-resort guard: repair any lone UTF-16 surrogate before the
@@ -2098,6 +2375,29 @@ export class Orchestrator {
                   ? ' — response carries tool_use blocks that will NOT run (truncated mid-call?)'
                   : ''),
             );
+          }
+          // #332 Layer 3 — forced-delegation obligation unmet at a pure-text
+          // turn end: escalate ONCE with a forced tool_choice + synthetic
+          // reminder (OB-31). Guarded by `!finalizeThisIter` so a normal
+          // tool-enabled iteration follows within the iteration budget.
+          if (
+            obligationTool &&
+            !obligationMet &&
+            !finalizeThisIter &&
+            !responseHasToolUse &&
+            obligationEscalationsUsed < 1
+          ) {
+            obligationEscalationsUsed++;
+            forceObligationNext = true;
+            messages.push({
+              role: 'user',
+              content: this.obligationReminder(obligationTool),
+            });
+            textParts.length = 0;
+            console.error(
+              `[orchestrator] obligation unmet — forcing one consult of \`${obligationTool}\``,
+            );
+            continue;
           }
           if (
             !finalizeThisIter &&
@@ -2213,6 +2513,14 @@ export class Orchestrator {
         // submission order. Mirror of the streaming-side parallelisation in
         // chatStreamInner.
         toolCalls += toolUses.length;
+        // #332 Layer 3 — mark the obligation satisfied as soon as the named
+        // sub-agent is actually dispatched this turn.
+        if (
+          obligationTool &&
+          toolUses.some((u: ContentBlock) => u.name === obligationTool)
+        ) {
+          obligationMet = true;
+        }
         const startedTimes = toolUses.map(() => Date.now());
         const invocations = toolUses.map((use: ContentBlock) => {
           const isNative = this.nativeTools.has(use.name);
@@ -2442,6 +2750,48 @@ export class Orchestrator {
     // loop drains them at each iteration boundary; `endTurn` clears the buffer.
     steeringBus.beginTurn(sessionId);
     try {
+      // #332 Layer 2 — Direct Line short-circuit (streaming / web-ui path).
+      // A user-directed specialist turn is dispatched deterministically by the
+      // harness; the orchestrator LLM never runs. We synthesize the `done`
+      // event and decorate it with the privacy receipt + onAfterTurn hook,
+      // exactly like the normal done branch below.
+      const direct = await this.executeDirectLine(input, turnId, observer);
+      if (direct) {
+        let doneEvent: Extract<ChatStreamEvent, { type: 'done' }> = {
+          type: 'done',
+          answer: direct.answer,
+          toolCalls: direct.toolCalls,
+          iterations: direct.iterations,
+          ...(direct.runTrace ? { runTrace: direct.runTrace } : {}),
+          ...(direct.delegatedAnswer
+            ? { delegatedAnswer: direct.delegatedAnswer }
+            : {}),
+        };
+        if (privacyHandle) {
+          try {
+            const receipt = await privacyHandle.finalize(input.userMessage);
+            if (receipt) {
+              doneEvent = { ...doneEvent, privacyReceipt: receipt };
+            }
+          } catch (err) {
+            console.warn(
+              '[orchestrator] privacyGuard.finalizeTurn threw — receipt dropped:',
+              err,
+            );
+          }
+        }
+        yield* this.toAnnotationEvents(
+          await this.fireTurnHook(
+            'onAfterTurn',
+            turnId,
+            input,
+            { assistantAnswer: doneEvent.answer },
+            2000,
+          ),
+        );
+        yield doneEvent;
+        return;
+      }
       for await (const event of this.chatStreamInner(input, turnId, observer)) {
         if (event.type === 'tool_use') {
           toolNameById.set(event.id, event.name);
@@ -2595,6 +2945,13 @@ export class Orchestrator {
     const turnStartedAt = Date.now();
     let forceFinalize = false;
 
+    // #332 Layer 3 — forced-delegation obligation (OB-31), streaming path.
+    const { obligationTool, forceObligation: forceObligationFor } =
+      this.directLineObligationState(input);
+    let obligationMet = obligationTool === undefined;
+    let obligationEscalationsUsed = 0;
+    let forceObligationNext = false;
+
     // Mid-turn steering — same key the route enqueues under (see chatStream:
     // `sessionId`). Drained at the top of every iteration below.
     const steerKey = input.sessionScope ?? turnId;
@@ -2631,6 +2988,9 @@ export class Orchestrator {
           forceFinalize ||
           iteration === this.maxIterations - 1 ||
           this.turnBudgetExceeded(turnStartedAt);
+        // #332 Layer 3 — one-shot forced obligation iteration (OB-31).
+        const forceObligation = forceObligationNext && !obligationMet;
+        forceObligationNext = false;
 
         // Fold any messages the user injected via `/chat/steer` since the
         // previous iteration into the conversation, so the model sees them on
@@ -2663,9 +3023,16 @@ export class Orchestrator {
             system: buildSystemBlocks(
               this.composeStableSystemPrompt(prependRules),
               priorContext,
-              withFinalizeHint(effectiveExtraSystemHint, finalizeThisIter),
+              withFinalizeHint(
+                effectiveExtraSystemHint,
+                finalizeThisIter && !forceObligation,
+              ),
             ),
-            tools: finalizeThisIter ? [] : this.buildToolsList(),
+            tools:
+              finalizeThisIter && !forceObligation ? [] : this.buildToolsList(),
+            ...(forceObligation && obligationTool
+              ? { tool_choice: forceObligationFor }
+              : {}),
             messages,
           },
           observer,
@@ -2705,6 +3072,29 @@ export class Orchestrator {
                   ? ' — response carries tool_use blocks that will NOT run (truncated mid-call?)'
                   : ''),
             );
+          }
+          // #332 Layer 3 — forced-delegation obligation unmet at a pure-text
+          // turn end: escalate ONCE with a forced tool_choice + synthetic
+          // reminder (OB-31). Guarded by `!finalizeThisIter` so a normal
+          // tool-enabled iteration follows within the iteration budget.
+          if (
+            obligationTool &&
+            !obligationMet &&
+            !finalizeThisIter &&
+            !responseHasToolUse &&
+            obligationEscalationsUsed < 1
+          ) {
+            obligationEscalationsUsed++;
+            forceObligationNext = true;
+            messages.push({
+              role: 'user',
+              content: this.obligationReminder(obligationTool),
+            });
+            textParts.length = 0;
+            console.error(
+              `[orchestrator] obligation unmet — forcing one consult of \`${obligationTool}\``,
+            );
+            continue;
           }
           if (
             !finalizeThisIter &&
@@ -2828,6 +3218,13 @@ export class Orchestrator {
         const toolUses = finalMessage.content.filter(
           (block: ContentBlock) => block.type === 'tool_use',
         );
+        // #332 Layer 3 — obligation satisfied once the named sub-agent runs.
+        if (
+          obligationTool &&
+          toolUses.some((u: ContentBlock) => u.name === obligationTool)
+        ) {
+          obligationMet = true;
+        }
 
         // Yield tool_use blocks upfront so the UI can render every pill
         // immediately, even before any tool has resolved.
