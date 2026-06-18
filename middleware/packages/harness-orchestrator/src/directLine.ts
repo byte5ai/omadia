@@ -49,7 +49,11 @@ export function parseDirectLineDirective(
   const match = /^([A-Za-z0-9._-]+)(.*)$/s.exec(afterPrefix);
   if (!match) return undefined;
   const token = match[1]!.toLowerCase();
-  const payload = match[2]!.trim();
+  // Strip ONLY the leading separator whitespace between token and payload;
+  // keep the remainder byte-for-byte so a whitespace-significant payload (e.g.
+  // a fenced code block) reaches the sub-agent verbatim. An all-whitespace
+  // remainder collapses to '' (treated as an empty payload by the caller).
+  const payload = match[2]!.replace(/^\s+/, '');
   return { token, payload };
 }
 

@@ -44,6 +44,14 @@ describe('#332 parseDirectLineDirective', () => {
   it('reports an empty payload when the specialist is named with no question', () => {
     const d = parseDirectLineDirective('#strategist');
     assert.deepEqual(d, { token: 'strategist', payload: '' });
+    // all-whitespace remainder collapses to empty too
+    assert.equal(parseDirectLineDirective('#strategist   ')?.payload, '');
+  });
+
+  it('keeps internal/trailing whitespace verbatim — only the separator is stripped', () => {
+    const d = parseDirectLineDirective('#strategist  line1\n\n  indented\n');
+    assert.equal(d?.token, 'strategist');
+    assert.equal(d?.payload, 'line1\n\n  indented\n');
   });
 });
 

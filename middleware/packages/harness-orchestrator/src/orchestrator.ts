@@ -2818,7 +2818,12 @@ export class Orchestrator {
             'onAfterTurn',
             turnId,
             input,
-            { assistantAnswer: doneEvent.answer },
+            {
+              assistantAnswer: doneEvent.answer,
+              // Parity with the normal done branch — graph-linking observers
+              // (#133 E8) need the persisted Turn id on direct-line turns too.
+              ...(doneEvent.turnId ? { turnExternalId: doneEvent.turnId } : {}),
+            },
             2000,
           ),
         );
