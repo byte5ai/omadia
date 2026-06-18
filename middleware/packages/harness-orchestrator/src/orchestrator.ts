@@ -1864,10 +1864,11 @@ export class Orchestrator {
    * path can short-circuit), or `undefined` for an ordinary turn (the caller
    * proceeds with the normal LLM loop).
    *
-   * Awareness (the orchestrator "stays aware"): the verbatim block becomes the
-   * turn's `answer`, so it is persisted as the assistant turn and re-enters the
-   * orchestrator's context on the next turn via the channel's prior-turn
-   * history — no hidden generation needed (Pitfall 5).
+   * Awareness (the orchestrator "stays aware", Pitfall 5): the verbatim block
+   * becomes the turn's `answer` AND is persisted via the same `sessionLogger`
+   * as a normal turn, so it re-enters the orchestrator's context next turn both
+   * via the channel's prior-turn buffer AND via cross-session recall / KG
+   * continuity — no hidden generation needed.
    */
   private async executeDirectLine(
     input: ChatTurnInput,
@@ -1889,24 +1890,27 @@ export class Orchestrator {
       label: directLineLabel(t.agentId ?? t.name),
     }));
 
-    if (directive.payload.length === 0) {
-      return this.directLineNotice(
-        `You addressed a specialist but didn't include a question. Try \`${this.directLinePrefix}${directive.token} <your question>\`.`,
-      );
-    }
-
     const resolution = resolveDirectLineTarget(directive.token, candidates);
-    if (resolution.kind === 'unknown') {
-      const available =
-        candidates.map((c) => c.label).join(', ') || '(none configured)';
-      return this.directLineNotice(
-        `No specialist named "${directive.token}" is available here. Available: ${available}.`,
-      );
-    }
+    // Collision rule (#332 Open Q3): a leading `#token` is only treated as a
+    // Direct-Line directive when it RESOLVES to a whitelisted specialist.
+    // An unknown token falls THROUGH to the normal LLM turn — so an ordinary
+    // message that merely starts with `#` (e.g. `#urgent …`, `#1 priority …`,
+    // a hashtag) is never hijacked into a "no such agent" reply. Ambiguity (the
+    // token matched ≥2 whitelisted agents) IS a directive intent, so we
+    // disambiguate rather than route silently (Pitfall 7).
+    if (resolution.kind === 'unknown') return undefined;
     if (resolution.kind === 'ambiguous') {
       const names = resolution.matches.map((c) => c.label).join(', ');
       return this.directLineNotice(
         `"${directive.token}" is ambiguous — it matches ${names}. Please name one specifically.`,
+      );
+    }
+
+    // A resolved specialist with no question — ask for one rather than
+    // dispatching an empty payload.
+    if (directive.payload.length === 0) {
+      return this.directLineNotice(
+        `You addressed ${resolution.candidate.label} but didn't include a question. Try \`${this.directLinePrefix}${directive.token} <your question>\`.`,
       );
     }
 
@@ -1973,20 +1977,48 @@ export class Orchestrator {
       if (note) answer = `${verbatim}\n\n▸ omadia note: ${note}`;
     }
 
+    // Awareness / continuity (#332 Pitfall 5): persist the verbatim exchange
+    // through the SAME session logger as a normal turn, so the orchestrator
+    // sees it on later turns (memory, cross-session recall, KG continuity) —
+    // not only via the channel's own prior-turn buffer. Best-effort: a logging
+    // failure must never swallow the already-captured answer.
+    let persistedTurnId: string | undefined;
+    if (this.sessionLogger && input.sessionScope) {
+      try {
+        const logged = await this.sessionLogger.log({
+          scope: input.sessionScope,
+          userMessage: input.userMessage,
+          assistantAnswer: answer,
+          toolCalls: 1,
+          iterations: 1,
+          ...(input.userId ? { userId: input.userId } : {}),
+          runTrace,
+        });
+        persistedTurnId = logged.turnExternalId;
+      } catch (err) {
+        console.error(
+          '[orchestrator] direct-line session log failed (continuing):',
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+
     return {
       answer,
       toolCalls: 1,
       iterations: 1,
       runTrace,
       delegatedAnswer,
+      ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
     };
   }
 
   /**
-   * #332 Layer 2 — a faithful, non-dispatching direct-line response (empty
-   * payload, unknown / ambiguous specialist). No sub-agent ran, so there is no
-   * `delegatedAnswer` and the consulted-footer stays empty. Never silently
-   * routes to the wrong agent (Pitfall 7).
+   * #332 Layer 2 — a faithful, non-dispatching direct-line response (a resolved
+   * specialist named with no question, or an ambiguous token). No sub-agent
+   * ran, so there is no `delegatedAnswer` and the consulted-footer stays empty.
+   * Never silently routes to the wrong agent (Pitfall 7). An UNKNOWN token is
+   * not handled here — it falls through to the normal LLM turn (collision rule).
    */
   private directLineNotice(text: string): ChatTurnResult {
     return { answer: text, toolCalls: 0, iterations: 0 };
@@ -2763,6 +2795,7 @@ export class Orchestrator {
           toolCalls: direct.toolCalls,
           iterations: direct.iterations,
           ...(direct.runTrace ? { runTrace: direct.runTrace } : {}),
+          ...(direct.turnId ? { turnId: direct.turnId } : {}),
           ...(direct.delegatedAnswer
             ? { delegatedAnswer: direct.delegatedAnswer }
             : {}),

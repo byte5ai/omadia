@@ -263,25 +263,57 @@ describe('#332 Layer 2 — Direct Line (strict passthrough, non-streaming/Teams)
     assert.equal(sa.agentsConsulted?.[0]?.label, 'Strategist'); // L1 footer
   });
 
-  it('an unknown specialist yields a disambiguation, never a silent wrong route', async () => {
+  it('an UNKNOWN token falls through to the normal LLM turn — ordinary `#…` messages are not hijacked', async () => {
     let asked = false;
     const tool = strategistTool(async () => {
       asked = true;
       return 'should not run';
     });
+    // The LLM IS allowed to run here (this is a normal turn that merely starts
+    // with `#`). It must not be short-circuited into a "no such agent" reply.
+    const { provider } = scriptedCompleteProvider([
+      textResponse('normal LLM answer'),
+    ]);
     const orch = new Orchestrator({
-      provider: neverCalledProvider(),
+      provider,
       model: 'test',
       maxTokens: 1024,
       maxToolIterations: 5,
       domainTools: [tool],
       nativeToolRegistry: new NativeToolRegistry(),
     });
-    const sa = await orch.chat({ userMessage: '#nobody hello?', sessionScope: 's2' });
+    const sa = await orch.chat({ userMessage: '#urgent server is down', sessionScope: 's2' });
     assert.equal(asked, false, 'no sub-agent may run for an unknown token');
     assert.equal(sa.delegatedAnswer, undefined);
-    assert.match(sa.text, /No specialist named "nobody"/);
-    assert.match(sa.text, /Strategist/); // lists what IS available
+    assert.equal(sa.text, 'normal LLM answer'); // handled by the LLM, not hijacked
+  });
+
+  it('an AMBIGUOUS token disambiguates, never a silent wrong route', async () => {
+    const a = createDomainTool({
+      name: 'ask_twin_a',
+      description: 'twin a',
+      domain: 'x',
+      agentId: 'de.byte5.agent.twin',
+      agent: { ask: async () => 'A' },
+    });
+    const b = createDomainTool({
+      name: 'ask_twin_b',
+      description: 'twin b',
+      domain: 'y',
+      agentId: 'com.other.agent.twin',
+      agent: { ask: async () => 'B' },
+    });
+    const orch = new Orchestrator({
+      provider: neverCalledProvider(),
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [a, b],
+      nativeToolRegistry: new NativeToolRegistry(),
+    });
+    const sa = await orch.chat({ userMessage: '#twin go', sessionScope: 's2b' });
+    assert.equal(sa.delegatedAnswer, undefined);
+    assert.match(sa.text, /ambiguous/i);
   });
 
   it('delivers a sub-agent failure faithfully (no cover-up)', async () => {
@@ -299,6 +331,31 @@ describe('#332 Layer 2 — Direct Line (strict passthrough, non-streaming/Teams)
     const sa = await orch.chat({ userMessage: '#strategist plan?', sessionScope: 's3' });
     assert.equal(sa.delegatedAnswer?.status, 'error');
     assert.match(sa.delegatedAnswer?.text ?? '', /Error|could not respond|503/i);
+  });
+
+  it('persists the verbatim exchange via the session logger (awareness / continuity)', async () => {
+    const logged: Array<{ scope: string; assistantAnswer: string }> = [];
+    const fakeLogger = {
+      log: async (entry: { scope: string; assistantAnswer: string }) => {
+        logged.push(entry);
+        return { turnExternalId: 'turn:test:1' };
+      },
+    };
+    const tool = strategistTool(async () => 'VERBATIM-LOGGED');
+    const orch = new Orchestrator({
+      provider: neverCalledProvider(),
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [tool],
+      nativeToolRegistry: new NativeToolRegistry(),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      sessionLogger: fakeLogger as any,
+    });
+    await orch.chat({ userMessage: '#strategist plan?', sessionScope: 'sLog' });
+    assert.equal(logged.length, 1, 'the direct-line turn must be persisted');
+    assert.equal(logged[0]?.scope, 'sLog');
+    assert.equal(logged[0]?.assistantAnswer, 'VERBATIM-LOGGED');
   });
 });
 
