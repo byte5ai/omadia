@@ -231,8 +231,15 @@ CREATE TABLE conductor_roles (
 
 ### `conductor_role_assignments`
 
-The baton. Read by the **default** `RoleResolver`. An external resolver may ignore this
-table entirely and answer from its own source — Conductor only ever calls the resolver.
+The baton — the **default / stand-alone-fallback** holder store, read by the default
+`RoleResolver`. **Primary path (#333, Identity & Role Projection):** role holders are
+projected from external systems of record (Entra groups/app-roles, HR/ERP) and matched to
+users on a primary key; an external resolver registered *in front of* this answers from
+that source and ignores this table. The local table is used only when no external source
+is configured. (Implementation note: the shipped migration stores `holder_id` /
+`delegate_id` as a **session-identity TEXT** — the provider `sub` / email — not a
+`users(id)` FK, so holders can be assigned by identity without a users-table join; the
+illustrative DDL below predates that — see migration `0003_role_holder_text.sql`.)
 
 ```sql
 CREATE TABLE conductor_role_assignments (
@@ -334,8 +341,12 @@ Designer (to offer triggers + payload fields).
 ### `RoleResolver` registry (kernel, via `serviceRegistry`)
 
 `resolve(roleKey, ctx) → { holders: Principal[]; unavailable?: Principal[]; delegate?: Principal }`.
-A default resolver reads `conductor_role_assignments`; an integration registers its own
-(FR-021). Called late — at dispatch and on each reminder (FR-022).
+The **default** resolver reads the local `conductor_role_assignments` table (stand-alone
+fallback). The **primary** resolver (#333, Identity & Role Projection) projects holders
+from external systems of record (Entra groups/app-roles, HR/ERP) and is registered *in
+front of* the default — exactly the "external resolver in front" follow-up the
+implementation's `roleStore` already anticipates. Called late — at dispatch and on each
+reminder (FR-022).
 
 ### `ctx.events.emit(id, payload)` (kernel, gated)
 

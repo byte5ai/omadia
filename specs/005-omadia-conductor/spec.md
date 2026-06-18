@@ -287,12 +287,15 @@ modes for a multi-holder role.
 A workflow step addresses a **principal**: either `user:<id>` (a specific person, who
 may be any omadia user of the instance, not only the workflow's creator) or
 `role:<key>` (a named seat). A role is resolved to its current holder(s) **at dispatch
-time and re-resolved on every reminder**, through a pluggable `RoleResolver`. omadia
-ships a default resolver backed by a manual assignment store (the baton can be moved
-by an API/Designer action); an integration may register a resolver that reports the
-current holder and unavailability from an external source. Access to a pending await
-and its payload is granted to whoever holds the role **at access time** — when the
-baton moves, access moves with it.
+time and re-resolved on every reminder**, through a pluggable `RoleResolver`. Per
+**#333 (Identity & Role Projection)**, the **primary** resolver projects role holders
+from the organization's systems of record (an IdP such as Entra via groups/app-roles,
+and/or an HR/ERP source such as Odoo), correlated to omadia users on a primary key.
+omadia's **local** manual assignment store is the **default / stand-alone fallback**
+(used when no external source is configured; the baton is then moved by an API/Designer
+action). Conductor only ever calls the resolver and hard-codes no role semantics. Access
+to a pending await and its payload is granted to whoever holds the role **at access
+time** — when the baton moves, access moves with it.
 
 **Why this priority**: Addressing a fixed person is brittle (people change roles, go
 on leave). The role indirection is required for the operator's real processes and must
@@ -537,12 +540,22 @@ all present and ordered.
 **Principals & roles**
 
 - **FR-020**: A human step MUST address a **principal** that is either `user:<id>` (any
-  omadia user of the instance, not only the run's initiator) or `role:<key>`.
+  omadia user of the instance, not only the run's initiator) or `role:<key>`. Per the
+  platform-wide paradigm in **#333**, `Principal = user | role` is the **default**
+  addressee type for *every* surface that targets a person (human steps, escalation /
+  fallback targets, report and interim-status recipients, notifications, assignments).
+  Restricting a surface to **user-only** is the exception, permitted only when
+  technically or legally necessary to bind one named natural person, and MUST carry a
+  documented justification (mirroring the `multi_instance_justification` precedent).
 - **FR-021**: A `role:<key>` MUST be resolved to its current holder(s) via a pluggable
   `RoleResolver` registered through `serviceRegistry` (the same seam pattern as
-  `LlmProvider`/channels); Conductor MUST hard-code no role semantics. A default
-  resolver MUST be provided, backed by a manual assignment store with APIs to move the
-  baton.
+  `LlmProvider`/channels); Conductor MUST hard-code no role semantics. The **primary**
+  resolver MUST project holders from external systems of record per **#333 (Identity &
+  Role Projection)** — an IdP (Entra groups/app-roles) and/or an HR/ERP source —
+  correlated to omadia users on a primary key. A **local** manual assignment store MUST
+  exist as the **default / stand-alone fallback** (with APIs to move the baton) for
+  deployments that configure no external source; the local table MUST NOT be treated as
+  the long-term system of record.
 - **FR-022**: Role resolution MUST be **late-bound**: performed at step dispatch and
   re-performed on each reminder, so a baton that moves before or during a wait routes to
   the current holder.
@@ -668,10 +681,13 @@ all present and ordered.
 - Connector plugins (GitHub/CI, ATS/HR, calendar, ERP, …) are separate plugin work.
   Conductor defines and depends only on the *contract* (`emits:` / `provides:` / the
   event catalog / `ctx.events.emit`), never on a specific connector.
-- The HR/ERP role-movement *policy* (when/why a baton moves) is owned by the live
-  instance and its integration; Conductor provides the resolver seam, the manual
-  assignment store + APIs, and the events — and exposes state/data access scoped to the
-  current holder so any integration can drive movement.
+- Roles and user identities are **projected from the organization's systems of record**
+  per **#333 (Identity & Role Projection)** — an IdP (Entra) for access identity, an
+  HR/ERP source for org roles/attributes — joined on a primary key; omadia maintains no
+  user/role master copy except in the stand-alone fallback. The HR/ERP role-movement
+  *policy* (when/why a baton moves) is owned by the live instance and its integration;
+  Conductor provides the resolver seam and consumes the projection, exposing state/data
+  access scoped to the current holder so any integration can drive movement.
 - A human principal is reachable proactively on a channel only if a channel binding /
   conversation reference for that user exists; provisioning those bindings is an
   operational concern reusing existing channel mechanisms.
