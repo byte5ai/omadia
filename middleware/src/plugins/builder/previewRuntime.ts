@@ -131,6 +131,32 @@ export interface PreviewLlmConfig {
   readonly maxTokensPerCall: number;
 }
 
+/** Mirror of `JobSchedule` from the boilerplate contract
+ *  (`agent-integration/types.ts`). Inline-copied to keep previewRuntime
+ *  self-contained. */
+export type PreviewJobSchedule =
+  | { readonly cron: string }
+  | { readonly intervalMs: number };
+
+/** Mirror of `JobSpec` — only the fields the preview needs to capture +
+ *  surface. The kernel validates the full shape at register-time; the
+ *  preview accepts and records it without scheduling anything. */
+export interface PreviewJobSpecInput {
+  readonly name: string;
+  readonly schedule: PreviewJobSchedule;
+  readonly timeoutMs?: number;
+  readonly overlap?: 'skip' | 'queue';
+}
+
+export type PreviewJobHandler = (signal: AbortSignal) => Promise<void>;
+
+/** Mirror of `PluginActionStatus` from the boilerplate contract. */
+export interface PreviewStatusInput {
+  readonly state: 'ok' | 'needs_action' | 'error';
+  readonly title?: string;
+  readonly detail?: string;
+}
+
 export interface PreviewPluginContext {
   readonly agentId: string;
   readonly secrets: {
@@ -150,6 +176,29 @@ export interface PreviewPluginContext {
    *  kernel after install. */
   readonly uiRoutes: {
     register(descriptor: PreviewUiRouteDescriptorInput): () => void;
+  };
+  /** Background-job registry. Non-optional in the kernel contract
+   *  (`pluginContext.ts` always wires `jobs`), so a plugin with a scheduled
+   *  job calls `ctx.jobs.register(...)` in activate() unconditionally. Before
+   *  this stub existed the call threw `Cannot read properties of undefined
+   *  (reading 'register')` ONLY in preview — the agent compiled and ran fine
+   *  after install. The preview CAPTURES the registration (so the operator can
+   *  see "this agent schedules N jobs") and returns a working disposer, but
+   *  deliberately does NOT fire the cron/interval: preview activations are
+   *  ephemeral and must not trigger real side effects. Contract-parity without
+   *  runtime side effects — the same call shape and disposer the kernel hands
+   *  the plugin post-install. */
+  readonly jobs: {
+    register(spec: PreviewJobSpecInput, handler: PreviewJobHandler): () => void;
+  };
+  /** Operator-facing action-status reporter. Non-optional in the kernel
+   *  contract (`pluginContext.ts` always wires `status`). Preview has no admin
+   *  badge to render into, so `report`/`clear` record the call locally (for
+   *  introspection + smoke) without surfacing a banner. Same crash class as
+   *  `jobs` before this stub — `reading 'report'`. */
+  readonly status: {
+    report(status: PreviewStatusInput): void;
+    clear(): void;
   };
   /** ServicesAccessor (solution B). When the runtime is wired with the live
    *  kernel ServiceRegistry (`PreviewRuntimeDeps.serviceRegistry`), `get`/`has`
@@ -217,6 +266,21 @@ export interface PreviewRouteCapture {
   disposed: boolean;
 }
 
+/**
+ * Job registration captured at activate-time by the preview's
+ * `jobs.register`. The preview does NOT schedule the job (no cron fires in
+ * an ephemeral preview); it records the spec + handler so the operator/smoke
+ * can see what the agent would schedule post-install. `disposed` flips when
+ * the plugin's close() calls the returned dispose handle.
+ */
+export interface PreviewJobCapture {
+  readonly name: string;
+  readonly schedule: PreviewJobSchedule;
+  readonly spec: PreviewJobSpecInput;
+  readonly handler: PreviewJobHandler;
+  disposed: boolean;
+}
+
 export interface PreviewActivateOptions {
   zipBuffer: Buffer;
   draftId: string;
@@ -242,6 +306,16 @@ export interface PreviewHandle {
    *  during `activate()` and may be flagged `disposed` when the plugin's
    *  close-handle is invoked. */
   readonly routeCaptures: ReadonlyArray<PreviewRouteCapture>;
+  /** Background jobs the plugin's `activate()` registered via
+   *  `ctx.jobs.register(...)`. Captured but never scheduled in preview.
+   *  Lets the operator/smoke confirm the agent wires its job the same way
+   *  the kernel would post-install. Empty for plugins with no jobs. */
+  readonly jobCaptures: ReadonlyArray<PreviewJobCapture>;
+  /** Action-status values the plugin reported via `ctx.status.report(...)`
+   *  during `activate()`, newest last. `ctx.status.clear()` appends a
+   *  synthetic `{ state: 'ok' }` marker (the kernel treats `ok`/clear the
+   *  same — both remove the badge). Empty when the plugin reports nothing. */
+  readonly statusReports: ReadonlyArray<PreviewStatusInput>;
   close(): Promise<void>;
 }
 
@@ -467,12 +541,16 @@ export class PreviewRuntime {
         : undefined;
 
     const routeCaptures: PreviewRouteCapture[] = [];
+    const jobCaptures: PreviewJobCapture[] = [];
+    const statusReports: PreviewStatusInput[] = [];
     const ctx = createStubContext({
       agentId,
       configValues: opts.configValues,
       secretValues: opts.secretValues,
       smokeMode: opts.smokeMode === true,
       routeCaptures,
+      jobCaptures,
+      statusReports,
       hostServices: this.hostServices,
       provideMemory,
       ...(http ? { http } : {}),
@@ -499,6 +577,8 @@ export class PreviewRuntime {
       toolkit: handle.toolkit,
       previewDir,
       routeCaptures,
+      jobCaptures,
+      statusReports,
       close: async () => {
         try {
           await withTimeout(
@@ -699,6 +779,8 @@ function createStubContext(opts: {
   secretValues: Readonly<Record<string, string>>;
   smokeMode: boolean;
   routeCaptures: PreviewRouteCapture[];
+  jobCaptures: PreviewJobCapture[];
+  statusReports: PreviewStatusInput[];
   hostServices?: PreviewHostServices;
   provideMemory: boolean;
   http?: HttpAccessor;
@@ -768,6 +850,53 @@ function createStubContext(opts: {
     // catalogue gets populated only after a real Install.
     uiRoutes: {
       register: (_descriptor) => () => {},
+    },
+    // Jobs accessor — non-optional in the kernel contract, so a plugin with a
+    // scheduled job calls `ctx.jobs.register(...)` unconditionally in
+    // activate(). Before this stub the call threw `Cannot read properties of
+    // undefined (reading 'register')` ONLY in preview (the plugin compiled and
+    // ran fine after install — the kernel always wires `jobs`). We CAPTURE the
+    // registration so the operator/smoke can see what the agent would schedule,
+    // and return a real disposer matching the kernel shape — but we never fire
+    // the cron/interval: preview activations are ephemeral and must not trigger
+    // real side effects. Same intent as the routes/uiRoutes stubs.
+    jobs: {
+      register: (spec, handler) => {
+        const entry: PreviewJobCapture = {
+          name: spec.name,
+          schedule: spec.schedule,
+          spec,
+          handler,
+          disposed: false,
+        };
+        opts.jobCaptures.push(entry);
+        return () => {
+          entry.disposed = true;
+        };
+      },
+    },
+    // Status accessor — also non-optional in the kernel contract. Preview has
+    // no admin badge to render into, so we just record the reported values
+    // (newest last) for introspection. `clear()` records a synthetic `ok`
+    // marker since the kernel treats `ok` and clear identically (both drop the
+    // badge). Same crash class as `jobs` before this stub (`reading 'report'`).
+    status: {
+      report: (next) => {
+        const state =
+          next.state === 'ok' ||
+          next.state === 'needs_action' ||
+          next.state === 'error'
+            ? next.state
+            : 'needs_action';
+        opts.statusReports.push({
+          state,
+          ...(typeof next.title === 'string' ? { title: next.title } : {}),
+          ...(typeof next.detail === 'string' ? { detail: next.detail } : {}),
+        });
+      },
+      clear: () => {
+        opts.statusReports.push({ state: 'ok' });
+      },
     },
     // ServicesAccessor (solution B): read through to the live kernel
     // ServiceRegistry when one is wired, so an integration-backed agent under
