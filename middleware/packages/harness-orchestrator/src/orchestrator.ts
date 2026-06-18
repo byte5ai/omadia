@@ -1873,7 +1873,6 @@ export class Orchestrator {
   private async executeDirectLine(
     input: ChatTurnInput,
     turnId: string,
-    observer?: AskObserver,
   ): Promise<ChatTurnResult | undefined> {
     const directive = parseDirectLineDirective(
       input.userMessage,
@@ -2812,7 +2811,7 @@ export class Orchestrator {
       // harness; the orchestrator LLM never runs. We synthesize the `done`
       // event and decorate it with the privacy receipt + onAfterTurn hook,
       // exactly like the normal done branch below.
-      const direct = await this.executeDirectLine(input, turnId, observer);
+      const direct = await this.executeDirectLine(input, turnId);
       if (direct) {
         let doneEvent: Extract<ChatStreamEvent, { type: 'done' }> = {
           type: 'done',
