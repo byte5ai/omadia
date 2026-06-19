@@ -17,7 +17,7 @@ copyright: Copyright © 2026 byte5 GmbH
 
 directories:
   output: release
-  buildResources: build
+  buildResources: buildResources
 
 # Only the compiled desktop app + its own node_modules go into the app bundle.
 files:
@@ -42,14 +42,14 @@ asarUnpack:
 # Sign the native Mach-O binaries inside the staged middleware (extraResources)
 # BEFORE the outer app is signed — electron-builder does not sign extraResources,
 # and notarization rejects unsigned nested Mach-O. Fail-soft when unsigned.
-afterPack: build/afterPack.js
+afterPack: buildResources/afterPack.js
 
 mac:
   category: public.app-category.developer-tools
   hardenedRuntime: true
   gatekeeperAssess: false
-  entitlements: build/entitlements.mac.plist
-  entitlementsInherit: build/entitlements.mac.plist
+  entitlements: buildResources/entitlements.mac.plist
+  entitlementsInherit: buildResources/entitlements.mac.plist
   target:
     - target: dmg
       arch: [arm64, x64]
