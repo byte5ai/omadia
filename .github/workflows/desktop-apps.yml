@@ -82,6 +82,13 @@ jobs:
         with:
           node-version: 22
 
+      # node-gyp's bundled gyp imports Python's `distutils`, removed in Python
+      # 3.12. The macOS/Windows runners default to 3.12+ (Ubuntu still ships
+      # 3.11), so pin 3.11 everywhere to keep native rebuilds working.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       # @electron/rebuild pulls @electron/node-gyp as a git+ssh GitHub dependency.
       # Runners have no SSH key, so rewrite git+ssh GitHub URLs to https (public
       # repo, no auth) before any npm install/ci, or those installs fail.
