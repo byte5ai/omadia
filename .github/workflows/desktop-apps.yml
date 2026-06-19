@@ -145,9 +145,13 @@ jobs:
             && npx --yes prebuild-install -r electron -t "$EV" --verbose ) \
           || ( cd desktop \
             && npx electron-rebuild --version "$EV" --module-dir ../middleware --only better-sqlite3 --force )
-          # Verify it loads under Electron's ABI.
+          # Verify ALL three native modules actually load under Electron's runtime
+          # — not just the rebuilt better-sqlite3, but also argon2 + sharp, whose
+          # (un-rebuilt) prebuilds we ASSUME are N-API/ABI-stable. If that
+          # assumption is wrong, this fails here instead of crashing the kernel at
+          # boot in the shipped app.
           ELECTRON_RUN_AS_NODE=1 ./desktop/node_modules/.bin/electron -e \
-            "require('./middleware/node_modules/better-sqlite3'); console.log('better-sqlite3 loads under Electron ABI OK')"
+            "require('./middleware/node_modules/better-sqlite3'); require('./middleware/node_modules/argon2'); require('./middleware/node_modules/sharp'); console.log('better-sqlite3 + argon2 + sharp load under Electron ABI OK')"
 
       - name: Build desktop (main + preload + renderer)
         working-directory: desktop
