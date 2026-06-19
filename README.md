@@ -14,12 +14,12 @@ Your LLM key. Your data. Your compliance story.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-black.svg)](LICENSE)
 [![Status: public preview](https://img.shields.io/badge/status-public%20preview-orange.svg)](#status--roadmap)
-[![Self-hosted](https://img.shields.io/badge/self--hosted-docker%20compose-2496ED.svg?logo=docker&logoColor=white)](#-60-second-quickstart)
+[![Self-hosted](https://img.shields.io/badge/self--hosted-docker%20compose-2496ED.svg?logo=docker&logoColor=white)](#-quickstart)
 [![TypeScript](https://img.shields.io/badge/built%20with-TypeScript-3178C6.svg?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 [![GitHub stars](https://img.shields.io/github/stars/byte5ai/omadia?style=social)](https://github.com/byte5ai/omadia/stargazers)
 
-[**Website**](https://omadia.ai) · [**Quickstart**](#-60-second-quickstart) · [**Why omadia?**](#why-omadia) · [**Docs**](docs/) · [**Contributing**](CONTRIBUTING.md)
+[**Website**](https://omadia.ai) · [**Quickstart**](#-quickstart) · [**Why omadia?**](#why-omadia) · [**Docs**](docs/) · [**Contributing**](CONTRIBUTING.md)
 
 </div>
 
@@ -37,13 +37,14 @@ Your LLM key. Your data. Your compliance story.
   for each agent run, so you can audit, debug, and prove what happened — built in,
   not bolted on.
 
-## ⚡ 60-second quickstart
+## ⚡ Quickstart
 
 ```bash
 git clone https://github.com/byte5ai/omadia.git && cd omadia
 
-# 1. Bring up the whole stack (postgres + middleware + admin UI).
-#    Every env var has a sane local default — no config needed to start.
+# 1. Bring up the minimal core: postgres + middleware + admin UI.
+#    Images are pulled prebuilt from GHCR, so first boot is a download,
+#    not a source build. No config needed to start.
 docker compose up -d
 
 # 2. Open the admin UI and complete the first-admin wizard.
@@ -51,15 +52,30 @@ docker compose up -d
 open http://localhost:3333
 ```
 
-That's it — `docker compose up -d`, open the UI, set your LLM key in the wizard,
-and run your first agent team. The next section is the 90-second "wow moment".
+`docker compose up -d` pulls exactly three services and nothing else. Open the UI,
+set your LLM key in the wizard, and run your first agent team. The next section is
+the 90-second "wow moment". Diagrams, embeddings, and object storage are opt-in
+(see [Optional features](#optional-features)).
+
+Pin a specific release instead of the latest with the `OMADIA_VERSION` shell
+variable (or a project-root `.env` file, not `middleware/.env`), or build the
+images from source instead of pulling:
+
+```bash
+OMADIA_VERSION=v0.3.0 docker compose up -d                              # pin a release
+docker compose -f docker-compose.yaml -f docker-compose.build.yaml up -d --build  # build locally
+```
+
+> **Pull fails with `manifest unknown`?** The GHCR images publish on each
+> release, so a brand-new checkout can briefly predate the first published
+> image. Build from source with the `--build` line above until a release lands.
 
 ## 🚀 First run: from prompt to audit receipt
 
 The point of omadia clicks the moment you watch a team of agents do real work and
 hand you a receipt for it:
 
-1. **`docker compose up -d`** — postgres, middleware, and the admin UI come up together.
+1. **`docker compose up -d`** — the minimal core (postgres, middleware, and the admin UI) comes up together.
 2. **Open `http://localhost:3333`** and finish the first-admin `/setup` wizard.
 3. **Start a demo agent team** from a single prompt in the web chat.
 4. **Watch it work** — the orchestrator streams turns and dispatches tools across
@@ -147,23 +163,33 @@ A more detailed walk-through of the plugin loading sequence, capability
 registry, and the multi-provider authentication layer lives under
 [`docs/`](docs/).
 
-### Optional Compose profiles
+### Optional features
+
+The minimal core is postgres + middleware + admin UI. Diagrams, embeddings, and
+object storage are off by default. Each is an overlay file you add with `-f`,
+which starts the sidecar and switches on the matching plugin.
 
 ```bash
-# Mermaid / PlantUML / Vega rendering for the diagrams plugin
-docker compose -f infra/docker-compose.yml --profile diagrams up -d
+# Object storage (MinIO): chat attachment ingestion
+docker compose -f docker-compose.yaml -f docker-compose.storage.yaml up -d
 
-# In-tenant embeddings via Ollama (no external API required)
-docker compose -f infra/docker-compose.yml --profile embeddings up -d
+# Diagram rendering (Kroki). Needs object storage, so add both overlays:
+docker compose -f docker-compose.yaml \
+  -f docker-compose.storage.yaml -f docker-compose.diagrams.yaml up -d
 
-# All optional profiles in one command
-docker compose -f infra/docker-compose.yml \
-  --profile diagrams --profile embeddings up -d
+# In-tenant embeddings (Ollama). First boot pulls nomic-embed-text (~270 MB),
+# so it needs network access the first time it starts.
+docker compose -f docker-compose.yaml -f docker-compose.embeddings.yaml up -d
+
+# Everything at once
+docker compose -f docker-compose.yaml \
+  -f docker-compose.storage.yaml -f docker-compose.diagrams.yaml \
+  -f docker-compose.embeddings.yaml up -d
 ```
 
-> **Enable diagram rendering** by generating a secret and adding it to
-> `middleware/.env` as `DIAGRAM_URL_SECRET` (only needed alongside
-> `KROKI_BASE_URL` + `BUCKET_NAME`): `openssl rand -hex 32`.
+> **Diagram rendering** also needs a signing secret. Generate one and add it to
+> `middleware/.env` as `DIAGRAM_URL_SECRET` before starting the diagrams overlay:
+> `openssl rand -hex 32`. The plugin stays inactive until it is set.
 
 ## Plugin development
 

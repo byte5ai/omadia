@@ -1,0 +1,24 @@
+# Overlay: build middleware + web-ui from source instead of pulling images.
+#
+# For contributors / anyone hacking on the kernel or admin UI. Compose still
+# tags the result under the GHCR image name from docker-compose.yaml, but
+# `--build` compiles it locally from this checkout:
+#   docker compose -f docker-compose.yaml -f docker-compose.build.yaml up -d --build
+#
+# Combine with feature overlays as usual, e.g. add -f docker-compose.storage.yaml.
+
+services:
+  middleware:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+  web-ui:
+    build:
+      context: ./web-ui
+      dockerfile: Dockerfile
+      args:
+        # Build-arg: the rewrite target baked into the Next.js build. Use the
+        # in-network service name so the browser-loaded UI reaches the
+        # middleware through Docker's DNS, not the host's localhost.
+        MIDDLEWARE_URL: http://middleware:8080
