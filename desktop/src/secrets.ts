@@ -52,7 +52,16 @@ function load(): SecretsBlob {
     }
   }
   cache = { vaultKey: generateVaultKey(), providerKeys: {} };
-  persist();
+  try {
+    persist();
+  } catch (err) {
+    // Fail-closed: if we couldn't persist (e.g. OS encryption unavailable in a
+    // packaged build), do NOT leave the unpersisted key cached — a later call
+    // would otherwise return it past the `if (cache)` short-circuit and bypass
+    // the fail-closed guard, diverging from whatever gets persisted next launch.
+    cache = null;
+    throw err;
+  }
   return cache;
 }
 

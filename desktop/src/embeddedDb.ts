@@ -24,6 +24,9 @@ import { log } from './log';
  * bottlenecks is a bundled native Postgres.
  */
 
+// NOT a credential: pglite-socket on loopback does not authenticate, so these
+// only populate the DATABASE_URL the kernel's pg client expects — any value is
+// accepted. Security rests entirely on the 127.0.0.1-only bind, not on this.
 const DB_NAME = 'omadia';
 const DB_USER = 'omadia';
 const DB_PASSWORD = 'omadia';
@@ -85,13 +88,18 @@ export async function startEmbeddedDb(): Promise<EmbeddedDb> {
   // (pgcrypto is intentionally NOT required: the kernel migrations only used it
   // for gen_random_uuid(), which is core since Postgres 13.)
 
-  const port = await stableDbPort();
-  const server = new PGLiteSocketServer({
-    db,
-    port,
-    host: '127.0.0.1',
-  });
-  await server.start();
+  // From here on, any failure must close `db` — otherwise the PGlite instance
+  // leaks and keeps the dataDir lock, so a retry can't reopen the same dir.
+  let server: PGLiteSocketServer;
+  let port: number;
+  try {
+    port = await stableDbPort();
+    server = new PGLiteSocketServer({ db, port, host: '127.0.0.1' });
+    await server.start();
+  } catch (err) {
+    await db.close().catch(() => {});
+    throw err;
+  }
   log.info(`[db] embedded Postgres listening on 127.0.0.1:${port}`);
 
   current = { db, server, port };

@@ -55,7 +55,10 @@ mac:
       arch: [arm64, x64]
     - target: zip          # required by electron-updater on macOS
       arch: [arm64, x64]
-  notarize: false          # flip to true in CI once APPLE_* secrets are set
+  # Notarization is left unset here so it's driven entirely by CI: the workflow
+  # adds `--config.mac.notarize=true` only when the Apple secrets are present
+  # (and electron-builder skips it without notary credentials). A hard-coded
+  # `notarize: false` here would fight that CLI override.
 
 dmg:
   title: ${productName} ${version}
