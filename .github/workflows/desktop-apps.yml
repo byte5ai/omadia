@@ -59,6 +59,8 @@ jobs:
       # web-ui bakes this kernel URL into its routes-manifest at BUILD time, so
       # it cannot be a per-launch random port.
       KERNEL_URL: http://127.0.0.1:8769
+      # node-gyp's VS auto-detection is unreliable on windows-latest; pin VS2022.
+      GYP_MSVS_VERSION: '2022'
       # macOS signing (hoisted so they're addressable in step-level `if:`).
       APPLE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64_HIGH5 }}
       APPLE_P12_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD_HIGH5 }}
@@ -206,6 +208,24 @@ jobs:
       - name: Package installers
         working-directory: desktop
         run: npx electron-builder ${{ matrix.args }} ${EB_NOTARIZE:-} --publish never
+
+      # Make the built installers downloadable from the run itself, independent of
+      # whether they're also uploaded to a Release — so a green OS leg always
+      # yields artifacts even on a build-validation (no-release) dispatch.
+      - name: Upload installers as run artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: omadia-installers-${{ matrix.os }}
+          if-no-files-found: ignore
+          path: |
+            desktop/release/*.dmg
+            desktop/release/*.zip
+            desktop/release/*.exe
+            desktop/release/*.AppImage
+            desktop/release/*.deb
+            desktop/release/*.blockmap
+            desktop/release/latest*.yml
 
       # The .app is notarized + stapled by electron-builder above; the DMG needs
       # its own ticket so `stapler validate` passes on the disk image itself.
