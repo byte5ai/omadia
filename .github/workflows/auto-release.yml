@@ -19,6 +19,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 concurrency:
   group: auto-release
@@ -27,12 +28,15 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      new_tag: ${{ steps.rel.outputs.new_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Compute bump, tag, and release
+        id: rel
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -77,3 +81,21 @@ jobs:
           git tag -a "$new" -m "omadia $new"
           git push origin "$new"
           gh release create "$new" --generate-notes --title "omadia $new" --latest
+          # Hand the new tag to the publish-images job below. A GITHUB_TOKEN
+          # release does not fire a `release` event, so the image build must run
+          # here in the same workflow rather than via an event trigger.
+          echo "new_tag=$new" >> "$GITHUB_OUTPUT"
+
+  # Build + push the versioned + :latest images for the Release just cut.
+  # Runs only when a release happened (new_tag set). In-run call, so it does
+  # not depend on the (suppressed) `release` event firing.
+  publish-images:
+    needs: release
+    if: ${{ needs.release.outputs.new_tag != '' }}
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/publish-images.yml
+    with:
+      ref: ${{ needs.release.outputs.new_tag }}
+      version: ${{ needs.release.outputs.new_tag }}
