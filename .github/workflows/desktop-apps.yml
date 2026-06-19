@@ -52,8 +52,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # macOS is built PER ARCH on a matching-arch runner, because the native
+          # modules ship as extraResources (copied verbatim, not arch-split): a
+          # single arm64 runner would otherwise put an arm64 better_sqlite3.node
+          # into the x64 DMG and crash on Intel Macs. macos-latest = Apple Silicon,
+          # macos-13 = Intel.
           - os: macos-latest
-            args: --mac
+            args: --mac --arm64
+          - os: macos-13
+            args: --mac --x64
           - os: windows-latest
             args: --win
           # Linux is best-effort for now: AppImage/deb are built + uploaded but
@@ -163,7 +170,7 @@ jobs:
 
       # --- macOS signing + notarization (proven for omadia-ui) --------------
       - name: Prepare Apple signing (optional — needs _HIGH5 secrets)
-        if: ${{ matrix.os == 'macos-latest' && env.APPLE_P12_BASE64 != '' }}
+        if: ${{ startsWith(matrix.os, 'macos') && env.APPLE_P12_BASE64 != '' }}
         run: |
           printf '%s' "$APPLE_P12_BASE64" | base64 -d > "$RUNNER_TEMP/developer-id.p12"
           printf '%s' "$APPLE_ASC_KEY_P8_BASE64" | base64 -d > "$RUNNER_TEMP/asc-key.p8"
@@ -224,28 +231,10 @@ jobs:
         working-directory: desktop
         run: npx electron-builder ${{ matrix.args }} ${EB_NOTARIZE:-} --publish never
 
-      # Make the built installers downloadable from the run itself, independent of
-      # whether they're also uploaded to a Release — so a green OS leg always
-      # yields artifacts even on a build-validation (no-release) dispatch.
-      - name: Upload installers as run artifacts
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: omadia-installers-${{ matrix.os }}
-          if-no-files-found: ignore
-          path: |
-            desktop/release/*.dmg
-            desktop/release/*.zip
-            desktop/release/*.exe
-            desktop/release/*.AppImage
-            desktop/release/*.deb
-            desktop/release/*.blockmap
-            desktop/release/latest*.yml
-
       # The .app is notarized + stapled by electron-builder above; the DMG needs
       # its own ticket so `stapler validate` passes on the disk image itself.
       - name: Notarize + staple the DMGs
-        if: ${{ matrix.os == 'macos-latest' && env.APPLE_P12_BASE64 != '' }}
+        if: ${{ startsWith(matrix.os, 'macos') && env.APPLE_P12_BASE64 != '' }}
         working-directory: desktop
         run: |
           for dmg in release/*.dmg; do
@@ -258,7 +247,7 @@ jobs:
           done
 
       - name: Verify macOS signatures (acceptance gate)
-        if: ${{ matrix.os == 'macos-latest' && env.APPLE_P12_BASE64 != '' }}
+        if: ${{ startsWith(matrix.os, 'macos') && env.APPLE_P12_BASE64 != '' }}
         working-directory: desktop
         run: |
           set -e
@@ -294,7 +283,31 @@ jobs:
 
       - name: Tear down signing material
         if: ${{ always() }}
-        run: rm -f "$RUNNER_TEMP/developer-id.p12" "$RUNNER_TEMP/asc-key.p8" "$RUNNER_TEMP/win-cert.p12" || true
+        run: |
+          rm -f "$RUNNER_TEMP/developer-id.p12" "$RUNNER_TEMP/asc-key.p8" "$RUNNER_TEMP/win-cert.p12" || true
+          # Also drop our temp signing keychain (and let macOS fall back to the
+          # default search list) so nothing signing-related lingers.
+          if [ -n "${MAC_SIGN_KEYCHAIN:-}" ]; then
+            security delete-keychain "$MAC_SIGN_KEYCHAIN" 2>/dev/null || true
+          fi
+
+      # Downloadable from the run itself (independent of the Release upload), and
+      # placed AFTER notarize/staple/verify so the artifacts are the final,
+      # stapled installers — not a pre-notarization copy.
+      - name: Upload installers as run artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: omadia-installers-${{ matrix.os }}
+          if-no-files-found: ignore
+          path: |
+            desktop/release/*.dmg
+            desktop/release/*.zip
+            desktop/release/*.exe
+            desktop/release/*.AppImage
+            desktop/release/*.deb
+            desktop/release/*.blockmap
+            desktop/release/latest*.yml
 
       - name: Upload installers to the release
         env:
