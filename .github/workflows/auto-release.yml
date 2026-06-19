@@ -99,3 +99,16 @@ jobs:
     with:
       ref: ${{ needs.release.outputs.new_tag }}
       version: ${{ needs.release.outputs.new_tag }}
+
+  # Build + attach the native desktop installers (macOS/Linux signed if secrets
+  # are set; Windows best-effort). Same in-run pattern as publish-images, because
+  # the GITHUB_TOKEN-created release does not fire a `release` event.
+  desktop-apps:
+    needs: release
+    if: ${{ needs.release.outputs.new_tag != '' }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/desktop-apps.yml
+    with:
+      tag: ${{ needs.release.outputs.new_tag }}
+    secrets: inherit

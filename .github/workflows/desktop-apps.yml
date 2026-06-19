@@ -30,6 +30,15 @@ on:
         description: 'Release tag to build + attach to (e.g. v0.3.0)'
         required: true
         type: string
+  # Called in-run from auto-release.yml: a GITHUB_TOKEN-created release does NOT
+  # fire the `release` event, so the apps must be built from within the same run
+  # that cut the release (same pattern as publish-images.yml).
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Release tag to build + attach to'
+        required: true
+        type: string
 
 concurrency:
   group: desktop-apps-${{ github.event.release.tag_name || inputs.tag }}
