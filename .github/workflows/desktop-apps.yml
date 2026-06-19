@@ -82,6 +82,14 @@ jobs:
         with:
           node-version: 22
 
+      # @electron/rebuild pulls @electron/node-gyp as a git+ssh GitHub dependency.
+      # Runners have no SSH key, so rewrite git+ssh GitHub URLs to https (public
+      # repo, no auth) before any npm install/ci, or those installs fail.
+      - name: Allow git-https for git dependencies
+        run: |
+          git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+
       # --- build the omadia runtime the installer bundles -------------------
       - name: Build middleware kernel
         working-directory: middleware
@@ -252,15 +260,15 @@ jobs:
         working-directory: desktop
         run: |
           shopt -s nullglob
-          # On workflow_dispatch the tag may not correspond to an existing
-          # release — fail with a clear message rather than a cryptic gh error.
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            echo "no GitHub Release exists for tag '$TAG' — create the release first" >&2
-            exit 1
-          fi
           files=(release/*.dmg release/*.zip release/*.exe release/*.AppImage release/*.deb release/*.blockmap release/latest*.yml)
           if [ ${#files[@]} -eq 0 ]; then
             echo "no installer artifacts found in desktop/release/" >&2
             exit 1
+          fi
+          # If TAG has no matching release (e.g. a build-validation dispatch on a
+          # branch name), this is a build-only run — skip upload, don't fail.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "no GitHub Release for '$TAG' — build validated, skipping upload."
+            exit 0
           fi
           gh release upload "$TAG" "${files[@]}" --clobber
