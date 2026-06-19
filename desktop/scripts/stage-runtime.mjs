@@ -43,6 +43,34 @@ for (const entry of ['dist', 'node_modules', 'packages', 'migrations', 'assets',
   const to = path.join(mwDest, entry);
   fs.cpSync(from, to, { recursive: true, dereference: true });
 }
+
+// fs.cpSync({dereference:true}) does NOT reliably materialise the npm-workspace
+// symlinks `node_modules/@omadia/* → packages/*` — on CI runners they're ABSOLUTE
+// (`/Users/runner/.../packages/x`), so the shipped bundle ends up with DANGLING
+// symlinks to the build machine and the kernel can't resolve any @omadia/* package
+// at runtime (ERR_MODULE_NOT_FOUND → kernel crash). Replace each @omadia symlink
+// with a real copy of the package it resolves to. (Each package's own nested
+// @omadia symlinks may stay dangling but are unused: Node resolves up to this
+// top-level real dir.)
+const scope = path.join(mwDest, 'node_modules', '@omadia');
+if (fs.existsSync(scope)) {
+  let materialised = 0;
+  for (const name of fs.readdirSync(scope)) {
+    const link = path.join(scope, name);
+    if (!fs.lstatSync(link).isSymbolicLink()) continue;
+    let target;
+    try {
+      target = fs.realpathSync(link);
+    } catch {
+      console.error(`[stage-runtime] FATAL: dangling @omadia/${name} symlink — build the middleware first`);
+      process.exit(1);
+    }
+    fs.rmSync(link, { force: true });
+    fs.cpSync(target, link, { recursive: true });
+    materialised++;
+  }
+  console.log(`[stage-runtime] materialised ${materialised} @omadia workspace package(s)`);
+}
 console.log('[stage-runtime] staged middleware');
 
 // --- web-ui: flatten the Next standalone output into runtime/web-ui ---

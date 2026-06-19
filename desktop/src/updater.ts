@@ -3,7 +3,14 @@ import { autoUpdater } from 'electron-updater';
 import fs from 'node:fs';
 import path from 'node:path';
 import { embeddedDbDir, snapshotDir } from './paths';
+import { getActiveSupervisor } from './supervisor';
 import { log } from './log';
+
+let installing = false;
+/** True once the user accepted an update and we're handing off to the installer. */
+export function isUpdateInstalling(): boolean {
+  return installing;
+}
 
 /**
  * Auto-update via electron-updater against GitHub Releases.
@@ -28,12 +35,6 @@ export function initUpdater(): void {
   );
   autoUpdater.on('update-downloaded', async (info) => {
     log.info(`[updater] downloaded ${info.version}`);
-    try {
-      snapshotDbDir(info.version);
-    } catch (err) {
-      log.error(`[updater] snapshot failed, not auto-installing: ${String(err)}`);
-      return;
-    }
     const { response } = await dialog.showMessageBox({
       type: 'info',
       buttons: ['Restart now', 'Later'],
@@ -41,11 +42,24 @@ export function initUpdater(): void {
       cancelId: 1,
       title: 'Update ready',
       message: `omadia ${info.version} is ready to install.`,
-      detail: 'Your data has been snapshotted. omadia will restart to apply the update.',
+      detail: 'omadia will close, back up your local data, and restart to apply the update.',
     });
-    if (response === 0) {
-      autoUpdater.quitAndInstall();
+    if (response !== 0) return;
+
+    // Quiesce the stack FIRST so the embedded DB is flushed + closed before we
+    // copy its directory — a live cpSync could capture a torn, unrestorable
+    // snapshot. Then snapshot, then hand off to the installer.
+    installing = true;
+    try {
+      const sup = getActiveSupervisor();
+      if (sup) await sup.stop();
+      snapshotDbDir(info.version);
+    } catch (err) {
+      log.error(`[updater] pre-install stop/snapshot failed (installing anyway): ${String(err)}`);
     }
+    // quitAndInstall drives the app quit itself; main's before-quit checks
+    // isUpdateInstalling() and steps aside so the installer isn't bypassed.
+    autoUpdater.quitAndInstall();
   });
 
   autoUpdater.checkForUpdates().catch((err) => log.error(`[updater] check failed: ${String(err)}`));

@@ -11,7 +11,6 @@ import {
 import { findFreePorts, isPortFree } from './ports';
 import { startEmbeddedDb, EmbeddedDb } from './embeddedDb';
 import { vaultKey, allProviderKeys } from './secrets';
-import { readSetup } from './setupState';
 import { log } from './log';
 
 export type BootPhase =
@@ -126,16 +125,18 @@ export class Supervisor extends EventEmitter {
       this.progress('ready', 'omadia is ready.');
       return this.uiUrl;
     } catch (err) {
-      // Roll back any partially-started children so a retry starts from a clean
-      // slate (and so we don't leak processes or hold the PGlite lock).
-      await this.teardownChildren();
-      this.state = 'idle';
+      // If a concurrent stop()/restart() superseded this boot (it bumped the
+      // generation), it now owns teardown + the state — do NOT double-tear-down
+      // or stomp its state. Only clean up when we're still the live generation.
+      if (gen === this.generation) {
+        await this.teardownChildren();
+        this.state = 'idle';
+      }
       throw err;
     }
   }
 
   private kernelEnv(port: number): NodeJS.ProcessEnv {
-    const setup = readSetup();
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       ELECTRON_RUN_AS_NODE: '1',
@@ -159,7 +160,6 @@ export class Supervisor extends EventEmitter {
     // v1 wires only persistence + LLM. Embeddings (in-process), diagrams (hosted),
     // and the filesystem attachment store are later milestones; leaving their env
     // unset means the kernel degrades gracefully rather than failing.
-    void setup;
     return env;
   }
 
