@@ -109,6 +109,64 @@ export interface SemanticAnswer {
    * recalled. Sidecar — does NOT short-circuit the answer.
    */
   recalled?: RecalledContext;
+
+  /**
+   * #332 Layer 1 — tamper-evident agent transparency. A curated projection of
+   * the deterministic run-trace's sub-agent invocations, built by the HARNESS
+   * (not the LLM) from the choke-point trace. Lets EVERY channel — including
+   * Teams / Telegram, which never see the raw `runTrace` — show which
+   * specialist(s) were actually consulted this turn. If the orchestrator only
+   * *claims* "I asked the Strategist" but never invoked the tool, this array is
+   * empty and the contradiction is visible. Omitted when no sub-agent ran.
+   * Sidecar — does NOT short-circuit the answer.
+   */
+  agentsConsulted?: readonly AgentConsultation[];
+
+  /**
+   * #332 Layer 2 — Direct Line. The verbatim answer of a sub-agent the USER
+   * directed input at (e.g. `@omadia #strategist …`), captured at the choke
+   * point and delivered as a HARNESS-owned, attributed segment INDEPENDENT of
+   * the orchestrator's own `text`. The orchestrator can neither remove nor
+   * rewrite it — its only sanctioned addition is an attributed, additive note
+   * in `text` (never a replacement). Still PII-masked by the privacy guard.
+   * Omitted on ordinary turns (no direct-line directive). Sidecar.
+   */
+  delegatedAnswer?: DelegatedAnswer;
+}
+
+/**
+ * #332 Layer 1 — one curated entry per sub-agent invocation this turn.
+ * Derived from the deterministic `runTrace.agentInvocations` (the choke-point
+ * record), NEVER from the orchestrator's prose. Carries only what a footer
+ * needs; the raw run-trace stays behind the connector boundary.
+ */
+export interface AgentConsultation {
+  /** Stable agent id when resolvable (e.g. `de.byte5.agent.strategist`). */
+  agentId?: string;
+  /** Human label for the footer (e.g. `Strategist`). Always present. */
+  label: string;
+  /** Deterministic outcome of the invocation. */
+  status: 'success' | 'error';
+  /** Wall-clock duration of the invocation, when recorded. */
+  durationMs?: number;
+  /** COUNT of tool calls the sub-agent made — never the orchestrator's prose. */
+  toolCalls?: number;
+}
+
+/**
+ * #332 Layer 2 — the harness-owned verbatim sub-agent segment for a
+ * direct-line turn. Rendered attributed and visually separate from the
+ * orchestrator's `text`. `status: 'error'` carries a faithful failure message
+ * in `text` (never a cover-up or hallucinated answer).
+ */
+export interface DelegatedAnswer {
+  /** Stable agent id the directive resolved to. */
+  agentId: string;
+  /** Human label for attribution (e.g. `Strategist`). */
+  label: string;
+  /** The sub-agent's verbatim answer (PII-masked), or a faithful error line. */
+  text: string;
+  status: 'success' | 'error';
 }
 
 /** Image/file side-channel. `url` must be reachable by the channel. */

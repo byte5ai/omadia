@@ -1,0 +1,77 @@
+# Overlay: S3-compatible object storage (MinIO, a Tigris stand-in).
+#
+# Adds the `minio` + `minio-init` sidecars and wires the kernel's object
+# store. Enabling this turns on chat ATTACHMENT ingestion (the bot can read
+# uploaded files) and is a prerequisite for the diagrams + office plugins.
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.storage.yaml up -d
+#
+# Without this overlay the kernel's `tigrisStore` service is simply not
+# published — attachment reads return a clean "storage unconfigured" message
+# rather than failing. (Vault, installed.json, builder drafts.db and uploaded
+# plugin packages live on the local PLATFORM_DATA_DIR volume, NOT in S3, so
+# the minimal core keeps all of them.)
+
+services:
+  middleware:
+    environment:
+      # In-network wiring — the middleware container reaches MinIO over the
+      # shared `omadia` network's DNS name, never the host's localhost.
+      AWS_ENDPOINT_URL_S3: http://minio:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      BUCKET_NAME: diagrams
+    depends_on:
+      # Wait for the bucket to exist before the kernel boots, so the object
+      # store is ready the moment a consumer plugin activates.
+      minio-init:
+        condition: service_completed_successfully
+
+  # --- S3-compatible object storage (Tigris stand-in) -----------------------
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    restart: unless-stopped
+    command: server /data --console-address ':9001'
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - '127.0.0.1:9000:9000'   # S3 API
+      - '127.0.0.1:9001:9001'   # Web console (login: minioadmin / minioadmin)
+    volumes:
+      - minio-data:/data
+    networks: [omadia]
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot container that waits for MinIO to be ready, then provisions the
+  # bucket and applies the 90-day expiration rule. Re-running is idempotent.
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks: [omadia]
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -eu
+        mc alias set local http://minio:9000 minioadmin minioadmin
+        mc mb --ignore-existing local/diagrams
+        # Lifecycle: expire all objects after 90 days. Mirror the production
+        # constraint (Tigris allows one rule per bucket) so we catch mistakes
+        # locally too.
+        mc ilm rule add --expire-days 90 local/diagrams || \
+          mc ilm rule import local/diagrams <<'EOF'
+        {"Rules":[{"ID":"expire-90d","Status":"Enabled","Filter":{"Prefix":""},"Expiration":{"Days":90}}]}
+        EOF
+        mc ilm rule list local/diagrams
+        echo '[minio-init] diagrams bucket ready with 90d expiration.'
+    restart: 'no'
+
+volumes:
+  minio-data:

@@ -87,6 +87,76 @@ export interface PreviewUiRouteDescriptorInput {
   readonly order?: number;
 }
 
+/** Mirror of `LlmCompleteRequest` from the boilerplate contract. Inline-copied
+ *  to keep previewRuntime self-contained (no plugin-api import). */
+export interface PreviewLlmCompleteRequest {
+  readonly model: string;
+  readonly system?: string;
+  readonly messages: ReadonlyArray<{
+    readonly role: 'user' | 'assistant';
+    readonly content: string;
+  }>;
+  readonly maxTokens?: number;
+  readonly temperature?: number;
+}
+
+/** Mirror of `LlmCompleteResult` from the boilerplate contract. */
+export interface PreviewLlmCompleteResult {
+  readonly text: string;
+  readonly model: string;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly stopReason: 'end_turn' | 'max_tokens' | 'stop_sequence' | 'tool_use';
+}
+
+/** Plugin-facing LLM accessor surface (mirror of `LlmAccessor`). */
+export interface PreviewLlmAccessor {
+  complete(req: PreviewLlmCompleteRequest): Promise<PreviewLlmCompleteResult>;
+  readonly modelsAllowed: readonly string[];
+}
+
+/** Structural subset of the host `'llm'` service the kernel registers — only
+ *  the `complete` the preview accessor delegates to. Resolved from the wired
+ *  ServiceRegistry via `hostServices.get('llm')`. */
+export interface PreviewHostLlmProvider {
+  complete(req: PreviewLlmCompleteRequest): Promise<PreviewLlmCompleteResult>;
+}
+
+/** LLM permission extracted from the package manifest, mirroring the kernel's
+ *  `extractLlmPermissions`. Empty `modelsAllowed` means the agent declared no
+ *  LLM access → `ctx.llm` stays absent. */
+export interface PreviewLlmConfig {
+  readonly modelsAllowed: readonly string[];
+  readonly callsPerInvocation: number;
+  readonly maxTokensPerCall: number;
+}
+
+/** Mirror of `JobSchedule` from the boilerplate contract
+ *  (`agent-integration/types.ts`). Inline-copied to keep previewRuntime
+ *  self-contained. */
+export type PreviewJobSchedule =
+  | { readonly cron: string }
+  | { readonly intervalMs: number };
+
+/** Mirror of `JobSpec` — only the fields the preview needs to capture +
+ *  surface. The kernel validates the full shape at register-time; the
+ *  preview accepts and records it without scheduling anything. */
+export interface PreviewJobSpecInput {
+  readonly name: string;
+  readonly schedule: PreviewJobSchedule;
+  readonly timeoutMs?: number;
+  readonly overlap?: 'skip' | 'queue';
+}
+
+export type PreviewJobHandler = (signal: AbortSignal) => Promise<void>;
+
+/** Mirror of `PluginActionStatus` from the boilerplate contract. */
+export interface PreviewStatusInput {
+  readonly state: 'ok' | 'needs_action' | 'error';
+  readonly title?: string;
+  readonly detail?: string;
+}
+
 export interface PreviewPluginContext {
   readonly agentId: string;
   readonly secrets: {
@@ -106,6 +176,29 @@ export interface PreviewPluginContext {
    *  kernel after install. */
   readonly uiRoutes: {
     register(descriptor: PreviewUiRouteDescriptorInput): () => void;
+  };
+  /** Background-job registry. Non-optional in the kernel contract
+   *  (`pluginContext.ts` always wires `jobs`), so a plugin with a scheduled
+   *  job calls `ctx.jobs.register(...)` in activate() unconditionally. Before
+   *  this stub existed the call threw `Cannot read properties of undefined
+   *  (reading 'register')` ONLY in preview — the agent compiled and ran fine
+   *  after install. The preview CAPTURES the registration (so the operator can
+   *  see "this agent schedules N jobs") and returns a working disposer, but
+   *  deliberately does NOT fire the cron/interval: preview activations are
+   *  ephemeral and must not trigger real side effects. Contract-parity without
+   *  runtime side effects — the same call shape and disposer the kernel hands
+   *  the plugin post-install. */
+  readonly jobs: {
+    register(spec: PreviewJobSpecInput, handler: PreviewJobHandler): () => void;
+  };
+  /** Operator-facing action-status reporter. Non-optional in the kernel
+   *  contract (`pluginContext.ts` always wires `status`). Preview has no admin
+   *  badge to render into, so `report`/`clear` record the call locally (for
+   *  introspection + smoke) without surfacing a banner. Same crash class as
+   *  `jobs` before this stub — `reading 'report'`. */
+  readonly status: {
+    report(status: PreviewStatusInput): void;
+    clear(): void;
   };
   /** ServicesAccessor (solution B). When the runtime is wired with the live
    *  kernel ServiceRegistry (`PreviewRuntimeDeps.serviceRegistry`), `get`/`has`
@@ -144,6 +237,18 @@ export interface PreviewPluginContext {
    *  preview the same way it would fail a real install — no false
    *  "works in preview" signal. */
   readonly http?: HttpAccessor;
+  /** Host-LLM accessor, present exactly when the manifest declares
+   *  `permissions.llm.models_allowed` with ≥1 entry AND the runtime is wired
+   *  with a host `'llm'` provider (the same two-part gate the kernel applies
+   *  post-install). Backed by the SAME host `'llm'` service the kernel serves
+   *  `ctx.llm` from (Anthropic default), so an agent that calls
+   *  `ctx.llm.complete(...)` is testable in preview with real completions —
+   *  model-whitelist, per-invocation call-budget and max-tokens clamp behave
+   *  like install. Absent when the manifest declares no `models_allowed` (or no
+   *  host provider is wired, e.g. unit tests), so an agent that forgot to
+   *  declare the permission fails preview the same way it would fail install —
+   *  no false "works in preview" signal. */
+  readonly llm?: PreviewLlmAccessor;
   readonly smokeMode: boolean;
   log(...args: unknown[]): void;
 }
@@ -158,6 +263,21 @@ export interface PreviewPluginContext {
 export interface PreviewRouteCapture {
   readonly prefix: string;
   readonly router: unknown;
+  disposed: boolean;
+}
+
+/**
+ * Job registration captured at activate-time by the preview's
+ * `jobs.register`. The preview does NOT schedule the job (no cron fires in
+ * an ephemeral preview); it records the spec + handler so the operator/smoke
+ * can see what the agent would schedule post-install. `disposed` flips when
+ * the plugin's close() calls the returned dispose handle.
+ */
+export interface PreviewJobCapture {
+  readonly name: string;
+  readonly schedule: PreviewJobSchedule;
+  readonly spec: PreviewJobSpecInput;
+  readonly handler: PreviewJobHandler;
   disposed: boolean;
 }
 
@@ -186,6 +306,16 @@ export interface PreviewHandle {
    *  during `activate()` and may be flagged `disposed` when the plugin's
    *  close-handle is invoked. */
   readonly routeCaptures: ReadonlyArray<PreviewRouteCapture>;
+  /** Background jobs the plugin's `activate()` registered via
+   *  `ctx.jobs.register(...)`. Captured but never scheduled in preview.
+   *  Lets the operator/smoke confirm the agent wires its job the same way
+   *  the kernel would post-install. Empty for plugins with no jobs. */
+  readonly jobCaptures: ReadonlyArray<PreviewJobCapture>;
+  /** Action-status values the plugin reported via `ctx.status.report(...)`
+   *  during `activate()`, newest last. `ctx.status.clear()` appends a
+   *  synthetic `{ state: 'ok' }` marker (the kernel treats `ok`/clear the
+   *  same — both remove the badge). Empty when the plugin reports nothing. */
+  readonly statusReports: ReadonlyArray<PreviewStatusInput>;
   close(): Promise<void>;
 }
 
@@ -386,16 +516,45 @@ export class PreviewRuntime {
           })
         : undefined;
 
+    // ctx.llm is gated on the manifest's `permissions.llm.models_allowed`
+    // exactly like the kernel's `extractLlmPermissions`, AND on a wired host
+    // `'llm'` provider (the second half of the kernel's two-part gate). When
+    // both hold, the preview serves REAL completions through the same host
+    // service the kernel uses post-install (Anthropic default), so an agent
+    // that calls `ctx.llm.complete(...)` is testable in the builder instead of
+    // crashing with "ctx.llm unavailable". When the manifest omits the
+    // permission (or no host provider is wired, e.g. unit tests), `ctx.llm`
+    // stays absent — same failure mode as a real install.
+    const llmConfig = await manifestLlmConfig(packageRoot);
+    const hostLlm =
+      llmConfig && this.hostServices
+        ? this.hostServices.get<PreviewHostLlmProvider>('llm')
+        : undefined;
+    const llm: PreviewLlmAccessor | undefined =
+      llmConfig && hostLlm
+        ? createPreviewLlmAccessor({
+            agentId,
+            config: llmConfig,
+            provider: hostLlm,
+            log: (...args) => this.log(`[${agentId}/llm]`, ...args),
+          })
+        : undefined;
+
     const routeCaptures: PreviewRouteCapture[] = [];
+    const jobCaptures: PreviewJobCapture[] = [];
+    const statusReports: PreviewStatusInput[] = [];
     const ctx = createStubContext({
       agentId,
       configValues: opts.configValues,
       secretValues: opts.secretValues,
       smokeMode: opts.smokeMode === true,
       routeCaptures,
+      jobCaptures,
+      statusReports,
       hostServices: this.hostServices,
       provideMemory,
       ...(http ? { http } : {}),
+      ...(llm ? { llm } : {}),
       logger: (...args) => this.log(`[${agentId}]`, ...args),
     });
 
@@ -418,6 +577,8 @@ export class PreviewRuntime {
       toolkit: handle.toolkit,
       previewDir,
       routeCaptures,
+      jobCaptures,
+      statusReports,
       close: async () => {
         try {
           await withTimeout(
@@ -508,15 +669,122 @@ async function manifestNetworkConfig(
   return { outbound, webScanner };
 }
 
+/**
+ * Reads the package's `manifest.yaml` and extracts the LLM permission the
+ * kernel uses to gate `ctx.llm`: the `permissions.llm.models_allowed` whitelist
+ * plus the optional per-invocation call budget and max-tokens cap. Mirrors
+ * `pluginContext.ts:extractLlmPermissions` so preview and production agree on
+ * when `ctx.llm` is present. Returns `undefined` when the manifest is missing,
+ * unparsable, declares no `permissions.llm`, or lists an empty `models_allowed`
+ * — the same "no LLM access" outcome the kernel produces. Defaults
+ * (`calls_per_invocation: 5`, `max_tokens_per_call: 4096`) match the kernel.
+ */
+async function manifestLlmConfig(
+  packageRoot: string,
+): Promise<PreviewLlmConfig | undefined> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(path.join(packageRoot, 'manifest.yaml'), 'utf-8');
+  } catch {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = yaml.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return undefined;
+  const permissions = (parsed as Record<string, unknown>)['permissions'];
+  if (typeof permissions !== 'object' || permissions === null) return undefined;
+  const llm = (permissions as Record<string, unknown>)['llm'];
+  if (typeof llm !== 'object' || llm === null) return undefined;
+  const rawModels = (llm as Record<string, unknown>)['models_allowed'];
+  const modelsAllowed = Array.isArray(rawModels)
+    ? rawModels.filter((m): m is string => typeof m === 'string' && m.length > 0)
+    : [];
+  if (modelsAllowed.length === 0) return undefined;
+  const callsRaw = (llm as Record<string, unknown>)['calls_per_invocation'];
+  const tokensRaw = (llm as Record<string, unknown>)['max_tokens_per_call'];
+  return {
+    modelsAllowed,
+    callsPerInvocation:
+      typeof callsRaw === 'number' && callsRaw > 0 ? callsRaw : 5,
+    maxTokensPerCall:
+      typeof tokensRaw === 'number' && tokensRaw > 0 ? tokensRaw : 4096,
+  };
+}
+
+/**
+ * Builds the preview `ctx.llm` accessor. Delegates real completions to the
+ * wired host `'llm'` provider (the same service the kernel serves `ctx.llm`
+ * from — Anthropic default), while replicating the three guardrails the kernel
+ * applies in `createLlmAccessor`:
+ *
+ *   - **call budget** — at most `callsPerInvocation` completions per preview
+ *     activation (the preview handle is one "invocation");
+ *   - **model whitelist** — the requested model must match an entry in
+ *     `models_allowed`. Concrete ids match exactly; `*` and `class:*` refs are
+ *     allowed through (the host default provider resolves class refs the same
+ *     way the kernel does), matching the kernel's intent without re-importing
+ *     its provider-coupling logic;
+ *   - **max-tokens clamp** — silently clamped to `maxTokensPerCall`.
+ *
+ * Preview does NOT thread non-Anthropic provider pins or the vault; it always
+ * serves on the host default `'llm'` provider, which is the common case and
+ * keeps the preview decoupled from the kernel's ServiceRegistry/vault types.
+ */
+function createPreviewLlmAccessor(opts: {
+  agentId: string;
+  config: PreviewLlmConfig;
+  provider: PreviewHostLlmProvider;
+  log: (...args: unknown[]) => void;
+}): PreviewLlmAccessor {
+  const { agentId, config, provider, log } = opts;
+  let callsUsed = 0;
+  return {
+    modelsAllowed: config.modelsAllowed,
+    async complete(
+      req: PreviewLlmCompleteRequest,
+    ): Promise<PreviewLlmCompleteResult> {
+      if (callsUsed >= config.callsPerInvocation) {
+        throw new Error(
+          `preview: agent '${agentId}' exceeded its LLM call budget ` +
+            `(${String(config.callsPerInvocation)} per invocation).`,
+        );
+      }
+      const allowed = config.modelsAllowed.some(
+        (m) => m === req.model || m === '*' || m.startsWith('class:'),
+      );
+      if (!allowed) {
+        throw new Error(
+          `preview: model '${req.model}' is not in agent '${agentId}' ` +
+            `permissions.llm.models_allowed (${config.modelsAllowed.join(', ')}).`,
+        );
+      }
+      const requested = req.maxTokens ?? config.maxTokensPerCall;
+      const effective = Math.min(requested, config.maxTokensPerCall);
+      if (effective < requested) {
+        log(`clamped maxTokens ${String(requested)} → ${String(effective)} (manifest cap)`);
+      }
+      callsUsed += 1;
+      return provider.complete({ ...req, maxTokens: effective });
+    },
+  };
+}
+
 function createStubContext(opts: {
   agentId: string;
   configValues: Readonly<Record<string, unknown>>;
   secretValues: Readonly<Record<string, string>>;
   smokeMode: boolean;
   routeCaptures: PreviewRouteCapture[];
+  jobCaptures: PreviewJobCapture[];
+  statusReports: PreviewStatusInput[];
   hostServices?: PreviewHostServices;
   provideMemory: boolean;
   http?: HttpAccessor;
+  llm?: PreviewLlmAccessor;
   logger: (...args: unknown[]) => void;
 }): PreviewPluginContext {
   // Services the previewed agent provides itself stay isolated to this
@@ -583,6 +851,53 @@ function createStubContext(opts: {
     uiRoutes: {
       register: (_descriptor) => () => {},
     },
+    // Jobs accessor — non-optional in the kernel contract, so a plugin with a
+    // scheduled job calls `ctx.jobs.register(...)` unconditionally in
+    // activate(). Before this stub the call threw `Cannot read properties of
+    // undefined (reading 'register')` ONLY in preview (the plugin compiled and
+    // ran fine after install — the kernel always wires `jobs`). We CAPTURE the
+    // registration so the operator/smoke can see what the agent would schedule,
+    // and return a real disposer matching the kernel shape — but we never fire
+    // the cron/interval: preview activations are ephemeral and must not trigger
+    // real side effects. Same intent as the routes/uiRoutes stubs.
+    jobs: {
+      register: (spec, handler) => {
+        const entry: PreviewJobCapture = {
+          name: spec.name,
+          schedule: spec.schedule,
+          spec,
+          handler,
+          disposed: false,
+        };
+        opts.jobCaptures.push(entry);
+        return () => {
+          entry.disposed = true;
+        };
+      },
+    },
+    // Status accessor — also non-optional in the kernel contract. Preview has
+    // no admin badge to render into, so we just record the reported values
+    // (newest last) for introspection. `clear()` records a synthetic `ok`
+    // marker since the kernel treats `ok` and clear identically (both drop the
+    // badge). Same crash class as `jobs` before this stub (`reading 'report'`).
+    status: {
+      report: (next) => {
+        const state =
+          next.state === 'ok' ||
+          next.state === 'needs_action' ||
+          next.state === 'error'
+            ? next.state
+            : 'needs_action';
+        opts.statusReports.push({
+          state,
+          ...(typeof next.title === 'string' ? { title: next.title } : {}),
+          ...(typeof next.detail === 'string' ? { detail: next.detail } : {}),
+        });
+      },
+      clear: () => {
+        opts.statusReports.push({ state: 'ok' });
+      },
+    },
     // ServicesAccessor (solution B): read through to the live kernel
     // ServiceRegistry when one is wired, so an integration-backed agent under
     // test resolves the real services its `depends_on` integrations provide
@@ -621,6 +936,7 @@ function createStubContext(opts: {
     // `http: undefined` — when the manifest declares no egress, matching the
     // kernel's optional `ctx.http`.
     ...(opts.http ? { http: opts.http } : {}),
+    ...(opts.llm ? { llm: opts.llm } : {}),
     smokeMode: opts.smokeMode,
     log: opts.logger,
   };

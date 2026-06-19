@@ -1,0 +1,60 @@
+# Overlay: in-tenant embeddings (Ollama sidecar).
+#
+# Adds the `ollama` + `ollama-init` sidecars and the env that activates the
+# embeddings pipeline (semantic memory retrieval + topic detection on
+# follow-ups). First boot pulls `nomic-embed-text` (~270 MB) into the volume.
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.embeddings.yaml up -d
+#
+# Without this overlay the knowledge graph runs "embeddings disabled" —
+# FTS-only retrieval, no topic detection. Nothing crashes.
+
+services:
+  middleware:
+    environment:
+      # In-network DNS name — the middleware reaches Ollama over the shared
+      # `omadia` network, not the host's localhost.
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_EMBEDDING_MODEL: nomic-embed-text
+    depends_on:
+      ollama-init:
+        condition: service_completed_successfully
+
+  # --- Ollama sidecar for in-tenant embeddings (topic-detection pipeline) ---
+  # Serves `nomic-embed-text` (~270 MB) via the standard Ollama HTTP API.
+  # Middleware reaches it over the in-network DNS name `ollama:11434`.
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:11434:11434'
+    volumes:
+      - ollama-data:/root/.ollama
+    networks: [omadia]
+
+  # One-shot: pulls the embedding model into the Ollama volume on first run.
+  # Re-running is cheap — the pull short-circuits if the model is present.
+  ollama-init:
+    image: ollama/ollama:latest
+    depends_on:
+      - ollama
+    networks: [omadia]
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -eu
+        # Wait until the Ollama server answers.
+        for i in 1 2 3 4 5 6 7 8 9 10; do
+          if wget -q -O- http://ollama:11434/api/tags >/dev/null 2>&1; then
+            break
+          fi
+          echo "[ollama-init] waiting for ollama ($$i)…"
+          sleep 3
+        done
+        OLLAMA_HOST=http://ollama:11434 ollama pull nomic-embed-text
+        echo "[ollama-init] nomic-embed-text ready."
+    restart: 'no'
+
+volumes:
+  ollama-data:

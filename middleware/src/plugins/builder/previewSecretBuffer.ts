@@ -97,6 +97,37 @@ export class PreviewSecretBuffer {
     }
   }
 
+  /**
+   * Merge the given secret-values into the existing buffer for one
+   * (user, draft): only the provided keys are added/updated, and every
+   * existing key NOT present in `values` is preserved.
+   *
+   * This is what the Test-Credentials drawer's "Übernehmen"/apply needs.
+   * The drawer can only ever resend the fields the user typed THIS session
+   * — it never sees already-buffered values (they leave the browser on the
+   * first apply) — so a `set` (full replace) wipes every sibling the user
+   * isn't currently re-typing. Merge keeps them. Per-key removal stays the
+   * job of "Clear all" (`drop`), which purges the whole namespace.
+   */
+  async merge(
+    userEmail: string,
+    draftId: string,
+    values: Readonly<Record<string, string>>,
+  ): Promise<void> {
+    await this.warm(userEmail, draftId);
+    const key = makeKey(userEmail, draftId);
+    const existing = this.byKey.get(key) ?? {};
+    const merged = { ...existing, ...values };
+    this.byKey.set(key, merged);
+    this.indexUser(userEmail, draftId);
+    if (this.vault && Object.keys(values).length > 0) {
+      const ns = this.namespaceFor(userEmail, draftId);
+      // Additive: write only the provided keys. setMany never removes, so
+      // the sibling keys already in the namespace survive untouched.
+      await this.vault.setMany(ns, { ...values });
+    }
+  }
+
   /** Returns a snapshot copy. Never returns null (always at least an empty object).
    *  Caller must have invoked `warm()` first when running in vault-backed mode. */
   get(userEmail: string, draftId: string): Readonly<Record<string, string>> {

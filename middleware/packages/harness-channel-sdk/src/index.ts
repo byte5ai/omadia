@@ -98,6 +98,10 @@ export type {
 // adapters can call it without crossing into kernel internals.
 export { toSemanticAnswer } from './toSemanticAnswer.js';
 
+// #332 Layer 1 — plain-text fallback so even a minimal connector (no rich-card
+// UI) can append a readable, harness-sourced consulted-agents footer line.
+export { agentsConsultedFooterText } from './toSemanticAnswer.js';
+
 // Semantic outgoing-message contracts (connectors render native)
 export type {
   SemanticAnswer,
@@ -109,6 +113,8 @@ export type {
   OutgoingSlotPicker,
   OutgoingTopicAsk,
   CaptureDisclosure,
+  AgentConsultation,
+  DelegatedAnswer,
 } from './outgoing.js';
 
 // Channel-agnostic store interfaces

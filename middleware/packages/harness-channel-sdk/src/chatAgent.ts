@@ -1,5 +1,9 @@
 import type { PrivacyReceipt, RecalledContext } from '@omadia/plugin-api';
-import type { FollowUpOption, SemanticAnswer } from './outgoing.js';
+import type {
+  DelegatedAnswer,
+  FollowUpOption,
+  SemanticAnswer,
+} from './outgoing.js';
 import type { SurfaceStreamEvent, PendingCanvasSurface } from './surface.js';
 
 /**
@@ -230,6 +234,18 @@ export interface ChatTurnInput {
    */
   extraSystemHint?: string;
   /**
+   * #332 Layer 3 — forced-delegation obligation. The tool name of a sub-agent
+   * that MUST be invoked at least once during this turn. If the orchestrator
+   * tries to end the turn (pure-text stop) without ever calling it, the harness
+   * performs ONE bounded escalation iteration with
+   * `tool_choice: { type: 'tool', name: <X> }` plus a synthetic reminder —
+   * exactly as `LocalSubAgent` does for sub-agents (OB-31). Unknown tool names
+   * are ignored. The Conductor (Spec 005) composes these into multi-step
+   * processes; on its own it guarantees the consult HAPPENS (Layer 1 surfaces
+   * it). Faithful input/output is the Direct Line's (Layer 2) job.
+   */
+  expectedDomainTool?: string;
+  /**
    * "Fresh check" mode — bypass the FTS context block, verbatim tail, and
    * memory-read convention for this turn only. The orchestrator treats the
    * user message as the sole source of truth and is explicitly told not to
@@ -428,6 +444,14 @@ export interface ChatTurnResult {
    * Omitted when nothing was recalled.
    */
   recalled?: RecalledContext;
+  /**
+   * #332 Layer 2 — Direct Line. The verbatim sub-agent answer for a turn the
+   * user directed at a named specialist (`@omadia #strategist …`). Set by the
+   * harness inside `chatStream`, NOT by the LLM; `toSemanticAnswer` forwards it
+   * to `SemanticAnswer.delegatedAnswer` so the orchestrator cannot suppress or
+   * reword it. Omitted on ordinary turns.
+   */
+  delegatedAnswer?: DelegatedAnswer;
 }
 
 /**
@@ -622,6 +646,12 @@ export type ChatStreamEvent =
        * answered, alongside the live token counts.
        */
       model?: string;
+      /**
+       * #332 Layer 2 — Direct Line. Harness-owned verbatim sub-agent segment
+       * for a user-directed specialist turn; see ChatTurnResult.delegatedAnswer.
+       * The orchestrator cannot suppress or reword it.
+       */
+      delegatedAnswer?: DelegatedAnswer;
     }
   /**
    * Emitted after `done` by the verifier wrapper (only when enabled). The
