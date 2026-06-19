@@ -139,7 +139,20 @@ export async function activate(
     process.env['GRAPH_TENANT_ID'] ??
     'default';
 
-  const graphPool: Pool = createNeonPool(databaseUrl);
+  // Pool size is configurable so an embedded single-connection engine can cap it
+  // at 1. The omadia desktop installer runs Postgres via PGlite exposed over the
+  // wire protocol (pglite-socket), which is single-client: a multi-connection
+  // pool terminates the extra connections. With `GRAPH_POOL_MAX=1` node-postgres
+  // multiplexes every query over one reused connection (empirically: 20
+  // concurrent queries in <10ms), so this is the seam that makes the no-Docker
+  // embedded DB work without forking the kernel. Defaults to 5 for server/cloud.
+  const poolMaxRaw =
+    ctx.config.get<string | number>('graph_pool_max') ?? process.env['GRAPH_POOL_MAX'];
+  const poolMaxParsed = Number(poolMaxRaw);
+  const poolMax =
+    Number.isInteger(poolMaxParsed) && poolMaxParsed > 0 ? poolMaxParsed : 5;
+
+  const graphPool: Pool = createNeonPool(databaseUrl, poolMax);
   // Ride out the first-boot Postgres-startup race (e.g. `docker compose up`,
   // where the DNS alias for the `postgres` service can lag the middleware's
   // first connection by a second or two). Without this a transient

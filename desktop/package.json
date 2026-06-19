@@ -1,0 +1,31 @@
+{
+  "name": "omadia-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "omadia native desktop installer — runs the full omadia stack locally with an embedded Postgres+pgvector engine, no Docker.",
+  "author": "byte5 GmbH",
+  "license": "Apache-2.0",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-renderer.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "stage": "node scripts/stage-runtime.mjs",
+    "start": "npm run build && electron .",
+    "dev": "OMADIA_DESKTOP_DEV=1 npm run start",
+    "pack:mac": "npm run build && npm run stage && electron-builder --mac --publish never",
+    "pack:win": "npm run build && npm run stage && electron-builder --win --publish never",
+    "pack:all": "npm run build && npm run stage && electron-builder --mac --win --publish never"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "0.3.4",
+    "@electric-sql/pglite-socket": "^0.0.9",
+    "electron-updater": "^6.3.9"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.1",
+    "@types/node": "^22.10.0",
+    "electron": "^37.2.0",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.7.2"
+  }
+}

@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'self'; script-src 'self';"
+    />
+    <title>Starting omadia…</title>
+    <link rel="stylesheet" href="wizard.css" />
+  </head>
+  <body>
+    <div style="display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;gap:24px;">
+      <div class="brand" style="font-size:28px;">omadia</div>
+      <div class="progress" style="width:360px;">
+        <div class="bar"><div id="barFill" class="bar-fill"></div></div>
+        <p id="progressMsg" class="progress-msg" style="text-align:center;">Starting local services…</p>
+      </div>
+    </div>
+    <script src="loading.js"></script>
+  </body>
+</html>

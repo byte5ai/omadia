@@ -22,6 +22,16 @@ const ASSETS = [
     from: 'src/services/graph/migrations',
     to: 'dist/services/graph/migrations',
   },
+  // The following runtime SQL/prompt assets were previously only mirrored into
+  // dist by the Dockerfile (so `docker build` worked but a plain `npm run build`
+  // produced an incomplete dist). The omadia desktop installer stages `dist`
+  // directly, so these must be copied by the build itself. Keep in sync with the
+  // matching COPY lines in the root Dockerfile.
+  { from: 'src/auth/migrations', to: 'dist/auth/migrations' },
+  { from: 'src/plugins/routines/migrations', to: 'dist/plugins/routines/migrations' },
+  { from: 'src/profileStorage/migrations', to: 'dist/profileStorage/migrations' },
+  { from: 'src/profileSnapshots/migrations', to: 'dist/profileSnapshots/migrations' },
+  { from: 'src/plugins/builder/prompts', to: 'dist/plugins/builder/prompts' },
 ];
 
 async function main() {
