@@ -57,6 +57,7 @@
   },
   "overrides": {
     "@swc/helpers": "0.5.21",
-    "esbuild": "^0.28.1"
+    "esbuild": "^0.28.1",
+    "undici": "^7.28.0"
   }
 }
