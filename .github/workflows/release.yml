@@ -1,10 +1,13 @@
-# Release workflow — container images ACTIVE; npm publish still gated.
+# Release workflow — edge images on every push to main; npm publish gated.
 #
-# Container images (middleware + web-ui) publish to GHCR:
-#   - push to `main`            -> ghcr.io/byte5ai/omadia-*:edge + :sha-<short>
-#   - GitHub Release published  -> :X.Y.Z + :vX.Y.Z + :X.Y + :vX.Y + :latest
-#     (auto-release.yml cuts the vX.Y.Z tag + Release on feat/fix merges to main;
-#      both v-prefixed and bare image tags are published so either pin resolves)
+# Image publishing is centralized in the reusable publish-images.yml:
+#   - this file (push to `main`)      -> :edge + :sha-<short>
+#   - auto-release.yml (after Release) -> :X.Y.Z / :vX.Y.Z / :X.Y / :vX.Y / :latest
+#
+# Why the version path lives in auto-release.yml and not a `release: published`
+# trigger here: auto-release cuts the Release with the default GITHUB_TOKEN, and
+# GitHub does not fire event-triggered workflows from GITHUB_TOKEN-created
+# releases. So auto-release calls publish-images directly, in the same run.
 # docker-compose.yaml pulls these by ${OMADIA_VERSION:-latest}.
 #
 # npm package publishing stays gated (`if: false`) until the npm-scope
@@ -15,112 +18,18 @@ name: Release
 on:
   push:
     branches: [main]
-  release:
-    types: [published]
-  workflow_dispatch:
-    inputs:
-      dry_run:
-        description: 'Dry-run only (build images, skip the GHCR push)'
-        required: false
-        type: boolean
-        default: true
-
-permissions:
-  contents: read
-  packages: write
-  id-token: write   # OIDC for npm provenance once wired
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  ghcr-middleware:
-    name: middleware → GHCR
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: ghcr.io/byte5ai/omadia-middleware
-          # latest=auto tags :latest on a (non-prerelease) semver Release tag,
-          # never on a plain main push. It does not compare against
-          # already-published tags, so manually re-releasing an older line would
-          # re-point :latest — auto-release.yml only ever advances forward.
-          flavor: |
-            latest=auto
-          tags: |
-            type=edge,branch=main
-            type=sha,prefix=sha-,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern=v{{version}}
-            type=semver,pattern=v{{major}}.{{minor}}
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
-          # Push for push/release events; for a manual run only when dry_run=false.
-          push: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          provenance: true
-          sbom: true
-
-  ghcr-web-ui:
-    name: web-ui → GHCR
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: ghcr.io/byte5ai/omadia-web-ui
-          # latest=auto tags :latest on a (non-prerelease) semver Release tag,
-          # never on a plain main push. It does not compare against
-          # already-published tags, so manually re-releasing an older line would
-          # re-point :latest — auto-release.yml only ever advances forward.
-          flavor: |
-            latest=auto
-          tags: |
-            type=edge,branch=main
-            type=sha,prefix=sha-,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern=v{{version}}
-            type=semver,pattern=v{{major}}.{{minor}}
-      - uses: docker/build-push-action@v6
-        with:
-          context: ./web-ui
-          file: ./web-ui/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            MIDDLEWARE_URL=http://middleware:8080
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          provenance: true
-          sbom: true
+  edge-images:
+    permissions:
+      contents: read
+      packages: write
+    # No `version` input -> edge build (:edge + :sha-<short>) from this commit.
+    uses: ./.github/workflows/publish-images.yml
 
   # ──────────────────────────────────────────────────────────────────
   # npm package publishing — GATED OFF until the npm-scope decision
@@ -130,6 +39,9 @@ jobs:
     name: npm publish (gated off)
     runs-on: ubuntu-latest
     if: false
+    permissions:
+      contents: read
+      id-token: write   # OIDC for npm provenance once wired
     defaults:
       run:
         working-directory: middleware
