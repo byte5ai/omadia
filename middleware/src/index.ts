@@ -2278,6 +2278,10 @@ async function main(): Promise<void> {
     pendingFlows: new PendingFlowStore(),
     signingKey: sessionSigningKey,
     publicBaseUrl: flowPublicBaseUrl,
+    // Re-resolve the plugin's connection state (derived config + ctx.status)
+    // immediately after a successful connect — same deactivate→activate the
+    // install flow uses, so the status badge clears without a restart.
+    reactivatePlugin: (pluginId) => installService.reactivate(pluginId),
   });
 
   app.use(

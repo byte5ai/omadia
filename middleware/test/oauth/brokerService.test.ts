@@ -83,6 +83,7 @@ interface Harness {
   signingKey: Uint8Array;
   pendingFlows: PendingFlowStore;
   lastExchangeBody: () => string;
+  reactivatedWith: () => string[];
 }
 
 function makeHarness(opts: {
@@ -116,6 +117,7 @@ function makeHarness(opts: {
       { status: opts.tokenStatus ?? 200 },
     );
   };
+  const reactivated: string[] = [];
   const broker = new OAuthBrokerService({
     catalog,
     registry,
@@ -123,10 +125,20 @@ function makeHarness(opts: {
     pendingFlows,
     signingKey,
     publicBaseUrl: 'https://app.example',
+    reactivatePlugin: async (id: string) => {
+      reactivated.push(id);
+    },
     fetchImpl,
     now: () => Date.parse('2026-06-16T12:00:00.000Z'),
   });
-  return { broker, vault, signingKey, pendingFlows, lastExchangeBody: () => lastBody };
+  return {
+    broker,
+    vault,
+    signingKey,
+    pendingFlows,
+    lastExchangeBody: () => lastBody,
+    reactivatedWith: () => reactivated,
+  };
 }
 
 async function startAndExtractState(h: Harness): Promise<string> {
@@ -191,6 +203,11 @@ test('callback: exchanges the code, persists tokens, redirects connected=ok', as
     assert.equal(tokens?.refreshToken, 'RT');
     assert.equal(tokens?.expiresAt, '2026-06-16T13:00:00.000Z');
     assert.equal(h.pendingFlows.size(), 0, 'flow consumed');
+    assert.deepEqual(
+      h.reactivatedWith(),
+      [PLUGIN_ID],
+      'plugin re-activated once so its status/derived-config refresh',
+    );
   } finally {
     h.pendingFlows.clear();
   }
@@ -211,6 +228,7 @@ test('callback: user-deny stores nothing and redirects with the error reason', a
       'connection',
     );
     assert.equal(tokens, undefined);
+    assert.deepEqual(h.reactivatedWith(), [], 'no reactivation on deny');
   } finally {
     h.pendingFlows.clear();
   }

@@ -46,6 +46,12 @@ export interface OAuthBrokerDeps {
    *  `${publicBaseUrl}/bot-api/v1/install/oauth/callback`; the post-callback
    *  redirect is `${publicBaseUrl}/store/<id>?connected=…`. */
   publicBaseUrl: string;
+  /** Re-activate the plugin after a successful connect so it re-resolves its
+   *  connection state (the plugin reads the freshly-stored token, resolves any
+   *  derived config, and clears its `ctx.status`). Optional — without it the
+   *  new tokens are stored but the plugin's status/derived-config only refresh
+   *  on its next activation. Wired to `installService.reactivate`. */
+  reactivatePlugin?: (pluginId: string) => Promise<void>;
   fetchImpl?: typeof fetch;
   now?: () => number;
 }
@@ -181,6 +187,21 @@ export class OAuthBrokerService {
       });
     } catch {
       return { redirectUrl: storeUrl('error', 'exchange_failed') };
+    }
+
+    // Re-activate so the plugin re-resolves its connection state with the
+    // freshly-stored token (derived config + ctx.status). Best-effort — the
+    // tokens are already persisted, so a hook failure must not fail the
+    // connect; the plugin will pick them up on its next activation regardless.
+    if (this.deps.reactivatePlugin) {
+      try {
+        await this.deps.reactivatePlugin(claims.pluginId);
+      } catch (err) {
+        console.error(
+          `[oauth-broker] reactivate after connect failed for ${claims.pluginId}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
     }
 
     return { redirectUrl: storeUrl('ok') };
