@@ -52,15 +52,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS is built PER ARCH on a matching-arch runner, because the native
-          # modules ship as extraResources (copied verbatim, not arch-split): a
-          # single arm64 runner would otherwise put an arm64 better_sqlite3.node
-          # into the x64 DMG and crash on Intel Macs. macos-latest = Apple Silicon,
-          # macos-13 = Intel.
+          # macOS is Apple Silicon (arm64) only for v1 — see the rationale in
+          # desktop/electron-builder.yml (extraResources can't be arch-split, and
+          # Intel runners queue for hours). Intel x64 is a tracked follow-up.
           - os: macos-latest
             args: --mac --arm64
-          - os: macos-13
-            args: --mac --x64
           - os: windows-latest
             args: --win
           # Linux is best-effort for now: AppImage/deb are built + uploaded but

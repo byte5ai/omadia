@@ -50,11 +50,16 @@ mac:
   gatekeeperAssess: false
   entitlements: buildResources/entitlements.mac.plist
   entitlementsInherit: buildResources/entitlements.mac.plist
+  # Apple Silicon only for v1. The native modules ship as extraResources (copied
+  # verbatim, not arch-split), and GitHub's Intel (macos-13) runners queue for
+  # hours — impractical for a release. An x64 DMG built on an arm64 runner would
+  # contain arm64 native modules and crash on Intel. Intel support is a follow-up
+  # (cross-compile x64 prebuilds on the arm64 runner into a second staged tree).
   target:
     - target: dmg
-      arch: [arm64, x64]
+      arch: [arm64]
     - target: zip          # required by electron-updater on macOS
-      arch: [arm64, x64]
+      arch: [arm64]
   # Notarization is left unset here so it's driven entirely by CI: the workflow
   # adds `--config.mac.notarize=true` only when the Apple secrets are present
   # (and electron-builder skips it without notary credentials). A hard-coded
