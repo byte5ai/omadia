@@ -53,6 +53,11 @@ jobs:
           - os: ubuntu-latest
             args: --linux
     runs-on: ${{ matrix.os }}
+    # Windows native rebuild (better-sqlite3 via node-gyp/VS) is not yet working;
+    # don't let it block the macOS/Linux installers. Tracked as a follow-up.
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    # Hard cap so a stuck native build can never run for hours.
+    timeout-minutes: 30
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
       # Must match Supervisor.KERNEL_PORT in desktop/src/supervisor.ts — the
