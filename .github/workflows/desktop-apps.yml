@@ -30,6 +30,15 @@ on:
         description: 'Release tag to build + attach to (e.g. v0.3.0)'
         required: true
         type: string
+  # Called in-run from auto-release.yml: a GITHUB_TOKEN-created release does NOT
+  # fire the `release` event, so the apps must be built from within the same run
+  # that cut the release (same pattern as publish-images.yml).
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Release tag to build + attach to'
+        required: true
+        type: string
 
 concurrency:
   group: desktop-apps-${{ github.event.release.tag_name || inputs.tag }}
@@ -53,12 +62,19 @@ jobs:
           - os: ubuntu-latest
             args: --linux
     runs-on: ${{ matrix.os }}
+    # Windows native rebuild (better-sqlite3 via node-gyp/VS) is not yet working;
+    # don't let it block the macOS/Linux installers. Tracked as a follow-up.
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    # Hard cap so a stuck native build can never run for hours.
+    timeout-minutes: 30
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
       # Must match Supervisor.KERNEL_PORT in desktop/src/supervisor.ts — the
       # web-ui bakes this kernel URL into its routes-manifest at BUILD time, so
       # it cannot be a per-launch random port.
       KERNEL_URL: http://127.0.0.1:8769
+      # node-gyp's VS auto-detection is unreliable on windows-latest; pin VS2022.
+      GYP_MSVS_VERSION: '2022'
       # macOS signing (hoisted so they're addressable in step-level `if:`).
       APPLE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64_HIGH5 }}
       APPLE_P12_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD_HIGH5 }}
@@ -81,6 +97,21 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      # node-gyp's bundled gyp imports Python's `distutils`, removed in Python
+      # 3.12. The macOS/Windows runners default to 3.12+ (Ubuntu still ships
+      # 3.11), so pin 3.11 everywhere to keep native rebuilds working.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # @electron/rebuild pulls @electron/node-gyp as a git+ssh GitHub dependency.
+      # Runners have no SSH key, so rewrite git+ssh GitHub URLs to https (public
+      # repo, no auth) before any npm install/ci, or those installs fail.
+      - name: Allow git-https for git dependencies
+        run: |
+          git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
 
       # --- build the omadia runtime the installer bundles -------------------
       - name: Build middleware kernel
@@ -150,8 +181,17 @@ jobs:
           security import "$RUNNER_TEMP/developer-id.p12" -k "$KEYCHAIN" \
             -P "$APPLE_P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCPASS" "$KEYCHAIN" >/dev/null
-          # Prepend our keychain to the user search list (keep the existing ones).
-          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/[\"[:space:]]//g')
+          # Prepend our keychain to the user search list, KEEPING the existing ones.
+          # Build the list as an array (bash 3.2 on macOS runners — no mapfile) so
+          # multiple existing keychains aren't mashed into one path by whitespace
+          # stripping. Only quotes + leading/trailing space are trimmed per entry.
+          EXISTING=()
+          while IFS= read -r kc; do
+            kc="${kc//\"/}"
+            kc="$(printf '%s' "$kc" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+            [ -n "$kc" ] && EXISTING+=("$kc")
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$KEYCHAIN" "${EXISTING[@]}"
 
           # The exact Developer ID Application identity now present in the keychain.
           IDENT=$(security find-identity -v -p codesigning "$KEYCHAIN" \
@@ -183,6 +223,24 @@ jobs:
         working-directory: desktop
         run: npx electron-builder ${{ matrix.args }} ${EB_NOTARIZE:-} --publish never
 
+      # Make the built installers downloadable from the run itself, independent of
+      # whether they're also uploaded to a Release — so a green OS leg always
+      # yields artifacts even on a build-validation (no-release) dispatch.
+      - name: Upload installers as run artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: omadia-installers-${{ matrix.os }}
+          if-no-files-found: ignore
+          path: |
+            desktop/release/*.dmg
+            desktop/release/*.zip
+            desktop/release/*.exe
+            desktop/release/*.AppImage
+            desktop/release/*.deb
+            desktop/release/*.blockmap
+            desktop/release/latest*.yml
+
       # The .app is notarized + stapled by electron-builder above; the DMG needs
       # its own ticket so `stapler validate` passes on the disk image itself.
       - name: Notarize + staple the DMGs
@@ -203,7 +261,13 @@ jobs:
         working-directory: desktop
         run: |
           set -e
-          for app in release/mac*/*.app; do
+          shopt -s nullglob
+          apps=(release/mac*/*.app)
+          if [ ${#apps[@]} -eq 0 ]; then
+            echo "FAIL: no .app produced under release/mac*/ — nothing to verify" >&2
+            exit 1
+          fi
+          for app in "${apps[@]}"; do
             # `--deep` is deprecated for verification and does NOT descend into
             # extraResources — verify the app, then EACH nested native binary
             # explicitly, then the real Gatekeeper verdict.
@@ -237,15 +301,15 @@ jobs:
         working-directory: desktop
         run: |
           shopt -s nullglob
-          # On workflow_dispatch the tag may not correspond to an existing
-          # release — fail with a clear message rather than a cryptic gh error.
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            echo "no GitHub Release exists for tag '$TAG' — create the release first" >&2
-            exit 1
-          fi
           files=(release/*.dmg release/*.zip release/*.exe release/*.AppImage release/*.deb release/*.blockmap release/latest*.yml)
           if [ ${#files[@]} -eq 0 ]; then
             echo "no installer artifacts found in desktop/release/" >&2
             exit 1
+          fi
+          # If TAG has no matching release (e.g. a build-validation dispatch on a
+          # branch name), this is a build-only run — skip upload, don't fail.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "no GitHub Release for '$TAG' — build validated, skipping upload."
+            exit 0
           fi
           gh release upload "$TAG" "${files[@]}" --clobber

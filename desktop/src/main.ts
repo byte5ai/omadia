@@ -4,7 +4,7 @@ import { Supervisor, setActiveSupervisor, BootProgress } from './supervisor';
 import { registerIpc } from './ipc';
 import { CH } from './ipcTypes';
 import { createTray, setTrayStatus, destroyTray, TrayActions } from './tray';
-import { initUpdater } from './updater';
+import { initUpdater, isUpdateInstalling } from './updater';
 import { isSetupComplete } from './setupState';
 import { log } from './log';
 
@@ -184,6 +184,10 @@ if (!gotLock) {
   app.on('before-quit', (e) => {
     quitting = true;
     destroyTray();
+    // During an update install, electron-updater drives the quit and runs the
+    // installer on `will-quit`. It already stopped the supervisor, so we must
+    // NOT preventDefault + app.exit() here — that would bypass the install.
+    if (isUpdateInstalling()) return;
     if (quitHandled || !supervisor) return;
     // Block the quit just long enough to flush + close the embedded DB and
     // terminate the children cleanly, then exit for real.

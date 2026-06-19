@@ -17,7 +17,7 @@ copyright: Copyright © 2026 byte5 GmbH
 
 directories:
   output: release
-  buildResources: build
+  buildResources: buildResources
 
 # Only the compiled desktop app + its own node_modules go into the app bundle.
 files:
@@ -42,20 +42,23 @@ asarUnpack:
 # Sign the native Mach-O binaries inside the staged middleware (extraResources)
 # BEFORE the outer app is signed — electron-builder does not sign extraResources,
 # and notarization rejects unsigned nested Mach-O. Fail-soft when unsigned.
-afterPack: build/afterPack.js
+afterPack: buildResources/afterPack.js
 
 mac:
   category: public.app-category.developer-tools
   hardenedRuntime: true
   gatekeeperAssess: false
-  entitlements: build/entitlements.mac.plist
-  entitlementsInherit: build/entitlements.mac.plist
+  entitlements: buildResources/entitlements.mac.plist
+  entitlementsInherit: buildResources/entitlements.mac.plist
   target:
     - target: dmg
       arch: [arm64, x64]
     - target: zip          # required by electron-updater on macOS
       arch: [arm64, x64]
-  notarize: false          # flip to true in CI once APPLE_* secrets are set
+  # Notarization is left unset here so it's driven entirely by CI: the workflow
+  # adds `--config.mac.notarize=true` only when the Apple secrets are present
+  # (and electron-builder skips it without notary credentials). A hard-coded
+  # `notarize: false` here would fight that CLI override.
 
 dmg:
   title: ${productName} ${version}
