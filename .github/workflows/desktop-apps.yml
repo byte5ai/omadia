@@ -132,25 +132,25 @@ jobs:
         working-directory: desktop
         run: npm ci
 
-      # better-sqlite3/argon2/sharp ship in middleware/node_modules built for the
-      # system Node ABI; the kernel runs under Electron's Node (ELECTRON_RUN_AS_NODE)
-      # so they must be rebuilt against Electron's ABI before staging. electron-builder
-      # rebuilds the APP's own deps but NOT extraResources, so we do it here.
-      - name: Rebuild middleware native modules for Electron
-        working-directory: desktop
-        # Pin the Electron version explicitly: electron-rebuild's auto-detection
-        # is unreliable across the --module-dir boundary (electron lives in
-        # desktop/, the modules in middleware/), and a wrong-ABI rebuild fails
-        # silently until the kernel won't boot.
+      # Make the middleware's native modules load under Electron's Node (the kernel
+      # runs via ELECTRON_RUN_AS_NODE). argon2 + sharp are N-API → ABI-stable across
+      # node/electron, so their shipped binaries already work, no rebuild needed.
+      # Only better-sqlite3 (non-N-API) needs an Electron-ABI build — and it
+      # publishes Electron PREBUILDS, so fetch one with prebuild-install (no
+      # node-gyp / Visual Studio). Fall back to a source rebuild if no prebuild
+      # exists for this Electron version on this platform.
+      - name: Provision better-sqlite3 for Electron
+        shell: bash
         run: |
-          EV="$(node -p "require('electron/package.json').version")"
-          echo "rebuilding middleware native modules for Electron $EV"
-          npx electron-rebuild --version "$EV" --module-dir ../middleware \
-            --only better-sqlite3,argon2,sharp --force
-          # Real ABI check: load a rebuilt native module under Electron's own Node
-          # runtime. If the rebuild targeted the wrong ABI this require() throws.
-          ELECTRON_RUN_AS_NODE=1 ./node_modules/.bin/electron -e \
-            "require('../middleware/node_modules/better-sqlite3'); console.log('native modules load under Electron ABI OK')"
+          EV="$(node -p "require('./desktop/node_modules/electron/package.json').version")"
+          echo "provisioning better-sqlite3 for Electron $EV"
+          ( cd middleware/node_modules/better-sqlite3 \
+            && npx --yes prebuild-install -r electron -t "$EV" --verbose ) \
+          || ( cd desktop \
+            && npx electron-rebuild --version "$EV" --module-dir ../middleware --only better-sqlite3 --force )
+          # Verify it loads under Electron's ABI.
+          ELECTRON_RUN_AS_NODE=1 ./desktop/node_modules/.bin/electron -e \
+            "require('./middleware/node_modules/better-sqlite3'); console.log('better-sqlite3 loads under Electron ABI OK')"
 
       - name: Build desktop (main + preload + renderer)
         working-directory: desktop
