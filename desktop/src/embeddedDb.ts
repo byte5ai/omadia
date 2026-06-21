@@ -1,127 +1,216 @@
-import { PGlite } from '@electric-sql/pglite';
-import { vector } from '@electric-sql/pglite/vector';
-import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
+import { spawn, ChildProcess, execFileSync } from 'node:child_process';
+import { Client } from 'pg';
 import fs from 'node:fs';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import { embeddedDbDir, dataRoot, runtimeIsDev } from './paths';
 import { findFreePort, isPortFree } from './ports';
-import { embeddedDbDir, dataRoot } from './paths';
 import { log } from './log';
 
 /**
- * The embedded Postgres engine.
+ * The embedded database engine: a REAL, bundled PostgreSQL 17 + pgvector.
  *
- * This is the piece that dissolves omadia's "postgres+pgvector is the blocker"
- * constraint for a no-Docker install. PGlite is a full Postgres compiled to WASM
- * that runs in-process and persists to disk; the `vector` extension gives us
- * pgvector. We then expose it over the Postgres *wire protocol* on a loopback
- * port via PGLiteSocketServer, so the kernel connects through its existing
- * node-postgres (`pg`) code path with a normal `DATABASE_URL` — zero kernel
- * changes, and all existing SQL migrations run unmodified.
+ * We previously embedded PGlite (Postgres compiled to WASM) over the wire
+ * protocol via pglite-socket. That worked for builds/boot but the WASM engine
+ * crashed (`RuntimeError: unreachable`) under the kernel's real query load, and
+ * pglite-socket is single-connection. A native Postgres removes both problems:
+ * full SQL compatibility (no WASM traps) and real connection pooling.
  *
- * Caveat (documented): PGlite is single-connection. The socket server serializes
- * client connections, so the kernel's pool effectively runs queries one at a
- * time. Acceptable for a single-tenant local install; the fallback if this ever
- * bottlenecks is a bundled native Postgres.
+ * The Postgres server binaries (initdb/postgres) + pgvector ship with the app
+ * (dev: the @embedded-postgres platform package in node_modules; packaged: staged
+ * to `resourcesPath/omadia-pg` as extraResources, so they're executable on disk
+ * — never trapped inside the asar archive). We drive initdb/postgres directly
+ * rather than via the embedded-postgres wrapper, which is asar-unaware.
+ *
+ * The kernel connects over loopback TCP with trust auth (loopback-only; no LAN
+ * exposure). No GRAPH_POOL_MAX=1 cap needed — real Postgres pools normally.
  */
 
-// NOT a credential: pglite-socket on loopback does not authenticate, so these
-// only populate the DATABASE_URL the kernel's pg client expects — any value is
-// accepted. Security rests entirely on the 127.0.0.1-only bind, not on this.
 const DB_NAME = 'omadia';
 const DB_USER = 'omadia';
-const DB_PASSWORD = 'omadia';
+const exe = (name: string): string => (process.platform === 'win32' ? `${name}.exe` : name);
 
 export interface EmbeddedDb {
   /** DATABASE_URL the kernel should use to reach this engine. */
   databaseUrl: string;
   /** The bound loopback port. */
   port: number;
-  /** Snapshot the on-disk data directory (used before applying an app update). */
+  /** Stop the Postgres server. */
   stop(): Promise<void>;
 }
 
-let current: { db: PGlite; server: PGLiteSocketServer; port: number } | null = null;
+let current: { proc: ChildProcess; port: number } | null = null;
+// Set while we are deliberately shutting the server down, so the `exit` handler
+// (registered at spawn) does not misreport an intentional stop as a crash.
+let stopping = false;
 
-export async function startEmbeddedDb(): Promise<EmbeddedDb> {
-  if (current) {
-    return toHandle(current);
-  }
-
-  const dir = embeddedDbDir();
-  log.info(`[db] opening embedded Postgres at ${dir}`);
-  // The kernel's KG migrations require `vector` (pgvector, embedding similarity)
-  // and `pg_trgm` (turn full-text search); both must be registered on the PGlite
-  // instance for the migrations' `CREATE EXTENSION` to succeed. Load + install
-  // them up front, and translate a bundling/staging miss into a clear error
-  // instead of a cryptic module-resolution or mid-migration failure.
-  const msg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
-
-  // A failure to LOAD the extension module is unambiguously a bundling/staging
-  // problem (the package isn't fully shipped) — say so clearly.
-  // pg_trgm's contrib subpath is ESM-only, so load it dynamically (this file
-  // compiles to CommonJS). `vector` ships a CJS build and imports statically.
-  let pg_trgm: unknown;
-  try {
-    ({ pg_trgm } = await import('@electric-sql/pglite/contrib/pg_trgm'));
-  } catch (err) {
-    throw new Error(
-      'Embedded Postgres extension module (pg_trgm) failed to load — the installer ' +
-        `bundle is likely incomplete (@electric-sql/pglite not fully staged). Underlying: ${msg(err)}`,
-      { cause: err },
-    );
-  }
-
-  // Opening the DB can fail for bundling reasons OR storage reasons (unwritable /
-  // corrupt data dir, disk full) — don't pin the blame on the bundle here.
-  let db: PGlite;
-  try {
-    db = await PGlite.create({ dataDir: dir, extensions: { vector, pg_trgm: pg_trgm as never } });
-    await db.exec('CREATE EXTENSION IF NOT EXISTS vector;');
-    await db.exec('CREATE EXTENSION IF NOT EXISTS pg_trgm;');
-  } catch (err) {
-    throw new Error(
-      `Failed to open the embedded Postgres database at ${dir} — this is usually an ` +
-        `incomplete bundle or an unwritable/corrupt data directory. Underlying: ${msg(err)}`,
-      { cause: err },
-    );
-  }
-  // (pgcrypto is intentionally NOT required: the kernel migrations only used it
-  // for gen_random_uuid(), which is core since Postgres 13.)
-
-  // From here on, any failure must close `db` — otherwise the PGlite instance
-  // leaks and keeps the dataDir lock, so a retry can't reopen the same dir.
-  let server: PGLiteSocketServer;
-  let port: number;
-  try {
-    port = await stableDbPort();
-    server = new PGLiteSocketServer({ db, port, host: '127.0.0.1' });
-    await server.start();
-  } catch (err) {
-    await db.close().catch(() => {});
-    throw err;
-  }
-  log.info(`[db] embedded Postgres listening on 127.0.0.1:${port}`);
-
-  current = { db, server, port };
-  return toHandle(current);
+/** @embedded-postgres package name for this platform (win32 → windows). */
+function pgPlatform(): string {
+  const os = process.platform === 'win32' ? 'windows' : process.platform;
+  return `${os}-${process.arch}`;
 }
 
-function toHandle(c: { db: PGlite; server: PGLiteSocketServer; port: number }): EmbeddedDb {
-  const databaseUrl =
-    `postgresql://${DB_USER}:${DB_PASSWORD}@127.0.0.1:${c.port}/${DB_NAME}`;
+/** The staged Postgres "native" dir (contains bin/, lib/, share/). */
+function pgNativeDir(): string {
+  if (runtimeIsDev) {
+    return path.join(__dirname, '..', 'node_modules', '@embedded-postgres', pgPlatform(), 'native');
+  }
+  return path.join(process.resourcesPath, 'omadia-pg');
+}
+
+function pgBin(name: string): string {
+  return path.join(pgNativeDir(), 'bin', exe(name));
+}
+
+export async function startEmbeddedDb(): Promise<EmbeddedDb> {
+  if (current) return toHandle(current.port);
+
+  const dataDir = embeddedDbDir();
+  const nativeDir = pgNativeDir();
+  if (!fs.existsSync(pgBin('postgres'))) {
+    throw new Error(
+      `Embedded Postgres binary not found at ${pgBin('postgres')} — the installer ` +
+        'bundle is incomplete (Postgres engine not staged).',
+    );
+  }
+
+  // First run: initialise the data cluster. `-A trust` (loopback-only) + locale C
+  // (avoids the "no suitable text search config for UTF-8 locale" initdb warning).
+  if (!fs.existsSync(path.join(dataDir, 'PG_VERSION'))) {
+    log.info('[db] initialising embedded Postgres cluster…');
+    const pwFile = path.join(dataDir, '..', '.pg-init-noop');
+    fs.mkdirSync(path.dirname(pwFile), { recursive: true });
+    execFileSync(
+      pgBin('initdb'),
+      ['-D', dataDir, '-U', DB_USER, '-A', 'trust', '-E', 'UTF8', '--locale=C'],
+      { stdio: 'pipe' },
+    );
+  }
+
+  const port = await stableDbPort();
+
+  // Start the server bound to loopback TCP only (unix sockets disabled — avoids
+  // the ~107-char socket-path limit under long userData paths and is moot on
+  // Windows). PG locates its share/lib relative to the binary.
+  log.info(`[db] starting embedded Postgres on 127.0.0.1:${port}…`);
+  const proc = spawn(
+    pgBin('postgres'),
+    [
+      '-D', dataDir,
+      '-p', String(port),
+      '-c', 'listen_addresses=127.0.0.1',
+      '-c', 'unix_socket_directories=',
+      '-c', 'fsync=on',
+    ],
+    { cwd: nativeDir, stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  proc.stdout?.on('data', (d: Buffer) => log.info(`[postgres] ${d.toString().trimEnd()}`));
+  proc.stderr?.on('data', (d: Buffer) => log.info(`[postgres] ${d.toString().trimEnd()}`));
+  proc.on('exit', (code, signal) => {
+    if (current && current.proc === proc) {
+      if (!stopping) {
+        log.warn(`[db] embedded Postgres exited unexpectedly code=${code} signal=${signal}`);
+      }
+      current = null;
+    }
+  });
+
+  current = { proc, port };
+
+  try {
+    await waitForReady(port);
+    await ensureDatabase(port);
+  } catch (err) {
+    // Deliberate cleanup of a server that failed to come ready — mark it so the
+    // exit handler reports the original failure, not a spurious "exited
+    // unexpectedly". (waitForReady already throws the actionable message.)
+    stopping = true;
+    await stopProc(proc);
+    current = null;
+    stopping = false;
+    throw err;
+  }
+
+  log.info(`[db] embedded Postgres ready on 127.0.0.1:${port}`);
+  return toHandle(port);
+}
+
+/** Poll until the server accepts a TCP connection and answers a query. */
+async function waitForReady(port: number, timeoutMs = 30_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let lastErr = '';
+  while (Date.now() < deadline) {
+    if (!current || current.proc.exitCode !== null) {
+      throw new Error('embedded Postgres exited before becoming ready');
+    }
+    const client = new Client({ host: '127.0.0.1', port, user: DB_USER, database: 'postgres', connectionTimeoutMillis: 3000 });
+    try {
+      await client.connect();
+      await client.query('SELECT 1');
+      await client.end();
+      return;
+    } catch (err) {
+      lastErr = err instanceof Error ? err.message : String(err);
+      await client.end().catch(() => {});
+    }
+    await delay(400);
+  }
+  throw new Error(`embedded Postgres did not become ready in ${timeoutMs}ms (${lastErr})`);
+}
+
+/** Ensure the `omadia` database exists (CREATE DATABASE has no IF NOT EXISTS). */
+async function ensureDatabase(port: number): Promise<void> {
+  const client = new Client({ host: '127.0.0.1', port, user: DB_USER, database: 'postgres' });
+  await client.connect();
+  try {
+    const { rowCount } = await client.query('SELECT 1 FROM pg_database WHERE datname = $1', [DB_NAME]);
+    if (!rowCount) {
+      await client.query(`CREATE DATABASE ${DB_NAME} OWNER ${DB_USER}`);
+      log.info(`[db] created database "${DB_NAME}"`);
+    }
+  } finally {
+    await client.end();
+  }
+}
+
+function toHandle(port: number): EmbeddedDb {
   return {
-    databaseUrl,
-    port: c.port,
+    databaseUrl: `postgresql://${DB_USER}@127.0.0.1:${port}/${DB_NAME}`,
+    port,
     async stop() {
-      log.info('[db] stopping embedded Postgres');
-      try {
-        await c.server.stop();
-      } finally {
-        await c.db.close();
+      if (current) {
+        stopping = true;
+        await stopProc(current.proc);
         current = null;
+        stopping = false;
       }
     },
   };
+}
+
+/** Fast, clean Postgres shutdown: SIGINT → wait → SIGQUIT → SIGKILL. */
+function stopProc(proc: ChildProcess): Promise<void> {
+  if (proc.exitCode !== null || proc.signalCode !== null) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(t1);
+      clearTimeout(t2);
+      resolve();
+    };
+    proc.once('exit', finish);
+    log.info('[db] stopping embedded Postgres (fast shutdown)');
+    proc.kill('SIGINT'); // fast shutdown
+    const t1 = setTimeout(() => {
+      if (proc.exitCode === null) proc.kill('SIGQUIT'); // immediate shutdown
+    }, 4_000);
+    const t2 = setTimeout(() => {
+      if (proc.exitCode === null) proc.kill('SIGKILL');
+      finish();
+    }, 8_000);
+  });
 }
 
 export function isEmbeddedDbRunning(): boolean {
@@ -129,13 +218,9 @@ export function isEmbeddedDbRunning(): boolean {
 }
 
 /**
- * Returns a STABLE loopback port for the embedded DB, persisted across restarts.
- *
- * The kernel records its `database_url` (port included) in its config store on
- * first boot, and that persisted value wins over the env var on later boots. If
- * the embedded DB picked a fresh random port each launch, the kernel would keep
- * dialing the first-ever port and fail with ECONNREFUSED. So we choose a port
- * once, store it, and reuse it — only re-picking if it's genuinely taken.
+ * STABLE loopback port, persisted across restarts. The kernel records its
+ * `database_url` (port included) in its config store on first boot and that
+ * persisted value wins on later boots — so the port must not drift.
  */
 async function stableDbPort(): Promise<number> {
   const file = path.join(dataRoot(), 'db-port.txt');
@@ -146,11 +231,9 @@ async function stableDbPort(): Promise<number> {
   } catch {
     /* no stored port yet */
   }
-  if (stored !== null && (await isPortFree(stored))) {
-    return stored;
-  }
+  if (stored !== null && (await isPortFree(stored))) return stored;
   if (stored !== null) {
-    log.warn(`[db] stored port ${stored} is busy; picking a new one (kernel db_url may need a reset)`);
+    log.warn(`[db] stored port ${stored} busy; picking a new one`);
   }
   const port = await findFreePort('127.0.0.1');
   fs.writeFileSync(file, String(port), 'utf8');

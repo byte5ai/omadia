@@ -20,24 +20,27 @@ directories:
   buildResources: buildResources
 
 # Only the compiled desktop app + its own node_modules go into the app bundle.
+# The ~130MB Postgres engine ships via extraResources (staged to runtime/omadia-pg),
+# so exclude its node_modules copy to avoid duplicating it inside the asar.
 files:
   - dist/**/*
   - package.json
   - "!**/*.map"
+  - "!**/node_modules/@embedded-postgres/**"
+  - "!**/node_modules/embedded-postgres/**"
 
-# The omadia stack lives outside the asar so child processes can execute it and
-# PGlite can memory-map its WASM. These paths are produced by `scripts/stage-runtime.mjs`
-# (run before electron-builder) which copies the built middleware + web-ui here.
+# The omadia stack lives outside the asar so child processes can execute it. These
+# paths are produced by `scripts/stage-runtime.mjs` (run before electron-builder),
+# which copies the built middleware + web-ui + the bundled Postgres engine here.
 extraResources:
   - from: runtime/middleware
     to: omadia/middleware
   - from: runtime/web-ui
     to: omadia/web-ui
+  - from: runtime/omadia-pg
+    to: omadia-pg
 
 asar: true
-# pglite ships a .wasm + .data that must stay on disk, not inside asar.
-asarUnpack:
-  - "**/node_modules/@electric-sql/**"
 
 # Sign the native Mach-O binaries inside the staged middleware (extraResources)
 # BEFORE the outer app is signed — electron-builder does not sign extraResources,

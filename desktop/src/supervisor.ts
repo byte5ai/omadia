@@ -146,11 +146,13 @@ export class Supervisor extends EventEmitter {
       // interfaces), which would expose the local install on the LAN.
       HOST: '127.0.0.1',
       DATABASE_URL: this.db?.databaseUrl ?? '',
-      // The embedded PGlite engine is single-client over the wire protocol; a
-      // multi-connection pool terminates the extra connections. Capping the
-      // kernel's pool at 1 makes node-postgres multiplex every query over one
-      // reused connection — the seam that makes the no-Docker DB work.
-      GRAPH_POOL_MAX: '1',
+      // Signals the kernel that DATABASE_URL points at our embedded Postgres,
+      // whose loopback port can change between launches (collision → new port).
+      // The knowledge-graph plugin then treats the live env DSN as authoritative
+      // over the first-boot value frozen in the vault, so a port change can't
+      // crash-loop boot against a dead port. Cloud/server leave this unset and
+      // keep vault precedence.
+      OMADIA_EMBEDDED_DB: '1',
       VAULT_KEY: vaultKey(),
       PLATFORM_DATA_DIR: platformDataDir(),
       // The browser opens signed diagram URLs against this host base.

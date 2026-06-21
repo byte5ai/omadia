@@ -38,6 +38,26 @@ function findIdentity() {
   }
 }
 
+// Mach-O magic numbers (first 4 bytes). Detecting by magic — not by extension —
+// is required because the bundled Postgres binaries (postgres, initdb, pg_ctl …)
+// are Mach-O EXECUTABLES with no extension, alongside the .node/.dylib modules.
+const MACHO_MAGIC = new Set([0xfeedface, 0xfeedfacf, 0xcafebabe, 0xcefaedfe, 0xcffaedfe, 0xbebafeca]);
+
+function isMachO(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(4);
+    const n = fs.readSync(fd, buf, 0, 4, 0);
+    if (n < 4) return false;
+    return MACHO_MAGIC.has(buf.readUInt32BE(0)) || MACHO_MAGIC.has(buf.readUInt32LE(0));
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
 function collectMachO(dir, found) {
   let entries;
   try {
@@ -59,7 +79,7 @@ function collectMachO(dir, found) {
     }
     if (st.isDirectory()) {
       collectMachO(p, found);
-    } else if (st.isFile() && (name.endsWith('.node') || name.endsWith('.dylib'))) {
+    } else if (st.isFile() && isMachO(p)) {
       try {
         found.add(fs.realpathSync(p));
       } catch {
@@ -91,8 +111,13 @@ exports.default = async function afterPack(context) {
   }
 
   const appName = `${context.packager.appInfo.productFilename}.app`;
-  const omadiaResources = path.join(context.appOutDir, appName, 'Contents', 'Resources', 'omadia');
-  const targets = [...collectMachO(omadiaResources, new Set())];
+  const resources = path.join(context.appOutDir, appName, 'Contents', 'Resources');
+  // Sign Mach-O in BOTH staged extraResources trees: the middleware native
+  // modules (omadia/) and the bundled Postgres engine (omadia-pg/).
+  const found = new Set();
+  collectMachO(path.join(resources, 'omadia'), found);
+  collectMachO(path.join(resources, 'omadia-pg'), found);
+  const targets = [...found];
   if (targets.length === 0) {
     console.log('[afterPack] no nested Mach-O binaries found under extraResources.');
     return;

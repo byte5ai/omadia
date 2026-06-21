@@ -25,13 +25,14 @@
     "pack:all": "npm run build && npm run stage && electron-builder --mac --win --publish never"
   },
   "dependencies": {
-    "@electric-sql/pglite": "0.3.4",
-    "@electric-sql/pglite-socket": "^0.0.9",
-    "electron-updater": "^6.3.9"
+    "electron-updater": "^6.3.9",
+    "embedded-postgres": "^17.10.0-beta.17",
+    "pg": "^8.13.0"
   },
   "devDependencies": {
     "@electron/rebuild": "3.6.1",
     "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.10",
     "electron": "^37.2.0",
     "electron-builder": "^25.1.8",
     "typescript": "^5.7.2"

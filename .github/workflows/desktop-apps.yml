@@ -57,13 +57,13 @@ jobs:
           # Intel runners queue for hours). Intel x64 is a tracked follow-up.
           - os: macos-latest
             args: --mac --arm64
-          - os: windows-latest
-            args: --win
-          # Linux is best-effort for now: AppImage/deb are built + uploaded but
-          # unsigned, and the AppImage bundling of native modules + PGlite WASM
-          # is the least-exercised path (no smoke-boot gate yet).
-          - os: ubuntu-latest
-            args: --linux
+          # Linux + Windows are temporarily off while the bundled-Postgres engine
+          # (replacing the crashing PGlite) is proven end-to-end on macOS. They
+          # return once their pgvector provisioning (apt / Windows build) is wired.
+          # - os: ubuntu-latest
+          #   args: --linux
+          # - os: windows-latest
+          #   args: --win
     runs-on: ${{ matrix.os }}
     # Hard cap so a stuck native build can never run for hours.
     timeout-minutes: 30
@@ -160,7 +160,23 @@ jobs:
         working-directory: desktop
         run: npm run build
 
-      - name: Stage runtime (middleware + web-ui → desktop/runtime)
+      # The bundled embedded Postgres (@embedded-postgres) is a minimal server with
+      # no pgvector. Build/grab pgvector for PG17 and copy vector.* into the engine
+      # so stage-runtime bundles it. PG extensions are ABI-stable within a major
+      # version, so a PG17 vector.dylib from Homebrew loads in the embedded PG17.
+      - name: Provision pgvector into the embedded Postgres (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          brew install pgvector
+          PV="$(brew --prefix pgvector)"
+          NATIVE="desktop/node_modules/@embedded-postgres/darwin-arm64/native"
+          mkdir -p "$NATIVE/lib/postgresql" "$NATIVE/share/postgresql/extension"
+          cp "$PV/lib/postgresql@17/vector.dylib" "$NATIVE/lib/postgresql/vector.dylib"
+          cp "$PV/share/postgresql@17/extension/vector.control" "$NATIVE/share/postgresql/extension/"
+          cp "$PV"/share/postgresql@17/extension/vector--*.sql "$NATIVE/share/postgresql/extension/"
+          echo "✓ pgvector staged into the embedded PG17 engine"
+
+      - name: Stage runtime (middleware + web-ui + Postgres → desktop/runtime)
         working-directory: desktop
         run: npm run stage
 
@@ -262,14 +278,17 @@ jobs:
               echo "FAIL: $app is ad-hoc signed — the Developer ID did not apply" >&2
               exit 1
             fi
-            # Every staged .node/.dylib must be individually signed with the
-            # Developer ID (not ad-hoc) — afterPack.js does this.
+            # Every staged Mach-O (middleware native modules AND the bundled
+            # Postgres binaries/dylibs, which are extensionless) must be signed
+            # with the Developer ID (not ad-hoc) — afterPack.js does this. Detect
+            # Mach-O via `file` so extensionless executables are covered.
             while IFS= read -r bin; do
+              file "$bin" | grep -q 'Mach-O' || continue
               codesign --verify --strict "$bin" || { echo "FAIL: unsigned nested binary $bin" >&2; exit 1; }
               if codesign -dv "$bin" 2>&1 | grep -q 'Signature=adhoc'; then
                 echo "FAIL: nested binary is ad-hoc signed, not Developer ID: $bin" >&2; exit 1
               fi
-            done < <(find "$app/Contents/Resources/omadia" -type f \( -name '*.node' -o -name '*.dylib' \))
+            done < <(find "$app/Contents/Resources/omadia" "$app/Contents/Resources/omadia-pg" -type f)
             xcrun stapler validate "$app"
             spctl --assess --type execute -vvv "$app"
           done

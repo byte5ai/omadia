@@ -84,4 +84,40 @@ if (fs.existsSync(uiPublic)) {
   fs.cpSync(uiPublic, path.join(uiDest, 'public'), { recursive: true });
 }
 console.log('[stage-runtime] staged web-ui');
+
+// --- embedded Postgres engine: stage the platform's PG binaries (+ pgvector,
+// which CI copies into native/ before staging) into runtime/omadia-pg. The kernel
+// connects to a real bundled PostgreSQL 17; embeddedDb.ts resolves this at
+// resourcesPath/omadia-pg in the packaged app. ---
+const pgOs = process.platform === 'win32' ? 'windows' : process.platform;
+const pgPlat = `${pgOs}-${process.arch}`;
+const pgNative = path.join(here, '..', 'node_modules', '@embedded-postgres', pgPlat, 'native');
+requireDir(
+  pgNative,
+  `install embedded-postgres so the @embedded-postgres/${pgPlat} binary is present`,
+);
+fs.cpSync(pgNative, path.join(runtime, 'omadia-pg'), { recursive: true, dereference: true });
+// Sanity: pgvector must have been FULLY provisioned into the engine (CI step) —
+// not just the control file. `CREATE EXTENSION vector` needs all three: the
+// control descriptor, the loadable module, and at least one install SQL script.
+// Checking only vector.control would let a half-copied payload pass staging and
+// fail at runtime when the first migration runs `CREATE EXTENSION vector`.
+const extDir = path.join(runtime, 'omadia-pg', 'share', 'postgresql', 'extension');
+const libDir = path.join(runtime, 'omadia-pg', 'lib', 'postgresql');
+const moduleName = { win32: 'vector.dll', darwin: 'vector.dylib' }[process.platform] ?? 'vector.so';
+const missing = [];
+if (!fs.existsSync(path.join(extDir, 'vector.control'))) missing.push('share/.../vector.control');
+if (!fs.existsSync(path.join(libDir, moduleName))) missing.push(`lib/postgresql/${moduleName}`);
+const hasInstallSql =
+  fs.existsSync(extDir) && fs.readdirSync(extDir).some((f) => /^vector--.*\.sql$/.test(f));
+if (!hasInstallSql) missing.push('share/.../vector--*.sql');
+if (missing.length) {
+  console.error(
+    `[stage-runtime] FATAL: pgvector not fully provisioned — missing: ${missing.join(', ')}. ` +
+      'CI must place the matching vector.control + module + vector--*.sql into the engine before staging.',
+  );
+  process.exit(1);
+}
+console.log(`[stage-runtime] staged Postgres engine (${pgPlat}) + pgvector (control + ${moduleName} + install SQL)`);
+
 console.log('[stage-runtime] done →', runtime);
