@@ -96,7 +96,35 @@ requireDir(
   pgNative,
   `install embedded-postgres so the @embedded-postgres/${pgPlat} binary is present`,
 );
-fs.cpSync(pgNative, path.join(runtime, 'omadia-pg'), { recursive: true, dereference: true });
+const stagedPg = path.join(runtime, 'omadia-pg');
+fs.cpSync(pgNative, stagedPg, { recursive: true, dereference: true });
+
+// fs.cpSync({dereference:true}) does NOT preserve the engine's RELATIVE same-dir
+// symlinks (e.g. libicudata.68.dylib -> libicudata.68.2.dylib). It rewrites them
+// into ABSOLUTE links pointing at THIS build machine's node_modules. They resolve
+// on the build box (so a local build boots — masking the bug) but DANGLE anywhere
+// else: on CI the link targets `/Users/runner/work/...`, so dyld can't find
+// `@loader_path/../lib/libicudata.68.dylib` and initdb/postgres fail to launch.
+// Restore the engine's own relative symlinks verbatim from the source tree so the
+// dylib chain resolves wherever the installer lands. (All source links are
+// relative + in-tree — verified — so copying their readlink value is sufficient.)
+let relinked = 0;
+const restoreLinks = (srcDir) => {
+  for (const ent of fs.readdirSync(srcDir, { withFileTypes: true })) {
+    const src = path.join(srcDir, ent.name);
+    if (ent.isSymbolicLink()) {
+      const dest = path.join(stagedPg, path.relative(pgNative, src));
+      fs.rmSync(dest, { force: true, recursive: true });
+      fs.symlinkSync(fs.readlinkSync(src), dest);
+      relinked++;
+    } else if (ent.isDirectory()) {
+      restoreLinks(src);
+    }
+  }
+};
+restoreLinks(pgNative);
+console.log(`[stage-runtime] restored ${relinked} relative symlink(s) in the Postgres engine`);
+
 // Sanity: pgvector must have been FULLY provisioned into the engine (CI step) —
 // not just the control file. `CREATE EXTENSION vector` needs all three: the
 // control descriptor, the loadable module, and at least one install SQL script.
