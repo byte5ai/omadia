@@ -13,7 +13,7 @@ import { AgentsDashboard } from './_components/AgentsDashboard';
  */
 
 export const metadata: Metadata = {
-  title: 'Agents · Omadia',
+  title: 'Agents · omadia',
 };
 
 export const dynamic = 'force-dynamic';

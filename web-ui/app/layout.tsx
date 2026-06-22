@@ -91,7 +91,7 @@ export default async function RootLayout({
                   >
                     <span className="flex flex-col leading-none">
                       <span className="font-display text-lg text-[color:var(--fg-strong)]">
-                        Omadia
+                        omadia
                       </span>
                       <span className="mt-1 text-[10px] uppercase tracking-[0.14em] text-[color:var(--fg-muted)]">
                         an Agentic OS

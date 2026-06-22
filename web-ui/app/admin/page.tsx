@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 
 export const metadata: Metadata = {
-  title: 'Admin · Omadia',
+  title: 'Admin · omadia',
 };
 
 export default function AdminIndexPage(): React.ReactElement {

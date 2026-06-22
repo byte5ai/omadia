@@ -1,4 +1,4 @@
-# `web-ui/` — Local Next.js dev UI for the Omadia middleware
+# `web-ui/` — Local Next.js dev UI for the omadia middleware
 
 Lightweight Next.js 15 + React 19 app that renders the chat surface, the plugin store, the builder, and the admin panels on top of the middleware's `/api/v1/*` HTTP API. **Not for production exposure** — auth is cookie-based and assumes a trusted single-tenant deployment.
 

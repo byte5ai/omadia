@@ -12,7 +12,7 @@ import { UploadDropzone } from '../_components/store/UploadDropzone';
 import { cn } from '../_lib/cn';
 
 export const metadata: Metadata = {
-  title: 'Plugin-Store · Omadia',
+  title: 'Plugin-Store · omadia',
 };
 
 export const dynamic = 'force-dynamic';
@@ -100,7 +100,7 @@ export default async function StorePage({
     <main className="mx-auto max-w-[1280px] px-6 py-12 lg:px-8 lg:py-16">
       <OnboardingModal installedCount={installedCount} profiles={profiles} />
 
-      {/* Hero — Omadia brand cadence (Days One headline + magenta colon lead) */}
+      {/* Hero — omadia brand cadence (Days One headline + magenta colon lead) */}
       <header className="b5-hero-bg relative -mx-6 rounded-lg border border-[color:var(--divider)] px-6 py-8 lg:-mx-8 lg:px-8 lg:py-12">
         <div className="flex items-baseline gap-3 text-[12px] font-semibold uppercase tracking-[0.24em] text-[color:var(--accent)]">
           <span className="font-mono-num text-[color:var(--fg-subtle)]">
@@ -111,7 +111,7 @@ export default async function StorePage({
         </div>
 
         <h1 className="font-display mt-6 text-[clamp(2.25rem,4.5vw,3.75rem)] leading-[1.05] text-[color:var(--fg-strong)]">
-          Agenten für die Omadia-Plattform.
+          Agenten für die omadia-Plattform.
         </h1>
 
         <p className="mt-6 max-w-2xl text-[18px] font-semibold leading-[1.55] text-[color:var(--fg)]">
@@ -211,7 +211,7 @@ export default async function StorePage({
           </span>
         </span>
         <span className="font-mono-num text-[color:var(--fg-muted)]">
-          Omadia · v1
+          omadia · v1
         </span>
       </footer>
     </main>

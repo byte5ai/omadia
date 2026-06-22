@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 #
-# Omadia Admin UI — Next.js standalone build for Docker / Fly.io.
+# omadia Admin UI — Next.js standalone build for Docker / Fly.io.
 # Multi-stage: install deps → build standalone → copy thin runtime image.
 # Final image ~150 MB (node 22 slim + standalone server + static assets).
 

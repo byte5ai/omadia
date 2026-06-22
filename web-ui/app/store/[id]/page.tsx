@@ -400,7 +400,7 @@ export default async function PluginDetailPage({
           <BookCheck className="size-3.5" aria-hidden />
           Manifest: {isLegacy ? 'Legacy' : 'Schema v1'}
         </span>
-        <span className="font-mono-num">Omadia · v1 · Slice 1.1</span>
+        <span className="font-mono-num">omadia · v1 · Slice 1.1</span>
       </footer>
     </main>
   );

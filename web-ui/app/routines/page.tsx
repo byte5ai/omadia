@@ -5,7 +5,7 @@ import { redirectIfUnauthorized } from '../_lib/authRedirect';
 import { RoutineRow } from './_components/RoutineRow';
 
 export const metadata: Metadata = {
-  title: 'Routines · Omadia',
+  title: 'Routines · omadia',
 };
 
 export const dynamic = 'force-dynamic';
