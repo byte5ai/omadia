@@ -88,3 +88,25 @@ input:focus, select:focus { border-color: var(--accent); }
 .error { color: var(--err); font-size: 14px; }
 .error.hidden { display: none; }
 .provisioning { display: flex; flex-direction: column; }
+
+/* Live install/boot log — verbosity during provisioning + startup. */
+.boot-log {
+  margin: 16px 0 0;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 12px 14px;
+  background: #080a0e;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--muted);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.boot-log:empty { display: none; }
+.boot-log .l-warn { color: #e3b341; }
+.boot-log .l-err { color: var(--err); }
+.boot-log .l-ok { color: var(--ok); }
+#elapsed { opacity: 0.8; }
