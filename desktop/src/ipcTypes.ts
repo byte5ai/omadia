@@ -7,7 +7,14 @@ export const CH = {
   complete: 'omadia:complete',
   exportRecoveryKey: 'omadia:exportRecoveryKey',
   bootProgress: 'omadia:bootProgress',
+  bootLog: 'omadia:bootLog',
 } as const;
+
+/** A single line streamed to the wizard/loading UI during boot. */
+export interface BootLogLine {
+  level: 'INFO' | 'WARN' | 'ERROR';
+  msg: string;
+}
 
 export interface AppState {
   setupComplete: boolean;

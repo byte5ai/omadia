@@ -6,7 +6,7 @@ import { CH } from './ipcTypes';
 import { createTray, setTrayStatus, destroyTray, TrayActions } from './tray';
 import { initUpdater, isUpdateInstalling } from './updater';
 import { isSetupComplete } from './setupState';
-import { log } from './log';
+import { log, onLog } from './log';
 
 // Stable app identity so userData resolves to ".../omadia" in both dev and
 // packaged builds (in dev the Electron CLI would otherwise name it "Electron").
@@ -15,6 +15,11 @@ app.setName('omadia');
 let win: BrowserWindow | null = null;
 let supervisor: Supervisor | null = null;
 let quitting = false;
+// While true, every log line is mirrored to the wizard/loading UI so the user
+// sees what's happening during the (potentially ~90s) install/boot. Turned off
+// once the admin UI takes over so normal operation isn't streamed to a page that
+// no longer listens.
+let streamBootLogs = false;
 
 function rendererPath(file: string): string {
   return path.join(app.getAppPath(), 'dist', 'renderer', file);
@@ -60,14 +65,17 @@ function trayActions(): TrayActions {
       await win.loadFile(rendererPath('loading.html'));
       setTrayStatus(trayActions(), 'starting');
       supervisor.on('progress', forwardProgress);
+      streamBootLogs = true;
       try {
         const uiUrl = await supervisor.restart();
+        streamBootLogs = false;
         await win.loadURL(uiUrl);
         setTrayStatus(trayActions(), 'running');
       } catch (err) {
         log.error(`[main] restart failed: ${String(err)}`);
         setTrayStatus(trayActions(), 'error');
       } finally {
+        streamBootLogs = false;
         supervisor.off('progress', forwardProgress);
       }
     },
@@ -82,12 +90,22 @@ function forwardProgress(p: BootProgress): void {
   if (win && !win.isDestroyed()) win.webContents.send(CH.bootProgress, p);
 }
 
+// Mirror log lines (kernel/web-ui/DB output all funnel through `log`) to the
+// boot UI for install verbosity. Subscribed once; gated by `streamBootLogs`.
+onLog((level, msg) => {
+  if (streamBootLogs && win && !win.isDestroyed()) {
+    win.webContents.send(CH.bootLog, { level, msg });
+  }
+});
+
 async function bootExistingInstall(): Promise<void> {
   if (!win || !supervisor) return;
   await win.loadFile(rendererPath('loading.html'));
   supervisor.on('progress', forwardProgress);
+  streamBootLogs = true;
   try {
     const uiUrl = await supervisor.start();
+    streamBootLogs = false;
     await win.loadURL(uiUrl);
     setTrayStatus(trayActions(), 'running');
   } catch (err) {
@@ -109,6 +127,7 @@ async function bootExistingInstall(): Promise<void> {
       app.quit();
     }
   } finally {
+    streamBootLogs = false;
     supervisor.off('progress', forwardProgress);
   }
 }
@@ -127,9 +146,11 @@ async function onReady(): Promise<void> {
   registerIpc({
     boot: async (forward) => {
       supervisor!.on('progress', forward);
+      streamBootLogs = true;
       try {
         return await supervisor!.start();
       } finally {
+        streamBootLogs = false;
         supervisor!.off('progress', forward);
       }
     },

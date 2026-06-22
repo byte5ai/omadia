@@ -6,6 +6,7 @@ import {
   TestLlmKeyResult,
   WizardConfig,
   CompleteResult,
+  BootLogLine,
 } from './ipcTypes';
 import type { BootProgress } from './supervisor';
 
@@ -25,6 +26,11 @@ const api = {
     const listener = (_e: unknown, p: BootProgress): void => cb(p);
     ipcRenderer.on(CH.bootProgress, listener);
     return () => ipcRenderer.removeListener(CH.bootProgress, listener);
+  },
+  onBootLog: (cb: (line: BootLogLine) => void): (() => void) => {
+    const listener = (_e: unknown, line: BootLogLine): void => cb(line);
+    ipcRenderer.on(CH.bootLog, listener);
+    return () => ipcRenderer.removeListener(CH.bootLog, listener);
   },
 };
 
