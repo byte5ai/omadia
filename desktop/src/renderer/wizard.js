@@ -2,7 +2,11 @@
    `window.omadia` bridge exposed by preload.ts. No Node access here. */
 'use strict';
 
-const omadia = window.omadia;
+// NB: do NOT name this `omadia`. contextBridge exposes `window.omadia` as a
+// NON-CONFIGURABLE global property, and a top-level `const omadia` collides with
+// it → "Identifier 'omadia' has already been declared", which aborts the whole
+// script so no handlers bind and the wizard freezes. Use a distinct name.
+const bridge = window.omadia;
 const LAST_STEP = 4;
 
 const state = {
@@ -17,7 +21,7 @@ const stepSections = () => Array.from(document.querySelectorAll('.step[data-step
 /* If the preload bridge failed to load, `window.omadia` is undefined and every
    action would silently do nothing. Surface it loudly instead of hanging. */
 function bridgeOk() {
-  if (omadia) return true;
+  if (bridge) return true;
   const el = $('#testResult') || document.body;
   el.textContent =
     'Internal error: the app bridge did not load. Please reinstall or report this (tray → Open Logs).';
@@ -119,20 +123,20 @@ async function provision() {
     if (elapsedEl) elapsedEl.textContent = `(${Math.round((Date.now() - started) / 1000)}s)`;
   }, 1000);
 
-  const unsubProgress = omadia.onBootProgress((p) => {
+  const unsubProgress = bridge.onBootProgress((p) => {
     const pct = PHASE_PCT[p.phase] ?? 10;
     $('#barFill').style.width = pct + '%';
     $('#progressMsg').textContent = p.message + (p.detail ? ' — ' + p.detail : '');
     if (p.phase === 'error') $('#barFill').style.background = 'var(--err)';
   });
   // Live, granular log (kernel migrations, plugin activation, DB readiness …).
-  const unsubLog = omadia.onBootLog
-    ? omadia.onBootLog((line) => appendBootLog(line.level, line.msg))
+  const unsubLog = bridge.onBootLog
+    ? bridge.onBootLog((line) => appendBootLog(line.level, line.msg))
     : () => {};
 
   let res;
   try {
-    res = await omadia.complete(collectConfig());
+    res = await bridge.complete(collectConfig());
   } catch (err) {
     res = { ok: false, error: (err && err.message) || 'Setup crashed unexpectedly.' };
   } finally {
@@ -180,7 +184,7 @@ $('#testKey').addEventListener('click', async () => {
   btn.disabled = true;
   flashTest('Testing…', true);
   try {
-    const res = await omadia.testLlmKey({ provider, apiKey });
+    const res = await bridge.testLlmKey({ provider, apiKey });
     state.keyVerified = res.ok;
     flashTest(res.ok ? 'Key works.' : res.error || 'Key check failed.', res.ok);
   } catch (err) {
@@ -195,7 +199,7 @@ $('#testKey').addEventListener('click', async () => {
 $('#chooseDir').addEventListener('click', async () => {
   if (!bridgeOk()) return;
   try {
-    const dir = await omadia.chooseDataDir();
+    const dir = await bridge.chooseDataDir();
     if (dir) {
       state.dataDir = dir;
       $('#dataDir').value = dir;
@@ -210,7 +214,7 @@ $('#chooseDir').addEventListener('click', async () => {
 $('#revealKey').addEventListener('click', async () => {
   if (!bridgeOk()) return;
   try {
-    const key = await omadia.exportRecoveryKey();
+    const key = await bridge.exportRecoveryKey();
     $('#recoveryKey').textContent = key;
     $('#revealKey').textContent = 'Copy';
     $('#revealKey').onclick = async () => {
@@ -224,4 +228,4 @@ $('#revealKey').addEventListener('click', async () => {
 
 goto(0);
 // Fail loud, not silent, if the preload bridge is missing.
-if (!omadia) bridgeOk();
+if (!bridge) bridgeOk();
