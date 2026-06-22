@@ -3,8 +3,8 @@
 # Release that triggered the run.
 #
 # This is the no-Docker, one-click installer in `desktop/`: an Electron shell
-# that bundles + supervises the existing middleware kernel and web-ui plus an
-# embedded Postgres (PGlite). See desktop/README.md and
+# that bundles + supervises the existing middleware kernel and web-ui plus a
+# bundled native PostgreSQL 17 + pgvector. See desktop/README.md and
 # docs/plans/native-installer-plan.md.
 #
 # Runs separately from release.yml (the GHCR image pipeline) so a desktop build
@@ -30,6 +30,15 @@ on:
         description: 'Release tag to build + attach to (e.g. v0.3.0)'
         required: true
         type: string
+  # Called in-run from auto-release.yml: a GITHUB_TOKEN-created release does NOT
+  # fire the `release` event, so the apps must be built from within the same run
+  # that cut the release (same pattern as publish-images.yml).
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Release tag to build + attach to'
+        required: true
+        type: string
 
 concurrency:
   group: desktop-apps-${{ github.event.release.tag_name || inputs.tag }}
@@ -43,22 +52,28 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # macOS is Apple Silicon (arm64) only for v1 — see the rationale in
+          # desktop/electron-builder.yml (extraResources can't be arch-split, and
+          # Intel runners queue for hours). Intel x64 is a tracked follow-up.
           - os: macos-latest
-            args: --mac
-          - os: windows-latest
-            args: --win
-          # Linux is best-effort for now: AppImage/deb are built + uploaded but
-          # unsigned, and the AppImage bundling of native modules + PGlite WASM
-          # is the least-exercised path (no smoke-boot gate yet).
+            args: --mac --arm64
+          # Linux + Windows each provision a PG17 pgvector for their embedded
+          # engine below (apt pgdg / MSVC nmake build) before staging. x64 only.
           - os: ubuntu-latest
             args: --linux
+          - os: windows-latest
+            args: --win
     runs-on: ${{ matrix.os }}
+    # Hard cap so a stuck native build can never run for hours.
+    timeout-minutes: 30
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
       # Must match Supervisor.KERNEL_PORT in desktop/src/supervisor.ts — the
       # web-ui bakes this kernel URL into its routes-manifest at BUILD time, so
       # it cannot be a per-launch random port.
       KERNEL_URL: http://127.0.0.1:8769
+      # node-gyp's VS auto-detection is unreliable on windows-latest; pin VS2022.
+      GYP_MSVS_VERSION: '2022'
       # macOS signing (hoisted so they're addressable in step-level `if:`).
       APPLE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64_HIGH5 }}
       APPLE_P12_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD_HIGH5 }}
@@ -82,6 +97,21 @@ jobs:
         with:
           node-version: 22
 
+      # node-gyp's bundled gyp imports Python's `distutils`, removed in Python
+      # 3.12. The macOS/Windows runners default to 3.12+ (Ubuntu still ships
+      # 3.11), so pin 3.11 everywhere to keep native rebuilds working.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # @electron/rebuild pulls @electron/node-gyp as a git+ssh GitHub dependency.
+      # Runners have no SSH key, so rewrite git+ssh GitHub URLs to https (public
+      # repo, no auth) before any npm install/ci, or those installs fail.
+      - name: Allow git-https for git dependencies
+        run: |
+          git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+
       # --- build the omadia runtime the installer bundles -------------------
       - name: Build middleware kernel
         working-directory: middleware
@@ -101,37 +131,110 @@ jobs:
         working-directory: desktop
         run: npm ci
 
-      # better-sqlite3/argon2/sharp ship in middleware/node_modules built for the
-      # system Node ABI; the kernel runs under Electron's Node (ELECTRON_RUN_AS_NODE)
-      # so they must be rebuilt against Electron's ABI before staging. electron-builder
-      # rebuilds the APP's own deps but NOT extraResources, so we do it here.
-      - name: Rebuild middleware native modules for Electron
-        working-directory: desktop
-        # Pin the Electron version explicitly: electron-rebuild's auto-detection
-        # is unreliable across the --module-dir boundary (electron lives in
-        # desktop/, the modules in middleware/), and a wrong-ABI rebuild fails
-        # silently until the kernel won't boot.
+      # Make the middleware's native modules load under Electron's Node (the kernel
+      # runs via ELECTRON_RUN_AS_NODE). argon2 + sharp are N-API → ABI-stable across
+      # node/electron, so their shipped binaries already work, no rebuild needed.
+      # Only better-sqlite3 (non-N-API) needs an Electron-ABI build — and it
+      # publishes Electron PREBUILDS, so fetch one with prebuild-install (no
+      # node-gyp / Visual Studio). Fall back to a source rebuild if no prebuild
+      # exists for this Electron version on this platform.
+      - name: Provision better-sqlite3 for Electron
+        shell: bash
         run: |
-          EV="$(node -p "require('electron/package.json').version")"
-          echo "rebuilding middleware native modules for Electron $EV"
-          npx electron-rebuild --version "$EV" --module-dir ../middleware \
-            --only better-sqlite3,argon2,sharp --force
-          # Real ABI check: load a rebuilt native module under Electron's own Node
-          # runtime. If the rebuild targeted the wrong ABI this require() throws.
-          ELECTRON_RUN_AS_NODE=1 ./node_modules/.bin/electron -e \
-            "require('../middleware/node_modules/better-sqlite3'); console.log('native modules load under Electron ABI OK')"
+          EV="$(node -p "require('./desktop/node_modules/electron/package.json').version")"
+          echo "provisioning better-sqlite3 for Electron $EV"
+          ( cd middleware/node_modules/better-sqlite3 \
+            && npx --yes prebuild-install -r electron -t "$EV" --verbose ) \
+          || ( cd desktop \
+            && npx electron-rebuild --version "$EV" --module-dir ../middleware --only better-sqlite3 --force )
+          # Verify ALL three native modules actually load under Electron's runtime
+          # — not just the rebuilt better-sqlite3, but also argon2 + sharp, whose
+          # (un-rebuilt) prebuilds we ASSUME are N-API/ABI-stable. If that
+          # assumption is wrong, this fails here instead of crashing the kernel at
+          # boot in the shipped app.
+          ELECTRON_RUN_AS_NODE=1 ./desktop/node_modules/.bin/electron -e \
+            "require('./middleware/node_modules/better-sqlite3'); require('./middleware/node_modules/argon2'); require('./middleware/node_modules/sharp'); console.log('better-sqlite3 + argon2 + sharp load under Electron ABI OK')"
 
       - name: Build desktop (main + preload + renderer)
         working-directory: desktop
         run: npm run build
 
-      - name: Stage runtime (middleware + web-ui → desktop/runtime)
+      # The bundled embedded Postgres (@embedded-postgres) is a minimal server with
+      # no pgvector. Build/grab pgvector for PG17 and copy vector.* into the engine
+      # so stage-runtime bundles it. PG extensions are ABI-stable within a major
+      # version, so a PG17 vector.dylib from Homebrew loads in the embedded PG17.
+      - name: Provision pgvector into the embedded Postgres (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          brew install pgvector
+          PV="$(brew --prefix pgvector)"
+          NATIVE="desktop/node_modules/@embedded-postgres/darwin-arm64/native"
+          mkdir -p "$NATIVE/lib/postgresql" "$NATIVE/share/postgresql/extension"
+          cp "$PV/lib/postgresql@17/vector.dylib" "$NATIVE/lib/postgresql/vector.dylib"
+          cp "$PV/share/postgresql@17/extension/vector.control" "$NATIVE/share/postgresql/extension/"
+          cp "$PV"/share/postgresql@17/extension/vector--*.sql "$NATIVE/share/postgresql/extension/"
+          echo "✓ pgvector staged into the embedded PG17 engine (darwin-arm64)"
+
+      # Linux: the PostgreSQL APT repo (pgdg) ships a prebuilt postgresql-17-pgvector.
+      # A PG17 vector.so loads in the embedded PG17 (extensions are ABI-stable within
+      # a major). Unix layout: module in lib/postgresql/, control+SQL in
+      # share/postgresql/extension/ (same as macOS).
+      - name: Provision pgvector into the embedded Postgres (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y postgresql-17-pgvector
+          NATIVE="desktop/node_modules/@embedded-postgres/linux-x64/native"
+          mkdir -p "$NATIVE/lib/postgresql" "$NATIVE/share/postgresql/extension"
+          cp /usr/lib/postgresql/17/lib/vector.so "$NATIVE/lib/postgresql/vector.so"
+          cp /usr/share/postgresql/17/extension/vector.control "$NATIVE/share/postgresql/extension/"
+          cp /usr/share/postgresql/17/extension/vector--*.sql "$NATIVE/share/postgresql/extension/"
+          echo "✓ pgvector staged into the embedded PG17 engine (linux-x64)"
+
+      # Windows: no prebuilt pgvector exists, so build vector.dll from source with
+      # MSVC against a full PG17 (Chocolatey ships headers + lib; the embedded
+      # engine is a minimal dist with neither). A PG17 build loads in the embedded
+      # PG17. Windows layout is FLAT: module in lib/, control+SQL in share/extension/.
+      - name: Set up MSVC (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Provision pgvector into the embedded Postgres (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          choco install postgresql17 --params "/Password:postgres" -y --no-progress
+          $pgroot = "C:\Program Files\PostgreSQL\17"
+          if (-not (Test-Path $pgroot)) {
+            $pgroot = (Get-ChildItem 'C:\Program Files\PostgreSQL' -Directory |
+              Sort-Object Name -Descending | Select-Object -First 1).FullName
+          }
+          $env:PGROOT = $pgroot
+          Write-Host "PGROOT=$pgroot"
+          git clone --depth 1 --branch v0.8.3 https://github.com/pgvector/pgvector.git "$env:RUNNER_TEMP\pgvector"
+          Push-Location "$env:RUNNER_TEMP\pgvector"
+          nmake /NOLOGO /F Makefile.win
+          if ($LASTEXITCODE -ne 0) { throw "pgvector nmake build failed ($LASTEXITCODE)" }
+          Pop-Location
+          $native = "desktop\node_modules\@embedded-postgres\windows-x64\native"
+          New-Item -ItemType Directory -Force -Path "$native\share\extension" | Out-Null
+          Copy-Item "$env:RUNNER_TEMP\pgvector\vector.dll" "$native\lib\vector.dll" -Force
+          Copy-Item "$env:RUNNER_TEMP\pgvector\vector.control" "$native\share\extension\" -Force
+          Copy-Item "$env:RUNNER_TEMP\pgvector\sql\vector--*.sql" "$native\share\extension\" -Force
+          Write-Host "✓ pgvector built + staged into the embedded PG17 engine (windows-x64)"
+
+      - name: Stage runtime (middleware + web-ui + Postgres → desktop/runtime)
         working-directory: desktop
         run: npm run stage
 
       # --- macOS signing + notarization (proven for omadia-ui) --------------
       - name: Prepare Apple signing (optional — needs _HIGH5 secrets)
-        if: ${{ matrix.os == 'macos-latest' && env.APPLE_P12_BASE64 != '' }}
+        if: ${{ startsWith(matrix.os, 'macos') && env.APPLE_P12_BASE64 != '' }}
         run: |
           printf '%s' "$APPLE_P12_BASE64" | base64 -d > "$RUNNER_TEMP/developer-id.p12"
           printf '%s' "$APPLE_ASC_KEY_P8_BASE64" | base64 -d > "$RUNNER_TEMP/asc-key.p8"
@@ -150,8 +253,17 @@ jobs:
           security import "$RUNNER_TEMP/developer-id.p12" -k "$KEYCHAIN" \
             -P "$APPLE_P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCPASS" "$KEYCHAIN" >/dev/null
-          # Prepend our keychain to the user search list (keep the existing ones).
-          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/[\"[:space:]]//g')
+          # Prepend our keychain to the user search list, KEEPING the existing ones.
+          # Build the list as an array (bash 3.2 on macOS runners — no mapfile) so
+          # multiple existing keychains aren't mashed into one path by whitespace
+          # stripping. Only quotes + leading/trailing space are trimmed per entry.
+          EXISTING=()
+          while IFS= read -r kc; do
+            kc="${kc//\"/}"
+            kc="$(printf '%s' "$kc" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+            [ -n "$kc" ] && EXISTING+=("$kc")
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$KEYCHAIN" "${EXISTING[@]}"
 
           # The exact Developer ID Application identity now present in the keychain.
           IDENT=$(security find-identity -v -p codesigning "$KEYCHAIN" \
@@ -186,7 +298,7 @@ jobs:
       # The .app is notarized + stapled by electron-builder above; the DMG needs
       # its own ticket so `stapler validate` passes on the disk image itself.
       - name: Notarize + staple the DMGs
-        if: ${{ matrix.os == 'macos-latest' && env.APPLE_P12_BASE64 != '' }}
+        if: ${{ startsWith(matrix.os, 'macos') && env.APPLE_P12_BASE64 != '' }}
         working-directory: desktop
         run: |
           for dmg in release/*.dmg; do
@@ -199,11 +311,17 @@ jobs:
           done
 
       - name: Verify macOS signatures (acceptance gate)
-        if: ${{ matrix.os == 'macos-latest' && env.APPLE_P12_BASE64 != '' }}
+        if: ${{ startsWith(matrix.os, 'macos') && env.APPLE_P12_BASE64 != '' }}
         working-directory: desktop
         run: |
           set -e
-          for app in release/mac*/*.app; do
+          shopt -s nullglob
+          apps=(release/mac*/*.app)
+          if [ ${#apps[@]} -eq 0 ]; then
+            echo "FAIL: no .app produced under release/mac*/ — nothing to verify" >&2
+            exit 1
+          fi
+          for app in "${apps[@]}"; do
             # `--deep` is deprecated for verification and does NOT descend into
             # extraResources — verify the app, then EACH nested native binary
             # explicitly, then the real Gatekeeper verdict.
@@ -212,14 +330,17 @@ jobs:
               echo "FAIL: $app is ad-hoc signed — the Developer ID did not apply" >&2
               exit 1
             fi
-            # Every staged .node/.dylib must be individually signed with the
-            # Developer ID (not ad-hoc) — afterPack.js does this.
+            # Every staged Mach-O (middleware native modules AND the bundled
+            # Postgres binaries/dylibs, which are extensionless) must be signed
+            # with the Developer ID (not ad-hoc) — afterPack.js does this. Detect
+            # Mach-O via `file` so extensionless executables are covered.
             while IFS= read -r bin; do
+              file "$bin" | grep -q 'Mach-O' || continue
               codesign --verify --strict "$bin" || { echo "FAIL: unsigned nested binary $bin" >&2; exit 1; }
               if codesign -dv "$bin" 2>&1 | grep -q 'Signature=adhoc'; then
                 echo "FAIL: nested binary is ad-hoc signed, not Developer ID: $bin" >&2; exit 1
               fi
-            done < <(find "$app/Contents/Resources/omadia" -type f \( -name '*.node' -o -name '*.dylib' \))
+            done < <(find "$app/Contents/Resources/omadia" "$app/Contents/Resources/omadia-pg" -type f)
             xcrun stapler validate "$app"
             spctl --assess --type execute -vvv "$app"
           done
@@ -229,7 +350,31 @@ jobs:
 
       - name: Tear down signing material
         if: ${{ always() }}
-        run: rm -f "$RUNNER_TEMP/developer-id.p12" "$RUNNER_TEMP/asc-key.p8" "$RUNNER_TEMP/win-cert.p12" || true
+        run: |
+          rm -f "$RUNNER_TEMP/developer-id.p12" "$RUNNER_TEMP/asc-key.p8" "$RUNNER_TEMP/win-cert.p12" || true
+          # Also drop our temp signing keychain (and let macOS fall back to the
+          # default search list) so nothing signing-related lingers.
+          if [ -n "${MAC_SIGN_KEYCHAIN:-}" ]; then
+            security delete-keychain "$MAC_SIGN_KEYCHAIN" 2>/dev/null || true
+          fi
+
+      # Downloadable from the run itself (independent of the Release upload), and
+      # placed AFTER notarize/staple/verify so the artifacts are the final,
+      # stapled installers — not a pre-notarization copy.
+      - name: Upload installers as run artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: omadia-installers-${{ matrix.os }}
+          if-no-files-found: ignore
+          path: |
+            desktop/release/*.dmg
+            desktop/release/*.zip
+            desktop/release/*.exe
+            desktop/release/*.AppImage
+            desktop/release/*.deb
+            desktop/release/*.blockmap
+            desktop/release/latest*.yml
 
       - name: Upload installers to the release
         env:
@@ -237,15 +382,15 @@ jobs:
         working-directory: desktop
         run: |
           shopt -s nullglob
-          # On workflow_dispatch the tag may not correspond to an existing
-          # release — fail with a clear message rather than a cryptic gh error.
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            echo "no GitHub Release exists for tag '$TAG' — create the release first" >&2
-            exit 1
-          fi
           files=(release/*.dmg release/*.zip release/*.exe release/*.AppImage release/*.deb release/*.blockmap release/latest*.yml)
           if [ ${#files[@]} -eq 0 ]; then
             echo "no installer artifacts found in desktop/release/" >&2
             exit 1
+          fi
+          # If TAG has no matching release (e.g. a build-validation dispatch on a
+          # branch name), this is a build-only run — skip upload, don't fail.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "no GitHub Release for '$TAG' — build validated, skipping upload."
+            exit 0
           fi
           gh release upload "$TAG" "${files[@]}" --clobber

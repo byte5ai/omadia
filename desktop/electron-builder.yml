@@ -17,45 +17,56 @@ copyright: Copyright © 2026 byte5 GmbH
 
 directories:
   output: release
-  buildResources: build
+  buildResources: buildResources
 
 # Only the compiled desktop app + its own node_modules go into the app bundle.
+# The ~130MB Postgres engine ships via extraResources (staged to runtime/omadia-pg),
+# so exclude its node_modules copy to avoid duplicating it inside the asar.
 files:
   - dist/**/*
   - package.json
   - "!**/*.map"
+  - "!**/node_modules/@embedded-postgres/**"
+  - "!**/node_modules/embedded-postgres/**"
 
-# The omadia stack lives outside the asar so child processes can execute it and
-# PGlite can memory-map its WASM. These paths are produced by `scripts/stage-runtime.mjs`
-# (run before electron-builder) which copies the built middleware + web-ui here.
+# The omadia stack lives outside the asar so child processes can execute it. These
+# paths are produced by `scripts/stage-runtime.mjs` (run before electron-builder),
+# which copies the built middleware + web-ui + the bundled Postgres engine here.
 extraResources:
   - from: runtime/middleware
     to: omadia/middleware
   - from: runtime/web-ui
     to: omadia/web-ui
+  - from: runtime/omadia-pg
+    to: omadia-pg
 
 asar: true
-# pglite ships a .wasm + .data that must stay on disk, not inside asar.
-asarUnpack:
-  - "**/node_modules/@electric-sql/**"
 
 # Sign the native Mach-O binaries inside the staged middleware (extraResources)
 # BEFORE the outer app is signed — electron-builder does not sign extraResources,
 # and notarization rejects unsigned nested Mach-O. Fail-soft when unsigned.
-afterPack: build/afterPack.js
+afterPack: buildResources/afterPack.js
 
 mac:
   category: public.app-category.developer-tools
   hardenedRuntime: true
   gatekeeperAssess: false
-  entitlements: build/entitlements.mac.plist
-  entitlementsInherit: build/entitlements.mac.plist
+  entitlements: buildResources/entitlements.mac.plist
+  entitlementsInherit: buildResources/entitlements.mac.plist
+  # Apple Silicon only for v1. The native modules ship as extraResources (copied
+  # verbatim, not arch-split), and GitHub's Intel (macos-13) runners queue for
+  # hours — impractical for a release. An x64 DMG built on an arm64 runner would
+  # contain arm64 native modules and crash on Intel. Intel support is a follow-up
+  # (cross-compile x64 prebuilds on the arm64 runner into a second staged tree).
   target:
     - target: dmg
-      arch: [arm64, x64]
+      arch: [arm64]
     - target: zip          # required by electron-updater on macOS
-      arch: [arm64, x64]
-  notarize: false          # flip to true in CI once APPLE_* secrets are set
+      arch: [arm64]
+  # Notarization is left unset here so it's driven entirely by CI: the workflow
+  # adds `--config.mac.notarize=true` only when the Apple secrets are present
+  # (and electron-builder skips it without notary credentials). A hard-coded
+  # `notarize: false` here would fight that CLI override.
 
 dmg:
   title: ${productName} ${version}
