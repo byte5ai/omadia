@@ -119,7 +119,9 @@
           <div class="progress">
             <div class="bar"><div id="barFill" class="bar-fill"></div></div>
             <p id="progressMsg" class="progress-msg">Starting…</p>
+            <p class="hint" id="progressHint">First start runs database migrations — this can take up to a minute. <span id="elapsed"></span></p>
           </div>
+          <pre id="bootLog" class="boot-log" aria-label="installation log"></pre>
           <p id="provisionError" class="error hidden"></p>
         </section>
 

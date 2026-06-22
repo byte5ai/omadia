@@ -14,6 +14,31 @@ const state = {
 const $ = (sel) => document.querySelector(sel);
 const stepSections = () => Array.from(document.querySelectorAll('.step[data-step]'));
 
+/* If the preload bridge failed to load, `window.omadia` is undefined and every
+   action would silently do nothing. Surface it loudly instead of hanging. */
+function bridgeOk() {
+  if (omadia) return true;
+  const el = $('#testResult') || document.body;
+  el.textContent =
+    'Internal error: the app bridge did not load. Please reinstall or report this (tray → Open Logs).';
+  if (el.className !== undefined) el.className = 'test-result err';
+  return false;
+}
+
+/* Append a line to the live install log (verbosity during provisioning). */
+function appendBootLog(level, msg) {
+  const el = $('#bootLog');
+  if (!el) return;
+  const line = document.createElement('div');
+  const cls = level === 'ERROR' ? 'l-err' : level === 'WARN' ? 'l-warn' : '';
+  if (cls) line.className = cls;
+  line.textContent = msg;
+  el.appendChild(line);
+  // Cap to keep the DOM light on a chatty boot.
+  while (el.childElementCount > 400) el.removeChild(el.firstChild);
+  el.scrollTop = el.scrollHeight;
+}
+
 function show(stepKey) {
   stepSections().forEach((el) => {
     el.classList.toggle('hidden', el.dataset.step !== String(stepKey));
@@ -80,24 +105,47 @@ const PHASE_PCT = {
 };
 
 async function provision() {
+  if (!bridgeOk()) return;
   show('provision');
   document.querySelector('.nav').style.display = 'none';
   document.querySelectorAll('#steps li').forEach((li) => li.classList.add('done'));
+  $('#provisionError').classList.add('hidden');
+  $('#bootLog').textContent = '';
 
-  const unsub = omadia.onBootProgress((p) => {
+  // Elapsed timer so a long first-boot (migrations) clearly looks alive.
+  const started = Date.now();
+  const elapsedEl = $('#elapsed');
+  const ticker = setInterval(() => {
+    if (elapsedEl) elapsedEl.textContent = `(${Math.round((Date.now() - started) / 1000)}s)`;
+  }, 1000);
+
+  const unsubProgress = omadia.onBootProgress((p) => {
     const pct = PHASE_PCT[p.phase] ?? 10;
     $('#barFill').style.width = pct + '%';
     $('#progressMsg').textContent = p.message + (p.detail ? ' — ' + p.detail : '');
     if (p.phase === 'error') $('#barFill').style.background = 'var(--err)';
   });
+  // Live, granular log (kernel migrations, plugin activation, DB readiness …).
+  const unsubLog = omadia.onBootLog
+    ? omadia.onBootLog((line) => appendBootLog(line.level, line.msg))
+    : () => {};
 
-  const res = await omadia.complete(collectConfig());
-  unsub();
+  let res;
+  try {
+    res = await omadia.complete(collectConfig());
+  } catch (err) {
+    res = { ok: false, error: (err && err.message) || 'Setup crashed unexpectedly.' };
+  } finally {
+    clearInterval(ticker);
+    unsubProgress();
+    unsubLog();
+  }
 
   if (!res.ok) {
     const err = $('#provisionError');
     err.textContent = res.error || 'Setup failed. Check the logs (tray → Open Logs).';
     err.classList.remove('hidden');
+    appendBootLog('ERROR', res.error || 'Setup failed.');
     // Allow another attempt.
     document.querySelector('.nav').style.display = 'flex';
     $('#next').textContent = 'Retry';
@@ -121,35 +169,59 @@ $('#back').addEventListener('click', () => {
 });
 
 $('#testKey').addEventListener('click', async () => {
+  if (!bridgeOk()) return;
   const provider = $('#provider').value;
   const apiKey = $('#apiKey').value.trim();
   if (apiKey.length < 8) {
     flashTest('Key looks too short.', false);
     return;
   }
+  const btn = $('#testKey');
+  btn.disabled = true;
   flashTest('Testing…', true);
-  const res = await omadia.testLlmKey({ provider, apiKey });
-  state.keyVerified = res.ok;
-  flashTest(res.ok ? 'Key works.' : res.error || 'Key check failed.', res.ok);
+  try {
+    const res = await omadia.testLlmKey({ provider, apiKey });
+    state.keyVerified = res.ok;
+    flashTest(res.ok ? 'Key works.' : res.error || 'Key check failed.', res.ok);
+  } catch (err) {
+    // Never leave the user stuck on "Testing…" — surface the failure.
+    state.keyVerified = false;
+    flashTest((err && err.message) || 'Key check failed (internal error).', false);
+  } finally {
+    btn.disabled = false;
+  }
 });
 
 $('#chooseDir').addEventListener('click', async () => {
-  const dir = await omadia.chooseDataDir();
-  if (dir) {
-    state.dataDir = dir;
-    $('#dataDir').value = dir;
-    $('#dataDirHint').textContent = 'omadia will store everything in this folder.';
+  if (!bridgeOk()) return;
+  try {
+    const dir = await omadia.chooseDataDir();
+    if (dir) {
+      state.dataDir = dir;
+      $('#dataDir').value = dir;
+      $('#dataDirHint').textContent = 'omadia will store everything in this folder.';
+    }
+  } catch (err) {
+    $('#dataDirHint').textContent =
+      'Could not open the folder picker: ' + ((err && err.message) || 'internal error') + '. The default folder will be used.';
   }
 });
 
 $('#revealKey').addEventListener('click', async () => {
-  const key = await omadia.exportRecoveryKey();
-  $('#recoveryKey').textContent = key;
-  $('#revealKey').textContent = 'Copy';
-  $('#revealKey').onclick = async () => {
-    await navigator.clipboard.writeText(key);
-    $('#revealKey').textContent = 'Copied';
-  };
+  if (!bridgeOk()) return;
+  try {
+    const key = await omadia.exportRecoveryKey();
+    $('#recoveryKey').textContent = key;
+    $('#revealKey').textContent = 'Copy';
+    $('#revealKey').onclick = async () => {
+      await navigator.clipboard.writeText(key);
+      $('#revealKey').textContent = 'Copied';
+    };
+  } catch (err) {
+    $('#recoveryKey').textContent = 'unavailable — ' + ((err && err.message) || 'internal error');
+  }
 });
 
 goto(0);
+// Fail loud, not silent, if the preload bridge is missing.
+if (!omadia) bridgeOk();

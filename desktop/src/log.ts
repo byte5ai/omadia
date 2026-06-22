@@ -10,6 +10,19 @@ import path from 'node:path';
 
 let stream: fs.WriteStream | null = null;
 
+// Optional taps so the main process can mirror log lines to the wizard/loading
+// UI during boot (install verbosity). Kept out of the file/console path so a
+// throwing listener can never break logging.
+export type LogLevel = 'INFO' | 'WARN' | 'ERROR';
+type LogListener = (level: LogLevel, msg: string) => void;
+const listeners = new Set<LogListener>();
+
+/** Subscribe to every log line. Returns an unsubscribe. */
+export function onLog(cb: LogListener): () => void {
+  listeners.add(cb);
+  return () => listeners.delete(cb);
+}
+
 function logFilePath(): string {
   const dir = path.join(app.getPath('userData'), 'logs');
   fs.mkdirSync(dir, { recursive: true });
@@ -31,6 +44,13 @@ function write(level: string, msg: string): void {
     stream.write(line);
   } catch {
     /* never let logging crash the app */
+  }
+  for (const l of listeners) {
+    try {
+      l(level as LogLevel, msg);
+    } catch {
+      /* a bad tap must never break logging */
+    }
   }
 }
 
