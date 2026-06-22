@@ -99,30 +99,30 @@ requireDir(
 const stagedPg = path.join(runtime, 'omadia-pg');
 fs.cpSync(pgNative, stagedPg, { recursive: true, dereference: true });
 
-// fs.cpSync({dereference:true}) does NOT preserve the engine's RELATIVE same-dir
-// symlinks (e.g. libicudata.68.dylib -> libicudata.68.2.dylib). It rewrites them
-// into ABSOLUTE links pointing at THIS build machine's node_modules. They resolve
-// on the build box (so a local build boots — masking the bug) but DANGLE anywhere
-// else: on CI the link targets `/Users/runner/work/...`, so dyld can't find
-// `@loader_path/../lib/libicudata.68.dylib` and initdb/postgres fail to launch.
-// Restore the engine's own relative symlinks verbatim from the source tree so the
-// dylib chain resolves wherever the installer lands. (All source links are
-// relative + in-tree — verified — so copying their readlink value is sufficient.)
+// The @embedded-postgres tarball ships ZERO real symlinks — it records the
+// engine's intra-lib links (e.g. libicudata.68.dylib -> libicudata.68.2.dylib) in
+// pg-symlinks.json and its postinstall materialises them. cpSync({dereference:true})
+// then turns whatever real symlinks exist into ABSOLUTE links pointing at THIS
+// build machine's node_modules: they resolve on the build box (so a local build
+// boots — masking the bug) but DANGLE anywhere else (CI: `/Users/runner/work/...`),
+// so dyld/ld.so can't find `@loader_path/../lib/libicudata.68.dylib` and
+// initdb/postgres fail to launch. Recreate the links RELATIVE + in-tree straight
+// from the manifest — independent of whether postinstall ran — so the dylib chain
+// resolves wherever the installer lands. (Windows manifest is empty: flat DLLs.)
 let relinked = 0;
-const restoreLinks = (srcDir) => {
-  for (const ent of fs.readdirSync(srcDir, { withFileTypes: true })) {
-    const src = path.join(srcDir, ent.name);
-    if (ent.isSymbolicLink()) {
-      const dest = path.join(stagedPg, path.relative(pgNative, src));
-      fs.rmSync(dest, { force: true, recursive: true });
-      fs.symlinkSync(fs.readlinkSync(src), dest);
-      relinked++;
-    } else if (ent.isDirectory()) {
-      restoreLinks(src);
-    }
+const manifest = path.join(pgNative, 'pg-symlinks.json');
+if (fs.existsSync(manifest)) {
+  const stripNative = (p) => p.replace(/^native[\\/]/, '');
+  for (const { source, target } of JSON.parse(fs.readFileSync(manifest, 'utf8'))) {
+    const realFile = path.join(stagedPg, stripNative(source));
+    const linkPath = path.join(stagedPg, stripNative(target));
+    if (!fs.existsSync(realFile)) continue; // nothing to point at — skip silently
+    fs.rmSync(linkPath, { force: true, recursive: true });
+    fs.mkdirSync(path.dirname(linkPath), { recursive: true });
+    fs.symlinkSync(path.relative(path.dirname(linkPath), realFile), linkPath);
+    relinked++;
   }
-};
-restoreLinks(pgNative);
+}
 console.log(`[stage-runtime] restored ${relinked} relative symlink(s) in the Postgres engine`);
 
 // Sanity: pgvector must have been FULLY provisioned into the engine (CI step) —
@@ -130,12 +130,16 @@ console.log(`[stage-runtime] restored ${relinked} relative symlink(s) in the Pos
 // control descriptor, the loadable module, and at least one install SQL script.
 // Checking only vector.control would let a half-copied payload pass staging and
 // fail at runtime when the first migration runs `CREATE EXTENSION vector`.
-const extDir = path.join(runtime, 'omadia-pg', 'share', 'postgresql', 'extension');
-const libDir = path.join(runtime, 'omadia-pg', 'lib', 'postgresql');
+// Layout differs by platform: Windows keeps extension modules flat in lib/ and
+// control/SQL in share/extension/; macOS + Linux nest them under postgresql/.
+const isWin = process.platform === 'win32';
+const extDir = path.join(stagedPg, 'share', ...(isWin ? ['extension'] : ['postgresql', 'extension']));
+const libDir = path.join(stagedPg, 'lib', ...(isWin ? [] : ['postgresql']));
 const moduleName = { win32: 'vector.dll', darwin: 'vector.dylib' }[process.platform] ?? 'vector.so';
+const relLib = path.relative(stagedPg, path.join(libDir, moduleName));
 const missing = [];
 if (!fs.existsSync(path.join(extDir, 'vector.control'))) missing.push('share/.../vector.control');
-if (!fs.existsSync(path.join(libDir, moduleName))) missing.push(`lib/postgresql/${moduleName}`);
+if (!fs.existsSync(path.join(libDir, moduleName))) missing.push(relLib);
 const hasInstallSql =
   fs.existsSync(extDir) && fs.readdirSync(extDir).some((f) => /^vector--.*\.sql$/.test(f));
 if (!hasInstallSql) missing.push('share/.../vector--*.sql');

@@ -3,8 +3,8 @@
 # Release that triggered the run.
 #
 # This is the no-Docker, one-click installer in `desktop/`: an Electron shell
-# that bundles + supervises the existing middleware kernel and web-ui plus an
-# embedded Postgres (PGlite). See desktop/README.md and
+# that bundles + supervises the existing middleware kernel and web-ui plus a
+# bundled native PostgreSQL 17 + pgvector. See desktop/README.md and
 # docs/plans/native-installer-plan.md.
 #
 # Runs separately from release.yml (the GHCR image pipeline) so a desktop build
@@ -57,13 +57,12 @@ jobs:
           # Intel runners queue for hours). Intel x64 is a tracked follow-up.
           - os: macos-latest
             args: --mac --arm64
-          # Linux + Windows are temporarily off while the bundled-Postgres engine
-          # (replacing the crashing PGlite) is proven end-to-end on macOS. They
-          # return once their pgvector provisioning (apt / Windows build) is wired.
-          # - os: ubuntu-latest
-          #   args: --linux
-          # - os: windows-latest
-          #   args: --win
+          # Linux + Windows each provision a PG17 pgvector for their embedded
+          # engine below (apt pgdg / MSVC nmake build) before staging. x64 only.
+          - os: ubuntu-latest
+            args: --linux
+          - os: windows-latest
+            args: --win
     runs-on: ${{ matrix.os }}
     # Hard cap so a stuck native build can never run for hours.
     timeout-minutes: 30
@@ -174,7 +173,60 @@ jobs:
           cp "$PV/lib/postgresql@17/vector.dylib" "$NATIVE/lib/postgresql/vector.dylib"
           cp "$PV/share/postgresql@17/extension/vector.control" "$NATIVE/share/postgresql/extension/"
           cp "$PV"/share/postgresql@17/extension/vector--*.sql "$NATIVE/share/postgresql/extension/"
-          echo "✓ pgvector staged into the embedded PG17 engine"
+          echo "✓ pgvector staged into the embedded PG17 engine (darwin-arm64)"
+
+      # Linux: the PostgreSQL APT repo (pgdg) ships a prebuilt postgresql-17-pgvector.
+      # A PG17 vector.so loads in the embedded PG17 (extensions are ABI-stable within
+      # a major). Unix layout: module in lib/postgresql/, control+SQL in
+      # share/postgresql/extension/ (same as macOS).
+      - name: Provision pgvector into the embedded Postgres (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y postgresql-17-pgvector
+          NATIVE="desktop/node_modules/@embedded-postgres/linux-x64/native"
+          mkdir -p "$NATIVE/lib/postgresql" "$NATIVE/share/postgresql/extension"
+          cp /usr/lib/postgresql/17/lib/vector.so "$NATIVE/lib/postgresql/vector.so"
+          cp /usr/share/postgresql/17/extension/vector.control "$NATIVE/share/postgresql/extension/"
+          cp /usr/share/postgresql/17/extension/vector--*.sql "$NATIVE/share/postgresql/extension/"
+          echo "✓ pgvector staged into the embedded PG17 engine (linux-x64)"
+
+      # Windows: no prebuilt pgvector exists, so build vector.dll from source with
+      # MSVC against a full PG17 (Chocolatey ships headers + lib; the embedded
+      # engine is a minimal dist with neither). A PG17 build loads in the embedded
+      # PG17. Windows layout is FLAT: module in lib/, control+SQL in share/extension/.
+      - name: Set up MSVC (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Provision pgvector into the embedded Postgres (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          choco install postgresql17 --params "/Password:postgres" -y --no-progress
+          $pgroot = "C:\Program Files\PostgreSQL\17"
+          if (-not (Test-Path $pgroot)) {
+            $pgroot = (Get-ChildItem 'C:\Program Files\PostgreSQL' -Directory |
+              Sort-Object Name -Descending | Select-Object -First 1).FullName
+          }
+          $env:PGROOT = $pgroot
+          Write-Host "PGROOT=$pgroot"
+          git clone --depth 1 --branch v0.8.3 https://github.com/pgvector/pgvector.git "$env:RUNNER_TEMP\pgvector"
+          Push-Location "$env:RUNNER_TEMP\pgvector"
+          nmake /NOLOGO /F Makefile.win
+          if ($LASTEXITCODE -ne 0) { throw "pgvector nmake build failed ($LASTEXITCODE)" }
+          Pop-Location
+          $native = "desktop\node_modules\@embedded-postgres\windows-x64\native"
+          New-Item -ItemType Directory -Force -Path "$native\share\extension" | Out-Null
+          Copy-Item "$env:RUNNER_TEMP\pgvector\vector.dll" "$native\lib\vector.dll" -Force
+          Copy-Item "$env:RUNNER_TEMP\pgvector\vector.control" "$native\share\extension\" -Force
+          Copy-Item "$env:RUNNER_TEMP\pgvector\sql\vector--*.sql" "$native\share\extension\" -Force
+          Write-Host "✓ pgvector built + staged into the embedded PG17 engine (windows-x64)"
 
       - name: Stage runtime (middleware + web-ui + Postgres → desktop/runtime)
         working-directory: desktop
