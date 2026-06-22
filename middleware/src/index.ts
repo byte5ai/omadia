@@ -3389,8 +3389,8 @@ async function main(): Promise<void> {
   // IPv4 (legacy + local dev) clients are served. Default `0.0.0.0` would
   // miss IPv6-only Fly-internal traffic — Stolperfalle #4 in
   // memory/feedback-fly-operational.
-  const server = app.listen(config.PORT, '::', () => {
-    console.log(`[middleware] listening on [::]:${config.PORT}`);
+  const server = app.listen(config.PORT, config.HOST, () => {
+    console.log(`[middleware] listening on [${config.HOST}]:${config.PORT}`);
     console.log(`[middleware] skills dir: ${config.SKILLS_DIR}`);
     console.log(`[middleware] orchestrator model: ${config.ORCHESTRATOR_MODEL}`);
     console.log(`[middleware] sub-agent model:   ${config.SUB_AGENT_MODEL}`);

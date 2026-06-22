@@ -1,0 +1,104 @@
+# electron-builder configuration for the omadia desktop installer.
+# Produces signed/notarizable installers for macOS and Windows from one config.
+#
+# Prerequisites for a *signed* build (unsigned builds work for local testing):
+#   macOS:   CSC_LINK + CSC_KEY_PASSWORD (Developer ID cert) and
+#            APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID for notarization.
+#   Windows: CSC_LINK + CSC_KEY_PASSWORD (Authenticode cert), ideally an EV cert
+#            to avoid SmartScreen warnings.
+#
+# The omadia runtime (middleware dist + node_modules, web-ui standalone) is shipped
+# as unpacked extraResources so the kernel can be forked as a child process and so
+# the WASM/native bits are not trapped inside the asar archive.
+
+appId: ai.omadia.desktop
+productName: omadia
+copyright: Copyright © 2026 byte5 GmbH
+
+directories:
+  output: release
+  buildResources: buildResources
+
+# Only the compiled desktop app + its own node_modules go into the app bundle.
+# The ~130MB Postgres engine ships via extraResources (staged to runtime/omadia-pg),
+# so exclude its node_modules copy to avoid duplicating it inside the asar.
+files:
+  - dist/**/*
+  - package.json
+  - "!**/*.map"
+  - "!**/node_modules/@embedded-postgres/**"
+  - "!**/node_modules/embedded-postgres/**"
+
+# The omadia stack lives outside the asar so child processes can execute it. These
+# paths are produced by `scripts/stage-runtime.mjs` (run before electron-builder),
+# which copies the built middleware + web-ui + the bundled Postgres engine here.
+extraResources:
+  - from: runtime/middleware
+    to: omadia/middleware
+  - from: runtime/web-ui
+    to: omadia/web-ui
+  - from: runtime/omadia-pg
+    to: omadia-pg
+
+asar: true
+
+# Sign the native Mach-O binaries inside the staged middleware (extraResources)
+# BEFORE the outer app is signed — electron-builder does not sign extraResources,
+# and notarization rejects unsigned nested Mach-O. Fail-soft when unsigned.
+afterPack: buildResources/afterPack.js
+
+mac:
+  category: public.app-category.developer-tools
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: buildResources/entitlements.mac.plist
+  entitlementsInherit: buildResources/entitlements.mac.plist
+  # Apple Silicon only for v1. The native modules ship as extraResources (copied
+  # verbatim, not arch-split), and GitHub's Intel (macos-13) runners queue for
+  # hours — impractical for a release. An x64 DMG built on an arm64 runner would
+  # contain arm64 native modules and crash on Intel. Intel support is a follow-up
+  # (cross-compile x64 prebuilds on the arm64 runner into a second staged tree).
+  target:
+    - target: dmg
+      arch: [arm64]
+    - target: zip          # required by electron-updater on macOS
+      arch: [arm64]
+  # Notarization is left unset here so it's driven entirely by CI: the workflow
+  # adds `--config.mac.notarize=true` only when the Apple secrets are present
+  # (and electron-builder skips it without notary credentials). A hard-coded
+  # `notarize: false` here would fight that CLI override.
+
+dmg:
+  title: ${productName} ${version}
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  # signtool / azure-trusted-signing wired via CSC_* env in CI.
+
+nsis:
+  oneClick: false
+  perMachine: false        # per-user install → state in %APPDATA%, no admin prompt
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+
+linux:
+  category: Development
+  target:
+    - target: AppImage      # portable, the true "one-click, no package manager" path
+      arch: [x64]
+    - target: deb
+      arch: [x64]
+
+publish:
+  provider: github
+  releaseType: release

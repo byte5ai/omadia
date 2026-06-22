@@ -30,6 +30,12 @@ const optionalNonEmpty = <T extends z.ZodTypeAny>(inner: T) =>
 const ConfigSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3979),
 
+  // Interface to bind. Defaults to dual-stack `::` (all interfaces) so Fly-Edge
+  // IPv6 + flycast keep working. A local single-tenant install (e.g. the omadia
+  // desktop app) sets `HOST=127.0.0.1` so the kernel is NOT reachable on the LAN
+  // — the desktop threat model is loopback-only.
+  HOST: z.string().min(1).default('::'),
+
   // Anthropic SDK — optional since OB-61: the operator can supply the key
   // through the /setup wizard on first boot (vault-stored per plugin), so
   // an empty ENV is now a valid state. When unset AND the vault has no key

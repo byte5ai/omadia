@@ -5,7 +5,7 @@
 -- first-class from day one so multi-tenant + per-conversation filtering stays
 -- a WHERE-clause instead of a schema migration.
 
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
+-- pgcrypto intentionally NOT required: gen_random_uuid() is core since Postgres 13, and PGlite (embedded installer) has no pgcrypto module (a CREATE EXTENSION attempt hard-crashes its WASM linker).
 CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE IF NOT EXISTS graph_nodes (

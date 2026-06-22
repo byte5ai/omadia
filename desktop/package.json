@@ -1,0 +1,41 @@
+{
+  "name": "omadia-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "omadia native desktop installer — runs the full omadia stack locally with an embedded Postgres+pgvector engine, no Docker.",
+  "author": {
+    "name": "byte5 GmbH",
+    "email": "mwege@byte5.de"
+  },
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/byte5ai/omadia",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/byte5ai/omadia.git"
+  },
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/bundle-preload.mjs && node scripts/copy-renderer.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "stage": "node scripts/stage-runtime.mjs",
+    "start": "npm run build && electron .",
+    "dev": "OMADIA_DESKTOP_DEV=1 npm run start",
+    "pack:mac": "npm run build && npm run stage && electron-builder --mac --publish never",
+    "pack:win": "npm run build && npm run stage && electron-builder --win --publish never",
+    "pack:all": "npm run build && npm run stage && electron-builder --mac --win --publish never"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9",
+    "embedded-postgres": "^17.10.0-beta.17",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "3.6.1",
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.10",
+    "electron": "^37.2.0",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.28.0",
+    "typescript": "^5.7.2"
+  }
+}

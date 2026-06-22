@@ -24,7 +24,7 @@
 --     by the JobScheduler's croner-backed validateSpec on register; this
 --     table itself only enforces non-empty.
 
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
+-- pgcrypto intentionally NOT required: gen_random_uuid() is core since Postgres 13, and PGlite (embedded installer) has no pgcrypto module (a CREATE EXTENSION attempt hard-crashes its WASM linker).
 
 CREATE TABLE IF NOT EXISTS routines (
   id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),

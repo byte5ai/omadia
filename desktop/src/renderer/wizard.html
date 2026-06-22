@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self';"
+    />
+    <title>Welcome to omadia</title>
+    <link rel="stylesheet" href="wizard.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="rail">
+        <div class="brand">omadia</div>
+        <ol class="steps" id="steps">
+          <li data-step="0">Welcome</li>
+          <li data-step="1">AI provider</li>
+          <li data-step="2">Capabilities</li>
+          <li data-step="3">Data location</li>
+          <li data-step="4">Recovery key</li>
+        </ol>
+        <div class="rail-foot">single-tenant · BYO-key · own your data</div>
+      </aside>
+
+      <main class="panel">
+        <!-- 0: Welcome -->
+        <section class="step" data-step="0">
+          <h1>Run omadia on your machine</h1>
+          <p class="lead">
+            omadia installs a complete local stack — the kernel, the admin
+            interface, and an embedded Postgres database — and runs it entirely on
+            this computer. No Docker, no cloud account. Your data and your AI key
+            never leave the machine.
+          </p>
+          <ul class="facts">
+            <li>Embedded database with vector search, persisted locally.</li>
+            <li>You bring your own AI provider key.</li>
+            <li>Everything is removed cleanly when you uninstall.</li>
+          </ul>
+        </section>
+
+        <!-- 1: Provider -->
+        <section class="step hidden" data-step="1">
+          <h1>Connect an AI provider</h1>
+          <p class="lead">omadia uses your own key. It is stored encrypted in your OS keychain.</p>
+          <label class="field">
+            <span>Provider</span>
+            <select id="provider">
+              <option value="anthropic">Anthropic (Claude)</option>
+              <option value="openai">OpenAI</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>API key</span>
+            <input id="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…" />
+          </label>
+          <div class="row">
+            <button id="testKey" class="btn ghost" type="button">Test key</button>
+            <span id="testResult" class="test-result"></span>
+          </div>
+        </section>
+
+        <!-- 2: Capabilities -->
+        <section class="step hidden" data-step="2">
+          <h1>Optional capabilities</h1>
+          <p class="lead">You can change these later. The core (chat, memory, audit) always works.</p>
+          <label class="toggle">
+            <input type="checkbox" id="capAttachments" checked />
+            <span>
+              <strong>Attachments</strong>
+              <em>Store uploaded files on your local disk.</em>
+            </span>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" id="capEmbeddings" />
+            <span>
+              <strong>Semantic memory <small class="soon">preview</small></strong>
+              <em>In-process embeddings for topic detection. Downloads a small model on first use.</em>
+            </span>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" id="capDiagrams" />
+            <span>
+              <strong>Diagrams <small class="soon">needs network</small></strong>
+              <em>Render diagrams via the hosted omadia service.</em>
+            </span>
+          </label>
+        </section>
+
+        <!-- 3: Data location -->
+        <section class="step hidden" data-step="3">
+          <h1>Where should omadia store data?</h1>
+          <p class="lead">Database, encrypted secrets, and uploads all live here.</p>
+          <div class="row">
+            <input id="dataDir" type="text" readonly placeholder="Default application data folder" />
+            <button id="chooseDir" class="btn ghost" type="button">Choose…</button>
+          </div>
+          <p class="hint" id="dataDirHint">Using the default per-user application data folder.</p>
+        </section>
+
+        <!-- 4: Recovery key -->
+        <section class="step hidden" data-step="4">
+          <h1>Save your recovery key</h1>
+          <p class="lead">
+            This key encrypts your secrets vault. If you ever move omadia to a new
+            machine, you need it. Losing it makes stored secrets unrecoverable.
+          </p>
+          <div class="recovery">
+            <code id="recoveryKey">••••••••••••••••••••••••••••</code>
+            <button id="revealKey" class="btn ghost" type="button">Reveal</button>
+          </div>
+          <p class="hint">It is also kept safe in your OS keychain on this machine.</p>
+        </section>
+
+        <!-- Provisioning overlay -->
+        <section class="step hidden provisioning" data-step="provision">
+          <h1>Setting up omadia…</h1>
+          <div class="progress">
+            <div class="bar"><div id="barFill" class="bar-fill"></div></div>
+            <p id="progressMsg" class="progress-msg">Starting…</p>
+            <p class="hint" id="progressHint">First start runs database migrations — this can take up to a minute. <span id="elapsed"></span></p>
+          </div>
+          <pre id="bootLog" class="boot-log" aria-label="installation log"></pre>
+          <p id="provisionError" class="error hidden"></p>
+        </section>
+
+        <footer class="nav">
+          <button id="back" class="btn ghost" type="button" disabled>Back</button>
+          <button id="next" class="btn primary" type="button">Continue</button>
+        </footer>
+      </main>
+    </div>
+
+    <script src="wizard.js"></script>
+  </body>
+</html>
