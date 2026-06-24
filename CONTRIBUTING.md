@@ -34,7 +34,7 @@ sprawling feature nobody asked for.
 
 Prerequisites:
 
-- Node.js **22.12.x** (pinned via `middleware/.nvmrc` — `nvm use` picks
+- Node.js **22.22.x** (pinned via `middleware/.nvmrc` — `nvm use` picks
   it up automatically). Other Node versions break the `better-sqlite3`
   native ABI; the `preinstall` hook will refuse to proceed if you're on
   the wrong version.

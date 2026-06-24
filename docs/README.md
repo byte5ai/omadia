@@ -6,7 +6,7 @@ Dieser Ordner ist das kollektive Gedächtnis des Omadia-Projekts. Mehrere Agents
 
 1. [`/AGENTS.md`](../AGENTS.md) — Dokumentations-Policy, Kernregeln, Anti-Pattern
 2. **dieses README** — Landkarte
-3. [`architecture.md`](architecture.md) — System-Überblick (Component-Map, Request-Flow), Einstieg vor dem Deep-Dive
+3. [`architecture.md`](architecture.md): System-Überblick (Component-Map, Request-Flow), Einstieg vor dem Deep-Dive
 4. [`middleware-agent-handoff.md`](middleware-agent-handoff.md) — Vollständige Tech-Übersicht
 5. [`CHANGELOG.md`](CHANGELOG.md) — Was ist zuletzt passiert
 6. [`security-architecture.md`](security-architecture.md) — Security-Design-Patterns
@@ -16,7 +16,7 @@ Dieser Ordner ist das kollektive Gedächtnis des Omadia-Projekts. Mehrere Agents
 | Doc | Scope | Update-Frequenz | Wer pflegt |
 |---|---|---|---|
 | [`/AGENTS.md`](../AGENTS.md) | **Policy** für Multi-Agent-Arbeit | Nur bei Regelwechsel | Jeder, der die Regeln ändert — MIT CHANGELOG-Eintrag |
-| [`architecture.md`](architecture.md) | System-Überblick: Component-Map, Request-Flow, Key-Decisions — die **Landkarte** vor den Deep-Dive-Docs | Bei strukturellen Architektur-Änderungen | Feature-Agents |
+| [`architecture.md`](architecture.md) | System-Überblick: Component-Map, Request-Flow, Key-Decisions. Die **Landkarte** vor den Deep-Dive-Docs | Bei strukturellen Architektur-Änderungen | Feature-Agents |
 | [`middleware-agent-handoff.md`](middleware-agent-handoff.md) | Architektur, Layout, Commands, Config, Roadmap — der **primäre** Tech-Einstieg | Bei jeder strukturellen Änderung | Feature-Agents |
 | [`upgrading.md`](upgrading.md) | Upgrade- und Migrations-Pfade pro Minor-Version (Env-Vars, Schema, Plugin-API) | Bei jedem Release mit Breaking Changes | Release-Thread |
 | [`rca/`](rca/) | Root-Cause-Analysen für operative Incidents (Template + Index) | Nach jedem Incident | Operator / betroffener Thread |
