@@ -3516,3 +3516,82 @@ export async function installSelfExtensionProposal(
     proposal: resp.proposal,
   };
 }
+
+// -----------------------------------------------------------------------------
+// In-app issue reporting — "Create Issue" button (/api/v1/issues)
+//
+// The operator writes a free-form note, the primary connected LLM phrases
+// it into a clean English GitHub issue, and it is filed to byte5ai/omadia
+// as the operator's OWN GitHub account (operator OAuth). The access token
+// never reaches the browser — the UI only ever sees { connected, login }.
+// -----------------------------------------------------------------------------
+
+export type IssueCategory = 'bug' | 'feature' | 'improvement';
+
+export interface GithubIssueStatus {
+  connected: boolean;
+  login: string | null;
+  oauthConfigured: boolean;
+}
+
+export interface IssuePreview {
+  title: string;
+  body: string;
+  category: IssueCategory;
+}
+
+export interface CreatedIssue {
+  number: number;
+  htmlUrl: string;
+}
+
+export function getGithubIssueStatus(): Promise<GithubIssueStatus> {
+  return getJson<GithubIssueStatus>('/v1/issues/github/status');
+}
+
+export interface GithubDeviceStart {
+  userCode: string;
+  verificationUri: string;
+  expiresIn: number;
+  interval: number;
+}
+
+export type GithubConnectPoll =
+  | { status: 'authorized'; login: string | null }
+  | { status: 'pending'; interval?: number }
+  | { status: 'expired' }
+  | { status: 'denied' }
+  | { status: 'error' };
+
+export function startGithubConnect(): Promise<GithubDeviceStart> {
+  return postJson<GithubDeviceStart>(
+    '/v1/issues/github/connect/start',
+    undefined,
+  );
+}
+
+export function pollGithubConnect(): Promise<GithubConnectPoll> {
+  return postJson<GithubConnectPoll>(
+    '/v1/issues/github/connect/poll',
+    undefined,
+  );
+}
+
+export function disconnectGithub(): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>('/v1/issues/github/disconnect', undefined);
+}
+
+export function previewGithubIssue(input: {
+  text: string;
+  category: IssueCategory;
+}): Promise<IssuePreview> {
+  return postJson<IssuePreview>('/v1/issues/preview', input);
+}
+
+export function createGithubIssue(input: {
+  title: string;
+  body: string;
+  category: IssueCategory;
+}): Promise<CreatedIssue> {
+  return postJson<CreatedIssue>('/v1/issues/create', input);
+}

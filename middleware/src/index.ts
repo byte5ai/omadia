@@ -97,6 +97,8 @@ import { BuilderAgent } from './plugins/builder/builderAgent.js';
 import { BuilderTriageLog } from './plugins/builder/builderTriageLog.js';
 import { GithubIssueCache } from './plugins/builder/githubIssueCache.js';
 import { GithubIssueCreator } from './plugins/builder/githubIssueCreator.js';
+import { createGitHubDeviceProvider } from './issues/githubOAuthProvider.js';
+import { createIssuesRouter } from './issues/issuesRouter.js';
 import { GitHubAppTokenProvider } from './plugins/builder/githubAppAuth.js';
 import { UserChoiceCoordinator } from './plugins/builder/userChoiceCoordinator.js';
 import {
@@ -1799,6 +1801,24 @@ async function main(): Promise<void> {
   // the sessions router to a different base path, the auth guarantee
   // travels with it.
   app.use('/api/chat', requireAuth, createChatSessionsRouter({ getStore: getChatSessionStore }));
+
+  // In-app "Create Issue" button: operator connects their own GitHub
+  // account via the device flow (only a public client id, no secret — so
+  // omadia ships the OAuth App baked in), the primary LLM reformulates the
+  // note into a clean English issue, and it is filed to byte5ai/omadia as
+  // the operator. No public callback — every route stays behind requireAuth.
+  app.use(
+    '/api/v1/issues',
+    requireAuth,
+    createIssuesRouter({
+      vault: secretVault,
+      installedRegistry,
+      llmProviderCatalog,
+      githubProvider: createGitHubDeviceProvider(config.GITHUB_OAUTH_CLIENT_ID),
+      createIssueCreator: (getToken) =>
+        new GithubIssueCreator({ tokenProvider: { getToken } }),
+    }),
+  );
   console.log('[middleware] chat-sessions endpoint ready at /api/chat/sessions (auth-gated)');
 
   // Slice 3b — MemorableKnowledge REST surface. `requireAuth` gates the
