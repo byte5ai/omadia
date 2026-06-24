@@ -36,10 +36,8 @@ import type {
 } from '../plugins/builder/githubIssueCreator.js';
 import { loadUpstreamIssueConfig } from '../plugins/builder/upstreamIssueConfig.js';
 
-import {
-  GitHubDeviceFlowProvider,
-  GITHUB_ISSUE_SCOPES,
-} from './githubOAuthProvider.js';
+import { GITHUB_ISSUE_SCOPES } from './githubOAuthProvider.js';
+import type { GitHubDeviceFlowProvider } from './githubOAuthProvider.js';
 import { DeviceFlowStore } from './deviceFlowStore.js';
 import {
   clearConnection,
