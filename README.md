@@ -37,6 +37,24 @@ Your LLM key. Your data. Your compliance story.
   for each agent run, so you can audit, debug, and prove what happened — built in,
   not bolted on.
 
+## Prerequisites
+
+The quickstart runs entirely in containers, so the host stays light:
+
+- **Docker 24+** with the Docker Compose v2 plugin (the `docker compose`
+  subcommand, not the legacy `docker-compose` binary)
+- **Git**, to clone the repository
+
+That is the whole list for running omadia. A local Node toolchain is only
+needed when you build the services from source or develop plugins:
+
+- **Node 22.x** for the middleware and admin UI outside Docker. The pinned
+  version lives in `.nvmrc`, so `nvm use` picks it up. The middleware blocks
+  installation on a mismatched major version, because native modules are
+  built against a specific ABI.
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full from-source setup.
+
 ## ⚡ Quickstart
 
 ```bash
@@ -255,6 +273,30 @@ Third-party dependency licenses and notices are documented in
 free of GPL, AGPL, and SSPL packages; weak-copyleft components (LGPL via
 `sharp-libvips`, MPL-2.0 via `axe-core` / `lightningcss` / `dompurify`) are
 used as documented unmodified dependencies.
+
+## Troubleshooting
+
+**Port already in use.** The core binds `3333` for the admin UI plus the
+Postgres port. If another process holds one of them, the affected container
+exits on start. Free the port, or remap it in your own compose override, then
+re-run `docker compose up -d`.
+
+**`VAULT_KEY` missing at boot.** A production image (`NODE_ENV=production`)
+refuses to start without `VAULT_KEY`, on purpose. Generate one with `openssl
+rand -base64 32` and set it in your project-root `.env` before deploying. The
+bundled `docker-compose.yaml` pins `NODE_ENV=development`, so a local `docker
+compose up` keeps the dev fallback. Full context lives in
+[Deployment](#deployment).
+
+**Optional overlay not found.** Optional features are overlay files added with
+repeated `-f` flags, not Compose profiles. Pass the full filename, for example
+`-f docker-compose.yaml -f docker-compose.storage.yaml`. A bare `--profile
+storage` matches nothing here.
+
+**Node version mismatch from source.** The middleware pins its Node major
+version in `.nvmrc` and stops `npm install` on a different one, because
+`better-sqlite3` and other native modules are compiled against a specific ABI.
+Run `nvm use` in the repository root before installing.
 
 ## Contributing
 
