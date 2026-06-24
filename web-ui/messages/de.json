@@ -273,6 +273,12 @@
     "outputLabel": "Output",
     "subIterations": "{count} interne Iterationen"
   },
+  "markdownTable": {
+    "openFullView": "Tabelle in Vollansicht öffnen",
+    "modalTitle": "Tabelle — Vollansicht",
+    "ariaClose": "Schließen",
+    "ariaCloseBackdrop": "Schließen"
+  },
   "nudgeCard": {
     "kicker": "Vorschlag",
     "ackTriggered": "✓ ausgelöst",

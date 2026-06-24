@@ -5,6 +5,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 import { stripCitationMarkers } from '../_lib/citations';
+import { MarkdownTable } from './MarkdownTable';
 
 /**
  * Thin wrapper that renders GitHub-flavored markdown with our project-local
@@ -117,9 +118,26 @@ export function Markdown({
   const displayed = useMemo(() => stripCitationMarkers(source), [source]);
   return (
     <div className="md-view">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={rehypePlugins}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={rehypePlugins}
+        components={MARKDOWN_COMPONENTS}
+      >
         {displayed}
       </ReactMarkdown>
     </div>
   );
 }
+
+/**
+ * GFM table renderer override. Wraps every table in a scroll-container with
+ * a "full view" toolbar — see {@link MarkdownTable}. Hoisted to module scope
+ * so the components object is stable across re-renders (no needless tree
+ * recomputation during streaming).
+ */
+const MARKDOWN_COMPONENTS: ComponentProps<typeof ReactMarkdown>['components'] =
+  {
+    table: ({ children, className }) => (
+      <MarkdownTable className={className}>{children}</MarkdownTable>
+    ),
+  };

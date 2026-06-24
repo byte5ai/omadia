@@ -480,17 +480,51 @@ body {
   @apply font-semibold text-[color:var(--fg-strong)];
 }
 
+/* Tables live inside a scroll-wrapper (MarkdownTable) so very wide tables
+   scroll horizontally inside the chat bubble instead of bleeding past it.
+   The wrapper also gives a max-height + sticky thead for long tables. The
+   `min-width: max-content` keeps columns from being squeezed to unreadable
+   widths — the wrapper takes the scroll instead. */
+.md-table-wrap {
+  @apply relative my-3 overflow-auto rounded-md;
+  max-width: 100%;
+  max-height: 60vh;
+  border: 1px solid var(--border);
+}
+.md-table-wrap--full {
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+}
 .md-view table {
-  @apply my-3 w-full border-collapse text-xs;
+  @apply border-collapse text-xs;
+  min-width: max-content;
+  width: 100%;
 }
 .md-view th,
 .md-view td {
   @apply px-3 py-2 text-left align-top tabular-nums;
   border: 1px solid var(--border);
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .md-view th {
   @apply font-semibold;
   background: var(--bg-soft);
+}
+.md-view thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+@media print {
+  .md-table-wrap {
+    overflow: visible;
+    max-height: none;
+  }
+  .md-view thead th {
+    position: static;
+  }
 }
 .md-view hr {
   @apply my-3;
