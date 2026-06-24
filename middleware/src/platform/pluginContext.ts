@@ -238,29 +238,9 @@ export function createPluginContext(
     ? createScratchAccessor(agentId)
     : undefined;
 
-  // HTTP accessor: present when the manifest declares outbound hosts OR the
-  // plugin is a #91 web_scanner (audit/scanner plugins fetch user-supplied
-  // URLs and may declare no static hosts at all). The effective allow-list
-  // is resolved from the manifest plus the operator-selected audit mode +
-  // host_list config. Today the global `fetch` is still reachable — a future
-  // hardening pass will sandbox it; plugins should use ctx.http exclusively.
-  const outboundHosts = extractOutboundAllowlist(agentId, catalog);
-  const webScanner =
-    catalog.get(agentId)?.plugin.permissions_summary.network_web_scanner ===
-    true;
-  const auditConfig = extractAuditConfig(agentId, catalog, registry);
-  const http: HttpAccessor | undefined =
-    outboundHosts.length > 0 || webScanner
-      ? createHttpAccessor({
-          agentId,
-          outbound: outboundHosts,
-          webScanner,
-          extraHosts: auditConfig.extraHosts,
-          ...(auditConfig.auditMode
-            ? { auditMode: auditConfig.auditMode }
-            : {}),
-        })
-      : undefined;
+  // (The HTTP accessor is built further down, AFTER `config` is defined, so its
+  // outbound allow-list can dereference `$config.*` entries — symmetric to the
+  // raw-TCP `outbound_tcp` path. See the `http`/`net` block below.)
 
   // Memory accessor: present when the manifest declares memory permissions
   // AND the memory provider plugin (`@omadia/memory`) has published its store
@@ -377,6 +357,34 @@ export function createPluginContext(
         }
       : {}),
   };
+
+  // HTTP accessor: present when the manifest declares outbound hosts OR the
+  // plugin is a #91 web_scanner (audit/scanner plugins fetch user-supplied
+  // URLs and may declare no static hosts at all). The effective allow-list is
+  // resolved from the manifest (literal hosts AND `$config.*` references — so a
+  // plugin can let the OPERATOR configure an allowed host, e.g. an attachment
+  // source, rather than hard-coding it) plus the operator-selected audit mode +
+  // host_list config. Today the global `fetch` is still reachable — a future
+  // hardening pass will sandbox it; plugins should use ctx.http exclusively.
+  const outboundHosts = extractOutboundAllowlist(agentId, catalog, (key) =>
+    config.get(key),
+  );
+  const webScanner =
+    catalog.get(agentId)?.plugin.permissions_summary.network_web_scanner ===
+    true;
+  const auditConfig = extractAuditConfig(agentId, catalog, registry);
+  const http: HttpAccessor | undefined =
+    outboundHosts.length > 0 || webScanner
+      ? createHttpAccessor({
+          agentId,
+          outbound: outboundHosts,
+          webScanner,
+          extraHosts: auditConfig.extraHosts,
+          ...(auditConfig.auditMode
+            ? { auditMode: auditConfig.auditMode }
+            : {}),
+        })
+      : undefined;
 
   // Net accessor: raw-TCP egress for line protocols ctx.http cannot speak
   // (SMTP/IMAP/…). Present only when the manifest declares
@@ -1158,6 +1166,7 @@ function memoryDeclared(agentId: string, catalog: PluginCatalog): boolean {
 function extractOutboundAllowlist(
   agentId: string,
   catalog: PluginCatalog,
+  configGet: (key: string) => unknown,
 ): string[] {
   const entry = catalog.get(agentId);
   if (!entry) return [];
@@ -1168,7 +1177,30 @@ function extractOutboundAllowlist(
   const network = permissions?.['network'] as Record<string, unknown> | undefined;
   const outbound = network?.['outbound'];
   if (!Array.isArray(outbound)) return [];
-  return outbound.filter((h): h is string => typeof h === 'string');
+
+  const out: string[] = [];
+  for (const item of outbound) {
+    if (typeof item !== 'string') continue;
+    const trimmed = item.trim();
+    if (trimmed.startsWith('$config.')) {
+      // Operator-configured host(s): a `$config.<field>` entry resolves to the
+      // value the operator saved at install. One field MAY hold several hosts
+      // (comma/whitespace/newline separated) so an operator can allow more than
+      // one attachment source without the plugin author enumerating them. An
+      // unset field contributes nothing (fail closed — no ctx.http).
+      const key = trimmed.slice('$config.'.length);
+      const resolved = configGet(key);
+      if (typeof resolved === 'string') {
+        for (const host of resolved.split(/[\s,]+/)) {
+          const h = host.trim();
+          if (h.length > 0) out.push(h);
+        }
+      }
+    } else if (trimmed.length > 0) {
+      out.push(trimmed);
+    }
+  }
+  return out;
 }
 
 /**
