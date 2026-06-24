@@ -72,18 +72,24 @@ describe('cliBackendDetector', () => {
   });
 });
 
-describe('claudeCliAdapter (Shape-2, tool-less)', () => {
-  it('advertises tools:false and fails closed when a request carries tools', async () => {
+describe('claudeCliAdapter (Shape-2)', () => {
+  it('advertises tools:false but supports forced single-tool structured output', () => {
     const provider = claudeCliAdapter.build({ apiKey: 'no-key-required', id: 'claude-cli' });
     assert.equal(provider.capabilities.tools, false);
+    assert.equal(provider.capabilities.forcedToolChoice, true);
+  });
+
+  it('fails closed on GENERAL (auto, non-forced) tool use', async () => {
+    const provider = claudeCliAdapter.build({ apiKey: 'no-key-required', id: 'claude-cli' });
     await assert.rejects(
       provider.complete({
         model: 'sonnet-cli',
         messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
         maxTokens: 100,
         tools: [{ name: 'do_thing', description: 'x', inputSchema: {} }],
+        // no toolChoice → general tool use → rejected (forced single-tool only)
       }),
-      /tool-less/,
+      /forced single-tool|general tool use/,
     );
   });
 });
