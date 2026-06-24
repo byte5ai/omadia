@@ -130,6 +130,29 @@ for everyone.
   out. Auto-generated boilerplate (param descriptions that just restate
   the type) is noise; please skip it.
 
+## Security guidelines
+
+The middleware runs plugin code and custodies operator secrets, so a few rules
+are non-negotiable in any contribution:
+
+- Never interpolate untrusted input into a shell command. Use argument arrays
+  or `execFile`, never string concatenation into `exec`.
+- Unwrap symlinks before any path operation on an operator-supplied path, so a
+  crafted link cannot escape the directory it is meant to stay in.
+- No `eval` or `new Function()` on untrusted content in plugin code.
+- Validate cron strings before they reach the scheduler.
+
+The patterns behind these rules live in
+[`docs/security-architecture.md`](docs/security-architecture.md). Read it
+before you touch the vault, the plugin loader, or any ingress channel.
+
+### Dependency hardening
+
+- **npm**: pin to a caret range (`^x.y.z`). Patch-level auto-updates are
+  acceptable; open ranges (`*`, `latest`) and unpinned minors are not.
+- **GitHub Actions**: pin third-party actions to a full commit SHA, not a
+  moving tag. First-party `actions/*` may stay on a major tag.
+
 ## Plugin contributions
 
 Channel and integration plugins generally belong in their own repositories
