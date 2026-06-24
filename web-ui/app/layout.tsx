@@ -5,6 +5,7 @@ import { NextIntlClientProvider } from 'next-intl';
 import { getLocale, getMessages, getTranslations } from 'next-intl/server';
 
 import { AuthBadge } from './_components/AuthBadge';
+import { CreateIssueButton } from './_components/CreateIssueButton';
 import { LocaleSwitcher } from './_components/LocaleSwitcher';
 import { Nav } from './_components/Nav';
 import { ThemeControls } from './_components/ThemeControls';
@@ -107,6 +108,7 @@ export default async function RootLayout({
                       className="hidden h-5 w-px bg-[color:var(--border)] sm:block"
                       aria-hidden
                     />
+                    <CreateIssueButton />
                     <ThemeControls />
                     <LocaleSwitcher />
                     <AuthBadge />
