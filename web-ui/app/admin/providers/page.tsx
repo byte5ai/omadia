@@ -8,10 +8,24 @@ import { useTranslations } from 'next-intl';
 import {
   assignProvider,
   getProviders,
+  ApiError,
   type AdminProvider,
   type ProviderAssignment,
   type ProvidersResponse,
 } from '../../_lib/api';
+
+/** Pull the backend's `message` out of an ApiError JSON body when present. */
+function friendlyError(err: unknown): string {
+  if (err instanceof ApiError && err.body) {
+    try {
+      const j = JSON.parse(err.body) as { message?: unknown };
+      if (typeof j.message === 'string' && j.message.trim()) return j.message;
+    } catch {
+      /* fall through to the generic message */
+    }
+  }
+  return err instanceof Error ? err.message : String(err);
+}
 
 /**
  * LLM provider admin (S4). Two concerns on one page:
@@ -57,6 +71,8 @@ export default function AdminProvidersPage(): React.ReactElement {
     void load();
   }, [load]);
 
+  // Prefer the backend's explanatory message (e.g. "…the subscription CLI is
+  // tool-less…") over the generic "POST … failed: 400".
   const apply = useCallback(
     async (pluginId: string, provider: string, model: string): Promise<void> => {
       setStatus((s) => ({ ...s, [pluginId]: 'saving' }));
@@ -85,7 +101,7 @@ export default function AdminProvidersPage(): React.ReactElement {
         setStatus((s) => ({ ...s, [pluginId]: 'error' }));
         setErrors((e) => ({
           ...e,
-          [pluginId]: err instanceof Error ? err.message : String(err),
+          [pluginId]: friendlyError(err),
         }));
       }
     },
@@ -190,13 +206,23 @@ function ProviderRow({
         >
           {p.connected ? t('providers.connected') : t('providers.notConnected')}
         </span>
-        {!p.connected && (
+        {p.toolLess ? (
+          // Subscription CLI: connect/manage via the in-app login, not a vault key.
           <Link
-            href="/admin/settings"
+            href="/admin/subscription-clis"
             className="text-[13px] font-medium text-[color:var(--accent)]"
           >
-            {t('providers.addKey')} →
+            {(p.connected ? t('providers.manageCli') : t('providers.logIn'))} →
           </Link>
+        ) : (
+          !p.connected && (
+            <Link
+              href="/admin/settings"
+              className="text-[13px] font-medium text-[color:var(--accent)]"
+            >
+              {t('providers.addKey')} →
+            </Link>
+          )
         )}
       </span>
     </li>
@@ -267,12 +293,20 @@ function AssignmentRow({
           onChange={(e) => onProvider(e.target.value)}
           className={`${selectCls} sm:max-w-[220px]`}
         >
-          {providers.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.label}
-              {p.connected ? '' : ` (${t('providers.notConnected')})`}
-            </option>
-          ))}
+          {providers.map((p) => {
+            // A tool-less provider can't drive a tool plugin → offer but disable.
+            const blocked = p.toolLess === true && a.requiresTools === true;
+            return (
+              <option key={p.id} value={p.id} disabled={blocked}>
+                {p.label}
+                {blocked
+                  ? ` (${t('assignments.toolLessBlocked')})`
+                  : p.connected
+                    ? ''
+                    : ` (${t('providers.notConnected')})`}
+              </option>
+            );
+          })}
         </select>
 
         <label className="sr-only" htmlFor={`model-${a.pluginId}`}>

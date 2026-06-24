@@ -4021,6 +4021,14 @@ export class Orchestrator {
    * next iteration onwards because `buildToolsList()` iterates the map
    * live. The Orchestrator simply does not mention them in the preamble.
    */
+  /** Live snapshot of the registered sub-agent (`ask_<slug>`) DomainTools.
+   *  Used by the #309 CLI agent-runtime to expose sub-agents to `claude -p`
+   *  over the loopback MCP bridge (they attach post-activate, so this must be
+   *  read live, not captured at build time). */
+  listDomainTools(): readonly DomainTool[] {
+    return [...this.domainToolsByName.values()];
+  }
+
   registerDomainTool(tool: DomainTool): void {
     // Hard collision check. Silent last-wins was the previous behavior and
     // it made two uploaded agents with the same shortName (last dot-segment

@@ -35,6 +35,11 @@ export default function AdminIndexPage(): React.ReactElement {
           description="Provider verbinden (Anthropic, OpenAI, Mistral) und pro Agent Provider + Modell zuordnen. Schlüssel liegen verschlüsselt im Vault. AVV-Hinweis beim Wechsel auf einen Drittanbieter. Wirkt sofort."
         />
         <AdminCard
+          href="/admin/subscription-clis"
+          title="Abo-CLIs (Claude / Codex / Gemini)"
+          description="Agenten über ein bestehendes LLM-Abo (Claude Pro/Max) statt über einen API-Schlüssel betreiben — via offizieller CLI. Zeigt erkannte CLIs, Login-Status und wie eine Verbindung aussieht. Einrichtung für Einzelnutzer-Self-Hosting."
+        />
+        <AdminCard
           href="/admin/auth"
           title="Authentifizierungs-Provider"
           description="Lokale Anmeldung und Entra-ID aktivieren oder deaktivieren. Änderungen wirken ohne Neustart."

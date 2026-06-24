@@ -196,6 +196,20 @@ export type {
   LocalSubAgentToolResult,
   AskOptions,
 } from './localSubAgent.js';
+export { ToolDispatchService } from './toolDispatchService.js';
+export type {
+  DispatchableToolSpec,
+  ToolDispatchResult,
+} from './toolDispatchService.js';
+export { LoopbackMcpServer } from './loopbackMcpServer.js';
+export type {
+  LoopbackMcpServerDeps,
+  LoopbackMcpServerHandle,
+} from './loopbackMcpServer.js';
+export { CLI_ENV_SCRUB_KEYS, CliChatAgent, StreamJsonParser } from './cliChatAgent.js';
+export type { CliChatAgentDeps, CliUsage } from './cliChatAgent.js';
+export { createCliSubAgent } from './cliSubAgent.js';
+export type { CliSubAgentOptions } from './cliSubAgent.js';
 
 // Knowledge-graph native tool (moved from harness-knowledge-graph in S+12.5-1)
 export {

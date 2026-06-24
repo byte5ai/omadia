@@ -79,6 +79,8 @@ import { createRegistryInstallRouter } from './routes/registryInstall.js';
 import { createRuntimeRouter } from './routes/runtime.js';
 import { createAdminSettingsRouter } from './routes/adminSettings.js';
 import { createAdminProvidersRouter } from './routes/adminProviders.js';
+import { createAdminCliBackendsRouter } from './routes/adminCliBackends.js';
+import { registerClaudeCliAdapter } from './platform/claudeCliAdapter.js';
 import { createVaultStatusRouter } from './routes/vaultStatus.js';
 import { createBuilderRouter } from './routes/builder.js';
 import {
@@ -321,6 +323,9 @@ async function main(): Promise<void> {
   // another register*Adapter call here (or a plugin registering at activate).
   registerAnthropicAdapter(defaultLlmAdapters);
   registerOpenAiAdapter(defaultLlmAdapters);
+  // #309 Shape 2 — the local `claude` CLI as a keyless, tool-less completion
+  // provider on the operator's subscription (not an HTTP wire format).
+  registerClaudeCliAdapter(defaultLlmAdapters);
   console.log(
     `[middleware] ${String(defaultLlmAdapters.list().length)} LLM wire-format adapter(s) registered: ${defaultLlmAdapters
       .list()
@@ -1595,6 +1600,17 @@ async function main(): Promise<void> {
       // from `onAgentBuilt` so a rebuilt agent re-acquires its sub-agents.
       const mcpManager = new McpManager();
       const SUBAGENT_DEFAULT_MODEL = 'claude-sonnet-4-6';
+      // Read the orchestrator provider from LIVE installed config on each
+      // hydrate so a runtime switch to/from the CLI provider is picked up on
+      // the next agent build without a process restart.
+      const orchestratorProviderId = (): string => {
+        const raw = installedRegistry.get('@omadia/orchestrator')?.config?.[
+          'llm_provider'
+        ];
+        return typeof raw === 'string' && raw.trim().length > 0
+          ? raw.trim()
+          : 'anthropic';
+      };
       const hydrateSubAgentTools = (
         slug: string,
         built: { orchestrator: { hasDomainTool(n: string): boolean; registerDomainTool(t: DomainTool): void } },
@@ -1602,6 +1618,7 @@ async function main(): Promise<void> {
         const entry = registryForHydrate.get(slug);
         if (!entry) return 0;
         const mcpServers = registryForHydrate.currentSnapshot()?.mcpServers ?? [];
+        const providerId = orchestratorProviderId();
         return registerDbSubAgentTools(
           {
             subAgents: entry.subAgents,
@@ -1615,6 +1632,9 @@ async function main(): Promise<void> {
             mcpManager,
             mcpServers,
             defaultModel: SUBAGENT_DEFAULT_MODEL,
+            hostIsCliProvider: providerId === 'claude-cli',
+            cliModelAlias: (model: string): string =>
+              model.replace(/-cli$/, '') || 'sonnet',
             log: (m: string) => console.log(`[middleware] ${m}`),
           },
         );
@@ -2572,6 +2592,12 @@ async function main(): Promise<void> {
     }),
   );
   console.log('[middleware] providers admin endpoint ready at /api/v1/admin/providers (auth: required)');
+
+  // Subscription-CLI backends (#309) — detect installed/logged-in vendor CLIs
+  // (Claude/Codex/Gemini) so the operator can run agents on a subscription.
+  // Read-only host-capability probe; never triggers a login or consumes quota.
+  app.use('/api/v1/admin/cli-backends', requireAuth, createAdminCliBackendsRouter());
+  console.log('[middleware] CLI backends endpoint ready at /api/v1/admin/cli-backends (auth: required)');
 
   // ── Agent-Builder drafts (B.0) ────────────────────────────────────────────
   // SQLite-backed draft store; persists alongside the vault so redeploys

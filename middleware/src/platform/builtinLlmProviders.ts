@@ -117,6 +117,55 @@ export const BUILTIN_LLM_PROVIDERS: ReadonlyArray<LlmProviderDescriptor> = [
     ],
   },
   {
+    // #309 Shape 2 — the local official `claude` CLI driven as a keyless,
+    // tool-less completion provider on the operator's Claude subscription. Not
+    // an HTTP endpoint: the `claude-cli` adapter spawns `claude -p`. Keyless
+    // (auth = host capability via `claude auth login`, surfaced on the
+    // Subscription CLIs admin page); `baseURL` is unused by this adapter.
+    id: 'claude-cli',
+    label: 'Claude (subscription CLI)',
+    wireFormat: 'claude-cli',
+    baseURL: '',
+    policy: { requiresApiKey: false, requiresAvvDisclosure: false },
+    models: [
+      // modelId is suffixed `-cli` so it never collides with another provider's
+      // alias (the registry requires globally-unique aliases and id ==
+      // `<provider>:<modelId>`); the claude-cli adapter strips the `-cli` suffix
+      // back to the CLI alias (`opus`/`sonnet`/`haiku`) for `claude -p --model`.
+      {
+        id: 'claude-cli:opus-cli',
+        provider: 'claude-cli',
+        modelId: 'opus-cli',
+        label: 'Claude Opus (CLI)',
+        class: 'frontier',
+        maxTokens: 32_000,
+        contextWindow: 200_000,
+        vision: false,
+      },
+      {
+        id: 'claude-cli:sonnet-cli',
+        provider: 'claude-cli',
+        modelId: 'sonnet-cli',
+        label: 'Claude Sonnet (CLI)',
+        class: 'balanced',
+        maxTokens: 64_000,
+        contextWindow: 200_000,
+        vision: false,
+        classDefault: true,
+      },
+      {
+        id: 'claude-cli:haiku-cli',
+        provider: 'claude-cli',
+        modelId: 'haiku-cli',
+        label: 'Claude Haiku (CLI)',
+        class: 'fast',
+        maxTokens: 8_192,
+        contextWindow: 200_000,
+        vision: false,
+      },
+    ],
+  },
+  {
     id: 'mistral',
     label: 'Mistral',
     wireFormat: 'openai-compatible',
