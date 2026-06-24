@@ -1,9 +1,20 @@
 {
-  "name": "odoo-bot-web-ui",
+  "name": "@omadia/web-ui",
   "private": true,
   "version": "0.2.0",
   "description": "Local-only Next.js dev UI for chatting with the middleware. Not for production.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/byte5ai/omadia"
+  },
+  "homepage": "https://omadia.ai",
+  "keywords": [
+    "ai-agents",
+    "self-hosted",
+    "orchestrator",
+    "plugin"
+  ],
   "scripts": {
     "dev": "next dev -p 3300",
     "build": "next build",

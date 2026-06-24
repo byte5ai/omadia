@@ -4,6 +4,17 @@
   "private": true,
   "type": "module",
   "main": "dist/index.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/byte5ai/omadia"
+  },
+  "homepage": "https://omadia.ai",
+  "keywords": [
+    "ai-agents",
+    "self-hosted",
+    "orchestrator",
+    "plugin"
+  ],
   "workspaces": [
     "packages/*"
   ],
