@@ -15,6 +15,8 @@
  * ask for another plugin's secrets — the boundary is structural.
  */
 
+import type { Socket } from 'node:net';
+
 import type {
   EntityCapturedTurnsHit,
   EntityCapturedTurnsOptions,
@@ -74,6 +76,14 @@ export interface PluginContext {
    *  `fetch` is not blocked today, but will be in a future hardening pass;
    *  relying on ctx.http means the plugin stays future-proof). */
   readonly http?: HttpAccessor;
+
+  /** Raw-TCP egress for line protocols `ctx.http` cannot speak (SMTP, IMAP,
+   *  …). Present only when the manifest declares
+   *  `permissions.network.outbound_tcp` and the referenced operator config
+   *  resolves to a concrete host:port. Every `connect` is pinned to that
+   *  exact allow-listed target. Undefined otherwise — guard with `if
+   *  (ctx.net)` so a Hub plugin tolerates an older core that lacks it. */
+  readonly net?: NetAccessor;
 
   /** Per-plugin memory store, scoped to `/memories/agents/<agentId>/`.
    *  Paths passed to this accessor are relative — `notes.md` resolves to
@@ -796,6 +806,66 @@ export class HttpRateLimitError extends Error {
   constructor(agentId: string) {
     super(`plugin '${agentId}' exceeded its per-minute HTTP request budget`);
     this.name = 'HttpRateLimitError';
+  }
+}
+
+/**
+ * Raw outbound TCP connection options for `ctx.net.connect`.
+ *
+ * Unlike `ctx.http` (HTTP/HTTPS only), `ctx.net` opens a raw TCP — or, with
+ * `tls: true`, an implicitly-encrypted — socket to a host:port the operator
+ * configured. It exists for line protocols the HTTP accessor cannot speak:
+ * SMTP/IMAP/POP3 and the like. The target is gated against
+ * `permissions.network.outbound_tcp` (see `NetAccessor`).
+ */
+export interface NetConnectOptions {
+  readonly host: string;
+  readonly port: number;
+  /**
+   * When true the kernel performs the TLS handshake and resolves with an
+   * already-encrypted socket (implicit TLS — e.g. SMTPS on :465). When false
+   * or omitted a plain TCP socket is returned and the caller may upgrade it
+   * itself (e.g. SMTP STARTTLS on :587, which nodemailer negotiates over the
+   * plain socket). Either way the connection only reaches the allow-listed
+   * host:port.
+   */
+  readonly tls?: boolean;
+  /** TLS SNI servername; defaults to `host`. Ignored when `tls` is falsy. */
+  readonly servername?: string;
+}
+
+/**
+ * Raw-TCP egress accessor. Present only when the manifest declares
+ * `permissions.network.outbound_tcp` with at least one target the plugin's
+ * config resolves to a concrete host:port. Every `connect` is gated against
+ * that resolved allow-list (exact host + port match) and a per-minute
+ * connection budget — an unlisted target throws `NetForbiddenError`, an
+ * over-budget caller `NetRateLimitError`.
+ *
+ * The allow-list is resolved from operator config, NOT static manifest
+ * hostnames: a generic mail plugin does not know the SMTP host at authoring
+ * time, so the manifest references config fields (`host: "$config.smtp_host"`)
+ * and the kernel pins egress to exactly what the operator entered. That also
+ * means an internal relay on a private IP is reachable — the operator chose
+ * it — without opening a general SSRF hole.
+ */
+export interface NetAccessor {
+  connect(options: NetConnectOptions): Promise<Socket>;
+}
+
+export class NetForbiddenError extends Error {
+  constructor(agentId: string, target: string) {
+    super(
+      `plugin '${agentId}' is not permitted to open a TCP connection to '${target}' — missing from permissions.network.outbound_tcp (or its config-referenced host/port is unset)`,
+    );
+    this.name = 'NetForbiddenError';
+  }
+}
+
+export class NetRateLimitError extends Error {
+  constructor(agentId: string) {
+    super(`plugin '${agentId}' exceeded its per-minute TCP connection budget`);
+    this.name = 'NetRateLimitError';
   }
 }
 

@@ -30,6 +30,7 @@ import {
   type MemoryAccessor,
   type MemoryStore,
   type MigrationContext,
+  type NetAccessor,
   type NotificationsAccessor,
   type OAuthTokensAccessor,
   OAuthTokenError,
@@ -76,6 +77,7 @@ import type { PluginRouteRegistry } from './pluginRouteRegistry.js';
 import type { NotificationRouter } from './notificationRouter.js';
 import type { UiRouteCatalog } from './uiRouteCatalog.js';
 import { createHttpAccessor, isAuditMode, type AuditMode } from './httpAccessor.js';
+import { createNetAccessor, type NetTarget } from './netAccessor.js';
 import { signFlowState, verifyFlowState } from './flowState.js';
 import type { PluginStatusRegistry } from './pluginStatusRegistry.js';
 import { createMemoryAccessor } from './memoryAccessor.js';
@@ -375,6 +377,22 @@ export function createPluginContext(
         }
       : {}),
   };
+
+  // Net accessor: raw-TCP egress for line protocols ctx.http cannot speak
+  // (SMTP/IMAP/…). Present only when the manifest declares
+  // `permissions.network.outbound_tcp` AND every referenced config field
+  // resolves to a concrete host:port — a generic mail plugin references the
+  // operator-entered SMTP host/port (`$config.smtp_host`) rather than a static
+  // manifest hostname, so egress is pinned to exactly what the operator chose.
+  // Resolved here (not in extractOutboundAllowlist) because it needs the
+  // already-built `config` accessor to dereference those refs.
+  const tcpTargets = resolveTcpTargets(agentId, catalog, (key) =>
+    config.get(key),
+  );
+  const net: NetAccessor | undefined =
+    tcpTargets.length > 0
+      ? createNetAccessor({ agentId, allowed: tcpTargets })
+      : undefined;
 
   // Tools accessor: funnel plugin-contributed tool registrations into the
   // kernel's NativeToolRegistry. Plugin captures the returned dispose handle
@@ -689,6 +707,7 @@ export function createPluginContext(
     smokeMode: false,
     ...(scratch ? { scratch } : {}),
     ...(http ? { http } : {}),
+    ...(net ? { net } : {}),
     ...(memory ? { memory } : {}),
     ...(subAgent ? { subAgent } : {}),
     ...(knowledgeGraph ? { knowledgeGraph } : {}),
@@ -1150,6 +1169,63 @@ function extractOutboundAllowlist(
   const outbound = network?.['outbound'];
   if (!Array.isArray(outbound)) return [];
   return outbound.filter((h): h is string => typeof h === 'string');
+}
+
+/**
+ * Resolve the raw-TCP egress allow-list from `permissions.network.outbound_tcp`.
+ *
+ * Each entry is `{ host, port }` where either value is a literal OR a
+ * `"$config.<field>"` reference resolved against the plugin's OWN config (the
+ * operator-entered install values). A reference shape is what makes a *generic*
+ * SMTP/IMAP plugin possible: the mail host is unknown at manifest-authoring
+ * time, so the manifest points at the config field and the kernel pins egress
+ * to whatever the operator saved. Entries whose host or port fail to resolve to
+ * a concrete, valid value are dropped (an unconfigured plugin simply gets no
+ * `ctx.net`), so a half-filled install never yields a half-open allow-list.
+ */
+function resolveTcpTargets(
+  agentId: string,
+  catalog: PluginCatalog,
+  configGet: (key: string) => unknown,
+): NetTarget[] {
+  const entry = catalog.get(agentId);
+  if (!entry) return [];
+  const manifest = entry.manifest as Record<string, unknown> | undefined;
+  const permissions = manifest?.['permissions'] as
+    | Record<string, unknown>
+    | undefined;
+  const network = permissions?.['network'] as Record<string, unknown> | undefined;
+  const raw = network?.['outbound_tcp'];
+  if (!Array.isArray(raw)) return [];
+
+  const resolveRef = (value: unknown): string | undefined => {
+    if (typeof value === 'number') return String(value);
+    if (typeof value !== 'string') return undefined;
+    const trimmed = value.trim();
+    if (!trimmed.startsWith('$config.')) {
+      return trimmed.length > 0 ? trimmed : undefined;
+    }
+    const key = trimmed.slice('$config.'.length);
+    const resolved = configGet(key);
+    if (typeof resolved === 'number') return String(resolved);
+    if (typeof resolved === 'string' && resolved.trim().length > 0) {
+      return resolved.trim();
+    }
+    return undefined;
+  };
+
+  const targets: NetTarget[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null) continue;
+    const rec = item as Record<string, unknown>;
+    const host = resolveRef(rec['host']);
+    const portStr = resolveRef(rec['port']);
+    if (host === undefined || portStr === undefined) continue;
+    const port = Number(portStr);
+    if (!Number.isInteger(port) || port < 1 || port > 65_535) continue;
+    targets.push({ host, port });
+  }
+  return targets;
 }
 
 /**
