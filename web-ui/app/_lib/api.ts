@@ -281,6 +281,9 @@ export interface AdminProvider {
    *  `euHosted`: provider is hosted in the EU (no third-country transfer). */
   requiresAvvDisclosure?: boolean;
   euHosted?: boolean;
+  /** Tool-less Shape-2 CLI provider — cannot drive a tool loop, so the UI
+   *  disables it for tool-dependent plugins. */
+  toolLess?: boolean;
   models: AdminProviderModel[];
 }
 
@@ -293,6 +296,8 @@ export interface ProviderAssignment {
   modelKey: string;
   /** Orchestrator only: per-turn model-routing flag ('true' | 'false'). */
   modelRouting?: string;
+  /** This plugin drives a tool loop → a tool-less provider is not assignable. */
+  requiresTools?: boolean;
 }
 
 export interface ProvidersResponse {
@@ -322,6 +327,79 @@ export async function assignProvider(
   body: AssignProviderRequest,
 ): Promise<AssignProviderResponse> {
   return postJson<AssignProviderResponse>('/v1/admin/providers/assignment', body);
+}
+
+// -----------------------------------------------------------------------------
+// Subscription-CLI backends (#309) — detect installed/logged-in vendor CLIs
+// (Claude/Codex/Gemini) so an operator can run agents on a subscription instead
+// of a metered API key. Read-only host-capability probe.
+// -----------------------------------------------------------------------------
+
+export type CliLoginState = 'yes' | 'no' | 'unknown';
+export type CliBillingPosture = 'subscription' | 'needs-verification';
+
+export interface CliBackendStatus {
+  id: string;
+  label: string;
+  bin: string;
+  installed: boolean;
+  version?: string;
+  loggedIn: CliLoginState;
+  account?: string;
+  billing: CliBillingPosture;
+  detail: string;
+}
+
+export interface CliBackendsResponse {
+  backends: CliBackendStatus[];
+  generatedAt: number;
+}
+
+/** Fetch CLI-backend detection. Pass `force` for the operator's "re-check". */
+export async function getCliBackends(force = false): Promise<CliBackendsResponse> {
+  return getJson<CliBackendsResponse>(
+    `/v1/admin/cli-backends${force ? '?refresh=1' : ''}`,
+  );
+}
+
+export interface CliLoginStart {
+  sessionId: string;
+  verificationUrl: string;
+}
+
+export type CliLoginStatus = 'pending' | 'authorized' | 'invalid' | 'expired' | 'error';
+
+export interface CliCodeResult {
+  status: CliLoginStatus;
+  account?: string;
+  error?: string;
+}
+
+/** Start the in-app CLI login flow (spawns `claude auth login`, returns the URL). */
+export async function startCliLogin(id: string): Promise<CliLoginStart> {
+  return postJson<CliLoginStart>(`/v1/admin/cli-backends/${encodeURIComponent(id)}/login/start`, {});
+}
+
+/** Submit the login code the operator's browser returned. */
+export async function submitCliLoginCode(
+  id: string,
+  sessionId: string,
+  code: string,
+): Promise<CliCodeResult> {
+  return postJson<CliCodeResult>(`/v1/admin/cli-backends/${encodeURIComponent(id)}/login/code`, {
+    sessionId,
+    code,
+  });
+}
+
+/** Cancel an in-flight CLI login. */
+export async function cancelCliLogin(id: string): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>(`/v1/admin/cli-backends/${encodeURIComponent(id)}/login/cancel`, {});
+}
+
+/** Log the CLI out (clears the stored subscription session). */
+export async function cliLogout(id: string): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>(`/v1/admin/cli-backends/${encodeURIComponent(id)}/logout`, {});
 }
 
 // -----------------------------------------------------------------------------

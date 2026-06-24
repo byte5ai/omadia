@@ -44,6 +44,8 @@ import type { Microsoft365Accessor } from './microsoft365-shim.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import type { ModelRoutingConfig } from './modelRouter.js';
 import { Orchestrator } from './orchestrator.js';
+import { CliChatAgent } from './cliChatAgent.js';
+import { ToolDispatchService } from './toolDispatchService.js';
 import { OrchestratorMemoryNamespacer } from './orchestratorMemoryNamespacer.js';
 import { DurableRulesMemoryStore } from './durableRulesMemoryStore.js';
 import {
@@ -292,6 +294,45 @@ export function buildOrchestratorForAgent(
       ? { attachmentReader: deps.attachmentReader }
       : {}),
   });
+
+  // #309 Shape 3: a tool-less subscription-CLI provider (`claude-cli`) CANNOT
+  // drive the in-process tool loop (its `stream()`/`complete()` reject any
+  // request carrying tools). Swap the agent for the CLI agent-runtime, where the
+  // official `claude` CLI owns the loop and reaches omadia's tools via the
+  // loopback MCP server. Done HERE — the single factory the default chatAgent
+  // path AND the US4 registry both call — so every chat surface (web-ui canvas,
+  // channels) routes to the CLI runtime, not just the default service. The raw
+  // Orchestrator is still built + returned (sub-agents attach to it post-activate;
+  // exposing those to the CLI dispatch is a follow-up — native tools work now).
+  if (deps.provider.id === 'claude-cli') {
+    // Security note (P2-2): the subscription CLI sees the FULL native tool
+    // registry via the loopback MCP server, with no allowlist beyond MCP
+    // server scoping; a per-agent tool allowlist is a follow-up.
+    const dispatch = new ToolDispatchService({
+      nativeTools: deps.nativeToolRegistry,
+      // Live read: sub-agents (ask_<slug>) attach to `orchestrator` post-activate,
+      // so the CLI reaches them over the loopback bridge. A sub-agent's own loop
+      // still runs in-process on the tool-less claude-cli provider, so tool-using
+      // sub-agents fail GRACEFULLY (dispatch returns an error result) until they
+      // also run on the CLI (recursive Shape 3 — follow-up); tool-less ones work.
+      domainToolsProvider: () => orchestrator.listDomainTools(),
+    });
+    return {
+      orchestrator,
+      bundle: {
+        agent: new CliChatAgent({
+          dispatch,
+          model: config.model.replace(/-cli$/, '') || 'sonnet',
+          ...(deps.assistantIdentity
+            ? { systemPrompt: deps.assistantIdentity }
+            : {}),
+        }),
+        raw: orchestrator,
+        sessionLogger,
+        chatSessionStore,
+      },
+    };
+  }
 
   // Verifier wrapper — only when the `verifier@1` capability is published.
   // Without it the bare Orchestrator IS the chatAgent.

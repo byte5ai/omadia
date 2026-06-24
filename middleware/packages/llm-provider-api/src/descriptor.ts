@@ -8,11 +8,13 @@
  */
 import type { ModelInfo } from './models.js';
 
-/** The HTTP wire protocol an adapter speaks. A provider picks one; the matching
+/** The transport an adapter speaks. Most are HTTP wire protocols; the matching
  *  registered `LlmAdapter` (see ./adapter.ts) builds the concrete provider.
  *  `openai-compatible` = OpenAI Chat Completions (most providers); `anthropic` =
- *  Anthropic Messages (Claude, or an Anthropic-compatible gateway). */
-export type WireFormat = 'openai-compatible' | 'anthropic';
+ *  Anthropic Messages (Claude, or an Anthropic-compatible gateway); `claude-cli`
+ *  = not HTTP at all but the local official `claude` CLI driven as a tool-less
+ *  completion endpoint on a subscription (#309 Shape 2, keyless). */
+export type WireFormat = 'openai-compatible' | 'anthropic' | 'claude-cli';
 
 /** Vendor deviations from plain OpenAI that the OpenAI adapter handles when set. */
 export interface ProviderQuirks {

@@ -24,7 +24,9 @@ import type { ServiceRegistry } from '../platform/serviceRegistry.js';
 import type { SecretVault } from '../secrets/vault.js';
 import type { NativeToolRegistry } from '@omadia/orchestrator';
 import {
+  createCliSubAgent,
   LocalSubAgent,
+  type Askable,
   type LocalSubAgentTool,
   type LocalSubAgentToolResult,
 } from '@omadia/orchestrator';
@@ -469,15 +471,28 @@ export class DynamicAgentRuntime {
       }
     }
 
-    const subAgent = new LocalSubAgent({
-      name: shortName,
-      provider,
-      model: subAgentModel,
-      maxTokens: this.deps.subAgentMaxTokens,
-      maxIterations: this.deps.subAgentMaxIterations,
-      systemPrompt,
-      tools: subAgentTools,
-    });
+    // #309 recursive Shape 3: on the subscription CLI provider the in-process
+    // LocalSubAgent cannot run a tool loop (its provider rejects tool-carrying
+    // requests). Run the sub-agent through its own CliChatAgent instead — the
+    // `claude` CLI owns the loop, the sub-agent's tools reach it over a fresh
+    // loopback MCP server. Every other provider keeps the in-process path.
+    const subAgent: Askable =
+      hostProviderId === 'claude-cli'
+        ? createCliSubAgent({
+            name: shortName,
+            systemPrompt,
+            model: stripCliModelAlias(subAgentModel),
+            tools: subAgentTools,
+          })
+        : new LocalSubAgent({
+            name: shortName,
+            provider,
+            model: subAgentModel,
+            maxTokens: this.deps.subAgentMaxTokens,
+            maxIterations: this.deps.subAgentMaxIterations,
+            systemPrompt,
+            tools: subAgentTools,
+          });
 
     const description = buildDomainToolDescription(catalogEntry);
 
@@ -726,6 +741,13 @@ function isLocalSubAgentTool(t: unknown): t is LocalSubAgentTool {
     'handle' in t &&
     typeof (t as { handle: unknown }).handle === 'function'
   );
+}
+
+/** Strip the registry's `-cli` model-alias suffix back to the bare CLI alias
+ *  (`opus-cli` -> `opus`) for `claude -p --model`. Mirrors buildOrchestrator.ts.
+ *  Falls back to `sonnet` when stripping yields an empty string. */
+function stripCliModelAlias(model: string): string {
+  return model.replace(/-cli$/, '') || 'sonnet';
 }
 
 function isStreamingUploadedToolkitTool(

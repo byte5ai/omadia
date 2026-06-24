@@ -1499,12 +1499,15 @@
       "modelCount": "{count, plural, one {# model} other {# models}}",
       "connected": "connected",
       "notConnected": "no key",
-      "addKey": "Add key"
+      "addKey": "Add key",
+      "logIn": "Log in",
+      "manageCli": "Manage"
     },
     "assignments": {
       "heading": "Per-agent assignment",
       "intro": "Pin each LLM-capable plugin to a provider and model. Saving re-activates the plugin so the change applies immediately.",
       "notInstalled": "not installed",
+      "toolLessBlocked": "needs tools — not for this role",
       "providerLabel": "Provider",
       "modelLabel": "Model",
       "pickModel": "Select a model …",
@@ -1515,6 +1518,64 @@
       "saving": "saving …",
       "saved": "✓ saved",
       "errorChip": "✗ error"
+    }
+  },
+  "adminSubscriptionClis": {
+    "title": "Subscription CLIs",
+    "intro": "Run agents on an LLM subscription you already pay for (such as Claude Pro or Max) by connecting the vendor's official CLI, instead of paying per token with an API key. omadia detects which CLIs are installed and logged in on this server.",
+    "explainer": {
+      "heading": "Subscription vs API key",
+      "body": "An API key bills you per token. A subscription CLI runs on your existing plan: you log in once with the official tool and omadia reuses that session. This is the same sanctioned path the official CLI uses, not token extraction.",
+      "singleOperator": "Subscription credits belong to one account and cannot be shared, so this fits a single-operator self-host. For a shared or production gateway, use an API key on the LLM providers page."
+    },
+    "loading": "Loading …",
+    "loadError": "Failed to load: {message}",
+    "selectModelLink": "Once logged in, select a CLI model for an agent in LLM providers",
+    "detected": {
+      "heading": "Detected CLIs"
+    },
+    "recheck": "Re-check",
+    "rechecking": "Checking …",
+    "version": "v{version}",
+    "status": {
+      "notInstalled": "Not installed in this environment.",
+      "loggedIn": "Logged in and ready.",
+      "loggedInAs": "Logged in as {account}.",
+      "installedNotLoggedIn": "Installed but not logged in yet.",
+      "installedUnknown": "Installed. Login status could not be confirmed."
+    },
+    "connect": {
+      "button": "Connect subscription",
+      "starting": "Starting the sign-in …",
+      "heading": "Sign in to your subscription",
+      "openHint": "Open the Anthropic sign-in page and approve access:",
+      "openLink": "Open the sign-in page",
+      "pasteHint": "Copy the code shown after you approve, paste it here, and submit:",
+      "codePlaceholder": "Paste the login code",
+      "submit": "Submit code",
+      "submitting": "Signing in …",
+      "cancel": "Cancel",
+      "retry": "Try again",
+      "failed": "Sign-in failed. Try again.",
+      "stillPending": "Not signed in yet. Open the link, approve access, then submit the code again.",
+      "manualSummary": "Prefer the terminal?",
+      "step1": "Make sure the CLI is installed (bundled in the omadia image, or install it):",
+      "installCmd": "npm install -g @anthropic-ai/claude-code",
+      "step2": "Log in with your subscription account:",
+      "step3": "Come back here and press Re-check. A logged-in CLI shows a green badge."
+    },
+    "logout": {
+      "button": "Log out",
+      "busy": "Logging out …"
+    },
+    "needsVerificationNote": "Subscription billing for this CLI is not confirmed yet. Signing in may meter the API instead of your subscription, so it is not recommended for omadia until verified.",
+    "badge": {
+      "notInstalled": "not found",
+      "installed": "installed",
+      "needsLogin": "needs login",
+      "loggedIn": "logged in",
+      "subscription": "subscription",
+      "needsVerification": "needs verification"
     }
   },
   "createIssue": {
