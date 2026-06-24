@@ -14,11 +14,27 @@ change can land quickly.
 - Security issues do **not** belong in the public issue tracker. See
   [SECURITY.md](SECURITY.md) for the private channel.
 
+## Contribution priority
+
+Not every contribution gets the same review turnaround. Roughly highest to
+lowest:
+
+1. **Bug fixes**, especially regressions against a released version
+2. **Security improvements** (coordinate sensitive ones privately first, see
+   [SECURITY.md](SECURITY.md))
+3. **Performance improvements** that ship with a before/after benchmark
+4. **New features** that match the roadmap in the
+   [README](README.md#status--roadmap)
+5. **Documentation and examples**
+
+This is a guide, not a gate. A well-scoped docs fix still lands faster than a
+sprawling feature nobody asked for.
+
 ## Local development setup
 
 Prerequisites:
 
-- Node.js **22.12.x** (pinned via `middleware/.nvmrc` — `nvm use` picks
+- Node.js **22.22.x** (pinned via `middleware/.nvmrc` — `nvm use` picks
   it up automatically). Other Node versions break the `better-sqlite3`
   native ABI; the `preinstall` hook will refuse to proceed if you're on
   the wrong version.
@@ -113,6 +129,29 @@ for everyone.
   code, what trade-off was made, what alternative was considered and ruled
   out. Auto-generated boilerplate (param descriptions that just restate
   the type) is noise; please skip it.
+
+## Security guidelines
+
+The middleware runs plugin code and custodies operator secrets, so a few rules
+are non-negotiable in any contribution:
+
+- Never interpolate untrusted input into a shell command. Use argument arrays
+  or `execFile`, never string concatenation into `exec`.
+- Unwrap symlinks before any path operation on an operator-supplied path, so a
+  crafted link cannot escape the directory it is meant to stay in.
+- No `eval` or `new Function()` on untrusted content in plugin code.
+- Validate cron strings before they reach the scheduler.
+
+The patterns behind these rules live in
+[`docs/security-architecture.md`](docs/security-architecture.md). Read it
+before you touch the vault, the plugin loader, or any ingress channel.
+
+### Dependency hardening
+
+- **npm**: pin to a caret range (`^x.y.z`). Patch-level auto-updates are
+  acceptable; open ranges (`*`, `latest`) and unpinned minors are not.
+- **GitHub Actions**: pin third-party actions to a full commit SHA, not a
+  moving tag. First-party `actions/*` may stay on a major tag.
 
 ## Plugin contributions
 
