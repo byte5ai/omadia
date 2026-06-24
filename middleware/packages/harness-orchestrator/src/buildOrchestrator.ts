@@ -304,7 +304,7 @@ export function buildOrchestratorForAgent(
   // channels) routes to the CLI runtime, not just the default service. The raw
   // Orchestrator is still built + returned (sub-agents attach to it post-activate;
   // exposing those to the CLI dispatch is a follow-up — native tools work now).
-  if (deps.provider.id === 'claude-cli') {
+  if (deps.provider?.id === 'claude-cli') {
     // Security note (P2-2): the subscription CLI sees the FULL native tool
     // registry via the loopback MCP server, with no allowlist beyond MCP
     // server scoping; a per-agent tool allowlist is a follow-up.
