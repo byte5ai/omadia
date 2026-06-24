@@ -6,16 +6,20 @@ Dieser Ordner ist das kollektive Gedächtnis des Omadia-Projekts. Mehrere Agents
 
 1. [`/AGENTS.md`](../AGENTS.md) — Dokumentations-Policy, Kernregeln, Anti-Pattern
 2. **dieses README** — Landkarte
-3. [`middleware-agent-handoff.md`](middleware-agent-handoff.md) — Vollständige Tech-Übersicht
-4. [`CHANGELOG.md`](CHANGELOG.md) — Was ist zuletzt passiert
-5. [`security-architecture.md`](security-architecture.md) — Security-Design-Patterns
+3. [`architecture.md`](architecture.md) — System-Überblick (Component-Map, Request-Flow), Einstieg vor dem Deep-Dive
+4. [`middleware-agent-handoff.md`](middleware-agent-handoff.md) — Vollständige Tech-Übersicht
+5. [`CHANGELOG.md`](CHANGELOG.md) — Was ist zuletzt passiert
+6. [`security-architecture.md`](security-architecture.md) — Security-Design-Patterns
 
 ## Dokument-Verzeichnis
 
 | Doc | Scope | Update-Frequenz | Wer pflegt |
 |---|---|---|---|
 | [`/AGENTS.md`](../AGENTS.md) | **Policy** für Multi-Agent-Arbeit | Nur bei Regelwechsel | Jeder, der die Regeln ändert — MIT CHANGELOG-Eintrag |
+| [`architecture.md`](architecture.md) | System-Überblick: Component-Map, Request-Flow, Key-Decisions — die **Landkarte** vor den Deep-Dive-Docs | Bei strukturellen Architektur-Änderungen | Feature-Agents |
 | [`middleware-agent-handoff.md`](middleware-agent-handoff.md) | Architektur, Layout, Commands, Config, Roadmap — der **primäre** Tech-Einstieg | Bei jeder strukturellen Änderung | Feature-Agents |
+| [`upgrading.md`](upgrading.md) | Upgrade- und Migrations-Pfade pro Minor-Version (Env-Vars, Schema, Plugin-API) | Bei jedem Release mit Breaking Changes | Release-Thread |
+| [`rca/`](rca/) | Root-Cause-Analysen für operative Incidents (Template + Index) | Nach jedem Incident | Operator / betroffener Thread |
 | [`CHANGELOG.md`](CHANGELOG.md) | Rolling chronologische Chronik aller signifikanten Änderungen | Nach jeder Aufgabe | Der Agent, der die Änderung macht |
 | [`security-architecture.md`](security-architecture.md) | Security-Design-Patterns (Vault-Credentials, Proxy-Routes, Scope-Locked Sub-Agents, signed URLs) | Bei Security-Architektur-Änderungen | Security-Thread |
 | [`creating-plugins.md`](creating-plugins.md) | HowTo: Plugin bauen (Scaffold → Manifest → ZIP) + Publish auf den Hub | Bei Änderungen am Package-Contract / Publish-Flow | Plugin-/Registry-Thread |

@@ -177,8 +177,9 @@ The operator UI and the canvas app share one identity.
   (Postgres + pgvector) (Ollama / API)              (AES-256-GCM file)
 ```
 
-A more detailed walk-through of the plugin loading sequence, capability
-registry, and the multi-provider authentication layer lives under
+Start with the [architecture overview](docs/architecture.md) for the component
+map and request flow. The deeper walk-through of the plugin loading sequence,
+capability registry, and multi-provider authentication layer lives under
 [`docs/`](docs/).
 
 ### Optional features
