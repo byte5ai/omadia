@@ -14,6 +14,22 @@ change can land quickly.
 - Security issues do **not** belong in the public issue tracker. See
   [SECURITY.md](SECURITY.md) for the private channel.
 
+## Contribution priority
+
+Not every contribution gets the same review turnaround. Roughly highest to
+lowest:
+
+1. **Bug fixes**, especially regressions against a released version
+2. **Security improvements** (coordinate sensitive ones privately first, see
+   [SECURITY.md](SECURITY.md))
+3. **Performance improvements** that ship with a before/after benchmark
+4. **New features** that match the roadmap in the
+   [README](README.md#status--roadmap)
+5. **Documentation and examples**
+
+This is a guide, not a gate. A well-scoped docs fix still lands faster than a
+sprawling feature nobody asked for.
+
 ## Local development setup
 
 Prerequisites:
