@@ -14,6 +14,7 @@ import type {
   ChannelManifestBlock,
   ChannelTransportKind,
   ChannelTransportRoute,
+  OAuthProviderDescriptor,
   Plugin,
   PluginJobSchedule,
   PluginJobSpec,
@@ -219,6 +220,19 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
         if (options.length > 0) entry.enum = options;
       }
     }
+    if (type === 'oauth') {
+      // Spec 005 — the kernel broker resolves the descriptor (by `provider`)
+      // and these scopes at flow time.
+      const provider = asString(f['provider']);
+      if (provider) entry.provider = provider;
+      const scopesRaw = f['scopes'];
+      if (Array.isArray(scopesRaw)) {
+        const scopes = scopesRaw.filter(
+          (s): s is string => typeof s === 'string',
+        );
+        if (scopes.length > 0) entry.scopes = scopes;
+      }
+    }
     setupFields.push(entry);
   }
 
@@ -308,6 +322,14 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
 
   const setupGuide = asLocalizedGuide(setup?.['guide']);
 
+  // Spec 005 — declarative OAuth-provider descriptors. Inert data the kernel
+  // broker reads at flow time; no plugin code runs during the OAuth dance.
+  const oauthProviders = extractOAuthProviders(doc['oauth_providers'], id);
+  const permissionsSummary = extractPermissions(permissions);
+  if (oauthProviders.length > 0) {
+    permissionsSummary.acquires_oauth = true;
+  }
+
   const base: Plugin = {
     id,
     kind,
@@ -324,7 +346,7 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
     signed: false,
     signed_by: null,
     setup_fields: setupFields,
-    permissions_summary: extractPermissions(permissions),
+    permissions_summary: permissionsSummary,
     integrations_summary: extractIntegrationTargets(integrations),
     install_state: 'available',
     depends_on: dependsOn,
@@ -335,6 +357,9 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
     privacy_class: privacyClass,
   };
   let result: Plugin = base;
+  if (oauthProviders.length > 0) {
+    result = { ...result, oauth_providers: oauthProviders };
+  }
   if (serviceTypes.length > 0) {
     result = { ...result, service_types: serviceTypes };
   }
@@ -622,7 +647,75 @@ function extractPermissions(
     llm_max_tokens_per_call: llmMaxTokensPerCall,
     secrets_runtime_write: secretsBlock?.['runtime_write'] === true,
     flows: permissions?.['flows'] === true,
+    // Spec 005 — overridden to true in adaptManifestV1 when the manifest
+    // declares >=1 valid oauth_providers descriptor.
+    acquires_oauth: false,
   };
+}
+
+/**
+ * Spec 005 — parse + validate the top-level `oauth_providers:` block. Each
+ * descriptor must carry id/authorize_url/token_url/client_id_field/
+ * client_secret_field and a valid `token_auth_style`; malformed entries are
+ * dropped with a `console.warn` (graceful-degradation, matching the rest of
+ * this loader). `pkce` defaults to true; `extra_authorize_params` keeps only
+ * string-valued entries. The descriptor is inert data — the kernel OAuth
+ * engine executes it, so no plugin code touches the flow.
+ */
+function extractOAuthProviders(
+  raw: unknown,
+  pluginId: string,
+): OAuthProviderDescriptor[] {
+  const out: OAuthProviderDescriptor[] = [];
+  for (const entry of asArray(raw)) {
+    const rec = asRecord(entry);
+    if (!rec) continue;
+    const id = asString(rec['id']);
+    const authorizeUrl = asString(rec['authorize_url']);
+    const tokenUrl = asString(rec['token_url']);
+    const clientIdField = asString(rec['client_id_field']);
+    const clientSecretField = asString(rec['client_secret_field']);
+    if (
+      !id ||
+      !authorizeUrl ||
+      !tokenUrl ||
+      !clientIdField ||
+      !clientSecretField
+    ) {
+      console.warn(
+        `[manifest:${pluginId}] oauth_provider dropped — requires id, authorize_url, token_url, client_id_field and client_secret_field.`,
+      );
+      continue;
+    }
+    const style = asString(rec['token_auth_style']);
+    if (style !== 'body_form' && style !== 'body_json' && style !== 'basic') {
+      console.warn(
+        `[manifest:${pluginId}] oauth_provider '${id}' dropped — token_auth_style '${style ?? ''}' is not body_form|body_json|basic.`,
+      );
+      continue;
+    }
+    const descriptor: OAuthProviderDescriptor = {
+      id,
+      authorize_url: authorizeUrl,
+      token_url: tokenUrl,
+      token_auth_style: style,
+      pkce: rec['pkce'] !== false,
+      client_id_field: clientIdField,
+      client_secret_field: clientSecretField,
+    };
+    const extra = asRecord(rec['extra_authorize_params']);
+    if (extra) {
+      const params: Record<string, string> = {};
+      for (const [k, v] of Object.entries(extra)) {
+        if (typeof v === 'string') params[k] = v;
+      }
+      if (Object.keys(params).length > 0) {
+        descriptor.extra_authorize_params = params;
+      }
+    }
+    out.push(descriptor);
+  }
+  return out;
 }
 
 function extractIntegrationTargets(integrations: unknown[]): string[] {

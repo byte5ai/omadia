@@ -143,10 +143,10 @@
     "clearStale": "Binding entfernen"
   },
   "layout": {
-    "logoAriaLabel": "Omadia · Startseite",
+    "logoAriaLabel": "omadia · Startseite",
     "subtitle": "Management UI · local",
-    "metaTitle": "Omadia · Management UI",
-    "metaDescription": "Verwaltungsoberfläche für die Omadia Agent-Plattform (lokal)."
+    "metaTitle": "omadia · Management UI",
+    "metaDescription": "Verwaltungsoberfläche für die omadia Agent-Plattform (lokal)."
   },
   "localeSwitcher": {
     "ariaLabel": "Sprache wechseln"
@@ -166,7 +166,7 @@
     }
   },
   "login": {
-    "title": "Bei Omadia anmelden",
+    "title": "Bei omadia anmelden",
     "shellLoading": "Lade Login…",
     "loadingProviders": "Lade Login…",
     "errorPrefix": "Login-Provider konnten nicht geladen werden:",
@@ -180,7 +180,7 @@
     "continueWith": "Weiter mit {provider}"
   },
   "setup": {
-    "title": "Willkommen bei Omadia",
+    "title": "Willkommen bei omadia",
     "shellLoading": "Lade Setup…",
     "loading": "Lade Setup…",
     "errorPrefix": "Setup-Status konnte nicht geladen werden:",

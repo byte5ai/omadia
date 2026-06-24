@@ -4,11 +4,12 @@ import assert from 'node:assert/strict';
 import { PendingFlowStore } from '../../src/plugins/oauth/pendingFlows.js';
 
 const sampleInit = {
+  pluginId: '@omadia/integration-atlassian',
   jobId: 'job-1',
-  fieldKey: 'ms365',
-  providerId: 'microsoft365',
+  fieldKey: 'connection',
+  providerId: 'atlassian',
   codeVerifier: 'verifier-xyz',
-  scopes: ['Calendars.Read', 'offline_access'],
+  scopes: ['read:jira-work', 'offline_access'],
 };
 
 test('create stores a flow and returns it with a server-generated id', () => {
@@ -16,9 +17,23 @@ test('create stores a flow and returns it with a server-generated id', () => {
   try {
     const flow = store.create(sampleInit);
     assert.ok(flow.flowId.length > 0);
+    assert.equal(flow.pluginId, '@omadia/integration-atlassian');
     assert.equal(flow.jobId, 'job-1');
-    assert.deepEqual(flow.scopes, ['Calendars.Read', 'offline_access']);
+    assert.deepEqual(flow.scopes, ['read:jira-work', 'offline_access']);
     assert.equal(store.size(), 1);
+  } finally {
+    store.clear();
+  }
+});
+
+test('re-connect path: a flow without a jobId is stored (store-detail re-connect)', () => {
+  const store = new PendingFlowStore();
+  try {
+    const { jobId: _drop, ...reconnect } = sampleInit;
+    void _drop;
+    const flow = store.create(reconnect);
+    assert.equal(flow.jobId, undefined);
+    assert.equal(flow.pluginId, '@omadia/integration-atlassian');
   } finally {
     store.clear();
   }

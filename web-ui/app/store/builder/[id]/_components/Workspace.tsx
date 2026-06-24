@@ -32,6 +32,7 @@ import {
   getPreviewSecretsStatus,
   getPreviewStatus,
   getTemplateSlots,
+  listBuilderModels,
   listBuilderTemplates,
   patchBuilderModel,
   patchBuilderSpec,
@@ -41,6 +42,7 @@ import { composeFixPrompt } from '../../../../_lib/composeFixPrompt';
 import { useIsDesktop } from '../../../../_lib/useMediaQuery';
 import type {
   BuilderModelId,
+  BuilderModelInfo,
   BuilderTemplateInfo,
   Draft,
   TemplateSlotDef,
@@ -88,12 +90,18 @@ const TAB_KEY: Record<EditorTab, string> = {
   versions: 'tabVersions',
 };
 
-// Model names are brand proper nouns — not translated.
-const MODEL_LABEL: Record<BuilderModelId, string> = {
+// Model names are brand proper nouns — not translated. Resolved against the
+// provider-supplied model list (by id or alias), then the legacy builder
+// slugs, then the raw reference.
+const SLUG_LABEL: Record<string, string> = {
   haiku: 'Haiku',
   sonnet: 'Sonnet',
   opus: 'Opus',
 };
+function modelLabel(models: BuilderModelInfo[], id: BuilderModelId): string {
+  const match = models.find((m) => m.id === id || m.aliases.includes(id));
+  return match?.label ?? SLUG_LABEL[id] ?? id;
+}
 
 // Draft-status → i18n key under `builder.workspace`.
 const STATUS_KEY: Record<Draft['status'], string> = {
@@ -393,6 +401,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
   // Template catalog (B.6-9). Fetched once per workspace mount; the
   // Switcher in the header populates from this list.
   const [templates, setTemplates] = useState<BuilderTemplateInfo[]>([]);
+  const [models, setModels] = useState<BuilderModelInfo[]>([]);
 
   useEffect(() => {
     let alive = true;
@@ -451,6 +460,20 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
       })
       .catch(() => {
         // Non-fatal — switcher just renders without a list and disables.
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    void listBuilderModels()
+      .then((res) => {
+        if (alive) setModels(res.models);
+      })
+      .catch(() => {
+        // Non-fatal — selector falls back to the draft's stored value.
       });
     return () => {
       alive = false;
@@ -694,6 +717,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
         }
         onInstallClick={() => setInstallModalOpen(true)}
         templates={templates}
+        models={models}
         currentTemplate={draft.spec.template ?? 'agent-integration'}
         templateSwitchEnabled={isDraftSwitchable}
         onTemplateChange={async (next) => {
@@ -1015,7 +1039,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
                   <PaneCard
                     index="03"
                     title={tw('panePreview')}
-                    meta={<PreviewMeta model={draft.previewModel} />}
+                    meta={<PreviewMeta model={draft.previewModel} models={models} />}
                     warningCount={missingRequiredCredentials}
                     fill
                     collapsed={previewCollapsed}
@@ -1159,7 +1183,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
                 <PaneCard
                   index="03"
                   title={tw('panePreview')}
-                  meta={<PreviewMeta model={draft.previewModel} />}
+                  meta={<PreviewMeta model={draft.previewModel} models={models} />}
                   warningCount={missingRequiredCredentials}
                   fill
                   collapsed={false}
@@ -1323,6 +1347,7 @@ function WorkspaceHeader({
   installDisabledReason,
   onInstallClick,
   templates,
+  models,
   currentTemplate,
   templateSwitchEnabled,
   onTemplateChange,
@@ -1342,6 +1367,7 @@ function WorkspaceHeader({
   installDisabledReason: string | null;
   onInstallClick: () => void;
   templates: BuilderTemplateInfo[];
+  models: BuilderModelInfo[];
   currentTemplate: string;
   templateSwitchEnabled: boolean;
   onTemplateChange: (next: string) => void | Promise<void>;
@@ -1386,12 +1412,14 @@ function WorkspaceHeader({
           <ModelSelector
             label="Codegen"
             value={draft.codegenModel}
+            models={models}
             enabled={modelEditingEnabled}
             onChange={onCodegenModelChange}
           />
           <ModelSelector
             label="Preview"
             value={draft.previewModel}
+            models={models}
             enabled={modelEditingEnabled}
             onChange={onPreviewModelChange}
           />
@@ -1530,11 +1558,13 @@ function StatusBadge({ status }: { status: Draft['status'] }): React.ReactElemen
 function ModelSelector({
   label,
   value,
+  models,
   enabled,
   onChange,
 }: {
   label: string;
   value: BuilderModelId;
+  models: BuilderModelInfo[];
   enabled: boolean;
   onChange: (next: BuilderModelId) => void | Promise<void>;
 }): React.ReactElement {
@@ -1546,11 +1576,15 @@ function ModelSelector({
           {label}
         </dt>
         <dd className="font-mono-num text-[12px] font-semibold text-[color:var(--fg-strong)]">
-          {MODEL_LABEL[value]}
+          {modelLabel(models, value)}
         </dd>
       </div>
     );
   }
+  const providers = [...new Set(models.map((m) => m.provider))];
+  const canonicalValue =
+    models.find((m) => m.id === value || m.aliases.includes(value))?.id ?? value;
+  const valueInList = models.some((m) => m.id === canonicalValue);
   return (
     <label className="flex items-baseline gap-2">
       <span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[color:var(--fg-subtle)]">
@@ -1558,10 +1592,9 @@ function ModelSelector({
       </span>
       <span className="relative inline-flex items-center">
         <select
-          value={value}
+          value={canonicalValue}
           onChange={(e) => {
-            const next = e.target.value as BuilderModelId;
-            void onChange(next);
+            void onChange(e.target.value);
           }}
           className={cn(
             'cursor-pointer appearance-none rounded-md border border-[color:var(--divider)] bg-[color:var(--bg-soft)] py-0.5 pl-2 pr-6',
@@ -1570,9 +1603,22 @@ function ModelSelector({
           )}
           aria-label={tw('modelSwitchAria', { label })}
         >
-          <option value="haiku">{MODEL_LABEL.haiku}</option>
-          <option value="sonnet">{MODEL_LABEL.sonnet}</option>
-          <option value="opus">{MODEL_LABEL.opus}</option>
+          {!valueInList && (
+            <option value={canonicalValue}>
+              {modelLabel(models, canonicalValue)}
+            </option>
+          )}
+          {providers.map((provider) => (
+            <optgroup key={provider} label={provider}>
+              {models
+                .filter((m) => m.provider === provider)
+                .map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label}
+                  </option>
+                ))}
+            </optgroup>
+          ))}
         </select>
         <span
           aria-hidden
@@ -1831,13 +1877,15 @@ function ChatMeta(): React.ReactElement {
 
 function PreviewMeta({
   model,
+  models,
 }: {
   model: BuilderModelId;
+  models: BuilderModelInfo[];
 }): React.ReactElement {
   return (
     <span className="font-mono-num inline-flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
       <Eye className="size-3" aria-hidden />
-      {MODEL_LABEL[model]}
+      {modelLabel(models, model)}
     </span>
   );
 }

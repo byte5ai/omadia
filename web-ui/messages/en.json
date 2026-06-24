@@ -143,10 +143,10 @@
     "clearStale": "Clear binding"
   },
   "layout": {
-    "logoAriaLabel": "Omadia · Home",
+    "logoAriaLabel": "omadia · Home",
     "subtitle": "Management UI · local",
-    "metaTitle": "Omadia · Management UI",
-    "metaDescription": "Admin UI for the Omadia agent platform (local)."
+    "metaTitle": "omadia · Management UI",
+    "metaDescription": "Admin UI for the omadia agent platform (local)."
   },
   "localeSwitcher": {
     "ariaLabel": "Switch language"
@@ -166,7 +166,7 @@
     }
   },
   "login": {
-    "title": "Sign in to Omadia",
+    "title": "Sign in to omadia",
     "shellLoading": "Loading login…",
     "loadingProviders": "Loading login…",
     "errorPrefix": "Failed to load login providers:",
@@ -180,7 +180,7 @@
     "continueWith": "Continue with {provider}"
   },
   "setup": {
-    "title": "Welcome to Omadia",
+    "title": "Welcome to omadia",
     "shellLoading": "Loading setup…",
     "loading": "Loading setup…",
     "errorPrefix": "Failed to load setup state:",

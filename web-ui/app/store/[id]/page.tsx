@@ -56,11 +56,22 @@ export async function generateMetadata({
 
 export default async function PluginDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
 }): Promise<React.ReactElement> {
   const { id } = await params;
   const pluginId = decodeURIComponent(id);
+
+  // Spec 005 — the kernel OAuth broker redirects back here after consent with
+  // `?connected=ok|error` (+ `&reason=` on error). Surfaced as a one-shot
+  // banner; it clears on the next navigation. The ActionStatusBanner below is
+  // the durable signal (the integration reports `ok` once the token + cloud_id
+  // resolve).
+  const sp = searchParams ? await searchParams : {};
+  const connected = typeof sp['connected'] === 'string' ? sp['connected'] : undefined;
+  const connectReason = typeof sp['reason'] === 'string' ? sp['reason'] : undefined;
 
   let detail;
   try {
@@ -139,6 +150,18 @@ export default async function PluginDetailPage({
           </div>
         </div>
       </header>
+
+      {/* Spec 005 — one-shot OAuth-connect result from the broker redirect. */}
+      {connected === 'ok' ? (
+        <div className="mt-8 flex items-center gap-2 rounded-lg border border-[color:var(--success)]/40 bg-[color:var(--success)]/10 px-4 py-3 text-[13px] font-semibold text-[color:var(--success)]">
+          <ShieldCheck className="size-4" aria-hidden />
+          Verbindung hergestellt.
+        </div>
+      ) : connected === 'error' ? (
+        <div className="mt-8 rounded-lg border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/10 px-4 py-3 text-[13px] font-semibold text-[color:var(--danger)]">
+          Verbindung fehlgeschlagen{connectReason ? ` (${connectReason})` : ''}. Bitte erneut versuchen.
+        </div>
+      ) : null}
 
       {/* Spec 004 — operator-action banner (auto-clears once the plugin reports
           ok, e.g. after connecting via the admin UI below). */}
@@ -400,7 +423,7 @@ export default async function PluginDetailPage({
           <BookCheck className="size-3.5" aria-hidden />
           Manifest: {isLegacy ? 'Legacy' : 'Schema v1'}
         </span>
-        <span className="font-mono-num">Omadia · v1 · Slice 1.1</span>
+        <span className="font-mono-num">omadia · v1 · Slice 1.1</span>
       </footer>
     </main>
   );

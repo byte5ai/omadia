@@ -64,6 +64,54 @@ export interface PluginSetupField {
    *  schema so the post-install editor can render a `<select>` instead of
    *  a free-text input. */
   enum?: Array<{ value: string; label: string }>;
+  /** Spec 005 — for `type === 'oauth'` fields: the `oauth_providers`
+   *  descriptor id this field connects through. The kernel broker resolves
+   *  the descriptor (+ this field's `scopes`) at flow time. */
+  provider?: string;
+  /** Spec 005 — OAuth scopes requested for a `type === 'oauth'` field. */
+  scopes?: string[];
+}
+
+/**
+ * Spec 005 — how a declarative OAuth-provider descriptor sends its client
+ * credentials + grant params to the token endpoint. `body_form`:
+ * x-www-form-urlencoded with the creds in the body (Microsoft). `body_json`:
+ * a JSON body (Atlassian). `basic`: HTTP Basic auth header for the client
+ * creds, grant params urlencoded in the body.
+ */
+export type OAuthTokenAuthStyle = 'body_form' | 'body_json' | 'basic';
+
+/**
+ * Spec 005 — declarative OAuth-provider descriptor. A plugin that acquires
+ * standard authorization-code credentials declares one per IdP in a top-level
+ * `oauth_providers:` manifest block; a `type:oauth` setup field references it
+ * by `id` through the field's `provider`. The kernel's generic OAuth engine
+ * runs the authorize/exchange/refresh dance from this data alone — NO plugin
+ * code executes during the flow, so refresh tokens never reach the plugin (the
+ * descriptor is inert). Additive + parsed leniently; older cores ignore it.
+ */
+export interface OAuthProviderDescriptor {
+  /** Stable id a `type:oauth` field references via its `provider`. */
+  id: string;
+  /** Authorization endpoint. May contain `{field}` placeholders interpolated
+   *  from the plugin's stored config (e.g. Microsoft's `{tenant_id}` in the
+   *  path). Atlassian's is static. */
+  authorize_url: string;
+  /** Token endpoint. Same `{field}` interpolation as `authorize_url`. */
+  token_url: string;
+  /** How client credentials + grant params reach the token endpoint. */
+  token_auth_style: OAuthTokenAuthStyle;
+  /** Emit a PKCE verifier/challenge (S256) and thread it through the flow.
+   *  Loader defaults to `true`. */
+  pkce: boolean;
+  /** Verbatim extra query params on the authorize URL (Atlassian: `audience`,
+   *  `prompt`). Optional. */
+  extra_authorize_params?: Record<string, string>;
+  /** Setup-field key holding the OAuth client id (resolved from the plugin's
+   *  stored config/vault at flow time). */
+  client_id_field: string;
+  /** Setup-field key (secret type) holding the OAuth client secret. */
+  client_secret_field: string;
 }
 
 export interface PluginPermissionsSummary {
@@ -119,6 +167,12 @@ export interface PluginPermissionsSummary {
    *  the `ctx.flows` accessor (public-callback-URL resolution + kernel-held
    *  state signing) is provisioned. Loader defaults to `false`. */
   flows?: boolean;
+  /** Spec 005: true when the manifest declares >=1 `oauth_providers`
+   *  descriptor — the plugin acquires standard authorization-code credentials
+   *  through the kernel OAuth broker (tokens stored + refreshed kernel-side;
+   *  refresh tokens never reach plugin code). Surfaced as a store-detail chip.
+   *  Loader defaults to `false`. */
+  acquires_oauth?: boolean;
 }
 
 export type PluginInstallState =
@@ -250,6 +304,11 @@ export interface Plugin {
    *  config alongside `secret`/`oauth` credentials. Consumers split the two
    *  by each field's `type`. */
   setup_fields: PluginSetupField[];
+  /** Spec 005 — declarative OAuth-provider descriptors from the manifest's
+   *  top-level `oauth_providers:` block. The kernel's generic OAuth broker
+   *  resolves a `type:oauth` field's `provider` against these at flow time.
+   *  Present only when the manifest declares at least one. */
+  oauth_providers?: OAuthProviderDescriptor[];
   permissions_summary: PluginPermissionsSummary;
   integrations_summary: string[];
   install_state: PluginInstallState;

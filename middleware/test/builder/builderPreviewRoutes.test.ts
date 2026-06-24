@@ -190,7 +190,10 @@ async function startHarness(opts: {
   });
 
   const chatService = new PreviewChatService({
-    anthropic: (() => ({})) as never,
+    resolveProvider: async () => ({
+      provider: {} as never,
+      modelId: 'claude-haiku-4-5-20251001',
+    }),
     draftStore: store,
     systemPromptFor: async () => 'sp',
     buildSubAgent: () => ({

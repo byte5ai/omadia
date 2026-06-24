@@ -3,10 +3,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-import {
-  createAnthropicProvider,
-  type AnthropicClient,
-} from '@omadia/llm-adapter-anthropic';
+import type { LlmProvider } from '@omadia/llm-provider';
 import {
   LocalSubAgent,
   type AskObserver,
@@ -189,13 +186,22 @@ interface Askable {
 
 export interface BuilderSubAgentBuildOptions {
   name: string;
-  client: AnthropicClient;
+  provider: LlmProvider;
   model: string;
   maxTokens: number;
   maxIterations: number;
   systemPrompt: string;
   tools: LocalSubAgentTool[];
 }
+
+export interface BuilderProviderResolution {
+  provider: LlmProvider;
+  modelId: string;
+}
+
+export type BuilderProviderResolver = (
+  modelRef: string,
+) => Promise<BuilderProviderResolution>;
 
 /**
  * Reference-implementation catalog shape: short-name → on-disk package root
@@ -207,12 +213,7 @@ export type BuilderReferenceCatalog = Readonly<
 >;
 
 export interface BuilderAgentDeps {
-  /** Accessor (not a captured instance): the shared Anthropic client is
-   *  hot-swapped when the API key arrives via the Setup Wizard / admin
-   *  secrets (OB-61), so it must be re-resolved per turn. A captured
-   *  boot-time client stays unauthenticated forever on vault-only installs
-   *  and every ask fails with builder.ask_failed. */
-  anthropic: () => AnthropicClient;
+  resolveProvider: BuilderProviderResolver;
   draftStore: DraftStore;
   bus: SpecEventBus;
   rebuildScheduler: RebuildScheduler;
@@ -328,7 +329,6 @@ export interface RunBuilderTurnOptions {
   draftId: string;
   userEmail: string;
   userMessage: string;
-  /** Anthropic model id — e.g. `claude-haiku-4-5-20251001`. */
   modelChoice: string;
   /**
    * Optional pre-generated turn id. The route layer generates one so it can
@@ -340,7 +340,7 @@ export interface RunBuilderTurnOptions {
 }
 
 export class BuilderAgent {
-  private readonly anthropic: () => AnthropicClient;
+  private readonly resolveProvider: BuilderProviderResolver;
   private readonly draftStore: DraftStore;
   private readonly bus: SpecEventBus;
   private readonly rebuildScheduler: RebuildScheduler;
@@ -377,7 +377,7 @@ export class BuilderAgent {
   private cachedSystemPromptSeed: string | null = null;
 
   constructor(deps: BuilderAgentDeps) {
-    this.anthropic = deps.anthropic;
+    this.resolveProvider = deps.resolveProvider;
     this.draftStore = deps.draftStore;
     this.bus = deps.bus;
     this.rebuildScheduler = deps.rebuildScheduler;
@@ -516,10 +516,22 @@ export class BuilderAgent {
     const subAgentTools = this.tools.map((tool) => bridgeBuilderTool(tool, toolCtx));
     const systemPrompt = await this.composedSystemPrompt(draft.spec, draft.slots ?? {});
 
+    let resolved: BuilderProviderResolution;
+    try {
+      resolved = await this.resolveProvider(opts.modelChoice);
+    } catch (err) {
+      yield {
+        type: 'error',
+        code: 'builder.model_unavailable',
+        message: err instanceof Error ? err.message : String(err),
+      };
+      return;
+    }
+
     const subAgent = this.buildSubAgent({
       name: `builder-${opts.draftId}`,
-      client: this.anthropic(),
-      model: opts.modelChoice,
+      provider: resolved.provider,
+      model: resolved.modelId,
       maxTokens: this.maxTokens,
       maxIterations: this.maxIterations,
       systemPrompt,
@@ -876,7 +888,7 @@ function bridgeBuilderTool(
 function defaultBuildSubAgent(opts: BuilderSubAgentBuildOptions): Askable {
   return new LocalSubAgent({
     name: opts.name,
-    provider: createAnthropicProvider({ client: opts.client }),
+    provider: opts.provider,
     model: opts.model,
     maxTokens: opts.maxTokens,
     maxIterations: opts.maxIterations,

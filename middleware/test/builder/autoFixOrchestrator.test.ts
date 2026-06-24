@@ -181,7 +181,6 @@ function makeHarness(opts?: { autoFixEnabled?: boolean }): Harness {
     draftStore,
     builderAgent,
     defaultModel: 'claude-haiku-4-5-20251001',
-    resolveModelId: () => 'claude-haiku-4-5-20251001',
     logger: () => {},
   });
 
@@ -429,7 +428,6 @@ describe('AutoFixOrchestrator integration', () => {
       draftStore,
       builderAgent,
       defaultModel: 'claude-haiku-4-5-20251001',
-      resolveModelId: () => 'claude-haiku-4-5-20251001',
       logger: () => {},
     });
     orchestrator.ensureSubscribed('d1', 'op@example.com');
@@ -494,7 +492,6 @@ describe('AutoFixOrchestrator integration', () => {
       draftStore,
       builderAgent,
       defaultModel: 'claude-haiku-4-5-20251001',
-      resolveModelId: () => 'claude-haiku-4-5-20251001',
       logger: () => {},
     });
     orchestrator.ensureSubscribed('d1', 'op@example.com');
@@ -560,7 +557,6 @@ describe('AutoFixOrchestrator integration', () => {
       draftStore,
       builderAgent,
       defaultModel: 'claude-haiku-4-5-20251001',
-      resolveModelId: () => 'claude-haiku-4-5-20251001',
       logger: () => {},
     });
     orchestrator.ensureSubscribed('d1', 'op@example.com');

@@ -635,13 +635,11 @@ function validateValues(
       (typeof raw === 'string' && raw.length === 0);
 
     if (field.type === 'oauth') {
-      errors.push({
-        key: field.key,
-        code: 'unsupported_type',
-        message:
-          'OAuth-Felder werden erst in Slice 1.2c unterstützt. ' +
-          'Bitte nicht für v1.2a verwenden.',
-      });
+      // Spec 005 — an oauth field carries no value submitted at configure.
+      // The kernel OAuth broker establishes the connection AFTER install (via
+      // the Connect flow on the store-detail page) and stores the tokens in
+      // the plugin's vault namespace under `oauth.<key>`. So configure simply
+      // skips it — it is neither required here nor coercible from form input.
       continue;
     }
 

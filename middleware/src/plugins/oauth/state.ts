@@ -27,13 +27,19 @@ const DEFAULT_TTL = '10m';
 export interface OAuthStateClaims {
   /** Server-side pendingFlows key. */
   flowId: string;
-  /** Install-job this flow belongs to. */
-  jobId: string;
-  /** Provider-id for routing the callback to the right factory. */
+  /** Plugin whose vault namespace + descriptor this flow targets. Always
+   *  present — it binds the state (and the resulting tokens) to one plugin
+   *  on both the install-drawer and the store-detail re-connect paths. */
+  pluginId: string;
+  /** Provider-id for routing the callback to the right descriptor. */
   providerId: string;
   /** Plugin-manifest field key the operator is connecting (so we know
-   *  where in the install-job's secret-buffer the tokens go). */
+   *  where the resulting tokens go). */
   fieldKey: string;
+  /** Install-job this flow belongs to. Present only on the first-time
+   *  install-drawer path; absent on the store-detail re-connect path (an
+   *  installed plugin re-acquiring a revoked credential — no job exists). */
+  jobId?: string;
 }
 
 export async function signOAuthState(
@@ -60,13 +66,19 @@ export async function verifyOAuthState(
     algorithms: [ALG],
   });
   const flowId = typeof payload['flowId'] === 'string' ? payload['flowId'] : '';
-  const jobId = typeof payload['jobId'] === 'string' ? payload['jobId'] : '';
+  const pluginId =
+    typeof payload['pluginId'] === 'string' ? payload['pluginId'] : '';
   const providerId =
     typeof payload['providerId'] === 'string' ? payload['providerId'] : '';
   const fieldKey =
     typeof payload['fieldKey'] === 'string' ? payload['fieldKey'] : '';
-  if (!flowId || !jobId || !providerId || !fieldKey) {
+  const jobIdRaw = payload['jobId'];
+  const jobId =
+    typeof jobIdRaw === 'string' && jobIdRaw.length > 0 ? jobIdRaw : undefined;
+  if (!flowId || !pluginId || !providerId || !fieldKey) {
     throw new Error('oauth state token missing required claims');
   }
-  return { flowId, jobId, providerId, fieldKey };
+  const claims: OAuthStateClaims = { flowId, pluginId, providerId, fieldKey };
+  if (jobId) claims.jobId = jobId;
+  return claims;
 }

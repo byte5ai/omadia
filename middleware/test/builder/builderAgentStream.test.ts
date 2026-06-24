@@ -70,7 +70,7 @@ async function createHarness(): Promise<Harness> {
     tmpRoot,
     agentFor(subAgentBuilder) {
       return new BuilderAgent({
-        anthropic: () => fakeAnthropic,
+        resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore,
         bus,
         rebuildScheduler: { schedule() {} },

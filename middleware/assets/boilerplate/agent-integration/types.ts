@@ -110,6 +110,13 @@ export interface PluginContext {
    *  ungated; re-report on `activate()` (in-memory, self-heals on restart). */
   readonly status: StatusAccessor;
 
+  /** Spec 005 — broker-acquired OAuth access tokens. Present iff the manifest
+   *  declares a `type:oauth` setup field + an `oauth_providers` descriptor AND
+   *  the core ships the broker. `get(fieldKey)` returns a valid access token,
+   *  refreshing kernel-side under a 5-min margin; the refresh token never
+   *  reaches plugin code. Guard with `if (ctx.oauthTokens)`. */
+  readonly oauthTokens?: OAuthTokensAccessor;
+
   /** Per-plugin memory store, scoped to `/memories/agents/<agentId>/`.
    *  All paths are RELATIVE — `notes.md` resolves to
    *  `/memories/agents/<agentId>/notes.md` under the hood. Plugins cannot
@@ -199,6 +206,19 @@ export interface StatusAccessor {
   report(status: PluginActionStatus): void;
   clear(): void;
 }
+
+/**
+ * Spec 005 — read-side of the kernel OAuth broker (mirror of
+ * `OAuthTokensAccessor` from `@omadia/plugin-api`). `get(fieldKey)` returns a
+ * valid access token for a `type:oauth` connection, refreshed kernel-side; the
+ * refresh token never reaches plugin code. Throws an `OAuthTokenError` with
+ * `code: 'not_connected'` (no token yet) or `'refresh_failed'` (re-connect).
+ */
+export interface OAuthTokensAccessor {
+  get(fieldKey: string): Promise<string>;
+}
+
+export type OAuthTokenErrorCode = 'not_connected' | 'refresh_failed';
 
 /**
  * Schedule for a cron- or interval-driven background job. Pass to
