@@ -26,6 +26,7 @@ import type { Request, Response } from 'express';
 
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { SecretVault } from '../secrets/vault.js';
+import { detectCliBackends } from '../platform/cliBackendDetector.js';
 
 export interface AdminProvidersDeps {
   readonly installedRegistry: InstalledRegistry;
@@ -38,6 +39,7 @@ export interface AdminProvidersDeps {
     get(id: string):
       | {
           readonly label: string;
+          readonly wireFormat?: string;
           readonly policy?: {
             readonly requiresAvvDisclosure?: boolean;
             readonly euHosted?: boolean;
@@ -61,6 +63,11 @@ interface LlmPluginDesc {
   readonly modelKeys: readonly string[];
   /** Extra config to apply on a non-Anthropic assignment. */
   readonly extraOnNonAnthropic?: Readonly<Record<string, string>>;
+  /** This plugin drives a tool loop, so a tool-less provider (e.g. the
+   *  `claude-cli` Shape-2 backend) must NOT be assignable to it — that would
+   *  silently disable its tools. Tool-less plugins (extractors/classifiers)
+   *  omit this. */
+  readonly requiresTools?: boolean;
 }
 
 const LLM_PLUGINS: ReadonlyArray<LlmPluginDesc> = [
@@ -68,13 +75,17 @@ const LLM_PLUGINS: ReadonlyArray<LlmPluginDesc> = [
     id: '@omadia/orchestrator',
     label: 'Orchestrator',
     modelKeys: ['orchestrator_model'],
-    // Per-turn Sonnet/Opus routing only makes sense within Anthropic.
+    // Per-turn Sonnet/Opus routing only makes sense within Anthropic; the
+    // default chatAgent path now accepts the subscription CLI via Shape 3.
     extraOnNonAnthropic: { orchestrator_model_routing: 'false' },
   },
   {
     id: '@omadia/verifier',
     label: 'Verifier',
     modelKeys: ['verifier_model'],
+    // The verifier uses FORCED single-tool structured output (claimExtractor /
+    // evidenceJudge), which the claude-cli provider now supports via a
+    // JSON-schema prompt — so the subscription CLI is a valid choice here.
   },
   {
     id: '@omadia/orchestrator-extras',
@@ -143,13 +154,21 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
     // an uncaught vault/read failure would hang the request. Catch → 500.
     try {
       const providerIds = [...new Set(listModels().map((m) => m.provider))];
+      // #309: a CLI-backed provider is keyless — "connected" means the local CLI
+      // is installed AND logged in (host capability), not a vault key. Detect once.
+      const cliSnap = await detectCliBackends().catch(() => undefined);
+      const cliConnected = (cliId: string): boolean =>
+        cliSnap?.backends.find((b) => b.id === cliId)?.loggedIn === 'yes';
       const providers = await Promise.all(
         providerIds.map(async (id) => {
           const descriptor = deps.llmProviderCatalog?.get(id);
           return {
           id,
           label: descriptor?.label ?? providerLabel(id),
-          connected: await isConnected(deps.vault, id),
+          connected: id === 'claude-cli' ? cliConnected('claude') : await isConnected(deps.vault, id),
+          // Tool-less (Shape-2 CLI) providers can't drive a tool loop — the UI
+          // uses this to disable them for tool-dependent plugins.
+          toolLess: descriptor?.wireFormat === 'claude-cli',
           // Data-protection hints for the operator UI (data-driven, no id checks).
           // Safe defaults for an unknown provider: third-party, non-EU.
           requiresAvvDisclosure: descriptor?.policy?.requiresAvvDisclosure ?? true,
@@ -178,6 +197,8 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
           provider: readStringConfig(cfg, 'llm_provider') ?? DEFAULT_PROVIDER,
           model: readStringConfig(cfg, modelKey) ?? null,
           modelKey,
+          // This plugin drives a tool loop → the UI disables tool-less providers.
+          requiresTools: p.requiresTools === true,
           // surface the orchestrator's per-turn routing flag so the page can show
           // /edit it directly (it gets force-disabled on a non-Anthropic switch).
           ...(p.id === '@omadia/orchestrator'
@@ -222,6 +243,18 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
       res.status(404).json({
         code: 'providers.not_installed',
         message: `${pluginId} is not installed`,
+      });
+      return;
+    }
+    // Fail closed: never assign a tool-less provider (the `claude-cli` Shape-2
+    // backend) to a plugin that drives a tool loop — it would silently disable
+    // tools/memory/sub-agents. Tool-less plugins (extractors/classifiers) are
+    // fine and are the intended target for the subscription CLI.
+    const providerWire = deps.llmProviderCatalog?.get(provider)?.wireFormat;
+    if (desc.requiresTools === true && providerWire === 'claude-cli') {
+      res.status(400).json({
+        code: 'providers.tool_incompatible',
+        message: `${desc.label} needs tool support; the subscription CLI provider is tool-less. Use it only for tool-less roles (e.g. extraction/classification).`,
       });
       return;
     }

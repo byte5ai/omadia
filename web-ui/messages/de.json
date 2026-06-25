@@ -1499,12 +1499,15 @@
       "modelCount": "{count, plural, one {# Modell} other {# Modelle}}",
       "connected": "verbunden",
       "notConnected": "kein Schlüssel",
-      "addKey": "Schlüssel hinterlegen"
+      "addKey": "Schlüssel hinterlegen",
+      "logIn": "Anmelden",
+      "manageCli": "Verwalten"
     },
     "assignments": {
       "heading": "Zuordnung pro Agent",
       "intro": "Ordne jedem LLM-fähigen Plugin einen Provider und ein Modell zu. Beim Speichern wird das Plugin neu aktiviert, sodass die Änderung sofort greift.",
       "notInstalled": "nicht installiert",
+      "toolLessBlocked": "braucht Tools — nicht für diese Rolle",
       "providerLabel": "Provider",
       "modelLabel": "Modell",
       "pickModel": "Modell wählen …",
@@ -1515,6 +1518,64 @@
       "saving": "speichert …",
       "saved": "✓ gespeichert",
       "errorChip": "✗ Fehler"
+    }
+  },
+  "adminSubscriptionClis": {
+    "title": "Abo-CLIs",
+    "intro": "Betreibe Agenten über ein LLM-Abo, das du bereits bezahlst (etwa Claude Pro oder Max), indem du die offizielle CLI des Anbieters verbindest, statt pro Token mit einem API-Schlüssel zu zahlen. omadia erkennt, welche CLIs auf diesem Server installiert und angemeldet sind.",
+    "explainer": {
+      "heading": "Abo vs. API-Schlüssel",
+      "body": "Ein API-Schlüssel rechnet pro Token ab. Eine Abo-CLI läuft über deinen bestehenden Tarif: Du meldest dich einmal mit dem offiziellen Tool an, und omadia nutzt diese Sitzung weiter. Das ist derselbe erlaubte Weg, den die offizielle CLI selbst nutzt, kein Token-Auslesen.",
+      "singleOperator": "Abo-Guthaben gehört zu einem Konto und lässt sich nicht teilen, daher passt das zu einem Self-Host für eine einzelne Person. Für ein geteiltes oder produktives Gateway nutze einen API-Schlüssel auf der Seite LLM-Provider."
+    },
+    "loading": "Lädt …",
+    "loadError": "Laden fehlgeschlagen: {message}",
+    "selectModelLink": "Nach der Anmeldung ein CLI-Modell für einen Agenten unter LLM-Provider auswählen",
+    "detected": {
+      "heading": "Erkannte CLIs"
+    },
+    "recheck": "Erneut prüfen",
+    "rechecking": "Prüft …",
+    "version": "v{version}",
+    "status": {
+      "notInstalled": "In dieser Umgebung nicht installiert.",
+      "loggedIn": "Angemeldet und bereit.",
+      "loggedInAs": "Angemeldet als {account}.",
+      "installedNotLoggedIn": "Installiert, aber noch nicht angemeldet.",
+      "installedUnknown": "Installiert. Anmeldestatus konnte nicht bestätigt werden."
+    },
+    "connect": {
+      "button": "Abo verbinden",
+      "starting": "Anmeldung wird gestartet …",
+      "heading": "Bei deinem Abo anmelden",
+      "openHint": "Öffne die Anthropic-Anmeldeseite und bestätige den Zugriff:",
+      "openLink": "Anmeldeseite öffnen",
+      "pasteHint": "Kopiere den nach der Bestätigung angezeigten Code, füge ihn hier ein und sende ab:",
+      "codePlaceholder": "Login-Code einfügen",
+      "submit": "Code senden",
+      "submitting": "Anmeldung läuft …",
+      "cancel": "Abbrechen",
+      "retry": "Erneut versuchen",
+      "failed": "Anmeldung fehlgeschlagen. Bitte erneut versuchen.",
+      "stillPending": "Noch nicht angemeldet. Öffne den Link, bestätige den Zugriff und sende den Code erneut.",
+      "manualSummary": "Lieber das Terminal?",
+      "step1": "Stelle sicher, dass die CLI installiert ist (im omadia-Image enthalten oder selbst installieren):",
+      "installCmd": "npm install -g @anthropic-ai/claude-code",
+      "step2": "Melde dich mit deinem Abo-Konto an:",
+      "step3": "Komm hierher zurück und drücke Erneut prüfen. Eine angemeldete CLI zeigt ein grünes Badge."
+    },
+    "logout": {
+      "button": "Abmelden",
+      "busy": "Abmeldung läuft …"
+    },
+    "needsVerificationNote": "Die Abo-Abrechnung für diese CLI ist noch nicht bestätigt. Eine Anmeldung könnte statt des Abos die API abrechnen, daher ist sie für omadia bis zur Prüfung nicht empfohlen.",
+    "badge": {
+      "notInstalled": "nicht gefunden",
+      "installed": "installiert",
+      "needsLogin": "Anmeldung nötig",
+      "loggedIn": "angemeldet",
+      "subscription": "Abo",
+      "needsVerification": "Prüfung nötig"
     }
   },
   "createIssue": {

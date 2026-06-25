@@ -59,6 +59,23 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends gosu zip \
  && rm -rf /var/lib/apt/lists/*
 
+# Subscription-CLI backends (#309): optionally bundle the official Claude CLI so
+# a single-operator self-host can run agents on a subscription (Claude Pro/Max)
+# instead of a metered API key. The CLI detector surfaces it in the admin UI.
+# Default OFF for public images — redistributing a proprietary vendor CLI needs
+# a legal review; the local/dev compose enables it via build arg. Login is still
+# per-host (`claude auth login`), never baked into the image.
+ARG INSTALL_SUBSCRIPTION_CLIS=false
+ARG CLAUDE_CODE_VERSION=2.1.187
+RUN if [ "${INSTALL_SUBSCRIPTION_CLIS}" = "true" ]; then \
+      npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+   && npm cache clean --force; \
+    fi
+# Subscription-CLI credentials live on the persisted data volume (not the
+# ephemeral image home), so a `claude auth login` survives container recreate.
+# The detector + login flow both honor CLAUDE_CONFIG_DIR.
+ENV CLAUDE_CONFIG_DIR=/data/claude-cli
+
 COPY middleware/package.json middleware/package-lock.json ./
 # S+11+ workspace packages: pull from the builder stage (with compiled dist/ per
 # package). Must be in place BEFORE `npm ci --omit=dev` so npm can

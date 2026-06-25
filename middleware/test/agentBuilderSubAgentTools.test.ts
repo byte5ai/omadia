@@ -24,6 +24,7 @@ import {
   mcpToolNameFromRef,
   subAgentToolName,
 } from '../packages/harness-orchestrator/src/registry/subAgentTools.js';
+import { registerDbSubAgentTools } from '../src/agents/subAgentToolHydration.js';
 
 const fakeProvider = {} as unknown as LlmProvider;
 
@@ -104,6 +105,68 @@ test('disabled sub-agents are skipped', () => {
     { provider: fakeProvider, defaultModel: 'm', defaultMaxTokens: 1, defaultMaxIterations: 1 },
   );
   assert.equal(tools.length, 0);
+});
+
+test('registerDbSubAgentTools registers one domain tool on local and CLI host paths', () => {
+  const slice = {
+    subAgents: [sub()],
+    toolGrants: [nativeGrant()],
+    skills: [skill()],
+  };
+
+  const makeBuilt = () => {
+    const registered: Array<{ name: string }> = [];
+    return {
+      built: {
+        orchestrator: {
+          hasDomainTool: (name: string): boolean =>
+            registered.some((tool) => tool.name === name),
+          registerDomainTool: (tool: { name: string }): void => {
+            registered.push(tool);
+          },
+        },
+      },
+      registered,
+    };
+  };
+
+  const makeDeps = (
+    overrides: Partial<Parameters<typeof registerDbSubAgentTools>[2]> = {},
+  ): Parameters<typeof registerDbSubAgentTools>[2] => ({
+    client: {} as Parameters<typeof registerDbSubAgentTools>[2]['client'],
+    nativeToolRegistry: {
+      get: (toolRef: string) =>
+        toolRef === 'web_search'
+          ? { spec: stubNativeTool.spec, handler: stubNativeTool.handle }
+          : undefined,
+    } as Parameters<typeof registerDbSubAgentTools>[2]['nativeToolRegistry'],
+    mcpManager: {} as Parameters<typeof registerDbSubAgentTools>[2]['mcpManager'],
+    mcpServers: [],
+    defaultModel: 'claude-sonnet-4-6',
+    ...overrides,
+  });
+
+  const local = makeBuilt();
+  const cli = makeBuilt();
+
+  assert.equal(registerDbSubAgentTools(slice, local.built, makeDeps()), 1);
+  assert.equal(local.registered.length, 1);
+  assert.equal(local.registered[0]?.name, 'ask_researcher_bot');
+
+  assert.equal(
+    registerDbSubAgentTools(
+      slice,
+      cli.built,
+      makeDeps({
+        hostIsCliProvider: true,
+        cliModelAlias: (model: string): string =>
+          model.replace(/-cli$/, '') || 'sonnet',
+      }),
+    ),
+    1,
+  );
+  assert.equal(cli.registered.length, 1);
+  assert.equal(cli.registered[0]?.name, 'ask_researcher_bot');
 });
 
 test('subAgentToolName + mcpToolNameFromRef', () => {
