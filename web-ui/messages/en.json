@@ -274,10 +274,7 @@
     "subIterations": "{count} inner iterations"
   },
   "markdownTable": {
-    "openFullView": "Open table in full view",
-    "modalTitle": "Table — full view",
-    "ariaClose": "Close",
-    "ariaCloseBackdrop": "Close"
+    "scrollRegionLabel": "Scrollable table"
   },
   "nudgeCard": {
     "kicker": "Suggestion",

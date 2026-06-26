@@ -491,31 +491,46 @@ body {
   max-height: 60vh;
   border: 1px solid var(--border);
 }
-.md-table-wrap--full {
-  max-height: none;
-  border: 0;
-  border-radius: 0;
-}
 .md-view table {
-  @apply border-collapse text-xs;
+  @apply text-xs;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+/* Inside the scroll wrapper: `min-width: max-content` keeps wide tables from
+   being squeezed (the wrapper takes the horizontal scroll instead); `width:
+   100%` makes small tables fill the wrapper so its border/rounded corners
+   don't gap. Outside the wrapper (e.g. BuilderMarkdown), small tables stay
+   at content width instead of stretching to full width. */
+.md-table-wrap table {
   min-width: max-content;
   width: 100%;
 }
 .md-view th,
 .md-view td {
   @apply px-3 py-2 text-left align-top tabular-nums;
-  border: 1px solid var(--border);
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: break-word;
+}
+.md-view th:first-child,
+.md-view td:first-child {
+  border-left: 1px solid var(--border);
 }
 .md-view th {
   @apply font-semibold;
   background: var(--bg-soft);
 }
+/* `border-collapse: separate` keeps cell borders on the cell, so a sticky
+   header keeps its divider while scrolling. We still render the bottom rule
+   as an inset shadow (instead of `border-bottom`) so it's painted by the
+   sticky cell itself — guaranteed visible regardless of how the row above
+   resolves the shared edge. */
 .md-view thead th {
   position: sticky;
   top: 0;
   z-index: 1;
+  border-bottom: 0;
+  box-shadow: inset 0 -1px 0 var(--border);
 }
 @media print {
   .md-table-wrap {
