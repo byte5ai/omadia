@@ -1,6 +1,8 @@
 <div align="center">
 
-<img src="docs/media/omadia-banner.png" alt="omadia: An Agentic OS for professionals" width="820">
+<img src="docs/media/omadia-banner.png" alt="omadia" width="820">
+
+### An Agentic OS for professionals
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-black.svg)](LICENSE)
 [![Status: public preview](https://img.shields.io/badge/status-public%20preview-orange.svg)](#status--roadmap)
