@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="docs/media/omadia-banner.png" alt="omadia" width="820">
+<img src="docs/media/omadia-wordmark.png" alt="omadia" width="820">
 
-### Spin up a team of AI agents that does the work — on your own server, with a receipt for every action.
+### An Agentic OS for professionals
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-black.svg)](LICENSE)
 [![Status: public preview](https://img.shields.io/badge/status-public%20preview-orange.svg)](#status--roadmap)
@@ -15,13 +15,12 @@
 
 </div>
 
-**omadia is a self-hostable agentic OS** — compose multi-agent teams from signed
-plugins, run them on a single machine, and get an auditable receipt for everything
-they do. Unlike most agent frameworks: **real data never reaches the LLM** (the
-Privacy Shield interns raw tool results behind a data-plane boundary), **answers
-are verified** before they go out, and **numbers are computed** by a real
-spreadsheet engine — not guessed by the model. Your LLM key. Your data. Your
-compliance story.
+**omadia is a self-hostable agentic OS that makes AI dependable enough for real
+work.** A team of agents runs on infrastructure you own and turns your data,
+software, and people into results you can steer, audit, and prove. Sensitive data
+stays in the house and never leaves in clear text. Every answer is checked before
+it ships. Every action carries a receipt. Bring your own LLM key and switch
+providers by config, not code.
 
 #### 🎬 The 2-minute pitch
 
@@ -84,67 +83,66 @@ docker compose -f docker-compose.yaml -f docker-compose.build.yaml up -d --build
 
 <div align="center">
 
-<img src="docs/media/omadia-demo.gif" alt="omadia no-code builder — describe an agent in plain words, the builder generates it, then try it out" width="820">
+<img src="docs/media/omadia-demo.gif" alt="omadia no-code builder: describe an agent in plain words, the builder generates it, then try it out" width="820">
 
 <sub>Describe an agent in plain words → the builder generates it → try it out. No code.</sub>
 
 </div>
 
-The point of omadia clicks the moment you watch a team of agents do real work and
-hand you a receipt for it:
+omadia clicks once you watch a team of agents do real work and hand you a receipt
+for it:
 
-1. **`docker compose up -d`** — the minimal core (postgres, middleware, and the admin UI) comes up together.
+1. Run **`docker compose up -d`**. The minimal core (postgres, middleware, admin UI) comes up together.
 2. **Open `http://localhost:3333`** and finish the first-admin `/setup` wizard.
 3. **Start a demo agent team** from a single prompt in the web chat.
-4. **Watch it work** — the orchestrator streams turns and dispatches tools across
+4. **Watch it work.** The orchestrator streams turns and dispatches tools across
    the agents in the team.
-5. **Open the run's trace** — the per-run **call-stack viewer** is your audit
-   receipt: every step, every tool call, every decision, replayable.
+5. **Open the run's trace.** The per-run call-stack viewer is your audit receipt:
+   every step, every tool call, every decision, replayable.
 
 ## Why omadia?
 
-omadia optimizes for what matters once an agent system leaves a laptop —
-ownership, auditability, and dropping into a real enterprise stack, not just
-"how many demos can it run." The first three rows are the moat; the rest is
-table stakes done right.
+omadia is built for the moment an agent system leaves the laptop and meets real
+work: ownership, auditability, and a clean fit into an existing stack. The first
+three rows are why teams choose it; the rest is the groundwork done properly.
 
 | Capability | What you get |
 |---|---|
-| 🛡️ **Privacy Shield** | Raw tool results are interned behind a data-plane boundary; the LLM sees only an identity-free digest. `guarded` by default, `bypass`/`per_tool` opt-in, org-wide clamp via `OMADIA_PRIVACY_FORCE_GUARDED`. The answer to *"I can't put real data through an LLM."* |
-| ✅ **Answer verification** | Each answer's claims are checked against the run's own sources; a verdict (`approved` / `approved_with_disclaimer`) lands before it reaches the user — no more "confidently wrong." |
-| 🧮 **Computed, not guessed** | Headless Office/Excel compute runs real spreadsheet formulas server-side over real rows (`datasetId`) that never pass through the model. |
-| 🧾 **A receipt for every action** | Per-run trace + call-stack viewer for every agent run — audit, debug, and prove what happened. Built in, not bolted on. |
-| 🤖 **Agent teams, not one chatbot** | An orchestrator routes each turn to the right specialized plugin agent — channels, integrations, tools, and capability providers behind one stable API. |
-| 🔒 **Self-hosted and yours** | `docker compose up` on a single machine, bring your own LLM key, own 100% of the data. EU / GDPR-ready, no SaaS lock-in. |
-| 🧩 **Signed plugin distribution** | Verifiable plugin packages, not arbitrary npm pulled at runtime. |
-| 🔌 **Enterprise integrations** | Microsoft 365, Odoo, Confluence, Teams, Telegram — provider-pluggable LLM behind all of it. |
+| 🛡️ **Privacy Shield** | Raw tool results stay behind a data-plane boundary; the LLM sees only an identity-free digest. `guarded` by default, with `bypass`/`per_tool` opt-in and an org-wide clamp (`OMADIA_PRIVACY_FORCE_GUARDED`). Real data can run through omadia without running through the model. |
+| ✅ **Answer verification** | A verifier checks each answer's claims against the run's own sources and records a verdict (`approved` / `approved_with_disclaimer`) before it reaches the channel. |
+| 🧮 **Computed, not guessed** | Office and Excel output comes from a real spreadsheet engine, server-side, over real rows (`datasetId`). The figures are calculated by that engine rather than produced by the model. |
+| 🧾 **A receipt for every action** | Every agent run carries a full per-run trace and call-stack viewer: every step, tool call, and decision, replayable. |
+| 🤖 **Agent teams, not one chatbot** | An orchestrator routes each turn to the right specialist plugin agent. Channels, integrations, tools, and capability providers sit behind one stable API. |
+| 🔒 **Self-hosted and yours** | One `docker compose up` on a single machine. Your Postgres, your LLM key, all of the data on your own infrastructure. GDPR-aware and made in the EU. |
+| 🧩 **Signed plugin distribution** | Plugins ship as verifiable signed packages. The platform never pulls arbitrary npm at runtime. |
+| 🔌 **Enterprise integrations** | Microsoft 365, Odoo, Confluence, Teams, and Telegram, with the LLM provider a swappable plugin. |
 
 ## What's in the box
 
-- **Privacy Shield** — a data-plane boundary that interns raw tool results and
+- **Privacy Shield**: a data-plane boundary that interns raw tool results and
   exposes only an identity-free digest to the LLM
   ([`harness-plugin-privacy-guard`](middleware/packages/harness-plugin-privacy-guard),
   [`privacyMode.ts`](middleware/packages/plugin-api/src/privacyMode.ts))
-- **Answer verifier** — claim-checks each answer against its sources and returns
+- **Answer verifier**: claim-checks each answer against its sources and returns
   a verdict before it ships
   ([`harness-verifier`](middleware/packages/harness-verifier),
   [`verifierService.ts`](middleware/packages/harness-orchestrator/src/verifierService.ts))
-- **Office compute** — `create_xlsx` / `create_docx` build real spreadsheets and
+- **Office compute**: `create_xlsx` / `create_docx` build real spreadsheets and
   documents server-side, resolving dataset rows without routing them through the
   model ([`harness-plugin-office`](middleware/packages/harness-plugin-office))
-- **Plugin runtime** — channels, integrations, tools, sub-agents, capability
+- **Plugin runtime**: channels, integrations, tools, sub-agents, and capability
   providers; everything is a plugin behind a stable API surface
   ([`@omadia/plugin-api`](middleware/packages/plugin-api))
-- **Builder** — UI-driven plugin authoring with codegen, slot-typecheck,
+- **Builder**: UI-driven plugin authoring with codegen, slot-typecheck,
   in-process ESLint auto-fix, and a runtime smoke harness
-- **Knowledge graph** — pgvector-backed (Postgres) with an in-memory
+- **Knowledge graph**: pgvector-backed (Postgres) with an in-memory
   alternative for tests
-- **Channels** — web-chat (admin UI) is in-tree; Teams + Telegram are
-  shipped as separately-distributed plugin ZIPs
-- **Auth** — multi-provider login (local password + OIDC), per-provider
+- **Channels**: web-chat (admin UI) is in-tree; Teams and Telegram ship as
+  separately-distributed plugin ZIPs
+- **Auth**: multi-provider login (local password + OIDC), per-provider
   user table, admin UI for provider toggle and user management
-- **Routines** — user-authored cron-triggered agent runs with full per-run
-  trace + call-stack viewer
+- **Routines**: user-authored cron-triggered agent runs with a full per-run
+  trace and call-stack viewer
 
 ## Design
 
@@ -198,22 +196,22 @@ capability registry, and multi-provider authentication layer lives under
 
 ## Trust & privacy architecture
 
-Three subsystems are what let omadia put *real* data in front of an LLM and
-stand behind the answer:
+Three subsystems let omadia put real data in front of an LLM and stand behind the
+answer:
 
-- **Privacy Shield (data-plane boundary)** — raw tool results are interned
-  behind the boundary and the LLM sees only an identity-free digest. The mode is
-  `guarded` by default (safe-by-default); `bypass` and `per_tool` are explicit
-  opt-ins, and `OMADIA_PRIVACY_FORCE_GUARDED` clamps every plugin to `guarded`
-  org-wide. Pseudonyms resolve back to real values only at materialization, and
-  each bypass lands in the receipt. Spec: [`specs/001-privacy-shield-v4/`](specs/001-privacy-shield-v4/).
-- **Answer verification** — before a turn's answer is returned, the verifier
-  checks its claims against the run's sources and emits a verdict
-  (`approved`, `approved_with_disclaimer`, or `blocked`). The borderline verdict
-  attaches a disclaimer rather than silently shipping an unsupported claim.
-- **Office compute (computed, not guessed)** — numbers in `.xlsx` / `.docx`
-  output are produced by a real spreadsheet engine over real rows, not generated
-  token-by-token. When a specialist agent returns a `datasetId`, the rows are
+- **Privacy Shield (data-plane boundary)**: raw tool results are interned behind
+  the boundary and the LLM sees only an identity-free digest. `guarded` is the
+  default; `bypass` and `per_tool` are explicit opt-ins, and
+  `OMADIA_PRIVACY_FORCE_GUARDED` clamps every plugin to `guarded` org-wide.
+  Pseudonyms resolve back to real values only at materialization, and each bypass
+  lands in the receipt. Spec: [`specs/001-privacy-shield-v4/`](specs/001-privacy-shield-v4/).
+- **Answer verification**: before a turn's answer is returned, the verifier checks
+  its claims against the run's sources and emits a verdict (`approved`,
+  `approved_with_disclaimer`, or `blocked`). A borderline verdict attaches a
+  disclaimer instead of silently shipping an unsupported claim.
+- **Office compute (computed, not guessed)**: numbers in `.xlsx` / `.docx` output
+  come from a real spreadsheet engine over real rows, rather than the model's
+  token stream. When a specialist agent returns a `datasetId`, the rows are
   resolved server-side and never pass through the model.
 
 ### Optional features
@@ -246,19 +244,19 @@ docker compose -f docker-compose.yaml \
 
 ## Plugin development
 
-**Start here → [`byte5ai/omadia-plugin-starter`](https://github.com/byte5ai/omadia-plugin-starter)** —
-a ready-to-fork template for building your own omadia plugin. Clone it, fill in
-your logic against [`@omadia/plugin-api`](middleware/packages/plugin-api), and ship.
+**Start here: [`byte5ai/omadia-plugin-starter`](https://github.com/byte5ai/omadia-plugin-starter).**
+A ready-to-fork template for your own omadia plugin. Clone it, fill in your logic
+against [`@omadia/plugin-api`](middleware/packages/plugin-api), and ship.
 
 omadia plugins are self-contained ZIP files that the operator uploads through
-the admin UI. The platform never trusts external npm registries at runtime —
-plugins ship `node_modules` baked in (or use the platform's standard library
-via `@omadia/plugin-api`). Two reference plugins are also shipped in-tree as
+the admin UI. The platform never trusts external npm registries at runtime;
+plugins ship `node_modules` baked in, or use the platform's standard library
+via `@omadia/plugin-api`. Two reference plugins are also shipped in-tree as
 starting points:
 
-- [`agent-reference-maximum`](middleware/packages/agent-reference-maximum) —
+- [`agent-reference-maximum`](middleware/packages/agent-reference-maximum):
   exercises every capability in the plugin API
-- [`agent-seo-analyst`](middleware/packages/agent-seo-analyst) — a smaller,
+- [`agent-seo-analyst`](middleware/packages/agent-seo-analyst): a smaller,
   focused tool-only example
 
 The Builder UI walks operators through cloning either reference, slot-filling
@@ -266,12 +264,12 @@ the differentiating logic, and verifying with the smoke runner before install.
 
 ## Deployment
 
-- **Local / single-tenant** — `docker compose up`, see Quickstart above
-- **Bring-your-own** — the runtime is a stock Node + Postgres app; any host
-  capable of running both works (Kubernetes, ECS, plain VM).
+- **Local / single-tenant**: `docker compose up`, see Quickstart above
+- **Bring-your-own**: the runtime is a stock Node + Postgres app; any host
+  that can run both works (Kubernetes, ECS, plain VM).
 
 > **Required production secret.** The shipped image runs with
-> `NODE_ENV=production`, which makes `VAULT_KEY` mandatory at boot — without
+> `NODE_ENV=production`, which makes `VAULT_KEY` mandatory at boot; without
 > it the middleware refuses to start (this is intentional; the dev fallback
 > writes the master key into the data volume, which is not safe at rest).
 > Generate one with `openssl rand -base64 32` and wire it as a platform
@@ -283,7 +281,7 @@ the differentiating logic, and verifying with the smoke runner before install.
 
 ## Status & Roadmap
 
-> **Status — pre-1.0.** Public preview. APIs and database schemas may break
+> **Status: pre-1.0.** Public preview. APIs and database schemas may break
 > between minor versions until `1.0.0`. Production use of the OSS distribution
 > is supported but the upgrade path is hand-rolled today; an automated
 > migration runner is on the v1.0 roadmap.
@@ -294,17 +292,17 @@ without notice until `1.0.0`.
 
 Active development tracks:
 
-- **Conductor** — multi-step composition with a human sign-off path; landing
-  from branch `005-omadia-conductor` (this section graduates to a first-class
-  feature once it merges to `main`)
-- **Plugin marketplace** — discovery + signed-package distribution (post-1.0)
-- **Multi-tenant hosting** — out of scope for v1; a separate fork is planned
-- **Web-IDE for plugin development** — moves the Builder authoring loop into
-  the management UI without round-tripping through ZIP uploads (post-1.0)
+- **Conductor**: multi-step composition with a human sign-off path. Landing from
+  branch `005-omadia-conductor`; it graduates to a first-class feature once that
+  merges to `main`.
+- **Plugin marketplace**: discovery and signed-package distribution (post-1.0)
+- **Multi-tenant hosting**: out of scope for v1; a separate fork is planned
+- **Web-IDE for plugin development**: moves the Builder authoring loop into the
+  management UI without round-tripping through ZIP uploads (post-1.0)
 
 ## License
 
-[MIT](LICENSE) — Copyright (c) 2026 byte5 GmbH
+[MIT](LICENSE). Copyright (c) 2026 byte5 GmbH.
 
 Third-party dependency licenses and notices are documented in
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). The dependency tree is
@@ -353,4 +351,4 @@ private contact channel.
 
 omadia is maintained by [byte5 GmbH](https://byte5.de) under the GitHub
 organisation [`byte5ai`](https://github.com/byte5ai). Outside contributions
-are welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+are welcome; see [`CONTRIBUTING.md`](CONTRIBUTING.md).
