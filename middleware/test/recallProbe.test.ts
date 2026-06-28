@@ -726,6 +726,53 @@ describe('R8 · recall relevance judge (LLM-agnostic)', () => {
     const keep = await judge.filterRelevant('deploy', []);
     assert.equal(keep.size, 0);
   });
+
+  /** Stub returning a different reply per call; counts invocations. */
+  function sequencedLlm(replies: Array<string | (() => never)>): {
+    llm: LlmProvider;
+    calls: () => number;
+  } {
+    let i = 0;
+    return {
+      calls: () => i,
+      llm: {
+        async complete(): Promise<unknown> {
+          const r = replies[Math.min(i, replies.length - 1)];
+          i += 1;
+          if (typeof r === 'function') return r();
+          return { content: [{ type: 'text', text: r }] };
+        },
+      } as unknown as LlmProvider,
+    };
+  }
+
+  it('replays a genuine verdict for an identical query (R5 determinism — judge called once)', async () => {
+    const seq = sequencedLlm([
+      JSON.stringify({ relevant: ['plan:a'] }), // 1st genuine verdict
+      JSON.stringify({ relevant: ['process:b'] }), // would differ if re-called
+    ]);
+    const judge = createRecallRelevanceJudge({ llm: seq.llm, model: 'fast-test' });
+    const first = await judge.filterRelevant('how do I deploy billing?', cands);
+    const second = await judge.filterRelevant('how do I deploy billing?', cands);
+    assert.deepEqual([...first], ['plan:a']);
+    assert.deepEqual([...second], ['plan:a'], 'cached verdict replayed, not re-rolled');
+    assert.equal(seq.calls(), 1, 'provider hit exactly once for the repeated query');
+  });
+
+  it('does NOT cache an abstain — a transient failure retries the judge next time', async () => {
+    const seq = sequencedLlm([
+      () => {
+        throw new Error('provider down'); // 1st call abstains (keep all)
+      },
+      JSON.stringify({ relevant: ['plan:a'] }), // 2nd call genuinely judges
+    ]);
+    const judge = createRecallRelevanceJudge({ llm: seq.llm, model: 'fast-test' });
+    const first = await judge.filterRelevant('deploy', cands);
+    const second = await judge.filterRelevant('deploy', cands);
+    assert.equal(first.size, 3, 'abstain keeps all (deterministic floor)');
+    assert.deepEqual([...second], ['plan:a'], 'retry runs the judge (abstain was not cached)');
+    assert.equal(seq.calls(), 2);
+  });
 });
 
 describe('R9 · ContextRetriever applies the relevance judge to recalled', () => {

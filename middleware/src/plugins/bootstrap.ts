@@ -488,13 +488,55 @@ export async function bootstrapMemoryFromEnv(deps: BootstrapDeps): Promise<void>
  * plugin (which now declares `requires: ["embeddingClient@^1"]`) on
  * every boot.
  *
- * Idempotent: once the registry entry exists we never overwrite the
- * operator's settings.
+ * Idempotent install: once the registry entry exists we keep the operator's
+ * settings — EXCEPT we reconcile `ollama_base_url` / `ollama_model` from env
+ * when `OLLAMA_BASE_URL` is set. Without that reconcile, enabling the Ollama
+ * overlay on an EXISTING deployment was a silent no-op: the env→config
+ * migration ran first-install-only, so the embeddings capability stayed
+ * unpublished and recall / durable / process all degraded to no-embedding
+ * paths even though the sidecar was up. Env is the operator's explicit signal
+ * (the overlay), so when set it wins; when unset we leave config untouched.
  */
-async function bootstrapEmbeddingsFromEnv(deps: BootstrapDeps): Promise<void> {
+export async function bootstrapEmbeddingsFromEnv(
+  deps: BootstrapDeps,
+): Promise<void> {
   const log = deps.log ?? ((m) => console.log(m));
 
-  if (deps.registry.has(EMBEDDINGS_TOOL_ID)) return;
+  if (deps.registry.has(EMBEDDINGS_TOOL_ID)) {
+    const entry = deps.registry.get(EMBEDDINGS_TOOL_ID);
+    if (entry && deps.config.OLLAMA_BASE_URL) {
+      const desiredModel = deps.config.OLLAMA_EMBEDDING_MODEL;
+      const desiredConcurrent =
+        typeof deps.config.GRAPH_EMBEDDING_MAX_CONCURRENT === 'number' &&
+        Number.isFinite(deps.config.GRAPH_EMBEDDING_MAX_CONCURRENT)
+          ? deps.config.GRAPH_EMBEDDING_MAX_CONCURRENT
+          : undefined;
+      const needsUrl =
+        entry.config?.['ollama_base_url'] !== deps.config.OLLAMA_BASE_URL;
+      const needsModel =
+        !!desiredModel && entry.config?.['ollama_model'] !== desiredModel;
+      const needsConcurrent =
+        desiredConcurrent !== undefined &&
+        entry.config?.['max_concurrent'] !== desiredConcurrent;
+      if (needsUrl || needsModel || needsConcurrent) {
+        await deps.registry.register({
+          ...entry,
+          config: {
+            ...entry.config,
+            ollama_base_url: deps.config.OLLAMA_BASE_URL,
+            ...(desiredModel ? { ollama_model: desiredModel } : {}),
+            ...(desiredConcurrent !== undefined
+              ? { max_concurrent: desiredConcurrent }
+              : {}),
+          },
+        });
+        log(
+          `[bootstrap] ⚐ ${EMBEDDINGS_TOOL_ID} ollama_base_url reconciled from env (embeddings activated on an existing install)`,
+        );
+      }
+    }
+    return;
+  }
 
   const catalogEntry = deps.catalog.get(EMBEDDINGS_TOOL_ID);
   if (!catalogEntry) {
@@ -580,7 +622,7 @@ async function bootstrapEmbeddingsFromEnv(deps: BootstrapDeps): Promise<void> {
  * auto-flip between the two on subsequent boots — once a provider is
  * installed, it stays installed regardless of env changes.
  */
-async function bootstrapKnowledgeGraphFromEnv(
+export async function bootstrapKnowledgeGraphFromEnv(
   deps: BootstrapDeps,
 ): Promise<void> {
   const log = deps.log ?? ((m) => console.log(m));
@@ -638,8 +680,51 @@ async function bootstrapKnowledgeGraphFromEnv(
     ? KNOWLEDGE_GRAPH_INMEMORY_ID
     : KNOWLEDGE_GRAPH_NEON_ID;
 
-  // Mutual exclusion: respect an operator-managed switch to the sibling.
-  if (deps.registry.has(otherId)) {
+  // Mutual exclusion: exactly one `knowledgeGraph@1` provider may be active.
+  // Two distinct states reach this point:
+  //   (a) Dual-active conflict — BOTH siblings installed. Not a valid operator
+  //       state (the Operator-Switch-Story above uninstalls the old provider
+  //       first). Left as-is, the capability resolver routes reads/writes
+  //       between the two backends non-deterministically (a fact written via
+  //       one is invisible to a read served by the other → "KG doesn't work
+  //       between sessions"). Self-heal by removing the non-selected sibling,
+  //       keeping the DATABASE_URL-consistent backend (the durable one when
+  //       set; inmemory was volatile anyway, so no real data is lost). Mirrors
+  //       the memoryStore self-heal in bootstrapMemoryFromEnv.
+  //   (b) Operator-managed switch — ONLY the sibling installed. Respect it; do
+  //       NOT auto-flip back to the env-selected target.
+  const targetInstalled = deps.registry.has(targetId);
+  const otherInstalled = deps.registry.has(otherId);
+
+  if (targetInstalled && otherInstalled) {
+    // Decide which sibling to KEEP by which one can actually serve durable
+    // data, NOT by env alone. Neon resolves its DSN from the vault (Step 1.5
+    // above migrates database_url → vault, S+12.5-3), so DATABASE_URL may be
+    // unset while neon is the data-bearing backend. Removing neon there would
+    // drop the durable Postgres KG and leave the volatile inmemory one — the
+    // exact "KG doesn't work between sessions" failure. Keep neon whenever it
+    // has a usable DSN (env OR vault); only keep inmemory when neon has none.
+    const neonDsnInVault = await deps.vault.get(
+      KNOWLEDGE_GRAPH_NEON_ID,
+      'database_url',
+    );
+    const neonUsable =
+      !!databaseUrl ||
+      (typeof neonDsnInVault === 'string' && neonDsnInVault.length > 0);
+    const keepId = neonUsable
+      ? KNOWLEDGE_GRAPH_NEON_ID
+      : KNOWLEDGE_GRAPH_INMEMORY_ID;
+    const dropId = neonUsable
+      ? KNOWLEDGE_GRAPH_INMEMORY_ID
+      : KNOWLEDGE_GRAPH_NEON_ID;
+    await deps.registry.remove(dropId);
+    log(
+      `[bootstrap] ⚐ knowledge-graph dual-active conflict — removed ${dropId}, kept ${keepId} (neon DSN ${neonUsable ? 'present' : 'absent'})`,
+    );
+    return;
+  }
+
+  if (otherInstalled) {
     log(
       `[bootstrap] ${otherId} already installed — skipping ${targetId} migration (operator-managed)`,
     );
@@ -647,7 +732,7 @@ async function bootstrapKnowledgeGraphFromEnv(
   }
 
   // Idempotent: preserve operator settings on subsequent boots.
-  if (deps.registry.has(targetId)) return;
+  if (targetInstalled) return;
 
   const catalogEntry = deps.catalog.get(targetId);
   if (!catalogEntry) {

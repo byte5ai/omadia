@@ -87,6 +87,18 @@ export interface ContextRetrieverOptions {
   /** Min cosine for the durable tier. Default 0.0 on purpose: curated,
    *  manual-authored long-term knowledge must survive paraphrase. */
   durableMinSimilarity?: number;
+  /**
+   * Route durable ("always-surface") hits through the SAME relevance judge as
+   * the other cross-session legs. Default TRUE — durable is relevance-gated
+   * like the rest, which stops off-topic curated facts from appearing for
+   * unrelated queries (R4). The judge's fail-DETERMINISTIC abstain still
+   * always-surfaces durable when no LLM/judge is wired (keyless/degraded
+   * deployments), so the #317 always-surface guarantee holds whenever there is
+   * no judge to consult. Set `kg_durable_relevance_judge_enabled=false` to
+   * restore the unconditional pre-judge bypass. Has no effect unless a judge is
+   * wired and `recallRelevanceJudgeDisabled` is false.
+   */
+  durableRelevanceJudgeEnabled?: boolean;
 
   // Cross-session recall probe — Plan + Process + team-scoped insights.
   /**
@@ -320,6 +332,7 @@ const DEFAULTS: Required<
   durableReservedSlots: 2,
   durableKinds: ['reference', 'decision'],
   durableMinSimilarity: 0,
+  durableRelevanceJudgeEnabled: true,
   // Cross-session recall probe defaults.
   teamVisibility: false,
   planRecallDisabled: false,
@@ -675,41 +688,80 @@ export class ContextRetriever {
     let judgedPlans = planHits;
     let judgedProcesses = processHits;
     let judgedMemory = memoryHits;
-    if (
+    // R4 fix: durable ("always-surface") hits used to bypass the judge and
+    // surface top-K for ANY query (minSimilarity 0) — the chief source of
+    // irrelevant "earlier sessions" items. By DEFAULT they now route through
+    // the SAME judge as the other legs (`durableRelevanceJudgeEnabled`, default
+    // true). The judge is fail-DETERMINISTIC (it abstains → keep-all when no
+    // LLM / on error, §recallRelevanceJudge), so durable still always-surfaces
+    // in keyless/degraded deployments (#317 guarantee where there is no judge);
+    // in LLM-enabled ones it is relevance-gated and predictable. Set the flag
+    // false to restore the unconditional pre-judge bypass.
+    // The term-gated legs (plan/process/memory) are judged only when the gate
+    // is open. Durable judging (opt-in) runs INDEPENDENT of the gate: a
+    // term-less message ("ok"/"danke") is exactly the off-topic case R4
+    // targets, so the judge must still be able to drop an unrelated curated
+    // fact there. (durableHits load unconditionally, above.)
+    const judge = this.relevanceJudge;
+    const judgeAvailable = !!judge && !this.opts.recallRelevanceJudgeDisabled;
+    const judgeTermGated =
       runCrossSessionRecall &&
-      this.relevanceJudge &&
-      !this.opts.recallRelevanceJudgeDisabled &&
-      (planHits.length > 0 || processHits.length > 0 || memoryHits.length > 0)
-    ) {
+      (planHits.length > 0 || processHits.length > 0 || memoryHits.length > 0);
+    const judgeDurable =
+      !!this.opts.durableRelevanceJudgeEnabled && durableHits.length > 0;
+    let judgedDurable = durableHits;
+    if (judge && judgeAvailable && (judgeTermGated || judgeDurable)) {
       const candidates: RecallCandidate[] = [
-        ...planHits.map((p) => ({
-          id: p.planId,
-          kind: 'plan' as const,
-          text: `${p.strategy ?? ''} ${p.openStepGoals.join('; ')}`,
-        })),
-        ...processHits.map((p) => ({
-          id: p.id,
-          kind: 'process' as const,
-          text: p.title,
-        })),
-        ...memoryHits.map((h) => ({
-          id: h.mk.id,
-          kind: 'insight' as const,
-          text: String(h.mk.props['summary'] ?? ''),
-        })),
+        ...(judgeTermGated
+          ? planHits.map((p) => ({
+              id: p.planId,
+              kind: 'plan' as const,
+              text: `${p.strategy ?? ''} ${p.openStepGoals.join('; ')}`,
+            }))
+          : []),
+        ...(judgeTermGated
+          ? processHits.map((p) => ({
+              id: p.id,
+              kind: 'process' as const,
+              text: p.title,
+            }))
+          : []),
+        ...(judgeTermGated
+          ? memoryHits.map((h) => ({
+              id: h.mk.id,
+              kind: 'insight' as const,
+              text: String(h.mk.props['summary'] ?? ''),
+            }))
+          : []),
+        ...(judgeDurable
+          ? durableHits.map((h) => ({
+              id: h.mk.id,
+              kind: 'insight' as const,
+              text: String(h.mk.props['summary'] ?? ''),
+            }))
+          : []),
       ];
-      const keep = await this.relevanceJudge.filterRelevant(
-        input.userMessage,
-        candidates,
+      // De-dup by id so an mk present in BOTH the memory and durable legs is
+      // listed to the judge once (the `keep` Set already dedups verdicts; this
+      // saves tokens and stabilizes the verdict-cache key).
+      const seenCand = new Set<string>();
+      const deduped = candidates.filter((c) =>
+        seenCand.has(c.id) ? false : (seenCand.add(c.id), true),
       );
-      judgedPlans = planHits.filter((p) => keep.has(p.planId));
-      judgedProcesses = processHits.filter((p) => keep.has(p.id));
-      judgedMemory = memoryHits.filter((h) => keep.has(h.mk.id));
+      const keep = await judge.filterRelevant(input.userMessage, deduped);
+      if (judgeTermGated) {
+        judgedPlans = planHits.filter((p) => keep.has(p.planId));
+        judgedProcesses = processHits.filter((p) => keep.has(p.id));
+        judgedMemory = memoryHits.filter((h) => keep.has(h.mk.id));
+      }
+      if (judgeDurable) {
+        judgedDurable = durableHits.filter((h) => keep.has(h.mk.id));
+      }
     }
 
     const seenInsightIds = new Set<string>();
     const insights: RecalledInsight[] = [];
-    for (const hit of durableHits) {
+    for (const hit of judgedDurable) {
       const insight = toRecalledInsight(hit, true);
       if (seenInsightIds.has(insight.mkId)) continue;
       seenInsightIds.add(insight.mkId);
@@ -809,7 +861,7 @@ export class ContextRetriever {
       const pre = `${planHits.length}/${processHits.length}/${memoryHits.length}`;
       const post = `${recalled.plans.length}/${recalled.processes.length}/${recalled.insights.length}`;
       console.error(
-        `[context:recall] scope=${scope} gate=${runCrossSessionRecall ? 'open' : 'closed'} judge=${judgeOn ? 'on' : 'off'} durable=${String(durableHits.length)} pre(p/pr/i)=${pre} post=${post} terms=[${extractedTerms.join(',')}] plans=[${plansTrace}] processes=[${procTrace}] insights=[${insTrace}]`,
+        `[context:recall] scope=${scope} gate=${runCrossSessionRecall ? 'open' : 'closed'} judge=${judgeOn ? 'on' : 'off'} durableJudge=${this.opts.durableRelevanceJudgeEnabled ? 'on' : 'off'} durable=${String(durableHits.length)}→${String(judgedDurable.length)} pre(p/pr/i)=${pre} post=${post} terms=[${extractedTerms.join(',')}] plans=[${plansTrace}] processes=[${procTrace}] insights=[${insTrace}]`,
       );
     }
 
@@ -1196,9 +1248,12 @@ export class ContextRetriever {
    * Additive durable tier for manual-authored long-term knowledge.
    *
    * Deliberately separate from the fuzzy memory leg: it ignores the turn-term
-   * gate, uses its own low/no cosine floor so paraphrases still hit, bypasses
-   * the fuzzy `memoryLimit`, and NEVER enters the relevance judge's candidate
-   * set. Failures degrade to [] — same discipline as `loadMemoryHits`.
+   * gate, uses its own low/no cosine floor so paraphrases still hit, and
+   * bypasses the fuzzy `memoryLimit`. By default these hits DO enter the
+   * relevance judge's candidate set (`durableRelevanceJudgeEnabled`, default
+   * true) so off-topic curated facts are dropped; set that flag false to
+   * restore the unconditional bypass. Failures degrade to [] — same discipline
+   * as `loadMemoryHits`.
    */
   private async loadDurableHits(
     input: ContextBuildInput,
