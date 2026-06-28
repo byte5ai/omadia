@@ -112,6 +112,7 @@ three rows are why teams choose it; the rest is the groundwork done properly.
 | ✅ **Answer verification** | A verifier checks each answer's claims against the run's own sources and records a verdict (`approved` / `approved_with_disclaimer`) before it reaches the channel. |
 | 🧮 **Computed, not guessed** | Office and Excel output comes from a real spreadsheet engine, server-side, over real rows (`datasetId`). The figures are calculated by that engine rather than produced by the model. |
 | 🧾 **A receipt for every action** | Every agent run carries a full per-run trace and call-stack viewer: every step, tool call, and decision, replayable. |
+| 👥 **Multiplayer by design** | Agents run in your team's shared channels (Slack, Teams, Telegram, Discord), so several people work with them in one context, not a private one-on-one chatbot. |
 | 🤖 **Agent teams, not one chatbot** | An orchestrator routes each turn to the right specialist plugin agent. Channels, integrations, tools, and capability providers sit behind one stable API. |
 | 🔒 **Self-hosted and yours** | One `docker compose up` on a single machine. Your Postgres, your LLM key, all of the data on your own infrastructure. GDPR-aware and made in the EU. |
 | 🧩 **Signed plugin distribution** | Plugins ship as verifiable signed packages. The platform never pulls arbitrary npm at runtime. |
