@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/media/omadia-splash.png" alt="omadia" width="640">
+
 # omadia
 
 ### Spin up a team of AI agents that does the work — on your own server, with a receipt for every action.
@@ -21,18 +23,32 @@ Your LLM key. Your data. Your compliance story.
 
 [**Website**](https://omadia.ai) · [**Quickstart**](#-quickstart) · [**Why omadia?**](#why-omadia) · [**Docs**](docs/) · [**Contributing**](CONTRIBUTING.md)
 
+#### 🎬 The 2-minute pitch
+
+<video src="https://github.com/byte5ai/omadia/raw/main/docs/media/omadia-pitch.mp4" poster="https://github.com/byte5ai/omadia/raw/main/docs/media/omadia-splash.png" controls muted width="720"></video>
+
+<sub>Video not playing? <a href="docs/media/omadia-pitch.mp4">Watch <code>omadia-pitch.mp4</code> directly.</a></sub>
+
 </div>
 
 ---
 
 ## Why you'll want to ⭐ this
 
+- 🛡️ **Real data never reaches the LLM.** The **Privacy Shield** data-plane
+  boundary interns every raw tool result and shows the model only an
+  identity-free digest — `guarded` by default, with pseudonyms that resolve
+  back only at materialization. The answer to *"I can't put real data through
+  an LLM."*
 - 🔒 **Self-hosted and yours.** Bring your own LLM key, run on a single machine
   with Docker Compose, and own 100% of the data. No SaaS lock-in,
   EU/GDPR-ready by design.
 - 🤖 **Agent *teams*, not one chatbot.** An orchestrator routes each turn to the
   right specialized plugin agent — channels, integrations, tools, and capability
   providers all snap together behind one stable API.
+- ✅ **Answers are verified before they go out.** A verifier checks each answer's
+  claims against its sources and returns a verdict — catching the
+  "confidently wrong" failure mode instead of shipping it.
 - 🧾 **Every action leaves a receipt.** Full per-run trace and call-stack viewer
   for each agent run, so you can audit, debug, and prove what happened — built in,
   not bolted on.
@@ -107,6 +123,9 @@ omadia optimizes for what matters once an agent system leaves a laptop —
 ownership, auditability, and dropping into a real enterprise stack, not just
 "how many demos can it run." What you get, first-class:
 
+- ✅ **Privacy Shield (data-plane boundary)** — raw tool results are interned behind the boundary; the LLM sees an identity-free digest. `guarded` by default, `bypass`/`per_tool` opt-in, org-wide clamp via `OMADIA_PRIVACY_FORCE_GUARDED`
+- ✅ **Answer verification** — verdicts (`approved` / `approved_with_disclaimer`) before an answer reaches the user, against the run's own sources
+- ✅ **Computed, not guessed** — headless Office/Excel compute runs real spreadsheet formulas server-side over real rows (`datasetId`) that never pass through the model
 - ✅ **Self-hosting on a single machine** — `docker compose up`, no SaaS dependency
 - ✅ **Own your data** — your Postgres, your LLM key; nothing leaves your box
 - ✅ **Built-in audit trail / receipts** — per-run trace + call-stack viewer for every agent run
@@ -118,6 +137,17 @@ ownership, auditability, and dropping into a real enterprise stack, not just
 
 ## What's in the box
 
+- **Privacy Shield** — a data-plane boundary that interns raw tool results and
+  exposes only an identity-free digest to the LLM
+  ([`harness-plugin-privacy-guard`](middleware/packages/harness-plugin-privacy-guard),
+  [`privacyMode.ts`](middleware/packages/plugin-api/src/privacyMode.ts))
+- **Answer verifier** — claim-checks each answer against its sources and returns
+  a verdict before it ships
+  ([`harness-verifier`](middleware/packages/harness-verifier),
+  [`verifierService.ts`](middleware/packages/harness-orchestrator/src/verifierService.ts))
+- **Office compute** — `create_xlsx` / `create_docx` build real spreadsheets and
+  documents server-side, resolving dataset rows without routing them through the
+  model ([`harness-plugin-office`](middleware/packages/harness-plugin-office))
 - **Plugin runtime** — channels, integrations, tools, sub-agents, capability
   providers; everything is a plugin behind a stable API surface
   ([`@omadia/plugin-api`](middleware/packages/plugin-api))
@@ -181,6 +211,26 @@ Start with the [architecture overview](docs/architecture.md) for the component
 map and request flow. The deeper walk-through of the plugin loading sequence,
 capability registry, and multi-provider authentication layer lives under
 [`docs/`](docs/).
+
+## Trust & privacy architecture
+
+Three subsystems are what let omadia put *real* data in front of an LLM and
+stand behind the answer:
+
+- **Privacy Shield (data-plane boundary)** — raw tool results are interned
+  behind the boundary and the LLM sees only an identity-free digest. The mode is
+  `guarded` by default (safe-by-default); `bypass` and `per_tool` are explicit
+  opt-ins, and `OMADIA_PRIVACY_FORCE_GUARDED` clamps every plugin to `guarded`
+  org-wide. Pseudonyms resolve back to real values only at materialization, and
+  each bypass lands in the receipt. Spec: [`specs/001-privacy-shield-v4/`](specs/001-privacy-shield-v4/).
+- **Answer verification** — before a turn's answer is returned, the verifier
+  checks its claims against the run's sources and emits a verdict
+  (`approved`, `approved_with_disclaimer`, or `blocked`). The borderline verdict
+  attaches a disclaimer rather than silently shipping an unsupported claim.
+- **Office compute (computed, not guessed)** — numbers in `.xlsx` / `.docx`
+  output are produced by a real spreadsheet engine over real rows, not generated
+  token-by-token. When a specialist agent returns a `datasetId`, the rows are
+  resolved server-side and never pass through the model.
 
 ### Optional features
 
@@ -260,6 +310,9 @@ without notice until `1.0.0`.
 
 Active development tracks:
 
+- **Conductor** — multi-step composition with a human sign-off path; landing
+  from branch `005-omadia-conductor` (this section graduates to a first-class
+  feature once it merges to `main`)
 - **Plugin marketplace** — discovery + signed-package distribution (post-1.0)
 - **Multi-tenant hosting** — out of scope for v1; a separate fork is planned
 - **Web-IDE for plugin development** — moves the Builder authoring loop into
