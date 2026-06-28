@@ -15,11 +15,13 @@
 
 </div>
 
-**omadia is a self-hostable agentic OS that makes AI dependable enough for real
-work.** A team of agents runs on infrastructure you own and turns your data,
-software, and people into results you can steer, audit, and prove. Sensitive data
-stays in the house and never leaves in clear text. Every answer is checked before
-it ships. Every action carries a receipt. Bring your own LLM key and switch
+**omadia is a self-hostable, multiplayer agentic OS that makes AI dependable
+enough for real work.** A team of agents runs on infrastructure you own and works
+inside your team's shared channels, so several people collaborate with the same
+agents in one context, not a private one-on-one chatbot. The agents turn your
+data, software, and people into results you can steer, audit, and prove. Sensitive
+data stays in the house and never leaves in clear text. Every answer is checked
+before it ships. Every action carries a receipt. Bring your own LLM key and switch
 providers by config, not code.
 
 #### 🎬 The 2-minute pitch
