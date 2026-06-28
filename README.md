@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/media/omadia-banner.png" alt="omadia" width="820">
+<img src="docs/media/omadia-wordmark.png" alt="omadia" width="820">
 
 ### An Agentic OS for professionals
 
