@@ -1,18 +1,8 @@
 <div align="center">
 
-<img src="docs/media/omadia-splash.png" alt="omadia" width="640">
-
-# omadia
+<img src="docs/media/omadia-banner.png" alt="omadia" width="820">
 
 ### Spin up a team of AI agents that does the work — on your own server, with a receipt for every action.
-
-omadia is a self-hostable **agentic OS**: compose multi-agent teams from signed
-plugins, run them on one machine, and get an auditable trail for everything they do.
-Your LLM key. Your data. Your compliance story.
-
-<img src="docs/media/omadia-demo.gif" alt="omadia no-code builder — describe an agent in plain words, the builder generates it, then try it out" width="860">
-
-<sub>Describe an agent in plain words → the builder generates it → try it out. No code.</sub>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-black.svg)](LICENSE)
 [![Status: public preview](https://img.shields.io/badge/status-public%20preview-orange.svg)](#status--roadmap)
@@ -23,35 +13,21 @@ Your LLM key. Your data. Your compliance story.
 
 [**Website**](https://omadia.ai) · [**Quickstart**](#-quickstart) · [**Why omadia?**](#why-omadia) · [**Docs**](docs/) · [**Contributing**](CONTRIBUTING.md)
 
-#### 🎬 The 2-minute pitch
-
-<video src="https://github.com/byte5ai/omadia/raw/main/docs/media/omadia-pitch.mp4" poster="https://github.com/byte5ai/omadia/raw/main/docs/media/omadia-splash.png" controls muted width="720"></video>
-
-<sub>Video not playing? <a href="docs/media/omadia-pitch.mp4">Watch <code>omadia-pitch.mp4</code> directly.</a></sub>
-
 </div>
 
+**omadia is a self-hostable agentic OS** — compose multi-agent teams from signed
+plugins, run them on a single machine, and get an auditable receipt for everything
+they do. Unlike most agent frameworks: **real data never reaches the LLM** (the
+Privacy Shield interns raw tool results behind a data-plane boundary), **answers
+are verified** before they go out, and **numbers are computed** by a real
+spreadsheet engine — not guessed by the model. Your LLM key. Your data. Your
+compliance story.
+
+#### 🎬 The 2-minute pitch
+
+https://github.com/user-attachments/assets/644f9dae-c8a9-44af-a47f-183d2fcdcf34
+
 ---
-
-## Why you'll want to ⭐ this
-
-- 🛡️ **Real data never reaches the LLM.** The **Privacy Shield** data-plane
-  boundary interns every raw tool result and shows the model only an
-  identity-free digest — `guarded` by default, with pseudonyms that resolve
-  back only at materialization. The answer to *"I can't put real data through
-  an LLM."*
-- 🔒 **Self-hosted and yours.** Bring your own LLM key, run on a single machine
-  with Docker Compose, and own 100% of the data. No SaaS lock-in,
-  EU/GDPR-ready by design.
-- 🤖 **Agent *teams*, not one chatbot.** An orchestrator routes each turn to the
-  right specialized plugin agent — channels, integrations, tools, and capability
-  providers all snap together behind one stable API.
-- ✅ **Answers are verified before they go out.** A verifier checks each answer's
-  claims against its sources and returns a verdict — catching the
-  "confidently wrong" failure mode instead of shipping it.
-- 🧾 **Every action leaves a receipt.** Full per-run trace and call-stack viewer
-  for each agent run, so you can audit, debug, and prove what happened — built in,
-  not bolted on.
 
 ## Prerequisites
 
@@ -106,6 +82,14 @@ docker compose -f docker-compose.yaml -f docker-compose.build.yaml up -d --build
 
 ## 🚀 First run: from prompt to audit receipt
 
+<div align="center">
+
+<img src="docs/media/omadia-demo.gif" alt="omadia no-code builder — describe an agent in plain words, the builder generates it, then try it out" width="820">
+
+<sub>Describe an agent in plain words → the builder generates it → try it out. No code.</sub>
+
+</div>
+
 The point of omadia clicks the moment you watch a team of agents do real work and
 hand you a receipt for it:
 
@@ -121,19 +105,19 @@ hand you a receipt for it:
 
 omadia optimizes for what matters once an agent system leaves a laptop —
 ownership, auditability, and dropping into a real enterprise stack, not just
-"how many demos can it run." What you get, first-class:
+"how many demos can it run." The first three rows are the moat; the rest is
+table stakes done right.
 
-- ✅ **Privacy Shield (data-plane boundary)** — raw tool results are interned behind the boundary; the LLM sees an identity-free digest. `guarded` by default, `bypass`/`per_tool` opt-in, org-wide clamp via `OMADIA_PRIVACY_FORCE_GUARDED`
-- ✅ **Answer verification** — verdicts (`approved` / `approved_with_disclaimer`) before an answer reaches the user, against the run's own sources
-- ✅ **Computed, not guessed** — headless Office/Excel compute runs real spreadsheet formulas server-side over real rows (`datasetId`) that never pass through the model
-- ✅ **Self-hosting on a single machine** — `docker compose up`, no SaaS dependency
-- ✅ **Own your data** — your Postgres, your LLM key; nothing leaves your box
-- ✅ **Built-in audit trail / receipts** — per-run trace + call-stack viewer for every agent run
-- ✅ **Signed plugin distribution** — verifiable plugin packages, not arbitrary npm at runtime
-- ✅ **EU / GDPR-ready posture** — single-tenant and self-hosted, data-resident by design
-- ✅ **Multi-agent coordination** — an orchestrator routes each turn across specialized agents
-- ✅ **Enterprise integrations** — Microsoft 365, Odoo, Confluence, Teams, Telegram
-- ✅ **Bring-your-own LLM key** — provider-pluggable
+| Capability | What you get |
+|---|---|
+| 🛡️ **Privacy Shield** | Raw tool results are interned behind a data-plane boundary; the LLM sees only an identity-free digest. `guarded` by default, `bypass`/`per_tool` opt-in, org-wide clamp via `OMADIA_PRIVACY_FORCE_GUARDED`. The answer to *"I can't put real data through an LLM."* |
+| ✅ **Answer verification** | Each answer's claims are checked against the run's own sources; a verdict (`approved` / `approved_with_disclaimer`) lands before it reaches the user — no more "confidently wrong." |
+| 🧮 **Computed, not guessed** | Headless Office/Excel compute runs real spreadsheet formulas server-side over real rows (`datasetId`) that never pass through the model. |
+| 🧾 **A receipt for every action** | Per-run trace + call-stack viewer for every agent run — audit, debug, and prove what happened. Built in, not bolted on. |
+| 🤖 **Agent teams, not one chatbot** | An orchestrator routes each turn to the right specialized plugin agent — channels, integrations, tools, and capability providers behind one stable API. |
+| 🔒 **Self-hosted and yours** | `docker compose up` on a single machine, bring your own LLM key, own 100% of the data. EU / GDPR-ready, no SaaS lock-in. |
+| 🧩 **Signed plugin distribution** | Verifiable plugin packages, not arbitrary npm pulled at runtime. |
+| 🔌 **Enterprise integrations** | Microsoft 365, Odoo, Confluence, Teams, Telegram — provider-pluggable LLM behind all of it. |
 
 ## What's in the box
 
