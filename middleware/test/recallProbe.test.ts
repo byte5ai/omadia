@@ -262,6 +262,16 @@ describe('R2 · ContextRetriever cross-session recall legs', () => {
     assert.equal(result.recalled.plans[0]!.openStepGoals.length, 1);
     assert.equal(result.recalled.plans[0]!.doneCount, 1);
     assert.equal(result.recalled.plans[0]!.totalCount, 2);
+    // Resume: interrupted plan carries its completed step goals + renders the
+    // "do not redo / resume from" framing into the injected recall text.
+    assert.deepEqual(
+      result.recalled.plans[0]!.completedStepGoals,
+      ['write migration'],
+      'completed step goal surfaced for resume',
+    );
+    assert.match(result.text, /UNTERBROCHEN/, 'interrupted plan framed as resumable');
+    assert.match(result.text, /NICHT wiederholen.*write migration/, 'completed work marked do-not-redo');
+    assert.match(result.text, /Fortsetzen bei: run migration in staging/, 'explicit resume point');
 
     assert.equal(result.recalled.processes.length, 1, 'one stored process');
     assert.equal(
@@ -628,6 +638,9 @@ describe('T1 · toSemanticAnswer forwards recalled (non-stream / Teams path)', (
         planId: 'plan:prior',
         scope: 'sess-prior',
         openStepGoals: ['ship it'],
+        completedStepGoals: ['build it'],
+        resumeFromInProgress: false,
+        resumeFromSideEffecting: false,
         doneCount: 1,
         totalCount: 2,
       },
@@ -672,6 +685,65 @@ function stubLlm(reply: string | (() => never)): LlmProvider {
     },
   } as unknown as LlmProvider;
 }
+
+describe('R6b · resume framing for interrupted plans', () => {
+  async function renderFor(
+    steps: Array<{ goal: string; status: 'done' | 'pending' | 'in_progress'; order: number; sideEffecting?: boolean }>,
+  ): Promise<string> {
+    const kg = new InMemoryKnowledgeGraph();
+    await kg.ingestPlan({
+      planId: 'prior',
+      scope: 'sess-prior',
+      strategy: 'Deploy the billing migration',
+      createdAt: '2026-06-01T10:00:00.000Z',
+    });
+    for (const s of steps) {
+      await kg.upsertPlanStep({
+        stepId: `prior-${String(s.order)}`,
+        planId: 'prior',
+        scope: 'sess-prior',
+        goal: s.goal,
+        order: s.order,
+        status: s.status,
+        ...(s.sideEffecting ? { sideEffecting: true } : {}),
+      });
+    }
+    const retriever = new ContextRetriever(kg, { teamVisibility: true }, stubEmbedder);
+    const result = await retriever.assembleForBudget({
+      userMessage: 'continue the billing migration deploy',
+      agentId: 'test-agent',
+      sessionScope: 'sess-now',
+      userId: 'alice',
+    });
+    return result.text;
+  }
+
+  it('fully-DONE plan does NOT render resume framing', async () => {
+    const text = await renderFor([
+      { goal: 'write billing migration', status: 'done', order: 0 },
+      { goal: 'run billing migration', status: 'done', order: 1 },
+    ]);
+    assert.doesNotMatch(text, /UNTERBROCHEN/, 'no open steps → not resumable');
+  });
+
+  it('fully-PENDING plan does NOT render resume framing', async () => {
+    const text = await renderFor([
+      { goal: 'write billing migration', status: 'pending', order: 0 },
+      { goal: 'run billing migration', status: 'pending', order: 1 },
+    ]);
+    assert.doesNotMatch(text, /UNTERBROCHEN/, 'nothing completed → nothing to resume past');
+  });
+
+  it('in_progress + sideEffecting resume step renders the side-effect caveat', async () => {
+    const text = await renderFor([
+      { goal: 'write billing migration', status: 'done', order: 0 },
+      { goal: 'charge the billing customer', status: 'in_progress', order: 1, sideEffecting: true },
+    ]);
+    assert.match(text, /UNTERBROCHEN/, 'interrupted → resumable');
+    assert.match(text, /Seiteneffekte/, 'side-effect caveat present');
+    assert.match(text, /nicht doppelt/, 'warns against double execution');
+  });
+});
 
 describe('R8 · recall relevance judge (LLM-agnostic)', () => {
   const cands = [

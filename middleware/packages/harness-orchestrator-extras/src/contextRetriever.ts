@@ -1035,15 +1035,30 @@ export class ContextRetriever {
       for (const p of candidates) {
         const steps = stepsByPlan.get(p.id) ?? [];
         const openStepGoals: string[] = [];
+        const completedStepGoals: string[] = [];
         const goalTexts: string[] = [];
         let doneCount = 0;
+        // Safety signal for resume: capture whether the FIRST open step (the
+        // resume-from point) was in_progress / sideEffecting, mirroring
+        // buildResumePlan's ambiguous-side-effect guard. An in_progress step may
+        // have partially applied its effect before the interruption.
+        let resumeFromInProgress = false;
+        let resumeFromSideEffecting = false;
+        let firstOpenSeen = false;
         for (const s of steps) {
           const status = s.props['status'];
           const goal = String(s.props['goal'] ?? '');
           if (goal.length > 0) goalTexts.push(goal);
-          if (status === 'done') doneCount += 1;
-          else if (status === 'pending' || status === 'in_progress') {
+          if (status === 'done') {
+            doneCount += 1;
+            if (goal.length > 0) completedStepGoals.push(goal);
+          } else if (status === 'pending' || status === 'in_progress') {
             if (goal.length > 0) openStepGoals.push(goal);
+            if (!firstOpenSeen) {
+              firstOpenSeen = true;
+              resumeFromInProgress = status === 'in_progress';
+              resumeFromSideEffecting = s.props['sideEffecting'] === true;
+            }
           }
         }
         // Relevance = how many query terms appear in strategy + step goals.
@@ -1064,6 +1079,9 @@ export class ContextRetriever {
               ? { createdAt: p.props['createdAt'] }
               : {}),
             openStepGoals,
+            completedStepGoals,
+            resumeFromInProgress,
+            resumeFromSideEffecting,
             doneCount,
             totalCount: steps.length,
           },
@@ -1513,11 +1531,39 @@ function renderRecallBlocks(
     push('## Aus früheren Sessions — offene Pläne');
     for (const p of recalled.plans) {
       const label = p.strategy ? truncate(p.strategy, 120) : 'Plan';
+      const when = p.createdAt ? ` · ${p.createdAt}` : '';
+      // An INTERRUPTED plan (some steps done AND some still open) is resumable:
+      // surface the completed steps as "do NOT redo" + an explicit resume point
+      // so the turn continues the plan instead of restarting it. This realizes
+      // the resume DESCRIPTOR (buildResumePlan) through the one channel that
+      // reaches the prompt — turn hooks are observer-only and cannot inject it.
+      const interrupted =
+        p.completedStepGoals.length > 0 && p.openStepGoals.length > 0;
+      if (interrupted) {
+        const done = truncate(p.completedStepGoals.join('; '), 240);
+        const resumeFrom = truncate(p.openStepGoals[0] ?? '', 160);
+        const rest =
+          p.openStepGoals.length > 1
+            ? ` (danach: ${truncate(p.openStepGoals.slice(1).join('; '), 160)})`
+            : '';
+        // Side-effect safety: an in_progress resume-from step may have already
+        // (partially) applied its effect. Warn before re-running so a
+        // side-effecting action isn't duplicated (mirrors buildResumePlan's
+        // ambiguous-side-effect guard, which the recall channel would otherwise
+        // drop).
+        const caveat = p.resumeFromInProgress
+          ? p.resumeFromSideEffecting
+            ? ' ⚠ Dieser Schritt war IN ARBEIT und hat Seiteneffekte — vor erneutem Ausführen prüfen, ob der Effekt bereits eingetreten ist (nicht doppelt ausführen).'
+            : ' (Hinweis: Schritt war IN ARBEIT — Status vor Fortsetzen prüfen.)'
+          : '';
+        const chunk = `- ${label} (${p.doneCount}/${p.totalCount} erledigt) — UNTERBROCHEN, fortsetzen statt neu beginnen. Bereits erledigt (NICHT wiederholen): ${done}. Fortsetzen bei: ${resumeFrom}${rest}${caveat}${when}`;
+        if (!push(chunk)) break;
+        continue;
+      }
       const open =
         p.openStepGoals.length > 0
           ? ` · offen: ${truncate(p.openStepGoals.join('; '), 300)}`
           : '';
-      const when = p.createdAt ? ` · ${p.createdAt}` : '';
       const chunk = `- ${label} (${p.doneCount}/${p.totalCount} Schritte erledigt)${open}${when}`;
       if (!push(chunk)) break;
     }
