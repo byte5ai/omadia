@@ -360,6 +360,8 @@
     "designerHint": "Steps hinzufügen, zum Verdrahten zwischen ihnen ziehen, einen Step im Inspector bearbeiten, dann Speichern. Markiere einen Step als Einstieg.",
     "triggerLabel": "Trigger",
     "eventIdLabel": "Event-ID",
+    "eventCatalogHint": "{count} deklarierte(s) Event(s) verfügbar — wähle eines oder gib eine eigene ID ein.",
+    "eventCatalogEmpty": "Noch keine Events von installierten Plugins deklariert — gib eine eigene ID ein.",
     "loadLabel": "Laden",
     "saveButton": "Speichern & veröffentlichen",
     "addAgent": "Agent-Step",

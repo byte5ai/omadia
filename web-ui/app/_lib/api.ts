@@ -3647,6 +3647,11 @@ export async function getConductorWorkflowGraph(
   return getJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}`);
 }
 
+/** Declared emittable domain events (US4), for the Designer's event-trigger picker. */
+export async function getConductorEventCatalog(): Promise<{ events: string[]; byPlugin: Record<string, string[]> }> {
+  return getJson(`${CONDUCTOR_BASE}/events/catalog`);
+}
+
 export interface ConductorAwait {
   id: string;
   runId: string;

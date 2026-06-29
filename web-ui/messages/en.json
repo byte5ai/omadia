@@ -360,6 +360,8 @@
     "designerHint": "Add steps, drag between them to wire transitions, edit a step in the inspector, then Save. Mark one step as the entry.",
     "triggerLabel": "Trigger",
     "eventIdLabel": "Event id",
+    "eventCatalogHint": "{count} declared event(s) available — pick one or type a custom id.",
+    "eventCatalogEmpty": "No events declared by installed plugins yet — type a custom id.",
     "loadLabel": "Load",
     "saveButton": "Save & publish",
     "addAgent": "Agent step",

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import {
   addEdge,
@@ -25,6 +25,7 @@ import '@xyflow/react/dist/style.css';
 import { Button } from '@/app/_components/ui/Button';
 import {
   ApiError,
+  getConductorEventCatalog,
   getConductorRun,
   getConductorWorkflowGraph,
   previewConductorWorkflow,
@@ -157,6 +158,25 @@ function CanvasInner({
   const [triggerKind, setTriggerKind] = useState<'manual' | 'event' | 'cron'>('manual');
   const [triggerEventId, setTriggerEventId] = useState('');
   const [triggerCron, setTriggerCron] = useState('');
+  // Declared emittable events (US4 / FR-028) — the Designer sources the event-trigger picker from the
+  // live catalog. Best-effort: an empty catalog just falls back to free-text entry.
+  const [eventCatalog, setEventCatalog] = useState<string[]>([]);
+  const eventListId = useId(); // unique per canvas instance — no datalist id collision on double-mount
+
+  useEffect(() => {
+    let cancelled = false;
+    void getConductorEventCatalog()
+      .then((c) => {
+        // Defensive: a 200 with an unexpected body would otherwise make state non-array and crash render.
+        if (!cancelled) setEventCatalog(Array.isArray(c?.events) ? c.events : []);
+      })
+      // Errors degrade to the empty-catalog hint + free-text entry. (A 401 still triggers getJson's
+      // standard login redirect — same as every other page fetch — which is the desired behaviour.)
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Monotonic id source — guarantees unique node/edge ids even if a click double-fires.
   const nextId = useRef(0);
@@ -445,7 +465,22 @@ function CanvasInner({
         {triggerKind === 'event' && (
           <label className={lbl}>
             {t('eventIdLabel')}
-            <input className={input} value={triggerEventId} onChange={(e) => setTriggerEventId(e.target.value)} placeholder="github.pull_request.merged" />
+            {/* Pick a declared event from the live catalog (datalist), or type a custom id. */}
+            <input
+              className={input}
+              list={eventListId}
+              value={triggerEventId}
+              onChange={(e) => setTriggerEventId(e.target.value)}
+              placeholder="github.pull_request.merged"
+            />
+            <datalist id={eventListId}>
+              {[...new Set(eventCatalog)].map((id) => (
+                <option key={id} value={id} />
+              ))}
+            </datalist>
+            <span className="mt-1 text-[12px] text-[color:var(--fg-muted)]">
+              {eventCatalog.length > 0 ? t('eventCatalogHint', { count: eventCatalog.length }) : t('eventCatalogEmpty')}
+            </span>
           </label>
         )}
         {triggerKind === 'cron' && (
