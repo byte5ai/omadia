@@ -9,7 +9,7 @@
 # botbuilder (@azure/msal-node family) have post-install hooks that break on
 # Alpine's musl libc without extra build tools. Slim keeps the image small
 # while staying on glibc.
-FROM node:22.22.3-slim AS builder
+FROM node:22.23.1-slim AS builder
 ARG TARGETARCH
 WORKDIR /app
 
@@ -38,7 +38,7 @@ COPY middleware/scripts ./scripts
 RUN npm run build
 
 # --- runtime ----------------------------------------------------------------
-FROM node:22.22.3-slim AS runtime
+FROM node:22.23.1-slim AS runtime
 ARG TARGETARCH
 WORKDIR /app
 
