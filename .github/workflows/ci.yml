@@ -41,7 +41,7 @@ jobs:
       run:
         working-directory: middleware
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v4
         with:
@@ -87,7 +87,7 @@ jobs:
       run:
         working-directory: web-ui
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v4
         with:
@@ -143,7 +143,7 @@ jobs:
         middleware/src/profileSnapshots/migrations
         middleware/src/profileStorage/migrations
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Enable pgvector extension
         run: |
@@ -193,7 +193,7 @@ jobs:
       run:
         working-directory: ${{ matrix.workspace }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v4
         with:
