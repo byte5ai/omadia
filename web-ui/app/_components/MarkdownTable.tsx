@@ -25,7 +25,7 @@ export function MarkdownTable({
     <div
       className="md-table-wrap"
       tabIndex={0}
-      role="region"
+      role="group"
       aria-label={t('scrollRegionLabel')}
     >
       <table className={className}>{children}</table>

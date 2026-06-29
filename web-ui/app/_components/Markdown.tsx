@@ -130,9 +130,9 @@ export function Markdown({
 }
 
 /**
- * GFM table renderer override. Wraps every table in a scroll-container with
- * a "full view" toolbar — see {@link MarkdownTable}. Hoisted to module scope
- * so the components object is stable across re-renders (no needless tree
+ * GFM table renderer override. Wraps every table in a horizontal/vertical
+ * scroll container — see {@link MarkdownTable}. Hoisted to module scope so
+ * the components object is stable across re-renders (no needless tree
  * recomputation during streaming).
  */
 const MARKDOWN_COMPONENTS: ComponentProps<typeof ReactMarkdown>['components'] =

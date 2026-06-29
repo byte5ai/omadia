@@ -492,40 +492,50 @@ body {
   border: 1px solid var(--border);
 }
 .md-view table {
-  @apply text-xs;
-  border-collapse: separate;
-  border-spacing: 0;
-}
-/* Inside the scroll wrapper: `min-width: max-content` keeps wide tables from
-   being squeezed (the wrapper takes the horizontal scroll instead); `width:
-   100%` makes small tables fill the wrapper so its border/rounded corners
-   don't gap. Outside the wrapper (e.g. BuilderMarkdown), small tables stay
-   at content width instead of stretching to full width. */
-.md-table-wrap table {
-  min-width: max-content;
-  width: 100%;
+  @apply my-3 w-full text-xs;
+  border-collapse: collapse;
 }
 .md-view th,
 .md-view td {
   @apply px-3 py-2 text-left align-top tabular-nums;
-  border-right: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
+  border: 1px solid var(--border);
   overflow-wrap: break-word;
-}
-.md-view th:first-child,
-.md-view td:first-child {
-  border-left: 1px solid var(--border);
 }
 .md-view th {
   @apply font-semibold;
   background: var(--bg-soft);
+}
+/* Inside the scroll wrapper we switch to `border-collapse: separate` so cell
+   borders stay on the cell — required for the sticky `<thead>` divider to
+   ride along with the scroll. `min-width: max-content` keeps wide tables from
+   being squeezed (the wrapper takes the horizontal scroll instead); `width:
+   100%` makes small tables fill the wrapper so its border/rounded corners
+   don't gap. Margin is zeroed because the wrapper itself supplies `my-3`.
+   Outside the wrapper (e.g. BuilderMarkdown) the `.md-view table` defaults
+   above stay in force — no sticky header, classic collapse model. */
+.md-table-wrap table {
+  border-collapse: separate;
+  border-spacing: 0;
+  min-width: max-content;
+  width: 100%;
+  margin: 0;
+}
+.md-table-wrap th,
+.md-table-wrap td {
+  border: 0;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.md-table-wrap th:first-child,
+.md-table-wrap td:first-child {
+  border-left: 1px solid var(--border);
 }
 /* `border-collapse: separate` keeps cell borders on the cell, so a sticky
    header keeps its divider while scrolling. We still render the bottom rule
    as an inset shadow (instead of `border-bottom`) so it's painted by the
    sticky cell itself — guaranteed visible regardless of how the row above
    resolves the shared edge. */
-.md-view thead th {
+.md-table-wrap thead th {
   position: sticky;
   top: 0;
   z-index: 1;
@@ -537,7 +547,7 @@ body {
     overflow: visible;
     max-height: none;
   }
-  .md-view thead th {
+  .md-table-wrap thead th {
     position: static;
   }
 }
