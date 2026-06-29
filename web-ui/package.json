@@ -35,7 +35,7 @@
     "clsx": "^2.1.1",
     "cytoscape": "^3.33.4",
     "cytoscape-fcose": "^2.2.0",
-    "framer-motion": "^12.38.0",
+    "framer-motion": "^12.42.0",
     "lucide-react": "^1.17.0",
     "monaco-editor": "^0.55.1",
     "next": "^16.2.6",
