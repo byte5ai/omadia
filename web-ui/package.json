@@ -33,7 +33,7 @@
     "@monaco-editor/react": "^4.7.0",
     "@xyflow/react": "^12.11.1",
     "clsx": "^2.1.1",
-    "cytoscape": "^3.33.4",
+    "cytoscape": "^3.34.0",
     "cytoscape-fcose": "^2.2.0",
     "framer-motion": "^12.38.0",
     "lucide-react": "^1.17.0",
