@@ -55,7 +55,7 @@ jobs:
             build_args: |
               MIDDLEWARE_URL=http://middleware:8080
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
       - uses: docker/setup-qemu-action@v3
