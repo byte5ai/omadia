@@ -77,28 +77,34 @@ function LoginPageInner(): React.ReactElement {
     let cancelled = false;
     (async () => {
       try {
-        const session = await getSessionStatus();
+        // Probe session + providers in parallel: most visitors are
+        // logged-out, so the providers fetch is on the hot path. The only
+        // cost is one wasted providers call in the rare already-authed case.
+        const [session, providers] = await Promise.all([
+          getSessionStatus(),
+          getAuthProviders(),
+        ]);
         if (cancelled) return;
         if (session.authenticated) {
-          router.replace(returnPath);
+          // Guard against ?return=/login which would re-enter this page
+          // and loop. Only reachable via hand-crafted URLs today.
+          router.replace(returnPath === '/login' ? '/' : returnPath);
           return;
         }
-        const res = await getAuthProviders();
-        if (cancelled) return;
-        if (res.setup_required) {
+        if (providers.setup_required) {
           router.replace(
             `/setup?return=${encodeURIComponent(returnPath)}`,
           );
           return;
         }
-        if (res.providers.length === 0) {
+        if (providers.providers.length === 0) {
           setState({ kind: 'no-providers' });
           return;
         }
-        const password = res.providers.find((p) => p.kind === 'password');
+        const password = providers.providers.find((p) => p.kind === 'password');
         setState({
           kind: 'ready',
-          providers: res.providers,
+          providers: providers.providers,
           activePasswordProviderId: password?.id ?? null,
         });
       } catch (err) {
