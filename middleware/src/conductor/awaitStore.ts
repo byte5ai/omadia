@@ -16,7 +16,18 @@ export interface ConductorAwait {
   deadlineAt: Date | null;
   fallbackTransitionId: string | null;
   status: AwaitStatus;
+  /** true when the last reminder found no reachable holder (no channel binding) — operator signal. */
+  unreachable: boolean;
   createdAt: Date;
+}
+
+/** Resolve an await's principal to concrete holder ids — `role:` via the resolver, `user:` as itself.
+ *  Shared by the reminder worker and the operator inbox so the rule never drifts. */
+export async function resolveAwaitHolders(
+  aw: Pick<ConductorAwait, 'principalKind' | 'principalRef'>,
+  resolveRole: (roleKey: string) => Promise<string[]>,
+): Promise<string[]> {
+  return aw.principalKind === 'role' ? resolveRole(aw.principalRef) : [aw.principalRef];
 }
 
 interface AwaitRow {
@@ -32,11 +43,12 @@ interface AwaitRow {
   deadline_at: Date | null;
   fallback_transition_id: string | null;
   status: AwaitStatus;
+  unreachable: boolean;
   created_at: Date;
 }
 
 const COLS = `id, run_id, step_id, principal_kind, principal_ref, channel_type, message, quorum,
-  reminder_interval_ms, deadline_at, fallback_transition_id, status, created_at`;
+  reminder_interval_ms, deadline_at, fallback_transition_id, status, unreachable, created_at`;
 
 function toAwait(r: AwaitRow): ConductorAwait {
   return {
@@ -52,6 +64,7 @@ function toAwait(r: AwaitRow): ConductorAwait {
     deadlineAt: r.deadline_at,
     fallbackTransitionId: r.fallback_transition_id,
     status: r.status,
+    unreachable: r.unreachable,
     createdAt: r.created_at,
   };
 }
@@ -118,6 +131,50 @@ export class ConductorAwaitStore {
       [now],
     );
     return r.rows.map(toAwait);
+  }
+
+  /**
+   * Candidate awaits whose reminder interval has elapsed (and whose deadline has not yet passed).
+   * The interval counts from `COALESCE(last_reminder_at, created_at)`, so the FIRST reminder waits a
+   * full interval after the await opened (the holder was already notified at open time) rather than
+   * firing on the next tick.
+   */
+  async listRemindersDue(now: Date): Promise<ConductorAwait[]> {
+    const r = await this.pool.query<AwaitRow>(
+      `SELECT ${COLS} FROM conductor_awaits
+        WHERE status = 'waiting'
+          AND reminder_interval_ms IS NOT NULL
+          AND COALESCE(last_reminder_at, created_at) + (reminder_interval_ms * interval '1 millisecond') <= $1
+          AND (deadline_at IS NULL OR deadline_at > $1)
+        ORDER BY created_at ASC LIMIT 100`,
+      [now],
+    );
+    return r.rows.map(toAwait);
+  }
+
+  /**
+   * Atomically claim a reminder slot: advance `last_reminder_at` to now ONLY if the await is still
+   * waiting and genuinely due (same predicate as listRemindersDue). Returns true iff this caller won.
+   * Claim-THEN-send: advancing the clock before delivery means a send/record failure (or a crash, or
+   * a second replica) can re-deliver at most once per interval rather than every tick (at-most-once
+   * nudges — losing one reminder on a crash is safer than a per-minute storm). Replica-safe.
+   */
+  async claimReminderDue(awaitId: string, now: Date): Promise<boolean> {
+    const r = await this.pool.query(
+      `UPDATE conductor_awaits SET last_reminder_at = $2
+        WHERE id = $1
+          AND status = 'waiting'
+          AND reminder_interval_ms IS NOT NULL
+          AND COALESCE(last_reminder_at, created_at) + (reminder_interval_ms * interval '1 millisecond') <= $2
+          AND (deadline_at IS NULL OR deadline_at > $2)`,
+      [awaitId, now],
+    );
+    return (r.rowCount ?? 0) > 0;
+  }
+
+  /** Set the `unreachable` operator signal after a delivery attempt (false clears a stale flag). */
+  async setReminderUnreachable(awaitId: string, unreachable: boolean): Promise<void> {
+    await this.pool.query(`UPDATE conductor_awaits SET unreachable = $2 WHERE id = $1`, [awaitId, unreachable]);
   }
 
   async recordResponse(awaitId: string, responderId: string, response: JsonValue): Promise<void> {

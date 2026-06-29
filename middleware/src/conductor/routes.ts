@@ -6,6 +6,7 @@ import type { JsonObject, WorkflowGraph } from '@omadia/conductor-core';
 
 import type { ConductorWorkflowStore } from './workflowStore.js';
 import type { ConductorRunStore } from './runStore.js';
+import { resolveAwaitHolders } from './awaitStore.js';
 import type { ConductorAwaitStore } from './awaitStore.js';
 import type { ConductorRoleStore } from './roleStore.js';
 import type { ConductorScheduleStore } from './scheduleStore.js';
@@ -176,8 +177,8 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       const awaits = await deps.awaitStore.listWaiting();
       const enriched = await Promise.all(
         awaits.map(async (aw) => ({
-          ...aw,
-          resolvedHolders: aw.principalKind === 'role' ? await deps.roleStore.resolve(aw.principalRef) : [aw.principalRef],
+          ...aw, // includes `unreachable` so the operator sees awaits whose holders have no channel binding
+          resolvedHolders: await resolveAwaitHolders(aw, (key) => deps.roleStore.resolve(key)),
         })),
       );
       res.json({ awaits: enriched });

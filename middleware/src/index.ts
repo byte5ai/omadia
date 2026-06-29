@@ -1729,7 +1729,15 @@ async function main(): Promise<void> {
     // builders) without constructor-injected Deps.
     serviceRegistry.provide(
       ROUTINES_INTEGRATION_SERVICE_NAME,
-      createRoutinesIntegration(routinesHandle),
+      createRoutinesIntegration(routinesHandle, (info) => {
+        // US5: persist a Conductor channel binding per inbound turn so awaits can be reminded.
+        // Lazy-resolve the store (Conductor wires later in boot); fire-and-forget — a turn must
+        // never be blocked or broken by it.
+        const bindings = serviceRegistry.get<{ upsert(u: string, c: string, r: unknown): Promise<void> }>(
+          'conductorChannelBindings',
+        );
+        if (bindings) void bindings.upsert(String(info.userId), String(info.channel), info.conversationRef).catch(() => undefined);
+      }),
     );
     console.log(
       '[middleware] routines feature ready (manage_routine tool registered, routinesIntegration published)',
@@ -2126,10 +2134,18 @@ async function main(): Promise<void> {
       getRegistry,
       invokeAction: (toolId, input) => dynamicAgentRuntime.invokeAgentTool(toolId, input),
       eventCatalog: eventCatalogRegistry,
+      // US5 reminders: resolve a channel's proactive sender from the routines senderRegistry. Adapt
+      // ProactiveSender → the worker's minimal shape ({ text } is a valid SemanticAnswer).
+      getProactiveSender: (channel) => {
+        const sender = routinesHandle?.senderRegistry.get(channel);
+        return sender ? { send: (opts) => sender.send(opts) } : undefined;
+      },
       log: (m) => console.log(m),
     });
     // Expose the event router so plugin contexts (ctx.events.emit) resolve it lazily — US4.
     serviceRegistry.provide('conductorEventRouter', conductorWiring.eventRouter);
+    // Expose the channel-binding store so the routines turn-capture hook can populate it — US5.
+    serviceRegistry.provide('conductorChannelBindings', conductorWiring.channelBindingStore);
     console.log('[middleware] conductor wired at /api/v1/operator/conductors/* (auth-gated)');
     const userStore = new UserStore(graphPool);
 

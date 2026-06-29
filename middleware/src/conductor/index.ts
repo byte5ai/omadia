@@ -10,8 +10,10 @@ import { ConductorRunStore } from './runStore.js';
 import { ConductorAwaitStore } from './awaitStore.js';
 import { ConductorRoleStore } from './roleStore.js';
 import { ConductorScheduleStore } from './scheduleStore.js';
+import { ConductorChannelBindingStore } from './channelBindingStore.js';
 import { ConductorRunExecutor } from './runExecutor.js';
 import { ConductorAwaitWorker } from './awaitWorker.js';
+import type { ProactiveSenderLike } from './awaitWorker.js';
 import { ConductorRunResumeWorker } from './runResumeWorker.js';
 import { ConductorScheduleWorker } from './scheduleWorker.js';
 import { ConductorEventRouter } from './eventRouter.js';
@@ -28,6 +30,7 @@ export { ConductorAwaitWorker } from './awaitWorker.js';
 export { ConductorRunResumeWorker } from './runResumeWorker.js';
 export { ConductorScheduleWorker } from './scheduleWorker.js';
 export { ConductorScheduleStore } from './scheduleStore.js';
+export { ConductorChannelBindingStore } from './channelBindingStore.js';
 export { ConductorEventRouter } from './eventRouter.js';
 export { StubStepEffects } from './stepEffects.js';
 export { RealStepEffects } from './realStepEffects.js';
@@ -40,6 +43,7 @@ export interface ConductorWiring {
   awaitStore: ConductorAwaitStore;
   roleStore: ConductorRoleStore;
   scheduleStore: ConductorScheduleStore;
+  channelBindingStore: ConductorChannelBindingStore;
   executor: ConductorRunExecutor;
   awaitWorker: ConductorAwaitWorker;
   resumeWorker: ConductorRunResumeWorker;
@@ -63,6 +67,8 @@ export async function wireConductor(deps: {
   invokeAction?: (toolId: string, input: unknown) => Promise<string | undefined>;
   /** read model of the event-emit catalog (declared `event_emit` capabilities) for the Designer. */
   eventCatalog?: { list(): string[]; byPluginId(): Record<string, string[]> };
+  /** resolves a proactive sender for a channel (US5 reminders) — from the routines senderRegistry. */
+  getProactiveSender?: (channel: string) => ProactiveSenderLike | undefined;
   log?: (msg: string) => void;
 }): Promise<ConductorWiring> {
   const log = deps.log ?? (() => undefined);
@@ -73,6 +79,7 @@ export async function wireConductor(deps: {
   const awaitStore = new ConductorAwaitStore(deps.pool);
   const roleStore = new ConductorRoleStore(deps.pool);
   const scheduleStore = new ConductorScheduleStore(deps.pool);
+  const channelBindingStore = new ConductorChannelBindingStore(deps.pool);
   const executor = new ConductorRunExecutor({
     workflowStore,
     runStore,
@@ -86,8 +93,16 @@ export async function wireConductor(deps: {
     log,
   });
 
-  // Deadline worker — fires the in-graph fallback when a human await times out.
-  const awaitWorker = new ConductorAwaitWorker({ awaitStore, executor, log });
+  // Deadline + reminder worker — fires the in-graph fallback on timeout (US5) and nudges waiting
+  // holders on their channel when a reminder interval elapses (reminder deps optional / graphPool-gated).
+  const awaitWorker = new ConductorAwaitWorker({
+    awaitStore,
+    executor,
+    bindingStore: channelBindingStore,
+    resolveRoleHolders: (key) => roleStore.resolve(key),
+    ...(deps.getProactiveSender ? { getProactiveSender: deps.getProactiveSender } : {}),
+    log,
+  });
   awaitWorker.start();
 
   // Resume worker — re-drives runs orphaned by a process restart (US2 / SC-002).
@@ -107,5 +122,5 @@ export async function wireConductor(deps: {
     createConductorRouter({ workflowStore, runStore, awaitStore, roleStore, scheduleStore, executor, eventRouter, eventCatalog: deps.eventCatalog }),
   );
 
-  return { workflowStore, runStore, awaitStore, roleStore, scheduleStore, executor, awaitWorker, resumeWorker, scheduleWorker, eventRouter };
+  return { workflowStore, runStore, awaitStore, roleStore, scheduleStore, channelBindingStore, executor, awaitWorker, resumeWorker, scheduleWorker, eventRouter };
 }
