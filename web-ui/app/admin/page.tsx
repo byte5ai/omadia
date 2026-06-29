@@ -1,96 +1,101 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
+import { getTranslations } from 'next-intl/server';
 
-export const metadata: Metadata = {
-  title: 'Admin · Omadia',
-};
+export const dynamic = 'force-dynamic';
 
-export default function AdminIndexPage(): React.ReactElement {
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations('admin.index');
+  return { title: t('metaTitle') };
+}
+
+/**
+ * Admin landing page. The flat 15-card grid was consolidated into titled
+ * groups (LLM Access, Knowledge & Memory, Plugins, Access, Danger Zone). Cards
+ * are data-driven — copy lives in messages/{en,de}.json under `admin.index.*`;
+ * this file only owns the href + i18n key + ordering.
+ *
+ * The `/admin/builder` route still exists for deep links but is no longer
+ * advertised here — the canonical Builder entry point is the Plugins nav
+ * (`/store/builder`).
+ */
+type CardDef = { readonly href: string; readonly key: string; readonly danger?: boolean };
+type GroupDef = { readonly key: string; readonly cards: readonly CardDef[] };
+
+const GROUPS: readonly GroupDef[] = [
+  {
+    key: 'llm',
+    cards: [
+      { href: '/admin/providers', key: 'llmAccess' },
+      // Usage & cost is an LLM concern (token spend per model), so it lives
+      // with LLM access. The former standalone "General" group (Configuration +
+      // Usage) is gone — provider keys are now entered inline on LLM access.
+      { href: '/admin/usage', key: 'usage' },
+    ],
+  },
+  {
+    key: 'knowledge',
+    cards: [
+      { href: '/admin/kg-lifecycle', key: 'kgLifecycle' },
+      { href: '/admin/kg-priorities', key: 'kgPriorities' },
+      { href: '/admin/bulk-promote', key: 'bulkPromote' },
+      { href: '/admin/inconsistencies', key: 'inconsistencies' },
+      { href: '/admin/memory-backend', key: 'memoryBackend' },
+    ],
+  },
+  {
+    key: 'plugins',
+    cards: [
+      { href: '/admin/domains', key: 'domains' },
+      { href: '/admin/registries', key: 'registries' },
+    ],
+  },
+  {
+    key: 'access',
+    cards: [
+      { href: '/admin/auth', key: 'auth' },
+      { href: '/admin/users', key: 'users' },
+    ],
+  },
+  {
+    key: 'danger',
+    cards: [{ href: '/admin/danger-zone', key: 'dangerZone', danger: true }],
+  },
+] as const;
+
+export default async function AdminIndexPage(): Promise<React.ReactElement> {
+  const t = await getTranslations('admin.index');
   return (
     <main className="mx-auto max-w-[960px] px-6 py-12 lg:px-8 lg:py-16">
       <header className="mb-8">
         <h1 className="font-display text-[clamp(2rem,4vw,3rem)] leading-[1.1] text-[color:var(--fg-strong)]">
-          Admin
+          {t('h1')}
         </h1>
         <p className="mt-3 max-w-2xl text-[16px] leading-[1.55] text-[color:var(--fg-muted)]">
-          Verwaltung der Authentifizierungs-Provider und der lokalen
-          Benutzerkonten.
+          {t('subtitle')}
         </p>
       </header>
 
-      <ul className="grid gap-4 lg:grid-cols-2">
-        <AdminCard
-          href="/admin/builder"
-          title="Agent-Builder"
-          description="Visuelle Node-Graph-Leinwand: Kanäle, Sub-Agenten, Skills, Tools/MCP und Zeitpläne verdrahten. Verbindung ziehen schreibt die Verdrahtung, Kante löschen entfernt sie."
-        />
-        <AdminCard
-          href="/admin/settings"
-          title="Konfiguration"
-          description="Alle .env-basierten Werte (Modelle & Routing, Verifier, Embeddings, Integrationen), die in Config-Store/Vault landen — direkt editierbar. Auto-Save, wirkt sofort ohne Neustart."
-        />
-        <AdminCard
-          href="/admin/providers"
-          title="LLM-Provider"
-          description="Provider verbinden (Anthropic, OpenAI, Mistral) und pro Agent Provider + Modell zuordnen. Schlüssel liegen verschlüsselt im Vault. AVV-Hinweis beim Wechsel auf einen Drittanbieter. Wirkt sofort."
-        />
-        <AdminCard
-          href="/admin/auth"
-          title="Authentifizierungs-Provider"
-          description="Lokale Anmeldung und Entra-ID aktivieren oder deaktivieren. Änderungen wirken ohne Neustart."
-        />
-        <AdminCard
-          href="/admin/users"
-          title="Benutzer"
-          description="Lokale Konten anlegen, deaktivieren, Passwort zurücksetzen oder löschen."
-        />
-        <AdminCard
-          href="/admin/kg-lifecycle"
-          title="Knowledge-Graph Lifecycle"
-          description="Tier-Histogram (HOT/WARM/COLD), Decay-Verteilung, Top-Scopes. Decay- und GC-Sweeps manuell ausführen."
-        />
-        <AdminCard
-          href="/admin/kg-priorities"
-          title="Knowledge-Graph Priorities"
-          description="Per-Agent Block/Boost-Liste für den Token-Budget-Assembler. Operator-Override für Recall-Hits pro Agent."
-        />
-        <AdminCard
-          href="/admin/domains"
-          title="Plugin-Domains"
-          description="Übersicht aller registrierten Plugins gruppiert nach Domain (z.B. odoo, m365.calendar, core.knowledge-graph). Read-only — Curation kommt mit Phase 9."
-        />
-        <AdminCard
-          href="/admin/registries"
-          title="Plugin-Registries"
-          description="Store-Quellen verwalten (Standard: hub.omadia.ai). Private Registries mit Token. Änderungen wirken ohne Neustart."
-        />
-        <AdminCard
-          href="/admin/bulk-promote"
-          title="Memory · Bulk-Promotion"
-          description="Historische Turns nachträglich auf Significance scoren und bei hoher Bewertung als MemorableKnowledge promoten. Idempotent."
-        />
-        <AdminCard
-          href="/admin/inconsistencies"
-          title="Memory · Widersprüche"
-          description="Semantisch ähnliche Memories mit widersprüchlichen Aussagen — Operator entscheidet welche korrekt ist (oder ob beide gelten)."
-        />
-        <AdminCard
-          href="/admin/memory-backend"
-          title="Memory · Speicher-Backend"
-          description="Memory-Storage zwischen Dateisystem und Postgres umschalten. Postgres benötigt DATABASE_URL (Neon-KG/graphPool). Der Wechsel greift erst nach einem Neustart."
-        />
-        <AdminCard
-          href="/admin/danger-zone"
-          title="Danger Zone · Memory-Purge"
-          description="Memory unwiderruflich entlang einer Achse löschen (Alles / Agent / User / Team / Channel). Vorschau-gated, mit Confirm-Phrase. Kein Undo."
-          danger
-        />
-        <AdminCard
-          href="/admin/usage"
-          title="Kosten"
-          description="LLM-Token-Verbrauch und Kosten pro Modell, Quelle und Zeit. Cache-Hit-Rate und Gesamtkosten über jeden Anthropic-Call (Orchestrator, Sub-Agents, Background-Tasks)."
-        />
-      </ul>
+      <div className="flex flex-col gap-10">
+        {GROUPS.map((group) => (
+          <section key={group.key}>
+            <h2 className="mb-3 text-xs font-semibold tracking-wider text-[color:var(--fg-muted)] uppercase">
+              {t(`groups.${group.key}.heading`)}
+            </h2>
+            <ul className="grid gap-4 lg:grid-cols-2">
+              {group.cards.map((card) => (
+                <AdminCard
+                  key={card.key}
+                  href={card.href}
+                  title={t(`cards.${card.key}.title`)}
+                  description={t(`cards.${card.key}.description`)}
+                  danger={card.danger ?? false}
+                />
+              ))}
+            </ul>
+          </section>
+        ))}
+      </div>
     </main>
   );
 }
@@ -125,9 +130,7 @@ function AdminCard({
         >
           {title}
         </div>
-        <p className="mt-2 text-sm text-[color:var(--fg-muted)]">
-          {description}
-        </p>
+        <p className="mt-2 text-sm text-[color:var(--fg-muted)]">{description}</p>
       </Link>
     </li>
   );

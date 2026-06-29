@@ -9,7 +9,7 @@ import { redirectIfUnauthorized } from '../../../_lib/authRedirect';
 import { Workspace } from './_components/Workspace';
 
 export const metadata: Metadata = {
-  title: 'Workspace · Agent-Builder · Omadia',
+  title: 'Workspace · Agent-Builder · omadia',
 };
 
 export const dynamic = 'force-dynamic';

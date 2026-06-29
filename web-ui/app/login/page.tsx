@@ -9,6 +9,7 @@ import { Button } from '../_components/ui/Button';
 import {
   ApiError,
   getAuthProviders,
+  getSessionStatus,
   postAuthLogin,
   type AuthProviderSummary,
 } from '../_lib/api';
@@ -76,22 +77,34 @@ function LoginPageInner(): React.ReactElement {
     let cancelled = false;
     (async () => {
       try {
-        const res = await getAuthProviders();
+        // Probe session + providers in parallel: most visitors are
+        // logged-out, so the providers fetch is on the hot path. The only
+        // cost is one wasted providers call in the rare already-authed case.
+        const [session, providers] = await Promise.all([
+          getSessionStatus(),
+          getAuthProviders(),
+        ]);
         if (cancelled) return;
-        if (res.setup_required) {
+        if (session.authenticated) {
+          // Guard against ?return=/login which would re-enter this page
+          // and loop. Only reachable via hand-crafted URLs today.
+          router.replace(returnPath === '/login' ? '/' : returnPath);
+          return;
+        }
+        if (providers.setup_required) {
           router.replace(
             `/setup?return=${encodeURIComponent(returnPath)}`,
           );
           return;
         }
-        if (res.providers.length === 0) {
+        if (providers.providers.length === 0) {
           setState({ kind: 'no-providers' });
           return;
         }
-        const password = res.providers.find((p) => p.kind === 'password');
+        const password = providers.providers.find((p) => p.kind === 'password');
         setState({
           kind: 'ready',
-          providers: res.providers,
+          providers: providers.providers,
           activePasswordProviderId: password?.id ?? null,
         });
       } catch (err) {
@@ -238,7 +251,7 @@ function PageShell({ children }: { children: React.ReactNode }): React.ReactElem
       <div className="lume-surface-raised lume-border w-full max-w-sm rounded-lg p-6 shadow-[var(--shadow-lg)]">
         <header className="mb-6 flex flex-col leading-none">
           <h1 className="font-display text-3xl text-[color:var(--fg-strong)]">
-            Omadia
+            omadia
           </h1>
           <span className="mt-2 text-[11px] uppercase tracking-[0.18em] text-[color:var(--fg-muted)]">
             an Agentic OS

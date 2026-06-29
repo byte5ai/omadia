@@ -18,10 +18,11 @@ export default tseslint.config(
         { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
       ],
       '@typescript-eslint/consistent-type-imports': 'error',
-      // LLM-provider decoupling (docs/plans/llm-provider-interface-plan.md):
-      // no middleware code may import the Anthropic SDK directly — go through
-      // the neutral @omadia/llm-provider contract. The Anthropic adapter (the
-      // ONLY sanctioned SDK consumer) lives in packages/llm-provider, which is
+      // LLM-provider decoupling (issue #298, docs/plans/issue-298-provider-plugins.md):
+      // no middleware code — INCLUDING the @omadia/llm-provider runtime core — may
+      // import a vendor SDK directly. Go through the neutral @omadia/llm-provider
+      // contract. The wire-format adapters (@omadia/llm-adapter-anthropic and
+      // @omadia/llm-adapter-openai) are the ONLY sanctioned SDK consumers and are
       // exempted in the override below.
       '@typescript-eslint/no-restricted-imports': [
         'error',
@@ -30,7 +31,12 @@ export default tseslint.config(
             {
               group: ['@anthropic-ai/sdk', '@anthropic-ai/sdk/*'],
               message:
-                'Import the neutral @omadia/llm-provider contract instead (LlmProvider, createAnthropicProvider, AnthropicClient, …). The Anthropic SDK is confined to packages/llm-provider. See docs/plans/llm-provider-interface-plan.md.',
+                'Import the neutral @omadia/llm-provider contract instead (LlmProvider, …). The Anthropic SDK is confined to @omadia/llm-adapter-anthropic. See docs/plans/issue-298-provider-plugins.md.',
+            },
+            {
+              group: ['openai', 'openai/*'],
+              message:
+                'Import the neutral @omadia/llm-provider contract instead (LlmProvider, …). The OpenAI SDK is confined to @omadia/llm-adapter-openai. See docs/plans/issue-298-provider-plugins.md.',
             },
           ],
         },
@@ -38,8 +44,11 @@ export default tseslint.config(
     },
   },
   {
-    // The Anthropic reference adapter is the one place the SDK is allowed.
-    files: ['packages/llm-provider/**/*.ts'],
+    // The wire-format adapter packages are the only places a vendor SDK is allowed.
+    files: [
+      'packages/llm-adapter-anthropic/**/*.ts',
+      'packages/llm-adapter-openai/**/*.ts',
+    ],
     rules: {
       '@typescript-eslint/no-restricted-imports': 'off',
     },

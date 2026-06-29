@@ -1,0 +1,65 @@
+# Overlay: diagram rendering (Kroki gateway + Mermaid companion).
+#
+# Adds the `kroki` + `kroki-mermaid` sidecars and the env that activates the
+# diagrams plugin (the `render_diagram` tool + signed PNG URLs at
+# /diagrams/<key>).
+#
+# REQUIRES the storage overlay — rendered diagrams are stored in object
+# storage, so always compose this WITH docker-compose.storage.yaml:
+#   docker compose -f docker-compose.yaml \
+#     -f docker-compose.storage.yaml -f docker-compose.diagrams.yaml up -d
+#
+# You must also set a signing secret in middleware/.env before the plugin
+# activates (the kernel skips auto-install while it is empty):
+#   DIAGRAM_URL_SECRET=$(openssl rand -hex 32)
+
+services:
+  middleware:
+    environment:
+      # In-network DNS name — the middleware reaches the Kroki gateway over
+      # the shared `omadia` network, not the host's localhost.
+      KROKI_BASE_URL: http://kroki:8000
+      # Host-side public base URL — the browser opens signed diagram URLs
+      # against the published host port, not the in-network service name.
+      DIAGRAM_PUBLIC_BASE_URL: http://localhost:8080
+      # Signing secret for diagram URLs. Set in middleware/.env
+      # (`openssl rand -hex 32`); the diagrams plugin stays inactive while
+      # this is empty.
+      DIAGRAM_URL_SECRET: ${DIAGRAM_URL_SECRET:-}
+    depends_on:
+      kroki:
+        condition: service_started
+
+  # --- Diagram rendering (Kroki gateway + Mermaid companion) ----------------
+  kroki-mermaid:
+    image: yuzutech/kroki-mermaid:0.29.1
+    restart: unless-stopped
+    networks: [omadia]
+    # No host port — only reachable from the kroki gateway on the shared network.
+
+  kroki:
+    image: yuzutech/kroki:0.29.1
+    # Force amd64 emulation: the vega/vega-lite binary bundled inside the Kroki
+    # gateway image is x86-only (no arm64 build). On Apple Silicon hosts the
+    # default (matching the host) tries to load the x86 ELF natively and fails
+    # with "Dynamic loader not found". Other formats (graphviz/plantuml) are
+    # JVM-based and work either way; this setting is a no-op on amd64 hosts.
+    platform: linux/amd64
+    restart: unless-stopped
+    depends_on:
+      - kroki-mermaid
+    environment:
+      KROKI_MERMAID_HOST: kroki-mermaid
+      KROKI_MERMAID_PORT: '8002'
+      # SECURE blocks !include, remote refs, file access. Keep on for local dev too
+      # so we catch policy-violating diagrams before they hit production.
+      KROKI_SAFE_MODE: SECURE
+      KROKI_LISTEN: 0.0.0.0:8000
+    ports:
+      # Loopback-only. Host port 8765 (8000 is frequently taken by OrbStack,
+      # 8787 by Python dev tooling); container still listens on 8000 internally.
+      - '127.0.0.1:8765:8000'
+    networks: [omadia]
+    # PlantUML writes temp files under /tmp; tmpfs with exec makes it fast and clean.
+    tmpfs:
+      - /tmp:exec,size=128m

@@ -154,6 +154,14 @@ export interface PluginContext {
    *  a Hub plugin may land on an older core that lacks it. */
   readonly flows?: FlowsAccessor;
 
+  /** Spec 005 — broker-acquired OAuth access tokens. Present iff the manifest
+   *  declares a `type:oauth` setup field (resolved through an `oauth_providers`
+   *  descriptor) AND the core ships the broker. `get(fieldKey)` returns a
+   *  valid access token, refreshing under a 5-minute margin kernel-side; the
+   *  refresh token never reaches plugin code. Guard with `if (ctx.oauthTokens)`
+   *  — a Hub plugin may land on an older core without the broker. */
+  readonly oauthTokens?: OAuthTokensAccessor;
+
   /** Report an operator-facing action status (e.g. "not connected yet"). The
    *  kernel holds the latest value per plugin and the admin UI renders it as a
    *  badge on the plugin card + a banner on the detail page that clears when
@@ -583,6 +591,32 @@ export interface PluginActionStatus {
 export interface StatusAccessor {
   report(status: PluginActionStatus): void;
   clear(): void;
+}
+
+/**
+ * Spec 005 — read-side of the kernel OAuth broker. `get(fieldKey)` returns a
+ * currently-valid access token for the named `type:oauth` connection,
+ * transparently refreshing it within a 5-minute expiry margin. The kernel runs
+ * the refresh, rotates the stored refresh token, and returns only the access
+ * token — the refresh token NEVER reaches plugin code.
+ *
+ * Throws an {@link OAuthTokenError}: `not_connected` when no token is stored
+ * (the operator hasn't completed Connect), `refresh_failed` when a refresh was
+ * rejected (credential revoked → operator must re-connect).
+ */
+export interface OAuthTokensAccessor {
+  get(fieldKey: string): Promise<string>;
+}
+
+export type OAuthTokenErrorCode = 'not_connected' | 'refresh_failed';
+
+export class OAuthTokenError extends Error {
+  readonly code: OAuthTokenErrorCode;
+  constructor(code: OAuthTokenErrorCode, message: string) {
+    super(message);
+    this.name = 'OAuthTokenError';
+    this.code = code;
+  }
 }
 
 /**

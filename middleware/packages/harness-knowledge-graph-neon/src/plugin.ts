@@ -118,7 +118,17 @@ export async function activate(
   // setup-form (Vault) post-install. The legacy installed.json fallback was
   // dropped; bootstrapKnowledgeGraphFromEnv migrates pre-S+12.5-3 entries
   // automatically on first boot.
-  const databaseUrl = await ctx.secrets.get('database_url');
+  //
+  // Desktop installer exception: the embedded Postgres binds a loopback port
+  // that can change between launches (collision → a new free port is chosen),
+  // but the vault froze the FIRST-boot DSN and bootstrap never refreshes it. So
+  // when the supervisor signals an embedded DB (OMADIA_EMBEDDED_DB=1), the live
+  // DATABASE_URL env is authoritative — otherwise a drifted port would make this
+  // eager connect crash-loop boot against a dead port. Cloud/server (flag unset)
+  // keep vault precedence unchanged.
+  const embeddedDbUrl =
+    process.env['OMADIA_EMBEDDED_DB'] === '1' ? process.env['DATABASE_URL'] : undefined;
+  const databaseUrl = embeddedDbUrl || (await ctx.secrets.get('database_url'));
 
   if (!databaseUrl) {
     ctx.log(
@@ -139,7 +149,18 @@ export async function activate(
     process.env['GRAPH_TENANT_ID'] ??
     'default';
 
-  const graphPool: Pool = createNeonPool(databaseUrl);
+  // Pool size is configurable via graph_pool_max / GRAPH_POOL_MAX (defaults to
+  // 5). The desktop installer bundles a REAL native PostgreSQL 17, which pools
+  // normally — no single-connection cap needed. (The knob predates that: it let
+  // an earlier PGlite-over-pglite-socket engine, which was single-client, cap at
+  // 1. Kept configurable for constrained deployments.)
+  const poolMaxRaw =
+    ctx.config.get<string | number>('graph_pool_max') ?? process.env['GRAPH_POOL_MAX'];
+  const poolMaxParsed = Number(poolMaxRaw);
+  const poolMax =
+    Number.isInteger(poolMaxParsed) && poolMaxParsed > 0 ? poolMaxParsed : 5;
+
+  const graphPool: Pool = createNeonPool(databaseUrl, poolMax);
   // Ride out the first-boot Postgres-startup race (e.g. `docker compose up`,
   // where the DNS alias for the `postgres` service can lag the middleware's
   // first connection by a second or two). Without this a transient

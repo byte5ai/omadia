@@ -1,10 +1,53 @@
 import type { ChatTurnResult } from './chatAgent.js';
 import type {
+  AgentConsultation,
   OutgoingAttachment,
   OutgoingInteractive,
   SemanticAnswer,
   VerifierBadge,
 } from './outgoing.js';
+
+/**
+ * #332 Layer 1 — plain-text fallback footer for connectors without rich-card
+ * UI. Renders the harness-sourced `agentsConsulted` projection as a single
+ * readable line, e.g. `🔎 Consulted: Strategist ✓ · 2 steps`. Returns
+ * `undefined` when no sub-agent ran (caller appends nothing). Rich connectors
+ * (web-ui, Teams) render their own UI from the structured field instead.
+ */
+export function agentsConsultedFooterText(
+  answer: Pick<SemanticAnswer, 'agentsConsulted'>,
+): string | undefined {
+  const consulted = answer.agentsConsulted;
+  if (!consulted || consulted.length === 0) return undefined;
+  const parts = consulted.map((c) => {
+    const mark = c.status === 'success' ? '✓' : '✗';
+    const steps =
+      typeof c.toolCalls === 'number' && c.toolCalls > 0
+        ? ` · ${c.toolCalls} ${c.toolCalls === 1 ? 'step' : 'steps'}`
+        : '';
+    return `${c.label} ${mark}${steps}`;
+  });
+  return `🔎 Consulted: ${parts.join(' · ')}`;
+}
+
+/**
+ * Humanize a run-trace `agentName` (which is the invoked tool name, e.g.
+ * `ask_strategist` / `@omadia/agent-strategist`) into a footer label. Mirrors
+ * the middleware-side `labelFromAgentId` (agents/resolveAgentForTool.ts) but
+ * stays local — channel-sdk has no access to the dynamic agent runtime. Strips
+ * an `ask_`/`consult_` verb prefix and any npm-scope / legacy-namespace, then
+ * Title-Cases the remainder.
+ */
+function humanizeAgentLabel(agentName: string): string {
+  const last = agentName.split(/[./]/).pop() ?? agentName;
+  const deverbed = last.replace(/^(?:ask|consult|query|invoke|agent)[-_]/i, '');
+  const titled = deverbed
+    .split(/[-_]/)
+    .filter((seg) => seg.length > 0)
+    .map((seg) => seg.charAt(0).toUpperCase() + seg.slice(1))
+    .join(' ');
+  return titled.length > 0 ? titled : agentName;
+}
 
 /**
  * Convert the internal kernel-shaped `ChatTurnResult` to the channel-agnostic
@@ -87,9 +130,30 @@ export function toSemanticAnswer(r: ChatTurnResult): SemanticAnswer {
     ? { status: r.verifier.badge }
     : undefined;
 
+  // #332 Layer 1 — curate a tamper-evident consulted-agents footer from the
+  // deterministic run-trace. This is the ONLY sub-agent signal Teams/Telegram
+  // get; the raw `runTrace` stays dropped (see header). Built by the harness,
+  // outside the LLM's output stream — a fabricated "I asked X" with no real
+  // invocation yields an empty array here.
+  const agentsConsulted: AgentConsultation[] | undefined =
+    r.runTrace?.agentInvocations && r.runTrace.agentInvocations.length > 0
+      ? r.runTrace.agentInvocations.map((inv) => ({
+          label: humanizeAgentLabel(inv.agentName),
+          status: inv.status,
+          ...(typeof inv.durationMs === 'number'
+            ? { durationMs: inv.durationMs }
+            : {}),
+          ...(inv.toolCalls ? { toolCalls: inv.toolCalls.length } : {}),
+        }))
+      : undefined;
+
   return {
     text: r.answer,
     ...(verifier ? { verifier } : {}),
+    ...(agentsConsulted && agentsConsulted.length > 0
+      ? { agentsConsulted }
+      : {}),
+    ...(r.delegatedAnswer ? { delegatedAnswer: r.delegatedAnswer } : {}),
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
     ...(r.followUpOptions && r.followUpOptions.length > 0
       ? { followUps: r.followUpOptions }

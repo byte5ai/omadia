@@ -8,6 +8,7 @@ import { composePersonaSection } from '../plugins/personaCompose.js';
 import {
   inferFamilyFromModel,
 } from '../plugins/dynamicAgentRuntime.js';
+import { resolveModelRef } from '@omadia/llm-provider';
 import { compileSycophancyGuard } from '../plugins/sycophancyGuard.js';
 
 /**
@@ -60,7 +61,9 @@ export function registerBuilderPreviewPromptRoute(
       });
     }
 
-    const family = inferFamilyFromModel(draft.previewModel);
+    const previewVendorId =
+      resolveModelRef(draft.previewModel)?.modelId ?? draft.previewModel;
+    const family = inferFamilyFromModel(previewVendorId);
     const sections: PreviewSection[] = [];
 
     // Header — minimal placeholder; runtime builds a richer header from

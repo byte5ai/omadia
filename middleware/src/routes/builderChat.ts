@@ -78,7 +78,7 @@ export function registerBuilderChatRoutes(
       }
       const message = body.message;
 
-      let modelId: BuilderModelId;
+      let modelChoice: BuilderModelId;
       if (body.model === undefined) {
         const draft = await deps.draftStore.load(email, draftId);
         if (!draft) {
@@ -88,22 +88,21 @@ export function registerBuilderChatRoutes(
           });
           return;
         }
-        modelId = draft.codegenModel;
+        modelChoice = draft.codegenModel;
       } else if (
         typeof body.model === 'string' &&
         BuilderModelRegistry.has(body.model)
       ) {
-        modelId = body.model;
+        modelChoice = body.model;
       } else {
         sendJson(res, 400, {
           code: 'builder.invalid_model',
-          message: `model muss einer von haiku|sonnet|opus sein`,
+          message:
+            `model '${String(body.model)}' ist in keinem konfigurierten ` +
+            `LLM-Provider registriert`,
         });
         return;
       }
-
-      const anthropicModelId =
-        BuilderModelRegistry.get(modelId).anthropicModelId;
 
       // Open the NDJSON stream.
       res.status(200);
@@ -142,7 +141,7 @@ export function registerBuilderChatRoutes(
           draftId,
           userEmail: email,
           userMessage: message,
-          modelChoice: anthropicModelId,
+          modelChoice,
           turnId,
         });
 

@@ -18,7 +18,7 @@ interface RouteParams {
 export const dynamic = 'force-dynamic';
 
 export const metadata: Metadata = {
-  title: 'Routine Run · Omadia',
+  title: 'Routine Run · omadia',
 };
 
 export default async function RoutineRunDetailPage({

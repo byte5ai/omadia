@@ -5,6 +5,7 @@ import { z } from 'zod';
 import {
   attachAllPlugins,
   ConfigValidationError,
+  FALLBACK_AGENT_SLUG,
   type ChatSessionStore,
   type ConfigStore,
   type OrchestratorRegistry,
@@ -292,6 +293,20 @@ export function createOperatorAgentsRouter(
         res.status(404).json({ error: 'not_found' });
         return;
       }
+      // The fallback orchestrator (the auto-seeded `fallback` slug, and/or
+      // whatever the platform currently points at) must stay enabled — it is
+      // the catch-all for unbound channel traffic. Disabling it would strand
+      // every un-routed turn.
+      if (body.status === 'disabled') {
+        const settings = await live.store.getPlatformSettings();
+        if (
+          existing.slug === FALLBACK_AGENT_SLUG ||
+          existing.id === settings.fallbackAgentId
+        ) {
+          res.status(409).json({ error: 'fallback_protected' });
+          return;
+        }
+      }
       await live.store.updateAgent(existing.id, {
         ...(body.name !== undefined ? { name: body.name } : {}),
         ...(body.description !== undefined
@@ -319,6 +334,17 @@ export function createOperatorAgentsRouter(
       const existing = await live.store.getAgentBySlug(slug);
       if (!existing) {
         res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      // Refuse to delete the fallback orchestrator (auto-seeded `fallback`
+      // slug, and/or the active platform fallback). It is the safety net for
+      // unbound channel traffic; deleting it would hard-reject those turns.
+      const settings = await live.store.getPlatformSettings();
+      if (
+        existing.slug === FALLBACK_AGENT_SLUG ||
+        existing.id === settings.fallbackAgentId
+      ) {
+        res.status(409).json({ error: 'fallback_protected' });
         return;
       }
       await live.store.deleteAgent(existing.id);

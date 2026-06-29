@@ -1,5 +1,202 @@
 {
+  "dashboard": {
+    "metaTitle": "Dashboard · omadia",
+    "h1": "Dashboard",
+    "subtitle": "Dein Operator-Cockpit: Systemstatus, Schnellzugriff und Einrichtung.",
+    "health": {
+      "heading": "Systemstatus",
+      "subtitle": "Live-Status der Kerndienste. Wähle eine Karte, um sie zu verwalten.",
+      "ok": "Verbunden",
+      "down": "Nicht erreichbar",
+      "warn": "Aufmerksamkeit nötig",
+      "manage": "Verwalten",
+      "middleware": {
+        "title": "Middleware",
+        "okDetail": "API erreichbar",
+        "downDetail": "Keine Antwort von der Middleware-API."
+      },
+      "llm": {
+        "title": "LLM-Provider",
+        "connected": "{count, plural, one {# Provider verbunden} other {# Provider verbunden}}",
+        "none": "Kein Provider verbunden",
+        "active": "Aktiv: {name}"
+      },
+      "orchestrators": {
+        "title": "Orchestratoren",
+        "available": "{count, plural, one {# Orchestrator verfügbar} other {# Orchestratoren verfügbar}}",
+        "none": "Kein Orchestrator konfiguriert"
+      },
+      "plugins": {
+        "title": "Plugins",
+        "installed": "{count, plural, one {# Plugin installiert} other {# Plugins installiert}}",
+        "none": "Noch keine Plugins installiert"
+      }
+    },
+    "quick": {
+      "heading": "Schnellzugriff",
+      "subtitle": "Direkt zu den meistgenutzten Bereichen springen.",
+      "chat": {
+        "title": "Chat",
+        "description": "Mit deinen Orchestratoren sprechen und Aufgaben ausführen."
+      },
+      "hub": {
+        "title": "Hub",
+        "description": "Plugins für dein Team durchsuchen und installieren."
+      },
+      "orchestrators": {
+        "title": "Orchestratoren",
+        "description": "Agenten, Bindings und Channels konfigurieren."
+      },
+      "routines": {
+        "title": "Routinen",
+        "description": "Wiederkehrende Arbeit planen und automatisieren."
+      },
+      "admin": {
+        "title": "Admin",
+        "description": "Provider, Zugriff, Wissen und Einstellungen."
+      }
+    },
+    "onboarding": {
+      "chooseCaseHeading": "Business-Case wählen",
+      "chooseCaseSubtitle": "Wähle deine Rolle — wir empfehlen passende Plugins, gruppiert nach Bereich.",
+      "cases": {
+        "sales": {
+          "name": "Vertrieb & CRM",
+          "description": "Kunden über alle Kanäle erreichen, mit CRM- und ERP-Daten zur Hand."
+        },
+        "hr": {
+          "name": "HR & Recruiting",
+          "description": "HR-Fragen beantworten und People-Prozesse aus dem Chat steuern."
+        },
+        "finance": {
+          "name": "Finanzen & Buchhaltung",
+          "description": "Buchhaltung und Finanzprozesse, gestützt auf dein ERP."
+        },
+        "devteam": {
+          "name": "Software-Team / DevOps",
+          "description": "Schneller liefern mit Dev-Tools, Doku und Team-Kanälen."
+        }
+      },
+      "categories": {
+        "channels": "Channels",
+        "erp": "ERP",
+        "knowledge": "Knowledge",
+        "devtools": "DevTools"
+      },
+      "recommend": {
+        "incompatibleHint": "Inkompatibel",
+        "catalogUnavailable": "Plugin-Katalog gerade nicht erreichbar. Versuch es gleich nochmal.",
+        "subtitle": "Empfohlene Plugins für diesen Business-Case.",
+        "back": "Andere Rolle",
+        "installedBadge": "Installiert",
+        "open": "Öffnen",
+        "build": "Im Builder bauen",
+        "request": "Anfragen",
+        "missingHint": "Noch nicht im Hub",
+        "sectionEmpty": "Keine Empfehlung in dieser Kategorie."
+      },
+      "step": "Schritt {n}",
+      "rolesHeading": "Rolle wählen",
+      "llmStep": {
+        "connect": "LLM-Zugang öffnen",
+        "title": "LLM verbinden",
+        "description": "Ohne verbundenes LLM kann kein Orchestrator laufen. Verbinde zuerst einen API-Provider oder ein Abo-CLI.",
+        "connectProvider": "Provider verbinden",
+        "connectCli": "Abo-CLI verbinden"
+      },
+      "heading": "Erste Schritte",
+      "subtitle": "Wähle eine Rolle, um einen empfohlenen Satz Plugins zu installieren. Alles lässt sich später anpassen.",
+      "kicker": "Einrichtung",
+      "pluginCount": "{count, plural, one {# Plugin} other {# Plugins}}",
+      "apply": "Set installieren",
+      "applying": "Wird installiert",
+      "applied": "Installiert",
+      "failed": "Installation fehlgeschlagen",
+      "retry": "Erneut versuchen",
+      "browseAll": "Alle Plugins ansehen",
+      "dismiss": "Onboarding ausblenden",
+      "reenable": "Onboarding anzeigen",
+      "empty": "Keine Rollenprofile verfügbar. Verbinde eine Registry, um Empfehlungen zu sehen.",
+      "outcome": "{installed} installiert, {skipped} übersprungen, {errored} fehlgeschlagen"
+    }
+  },
+  "adminLlm": {
+    "title": "LLM-Zugang",
+    "subtitle": "Gib dem Orchestrator ein Modell: einen API-Provider verbinden und Modelle pro Plugin zuweisen, oder ein Abo-CLI per Login anbinden.",
+    "tabProviders": "API-Keys",
+    "tabSubscriptions": "Abos"
+  },
   "admin": {
+    "index": {
+      "metaTitle": "Admin · omadia",
+      "h1": "Admin",
+      "subtitle": "Agenten, Modelle, Wissen, Plugins, Zugänge und Kosten dieser omadia-Instanz verwalten und überwachen.",
+      "groups": {
+        "llm": { "heading": "LLM-Zugang" },
+        "knowledge": { "heading": "Wissen & Memory" },
+        "plugins": { "heading": "Plugins" },
+        "access": { "heading": "Zugang" },
+        "danger": { "heading": "Gefahrenzone" }
+      },
+      "cards": {
+        "llmAccess": {
+          "title": "LLM-Zugang",
+          "description": "LLM-Provider verbinden (API-Keys), Modelle pro Plugin zuweisen und Abo-CLIs anmelden."
+        },
+        "usage": {
+          "title": "Nutzung & Kosten",
+          "description": "Token-Verbrauch und Kosten pro Modell, Quelle und Zeit verfolgen, inklusive Cache-Hit-Rate über jeden Call."
+        },
+        "providers": {
+          "title": "Provider",
+          "description": "Provider verbinden und pro Agent Provider plus Modell zuordnen; Schlüssel bleiben verschlüsselt im Vault."
+        },
+        "subscriptionClis": {
+          "title": "Abo-CLIs",
+          "description": "Agenten über ein bestehendes LLM-Abo (Claude Pro/Max) per offizieller CLI statt API-Schlüssel betreiben."
+        },
+        "kgLifecycle": {
+          "title": "Knowledge-Graph Lebenszyklus",
+          "description": "Tier-, Decay- und Scope-Verteilung einsehen und Decay- sowie GC-Sweeps manuell ausführen."
+        },
+        "kgPriorities": {
+          "title": "Knowledge-Graph Prioritäten",
+          "description": "Pro Agent Block- und Boost-Listen setzen, die Recall-Treffer im Token-Budget-Assembler überschreiben."
+        },
+        "bulkPromote": {
+          "title": "Bulk-Promotion",
+          "description": "Historische Turns nachträglich scoren und hoch bewertete als dauerhaftes Wissen promoten (idempotent)."
+        },
+        "inconsistencies": {
+          "title": "Widersprüche",
+          "description": "Semantisch ähnliche Memories mit widersprüchlichen Aussagen auflösen; der Operator entscheidet, welche gilt."
+        },
+        "memoryBackend": {
+          "title": "Speicher-Backend",
+          "description": "Memory-Speicher zwischen Dateisystem und Postgres umschalten; Postgres benötigt DATABASE_URL und greift erst nach Neustart."
+        },
+        "domains": {
+          "title": "Domains",
+          "description": "Registrierte Plugins nach Domain gruppiert ansehen (read-only)."
+        },
+        "registries": {
+          "title": "Registries",
+          "description": "Store-Quellen verwalten, inklusive privater Registries mit Token; Änderungen wirken ohne Neustart."
+        },
+        "auth": {
+          "title": "Authentifizierungs-Provider",
+          "description": "Lokale Anmeldung und Entra-ID aktivieren oder deaktivieren; Änderungen wirken ohne Neustart."
+        },
+        "users": {
+          "title": "Benutzer",
+          "description": "Lokale Konten anlegen, deaktivieren, Passwort zurücksetzen oder löschen."
+        },
+        "dangerZone": {
+          "title": "Memory-Purge",
+          "description": "Memory unwiderruflich entlang einer Achse löschen (Alles, Agent, User, Team, Channel); Vorschau-gated mit Confirm-Phrase, kein Undo."
+        }
+      }
+    },
     "builder": {
       "title": "Agent-Builder",
       "subtitle": "Kanäle, Sub-Agenten, Skills und Tools auf einer editierbaren Leinwand verdrahten.",
@@ -112,8 +309,9 @@
     "openLabel": "offen"
   },
   "nav": {
+    "dashboard": "Dashboard",
     "chat": "Chat",
-    "store": "Store",
+    "store": "Hub",
     "builder": "Builder",
     "memory": "Memory",
     "memories": "Memories",
@@ -122,7 +320,7 @@
     "conductor": "Conductor",
     "admin": "Admin",
     "system": "System",
-    "agentsCluster": "Agents",
+    "agentsCluster": "Orchestratoren",
     "agentsOverview": "Übersicht",
     "channels": "Channels",
     "pluginsCluster": "Plugins",
@@ -206,24 +404,23 @@
   },
   "operatorChannels": {
     "title": "Channels",
-    "subtitle": "Eingehende Webhooks pro Channel-Key auf einen Agent routen. Jeder Channel-Plugin meldet seine eigenen Keys — du wählst nur, welcher Agent sie beantwortet.",
+    "subtitle": "Eingehende Webhooks pro Channel-Key auf einen Orchestrator routen. Jeder Channel-Plugin meldet seine eigenen Keys — du wählst nur, welcher Orchestrator sie beantwortet.",
     "loadError": "Konnte Channels nicht laden",
     "emptyHeading": "Noch keine Channels bekannt.",
     "emptyExplain": "Channel-Plugins (Teams, Telegram, …) melden ihre Keys während der Plugin-Aktivierung. Sobald ein Channel-Plugin installiert + aktiv ist, erscheinen seine Keys hier.",
     "emptyDirectoriesKnown": "Registrierte Channel-Typen: {types}",
-    "fallbackHint": "Channels ohne explizite Zuordnung landen beim Fallback-Agent ({fallback}).",
-    "fallbackHintNone": "kein Fallback gesetzt",
+    "fallbackHint": "Channels ohne explizite Zuordnung landen beim Standard-Orchestrator ({fallback}).",
+    "fallbackHintNone": "kein Standard gesetzt",
     "originLabel": "via",
     "staleBadge": "veraltet",
-    "routesTo": "→ Agent:",
-    "routesToFallback": "(Fallback · {fallback})",
+    "routesTo": "→ Orchestrator:",
+    "routesToFallback": "(Standard · {fallback})",
     "clearStale": "Binding entfernen"
   },
   "layout": {
-    "logoAriaLabel": "Omadia · Startseite",
-    "subtitle": "Management UI · local",
-    "metaTitle": "Omadia · Management UI",
-    "metaDescription": "Verwaltungsoberfläche für die Omadia Agent-Plattform (lokal)."
+    "logoAriaLabel": "omadia · Startseite",
+    "metaTitle": "omadia · Management UI",
+    "metaDescription": "Verwaltungsoberfläche für die omadia Agent-Plattform (lokal)."
   },
   "localeSwitcher": {
     "ariaLabel": "Sprache wechseln"
@@ -243,7 +440,7 @@
     }
   },
   "login": {
-    "title": "Bei Omadia anmelden",
+    "title": "Bei omadia anmelden",
     "shellLoading": "Lade Login…",
     "loadingProviders": "Lade Login…",
     "errorPrefix": "Login-Provider konnten nicht geladen werden:",
@@ -257,7 +454,7 @@
     "continueWith": "Weiter mit {provider}"
   },
   "setup": {
-    "title": "Willkommen bei Omadia",
+    "title": "Willkommen bei omadia",
     "shellLoading": "Lade Setup…",
     "loading": "Lade Setup…",
     "errorPrefix": "Setup-Status konnte nicht geladen werden:",
@@ -560,33 +757,33 @@
     "auditDeferred": "Verfügbar ab v0.2.x — benötigt Receipt-Persistence."
   },
   "agentPicker": {
-    "label": "Agent:",
-    "loading": "Lade Agents…",
-    "error": "Agent-Liste nicht verfügbar",
-    "fallbackMarker": "(Fallback)",
-    "pinnedTooltip": "Session ist gepinnt. Zum Wechseln: Operator → Agents → Drain.",
-    "emptyCta": "Keine Agents konfiguriert — öffne Operator → Agents",
-    "unavailableTitle": "Der Agent dieser Session ist nicht mehr verfügbar",
-    "unavailableBody": "Der Agent „{slug}\" wurde gelöscht oder deaktiviert. Wie soll diese Session weiterlaufen?",
-    "actionReSnapshot": "Auf Fallback umbinden",
+    "label": "Orchestrator:",
+    "loading": "Lade Orchestratoren…",
+    "error": "Orchestrator-Liste nicht verfügbar",
+    "fallbackMarker": "(Standard)",
+    "pinnedTooltip": "Session ist gepinnt. Zum Wechseln: Operator → Orchestratoren → Drain.",
+    "emptyCta": "Keine Orchestratoren konfiguriert — öffne Operator → Orchestratoren",
+    "unavailableTitle": "Der Orchestrator dieser Session ist nicht mehr verfügbar",
+    "unavailableBody": "Der Orchestrator „{slug}\" wurde gelöscht oder deaktiviert. Wie soll diese Session weiterlaufen?",
+    "actionReSnapshot": "Auf Standard umbinden",
     "actionDelete": "Session löschen"
   },
   "operatorAgents": {
-    "title": "Agents",
-    "subtitle": "Multi-Orchestrator-Runtime — Agents anlegen, editieren, deaktivieren, drainen oder killen und der Registry live beim Reagieren zuschauen über den LISTEN/NOTIFY-Hot-Reload-Bus.",
-    "loadError": "Konnte Agents nicht laden",
+    "title": "Orchestratoren",
+    "subtitle": "Multi-Orchestrator-Runtime — Orchestratoren anlegen, editieren, deaktivieren, drainen oder killen und der Registry live beim Reagieren zuschauen über den LISTEN/NOTIFY-Hot-Reload-Bus.",
+    "loadError": "Konnte Orchestratoren nicht laden",
     "platformHeading": "Plattform",
     "forceReload": "Registry-Reload erzwingen",
-    "fallbackLabel": "Fallback-Agent:",
+    "fallbackLabel": "Standard-Orchestrator:",
     "fallbackNone": "(keiner — unbound Keys hart ablehnen)",
-    "createHeading": "Agent anlegen",
+    "createHeading": "Orchestrator anlegen",
     "fieldSlug": "Slug",
     "fieldName": "Name",
     "fieldDescription": "Beschreibung",
     "fieldPrivacy": "Privacy-Profil",
     "createSubmit": "Anlegen",
-    "agentsHeading": "Agents",
-    "agentsEmpty": "Noch keine Agents. Leg oben einen an.",
+    "agentsHeading": "Orchestratoren",
+    "agentsEmpty": "Noch keine Orchestratoren. Leg oben einen an.",
     "agentMeta": "id: {id} · privacy: {privacy} · status: {status} · runtime: {runtime}",
     "statusEnabled": "aktiviert",
     "statusDisabled": "deaktiviert",
@@ -598,22 +795,23 @@
     "actionDelete": "Löschen",
     "actionDrain": "Sessions drainen",
     "actionKill": "Sessions killen",
-    "drainTooltip": "Snapshot auf allen an diesen Agent gebundenen Sessions leeren — nächster Turn nimmt frische Config aus der Registry",
-    "deleteConfirm": "Agent „{slug}\" wirklich löschen?",
+    "drainTooltip": "Snapshot auf allen an diesen Orchestrator gebundenen Sessions leeren — nächster Turn nimmt frische Config aus der Registry",
+    "fallbackProtected": "Das ist der Standard-Orchestrator und kann nicht deaktiviert oder gelöscht werden.",
+    "deleteConfirm": "Orchestrator „{slug}\" wirklich löschen?",
     "killConfirm": "Alle Sessions von „{slug}\" killen? History geht verloren.",
     "memoryScopeHeading": "Memory-Scope",
     "memoryScopeEmpty": "Kein Scope (Runtime-Registry nicht aktiv)",
     "pluginsHeading": "Plugins",
     "bindingsHeading": "Channel-Bindings",
     "save": "Speichern",
-    "actionRehydrateFallback": "Fallback auf alle Plugins zurücksetzen",
-    "rehydrateTooltip": "Hängt jedes installierte Plugin wieder an den aktuellen Fallback-Agent — du kriegst Day-1-Capabilities zurück.",
-    "rehydrateConfirm": "Wirklich jedes installierte Plugin auf den Fallback-Agent rehydrieren? Existierende Plugin-Configs bleiben erhalten; neu hinzugefügte Plugins starten mit leerer Config.",
-    "rehydrateDone": "Fallback rehydriert: {attached} von {requested} Plugins angehängt.",
+    "actionRehydrateFallback": "Standard auf alle Plugins zurücksetzen",
+    "rehydrateTooltip": "Hängt jedes installierte Plugin wieder an den aktuellen Standard-Orchestrator — du kriegst Day-1-Capabilities zurück.",
+    "rehydrateConfirm": "Wirklich jedes installierte Plugin auf den Standard-Orchestrator rehydrieren? Existierende Plugin-Configs bleiben erhalten; neu hinzugefügte Plugins starten mit leerer Config.",
+    "rehydrateDone": "Standard rehydriert: {attached} von {requested} Plugins angehängt.",
     "catalogError": "Plugin-Katalog konnte nicht geladen werden ({message}). Multi-Select fällt auf manuellen Modus zurück.",
     "catalogLoading": "Plugin-Katalog lädt …",
     "catalogEmpty": "Keine installierten Plugins.",
-    "multiInstanceFalseBadge": "multi_instance: false — darf nur auf EINEM Agent aktiv sein",
+    "multiInstanceFalseBadge": "multi_instance: false — darf nur auf EINEM Orchestrator aktiv sein",
     "multiInstanceFalseShort": "Single-Instance",
     "privacyStrictBadge": "strict",
     "memoryReadTooltip": "Memory-Read-Scope dieses Plugins",
@@ -624,15 +822,15 @@
     "orphanPluginBadge": "nicht mehr installiert",
     "bindingsAdd": "Binding hinzufügen",
     "bindingsRemove": "Entfernen",
-    "bindingsEmpty": "Keine Bindings — unbound Traffic landet beim Fallback-Agent.",
+    "bindingsEmpty": "Keine Bindings — unbound Traffic landet beim Standard-Orchestrator.",
     "routingTesterHeading": "Routing-Tester",
-    "routingTesterHelp": "Frag den Server, welcher Agent einen eingehenden Webhook beantworten würde. Hits gegen explizite Bindings zuerst, dann Fallback.",
+    "routingTesterHelp": "Frag den Server, welcher Orchestrator einen eingehenden Webhook beantworten würde. Hits gegen explizite Bindings zuerst, dann Standard.",
     "fieldChannelType": "Channel-Type",
     "fieldChannelKey": "Channel-Key",
     "routingTesterSubmit": "Routing prüfen",
     "routingTesterRunning": "Prüfe …",
-    "routingTesterMatched": "→ Agent „{slug}\" (via {via})",
-    "routingTesterNoMatch": "Kein Match — und kein Fallback-Agent konfiguriert.",
+    "routingTesterMatched": "→ Orchestrator „{slug}\" (via {via})",
+    "routingTesterNoMatch": "Kein Match — und kein Standard-Orchestrator konfiguriert.",
     "agentCardSummary": "privacy: {privacy} · status: {status} · runtime: {runtime} · plugins: {plugins} · bindings: {bindings}",
     "sessionsLabel": "Sessions:",
     "pluginsAvailable": "Verfügbar",
@@ -646,7 +844,7 @@
     "dragHandle": "Ziehen, um zwischen den Spalten zu bewegen",
     "dependencyMissingBadge": "Parent fehlt",
     "dependencyMissingTooltip": "Dieses Plugin hängt von „{parent}\" ab — Parent ist nicht in der gleichen Spalte angehängt.",
-    "fallbackStoreOnlyNotice": "Der Fallback-Agent läuft immer mit den Configs aus dem Store. Per-Agent Overrides sind hier deaktiviert — leg dafür einen eigenen Agent an.",
+    "fallbackStoreOnlyNotice": "Der Standard-Orchestrator läuft immer mit den Configs aus dem Store. Per-Orchestrator Overrides sind hier deaktiviert — leg dafür einen eigenen Orchestrator an.",
     "orphanDetachAll": "Alle entfernen",
     "orphanDetachAllTooltip": "Entfernt alle veralteten Plugin-Zuordnungen (alte IDs aus früheren Deployments) auf einmal.",
     "orphanExplain": "Plugin-IDs aus früheren Seeds, die im aktuellen Katalog nicht mehr existieren (typisch: Umbenennung de.byte5.agent.* → @omadia/*). Werden beim nächsten „Speichern\" verworfen, außer du markierst sie als „Behalten\".",
@@ -1442,9 +1640,9 @@
     },
     "drafts": {
       "list": {
-        "eyebrow": "Agent-Builder",
-        "headline": "Neue Agents bauen.",
-        "lede": "Lege Drafts an, iteriere parallel an mehreren Agents und installiere sie per Klick in die Plattform. Jeder Draft lebt in deinem persönlichen Arbeitsbereich — keiner sieht deine Entwürfe außer dir.",
+        "eyebrow": "Plugin-Builder",
+        "headline": "Neue Plugins bauen.",
+        "lede": "Ein Plugin kann deterministischen Code bündeln (die Tools und Integrationen, auf denen die Plattform läuft), die Agents, die damit arbeiten, oder beides zusammen. Lege hier Drafts an, iteriere parallel an mehreren und installiere sie per Klick. Jeder Draft bleibt in deinem persönlichen Arbeitsbereich, sichtbar nur für dich.",
         "scope": {
           "draft": "Entwurf",
           "published": "Bereitgestellt",
@@ -1460,11 +1658,11 @@
         "empty": {
           "draft": {
             "headline": "Noch keine Entwürfe.",
-            "hint": "Klicke rechts oben auf „Neuer Agent\" um deinen ersten Entwurf anzulegen."
+            "hint": "Klicke rechts oben auf „Neues Plugin\" um deinen ersten Entwurf anzulegen."
           },
           "published": {
             "headline": "Noch nichts bereitgestellt.",
-            "hint": "Bereitgestellte Agents erscheinen hier, sobald du einen Entwurf über den Workspace in deiner Instanz bereitgestellt hast."
+            "hint": "Bereitgestellte Plugins erscheinen hier, sobald du einen Entwurf über den Workspace in deiner Instanz bereitgestellt hast."
           },
           "deleted": {
             "headline": "Papierkorb ist leer.",
@@ -1520,7 +1718,7 @@
         }
       },
       "create": {
-        "label": "Neuer Agent",
+        "label": "Neues Plugin",
         "pending": "Wird angelegt…",
         "quotaReachedTooltip": "Draft-Quota erreicht — lösche bestehende, bevor du einen neuen anlegst."
       },
@@ -1567,7 +1765,7 @@
   },
   "adminProviders": {
     "title": "LLM-Provider",
-    "intro": "Verbinde LLM-Provider und lege fest, mit welchem jeder Agent läuft. Schlüssel werden verschlüsselt im Vault gespeichert (Eingabe auf der Konfigurationsseite) und verlassen deinen Server nie. Anthropic ist der Standard; ein Provider-Wechsel pro Agent wirkt sofort.",
+    "intro": "Verbinde LLM-Provider und lege fest, mit welchem jeder Agent läuft. Schlüssel werden verschlüsselt im Vault gespeichert und verlassen deinen Server nie. Anthropic ist der Standard; ein Provider-Wechsel pro Agent wirkt sofort.",
     "loading": "Lädt …",
     "loadError": "Fehler beim Laden: {message}",
     "vaultUnavailable": "Vault nicht verfügbar — Provider-Schlüssel können nicht gelesen werden.",
@@ -1576,12 +1774,19 @@
       "modelCount": "{count, plural, one {# Modell} other {# Modelle}}",
       "connected": "verbunden",
       "notConnected": "kein Schlüssel",
-      "addKey": "Schlüssel hinterlegen"
+      "addKey": "Schlüssel hinterlegen",
+      "logIn": "Anmelden",
+      "manageCli": "Verwalten",
+      "keyInputLabel": "{provider} API-Key",
+      "keyPlaceholder": "API-Key einfügen …",
+      "saveKey": "Schlüssel speichern",
+      "cancel": "Abbrechen"
     },
     "assignments": {
       "heading": "Zuordnung pro Agent",
       "intro": "Ordne jedem LLM-fähigen Plugin einen Provider und ein Modell zu. Beim Speichern wird das Plugin neu aktiviert, sodass die Änderung sofort greift.",
       "notInstalled": "nicht installiert",
+      "toolLessBlocked": "braucht Tools — nicht für diese Rolle",
       "providerLabel": "Provider",
       "modelLabel": "Modell",
       "pickModel": "Modell wählen …",
@@ -1592,6 +1797,119 @@
       "saving": "speichert …",
       "saved": "✓ gespeichert",
       "errorChip": "✗ Fehler"
+    }
+  },
+  "adminSubscriptionClis": {
+    "title": "Abo-CLIs",
+    "intro": "Betreibe Agenten über ein LLM-Abo, das du bereits bezahlst (etwa Claude Pro oder Max), indem du die offizielle CLI des Anbieters verbindest, statt pro Token mit einem API-Schlüssel zu zahlen. omadia erkennt, welche CLIs auf diesem Server installiert und angemeldet sind.",
+    "explainer": {
+      "heading": "Abo vs. API-Schlüssel",
+      "body": "Ein API-Schlüssel rechnet pro Token ab. Eine Abo-CLI läuft über deinen bestehenden Tarif: Du meldest dich einmal mit dem offiziellen Tool an, und omadia nutzt diese Sitzung weiter. Das ist derselbe erlaubte Weg, den die offizielle CLI selbst nutzt, kein Token-Auslesen.",
+      "singleOperator": "Abo-Guthaben gehört zu einem Konto und lässt sich nicht teilen, daher passt das zu einem Self-Host für eine einzelne Person. Für ein geteiltes oder produktives Gateway nutze einen API-Schlüssel auf der Seite LLM-Provider."
+    },
+    "loading": "Lädt …",
+    "loadError": "Laden fehlgeschlagen: {message}",
+    "selectModelLink": "Nach der Anmeldung ein CLI-Modell für einen Agenten unter LLM-Provider auswählen",
+    "detected": {
+      "heading": "Erkannte CLIs"
+    },
+    "recheck": "Erneut prüfen",
+    "rechecking": "Prüft …",
+    "version": "v{version}",
+    "status": {
+      "notInstalled": "In dieser Umgebung nicht installiert.",
+      "loggedIn": "Angemeldet und bereit.",
+      "loggedInAs": "Angemeldet als {account}.",
+      "installedNotLoggedIn": "Installiert, aber noch nicht angemeldet.",
+      "installedUnknown": "Installiert. Anmeldestatus konnte nicht bestätigt werden."
+    },
+    "connect": {
+      "button": "Abo verbinden",
+      "starting": "Anmeldung wird gestartet …",
+      "heading": "Bei deinem Abo anmelden",
+      "openHint": "Öffne die Anthropic-Anmeldeseite und bestätige den Zugriff:",
+      "openLink": "Anmeldeseite öffnen",
+      "pasteHint": "Kopiere den nach der Bestätigung angezeigten Code, füge ihn hier ein und sende ab:",
+      "codePlaceholder": "Login-Code einfügen",
+      "submit": "Code senden",
+      "submitting": "Anmeldung läuft …",
+      "cancel": "Abbrechen",
+      "retry": "Erneut versuchen",
+      "failed": "Anmeldung fehlgeschlagen. Bitte erneut versuchen.",
+      "stillPending": "Noch nicht angemeldet. Öffne den Link, bestätige den Zugriff und sende den Code erneut.",
+      "manualSummary": "Lieber das Terminal?",
+      "step1": "Stelle sicher, dass die CLI installiert ist (im omadia-Image enthalten oder selbst installieren):",
+      "installCmd": "npm install -g @anthropic-ai/claude-code",
+      "step2": "Melde dich mit deinem Abo-Konto an:",
+      "step3": "Komm hierher zurück und drücke Erneut prüfen. Eine angemeldete CLI zeigt ein grünes Badge."
+    },
+    "logout": {
+      "button": "Abmelden",
+      "busy": "Abmeldung läuft …"
+    },
+    "needsVerificationNote": "Die Abo-Abrechnung für diese CLI ist noch nicht bestätigt. Eine Anmeldung könnte statt des Abos die API abrechnen, daher ist sie für omadia bis zur Prüfung nicht empfohlen.",
+    "badge": {
+      "notInstalled": "nicht gefunden",
+      "installed": "installiert",
+      "needsLogin": "Anmeldung nötig",
+      "loggedIn": "angemeldet",
+      "subscription": "Abo",
+      "needsVerification": "Prüfung nötig"
+    }
+  },
+  "createIssue": {
+    "button": "Issue erstellen",
+    "buttonTitle": "Fehler melden oder Feature vorschlagen",
+    "dialogTitle": "GitHub-Issue erstellen",
+    "closeAriaLabel": "Schließen",
+    "categoryLabel": "Kategorie",
+    "category": {
+      "bug": "Bug",
+      "feature": "Feature",
+      "improvement": "Verbesserung"
+    },
+    "descriptionLabel": "Beschreibe es in eigenen Worten",
+    "descriptionPlaceholder": "Was ist passiert oder was wünschst du dir? Jede Sprache ist okay — wir formulieren es auf Englisch.",
+    "reformulate": "Weiter",
+    "reformulating": "Formuliere …",
+    "previewTitle": "Issue prüfen",
+    "previewHint": "Von deiner verbundenen KI formuliert. Vor dem Anlegen beliebig anpassbar.",
+    "titleLabel": "Titel",
+    "bodyLabel": "Beschreibung",
+    "tabEdit": "Bearbeiten",
+    "tabPreview": "Vorschau",
+    "emptyPreview": "Nichts zum Vorschauen.",
+    "back": "Zurück",
+    "cancel": "Abbrechen",
+    "create": "Issue erstellen",
+    "creating": "Wird angelegt …",
+    "connectIntro": "Verbinde dein GitHub-Konto, um das Issue unter deinem Namen anzulegen.",
+    "connectGithub": "GitHub verbinden",
+    "connecting": "Starte …",
+    "deviceStep1": "Öffne <page>github.com/login/device</page> in einem neuen Tab.",
+    "deviceStep2": "Gib diesen Code ein:",
+    "deviceWaiting": "Warte auf deine Bestätigung auf GitHub …",
+    "deviceExpired": "Der Code ist abgelaufen. Bitte verbinde erneut.",
+    "deviceDenied": "Die Autorisierung wurde abgebrochen.",
+    "connectedAs": "Verbunden als @{login}",
+    "disconnect": "Trennen",
+    "notConfigured": "Das Anlegen von GitHub-Issues ist auf dieser Instanz nicht konfiguriert.",
+    "repoNote": "Wird in byte5ai/omadia angelegt.",
+    "successTitle": "Issue erstellt",
+    "openOnGithub": "Auf GitHub öffnen",
+    "createAnother": "Weiteres erstellen",
+    "dismiss": "Schließen",
+    "errorReformulate": "Konnte das Issue nicht formulieren. Versuch es erneut oder bearbeite den Text.",
+    "errorNotConnected": "Verbinde zuerst dein GitHub-Konto.",
+    "errorLlm": "Es ist kein KI-Provider verbunden, um das Issue zu formulieren.",
+    "errorRateLimited": "Dein KI-Provider hat ein Raten- oder Kontingentlimit erreicht. Später erneut versuchen oder in den Einstellungen den Provider wechseln.",
+    "errorGeneric": "Etwas ist schiefgelaufen. Bitte erneut versuchen."
+  },
+  "store": {
+    "hero": {
+      "eyebrow": "Hub",
+      "headline": "Plugins für die omadia-Plattform.",
+      "lead": "Der Hub ist unser Katalog für die bereitgestellten Plugins. Er bündelt Integrations (Credential-Container), Agents (Domain-Capabilities) und Channels (User-Kanäle wie Teams, Telegram). Ein Klick auf eine Kachel zeigt Berechtigungen, Secrets und Abhängigkeiten vor der Installation."
     }
   }
 }

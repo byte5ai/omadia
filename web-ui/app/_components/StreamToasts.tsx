@@ -37,7 +37,7 @@ export function StreamToasts(): React.ReactElement {
   // change, so toasts correctly appear once the user leaves the chat
   // page mid-stream and disappear when they return.
   const pathname = usePathname();
-  const onChatRoute = !pathname || pathname === '/';
+  const onChatRoute = pathname === '/chat' || pathname?.startsWith('/chat');
   const visibleRecords: StreamRecord[] = [];
   for (const rec of store.records.values()) {
     // Hide records that the user is currently viewing in-page: the user is
@@ -52,7 +52,7 @@ export function StreamToasts(): React.ReactElement {
 
   const openChat = (sessionId: string): void => {
     setActive(sessionId);
-    if (!onChatRoute) router.push('/');
+    if (!onChatRoute) router.push('/chat');
   };
 
   return (

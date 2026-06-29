@@ -1,17 +1,14 @@
 /**
- * Public surface of the plugin-OAuth library (Slice 1.2c / OB-1, P1).
+ * Public surface of the kernel OAuth broker library (spec 005).
  *
- * Consumers (P2 install-route, P4 calendar plugin) import only from here
- * — the internal modules are free to reorganise without breaking
- * downstream code.
+ * The broker drives standard authorization-code flows for plugins that declare
+ * a `type:oauth` setup field + an `oauth_providers` descriptor. The generic
+ * `engine` executes the dance from descriptor data — no plugin code runs, so
+ * client secrets + refresh tokens stay kernel-side.
+ *
+ * Consumers (broker routes, `ctx.oauthTokens`) import only from here; internal
+ * modules are free to reorganise without breaking downstream code.
  */
-
-export type {
-  AuthorizeUrlInput,
-  OAuthTokens,
-  PluginOAuthProvider,
-  ProviderFactory,
-} from './types.js';
 
 export { generateCodeVerifier, computeCodeChallenge } from './pkce.js';
 
@@ -28,11 +25,32 @@ export {
   type PendingFlowStoreOptions,
 } from './pendingFlows.js';
 
-export { OAuthProviderRegistry } from './providerRegistry.js';
+export {
+  buildAuthorizeUrl,
+  exchangeCode,
+  refreshAccessToken,
+  type OAuthEngineTokens,
+  type AuthorizeUrlParams,
+  type ExchangeCodeParams,
+  type RefreshParams,
+} from './engine.js';
 
 export {
-  MS365_PROVIDER_ID,
-  MicrosoftGraphProvider,
-  microsoftGraphProviderFactory,
-  type MicrosoftGraphProviderConfig,
-} from './microsoftGraphProvider.js';
+  oauthVaultKey,
+  readStoredTokens,
+  writeStoredTokens,
+  type StoredOAuthTokens,
+} from './tokenStore.js';
+
+export {
+  OAuthBrokerService,
+  type OAuthBrokerDeps,
+  type StartInput,
+  type CallbackInput,
+} from './brokerService.js';
+
+export {
+  OAuthBrokerError,
+  resolveOAuthProvider,
+  type ResolvedOAuthProvider,
+} from './providerResolve.js';

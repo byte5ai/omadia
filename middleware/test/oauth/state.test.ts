@@ -13,9 +13,10 @@ function freshKey(): Uint8Array {
 
 const sampleClaims = {
   flowId: 'flow-123',
+  pluginId: '@omadia/integration-atlassian',
   jobId: 'job-456',
-  providerId: 'microsoft365',
-  fieldKey: 'ms365',
+  providerId: 'atlassian',
+  fieldKey: 'connection',
 };
 
 test('signOAuthState + verifyOAuthState round-trip', async () => {
@@ -23,6 +24,16 @@ test('signOAuthState + verifyOAuthState round-trip', async () => {
   const token = await signOAuthState(sampleClaims, key);
   const out = await verifyOAuthState(token, key);
   assert.deepEqual(out, sampleClaims);
+});
+
+test('re-connect round-trip: jobId omitted is preserved as absent', async () => {
+  const key = freshKey();
+  const { jobId: _drop, ...reconnect } = sampleClaims;
+  void _drop;
+  const token = await signOAuthState(reconnect, key);
+  const out = await verifyOAuthState(token, key);
+  assert.deepEqual(out, reconnect);
+  assert.equal(out.jobId, undefined);
 });
 
 test('verify fails with wrong key', async () => {
@@ -56,9 +67,9 @@ test('verify fails when a required claim is missing', async () => {
   const key = freshKey();
   const incomplete = {
     flowId: 'flow-1',
-    jobId: '',
-    providerId: 'microsoft365',
-    fieldKey: 'ms365',
+    pluginId: '',
+    providerId: 'atlassian',
+    fieldKey: 'connection',
   };
   const token = await signOAuthState(incomplete, key);
   await assert.rejects(

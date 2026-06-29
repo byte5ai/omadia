@@ -86,6 +86,7 @@ export interface PromoteTurnResult {
     | 'promoted'
     | 'below-threshold'
     | 'no-significance'
+    | 'hygiene-skip'
     | 'already-promoted'
     | 'missing-user'
     | 'missing-turn'
@@ -176,16 +177,28 @@ export async function promoteTurnIfSignificant(
       input.fallbackAssistantAnswer,
     );
 
+    // Ingest hygiene — applied to ALL auto-harvest, not just the durable tier.
+    // First-person agent narration ("Ich schaue kurz in den Memory…") and
+    // trivially short fragments scored high enough to clear the significance
+    // threshold and were being stored as fuzzy MK every session, re-polluting
+    // recall. Drop them entirely so they never enter the KG.
+    if (!passesIngestHygiene(summary)) {
+      log(
+        `[promotion] skip turn=${input.turnId} reason=hygiene (agent narration) significance=${significance.toFixed(2)}`,
+      );
+      return { promoted: false, reason: 'hygiene-skip', significance };
+    }
+
     // Trigger T3 — durable auto-promotion gate. Conservative by design: only
-    // high-significance reference knowledge that survives the hygiene check is
-    // marked durable, so conversational narration + time-bound snapshots never
-    // re-pollute the always-surface tier.
+    // high-significance, substantial reference knowledge is marked durable, so
+    // time-bound snapshots / short fragments never reach the always-surface
+    // tier (narration is already dropped above).
     const durableKinds = input.durableKinds ?? ['reference'];
     const durable =
       input.durableMinSignificance !== undefined &&
       significance >= input.durableMinSignificance &&
       durableKinds.includes(kind) &&
-      passesDurableHygiene(summary, rationale);
+      isDurableContentLengthOk(summary, rationale);
 
     const result = await input.kg.createMemorableKnowledge({
       kind,
@@ -231,21 +244,25 @@ export async function promoteTurnIfSignificant(
 }
 
 /**
- * Hygiene gate for durable auto-promotion (Trigger T3). Rejects the two
- * pollution classes observed in the live KG — first-person agent narration
- * ("Ich schaue zuerst in den Memory…") and trivially short fragments — so they
- * stay in the fuzzy tier instead of re-polluting the always-surface durable
- * tier. Conservative: returns false when unsure.
+ * Ingest hygiene gate for ALL auto-harvested MemorableKnowledge (not just the
+ * durable tier). Rejects first-person agent narration / meta-process preambles
+ * ("Ich schaue zuerst in den Memory…") — the dominant pollution class observed
+ * in the live KG — so they never enter the KG and re-pollute recall every
+ * session. Deliberately does NOT reject on length: short FACTS ("Preis 1200€",
+ * "Migration 0007 ist live.") are legitimate. The durable tier adds its own
+ * length floor. Conservative: returns false when unsure.
  */
-function passesDurableHygiene(summary: string, rationale?: string): boolean {
+function passesIngestHygiene(summary: string): boolean {
   const head = summary.trim();
-  const full = `${summary} ${rationale ?? ''}`.trim();
-  if (full.length < 40) return false;
-  // First-person agent narration / meta-process preambles.
   const NARRATION =
     /^(ich\s+(schaue|schau|prüfe|pruefe|sehe|gucke|lese|checke|werde|muss)|lass\s+mich|du\s+hast\s+recht|moment\b|kurz\b|let me\b|i\s+will\b|i'?ll\b|looking\b|checking\b)/i;
   if (NARRATION.test(head)) return false;
   return true;
+}
+
+/** Durable tier requires substantial content on top of ingest hygiene. */
+function isDurableContentLengthOk(summary: string, rationale?: string): boolean {
+  return `${summary} ${rationale ?? ''}`.trim().length >= 40;
 }
 
 function buildPayload(

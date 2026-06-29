@@ -13,7 +13,7 @@
 -- Idempotent — every CREATE has IF NOT EXISTS, the trigger uses CREATE OR
 -- REPLACE plus a guarded CREATE TRIGGER that skips on re-run.
 
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
+-- pgcrypto intentionally NOT required: gen_random_uuid() is core since Postgres 13, and PGlite (embedded installer) has no pgcrypto module (a CREATE EXTENSION attempt hard-crashes its WASM linker).
 
 CREATE TABLE IF NOT EXISTS users (
   id              UUID         NOT NULL PRIMARY KEY DEFAULT gen_random_uuid(),

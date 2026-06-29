@@ -122,7 +122,7 @@ export async function ensureFallbackAgent(
   if (!fallback) {
     fallback = await store.createAgent({
       slug,
-      name: options.name ?? 'Fallback Agent',
+      name: options.name ?? 'Standard Orchestrator',
       description:
         options.description ??
         'Auto-seeded on first boot. Receives unbound channel traffic until the operator configures explicit bindings.',

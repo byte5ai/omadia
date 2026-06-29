@@ -1,0 +1,8 @@
+# Shell scripts should always use LF
+*.sh text eol=lf
+docker-entrypoint.sh text eol=lf
+
+# Ensure these common files use consistent line endings
+Dockerfile text eol=lf
+*.bash text eol=lf
+Makefile text eol=lf

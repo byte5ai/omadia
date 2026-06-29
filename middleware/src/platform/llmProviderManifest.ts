@@ -111,8 +111,9 @@ function parseQuirks(raw: unknown): ProviderQuirks | undefined {
   };
 }
 
-/** Parse the optional `policy` block (operator-UI compliance hints). All
- *  fields optional; non-booleans are ignored so a typo can't flip a default. */
+/** Parse the optional `policy` block (operator-UI compliance hints + the
+ *  keyless flag). All fields optional; non-booleans are ignored so a typo can't
+ *  flip a default. */
 function parsePolicy(raw: unknown): ProviderPolicy | undefined {
   if (raw === undefined) return undefined;
   const rec = asRecord(raw);

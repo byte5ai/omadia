@@ -860,7 +860,10 @@ export interface PalaiaExcerptHit {
 // ---------------------------------------------------------------------------
 
 /** One resumable plan from a PRIOR session. `openStepGoals` are the goals of
- *  its still-pending/in-progress steps. */
+ *  its still-pending/in-progress steps; `completedStepGoals` are the goals of
+ *  its `done` steps (in order) — surfaced so a resumed turn knows what NOT to
+ *  redo. A plan with BOTH completed and open steps is *interrupted* and the
+ *  recall renderer frames it as a resume hint. */
 export interface RecalledPlan {
   /** External id `plan:<planId>`. */
   planId: string;
@@ -868,6 +871,16 @@ export interface RecalledPlan {
   strategy?: string;
   createdAt?: string;
   openStepGoals: string[];
+  /** Goals of the `done` steps, in order — "already completed, do not redo". */
+  completedStepGoals: string[];
+  /** The resume-from step (first open step) was `in_progress`, i.e. it may have
+   *  been mid-execution when the plan was interrupted — its effect could be
+   *  partially applied. The renderer adds a "verify before re-running" caveat. */
+  resumeFromInProgress: boolean;
+  /** The resume-from step is flagged `sideEffecting`. Combined with
+   *  `resumeFromInProgress` this is the ambiguous case `buildResumePlan` guards:
+   *  a side effect that may already have fired needs confirmation before retry. */
+  resumeFromSideEffecting: boolean;
   doneCount: number;
   totalCount: number;
 }
@@ -888,6 +901,11 @@ export interface RecalledInsight {
   kind: string;
   summary: string;
   score: number;
+  /** True when this insight comes from the always-surface DURABLE tier
+   *  (curated `manuallyAuthored` reference/decision knowledge). Durable
+   *  insights render at full length (not the fuzzy cap) so the agent can
+   *  trust recalled schema instead of re-discovering it via tools. */
+  durable?: boolean;
 }
 
 /** What the cross-session probe surfaced this turn. Empty arrays when a leg

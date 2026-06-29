@@ -176,7 +176,7 @@ describe('PreviewChatService', () => {
         finalText: 'I called the echo tool.',
       });
       const svc = new PreviewChatService({
-        anthropic: () => fakeAnthropic,
+        resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
         systemPromptFor: async () => 'system-prompt-stub',
         buildSubAgent: fake.build,
@@ -224,7 +224,7 @@ describe('PreviewChatService', () => {
       const handle = makeHandle({ draftId: draft.id });
       const fake = fakeSubAgentBuilder({ finalText: 'OK' });
       const svc = new PreviewChatService({
-        anthropic: () => fakeAnthropic,
+        resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
         systemPromptFor: async () => 'sp',
         buildSubAgent: fake.build,
@@ -267,7 +267,7 @@ describe('PreviewChatService', () => {
       const handle = makeHandle({ draftId: draft.id });
       const fake = fakeSubAgentBuilder({ finalText: 'noted' });
       const svc = new PreviewChatService({
-        anthropic: () => fakeAnthropic,
+        resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
         systemPromptFor: async () => 'sp',
         buildSubAgent: fake.build,
@@ -296,7 +296,7 @@ describe('PreviewChatService', () => {
       const handle = makeHandle({ draftId: draft.id });
       const fake = fakeSubAgentBuilder({ finalText: 'ack' });
       const svc = new PreviewChatService({
-        anthropic: () => fakeAnthropic,
+        resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
         systemPromptFor: async () => 'sp',
         buildSubAgent: fake.build,
@@ -320,7 +320,7 @@ describe('PreviewChatService', () => {
       const handle = makeHandle({ draftId: draft.id, tools: [tool] });
       const fake = fakeSubAgentBuilder({ finalText: 'OK' });
       const svc = new PreviewChatService({
-        anthropic: () => fakeAnthropic,
+        resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
         systemPromptFor: async () => 'CUSTOM-PROMPT',
         buildSubAgent: fake.build,
@@ -368,7 +368,7 @@ describe('PreviewChatService', () => {
       const handle = makeHandle({ draftId: draft.id, tools: [tool] });
       const fake = fakeSubAgentBuilder({ finalText: 'OK' });
       const svc = new PreviewChatService({
-        anthropic: () => fakeAnthropic,
+        resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
         systemPromptFor: async () => 'sp',
         buildSubAgent: fake.build,
@@ -415,7 +415,7 @@ describe('PreviewChatService', () => {
         throws: new Error('anthropic-rate-limit'),
       });
       const svc = new PreviewChatService({
-        anthropic: () => fakeAnthropic,
+        resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
         systemPromptFor: async () => 'sp',
         buildSubAgent: fake.build,
@@ -441,7 +441,7 @@ describe('PreviewChatService', () => {
       const handle = makeHandle({ draftId: draft.id });
       const fake = fakeSubAgentBuilder({ finalText: 'unused' });
       const svc = new PreviewChatService({
-        anthropic: () => fakeAnthropic,
+        resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
         systemPromptFor: async () => 'sp',
         buildSubAgent: fake.build,
@@ -474,7 +474,7 @@ describe('PreviewChatService', () => {
       const handle = makeHandle({ draftId: draft.id });
       const fake = fakeSubAgentBuilder({ finalText: 'new reply' });
       const svc = new PreviewChatService({
-        anthropic: () => fakeAnthropic,
+        resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
         systemPromptFor: async () => 'sp',
         buildSubAgent: fake.build,
@@ -512,7 +512,7 @@ describe('PreviewChatService', () => {
         finalText: 'done',
       });
       const svc = new PreviewChatService({
-        anthropic: () => fakeAnthropic,
+        resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
         systemPromptFor: async () => 'sp',
         buildSubAgent: fake.build,
@@ -552,7 +552,7 @@ describe('PreviewChatService', () => {
       });
       const handle = makeHandle({ draftId: 'd1', tools: [tool] });
       const svc = new PreviewChatService({
-        anthropic: () => fakeAnthropic,
+        resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
         systemPromptFor: async () => 'sp',
         logger: () => {},
@@ -570,7 +570,7 @@ describe('PreviewChatService', () => {
     it('returns isError=true on unknown toolId', async () => {
       const handle = makeHandle({ draftId: 'd1' });
       const svc = new PreviewChatService({
-        anthropic: () => fakeAnthropic,
+        resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
         systemPromptFor: async () => 'sp',
         logger: () => {},
@@ -593,7 +593,7 @@ describe('PreviewChatService', () => {
       });
       const handle = makeHandle({ draftId: 'd1', tools: [tool] });
       const svc = new PreviewChatService({
-        anthropic: () => fakeAnthropic,
+        resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
         systemPromptFor: async () => 'sp',
         logger: () => {},
@@ -614,7 +614,7 @@ describe('PreviewChatService', () => {
       });
       const handle = makeHandle({ draftId: 'd1', tools: [tool] });
       const svc = new PreviewChatService({
-        anthropic: () => fakeAnthropic,
+        resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
         systemPromptFor: async () => 'sp',
         logger: () => {},

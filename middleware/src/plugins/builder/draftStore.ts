@@ -844,7 +844,7 @@ function summaryRowToSummary(row: DraftSummaryRow): DraftSummary {
 }
 
 function normalizeModel(value: string): BuilderModelId {
-  return BuilderModelRegistry.has(value) ? value : DEFAULT_BUILDER_MODEL;
+  return value.trim().length > 0 ? value : DEFAULT_BUILDER_MODEL;
 }
 
 function normalizeStatus(value: string): DraftStatus {

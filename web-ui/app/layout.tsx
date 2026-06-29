@@ -5,6 +5,7 @@ import { NextIntlClientProvider } from 'next-intl';
 import { getLocale, getMessages, getTranslations } from 'next-intl/server';
 
 import { AuthBadge } from './_components/AuthBadge';
+import { CreateIssueButton } from './_components/CreateIssueButton';
 import { LocaleSwitcher } from './_components/LocaleSwitcher';
 import { Nav } from './_components/Nav';
 import { ThemeControls } from './_components/ThemeControls';
@@ -91,22 +92,20 @@ export default async function RootLayout({
                   >
                     <span className="flex flex-col leading-none">
                       <span className="font-display text-lg text-[color:var(--fg-strong)]">
-                        Omadia
+                        omadia
                       </span>
                       <span className="mt-1 text-[10px] uppercase tracking-[0.14em] text-[color:var(--fg-muted)]">
                         an Agentic OS
                       </span>
                     </span>
                   </Link>
-                  <span className="text-xs text-[color:var(--fg-muted)]">
-                    {t('subtitle')}
-                  </span>
                   <div className="ml-auto flex items-center gap-4">
                     <Nav />
                     <span
                       className="hidden h-5 w-px bg-[color:var(--border)] sm:block"
                       aria-hidden
                     />
+                    <CreateIssueButton />
                     <ThemeControls />
                     <LocaleSwitcher />
                     <AuthBadge />

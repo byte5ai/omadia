@@ -5,7 +5,7 @@ import { redirectIfUnauthorized } from '../_lib/authRedirect';
 import { VaultStatusCard } from './_components/VaultStatusCard';
 
 export const metadata: Metadata = {
-  title: 'System · Omadia',
+  title: 'System · omadia',
 };
 
 export const dynamic = 'force-dynamic';

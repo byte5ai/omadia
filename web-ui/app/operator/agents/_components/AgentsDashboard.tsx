@@ -30,6 +30,17 @@ import {
 
 import { PluginsDnd } from './PluginsDnd';
 
+/**
+ * Slug of the auto-seeded fallback orchestrator (kept in sync with
+ * `FALLBACK_AGENT_SLUG` in `@omadia/orchestrator`). The fallback orchestrator
+ * is the catch-all for unbound channel traffic, so its Disable/Delete actions
+ * are blocked in the UI (and server-side). We treat an orchestrator as the
+ * protected fallback when it carries this slug OR is the active platform
+ * fallback pointer — the platform pointer may be intentionally unset while the
+ * seeded `fallback` row still exists.
+ */
+const FALLBACK_AGENT_SLUG = 'fallback';
+
 interface AgentsDashboardProps {
   initial: OperatorAgentsListDto;
 }
@@ -186,7 +197,10 @@ export function AgentsDashboard({
               agent={agent}
               catalog={catalog}
               channelTypes={channelTypes}
-              isFallback={agent.id === initial.fallback_agent_id}
+              isFallback={
+                agent.slug === FALLBACK_AGENT_SLUG ||
+                agent.id === initial.fallback_agent_id
+              }
               disabled={pending || !!busy}
               onPatch={(patch) =>
                 run(`patch:${agent.slug}`, () =>
@@ -537,20 +551,25 @@ function AgentCard(props: {
         </button>
         <div className="flex flex-col items-end gap-2">
           <div className="flex gap-2">
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={props.disabled}
-              onClick={() =>
-                props.onPatch({
-                  status: agent.status === 'enabled' ? 'disabled' : 'enabled',
-                })
-              }
-            >
-              {agent.status === 'enabled'
-                ? t('actionDisable')
-                : t('actionEnable')}
-            </Button>
+            {/* The standard orchestrator is the catch-all for unbound traffic;
+                disabling or deleting it would strand that traffic, so those
+                actions are not offered for it at all. */}
+            {!props.isFallback && (
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={props.disabled}
+                onClick={() =>
+                  props.onPatch({
+                    status: agent.status === 'enabled' ? 'disabled' : 'enabled',
+                  })
+                }
+              >
+                {agent.status === 'enabled'
+                  ? t('actionDisable')
+                  : t('actionEnable')}
+              </Button>
+            )}
             <Button
               variant="secondary"
               size="sm"
@@ -564,17 +583,19 @@ function AgentCard(props: {
             >
               {t('actionTogglePrivacy')}
             </Button>
-            <Button
-              variant="danger"
-              size="sm"
-              disabled={props.disabled}
-              onClick={() => {
-                if (confirm(t('deleteConfirm', { slug: agent.slug })))
-                  props.onDelete();
-              }}
-            >
-              {t('actionDelete')}
-            </Button>
+            {!props.isFallback && (
+              <Button
+                variant="danger"
+                size="sm"
+                disabled={props.disabled}
+                onClick={() => {
+                  if (confirm(t('deleteConfirm', { slug: agent.slug })))
+                    props.onDelete();
+                }}
+              >
+                {t('actionDelete')}
+              </Button>
+            )}
           </div>
         </div>
       </header>

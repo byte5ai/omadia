@@ -140,6 +140,21 @@ export type {
 export { Orchestrator, parseToolEmittedChoice } from './orchestrator.js';
 export type { OrchestratorOptions } from './orchestrator.js';
 
+// #332 Layer 2 — Direct Line directive parsing & target resolution (exported
+// for unit coverage and reuse by deterministic routers / the Conductor).
+export {
+  parseDirectLineDirective,
+  resolveDirectLineTarget,
+  directLineLabel,
+  DEFAULT_DIRECTIVE_PREFIX,
+} from './directLine.js';
+export type {
+  DirectLineDirective,
+  DirectLineCandidate,
+  DirectLineResolution,
+  DirectLineMode,
+} from './directLine.js';
+
 // Round-loop guard — exported so it can be unit-tested in isolation and reused
 // by other agentic loops (e.g. the Builder).
 export { LoopGuard, canonicalize } from './loopGuard.js';
@@ -181,6 +196,20 @@ export type {
   LocalSubAgentToolResult,
   AskOptions,
 } from './localSubAgent.js';
+export { ToolDispatchService } from './toolDispatchService.js';
+export type {
+  DispatchableToolSpec,
+  ToolDispatchResult,
+} from './toolDispatchService.js';
+export { LoopbackMcpServer } from './loopbackMcpServer.js';
+export type {
+  LoopbackMcpServerDeps,
+  LoopbackMcpServerHandle,
+} from './loopbackMcpServer.js';
+export { CLI_ENV_SCRUB_KEYS, CliChatAgent, StreamJsonParser } from './cliChatAgent.js';
+export type { CliChatAgentDeps, CliUsage } from './cliChatAgent.js';
+export { createCliSubAgent } from './cliSubAgent.js';
+export type { CliSubAgentOptions } from './cliSubAgent.js';
 
 // Knowledge-graph native tool (moved from harness-knowledge-graph in S+12.5-1)
 export {

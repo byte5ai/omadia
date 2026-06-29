@@ -43,18 +43,14 @@ import { parseAgentSpec } from './agentSpec.js';
 
 export const MAX_IDENTICAL_ATTEMPTS = 3;
 
-/** Anthropic-style model id required by `BuilderAgent.runTurn(modelChoice)`. */
-type AnthropicModelId = string;
+type ModelRef = string;
 
 export interface AutoFixOrchestratorDeps {
   bus: SpecEventBus;
   draftStore: DraftStore;
   builderAgent: BuilderAgent;
-  /** Fallback Anthropic model id when a draft has none recorded. */
-  defaultModel: AnthropicModelId;
-  /** Resolves a `BuilderModelId` ('haiku'|'sonnet'|'opus') to an
-   *  Anthropic id. The route uses the same registry. */
-  resolveModelId: (builderModelId: 'haiku' | 'sonnet' | 'opus') => AnthropicModelId;
+  /** Fallback model reference when a draft has none recorded. */
+  defaultModel: ModelRef;
   /** Optional ring buffer so auto-turn frames are replayable across
    *  tabs the same way an HTTP-route turn is. */
   turnRingBuffer?: BuilderTurnRingBuffer;
@@ -132,10 +128,7 @@ export class AutoFixOrchestrator {
   private readonly bus: SpecEventBus;
   private readonly draftStore: DraftStore;
   private readonly builderAgent: BuilderAgent;
-  private readonly defaultModel: AnthropicModelId;
-  private readonly resolveModelId: (
-    builderModelId: 'haiku' | 'sonnet' | 'opus',
-  ) => AnthropicModelId;
+  private readonly defaultModel: ModelRef;
   private readonly turnRingBuffer: BuilderTurnRingBuffer | undefined;
   private readonly log: (...args: unknown[]) => void;
 
@@ -146,7 +139,6 @@ export class AutoFixOrchestrator {
     this.draftStore = deps.draftStore;
     this.builderAgent = deps.builderAgent;
     this.defaultModel = deps.defaultModel;
-    this.resolveModelId = deps.resolveModelId;
     this.turnRingBuffer = deps.turnRingBuffer;
     this.log = deps.logger ?? (() => {});
   }
@@ -396,24 +388,15 @@ export class AutoFixOrchestrator {
       });
   }
 
-  private resolveDraftModel(
-    builderModelId: 'haiku' | 'sonnet' | 'opus' | string,
-  ): AnthropicModelId {
-    if (
-      builderModelId === 'haiku' ||
-      builderModelId === 'sonnet' ||
-      builderModelId === 'opus'
-    ) {
-      return this.resolveModelId(builderModelId);
-    }
-    return this.defaultModel;
+  private resolveDraftModel(draftModel: string): ModelRef {
+    return draftModel.trim().length > 0 ? draftModel : this.defaultModel;
   }
 
   private async fireTurn(opts: {
     draftId: string;
     userEmail: string;
     userMessage: string;
-    modelChoice: AnthropicModelId;
+    modelChoice: ModelRef;
     /** Provided by `tryTrigger` so the same id is also stored in the
      *  pause-lock — we do not generate it here to keep the lock <-> turn
      *  identity 1:1. */

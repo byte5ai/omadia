@@ -24,7 +24,7 @@ import type { BuilderModelId } from '../plugins/builder/types.js';
  *   POST   /drafts/:id/preview/tool-call      → JSON { result, isError }
  *   POST   /drafts/:id/preview/refresh        → JSON { ok, build } (manual rebuild)
  *   GET    /drafts/:id/preview/secrets        → JSON { keys: string[] } (no values)
- *   PUT    /drafts/:id/preview/secrets        → 204 (set in-memory secret values)
+ *   PUT    /drafts/:id/preview/secrets        → 204 (merge in-memory secret values; siblings preserved)
  *   DELETE /drafts/:id/preview/secrets        → 204 (clear secret buffer for draft)
  *
  * Stream framing follows the kernel's existing convention (`chat.ts`): one
@@ -126,7 +126,7 @@ export function registerBuilderPreviewRoutes(
       }
       const message = body.message;
 
-      let modelId: BuilderModelId;
+      let modelChoice: BuilderModelId;
       if (body.model === undefined) {
         const draft = await deps.draftStore.load(email, draftId);
         if (!draft) {
@@ -136,22 +136,21 @@ export function registerBuilderPreviewRoutes(
           });
           return;
         }
-        modelId = draft.previewModel;
+        modelChoice = draft.previewModel;
       } else if (
         typeof body.model === 'string' &&
         BuilderModelRegistry.has(body.model)
       ) {
-        modelId = body.model;
+        modelChoice = body.model;
       } else {
         sendJson(res, 400, {
           code: 'builder.invalid_model',
-          message: `model muss einer von haiku|sonnet|opus sein`,
+          message:
+            `model '${String(body.model)}' ist in keinem konfigurierten ` +
+            `LLM-Provider registriert`,
         });
         return;
       }
-
-      const anthropicModelId =
-        BuilderModelRegistry.get(modelId).anthropicModelId;
 
       // Open the NDJSON stream.
       res.status(200);
@@ -193,7 +192,7 @@ export function registerBuilderPreviewRoutes(
           handle,
           userEmail: email,
           userMessage: message,
-          modelChoice: anthropicModelId,
+          modelChoice,
         });
 
         for await (const ev of iterator) {
@@ -423,7 +422,12 @@ export function registerBuilderPreviewRoutes(
         }
         cleaned[k] = v;
       }
-      await deps.previewSecretBuffer.set(email, draftId, cleaned);
+      // Merge — NOT replace. The drawer can only resend the fields the
+      // operator typed this session (it never sees already-buffered values),
+      // so a replace would wipe every sibling not currently re-typed — the
+      // "values set higher up vanish on every apply" bug. Merge keeps them;
+      // "Clear all" (DELETE) is the only full wipe.
+      await deps.previewSecretBuffer.merge(email, draftId, cleaned);
       // Setting secrets invalidates a warm cache so the next turn picks
       // them up from the build closure.
       deps.previewCache.invalidate(email, draftId);

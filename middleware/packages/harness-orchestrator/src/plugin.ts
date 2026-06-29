@@ -667,6 +667,11 @@ export async function activate(
           : {}),
       });
 
+      // SEAM (M3-followup): the `claude-cli` -> CliChatAgent swap lives in
+      // buildOrchestratorForAgent (buildOrchestrator.ts), which both the
+      // default `chatAgent@1` path and the US4 registry call via buildForAgent.
+      // Registry-managed Agents are CLI-backed too; the remaining follow-up is
+      // exposing sub-agent/kernel tools to the CLI dispatch (`domainTools: []`).
       registry = new OrchestratorRegistry(store, orchestratorDeps, {
         defaultRuntimeConfig: {
           model,

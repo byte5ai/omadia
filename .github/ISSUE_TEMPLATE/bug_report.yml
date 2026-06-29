@@ -1,0 +1,46 @@
+name: Bug report
+description: Something isn't working as documented
+labels: ["bug", "needs-triage"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. docker compose up -d
+        2. ...
+        3. See error
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: omadia version
+      description: From the admin UI footer, or the OMADIA_VERSION you pinned.
+      placeholder: v0.41.0
+    validations:
+      required: true
+  - type: dropdown
+    id: deploy
+    attributes:
+      label: How are you running it?
+      options:
+        - Docker Compose (prebuilt GHCR images)
+        - Docker Compose (built from source)
+        - From source (Node)
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste container or middleware logs. This is automatically formatted as code.
+      render: shell

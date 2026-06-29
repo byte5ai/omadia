@@ -31,6 +31,29 @@ export interface PluginSetupField {
   /** Allowed values for `type === 'enum'`. When present, the
    *  post-install editor renders a `<select>` instead of a text input. */
   enum?: Array<{ value: string; label: string }>;
+  /** Spec 005 — `type === 'oauth'`: the `oauth_providers` descriptor id this
+   *  field connects through, and the scopes requested. */
+  provider?: string;
+  scopes?: string[];
+}
+
+/** Spec 005 — how a declarative OAuth descriptor authenticates to the token
+ *  endpoint. Mirrors middleware admin-v1 `OAuthTokenAuthStyle`. */
+export type OAuthTokenAuthStyle = 'body_form' | 'body_json' | 'basic';
+
+/** Spec 005 — declarative OAuth-provider descriptor from a plugin manifest's
+ *  top-level `oauth_providers:` block. The kernel broker runs the flow from
+ *  this inert data; no plugin code executes during the OAuth dance. Mirrors
+ *  middleware admin-v1 `OAuthProviderDescriptor`. */
+export interface OAuthProviderDescriptor {
+  id: string;
+  authorize_url: string;
+  token_url: string;
+  token_auth_style: OAuthTokenAuthStyle;
+  pkce: boolean;
+  extra_authorize_params?: Record<string, string>;
+  client_id_field: string;
+  client_secret_field: string;
 }
 
 export interface PluginPermissionsSummary {
@@ -48,6 +71,9 @@ export interface PluginPermissionsSummary {
   secrets_runtime_write?: boolean;
   /** Spec 004 — plugin runs credential-acquisition flows on its own routes. */
   flows?: boolean;
+  /** Spec 005 — plugin acquires standard authorization-code credentials via
+   *  the kernel OAuth broker (tokens stored + refreshed kernel-side). */
+  acquires_oauth?: boolean;
 }
 
 export type PluginInstallState =
@@ -131,6 +157,9 @@ export interface Plugin {
    *  manifest's `setup.fields`. Not secrets-only — split by each field's
    *  `type` (secret/oauth → vault, everything else → instance config). */
   setup_fields: PluginSetupField[];
+  /** Spec 005 — declarative OAuth-provider descriptors (manifest
+   *  `oauth_providers:`). Present only when the manifest declares at least one. */
+  oauth_providers?: OAuthProviderDescriptor[];
   permissions_summary: PluginPermissionsSummary;
   integrations_summary: string[];
   install_state: PluginInstallState;

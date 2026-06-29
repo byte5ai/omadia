@@ -1,0 +1,17 @@
+{
+  "name": "@omadia/llm-provider-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "The versioned, SDK-free LLM provider CONTRACT for the omadia middleware. Holds only the neutral DTOs (ChatMessage content parts, ToolSpec, LlmRequest/Response, usage), the LlmProvider interface, the model-registry types (ModelInfo/ModelClass/ModelRole), the provider descriptor (LlmProviderDescriptor/ProviderQuirks/ProviderPolicy/WireFormat), and the adapter contract (LlmAdapter) a wire-format adapter package implements. Zero runtime dependencies — this is the public surface a third-party provider plugin compiles against. See docs/plans/issue-298-provider-plugins.md.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

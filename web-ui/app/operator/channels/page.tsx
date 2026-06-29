@@ -18,7 +18,7 @@ import { ChannelsDashboard } from './_components/ChannelsDashboard';
  */
 
 export const metadata: Metadata = {
-  title: 'Channels · Omadia',
+  title: 'Channels · omadia',
 };
 
 export const dynamic = 'force-dynamic';

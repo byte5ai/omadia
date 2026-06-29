@@ -15,7 +15,7 @@
 import {
   createAnthropicProvider,
   type AnthropicClient,
-} from '@omadia/llm-provider';
+} from '@omadia/llm-adapter-anthropic';
 import type { LocalSubAgentTool } from '@omadia/plugin-api';
 import {
   buildSubAgentDomainTools,
@@ -51,6 +51,8 @@ export interface HydrateDeps {
   readonly defaultModel: string;
   readonly defaultMaxTokens?: number;
   readonly defaultMaxIterations?: number;
+  readonly hostIsCliProvider?: boolean;
+  readonly cliModelAlias?: (model: string) => string;
   readonly log?: (msg: string) => void;
 }
 
@@ -113,6 +115,12 @@ export function registerDbSubAgentTools(
     mcpManager: deps.mcpManager,
     mcpServersById,
     nativeTool: (ref) => adaptNativeToolForSubAgent(deps.nativeToolRegistry, ref),
+    ...(deps.hostIsCliProvider !== undefined
+      ? { hostIsCliProvider: deps.hostIsCliProvider }
+      : {}),
+    ...(deps.cliModelAlias !== undefined
+      ? { cliModelAlias: deps.cliModelAlias }
+      : {}),
     ...(deps.log ? { log: deps.log } : {}),
   });
   let n = 0;

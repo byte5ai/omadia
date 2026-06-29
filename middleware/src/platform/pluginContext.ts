@@ -31,6 +31,8 @@ import {
   type MemoryStore,
   type MigrationContext,
   type NotificationsAccessor,
+  type OAuthTokensAccessor,
+  OAuthTokenError,
   type PluginContext,
   type RoutesAccessor,
   type PluginActionStatus,
@@ -59,6 +61,15 @@ import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { JobScheduler } from '../plugins/jobScheduler.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import type { SecretVault } from '../secrets/vault.js';
+import { refreshAccessToken } from '../plugins/oauth/engine.js';
+import {
+  OAuthBrokerError,
+  resolveOAuthProvider,
+} from '../plugins/oauth/providerResolve.js';
+import {
+  readStoredTokens,
+  writeStoredTokens,
+} from '../plugins/oauth/tokenStore.js';
 import { createLlmProviderFromNeutral } from './anthropicLlmProvider.js';
 import type { NativeToolRegistry } from '@omadia/orchestrator';
 import type { PluginRouteRegistry } from './pluginRouteRegistry.js';
@@ -489,6 +500,91 @@ export function createPluginContext(
         }
       : undefined;
 
+  // Spec 005 (FR-H1) — ctx.oauthTokens. Present iff the manifest declares a
+  // `type:oauth` setup field. `.get(fieldKey)` returns a currently-valid
+  // access token, refreshing within a 5-minute expiry margin kernel-side and
+  // rotating the stored refresh token. The refresh token NEVER leaves this
+  // closure — only the access token is returned. Resolution shares
+  // `resolveOAuthProvider` with the broker so the two can't drift.
+  const REFRESH_MARGIN_MS = 5 * 60 * 1000;
+  const hasOAuthField =
+    catalog
+      .get(agentId)
+      ?.plugin.setup_fields.some((f) => f.type === 'oauth') === true;
+  const oauthTokens: OAuthTokensAccessor | undefined = hasOAuthField
+    ? {
+        async get(fieldKey: string): Promise<string> {
+          const stored = await readStoredTokens(vault, agentId, fieldKey);
+          if (!stored) {
+            throw new OAuthTokenError(
+              'not_connected',
+              `oauth field '${fieldKey}' is not connected — complete the Connect flow first`,
+            );
+          }
+          const expiresMs = Date.parse(stored.expiresAt);
+          const stillFresh =
+            Number.isFinite(expiresMs) &&
+            expiresMs - Date.now() > REFRESH_MARGIN_MS;
+          if (stillFresh) return stored.accessToken;
+
+          if (!stored.refreshToken) {
+            throw new OAuthTokenError(
+              'refresh_failed',
+              `oauth field '${fieldKey}' token expired and no refresh token is stored — re-connect`,
+            );
+          }
+
+          let resolved;
+          try {
+            const pluginConfig = registry.get(agentId)?.config ?? {};
+            const plugin = catalog.get(agentId)?.plugin;
+            if (!plugin) throw new Error('plugin not in catalog');
+            resolved = await resolveOAuthProvider({
+              plugin,
+              pluginId: agentId,
+              fieldKey,
+              config: pluginConfig,
+              vault,
+            });
+          } catch (err) {
+            const reason =
+              err instanceof OAuthBrokerError ? err.code : 'resolve';
+            throw new OAuthTokenError(
+              'refresh_failed',
+              `oauth field '${fieldKey}' refresh could not resolve provider (${reason}) — re-connect`,
+            );
+          }
+
+          let refreshed;
+          try {
+            refreshed = await refreshAccessToken({
+              descriptor: resolved.descriptor,
+              clientId: resolved.clientId,
+              clientSecret: resolved.clientSecret,
+              refreshToken: stored.refreshToken,
+              scopes: resolved.scopes,
+              configValues: resolved.configValues,
+            });
+          } catch {
+            throw new OAuthTokenError(
+              'refresh_failed',
+              `oauth field '${fieldKey}' token refresh was rejected — the credential may be revoked; re-connect`,
+            );
+          }
+
+          // Providers MAY rotate the refresh token; keep the previous one when
+          // the response omits it.
+          await writeStoredTokens(vault, agentId, fieldKey, {
+            accessToken: refreshed.accessToken,
+            refreshToken: refreshed.refreshToken || stored.refreshToken,
+            expiresAt: refreshed.expiresAt,
+            scope: refreshed.scope || stored.scope,
+          });
+          return refreshed.accessToken;
+        },
+      }
+    : undefined;
+
   // Status accessor (spec 004): the plugin pushes its operator-facing action
   // status to the kernel registry. Self-scoped to this plugin id — a plugin
   // cannot report another's status. No-op when no registry was threaded
@@ -598,6 +694,7 @@ export function createPluginContext(
     ...(knowledgeGraph ? { knowledgeGraph } : {}),
     ...(llm ? { llm } : {}),
     ...(flows ? { flows } : {}),
+    ...(oauthTokens ? { oauthTokens } : {}),
     status,
     log,
   };

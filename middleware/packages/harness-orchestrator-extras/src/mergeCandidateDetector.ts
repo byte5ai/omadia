@@ -43,6 +43,17 @@ export interface MergeCandidateDetectorDeps {
   excerptMinSimilarity?: number;
   /** Max candidates checked per source. Default 5. */
   topK?: number;
+  /**
+   * Auto-merge threshold. When set, a flagged MK pair whose cosine is at or
+   * above this value is RESOLVED automatically (the duplicate is retired via
+   * `resolveMergeCandidate`) instead of only being flagged for an operator —
+   * so re-learned knowledge stops accumulating on any deployment without a
+   * manual cleanup pass. SAFETY: a `manuallyAuthored` (durable) node is NEVER
+   * deleted; when exactly one side is durable it always wins; when BOTH are
+   * durable the pair is left for an operator; otherwise the OLDER node wins.
+   * Undefined → auto-merge disabled (flag-only, legacy behaviour).
+   */
+  autoMergeThreshold?: number;
   log?: (msg: string) => void;
 }
 
@@ -59,6 +70,24 @@ export function createMergeCandidateDetector(
   const excerptMinSim =
     deps.excerptMinSimilarity ?? DEFAULT_EXCERPT_MIN_SIMILARITY;
   const topK = deps.topK ?? DEFAULT_TOP_K;
+  const autoMergeThreshold = deps.autoMergeThreshold;
+
+  /**
+   * Pick which of two near-duplicate MKs to KEEP, or null to leave for an
+   * operator. Durable (`manuallyAuthored`) is sacred: it is never the loser,
+   * and two durable nodes are never auto-merged. Otherwise the older node wins
+   * (it's the established one; the fresh re-statement is the duplicate).
+   */
+  function decideKeeper(a: GraphNode, b: GraphNode): string | null {
+    const aDur = a.manuallyAuthored === true;
+    const bDur = b.manuallyAuthored === true;
+    if (aDur && bDur) return null; // both curated — hands off
+    if (aDur !== bDur) return aDur ? a.id : b.id; // the durable one wins
+    const aAt = String(a.props['created_at'] ?? '');
+    const bAt = String(b.props['created_at'] ?? '');
+    if (aAt && bAt && aAt !== bAt) return aAt < bAt ? a.id : b.id; // older wins
+    return b.id; // tie / unknown → keep the existing candidate, retire source
+  }
 
   async function detectFor(
     memorableKnowledgeNodeId: string,
@@ -137,6 +166,38 @@ export function createMergeCandidateDetector(
           log(
             `[merge-detector] flagged ${source.id} vs ${candidate.mk.id} cosine=${candidate.cosineSim.toFixed(3)}`,
           );
+          // Auto-merge: high-confidence + safe → retire the duplicate now so
+          // re-learned knowledge stops accumulating without a manual sweep.
+          if (
+            autoMergeThreshold !== undefined &&
+            candidate.cosineSim >= autoMergeThreshold
+          ) {
+            const keeper = decideKeeper(source, candidate.mk);
+            if (keeper === null) {
+              log(
+                `[merge-detector] auto-merge SKIP ${source.id} vs ${candidate.mk.id}: both durable`,
+              );
+            } else {
+              // duplicateOf is sorted ascending; keep_a keeps [0] (deletes [1]),
+              // keep_b keeps [1] (deletes [0]).
+              const resolution =
+                persisted.duplicateOf[0] === keeper ? 'keep_a' : 'keep_b';
+              try {
+                await deps.graph.resolveMergeCandidate(
+                  persisted.id,
+                  resolution,
+                  { actorOmadiaUserId: viewer },
+                );
+                log(
+                  `[merge-detector] auto-merged cosine=${candidate.cosineSim.toFixed(3)} kept=${keeper} (retired the duplicate)`,
+                );
+              } catch (err) {
+                log(
+                  `[merge-detector] auto-merge FAILED for ${persisted.id} (left flagged): ${err instanceof Error ? err.message : String(err)}`,
+                );
+              }
+            }
+          }
         }
       } catch (err) {
         log(

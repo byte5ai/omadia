@@ -1,6 +1,7 @@
 import type { LlmProvider } from '@omadia/llm-provider';
 import type { LocalSubAgentTool } from '@omadia/plugin-api';
 
+import { createCliSubAgent } from '../cliSubAgent.js';
 import { LocalSubAgent } from '../localSubAgent.js';
 import type {
   McpManager} from '../mcp/mcpClient.js';
@@ -8,7 +9,11 @@ import {
   mcpToolToLocalSubAgentTool,
   type McpServerConfig,
 } from '../mcp/mcpClient.js';
-import { createDomainTool, type DomainTool } from '../tools/domainQueryTool.js';
+import {
+  createDomainTool,
+  type Askable,
+  type DomainTool,
+} from '../tools/domainQueryTool.js';
 
 import type {
   SkillRow,
@@ -42,6 +47,13 @@ export interface SubAgentToolDeps {
   readonly defaultModel: string;
   readonly defaultMaxTokens: number;
   readonly defaultMaxIterations: number;
+  /** #309 recursive Shape 3 — when the host provider is the subscription CLI,
+   *  run each DB-defined sub-agent through its own CliChatAgent instead of the
+   *  in-process LocalSubAgent. Default false → byte-identical legacy path. */
+  readonly hostIsCliProvider?: boolean;
+  /** CLI model alias resolver (strip `-cli`). Required only when
+   *  hostIsCliProvider is true; defaults to identity otherwise. */
+  readonly cliModelAlias?: (model: string) => string;
   /** Resolves an MCP server id → connection config (for mcp tool grants). */
   readonly mcpServersById?: ReadonlyMap<string, McpServerConfig>;
   /** Shared MCP connection pool. Required to honour mcp tool grants. */
@@ -81,21 +93,30 @@ export function buildSubAgentDomainTools(
       deps,
     );
 
-    const local = new LocalSubAgent({
-      name: sub.name,
-      provider: deps.provider,
-      model: sub.model ?? deps.defaultModel,
-      maxTokens: sub.maxTokens ?? deps.defaultMaxTokens,
-      maxIterations: sub.maxIterations ?? deps.defaultMaxIterations,
-      systemPrompt,
-      tools: subTools,
-    });
+    const agent: Askable = deps.hostIsCliProvider
+      ? createCliSubAgent({
+          name: sub.name,
+          systemPrompt,
+          model: (deps.cliModelAlias ?? ((model) => model))(
+            sub.model ?? deps.defaultModel,
+          ),
+          tools: subTools,
+        })
+      : new LocalSubAgent({
+          name: sub.name,
+          provider: deps.provider,
+          model: sub.model ?? deps.defaultModel,
+          maxTokens: sub.maxTokens ?? deps.defaultMaxTokens,
+          maxIterations: sub.maxIterations ?? deps.defaultMaxIterations,
+          systemPrompt,
+          tools: subTools,
+        });
 
     tools.push(
       createDomainTool({
         name: subAgentToolName(sub.name),
         description: `Delegate a focused question to the "${sub.name}" sub-agent.`,
-        agent: local,
+        agent,
         domain: `subagent.${slugifyDomain(sub.name)}`,
       }),
     );

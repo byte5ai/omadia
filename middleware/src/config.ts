@@ -30,6 +30,12 @@ const optionalNonEmpty = <T extends z.ZodTypeAny>(inner: T) =>
 const ConfigSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3979),
 
+  // Interface to bind. Defaults to dual-stack `::` (all interfaces) so Fly-Edge
+  // IPv6 + flycast keep working. A local single-tenant install (e.g. the omadia
+  // desktop app) sets `HOST=127.0.0.1` so the kernel is NOT reachable on the LAN
+  // — the desktop threat model is loopback-only.
+  HOST: z.string().min(1).default('::'),
+
   // Anthropic SDK — optional since OB-61: the operator can supply the key
   // through the /setup wizard on first boot (vault-stored per plugin), so
   // an empty ENV is now a valid state. When unset AND the vault has no key
@@ -343,6 +349,14 @@ const ConfigSchema = z.object({
    * served via signed URL).
    */
   ATTACHMENT_URL_SECRET: z.string().optional(),
+
+  // Public OAuth-App client id for the in-app "Create Issue" button
+  // (operator GitHub auth via the device flow — issues are filed as the
+  // operator's own GitHub account). Optional ENV OVERRIDE of the client id
+  // baked into the product (issues/githubOAuthProvider.ts). NO client
+  // secret exists for this flow — the device grant needs only the (public)
+  // client id, which is why omadia can ship the OAuth App included.
+  GITHUB_OAUTH_CLIENT_ID: z.string().optional(),
   /** Public URL base for signed attachment URLs — typically the same as the
    *  diagram base URL (the Fly app's public origin). */
   ATTACHMENT_PUBLIC_BASE_URL: z.string().url().optional(),

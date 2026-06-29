@@ -281,6 +281,9 @@ export interface AdminProvider {
    *  `euHosted`: provider is hosted in the EU (no third-country transfer). */
   requiresAvvDisclosure?: boolean;
   euHosted?: boolean;
+  /** Tool-less Shape-2 CLI provider — cannot drive a tool loop, so the UI
+   *  disables it for tool-dependent plugins. */
+  toolLess?: boolean;
   models: AdminProviderModel[];
 }
 
@@ -293,6 +296,8 @@ export interface ProviderAssignment {
   modelKey: string;
   /** Orchestrator only: per-turn model-routing flag ('true' | 'false'). */
   modelRouting?: string;
+  /** This plugin drives a tool loop → a tool-less provider is not assignable. */
+  requiresTools?: boolean;
 }
 
 export interface ProvidersResponse {
@@ -322,6 +327,79 @@ export async function assignProvider(
   body: AssignProviderRequest,
 ): Promise<AssignProviderResponse> {
   return postJson<AssignProviderResponse>('/v1/admin/providers/assignment', body);
+}
+
+// -----------------------------------------------------------------------------
+// Subscription-CLI backends (#309) — detect installed/logged-in vendor CLIs
+// (Claude/Codex/Gemini) so an operator can run agents on a subscription instead
+// of a metered API key. Read-only host-capability probe.
+// -----------------------------------------------------------------------------
+
+export type CliLoginState = 'yes' | 'no' | 'unknown';
+export type CliBillingPosture = 'subscription' | 'needs-verification';
+
+export interface CliBackendStatus {
+  id: string;
+  label: string;
+  bin: string;
+  installed: boolean;
+  version?: string;
+  loggedIn: CliLoginState;
+  account?: string;
+  billing: CliBillingPosture;
+  detail: string;
+}
+
+export interface CliBackendsResponse {
+  backends: CliBackendStatus[];
+  generatedAt: number;
+}
+
+/** Fetch CLI-backend detection. Pass `force` for the operator's "re-check". */
+export async function getCliBackends(force = false): Promise<CliBackendsResponse> {
+  return getJson<CliBackendsResponse>(
+    `/v1/admin/cli-backends${force ? '?refresh=1' : ''}`,
+  );
+}
+
+export interface CliLoginStart {
+  sessionId: string;
+  verificationUrl: string;
+}
+
+export type CliLoginStatus = 'pending' | 'authorized' | 'invalid' | 'expired' | 'error';
+
+export interface CliCodeResult {
+  status: CliLoginStatus;
+  account?: string;
+  error?: string;
+}
+
+/** Start the in-app CLI login flow (spawns `claude auth login`, returns the URL). */
+export async function startCliLogin(id: string): Promise<CliLoginStart> {
+  return postJson<CliLoginStart>(`/v1/admin/cli-backends/${encodeURIComponent(id)}/login/start`, {});
+}
+
+/** Submit the login code the operator's browser returned. */
+export async function submitCliLoginCode(
+  id: string,
+  sessionId: string,
+  code: string,
+): Promise<CliCodeResult> {
+  return postJson<CliCodeResult>(`/v1/admin/cli-backends/${encodeURIComponent(id)}/login/code`, {
+    sessionId,
+    code,
+  });
+}
+
+/** Cancel an in-flight CLI login. */
+export async function cancelCliLogin(id: string): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>(`/v1/admin/cli-backends/${encodeURIComponent(id)}/login/cancel`, {});
+}
+
+/** Log the CLI out (clears the stored subscription session). */
+export async function cliLogout(id: string): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>(`/v1/admin/cli-backends/${encodeURIComponent(id)}/logout`, {});
 }
 
 // -----------------------------------------------------------------------------
@@ -3660,4 +3738,83 @@ export async function listConductorRuns(slug: string): Promise<{ runs: Conductor
 
 export async function getConductorRun(slug: string, runId: string): Promise<ConductorRunResult> {
   return getJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/runs/${encodeURIComponent(runId)}`);
+}
+
+// -----------------------------------------------------------------------------
+// In-app issue reporting — "Create Issue" button (/api/v1/issues)
+//
+// The operator writes a free-form note, the primary connected LLM phrases
+// it into a clean English GitHub issue, and it is filed to byte5ai/omadia
+// as the operator's OWN GitHub account (operator OAuth). The access token
+// never reaches the browser — the UI only ever sees { connected, login }.
+// -----------------------------------------------------------------------------
+
+export type IssueCategory = 'bug' | 'feature' | 'improvement';
+
+export interface GithubIssueStatus {
+  connected: boolean;
+  login: string | null;
+  oauthConfigured: boolean;
+}
+
+export interface IssuePreview {
+  title: string;
+  body: string;
+  category: IssueCategory;
+}
+
+export interface CreatedIssue {
+  number: number;
+  htmlUrl: string;
+}
+
+export function getGithubIssueStatus(): Promise<GithubIssueStatus> {
+  return getJson<GithubIssueStatus>('/v1/issues/github/status');
+}
+
+export interface GithubDeviceStart {
+  userCode: string;
+  verificationUri: string;
+  expiresIn: number;
+  interval: number;
+}
+
+export type GithubConnectPoll =
+  | { status: 'authorized'; login: string | null }
+  | { status: 'pending'; interval?: number }
+  | { status: 'expired' }
+  | { status: 'denied' }
+  | { status: 'error' };
+
+export function startGithubConnect(): Promise<GithubDeviceStart> {
+  return postJson<GithubDeviceStart>(
+    '/v1/issues/github/connect/start',
+    undefined,
+  );
+}
+
+export function pollGithubConnect(): Promise<GithubConnectPoll> {
+  return postJson<GithubConnectPoll>(
+    '/v1/issues/github/connect/poll',
+    undefined,
+  );
+}
+
+export function disconnectGithub(): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>('/v1/issues/github/disconnect', undefined);
+}
+
+export function previewGithubIssue(input: {
+  text: string;
+  category: IssueCategory;
+}): Promise<IssuePreview> {
+  return postJson<IssuePreview>('/v1/issues/preview', input);
+}
+
+export function createGithubIssue(input: {
+  title: string;
+  body: string;
+  category: IssueCategory;
+}): Promise<CreatedIssue> {
+  return postJson<CreatedIssue>('/v1/issues/create', input);
 }

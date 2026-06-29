@@ -17,7 +17,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { CheckCircle2, KeyRound, Trash2 } from 'lucide-react';
+import { CheckCircle2, KeyRound, Plug, Trash2 } from 'lucide-react';
 
 import {
   ApiError,
@@ -240,7 +240,18 @@ export function CredentialsEditor({
                 ) : null}
               </div>
               <div className="flex flex-1 items-center gap-2">
-                {enumOptions ? (
+                {field.type === 'oauth' ? (
+                  // Spec 005 — an OAuth field has no typeable value; the kernel
+                  // broker holds the tokens. Render a Connect button that
+                  // navigates (top-level, so the server can 302 to the IdP) to
+                  // `/oauth/start`. "Connected" = the token bundle exists in the
+                  // vault under the reserved `oauth.<key>` name.
+                  <OAuthConnectField
+                    pluginId={pluginId}
+                    fieldKey={field.key}
+                    connected={storedKeys?.has(`oauth.${field.key}`) ?? false}
+                  />
+                ) : enumOptions ? (
                   (() => {
                     // The dropdown shows either the operator's pending
                     // draft, or — when nothing has been touched — the
@@ -376,6 +387,48 @@ export function CredentialsEditor({
           </span>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Spec 005 — Connect control for a `type:oauth` field. Renders the current
+ * connection state plus a button that navigates to the kernel broker's
+ * `/oauth/start` (a real top-level navigation through the `/bot-api` proxy, so
+ * the middleware can 302 to the IdP). After consent the broker redirects back
+ * to this store page with `?connected=ok|error`.
+ */
+function OAuthConnectField({
+  pluginId,
+  fieldKey,
+  connected,
+}: {
+  pluginId: string;
+  fieldKey: string;
+  connected: boolean;
+}): React.ReactElement {
+  const startUrl = `/bot-api/v1/install/oauth/start?pluginId=${encodeURIComponent(
+    pluginId,
+  )}&fieldKey=${encodeURIComponent(fieldKey)}`;
+  return (
+    <div className="flex min-w-0 flex-1 items-center justify-between gap-3">
+      {connected ? (
+        <span className="inline-flex items-center gap-1 text-[12px] font-semibold text-[color:var(--success)]">
+          <CheckCircle2 className="size-3.5" aria-hidden />
+          Verbunden
+        </span>
+      ) : (
+        <span className="text-[12px] text-[color:var(--muted-ink)]">
+          Nicht verbunden
+        </span>
+      )}
+      <a
+        href={startUrl}
+        className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[color:var(--accent)] bg-[color:var(--accent)]/10 px-3 py-1.5 text-[12px] font-semibold text-[color:var(--accent)] transition-colors hover:bg-[color:var(--accent)]/20"
+      >
+        <Plug className="size-3.5" aria-hidden />
+        {connected ? 'Neu verbinden' : 'Verbinden'}
+      </a>
     </div>
   );
 }

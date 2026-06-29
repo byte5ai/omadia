@@ -1,9 +1,20 @@
 {
-  "name": "odoo-bot-web-ui",
+  "name": "@omadia/web-ui",
   "private": true,
   "version": "0.2.0",
   "description": "Local-only Next.js dev UI for chatting with the middleware. Not for production.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/byte5ai/omadia"
+  },
+  "homepage": "https://omadia.ai",
+  "keywords": [
+    "ai-agents",
+    "self-hosted",
+    "orchestrator",
+    "plugin"
+  ],
   "scripts": {
     "dev": "next dev -p 3300",
     "build": "next build",
@@ -20,7 +31,7 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@monaco-editor/react": "^4.7.0",
-    "@xyflow/react": "^12.11.0",
+    "@xyflow/react": "^12.11.1",
     "clsx": "^2.1.1",
     "cytoscape": "^3.33.4",
     "cytoscape-fcose": "^2.2.0",
@@ -29,8 +40,8 @@
     "monaco-editor": "^0.55.1",
     "next": "^16.2.6",
     "next-intl": "^4.13.0",
-    "react": "^19.2.6",
-    "react-dom": "^19.2.6",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
     "react-force-graph-2d": "^1.29.1",
     "react-markdown": "^9.0.3",
     "react-resizable-panels": "^4.11.2",
@@ -38,25 +49,26 @@
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4.3.0",
+    "@tailwindcss/postcss": "^4.3.1",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
     "@types/cytoscape": "^3.31.0",
-    "@types/node": "^22.10.5",
-    "@types/react": "^19.2.15",
+    "@types/node": "^22.20.0",
+    "@types/react": "^19.2.17",
     "@types/react-dom": "^19.0.3",
     "@vitejs/plugin-react": "^5.0.4",
     "eslint": "^9.39.4",
-    "eslint-config-next": "^16.2.6",
+    "eslint-config-next": "^16.2.9",
     "jsdom": "^29.1.1",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.7.3",
-    "vitest": "^4.1.8"
+    "vitest": "^4.1.9"
   },
   "overrides": {
     "@swc/helpers": "0.5.21",
-    "esbuild": "^0.28.1"
+    "esbuild": "^0.28.1",
+    "undici": "^7.28.0"
   }
 }

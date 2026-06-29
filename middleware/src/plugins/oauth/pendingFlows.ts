@@ -17,9 +17,15 @@ import crypto from 'node:crypto';
 
 export interface PendingFlow {
   flowId: string;
-  jobId: string;
+  /** Plugin whose vault namespace + descriptor this flow targets. */
+  pluginId: string;
+  /** Install-job this flow belongs to. Absent on the store-detail
+   *  re-connect path (no install job exists). */
+  jobId?: string;
   fieldKey: string;
   providerId: string;
+  /** Raw PKCE verifier — the secret half; never leaves the server. Empty
+   *  string when the provider's descriptor opts out of PKCE. */
   codeVerifier: string;
   scopes: string[];
   /** Epoch ms — used by the test-doubles to assert TTL behaviour. */
@@ -27,7 +33,8 @@ export interface PendingFlow {
 }
 
 export interface PendingFlowInit {
-  jobId: string;
+  pluginId: string;
+  jobId?: string;
   fieldKey: string;
   providerId: string;
   codeVerifier: string;
@@ -63,13 +70,14 @@ export class PendingFlowStore {
     const flowId = crypto.randomUUID();
     const flow: PendingFlow = {
       flowId,
-      jobId: init.jobId,
+      pluginId: init.pluginId,
       fieldKey: init.fieldKey,
       providerId: init.providerId,
       codeVerifier: init.codeVerifier,
       scopes: [...init.scopes],
       createdAt: this.now(),
     };
+    if (init.jobId) flow.jobId = init.jobId;
     this.entries.set(flowId, flow);
     const timer = setTimeout(() => {
       this.entries.delete(flowId);

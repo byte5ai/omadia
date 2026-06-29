@@ -1,66 +1,52 @@
-# Release workflow — PLACEHOLDER, NOT YET ACTIVE.
+# Release workflow — edge images on every push to main; npm publish gated.
 #
-# Activates once OB-30 Block 2 (Branding & License) lands the
-# decisions below. The skeleton is here so the diff to "fully wired
-# release" stays small + reviewable.
+# Image publishing is centralized in the reusable publish-images.yml:
+#   - this file (push to `main`)      -> :edge + :sha-<short>
+#   - auto-release.yml (after Release) -> :X.Y.Z / :vX.Y.Z / :X.Y / :vX.Y / :latest
 #
-# Decisions still pending (TODO before enabling):
-#   1. npm scope          — `@omadia/*` vs. fresh scope
-#   2. GHCR target        — `ghcr.io/<org>/harness-middleware` and
-#                           `ghcr.io/<org>/harness-web-ui`
-#   3. Repo public name   — affects badge URLs in README
-#   4. Release-trigger    — semver tags `v*.*.*` vs. release-PR pattern
-#                           via release-please
-#   5. Which workspace
-#      packages publish   — only @omadia/channel-sdk +
-#                           plugin-api as SDK, or every workspace?
+# Why the version path lives in auto-release.yml and not a `release: published`
+# trigger here: auto-release cuts the Release with the default GITHUB_TOKEN, and
+# GitHub does not fire event-triggered workflows from GITHUB_TOKEN-created
+# releases. So auto-release calls publish-images directly, in the same run.
+# docker-compose.yaml pulls these by ${OMADIA_VERSION:-latest}.
 #
-# Every step below is intentionally commented-out so a `git push --tags`
-# today does NOT trigger a half-broken publish.
+# npm package publishing stays gated (`if: false`) until the npm-scope
+# decision (OB-30 Block 2, item 1) lands — out of scope for the image story.
 
-name: Release (placeholder)
+name: Release
 
 on:
-  # Active trigger — uncomment and pick ONE pattern when wiring:
-  # push:
-  #   tags: ['v*.*.*']
-  workflow_dispatch:
-    inputs:
-      dry_run:
-        description: 'Dry-run only (skip npm publish + GHCR push)'
-        required: false
-        type: boolean
-        default: true
+  push:
+    branches: [main]
 
-permissions:
-  contents: read
-  packages: write
-  id-token: write   # OIDC for npm provenance once wired
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  guard:
-    name: not-yet-wired guard
-    runs-on: ubuntu-latest
-    steps:
-      - run: |
-          echo "::error::release.yml is a placeholder. Decisions in OB-30 Block 2 (npm scope, GHCR target, release trigger pattern) must land before this workflow is enabled."
-          exit 1
+  edge-images:
+    permissions:
+      contents: read
+      packages: write
+    # No `version` input -> edge build (:edge + :sha-<short>) from this commit.
+    uses: ./.github/workflows/publish-images.yml
 
   # ──────────────────────────────────────────────────────────────────
-  # The blocks below show the SHAPE of what will activate post-Block-2.
-  # All are gated behind `if: false` so they never run today.
+  # npm package publishing — GATED OFF until the npm-scope decision
+  # (OB-30 Block 2, item 1) lands. Out of scope for the image story.
   # ──────────────────────────────────────────────────────────────────
-
   npm-publish:
     name: npm publish (gated off)
     runs-on: ubuntu-latest
     if: false
-    needs: [guard]
+    permissions:
+      contents: read
+      id-token: write   # OIDC for npm provenance once wired
     defaults:
       run:
         working-directory: middleware
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -72,7 +58,7 @@ jobs:
           npm ci --no-audit --no-fund
           npm run build
       - name: npm publish (--provenance, --access public)
-        # TODO: pick exact workspaces once Block 2 names them. Today
+        # TODO: pick exact workspaces once the npm scope is named. Today
         # every workspace ships with `"private": true` — flip that
         # for the publish-target subset before the first publish.
         run: |
@@ -83,69 +69,3 @@ jobs:
           exit 1
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-  ghcr-middleware:
-    name: middleware → GHCR (gated off)
-    runs-on: ubuntu-latest
-    if: false
-    needs: [guard]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          # TODO Block-2: lock org/repo name once decided.
-          images: ghcr.io/byte5ai/omadia-middleware
-          tags: |
-            type=ref,event=tag
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          provenance: true
-          sbom: true
-
-  ghcr-web-ui:
-    name: web-ui → GHCR (gated off)
-    runs-on: ubuntu-latest
-    if: false
-    needs: [guard]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          # TODO Block-2: lock org/repo name once decided.
-          images: ghcr.io/byte5ai/omadia-web-ui
-          tags: |
-            type=ref,event=tag
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-      - uses: docker/build-push-action@v6
-        with:
-          context: ./web-ui
-          file: ./web-ui/Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            MIDDLEWARE_URL=http://middleware:8080
-          provenance: true
-          sbom: true

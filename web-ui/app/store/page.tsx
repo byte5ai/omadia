@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { HardDrive, PackageCheck, Store } from 'lucide-react';
+import { getTranslations } from 'next-intl/server';
 
 import { listProfiles, listStorePlugins } from '../_lib/api';
 import { redirectIfUnauthorized } from '../_lib/authRedirect';
@@ -12,7 +13,7 @@ import { UploadDropzone } from '../_components/store/UploadDropzone';
 import { cn } from '../_lib/cn';
 
 export const metadata: Metadata = {
-  title: 'Plugin-Store · Omadia',
+  title: 'Hub · omadia',
 };
 
 export const dynamic = 'force-dynamic';
@@ -41,6 +42,7 @@ export default async function StorePage({
   const params = await searchParams;
   const source = parseSource(params.source);
   const filter = parseFilter(params.kind);
+  const t = await getTranslations('store.hero');
 
   let plugins: Plugin[] = [];
   let loadError: string | null = null;
@@ -100,34 +102,23 @@ export default async function StorePage({
     <main className="mx-auto max-w-[1280px] px-6 py-12 lg:px-8 lg:py-16">
       <OnboardingModal installedCount={installedCount} profiles={profiles} />
 
-      {/* Hero — Omadia brand cadence (Days One headline + magenta colon lead) */}
+      {/* Hero — omadia brand cadence (Days One headline + magenta colon lead) */}
       <header className="b5-hero-bg relative -mx-6 rounded-lg border border-[color:var(--divider)] px-6 py-8 lg:-mx-8 lg:px-8 lg:py-12">
         <div className="flex items-baseline gap-3 text-[12px] font-semibold uppercase tracking-[0.24em] text-[color:var(--accent)]">
           <span className="font-mono-num text-[color:var(--fg-subtle)]">
             01
           </span>
           <span className="h-px flex-1 bg-[color:var(--border)]" />
-          <span>Plugin-Store</span>
+          <span>{t('eyebrow')}</span>
         </div>
 
         <h1 className="font-display mt-6 text-[clamp(2.25rem,4.5vw,3.75rem)] leading-[1.05] text-[color:var(--fg-strong)]">
-          Agenten für die Omadia-Plattform.
+          {t('headline')}
         </h1>
 
         <p className="mt-6 max-w-2xl text-[18px] font-semibold leading-[1.55] text-[color:var(--fg)]">
-                    Der Katalog bündelt Integrations (Credential-Container), Agents
-          (Domain-Capabilities) und Channels (User-Kanäle wie Teams,
-          Telegram). Ein Klick auf eine Kachel zeigt Berechtigungen, Secrets
-          und Abhängigkeiten vor der Installation.
+          {t('lead')}
         </p>
-
-        {/* Stats strip — installed vs. hub split + total */}
-        <dl className="mt-8 grid max-w-2xl grid-cols-4 gap-6 border-t border-[color:var(--divider)] pt-4 text-sm">
-          <Stat label="Plugins" value={plugins.length} />
-          <Stat label="Hub" value={hubCount} accent />
-          <Stat label="Lokal" value={localCount} />
-          <Stat label="Installiert" value={installedCount} />
-        </dl>
       </header>
 
       {/* Source switch — the primary view selector by plugin origin. */}
@@ -211,37 +202,10 @@ export default async function StorePage({
           </span>
         </span>
         <span className="font-mono-num text-[color:var(--fg-muted)]">
-          Omadia · v1
+          omadia · v1
         </span>
       </footer>
     </main>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  accent,
-}: {
-  label: string;
-  value: number;
-  accent?: boolean;
-}): React.ReactElement {
-  return (
-    <div>
-      <dt className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[color:var(--fg-subtle)]">
-        {label}
-      </dt>
-      <dd
-        className={`font-display mt-1 text-[32px] leading-none ${
-          accent
-            ? 'text-[color:var(--highlight)]'
-            : 'text-[color:var(--fg-strong)]'
-        }`}
-      >
-        {String(value).padStart(2, '0')}
-      </dd>
-    </div>
   );
 }
 
@@ -269,7 +233,7 @@ function SourceTabs({
   }> = [
     {
       key: 'hub',
-      label: 'Hub',
+      label: 'Registry',
       count: hubCount,
       icon: <Store className="size-4" aria-hidden />,
     },
