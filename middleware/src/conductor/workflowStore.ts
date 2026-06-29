@@ -1,4 +1,4 @@
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import type { WorkflowGraph } from '@omadia/conductor-core';
 
 export interface ConductorWorkflow {
@@ -88,6 +88,10 @@ export class ConductorWorkflowStore {
     graph: WorkflowGraph;
     publishedBy?: string | null;
     enable?: boolean;
+    /** Runs inside the publish transaction after the version is set active — used to reconcile cron
+     *  schedules atomically with the publish (a throw rolls the whole publish back, so a failed
+     *  reconcile never leaves stale schedules behind). */
+    onPublished?: (client: PoolClient, workflowId: string) => Promise<void>;
   }): Promise<{ workflow: ConductorWorkflow; version: ConductorVersion }> {
     const client = await this.pool.connect();
     try {
@@ -130,6 +134,9 @@ export class ConductorWorkflowStore {
         RETURNING id, slug, name, description, status, active_version_id`,
         [workflowId, version.id],
       );
+
+      // Atomic side-effects of publishing (e.g. cron-schedule reconcile) — same transaction.
+      if (input.onPublished) await input.onPublished(client, workflowId);
 
       await client.query('COMMIT');
       return {

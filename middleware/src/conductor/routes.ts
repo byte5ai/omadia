@@ -8,6 +8,7 @@ import type { ConductorWorkflowStore } from './workflowStore.js';
 import type { ConductorRunStore } from './runStore.js';
 import type { ConductorAwaitStore } from './awaitStore.js';
 import type { ConductorRoleStore } from './roleStore.js';
+import type { ConductorScheduleStore } from './scheduleStore.js';
 import type { ConductorEventRouter } from './eventRouter.js';
 import {
   AwaitNotPendingError,
@@ -36,8 +37,11 @@ export interface ConductorRouterDeps {
   runStore: ConductorRunStore;
   awaitStore: ConductorAwaitStore;
   roleStore: ConductorRoleStore;
+  scheduleStore: ConductorScheduleStore;
   executor: ConductorRunExecutor;
   eventRouter: ConductorEventRouter;
+  /** Read model of declared emittable events (US4) — powers the Designer's event-trigger picker. */
+  eventCatalog?: { list(): string[]; byPluginId(): Record<string, string[]> };
 }
 
 /**
@@ -80,6 +84,9 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
         description: typeof body.description === 'string' ? body.description : null,
         graph,
         enable: body.enable === true,
+        // Reconcile cron schedules atomically with the publish: a reconcile failure rolls the whole
+        // publish back rather than leaving stale schedules firing (e.g. a just-removed cron trigger).
+        onPublished: (client, workflowId) => deps.scheduleStore.reconcileOnClient(client, workflowId, graph),
       });
       res.status(201).json({
         workflow: out.workflow,
@@ -106,6 +113,16 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
     } catch (err) {
       console.error('[conductor] emit failed:', err);
       res.status(500).json({ code: 'conductor.emit_failed', message: errMsg(err) });
+    }
+  });
+
+  // Event catalog (US4) — the events plugins declared they emit, for the Designer's trigger picker.
+  // Registered before '/:slug' so it is not swallowed by the catch-all workflow route.
+  router.get('/events/catalog', (_req: Request, res: Response): void => {
+    try {
+      res.json({ events: deps.eventCatalog?.list() ?? [], byPlugin: deps.eventCatalog?.byPluginId() ?? {} });
+    } catch (err) {
+      res.status(500).json({ code: 'conductor.event_catalog_failed', message: errMsg(err) });
     }
   });
 

@@ -9,9 +9,11 @@ import { ConductorWorkflowStore } from './workflowStore.js';
 import { ConductorRunStore } from './runStore.js';
 import { ConductorAwaitStore } from './awaitStore.js';
 import { ConductorRoleStore } from './roleStore.js';
+import { ConductorScheduleStore } from './scheduleStore.js';
 import { ConductorRunExecutor } from './runExecutor.js';
 import { ConductorAwaitWorker } from './awaitWorker.js';
 import { ConductorRunResumeWorker } from './runResumeWorker.js';
+import { ConductorScheduleWorker } from './scheduleWorker.js';
 import { ConductorEventRouter } from './eventRouter.js';
 import { RealStepEffects } from './realStepEffects.js';
 import { createConductorRouter } from './routes.js';
@@ -24,6 +26,8 @@ export { ConductorRoleStore } from './roleStore.js';
 export { ConductorRunExecutor } from './runExecutor.js';
 export { ConductorAwaitWorker } from './awaitWorker.js';
 export { ConductorRunResumeWorker } from './runResumeWorker.js';
+export { ConductorScheduleWorker } from './scheduleWorker.js';
+export { ConductorScheduleStore } from './scheduleStore.js';
 export { ConductorEventRouter } from './eventRouter.js';
 export { StubStepEffects } from './stepEffects.js';
 export { RealStepEffects } from './realStepEffects.js';
@@ -35,9 +39,11 @@ export interface ConductorWiring {
   runStore: ConductorRunStore;
   awaitStore: ConductorAwaitStore;
   roleStore: ConductorRoleStore;
+  scheduleStore: ConductorScheduleStore;
   executor: ConductorRunExecutor;
   awaitWorker: ConductorAwaitWorker;
   resumeWorker: ConductorRunResumeWorker;
+  scheduleWorker: ConductorScheduleWorker;
   eventRouter: ConductorEventRouter;
 }
 
@@ -55,6 +61,8 @@ export async function wireConductor(deps: {
   getRegistry: () => OrchestratorRegistry | undefined;
   /** invokes a deterministic-action / connector tool by id for action steps. */
   invokeAction?: (toolId: string, input: unknown) => Promise<string | undefined>;
+  /** read model of the event-emit catalog (declared `event_emit` capabilities) for the Designer. */
+  eventCatalog?: { list(): string[]; byPluginId(): Record<string, string[]> };
   log?: (msg: string) => void;
 }): Promise<ConductorWiring> {
   const log = deps.log ?? (() => undefined);
@@ -64,6 +72,7 @@ export async function wireConductor(deps: {
   const runStore = new ConductorRunStore(deps.pool);
   const awaitStore = new ConductorAwaitStore(deps.pool);
   const roleStore = new ConductorRoleStore(deps.pool);
+  const scheduleStore = new ConductorScheduleStore(deps.pool);
   const executor = new ConductorRunExecutor({
     workflowStore,
     runStore,
@@ -84,14 +93,18 @@ export async function wireConductor(deps: {
   const resumeWorker = new ConductorRunResumeWorker({ runStore, executor, claimerId: randomUUID(), log });
   resumeWorker.start();
 
+  // Schedule worker — fires workflows on their cron triggers (US4 cron).
+  const scheduleWorker = new ConductorScheduleWorker({ scheduleStore, executor, log });
+  scheduleWorker.start();
+
   // Event router — a domain event starts every subscribed workflow's run (US4).
   const eventRouter = new ConductorEventRouter({ workflowStore, executor, log });
 
   deps.app.use(
     '/api/v1/operator/conductors',
     deps.requireAuth,
-    createConductorRouter({ workflowStore, runStore, awaitStore, roleStore, executor, eventRouter }),
+    createConductorRouter({ workflowStore, runStore, awaitStore, roleStore, scheduleStore, executor, eventRouter, eventCatalog: deps.eventCatalog }),
   );
 
-  return { workflowStore, runStore, awaitStore, roleStore, executor, awaitWorker, resumeWorker, eventRouter };
+  return { workflowStore, runStore, awaitStore, roleStore, scheduleStore, executor, awaitWorker, resumeWorker, scheduleWorker, eventRouter };
 }

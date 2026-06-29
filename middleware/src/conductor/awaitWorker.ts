@@ -9,6 +9,7 @@ import type { ConductorRunExecutor } from './runExecutor.js';
  */
 export class ConductorAwaitWorker {
   private timer: ReturnType<typeof setInterval> | undefined;
+  private ticking = false;
 
   constructor(
     private readonly deps: {
@@ -37,20 +38,26 @@ export class ConductorAwaitWorker {
   }
 
   async tick(): Promise<void> {
-    const now = (this.deps.now ?? (() => new Date()))();
-    let due;
+    if (this.ticking) return; // never let two ticks overlap (consistent with the resume/schedule workers)
+    this.ticking = true;
     try {
-      due = await this.deps.awaitStore.listDue(now);
-    } catch (err) {
-      this.deps.log?.(`[conductor] await worker list failed: ${err instanceof Error ? err.message : String(err)}`);
-      return;
-    }
-    for (const aw of due) {
+      const now = (this.deps.now ?? (() => new Date()))();
+      let due;
       try {
-        await this.deps.executor.expireAwait(aw.id);
+        due = await this.deps.awaitStore.listDue(now);
       } catch (err) {
-        this.deps.log?.(`[conductor] await worker expire ${aw.id} failed: ${err instanceof Error ? err.message : String(err)}`);
+        this.deps.log?.(`[conductor] await worker list failed: ${err instanceof Error ? err.message : String(err)}`);
+        return;
       }
+      for (const aw of due) {
+        try {
+          await this.deps.executor.expireAwait(aw.id);
+        } catch (err) {
+          this.deps.log?.(`[conductor] await worker expire ${aw.id} failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    } finally {
+      this.ticking = false;
     }
   }
 }

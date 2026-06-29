@@ -222,6 +222,7 @@ import { NotificationRouter } from './platform/notificationRouter.js';
 import { PluginStatusRegistry } from './platform/pluginStatusRegistry.js';
 import { UiRouteCatalog } from './platform/uiRouteCatalog.js';
 import { CanvasOutputRegistry } from './platform/canvasOutputRegistry.js';
+import { EventCatalogRegistry } from './platform/eventCatalogRegistry.js';
 import { DeterministicActionRegistry } from './platform/deterministicActionRegistry.js';
 import { ServiceRegistry } from './platform/serviceRegistry.js';
 import { TurnHookRegistry } from './platform/turnHookRegistry.js';
@@ -360,6 +361,11 @@ async function main(): Promise<void> {
   // it lazily. The `deterministic_action_tools` config field stays as override.
   const deterministicActionRegistry = new DeterministicActionRegistry();
   serviceRegistry.provide('deterministicActionRegistry', deterministicActionRegistry);
+  // Event-catalog autodiscovery (US4 Conductor Surface): plugins declaring `event_emit: true`
+  // capabilities resolve into this registry on (de)activation from BOTH runtimes (dynamic + tool),
+  // so the Designer can list emittable events and ctx.events.emit enforces deny-by-default.
+  const eventCatalogRegistry = new EventCatalogRegistry();
+  serviceRegistry.provide('eventCatalogRegistry', eventCatalogRegistry);
   // #133 E0 — expose the kernel turn-hook registry to the orchestrator plugin
   // so it can fire onBeforeTurn / onAfterToolCall / onAfterTurn during turns.
   serviceRegistry.provide('turnHookRegistry', turnHookRegistry);
@@ -731,6 +737,7 @@ async function main(): Promise<void> {
     flowPublicBaseUrl,
     pluginStatusRegistry,
     canvasOutputRegistry,
+    eventCatalogRegistry,
     deterministicActionRegistry,
     log: (...a) => console.log(...a),
   });
@@ -803,6 +810,7 @@ async function main(): Promise<void> {
     pluginStatusRegistry,
     selfExtendRegistry,
     extensionStore,
+    eventCatalogRegistry,
     // When an integration plugin activates — at boot OR via a live hot-
     // install — register every `manifest.service_types` entry into the
     // agent-builder's `serviceTypeRegistry`, and link its package into the
@@ -2111,14 +2119,17 @@ async function main(): Promise<void> {
     // run executor + operator API, all behind the graphPool (inert in-memory).
     // Agent steps run real turns on Agents (orchestrator instances) resolved by slug
     // from the registry; action steps invoke real connector tools.
-    await wireConductor({
+    const conductorWiring = await wireConductor({
       pool: graphPool,
       app,
       requireAuth,
       getRegistry,
       invokeAction: (toolId, input) => dynamicAgentRuntime.invokeAgentTool(toolId, input),
+      eventCatalog: eventCatalogRegistry,
       log: (m) => console.log(m),
     });
+    // Expose the event router so plugin contexts (ctx.events.emit) resolve it lazily — US4.
+    serviceRegistry.provide('conductorEventRouter', conductorWiring.eventRouter);
     console.log('[middleware] conductor wired at /api/v1/operator/conductors/* (auth-gated)');
     const userStore = new UserStore(graphPool);
 
