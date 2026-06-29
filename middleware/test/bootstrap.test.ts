@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 
 import {
   bootstrapBuiltInPackages,
+  bootstrapEmbeddingsFromEnv,
+  bootstrapKnowledgeGraphFromEnv,
   bootstrapMemoryFromEnv,
   retryErroredPlugins,
   type RetryErroredPluginsDeps,
@@ -780,6 +782,129 @@ describe('memoryStore provider selection', () => {
     );
   });
 
+  it('knowledge-graph dual-active conflict self-heals to the DATABASE_URL-selected backend', async () => {
+    // R2/1.1: a persisted both-active state (both KG siblings installed) is
+    // not a valid operator state and causes capability resolution to route
+    // KG reads/writes non-deterministically between the two backends — the
+    // "KG doesn't work between sessions" symptom. Bootstrap must self-heal by
+    // removing the non-selected sibling and keeping the env-selected one.
+    const KG_INMEMORY = '@omadia/knowledge-graph-inmemory';
+    const KG_NEON = '@omadia/knowledge-graph-neon';
+    const kgCatalog = makeCatalog([
+      { id: KG_INMEMORY, kind: 'extension', provides: ['knowledgeGraph@1'], requires: [], depends_on: [] },
+      { id: KG_NEON, kind: 'extension', provides: ['knowledgeGraph@1'], requires: ['graphPool@^1'], depends_on: [] },
+    ]);
+    const kgVault = {
+      get: async () => undefined,
+      setMany: async () => {},
+      set: async () => {},
+      has: async () => false,
+      purge: async () => {},
+      list: async () => [],
+    } as unknown as SecretVault;
+
+    // DATABASE_URL set → neon is the selected backend.
+    const reg = new InMemoryInstalledRegistry();
+    await seedActive(reg, KG_INMEMORY);
+    await seedActive(reg, KG_NEON);
+    await bootstrapKnowledgeGraphFromEnv({
+      config: { DATABASE_URL: 'postgres://x', GRAPH_TENANT_ID: 'default' } as unknown as Config,
+      catalog: kgCatalog,
+      registry: reg,
+      vault: kgVault,
+      log: () => {},
+    });
+    assert.equal(reg.get(KG_NEON)?.status, 'active', 'neon kept (DATABASE_URL set)');
+    assert.equal(reg.get(KG_INMEMORY), undefined, 'non-selected inmemory sibling removed');
+  });
+
+  it('knowledge-graph dual-active conflict self-heals to inmemory when DATABASE_URL is unset', async () => {
+    const KG_INMEMORY = '@omadia/knowledge-graph-inmemory';
+    const KG_NEON = '@omadia/knowledge-graph-neon';
+    const kgCatalog = makeCatalog([
+      { id: KG_INMEMORY, kind: 'extension', provides: ['knowledgeGraph@1'], requires: [], depends_on: [] },
+      { id: KG_NEON, kind: 'extension', provides: ['knowledgeGraph@1'], requires: ['graphPool@^1'], depends_on: [] },
+    ]);
+    const kgVault = {
+      get: async () => undefined,
+      setMany: async () => {},
+    } as unknown as SecretVault;
+
+    const reg = new InMemoryInstalledRegistry();
+    await seedActive(reg, KG_INMEMORY);
+    await seedActive(reg, KG_NEON);
+    await bootstrapKnowledgeGraphFromEnv({
+      config: { GRAPH_TENANT_ID: 'default' } as unknown as Config,
+      catalog: kgCatalog,
+      registry: reg,
+      vault: kgVault,
+      log: () => {},
+    });
+    assert.equal(reg.get(KG_INMEMORY)?.status, 'active', 'inmemory kept (no DATABASE_URL)');
+    assert.equal(reg.get(KG_NEON), undefined, 'non-selected neon sibling removed');
+  });
+
+  it('knowledge-graph dual-active heal KEEPS neon when DATABASE_URL env is unset but neon holds a vault DSN', async () => {
+    // Forge B1 regression: neon resolves its DSN from the vault (S+12.5-3), so
+    // env can be unset while neon is the durable, data-bearing backend. The
+    // heal must NOT remove neon there (that would drop the durable KG and keep
+    // volatile inmemory — the production incident). Direction is decided by who
+    // holds a usable DSN, not by env alone.
+    const KG_INMEMORY = '@omadia/knowledge-graph-inmemory';
+    const KG_NEON = '@omadia/knowledge-graph-neon';
+    const kgCatalog = makeCatalog([
+      { id: KG_INMEMORY, kind: 'extension', provides: ['knowledgeGraph@1'], requires: [], depends_on: [] },
+      { id: KG_NEON, kind: 'extension', provides: ['knowledgeGraph@1'], requires: ['graphPool@^1'], depends_on: [] },
+    ]);
+    // Vault returns a DSN for neon (env DATABASE_URL stays unset).
+    const vaultWithNeonDsn = {
+      get: async (id: string, key: string) =>
+        id === KG_NEON && key === 'database_url' ? 'postgres://vault-dsn' : undefined,
+      setMany: async () => {},
+    } as unknown as SecretVault;
+
+    const reg = new InMemoryInstalledRegistry();
+    await seedActive(reg, KG_INMEMORY);
+    await seedActive(reg, KG_NEON);
+    await bootstrapKnowledgeGraphFromEnv({
+      config: { GRAPH_TENANT_ID: 'default' } as unknown as Config, // env DATABASE_URL UNSET
+      catalog: kgCatalog,
+      registry: reg,
+      vault: vaultWithNeonDsn,
+      log: () => {},
+    });
+    assert.equal(reg.get(KG_NEON)?.status, 'active', 'durable neon KEPT (vault DSN present)');
+    assert.equal(reg.get(KG_INMEMORY), undefined, 'volatile inmemory removed, not neon');
+  });
+
+  it('knowledge-graph preserves a genuine operator switch (only the sibling installed)', async () => {
+    // Operator-Switch-Story: only ONE provider installed at a time. When only
+    // the sibling (inmemory) is present while DATABASE_URL is set, that is a
+    // deliberate operator choice — bootstrap must NOT auto-flip to neon.
+    const KG_INMEMORY = '@omadia/knowledge-graph-inmemory';
+    const KG_NEON = '@omadia/knowledge-graph-neon';
+    const kgCatalog = makeCatalog([
+      { id: KG_INMEMORY, kind: 'extension', provides: ['knowledgeGraph@1'], requires: [], depends_on: [] },
+      { id: KG_NEON, kind: 'extension', provides: ['knowledgeGraph@1'], requires: ['graphPool@^1'], depends_on: [] },
+    ]);
+    const kgVault = {
+      get: async () => undefined,
+      setMany: async () => {},
+    } as unknown as SecretVault;
+
+    const reg = new InMemoryInstalledRegistry();
+    await seedActive(reg, KG_INMEMORY); // operator chose inmemory
+    await bootstrapKnowledgeGraphFromEnv({
+      config: { DATABASE_URL: 'postgres://x', GRAPH_TENANT_ID: 'default' } as unknown as Config,
+      catalog: kgCatalog,
+      registry: reg,
+      vault: kgVault,
+      log: () => {},
+    });
+    assert.equal(reg.get(KG_INMEMORY)?.status, 'active', 'operator-chosen inmemory preserved');
+    assert.equal(reg.get(KG_NEON), undefined, 'no auto-flip to neon');
+  });
+
   it('postgres backend: full boot order leaves ONLY memory-postgres (catch-all does not re-install the removed filesystem provider)', async () => {
     // Reproduces the boot crash: bootstrapMemoryFromEnv removes
     // @omadia/memory for the postgres backend, then the built-in catch-all
@@ -811,5 +936,90 @@ describe('memoryStore provider selection', () => {
       undefined,
       'filesystem provider NOT re-installed by the catch-all',
     );
+  });
+});
+
+describe('bootstrapEmbeddingsFromEnv — env→config reconcile (overlay-on-existing fix)', () => {
+  const EMB_ID = '@omadia/embeddings';
+  const embCatalog = makeCatalog([
+    { id: EMB_ID, kind: 'extension', provides: ['embeddingClient@1'], requires: [], depends_on: [] },
+  ]);
+  const stubVault = { get: async () => undefined, setMany: async () => {} } as unknown as SecretVault;
+  function embCfg(opts: { url?: string; model?: string; concurrent?: number }): Config {
+    return {
+      ...(opts.url ? { OLLAMA_BASE_URL: opts.url } : {}),
+      ...(opts.model ? { OLLAMA_EMBEDDING_MODEL: opts.model } : {}),
+      ...(opts.concurrent !== undefined
+        ? { GRAPH_EMBEDDING_MAX_CONCURRENT: opts.concurrent }
+        : {}),
+    } as unknown as Config;
+  }
+  async function seedEmb(reg: InMemoryInstalledRegistry, config: Record<string, unknown> = {}) {
+    await reg.register({ id: EMB_ID, installed_version: '0.1.0', installed_at: '2026-04-29T00:00:00Z', status: 'active', config });
+  }
+  function embDeps(reg: InMemoryInstalledRegistry, cfg: Config) {
+    return { config: cfg, vault: stubVault, registry: reg, catalog: embCatalog, log: () => {} };
+  }
+
+  it('reconciles ollama_base_url from env when overlay is added to an EXISTING install', async () => {
+    // The bug: enabling the Ollama overlay later left ollama_base_url unset
+    // (first-install-only migration) → embeddings silently stayed off.
+    const reg = new InMemoryInstalledRegistry();
+    await seedEmb(reg, {}); // installed earlier WITHOUT ollama
+    await bootstrapEmbeddingsFromEnv(
+      embDeps(reg, embCfg({ url: 'http://ollama:11434', model: 'nomic-embed-text' })),
+    );
+    const cfg = reg.get(EMB_ID)?.config;
+    assert.equal(cfg?.['ollama_base_url'], 'http://ollama:11434', 'url reconciled → embeddings activate');
+    assert.equal(cfg?.['ollama_model'], 'nomic-embed-text');
+  });
+
+  it('is a no-op when stored ollama_base_url already matches env', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await seedEmb(reg, { ollama_base_url: 'http://ollama:11434', ollama_model: 'nomic-embed-text' });
+    const logs: string[] = [];
+    await bootstrapEmbeddingsFromEnv({
+      ...embDeps(reg, embCfg({ url: 'http://ollama:11434', model: 'nomic-embed-text' })),
+      log: (m: string) => logs.push(m),
+    });
+    assert.equal(logs.some((l) => l.includes('reconciled')), false, 'no rewrite when already correct');
+  });
+
+  it('leaves operator config untouched when no OLLAMA_BASE_URL env is set', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await seedEmb(reg, { ollama_base_url: 'http://operator-set:11434' });
+    await bootstrapEmbeddingsFromEnv(embDeps(reg, embCfg({})));
+    assert.equal(
+      reg.get(EMB_ID)?.config?.['ollama_base_url'],
+      'http://operator-set:11434',
+      'env-unset must not clobber operator config',
+    );
+  });
+
+  it('reconciles a model-only change (URL already matches)', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await seedEmb(reg, { ollama_base_url: 'http://ollama:11434', ollama_model: 'old-model' });
+    await bootstrapEmbeddingsFromEnv(
+      embDeps(reg, embCfg({ url: 'http://ollama:11434', model: 'nomic-embed-text' })),
+    );
+    assert.equal(reg.get(EMB_ID)?.config?.['ollama_model'], 'nomic-embed-text');
+  });
+
+  it('reconciles max_concurrent on an existing install (same bug class as url)', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await seedEmb(reg, { ollama_base_url: 'http://ollama:11434' });
+    await bootstrapEmbeddingsFromEnv(
+      embDeps(reg, embCfg({ url: 'http://ollama:11434', concurrent: 8 })),
+    );
+    assert.equal(reg.get(EMB_ID)?.config?.['max_concurrent'], 8);
+  });
+
+  it('preserves unrelated operator config keys through the reconcile (wholesale register)', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await seedEmb(reg, { some_operator_key: 'keep-me' });
+    await bootstrapEmbeddingsFromEnv(embDeps(reg, embCfg({ url: 'http://ollama:11434' })));
+    const cfg = reg.get(EMB_ID)?.config;
+    assert.equal(cfg?.['ollama_base_url'], 'http://ollama:11434', 'url activated');
+    assert.equal(cfg?.['some_operator_key'], 'keep-me', 'unrelated key survives the register spread');
   });
 });

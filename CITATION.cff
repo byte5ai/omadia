@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "If you use omadia in your work, please cite it using this metadata."
+title: omadia
+abstract: "Self-hostable agentic OS for building, running, and auditing multi-agent AI teams from signed plugins, with a privacy boundary, answer verification, and a receipt for every action."
+type: software
+url: "https://omadia.ai"
+repository-code: "https://github.com/byte5ai/omadia"
+license: MIT
+authors:
+  - name: "byte5 GmbH"
+    website: "https://byte5.de"

@@ -15,7 +15,7 @@ import { ImportBundleButton } from './_components/ImportBundleButton';
 import { QuotaBadge } from './_components/QuotaBadge';
 
 export const metadata: Metadata = {
-  title: 'Agent-Builder · omadia',
+  title: 'Plugin-Builder · omadia',
 };
 
 export const dynamic = 'force-dynamic';
@@ -181,7 +181,7 @@ export default async function BuilderDashboardPage({
           </span>
         </span>
         <span className="font-mono-num text-[color:var(--fg-muted)]">
-          omadia · Agent-Builder
+          omadia · Plugin-Builder
         </span>
       </footer>
     </main>

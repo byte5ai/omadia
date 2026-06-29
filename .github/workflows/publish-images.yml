@@ -42,7 +42,12 @@ jobs:
             image: ghcr.io/byte5ai/omadia-middleware
             context: .
             dockerfile: ./Dockerfile
-            build_args: ''
+            # Bundle the official Claude CLI into the published middleware image
+            # so subscription-CLI agents (#309) work out of the box on a
+            # self-host. NOTE: redistributing a proprietary vendor CLI in a
+            # public image — see the Dockerfile comment by INSTALL_SUBSCRIPTION_CLIS.
+            build_args: |
+              INSTALL_SUBSCRIPTION_CLIS=true
           - name: web-ui
             image: ghcr.io/byte5ai/omadia-web-ui
             context: ./web-ui

@@ -25,18 +25,12 @@ type NavCluster = {
 type NavItem = NavLeaf | NavCluster;
 
 const NAV: readonly NavItem[] = [
-  { kind: 'link', href: '/', key: 'chat' },
-  {
-    kind: 'cluster',
-    key: 'agentsCluster',
-    children: [
-      { kind: 'link', href: '/operator/agents', key: 'agentsOverview' },
-      { kind: 'link', href: '/operator/channels', key: 'channels' },
-      { kind: 'link', href: '/memory', key: 'memory' },
-      { kind: 'link', href: '/memories', key: 'memories' },
-      { kind: 'link', href: '/graph', key: 'graph' },
-    ],
-  },
+  { kind: 'link', href: '/', key: 'dashboard' },
+  { kind: 'link', href: '/chat', key: 'chat' },
+  // Orchestrators is a direct link: the overview page now carries both the
+  // orchestrator and channel settings, so the old Overview/Channels dropdown
+  // collapsed into a single destination.
+  { kind: 'link', href: '/operator/agents', key: 'agentsCluster' },
   {
     kind: 'cluster',
     key: 'pluginsCluster',
