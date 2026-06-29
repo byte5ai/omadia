@@ -26,13 +26,53 @@ function asObject(v: JsonValue | undefined): JsonObject {
   return typeof v === 'object' && v !== null && !Array.isArray(v) ? v : {};
 }
 
+/** Thrown when a single step's I/O exceeds the per-step hard budget (`stepTimeoutMs`). */
+export class StepTimeoutError extends Error {
+  constructor(label: string, ms: number) {
+    super(`${label} exceeded the ${ms}ms step timeout`);
+    this.name = 'StepTimeoutError';
+  }
+}
+
+/**
+ * Bound a step's I/O so no single step runs unbounded. This is the resume-safety pair to the run
+ * lease: with `stepTimeoutMs` < the resume worker's `staleMs`, a step always settles (or fails) before
+ * a stalled run could be claimed and re-driven — closing the last at-least-once window (a still-running
+ * step being re-executed). Best-effort: the underlying turn isn't force-killed, but the run stops
+ * waiting and records the step `failed`, so it can take its fallback deterministically.
+ *
+ * NOTE: this Promise.race timeout shape is duplicated in toolPluginRuntime / dynamicAgentRuntime /
+ * previewRuntime / migrationRunner. Follow-up: extract one shared `withTimeout` util. This copy adds
+ * the typed StepTimeoutError + the `ms<=0` disable guard the others lack.
+ */
+async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  if (!(ms > 0)) return p;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    // Deliberately NOT unref'd: this timer MUST fire to enforce the budget (unlike the workers'
+    // long-lived poll timers). It is always cleared in `finally` once the race settles.
+    timer = setTimeout(() => reject(new StepTimeoutError(label, ms)), ms);
+  });
+  try {
+    return await Promise.race([p, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export interface RealStepEffectsDeps {
   /** the multi-orchestrator registry — resolves an Agent (orchestrator) by slug. */
   getRegistry: () => OrchestratorRegistry | undefined;
   /** invoke a deterministic-action / connector tool by id (dynamicAgentRuntime). */
   invokeAction?: (toolId: string, input: unknown) => Promise<string | undefined>;
+  /** Per-step hard budget in ms. MUST be < the resume worker's staleMs (default 900_000). 0 disables. */
+  stepTimeoutMs?: number;
   log?: (msg: string) => void;
 }
+
+// 10 min — generous for an agent turn, and strictly < the resume worker's DEFAULT_RESUME_STALE_MS
+// (15 min). That ordering is the resume-safety invariant; a test asserts it so a tweak can't break it.
+export const DEFAULT_STEP_TIMEOUT_MS = 600_000;
 
 /**
  * Real step execution — no stubs.
@@ -46,7 +86,11 @@ export interface RealStepEffectsDeps {
  * runs a full tool/sub-agent/memory loop) from a sub-agent or a bare model call.
  */
 export class RealStepEffects implements StepEffects {
-  constructor(private readonly deps: RealStepEffectsDeps) {}
+  private readonly stepTimeoutMs: number;
+
+  constructor(private readonly deps: RealStepEffectsDeps) {
+    this.stepTimeoutMs = deps.stepTimeoutMs ?? DEFAULT_STEP_TIMEOUT_MS;
+  }
 
   async runAgentStep(step: Step, context: JsonObject, meta: StepMeta): Promise<StepExecution> {
     const slug = step.agentId;
@@ -66,10 +110,14 @@ export class RealStepEffects implements StepEffects {
       : `Conductor workflow step "${step.id}". Run your configured task. Run context: ${JSON.stringify(context)}`;
 
     this.deps.log?.(`[conductor] agent step '${step.id}' → Agent '${slug}' (run ${meta.runId})`);
-    const answer = await entry.built.bundle.agent.chat({
-      userMessage,
-      sessionScope: `conductor:${meta.runId}:${step.id}`,
-    });
+    const answer = await withTimeout(
+      entry.built.bundle.agent.chat({
+        userMessage,
+        sessionScope: `conductor:${meta.runId}:${step.id}`,
+      }),
+      this.stepTimeoutMs,
+      `agent step '${step.id}'`,
+    );
 
     return {
       result: { text: answer.text },
@@ -84,7 +132,7 @@ export class RealStepEffects implements StepEffects {
 
     const input = step.input ?? {};
     this.deps.log?.(`[conductor] action step '${step.id}' → tool '${toolId}' (run ${meta.runId})`);
-    const out = await this.deps.invokeAction(toolId, input);
+    const out = await withTimeout(this.deps.invokeAction(toolId, input), this.stepTimeoutMs, `action step '${step.id}'`);
     if (out === undefined) {
       throw new Error(`action '${toolId}' is not registered or returned nothing`);
     }

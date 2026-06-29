@@ -3,6 +3,10 @@ import { randomUUID } from 'node:crypto';
 import type { ConductorRunStore } from './runStore.js';
 import type { ConductorRunExecutor } from './runExecutor.js';
 
+// Resume-safety invariant: this MUST stay strictly greater than RealStepEffects' DEFAULT_STEP_TIMEOUT_MS
+// so a live step always settles before its run could be claimed as stale. A test asserts the ordering.
+export const DEFAULT_RESUME_STALE_MS = 900_000; // 15 min
+
 /**
  * Re-drives runs left 'running' by a process restart (US2 / SC-002). A run is driven
  * in-process by the executor; if the process dies mid-drive, nothing re-drives it — the
@@ -17,9 +21,9 @@ import type { ConductorRunExecutor } from './runExecutor.js';
  *      is otherwise unbounded), so an actively-driven run is never mistaken for orphaned.
  *   2. Lease fencing. The claim stamps a fresh per-tick lease onto `claimed_by`; the executor fences
  *      every step write on that token. If a stalled live drive is nonetheless claimed, its next write
- *      throws RunLeaseLostError and it stops — the new owner drives on. (The one residual at-least-once
- *      window is a single step's *side effect* re-running; eliminating it needs a per-step hard timeout
- *      < staleMs in RealStepEffects — a documented follow-up.)
+ *      throws RunLeaseLostError and it stops — the new owner drives on. RealStepEffects additionally
+ *      enforces a per-step hard timeout (`stepTimeoutMs`) strictly < `staleMs`, so a step always settles
+ *      (or fails) before its run could be claimed — closing the last single-step at-least-once window.
  *
  * graphPool-gated by the caller, like the await worker.
  */
@@ -63,7 +67,7 @@ export class ConductorRunResumeWorker {
     if (this.ticking) return; // never let two ticks overlap
     this.ticking = true;
     try {
-      const staleMs = this.deps.staleMs ?? 900_000; // 15 min ≫ any single orchestrator turn
+      const staleMs = this.deps.staleMs ?? DEFAULT_RESUME_STALE_MS; // 15 min ≫ any single orchestrator turn
       const maxConcurrent = this.deps.maxConcurrent ?? 20;
       const slots = maxConcurrent - this.inFlight.size;
       if (slots <= 0) return; // already saturated; let in-flight drives finish first

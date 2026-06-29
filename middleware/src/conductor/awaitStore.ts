@@ -121,12 +121,24 @@ export class ConductorAwaitStore {
   }
 
   async recordResponse(awaitId: string, responderId: string, response: JsonValue): Promise<void> {
+    // Only record while the await is still open. A response arriving after close (e.g. a double-click
+    // once the run already resumed) must not rewrite the audit row the decision was based on.
     await this.pool.query(
       `INSERT INTO conductor_await_responses (await_id, responder_id, response)
-       VALUES ($1, $2, $3::jsonb)
+       SELECT $1, $2, $3::jsonb
+        WHERE EXISTS (SELECT 1 FROM conductor_awaits WHERE id = $1 AND status = 'waiting')
        ON CONFLICT (await_id, responder_id) DO UPDATE SET response = EXCLUDED.response, responded_at = now()`,
       [awaitId, responderId, JSON.stringify(response)],
     );
+  }
+
+  /** Every response recorded for an await (for quorum='all' completeness + the aggregate result). */
+  async listResponses(awaitId: string): Promise<Array<{ responderId: string; response: JsonValue }>> {
+    const r = await this.pool.query<{ responder_id: string; response: JsonValue }>(
+      `SELECT responder_id, response FROM conductor_await_responses WHERE await_id = $1 ORDER BY responded_at ASC`,
+      [awaitId],
+    );
+    return r.rows.map((row) => ({ responderId: row.responder_id, response: row.response }));
   }
 
   /** Atomic transition waiting → resolved/timed_out (FR-018). Returns true iff this call won. */

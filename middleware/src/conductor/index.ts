@@ -82,6 +82,7 @@ export async function wireConductor(deps: {
       ...(deps.invokeAction ? { invokeAction: deps.invokeAction } : {}),
       log,
     }),
+    resolveRoleHolders: (key) => roleStore.resolve(key), // quorum='all' required-responder resolution
     log,
   });
 

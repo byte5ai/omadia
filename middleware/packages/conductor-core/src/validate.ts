@@ -159,6 +159,16 @@ export function validate(graph: WorkflowGraph, knownRefs?: KnownRefs): Validatio
       errors.push({ code: 'deadline_without_fallback', message: `human step '${s.id}' has a deadline but no fallbackTransitionId`, nodeIds: [s.id] });
     }
 
+    // A quorum='all' human step must escalate if a required holder never responds — otherwise the run
+    // hangs forever. Require both a deadline and a fallback so the timeout path (expireAwait) can fire.
+    if (s.kind === 'human' && s.human?.quorum === 'all' && (s.human.deadline == null || s.fallbackTransitionId === undefined)) {
+      errors.push({
+        code: 'quorum_all_requires_deadline_fallback',
+        message: `human step '${s.id}' uses quorum 'all' and must declare both a deadline and a fallbackTransitionId (else a non-responding holder hangs the run)`,
+        nodeIds: [s.id],
+      });
+    }
+
     if (knownRefs?.agentIds && s.kind === 'agent' && s.agentId && !knownRefs.agentIds.includes(s.agentId)) {
       errors.push({ code: 'unknown_agent_ref', message: `step '${s.id}' references unknown agent '${s.agentId}'`, nodeIds: [s.id] });
     }

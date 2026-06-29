@@ -81,6 +81,30 @@ describe('validate', () => {
     expect(codes(g)).toContain('deadline_without_fallback');
   });
 
+  it("rejects a quorum='all' human step without a deadline + fallback (would hang forever)", () => {
+    const g: WorkflowGraph = {
+      entryStepId: 's1',
+      steps: [
+        { id: 's1', kind: 'human', human: { principal: { kind: 'role', ref: 'r' }, channel: 'teams', message: 'm', quorum: 'all' } },
+        { id: 's2', kind: 'action', actionId: 'x' },
+      ],
+      transitions: [{ id: 't1', source: 's1', target: 's2', guard: { op: 'always' } }],
+    };
+    expect(codes(g)).toContain('quorum_all_requires_deadline_fallback');
+  });
+
+  it("accepts a quorum='all' human step that has both a deadline and a fallback", () => {
+    const g: WorkflowGraph = {
+      entryStepId: 's1',
+      steps: [
+        { id: 's1', kind: 'human', fallbackTransitionId: 't1', human: { principal: { kind: 'role', ref: 'r' }, channel: 'teams', message: 'm', quorum: 'all', deadline: 'PT6H' } },
+        { id: 's2', kind: 'action', actionId: 'x' },
+      ],
+      transitions: [{ id: 't1', source: 's1', target: 's2', guard: { op: 'always' } }],
+    };
+    expect(codes(g)).not.toContain('quorum_all_requires_deadline_fallback');
+  });
+
   it('flags a fallback that does not originate from its step', () => {
     const g: WorkflowGraph = {
       entryStepId: 's1',

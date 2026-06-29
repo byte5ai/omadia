@@ -35,6 +35,21 @@ function asObject(v: JsonValue | undefined): JsonObject {
   return typeof v === 'object' && v !== null && !Array.isArray(v) ? v : {};
 }
 
+/**
+ * A human response counts as approval unless it is explicitly `{ approved: false }` (the reject
+ * button's payload). Fail-open by design: an absent/garbage/missing flag counts as approval, and
+ * only a strict boolean `false` is a reject (the inbox sends a typed boolean). A guard step's
+ * postcondition can still inspect the raw `responses` map for finer policy.
+ */
+function isApproved(response: JsonValue): boolean {
+  return !(
+    typeof response === 'object' &&
+    response !== null &&
+    !Array.isArray(response) &&
+    (response as JsonObject).approved === false
+  );
+}
+
 /** Parse an ISO-8601 duration (PT6H, PT24H, PT30M, P1D, P1DT2H) to milliseconds, or null. */
 export function parseIsoDurationMs(iso: string | null | undefined): number | null {
   if (!iso) return null;
@@ -56,6 +71,9 @@ export class ConductorRunExecutor {
   private readonly runStore: ConductorRunStore;
   private readonly awaitStore: ConductorAwaitStore;
   private readonly effects: StepEffects;
+  /** Late-bound role→holders resolver — the required responders for a quorum='all' role await.
+   *  Required (not optional) so a role-based 'all' can never silently degrade to 'any' when unwired. */
+  private readonly resolveRoleHolders: (roleKey: string) => Promise<string[]>;
   private readonly log: (msg: string) => void;
 
   constructor(deps: {
@@ -63,12 +81,14 @@ export class ConductorRunExecutor {
     runStore: ConductorRunStore;
     awaitStore: ConductorAwaitStore;
     effects: StepEffects;
+    resolveRoleHolders: (roleKey: string) => Promise<string[]>;
     log?: (msg: string) => void;
   }) {
     this.workflowStore = deps.workflowStore;
     this.runStore = deps.runStore;
     this.awaitStore = deps.awaitStore;
     this.effects = deps.effects;
+    this.resolveRoleHolders = deps.resolveRoleHolders;
     this.log = deps.log ?? (() => undefined);
   }
 
@@ -142,8 +162,19 @@ export class ConductorRunExecutor {
 
         // Human step → durable await + park; resolveAwait/expireAwait resume the run.
         if (step.kind === 'human') {
-          await this.openHumanAwait(runId, step, context, lease);
-          return (await this.runStore.get(runId)) ?? (await this.requireRun(runId));
+          const parked = await this.openHumanAwait(runId, step, context, lease);
+          if (parked) return (await this.runStore.get(runId)) ?? (await this.requireRun(runId));
+          // No reachable holder → don't hang. Take the step's in-graph fallback (FR-024), else fail.
+          const fb = step.fallbackTransitionId ? graph.transitions.find((tr) => tr.id === step.fallbackTransitionId) : undefined;
+          await this.runStore.recordStepAndAdvance({
+            runId, seq, stepId, actor: { kind: 'human', noHolder: true },
+            postconditionOutcome: 'unmet', transitionTaken: fb?.id ?? null, nextStepId: fb?.target ?? null,
+            context, status: fb ? 'running' : 'failed', claimedBy: lease,
+          });
+          if (!fb) break;
+          currentStepId = fb.target;
+          seq += 1;
+          continue;
         }
 
         let exec;
@@ -207,16 +238,46 @@ export class ConductorRunExecutor {
     const aw = await this.awaitStore.get(awaitId);
     if (!aw || aw.status !== 'waiting') throw new AwaitNotPendingError(`await '${awaitId}' is not pending`);
     await this.awaitStore.recordResponse(awaitId, responderId, response);
+
+    // Quorum: 'any' resumes on the first response (feeding that response on). 'all' records each
+    // response and resumes only once EVERY current holder has answered — holders resolved live, so a
+    // baton move correctly changes who is required. The aggregate is fed to the engine for 'all'.
+    let stepResult: JsonValue = response;
+    if (aw.quorum === 'all') {
+      const required = aw.principalKind === 'role'
+        ? await this.resolveRoleHolders(aw.principalRef)
+        : [aw.principalRef];
+      const requiredSet = new Set(required);
+      const responses = await this.awaitStore.listResponses(awaitId);
+      const respondedRequired = new Set(responses.map((r) => r.responderId).filter((id) => requiredSet.has(id)));
+      // Empty `required` (a role with no current holders, e.g. all batons moved away) is NOT
+      // vacuously complete — that would let one stray response resolve a no-holder await. Such a
+      // run stays waiting until its deadline fires the fallback (FR-024).
+      const complete = required.length > 0 && required.every((h) => respondedRequired.has(h));
+      if (!complete) {
+        this.log(`[conductor] await ${awaitId} quorum 'all': ${respondedRequired.size}/${required.length} required responded`);
+        return (await this.runStore.get(aw.runId)) ?? (await this.requireRun(aw.runId));
+      }
+      // Aggregate over CURRENT required holders only — a holder who lost the baton (or whose stale
+      // answer predates a baton move) must not skew `approved` or appear in `responses` (review C#1).
+      const counted = responses.filter((r) => requiredSet.has(r.responderId));
+      stepResult = {
+        quorum: 'all',
+        approved: counted.every((r) => isApproved(r.response)),
+        responses: Object.fromEntries(counted.map((r) => [r.responderId, r.response])),
+      };
+    }
+
     const won = await this.awaitStore.close(awaitId, 'resolved');
     if (!won) throw new AwaitNotPendingError(`await '${awaitId}' was already resolved`);
 
     const { graph, run } = await this.loadRunGraph(aw.runId);
     const lease = randomUUID();
     await this.runStore.acquireLease(aw.runId, lease); // take over the parked run's lease
-    const decision = nextStep(graph, aw.stepId, response, run.context);
-    const context = this.accumulate(run.context, aw.stepId, response);
+    const decision = nextStep(graph, aw.stepId, stepResult, run.context);
+    const context = this.accumulate(run.context, aw.stepId, stepResult);
     const seq = (await this.runStore.stepsForRun(aw.runId)).length;
-    const next = await this.applyDecision(aw.runId, seq, aw.stepId, { kind: 'human', resolvedUserId: responderId }, decision, context, lease);
+    const next = await this.applyDecision(aw.runId, seq, aw.stepId, { kind: 'human', quorum: aw.quorum, resolvedUserId: responderId }, decision, context, lease);
     if (next) return this.driveFrom(aw.runId, graph, next, context, lease);
     return (await this.runStore.get(aw.runId)) ?? run;
   }
@@ -315,8 +376,18 @@ export class ConductorRunExecutor {
 
   // ── helpers ────────────────────────────────────────────────────────────────
 
-  private async openHumanAwait(runId: string, step: Step, context: JsonObject, lease: string): Promise<void> {
+  /** Opens a durable await + parks the run. Returns false (without parking) when a role principal has
+   *  NO current holder — nobody could answer, so the caller takes the step's fallback instead of
+   *  hanging the run forever (FR-024). */
+  private async openHumanAwait(runId: string, step: Step, context: JsonObject, lease: string): Promise<boolean> {
     const h = step.human;
+    if (h?.principal.kind === 'role') {
+      const holders = await this.resolveRoleHolders(h.principal.ref);
+      if (holders.length === 0) {
+        this.log(`[conductor] run ${runId} human step '${step.id}' role '${h.principal.ref}' has no current holder`);
+        return false;
+      }
+    }
     const deadlineMs = parseIsoDurationMs(h?.deadline ?? null);
     const reminderMs = parseIsoDurationMs(h?.reminderInterval ?? null);
     // create() is idempotent (one open await per run+step), so a crash-and-resume between
@@ -335,6 +406,7 @@ export class ConductorRunExecutor {
     });
     await this.runStore.park(runId, step.id, context, lease);
     this.log(`[conductor] run ${runId} awaiting human at step '${step.id}' (${h?.principal.kind}:${h?.principal.ref})`);
+    return true;
   }
 
   private accumulate(context: JsonObject, stepId: string, result: JsonValue): JsonObject {

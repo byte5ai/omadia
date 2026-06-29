@@ -190,6 +190,7 @@ export type ValidationCode =
   | 'unreachable_step'
   | 'unguarded_cycle'
   | 'deadline_without_fallback'
+  | 'quorum_all_requires_deadline_fallback'
   | 'agent_step_missing_agent'
   | 'action_step_missing_action'
   | 'human_step_missing_config'
