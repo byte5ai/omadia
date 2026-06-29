@@ -3,6 +3,7 @@ import type { LocalSubAgentTool } from '@omadia/plugin-api';
 
 import { createCliSubAgent } from '../cliSubAgent.js';
 import { LocalSubAgent } from '../localSubAgent.js';
+import { resolveModelIdForProvider } from './agentRuntime.js';
 import type {
   McpManager} from '../mcp/mcpClient.js';
 import {
@@ -105,7 +106,7 @@ export function buildSubAgentDomainTools(
       : new LocalSubAgent({
           name: sub.name,
           provider: deps.provider,
-          model: sub.model ?? deps.defaultModel,
+          model: resolveSubAgentModel(sub.model, deps),
           maxTokens: sub.maxTokens ?? deps.defaultMaxTokens,
           maxIterations: sub.maxIterations ?? deps.defaultMaxIterations,
           systemPrompt,
@@ -122,6 +123,25 @@ export function buildSubAgentDomainTools(
     );
   }
   return tools;
+}
+
+/**
+ * Resolve a sub-agent's persisted `model` ref to the active provider's concrete
+ * bare `modelId` (issue #296 MAJOR 3). `LocalSubAgent` sends `model` RAW to the
+ * provider adapter, exactly like the orchestrator main loop — so a picker-stored
+ * provider-qualified id (`anthropic:claude-opus-4-8`) or alias (`opus`) would
+ * 404 every delegated turn. Shares the resolver with the orchestrator path
+ * (`resolveModelIdForProvider`); an empty / unknown / cross-provider ref
+ * degrades to the parent's default model instead of 404ing. The CLI sub-agent
+ * path keeps its own alias scheme (`cliModelAlias`) and is not routed here.
+ */
+export function resolveSubAgentModel(
+  ref: string | null | undefined,
+  deps: Pick<SubAgentToolDeps, 'provider' | 'defaultModel'>,
+): string {
+  return (
+    resolveModelIdForProvider(ref, deps.provider?.id) ?? deps.defaultModel
+  );
 }
 
 function resolveSubAgentTools(

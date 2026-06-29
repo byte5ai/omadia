@@ -1,6 +1,6 @@
 import type { Pool } from 'pg';
 
-import { ConfigValidationError } from './configStore.js';
+import { ConfigValidationError, validateModelRef } from './configStore.js';
 
 /**
  * Agent Builder graph store (P0).
@@ -316,6 +316,12 @@ export class AgentGraphStore {
   }
 
   async createSubAgent(input: SubAgentInput): Promise<SubAgentRow> {
+    // Issue #296 follow-up — guard sub-agent model writes against unknown
+    // ids the same way `setModelRouting` guards the orchestrator model.
+    // Empty / null skips validation (= inherit parent agent / platform).
+    if (input.model != null && input.model.trim() !== '') {
+      validateModelRef('subAgent.model', input.model.trim());
+    }
     try {
       const { rows } = await this.pool.query<SubAgentDbRow>(
         `INSERT INTO agent_subagents
@@ -347,6 +353,12 @@ export class AgentGraphStore {
   }
 
   async updateSubAgent(id: string, patch: SubAgentPatch): Promise<SubAgentRow> {
+    // Issue #296 follow-up — see `createSubAgent` rationale. `null` is the
+    // wire form for "clear" (no validation); empty-string is treated the
+    // same so the UI dropdown's "(default)" choice round-trips cleanly.
+    if (patch.model != null && patch.model.trim() !== '') {
+      validateModelRef('subAgent.model', patch.model.trim());
+    }
     const { rows } = await this.pool.query<SubAgentDbRow>(
       `UPDATE agent_subagents SET
          name                   = COALESCE($2, name),

@@ -10,7 +10,11 @@ import type {
   SubAgentRow,
   ToolGrantRow,
 } from './agentGraphStore.js';
-import { resolveAgentModelRouting } from './agentRuntime.js';
+import {
+  DEFAULT_ORCHESTRATOR_MODEL,
+  resolveAgentModelRouting,
+  resolveModelIdForProvider,
+} from './agentRuntime.js';
 import type {
   AgentPluginRow,
   AgentRow,
@@ -160,18 +164,56 @@ export function buildForAgent(
   // platform default: `main` overrides the model, `triage` mode adds per-turn
   // Haiku→Sonnet/Opus routing. Falls back to the platform runtime when unset.
   const routing = resolveAgentModelRouting(agent.modelRouting);
+
+  // The orchestrator hands `model` to a SINGLE concrete provider adapter, which
+  // sends it RAW to the wire API (no ref→modelId resolution in the send path).
+  // The Admin picker stores a provider-qualified id / alias, so resolve the
+  // per-Agent overlay to the active provider's concrete `modelId` HERE — see
+  // `resolveModelIdForProvider` (issue #296). The CLI provider owns its own
+  // alias scheme so its refs pass through untouched; the platform default
+  // (`runtime.model`, operator-set env) is left as-is — it works raw today and
+  // resolving it would change established behaviour.
+  const activeProvider = deps.provider?.id;
+  const resolveOverlay = (ref: string | undefined): string | undefined =>
+    activeProvider === 'claude-cli'
+      ? ref?.trim() || undefined
+      : resolveModelIdForProvider(ref, activeProvider);
+
+  // Per-instance model resolution (issue #296 AC#2), three tiers:
+  //   1. the Agent's `model_routing.main` (operator's per-Agent choice)
+  //   2. the global seeded platform default `runtime.model`
+  //      (= `orchestrator_model` install config = `ORCHESTRATOR_MODEL` env)
+  //   3. `DEFAULT_ORCHESTRATOR_MODEL` — guards against an empty / whitespace
+  //      platform default so the turn loop never gets an empty model id.
+  const model =
+    resolveOverlay(routing.model) ||
+    runtime.model?.trim() ||
+    DEFAULT_ORCHESTRATOR_MODEL;
+
+  // Resolve the per-turn routing sub-models the same way. Any sub-model that
+  // does not resolve to the active provider falls back to the resolved `model`
+  // so every id the turn loop sends is a valid same-provider `modelId`.
+  const overlayRouting = routing.modelRouting
+    ? {
+        classifierModel:
+          resolveOverlay(routing.modelRouting.classifierModel) ?? model,
+        simpleModel: resolveOverlay(routing.modelRouting.simpleModel) ?? model,
+        complexModel: resolveOverlay(routing.modelRouting.complexModel) ?? model,
+      }
+    : undefined;
+
   return buildOrchestratorForAgent(
     {
       agentId: agent.slug,
-      model: routing.model ?? runtime.model,
+      model,
       maxTokens: runtime.maxTokens,
       maxToolIterations: runtime.maxToolIterations,
       // Per-turn model routing: prefer the agent's own persisted routing
       // (Agent Builder P5); otherwise fall back to the platform default
       // `runtime.modelRouting` so registry-managed orchestrators still emit
       // `turn_routing` and the UI renders the Haiku-triage badge (origin/main).
-      ...((routing.modelRouting ?? runtime.modelRouting)
-        ? { modelRouting: routing.modelRouting ?? runtime.modelRouting }
+      ...((overlayRouting ?? runtime.modelRouting)
+        ? { modelRouting: overlayRouting ?? runtime.modelRouting }
         : {}),
       ...(runtime.loopRepeatSoft !== undefined
         ? { loopRepeatSoft: runtime.loopRepeatSoft }

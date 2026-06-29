@@ -295,6 +295,7 @@ export function createBuilderRouter(deps: BuilderRouterDeps): Router {
         .filter((m) => connected === null || connected.has(m.provider))
         .map((m) => ({
           id: m.id,
+          model_id: m.modelId,
           label: m.label,
           provider: m.provider,
           model_class: m.modelClass,

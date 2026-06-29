@@ -87,7 +87,7 @@ export function createAgentBuilderRouter(
           l.graph.listSchedulesForAgent(agent.id),
         ]);
       res.json(
-        assembleGraph(agent, bindings, subAgents, skills, grants, servers, schedules),
+        assembleGraph(agent, bindings, subAgents, skills, grants, servers, schedules, l.registry),
       );
     } catch (err) {
       fail(res, err);
@@ -193,7 +193,7 @@ export function createAgentBuilderRouter(
         const routing = (req.body ?? {}).modelRouting ?? null;
         const updated = await l.config.setModelRouting(agent.id, routing);
         await reload(l);
-        res.json(agentNode(updated));
+        res.json(agentNode(updated, l.registry));
       } catch (err) {
         fail(res, err);
       }
@@ -475,6 +475,7 @@ function assembleGraph(
   grants: readonly ToolGrantRow[],
   servers: readonly McpServerRow[],
   schedules: readonly ScheduleRow[],
+  registry: OrchestratorRegistry | undefined,
 ) {
   const mySubs = subAgents.filter((s) => s.parentAgentId === agent.id);
   const subIds = new Set(mySubs.map((s) => s.id));
@@ -527,7 +528,7 @@ function assembleGraph(
   }
 
   return {
-    agent: agentNode(agent),
+    agent: agentNode(agent, registry),
     channels: bindings.map((b) => ({
       channelType: b.channelType,
       channelKey: b.channelKey,
@@ -544,7 +545,18 @@ function assembleGraph(
 
 // ── node mappers ─────────────────────────────────────────────────────────────
 
-function agentNode(a: AgentRow) {
+/**
+ * Map an `AgentRow` to the canvas `agent` node payload. Exported for unit
+ * tests so the `effectiveModel` surface stays covered without spinning up
+ * the express app.
+ */
+export function agentNode(a: AgentRow, registry: OrchestratorRegistry | undefined) {
+  // Issue #296 acceptance #4 — surface the orchestrator model the registry
+  // actually resolved for this Agent (per-Agent overlay applied to the
+  // platform default). Absent when the registry has not yet built the Agent
+  // (in-memory bootstrap / Agent disabled); UI then shows just the persisted
+  // `modelRouting.main` as a hint.
+  const built = registry?.get(a.slug)?.built;
   return {
     id: a.id,
     slug: a.slug,
@@ -553,6 +565,7 @@ function agentNode(a: AgentRow) {
     privacyProfile: a.privacyProfile,
     status: a.status,
     modelRouting: (a.modelRouting as Record<string, unknown> | null) ?? null,
+    effectiveModel: built?.effectiveModel ?? null,
     position: a.canvasPosition ?? null,
   };
 }
