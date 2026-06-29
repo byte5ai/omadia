@@ -4,6 +4,18 @@ import type { JsonObject, JsonValue } from '@omadia/conductor-core';
 export type RunStatus = 'running' | 'waiting' | 'completed' | 'failed';
 export type TriggerKind = 'manual' | 'cron' | 'channel' | 'agent' | 'webhook' | 'workflow' | 'event';
 
+/**
+ * Thrown when a step/park write is fenced out because the run's lease (`claimed_by`) no
+ * longer matches the driver's token — i.e. a resume worker has taken the run over. The
+ * superseded driver catches this and stops, so a run is never driven by two owners at once.
+ */
+export class RunLeaseLostError extends Error {
+  constructor(runId: string) {
+    super(`run '${runId}' lease lost (claimed by another worker)`);
+    this.name = 'RunLeaseLostError';
+  }
+}
+
 export interface ConductorRun {
   id: string;
   workflowVersionId: string;
@@ -97,11 +109,15 @@ export class ConductorRunStore {
     triggerKind: TriggerKind;
     triggerSource?: JsonValue | null;
     isDryRun?: boolean;
+    /** Lease token of the in-process driver — fences this run's step writes (see RunLeaseLostError). */
+    claimedBy: string;
   }): Promise<ConductorRun> {
     const r = await this.pool.query<RunRow>(
+      // claimed_by/claimed_at set now: this run is driven in-process immediately, so the
+      // resume worker must neither treat it as orphaned nor steal it during its first step.
       `INSERT INTO conductor_runs
-         (workflow_version_id, status, current_step_id, context, trigger_kind, trigger_source, is_dry_run)
-       VALUES ($1, 'running', $2, $3::jsonb, $4, $5::jsonb, $6)
+         (workflow_version_id, status, current_step_id, context, trigger_kind, trigger_source, is_dry_run, claimed_by, claimed_at)
+       VALUES ($1, 'running', $2, $3::jsonb, $4, $5::jsonb, $6, $7, now())
        RETURNING ${RUN_COLS}`,
       [
         input.workflowVersionId,
@@ -110,9 +126,22 @@ export class ConductorRunStore {
         input.triggerKind,
         input.triggerSource === undefined ? null : JSON.stringify(input.triggerSource),
         input.isDryRun ?? false,
+        input.claimedBy,
       ],
     );
     return toRun(r.rows[0]!);
+  }
+
+  /**
+   * Take over a run's lease (used by the human-response / deadline paths, which resume a
+   * 'waiting' run that no driver currently owns). Unconditional: the resuming caller becomes
+   * the authoritative owner; its subsequent step writes are then fenced on this token.
+   */
+  async acquireLease(runId: string, claimedBy: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE conductor_runs SET claimed_by = $2, claimed_at = now() WHERE id = $1`,
+      [runId, claimedBy],
+    );
   }
 
   async get(runId: string): Promise<ConductorRun | null> {
@@ -141,6 +170,8 @@ export class ConductorRunStore {
     nextStepId: string | null;
     context: JsonObject;
     status: RunStatus;
+    /** Driver's lease token — the run UPDATE is fenced on it (throws RunLeaseLostError on mismatch). */
+    claimedBy: string;
   }): Promise<void> {
     const client = await this.pool.connect();
     try {
@@ -159,13 +190,19 @@ export class ConductorRunStore {
         ],
       );
       const ended = input.status === 'completed' || input.status === 'failed';
-      await client.query(
+      const upd = await client.query(
+        // Fence on claimed_by: if a resume worker has taken this run over, the lease no longer
+        // matches and 0 rows update — we roll back (the step row too) and signal RunLeaseLostError.
+        // While the run stays 'running', refresh claimed_at — the per-step heartbeat the resume
+        // worker uses to tell a live drive from an orphaned one.
         `UPDATE conductor_runs
             SET current_step_id = $2, context = $3::jsonb, status = $4,
-                ended_at = CASE WHEN $5 THEN now() ELSE ended_at END
-          WHERE id = $1`,
-        [input.runId, input.nextStepId, JSON.stringify(input.context), input.status, ended],
+                ended_at = CASE WHEN $5 THEN now() ELSE ended_at END,
+                claimed_at = CASE WHEN $4 = 'running' THEN now() ELSE claimed_at END
+          WHERE id = $1 AND claimed_by = $6`,
+        [input.runId, input.nextStepId, JSON.stringify(input.context), input.status, ended, input.claimedBy],
       );
+      if ((upd.rowCount ?? 0) === 0) throw new RunLeaseLostError(input.runId);
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK');
@@ -176,11 +213,40 @@ export class ConductorRunStore {
   }
 
   /** Park a run as `waiting` at a step (a durable human await is open) without a step record. */
-  async park(runId: string, stepId: string, context: JsonObject): Promise<void> {
-    await this.pool.query(
-      `UPDATE conductor_runs SET status = 'waiting', current_step_id = $2, context = $3::jsonb WHERE id = $1`,
-      [runId, stepId, JSON.stringify(context)],
+  async park(runId: string, stepId: string, context: JsonObject, claimedBy: string): Promise<void> {
+    const r = await this.pool.query(
+      `UPDATE conductor_runs SET status = 'waiting', current_step_id = $2, context = $3::jsonb
+        WHERE id = $1 AND claimed_by = $4`,
+      [runId, stepId, JSON.stringify(context), claimedBy],
     );
+    if ((r.rowCount ?? 0) === 0) throw new RunLeaseLostError(runId);
+  }
+
+  /**
+   * Atomically claim up to `limit` 'running' runs whose heartbeat (`claimed_at`) is
+   * stale — i.e. older than `staleMs`, or never set (pre-migration rows). These are
+   * runs orphaned by a process restart. `FOR UPDATE SKIP LOCKED` + the conditional
+   * UPDATE make the claim exclusive, so concurrent workers/replicas never both grab
+   * the same run. Dry-run rows are never resumed (they have no durable effects).
+   */
+  async claimResumableRuns(claimerId: string, staleMs: number, limit: number): Promise<ConductorRun[]> {
+    const safe = Math.min(Math.max(1, Math.trunc(limit)), 200);
+    const r = await this.pool.query<RunRow>(
+      `UPDATE conductor_runs
+          SET claimed_by = $1, claimed_at = now()
+        WHERE id IN (
+          SELECT id FROM conductor_runs
+           WHERE status = 'running'
+             AND is_dry_run = false
+             AND (claimed_at IS NULL OR claimed_at < now() - (interval '1 millisecond' * $2))
+           ORDER BY started_at ASC
+           LIMIT $3
+           FOR UPDATE SKIP LOCKED
+        )
+        RETURNING ${RUN_COLS}`,
+      [claimerId, staleMs, safe],
+    );
+    return r.rows.map(toRun);
   }
 
   async stepsForRun(runId: string): Promise<ConductorRunStep[]> {

@@ -72,18 +72,27 @@ export class ConductorAwaitStore {
     deadlineAt: Date | null;
     fallbackTransitionId: string | null;
   }): Promise<ConductorAwait> {
+    // Idempotent against a crash-and-resume: if an open await already exists for this
+    // (run, step), the partial unique index makes the insert a no-op and we return the
+    // existing row — never a duplicate await (and so never a duplicate notification).
     const r = await this.pool.query<AwaitRow>(
       `INSERT INTO conductor_awaits
          (run_id, step_id, principal_kind, principal_ref, channel_type, message, quorum,
           reminder_interval_ms, deadline_at, fallback_transition_id)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       ON CONFLICT (run_id, step_id) WHERE status = 'waiting' DO NOTHING
        RETURNING ${COLS}`,
       [
         input.runId, input.stepId, input.principalKind, input.principalRef, input.channelType,
         input.message, input.quorum, input.reminderIntervalMs, input.deadlineAt, input.fallbackTransitionId,
       ],
     );
-    return toAwait(r.rows[0]!);
+    if (r.rows[0]) return toAwait(r.rows[0]);
+    const existing = await this.pool.query<AwaitRow>(
+      `SELECT ${COLS} FROM conductor_awaits WHERE run_id = $1 AND step_id = $2 AND status = 'waiting' LIMIT 1`,
+      [input.runId, input.stepId],
+    );
+    return toAwait(existing.rows[0]!);
   }
 
   async get(awaitId: string): Promise<ConductorAwait | null> {

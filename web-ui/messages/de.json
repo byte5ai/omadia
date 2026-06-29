@@ -400,7 +400,17 @@
     "holdersLabel": "Holder",
     "assignButton": "Zuweisen",
     "createRoleButton": "Rolle anlegen",
-    "noHolder": "kein Holder"
+    "noHolder": "kein Holder",
+    "historyButton": "Verlauf",
+    "historyHeading": "Lauf-Verlauf",
+    "closeButton": "Schließen",
+    "backToRuns": "Zurück zu den Läufen",
+    "noRuns": "Noch keine Läufe.",
+    "noSteps": "Noch keine Schritte erfasst.",
+    "colActor": "Akteur",
+    "runTriggerLabel": "Auslöser",
+    "startedLabel": "Gestartet",
+    "endedLabel": "Beendet"
   },
   "operatorChannels": {
     "title": "Channels",

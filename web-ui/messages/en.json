@@ -400,7 +400,17 @@
     "holdersLabel": "Holders",
     "assignButton": "Assign",
     "createRoleButton": "Create role",
-    "noHolder": "no holder"
+    "noHolder": "no holder",
+    "historyButton": "History",
+    "historyHeading": "Run history",
+    "closeButton": "Close",
+    "backToRuns": "Back to runs",
+    "noRuns": "No runs yet.",
+    "noSteps": "No steps recorded yet.",
+    "colActor": "Actor",
+    "runTriggerLabel": "Trigger",
+    "startedLabel": "Started",
+    "endedLabel": "Ended"
   },
   "operatorChannels": {
     "title": "Channels",

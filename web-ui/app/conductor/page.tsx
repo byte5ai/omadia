@@ -23,6 +23,7 @@ import {
 } from '@/app/_lib/api';
 
 import { ConductorCanvas } from './_components/ConductorCanvas';
+import { ConductorRunHistory, ConductorRunTrace } from './_components/ConductorRunTrace';
 
 export default function ConductorPage(): React.JSX.Element {
   const t = useTranslations('conductor');
@@ -32,6 +33,7 @@ export default function ConductorPage(): React.JSX.Element {
   const [runningSlug, setRunningSlug] = useState<string | null>(null);
   const [runResult, setRunResult] = useState<ConductorRunResult | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
+  const [historySlug, setHistorySlug] = useState<string | null>(null);
   const [awaits, setAwaits] = useState<ConductorAwait[]>([]);
   const [awaitBusy, setAwaitBusy] = useState<string | null>(null);
   const [eventId, setEventId] = useState('github.pull_request.merged');
@@ -209,6 +211,12 @@ export default function ConductorPage(): React.JSX.Element {
                   </div>
                 </div>
                 <div className="flex shrink-0 gap-2">
+                  <Button
+                    variant="ghost"
+                    onClick={() => setHistorySlug((s) => (s === wf.slug ? null : wf.slug))}
+                  >
+                    {t('historyButton')}
+                  </Button>
                   <Button variant="secondary" disabled={runningSlug !== null} onClick={() => handleEdit(wf.slug)}>
                     {t('editButton')}
                   </Button>
@@ -228,14 +236,11 @@ export default function ConductorPage(): React.JSX.Element {
         {runError && <p className="mt-3 text-[14px] text-[color:var(--danger,#e5484d)]">{runError}</p>}
         {runResult && (
           <div className={`${card} mt-4`}>
-            <div className="mb-2 text-[14px] text-[color:var(--fg-strong)]">
-              {t('lastRunHeading')} · {t('statusLabel')}: <span className="font-mono">{runResult.run.status}</span>
-            </div>
-            <pre className="overflow-x-auto rounded-md bg-black/20 p-3 text-[12px] text-[color:var(--fg-strong)]">
-              {JSON.stringify(runResult.run.context, null, 2)}
-            </pre>
+            <div className="mb-3 text-[14px] font-semibold text-[color:var(--fg-strong)]">{t('lastRunHeading')}</div>
+            <ConductorRunTrace result={runResult} />
           </div>
         )}
+        {historySlug && <ConductorRunHistory slug={historySlug} onClose={() => setHistorySlug(null)} />}
       </section>
 
       {/* Roles & the baton (US6) */}

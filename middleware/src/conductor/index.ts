@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import type { Express, RequestHandler } from 'express';
 import type { Pool } from 'pg';
 import type { OrchestratorRegistry } from '@omadia/orchestrator';
@@ -9,6 +11,7 @@ import { ConductorAwaitStore } from './awaitStore.js';
 import { ConductorRoleStore } from './roleStore.js';
 import { ConductorRunExecutor } from './runExecutor.js';
 import { ConductorAwaitWorker } from './awaitWorker.js';
+import { ConductorRunResumeWorker } from './runResumeWorker.js';
 import { ConductorEventRouter } from './eventRouter.js';
 import { RealStepEffects } from './realStepEffects.js';
 import { createConductorRouter } from './routes.js';
@@ -20,6 +23,7 @@ export { ConductorAwaitStore } from './awaitStore.js';
 export { ConductorRoleStore } from './roleStore.js';
 export { ConductorRunExecutor } from './runExecutor.js';
 export { ConductorAwaitWorker } from './awaitWorker.js';
+export { ConductorRunResumeWorker } from './runResumeWorker.js';
 export { ConductorEventRouter } from './eventRouter.js';
 export { StubStepEffects } from './stepEffects.js';
 export { RealStepEffects } from './realStepEffects.js';
@@ -33,6 +37,7 @@ export interface ConductorWiring {
   roleStore: ConductorRoleStore;
   executor: ConductorRunExecutor;
   awaitWorker: ConductorAwaitWorker;
+  resumeWorker: ConductorRunResumeWorker;
   eventRouter: ConductorEventRouter;
 }
 
@@ -75,6 +80,10 @@ export async function wireConductor(deps: {
   const awaitWorker = new ConductorAwaitWorker({ awaitStore, executor, log });
   awaitWorker.start();
 
+  // Resume worker — re-drives runs orphaned by a process restart (US2 / SC-002).
+  const resumeWorker = new ConductorRunResumeWorker({ runStore, executor, claimerId: randomUUID(), log });
+  resumeWorker.start();
+
   // Event router — a domain event starts every subscribed workflow's run (US4).
   const eventRouter = new ConductorEventRouter({ workflowStore, executor, log });
 
@@ -84,5 +93,5 @@ export async function wireConductor(deps: {
     createConductorRouter({ workflowStore, runStore, awaitStore, roleStore, executor, eventRouter }),
   );
 
-  return { workflowStore, runStore, awaitStore, roleStore, executor, awaitWorker, eventRouter };
+  return { workflowStore, runStore, awaitStore, roleStore, executor, awaitWorker, resumeWorker, eventRouter };
 }

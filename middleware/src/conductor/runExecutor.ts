@@ -1,8 +1,11 @@
+import { randomUUID } from 'node:crypto';
+
 import { nextStep } from '@omadia/conductor-core';
 import type { JsonObject, JsonValue, Step, WorkflowGraph } from '@omadia/conductor-core';
 
 import type { ConductorWorkflowStore } from './workflowStore.js';
 import type { ConductorRun, ConductorRunStore, TriggerKind } from './runStore.js';
+import { RunLeaseLostError } from './runStore.js';
 import type { ConductorAwaitStore } from './awaitStore.js';
 import type { StepEffects } from './stepEffects.js';
 
@@ -87,6 +90,7 @@ export class ConductorRunExecutor {
     const version = await this.workflowStore.getVersion(wf.activeVersionId);
     if (!version) throw new WorkflowNotPublishedError(`active version of '${input.slug}' missing`);
 
+    const lease = randomUUID();
     const run = await this.runStore.create({
       workflowVersionId: version.id,
       entryStepId: version.graph.entryStepId,
@@ -94,62 +98,108 @@ export class ConductorRunExecutor {
       triggerKind: input.triggerKind ?? 'manual',
       triggerSource: input.triggerSource ?? null,
       isDryRun: input.isDryRun ?? false,
+      claimedBy: lease,
     });
 
     if (input.awaitCompletion) {
-      return this.driveFrom(run.id, version.graph, version.graph.entryStepId, input.payload);
+      return this.driveFrom(run.id, version.graph, version.graph.entryStepId, input.payload, lease);
     }
     const graph = version.graph;
-    void this.driveFrom(run.id, graph, graph.entryStepId, input.payload).catch((err) => {
+    void this.driveFrom(run.id, graph, graph.entryStepId, input.payload, lease).catch((err) => {
       this.log(`[conductor] run ${run.id} drive crashed: ${err instanceof Error ? err.message : String(err)}`);
     });
     return run;
   }
 
-  /** Drive a run forward from `startStepId`. Human steps open an await and park. */
-  private async driveFrom(runId: string, graph: WorkflowGraph, startStepId: string, startContext: JsonObject): Promise<ConductorRun> {
+  /**
+   * Drive a run forward from `startStepId`. Human steps open an await and park. Every step/park
+   * write is fenced on `lease` (the driver's claimed_by token): if a resume worker has taken the
+   * run over (because this drive stalled past staleMs), the next write throws RunLeaseLostError and
+   * this superseded driver stops — the new owner is now driving, so the run is never double-driven.
+   */
+  private async driveFrom(
+    runId: string,
+    graph: WorkflowGraph,
+    startStepId: string,
+    startContext: JsonObject,
+    lease: string,
+  ): Promise<ConductorRun> {
     let context: JsonObject = { ...startContext };
     let currentStepId: string | null = startStepId;
     let seq = (await this.runStore.stepsForRun(runId)).length;
 
-    while (currentStepId && seq < MAX_STEPS) {
-      const stepId: string = currentStepId;
-      const step = graph.steps.find((s) => s.id === stepId);
-      if (!step) {
-        await this.runStore.recordStepAndAdvance({
-          runId, seq, stepId, actor: null, postconditionOutcome: 'n/a', transitionTaken: null,
-          nextStepId: null, context, status: 'failed',
-        });
-        break;
-      }
+    try {
+      while (currentStepId && seq < MAX_STEPS) {
+        const stepId: string = currentStepId;
+        const step = graph.steps.find((s) => s.id === stepId);
+        if (!step) {
+          await this.runStore.recordStepAndAdvance({
+            runId, seq, stepId, actor: null, postconditionOutcome: 'n/a', transitionTaken: null,
+            nextStepId: null, context, status: 'failed', claimedBy: lease,
+          });
+          break;
+        }
 
-      // Human step → durable await + park; resolveAwait/expireAwait resume the run.
-      if (step.kind === 'human') {
-        await this.openHumanAwait(runId, step, context);
+        // Human step → durable await + park; resolveAwait/expireAwait resume the run.
+        if (step.kind === 'human') {
+          await this.openHumanAwait(runId, step, context, lease);
+          return (await this.runStore.get(runId)) ?? (await this.requireRun(runId));
+        }
+
+        let exec;
+        try {
+          exec = step.kind === 'agent'
+            ? await this.effects.runAgentStep(step, context, { runId })
+            : await this.effects.runActionStep(step, context, { runId });
+        } catch (err) {
+          this.log(`[conductor] run ${runId} step '${stepId}' threw: ${err instanceof Error ? err.message : String(err)}`);
+          await this.runStore.recordStepAndAdvance({
+            runId, seq, stepId, actor: { kind: step.kind, ref: step.agentId ?? step.actionId ?? null },
+            postconditionOutcome: 'n/a', transitionTaken: null, nextStepId: null, context, status: 'failed', claimedBy: lease,
+          });
+          break;
+        }
+
+        const decision = nextStep(graph, stepId, exec.result, context);
+        context = this.accumulate(context, stepId, exec.result);
+        currentStepId = await this.applyDecision(runId, seq, stepId, exec.actor, decision, context, lease);
+        if (currentStepId) seq += 1;
+      }
+    } catch (err) {
+      if (err instanceof RunLeaseLostError) {
+        this.log(`[conductor] run ${runId} drive yielded: ${err.message}`);
         return (await this.runStore.get(runId)) ?? (await this.requireRun(runId));
       }
-
-      let exec;
-      try {
-        exec = step.kind === 'agent'
-          ? await this.effects.runAgentStep(step, context, { runId })
-          : await this.effects.runActionStep(step, context, { runId });
-      } catch (err) {
-        this.log(`[conductor] run ${runId} step '${stepId}' threw: ${err instanceof Error ? err.message : String(err)}`);
-        await this.runStore.recordStepAndAdvance({
-          runId, seq, stepId, actor: { kind: step.kind, ref: step.agentId ?? step.actionId ?? null },
-          postconditionOutcome: 'n/a', transitionTaken: null, nextStepId: null, context, status: 'failed',
-        });
-        break;
-      }
-
-      const decision = nextStep(graph, stepId, exec.result, context);
-      context = this.accumulate(context, stepId, exec.result);
-      currentStepId = await this.applyDecision(runId, seq, stepId, exec.actor, decision, context);
-      if (currentStepId) seq += 1;
+      throw err;
     }
 
     return (await this.runStore.get(runId)) ?? (await this.requireRun(runId));
+  }
+
+  /**
+   * Re-drive a run left 'running' by a process restart (US2 / SC-002). The run's
+   * `current_step_id` points at the next not-yet-executed step — `recordStepAndAdvance`
+   * persists the COMPLETED step and only then advances the pointer — so re-driving from
+   * there never re-runs a step that was already recorded. The single residual gap is a
+   * step whose effect ran but whose record never committed (a crash mid-effect): that one
+   * step is re-executed, the inherent at-least-once limit of crash-resume without effect
+   * idempotency keys. Called only by the resume worker, after it has claimed the run.
+   */
+  async resumeRun(runId: string, lease: string): Promise<ConductorRun> {
+    const run = await this.requireRun(runId);
+    if (run.status !== 'running') return run; // completed/parked between claim and resume
+    if (!run.currentStepId) {
+      // 'running' with no next step is an inconsistent state — finalize rather than hang.
+      const seq = (await this.runStore.stepsForRun(runId)).length;
+      await this.runStore.recordStepAndAdvance({
+        runId, seq, stepId: '(resume)', actor: { kind: 'resume', reason: 'no_current_step' },
+        postconditionOutcome: 'n/a', transitionTaken: null, nextStepId: null, context: run.context, status: 'failed', claimedBy: lease,
+      });
+      return (await this.runStore.get(runId)) ?? run;
+    }
+    const { graph } = await this.loadRunGraph(runId);
+    this.log(`[conductor] resuming run ${runId} at step '${run.currentStepId}'`);
+    return this.driveFrom(runId, graph, run.currentStepId, run.context, lease);
   }
 
   /** A human responded — resolve the await and resume the run. */
@@ -161,11 +211,13 @@ export class ConductorRunExecutor {
     if (!won) throw new AwaitNotPendingError(`await '${awaitId}' was already resolved`);
 
     const { graph, run } = await this.loadRunGraph(aw.runId);
+    const lease = randomUUID();
+    await this.runStore.acquireLease(aw.runId, lease); // take over the parked run's lease
     const decision = nextStep(graph, aw.stepId, response, run.context);
     const context = this.accumulate(run.context, aw.stepId, response);
     const seq = (await this.runStore.stepsForRun(aw.runId)).length;
-    const next = await this.applyDecision(aw.runId, seq, aw.stepId, { kind: 'human', resolvedUserId: responderId }, decision, context);
-    if (next) return this.driveFrom(aw.runId, graph, next, context);
+    const next = await this.applyDecision(aw.runId, seq, aw.stepId, { kind: 'human', resolvedUserId: responderId }, decision, context, lease);
+    if (next) return this.driveFrom(aw.runId, graph, next, context, lease);
     return (await this.runStore.get(aw.runId)) ?? run;
   }
 
@@ -177,21 +229,23 @@ export class ConductorRunExecutor {
     if (!won) return;
 
     const { graph, run } = await this.loadRunGraph(aw.runId);
+    const lease = randomUUID();
+    await this.runStore.acquireLease(aw.runId, lease); // take over the parked run's lease
     const seq = (await this.runStore.stepsForRun(aw.runId)).length;
     const fallback = aw.fallbackTransitionId ? graph.transitions.find((tr) => tr.id === aw.fallbackTransitionId) : undefined;
     if (!fallback) {
       await this.runStore.recordStepAndAdvance({
         runId: aw.runId, seq, stepId: aw.stepId, actor: { kind: 'human', timedOut: true },
-        postconditionOutcome: 'unmet', transitionTaken: null, nextStepId: null, context: run.context, status: 'failed',
+        postconditionOutcome: 'unmet', transitionTaken: null, nextStepId: null, context: run.context, status: 'failed', claimedBy: lease,
       });
       return;
     }
     await this.runStore.recordStepAndAdvance({
       runId: aw.runId, seq, stepId: aw.stepId, actor: { kind: 'human', timedOut: true },
-      postconditionOutcome: 'unmet', transitionTaken: fallback.id, nextStepId: fallback.target, context: run.context, status: 'running',
+      postconditionOutcome: 'unmet', transitionTaken: fallback.id, nextStepId: fallback.target, context: run.context, status: 'running', claimedBy: lease,
     });
     this.log(`[conductor] await ${awaitId} timed out → fallback '${fallback.id}' (run ${aw.runId})`);
-    await this.driveFrom(aw.runId, graph, fallback.target, run.context);
+    await this.driveFrom(aw.runId, graph, fallback.target, run.context, lease);
   }
 
   /**
@@ -261,10 +315,12 @@ export class ConductorRunExecutor {
 
   // ── helpers ────────────────────────────────────────────────────────────────
 
-  private async openHumanAwait(runId: string, step: Step, context: JsonObject): Promise<void> {
+  private async openHumanAwait(runId: string, step: Step, context: JsonObject, lease: string): Promise<void> {
     const h = step.human;
     const deadlineMs = parseIsoDurationMs(h?.deadline ?? null);
     const reminderMs = parseIsoDurationMs(h?.reminderInterval ?? null);
+    // create() is idempotent (one open await per run+step), so a crash-and-resume between
+    // create and park never doubles the await; park is fenced on the lease.
     await this.awaitStore.create({
       runId,
       stepId: step.id,
@@ -277,7 +333,7 @@ export class ConductorRunExecutor {
       deadlineAt: deadlineMs ? new Date(Date.now() + deadlineMs) : null,
       fallbackTransitionId: step.fallbackTransitionId ?? null,
     });
-    await this.runStore.park(runId, step.id, context);
+    await this.runStore.park(runId, step.id, context, lease);
     this.log(`[conductor] run ${runId} awaiting human at step '${step.id}' (${h?.principal.kind}:${h?.principal.ref})`);
   }
 
@@ -294,25 +350,26 @@ export class ConductorRunExecutor {
     actor: JsonValue,
     decision: ReturnType<typeof nextStep>,
     context: JsonObject,
+    lease: string,
   ): Promise<string | null> {
     if (decision.kind === 'advance') {
       await this.runStore.recordStepAndAdvance({
         runId, seq, stepId, actor, postconditionOutcome: decision.postcondition, transitionTaken: decision.transitionId,
-        nextStepId: decision.targetStepId, context, status: 'running',
+        nextStepId: decision.targetStepId, context, status: 'running', claimedBy: lease,
       });
       return decision.targetStepId;
     }
     if (decision.kind === 'complete') {
       await this.runStore.recordStepAndAdvance({
         runId, seq, stepId, actor, postconditionOutcome: decision.postcondition, transitionTaken: null,
-        nextStepId: null, context, status: 'completed',
+        nextStepId: null, context, status: 'completed', claimedBy: lease,
       });
       return null;
     }
     this.log(`[conductor] run ${runId} stuck at '${stepId}': ${decision.message}`);
     await this.runStore.recordStepAndAdvance({
       runId, seq, stepId, actor, postconditionOutcome: decision.postcondition, transitionTaken: null,
-      nextStepId: stepId, context, status: 'failed',
+      nextStepId: stepId, context, status: 'failed', claimedBy: lease,
     });
     return null;
   }
