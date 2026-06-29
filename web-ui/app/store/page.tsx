@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { HardDrive, PackageCheck, Store } from 'lucide-react';
+import { getTranslations } from 'next-intl/server';
 
 import { listProfiles, listStorePlugins } from '../_lib/api';
 import { redirectIfUnauthorized } from '../_lib/authRedirect';
@@ -12,7 +13,7 @@ import { UploadDropzone } from '../_components/store/UploadDropzone';
 import { cn } from '../_lib/cn';
 
 export const metadata: Metadata = {
-  title: 'Plugin-Store · omadia',
+  title: 'Hub · omadia',
 };
 
 export const dynamic = 'force-dynamic';
@@ -41,6 +42,7 @@ export default async function StorePage({
   const params = await searchParams;
   const source = parseSource(params.source);
   const filter = parseFilter(params.kind);
+  const t = await getTranslations('store.hero');
 
   let plugins: Plugin[] = [];
   let loadError: string | null = null;
@@ -107,27 +109,16 @@ export default async function StorePage({
             01
           </span>
           <span className="h-px flex-1 bg-[color:var(--border)]" />
-          <span>Plugin-Store</span>
+          <span>{t('eyebrow')}</span>
         </div>
 
         <h1 className="font-display mt-6 text-[clamp(2.25rem,4.5vw,3.75rem)] leading-[1.05] text-[color:var(--fg-strong)]">
-          Agenten für die omadia-Plattform.
+          {t('headline')}
         </h1>
 
         <p className="mt-6 max-w-2xl text-[18px] font-semibold leading-[1.55] text-[color:var(--fg)]">
-                    Der Katalog bündelt Integrations (Credential-Container), Agents
-          (Domain-Capabilities) und Channels (User-Kanäle wie Teams,
-          Telegram). Ein Klick auf eine Kachel zeigt Berechtigungen, Secrets
-          und Abhängigkeiten vor der Installation.
+          {t('lead')}
         </p>
-
-        {/* Stats strip — installed vs. hub split + total */}
-        <dl className="mt-8 grid max-w-2xl grid-cols-4 gap-6 border-t border-[color:var(--divider)] pt-4 text-sm">
-          <Stat label="Plugins" value={plugins.length} />
-          <Stat label="Hub" value={hubCount} accent />
-          <Stat label="Lokal" value={localCount} />
-          <Stat label="Installiert" value={installedCount} />
-        </dl>
       </header>
 
       {/* Source switch — the primary view selector by plugin origin. */}
@@ -218,33 +209,6 @@ export default async function StorePage({
   );
 }
 
-function Stat({
-  label,
-  value,
-  accent,
-}: {
-  label: string;
-  value: number;
-  accent?: boolean;
-}): React.ReactElement {
-  return (
-    <div>
-      <dt className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[color:var(--fg-subtle)]">
-        {label}
-      </dt>
-      <dd
-        className={`font-display mt-1 text-[32px] leading-none ${
-          accent
-            ? 'text-[color:var(--highlight)]'
-            : 'text-[color:var(--fg-strong)]'
-        }`}
-      >
-        {String(value).padStart(2, '0')}
-      </dd>
-    </div>
-  );
-}
-
 /**
  * Source switch — segmented control toggling between the installed-runtime
  * view and the Hub catalog. Server-rendered as two `<Link>`s so the active
@@ -269,7 +233,7 @@ function SourceTabs({
   }> = [
     {
       key: 'hub',
-      label: 'Hub',
+      label: 'Registry',
       count: hubCount,
       icon: <Store className="size-4" aria-hidden />,
     },

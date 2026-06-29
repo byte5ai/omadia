@@ -99,9 +99,6 @@ export default async function RootLayout({
                       </span>
                     </span>
                   </Link>
-                  <span className="text-xs text-[color:var(--fg-muted)]">
-                    {t('subtitle')}
-                  </span>
                   <div className="ml-auto flex items-center gap-4">
                     <Nav />
                     <span

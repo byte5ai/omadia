@@ -1,5 +1,202 @@
 {
+  "dashboard": {
+    "metaTitle": "Dashboard · omadia",
+    "h1": "Dashboard",
+    "subtitle": "Your operator cockpit: system health, quick access, and setup.",
+    "health": {
+      "heading": "System health",
+      "subtitle": "Live status of the core services. Select a card to manage it.",
+      "ok": "Connected",
+      "down": "Unreachable",
+      "warn": "Needs attention",
+      "manage": "Manage",
+      "middleware": {
+        "title": "Middleware",
+        "okDetail": "API reachable",
+        "downDetail": "No response from the middleware API."
+      },
+      "llm": {
+        "title": "LLM provider",
+        "connected": "{count, plural, one {# provider connected} other {# providers connected}}",
+        "none": "No provider connected",
+        "active": "Active: {name}"
+      },
+      "orchestrators": {
+        "title": "Orchestrators",
+        "available": "{count, plural, one {# orchestrator available} other {# orchestrators available}}",
+        "none": "No orchestrator configured"
+      },
+      "plugins": {
+        "title": "Plugins",
+        "installed": "{count, plural, one {# plugin installed} other {# plugins installed}}",
+        "none": "No plugins installed yet"
+      }
+    },
+    "quick": {
+      "heading": "Quick access",
+      "subtitle": "Jump straight into the most-used surfaces.",
+      "chat": {
+        "title": "Chat",
+        "description": "Talk to your orchestrators and run tasks."
+      },
+      "hub": {
+        "title": "Hub",
+        "description": "Browse and install plugins for your team."
+      },
+      "orchestrators": {
+        "title": "Orchestrators",
+        "description": "Configure agents, bindings, and channels."
+      },
+      "routines": {
+        "title": "Routines",
+        "description": "Schedule and automate recurring work."
+      },
+      "admin": {
+        "title": "Admin",
+        "description": "Providers, access, knowledge, and settings."
+      }
+    },
+    "onboarding": {
+      "chooseCaseHeading": "Choose a business case",
+      "chooseCaseSubtitle": "Pick your role and we'll recommend matching plugins, grouped by area.",
+      "cases": {
+        "sales": {
+          "name": "Sales & CRM",
+          "description": "Reach customers across channels, with CRM and ERP data at hand."
+        },
+        "hr": {
+          "name": "HR & Recruiting",
+          "description": "Answer HR questions and run people processes from chat."
+        },
+        "finance": {
+          "name": "Finance & Accounting",
+          "description": "Bookkeeping and finance workflows backed by your ERP."
+        },
+        "devteam": {
+          "name": "Software team / DevOps",
+          "description": "Ship faster with dev tools, docs, and team channels."
+        }
+      },
+      "categories": {
+        "channels": "Channels",
+        "erp": "ERP",
+        "knowledge": "Knowledge",
+        "devtools": "DevTools"
+      },
+      "recommend": {
+        "incompatibleHint": "Incompatible",
+        "catalogUnavailable": "Plugin catalog unavailable right now. Try again in a moment.",
+        "subtitle": "Recommended plugins for this business case.",
+        "back": "Other case",
+        "installedBadge": "Installed",
+        "open": "Open",
+        "build": "Build in Builder",
+        "request": "Request",
+        "missingHint": "Not in the Hub yet",
+        "sectionEmpty": "No recommendation in this category."
+      },
+      "step": "Step {n}",
+      "rolesHeading": "Choose a role",
+      "llmStep": {
+        "connect": "Open LLM access",
+        "title": "Connect an LLM",
+        "description": "Without a connected LLM no orchestrator can run. Connect an API provider or a subscription CLI first.",
+        "connectProvider": "Connect provider",
+        "connectCli": "Connect subscription CLI"
+      },
+      "heading": "Get started",
+      "subtitle": "Pick a role to install a recommended set of plugins. You can fine-tune everything later.",
+      "kicker": "Setup",
+      "pluginCount": "{count, plural, one {# plugin} other {# plugins}}",
+      "apply": "Install set",
+      "applying": "Installing",
+      "applied": "Installed",
+      "failed": "Could not install",
+      "retry": "Try again",
+      "browseAll": "Browse all plugins",
+      "dismiss": "Hide onboarding",
+      "reenable": "Show onboarding",
+      "empty": "No role profiles available. Connect a registry to see recommendations.",
+      "outcome": "{installed} installed, {skipped} skipped, {errored} failed"
+    }
+  },
+  "adminLlm": {
+    "title": "LLM access",
+    "subtitle": "Give the orchestrator a model: connect an API provider and assign models per plugin, or log in to a vendor subscription CLI.",
+    "tabProviders": "API keys",
+    "tabSubscriptions": "Subscriptions"
+  },
   "admin": {
+    "index": {
+      "metaTitle": "Admin · omadia",
+      "h1": "Admin",
+      "subtitle": "Configure and monitor agents, models, knowledge, plugins, access, and cost for this omadia instance.",
+      "groups": {
+        "llm": { "heading": "LLM Access" },
+        "knowledge": { "heading": "Knowledge & Memory" },
+        "plugins": { "heading": "Plugins" },
+        "access": { "heading": "Access" },
+        "danger": { "heading": "Danger Zone" }
+      },
+      "cards": {
+        "llmAccess": {
+          "title": "LLM access",
+          "description": "Connect LLM providers (API keys), assign models per plugin, and log in to subscription CLIs."
+        },
+        "usage": {
+          "title": "Usage & Cost",
+          "description": "Track token usage and cost per model, source and time, with cache-hit rate across every call."
+        },
+        "providers": {
+          "title": "Providers",
+          "description": "Connect providers and assign a provider plus model per agent; keys stay encrypted in the vault."
+        },
+        "subscriptionClis": {
+          "title": "Subscription CLIs",
+          "description": "Run agents on an existing LLM subscription (Claude Pro/Max) via the official CLI instead of an API key."
+        },
+        "kgLifecycle": {
+          "title": "Knowledge-Graph Lifecycle",
+          "description": "Inspect tier, decay and scope distribution, and run decay and GC sweeps manually."
+        },
+        "kgPriorities": {
+          "title": "Knowledge-Graph Priorities",
+          "description": "Set per-agent block and boost lists that override recall hits in the token-budget assembler."
+        },
+        "bulkPromote": {
+          "title": "Bulk Promotion",
+          "description": "Re-score historical turns and promote high-significance ones to durable knowledge (idempotent)."
+        },
+        "inconsistencies": {
+          "title": "Contradictions",
+          "description": "Resolve semantically similar memories whose statements conflict; the operator decides which holds."
+        },
+        "memoryBackend": {
+          "title": "Storage Backend",
+          "description": "Switch memory storage between filesystem and Postgres; Postgres needs DATABASE_URL and takes effect after a restart."
+        },
+        "domains": {
+          "title": "Domains",
+          "description": "Browse registered plugins grouped by domain (read-only)."
+        },
+        "registries": {
+          "title": "Registries",
+          "description": "Manage store sources, including private registries with tokens; changes apply without a restart."
+        },
+        "auth": {
+          "title": "Authentication Providers",
+          "description": "Enable or disable local login and Entra ID sign-in; changes apply without a restart."
+        },
+        "users": {
+          "title": "Users",
+          "description": "Create, disable, reset passwords for, or delete local accounts."
+        },
+        "dangerZone": {
+          "title": "Memory Purge",
+          "description": "Irreversibly delete memory along one axis (all, agent, user, team, channel); preview-gated with a confirm phrase, no undo."
+        }
+      }
+    },
     "builder": {
       "title": "Agent Builder",
       "subtitle": "Wire channels, sub-agents, skills and tools on an editable canvas.",
@@ -112,8 +309,9 @@
     "openLabel": "open"
   },
   "nav": {
+    "dashboard": "Dashboard",
     "chat": "Chat",
-    "store": "Store",
+    "store": "Hub",
     "builder": "Builder",
     "memory": "Memory",
     "memories": "Memories",
@@ -121,7 +319,7 @@
     "routines": "Routines",
     "admin": "Admin",
     "system": "System",
-    "agentsCluster": "Agents",
+    "agentsCluster": "Orchestrators",
     "agentsOverview": "Overview",
     "channels": "Channels",
     "pluginsCluster": "Plugins",
@@ -129,22 +327,21 @@
   },
   "operatorChannels": {
     "title": "Channels",
-    "subtitle": "Route inbound webhooks per channel-key to an Agent. Each channel plugin reports its own keys — you only pick which Agent answers them.",
+    "subtitle": "Route inbound webhooks per channel-key to an Orchestrator. Each channel plugin reports its own keys — you only pick which Orchestrator answers them.",
     "loadError": "Failed to load channels",
     "emptyHeading": "No channels known yet.",
     "emptyExplain": "Channel plugins (Teams, Telegram, …) report their keys during activation. As soon as a channel plugin is installed and active, its keys appear here.",
     "emptyDirectoriesKnown": "Registered channel types: {types}",
-    "fallbackHint": "Channels without an explicit binding fall through to the fallback Agent ({fallback}).",
-    "fallbackHintNone": "no fallback set",
+    "fallbackHint": "Channels without an explicit binding fall through to the standard Orchestrator ({fallback}).",
+    "fallbackHintNone": "no standard set",
     "originLabel": "via",
     "staleBadge": "stale",
-    "routesTo": "→ Agent:",
-    "routesToFallback": "(fallback · {fallback})",
+    "routesTo": "→ Orchestrator:",
+    "routesToFallback": "(standard · {fallback})",
     "clearStale": "Clear binding"
   },
   "layout": {
     "logoAriaLabel": "omadia · Home",
-    "subtitle": "Management UI · local",
     "metaTitle": "omadia · Management UI",
     "metaDescription": "Admin UI for the omadia agent platform (local)."
   },
@@ -483,33 +680,33 @@
     "auditDeferred": "Available in v0.2.x — requires receipt persistence."
   },
   "agentPicker": {
-    "label": "Agent:",
-    "loading": "loading agents…",
-    "error": "agent list unavailable",
-    "fallbackMarker": "(fallback)",
-    "pinnedTooltip": "Session is pinned. Use Operator → Agents → Drain to reassign.",
-    "emptyCta": "No agents configured — open Operator → Agents",
-    "unavailableTitle": "This session's Agent is no longer available",
-    "unavailableBody": "The Agent \"{slug}\" was deleted or disabled. Pick how to recover this session.",
-    "actionReSnapshot": "Re-bind to fallback",
+    "label": "Orchestrator:",
+    "loading": "loading orchestrators…",
+    "error": "orchestrator list unavailable",
+    "fallbackMarker": "(standard)",
+    "pinnedTooltip": "Session is pinned. Use Operator → Orchestrators → Drain to reassign.",
+    "emptyCta": "No orchestrators configured — open Operator → Orchestrators",
+    "unavailableTitle": "This session's Orchestrator is no longer available",
+    "unavailableBody": "The Orchestrator \"{slug}\" was deleted or disabled. Pick how to recover this session.",
+    "actionReSnapshot": "Re-bind to standard",
     "actionDelete": "Delete session"
   },
   "operatorAgents": {
-    "title": "Agents",
-    "subtitle": "Multi-orchestrator runtime — create, edit, disable, drain, or kill Agents and watch the registry react in real time via the LISTEN/NOTIFY hot-reload bus.",
-    "loadError": "Failed to load agents",
+    "title": "Orchestrators",
+    "subtitle": "Multi-orchestrator runtime — create, edit, disable, drain, or kill Orchestrators and watch the registry react in real time via the LISTEN/NOTIFY hot-reload bus.",
+    "loadError": "Failed to load orchestrators",
     "platformHeading": "Platform",
     "forceReload": "Force registry reload",
-    "fallbackLabel": "Fallback agent:",
+    "fallbackLabel": "Standard orchestrator:",
     "fallbackNone": "(none — hard-reject unbound keys)",
-    "createHeading": "Create Agent",
+    "createHeading": "Create Orchestrator",
     "fieldSlug": "Slug",
     "fieldName": "Name",
     "fieldDescription": "Description",
     "fieldPrivacy": "Privacy profile",
     "createSubmit": "Create",
-    "agentsHeading": "Agents",
-    "agentsEmpty": "No agents yet. Create one above.",
+    "agentsHeading": "Orchestrators",
+    "agentsEmpty": "No orchestrators yet. Create one above.",
     "agentMeta": "id: {id} · privacy: {privacy} · status: {status} · runtime: {runtime}",
     "statusEnabled": "enabled",
     "statusDisabled": "disabled",
@@ -521,22 +718,23 @@
     "actionDelete": "Delete",
     "actionDrain": "Drain sessions",
     "actionKill": "Kill sessions",
-    "drainTooltip": "Clear snapshot on every session bound to this Agent — next turn re-captures from current config",
-    "deleteConfirm": "Delete agent \"{slug}\"?",
+    "drainTooltip": "Clear snapshot on every session bound to this Orchestrator — next turn re-captures from current config",
+    "fallbackProtected": "This is the standard orchestrator and cannot be disabled or deleted.",
+    "deleteConfirm": "Delete orchestrator \"{slug}\"?",
     "killConfirm": "Kill all sessions for \"{slug}\"? History will be lost.",
     "memoryScopeHeading": "Memory scope",
     "memoryScopeEmpty": "No scope (runtime registry not active)",
     "pluginsHeading": "Plugins",
     "bindingsHeading": "Channel bindings",
     "save": "Save",
-    "actionRehydrateFallback": "Reset fallback to all plugins",
-    "rehydrateTooltip": "Re-attaches every installed plugin to the current fallback Agent — restores day-1 capabilities.",
-    "rehydrateConfirm": "Re-attach every installed plugin to the fallback Agent? Existing plugin configs are preserved; newly added plugins start with empty config.",
-    "rehydrateDone": "Fallback rehydrated: {attached} of {requested} plugins attached.",
+    "actionRehydrateFallback": "Reset standard to all plugins",
+    "rehydrateTooltip": "Re-attaches every installed plugin to the current standard Orchestrator — restores day-1 capabilities.",
+    "rehydrateConfirm": "Re-attach every installed plugin to the standard Orchestrator? Existing plugin configs are preserved; newly added plugins start with empty config.",
+    "rehydrateDone": "Standard rehydrated: {attached} of {requested} plugins attached.",
     "catalogError": "Failed to load the plugin catalog ({message}). The multi-select falls back to manual mode.",
     "catalogLoading": "Loading plugin catalog…",
     "catalogEmpty": "No installed plugins.",
-    "multiInstanceFalseBadge": "multi_instance: false — may be active on at most ONE agent",
+    "multiInstanceFalseBadge": "multi_instance: false — may be active on at most ONE orchestrator",
     "multiInstanceFalseShort": "Single-instance",
     "privacyStrictBadge": "strict",
     "memoryReadTooltip": "Plugin's memory read scope",
@@ -547,15 +745,15 @@
     "orphanPluginBadge": "no longer installed",
     "bindingsAdd": "Add binding",
     "bindingsRemove": "Remove",
-    "bindingsEmpty": "No bindings — unbound traffic lands on the fallback Agent.",
+    "bindingsEmpty": "No bindings — unbound traffic lands on the standard Orchestrator.",
     "routingTesterHeading": "Routing tester",
-    "routingTesterHelp": "Ask the server which Agent would handle an inbound webhook. Hits explicit bindings first, then the platform fallback.",
+    "routingTesterHelp": "Ask the server which Orchestrator would handle an inbound webhook. Hits explicit bindings first, then the standard orchestrator.",
     "fieldChannelType": "Channel type",
     "fieldChannelKey": "Channel key",
     "routingTesterSubmit": "Test routing",
     "routingTesterRunning": "Testing…",
-    "routingTesterMatched": "→ Agent \"{slug}\" (via {via})",
-    "routingTesterNoMatch": "No match — and no platform fallback configured.",
+    "routingTesterMatched": "→ Orchestrator \"{slug}\" (via {via})",
+    "routingTesterNoMatch": "No match — and no standard orchestrator configured.",
     "agentCardSummary": "privacy: {privacy} · status: {status} · runtime: {runtime} · plugins: {plugins} · bindings: {bindings}",
     "sessionsLabel": "Sessions:",
     "pluginsAvailable": "Available",
@@ -569,7 +767,7 @@
     "dragHandle": "Drag to move between columns",
     "dependencyMissingBadge": "Parent missing",
     "dependencyMissingTooltip": "This plugin depends on \"{parent}\" — parent is not attached in the same column.",
-    "fallbackStoreOnlyNotice": "The fallback Agent always runs plugins with the global store config. Per-Agent overrides are disabled here — create a dedicated Agent if you need them.",
+    "fallbackStoreOnlyNotice": "The standard Orchestrator always runs plugins with the global store config. Per-Orchestrator overrides are disabled here — create a dedicated Orchestrator if you need them.",
     "orphanDetachAll": "Remove all",
     "orphanDetachAllTooltip": "Detach every stale plugin row (old ids from earlier deployments) at once.",
     "orphanExplain": "Plugin ids from earlier seeds that no longer exist in the current catalog (typically a rename like de.byte5.agent.* → @omadia/*). Dropped on next Save unless you tick \"Keep\".",
@@ -1365,9 +1563,9 @@
     },
     "drafts": {
       "list": {
-        "eyebrow": "Agent Builder",
-        "headline": "Build new agents.",
-        "lede": "Create drafts, iterate on several agents in parallel and install them into the platform with one click. Every draft lives in your personal workspace — nobody sees your drafts but you.",
+        "eyebrow": "Plugin Builder",
+        "headline": "Build new plugins.",
+        "lede": "A plugin can package deterministic code (the tools and integrations the platform runs on), the agents that put them to work, or both together. Draft here, iterate on several in parallel, and install with one click. Every draft stays in your personal workspace, visible only to you.",
         "scope": {
           "draft": "Draft",
           "published": "Published",
@@ -1383,11 +1581,11 @@
         "empty": {
           "draft": {
             "headline": "No drafts yet.",
-            "hint": "Click “New agent” in the top right to create your first draft."
+            "hint": "Click “New plugin” in the top right to create your first draft."
           },
           "published": {
             "headline": "Nothing published yet.",
-            "hint": "Published agents appear here once you have pushed a draft into the platform via the workspace."
+            "hint": "Published plugins appear here once you have pushed a draft into the platform via the workspace."
           },
           "deleted": {
             "headline": "Trash is empty.",
@@ -1443,7 +1641,7 @@
         }
       },
       "create": {
-        "label": "New agent",
+        "label": "New plugin",
         "pending": "Creating…",
         "quotaReachedTooltip": "Draft quota reached — delete an existing one before creating a new draft."
       },
@@ -1490,7 +1688,7 @@
   },
   "adminProviders": {
     "title": "LLM providers",
-    "intro": "Connect LLM providers and choose which one each agent runs on. Keys are stored encrypted in the vault (added on the Settings page) and never leave your server. Anthropic is the default; switching an agent to another provider takes effect live.",
+    "intro": "Connect LLM providers and choose which one each agent runs on. Keys are stored encrypted in the vault and never leave your server. Anthropic is the default; switching an agent to another provider takes effect live.",
     "loading": "Loading …",
     "loadError": "Failed to load: {message}",
     "vaultUnavailable": "Vault unavailable — provider keys cannot be read.",
@@ -1501,7 +1699,11 @@
       "notConnected": "no key",
       "addKey": "Add key",
       "logIn": "Log in",
-      "manageCli": "Manage"
+      "manageCli": "Manage",
+      "keyInputLabel": "{provider} API key",
+      "keyPlaceholder": "Paste API key …",
+      "saveKey": "Save key",
+      "cancel": "Cancel"
     },
     "assignments": {
       "heading": "Per-agent assignment",
@@ -1625,5 +1827,12 @@
     "errorLlm": "No AI provider is connected to phrase the issue.",
     "errorRateLimited": "Your AI provider hit a rate or quota limit. Try again later, or switch the provider in Settings.",
     "errorGeneric": "Something went wrong. Please try again."
+  },
+  "store": {
+    "hero": {
+      "eyebrow": "Hub",
+      "headline": "Plugins for the omadia platform.",
+      "lead": "The Hub is our catalog of ready-made plugins. It bundles integrations (credential containers), agents (domain capabilities) and channels (user channels like Teams and Telegram). Click a tile to see permissions, secrets and dependencies before you install."
+    }
   }
 }

@@ -42,7 +42,7 @@ interface LoadState {
   error: string | null;
 }
 
-export function AgentPicker(props: AgentPickerProps): React.ReactElement {
+export function AgentPicker(props: AgentPickerProps): React.ReactElement | null {
   const t = useTranslations('agentPicker');
   const [state, setState] = useState<LoadState>({
     loading: true,
@@ -87,26 +87,9 @@ export function AgentPicker(props: AgentPickerProps): React.ReactElement {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.pinnedSlug]);
 
-  // Pinned → read-only.
-  if (props.pinnedSlug) {
-    return (
-      <span
-        className="inline-flex items-center gap-2 rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-2 py-1 font-mono text-xs text-[color:var(--fg)]"
-        title={t('pinnedTooltip')}
-      >
-        <span className="text-[color:var(--fg-muted)]">{t('label')}</span>
-        <span className="font-semibold">{props.pinnedSlug}</span>
-      </span>
-    );
-  }
-
-  if (state.loading) {
-    return (
-      <span className="inline-flex text-xs text-[color:var(--fg-muted)]">
-        {t('loading')}
-      </span>
-    );
-  }
+  // While loading we don't yet know the orchestrator count — render nothing
+  // so the picker doesn't flash for the common single-orchestrator case.
+  if (state.loading) return null;
 
   if (state.error) {
     return (
@@ -116,15 +99,24 @@ export function AgentPicker(props: AgentPickerProps): React.ReactElement {
     );
   }
 
-  // TA07 — empty-config CTA.
-  if (state.agents.length === 0 && !state.fallbackSlug) {
+  // Only surface the picker when the operator actually has a choice to make:
+  // more than one orchestrator. A lone fallback (or none) is just noise, so
+  // the picker — dropdown and read-only pinned label alike — stays hidden.
+  // The fallback is still auto-selected in the effect above, so the first
+  // turn binds correctly even with no UI.
+  if (state.agents.length <= 1) return null;
+
+  // Pinned → read-only label (only reached when more than one orchestrator
+  // exists, i.e. the binding is a real choice worth showing).
+  if (props.pinnedSlug) {
     return (
-      <a
-        href="/operator/agents"
-        className="inline-flex items-center gap-2 rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 px-2 py-1 text-xs text-[color:var(--warning)] hover:bg-[color:var(--warning)]/10"
+      <span
+        className="inline-flex items-center gap-2 rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-2 py-1 font-mono text-xs text-[color:var(--fg)]"
+        title={t('pinnedTooltip')}
       >
-        {t('emptyCta')}
-      </a>
+        <span className="text-[color:var(--fg-muted)]">{t('label')}</span>
+        <span className="font-semibold">{props.pinnedSlug}</span>
+      </span>
     );
   }
 
