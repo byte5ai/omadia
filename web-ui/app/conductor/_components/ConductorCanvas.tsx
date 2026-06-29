@@ -138,14 +138,23 @@ export interface CanvasEditRequest {
   nonce: number;
 }
 
+// A request from the parent to render a draft graph (e.g. the conversational builder's evolving
+// draft, US7) directly into the canvas. The nonce changes each push so the same graph re-renders.
+export interface CanvasGraphRequest {
+  graph: unknown;
+  nonce: number;
+}
+
 function CanvasInner({
   workflows,
   onSaved,
   editRequest,
+  loadGraphRequest,
 }: {
   workflows: ConductorWorkflow[];
   onSaved: () => void;
   editRequest: CanvasEditRequest | null;
+  loadGraphRequest: CanvasGraphRequest | null;
 }): React.JSX.Element {
   const t = useTranslations('conductor');
   const [nodes, setNodes] = useState<StepNode[]>([]);
@@ -326,17 +335,19 @@ function CanvasInner({
     }
   }, [buildGraph, slug, name, onSaved]);
 
-  const loadWorkflow = useCallback(async (wfSlug: string) => {
-    try {
-      const { workflow, graph } = await getConductorWorkflowGraph(wfSlug);
-      setSlug(workflow.slug);
-      setName(workflow.name);
-      const g = graph as {
-        entryStepId: string;
-        steps: Array<Record<string, unknown>>;
-        transitions: Array<Record<string, unknown>>;
-        triggers?: Array<Record<string, unknown>>;
-      };
+  // Rehydrate the canvas (nodes/edges/trigger) from a serialized WorkflowGraph. Shared by the
+  // "Load existing workflow" path and the conversational builder (US7), which pushes its evolving
+  // draft graph in via `loadGraphRequest` so the chat and the canvas are two windows on one draft.
+  const hydrateFromGraph = useCallback((graph: unknown) => {
+    const g = graph as {
+      entryStepId: string;
+      steps: Array<Record<string, unknown>>;
+      transitions?: Array<Record<string, unknown>>;
+      triggers?: Array<Record<string, unknown>>;
+    };
+    if (!g || !Array.isArray(g.steps)) return;
+    const transitionsIn = Array.isArray(g.transitions) ? g.transitions : [];
+    {
       const newNodes: StepNode[] = g.steps.map((step, i) => {
         const kind = step.kind as StepKind;
         const base = emptyData(kind, i + 1);
@@ -370,7 +381,7 @@ function CanvasInner({
           },
         };
       });
-      const newEdges: Edge[] = g.transitions.map((tr) => ({
+      const newEdges: Edge[] = transitionsIn.map((tr) => ({
         id: String(tr.id),
         source: String(tr.source),
         target: String(tr.target),
@@ -378,23 +389,41 @@ function CanvasInner({
       }));
       setNodes(newNodes);
       setEdges(newEdges);
-      nextId.current += g.steps.length + g.transitions.length;
+      nextId.current += g.steps.length + transitionsIn.length;
       const trig = g.triggers?.[0];
       if (trig) {
         setTriggerKind((trig.kind as 'manual' | 'event' | 'cron') ?? 'manual');
         setTriggerEventId(String(trig.eventId ?? ''));
         setTriggerCron(String(trig.cron ?? ''));
       }
-    } catch (err) {
-      setSaveError(err instanceof ApiError ? err.message : String(err));
     }
   }, []);
+
+  const loadWorkflow = useCallback(
+    async (wfSlug: string) => {
+      try {
+        const { workflow, graph } = await getConductorWorkflowGraph(wfSlug);
+        setSlug(workflow.slug);
+        setName(workflow.name);
+        hydrateFromGraph(graph);
+      } catch (err) {
+        setSaveError(err instanceof ApiError ? err.message : String(err));
+      }
+    },
+    [hydrateFromGraph],
+  );
 
   // Load the workflow the parent asked us to edit. The parent hands us a fresh
   // object (new nonce) on every "Edit" click, so this fires once per click.
   useEffect(() => {
     if (editRequest?.slug) void loadWorkflow(editRequest.slug);
   }, [editRequest, loadWorkflow]);
+
+  // Mirror the conversational builder's draft into the canvas (US7). A new nonce each turn means a
+  // re-push of the same-shaped graph still re-renders, so chat edits show up live on the canvas.
+  useEffect(() => {
+    if (loadGraphRequest) hydrateFromGraph(loadGraphRequest.graph);
+  }, [loadGraphRequest, hydrateFromGraph]);
 
   const handleRun = useCallback(async () => {
     if (!slug) return;
@@ -737,10 +766,15 @@ export function ConductorCanvas(props: {
   workflows: ConductorWorkflow[];
   onSaved: () => void;
   editRequest?: CanvasEditRequest | null;
+  loadGraphRequest?: CanvasGraphRequest | null;
 }): React.JSX.Element {
   return (
     <ReactFlowProvider>
-      <CanvasInner {...props} editRequest={props.editRequest ?? null} />
+      <CanvasInner
+        {...props}
+        editRequest={props.editRequest ?? null}
+        loadGraphRequest={props.loadGraphRequest ?? null}
+      />
     </ReactFlowProvider>
   );
 }

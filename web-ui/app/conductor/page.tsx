@@ -23,6 +23,7 @@ import {
 } from '@/app/_lib/api';
 
 import { ConductorCanvas } from './_components/ConductorCanvas';
+import { ConductorChatPane } from './_components/ConductorChatPane';
 import { ConductorRunHistory, ConductorRunTrace } from './_components/ConductorRunTrace';
 
 export default function ConductorPage(): React.JSX.Element {
@@ -51,6 +52,8 @@ export default function ConductorPage(): React.JSX.Element {
   // Edit flow: clicking "Edit" on a workflow loads it into the designer canvas below and
   // scrolls there. The nonce changes per click so editing the same workflow twice reloads it.
   const [editRequest, setEditRequest] = useState<{ slug: string; nonce: number } | null>(null);
+  // The conversational builder's evolving draft, mirrored into the canvas below (US7 parity).
+  const [chatGraphRequest, setChatGraphRequest] = useState<{ graph: unknown; nonce: number } | null>(null);
   const designerRef = useRef<HTMLElement>(null);
 
   const reload = useCallback(async () => {
@@ -372,13 +375,32 @@ export default function ConductorPage(): React.JSX.Element {
         </section>
       )}
 
-      {/* Visual designer */}
+      {/* Conversational builder (US7) */}
+      <section className="mb-10">
+        <h2 className="mb-1 text-[13px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
+          {t('chatHeading')}
+        </h2>
+        <p className="mb-4 max-w-2xl text-[13px] text-[color:var(--fg-muted)]">{t('chatHint')}</p>
+        <ConductorChatPane
+          onShowInDesigner={(graph) => {
+            setChatGraphRequest({ graph, nonce: Date.now() });
+            designerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }}
+        />
+      </section>
+
+      {/* Visual designer — shares the conversational builder's draft (loadGraphRequest) */}
       <section ref={designerRef}>
         <h2 className="mb-1 text-[13px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
           {t('designerHeading')}
         </h2>
         <p className="mb-4 max-w-2xl text-[13px] text-[color:var(--fg-muted)]">{t('designerHint')}</p>
-        <ConductorCanvas workflows={workflows} editRequest={editRequest} onSaved={() => void reload()} />
+        <ConductorCanvas
+          workflows={workflows}
+          editRequest={editRequest}
+          loadGraphRequest={chatGraphRequest}
+          onSaved={() => void reload()}
+        />
       </section>
     </main>
   );

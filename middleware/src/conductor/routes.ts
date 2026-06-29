@@ -4,6 +4,9 @@ import type { Request, Response } from 'express';
 import { validate } from '@omadia/conductor-core';
 import type { JsonObject, WorkflowGraph } from '@omadia/conductor-core';
 
+import { ConductorBuilderUnavailableError } from './builderAgent.js';
+import type { BuilderChatMessage, ConductorBuilderAgent } from './builderAgent.js';
+import { emptyGraph } from './graphPatch.js';
 import type { ConductorWorkflowStore } from './workflowStore.js';
 import type { ConductorRunStore } from './runStore.js';
 import { resolveAwaitHolders } from './awaitStore.js';
@@ -43,6 +46,8 @@ export interface ConductorRouterDeps {
   eventRouter: ConductorEventRouter;
   /** Read model of declared emittable events (US4) — powers the Designer's event-trigger picker. */
   eventCatalog?: { list(): string[]; byPluginId(): Record<string, string[]> };
+  /** Conversational builder agent (US7) — co-design a draft graph by chat. Optional: absent on hosts without a registry. */
+  builderAgent?: ConductorBuilderAgent;
 }
 
 /**
@@ -51,6 +56,13 @@ export interface ConductorRouterDeps {
  * validated by @omadia/conductor-core before persist), start manual runs, and
  * read the durable run trace.
  */
+// Caps on conversational-builder input — the message + history + graph are all inlined verbatim into
+// a prompt sent to the LLM up to twice per request, so unbounded input is an authenticated
+// cost/latency amplification vector. Generous enough for real workflows, tight enough to bound cost.
+const MAX_BUILDER_MESSAGE_CHARS = 8_000;
+const MAX_BUILDER_HISTORY_TURNS = 20;
+const MAX_BUILDER_GRAPH_BYTES = 200_000;
+
 export function createConductorRouter(deps: ConductorRouterDeps): Router {
   const router = Router();
 
@@ -124,6 +136,53 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       res.json({ events: deps.eventCatalog?.list() ?? [], byPlugin: deps.eventCatalog?.byPluginId() ?? {} });
     } catch (err) {
       res.status(500).json({ code: 'conductor.event_catalog_failed', message: errMsg(err) });
+    }
+  });
+
+  // Conversational builder turn (US7): (draft graph + message) → patched draft + reply + validation.
+  // Stateless — the draft lives client-side (parity with the visual Designer); this just transforms it.
+  router.post('/builder/turn', async (req: Request, res: Response): Promise<void> => {
+    if (!deps.builderAgent) {
+      res.status(503).json({ code: 'conductor.builder_unavailable', message: 'conversational builder is not wired (no orchestrator registry)' });
+      return;
+    }
+    const body = asObject(req.body);
+    const message = typeof body.message === 'string' ? body.message.trim() : '';
+    if (!message) {
+      res.status(400).json({ code: 'conductor.invalid_input', message: 'message is required' });
+      return;
+    }
+    if (message.length > MAX_BUILDER_MESSAGE_CHARS) {
+      res.status(400).json({ code: 'conductor.invalid_input', message: `message exceeds ${String(MAX_BUILDER_MESSAGE_CHARS)} characters` });
+      return;
+    }
+    const graph = (body.graph as unknown as WorkflowGraph | undefined) ?? emptyGraph();
+    if (JSON.stringify(graph).length > MAX_BUILDER_GRAPH_BYTES) {
+      res.status(400).json({ code: 'conductor.invalid_input', message: 'draft graph is too large' });
+      return;
+    }
+    // Keep only well-formed {role,text} turns (a null/garbage element would otherwise crash prompt
+    // assembly) and cap to the most recent N so prompt size stays bounded.
+    const history: BuilderChatMessage[] = (Array.isArray(body.history) ? body.history : [])
+      .filter((m) => {
+        const r = asObject(m);
+        return typeof r.text === 'string' && (r.role === 'user' || r.role === 'assistant');
+      })
+      .slice(-MAX_BUILDER_HISTORY_TURNS)
+      .map((m) => {
+        const r = asObject(m);
+        return { role: r.role as 'user' | 'assistant', text: r.text as string };
+      });
+    try {
+      const result = await deps.builderAgent.runTurn({ graph, message, history });
+      res.json(result);
+    } catch (err) {
+      if (err instanceof ConductorBuilderUnavailableError) {
+        res.status(503).json({ code: 'conductor.builder_unavailable', message: err.message });
+      } else {
+        console.error('[conductor] builder turn failed:', err);
+        res.status(500).json({ code: 'conductor.builder_failed', message: errMsg(err) });
+      }
     }
   });
 

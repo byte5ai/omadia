@@ -18,6 +18,7 @@ import { ConductorRunResumeWorker } from './runResumeWorker.js';
 import { ConductorScheduleWorker } from './scheduleWorker.js';
 import { ConductorEventRouter } from './eventRouter.js';
 import { RealStepEffects } from './realStepEffects.js';
+import { ConductorBuilderAgent } from './builderAgent.js';
 import { createConductorRouter } from './routes.js';
 
 export { runConductorMigrations } from './migrator.js';
@@ -35,6 +36,10 @@ export { ConductorEventRouter } from './eventRouter.js';
 export { StubStepEffects } from './stepEffects.js';
 export { RealStepEffects } from './realStepEffects.js';
 export type { StepEffects, StepExecution, StepMeta } from './stepEffects.js';
+export { ConductorBuilderAgent, ConductorBuilderUnavailableError } from './builderAgent.js';
+export type { ConductorBuilderTurnInput, ConductorBuilderTurnResult, BuilderChatMessage } from './builderAgent.js';
+export { applyGraphPatches, emptyGraph } from './graphPatch.js';
+export type { GraphPatch } from './graphPatch.js';
 export { createConductorRouter } from './routes.js';
 
 export interface ConductorWiring {
@@ -49,6 +54,7 @@ export interface ConductorWiring {
   resumeWorker: ConductorRunResumeWorker;
   scheduleWorker: ConductorScheduleWorker;
   eventRouter: ConductorEventRouter;
+  builderAgent: ConductorBuilderAgent;
 }
 
 /**
@@ -116,11 +122,19 @@ export async function wireConductor(deps: {
   // Event router — a domain event starts every subscribed workflow's run (US4).
   const eventRouter = new ConductorEventRouter({ workflowStore, executor, log });
 
+  // Conversational builder agent (US7) — drives draft co-design via a registry Agent turn. Known
+  // refs are sourced live from the event catalog so the builder + validate can flag unknown events.
+  const builderAgent = new ConductorBuilderAgent({
+    getRegistry: deps.getRegistry,
+    knownRefs: () => ({ eventIds: deps.eventCatalog?.list() ?? [] }),
+    log,
+  });
+
   deps.app.use(
     '/api/v1/operator/conductors',
     deps.requireAuth,
-    createConductorRouter({ workflowStore, runStore, awaitStore, roleStore, scheduleStore, executor, eventRouter, eventCatalog: deps.eventCatalog }),
+    createConductorRouter({ workflowStore, runStore, awaitStore, roleStore, scheduleStore, executor, eventRouter, eventCatalog: deps.eventCatalog, builderAgent }),
   );
 
-  return { workflowStore, runStore, awaitStore, roleStore, scheduleStore, channelBindingStore, executor, awaitWorker, resumeWorker, scheduleWorker, eventRouter };
+  return { workflowStore, runStore, awaitStore, roleStore, scheduleStore, channelBindingStore, executor, awaitWorker, resumeWorker, scheduleWorker, eventRouter, builderAgent };
 }

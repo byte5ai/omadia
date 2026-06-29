@@ -3745,6 +3745,48 @@ export async function getConductorRun(slug: string, runId: string): Promise<Cond
   return getJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/runs/${encodeURIComponent(runId)}`);
 }
 
+// Conversational builder (US7) — co-design a draft graph by chat. A turn is stateless: the
+// client posts the current draft graph + the message, and gets back the patched draft, the
+// applied patches, the assistant's reply, and a validation verdict. The draft stays client-side
+// (parity with the visual designer), so there is no draft id — the graph IS the state.
+
+export interface ConductorValidationError {
+  code: string;
+  message: string;
+  nodeIds: string[];
+}
+
+export interface ConductorValidationResult {
+  ok: boolean;
+  errors: ConductorValidationError[];
+}
+
+export interface ConductorGraphPatch {
+  op: string;
+  [key: string]: unknown;
+}
+
+export interface ConductorBuilderMessage {
+  role: 'user' | 'assistant';
+  text: string;
+}
+
+export interface ConductorBuilderTurnResult {
+  graph: unknown;
+  patches: ConductorGraphPatch[];
+  reply: string;
+  validation: ConductorValidationResult;
+  applyErrors: string[];
+}
+
+export async function conductorBuilderTurn(body: {
+  graph: unknown;
+  message: string;
+  history?: ConductorBuilderMessage[];
+}): Promise<ConductorBuilderTurnResult> {
+  return postJson(`${CONDUCTOR_BASE}/builder/turn`, body);
+}
+
 // -----------------------------------------------------------------------------
 // In-app issue reporting — "Create Issue" button (/api/v1/issues)
 //
