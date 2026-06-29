@@ -159,7 +159,10 @@ describe('B1 · durable-curation tier surfaces manual MK', () => {
     assert.equal(result.recalled.insights[0]!.mkId, mkId);
   });
 
-  it('durable hits are NEVER submitted to the relevance judge', async () => {
+  it('OPT-OUT (durableRelevanceJudgeEnabled=false): durable bypasses the judge and always surfaces', async () => {
+    // The default is now judge=ON (R4). Operators who want the legacy #317
+    // unconditional always-surface set durableRelevanceJudgeEnabled=false to
+    // restore the bypass — durable then never reaches the judge.
     const kg = new InMemoryKnowledgeGraph();
     const durableId = await seedDurableMk(
       kg,
@@ -169,7 +172,7 @@ describe('B1 · durable-curation tier surfaces manual MK', () => {
     const { judge, seen } = recordingJudge();
     const retriever = new ContextRetriever(
       kg,
-      { teamVisibility: true },
+      { teamVisibility: true, durableRelevanceJudgeEnabled: false },
       queryEmbedder,
       undefined,
       undefined,
@@ -190,6 +193,90 @@ describe('B1 · durable-curation tier surfaces manual MK', () => {
       false,
       'durable id must NOT appear in the judge candidate set',
     );
+  });
+
+  it('OPT-IN (durableRelevanceJudgeEnabled): durable IS submitted to the judge and an off-topic one is dropped', async () => {
+    // R4 fix: when the operator opts in, durable joins the judge candidate set
+    // so an off-topic curated fact no longer surfaces for an unrelated query.
+    const kg = new InMemoryKnowledgeGraph();
+    const durableId = await seedDurableMk(
+      kg,
+      'reference',
+      'Durable curated fact the judge will reject as off-topic',
+    );
+    const { judge, seen } = recordingJudge(); // drops every insight
+    const retriever = new ContextRetriever(
+      kg,
+      { teamVisibility: true, durableRelevanceJudgeEnabled: true },
+      queryEmbedder,
+      undefined,
+      undefined,
+      judge,
+    );
+    const result = await retriever.assembleForBudget({
+      userMessage: 'Was waren die wichtigsten Buchungsregeln?',
+      agentId: 'test-agent',
+      sessionScope: 'sess-now',
+      userId: 'alice',
+    });
+    assert.equal(seen.has(durableId), true, 'durable id reached the judge when opted in');
+    assert.equal(
+      result.recalled.insights.length,
+      0,
+      'off-topic durable dropped by the judge under opt-in',
+    );
+  });
+
+  it('OPT-IN: durable is judged even on a TERM-LESS message (closed gate — Forge C1)', async () => {
+    // The opt-in must filter durable on the canonical R4 path: a term-less
+    // message ("ok") closes the cross-session gate, but durable still loads
+    // unconditionally and must reach the judge so an off-topic curated fact
+    // does not surface for a contentless turn.
+    const kg = new InMemoryKnowledgeGraph();
+    const durableId = await seedDurableMk(kg, 'reference', 'Off-topic durable fact');
+    const { judge, seen } = recordingJudge(); // drops every insight
+    const retriever = new ContextRetriever(
+      kg,
+      { teamVisibility: true, durableRelevanceJudgeEnabled: true },
+      queryEmbedder,
+      undefined,
+      undefined,
+      judge,
+    );
+    const result = await retriever.assembleForBudget({
+      userMessage: 'ok', // no candidate term → cross-session gate CLOSED
+      agentId: 'test-agent',
+      sessionScope: 'sess-now',
+      userId: 'alice',
+    });
+    assert.equal(seen.has(durableId), true, 'durable judged despite closed gate');
+    assert.equal(result.recalled.insights.length, 0, 'off-topic durable dropped on term-less turn');
+  });
+
+  it('OPT-IN: a durable the judge KEEPS still surfaces (always-surface preserved for on-topic)', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    const durableId = await seedDurableMk(kg, 'reference', 'On-topic durable fact');
+    const keepAll: RecallRelevanceJudge = {
+      async filterRelevant(_msg, candidates): Promise<Set<string>> {
+        return new Set(candidates.map((c) => c.id));
+      },
+    };
+    const retriever = new ContextRetriever(
+      kg,
+      { teamVisibility: true, durableRelevanceJudgeEnabled: true },
+      queryEmbedder,
+      undefined,
+      undefined,
+      keepAll,
+    );
+    const result = await retriever.assembleForBudget({
+      userMessage: 'Was waren die wichtigsten Buchungsregeln?',
+      agentId: 'test-agent',
+      sessionScope: 'sess-now',
+      userId: 'alice',
+    });
+    assert.equal(result.recalled.insights.length, 1, 'kept durable surfaces');
+    assert.equal(result.recalled.insights[0]!.mkId, durableId);
   });
 
   it('a fuzzy insight still goes through gate + floor + judge unchanged', async () => {

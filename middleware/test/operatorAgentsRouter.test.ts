@@ -311,6 +311,44 @@ describe('createOperatorAgentsRouter', () => {
     assert.equal(await store.getAgentBySlug('public'), undefined);
   });
 
+  it('PATCH /:slug refuses to DISABLE the fallback orchestrator (409 fallback_protected)', async () => {
+    await store.createAgent({ slug: 'fallback', name: 'Standard Orchestrator' });
+    const res = await fetch(`${baseUrl}/fallback`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 'disabled' }),
+    });
+    assert.equal(res.status, 409);
+    assert.equal(((await res.json()) as { error: string }).error, 'fallback_protected');
+    assert.equal((await store.getAgentBySlug('fallback'))?.status, 'enabled', 'stayed enabled');
+  });
+
+  it('PATCH /:slug still allows ENABLING / renaming the fallback orchestrator', async () => {
+    await store.createAgent({ slug: 'fallback', name: 'Standard Orchestrator' });
+    const res = await fetch(`${baseUrl}/fallback`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 'enabled', name: 'Renamed' }),
+    });
+    assert.equal(res.status, 200, 'only disable/delete are blocked');
+  });
+
+  it('DELETE /:slug refuses to delete the fallback orchestrator (409 fallback_protected)', async () => {
+    await store.createAgent({ slug: 'fallback', name: 'Standard Orchestrator' });
+    const res = await fetch(`${baseUrl}/fallback`, { method: 'DELETE' });
+    assert.equal(res.status, 409);
+    assert.equal(((await res.json()) as { error: string }).error, 'fallback_protected');
+    assert.ok(await store.getAgentBySlug('fallback'), 'not deleted');
+  });
+
+  it('protects whatever the platform fallbackAgentId points at (id-based, non-"fallback" slug)', async () => {
+    const agent = await store.createAgent({ slug: 'special', name: 'Special' });
+    await store.setFallbackAgentId(agent.id);
+    const res = await fetch(`${baseUrl}/special`, { method: 'DELETE' });
+    assert.equal(res.status, 409, 'active platform fallback protected by id');
+    assert.equal(((await res.json()) as { error: string }).error, 'fallback_protected');
+  });
+
   it('PUT /:slug/plugins replaces the plugin set', async () => {
     const agent = await store.createAgent({ slug: 'public', name: 'Public' });
     await store.upsertAgentPlugin(agent.id, { pluginId: '@omadia/old' });

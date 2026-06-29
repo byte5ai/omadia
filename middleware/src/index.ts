@@ -182,6 +182,7 @@ import {
 import { createAdminUsersRouter } from './routes/adminUsers.js';
 import { createAdminAuthRouter } from './routes/adminAuth.js';
 import { PluginCatalog } from './plugins/manifestLoader.js';
+import { buildKgHealth } from './health/kgHealth.js';
 import { FileInstalledRegistry } from './plugins/fileInstalledRegistry.js';
 import { InstallService } from './plugins/installService.js';
 import {
@@ -1746,7 +1747,11 @@ async function main(): Promise<void> {
   app.use(cookieParser());
 
   app.get('/health', (_req, res) => {
-    res.json({ status: 'ok' });
+    // `kg` surfaces the recall capability picture (backend durability +
+    // embeddings/semantic-recall/durable-tier/process-reuse availability) so a
+    // silently-degraded deployment is observable here instead of only in boot
+    // logs. Non-sensitive: capability states only, no secrets/URLs.
+    res.json({ status: 'ok', kg: buildKgHealth(installedRegistry) });
   });
 
   // Friction-free pairing discovery (#293). Public-by-design (lives outside
