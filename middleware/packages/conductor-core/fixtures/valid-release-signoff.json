@@ -1,0 +1,40 @@
+{
+  "entryStepId": "s1",
+  "steps": [
+    {
+      "id": "s1",
+      "kind": "agent",
+      "agentId": "release-notes",
+      "postcondition": { "op": "exists", "path": "stepResult.notes" },
+      "fallbackTransitionId": "t_fail",
+      "position": { "x": 40, "y": 40 }
+    },
+    {
+      "id": "s2",
+      "kind": "human",
+      "human": {
+        "principal": { "kind": "role", "ref": "approver.release" },
+        "channel": "teams",
+        "message": "Release {{ctx.tag}} ready — approve?",
+        "reminderInterval": "PT6H",
+        "deadline": "PT24H",
+        "quorum": "any"
+      },
+      "fallbackTransitionId": "t_deadline",
+      "position": { "x": 240, "y": 40 }
+    },
+    { "id": "s3", "kind": "action", "actionId": "github.create_release", "position": { "x": 440, "y": 40 } },
+    { "id": "s_end_fail", "kind": "action", "actionId": "notify.failure", "position": { "x": 240, "y": 200 } },
+    { "id": "s_autoreject", "kind": "action", "actionId": "release.cancel", "position": { "x": 440, "y": 200 } }
+  ],
+  "transitions": [
+    { "id": "t1", "source": "s1", "target": "s2", "guard": { "op": "exists", "path": "stepResult.notes" } },
+    { "id": "t_fail", "source": "s1", "target": "s_end_fail" },
+    { "id": "t_approve", "source": "s2", "target": "s3", "guard": { "op": "eq", "path": "stepResult.approved", "value": true } },
+    { "id": "t_deadline", "source": "s2", "target": "s_autoreject" }
+  ],
+  "triggers": [
+    { "id": "tr1", "kind": "event", "eventId": "github.pull_request.merged", "filter": { "op": "eq", "path": "ctx.base", "value": "main" } },
+    { "id": "tr2", "kind": "manual" }
+  ]
+}

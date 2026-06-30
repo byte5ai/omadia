@@ -40,6 +40,7 @@ const NAV: readonly NavItem[] = [
     ],
   },
   { kind: 'link', href: '/routines', key: 'routines' },
+  { kind: 'link', href: '/conductor', key: 'conductor' },
   {
     kind: 'cluster',
     key: 'adminCluster',

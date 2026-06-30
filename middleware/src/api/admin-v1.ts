@@ -167,6 +167,9 @@ export interface PluginPermissionsSummary {
    *  the `ctx.flows` accessor (public-callback-URL resolution + kernel-held
    *  state signing) is provisioned. Loader defaults to `false`. */
   flows?: boolean;
+  /** Spec 005 (US4 Conductor Surface): plugin declares `permissions.events.emit: true` and may
+   *  emit declared domain events via `ctx.events`. Loader defaults to `false`. */
+  events_emit?: boolean;
   /** Spec 005: true when the manifest declares >=1 `oauth_providers`
    *  descriptor — the plugin acquires standard authorization-code credentials
    *  through the kernel OAuth broker (tokens stored + refreshed kernel-side;

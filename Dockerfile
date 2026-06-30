@@ -9,7 +9,7 @@
 # botbuilder (@azure/msal-node family) have post-install hooks that break on
 # Alpine's musl libc without extra build tools. Slim keeps the image small
 # while staying on glibc.
-FROM node:22.22.3-slim AS builder
+FROM node:22.23.1-slim AS builder
 ARG TARGETARCH
 WORKDIR /app
 
@@ -38,7 +38,7 @@ COPY middleware/scripts ./scripts
 RUN npm run build
 
 # --- runtime ----------------------------------------------------------------
-FROM node:22.22.3-slim AS runtime
+FROM node:22.23.1-slim AS runtime
 ARG TARGETARCH
 WORKDIR /app
 
@@ -106,6 +106,9 @@ COPY middleware/src/auth/migrations ./dist/auth/migrations
 COPY middleware/src/profileStorage/migrations ./dist/profileStorage/migrations
 # Profile-snapshots migrations — same pattern (palaia-phase profile snapshots).
 COPY middleware/src/profileSnapshots/migrations ./dist/profileSnapshots/migrations
+# Conductor migrations (Spec 005) — tsc skips .sql, so copy them next to the
+# compiled migrator (runConductorMigrations scans dist/conductor/migrations).
+COPY middleware/src/conductor/migrations ./dist/conductor/migrations
 # Multi-orchestrator runtime migrations — runMultiOrchestratorMigrations
 # (in @omadia/orchestrator) scans this dir. Top-level location matches the
 # spec convention (specs/001-multi-orchestrator-runtime/data-model.md); the

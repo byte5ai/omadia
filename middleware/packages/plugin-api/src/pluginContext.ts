@@ -15,6 +15,8 @@
  * ask for another plugin's secrets — the boundary is structural.
  */
 
+import type { Socket } from 'node:net';
+
 import type {
   EntityCapturedTurnsHit,
   EntityCapturedTurnsOptions,
@@ -75,6 +77,14 @@ export interface PluginContext {
    *  relying on ctx.http means the plugin stays future-proof). */
   readonly http?: HttpAccessor;
 
+  /** Raw-TCP egress for line protocols `ctx.http` cannot speak (SMTP, IMAP,
+   *  …). Present only when the manifest declares
+   *  `permissions.network.outbound_tcp` and the referenced operator config
+   *  resolves to a concrete host:port. Every `connect` is pinned to that
+   *  exact allow-listed target. Undefined otherwise — guard with `if
+   *  (ctx.net)` so a Hub plugin tolerates an older core that lacks it. */
+  readonly net?: NetAccessor;
+
   /** Per-plugin memory store, scoped to `/memories/agents/<agentId>/`.
    *  Paths passed to this accessor are relative — `notes.md` resolves to
    *  `/memories/agents/<agentId>/notes.md` under the hood. Plugins cannot
@@ -115,6 +125,14 @@ export interface PluginContext {
    *  `activate()` returns control; programmatic registrations via this
    *  accessor coexist with them. */
   readonly jobs: JobsAccessor;
+
+  /** US4 (Conductor Surface) — emit a domain event the plugin declared. Present iff the manifest
+   *  declares `permissions.events.emit: true`. A plugin may only emit an event id it declared via an
+   *  `{ id, event_emit: true }` capability (deny-by-default → `EventNotDeclaredError`). `emit` throws
+   *  `ConductorUnavailableError` when no Conductor event router is registered in this host (e.g. the
+   *  in-memory backend, or during boot before Conductor has wired) — presence of the accessor does
+   *  NOT guarantee the router. A successful emit is routed to every subscribed Conductor workflow. */
+  readonly events?: EventsAccessor;
 
   /** OB-29-1 — delegate a single-turn question to another agent registered
    *  in the host. Present iff the manifest declares
@@ -237,6 +255,37 @@ export class JobAlreadyRegisteredError extends Error {
   constructor(agentId: string, name: string) {
     super(`plugin '${agentId}' already registered job '${name}'`);
     this.name = 'JobAlreadyRegisteredError';
+  }
+}
+
+/** Outcome of emitting a domain event — how many Conductor workflows matched and started. */
+export interface EmitResult {
+  eventId: string;
+  matchedWorkflows: number;
+  startedRuns: Array<{ workflowSlug: string; runId: string }>;
+}
+
+export interface EventsAccessor {
+  /** Emit a declared domain event with a JSON payload. Routes to every subscribed Conductor
+   *  workflow (matched by event id + optional payload filter). Throws if the plugin did not
+   *  declare `id` as an emittable event. */
+  emit(id: string, payload: Record<string, unknown>): Promise<EmitResult>;
+}
+
+export class EventNotDeclaredError extends Error {
+  constructor(agentId: string, eventId: string) {
+    super(`plugin '${agentId}' did not declare event '${eventId}' (add an { id, event_emit: true } capability)`);
+    this.name = 'EventNotDeclaredError';
+  }
+}
+
+/** Thrown by `ctx.events.emit` when no Conductor event router is registered in this host — e.g. the
+ *  in-memory backend, or before the Conductor subsystem has finished wiring. A typed error so plugins
+ *  can detect "Conductor not available here" and degrade, rather than parsing a generic message. */
+export class ConductorUnavailableError extends Error {
+  constructor() {
+    super('Conductor event router is not available in this host');
+    this.name = 'ConductorUnavailableError';
   }
 }
 
@@ -796,6 +845,66 @@ export class HttpRateLimitError extends Error {
   constructor(agentId: string) {
     super(`plugin '${agentId}' exceeded its per-minute HTTP request budget`);
     this.name = 'HttpRateLimitError';
+  }
+}
+
+/**
+ * Raw outbound TCP connection options for `ctx.net.connect`.
+ *
+ * Unlike `ctx.http` (HTTP/HTTPS only), `ctx.net` opens a raw TCP — or, with
+ * `tls: true`, an implicitly-encrypted — socket to a host:port the operator
+ * configured. It exists for line protocols the HTTP accessor cannot speak:
+ * SMTP/IMAP/POP3 and the like. The target is gated against
+ * `permissions.network.outbound_tcp` (see `NetAccessor`).
+ */
+export interface NetConnectOptions {
+  readonly host: string;
+  readonly port: number;
+  /**
+   * When true the kernel performs the TLS handshake and resolves with an
+   * already-encrypted socket (implicit TLS — e.g. SMTPS on :465). When false
+   * or omitted a plain TCP socket is returned and the caller may upgrade it
+   * itself (e.g. SMTP STARTTLS on :587, which nodemailer negotiates over the
+   * plain socket). Either way the connection only reaches the allow-listed
+   * host:port.
+   */
+  readonly tls?: boolean;
+  /** TLS SNI servername; defaults to `host`. Ignored when `tls` is falsy. */
+  readonly servername?: string;
+}
+
+/**
+ * Raw-TCP egress accessor. Present only when the manifest declares
+ * `permissions.network.outbound_tcp` with at least one target the plugin's
+ * config resolves to a concrete host:port. Every `connect` is gated against
+ * that resolved allow-list (exact host + port match) and a per-minute
+ * connection budget — an unlisted target throws `NetForbiddenError`, an
+ * over-budget caller `NetRateLimitError`.
+ *
+ * The allow-list is resolved from operator config, NOT static manifest
+ * hostnames: a generic mail plugin does not know the SMTP host at authoring
+ * time, so the manifest references config fields (`host: "$config.smtp_host"`)
+ * and the kernel pins egress to exactly what the operator entered. That also
+ * means an internal relay on a private IP is reachable — the operator chose
+ * it — without opening a general SSRF hole.
+ */
+export interface NetAccessor {
+  connect(options: NetConnectOptions): Promise<Socket>;
+}
+
+export class NetForbiddenError extends Error {
+  constructor(agentId: string, target: string) {
+    super(
+      `plugin '${agentId}' is not permitted to open a TCP connection to '${target}' — missing from permissions.network.outbound_tcp (or its config-referenced host/port is unset)`,
+    );
+    this.name = 'NetForbiddenError';
+  }
+}
+
+export class NetRateLimitError extends Error {
+  constructor(agentId: string) {
+    super(`plugin '${agentId}' exceeded its per-minute TCP connection budget`);
+    this.name = 'NetRateLimitError';
   }
 }
 

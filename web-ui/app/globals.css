@@ -710,6 +710,37 @@ textarea:focus {
     0 0 0 4px var(--accent-glow),
     0 0 12px var(--accent-glow-core);
 }
+
+/* Native <select> popup options (issue #360). Windows Chromium/Edge renders
+   the option list through the OS combobox widget. Two relevant quirks:
+     1. The widget ignores CSS custom properties (`var(--…)`) on <option>,
+        so token references would not paint.
+     2. The widget does NOT inherit the page's `color-scheme` into its
+        popup surface — in a dark-themed page the popup still draws on the
+        OS light background. That breaks any `light-dark()` value at the
+        <option> level: it resolves against the page's color-scheme (dark)
+        and yields a near-white text color that lands on the OS-light
+        popup background — unreadable.
+   Solution: pick the option color pair directly off the page's
+   [data-theme] attribute on <html>, so background and foreground always
+   carry a matching contrast pair regardless of whether the OS popup ends
+   up honoring the background-color or only the color. Concrete hex values
+   mirror --bg-surface-raised-top / --text-primary in theme.css; keep in
+   sync if those tokens change. */
+:root[data-theme='dark'] select option {
+  background-color: #303440;
+  color: #EEEFF3;
+}
+:root:not([data-theme='dark']) select option {
+  background-color: #FFFFFF;
+  color: #1B1D24;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) select option {
+    background-color: #303440;
+    color: #EEEFF3;
+  }
+}
 /* Checked choice controls emit a small glow (§4.2 choice/toggle). */
 input[type='checkbox']:checked,
 input[type='radio']:checked {

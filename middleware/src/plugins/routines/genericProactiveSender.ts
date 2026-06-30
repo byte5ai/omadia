@@ -1,4 +1,5 @@
 import type { SemanticAnswer } from '@omadia/channel-sdk';
+import type { ApprovalReminder } from '@omadia/plugin-api';
 
 import type { ProactiveSender } from './proactiveSender.js';
 
@@ -36,7 +37,7 @@ export function createProactiveSender(
   channel: string,
   send: (
     conversationRef: unknown,
-    message: SemanticAnswer & { cardBody?: readonly unknown[] },
+    message: SemanticAnswer & { cardBody?: readonly unknown[]; approval?: ApprovalReminder },
     routine?: { id: string; name: string; cron: string },
   ) => Promise<void>,
 ): ProactiveSender {
@@ -47,11 +48,13 @@ export function createProactiveSender(
       // message envelope so channel adapters can read both `text`
       // (markdown fallback) and `cardBody` (rich-card primitives) from
       // a single object, without us teaching the integration shim to
-      // forward a third positional argument.
-      const message =
-        opts.cardBody !== undefined
-          ? { ...opts.message, cardBody: opts.cardBody }
-          : opts.message;
+      // forward a third positional argument. The Conductor approval
+      // payload folds in the same way (`approval`).
+      const message = {
+        ...opts.message,
+        ...(opts.cardBody !== undefined ? { cardBody: opts.cardBody } : {}),
+        ...(opts.approval !== undefined ? { approval: opts.approval } : {}),
+      };
       await send(opts.conversationRef, message, opts.routine);
     },
   };

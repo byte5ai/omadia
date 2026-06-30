@@ -1,0 +1,12 @@
+{
+  "entryStepId": "s1",
+  "steps": [
+    { "id": "s1", "kind": "agent", "agentId": "a1" },
+    { "id": "s2", "kind": "agent", "agentId": "a2" }
+  ],
+  "transitions": [
+    { "id": "tA", "source": "s1", "target": "s2" },
+    { "id": "tB", "source": "s2", "target": "s1" }
+  ],
+  "triggers": [{ "id": "tr1", "kind": "manual" }]
+}
