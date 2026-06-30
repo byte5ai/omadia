@@ -24,6 +24,9 @@ import { routineTurnContext } from './routineTurnContext.js';
  */
 export function createRoutinesIntegration(
   handle: RoutinesHandle,
+  /** Optional per-turn observer — the kernel uses it to persist a Conductor channel binding for
+   *  reminders, without coupling routines to Conductor. Best-effort: failures must not break a turn. */
+  onTurnCaptured?: (info: { userId: string; channel: string; conversationRef: unknown }) => void,
 ): RoutinesIntegration {
   return {
     captureRoutineTurn(info) {
@@ -34,6 +37,11 @@ export function createRoutinesIntegration(
         conversationRef: info.conversationRef,
         canTargetOthers: info.canTargetOthers ?? false,
       });
+      try {
+        onTurnCaptured?.({ userId: info.userId, channel: info.channel, conversationRef: info.conversationRef });
+      } catch {
+        // never let a binding-capture error break the inbound turn
+      }
     },
 
     async updateRoutineConversationRef(routineId, conversationRef) {

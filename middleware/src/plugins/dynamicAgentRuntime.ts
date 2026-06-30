@@ -15,6 +15,7 @@ import type { z } from 'zod';
 
 import { canvasOutputToolIds } from '../platform/canvasOutputRegistry.js';
 import { deterministicActionToolIds } from '../platform/deterministicActionRegistry.js';
+import { eventEmitIds } from '../platform/eventCatalogRegistry.js';
 import { createPluginContext } from '../platform/pluginContext.js';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
 import type { NotificationRouter } from '../platform/notificationRouter.js';
@@ -181,6 +182,14 @@ export interface DynamicAgentRuntimeDeps {
    *  operator config. Optional — absent in narrow test contexts. */
   deterministicActionRegistry?: {
     register(pluginId: string, toolIds: readonly string[]): void;
+    unregister(pluginId: string): void;
+  };
+  /** Event-catalog autodiscovery (US4 Conductor Surface): manifest capability entries declaring
+   *  `event_emit: true` are resolved into this registry on (de)activation so the Conductor
+   *  Designer can list emittable events and `ctx.events.emit` can enforce deny-by-default.
+   *  Optional — absent in narrow test contexts. */
+  eventCatalogRegistry?: {
+    register(pluginId: string, eventIds: readonly string[]): void;
     unregister(pluginId: string): void;
   };
   log?: (...args: unknown[]) => void;
@@ -555,6 +564,16 @@ export class DynamicAgentRuntime {
       );
     }
 
+    // Event-catalog autodiscovery (US4): same declare → resolve path. Capability entries with
+    // `event_emit: true` become emittable via ctx.events.emit and discoverable by the Designer.
+    const eventEmitIdList = eventEmitIds(catalogEntry.manifest);
+    if (eventEmitIdList.length > 0) {
+      this.deps.eventCatalogRegistry?.register(agentId, eventEmitIdList);
+      log(
+        `[dynamic-runtime] event-emit capabilities registered for ${agentId}: ${eventEmitIdList.join(', ')}`,
+      );
+    }
+
     // Circuit-breaker: clear any prior failure counter so an agent that
     // recovers (e.g. after a config fix + re-upload) returns to a healthy
     // starting state for the next boot. Best-effort — registry write errors
@@ -585,6 +604,7 @@ export class DynamicAgentRuntime {
     // Symmetric to the activate-time canvas-output registration.
     this.deps.canvasOutputRegistry?.unregister(agentId);
     this.deps.deterministicActionRegistry?.unregister(agentId);
+    this.deps.eventCatalogRegistry?.unregister(agentId);
     try {
       await withTimeout(
         entry.handle.close(),

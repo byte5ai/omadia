@@ -126,6 +126,14 @@ export interface PluginContext {
    *  accessor coexist with them. */
   readonly jobs: JobsAccessor;
 
+  /** US4 (Conductor Surface) — emit a domain event the plugin declared. Present iff the manifest
+   *  declares `permissions.events.emit: true`. A plugin may only emit an event id it declared via an
+   *  `{ id, event_emit: true }` capability (deny-by-default → `EventNotDeclaredError`). `emit` throws
+   *  `ConductorUnavailableError` when no Conductor event router is registered in this host (e.g. the
+   *  in-memory backend, or during boot before Conductor has wired) — presence of the accessor does
+   *  NOT guarantee the router. A successful emit is routed to every subscribed Conductor workflow. */
+  readonly events?: EventsAccessor;
+
   /** OB-29-1 — delegate a single-turn question to another agent registered
    *  in the host. Present iff the manifest declares
    *  `permissions.subAgents.calls` with at least one entry. Plugins without
@@ -247,6 +255,37 @@ export class JobAlreadyRegisteredError extends Error {
   constructor(agentId: string, name: string) {
     super(`plugin '${agentId}' already registered job '${name}'`);
     this.name = 'JobAlreadyRegisteredError';
+  }
+}
+
+/** Outcome of emitting a domain event — how many Conductor workflows matched and started. */
+export interface EmitResult {
+  eventId: string;
+  matchedWorkflows: number;
+  startedRuns: Array<{ workflowSlug: string; runId: string }>;
+}
+
+export interface EventsAccessor {
+  /** Emit a declared domain event with a JSON payload. Routes to every subscribed Conductor
+   *  workflow (matched by event id + optional payload filter). Throws if the plugin did not
+   *  declare `id` as an emittable event. */
+  emit(id: string, payload: Record<string, unknown>): Promise<EmitResult>;
+}
+
+export class EventNotDeclaredError extends Error {
+  constructor(agentId: string, eventId: string) {
+    super(`plugin '${agentId}' did not declare event '${eventId}' (add an { id, event_emit: true } capability)`);
+    this.name = 'EventNotDeclaredError';
+  }
+}
+
+/** Thrown by `ctx.events.emit` when no Conductor event router is registered in this host — e.g. the
+ *  in-memory backend, or before the Conductor subsystem has finished wiring. A typed error so plugins
+ *  can detect "Conductor not available here" and degrade, rather than parsing a generic message. */
+export class ConductorUnavailableError extends Error {
+  constructor() {
+    super('Conductor event router is not available in this host');
+    this.name = 'ConductorUnavailableError';
   }
 }
 

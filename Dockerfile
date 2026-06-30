@@ -106,6 +106,9 @@ COPY middleware/src/auth/migrations ./dist/auth/migrations
 COPY middleware/src/profileStorage/migrations ./dist/profileStorage/migrations
 # Profile-snapshots migrations — same pattern (palaia-phase profile snapshots).
 COPY middleware/src/profileSnapshots/migrations ./dist/profileSnapshots/migrations
+# Conductor migrations (Spec 005) — tsc skips .sql, so copy them next to the
+# compiled migrator (runConductorMigrations scans dist/conductor/migrations).
+COPY middleware/src/conductor/migrations ./dist/conductor/migrations
 # Multi-orchestrator runtime migrations — runMultiOrchestratorMigrations
 # (in @omadia/orchestrator) scans this dir. Top-level location matches the
 # spec convention (specs/001-multi-orchestrator-runtime/data-model.md); the

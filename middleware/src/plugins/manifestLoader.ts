@@ -647,6 +647,8 @@ function extractPermissions(
     llm_max_tokens_per_call: llmMaxTokensPerCall,
     secrets_runtime_write: secretsBlock?.['runtime_write'] === true,
     flows: permissions?.['flows'] === true,
+    // Spec 005 (US4 Conductor Surface) — plugin may emit declared domain events via ctx.events.emit.
+    events_emit: asRecord(permissions?.['events'])?.['emit'] === true,
     // Spec 005 — overridden to true in adaptManifestV1 when the manifest
     // declares >=1 valid oauth_providers descriptor.
     acquires_oauth: false,

@@ -1,4 +1,6 @@
 import { createPluginContext } from '../platform/pluginContext.js';
+import { eventEmitIds } from '../platform/eventCatalogRegistry.js';
+import type { EventCatalogRegistry } from '../platform/eventCatalogRegistry.js';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
 import type { NotificationRouter } from '../platform/notificationRouter.js';
 import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
@@ -45,6 +47,13 @@ export interface ChannelRegistryDeps {
   flowPublicBaseUrl?: string;
   /** Spec 004 — backing store for `ctx.status`; cleared on deactivate. */
   pluginStatusRegistry?: PluginStatusRegistry;
+  /**
+   * US4 event-emit catalog. A channel plugin that declares `event_emit` capabilities (e.g. Teams
+   * emitting `teams.message.posted`) has them registered here on activate, so `ctx.events.emit` is
+   * allowed (deny-by-default otherwise) and the Conductor event-trigger picker lists them. The tool
+   * and dynamic-agent runtimes already do this — the channel activation path was the missing third.
+   */
+  eventCatalogRegistry?: EventCatalogRegistry;
   resolver: ChannelPluginResolver;
   coreApi: CoreApi;
   routes: ExpressRouteRegistry;
@@ -114,6 +123,14 @@ export class DefaultChannelRegistry implements ChannelRegistry {
 
     const handle = await impl.activate(ctx, this.deps.coreApi);
     this.handles.set(agentId, handle);
+    // Register declared event-emit ids (raw manifest `capabilities[].event_emit`) so the channel's
+    // `ctx.events.emit(...)` passes the deny-by-default catalog gate and the events surface in the
+    // Conductor trigger picker. No-op when the manifest declares none.
+    const emitIds = eventEmitIds(catalogEntry.manifest);
+    if (emitIds.length > 0) {
+      this.deps.eventCatalogRegistry?.register(agentId, emitIds);
+      console.log(`[channels] event-emit capabilities registered for ${agentId}: ${emitIds.join(', ')}`);
+    }
     this.deps.routes.setActive(agentId, true);
     this.deps.webSockets?.setActive(agentId, true);
     console.log(`[channels] ✓ activated ${agentId}`);
@@ -135,6 +152,7 @@ export class DefaultChannelRegistry implements ChannelRegistry {
     // a stale entry in channel-teams' Hub + Tab-Config dropdown.
     this.deps.uiRouteCatalog.disposeBySource(agentId);
     this.deps.pluginStatusRegistry?.clear(agentId);
+    this.deps.eventCatalogRegistry?.unregister(agentId);
     if (!handle) return;
     this.handles.delete(agentId);
     try {
