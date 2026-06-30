@@ -1,6 +1,6 @@
-import { render } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
+import { renderWithIntl } from '../../_lib/test-utils';
 import { Markdown } from '../Markdown';
 
 /**
@@ -10,7 +10,7 @@ import { Markdown } from '../Markdown';
  */
 describe('<Markdown /> — Privacy Shield v4 highlight', () => {
   it('wraps a highlightTerm occurrence in a violet span', () => {
-    const { container } = render(
+    const { container } = renderWithIntl(
       <Markdown
         source={'| Name | Days |\n| --- | --- |\n| Marvin Vomberg | 24 |'}
         highlightTerms={['Marvin Vomberg']}
@@ -22,7 +22,7 @@ describe('<Markdown /> — Privacy Shield v4 highlight', () => {
   });
 
   it('does not highlight anything when no terms are given', () => {
-    const { container } = render(
+    const { container } = renderWithIntl(
       <Markdown source={'Marvin Vomberg steht hier.'} />,
     );
     expect(container.querySelector('span[class*="bg-[color:var(--accent)]/10"]')).toBeNull();
@@ -30,7 +30,7 @@ describe('<Markdown /> — Privacy Shield v4 highlight', () => {
   });
 
   it('highlights every occurrence and leaves surrounding text intact', () => {
-    const { container } = render(
+    const { container } = renderWithIntl(
       <Markdown
         source={'Anna Rüsche und Anna Rüsche, aber nicht Bob.'}
         highlightTerms={['Anna Rüsche']}
@@ -41,7 +41,7 @@ describe('<Markdown /> — Privacy Shield v4 highlight', () => {
   });
 
   it('ignores empty / whitespace-only terms', () => {
-    const { container } = render(
+    const { container } = renderWithIntl(
       <Markdown source={'Some answer text.'} highlightTerms={['', '  ']} />,
     );
     expect(container.querySelector('span[class*="bg-[color:var(--accent)]/10"]')).toBeNull();

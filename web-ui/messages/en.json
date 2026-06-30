@@ -578,6 +578,9 @@
     "outputLabel": "Output",
     "subIterations": "{count} inner iterations"
   },
+  "markdownTable": {
+    "scrollRegionLabel": "Scrollable table"
+  },
   "nudgeCard": {
     "kicker": "Suggestion",
     "ackTriggered": "✓ triggered",
