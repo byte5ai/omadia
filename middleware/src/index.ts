@@ -24,7 +24,7 @@ import { createMemoryPurgeRouter } from './routes/memoryPurge.js';
 import { createMemoryBackendRouter } from './routes/memoryBackend.js';
 import { createChatRouter } from './routes/chat.js';
 import { createOperatorAgentsRouter } from './routes/operatorAgents.js';
-import { wireConductor } from './conductor/index.js';
+import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError } from './conductor/index.js';
 import { bindingKeyForTurn } from './conductor/principalId.js';
 import { createOperatorChannelsRouter } from './routes/operatorChannels.js';
 import { createAgentBuilderRouter } from './routes/agentBuilder.js';
@@ -2154,6 +2154,26 @@ async function main(): Promise<void> {
     serviceRegistry.provide('conductorEventRouter', conductorWiring.eventRouter);
     // Expose the channel-binding store so the routines turn-capture hook can populate it — US5.
     serviceRegistry.provide('conductorChannelBindings', conductorWiring.channelBindingStore);
+    // Expose await resolution so a channel plugin can resolve a human approval in-process when the
+    // user clicks an approve/reject card button — no HTTP round-trip. `approved` maps to the engine's
+    // fail-open response shape ({ approved }); resolveAwait records the response + resumes the run.
+    serviceRegistry.provide('conductorAwaitResolver', {
+      resolve: async (
+        awaitId: string,
+        responderId: string,
+        approved: boolean,
+      ): Promise<'resumed' | 'recorded' | 'already_resolved' | 'not_a_holder'> => {
+        try {
+          const run = await conductorWiring.executor.resolveAwait(awaitId, responderId, { approved });
+          // 'waiting' ⇒ vote recorded but a quorum='all' await still needs other holders.
+          return run.status === 'waiting' ? 'recorded' : 'resumed';
+        } catch (err) {
+          if (err instanceof AwaitResponderNotHolderError) return 'not_a_holder';
+          if (err instanceof AwaitNotPendingError) return 'already_resolved'; // stale card / double-click
+          throw err;
+        }
+      },
+    });
     console.log('[middleware] conductor wired at /api/v1/operator/conductors/* (auth-gated)');
     const userStore = new UserStore(graphPool);
 

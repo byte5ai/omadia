@@ -8,11 +8,14 @@ import type { ConductorRun, ConductorRunStore, TriggerKind } from './runStore.js
 import { RunLeaseLostError } from './runStore.js';
 import type { ConductorAwaitStore } from './awaitStore.js';
 import type { StepEffects } from './stepEffects.js';
+import { canonicalizePrincipalId } from './principalId.js';
 
 export class WorkflowNotFoundError extends Error {}
 export class WorkflowDisabledError extends Error {}
 export class WorkflowNotPublishedError extends Error {}
 export class AwaitNotPendingError extends Error {}
+/** A responder who is not a current holder tried to resolve an await (authorization gate). */
+export class AwaitResponderNotHolderError extends Error {}
 
 export interface PreviewStep {
   stepId: string;
@@ -237,19 +240,34 @@ export class ConductorRunExecutor {
   async resolveAwait(awaitId: string, responderId: string, response: JsonValue): Promise<ConductorRun> {
     const aw = await this.awaitStore.get(awaitId);
     if (!aw || aw.status !== 'waiting') throw new AwaitNotPendingError(`await '${awaitId}' is not pending`);
-    await this.awaitStore.recordResponse(awaitId, responderId, response);
+
+    // Holders resolved LIVE (baton moves re-target) and canonicalized so a lowercased-email responder
+    // (the channel layer always lowercases) matches an operator-typed holder. Used for BOTH the
+    // authorization gate below and the quorum='all' completeness check.
+    const required = (
+      aw.principalKind === 'role' ? await this.resolveRoleHolders(aw.principalRef) : [aw.principalRef]
+    ).map(canonicalizePrincipalId);
+    const requiredSet = new Set(required);
+    const responder = canonicalizePrincipalId(responderId);
+
+    // Authorization gate: only a current holder may resolve an await. Without this, the Action.Submit
+    // payload (client-controllable, carries only awaitId) let any recipient of the card resolve a step
+    // they don't own — including non-holders in a shared chat (review: Forge HIGH-1 / Claude M1).
+    if (!requiredSet.has(responder)) {
+      throw new AwaitResponderNotHolderError(`responder '${responderId}' is not a holder of await '${awaitId}'`);
+    }
+
+    await this.awaitStore.recordResponse(awaitId, responder, response);
 
     // Quorum: 'any' resumes on the first response (feeding that response on). 'all' records each
     // response and resumes only once EVERY current holder has answered — holders resolved live, so a
     // baton move correctly changes who is required. The aggregate is fed to the engine for 'all'.
     let stepResult: JsonValue = response;
     if (aw.quorum === 'all') {
-      const required = aw.principalKind === 'role'
-        ? await this.resolveRoleHolders(aw.principalRef)
-        : [aw.principalRef];
-      const requiredSet = new Set(required);
       const responses = await this.awaitStore.listResponses(awaitId);
-      const respondedRequired = new Set(responses.map((r) => r.responderId).filter((id) => requiredSet.has(id)));
+      const respondedRequired = new Set(
+        responses.map((r) => canonicalizePrincipalId(r.responderId)).filter((id) => requiredSet.has(id)),
+      );
       // Empty `required` (a role with no current holders, e.g. all batons moved away) is NOT
       // vacuously complete — that would let one stray response resolve a no-holder await. Such a
       // run stays waiting until its deadline fires the fallback (FR-024).
@@ -260,11 +278,11 @@ export class ConductorRunExecutor {
       }
       // Aggregate over CURRENT required holders only — a holder who lost the baton (or whose stale
       // answer predates a baton move) must not skew `approved` or appear in `responses` (review C#1).
-      const counted = responses.filter((r) => requiredSet.has(r.responderId));
+      const counted = responses.filter((r) => requiredSet.has(canonicalizePrincipalId(r.responderId)));
       stepResult = {
         quorum: 'all',
         approved: counted.every((r) => isApproved(r.response)),
-        responses: Object.fromEntries(counted.map((r) => [r.responderId, r.response])),
+        responses: Object.fromEntries(counted.map((r) => [canonicalizePrincipalId(r.responderId), r.response])),
       };
     }
 
@@ -277,7 +295,7 @@ export class ConductorRunExecutor {
     const decision = nextStep(graph, aw.stepId, stepResult, run.context);
     const context = this.accumulate(run.context, aw.stepId, stepResult);
     const seq = (await this.runStore.stepsForRun(aw.runId)).length;
-    const next = await this.applyDecision(aw.runId, seq, aw.stepId, { kind: 'human', quorum: aw.quorum, resolvedUserId: responderId }, decision, context, lease);
+    const next = await this.applyDecision(aw.runId, seq, aw.stepId, { kind: 'human', quorum: aw.quorum, resolvedUserId: responder }, decision, context, lease);
     if (next) return this.driveFrom(aw.runId, graph, next, context, lease);
     return (await this.runStore.get(aw.runId)) ?? run;
   }
