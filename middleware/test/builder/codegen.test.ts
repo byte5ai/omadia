@@ -1,12 +1,14 @@
 import { describe, it, beforeEach } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import yaml from 'yaml';
 
 import { generate, CodegenError } from '../../src/plugins/builder/codegen.js';
+import { loadManifestFromPath } from '../../src/plugins/manifestLoader.js';
 import { parseAgentSpec, type AgentSpec } from '../../src/plugins/builder/agentSpec.js';
 import { _resetCacheForTests } from '../../src/plugins/builder/boilerplateSource.js';
 import {
@@ -512,6 +514,147 @@ describe('codegen.generate', () => {
     const out = await generate({ spec, slots });
     const manifest = out.get('manifest.yaml')!.toString('utf-8');
     assert.match(manifest, /outbound:[\s\S]*api\.example\.com/);
+  });
+
+  it('emits oauth_providers + type:oauth field provider/scopes (Spec 005, #371)', async () => {
+    // Codegen writes both the descriptor block + field provider/scopes; shape
+    // assertions only (the e2e test below feeds the real loader).
+    const { slots } = loadFixture();
+    const spec = parseAgentSpec({
+      id: 'de.byte5.agent.gmailsummary',
+      name: 'Gmail Summary',
+      description: 'summarises Gmail via the kernel OAuth broker',
+      category: 'communication',
+      depends_on: [],
+      tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
+      skill: { role: 'x' },
+      playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
+      network: { outbound: ['gmail.googleapis.com'] },
+      setup_fields: [
+        { key: 'google_client_id', type: 'string', required: true },
+        { key: 'google_client_secret', type: 'secret', required: true },
+        {
+          key: 'gmail_oauth',
+          type: 'oauth',
+          required: true,
+          provider: 'google',
+          scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+        },
+      ],
+      oauth_providers: [
+        {
+          id: 'google',
+          authorize_url: 'https://accounts.google.com/o/oauth2/v2/auth',
+          token_url: 'https://oauth2.googleapis.com/token',
+          token_auth_style: 'body_form',
+          client_id_field: 'google_client_id',
+          client_secret_field: 'google_client_secret',
+        },
+      ],
+    });
+    const out = await generate({ spec, slots });
+    const manifestText = out.get('manifest.yaml')!.toString('utf-8');
+    const parsed = yaml.parse(manifestText) as {
+      oauth_providers?: Array<Record<string, unknown>>;
+      setup?: { fields?: Array<Record<string, unknown>> };
+    };
+    // Top-level descriptor block round-trips (incl. pkce default true).
+    assert.equal(parsed.oauth_providers?.length, 1);
+    const desc = parsed.oauth_providers![0]!;
+    assert.equal(desc['id'], 'google');
+    assert.equal(desc['token_url'], 'https://oauth2.googleapis.com/token');
+    assert.equal(desc['pkce'], true);
+    assert.equal(desc['client_id_field'], 'google_client_id');
+    // Field-level provider/scopes pass through onto the manifest setup field.
+    const oauthField = parsed.setup?.fields?.find((f) => f['key'] === 'gmail_oauth');
+    assert.ok(oauthField, 'gmail_oauth setup field present in manifest');
+    assert.equal(oauthField!['provider'], 'google');
+    assert.deepEqual(oauthField!['scopes'], [
+      'https://www.googleapis.com/auth/gmail.readonly',
+    ]);
+  });
+
+  it('omits oauth_providers from the manifest when the spec declares none', async () => {
+    const { slots } = loadFixture();
+    const spec = parseAgentSpec({
+      id: 'de.byte5.agent.nooauth',
+      name: 'No OAuth',
+      description: 'agent without any OAuth',
+      category: 'other',
+      depends_on: [],
+      tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
+      skill: { role: 'x' },
+      playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
+      network: { outbound: [] },
+    });
+    const out = await generate({ spec, slots });
+    const manifestText = out.get('manifest.yaml')!.toString('utf-8');
+    assert.ok(!/^oauth_providers:/m.test(manifestText));
+  });
+
+  it('generated OAuth manifest arms the real kernel loader end-to-end (Spec 005, #371)', async () => {
+    // Feed the generated manifest through the REAL manifestLoader so any drift
+    // between the builder schema and extractOAuthProviders/adaptManifestV1
+    // fails here, not at runtime. Asserts the descriptor (broker + chip) and
+    // the type:oauth field (what arms ctx.oauthTokens) both survive load.
+    const { slots } = loadFixture();
+    const spec = parseAgentSpec({
+      id: 'de.byte5.agent.gmaile2e',
+      name: 'Gmail E2E',
+      description: 'summarises Gmail via the kernel OAuth broker',
+      category: 'communication',
+      depends_on: [],
+      tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
+      skill: { role: 'x' },
+      playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
+      network: { outbound: ['gmail.googleapis.com'] },
+      setup_fields: [
+        { key: 'google_client_id', type: 'string', required: true },
+        { key: 'google_client_secret', type: 'secret', required: true },
+        {
+          key: 'gmail_oauth',
+          type: 'oauth',
+          required: true,
+          provider: 'google',
+          scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+        },
+      ],
+      oauth_providers: [
+        {
+          id: 'google',
+          authorize_url: 'https://accounts.google.com/o/oauth2/v2/auth',
+          token_url: 'https://oauth2.googleapis.com/token',
+          token_auth_style: 'body_form',
+          client_id_field: 'google_client_id',
+          client_secret_field: 'google_client_secret',
+        },
+      ],
+    });
+    const out = await generate({ spec, slots });
+    const manifestText = out.get('manifest.yaml')!.toString('utf-8');
+
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'omadia-oauth-e2e-'));
+    try {
+      const manifestPath = path.join(dir, 'plugin.manifest.yaml');
+      writeFileSync(manifestPath, manifestText, 'utf-8');
+      const entry = await loadManifestFromPath(manifestPath);
+      assert.ok(entry, 'loader accepted the generated manifest');
+      const plugin = entry!.plugin;
+      // (a) descriptor survived the loader's own validation untouched.
+      assert.equal(plugin.oauth_providers?.length, 1);
+      assert.equal(plugin.oauth_providers![0]!.id, 'google');
+      assert.equal(plugin.oauth_providers![0]!.token_auth_style, 'body_form');
+      assert.equal(plugin.oauth_providers![0]!.pkce, true);
+      // acquires_oauth chip is derived from descriptor presence (loader-side).
+      assert.equal(plugin.permissions_summary.acquires_oauth, true);
+      // (b) the type:oauth field is present — this is what arms ctx.oauthTokens.
+      const oauthField = plugin.setup_fields.find((f) => f.key === 'gmail_oauth');
+      assert.ok(oauthField, 'type:oauth setup field survived the loader');
+      assert.equal(oauthField!.type, 'oauth');
+      assert.equal(oauthField!.provider, 'google');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('renders depends_on: [] when spec.depends_on is empty (B.6-9.1)', async () => {

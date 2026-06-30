@@ -124,8 +124,26 @@ export interface SetupField {
   key: string;
   label?: string;
   description?: string;
-  type?: 'string' | 'secret' | 'url' | 'number' | 'boolean';
+  type?: 'string' | 'secret' | 'url' | 'number' | 'boolean' | 'oauth';
   required?: boolean;
+  /** Spec 005 (#371) — for `type: 'oauth'` fields: the oauth_providers[].id
+   *  this field connects through, plus the requested scopes. */
+  provider?: string;
+  scopes?: string[];
+}
+
+/** Spec 005 (#371) — declarative OAuth-provider descriptor. Mirrors
+ *  middleware OAuthProviderSchema / OAuthProviderDescriptor. A `type:oauth`
+ *  setup_field references one by `id` via its `provider`. */
+export interface OAuthProvider {
+  id: string;
+  authorize_url: string;
+  token_url: string;
+  token_auth_style: 'body_form' | 'body_json' | 'basic';
+  pkce?: boolean;
+  extra_authorize_params?: Record<string, string>;
+  client_id_field: string;
+  client_secret_field: string;
 }
 
 export interface AgentSpecSkeleton {
@@ -147,6 +165,9 @@ export interface AgentSpecSkeleton {
   tools: ToolSpec[];
   skill: { role: string; tonality?: string };
   setup_fields: SetupField[];
+  /** Spec 005 (#371) — declarative OAuth-provider descriptors. Optional;
+   *  defaults to [] in spec. Mirrors middleware AgentSpecSkeleton. */
+  oauth_providers?: OAuthProvider[];
   playbook: {
     when_to_use: string;
     not_for: string[];

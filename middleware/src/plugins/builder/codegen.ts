@@ -527,6 +527,12 @@ function reproduceManifestCapabilities(
     }
   }
 
+  // Spec 005 (#371) — top-level oauth_providers block, verbatim. Emit only
+  // when non-empty so non-OAuth agents stay clean (absent block = no broker).
+  if (spec.oauth_providers.length > 0) {
+    doc.set('oauth_providers', doc.createNode(spec.oauth_providers));
+  }
+
   const capsNode = doc.get('capabilities', true);
   if (!yaml.isSeq(capsNode) || capsNode.items.length === 0) {
     return doc.toString();
@@ -580,6 +586,9 @@ function mapSetupFieldSpecToManifest(
   if (field.enum_values && field.enum_values.length > 0) {
     out['enum'] = field.enum_values.map((value) => ({ value, label: value }));
   }
+  // Spec 005 (#371) — forward type:oauth descriptor reference + scopes.
+  if (field.provider) out['provider'] = field.provider;
+  if (field.scopes && field.scopes.length > 0) out['scopes'] = field.scopes;
   return out;
 }
 
