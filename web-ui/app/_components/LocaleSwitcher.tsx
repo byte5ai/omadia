@@ -34,7 +34,7 @@ export function LocaleSwitcher(): React.ReactElement {
         className="appearance-none rounded-md border border-[color:var(--border)] bg-transparent px-2 py-1 text-xs uppercase tracking-[0.18em] text-[color:var(--muted-ink)] outline-none transition-colors hover:text-[color:var(--ink)] focus:border-[color:var(--accent)] disabled:opacity-50"
       >
         {LOCALES.map((locale) => (
-          <option key={locale} value={locale} className="bg-[color:var(--bg)] text-[color:var(--ink)]">
+          <option key={locale} value={locale}>
             {locale.toUpperCase()} · {LOCALE_LABELS[locale]}
           </option>
         ))}

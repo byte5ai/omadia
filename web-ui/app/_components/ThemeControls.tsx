@@ -105,11 +105,7 @@ export function ThemeControls(): React.ReactElement {
           className={selectClass}
         >
           {PALETTES.map((p) => (
-            <option
-              key={p}
-              value={p}
-              className="bg-[color:var(--bg-elevated)] text-[color:var(--fg)]"
-            >
+            <option key={p} value={p}>
               {t(`palette.${p}`)}
             </option>
           ))}
@@ -134,11 +130,7 @@ export function ThemeControls(): React.ReactElement {
           className={selectClass}
         >
           {THEMES.map((m) => (
-            <option
-              key={m}
-              value={m}
-              className="bg-[color:var(--bg-elevated)] text-[color:var(--fg)]"
-            >
+            <option key={m} value={m}>
               {t(`appearance.${m}`)}
             </option>
           ))}
