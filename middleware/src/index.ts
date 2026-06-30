@@ -3481,6 +3481,7 @@ async function main(): Promise<void> {
     flowSigningKey: sessionSigningKey,
     flowPublicBaseUrl,
     pluginStatusRegistry,
+    eventCatalogRegistry,
     resolver: channelPluginResolver,
     coreApi: channelCoreApi,
     routes: routeRegistry,
