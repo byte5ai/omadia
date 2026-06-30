@@ -23,11 +23,14 @@ import {
 import '@xyflow/react/dist/style.css';
 
 import { Button } from '@/app/_components/ui/Button';
-import { ChannelSelect, DurationInput, QuorumSelect, RefPicker } from './GuidedControls';
+import { ChannelSelect, DurationInput, QuorumSelect, RefPicker, SelectPicker } from './GuidedControls';
 import { ScheduleBuilder } from './ScheduleBuilder';
 import { ConditionBuilder } from './ConditionBuilder';
+import { KeyValueEditor } from './KeyValueEditor';
 import {
   ApiError,
+  getConductorActions,
+  getConductorAgents,
   getConductorEventCatalog,
   getConductorRoles,
   getConductorRun,
@@ -168,6 +171,8 @@ function CanvasInner({
 
   const [slug, setSlug] = useState('');
   const [name, setName] = useState('');
+  // Auto-derive the slug from the name until the user edits the slug directly (or a workflow loads).
+  const slugEdited = useRef(false);
   const [triggerKind, setTriggerKind] = useState<'manual' | 'event' | 'cron'>('manual');
   const [triggerEventId, setTriggerEventId] = useState('');
   const [triggerCron, setTriggerCron] = useState('');
@@ -176,6 +181,9 @@ function CanvasInner({
   const [eventCatalog, setEventCatalog] = useState<string[]>([]);
   // Known role keys (US6) — source for the human-step principal picker. Best-effort like the events.
   const [roleCatalog, setRoleCatalog] = useState<string[]>([]);
+  // Live agent + action catalogs — real dropdowns for the agent/action steps. Best-effort.
+  const [agentCatalog, setAgentCatalog] = useState<Array<{ slug: string; name: string }>>([]);
+  const [actionCatalog, setActionCatalog] = useState<string[]>([]);
   const eventListId = useId(); // unique per canvas instance — no datalist id collision on double-mount
 
   useEffect(() => {
@@ -191,6 +199,16 @@ function CanvasInner({
     void getConductorRoles()
       .then((r) => {
         if (!cancelled) setRoleCatalog(Array.isArray(r?.roles) ? r.roles.map((x) => x.key).filter(Boolean) : []);
+      })
+      .catch(() => undefined);
+    void getConductorAgents()
+      .then((r) => {
+        if (!cancelled) setAgentCatalog(Array.isArray(r?.agents) ? r.agents.filter((a) => a.slug) : []);
+      })
+      .catch(() => undefined);
+    void getConductorActions()
+      .then((r) => {
+        if (!cancelled) setActionCatalog(Array.isArray(r?.actions) ? r.actions.filter(Boolean) : []);
       })
       .catch(() => undefined);
     return () => {
@@ -376,7 +394,7 @@ function CanvasInner({
             agentId: String(step.agentId ?? ''),
             prompt: String(step.prompt ?? ''),
             actionId: String(step.actionId ?? ''),
-            input: step.input ? JSON.stringify(step.input, null, 2) : '',
+            input: step.input !== undefined ? JSON.stringify(step.input, null, 2) : '',
             human: {
               principalKind: (principal.kind as 'user' | 'role') ?? 'role',
               principalRef: String(principal.ref ?? ''),
@@ -386,7 +404,7 @@ function CanvasInner({
               deadline: String(human.deadline ?? ''),
               quorum: (human.quorum as 'any' | 'all') ?? 'any',
             },
-            postcondition: step.postcondition ? JSON.stringify(step.postcondition, null, 2) : '',
+            postcondition: step.postcondition !== undefined ? JSON.stringify(step.postcondition, null, 2) : '',
             fallbackTransitionId: String(step.fallbackTransitionId ?? ''),
             isEntry: step.id === g.entryStepId,
           },
@@ -396,7 +414,7 @@ function CanvasInner({
         id: String(tr.id),
         source: String(tr.source),
         target: String(tr.target),
-        data: { guard: tr.guard ? JSON.stringify(tr.guard) : '' },
+        data: { guard: tr.guard !== undefined ? JSON.stringify(tr.guard) : '' },
       }));
       setNodes(newNodes);
       setEdges(newEdges);
@@ -414,6 +432,7 @@ function CanvasInner({
     async (wfSlug: string) => {
       try {
         const { workflow, graph } = await getConductorWorkflowGraph(wfSlug);
+        slugEdited.current = true; // a loaded workflow keeps its slug; don't auto-rewrite from the name
         setSlug(workflow.slug);
         setName(workflow.name);
         hydrateFromGraph(graph);
@@ -489,12 +508,28 @@ function CanvasInner({
       {/* Toolbar */}
       <div className="flex flex-wrap items-end gap-3 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-3">
         <label className={lbl}>
-          {t('slugLabel')}
-          <input className={input} value={slug} onChange={(e) => setSlug(e.target.value)} placeholder="release-signoff" />
+          {t('nameLabel')}
+          <input
+            className={input}
+            value={name}
+            onChange={(e) => {
+              setName(e.target.value);
+              if (!slugEdited.current) setSlug(slugify(e.target.value));
+            }}
+            placeholder="Release sign-off"
+          />
         </label>
         <label className={lbl}>
-          {t('nameLabel')}
-          <input className={input} value={name} onChange={(e) => setName(e.target.value)} placeholder="Release sign-off" />
+          {t('slugLabel')}
+          <input
+            className={`${input} font-mono`}
+            value={slug}
+            onChange={(e) => {
+              slugEdited.current = true;
+              setSlug(slugifyLive(e.target.value));
+            }}
+            placeholder="release-signoff"
+          />
         </label>
         <label className={lbl}>
           {t('triggerLabel')}
@@ -539,7 +574,7 @@ function CanvasInner({
             ))}
           </select>
         </label>
-        <Button variant="primary" busy={saving} disabled={saving} onClick={() => void handleSave()}>
+        <Button variant="primary" busy={saving} disabled={saving || !slug || !name} onClick={() => void handleSave()}>
           {saving ? t('publishing') : t('saveButton')}
         </Button>
         <Button variant="secondary" busy={busy} disabled={busy || !slug} onClick={() => void handleRun()}>
@@ -626,14 +661,25 @@ function CanvasInner({
               </label>
               {sel.data.kind === 'agent' && (
                 <>
-                  <RefPicker
-                    label={t('agentSlugLabel')}
-                    value={sel.data.agentId}
-                    onChange={(v) => patchNode(sel.id, { agentId: v })}
-                    options={[]}
-                    placeholder="fallback"
-                    hint={t('agentSlugHint')}
-                  />
+                  {agentCatalog.length > 0 ? (
+                    <SelectPicker
+                      label={t('agentSlugLabel')}
+                      value={sel.data.agentId}
+                      onChange={(v) => patchNode(sel.id, { agentId: v })}
+                      options={agentCatalog.map((a) => ({ value: a.slug, label: `${a.name} (${a.slug})` }))}
+                      emptyLabel={t('agentPick')}
+                      hint={t('agentSlugHint')}
+                    />
+                  ) : (
+                    <RefPicker
+                      label={t('agentSlugLabel')}
+                      value={sel.data.agentId}
+                      onChange={(v) => patchNode(sel.id, { agentId: v })}
+                      options={[]}
+                      placeholder="fallback"
+                      hint={t('agentSlugHint')}
+                    />
+                  )}
                   <label className={lbl}>
                     {t('promptLabel')}
                     <textarea className={`${input} min-h-[80px]`} value={sel.data.prompt} onChange={(e) => patchNode(sel.id, { prompt: e.target.value })} />
@@ -642,17 +688,25 @@ function CanvasInner({
               )}
               {sel.data.kind === 'action' && (
                 <>
-                  <RefPicker
-                    label={t('actionIdLabel')}
-                    value={sel.data.actionId}
-                    onChange={(v) => patchNode(sel.id, { actionId: v })}
-                    options={[]}
-                    hint={t('actionIdHint')}
-                  />
-                  <label className={lbl}>
-                    {t('inputLabel')}
-                    <textarea className={`${input} min-h-[60px] font-mono`} value={sel.data.input} onChange={(e) => patchNode(sel.id, { input: e.target.value })} placeholder="{}" />
-                  </label>
+                  {actionCatalog.length > 0 ? (
+                    <SelectPicker
+                      label={t('actionIdLabel')}
+                      value={sel.data.actionId}
+                      onChange={(v) => patchNode(sel.id, { actionId: v })}
+                      options={actionCatalog.map((a) => ({ value: a, label: a }))}
+                      emptyLabel={t('actionPick')}
+                      hint={t('actionIdHint')}
+                    />
+                  ) : (
+                    <RefPicker
+                      label={t('actionIdLabel')}
+                      value={sel.data.actionId}
+                      onChange={(v) => patchNode(sel.id, { actionId: v })}
+                      options={[]}
+                      hint={t('actionIdHint')}
+                    />
+                  )}
+                  <KeyValueEditor label={t('inputLabel')} value={sel.data.input} onChange={(v) => patchNode(sel.id, { input: v })} />
                 </>
               )}
               {sel.data.kind === 'human' && (
@@ -785,6 +839,29 @@ function CanvasInner({
       )}
     </div>
   );
+}
+
+/** Slugify a workflow name into the a-z0-9-dash form the backend expects. Folds accents/umlauts
+ *  (München → munchen) so non-ASCII names still produce a usable slug instead of a dash-mangled one. */
+function slugify(s: string): string {
+  return s
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+/** Sanitize the slug field WHILE typing — keeps a hyphen the user is typing (only strips leading
+ *  dashes), so `my-flow` can be authored left-to-right. Full trim happens via slugify on name-derive. */
+function slugifyLive(s: string): string {
+  return s
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/^-+/, '');
 }
 
 export function ConductorCanvas(props: {

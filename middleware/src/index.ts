@@ -2141,6 +2141,7 @@ async function main(): Promise<void> {
       requireAuth,
       getRegistry,
       invokeAction: (toolId, input) => dynamicAgentRuntime.invokeAgentTool(toolId, input),
+      listActions: () => deterministicActionRegistry.list(),
       eventCatalog: eventCatalogRegistry,
       // US5 reminders: resolve a channel's proactive sender from the routines senderRegistry. Adapt
       // ProactiveSender → the worker's minimal shape ({ text } is a valid SemanticAnswer).

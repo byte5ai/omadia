@@ -196,3 +196,34 @@ export function RefPicker(props: {
     </label>
   );
 }
+
+/**
+ * SelectPicker — a real <select> dropdown over a known catalog (agents, actions).
+ * Preserves a stored value that isn't in the catalog (e.g. a disabled agent) as its
+ * own option so loading never silently drops it, and offers an empty option.
+ */
+export function SelectPicker(props: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: ReadonlyArray<{ value: string; label: string }>;
+  emptyLabel?: string;
+  hint?: string;
+}): React.JSX.Element {
+  const present = props.value === '' || props.options.some((o) => o.value === props.value);
+  return (
+    <label className={gcLbl}>
+      {props.label}
+      <select className={gcInput} value={props.value} onChange={(e) => props.onChange(e.target.value)}>
+        <option value="">{props.emptyLabel ?? '—'}</option>
+        {!present ? <option value={props.value}>{props.value}</option> : null}
+        {props.options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      {props.hint ? <span className={gcHint}>{props.hint}</span> : null}
+    </label>
+  );
+}

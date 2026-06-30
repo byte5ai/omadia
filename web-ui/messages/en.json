@@ -491,7 +491,13 @@
     "agentSlugHint": "The orchestrator slug to run for this step.",
     "actionIdHint": "The tool / connector action id to invoke.",
     "scheduleLabel": "Schedule",
-    "durationRawHint": "Custom ISO-8601 duration (e.g. PT1H30M)"
+    "durationRawHint": "Custom ISO-8601 duration (e.g. PT1H30M)",
+    "agentPick": "Select an agent…",
+    "actionPick": "Select an action…",
+    "kvKey": "key",
+    "kvValue": "value",
+    "kvAddRow": "+ Add field",
+    "kvHint": "Tip: wrap text in quotes to keep it a string, e.g. \"123\"."
   },
   "operatorChannels": {
     "title": "Channels",

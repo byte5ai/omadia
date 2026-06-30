@@ -3657,6 +3657,16 @@ export async function getConductorRoles(): Promise<{ roles: Array<{ key: string;
   return getJson(`${CONDUCTOR_BASE}/roles`);
 }
 
+/** Live orchestrator agents, for the Designer's agent-step dropdown. */
+export async function getConductorAgents(): Promise<{ agents: Array<{ slug: string; name: string }> }> {
+  return getJson(`${CONDUCTOR_BASE}/agents`);
+}
+
+/** Registered deterministic-action / tool ids, for the Designer's action-step dropdown. */
+export async function getConductorActions(): Promise<{ actions: string[] }> {
+  return getJson(`${CONDUCTOR_BASE}/actions`);
+}
+
 export interface ConductorAwait {
   id: string;
   runId: string;

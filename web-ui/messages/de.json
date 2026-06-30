@@ -491,7 +491,13 @@
     "agentSlugHint": "Der Orchestrator-Slug, der für diesen Schritt läuft.",
     "actionIdHint": "Die Tool-/Connector-Action-ID, die aufgerufen wird.",
     "scheduleLabel": "Zeitplan",
-    "durationRawHint": "Eigene ISO-8601-Dauer (z. B. PT1H30M)"
+    "durationRawHint": "Eigene ISO-8601-Dauer (z. B. PT1H30M)",
+    "agentPick": "Agent wählen…",
+    "actionPick": "Aktion wählen…",
+    "kvKey": "Schlüssel",
+    "kvValue": "Wert",
+    "kvAddRow": "+ Feld hinzufügen",
+    "kvHint": "Tipp: Text in Anführungszeichen bleibt ein String, z. B. \"123\"."
   },
   "operatorChannels": {
     "title": "Channels",
