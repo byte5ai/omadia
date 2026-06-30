@@ -1,7 +1,13 @@
+import type { ApprovalReminder } from '@omadia/plugin-api';
+
 import { resolveAwaitHolders } from './awaitStore.js';
 import type { ConductorAwait, ConductorAwaitStore } from './awaitStore.js';
 import type { ConductorRunExecutor } from './runExecutor.js';
 import type { ConductorChannelBindingStore } from './channelBindingStore.js';
+
+// Re-export the shared approval contract so callers that build the worker can
+// import it alongside ProactiveSenderLike (the type is owned by plugin-api).
+export type { ApprovalReminder } from '@omadia/plugin-api';
 
 interface ReminderDeps {
   bindingStore: ConductorChannelBindingStore;
@@ -14,7 +20,7 @@ interface ReminderDeps {
  *  (see `@omadia/channel-sdk` SemanticAnswer in harness-channel-sdk/src/outgoing.ts). If the SDK ever
  *  adds a second required field this structural call breaks — re-check there before relying on it. */
 export interface ProactiveSenderLike {
-  send(opts: { conversationRef: unknown; message: { text: string } }): Promise<void>;
+  send(opts: { conversationRef: unknown; message: { text: string }; approval?: ApprovalReminder }): Promise<void>;
 }
 
 /**
@@ -35,6 +41,10 @@ export class ConductorAwaitWorker {
       bindingStore?: ConductorChannelBindingStore;
       resolveRoleHolders?: (roleKey: string) => Promise<string[]>;
       getProactiveSender?: (channel: string) => ProactiveSenderLike | undefined;
+      // Enriches a reminder with the structured approval payload (channels that render a rich
+      // approve/reject card consume it). Absent ⇒ reminders stay text-only. Must never throw —
+      // a reminder must still send its text fallback even when enrichment fails.
+      describeApproval?: (aw: ConductorAwait) => Promise<ApprovalReminder | undefined>;
       intervalMs?: number;
       now?: () => Date;
       log?: (msg: string) => void;
@@ -127,11 +137,14 @@ export class ConductorAwaitWorker {
     if (sender) {
       const refs = await deps.bindingStore.getMany(holders, aw.channelType);
       const text = `Reminder: ${aw.message || 'a pending step awaits your response.'}`;
+      // Best-effort enrichment for channels that render a rich approve/reject card. describeApproval
+      // already swallows its own errors (returns undefined), so text-only delivery is always available.
+      const approval = this.deps.describeApproval ? await this.deps.describeApproval(aw) : undefined;
       for (const holder of holders) {
         const conversationRef = refs.get(holder);
         if (!conversationRef) continue;
         try {
-          await sender.send({ conversationRef, message: { text } });
+          await sender.send({ conversationRef, message: { text }, ...(approval ? { approval } : {}) });
           delivered += 1;
         } catch (err) {
           this.deps.log?.(`[conductor] await ${aw.id} reminder to '${holder}' failed: ${err instanceof Error ? err.message : String(err)}`);

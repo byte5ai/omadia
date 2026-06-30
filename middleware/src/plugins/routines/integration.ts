@@ -56,6 +56,7 @@ export function createRoutinesIntegration(
             {
               text: msg.text,
               ...(msg.cardBody !== undefined ? { cardBody: msg.cardBody } : {}),
+              ...(msg.approval !== undefined ? { approval: msg.approval } : {}),
             },
             routine,
           );

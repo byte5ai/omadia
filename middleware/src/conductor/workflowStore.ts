@@ -60,6 +60,14 @@ export class ConductorWorkflowStore {
     return r.rows[0] ? toWorkflow(r.rows[0]) : null;
   }
 
+  async getById(id: string): Promise<ConductorWorkflow | null> {
+    const r = await this.pool.query<WorkflowRow>(
+      'SELECT id, slug, name, description, status, active_version_id FROM conductor_workflows WHERE id = $1',
+      [id],
+    );
+    return r.rows[0] ? toWorkflow(r.rows[0]) : null;
+  }
+
   async list(): Promise<ConductorWorkflow[]> {
     const r = await this.pool.query<WorkflowRow>(
       'SELECT id, slug, name, description, status, active_version_id FROM conductor_workflows ORDER BY created_at DESC',

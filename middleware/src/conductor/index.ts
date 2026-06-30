@@ -8,6 +8,8 @@ import { runConductorMigrations } from './migrator.js';
 import { ConductorWorkflowStore } from './workflowStore.js';
 import { ConductorRunStore } from './runStore.js';
 import { ConductorAwaitStore } from './awaitStore.js';
+import type { ConductorAwait } from './awaitStore.js';
+import type { ApprovalReminder } from '@omadia/plugin-api';
 import { ConductorRoleStore } from './roleStore.js';
 import { ConductorScheduleStore } from './scheduleStore.js';
 import { ConductorChannelBindingStore } from './channelBindingStore.js';
@@ -26,7 +28,7 @@ export { ConductorWorkflowStore } from './workflowStore.js';
 export { ConductorRunStore } from './runStore.js';
 export { ConductorAwaitStore } from './awaitStore.js';
 export { ConductorRoleStore } from './roleStore.js';
-export { ConductorRunExecutor } from './runExecutor.js';
+export { ConductorRunExecutor, AwaitNotPendingError, AwaitResponderNotHolderError } from './runExecutor.js';
 export { ConductorAwaitWorker } from './awaitWorker.js';
 export { ConductorRunResumeWorker } from './runResumeWorker.js';
 export { ConductorScheduleWorker } from './scheduleWorker.js';
@@ -99,6 +101,33 @@ export async function wireConductor(deps: {
     log,
   });
 
+  // Enriches a reminder with the structured approval payload (WHAT is being approved + the
+  // workflow's current step/progress) so a channel that renders a rich approve/reject card can.
+  // Best-effort: any miss returns undefined and the reminder still delivers its text fallback.
+  const describeApproval = async (aw: ConductorAwait): Promise<ApprovalReminder | undefined> => {
+    try {
+      const run = await runStore.get(aw.runId);
+      if (!run) return undefined;
+      const version = await workflowStore.getVersion(run.workflowVersionId);
+      if (!version) return undefined;
+      const workflow = await workflowStore.getById(version.workflowId);
+      // NB: we intentionally do NOT derive a "step X of Y" from `version.graph.steps` — that array is
+      // authoring order, not execution order (the graph branches via transitions), so a fraction would
+      // misread as linear progress. stepIndex/totalSteps stay reserved for a future run-trace-based
+      // computation (review M2). "Where we are" is conveyed by the current step label.
+      return {
+        awaitId: aw.id,
+        runId: aw.runId,
+        question: aw.message,
+        workflowName: workflow?.name || workflow?.slug || 'Workflow',
+        stepLabel: aw.stepId,
+        quorum: aw.quorum,
+      };
+    } catch {
+      return undefined; // never block a reminder on enrichment
+    }
+  };
+
   // Deadline + reminder worker — fires the in-graph fallback on timeout (US5) and nudges waiting
   // holders on their channel when a reminder interval elapses (reminder deps optional / graphPool-gated).
   const awaitWorker = new ConductorAwaitWorker({
@@ -107,6 +136,7 @@ export async function wireConductor(deps: {
     bindingStore: channelBindingStore,
     resolveRoleHolders: (key) => roleStore.resolve(key),
     ...(deps.getProactiveSender ? { getProactiveSender: deps.getProactiveSender } : {}),
+    describeApproval,
     log,
   });
   awaitWorker.start();
