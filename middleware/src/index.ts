@@ -25,6 +25,7 @@ import { createMemoryBackendRouter } from './routes/memoryBackend.js';
 import { createChatRouter } from './routes/chat.js';
 import { createOperatorAgentsRouter } from './routes/operatorAgents.js';
 import { wireConductor } from './conductor/index.js';
+import { bindingKeyForTurn } from './conductor/principalId.js';
 import { createOperatorChannelsRouter } from './routes/operatorChannels.js';
 import { createAgentBuilderRouter } from './routes/agentBuilder.js';
 import { ScheduleWorker } from './scheduler/scheduleWorker.js';
@@ -1736,7 +1737,14 @@ async function main(): Promise<void> {
         const bindings = serviceRegistry.get<{ upsert(u: string, c: string, r: unknown): Promise<void> }>(
           'conductorChannelBindings',
         );
-        if (bindings) void bindings.upsert(String(info.userId), String(info.channel), info.conversationRef).catch(() => undefined);
+        // Key the binding by the operator-addressable principalRef (Teams: the user's email) when the
+        // channel supplied one, so it matches a human-step principal / role holder; otherwise fall back
+        // to the channel-native userId (e.g. AAD object id). The store canonicalizes the key on write.
+        if (bindings) {
+          void bindings
+            .upsert(bindingKeyForTurn(info), String(info.channel), info.conversationRef)
+            .catch(() => undefined);
+        }
       }),
     );
     console.log(

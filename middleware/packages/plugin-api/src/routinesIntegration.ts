@@ -53,6 +53,13 @@ export interface RoutinesIntegration {
     channel: string;
     conversationRef: unknown;
     /**
+     * Operator-addressable principal id used as the Conductor channel-binding key, so proactive
+     * reminders / approvals reach this user. For Teams this is the lowercased email/UPN — the id an
+     * operator enters as a role holder or human-step principal. Omitted ⇒ the binding falls back to
+     * `userId` (the channel-native id, e.g. AAD object id). Does NOT affect routine attribution.
+     */
+    principalRef?: string;
+    /**
      * Cold-start authorization (default `false`). When `true`, the
      * `manage_routine` tool permits this user to create routines that
      * proactively message OTHER people (via `targetEmail` → a
