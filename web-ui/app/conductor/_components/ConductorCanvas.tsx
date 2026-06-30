@@ -23,9 +23,13 @@ import {
 import '@xyflow/react/dist/style.css';
 
 import { Button } from '@/app/_components/ui/Button';
+import { ChannelSelect, DurationInput, QuorumSelect, RefPicker } from './GuidedControls';
+import { ScheduleBuilder } from './ScheduleBuilder';
+import { ConditionBuilder } from './ConditionBuilder';
 import {
   ApiError,
   getConductorEventCatalog,
+  getConductorRoles,
   getConductorRun,
   getConductorWorkflowGraph,
   previewConductorWorkflow,
@@ -170,6 +174,8 @@ function CanvasInner({
   // Declared emittable events (US4 / FR-028) — the Designer sources the event-trigger picker from the
   // live catalog. Best-effort: an empty catalog just falls back to free-text entry.
   const [eventCatalog, setEventCatalog] = useState<string[]>([]);
+  // Known role keys (US6) — source for the human-step principal picker. Best-effort like the events.
+  const [roleCatalog, setRoleCatalog] = useState<string[]>([]);
   const eventListId = useId(); // unique per canvas instance — no datalist id collision on double-mount
 
   useEffect(() => {
@@ -181,6 +187,11 @@ function CanvasInner({
       })
       // Errors degrade to the empty-catalog hint + free-text entry. (A 401 still triggers getJson's
       // standard login redirect — same as every other page fetch — which is the desired behaviour.)
+      .catch(() => undefined);
+    void getConductorRoles()
+      .then((r) => {
+        if (!cancelled) setRoleCatalog(Array.isArray(r?.roles) ? r.roles.map((x) => x.key).filter(Boolean) : []);
+      })
       .catch(() => undefined);
     return () => {
       cancelled = true;
@@ -515,10 +526,7 @@ function CanvasInner({
           </label>
         )}
         {triggerKind === 'cron' && (
-          <label className={lbl}>
-            cron
-            <input className={input} value={triggerCron} onChange={(e) => setTriggerCron(e.target.value)} placeholder="0 9 * * 1" />
-          </label>
+          <ScheduleBuilder label={t('scheduleLabel')} value={triggerCron} onChange={setTriggerCron} />
         )}
         <label className={lbl}>
           {t('loadLabel')}
@@ -618,10 +626,14 @@ function CanvasInner({
               </label>
               {sel.data.kind === 'agent' && (
                 <>
-                  <label className={lbl}>
-                    {t('agentSlugLabel')}
-                    <input className={input} value={sel.data.agentId} onChange={(e) => patchNode(sel.id, { agentId: e.target.value })} />
-                  </label>
+                  <RefPicker
+                    label={t('agentSlugLabel')}
+                    value={sel.data.agentId}
+                    onChange={(v) => patchNode(sel.id, { agentId: v })}
+                    options={[]}
+                    placeholder="fallback"
+                    hint={t('agentSlugHint')}
+                  />
                   <label className={lbl}>
                     {t('promptLabel')}
                     <textarea className={`${input} min-h-[80px]`} value={sel.data.prompt} onChange={(e) => patchNode(sel.id, { prompt: e.target.value })} />
@@ -630,10 +642,13 @@ function CanvasInner({
               )}
               {sel.data.kind === 'action' && (
                 <>
-                  <label className={lbl}>
-                    {t('actionIdLabel')}
-                    <input className={input} value={sel.data.actionId} onChange={(e) => patchNode(sel.id, { actionId: e.target.value })} />
-                  </label>
+                  <RefPicker
+                    label={t('actionIdLabel')}
+                    value={sel.data.actionId}
+                    onChange={(v) => patchNode(sel.id, { actionId: v })}
+                    options={[]}
+                    hint={t('actionIdHint')}
+                  />
                   <label className={lbl}>
                     {t('inputLabel')}
                     <textarea className={`${input} min-h-[60px] font-mono`} value={sel.data.input} onChange={(e) => patchNode(sel.id, { input: e.target.value })} placeholder="{}" />
@@ -642,49 +657,61 @@ function CanvasInner({
               )}
               {sel.data.kind === 'human' && (
                 <>
-                  <label className={lbl}>
+                  <div className={lbl}>
                     {t('principalLabel')}
                     <div className="flex gap-2">
                       <select
-                        className={input}
+                        className={`${input} w-24`}
                         value={sel.data.human.principalKind}
                         onChange={(e) => patchNode(sel.id, { human: { ...sel.data.human, principalKind: e.target.value as 'user' | 'role' } })}
                       >
                         <option value="role">role</option>
                         <option value="user">user</option>
                       </select>
-                      <input
-                        className={input}
-                        value={sel.data.human.principalRef}
-                        onChange={(e) => patchNode(sel.id, { human: { ...sel.data.human, principalRef: e.target.value } })}
-                        placeholder="approver.release"
-                      />
+                      <div className="flex-1">
+                        <RefPicker
+                          label=""
+                          value={sel.data.human.principalRef}
+                          onChange={(v) => patchNode(sel.id, { human: { ...sel.data.human, principalRef: v } })}
+                          options={sel.data.human.principalKind === 'role' ? roleCatalog : []}
+                          placeholder={sel.data.human.principalKind === 'role' ? 'approver.release' : 'name@firm.com'}
+                        />
+                      </div>
                     </div>
-                  </label>
-                  <label className={lbl}>
-                    {t('channelLabel')}
-                    <input className={input} value={sel.data.human.channel} onChange={(e) => patchNode(sel.id, { human: { ...sel.data.human, channel: e.target.value } })} />
-                  </label>
+                  </div>
+                  <ChannelSelect
+                    label={t('channelLabel')}
+                    value={sel.data.human.channel}
+                    onChange={(v) => patchNode(sel.id, { human: { ...sel.data.human, channel: v } })}
+                  />
                   <label className={lbl}>
                     {t('messageLabel')}
                     <textarea className={`${input} min-h-[50px]`} value={sel.data.human.message} onChange={(e) => patchNode(sel.id, { human: { ...sel.data.human, message: e.target.value } })} />
                   </label>
                   <div className="grid grid-cols-2 gap-2">
-                    <label className={lbl}>
-                      {t('reminderLabel')}
-                      <input className={input} value={sel.data.human.reminderInterval} onChange={(e) => patchNode(sel.id, { human: { ...sel.data.human, reminderInterval: e.target.value } })} placeholder="PT6H" />
-                    </label>
-                    <label className={lbl}>
-                      {t('deadlineLabel')}
-                      <input className={input} value={sel.data.human.deadline} onChange={(e) => patchNode(sel.id, { human: { ...sel.data.human, deadline: e.target.value } })} placeholder="PT24H" />
-                    </label>
+                    <DurationInput
+                      label={t('reminderLabel')}
+                      value={sel.data.human.reminderInterval}
+                      onChange={(v) => patchNode(sel.id, { human: { ...sel.data.human, reminderInterval: v } })}
+                    />
+                    <DurationInput
+                      label={t('deadlineLabel')}
+                      value={sel.data.human.deadline}
+                      onChange={(v) => patchNode(sel.id, { human: { ...sel.data.human, deadline: v } })}
+                    />
                   </div>
+                  <QuorumSelect
+                    label={t('quorumLabel')}
+                    value={sel.data.human.quorum}
+                    onChange={(q) => patchNode(sel.id, { human: { ...sel.data.human, quorum: q } })}
+                  />
                 </>
               )}
-              <label className={lbl}>
-                {t('postconditionLabel')}
-                <textarea className={`${input} min-h-[50px] font-mono`} value={sel.data.postcondition} onChange={(e) => patchNode(sel.id, { postcondition: e.target.value })} placeholder='{"op":"exists","path":"stepResult.text"}' />
-              </label>
+              <ConditionBuilder
+                label={t('postconditionLabel')}
+                value={sel.data.postcondition}
+                onChange={(v) => patchNode(sel.id, { postcondition: v })}
+              />
               <label className={lbl}>
                 {t('fallbackLabel')}
                 <select className={input} value={sel.data.fallbackTransitionId} onChange={(e) => patchNode(sel.id, { fallbackTransitionId: e.target.value })}>
@@ -707,15 +734,11 @@ function CanvasInner({
             <div className="grid gap-3">
               <div className="text-[12px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">{t('transitionLabel')}</div>
               <div className="font-mono text-[12px] text-[color:var(--fg-muted)]">{selEdge.id}</div>
-              <label className={lbl}>
-                {t('guardLabel')}
-                <textarea
-                  className={`${input} min-h-[60px] font-mono`}
-                  value={(selEdge.data?.guard as string) ?? ''}
-                  onChange={(e) => setEdges((es) => es.map((ed) => (ed.id === selEdge.id ? { ...ed, data: { ...ed.data, guard: e.target.value } } : ed)))}
-                  placeholder='{"op":"eq","path":"stepResult.approved","value":true}'
-                />
-              </label>
+              <ConditionBuilder
+                label={t('guardLabel')}
+                value={(selEdge.data?.guard as string) ?? ''}
+                onChange={(v) => setEdges((es) => es.map((ed) => (ed.id === selEdge.id ? { ...ed, data: { ...ed.data, guard: v } } : ed)))}
+              />
             </div>
           )}
         </div>

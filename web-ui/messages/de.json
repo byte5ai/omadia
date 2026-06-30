@@ -132,11 +132,21 @@
       "h1": "Admin",
       "subtitle": "Agenten, Modelle, Wissen, Plugins, Zugänge und Kosten dieser omadia-Instanz verwalten und überwachen.",
       "groups": {
-        "llm": { "heading": "LLM-Zugang" },
-        "knowledge": { "heading": "Wissen & Memory" },
-        "plugins": { "heading": "Plugins" },
-        "access": { "heading": "Zugang" },
-        "danger": { "heading": "Gefahrenzone" }
+        "llm": {
+          "heading": "LLM-Zugang"
+        },
+        "knowledge": {
+          "heading": "Wissen & Memory"
+        },
+        "plugins": {
+          "heading": "Plugins"
+        },
+        "access": {
+          "heading": "Zugang"
+        },
+        "danger": {
+          "heading": "Gefahrenzone"
+        }
       },
       "cards": {
         "llmAccess": {
@@ -431,7 +441,57 @@
     "colActor": "Akteur",
     "runTriggerLabel": "Auslöser",
     "startedLabel": "Gestartet",
-    "endedLabel": "Beendet"
+    "endedLabel": "Beendet",
+    "quorumLabel": "Quorum",
+    "quorumAny": "Eine Antwort genügt",
+    "quorumAll": "Alle müssen zustimmen",
+    "quorumAnyHint": "Der Schritt geht weiter, sobald ein Freigeber antwortet.",
+    "quorumAllHint": "Jeder aktuelle Freigeber muss antworten, bevor es weitergeht.",
+    "durationUnit_minutes": "Minuten",
+    "durationUnit_hours": "Stunden",
+    "durationUnit_days": "Tage",
+    "durationUnit_weeks": "Wochen",
+    "cronModeHourly": "Stündlich",
+    "cronModeDaily": "Täglich",
+    "cronModeWeekly": "Wöchentlich",
+    "cronModeMonthly": "Monatlich",
+    "cronModeAdvanced": "Erweitert (Cron)",
+    "cronWeekday": "Wochentag",
+    "cronDayOfMonth": "Tag im Monat",
+    "cronTime": "Uhrzeit",
+    "cronRaw": "Cron-Ausdruck",
+    "cronPreviewHourly": "Stündlich",
+    "cronPreviewDaily": "Täglich um {time}",
+    "cronPreviewWeekly": "Jeden {day} um {time}",
+    "cronPreviewMonthly": "Am {dom}. jedes Monats um {time}",
+    "cronPreviewAdvanced": "Eigener Zeitplan (Cron)",
+    "weekday_0": "Sonntag",
+    "weekday_1": "Montag",
+    "weekday_2": "Dienstag",
+    "weekday_3": "Mittwoch",
+    "weekday_4": "Donnerstag",
+    "weekday_5": "Freitag",
+    "weekday_6": "Samstag",
+    "conditionAdvanced": "Erweitert (JSON)",
+    "conditionSimple": "Einfach",
+    "conditionCombiner": "Verknüpfen mit",
+    "conditionAnd": "Alle (UND)",
+    "conditionOr": "Eine (ODER)",
+    "conditionAddRow": "+ Bedingung hinzufügen",
+    "conditionRemove": "Bedingung entfernen",
+    "conditionOp_eq": "gleich",
+    "conditionOp_ne": "ungleich",
+    "conditionOp_gt": "größer als",
+    "conditionOp_lt": "kleiner als",
+    "conditionOp_gte": "größer/gleich",
+    "conditionOp_lte": "kleiner/gleich",
+    "conditionOp_exists": "existiert",
+    "conditionOp_in": "ist eine von",
+    "conditionOp_matches": "passt auf",
+    "agentSlugHint": "Der Orchestrator-Slug, der für diesen Schritt läuft.",
+    "actionIdHint": "Die Tool-/Connector-Action-ID, die aufgerufen wird.",
+    "scheduleLabel": "Zeitplan",
+    "durationRawHint": "Eigene ISO-8601-Dauer (z. B. PT1H30M)"
   },
   "operatorChannels": {
     "title": "Channels",
