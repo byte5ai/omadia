@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
+import { cookies } from 'next/headers';
 import { Geist, Geist_Mono, Source_Serif_4 } from 'next/font/google';
 import { NextIntlClientProvider } from 'next-intl';
 import { getLocale, getMessages, getTranslations } from 'next-intl/server';
@@ -14,6 +15,7 @@ import { StreamRunner } from './_components/StreamRunner';
 import { StreamToasts } from './_components/StreamToasts';
 import { ChatSessionsProvider } from './_lib/chatSessionsContext';
 import { StreamStoreProvider } from './_lib/streamStore';
+import { UI_PREFS_COOKIE, parseUiPrefsCookie } from './_lib/uiPrefs';
 import './globals.css';
 
 /**
@@ -48,10 +50,18 @@ const mono = Geist_Mono({
   preload: false,
 });
 
-/* Pre-hydration palette/theme application — sets data-palette + data-theme on
-   <html> from localStorage before first paint so there is no flash of the
-   default palette/mode. Mirrors the keys ThemeControls writes. */
-const THEME_BOOTSTRAP = `(function(){try{var d=document.documentElement;var p=localStorage.getItem('omadia-palette');d.setAttribute('data-palette',(p==='petrol'||p==='atelier'||p==='lagoon')?p:'lagoon');var t=localStorage.getItem('omadia-theme');if(t==='light'||t==='dark')d.setAttribute('data-theme',t);}catch(e){document.documentElement.setAttribute('data-palette','lagoon');}})();`;
+/**
+ * No-FOUC palette/theme (issue #287). The choice now lives in a server-side
+ * per-user store (/api/v1/ui-prefs); the browser mirrors it into the
+ * `omadia-ui-prefs` cookie, which ThemeControls writes on every change. We
+ * read that cookie here in the RSC and render `data-palette`/`data-theme`
+ * straight onto <html>, so the correct palette/mode is in the very first
+ * server response — no flash, no client bootstrap script. ThemeControls
+ * re-fetches the store on mount to seed/correct the cookie on a fresh device.
+ *
+ * The cookie name + shape and the parser live in `_lib/uiPrefs`, shared with
+ * the API client and ThemeControls so the contract stays in one place.
+ */
 
 export async function generateMetadata(): Promise<Metadata> {
   const t = await getTranslations('layout');
@@ -69,17 +79,17 @@ export default async function RootLayout({
   const locale = await getLocale();
   const messages = await getMessages();
   const t = await getTranslations('layout');
+  const jar = await cookies();
+  const { palette, theme } = parseUiPrefsCookie(jar.get(UI_PREFS_COOKIE)?.value);
   return (
     <html
       lang={locale}
       className={`${sans.variable} ${serif.variable} ${mono.variable}`}
+      data-palette={palette}
+      {...(theme ? { 'data-theme': theme } : {})}
       suppressHydrationWarning
     >
       <body className="flex h-full flex-col">
-        <script
-          // Runs before paint; sets palette/mode from localStorage (no FOUC).
-          dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP }}
-        />
         <NextIntlClientProvider locale={locale} messages={messages}>
           <ChatSessionsProvider>
             <StreamStoreProvider>
