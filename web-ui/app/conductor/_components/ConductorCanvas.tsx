@@ -416,12 +416,14 @@ function CanvasInner({
   // Load the workflow the parent asked us to edit. The parent hands us a fresh
   // object (new nonce) on every "Edit" click, so this fires once per click.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- prop-nonce-triggered imperative load
     if (editRequest?.slug) void loadWorkflow(editRequest.slug);
   }, [editRequest, loadWorkflow]);
 
   // Mirror the conversational builder's draft into the canvas (US7). A new nonce each turn means a
   // re-push of the same-shaped graph still re-renders, so chat edits show up live on the canvas.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- prop-nonce-triggered imperative load
     if (loadGraphRequest) hydrateFromGraph(loadGraphRequest.graph);
   }, [loadGraphRequest, hydrateFromGraph]);
 

@@ -16,11 +16,11 @@ import type { ConductorScheduleStore } from './scheduleStore.js';
 import type { ConductorEventRouter } from './eventRouter.js';
 import {
   AwaitNotPendingError,
-  ConductorRunExecutor,
   WorkflowDisabledError,
   WorkflowNotFoundError,
   WorkflowNotPublishedError,
 } from './runExecutor.js';
+import type { ConductorRunExecutor } from './runExecutor.js';
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);

@@ -139,6 +139,7 @@ export function ConductorRunHistory({ slug, onClose }: { slug: string; onClose: 
   }, [slug]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset + fetch-on-mount loader
     setSelected(null);
     void reload();
   }, [reload]);

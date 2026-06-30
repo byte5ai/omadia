@@ -122,6 +122,7 @@ export default function ConductorPage(): React.JSX.Element {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount loader
     void reload();
   }, [reload]);
 
