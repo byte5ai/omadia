@@ -3,7 +3,7 @@ import { getTranslations } from 'next-intl/server';
 
 import { redirectIfUnauthorized } from '../../_lib/authRedirect';
 import { listSkills, type SkillNode } from '../../_lib/agentBuilder';
-import { SkillsDashboard } from './_components/SkillsDashboard';
+import { SkillsRegistry } from '../../_components/admin/SkillsRegistry';
 
 export const metadata: Metadata = {
   title: 'Skills · omadia',
@@ -34,7 +34,7 @@ export default async function OperatorSkillsPage(): Promise<React.ReactElement> 
           {loadError}
         </div>
       ) : (
-        <SkillsDashboard initial={initial} />
+        <SkillsRegistry initial={initial} />
       )}
     </main>
   );

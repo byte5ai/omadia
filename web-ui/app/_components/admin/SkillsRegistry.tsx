@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslations } from 'next-intl';
 
 import {
@@ -9,17 +9,25 @@ import {
   listSkills,
   type SkillDetail,
   type SkillNode,
-} from '../../../_lib/agentBuilder';
-import { SkillEditor } from '../../../_components/admin/SkillEditor';
-import { SkillImportModal } from '../../../_components/admin/SkillImportModal';
+} from '../../_lib/agentBuilder';
+import { SkillEditor } from './SkillEditor';
+import { SkillImportModal } from './SkillImportModal';
 
 /**
- * The central skills registry: list + search on the left, the shared skill
- * editor on the right, plus import / export / delete and a "used by N agents"
- * readout. One editor everywhere — the same <SkillEditor> the node-graph
- * inspector uses.
+ * The central skills registry, reused wherever skills are managed (the Operator
+ * screen and the conversational Builder's Skills tab): list + search, the shared
+ * <SkillEditor>, import, export (via the editor), delete with a used-by-aware
+ * confirm, and a "used by N agents" readout. Self-loading — pass `initial` for
+ * an SSR first paint, or omit it and the component fetches on mount.
  */
-export function SkillsDashboard({ initial }: { initial: SkillNode[] }): React.ReactElement {
+export function SkillsRegistry({
+  initial = [],
+  showScopeHint = false,
+}: {
+  initial?: SkillNode[];
+  /** Show a caption clarifying this manages the shared registry (builder tab). */
+  showScopeHint?: boolean;
+}): React.ReactElement {
   const t = useTranslations('skills');
   const [skills, setSkills] = useState<SkillNode[]>(initial);
   const [query, setQuery] = useState('');
@@ -31,6 +39,25 @@ export function SkillsDashboard({ initial }: { initial: SkillNode[] }): React.Re
   const refresh = useCallback(async () => {
     setSkills((await listSkills()).skills);
   }, []);
+
+  // Load on mount when no SSR list was provided (the builder tab). When
+  // `initial` is present (the operator page SSRs a fresh list under
+  // force-dynamic) we skip the redundant round-trip. The state update lives in
+  // the async callback, guarded against a late resolve after unmount.
+  useEffect(() => {
+    if (initial.length > 0) return undefined;
+    let active = true;
+    void listSkills()
+      .then((r) => {
+        if (active) setSkills(r.skills);
+      })
+      .catch(() => {
+        /* keep the initial list on failure */
+      });
+    return () => {
+      active = false;
+    };
+  }, [initial.length]);
 
   const select = useCallback(async (skill: SkillNode) => {
     setSelected(skill);
@@ -62,8 +89,14 @@ export function SkillsDashboard({ initial }: { initial: SkillNode[] }): React.Re
   );
 
   return (
-    <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
-      <section className="flex flex-col gap-3">
+    <div className="flex flex-col gap-3">
+      {showScopeHint && (
+        <p className="rounded-md bg-[color:var(--bg-soft)] px-3 py-2 text-xs text-[color:var(--fg-muted)]">
+          {t('scopeHint')}
+        </p>
+      )}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
+        <section className="flex flex-col gap-3">
         <div className="flex gap-2">
           <input
             value={query}
@@ -161,7 +194,8 @@ export function SkillsDashboard({ initial }: { initial: SkillNode[] }): React.Re
         ) : (
           <p className="text-sm text-[color:var(--fg-muted)]">{t('selectHint')}</p>
         )}
-      </section>
+        </section>
+      </div>
 
       {importing && (
         <SkillImportModal
