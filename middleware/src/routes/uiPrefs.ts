@@ -83,7 +83,14 @@ async function readPrefs(store: MemoryStore, path: string): Promise<UiPrefs> {
 }
 
 function requireSessionUserId(req: Request, res: Response): string | null {
-  const id = req.session?.omadia_user_id;
+  // `omadia_user_id` (the KG cluster id) is OPTIONAL on a live session — it is
+  // only set when resolveChannelIdentity resolves, which returns undefined in
+  // the eventual-consistency window of a new user's first OIDC login and on any
+  // KG hiccup. Falling back to `sub` (a required claim, guaranteed by
+  // requireAuth) keys the store on an id that is always present, so a live
+  // session never 401s here and the client is never bounced to /login. The 401
+  // then only fires for a genuinely session-less request.
+  const id = req.session?.omadia_user_id ?? req.session?.sub;
   if (!id) {
     res.status(401).json({ code: 'auth.required', message: 'login required' });
     return null;

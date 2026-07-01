@@ -31,6 +31,11 @@ interface Harness {
 async function makeHarness(
   userId: string | null,
   sharedStore?: InMemoryMemoryStore,
+  // Which session claim carries the id. `omadia_user_id` is the happy path;
+  // `sub` exercises the fallback for a live session in the first-login /
+  // KG-degraded window where `omadia_user_id` is absent (a required claim, so
+  // it must still key the store instead of 401-ing the user to /login).
+  claim: 'omadia_user_id' | 'sub' = 'omadia_user_id',
 ): Promise<Harness> {
   const store = sharedStore ?? new InMemoryMemoryStore();
 
@@ -38,8 +43,8 @@ async function makeHarness(
   app.use(express.json());
   if (userId) {
     app.use((req: Request, _res: Response, next: NextFunction) => {
-      (req as unknown as { session: { omadia_user_id: string } }).session = {
-        omadia_user_id: userId,
+      (req as unknown as { session: Record<string, string> }).session = {
+        [claim]: userId,
       };
       next();
     });
@@ -212,6 +217,19 @@ describe('ui-prefs router', () => {
       const put = await req(h.baseUrl, 'PUT', { palette: 'lagoon' });
       assert.equal(put.status, 204);
       assert.deepEqual((await req(h.baseUrl, 'GET')).body, { palette: 'lagoon' });
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('keys the store on sub when omadia_user_id is absent (live session, no 401)', async () => {
+    const h = await makeHarness('sub-only-user', undefined, 'sub');
+    try {
+      const put = await req(h.baseUrl, 'PUT', { palette: 'petrol' });
+      assert.equal(put.status, 204);
+      const get = await req(h.baseUrl, 'GET');
+      assert.equal(get.status, 200);
+      assert.equal(get.body['palette'], 'petrol');
     } finally {
       await h.close();
     }
