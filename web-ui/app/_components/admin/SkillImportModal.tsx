@@ -112,6 +112,19 @@ export function SkillImportModal({
             <div className="mt-1 text-xs text-[color:var(--accent)]">
               {t(`outcome.${preview.outcome}`)}
             </div>
+            {preview.risks.length > 0 && (
+              <div className="mt-2 rounded-md border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/10 p-2 text-xs text-[color:var(--warning)]">
+                <div className="font-semibold">{t('risks.title')}</div>
+                <ul className="mt-1 flex flex-col gap-1">
+                  {preview.risks.map((r) => (
+                    <li key={r.code}>
+                      <span className="font-medium">{t(`risks.code.${r.code}`)}</span>
+                      <span className="text-[color:var(--fg-muted)]"> — “{r.excerpt}”</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
         )}
 

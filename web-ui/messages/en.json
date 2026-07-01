@@ -255,6 +255,16 @@
           "created": "Will be created as a new skill.",
           "updated": "Will update the existing imported skill.",
           "unchanged": "Already imported — no changes."
+        },
+        "risks": {
+          "title": "Review before importing — this content looks like it may try to:",
+          "code": {
+            "instruction_override": "Override earlier instructions",
+            "system_prompt_reference": "Reassign the agent's role / system prompt",
+            "tool_coercion": "Force tool calls or bypass confirmation",
+            "data_exfiltration": "Send data or secrets somewhere",
+            "hidden_content": "Contain hidden or obfuscated content"
+          }
         }
       },
       "toolbox": {

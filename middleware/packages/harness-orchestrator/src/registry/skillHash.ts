@@ -9,6 +9,11 @@ import { createHash } from 'node:crypto';
  * of frontmatter key order, so re-imports and edits converge instead of
  * duplicating. The canonical form sorts object keys recursively, so
  * `{a:1,b:2}` and `{b:2,a:1}` produce the same hash.
+ *
+ * Versioning decision (v1): content-hash identity is the whole versioning
+ * story — it powers dedup and tells "changed" from "unchanged". An explicit
+ * version-history table with rollback is deliberately deferred until there is
+ * demand; the hash already gives a stable content identity to build on.
  */
 export function computeSkillHash(
   frontmatter: Record<string, unknown>,

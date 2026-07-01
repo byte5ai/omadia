@@ -383,6 +383,19 @@ export interface ImportSkillInput {
   dryRun?: boolean;
 }
 
+export type SkillRiskCode =
+  | 'instruction_override'
+  | 'system_prompt_reference'
+  | 'tool_coercion'
+  | 'data_exfiltration'
+  | 'hidden_content';
+
+export interface SkillRisk {
+  code: SkillRiskCode;
+  severity: 'warn';
+  excerpt: string;
+}
+
 export interface SkillImportResult {
   outcome: ImportOutcome;
   skill: {
@@ -394,6 +407,7 @@ export interface SkillImportResult {
     sourcePath: string | null;
   };
   contentHash: string;
+  risks: SkillRisk[];
   skillId?: string;
 }
 

@@ -1,6 +1,7 @@
 import { computeSkillHash, type SkillInput, type SkillRow } from '@omadia/orchestrator';
 
 import { parseSkillMarkdown } from './skillLoader.js';
+import { scanSkillForRisks, type SkillRisk } from './skillGuard.js';
 
 /**
  * Skill import (epic #391, Part 1). Turns a raw SKILL.md string (pasted or read
@@ -35,6 +36,8 @@ export interface SkillImportResult {
   /** Normalized skill (drives the preview card). */
   readonly skill: NormalizedSkill;
   readonly contentHash: string;
+  /** Heuristic pre-activation risk findings surfaced in the preview. */
+  readonly risks: SkillRisk[];
   /** Id of the affected/existing skill (absent for a dry-run create). */
   readonly skillId?: string;
 }
@@ -107,12 +110,13 @@ export async function importSkillMarkdown(
 ): Promise<SkillImportResult> {
   const normalized = normalizeSkillMarkdown(req);
   const contentHash = computeSkillHash(normalized.frontmatter, normalized.body);
+  const risks = scanSkillForRisks(normalized.frontmatter, normalized.body);
 
   // 1. Already imported, byte-identical → no-op. Scoped to file skills so an
   //    identical host skill can't produce a self-inconsistent "unchanged".
   const byHash = await store.getSkillByContentHash(contentHash, 'file');
   if (byHash) {
-    return { outcome: 'unchanged', skill: normalized, contentHash, skillId: byHash.id };
+    return { outcome: 'unchanged', skill: normalized, contentHash, risks, skillId: byHash.id };
   }
 
   // 2. Newer version of the same origin file → update in place. Requires a
@@ -127,7 +131,7 @@ export async function importSkillMarkdown(
     bySlug.sourcePath === normalized.sourcePath
   ) {
     if (opts.dryRun) {
-      return { outcome: 'updated', skill: normalized, contentHash, skillId: bySlug.id };
+      return { outcome: 'updated', skill: normalized, contentHash, risks, skillId: bySlug.id };
     }
     const row = await store.upsertSkill({
       slug: bySlug.slug,
@@ -138,14 +142,14 @@ export async function importSkillMarkdown(
       source: 'file',
       sourcePath: normalized.sourcePath,
     });
-    return { outcome: 'updated', skill: { ...normalized, slug: bySlug.slug }, contentHash, skillId: row.id };
+    return { outcome: 'updated', skill: { ...normalized, slug: bySlug.slug }, contentHash, risks, skillId: row.id };
   }
 
   // 3. Create, disambiguating the slug against any existing skill.
   const targetSlug = bySlug ? await uniqueSlug(store, normalized.slug) : normalized.slug;
   const created = { ...normalized, slug: targetSlug };
   if (opts.dryRun) {
-    return { outcome: 'created', skill: created, contentHash };
+    return { outcome: 'created', skill: created, contentHash, risks };
   }
 
   // Race-safe insert: ON CONFLICT DO NOTHING, re-disambiguate if a concurrent
@@ -162,7 +166,7 @@ export async function importSkillMarkdown(
       sourcePath: normalized.sourcePath,
     });
     if (row) {
-      return { outcome: 'created', skill: { ...normalized, slug }, contentHash, skillId: row.id };
+      return { outcome: 'created', skill: { ...normalized, slug }, contentHash, risks, skillId: row.id };
     }
   }
   throw new Error(`could not create imported skill "${normalized.slug}" after repeated slug conflicts`);

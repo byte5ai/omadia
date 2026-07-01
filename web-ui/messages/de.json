@@ -255,6 +255,16 @@
           "created": "Wird als neuer Skill angelegt.",
           "updated": "Aktualisiert den bestehenden importierten Skill.",
           "unchanged": "Bereits importiert — keine Änderungen."
+        },
+        "risks": {
+          "title": "Vor dem Import prüfen — dieser Inhalt könnte versuchen:",
+          "code": {
+            "instruction_override": "Frühere Anweisungen zu überschreiben",
+            "system_prompt_reference": "Die Rolle / den System-Prompt des Agenten umzudefinieren",
+            "tool_coercion": "Tool-Aufrufe zu erzwingen oder Bestätigungen zu umgehen",
+            "data_exfiltration": "Daten oder Geheimnisse irgendwohin zu senden",
+            "hidden_content": "Versteckten oder verschleierten Inhalt zu enthalten"
+          }
         }
       },
       "toolbox": {
