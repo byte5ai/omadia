@@ -114,6 +114,16 @@
       "failed": "Could not install",
       "retry": "Try again",
       "browseAll": "Browse all plugins",
+      "bringSkills": {
+        "kicker": "Optional",
+        "title": "Bring your skills",
+        "subtitle": "Already have skills you trust — e.g. from Claude? Import one to get an early win with your own work. You can skip this.",
+        "cta": "Import a skill",
+        "imported": "Imported \"{name}\" — now build an agent that uses it.",
+        "toRegistry": "View in Skills",
+        "toBuilder": "Build an agent",
+        "importAnother": "Import another"
+      },
       "dismiss": "Hide onboarding",
       "reenable": "Show onboarding",
       "empty": "No role profiles available. Connect a registry to see recommendations.",

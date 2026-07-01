@@ -114,6 +114,16 @@
       "failed": "Installation fehlgeschlagen",
       "retry": "Erneut versuchen",
       "browseAll": "Alle Plugins ansehen",
+      "bringSkills": {
+        "kicker": "Optional",
+        "title": "Bring deine Skills mit",
+        "subtitle": "Du hast schon Skills, denen du vertraust — z. B. aus Claude? Importiere einen für einen schnellen ersten Erfolg mit deiner eigenen Arbeit. Du kannst das überspringen.",
+        "cta": "Skill importieren",
+        "imported": "\"{name}\" importiert — jetzt einen Agenten damit bauen.",
+        "toRegistry": "In Skills ansehen",
+        "toBuilder": "Agent bauen",
+        "importAnother": "Weiteren importieren"
+      },
       "dismiss": "Onboarding ausblenden",
       "reenable": "Onboarding anzeigen",
       "empty": "Keine Rollenprofile verfügbar. Verbinde eine Registry, um Empfehlungen zu sehen.",
