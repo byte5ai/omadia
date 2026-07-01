@@ -38,14 +38,20 @@ describe('AgentGraphStore skill lifecycle (pg)', { skip: !pgAvailable }, () => {
   const pool = probePool;
   let store: AgentGraphStore;
 
+  async function cleanup(): Promise<void> {
+    // Delete agents first (cascades sub-agents), then skills.
+    await pool.query('DELETE FROM agents WHERE slug LIKE $1', [`${SLUG_PREFIX}%`]);
+    await pool.query('DELETE FROM skills WHERE slug LIKE $1', [`${SLUG_PREFIX}%`]);
+  }
+
   before(async () => {
     await runMultiOrchestratorMigrations(pool, undefined, migrationsDir);
-    await pool.query('DELETE FROM skills WHERE slug LIKE $1', [`${SLUG_PREFIX}%`]);
+    await cleanup();
     store = new AgentGraphStore(pool);
   });
 
   after(async () => {
-    await pool.query('DELETE FROM skills WHERE slug LIKE $1', [`${SLUG_PREFIX}%`]);
+    await cleanup();
     await pool.end();
   });
 
@@ -152,5 +158,51 @@ describe('AgentGraphStore skill lifecycle (pg)', { skip: !pgAvailable }, () => {
     });
     assert.equal(updated.outcome, 'updated');
     assert.equal(updated.skillId, created.skillId, 'updates in place, no duplicate');
+  });
+
+  it('forkSkill copies an imported skill to an editable db skill, migrates refs, preserves provenance', async () => {
+    const imp = await importSkillMarkdown(store, {
+      raw: `---\nname: ${SLUG_PREFIX}fork\n---\n\nbody\n`,
+      sourcePath: 'f/SKILL.md',
+    });
+    const originId = imp.skillId!;
+    const { rows } = await pool.query<{ id: string }>(
+      'INSERT INTO agents (slug, name) VALUES ($1,$2) RETURNING id',
+      [`${SLUG_PREFIX}agent`, 'A'],
+    );
+    const sub = await store.createSubAgent({
+      parentAgentId: rows[0]!.id,
+      name: 'sub',
+      skillId: originId,
+    });
+    assert.equal((await store.listSubAgentsBySkillId(originId)).length, 1);
+
+    const fork = await store.forkSkill(originId);
+    assert.equal(fork.source, 'db');
+    assert.equal(fork.forkedFrom, originId);
+    assert.notEqual(fork.slug, imp.skill.slug);
+    assert.equal(fork.sourcePath, 'f/SKILL.md', 'provenance preserved');
+    assert.equal((await store.listSubAgentsBySkillId(originId)).length, 0, 'origin ref migrated away');
+    const onFork = await store.listSubAgentsBySkillId(fork.id);
+    assert.equal(onFork.length, 1);
+    assert.equal(onFork[0]?.id, sub.id);
+    assert.notEqual(await store.getSkill(originId), undefined, 'origin kept as provenance record');
+  });
+
+  it('forkSkill is idempotent — forking the same import twice returns the same fork', async () => {
+    const imp = await importSkillMarkdown(store, {
+      raw: `---\nname: ${SLUG_PREFIX}idem\n---\n\nbody\n`,
+      sourcePath: 'i/SKILL.md',
+    });
+    const fork1 = await store.forkSkill(imp.skillId!);
+    const fork2 = await store.forkSkill(imp.skillId!);
+    assert.equal(fork2.id, fork1.id, 'no duplicate fork minted');
+  });
+
+  it('forkSkill returns a db skill unchanged (only file skills fork)', async () => {
+    const db = await store.upsertSkill({ slug: `${SLUG_PREFIX}dbfork`, name: 'D', body: 'x', source: 'db' });
+    const same = await store.forkSkill(db.id);
+    assert.equal(same.id, db.id);
+    assert.equal(same.source, 'db');
   });
 });

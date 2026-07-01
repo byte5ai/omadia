@@ -30,6 +30,7 @@ import { McpManager } from '@omadia/orchestrator';
 import { Router, type Request, type Response } from 'express';
 
 import { importSkillMarkdown } from '../services/skillImport.js';
+import { serializeSkillMarkdown } from '../services/skillLoader.js';
 
 export interface AgentBuilderRouterOptions {
   readonly getConfigStore: () => ConfigStore | undefined;
@@ -348,6 +349,56 @@ export function createAgentBuilderRouter(
       await l.graph.deleteSkill(str(req.params.id));
       await reload(l);
       res.status(204).end();
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  // Fork an imported (source:'file') skill into an editable db copy (fork-on-
+  // edit). Migrates sub-agent references to the fork; preserves provenance.
+  router.post('/skills/:id/fork', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const id = str(req.params.id);
+      if (!isUuid(id)) {
+        res.status(404).json({ error: 'skill_not_found', id });
+        return;
+      }
+      const row = await l.graph.forkSkill(id);
+      await reload(l);
+      res.json(skillNode(row));
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  // Export a skill back to a portable SKILL.md (frontmatter + body).
+  router.get('/skills/:id/export', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const id = str(req.params.id);
+      if (!isUuid(id)) {
+        res.status(404).json({ error: 'skill_not_found', id });
+        return;
+      }
+      const skill = await l.graph.getSkill(id);
+      if (!skill) {
+        res.status(404).json({ error: 'skill_not_found', id });
+        return;
+      }
+      const frontmatter: Record<string, unknown> = {
+        ...skill.frontmatter,
+        name: skill.name,
+        ...(skill.description !== null ? { description: skill.description } : {}),
+      };
+      // Sanitize the filename: slugs are server-generated kebab, but db-source
+      // slugs come from POST /skills unvalidated, so never trust them in a header.
+      const safeName = skill.slug.replace(/[^a-zA-Z0-9._-]/g, '_') || 'skill';
+      res.setHeader('content-type', 'text/markdown; charset=utf-8');
+      res.setHeader('content-disposition', `attachment; filename="${safeName}.SKILL.md"`);
+      res.send(serializeSkillMarkdown(frontmatter, skill.body));
     } catch (err) {
       fail(res, err);
     }

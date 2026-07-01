@@ -347,6 +347,7 @@
     "admin": "Admin",
     "system": "System",
     "agentsCluster": "Orchestrators",
+    "skills": "Skills",
     "agentsOverview": "Overview",
     "channels": "Channels",
     "pluginsCluster": "Plugins",
@@ -883,6 +884,33 @@
     "unavailableBody": "The Orchestrator \"{slug}\" was deleted or disabled. Pick how to recover this session.",
     "actionReSnapshot": "Re-bind to standard",
     "actionDelete": "Delete session"
+  },
+  "skills": {
+    "title": "Skills",
+    "subtitle": "Your skill library — import, view, edit and export skills used across agents.",
+    "loadError": "Could not load skills.",
+    "search": "Search skills…",
+    "import": "Import",
+    "empty": "No skills yet.",
+    "selectHint": "Select a skill to view and edit it.",
+    "delete": "Delete",
+    "confirmDelete": "This skill is used by {count} agents — they will lose it. Delete anyway?",
+    "confirmDeleteAction": "Delete anyway",
+    "cancel": "Cancel",
+    "usedBy": "Used by {count} agents",
+    "source": {
+      "db": "authored",
+      "file": "imported"
+    },
+    "editor": {
+      "name": "Name",
+      "description": "Description",
+      "body": "Skill body (Markdown)",
+      "save": "Save",
+      "forkAndSave": "Save as editable copy",
+      "forkNotice": "This is an imported skill. Saving creates an editable copy and keeps the original as its source.",
+      "export": "Export"
+    }
   },
   "operatorAgents": {
     "title": "Orchestrators",

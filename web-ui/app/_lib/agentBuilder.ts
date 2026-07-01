@@ -411,6 +411,28 @@ export async function previewImportSkill(
   return importSkill({ ...input, dryRun: true });
 }
 
+/**
+ * Fork an imported (source:'file') skill into an editable db copy — used by the
+ * editor on first edit so provenance is preserved. Returns the fork (db) skill.
+ */
+export async function forkSkill(id: string): Promise<SkillNode> {
+  return callJson<SkillNode>(`/v1/operator/skills/${encodeURIComponent(id)}/fork`, {
+    method: 'POST',
+  });
+}
+
+/** Export a skill back to portable SKILL.md text (frontmatter + body). */
+export async function exportSkill(id: string): Promise<string> {
+  const res = await fetch(botApi(`/v1/operator/skills/${encodeURIComponent(id)}/export`), {
+    headers: { accept: 'text/markdown' },
+    cache: 'no-store',
+    credentials: 'include',
+  });
+  const text = await res.text();
+  if (!res.ok) throw new ApiError(res.status, `export ${id} failed: ${res.status}`, text);
+  return text;
+}
+
 // -----------------------------------------------------------------------------
 // MCP servers
 // -----------------------------------------------------------------------------

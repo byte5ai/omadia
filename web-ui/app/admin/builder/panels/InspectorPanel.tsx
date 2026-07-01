@@ -6,17 +6,16 @@ import { useState } from 'react';
 import {
   discoverMcpTools,
   patchModelRouting,
-  patchSkill,
   patchSubAgent,
   type AgentNode,
   type McpServerNode,
   type ModelRoutingConfig,
   type ModelRoutingMode,
   type ScheduleNode,
-  type SkillNode,
   type SubAgentNode,
 } from '../../../_lib/agentBuilder';
 import { Button } from '@/app/_components/ui/Button';
+import { SkillEditor } from '../../../_components/admin/SkillEditor';
 import type { BuilderNodeData } from '../nodes/types';
 import { Field, inputCls, SaveButton } from './InspectorControls';
 
@@ -209,59 +208,6 @@ function SubAgentEditor({
       </Field>
       <ErrLine error={error} />
       <SaveButton onClick={() => void save()} pending={pending} label={t('inspector.save')} />
-    </div>
-  );
-}
-
-// ── Skill ────────────────────────────────────────────────────────────────
-function SkillEditor({
-  skill,
-  onSaved,
-}: {
-  skill: SkillNode;
-  onSaved: () => void;
-}): React.ReactElement {
-  const t = useTranslations('admin.builder');
-  const [name, setName] = useState(skill.name);
-  const [body, setBody] = useState(skill.body);
-  const { pending, error, run } = useSaver();
-  const readOnly = skill.source === 'file';
-
-  async function save(): Promise<void> {
-    await run(async () => {
-      await patchSkill(skill.id, { name: name.trim(), body });
-      onSaved();
-    });
-  }
-
-  return (
-    <div className="flex flex-col gap-3">
-      {readOnly && (
-        <p className="rounded-md bg-[color:var(--warning)]/10 px-2 py-1 text-xs text-[color:var(--warning)]">
-          {t('inspector.skillFileReadOnly')}
-        </p>
-      )}
-      <Field label={t('inspector.name')}>
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          disabled={readOnly}
-          className={inputCls}
-        />
-      </Field>
-      <Field label={t('inspector.skillBody')}>
-        <textarea
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-          disabled={readOnly}
-          rows={12}
-          className={`${inputCls} font-mono text-xs`}
-        />
-      </Field>
-      <ErrLine error={error} />
-      {!readOnly && (
-        <SaveButton onClick={() => void save()} pending={pending} label={t('inspector.save')} />
-      )}
     </div>
   );
 }

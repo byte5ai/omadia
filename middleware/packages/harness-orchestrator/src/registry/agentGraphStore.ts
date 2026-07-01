@@ -590,6 +590,84 @@ export class AgentGraphStore {
     return rows.map(mapSubAgent);
   }
 
+  /**
+   * Fork an imported (`source:'file'`) skill into an editable `source:'db'`
+   * copy so it can be edited without mutating the import record (fork-on-edit,
+   * #397). Preserves provenance (`forked_from` = origin id, `source_path`
+   * copied), disambiguates the slug, and migrates every sub-agent reference
+   * from the origin to the fork — all in one transaction so references never
+   * dangle. Returns the existing skill unchanged if it is already a `db` skill.
+   */
+  async forkSkill(id: string): Promise<SkillRow> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rows: cur } = await client.query<SkillDbRow>(
+        'SELECT * FROM skills WHERE id = $1 FOR UPDATE',
+        [id],
+      );
+      const origin = cur[0];
+      if (!origin) throw new ConfigValidationError(`skill ${id} not found`);
+      if (origin.source !== 'file') {
+        await client.query('ROLLBACK');
+        return mapSkill(origin);
+      }
+
+      // Idempotent: if this import was already forked, return that fork instead
+      // of minting a duplicate (refs already live on it).
+      const { rows: existing } = await client.query<SkillDbRow>(
+        'SELECT * FROM skills WHERE forked_from = $1 ORDER BY created_at LIMIT 1',
+        [origin.id],
+      );
+      if (existing[0]) {
+        await client.query('ROLLBACK');
+        return mapSkill(existing[0]);
+      }
+
+      // Find a free slug within the transaction.
+      let slug = `${origin.slug}`.slice(0, 61);
+      for (let i = 2; ; i++) {
+        const { rows } = await client.query<{ one: number }>(
+          'SELECT 1 AS one FROM skills WHERE slug = $1',
+          [slug],
+        );
+        if (rows.length === 0) break;
+        slug = `${origin.slug}`.slice(0, 58) + `-${i}`;
+        if (i > 999) throw new Error(`could not fork skill ${id}: no free slug`);
+      }
+
+      const contentHash = computeSkillHash(origin.frontmatter, origin.body);
+      const { rows: ins } = await client.query<SkillDbRow>(
+        `INSERT INTO skills (slug, name, description, body, frontmatter, source, source_path, content_hash, forked_from)
+         VALUES ($1,$2,$3,$4,$5::jsonb,'db',$6,$7,$8)
+         RETURNING *`,
+        [
+          slug,
+          origin.name,
+          origin.description,
+          origin.body,
+          JSON.stringify(origin.frontmatter),
+          origin.source_path,
+          contentHash,
+          origin.id,
+        ],
+      );
+      const fork = ins[0]!;
+      // Migrate sub-agent references from the import to the editable fork.
+      await client.query('UPDATE agent_subagents SET skill_id = $2, updated_at = now() WHERE skill_id = $1', [
+        origin.id,
+        fork.id,
+      ]);
+      await client.query('COMMIT');
+      return mapSkill(fork);
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
   // ── mcp_servers ─────────────────────────────────────────────────────────────
   async listMcpServers(): Promise<readonly McpServerRow[]> {
     const { rows } = await this.pool.query<McpServerDbRow>(

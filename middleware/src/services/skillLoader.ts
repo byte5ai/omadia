@@ -41,6 +41,29 @@ export function parseSkillMarkdown(raw: string): ParsedSkillMarkdown {
   return { frontmatter, body: body.trim(), description: frontmatter['description'] };
 }
 
+/** Emit a YAML scalar, quoting (as JSON, a YAML subset) when it could misparse. */
+function yamlScalar(v: unknown): string {
+  if (typeof v === 'string') {
+    if (v === '' || /[:#\n]|^[\s>|&*!%@`"'[\]{}]|\s$/.test(v)) return JSON.stringify(v);
+    return v;
+  }
+  return JSON.stringify(v);
+}
+
+/**
+ * Serialize frontmatter + body back into a SKILL.md string — the inverse of
+ * {@link parseSkillMarkdown}, for exporting a registry skill. Keys are sorted
+ * for stable output; simple scalars round-trip through parseSkillMarkdown.
+ */
+export function serializeSkillMarkdown(frontmatter: Record<string, unknown>, body: string): string {
+  const fm = Object.keys(frontmatter)
+    .sort()
+    .filter((k) => frontmatter[k] !== undefined)
+    .map((k) => `${k}: ${yamlScalar(frontmatter[k])}`)
+    .join('\n');
+  return `---\n${fm}\n---\n\n${body.trim()}\n`;
+}
+
 export async function loadSkill(skillDir: string): Promise<LoadedSkill> {
   const sourcePath = path.join(skillDir, 'SKILL.md');
   const raw = await fs.readFile(sourcePath, 'utf8');
@@ -73,8 +96,26 @@ function splitFrontmatter(raw: string): {
     const key = match[1];
     const value = match[2];
     if (key !== undefined && value !== undefined) {
-      frontmatter[key] = value.trim();
+      frontmatter[key] = unquoteScalar(value.trim());
     }
   }
   return { frontmatter, body };
+}
+
+/**
+ * Reverse of {@link yamlScalar}: a double-quoted value is a JSON string (JSON
+ * is a YAML subset), so parse it back to its literal — keeping
+ * serialize→parse an exact round-trip for values with colons, newlines, etc.
+ * Anything not cleanly JSON-parseable is left as the raw trimmed text.
+ */
+function unquoteScalar(value: string): string {
+  if (value.startsWith('"')) {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      if (typeof parsed === 'string') return parsed;
+    } catch {
+      /* not valid JSON — keep the raw value */
+    }
+  }
+  return value;
 }

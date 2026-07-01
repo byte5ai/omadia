@@ -347,6 +347,7 @@
     "admin": "Admin",
     "system": "System",
     "agentsCluster": "Orchestratoren",
+    "skills": "Skills",
     "agentsOverview": "Übersicht",
     "channels": "Channels",
     "pluginsCluster": "Plugins",
@@ -883,6 +884,33 @@
     "unavailableBody": "Der Orchestrator „{slug}\" wurde gelöscht oder deaktiviert. Wie soll diese Session weiterlaufen?",
     "actionReSnapshot": "Auf Standard umbinden",
     "actionDelete": "Session löschen"
+  },
+  "skills": {
+    "title": "Skills",
+    "subtitle": "Deine Skill-Bibliothek — Skills importieren, ansehen, bearbeiten und exportieren.",
+    "loadError": "Skills konnten nicht geladen werden.",
+    "search": "Skills durchsuchen…",
+    "import": "Importieren",
+    "empty": "Noch keine Skills.",
+    "selectHint": "Wähle einen Skill, um ihn anzusehen und zu bearbeiten.",
+    "delete": "Löschen",
+    "confirmDelete": "Dieser Skill wird von {count} Agenten genutzt — sie verlieren ihn. Trotzdem löschen?",
+    "confirmDeleteAction": "Trotzdem löschen",
+    "cancel": "Abbrechen",
+    "usedBy": "Verwendet von {count} Agenten",
+    "source": {
+      "db": "erstellt",
+      "file": "importiert"
+    },
+    "editor": {
+      "name": "Name",
+      "description": "Beschreibung",
+      "body": "Skill-Inhalt (Markdown)",
+      "save": "Speichern",
+      "forkAndSave": "Als bearbeitbare Kopie speichern",
+      "forkNotice": "Dies ist ein importierter Skill. Beim Speichern wird eine bearbeitbare Kopie erstellt; das Original bleibt als Quelle erhalten.",
+      "export": "Exportieren"
+    }
   },
   "operatorAgents": {
     "title": "Orchestratoren",
