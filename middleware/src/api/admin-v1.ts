@@ -70,6 +70,22 @@ export interface PluginSetupField {
   provider?: string;
   /** Spec 005 — OAuth scopes requested for a `type === 'oauth'` field. */
   scopes?: string[];
+  /** Dynamic post-install options: the toolkit-tool id (on the SAME plugin)
+   *  that returns selectable `SetupOption[]` for this field. The field `type`
+   *  stays a normal union member (typically `string`); the post-install editor
+   *  fetches options live and stores the picks. Additive + optional — fields
+   *  without it behave exactly as before. */
+  options_provider?: string;
+  /** When true, this field holds MULTIPLE selected values (stored as a
+   *  JSON-encoded `string[]`). Only meaningful alongside `options_provider`. */
+  multi?: boolean;
+}
+
+/** A single selectable choice returned by a field's `options_provider` tool. */
+export interface SetupOption {
+  value: string;
+  label: string;
+  group?: string;
 }
 
 /**

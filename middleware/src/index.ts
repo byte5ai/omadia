@@ -2635,6 +2635,7 @@ async function main(): Promise<void> {
       vault: secretVault,
       catalog: pluginCatalog,
       reactivate: reactivateAgent,
+      dynamicAgentRuntime,
     }),
   );
   console.log('[middleware] runtime introspection endpoint ready at /api/v1/admin/runtime (auth: required)');

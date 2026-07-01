@@ -35,6 +35,14 @@ export interface PluginSetupField {
    *  field connects through, and the scopes requested. */
   provider?: string;
   scopes?: string[];
+  /** Dynamic post-install options: the plugin toolkit-tool id that returns the
+   *  selectable choices for this field. With `multi`, the post-install editor
+   *  renders a fetched multiselect instead of a text input. `type` stays a
+   *  normal union member (typically `string`). */
+  options_provider?: string;
+  /** Holds multiple selected values (stored as a JSON-encoded `string[]`).
+   *  Only meaningful with `options_provider`. */
+  multi?: boolean;
 }
 
 /** Spec 005 — how a declarative OAuth descriptor authenticates to the token

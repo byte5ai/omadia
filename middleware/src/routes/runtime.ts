@@ -7,10 +7,20 @@ import type { PromptContributionRegistry } from '../platform/promptContributionR
 import type { ServiceRegistry } from '../platform/serviceRegistry.js';
 import type { TurnHookRegistry } from '../platform/turnHookRegistry.js';
 import { isAuditMode } from '../platform/httpAccessor.js';
+import type { SetupOption } from '../api/admin-v1.js';
+import {
+  SetupOptionsResolveError,
+  withTimeout,
+} from '../plugins/dynamicAgentRuntime.js';
 import { extractSetupSchema } from '../plugins/installService.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import type { SecretVault } from '../secrets/vault.js';
+
+/** Per-call budget for invoking a plugin's dynamic options provider. */
+const SETUP_OPTIONS_TIMEOUT_MS = 8_000;
+/** Hard cap on options returned to the editor. */
+const MAX_SETUP_OPTIONS = 500;
 
 /**
  * Runtime introspection endpoints — diagnostic view into what the harness
@@ -49,6 +59,17 @@ interface RuntimeDeps {
    *  current runtime instance and re-activates it so the plugin reads
    *  the fresh values — most plugins cache config at activate-time. */
   reactivate?: (agentId: string) => Promise<void>;
+  /** Live-plugin tool invoker for dynamic setup-field options (post-install).
+   *  Optional so existing test wiring keeps compiling — the setup-options
+   *  endpoint 503s when absent, and PATCH /config falls back to opaque-id
+   *  validation for multiselect fields. */
+  dynamicAgentRuntime?: {
+    resolveSetupOptions(
+      agentId: string,
+      toolId: string,
+      input: unknown,
+    ): Promise<unknown>;
+  };
 }
 
 export function createRuntimeRouter(deps: RuntimeDeps): Router {
@@ -146,9 +167,27 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
       for (const [k, v] of Object.entries(patch)) {
         if (v === null) {
           delete nextConfig[k];
-        } else {
-          nextConfig[k] = v;
+          continue;
         }
+        // Fields declaring `options_provider` carry a multiselect array; they
+        // are validated against the live provider and stored JSON-encoded.
+        // Every other key keeps the legacy blind-merge behaviour.
+        const optField = findOptionsProviderField(deps.catalog, id, k);
+        if (optField) {
+          const checked = await validateMultiselectValue(
+            v,
+            id,
+            optField,
+            deps.dynamicAgentRuntime,
+          );
+          if ('error' in checked) {
+            res.status(400).json(checked.error);
+            return;
+          }
+          nextConfig[k] = checked.value;
+          continue;
+        }
+        nextConfig[k] = v;
       }
       try {
         await deps.installedRegistry.updateConfig(id, nextConfig);
@@ -170,6 +209,77 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
         res
           .status(500)
           .json({ code: 'runtime.update_failed', message });
+      }
+    },
+  );
+
+  // GET /installed/:id/setup-options/:fieldKey — dynamic, post-install options
+  // for a field that declares `options_provider`. Resolves the named toolkit
+  // tool on the ACTIVE plugin and returns the choices for the editor. Advisory
+  // for the UI only; PATCH /config re-validates server-side (trust boundary).
+  // Concurrent identical requests share one provider invocation.
+  const optionsInFlight = new Map<string, Promise<SetupOption[] | null>>();
+  router.get(
+    '/installed/:id/setup-options/:fieldKey',
+    async (req: Request, res: Response) => {
+      const id = readId(req);
+      const rawField = req.params['fieldKey'];
+      const fieldKey = typeof rawField === 'string' ? rawField : '';
+      if (!id || !fieldKey) {
+        res.status(400).json({
+          code: 'runtime.invalid_id',
+          message: 'missing id or fieldKey',
+        });
+        return;
+      }
+      if (!deps.installedRegistry.get(id)) {
+        res.status(404).json({
+          code: 'runtime.not_installed',
+          message: `agent '${id}' is not installed`,
+        });
+        return;
+      }
+      const field = findOptionsProviderField(deps.catalog, id, fieldKey);
+      if (!field) {
+        res.status(400).json({
+          code: 'runtime.no_options_provider',
+          message: `field '${fieldKey}' declares no options_provider`,
+        });
+        return;
+      }
+      const resolver = deps.dynamicAgentRuntime;
+      if (!resolver) {
+        res.status(503).json({
+          code: 'runtime.options_unavailable',
+          message: 'dynamic setup-options are not available on this core',
+        });
+        return;
+      }
+      const cacheKey = `${id}::${fieldKey}`;
+      try {
+        let pending = optionsInFlight.get(cacheKey);
+        if (!pending) {
+          pending = withTimeout(
+            resolver.resolveSetupOptions(id, field.toolId, {}),
+            SETUP_OPTIONS_TIMEOUT_MS,
+            'setup-options provider timed out',
+          ).then((raw) => normalizeSetupOptions(raw));
+          optionsInFlight.set(cacheKey, pending);
+          void pending
+            .catch(() => undefined)
+            .finally(() => optionsInFlight.delete(cacheKey));
+        }
+        const options = await pending;
+        if (options === null) {
+          res.status(502).json({
+            code: 'runtime.options_provider_bad_shape',
+            message: 'provider did not return an options array',
+          });
+          return;
+        }
+        res.json({ options });
+      } catch (err) {
+        sendOptionsError(res, err);
       }
     },
   );
@@ -521,4 +631,149 @@ function resolveSecretFieldKeys(
     if (f.type === 'secret' || f.type === 'oauth') out.add(f.key);
   }
   return out;
+}
+
+interface OptionsProviderField {
+  toolId: string;
+  multi: boolean;
+}
+
+/**
+ * Reads a setup field's `options_provider` / `multi` straight from the raw
+ * manifest (mirrors `extractSetupSchema`'s raw read, so it stays decoupled from
+ * the InstallSetupField type). Returns null when the field does not declare a
+ * dynamic options provider — the caller then treats the key as an ordinary
+ * config value, preserving legacy behaviour.
+ */
+function findOptionsProviderField(
+  catalog: PluginCatalog | undefined,
+  pluginId: string,
+  fieldKey: string,
+): OptionsProviderField | null {
+  if (!catalog) return null;
+  const entry = catalog.get(pluginId);
+  if (!entry) return null;
+  const manifest = entry.manifest;
+  if (!manifest || typeof manifest !== 'object') return null;
+  const setup = (manifest as Record<string, unknown>)['setup'];
+  if (!setup || typeof setup !== 'object') return null;
+  const fieldsRaw = (setup as Record<string, unknown>)['fields'];
+  if (!Array.isArray(fieldsRaw)) return null;
+  for (const raw of fieldsRaw) {
+    if (!raw || typeof raw !== 'object') continue;
+    const f = raw as Record<string, unknown>;
+    if (f['key'] !== fieldKey) continue;
+    const toolId =
+      typeof f['options_provider'] === 'string' ? f['options_provider'] : '';
+    if (!toolId) return null;
+    return { toolId, multi: f['multi'] === true };
+  }
+  return null;
+}
+
+/**
+ * Coerce a provider's raw return into well-formed SetupOption rows. Returns
+ * null when the shape is wrong (not an array) so the caller can 502; an empty
+ * array is legitimate (e.g. nothing shared yet) and passes through. Caps the
+ * list and keeps only `{value,label}` string rows (rendered as text only).
+ */
+function normalizeSetupOptions(raw: unknown): SetupOption[] | null {
+  if (!Array.isArray(raw)) return null;
+  const out: SetupOption[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const o = item as Record<string, unknown>;
+    const value = typeof o['value'] === 'string' ? o['value'] : undefined;
+    const label = typeof o['label'] === 'string' ? o['label'] : undefined;
+    if (!value || !label) continue;
+    const opt: SetupOption = { value, label };
+    if (typeof o['group'] === 'string') opt.group = o['group'];
+    out.push(opt);
+    if (out.length >= MAX_SETUP_OPTIONS) break;
+  }
+  return out;
+}
+
+/** Map a provider-invocation failure to the typed HTTP response. */
+function sendOptionsError(res: Response, err: unknown): void {
+  if (err instanceof SetupOptionsResolveError) {
+    res
+      .status(409)
+      .json({ code: 'runtime.agent_inactive', message: err.message });
+    return;
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  if (message.includes('timed out')) {
+    res
+      .status(504)
+      .json({ code: 'runtime.options_provider_timeout', message });
+    return;
+  }
+  res
+    .status(502)
+    .json({ code: 'runtime.options_provider_failed', message });
+}
+
+/**
+ * Server-side validation of a submitted multiselect value (do NOT trust the
+ * client). Requires a `string[]`; re-invokes the provider and rejects any value
+ * not in the live set. If the provider is inactive/throws/times out at save
+ * time, degrades to accepting only syntactically-safe opaque ids rather than
+ * bricking the save. Returns the value JSON-encoded for scalar config storage.
+ */
+async function validateMultiselectValue(
+  raw: unknown,
+  pluginId: string,
+  field: OptionsProviderField,
+  resolver: RuntimeDeps['dynamicAgentRuntime'],
+): Promise<{ value: string } | { error: { code: string; message: string } }> {
+  if (!Array.isArray(raw) || !raw.every((x) => typeof x === 'string')) {
+    return {
+      error: {
+        code: 'runtime.invalid_multiselect',
+        message: 'value must be an array of strings',
+      },
+    };
+  }
+  const values = raw as string[];
+
+  let allowed: Set<string> | null = null;
+  if (resolver) {
+    try {
+      const result = await withTimeout(
+        resolver.resolveSetupOptions(pluginId, field.toolId, {}),
+        SETUP_OPTIONS_TIMEOUT_MS,
+        'setup-options provider timed out',
+      );
+      const opts = normalizeSetupOptions(result);
+      if (opts) allowed = new Set(opts.map((o) => o.value));
+    } catch {
+      // provider down / inactive / threw → fall through to degraded check
+    }
+  }
+
+  if (allowed) {
+    const allowedSet = allowed;
+    const bad = values.find((x) => !allowedSet.has(x));
+    if (bad !== undefined) {
+      return {
+        error: {
+          code: 'runtime.value_not_offered',
+          message: `value '${bad}' is not an offered option`,
+        },
+      };
+    }
+  } else {
+    const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+    const bad = values.find((x) => !SAFE_ID.test(x));
+    if (bad !== undefined) {
+      return {
+        error: {
+          code: 'runtime.invalid_multiselect',
+          message: `value '${bad}' is not a safe opaque id`,
+        },
+      };
+    }
+  }
+  return { value: JSON.stringify(values) };
 }

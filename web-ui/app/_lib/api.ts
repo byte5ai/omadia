@@ -2084,6 +2084,68 @@ export async function patchInstalledSecrets(
   return (await res.json()) as InstalledSecretsState;
 }
 
+/** A selectable choice for a setup field that declares `options_provider`. */
+export interface SetupOption {
+  value: string;
+  label: string;
+  group?: string;
+}
+
+/**
+ * Fetch live options for a post-install multiselect field from the running
+ * plugin's options-provider tool. Throws ApiError on failure — notably 409
+ * (plugin inactive), 502 (provider failed), 504 (timeout) — which the editor
+ * uses to degrade to a free-text input.
+ */
+export async function fetchSetupFieldOptions(
+  pluginId: string,
+  fieldKey: string,
+): Promise<SetupOption[]> {
+  const { options } = await getJson<{ options: SetupOption[] }>(
+    `/v1/admin/runtime/installed/${encodeURIComponent(
+      pluginId,
+    )}/setup-options/${encodeURIComponent(fieldKey)}`,
+  );
+  return options;
+}
+
+/**
+ * Patch non-secret config for an installed plugin (array-capable, unlike
+ * patchInstalledSecrets which only carries strings). Used to persist
+ * multiselect selections; the middleware re-validates each submitted value
+ * against the live provider before storing.
+ */
+export async function patchInstalledConfig(
+  pluginId: string,
+  patch: Record<string, unknown>,
+): Promise<void> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(
+    botApi(
+      `/v1/admin/runtime/installed/${encodeURIComponent(pluginId)}/config`,
+    ),
+    {
+      method: 'PATCH',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+        ...forwarded,
+      },
+      body: JSON.stringify(patch),
+      credentials: 'include',
+      cache: 'no-store',
+    },
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new ApiError(
+      res.status,
+      `PATCH installed/${pluginId}/config failed: ${res.status}`,
+      text,
+    );
+  }
+}
+
 /**
  * #91 — set the audit egress mode for an installed web_scanner plugin.
  * The middleware validates the mode enum and rejects the call when the

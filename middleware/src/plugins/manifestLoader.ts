@@ -233,6 +233,10 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
         if (scopes.length > 0) entry.scopes = scopes;
       }
     }
+    // Dynamic post-install options (additive, lenient — any field type).
+    const optionsProvider = asString(f['options_provider']);
+    if (optionsProvider) entry.options_provider = optionsProvider;
+    if (f['multi'] === true) entry.multi = true;
     setupFields.push(entry);
   }
 
