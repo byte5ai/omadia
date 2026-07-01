@@ -23,9 +23,16 @@ import {
 import '@xyflow/react/dist/style.css';
 
 import { Button } from '@/app/_components/ui/Button';
+import { ChannelSelect, DurationInput, QuorumSelect, RefPicker, SelectPicker } from './GuidedControls';
+import { ScheduleBuilder } from './ScheduleBuilder';
+import { ConditionBuilder } from './ConditionBuilder';
+import { KeyValueEditor } from './KeyValueEditor';
 import {
   ApiError,
+  getConductorActions,
+  getConductorAgents,
   getConductorEventCatalog,
+  getConductorRoles,
   getConductorRun,
   getConductorWorkflowGraph,
   previewConductorWorkflow,
@@ -164,12 +171,19 @@ function CanvasInner({
 
   const [slug, setSlug] = useState('');
   const [name, setName] = useState('');
+  // Auto-derive the slug from the name until the user edits the slug directly (or a workflow loads).
+  const slugEdited = useRef(false);
   const [triggerKind, setTriggerKind] = useState<'manual' | 'event' | 'cron'>('manual');
   const [triggerEventId, setTriggerEventId] = useState('');
   const [triggerCron, setTriggerCron] = useState('');
   // Declared emittable events (US4 / FR-028) — the Designer sources the event-trigger picker from the
   // live catalog. Best-effort: an empty catalog just falls back to free-text entry.
   const [eventCatalog, setEventCatalog] = useState<string[]>([]);
+  // Known role keys (US6) — source for the human-step principal picker. Best-effort like the events.
+  const [roleCatalog, setRoleCatalog] = useState<string[]>([]);
+  // Live agent + action catalogs — real dropdowns for the agent/action steps. Best-effort.
+  const [agentCatalog, setAgentCatalog] = useState<Array<{ slug: string; name: string }>>([]);
+  const [actionCatalog, setActionCatalog] = useState<string[]>([]);
   const eventListId = useId(); // unique per canvas instance — no datalist id collision on double-mount
 
   useEffect(() => {
@@ -181,6 +195,21 @@ function CanvasInner({
       })
       // Errors degrade to the empty-catalog hint + free-text entry. (A 401 still triggers getJson's
       // standard login redirect — same as every other page fetch — which is the desired behaviour.)
+      .catch(() => undefined);
+    void getConductorRoles()
+      .then((r) => {
+        if (!cancelled) setRoleCatalog(Array.isArray(r?.roles) ? r.roles.map((x) => x.key).filter(Boolean) : []);
+      })
+      .catch(() => undefined);
+    void getConductorAgents()
+      .then((r) => {
+        if (!cancelled) setAgentCatalog(Array.isArray(r?.agents) ? r.agents.filter((a) => a.slug) : []);
+      })
+      .catch(() => undefined);
+    void getConductorActions()
+      .then((r) => {
+        if (!cancelled) setActionCatalog(Array.isArray(r?.actions) ? r.actions.filter(Boolean) : []);
+      })
       .catch(() => undefined);
     return () => {
       cancelled = true;
@@ -365,7 +394,7 @@ function CanvasInner({
             agentId: String(step.agentId ?? ''),
             prompt: String(step.prompt ?? ''),
             actionId: String(step.actionId ?? ''),
-            input: step.input ? JSON.stringify(step.input, null, 2) : '',
+            input: step.input !== undefined ? JSON.stringify(step.input, null, 2) : '',
             human: {
               principalKind: (principal.kind as 'user' | 'role') ?? 'role',
               principalRef: String(principal.ref ?? ''),
@@ -375,7 +404,7 @@ function CanvasInner({
               deadline: String(human.deadline ?? ''),
               quorum: (human.quorum as 'any' | 'all') ?? 'any',
             },
-            postcondition: step.postcondition ? JSON.stringify(step.postcondition, null, 2) : '',
+            postcondition: step.postcondition !== undefined ? JSON.stringify(step.postcondition, null, 2) : '',
             fallbackTransitionId: String(step.fallbackTransitionId ?? ''),
             isEntry: step.id === g.entryStepId,
           },
@@ -385,7 +414,7 @@ function CanvasInner({
         id: String(tr.id),
         source: String(tr.source),
         target: String(tr.target),
-        data: { guard: tr.guard ? JSON.stringify(tr.guard) : '' },
+        data: { guard: tr.guard !== undefined ? JSON.stringify(tr.guard) : '' },
       }));
       setNodes(newNodes);
       setEdges(newEdges);
@@ -403,6 +432,7 @@ function CanvasInner({
     async (wfSlug: string) => {
       try {
         const { workflow, graph } = await getConductorWorkflowGraph(wfSlug);
+        slugEdited.current = true; // a loaded workflow keeps its slug; don't auto-rewrite from the name
         setSlug(workflow.slug);
         setName(workflow.name);
         hydrateFromGraph(graph);
@@ -478,12 +508,28 @@ function CanvasInner({
       {/* Toolbar */}
       <div className="flex flex-wrap items-end gap-3 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-3">
         <label className={lbl}>
-          {t('slugLabel')}
-          <input className={input} value={slug} onChange={(e) => setSlug(e.target.value)} placeholder="release-signoff" />
+          {t('nameLabel')}
+          <input
+            className={input}
+            value={name}
+            onChange={(e) => {
+              setName(e.target.value);
+              if (!slugEdited.current) setSlug(slugify(e.target.value));
+            }}
+            placeholder="Release sign-off"
+          />
         </label>
         <label className={lbl}>
-          {t('nameLabel')}
-          <input className={input} value={name} onChange={(e) => setName(e.target.value)} placeholder="Release sign-off" />
+          {t('slugLabel')}
+          <input
+            className={`${input} font-mono`}
+            value={slug}
+            onChange={(e) => {
+              slugEdited.current = true;
+              setSlug(slugifyLive(e.target.value));
+            }}
+            placeholder="release-signoff"
+          />
         </label>
         <label className={lbl}>
           {t('triggerLabel')}
@@ -515,10 +561,7 @@ function CanvasInner({
           </label>
         )}
         {triggerKind === 'cron' && (
-          <label className={lbl}>
-            cron
-            <input className={input} value={triggerCron} onChange={(e) => setTriggerCron(e.target.value)} placeholder="0 9 * * 1" />
-          </label>
+          <ScheduleBuilder label={t('scheduleLabel')} value={triggerCron} onChange={setTriggerCron} />
         )}
         <label className={lbl}>
           {t('loadLabel')}
@@ -531,7 +574,7 @@ function CanvasInner({
             ))}
           </select>
         </label>
-        <Button variant="primary" busy={saving} disabled={saving} onClick={() => void handleSave()}>
+        <Button variant="primary" busy={saving} disabled={saving || !slug || !name} onClick={() => void handleSave()}>
           {saving ? t('publishing') : t('saveButton')}
         </Button>
         <Button variant="secondary" busy={busy} disabled={busy || !slug} onClick={() => void handleRun()}>
@@ -618,10 +661,25 @@ function CanvasInner({
               </label>
               {sel.data.kind === 'agent' && (
                 <>
-                  <label className={lbl}>
-                    {t('agentSlugLabel')}
-                    <input className={input} value={sel.data.agentId} onChange={(e) => patchNode(sel.id, { agentId: e.target.value })} />
-                  </label>
+                  {agentCatalog.length > 0 ? (
+                    <SelectPicker
+                      label={t('agentSlugLabel')}
+                      value={sel.data.agentId}
+                      onChange={(v) => patchNode(sel.id, { agentId: v })}
+                      options={agentCatalog.map((a) => ({ value: a.slug, label: `${a.name} (${a.slug})` }))}
+                      emptyLabel={t('agentPick')}
+                      hint={t('agentSlugHint')}
+                    />
+                  ) : (
+                    <RefPicker
+                      label={t('agentSlugLabel')}
+                      value={sel.data.agentId}
+                      onChange={(v) => patchNode(sel.id, { agentId: v })}
+                      options={[]}
+                      placeholder="fallback"
+                      hint={t('agentSlugHint')}
+                    />
+                  )}
                   <label className={lbl}>
                     {t('promptLabel')}
                     <textarea className={`${input} min-h-[80px]`} value={sel.data.prompt} onChange={(e) => patchNode(sel.id, { prompt: e.target.value })} />
@@ -630,61 +688,84 @@ function CanvasInner({
               )}
               {sel.data.kind === 'action' && (
                 <>
-                  <label className={lbl}>
-                    {t('actionIdLabel')}
-                    <input className={input} value={sel.data.actionId} onChange={(e) => patchNode(sel.id, { actionId: e.target.value })} />
-                  </label>
-                  <label className={lbl}>
-                    {t('inputLabel')}
-                    <textarea className={`${input} min-h-[60px] font-mono`} value={sel.data.input} onChange={(e) => patchNode(sel.id, { input: e.target.value })} placeholder="{}" />
-                  </label>
+                  {actionCatalog.length > 0 ? (
+                    <SelectPicker
+                      label={t('actionIdLabel')}
+                      value={sel.data.actionId}
+                      onChange={(v) => patchNode(sel.id, { actionId: v })}
+                      options={actionCatalog.map((a) => ({ value: a, label: a }))}
+                      emptyLabel={t('actionPick')}
+                      hint={t('actionIdHint')}
+                    />
+                  ) : (
+                    <RefPicker
+                      label={t('actionIdLabel')}
+                      value={sel.data.actionId}
+                      onChange={(v) => patchNode(sel.id, { actionId: v })}
+                      options={[]}
+                      hint={t('actionIdHint')}
+                    />
+                  )}
+                  <KeyValueEditor label={t('inputLabel')} value={sel.data.input} onChange={(v) => patchNode(sel.id, { input: v })} />
                 </>
               )}
               {sel.data.kind === 'human' && (
                 <>
-                  <label className={lbl}>
+                  <div className={lbl}>
                     {t('principalLabel')}
                     <div className="flex gap-2">
                       <select
-                        className={input}
+                        className={`${input} w-24`}
                         value={sel.data.human.principalKind}
                         onChange={(e) => patchNode(sel.id, { human: { ...sel.data.human, principalKind: e.target.value as 'user' | 'role' } })}
                       >
                         <option value="role">role</option>
                         <option value="user">user</option>
                       </select>
-                      <input
-                        className={input}
-                        value={sel.data.human.principalRef}
-                        onChange={(e) => patchNode(sel.id, { human: { ...sel.data.human, principalRef: e.target.value } })}
-                        placeholder="approver.release"
-                      />
+                      <div className="flex-1">
+                        <RefPicker
+                          label=""
+                          value={sel.data.human.principalRef}
+                          onChange={(v) => patchNode(sel.id, { human: { ...sel.data.human, principalRef: v } })}
+                          options={sel.data.human.principalKind === 'role' ? roleCatalog : []}
+                          placeholder={sel.data.human.principalKind === 'role' ? 'approver.release' : 'name@firm.com'}
+                        />
+                      </div>
                     </div>
-                  </label>
-                  <label className={lbl}>
-                    {t('channelLabel')}
-                    <input className={input} value={sel.data.human.channel} onChange={(e) => patchNode(sel.id, { human: { ...sel.data.human, channel: e.target.value } })} />
-                  </label>
+                  </div>
+                  <ChannelSelect
+                    label={t('channelLabel')}
+                    value={sel.data.human.channel}
+                    onChange={(v) => patchNode(sel.id, { human: { ...sel.data.human, channel: v } })}
+                  />
                   <label className={lbl}>
                     {t('messageLabel')}
                     <textarea className={`${input} min-h-[50px]`} value={sel.data.human.message} onChange={(e) => patchNode(sel.id, { human: { ...sel.data.human, message: e.target.value } })} />
                   </label>
                   <div className="grid grid-cols-2 gap-2">
-                    <label className={lbl}>
-                      {t('reminderLabel')}
-                      <input className={input} value={sel.data.human.reminderInterval} onChange={(e) => patchNode(sel.id, { human: { ...sel.data.human, reminderInterval: e.target.value } })} placeholder="PT6H" />
-                    </label>
-                    <label className={lbl}>
-                      {t('deadlineLabel')}
-                      <input className={input} value={sel.data.human.deadline} onChange={(e) => patchNode(sel.id, { human: { ...sel.data.human, deadline: e.target.value } })} placeholder="PT24H" />
-                    </label>
+                    <DurationInput
+                      label={t('reminderLabel')}
+                      value={sel.data.human.reminderInterval}
+                      onChange={(v) => patchNode(sel.id, { human: { ...sel.data.human, reminderInterval: v } })}
+                    />
+                    <DurationInput
+                      label={t('deadlineLabel')}
+                      value={sel.data.human.deadline}
+                      onChange={(v) => patchNode(sel.id, { human: { ...sel.data.human, deadline: v } })}
+                    />
                   </div>
+                  <QuorumSelect
+                    label={t('quorumLabel')}
+                    value={sel.data.human.quorum}
+                    onChange={(q) => patchNode(sel.id, { human: { ...sel.data.human, quorum: q } })}
+                  />
                 </>
               )}
-              <label className={lbl}>
-                {t('postconditionLabel')}
-                <textarea className={`${input} min-h-[50px] font-mono`} value={sel.data.postcondition} onChange={(e) => patchNode(sel.id, { postcondition: e.target.value })} placeholder='{"op":"exists","path":"stepResult.text"}' />
-              </label>
+              <ConditionBuilder
+                label={t('postconditionLabel')}
+                value={sel.data.postcondition}
+                onChange={(v) => patchNode(sel.id, { postcondition: v })}
+              />
               <label className={lbl}>
                 {t('fallbackLabel')}
                 <select className={input} value={sel.data.fallbackTransitionId} onChange={(e) => patchNode(sel.id, { fallbackTransitionId: e.target.value })}>
@@ -707,15 +788,11 @@ function CanvasInner({
             <div className="grid gap-3">
               <div className="text-[12px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">{t('transitionLabel')}</div>
               <div className="font-mono text-[12px] text-[color:var(--fg-muted)]">{selEdge.id}</div>
-              <label className={lbl}>
-                {t('guardLabel')}
-                <textarea
-                  className={`${input} min-h-[60px] font-mono`}
-                  value={(selEdge.data?.guard as string) ?? ''}
-                  onChange={(e) => setEdges((es) => es.map((ed) => (ed.id === selEdge.id ? { ...ed, data: { ...ed.data, guard: e.target.value } } : ed)))}
-                  placeholder='{"op":"eq","path":"stepResult.approved","value":true}'
-                />
-              </label>
+              <ConditionBuilder
+                label={t('guardLabel')}
+                value={(selEdge.data?.guard as string) ?? ''}
+                onChange={(v) => setEdges((es) => es.map((ed) => (ed.id === selEdge.id ? { ...ed, data: { ...ed.data, guard: v } } : ed)))}
+              />
             </div>
           )}
         </div>
@@ -762,6 +839,29 @@ function CanvasInner({
       )}
     </div>
   );
+}
+
+/** Slugify a workflow name into the a-z0-9-dash form the backend expects. Folds accents/umlauts
+ *  (München → munchen) so non-ASCII names still produce a usable slug instead of a dash-mangled one. */
+function slugify(s: string): string {
+  return s
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+/** Sanitize the slug field WHILE typing — keeps a hyphen the user is typing (only strips leading
+ *  dashes), so `my-flow` can be authored left-to-right. Full trim happens via slugify on name-derive. */
+function slugifyLive(s: string): string {
+  return s
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/^-+/, '');
 }
 
 export function ConductorCanvas(props: {

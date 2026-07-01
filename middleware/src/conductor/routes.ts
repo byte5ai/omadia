@@ -46,6 +46,10 @@ export interface ConductorRouterDeps {
   eventRouter: ConductorEventRouter;
   /** Read model of declared emittable events (US4) — powers the Designer's event-trigger picker. */
   eventCatalog?: { list(): string[]; byPluginId(): Record<string, string[]> };
+  /** Live orchestrator slugs + names — powers the Designer's agent-step picker (dropdown). */
+  agentCatalog?: () => Array<{ slug: string; name: string }>;
+  /** Registered deterministic-action / tool ids — powers the Designer's action-step picker (dropdown). */
+  actionCatalog?: () => string[];
   /** Conversational builder agent (US7) — co-design a draft graph by chat. Optional: absent on hosts without a registry. */
   builderAgent?: ConductorBuilderAgent;
 }
@@ -136,6 +140,25 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       res.json({ events: deps.eventCatalog?.list() ?? [], byPlugin: deps.eventCatalog?.byPluginId() ?? {} });
     } catch (err) {
       res.status(500).json({ code: 'conductor.event_catalog_failed', message: errMsg(err) });
+    }
+  });
+
+  // Agent catalog — live orchestrator slugs + names for the Designer's agent-step dropdown.
+  // Before '/:slug' so the catch-all workflow route doesn't swallow it.
+  router.get('/agents', (_req: Request, res: Response): void => {
+    try {
+      res.json({ agents: deps.agentCatalog?.() ?? [] });
+    } catch (err) {
+      res.status(500).json({ code: 'conductor.agent_catalog_failed', message: errMsg(err) });
+    }
+  });
+
+  // Action catalog — registered deterministic-action / tool ids for the Designer's action-step dropdown.
+  router.get('/actions', (_req: Request, res: Response): void => {
+    try {
+      res.json({ actions: deps.actionCatalog?.() ?? [] });
+    } catch (err) {
+      res.status(500).json({ code: 'conductor.action_catalog_failed', message: errMsg(err) });
     }
   });
 

@@ -132,11 +132,21 @@
       "h1": "Admin",
       "subtitle": "Configure and monitor agents, models, knowledge, plugins, access, and cost for this omadia instance.",
       "groups": {
-        "llm": { "heading": "LLM Access" },
-        "knowledge": { "heading": "Knowledge & Memory" },
-        "plugins": { "heading": "Plugins" },
-        "access": { "heading": "Access" },
-        "danger": { "heading": "Danger Zone" }
+        "llm": {
+          "heading": "LLM Access"
+        },
+        "knowledge": {
+          "heading": "Knowledge & Memory"
+        },
+        "plugins": {
+          "heading": "Plugins"
+        },
+        "access": {
+          "heading": "Access"
+        },
+        "danger": {
+          "heading": "Danger Zone"
+        }
       },
       "cards": {
         "llmAccess": {
@@ -431,7 +441,63 @@
     "colActor": "Actor",
     "runTriggerLabel": "Trigger",
     "startedLabel": "Started",
-    "endedLabel": "Ended"
+    "endedLabel": "Ended",
+    "quorumLabel": "Quorum",
+    "quorumAny": "First response is enough",
+    "quorumAll": "All approvers must respond",
+    "quorumAnyHint": "The step continues as soon as one holder responds.",
+    "quorumAllHint": "Every current holder must respond before the step continues.",
+    "durationUnit_minutes": "Minutes",
+    "durationUnit_hours": "Hours",
+    "durationUnit_days": "Days",
+    "durationUnit_weeks": "Weeks",
+    "cronModeHourly": "Hourly",
+    "cronModeDaily": "Daily",
+    "cronModeWeekly": "Weekly",
+    "cronModeMonthly": "Monthly",
+    "cronModeAdvanced": "Advanced (cron)",
+    "cronWeekday": "Weekday",
+    "cronDayOfMonth": "Day of month",
+    "cronTime": "Time",
+    "cronRaw": "Cron expression",
+    "cronPreviewHourly": "Every hour",
+    "cronPreviewDaily": "Every day at {time}",
+    "cronPreviewWeekly": "Every {day} at {time}",
+    "cronPreviewMonthly": "On day {dom} of every month at {time}",
+    "cronPreviewAdvanced": "Custom schedule (raw cron)",
+    "weekday_0": "Sunday",
+    "weekday_1": "Monday",
+    "weekday_2": "Tuesday",
+    "weekday_3": "Wednesday",
+    "weekday_4": "Thursday",
+    "weekday_5": "Friday",
+    "weekday_6": "Saturday",
+    "conditionAdvanced": "Advanced (JSON)",
+    "conditionSimple": "Simple",
+    "conditionCombiner": "Combine with",
+    "conditionAnd": "All (AND)",
+    "conditionOr": "Any (OR)",
+    "conditionAddRow": "+ Add condition",
+    "conditionRemove": "Remove condition",
+    "conditionOp_eq": "equals",
+    "conditionOp_ne": "not equals",
+    "conditionOp_gt": "greater than",
+    "conditionOp_lt": "less than",
+    "conditionOp_gte": "greater or equal",
+    "conditionOp_lte": "less or equal",
+    "conditionOp_exists": "exists",
+    "conditionOp_in": "is one of",
+    "conditionOp_matches": "matches",
+    "agentSlugHint": "The orchestrator slug to run for this step.",
+    "actionIdHint": "The tool / connector action id to invoke.",
+    "scheduleLabel": "Schedule",
+    "durationRawHint": "Custom ISO-8601 duration (e.g. PT1H30M)",
+    "agentPick": "Select an agent…",
+    "actionPick": "Select an action…",
+    "kvKey": "key",
+    "kvValue": "value",
+    "kvAddRow": "+ Add field",
+    "kvHint": "Tip: wrap text in quotes to keep it a string, e.g. \"123\"."
   },
   "operatorChannels": {
     "title": "Channels",

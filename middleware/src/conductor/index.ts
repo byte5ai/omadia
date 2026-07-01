@@ -73,6 +73,8 @@ export async function wireConductor(deps: {
   getRegistry: () => OrchestratorRegistry | undefined;
   /** invokes a deterministic-action / connector tool by id for action steps. */
   invokeAction?: (toolId: string, input: unknown) => Promise<string | undefined>;
+  /** lists registered deterministic-action / tool ids for the Designer's action-step picker. */
+  listActions?: () => string[];
   /** read model of the event-emit catalog (declared `event_emit` capabilities) for the Designer. */
   eventCatalog?: { list(): string[]; byPluginId(): Record<string, string[]> };
   /** resolves a proactive sender for a channel (US5 reminders) — from the routines senderRegistry. */
@@ -163,7 +165,20 @@ export async function wireConductor(deps: {
   deps.app.use(
     '/api/v1/operator/conductors',
     deps.requireAuth,
-    createConductorRouter({ workflowStore, runStore, awaitStore, roleStore, scheduleStore, executor, eventRouter, eventCatalog: deps.eventCatalog, builderAgent }),
+    createConductorRouter({
+      workflowStore,
+      runStore,
+      awaitStore,
+      roleStore,
+      scheduleStore,
+      executor,
+      eventRouter,
+      eventCatalog: deps.eventCatalog,
+      // Live agent/action catalogs for the Designer's step pickers (dropdowns).
+      agentCatalog: () => (deps.getRegistry()?.list() ?? []).map((a) => ({ slug: a.agent.slug, name: a.agent.name })),
+      ...(deps.listActions ? { actionCatalog: deps.listActions } : {}),
+      builderAgent,
+    }),
   );
 
   return { workflowStore, runStore, awaitStore, roleStore, scheduleStore, channelBindingStore, executor, awaitWorker, resumeWorker, scheduleWorker, eventRouter, builderAgent };
