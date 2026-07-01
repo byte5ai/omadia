@@ -404,7 +404,11 @@ export function createPrivacyGuardService(deps?: {
       );
       return {
         rowCount: dataset.rows.length,
-        columns: dataset.schema.fields.map((f) => ({ path: f.path, type: f.type })),
+        columns: dataset.schema.fields.map((f) => ({
+          path: f.path,
+          type: f.type,
+          classification: f.classification,
+        })),
         rows: dataset.rows as ReadonlyArray<Record<string, unknown>>,
       };
     },
