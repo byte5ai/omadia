@@ -232,16 +232,51 @@ export function createAgentBuilderRouter(
     }
   });
 
+  router.get('/skills/:id', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const id = str(req.params.id);
+      // Guard the id shape so a malformed id is a clean 404 rather than a
+      // Postgres "invalid input syntax for type uuid" 500 that leaks the raw
+      // DB error.
+      if (!isUuid(id)) {
+        res.status(404).json({ error: 'skill_not_found', id });
+        return;
+      }
+      const skill = await l.graph.getSkill(id);
+      if (!skill) {
+        res.status(404).json({ error: 'skill_not_found', id });
+        return;
+      }
+      const usedBy = await l.graph.listSubAgentsBySkillId(skill.id);
+      res.json({ ...skillNode(skill), usedByCount: usedBy.length });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
   router.post('/skills', async (req: Request, res: Response) => {
     const l = live(res);
     if (!l) return;
     try {
       const b = req.body ?? {};
+      // Validate provenance fields at the boundary: `source` is a closed set,
+      // `frontmatter` must be a plain object. Bad input falls back to defaults
+      // rather than tripping a DB CHECK.
+      const source = b.source === 'file' ? 'file' : b.source === 'db' ? 'db' : undefined;
+      const frontmatter =
+        b.frontmatter && typeof b.frontmatter === 'object' && !Array.isArray(b.frontmatter)
+          ? (b.frontmatter as Record<string, unknown>)
+          : undefined;
       const row = await l.graph.upsertSkill({
         slug: String(b.slug ?? '').trim(),
         name: String(b.name ?? '').trim(),
         description: b.description ?? null,
         body: b.body ?? '',
+        frontmatter,
+        source,
+        sourcePath: typeof b.sourcePath === 'string' ? b.sourcePath : null,
       });
       res.json(skillNode(row));
     } catch (err) {
@@ -253,7 +288,26 @@ export function createAgentBuilderRouter(
     const l = live(res);
     if (!l) return;
     try {
-      const row = await l.graph.updateSkill(str(req.params.id), req.body ?? {});
+      // Validate at the boundary like POST: only forward known fields, and
+      // reject a non-object `frontmatter` so it can't corrupt the jsonb column
+      // (there is no DB CHECK on frontmatter shape) or break the
+      // Record<string, unknown> contract that skillNode now exposes.
+      const b = req.body ?? {};
+      const patch: {
+        name?: string;
+        description?: string | null;
+        body?: string;
+        frontmatter?: Record<string, unknown>;
+      } = {};
+      if (typeof b.name === 'string') patch.name = b.name;
+      if (b.description === null || typeof b.description === 'string') {
+        patch.description = b.description;
+      }
+      if (typeof b.body === 'string') patch.body = b.body;
+      if (b.frontmatter && typeof b.frontmatter === 'object' && !Array.isArray(b.frontmatter)) {
+        patch.frontmatter = b.frontmatter as Record<string, unknown>;
+      }
+      const row = await l.graph.updateSkill(str(req.params.id), patch);
       await reload(l);
       res.json(skillNode(row));
     } catch (err) {
@@ -579,7 +633,11 @@ function skillNode(s: SkillRow) {
     name: s.name,
     description: s.description,
     body: s.body,
+    frontmatter: s.frontmatter,
     source: s.source,
+    sourcePath: s.sourcePath,
+    contentHash: s.contentHash,
+    forkedFrom: s.forkedFrom,
   };
 }
 
@@ -677,4 +735,12 @@ function str(v: unknown): string {
   if (typeof v === 'string') return v;
   if (Array.isArray(v) && typeof v[0] === 'string') return v[0];
   return '';
+}
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** True for a canonical UUID string — guards `:id` routes against non-UUID input. */
+function isUuid(v: string): boolean {
+  return UUID_RE.test(v);
 }

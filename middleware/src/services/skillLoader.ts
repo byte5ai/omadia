@@ -19,12 +19,32 @@ export interface LoadedSkill {
   body: string;
 }
 
+/** Parsed shape of a raw SKILL.md string, independent of the filesystem. */
+export interface ParsedSkillMarkdown {
+  /** Frontmatter key/value pairs (empty object if no frontmatter block). */
+  frontmatter: Record<string, string>;
+  /** Markdown body with the frontmatter block stripped and trimmed. */
+  body: string;
+  /** `description` from the frontmatter, or undefined if absent. */
+  description: string | undefined;
+}
+
+/**
+ * Parse a raw SKILL.md string (frontmatter + body) without touching the
+ * filesystem, so pasted or uploaded skill text can reuse the same parser as
+ * on-disk skills. `loadSkill` layers file IO on top of this.
+ */
+export function parseSkillMarkdown(raw: string): ParsedSkillMarkdown {
+  const { frontmatter, body } = splitFrontmatter(raw);
+  return { frontmatter, body: body.trim(), description: frontmatter['description'] };
+}
+
 export async function loadSkill(skillDir: string): Promise<LoadedSkill> {
   const sourcePath = path.join(skillDir, 'SKILL.md');
   const raw = await fs.readFile(sourcePath, 'utf8');
-  const { frontmatter, body } = splitFrontmatter(raw);
-  const description = frontmatter['description'] ?? path.basename(skillDir);
-  return { sourcePath, description, body: body.trim() };
+  const parsed = parseSkillMarkdown(raw);
+  const description = parsed.description ?? path.basename(skillDir);
+  return { sourcePath, description, body: parsed.body };
 }
 
 function splitFrontmatter(raw: string): {

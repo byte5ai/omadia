@@ -1,6 +1,7 @@
 import type { Pool } from 'pg';
 
 import { ConfigValidationError } from './configStore.js';
+import { computeSkillHash } from './skillHash.js';
 
 /**
  * Agent Builder graph store (P0).
@@ -47,6 +48,10 @@ export interface SkillRow {
   readonly frontmatter: Record<string, unknown>;
   readonly source: 'db' | 'file';
   readonly sourcePath: string | null;
+  /** sha256 of the canonical {frontmatter + body}; null until first write. */
+  readonly contentHash: string | null;
+  /** Origin skill id when this row is an editable fork of an imported skill. */
+  readonly forkedFrom: string | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;
 }
@@ -120,6 +125,8 @@ export interface SkillInput {
   readonly frontmatter?: Record<string, unknown>;
   readonly source?: 'db' | 'file';
   readonly sourcePath?: string | null;
+  /** Set only when creating an editable fork of an imported skill (#397). */
+  readonly forkedFrom?: string | null;
 }
 
 export interface SkillPatch {
@@ -181,6 +188,8 @@ interface SkillDbRow {
   frontmatter: Record<string, unknown>;
   source: 'db' | 'file';
   source_path: string | null;
+  content_hash: string | null;
+  forked_from: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -250,6 +259,8 @@ function mapSkill(r: SkillDbRow): SkillRow {
     frontmatter: r.frontmatter,
     source: r.source,
     sourcePath: r.source_path,
+    contentHash: r.content_hash,
+    forkedFrom: r.forked_from,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -413,16 +424,29 @@ export class AgentGraphStore {
     return rows.map(mapSkill);
   }
 
-  async upsertSkill(input: SkillInput): Promise<SkillRow> {
+  async getSkill(id: string): Promise<SkillRow | undefined> {
     const { rows } = await this.pool.query<SkillDbRow>(
-      `INSERT INTO skills (slug, name, description, body, frontmatter, source, source_path)
-       VALUES ($1,$2,$3,COALESCE($4,''),COALESCE($5::jsonb,'{}'::jsonb),COALESCE($6,'db'),$7)
+      'SELECT * FROM skills WHERE id = $1',
+      [id],
+    );
+    const row = rows[0];
+    return row ? mapSkill(row) : undefined;
+  }
+
+  async upsertSkill(input: SkillInput): Promise<SkillRow> {
+    // content_hash is derived here (never caller-supplied) over the same
+    // effective values the row stores, so it always matches the content.
+    const contentHash = computeSkillHash(input.frontmatter ?? {}, input.body ?? '');
+    const { rows } = await this.pool.query<SkillDbRow>(
+      `INSERT INTO skills (slug, name, description, body, frontmatter, source, source_path, content_hash, forked_from)
+       VALUES ($1,$2,$3,COALESCE($4,''),COALESCE($5::jsonb,'{}'::jsonb),COALESCE($6,'db'),$7,$8,$9)
        ON CONFLICT (slug) DO UPDATE SET
-         name        = EXCLUDED.name,
-         description = EXCLUDED.description,
-         body        = EXCLUDED.body,
-         frontmatter = EXCLUDED.frontmatter,
-         updated_at  = now()
+         name         = EXCLUDED.name,
+         description  = EXCLUDED.description,
+         body         = EXCLUDED.body,
+         frontmatter  = EXCLUDED.frontmatter,
+         content_hash = EXCLUDED.content_hash,
+         updated_at   = now()
        RETURNING *`,
       [
         input.slug,
@@ -432,36 +456,76 @@ export class AgentGraphStore {
         input.frontmatter ? JSON.stringify(input.frontmatter) : null,
         input.source ?? null,
         input.sourcePath ?? null,
+        contentHash,
+        input.forkedFrom ?? null,
       ],
     );
     return mapSkill(rows[0]!);
   }
 
   async updateSkill(id: string, patch: SkillPatch): Promise<SkillRow> {
-    const { rows } = await this.pool.query<SkillDbRow>(
-      `UPDATE skills SET
-         name        = COALESCE($2, name),
-         description  = COALESCE($3, description),
-         body         = COALESCE($4, body),
-         frontmatter  = COALESCE($5::jsonb, frontmatter),
-         updated_at   = now()
-       WHERE id = $1
-       RETURNING *`,
-      [
-        id,
-        patch.name ?? null,
-        patch.description ?? null,
-        patch.body ?? null,
-        patch.frontmatter ? JSON.stringify(patch.frontmatter) : null,
-      ],
-    );
-    const row = rows[0];
-    if (!row) throw new ConfigValidationError(`skill ${id} not found`);
-    return mapSkill(row);
+    // Read-modify-write so content_hash is recomputed from the *effective*
+    // body + frontmatter (a name-only patch must not stale the hash, and a
+    // partial content patch must hash against the untouched other half).
+    // Wrapped in a transaction with SELECT ... FOR UPDATE so concurrent
+    // patches on the same row can't interleave and persist a content_hash
+    // that disagrees with the stored body/frontmatter.
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rows: cur } = await client.query<SkillDbRow>(
+        'SELECT * FROM skills WHERE id = $1 FOR UPDATE',
+        [id],
+      );
+      const current = cur[0];
+      if (!current) throw new ConfigValidationError(`skill ${id} not found`);
+      const nextBody = patch.body ?? current.body;
+      const nextFrontmatter = patch.frontmatter ?? current.frontmatter;
+      const contentHash = computeSkillHash(nextFrontmatter, nextBody);
+      const { rows } = await client.query<SkillDbRow>(
+        `UPDATE skills SET
+           name         = COALESCE($2, name),
+           description  = COALESCE($3, description),
+           body         = COALESCE($4, body),
+           frontmatter  = COALESCE($5::jsonb, frontmatter),
+           content_hash = $6,
+           updated_at   = now()
+         WHERE id = $1
+         RETURNING *`,
+        [
+          id,
+          patch.name ?? null,
+          patch.description ?? null,
+          patch.body ?? null,
+          patch.frontmatter ? JSON.stringify(patch.frontmatter) : null,
+          contentHash,
+        ],
+      );
+      await client.query('COMMIT');
+      return mapSkill(rows[0]!);
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   async deleteSkill(id: string): Promise<void> {
     await this.pool.query('DELETE FROM skills WHERE id = $1', [id]);
+  }
+
+  /**
+   * Sub-agents that reference a given skill — the reverse of
+   * `SubAgentRow.skillId`, backed by `agent_subagents_skill_idx`. Powers the
+   * "used by N agents" affordance and safe fork/delete reference migration.
+   */
+  async listSubAgentsBySkillId(skillId: string): Promise<readonly SubAgentRow[]> {
+    const { rows } = await this.pool.query<SubAgentDbRow>(
+      'SELECT * FROM agent_subagents WHERE skill_id = $1 ORDER BY name',
+      [skillId],
+    );
+    return rows.map(mapSubAgent);
   }
 
   // ── mcp_servers ─────────────────────────────────────────────────────────────

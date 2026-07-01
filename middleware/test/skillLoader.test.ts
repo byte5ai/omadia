@@ -3,7 +3,7 @@ import { strict as assert } from 'node:assert';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadSkill } from '../src/services/skillLoader.js';
+import { loadSkill, parseSkillMarkdown } from '../src/services/skillLoader.js';
 
 describe('loadSkill', () => {
   let tmp: string;
@@ -43,5 +43,30 @@ describe('loadSkill', () => {
     const skill = await loadSkill(dir);
     assert.equal(skill.description, 'nofm');
     assert.equal(skill.body, content.trim());
+  });
+});
+
+describe('parseSkillMarkdown', () => {
+  it('parses frontmatter, trimmed body, and description from a raw string', () => {
+    const parsed = parseSkillMarkdown(
+      '---\nname: example\ndescription: An example skill.\n---\n\n# Example\n\nProse body.\n',
+    );
+    assert.equal(parsed.description, 'An example skill.');
+    assert.equal(parsed.frontmatter['name'], 'example');
+    assert.match(parsed.body, /^# Example/);
+    assert.ok(!parsed.body.includes('---'), 'body must not contain frontmatter delimiters');
+  });
+
+  it('returns undefined description when frontmatter has none', () => {
+    const parsed = parseSkillMarkdown('---\nname: bare\n---\n\nJust body.\n');
+    assert.equal(parsed.description, undefined);
+    assert.equal(parsed.body, 'Just body.');
+  });
+
+  it('treats the whole string as body when there is no frontmatter', () => {
+    const parsed = parseSkillMarkdown('# No frontmatter\n\nSome body.');
+    assert.deepEqual(parsed.frontmatter, {});
+    assert.equal(parsed.body, '# No frontmatter\n\nSome body.');
+    assert.equal(parsed.description, undefined);
   });
 });
