@@ -433,6 +433,39 @@ export class AgentGraphStore {
     return row ? mapSkill(row) : undefined;
   }
 
+  /**
+   * Look up a skill by exact content hash — for import dedup / convergence.
+   * Pass `source` to scope the match (import dedup scopes to `'file'` so a
+   * host-authored skill with identical content is never mistaken for a prior
+   * import).
+   */
+  async getSkillByContentHash(
+    contentHash: string,
+    source?: 'db' | 'file',
+  ): Promise<SkillRow | undefined> {
+    const { rows } = source
+      ? await this.pool.query<SkillDbRow>(
+          'SELECT * FROM skills WHERE content_hash = $1 AND source = $2 LIMIT 1',
+          [contentHash, source],
+        )
+      : await this.pool.query<SkillDbRow>(
+          'SELECT * FROM skills WHERE content_hash = $1 LIMIT 1',
+          [contentHash],
+        );
+    const row = rows[0];
+    return row ? mapSkill(row) : undefined;
+  }
+
+  /** Look up a skill by its unique slug — for import update-vs-create routing. */
+  async getSkillBySlug(slug: string): Promise<SkillRow | undefined> {
+    const { rows } = await this.pool.query<SkillDbRow>(
+      'SELECT * FROM skills WHERE slug = $1',
+      [slug],
+    );
+    const row = rows[0];
+    return row ? mapSkill(row) : undefined;
+  }
+
   async upsertSkill(input: SkillInput): Promise<SkillRow> {
     // content_hash is derived here (never caller-supplied) over the same
     // effective values the row stores, so it always matches the content.
@@ -461,6 +494,35 @@ export class AgentGraphStore {
       ],
     );
     return mapSkill(rows[0]!);
+  }
+
+  /**
+   * Insert a new skill, never touching an existing row: `ON CONFLICT (slug) DO
+   * NOTHING`. Returns undefined when the slug is already taken, so callers can
+   * disambiguate + retry instead of clobbering an existing (db or file) skill —
+   * the race-safe create path for import.
+   */
+  async insertSkill(input: SkillInput): Promise<SkillRow | undefined> {
+    const contentHash = computeSkillHash(input.frontmatter ?? {}, input.body ?? '');
+    const { rows } = await this.pool.query<SkillDbRow>(
+      `INSERT INTO skills (slug, name, description, body, frontmatter, source, source_path, content_hash, forked_from)
+       VALUES ($1,$2,$3,COALESCE($4,''),COALESCE($5::jsonb,'{}'::jsonb),COALESCE($6,'db'),$7,$8,$9)
+       ON CONFLICT (slug) DO NOTHING
+       RETURNING *`,
+      [
+        input.slug,
+        input.name,
+        input.description ?? null,
+        input.body ?? null,
+        input.frontmatter ? JSON.stringify(input.frontmatter) : null,
+        input.source ?? null,
+        input.sourcePath ?? null,
+        contentHash,
+        input.forkedFrom ?? null,
+      ],
+    );
+    const row = rows[0];
+    return row ? mapSkill(row) : undefined;
   }
 
   async updateSkill(id: string, patch: SkillPatch): Promise<SkillRow> {

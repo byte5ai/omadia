@@ -127,6 +127,10 @@ export interface SkillNode {
   description: string | null;
   body: string;
   source: 'db' | 'file';
+  frontmatter?: Record<string, unknown>;
+  sourcePath?: string | null;
+  contentHash?: string | null;
+  forkedFrom?: string | null;
 }
 
 export type ToolKind = 'native' | 'mcp';
@@ -358,6 +362,53 @@ export async function deleteSkill(id: string): Promise<void> {
   await callJson(`/v1/operator/skills/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   });
+}
+
+export interface SkillDetail extends SkillNode {
+  usedByCount: number;
+}
+
+export async function getSkill(id: string): Promise<SkillDetail> {
+  return callJson<SkillDetail>(`/v1/operator/skills/${encodeURIComponent(id)}`);
+}
+
+export type ImportOutcome = 'created' | 'updated' | 'unchanged';
+
+export interface ImportSkillInput {
+  /** Raw SKILL.md text (paste or uploaded file content). */
+  raw: string;
+  /** Optional provenance path (e.g. the original file name). */
+  sourcePath?: string;
+  /** When true, compute the outcome + preview without persisting. */
+  dryRun?: boolean;
+}
+
+export interface SkillImportResult {
+  outcome: ImportOutcome;
+  skill: {
+    slug: string;
+    name: string;
+    description: string | null;
+    body: string;
+    frontmatter: Record<string, unknown>;
+    sourcePath: string | null;
+  };
+  contentHash: string;
+  skillId?: string;
+}
+
+export async function importSkill(input: ImportSkillInput): Promise<SkillImportResult> {
+  return callJson<SkillImportResult>('/v1/operator/skills/import', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+/** Preview an import (dry-run) — computes outcome + normalized skill, no write. */
+export async function previewImportSkill(
+  input: Omit<ImportSkillInput, 'dryRun'>,
+): Promise<SkillImportResult> {
+  return importSkill({ ...input, dryRun: true });
 }
 
 // -----------------------------------------------------------------------------

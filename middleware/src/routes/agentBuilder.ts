@@ -29,6 +29,8 @@ import {
 import { McpManager } from '@omadia/orchestrator';
 import { Router, type Request, type Response } from 'express';
 
+import { importSkillMarkdown } from '../services/skillImport.js';
+
 export interface AgentBuilderRouterOptions {
   readonly getConfigStore: () => ConfigStore | undefined;
   readonly getGraphStore: () => AgentGraphStore | undefined;
@@ -279,6 +281,30 @@ export function createAgentBuilderRouter(
         sourcePath: typeof b.sourcePath === 'string' ? b.sourcePath : null,
       });
       res.json(skillNode(row));
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  // Import a SKILL.md (paste or uploaded file content) into the registry as a
+  // `source:'file'` skill. `dryRun:true` returns the computed outcome +
+  // normalized preview without persisting. Only frontmatter+body are ingested;
+  // bundled executable code is never run (that is the signed plugin path).
+  router.post('/skills/import', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const b = req.body ?? {};
+      const raw = typeof b.raw === 'string' ? b.raw : '';
+      if (!raw.trim()) {
+        res.status(400).json({ error: 'empty_skill', message: 'raw SKILL.md content is required' });
+        return;
+      }
+      const sourcePath = typeof b.sourcePath === 'string' ? b.sourcePath : undefined;
+      const dryRun = b.dryRun === true;
+      const result = await importSkillMarkdown(l.graph, { raw, sourcePath }, { dryRun });
+      if (!dryRun && result.outcome !== 'unchanged') await reload(l);
+      res.json(result);
     } catch (err) {
       fail(res, err);
     }

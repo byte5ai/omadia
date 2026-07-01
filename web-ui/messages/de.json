@@ -229,7 +229,23 @@
         "tools": "Tools"
       },
       "palette": {
-        "title": "Hinzufügen"
+        "title": "Hinzufügen",
+        "importSkill": "Skill importieren"
+      },
+      "import": {
+        "title": "Skill importieren",
+        "hint": "SKILL.md ablegen oder einfügen. Es wird nur der Text importiert — mitgelieferte Skripte müssen als Plugin hinzugefügt werden.",
+        "chooseFile": "SKILL.md-Datei wählen",
+        "fileChosen": "{name}",
+        "pastePlaceholder": "SKILL.md-Inhalt hier einfügen…",
+        "preview": "Vorschau",
+        "confirm": "Importieren",
+        "cancel": "Abbrechen",
+        "outcome": {
+          "created": "Wird als neuer Skill angelegt.",
+          "updated": "Aktualisiert den bestehenden importierten Skill.",
+          "unchanged": "Bereits importiert — keine Änderungen."
+        }
       },
       "toolbox": {
         "native": "Native Tools",

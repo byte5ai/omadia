@@ -35,7 +35,9 @@ export interface ParsedSkillMarkdown {
  * on-disk skills. `loadSkill` layers file IO on top of this.
  */
 export function parseSkillMarkdown(raw: string): ParsedSkillMarkdown {
-  const { frontmatter, body } = splitFrontmatter(raw);
+  // Normalize CRLF so Windows-authored SKILL.md files parse their frontmatter
+  // (the delimiter checks below are LF-only) and hash identically to LF files.
+  const { frontmatter, body } = splitFrontmatter(raw.replace(/\r\n/g, '\n'));
   return { frontmatter, body: body.trim(), description: frontmatter['description'] };
 }
 

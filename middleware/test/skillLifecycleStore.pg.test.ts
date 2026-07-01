@@ -7,6 +7,8 @@ import { Pool } from 'pg';
 
 import { AgentGraphStore, runMultiOrchestratorMigrations } from '@omadia/orchestrator';
 
+import { importSkillMarkdown } from '../src/services/skillImport.js';
+
 /**
  * PG-gated coverage for the Wave 0 skill-lifecycle store surface:
  * content-hash derivation on write, hash stability on a name-only patch,
@@ -130,5 +132,25 @@ describe('AgentGraphStore skill lifecycle (pg)', { skip: !pgAvailable }, () => {
     const s = await store.upsertSkill({ slug: `${SLUG_PREFIX}f`, name: 'F', body: 'q' });
     const usedBy = await store.listSubAgentsBySkillId(s.id);
     assert.deepEqual(usedBy, []);
+  });
+
+  it('importSkillMarkdown creates, then converges (unchanged) then updates against real PG', async () => {
+    const raw = `---\nname: ${SLUG_PREFIX}imp\ndescription: d\n---\n\nbody one\n`;
+    const created = await importSkillMarkdown(store, { raw, sourcePath: 'x/SKILL.md' });
+    assert.equal(created.outcome, 'created');
+    const row = await store.getSkill(created.skillId!);
+    assert.equal(row?.source, 'file');
+    assert.equal(row?.sourcePath, 'x/SKILL.md');
+
+    const unchanged = await importSkillMarkdown(store, { raw, sourcePath: 'x/SKILL.md' });
+    assert.equal(unchanged.outcome, 'unchanged');
+    assert.equal(unchanged.skillId, created.skillId);
+
+    const updated = await importSkillMarkdown(store, {
+      raw: raw.replace('body one', 'body two'),
+      sourcePath: 'x/SKILL.md',
+    });
+    assert.equal(updated.outcome, 'updated');
+    assert.equal(updated.skillId, created.skillId, 'updates in place, no duplicate');
   });
 });

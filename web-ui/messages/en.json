@@ -229,7 +229,23 @@
         "tools": "tools"
       },
       "palette": {
-        "title": "Add"
+        "title": "Add",
+        "importSkill": "Import skill"
+      },
+      "import": {
+        "title": "Import a skill",
+        "hint": "Drop or paste a SKILL.md. Only its text is imported — bundled scripts must be added as a plugin.",
+        "chooseFile": "Choose a SKILL.md file",
+        "fileChosen": "{name}",
+        "pastePlaceholder": "Paste SKILL.md content here…",
+        "preview": "Preview",
+        "confirm": "Import",
+        "cancel": "Cancel",
+        "outcome": {
+          "created": "Will be created as a new skill.",
+          "updated": "Will update the existing imported skill.",
+          "unchanged": "Already imported — no changes."
+        }
       },
       "toolbox": {
         "native": "Native tools",
