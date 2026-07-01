@@ -7,8 +7,10 @@ import {
   deleteSkill,
   getSkill,
   listSkills,
+  listSkillResources,
   type SkillDetail,
   type SkillNode,
+  type SkillResource,
 } from '../../_lib/agentBuilder';
 import { SkillEditor } from './SkillEditor';
 import { SkillImportModal } from './SkillImportModal';
@@ -33,6 +35,7 @@ export function SkillsRegistry({
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<SkillNode | null>(null);
   const [detail, setDetail] = useState<SkillDetail | null>(null);
+  const [resources, setResources] = useState<SkillResource[]>([]);
   const [importing, setImporting] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
@@ -62,11 +65,17 @@ export function SkillsRegistry({
   const select = useCallback(async (skill: SkillNode) => {
     setSelected(skill);
     setDetail(null);
+    setResources([]);
     setConfirmingDelete(false);
     try {
       setDetail(await getSkill(skill.id));
     } catch {
       /* used-by readout is best-effort */
+    }
+    try {
+      setResources(await listSkillResources(skill.id));
+    } catch {
+      /* resources readout is best-effort */
     }
   }, []);
 
@@ -147,6 +156,11 @@ export function SkillsRegistry({
                 {detail && (
                   <div className="text-xs text-[color:var(--fg-muted)]">
                     {t('usedBy', { count: detail.usedByCount })}
+                  </div>
+                )}
+                {resources.length > 0 && (
+                  <div className="text-xs text-[color:var(--fg-muted)]">
+                    {t('resources', { count: resources.length })}: {resources.map((r) => r.name).join(', ')}
                   </div>
                 )}
               </div>

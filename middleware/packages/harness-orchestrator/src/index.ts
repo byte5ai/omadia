@@ -97,6 +97,8 @@ export type {
   ScheduleRow,
   SkillInput,
   SkillPatch,
+  SkillResourceInput,
+  SkillResourceRow,
   SkillRow,
   SubAgentInput,
   SubAgentPatch,

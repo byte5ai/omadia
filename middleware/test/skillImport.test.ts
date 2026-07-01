@@ -1,7 +1,12 @@
 import { describe, it, beforeEach } from 'node:test';
 import { strict as assert } from 'node:assert';
 
-import { computeSkillHash, type SkillInput, type SkillRow } from '@omadia/orchestrator';
+import {
+  computeSkillHash,
+  type SkillInput,
+  type SkillResourceInput,
+  type SkillRow,
+} from '@omadia/orchestrator';
 
 import {
   detectAndNormalize,
@@ -14,7 +19,16 @@ import {
 /** In-memory SkillImportStore mirroring the real upsert-by-slug semantics. */
 class FakeStore implements SkillImportStore {
   readonly bySlug = new Map<string, SkillRow>();
+  readonly resourcesBySkill = new Map<string, SkillResourceInput[]>();
   private seq = 0;
+
+  async replaceSkillResources(
+    skillId: string,
+    resources: readonly SkillResourceInput[],
+  ): Promise<readonly unknown[]> {
+    this.resourcesBySkill.set(skillId, [...resources]);
+    return [...resources];
+  }
 
   async getSkillByContentHash(hash: string, source?: 'db' | 'file'): Promise<SkillRow | undefined> {
     for (const s of this.bySlug.values()) {
@@ -213,6 +227,59 @@ describe('importSkillMarkdown', () => {
     const r = await importSkillMarkdown(store, { raw: CLAUDE_SKILL }, { dryRun: true });
     assert.equal(r.outcome, 'created');
     assert.equal(store.bySlug.size, 0);
+  });
+
+  it('imports bundled resources and reports the count', async () => {
+    const r = await importSkillMarkdown(store, {
+      raw: CLAUDE_SKILL,
+      resources: [
+        { name: 'reference.md', content: '# Ref' },
+        { name: 'data.csv', content: 'a,b' },
+      ],
+    });
+    assert.equal(r.resourceCount, 2);
+    assert.equal(store.resourcesBySkill.get(r.skillId!)?.length, 2);
+  });
+
+  it('reports zero resources when none are bundled', async () => {
+    const r = await importSkillMarkdown(store, { raw: CLAUDE_SKILL });
+    assert.equal(r.resourceCount, 0);
+    assert.equal(store.resourcesBySkill.has(r.skillId!), false);
+  });
+
+  it('syncs resources on re-import even when the body is unchanged', async () => {
+    const first = await importSkillMarkdown(store, {
+      raw: CLAUDE_SKILL,
+      resources: [{ name: 'a.md', content: 'A' }],
+    });
+    // Same body (→ unchanged) but a new resource set.
+    const again = await importSkillMarkdown(store, {
+      raw: CLAUDE_SKILL,
+      resources: [{ name: 'b.md', content: 'B' }],
+    });
+    assert.equal(again.outcome, 'unchanged');
+    assert.deepEqual(store.resourcesBySkill.get(first.skillId!)?.map((r) => r.name), ['b.md']);
+  });
+
+  it('clears resources when an explicit empty array is sent', async () => {
+    const r = await importSkillMarkdown(store, {
+      raw: CLAUDE_SKILL,
+      resources: [{ name: 'a.md', content: 'A' }],
+    });
+    await importSkillMarkdown(store, { raw: CLAUDE_SKILL, resources: [] });
+    assert.deepEqual(store.resourcesBySkill.get(r.skillId!), []);
+  });
+
+  it('dedupes bundled resources by name (last-wins) so the count is honest', async () => {
+    const r = await importSkillMarkdown(store, {
+      raw: CLAUDE_SKILL,
+      resources: [
+        { name: 'dup.md', content: 'first' },
+        { name: 'dup.md', content: 'second' },
+      ],
+    });
+    assert.equal(r.resourceCount, 1);
+    assert.equal(store.resourcesBySkill.get(r.skillId!)?.[0]?.content, 'second');
   });
 
   it('surfaces guard risks on the result', async () => {

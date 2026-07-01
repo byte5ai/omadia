@@ -56,6 +56,20 @@ export interface SkillRow {
   readonly updatedAt: Date;
 }
 
+export interface SkillResourceRow {
+  readonly id: string;
+  readonly skillId: string;
+  readonly name: string;
+  readonly content: string;
+  readonly createdAt: Date;
+}
+
+/** A bundled resource to attach to a skill (name + text content). */
+export interface SkillResourceInput {
+  readonly name: string;
+  readonly content: string;
+}
+
 export interface McpServerRow {
   readonly id: string;
   readonly name: string;
@@ -194,6 +208,14 @@ interface SkillDbRow {
   updated_at: Date;
 }
 
+interface SkillResourceDbRow {
+  id: string;
+  skill_id: string;
+  name: string;
+  content: string;
+  created_at: Date;
+}
+
 interface McpServerDbRow {
   id: string;
   name: string;
@@ -263,6 +285,16 @@ function mapSkill(r: SkillDbRow): SkillRow {
     forkedFrom: r.forked_from,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+  };
+}
+
+function mapSkillResource(r: SkillResourceDbRow): SkillResourceRow {
+  return {
+    id: r.id,
+    skillId: r.skill_id,
+    name: r.name,
+    content: r.content,
+    createdAt: r.created_at,
   };
 }
 
@@ -590,6 +622,48 @@ export class AgentGraphStore {
     return rows.map(mapSubAgent);
   }
 
+  /** Bundled resources attached to a skill (#391 bundles). */
+  async listSkillResources(skillId: string): Promise<readonly SkillResourceRow[]> {
+    const { rows } = await this.pool.query<SkillResourceDbRow>(
+      'SELECT * FROM skill_resources WHERE skill_id = $1 ORDER BY name',
+      [skillId],
+    );
+    return rows.map(mapSkillResource);
+  }
+
+  /**
+   * Replace a skill's bundled resources atomically (delete-all then insert),
+   * so re-importing a bundle converges instead of accumulating stale files.
+   */
+  async replaceSkillResources(
+    skillId: string,
+    resources: readonly SkillResourceInput[],
+  ): Promise<readonly SkillResourceRow[]> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM skill_resources WHERE skill_id = $1', [skillId]);
+      const out: SkillResourceRow[] = [];
+      for (const r of resources) {
+        const { rows } = await client.query<SkillResourceDbRow>(
+          `INSERT INTO skill_resources (skill_id, name, content)
+           VALUES ($1,$2,$3)
+           ON CONFLICT (skill_id, name) DO UPDATE SET content = EXCLUDED.content
+           RETURNING *`,
+          [skillId, r.name, r.content],
+        );
+        out.push(mapSkillResource(rows[0]!));
+      }
+      await client.query('COMMIT');
+      return out;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
   /**
    * Fork an imported (`source:'file'`) skill into an editable `source:'db'`
    * copy so it can be edited without mutating the import record (fork-on-edit,
@@ -658,6 +732,13 @@ export class AgentGraphStore {
         origin.id,
         fork.id,
       ]);
+      // Carry the bundled resources over to the fork so editing an imported
+      // skill never silently drops its bundle.
+      await client.query(
+        `INSERT INTO skill_resources (skill_id, name, content)
+         SELECT $2, name, content FROM skill_resources WHERE skill_id = $1`,
+        [origin.id, fork.id],
+      );
       await client.query('COMMIT');
       return mapSkill(fork);
     } catch (err) {

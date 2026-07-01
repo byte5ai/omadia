@@ -177,9 +177,14 @@ describe('AgentGraphStore skill lifecycle (pg)', { skip: !pgAvailable }, () => {
     });
     assert.equal((await store.listSubAgentsBySkillId(originId)).length, 1);
 
+    await store.replaceSkillResources(originId, [{ name: 'ref.md', content: 'R' }]);
+
     const fork = await store.forkSkill(originId);
     assert.equal(fork.source, 'db');
     assert.equal(fork.forkedFrom, originId);
+    const forkResources = await store.listSkillResources(fork.id);
+    assert.equal(forkResources.length, 1, 'fork carries the origin bundle');
+    assert.equal(forkResources[0]?.name, 'ref.md');
     assert.notEqual(fork.slug, imp.skill.slug);
     assert.equal(fork.sourcePath, 'f/SKILL.md', 'provenance preserved');
     assert.equal((await store.listSubAgentsBySkillId(originId)).length, 0, 'origin ref migrated away');
@@ -204,5 +209,26 @@ describe('AgentGraphStore skill lifecycle (pg)', { skip: !pgAvailable }, () => {
     const same = await store.forkSkill(db.id);
     assert.equal(same.id, db.id);
     assert.equal(same.source, 'db');
+  });
+
+  it('replaceSkillResources sets, replaces, and cascade-deletes with the skill', async () => {
+    const s = await store.upsertSkill({ slug: `${SLUG_PREFIX}res`, name: 'R', body: 'b' });
+    await store.replaceSkillResources(s.id, [
+      { name: 'a.md', content: 'A' },
+      { name: 'b.md', content: 'B' },
+    ]);
+    let list = await store.listSkillResources(s.id);
+    assert.equal(list.length, 2);
+    assert.deepEqual(list.map((r) => r.name), ['a.md', 'b.md']);
+
+    // Replace converges (old entries removed).
+    await store.replaceSkillResources(s.id, [{ name: 'a.md', content: 'A2' }]);
+    list = await store.listSkillResources(s.id);
+    assert.equal(list.length, 1);
+    assert.equal(list[0]?.content, 'A2');
+
+    // Cascade on skill delete.
+    await store.deleteSkill(s.id);
+    assert.deepEqual(await store.listSkillResources(s.id), []);
   });
 });

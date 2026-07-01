@@ -919,6 +919,7 @@
     "confirmDeleteAction": "Trotzdem löschen",
     "cancel": "Abbrechen",
     "usedBy": "Verwendet von {count} Agenten",
+    "resources": "{count} gebündelte Ressourcen",
     "source": {
       "db": "erstellt",
       "file": "importiert"

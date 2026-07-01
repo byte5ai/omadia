@@ -408,7 +408,25 @@ export interface SkillImportResult {
   };
   contentHash: string;
   risks: SkillRisk[];
+  resourceCount: number;
   skillId?: string;
+}
+
+export interface SkillResource {
+  name: string;
+  content?: string;
+}
+
+/** List a skill's bundled resource files. Names only by default (cheap). */
+export async function listSkillResources(
+  id: string,
+  opts: { withContent?: boolean } = {},
+): Promise<SkillResource[]> {
+  const suffix = opts.withContent ? '' : '?names=1';
+  const res = await callJson<{ resources: SkillResource[] }>(
+    `/v1/operator/skills/${encodeURIComponent(id)}/resources${suffix}`,
+  );
+  return res.resources;
 }
 
 export async function importSkill(input: ImportSkillInput): Promise<SkillImportResult> {

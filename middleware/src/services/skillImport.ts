@@ -1,4 +1,9 @@
-import { computeSkillHash, type SkillInput, type SkillRow } from '@omadia/orchestrator';
+import {
+  computeSkillHash,
+  type SkillInput,
+  type SkillResourceInput,
+  type SkillRow,
+} from '@omadia/orchestrator';
 
 import { parseSkillMarkdown } from './skillLoader.js';
 import { scanSkillForRisks, type SkillRisk } from './skillGuard.js';
@@ -18,6 +23,8 @@ export interface SkillImportRequest {
   readonly raw: string;
   /** Optional provenance path (e.g. the original file/folder name). */
   readonly sourcePath?: string;
+  /** Optional bundled resource files (from an expanded skill folder/zip). */
+  readonly resources?: readonly SkillResourceInput[];
 }
 
 export interface NormalizedSkill {
@@ -38,6 +45,8 @@ export interface SkillImportResult {
   readonly contentHash: string;
   /** Heuristic pre-activation risk findings surfaced in the preview. */
   readonly risks: SkillRisk[];
+  /** Number of bundled resource files carried by this import. */
+  readonly resourceCount: number;
   /** Id of the affected/existing skill (absent for a dry-run create). */
   readonly skillId?: string;
 }
@@ -48,6 +57,10 @@ export interface SkillImportStore {
   getSkillBySlug(slug: string): Promise<SkillRow | undefined>;
   insertSkill(input: SkillInput): Promise<SkillRow | undefined>;
   upsertSkill(input: SkillInput): Promise<SkillRow>;
+  replaceSkillResources(
+    skillId: string,
+    resources: readonly SkillResourceInput[],
+  ): Promise<readonly unknown[]>;
 }
 
 const MAX_SLUG_LEN = 63;
@@ -159,6 +172,13 @@ export function detectAndNormalize(req: SkillImportRequest): {
   return { skill: normalizeAgentsMarkdown(req), format: 'agents-md' };
 }
 
+/** Dedupe bundled resources by name (last-wins), so the count never lies. */
+function dedupeResources(list: readonly SkillResourceInput[]): SkillResourceInput[] {
+  const byName = new Map<string, SkillResourceInput>();
+  for (const r of list) byName.set(r.name, r);
+  return [...byName.values()];
+}
+
 /** Find a free slug near `base`, never colliding with an existing row. */
 async function uniqueSlug(store: SkillImportStore, base: string): Promise<string> {
   if (!(await store.getSkillBySlug(base))) return base;
@@ -191,12 +211,20 @@ export async function importSkillMarkdown(
   const normalized = detectAndNormalize(req).skill;
   const contentHash = computeSkillHash(normalized.frontmatter, normalized.body);
   const risks = scanSkillForRisks(normalized.frontmatter, normalized.body);
+  // Distinguish "no resources key sent" (leave bundle untouched) from an
+  // explicit array (replace it, empty = clear). Dedupe by name.
+  const providedResources = req.resources;
+  const resources = dedupeResources(providedResources ?? []);
+  const resourceCount = resources.length;
 
   // 1. Already imported, byte-identical → no-op. Scoped to file skills so an
   //    identical host skill can't produce a self-inconsistent "unchanged".
   const byHash = await store.getSkillByContentHash(contentHash, 'file');
   if (byHash) {
-    return { outcome: 'unchanged', skill: normalized, contentHash, risks, skillId: byHash.id };
+    // Body/frontmatter unchanged, but the caller may still be re-syncing the
+    // bundle (content_hash intentionally excludes resources).
+    if (providedResources !== undefined) await store.replaceSkillResources(byHash.id, resources);
+    return { outcome: 'unchanged', skill: normalized, contentHash, risks, resourceCount, skillId: byHash.id };
   }
 
   // 2. Newer version of the same origin file → update in place. Requires a
@@ -211,7 +239,7 @@ export async function importSkillMarkdown(
     bySlug.sourcePath === normalized.sourcePath
   ) {
     if (opts.dryRun) {
-      return { outcome: 'updated', skill: normalized, contentHash, risks, skillId: bySlug.id };
+      return { outcome: 'updated', skill: normalized, contentHash, risks, resourceCount, skillId: bySlug.id };
     }
     const row = await store.upsertSkill({
       slug: bySlug.slug,
@@ -222,14 +250,15 @@ export async function importSkillMarkdown(
       source: 'file',
       sourcePath: normalized.sourcePath,
     });
-    return { outcome: 'updated', skill: { ...normalized, slug: bySlug.slug }, contentHash, risks, skillId: row.id };
+    if (providedResources !== undefined) await store.replaceSkillResources(row.id, resources);
+    return { outcome: 'updated', skill: { ...normalized, slug: bySlug.slug }, contentHash, risks, resourceCount, skillId: row.id };
   }
 
   // 3. Create, disambiguating the slug against any existing skill.
   const targetSlug = bySlug ? await uniqueSlug(store, normalized.slug) : normalized.slug;
   const created = { ...normalized, slug: targetSlug };
   if (opts.dryRun) {
-    return { outcome: 'created', skill: created, contentHash, risks };
+    return { outcome: 'created', skill: created, contentHash, risks, resourceCount };
   }
 
   // Race-safe insert: ON CONFLICT DO NOTHING, re-disambiguate if a concurrent
@@ -246,7 +275,8 @@ export async function importSkillMarkdown(
       sourcePath: normalized.sourcePath,
     });
     if (row) {
-      return { outcome: 'created', skill: { ...normalized, slug }, contentHash, risks, skillId: row.id };
+      if (providedResources !== undefined) await store.replaceSkillResources(row.id, resources);
+      return { outcome: 'created', skill: { ...normalized, slug }, contentHash, risks, resourceCount, skillId: row.id };
     }
   }
   throw new Error(`could not create imported skill "${normalized.slug}" after repeated slug conflicts`);

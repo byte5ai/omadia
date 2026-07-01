@@ -919,6 +919,7 @@
     "confirmDeleteAction": "Delete anyway",
     "cancel": "Cancel",
     "usedBy": "Used by {count} agents",
+    "resources": "{count} bundled resources",
     "source": {
       "db": "authored",
       "file": "imported"

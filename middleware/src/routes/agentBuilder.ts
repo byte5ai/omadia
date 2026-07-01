@@ -303,7 +303,20 @@ export function createAgentBuilderRouter(
       }
       const sourcePath = typeof b.sourcePath === 'string' ? b.sourcePath : undefined;
       const dryRun = b.dryRun === true;
-      const result = await importSkillMarkdown(l.graph, { raw, sourcePath }, { dryRun });
+      // Validate bundled resources at the boundary: array of {name, content}.
+      const resources = Array.isArray(b.resources)
+        ? b.resources
+            .filter(
+              (r: unknown): r is { name: string; content: string } =>
+                !!r &&
+                typeof r === 'object' &&
+                typeof (r as { name?: unknown }).name === 'string' &&
+                typeof (r as { content?: unknown }).content === 'string' &&
+                isSafeResourceName((r as { name: string }).name),
+            )
+            .map((r: { name: string; content: string }) => ({ name: r.name, content: r.content }))
+        : undefined;
+      const result = await importSkillMarkdown(l.graph, { raw, sourcePath, resources }, { dryRun });
       if (!dryRun && result.outcome !== 'unchanged') await reload(l);
       res.json(result);
     } catch (err) {
@@ -399,6 +412,28 @@ export function createAgentBuilderRouter(
       res.setHeader('content-type', 'text/markdown; charset=utf-8');
       res.setHeader('content-disposition', `attachment; filename="${safeName}.SKILL.md"`);
       res.send(serializeSkillMarkdown(frontmatter, skill.body));
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  // List a skill's bundled resources (#391 bundles).
+  router.get('/skills/:id/resources', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const id = str(req.params.id);
+      if (!isUuid(id)) {
+        res.status(404).json({ error: 'skill_not_found', id });
+        return;
+      }
+      // `?names=1` returns metadata only — the registry lists names and
+      // shouldn't pull potentially large resource bodies to do so.
+      const namesOnly = str(req.query.names) === '1';
+      const resources = (await l.graph.listSkillResources(id)).map((r) =>
+        namesOnly ? { name: r.name } : { name: r.name, content: r.content },
+      );
+      res.json({ resources });
     } catch (err) {
       fail(res, err);
     }
@@ -820,4 +855,14 @@ const UUID_RE =
 /** True for a canonical UUID string — guards `:id` routes against non-UUID input. */
 function isUuid(v: string): boolean {
   return UUID_RE.test(v);
+}
+
+/**
+ * Reject empty / path-like resource names at the boundary. Resources are DB
+ * blobs today, but a stored `../x` name would become a path-traversal write if
+ * the future runtime materializes them as files — cheaper to guard now.
+ */
+function isSafeResourceName(name: string): boolean {
+  const n = name.trim();
+  return n.length > 0 && !n.includes('/') && !n.includes('\\') && !n.includes('..');
 }
