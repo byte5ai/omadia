@@ -1201,6 +1201,13 @@
         "validation": {
           "keyExists": "Key existiert bereits.",
           "keyFormat": "Key muss snake_case sein (a-z, 0-9, _; mit Buchstaben starten)."
+        },
+        "oauth": {
+          "provider": "Provider",
+          "selectProvider": "— Provider wählen —",
+          "noProviders": "Zuerst einen oauth_providers-Deskriptor anlegen (den Builder-Agent fragen) — dann hier auswählen.",
+          "scopes": "Scopes",
+          "scopesPlaceholder": "kommagetrennt, z.B. profile, email"
         }
       }
     },

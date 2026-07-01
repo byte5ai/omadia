@@ -140,7 +140,10 @@ export interface OAuthProvider {
   authorize_url: string;
   token_url: string;
   token_auth_style: 'body_form' | 'body_json' | 'basic';
-  pkce?: boolean;
+  /** Required to mirror the kernel contract (admin-v1 `OAuthProviderDescriptor`
+   *  + middleware Zod, which defaults it to true on parse). Served specs always
+   *  carry it. */
+  pkce: boolean;
   extra_authorize_params?: Record<string, string>;
   client_id_field: string;
   client_secret_field: string;

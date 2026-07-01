@@ -51,7 +51,8 @@ export type ViolationKind =
   | 'oauth_field_provider_unresolved'
   | 'oauth_provider_client_field_missing'
   | 'oauth_provider_unreferenced'
-  | 'oauth_provider_client_secret_not_secret';
+  | 'oauth_provider_client_secret_not_secret'
+  | 'setup_field_provider_on_non_oauth';
 
 export interface ManifestViolation {
   kind: ViolationKind;
@@ -360,6 +361,29 @@ export function validateSpec(
     const field = f as { key?: unknown; type?: unknown };
     if (typeof field.key === 'string') setupFieldTypes.set(field.key, field.type);
   }
+  // provider/scopes are the type:oauth wiring — the Zod schema makes both
+  // optional on every field type, so a non-oauth field can carry a stray
+  // provider. The loader only reads them inside `if (type === 'oauth')` and
+  // codegen now gates the forward, so such a field is silently inert. Reject
+  // it up-front rather than let a malformed field slip past.
+  setupFields.forEach((f, i) => {
+    if (!f || typeof f !== 'object') return;
+    const field = f as { type?: unknown; provider?: unknown; scopes?: unknown };
+    if (field.type === 'oauth') return;
+    const hasProvider =
+      typeof field.provider === 'string' && field.provider.length > 0;
+    const hasScopes = Array.isArray(field.scopes) && field.scopes.length > 0;
+    if (hasProvider || hasScopes) {
+      violations.push({
+        kind: 'setup_field_provider_on_non_oauth',
+        path: `/setup_fields/${i}/${hasProvider ? 'provider' : 'scopes'}`,
+        message:
+          `setup_fields[${i}] is type:'${String(field.type)}' but carries ` +
+          `${hasProvider ? 'a provider' : 'scopes'} — those belong to a ` +
+          "type:'oauth' field only. Set type:'oauth' or drop the field.",
+      });
+    }
+  });
   // type:oauth field → must reference a declared descriptor; collect referenced
   // ids so orphan descriptors can be flagged below.
   const referencedProviderIds = new Set<string>();

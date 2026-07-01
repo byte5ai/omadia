@@ -9,6 +9,7 @@ import { Plus, Trash2 } from 'lucide-react';
 import { ApiError, patchBuilderSpec } from '../../../../_lib/api';
 import type {
   JsonPatch,
+  OAuthProvider,
   SetupField,
 } from '../../../../_lib/builderTypes';
 import { cn } from '../../../../_lib/cn';
@@ -18,6 +19,9 @@ interface SetupFieldsEditorProps {
   /** Server-canonical setup_fields. Re-renders flow through here via SSE
    *  + Workspace re-fetch. */
   fields: ReadonlyArray<SetupField>;
+  /** Spec 005 (#371) — declared `oauth_providers` descriptors. A `type:oauth`
+   *  field's `provider` picks one by `id`; empty means none authored yet. */
+  oauthProviders: ReadonlyArray<OAuthProvider>;
 }
 
 const FIELD_TYPES: ReadonlyArray<NonNullable<SetupField['type']>> = [
@@ -26,6 +30,7 @@ const FIELD_TYPES: ReadonlyArray<NonNullable<SetupField['type']>> = [
   'url',
   'number',
   'boolean',
+  'oauth',
 ];
 
 const KEY_PATTERN = /^[a-z][a-z0-9_]*$/;
@@ -44,6 +49,7 @@ const KEY_PATTERN = /^[a-z][a-z0-9_]*$/;
 export function SetupFieldsEditor({
   draftId,
   fields,
+  oauthProviders,
 }: SetupFieldsEditorProps): React.ReactElement {
   const t = useTranslations('builder.spec.setupFields');
   const safeFields = useMemo<SetupField[]>(
@@ -108,6 +114,7 @@ export function SetupFieldsEditor({
             <SetupFieldRow
               key={`${f.key}-${String(i)}`}
               field={f}
+              oauthProviders={oauthProviders}
               onChange={(patch) => updateAt(i, patch)}
               onRemove={() => removeAt(i)}
             />
@@ -129,16 +136,38 @@ export function SetupFieldsEditor({
 
 function SetupFieldRow({
   field,
+  oauthProviders,
   onChange,
   onRemove,
 }: {
   field: SetupField;
+  oauthProviders: ReadonlyArray<OAuthProvider>;
   onChange: (patch: Partial<SetupField>) => void;
   onRemove: () => void;
 }): React.ReactElement {
   const t = useTranslations('builder.spec.setupFields');
   const keyId = useId();
   const labelId = useId();
+  const providerId = useId();
+  const scopesId = useId();
+  // scopes is a comma-separated list — keep the raw text local so an
+  // in-progress separator ("profile," while typing the second scope) survives
+  // the per-keystroke PATCH→refetch round-trip that filters empty entries.
+  const canonicalScopes = (field.scopes ?? []).join(', ');
+  const [scopesText, setScopesText] = useState(canonicalScopes);
+  const [prevCanonicalScopes, setPrevCanonicalScopes] = useState(canonicalScopes);
+  // Adjust-state-on-prop-change (React idiom, no effect): re-sync only on an
+  // external change (agent edit / other tab), not on the echo of our own edit
+  // — compare canonical to what the local text parses back to.
+  if (canonicalScopes !== prevCanonicalScopes) {
+    setPrevCanonicalScopes(canonicalScopes);
+    const localParsed = scopesText
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+      .join(', ');
+    if (canonicalScopes !== localParsed) setScopesText(canonicalScopes);
+  }
   return (
     <li className="rounded-md border border-[color:var(--divider)] bg-[color:var(--bg-soft)]/40 p-3">
       <div className="grid grid-cols-1 gap-2 md:grid-cols-[1.2fr_1fr_0.8fr_0.6fr_auto]">
@@ -187,9 +216,16 @@ function SetupFieldRow({
           </label>
           <select
             value={field.type ?? 'string'}
-            onChange={(e) =>
-              onChange({ type: e.target.value as SetupField['type'] })
-            }
+            onChange={(e) => {
+              const nextType = e.target.value as SetupField['type'];
+              // provider/scopes belong to type:oauth only — clear them when
+              // switching away so we never emit a field the linter rejects.
+              onChange(
+                nextType === 'oauth'
+                  ? { type: nextType }
+                  : { type: nextType, provider: undefined, scopes: undefined },
+              );
+            }}
             className="font-mono-num mt-0.5 w-full rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1 text-[12px] text-[color:var(--fg-strong)] focus:border-[color:var(--accent)] focus:outline-none"
           >
             {FIELD_TYPES.map((t) => (
@@ -238,6 +274,62 @@ function SetupFieldRow({
           className="mt-0.5 w-full rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1 text-[12px] text-[color:var(--fg-strong)] placeholder:text-[color:var(--fg-subtle)] focus:border-[color:var(--accent)] focus:outline-none"
         />
       </div>
+      {field.type === 'oauth' ? (
+        <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
+          <div>
+            <label
+              htmlFor={providerId}
+              className="block text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-subtle)]"
+            >
+              {t('oauth.provider')}
+            </label>
+            {oauthProviders.length > 0 ? (
+              <select
+                id={providerId}
+                value={field.provider ?? ''}
+                onChange={(e) =>
+                  onChange({ provider: e.target.value || undefined })
+                }
+                className="font-mono-num mt-0.5 w-full rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1 text-[12px] text-[color:var(--fg-strong)] focus:border-[color:var(--accent)] focus:outline-none"
+              >
+                <option value="">{t('oauth.selectProvider')}</option>
+                {oauthProviders.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.id}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <p className="mt-0.5 text-[11px] text-[color:var(--fg-muted)]">
+                {t('oauth.noProviders')}
+              </p>
+            )}
+          </div>
+          <div>
+            <label
+              htmlFor={scopesId}
+              className="block text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-subtle)]"
+            >
+              {t('oauth.scopes')}
+            </label>
+            <input
+              id={scopesId}
+              type="text"
+              value={scopesText}
+              onChange={(e) => {
+                setScopesText(e.target.value);
+                const scopes = e.target.value
+                  .split(',')
+                  .map((s) => s.trim())
+                  .filter((s) => s.length > 0);
+                onChange({ scopes: scopes.length > 0 ? scopes : undefined });
+              }}
+              placeholder={t('oauth.scopesPlaceholder')}
+              className="font-mono-num mt-0.5 w-full rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1 text-[12px] text-[color:var(--fg-strong)] placeholder:text-[color:var(--fg-subtle)] focus:border-[color:var(--accent)] focus:outline-none"
+            />
+          </div>
+        </div>
+      ) : null}
     </li>
   );
 }

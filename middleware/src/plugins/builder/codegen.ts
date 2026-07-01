@@ -586,9 +586,16 @@ function mapSetupFieldSpecToManifest(
   if (field.enum_values && field.enum_values.length > 0) {
     out['enum'] = field.enum_values.map((value) => ({ value, label: value }));
   }
-  // Spec 005 (#371) — forward type:oauth descriptor reference + scopes.
-  if (field.provider) out['provider'] = field.provider;
-  if (field.scopes && field.scopes.length > 0) out['scopes'] = field.scopes;
+  // Spec 005 (#371) — forward the descriptor reference + scopes for
+  // type:oauth fields only. The loader reads provider/scopes solely inside
+  // `if (type === 'oauth')`, so gating the forward here keeps the schema's
+  // documented "type:'oauth' only" contract honest — a stray provider on a
+  // non-oauth field is dropped (and rejected up-front by the linter) rather
+  // than emitted into a silently-malformed manifest.
+  if (field.type === 'oauth') {
+    if (field.provider) out['provider'] = field.provider;
+    if (field.scopes && field.scopes.length > 0) out['scopes'] = field.scopes;
+  }
   return out;
 }
 

@@ -174,6 +174,72 @@ test('manifestLinter rejects a client_secret_field that is not type:secret', () 
   );
 });
 
+test('manifestLinter rejects provider/scopes on a non-oauth field (#371)', () => {
+  const skel = {
+    ...baseSpec(),
+    setup_fields: [
+      ...credFields(),
+      { key: 'gmail_oauth', type: 'oauth', required: true, provider: 'google' },
+      // stray provider on a plain string field — inert, must be rejected.
+      { key: 'api_base', type: 'string', required: false, provider: 'google' },
+    ],
+    oauth_providers: [googleProvider()],
+  } as unknown as AgentSpecSkeleton;
+  const result = validateSpec(skel);
+  assert.equal(result.ok, false);
+  assert.ok(
+    result.violations.some(
+      (v) =>
+        v.kind === 'setup_field_provider_on_non_oauth' &&
+        v.path === '/setup_fields/3/provider',
+    ),
+    JSON.stringify(result.violations),
+  );
+});
+
+test('manifestLinter rejects scopes on a non-oauth field (#371)', () => {
+  const skel = {
+    ...baseSpec(),
+    setup_fields: [
+      ...credFields(),
+      { key: 'gmail_oauth', type: 'oauth', required: true, provider: 'google' },
+      { key: 'region', type: 'string', required: false, scopes: ['read'] },
+    ],
+    oauth_providers: [googleProvider()],
+  } as unknown as AgentSpecSkeleton;
+  const result = validateSpec(skel);
+  assert.equal(result.ok, false);
+  assert.ok(
+    result.violations.some(
+      (v) => v.kind === 'setup_field_provider_on_non_oauth',
+    ),
+  );
+});
+
+test('manifestLinter accepts multiple type:oauth fields with distinct providers (#371)', () => {
+  const githubProvider = () => ({
+    id: 'github',
+    authorize_url: 'https://github.com/login/oauth/authorize',
+    token_url: 'https://github.com/login/oauth/access_token',
+    token_auth_style: 'body_json',
+    client_id_field: 'github_client_id',
+    client_secret_field: 'github_client_secret',
+  });
+  const skel = {
+    ...baseSpec(),
+    setup_fields: [
+      ...credFields(),
+      { key: 'github_client_id', type: 'string', required: true },
+      { key: 'github_client_secret', type: 'secret', required: true },
+      { key: 'gmail_oauth', type: 'oauth', required: true, provider: 'google' },
+      { key: 'github_oauth', type: 'oauth', required: true, provider: 'github' },
+    ],
+    oauth_providers: [googleProvider(), githubProvider()],
+  } as unknown as AgentSpecSkeleton;
+  const result = validateSpec(skel);
+  assert.equal(result.ok, true, JSON.stringify(result.violations));
+});
+
 test('manifestLinter rejects duplicate oauth_providers ids', () => {
   const skel = {
     ...baseSpec(),

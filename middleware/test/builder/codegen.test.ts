@@ -574,6 +574,95 @@ describe('codegen.generate', () => {
     ]);
   });
 
+  it('does not forward provider/scopes for a non-oauth field (Spec 005, #371)', async () => {
+    // The Zod schema allows provider/scopes on any field type; codegen must
+    // only forward them for type:oauth, so a stray provider never lands in the
+    // manifest where the loader would never read it.
+    const { slots } = loadFixture();
+    const spec = parseAgentSpec({
+      id: 'de.byte5.agent.strayprovider',
+      name: 'Stray Provider',
+      description: 'non-oauth field carrying a stray provider',
+      category: 'other',
+      depends_on: [],
+      tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
+      skill: { role: 'x' },
+      playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
+      network: { outbound: [] },
+      setup_fields: [
+        // provider/scopes on a plain string field — must be dropped by codegen.
+        {
+          key: 'api_base',
+          type: 'string',
+          required: false,
+          provider: 'google',
+          scopes: ['read'],
+        },
+      ],
+    });
+    const out = await generate({ spec, slots });
+    const manifestText = out.get('manifest.yaml')!.toString('utf-8');
+    const parsed = yaml.parse(manifestText) as {
+      setup?: { fields?: Array<Record<string, unknown>> };
+    };
+    const field = parsed.setup?.fields?.find((f) => f['key'] === 'api_base');
+    assert.ok(field, 'api_base field present in manifest');
+    assert.equal(field!['provider'], undefined);
+    assert.equal(field!['scopes'], undefined);
+  });
+
+  it('round-trips extra_authorize_params through codegen + loader (Spec 005, #371)', async () => {
+    // extra_authorize_params is descriptor data the broker replays onto the
+    // authorize URL (e.g. access_type=offline for a Google refresh token).
+    // Prove it survives codegen and the real loader untouched.
+    const { slots } = loadFixture();
+    const spec = parseAgentSpec({
+      id: 'de.byte5.agent.gmailparams',
+      name: 'Gmail Params',
+      description: 'summarises Gmail via the kernel OAuth broker',
+      category: 'communication',
+      depends_on: [],
+      tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
+      skill: { role: 'x' },
+      playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
+      network: { outbound: ['gmail.googleapis.com'] },
+      setup_fields: [
+        { key: 'google_client_id', type: 'string', required: true },
+        { key: 'google_client_secret', type: 'secret', required: true },
+        { key: 'gmail_oauth', type: 'oauth', required: true, provider: 'google' },
+      ],
+      oauth_providers: [
+        {
+          id: 'google',
+          authorize_url: 'https://accounts.google.com/o/oauth2/v2/auth',
+          token_url: 'https://oauth2.googleapis.com/token',
+          token_auth_style: 'body_form',
+          extra_authorize_params: { access_type: 'offline', prompt: 'consent' },
+          client_id_field: 'google_client_id',
+          client_secret_field: 'google_client_secret',
+        },
+      ],
+    });
+    const out = await generate({ spec, slots });
+    const manifestText = out.get('manifest.yaml')!.toString('utf-8');
+
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'omadia-oauth-params-'));
+    try {
+      const manifestPath = path.join(dir, 'plugin.manifest.yaml');
+      writeFileSync(manifestPath, manifestText, 'utf-8');
+      const entry = await loadManifestFromPath(manifestPath);
+      assert.ok(entry, 'loader accepted the generated manifest');
+      const desc = entry!.plugin.oauth_providers?.[0];
+      assert.ok(desc, 'descriptor survived the loader');
+      assert.deepEqual(desc!.extra_authorize_params, {
+        access_type: 'offline',
+        prompt: 'consent',
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('omits oauth_providers from the manifest when the spec declares none', async () => {
     const { slots } = loadFixture();
     const spec = parseAgentSpec({
