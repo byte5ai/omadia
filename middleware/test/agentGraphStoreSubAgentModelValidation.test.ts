@@ -38,9 +38,21 @@ const OPUS: ModelInfo = {
   aliases: ['opus'],
 };
 
+const GPT: ModelInfo = {
+  id: 'openai:gpt-5.5',
+  provider: 'openai',
+  modelId: 'gpt-5.5',
+  label: 'GPT-5.5',
+  class: 'frontier',
+  maxTokens: 16384,
+  contextWindow: 400000,
+  vision: true,
+  aliases: [],
+};
+
 beforeEach(() => {
   clearExternalModels();
-  registerExternalModels([OPUS]);
+  registerExternalModels([OPUS, GPT]);
 });
 
 interface QueryCall {
@@ -150,4 +162,94 @@ test('updateSubAgent without a `model` patch skips validation entirely', async (
   });
   assert.equal(calls.length, 1);
   assert.match(calls[0]!.sql, /UPDATE agent_subagents/);
+});
+
+// ── clear path (issue #296 MAJOR#2) ──────────────────────────────────────
+// `model = COALESCE($4, model)` can NEVER clear the column — COALESCE(NULL,
+// model) keeps the old value. The write must use an explicit "was model in the
+// patch?" guard so `null` clears to NULL while `undefined` keeps.
+
+test('createSubAgent normalises empty-string model to NULL (clean data)', async () => {
+  const { pool, calls } = fakePool();
+  const store = new AgentGraphStore(pool);
+  await store.createSubAgent({
+    parentAgentId: '00000000-0000-0000-0000-000000000001',
+    name: 'r',
+    model: '   ',
+  });
+  // INSERT param $4 is the model column — must be NULL, not '' / whitespace.
+  assert.equal(calls[0]!.params[3], null, 'empty model persisted as NULL');
+});
+
+test('updateSubAgent clears model to NULL when patch.model is null', async () => {
+  const { pool, calls } = fakePool();
+  const store = new AgentGraphStore(pool);
+  const row = await store.updateSubAgent('00000000-0000-0000-0000-0000000000aa', {
+    model: null,
+  });
+  const { sql, params } = calls[0]!;
+  // The write must NOT COALESCE the model column (that would keep the old
+  // value); it must branch on the "provided" guard and write NULL.
+  assert.doesNotMatch(sql, /model\s+=\s+COALESCE/);
+  assert.match(sql, /model\s+=\s+CASE WHEN \$10 THEN \$4 ELSE model END/);
+  assert.equal(params[3], null, 'model value param is NULL');
+  assert.equal(params[9], true, 'model-provided guard is true → clears');
+  assert.equal(row.model, null);
+});
+
+test('updateSubAgent clears model to NULL when patch.model is empty string', async () => {
+  const { pool, calls } = fakePool();
+  const store = new AgentGraphStore(pool);
+  await store.updateSubAgent('00000000-0000-0000-0000-0000000000aa', {
+    model: '',
+  });
+  assert.equal(calls[0]!.params[3], null);
+  assert.equal(calls[0]!.params[9], true);
+});
+
+test('updateSubAgent keeps model untouched when patch omits it (undefined)', async () => {
+  const { pool, calls } = fakePool();
+  const store = new AgentGraphStore(pool);
+  await store.updateSubAgent('00000000-0000-0000-0000-0000000000aa', {
+    name: 'renamed',
+  });
+  // model-provided guard is false → the CASE keeps the existing column.
+  assert.equal(calls[0]!.params[9], false, 'model-provided guard is false → keeps');
+});
+
+// ── active-provider scoping (issue #296 MAJOR#3) ─────────────────────────
+
+test('createSubAgent rejects a cross-provider model when activeProvider is set', async () => {
+  const { pool, calls } = fakePool();
+  const store = new AgentGraphStore(pool);
+  await assert.rejects(
+    () =>
+      store.createSubAgent(
+        {
+          parentAgentId: '00000000-0000-0000-0000-000000000001',
+          name: 'researcher',
+          model: 'openai:gpt-5.5',
+        },
+        'anthropic',
+      ),
+    (err) =>
+      err instanceof ConfigValidationError && /cross-provider/.test(err.message),
+  );
+  assert.equal(calls.length, 0, 'no SQL for a rejected cross-provider write');
+});
+
+test('updateSubAgent rejects a cross-provider model when activeProvider is set', async () => {
+  const { pool, calls } = fakePool();
+  const store = new AgentGraphStore(pool);
+  await assert.rejects(
+    () =>
+      store.updateSubAgent(
+        '00000000-0000-0000-0000-0000000000aa',
+        { model: 'openai:gpt-5.5' },
+        'anthropic',
+      ),
+    (err) =>
+      err instanceof ConfigValidationError && /cross-provider/.test(err.message),
+  );
+  assert.equal(calls.length, 0);
 });

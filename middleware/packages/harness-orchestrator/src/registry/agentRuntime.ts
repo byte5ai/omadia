@@ -17,7 +17,11 @@ import type { ModelRoutingConfig as RuntimeModelRouting } from '../modelRouter.j
  * unit-testable without a DB.
  */
 
-const DEFAULT_CLASSIFIER_MODEL = 'claude-haiku-4-5';
+// Must be an id the registry actually serves: `validateModelRef` rejects an
+// unregistered ref, so the code's own default must agree with its write-
+// validation. The registered Haiku is the dated id (alias `haiku`); the
+// undated `claude-haiku-4-5` is NOT in the registry (issue #296 nit).
+const DEFAULT_CLASSIFIER_MODEL = 'claude-haiku-4-5-20251001';
 
 /**
  * Hard fallback orchestrator model — the last tier of the per-instance model

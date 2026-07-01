@@ -169,15 +169,28 @@ export function buildForAgent(
   // sends it RAW to the wire API (no ref→modelId resolution in the send path).
   // The Admin picker stores a provider-qualified id / alias, so resolve the
   // per-Agent overlay to the active provider's concrete `modelId` HERE — see
-  // `resolveModelIdForProvider` (issue #296). The CLI provider owns its own
-  // alias scheme so its refs pass through untouched; the platform default
-  // (`runtime.model`, operator-set env) is left as-is — it works raw today and
-  // resolving it would change established behaviour.
+  // `resolveModelIdForProvider` (issue #296).
+  //
+  // The CLI provider is resolved like any other — its models ARE registered
+  // (`claude-cli:opus-cli` etc.), so `resolveModelIdForProvider('claude-cli:opus-cli',
+  // 'claude-cli')` → `opus-cli` → (`-cli` stripped downstream) → `opus`, the
+  // alias the CLI expects. The old code special-cased CLI to pass the ref RAW,
+  // which left the picker's `claude-cli:opus-cli` unresolved → `claude-cli:opus`
+  // after the strip → an invalid `--model` on every turn (issue #296 BLOCKER).
+  //
+  // A ref the resolver returns `undefined` for (a registry-known CROSS-provider
+  // id, or a legacy bare CLI alias like `opus`) falls through to the raw trimmed
+  // ref. Cross-provider picks are rejected at WRITE time (the model-routing /
+  // sub-agent validators are scoped to the active provider, issue #296 MAJOR),
+  // so a cross-provider ref never reaches here for a fresh write; the raw
+  // fallthrough is what lets a CLI deployment's bare alias (`opus`) run. A
+  // registry-UNKNOWN same-context ref is already returned raw by the resolver.
+  // The platform default (`runtime.model`, operator-set env) is not passed
+  // through here — it works raw today and resolving it would change established
+  // behaviour.
   const activeProvider = deps.provider?.id;
   const resolveOverlay = (ref: string | undefined): string | undefined =>
-    activeProvider === 'claude-cli'
-      ? ref?.trim() || undefined
-      : resolveModelIdForProvider(ref, activeProvider);
+    (resolveModelIdForProvider(ref, activeProvider) ?? ref?.trim()) || undefined;
 
   // Per-instance model resolution (issue #296 AC#2), three tiers:
   //   1. the Agent's `model_routing.main` (operator's per-Agent choice)

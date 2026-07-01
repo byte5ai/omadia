@@ -134,10 +134,23 @@ const GPT: ModelInfo = {
   vision: true,
   aliases: [],
 };
+// The subscription-CLI provider registers `-cli`-suffixed modelIds so they
+// never collide with another provider's alias; the claude-cli adapter strips
+// the suffix back to the bare CLI alias (`opus`) for `claude -p --model`.
+const OPUS_CLI: ModelInfo = {
+  id: 'claude-cli:opus-cli',
+  provider: 'claude-cli',
+  modelId: 'opus-cli',
+  label: 'Claude Opus (CLI)',
+  class: 'frontier',
+  maxTokens: 32000,
+  contextWindow: 200000,
+  vision: false,
+};
 
 beforeEach(() => {
   clearExternalModels();
-  registerExternalModels([OPUS, HAIKU, GPT]);
+  registerExternalModels([OPUS, HAIKU, GPT, OPUS_CLI]);
 });
 
 const twoAgentSnapshot: ConfigSnapshot = {
@@ -654,11 +667,14 @@ test('issue #296 BLOCKER: per-Agent model ref resolves to the active provider ba
   );
 });
 
-test('issue #296 FIX2: a cross-provider per-Agent pick is dropped, not sent to the wrong adapter', async () => {
-  // The orchestrator runs on ONE provider (`anthropic` here). A pick that
-  // resolves to a DIFFERENT provider (`openai:gpt-5.5`) would be sent to the
-  // anthropic adapter → 404. The build path drops it and falls back to the
-  // platform default so the Agent keeps running.
+test('issue #296 FIX2: a cross-provider per-Agent pick is guarded at write time, not silently dropped at build', async () => {
+  // The orchestrator runs on ONE provider (`anthropic` here). A cross-provider
+  // pick (`openai:gpt-5.5`) is REJECTED at write time by the provider-scoped
+  // model-routing validator (see configStoreModelRoutingValidation.test.ts), so
+  // it can never be persisted for a fresh write. The build path itself does not
+  // re-drop it: an unresolved ref falls through raw (fail-loud at runtime, no
+  // silent switch to a different model). This test pins that build-time
+  // contract for the residual/stale case.
   const snapshot: ConfigSnapshot = {
     agents: [
       {
@@ -678,8 +694,38 @@ test('issue #296 FIX2: a cross-provider per-Agent pick is dropped, not sent to t
   await registry.start();
   assert.equal(
     registry.get('crossprovider')?.built.effectiveModel,
-    'claude-opus-4-8',
-    'cross-provider pick is dropped → falls back to the platform default (no 404)',
+    'openai:gpt-5.5',
+    'a cross-provider ref that escaped write-validation is passed through raw (fails loud), not silently dropped',
+  );
+});
+
+test('issue #296 BLOCKER (claude-cli): a provider-qualified CLI pick resolves to the bare CLI modelId, never sent raw', async () => {
+  // On a keyless subscription-CLI deployment the picker offers only
+  // `claude-cli:opus-cli`. If the build passes that ref raw, buildOrchestrator's
+  // `-cli` strip yields `claude-cli:opus` → an invalid `claude -p --model`,
+  // failing every turn. The overlay MUST resolve it to the bare `opus-cli`
+  // (which the downstream strip turns into `opus`, the alias the CLI expects).
+  const snapshot: ConfigSnapshot = {
+    agents: [
+      {
+        ...agentRow('cli', '00000000-0000-0000-0000-0000000000d1'),
+        modelRouting: { mode: 'single', main: 'claude-cli:opus-cli' },
+      },
+    ],
+    agentPlugins: [],
+    channelBindings: [],
+    platformSettings: { fallbackAgentId: null, updatedAt: new Date(0) },
+  };
+  const registry = new OrchestratorRegistry(
+    fakeStore(snapshot),
+    depsWithProvider('claude-cli'),
+    { defaultRuntimeConfig: { model: 'opus-cli', maxTokens: 100, maxToolIterations: 4 } },
+  );
+  await registry.start();
+  assert.equal(
+    registry.get('cli')?.built.effectiveModel,
+    'opus-cli',
+    'CLI picker id resolves to the bare modelId (not raw claude-cli:opus-cli)',
   );
 });
 

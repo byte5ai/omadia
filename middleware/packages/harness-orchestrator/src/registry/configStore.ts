@@ -122,6 +122,7 @@ const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
  */
 export function validateModelRoutingShape(
   routing: Record<string, unknown>,
+  activeProvider?: string,
 ): void {
   const mode = routing['mode'];
   if (mode !== 'single' && mode !== 'triage') {
@@ -135,7 +136,7 @@ export function validateModelRoutingShape(
       `modelRouting.main is required (clear routing by passing null instead)`,
     );
   }
-  validateModelRef(`modelRouting.main`, main.trim());
+  validateModelRef(`modelRouting.main`, main.trim(), activeProvider);
   if (mode === 'triage') {
     for (const key of ['triage', 'simple'] as const) {
       const raw = routing[key];
@@ -147,7 +148,7 @@ export function validateModelRoutingShape(
       }
       const trimmed = raw.trim();
       if (trimmed === '') continue;
-      validateModelRef(`modelRouting.${key}`, trimmed);
+      validateModelRef(`modelRouting.${key}`, trimmed, activeProvider);
     }
   }
 }
@@ -159,16 +160,38 @@ export function validateModelRoutingShape(
  * cannot pin runtime to an id the live provider set does not serve — an
  * unknown id would 404 at every turn. Empty / whitespace `ref` is rejected —
  * callers should skip the validator when clearing the field instead.
+ *
+ * When `activeProvider` is given (the orchestrator's single configured
+ * provider), the ref is resolved in that provider's context AND a ref that
+ * resolves to a DIFFERENT provider is rejected: cross-provider routing is out
+ * of scope (issue #296) and would be silently dropped to the platform default
+ * at build, so the picker must not be able to persist a model the Agent never
+ * actually runs on. Without it the check is provider-agnostic (legacy).
  */
-export function validateModelRef(field: string, ref: string): void {
+export function validateModelRef(
+  field: string,
+  ref: string,
+  activeProvider?: string,
+): void {
   if (typeof ref !== 'string' || ref.trim() === '') {
     throw new ConfigValidationError(
       `${field} must be a non-empty model ref (clear with null instead)`,
     );
   }
-  if (resolveModelRef(ref.trim()) === undefined) {
+  const info = resolveModelRef(
+    ref.trim(),
+    activeProvider ? { defaultProvider: activeProvider } : {},
+  );
+  if (info === undefined) {
     throw new ConfigValidationError(
       `${field} '${ref}' is not registered with any installed LLM provider`,
+    );
+  }
+  if (activeProvider && info.provider !== activeProvider) {
+    throw new ConfigValidationError(
+      `${field} '${ref}' resolves to provider '${info.provider}', but the ` +
+        `orchestrator runs on '${activeProvider}' — cross-provider model ` +
+        `selection is not supported; pick a '${activeProvider}' model`,
     );
   }
 }
@@ -356,8 +379,9 @@ export class ConfigStore {
   async setModelRouting(
     id: string,
     routing: Record<string, unknown> | null,
+    activeProvider?: string,
   ): Promise<AgentRow> {
-    if (routing) validateModelRoutingShape(routing);
+    if (routing) validateModelRoutingShape(routing, activeProvider);
     const { rows } = await this.pool.query<AgentDbRow>(
       `UPDATE agents SET model_routing = $2::jsonb, updated_at = now()
        WHERE id = $1 RETURNING *`,

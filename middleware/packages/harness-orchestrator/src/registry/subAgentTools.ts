@@ -98,8 +98,11 @@ export function buildSubAgentDomainTools(
       ? createCliSubAgent({
           name: sub.name,
           systemPrompt,
+          // Resolve the picker-stored ref to the bare `modelId` BEFORE the
+          // `-cli` strip — exactly like the orchestrator main model (issue #296
+          // BLOCKER). See `resolveCliSubAgentModel`.
           model: (deps.cliModelAlias ?? ((model) => model))(
-            sub.model ?? deps.defaultModel,
+            resolveCliSubAgentModel(sub.model, deps.defaultModel),
           ),
           tools: subTools,
         })
@@ -141,6 +144,30 @@ export function resolveSubAgentModel(
 ): string {
   return (
     resolveModelIdForProvider(ref, deps.provider?.id) ?? deps.defaultModel
+  );
+}
+
+/**
+ * CLI-provider variant of `resolveSubAgentModel` (issue #296 BLOCKER). The CLI
+ * sub-agent runs the picked ref through `cliModelAlias` (which strips the `-cli`
+ * suffix back to `opus`/`sonnet`/`haiku`), so the ref must first be resolved to
+ * the bare CLI `modelId` — a picker-stored `claude-cli:opus-cli` must become
+ * `opus-cli` (→ `opus`), NOT reach the strip raw (→ the invalid `claude-cli:opus`).
+ *
+ * Resolves against `claude-cli` explicitly (the caller is inside the
+ * `hostIsCliProvider` branch and `deps.provider` may be absent on the hydrate
+ * path). A ref that does not resolve under `claude-cli` — a legacy bare alias
+ * (`opus`) or full vendor id — falls through untouched so `cliModelAlias`
+ * handles it exactly as before; an empty ref inherits the parent default.
+ * Mirrors the orchestrator main model's overlay resolution in `applyDiff`.
+ */
+export function resolveCliSubAgentModel(
+  ref: string | null | undefined,
+  defaultModel: string,
+): string {
+  return (
+    (resolveModelIdForProvider(ref, 'claude-cli') ?? ref?.trim()) ||
+    defaultModel
   );
 }
 

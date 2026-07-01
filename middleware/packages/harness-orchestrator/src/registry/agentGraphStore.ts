@@ -315,12 +315,16 @@ export class AgentGraphStore {
     return rows.map(mapSubAgent);
   }
 
-  async createSubAgent(input: SubAgentInput): Promise<SubAgentRow> {
+  async createSubAgent(
+    input: SubAgentInput,
+    activeProvider?: string,
+  ): Promise<SubAgentRow> {
     // Issue #296 follow-up — guard sub-agent model writes against unknown
     // ids the same way `setModelRouting` guards the orchestrator model.
     // Empty / null skips validation (= inherit parent agent / platform).
+    // `activeProvider` additionally rejects a cross-provider pick.
     if (input.model != null && input.model.trim() !== '') {
-      validateModelRef('subAgent.model', input.model.trim());
+      validateModelRef('subAgent.model', input.model.trim(), activeProvider);
     }
     try {
       const { rows } = await this.pool.query<SubAgentDbRow>(
@@ -333,7 +337,10 @@ export class AgentGraphStore {
           input.parentAgentId,
           input.name,
           input.skillId ?? null,
-          input.model ?? null,
+          // Normalise the empty-string "(default)" dropdown choice to NULL so
+          // the column stays clean (`resolveSubAgentModel('')` would inherit
+          // anyway, but `''` is dirty data).
+          input.model?.trim() || null,
           input.maxTokens ?? null,
           input.maxIterations ?? null,
           input.systemPromptOverride ?? null,
@@ -352,18 +359,29 @@ export class AgentGraphStore {
     }
   }
 
-  async updateSubAgent(id: string, patch: SubAgentPatch): Promise<SubAgentRow> {
-    // Issue #296 follow-up — see `createSubAgent` rationale. `null` is the
-    // wire form for "clear" (no validation); empty-string is treated the
-    // same so the UI dropdown's "(default)" choice round-trips cleanly.
+  async updateSubAgent(
+    id: string,
+    patch: SubAgentPatch,
+    activeProvider?: string,
+  ): Promise<SubAgentRow> {
+    // Issue #296 follow-up — see `createSubAgent` rationale.
+    // Non-empty string  → validate + pin the model.
+    // `null` / empty    → CLEAR back to inherit-parent (skip validation).
+    // Absent (undefined) → keep the existing value untouched.
     if (patch.model != null && patch.model.trim() !== '') {
-      validateModelRef('subAgent.model', patch.model.trim());
+      validateModelRef('subAgent.model', patch.model.trim(), activeProvider);
     }
+    // `model` cannot use COALESCE: COALESCE(NULL, model) keeps the old value,
+    // so a `null` clear would be a silent no-op. Guard the write with an
+    // explicit "was model in the patch?" flag ($10) so `undefined` keeps and
+    // `null`/'' clears to NULL.
+    const modelProvided = patch.model !== undefined;
+    const modelValue = patch.model?.trim() || null;
     const { rows } = await this.pool.query<SubAgentDbRow>(
       `UPDATE agent_subagents SET
          name                   = COALESCE($2, name),
          skill_id               = COALESCE($3, skill_id),
-         model                  = COALESCE($4, model),
+         model                  = CASE WHEN $10 THEN $4 ELSE model END,
          max_tokens             = COALESCE($5, max_tokens),
          max_iterations         = COALESCE($6, max_iterations),
          system_prompt_override = COALESCE($7, system_prompt_override),
@@ -376,12 +394,13 @@ export class AgentGraphStore {
         id,
         patch.name ?? null,
         patch.skillId ?? null,
-        patch.model ?? null,
+        modelValue,
         patch.maxTokens ?? null,
         patch.maxIterations ?? null,
         patch.systemPromptOverride ?? null,
         patch.status ?? null,
         patch.position ? JSON.stringify(patch.position) : null,
+        modelProvided,
       ],
     );
     const row = rows[0];

@@ -126,6 +126,11 @@ export interface BuilderRouterDeps {
    *  key is configured, or the provider is keyless). When omitted, the model
    *  picker lists every registered model regardless of connection. */
   connectedProviders?: () => Promise<ReadonlySet<string>>;
+  /** The orchestrator's single configured provider id (live-read). When set,
+   *  the model picker is scoped to it so a cross-provider pick can't be offered
+   *  (it would be silently dropped to the platform default at build — issue
+   *  #296). When omitted, the picker falls back to `connectedProviders`. */
+  activeProvider?: () => string | undefined;
 }
 
 export function createBuilderRouter(deps: BuilderRouterDeps): Router {
@@ -288,11 +293,21 @@ export function createBuilderRouter(deps: BuilderRouterDeps): Router {
   // ── GET /models ─────────────────────────────────────────────────────────
   router.get('/models', async (_req: Request, res: Response) => {
     try {
+      // Scope to the orchestrator's active provider when known: a per-Agent
+      // pick on another provider would be dropped to the platform default at
+      // build (issue #296), so it must not be offered. Fall back to the
+      // connected-provider set (all keyed providers) when the active provider
+      // is unknown.
+      const active = deps.activeProvider?.();
       const connected = deps.connectedProviders
         ? await deps.connectedProviders()
         : null;
       const models = BuilderModelRegistry.list()
-        .filter((m) => connected === null || connected.has(m.provider))
+        .filter((m) =>
+          active
+            ? m.provider === active
+            : connected === null || connected.has(m.provider),
+        )
         .map((m) => ({
           id: m.id,
           model_id: m.modelId,

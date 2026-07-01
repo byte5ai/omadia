@@ -19,7 +19,10 @@ import {
   type ModelInfo,
 } from '@omadia/llm-provider';
 
-import { resolveSubAgentModel } from '../packages/harness-orchestrator/src/registry/subAgentTools.js';
+import {
+  resolveSubAgentModel,
+  resolveCliSubAgentModel,
+} from '../packages/harness-orchestrator/src/registry/subAgentTools.js';
 
 const OPUS: ModelInfo = {
   id: 'anthropic:claude-opus-4-8',
@@ -43,6 +46,16 @@ const GPT: ModelInfo = {
   vision: true,
   aliases: [],
 };
+const OPUS_CLI: ModelInfo = {
+  id: 'claude-cli:opus-cli',
+  provider: 'claude-cli',
+  modelId: 'opus-cli',
+  label: 'Claude Opus (CLI)',
+  class: 'frontier',
+  maxTokens: 32000,
+  contextWindow: 200000,
+  vision: false,
+};
 
 const DEFAULT_MODEL = 'claude-sonnet-4-6';
 
@@ -58,7 +71,7 @@ function deps(providerId?: string): {
 
 beforeEach(() => {
   clearExternalModels();
-  registerExternalModels([OPUS, GPT]);
+  registerExternalModels([OPUS, GPT, OPUS_CLI]);
 });
 
 test('null / empty / whitespace ref → parent default model (inherit)', () => {
@@ -102,4 +115,32 @@ test('no active provider id → resolves against the anthropic default, no cross
   // A deps with no provider id (older boot / stub) still resolves a known ref to
   // its bare modelId; the cross-provider guard is simply skipped.
   assert.equal(resolveSubAgentModel('opus', deps()), 'claude-opus-4-8');
+});
+
+// ── CLI sub-agent path (issue #296 BLOCKER) ──────────────────────────────
+// The CLI sub-agent feeds the resolved id through `cliModelAlias` (strips
+// `-cli`). The ref must resolve to the bare CLI modelId FIRST, or a
+// picker-stored `claude-cli:opus-cli` reaches the strip raw → `claude-cli:opus`,
+// an invalid `--model` on every delegated turn — the same failure the main
+// model had.
+
+test('resolveCliSubAgentModel resolves a CLI picker id to the bare modelId (→ strips to opus)', () => {
+  // opus-cli is what cliModelAlias then strips `-cli` from → `opus`.
+  assert.equal(resolveCliSubAgentModel('claude-cli:opus-cli', DEFAULT_MODEL), 'opus-cli');
+});
+
+test('resolveCliSubAgentModel passes a legacy bare alias / full id through untouched', () => {
+  // `opus` / `claude-opus-4-8` resolve cross-provider to undefined under
+  // claude-cli and fall through raw so cliModelAlias handles them as before.
+  assert.equal(resolveCliSubAgentModel('opus', DEFAULT_MODEL), 'opus');
+  assert.equal(
+    resolveCliSubAgentModel('claude-opus-4-8', DEFAULT_MODEL),
+    'claude-opus-4-8',
+  );
+});
+
+test('resolveCliSubAgentModel inherits the parent default for empty / null refs', () => {
+  assert.equal(resolveCliSubAgentModel(null, DEFAULT_MODEL), DEFAULT_MODEL);
+  assert.equal(resolveCliSubAgentModel('', DEFAULT_MODEL), DEFAULT_MODEL);
+  assert.equal(resolveCliSubAgentModel('   ', DEFAULT_MODEL), DEFAULT_MODEL);
 });

@@ -58,9 +58,21 @@ const SONNET: ModelInfo = {
   aliases: ['sonnet'],
 };
 
+const GPT: ModelInfo = {
+  id: 'openai:gpt-5.5',
+  provider: 'openai',
+  modelId: 'gpt-5.5',
+  label: 'GPT-5.5',
+  class: 'frontier',
+  maxTokens: 16384,
+  contextWindow: 400000,
+  vision: true,
+  aliases: [],
+};
+
 beforeEach(() => {
   clearExternalModels();
-  registerExternalModels([OPUS, HAIKU, SONNET]);
+  registerExternalModels([OPUS, HAIKU, SONNET, GPT]);
 });
 
 test('accepts single mode with a registered model', () => {
@@ -186,5 +198,62 @@ test('validateModelRef rejects empty / whitespace (callers should skip instead)'
     (err) =>
       err instanceof ConfigValidationError &&
       /must be a non-empty model ref/.test(err.message),
+  );
+});
+
+// ── active-provider scoping (issue #296 MAJOR#3) ─────────────────────────
+// The picker lists every connected provider's models, so a cross-provider ref
+// (`openai:gpt-5.5` under an anthropic orchestrator) can reach the validator.
+// At build it resolves to the wrong provider and is silently dropped to the
+// platform default — the Agent never runs on the picked model. Reject it at
+// write time so the operator gets an error instead of a phantom pick.
+
+test('validateModelRef with activeProvider accepts a same-provider ref', () => {
+  validateModelRef('subAgent.model', 'claude-opus-4-8', 'anthropic');
+  validateModelRef('subAgent.model', 'opus', 'anthropic');
+  validateModelRef('subAgent.model', 'anthropic:claude-opus-4-8', 'anthropic');
+  validateModelRef('subAgent.model', 'gpt-5.5', 'openai');
+});
+
+test('validateModelRef with activeProvider rejects a cross-provider ref', () => {
+  assert.throws(
+    () => validateModelRef('subAgent.model', 'openai:gpt-5.5', 'anthropic'),
+    (err) =>
+      err instanceof ConfigValidationError &&
+      /resolves to provider 'openai'/.test(err.message) &&
+      /orchestrator runs on 'anthropic'/.test(err.message),
+  );
+});
+
+test('validateModelRef without activeProvider stays provider-agnostic (legacy)', () => {
+  // No active provider → the cross-provider guard is off; a registered ref
+  // passes regardless of provider (pre-#296 behaviour).
+  validateModelRef('subAgent.model', 'openai:gpt-5.5');
+});
+
+test('validateModelRoutingShape with activeProvider rejects a cross-provider main', () => {
+  assert.throws(
+    () =>
+      validateModelRoutingShape(
+        { mode: 'single', main: 'openai:gpt-5.5' },
+        'anthropic',
+      ),
+    (err) =>
+      err instanceof ConfigValidationError &&
+      /modelRouting\.main 'openai:gpt-5.5'/.test(err.message) &&
+      /cross-provider/.test(err.message),
+  );
+});
+
+test('validateModelRoutingShape with activeProvider rejects a cross-provider triage sub-model', () => {
+  assert.throws(
+    () =>
+      validateModelRoutingShape(
+        { mode: 'triage', main: 'claude-opus-4-8', triage: 'openai:gpt-5.5' },
+        'anthropic',
+      ),
+    (err) =>
+      err instanceof ConfigValidationError &&
+      /modelRouting\.triage 'openai:gpt-5.5'/.test(err.message),
   );
 });

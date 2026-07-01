@@ -33,6 +33,11 @@ export interface AgentBuilderRouterOptions {
   readonly getConfigStore: () => ConfigStore | undefined;
   readonly getGraphStore: () => AgentGraphStore | undefined;
   readonly getRegistry: () => OrchestratorRegistry | undefined;
+  /** The orchestrator's single configured LLM provider id (live-read from the
+   *  installed `@omadia/orchestrator` config, default `anthropic`). Scopes
+   *  per-Agent / sub-agent model writes to this provider so a cross-provider
+   *  pick is rejected instead of silently dropped at build (issue #296). */
+  readonly getActiveProvider?: () => string | undefined;
 }
 
 interface Live {
@@ -133,17 +138,20 @@ export function createAgentBuilderRouter(
       const agent = await agentOr404(l, str(req.params.slug), res);
       if (!agent) return;
       const b = req.body ?? {};
-      const row = await l.graph.createSubAgent({
-        parentAgentId: agent.id,
-        name: String(b.name ?? '').trim(),
-        skillId: b.skillId ?? null,
-        model: b.model ?? null,
-        maxTokens: b.maxTokens ?? null,
-        maxIterations: b.maxIterations ?? null,
-        systemPromptOverride: b.systemPromptOverride ?? null,
-        status: b.status ?? 'enabled',
-        position: b.position ?? null,
-      });
+      const row = await l.graph.createSubAgent(
+        {
+          parentAgentId: agent.id,
+          name: String(b.name ?? '').trim(),
+          skillId: b.skillId ?? null,
+          model: b.model ?? null,
+          maxTokens: b.maxTokens ?? null,
+          maxIterations: b.maxIterations ?? null,
+          systemPromptOverride: b.systemPromptOverride ?? null,
+          status: b.status ?? 'enabled',
+          position: b.position ?? null,
+        },
+        options.getActiveProvider?.(),
+      );
       await reload(l);
       res.json(subAgentNode(row));
     } catch (err) {
@@ -157,7 +165,11 @@ export function createAgentBuilderRouter(
       const l = live(res);
       if (!l) return;
       try {
-        const row = await l.graph.updateSubAgent(str(req.params.id), req.body ?? {});
+        const row = await l.graph.updateSubAgent(
+          str(req.params.id),
+          req.body ?? {},
+          options.getActiveProvider?.(),
+        );
         await reload(l);
         res.json(subAgentNode(row));
       } catch (err) {
@@ -191,7 +203,11 @@ export function createAgentBuilderRouter(
         const agent = await agentOr404(l, str(req.params.slug), res);
         if (!agent) return;
         const routing = (req.body ?? {}).modelRouting ?? null;
-        const updated = await l.config.setModelRouting(agent.id, routing);
+        const updated = await l.config.setModelRouting(
+          agent.id,
+          routing,
+          options.getActiveProvider?.(),
+        );
         await reload(l);
         res.json(agentNode(updated, l.registry));
       } catch (err) {
