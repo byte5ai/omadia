@@ -244,7 +244,7 @@
       },
       "import": {
         "title": "Skill importieren",
-        "hint": "SKILL.md ablegen oder einfügen. Es wird nur der Text importiert — mitgelieferte Skripte müssen als Plugin hinzugefügt werden.",
+        "hint": "Claude-SKILL.md, Codex-AGENTS.md oder einen ChatGPT-Export ablegen oder einfügen. Es wird nur der Text importiert — mitgelieferte Skripte müssen als Plugin hinzugefügt werden.",
         "chooseFile": "SKILL.md-Datei wählen",
         "fileChosen": "{name}",
         "pastePlaceholder": "SKILL.md-Inhalt hier einfügen…",

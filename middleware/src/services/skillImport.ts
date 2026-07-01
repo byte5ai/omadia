@@ -64,7 +64,7 @@ export function slugify(input: string): string {
   return slug || 'imported-skill';
 }
 
-/** Parse + derive name/slug/description from a raw SKILL.md. */
+/** Parse + derive name/slug/description from a raw SKILL.md (Claude format). */
 export function normalizeSkillMarkdown(req: SkillImportRequest): NormalizedSkill {
   const parsed = parseSkillMarkdown(req.raw);
   const fmName = typeof parsed.frontmatter['name'] === 'string' ? parsed.frontmatter['name'].trim() : '';
@@ -77,6 +77,86 @@ export function normalizeSkillMarkdown(req: SkillImportRequest): NormalizedSkill
     frontmatter: parsed.frontmatter,
     sourcePath: req.sourcePath ?? null,
   };
+}
+
+/** Supported import source formats. One front door, per-source adapters (#391). */
+export type SkillSourceFormat = 'claude-skill' | 'openai-gpt-json' | 'agents-md';
+
+function firstString(...vals: unknown[]): string | undefined {
+  for (const v of vals) if (typeof v === 'string' && v.trim()) return v.trim();
+  return undefined;
+}
+
+/** OpenAI custom-GPT / ChatGPT export JSON → skill (instructions become body). */
+function normalizeOpenAiGptJson(gpt: Record<string, unknown>, req: SkillImportRequest): NormalizedSkill | null {
+  const instructions = firstString(
+    gpt['instructions'],
+    gpt['system_prompt'],
+    gpt['systemPrompt'],
+    gpt['prompt'],
+  );
+  if (instructions === undefined) return null;
+  const name = firstString(gpt['name'], gpt['title']) ?? 'Imported skill';
+  const description = firstString(gpt['description']) ?? null;
+  return {
+    slug: slugify(name),
+    name,
+    description,
+    body: instructions,
+    frontmatter: { name, ...(description !== null ? { description } : {}) },
+    sourcePath: req.sourcePath ?? null,
+  };
+}
+
+/** Codex AGENTS.md / plain instruction markdown → skill (whole text is body). */
+function normalizeAgentsMarkdown(req: SkillImportRequest): NormalizedSkill {
+  const body = req.raw.replace(/\r\n/g, '\n').trim();
+  const heading = /^#\s+(.+)$/m.exec(body)?.[1]?.trim();
+  const name = heading || 'Imported skill';
+  return {
+    slug: slugify(name),
+    name,
+    description: null,
+    body,
+    frontmatter: { name },
+    sourcePath: req.sourcePath ?? null,
+  };
+}
+
+/**
+ * Detect the source format and normalize to the canonical skill shape. One
+ * front door for Claude skills, OpenAI/ChatGPT exports, and Codex AGENTS.md —
+ * adding a source later is a new adapter, not a new import path.
+ */
+export function detectAndNormalize(req: SkillImportRequest): {
+  skill: NormalizedSkill;
+  format: SkillSourceFormat;
+} {
+  // Normalize + trim ONCE and route all branches off the same string, so a
+  // stray leading newline or BOM (common on copy/paste) can't send a Claude
+  // SKILL.md down the agents-md path — which would leak the frontmatter fence
+  // into the prompt and defeat content-hash dedup.
+  const normalizedRaw = req.raw.replace(/\r\n/g, '\n');
+  const trimmed = normalizedRaw.trimStart();
+  // 1. ChatGPT / custom-GPT JSON export.
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const gpt = normalizeOpenAiGptJson(parsed as Record<string, unknown>, req);
+        if (gpt) return { skill: gpt, format: 'openai-gpt-json' };
+      }
+    } catch {
+      /* not JSON — fall through to the text adapters */
+    }
+  }
+  // 2. Claude SKILL.md (has a YAML frontmatter block). Feed the trimmed raw so
+  //    the parser's own `startsWith('---\n')` check also succeeds.
+  if (trimmed.startsWith('---\n')) {
+    return { skill: normalizeSkillMarkdown({ ...req, raw: trimmed }), format: 'claude-skill' };
+  }
+  // 3. Codex AGENTS.md / plain instruction markdown.
+  return { skill: normalizeAgentsMarkdown(req), format: 'agents-md' };
 }
 
 /** Find a free slug near `base`, never colliding with an existing row. */
@@ -108,7 +188,7 @@ export async function importSkillMarkdown(
   req: SkillImportRequest,
   opts: { dryRun?: boolean } = {},
 ): Promise<SkillImportResult> {
-  const normalized = normalizeSkillMarkdown(req);
+  const normalized = detectAndNormalize(req).skill;
   const contentHash = computeSkillHash(normalized.frontmatter, normalized.body);
   const risks = scanSkillForRisks(normalized.frontmatter, normalized.body);
 

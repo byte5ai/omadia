@@ -87,7 +87,7 @@ export function SkillImportModal({
         <input
           ref={inputRef}
           type="file"
-          accept=".md,text/markdown,text/plain"
+          accept=".md,.txt,.json,text/markdown,text/plain,application/json"
           className="hidden"
           onChange={(e) => onFile(e.target.files?.[0] ?? null)}
         />

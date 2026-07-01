@@ -4,6 +4,7 @@ import { strict as assert } from 'node:assert';
 import { computeSkillHash, type SkillInput, type SkillRow } from '@omadia/orchestrator';
 
 import {
+  detectAndNormalize,
   importSkillMarkdown,
   normalizeSkillMarkdown,
   slugify,
@@ -84,6 +85,57 @@ describe('normalizeSkillMarkdown', () => {
     assert.equal(n.name, 'Imported skill');
     assert.equal(n.slug, 'imported-skill');
     assert.equal(n.description, null);
+  });
+});
+
+describe('detectAndNormalize (multi-source adapters)', () => {
+  it('detects a Claude SKILL.md by its frontmatter', () => {
+    const { skill, format } = detectAndNormalize({ raw: CLAUDE_SKILL });
+    assert.equal(format, 'claude-skill');
+    assert.equal(skill.name, 'Research Helper');
+  });
+
+  it('detects an OpenAI custom-GPT JSON export (instructions become body)', () => {
+    const raw = JSON.stringify({
+      name: 'Support GPT',
+      description: 'Answers support tickets',
+      instructions: 'You are a support agent. Be concise.',
+    });
+    const { skill, format } = detectAndNormalize({ raw });
+    assert.equal(format, 'openai-gpt-json');
+    assert.equal(skill.name, 'Support GPT');
+    assert.equal(skill.description, 'Answers support tickets');
+    assert.match(skill.body, /support agent/);
+  });
+
+  it('accepts system_prompt as an alias for instructions', () => {
+    const raw = JSON.stringify({ name: 'X', system_prompt: 'do the thing' });
+    const { format, skill } = detectAndNormalize({ raw });
+    assert.equal(format, 'openai-gpt-json');
+    assert.equal(skill.body, 'do the thing');
+  });
+
+  it('falls back to AGENTS.md / plain markdown, deriving the name from the H1', () => {
+    const { skill, format } = detectAndNormalize({
+      raw: '# Repo Guidelines\n\nAlways run the tests before committing.',
+    });
+    assert.equal(format, 'agents-md');
+    assert.equal(skill.name, 'Repo Guidelines');
+    assert.match(skill.body, /run the tests/);
+  });
+
+  it('treats JSON without instructions as plain text, not a GPT export', () => {
+    const { format } = detectAndNormalize({ raw: '{"foo": "bar"}' });
+    assert.equal(format, 'agents-md');
+  });
+
+  it('still detects a Claude SKILL.md despite a leading newline or BOM (no frontmatter leak)', () => {
+    for (const prefix of ['\n', '  ', '\uFEFF']) {
+      const { skill, format } = detectAndNormalize({ raw: prefix + CLAUDE_SKILL });
+      assert.equal(format, 'claude-skill', `prefix ${JSON.stringify(prefix)}`);
+      assert.equal(skill.name, 'Research Helper');
+      assert.ok(!skill.body.includes('---'), 'frontmatter fence must not leak into body');
+    }
   });
 });
 

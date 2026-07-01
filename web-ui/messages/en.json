@@ -244,7 +244,7 @@
       },
       "import": {
         "title": "Import a skill",
-        "hint": "Drop or paste a SKILL.md. Only its text is imported — bundled scripts must be added as a plugin.",
+        "hint": "Drop or paste a Claude SKILL.md, a Codex AGENTS.md, or a ChatGPT export. Only the text is imported — bundled scripts must be added as a plugin.",
         "chooseFile": "Choose a SKILL.md file",
         "fileChosen": "{name}",
         "pastePlaceholder": "Paste SKILL.md content here…",
