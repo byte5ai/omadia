@@ -250,6 +250,7 @@ import {
 } from './plugins/routines/index.js';
 import { ROUTINES_INTEGRATION_SERVICE_NAME } from '@omadia/plugin-api';
 import { createRoutinesRouter } from './routes/routines.js';
+import { createUiPrefsRouter } from './routes/uiPrefs.js';
 import { ExpressRouteRegistry } from './channels/routeRegistry.js';
 import { WebSocketRegistry } from './channels/webSocketRegistry.js';
 import { createCoreApi } from './channels/coreApi.js';
@@ -2463,6 +2464,18 @@ async function main(): Promise<void> {
       '[middleware] routines endpoints ready at /api/v1/routines (auth: required)',
     );
   }
+
+  // Per-user UI preferences (issue #287) — server-side home for the Lume
+  // palette + appearance choice, backed by the MemoryStore. Replaces the
+  // per-browser localStorage from #284 with a cross-device store.
+  app.use(
+    '/api/v1/ui-prefs',
+    requireAuth,
+    createUiPrefsRouter({ store: memoryStore, log: (m) => console.log(m) }),
+  );
+  console.log(
+    '[middleware] ui-prefs endpoints ready at /api/v1/ui-prefs (auth: required)',
+  );
 
   // `packageUploadService` is declared in the outer `main` scope so the
   // builder install endpoint (B.6-1) can reference it. When PACKAGE_UPLOAD_-
