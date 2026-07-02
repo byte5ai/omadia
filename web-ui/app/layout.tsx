@@ -12,7 +12,6 @@ import { Nav } from './_components/Nav';
 import { ThemeControls } from './_components/ThemeControls';
 import { SessionWatcher } from './_components/SessionWatcher';
 import { StreamRunner } from './_components/StreamRunner';
-import { StreamToasts } from './_components/StreamToasts';
 import { ChatSessionsProvider } from './_lib/chatSessionsContext';
 import { StreamStoreProvider } from './_lib/streamStore';
 import { UI_PREFS_COOKIE, parseUiPrefsCookie } from './_lib/uiPrefs';
@@ -123,12 +122,11 @@ export default async function RootLayout({
                 </div>
               </header>
               <div className="min-h-0 flex-1">{children}</div>
-              {/* Background-stream toasts (only render for chats that
-                  aren't currently in view). The runner is headless — it
-                  owns the fetch + NDJSON-parse loop so that switching to
-                  another menu route doesn't kill an in-flight turn. */}
+              {/* Headless stream runner — owns the fetch + NDJSON-parse loop
+                  so switching menu route doesn't kill an in-flight turn.
+                  Background-stream state surfaces in-context on the chat tab
+                  (issue #286, Lume §7.4/§7.6), not in a floating toast. */}
               <StreamRunner />
-              <StreamToasts />
               <SessionWatcher />
             </StreamStoreProvider>
           </ChatSessionsProvider>

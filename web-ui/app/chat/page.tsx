@@ -430,6 +430,20 @@ export default function ChatPage(): React.ReactElement {
     void deleteSession(id);
   };
 
+  // Selecting a tab marks its background answer as read (issue #286). We only
+  // forget a `done` record: the dot itself already hides once the tab is active
+  // (it renders for non-active tabs only), so dismiss exists purely to stop a
+  // finished answer re-flagging after the user switches away again. `error` /
+  // `aborted` records are deliberately kept — the agent_unavailable recovery
+  // banner and the inline error read them off the store (page.tsx §Phase A).
+  // A running record is likewise kept so `isActive` (stop button / composer
+  // lock) stays correct once the tab is active.
+  const handleSelect = (id: string): void => {
+    const rec = streamStore.get(id);
+    if (rec?.phase === 'done') streamStore.dismiss(id);
+    setActive(id);
+  };
+
   const canReset =
     !hydrating && !resetPending && activeSession.messages.length > 0;
 
@@ -438,7 +452,7 @@ export default function ChatPage(): React.ReactElement {
       <ChatTabs
         sessions={sessions}
         activeId={activeId}
-        onSelect={setActive}
+        onSelect={handleSelect}
         onCreate={createSession}
         onClose={handleClose}
         onRename={(id, title) => {
