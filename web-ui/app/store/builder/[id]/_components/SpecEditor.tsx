@@ -305,7 +305,11 @@ export function SpecEditor({ draftId, spec, agentStuck }: SpecEditorProps): Reac
         </FieldGroup>
 
         <FieldGroup title={t('groups.setupFields')}>
-          <SetupFieldsEditor draftId={draftId} fields={spec.setup_fields ?? []} />
+          <SetupFieldsEditor
+            draftId={draftId}
+            fields={spec.setup_fields ?? []}
+            oauthProviders={spec.oauth_providers ?? []}
+          />
         </FieldGroup>
 
         <FieldGroup title="Tools">

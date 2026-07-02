@@ -140,6 +140,10 @@ const SetupFieldSchema = z
     label: z.string().optional(),
     placeholder: z.string().optional(),
     help: z.string().optional(),
+    // Spec 005 (#371) — `type:'oauth'` only. `provider` references an
+    // `oauth_providers[].id`; `scopes` are requested at flow time.
+    provider: z.string().optional(),
+    scopes: z.array(z.string()).optional(),
   })
   .strict();
 
@@ -435,6 +439,31 @@ export const EXTENDED_PERSONA_AXES = [
   'philosophy',
 ] as const satisfies ReadonlyArray<keyof PersonaAxes>;
 
+// --- OAuth provider descriptor --------------------------------------------
+// Spec 005 (#371) — inert authorization-code descriptor consumed by the
+// kernel OAuth engine; no plugin code touches the flow. Mirrors
+// OAuthProviderDescriptor in api/admin-v1.ts + manifestLoader.
+// extractOAuthProviders — keep all three in sync (pkce defaults true,
+// token_auth_style enum, client_*_field gating).
+const OAuthProviderSchema = z
+  .object({
+    id: z.string().regex(/^[a-z][a-z0-9_]*$/),
+    // URLs may carry `{field}` placeholders interpolated from config at flow
+    // time (e.g. Microsoft's `{tenant_id}`).
+    authorize_url: z.string().min(1),
+    token_url: z.string().min(1),
+    token_auth_style: z.enum(['body_form', 'body_json', 'basic']),
+    pkce: z.boolean().default(true),
+    extra_authorize_params: z.record(z.string(), z.string()).optional(),
+    // Setup-field keys holding the client id / secret (manifestLinter checks
+    // both resolve; the secret must be type:'secret').
+    client_id_field: z.string().regex(/^[a-z][a-z0-9_]*$/),
+    client_secret_field: z.string().regex(/^[a-z][a-z0-9_]*$/),
+  })
+  .strict();
+
+export type OAuthProvider = z.infer<typeof OAuthProviderSchema>;
+
 // --- AgentSpec ------------------------------------------------------------
 
 export const AgentSpecSchema = z
@@ -489,6 +518,11 @@ export const AgentSpecSchema = z
 
     // Runtime config
     setup_fields: z.array(SetupFieldSchema).default([]),
+
+    // Spec 005 (#371) — OAuth-provider descriptors a `type:oauth` setup_field
+    // references by `id`. Codegen emits the top-level `oauth_providers:` block
+    // when non-empty; default `[]` keeps legacy drafts + non-OAuth agents clean.
+    oauth_providers: z.array(OAuthProviderSchema).default([]),
 
     // Scheduled background jobs. Codegen writes these into manifest.yaml's
     // `jobs:` block; kernel auto-registers before activate(). Plugin
