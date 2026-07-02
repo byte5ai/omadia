@@ -25,9 +25,10 @@ import type { MemoryStore } from '@omadia/plugin-api';
 export type MemoryPurgeAxis = 'all' | 'agent' | 'user' | 'team' | 'channel';
 
 /**
- * Top-level `/memories/...` entries that hold seed / shared kernel data.
- * Protected from `axis: 'all'` unless `reseed` is requested. Stored as the
- * leaf entry names (the segment directly under `/memories`).
+ * Top-level `/memories/...` entries that hold seed / shared kernel data, plus
+ * durable per-user settings that a scratch purge must not wipe. Protected from
+ * `axis: 'all'` unless `reseed` is requested. Stored as the leaf entry names
+ * (the segment directly under `/memories`).
  */
 export const PROTECTED_SEED_ENTRIES: readonly string[] = [
   '_rules',
@@ -35,6 +36,11 @@ export const PROTECTED_SEED_ENTRIES: readonly string[] = [
   'core',
   'sessions',
   'chat-sessions',
+  // Per-user UI preferences (Lume palette/appearance, issue #287). Not seed
+  // data, but a durable cross-device user setting — a Danger-Zone scratch
+  // purge should not silently reset every operator's palette. A full `reseed`
+  // purge still clears it (the explicit "wipe everything" path).
+  'ui-prefs',
 ];
 
 const MEMORIES_ROOT = '/memories';
