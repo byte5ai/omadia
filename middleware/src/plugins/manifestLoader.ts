@@ -233,6 +233,10 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
         if (scopes.length > 0) entry.scopes = scopes;
       }
     }
+    // Dynamic post-install options (additive, lenient — any field type).
+    const optionsProvider = asString(f['options_provider']);
+    if (optionsProvider) entry.options_provider = optionsProvider;
+    if (f['multi'] === true) entry.multi = true;
     setupFields.push(entry);
   }
 
@@ -647,6 +651,8 @@ function extractPermissions(
     llm_max_tokens_per_call: llmMaxTokensPerCall,
     secrets_runtime_write: secretsBlock?.['runtime_write'] === true,
     flows: permissions?.['flows'] === true,
+    // Spec 005 (US4 Conductor Surface) — plugin may emit declared domain events via ctx.events.emit.
+    events_emit: asRecord(permissions?.['events'])?.['emit'] === true,
     // Spec 005 — overridden to true in adaptManifestV1 when the manifest
     // declares >=1 valid oauth_providers descriptor.
     acquires_oauth: false,

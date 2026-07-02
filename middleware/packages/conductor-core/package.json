@@ -1,0 +1,35 @@
+{
+  "name": "@omadia/conductor-core",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Pure, I/O-free Omadia Conductor engine: workflow graph validation and deterministic step advancement (predicate-AST guards + exit postconditions). Sibling of @omadia/canvas-core.",
+  "type": "module",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    },
+    "./schema/*": "./schema/*",
+    "./fixtures/*": "./fixtures/*"
+  },
+  "files": [
+    "dist",
+    "schema",
+    "fixtures"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "ajv": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.8"
+  }
+}

@@ -16,13 +16,16 @@
  * secrets after registration, etc.). Same vault, different UX moment.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, KeyRound, Plug, Trash2 } from 'lucide-react';
 
 import {
   ApiError,
+  fetchSetupFieldOptions,
   listInstalledSecretKeys,
+  patchInstalledConfig,
   patchInstalledSecrets,
+  type SetupOption,
 } from '../../_lib/api';
 import type { PluginSetupField } from '../../_lib/storeTypes';
 import { Button } from '@/app/_components/ui/Button';
@@ -118,6 +121,10 @@ export function CredentialsEditor({
       const set: Record<string, string> = {};
       const del: string[] = [];
       for (const f of setupFields) {
+        // Multiselect (options_provider) fields persist themselves through
+        // patchInstalledConfig in MultiselectField — never via this scalar
+        // secrets patch (which cannot carry arrays).
+        if (f.options_provider && f.multi) continue;
         const s = fieldStates[f.key];
         if (!s) continue;
         if (s.pendingDelete) {
@@ -185,6 +192,7 @@ export function CredentialsEditor({
             ({ draft: '', dirty: false, pendingDelete: false } as FieldState);
           const isStored = storedKeys?.has(field.key) ?? false;
           const isSecret = field.type === 'secret' || field.type === 'oauth';
+          const isMultiselect = Boolean(field.options_provider && field.multi);
           const enumOptions =
             field.type === 'enum' && field.enum && field.enum.length > 0
               ? field.enum
@@ -240,7 +248,13 @@ export function CredentialsEditor({
                 ) : null}
               </div>
               <div className="flex flex-1 items-center gap-2">
-                {field.type === 'oauth' ? (
+                {isMultiselect ? (
+                  <MultiselectField
+                    pluginId={pluginId}
+                    fieldKey={field.key}
+                    storedValue={storedValues[field.key]}
+                  />
+                ) : field.type === 'oauth' ? (
                   // Spec 005 — an OAuth field has no typeable value; the kernel
                   // broker holds the tokens. Render a Connect button that
                   // navigates (top-level, so the server can 302 to the IdP) to
@@ -329,7 +343,7 @@ export function CredentialsEditor({
                     );
                   })()
                 )}
-                {isStored ? (
+                {isStored && !isMultiselect ? (
                   <button
                     type="button"
                     onClick={() =>
@@ -429,6 +443,204 @@ function OAuthConnectField({
         <Plug className="size-3.5" aria-hidden />
         {connected ? 'Neu verbinden' : 'Verbinden'}
       </a>
+    </div>
+  );
+}
+
+/** Parse the stored config value (a JSON-encoded `string[]`, or a tolerated
+ *  legacy comma string) into the current selection. */
+function parseStoredArray(raw: string | undefined): string[] {
+  if (!raw) return [];
+  const t = raw.trim();
+  if (!t.startsWith('[')) {
+    return t
+      .split(/[\s,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+  try {
+    const parsed: unknown = JSON.parse(t);
+    return Array.isArray(parsed)
+      ? parsed.filter((x): x is string => typeof x === 'string')
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Post-install multiselect for a field that declares `options_provider`.
+ * Fetches choices from the running plugin, renders grouped checkboxes, and
+ * saves the selection via patchInstalledConfig (the array-capable path). When
+ * the provider is inactive/failing (409/502/504), degrades to a comma-separated
+ * free-text input so the operator is never blocked.
+ */
+function MultiselectField({
+  pluginId,
+  fieldKey,
+  storedValue,
+}: {
+  pluginId: string;
+  fieldKey: string;
+  storedValue: string | undefined;
+}): React.ReactElement {
+  const [selected, setSelected] = useState<string[]>([]);
+  const [options, setOptions] = useState<SetupOption[] | null>(null);
+  const [status, setStatus] = useState<'loading' | 'loaded' | 'degraded'>(
+    'loading',
+  );
+  const [error, setError] = useState<string | null>(null);
+  const [freeText, setFreeText] = useState<string>('');
+  const [saving, setSaving] = useState(false);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  // Hydrate the current selection from the stored value ONCE it arrives. The
+  // parent fetches config values async, so `storedValue` is undefined on the
+  // first render — initialising state from it directly would miss the value
+  // (and the checkboxes would look empty after a reload). Guard with a ref so
+  // we never clobber an in-progress edit if the parent re-fetches.
+  const hydratedRef = useRef(false);
+  useEffect(() => {
+    if (hydratedRef.current || storedValue === undefined) return;
+    hydratedRef.current = true;
+    const arr = parseStoredArray(storedValue);
+    setSelected(arr);
+    setFreeText(arr.join(', '));
+  }, [storedValue]);
+
+  const load = useCallback(async () => {
+    setStatus('loading');
+    setError(null);
+    try {
+      const opts = await fetchSetupFieldOptions(pluginId, fieldKey);
+      setOptions(opts);
+      setStatus('loaded');
+    } catch (err) {
+      setError(humanizeError(err));
+      setStatus('degraded');
+    }
+  }, [pluginId, fieldKey]);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void load();
+  }, [load]);
+
+  const toggle = (value: string): void =>
+    setSelected((prev) =>
+      prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value],
+    );
+
+  const onSave = useCallback(async () => {
+    setSaving(true);
+    setError(null);
+    setSavedAt(null);
+    try {
+      const values =
+        status === 'degraded'
+          ? freeText
+              .split(/[\s,]+/)
+              .map((s) => s.trim())
+              .filter(Boolean)
+          : selected;
+      await patchInstalledConfig(pluginId, { [fieldKey]: values });
+      setSavedAt(Date.now());
+    } catch (err) {
+      setError(humanizeError(err));
+    } finally {
+      setSaving(false);
+    }
+  }, [status, freeText, selected, pluginId, fieldKey]);
+
+  const groups = useMemo(() => {
+    const m = new Map<string, SetupOption[]>();
+    for (const o of options ?? []) {
+      const g = o.group ?? '';
+      const arr = m.get(g) ?? [];
+      arr.push(o);
+      m.set(g, arr);
+    }
+    return Array.from(m.entries());
+  }, [options]);
+
+  return (
+    <div className="flex min-w-0 flex-1 flex-col gap-2">
+      {status === 'loading' ? (
+        <span className="text-[12px] text-[color:var(--muted-ink)]">
+          Loading options…
+        </span>
+      ) : status === 'degraded' ? (
+        <div className="flex flex-col gap-1">
+          <span className="text-[11px] text-[color:var(--muted-ink)]">
+            Options unavailable ({error ?? 'plugin inactive'}). Enter
+            values/IDs comma-separated.
+          </span>
+          <input
+            type="text"
+            value={freeText}
+            onChange={(e) => setFreeText(e.target.value)}
+            placeholder="id-1, id-2, …"
+            className="min-w-0 rounded-md border border-[color:var(--rule)] bg-[color:var(--bg)] px-3 py-2 text-[12px] text-[color:var(--ink)] placeholder:text-[color:var(--faint-ink)] focus:border-[color:var(--accent)] focus:outline-none"
+          />
+        </div>
+      ) : options && options.length > 0 ? (
+        <div className="max-h-56 overflow-auto rounded-md border border-[color:var(--rule)] p-2">
+          {groups.map(([group, opts]) => (
+            <div key={group || '_'} className="mb-2 last:mb-0">
+              {group ? (
+                <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[color:var(--faint-ink)]">
+                  {group}
+                </div>
+              ) : null}
+              {opts.map((o) => (
+                <label
+                  key={o.value}
+                  className="flex cursor-pointer items-center gap-2 py-0.5 text-[12px] text-[color:var(--ink)]"
+                >
+                  <input
+                    type="checkbox"
+                    checked={selected.includes(o.value)}
+                    onChange={() => toggle(o.value)}
+                    className="size-4 accent-[color:var(--accent)]"
+                  />
+                  <span className="truncate">{o.label}</span>
+                </label>
+              ))}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <span className="text-[12px] text-[color:var(--muted-ink)]">
+          No selectable entries (nothing shared with the integration?).
+        </span>
+      )}
+      <div className="flex items-center gap-3">
+        <Button
+          variant="primary"
+          onClick={() => void onSave()}
+          disabled={saving}
+          busy={saving}
+          busyLabel="Saving"
+        >
+          <CheckCircle2 className="size-3.5" aria-hidden />
+          Save selection
+          {status !== 'degraded' ? ` (${String(selected.length)})` : ''}
+        </Button>
+        {savedAt !== null ? (
+          <span className="text-[11px] text-[color:var(--muted-ink)]">
+            ✓ Saved
+          </span>
+        ) : null}
+        {status === 'loaded' ? (
+          <button
+            type="button"
+            onClick={() => void load()}
+            className="text-[11px] text-[color:var(--muted-ink)] underline hover:text-[color:var(--accent)]"
+          >
+            Refresh list
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }
