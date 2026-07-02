@@ -83,6 +83,11 @@ export * from './nudge.js';
 // Deps).
 export * from './routinesIntegration.js';
 
+// Conductor human-await approval contract: ApprovalReminder payload + the
+// ConductorAwaitResolver service a channel plugin uses to render a rich
+// approval card and resolve the await in-process.
+export * from './conductorApproval.js';
+
 // Cold-start proactive 1:1: shared delivery-target model (ColdStartTarget,
 // RoutineRecipient, type guards) so the routines kernel and channel plugins
 // agree on the shape of a deferred, not-yet-resolved recipient.

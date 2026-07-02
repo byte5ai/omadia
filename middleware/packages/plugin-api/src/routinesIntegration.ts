@@ -19,6 +19,8 @@
  * channels are free to ignore them.
  */
 
+import type { ApprovalReminder } from './conductorApproval.js';
+
 export const ROUTINES_INTEGRATION_SERVICE_NAME = 'routinesIntegration';
 
 export interface RoutineCardAttachment {
@@ -52,6 +54,13 @@ export interface RoutinesIntegration {
     userId: string;
     channel: string;
     conversationRef: unknown;
+    /**
+     * Operator-addressable principal id used as the Conductor channel-binding key, so proactive
+     * reminders / approvals reach this user. For Teams this is the lowercased email/UPN — the id an
+     * operator enters as a role holder or human-step principal. Omitted ⇒ the binding falls back to
+     * `userId` (the channel-native id, e.g. AAD object id). Does NOT affect routine attribution.
+     */
+    principalRef?: string;
     /**
      * Cold-start authorization (default `false`). When `true`, the
      * `manage_routine` tool permits this user to create routines that
@@ -89,12 +98,18 @@ export interface RoutinesIntegration {
    * (which already carries a markdown rendering of the same template
    * as a graceful degradation). The shape is the portable Adaptive
    * Card JSON schema, NOT a Teams-private contract.
+   *
+   * `message.approval` carries the Conductor human-await approval payload
+   * (WHAT is being approved + the workflow's current step/progress) when
+   * the proactive send is an approval reminder. Channels that can render a
+   * rich approve/reject card (Teams) build it from this; others ignore it
+   * and fall back to `message.text`.
    */
   publishProactiveSend(
     channel: string,
     send: (
       conversationRef: unknown,
-      message: { text: string; cardBody?: readonly unknown[] },
+      message: { text: string; cardBody?: readonly unknown[]; approval?: ApprovalReminder },
       routine?: { id: string; name: string; cron: string },
     ) => Promise<void>,
   ): void;
