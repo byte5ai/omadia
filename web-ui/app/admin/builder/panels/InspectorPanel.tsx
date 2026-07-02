@@ -1,7 +1,7 @@
 'use client';
 
 import { useTranslations } from 'next-intl';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import {
   discoverMcpTools,
@@ -16,6 +16,8 @@ import {
   type SkillNode,
   type SubAgentNode,
 } from '../../../_lib/agentBuilder';
+import { listBuilderModels } from '../../../_lib/api';
+import type { BuilderModelInfo } from '../../../_lib/builderTypes';
 import { Button } from '@/app/_components/ui/Button';
 import type { BuilderNodeData } from '../nodes/types';
 import { Field, inputCls, SaveButton } from './InspectorControls';
@@ -118,6 +120,7 @@ function AgentEditor({
   const [triage, setTriage] = useState(r?.triage ?? '');
   const [simple, setSimple] = useState(r?.simple ?? '');
   const { pending, error, run } = useSaver();
+  const catalog = useModelCatalog();
 
   async function save(): Promise<void> {
     await run(async () => {
@@ -132,9 +135,24 @@ function AgentEditor({
     });
   }
 
+  // Picker placeholder for `main`: while the catalog is loading we show
+  // "Loading models…"; afterwards prefer the platform default ("(platform
+  // default: X)") and fall back to a neutral "(default)" so a loaded catalog
+  // without a declared default never displays the stale loading copy.
+  const mainPlaceholder = catalog.loading
+    ? t('inspector.modelPickerLoading')
+    : catalog.defaultId
+      ? t('inspector.platformDefault', { model: catalog.defaultId })
+      : t('inspector.modelDefault');
+
   return (
     <div className="flex flex-col gap-3">
       <p className="text-[13px] font-semibold text-[color:var(--fg-strong)]">{agent.name}</p>
+      {agent.effectiveModel && (
+        <p className="text-xs text-[color:var(--fg-muted)]">
+          {t('inspector.effectiveModel', { model: agent.effectiveModel })}
+        </p>
+      )}
       <Field label={t('inspector.routingMode')}>
         <select
           value={mode}
@@ -146,21 +164,127 @@ function AgentEditor({
         </select>
       </Field>
       <Field label={t('inspector.modelMain')}>
-        <input value={main} onChange={(e) => setMain(e.target.value)} className={inputCls} />
+        <ModelSelect
+          value={main}
+          onChange={setMain}
+          catalog={catalog}
+          placeholder={mainPlaceholder}
+        />
       </Field>
       {mode === 'triage' && (
         <>
           <Field label={t('inspector.modelTriage')}>
-            <input value={triage} onChange={(e) => setTriage(e.target.value)} className={inputCls} />
+            <ModelSelect
+              value={triage}
+              onChange={setTriage}
+              catalog={catalog}
+              placeholder={t('inspector.modelDefault')}
+            />
           </Field>
           <Field label={t('inspector.modelSimple')}>
-            <input value={simple} onChange={(e) => setSimple(e.target.value)} className={inputCls} />
+            <ModelSelect
+              value={simple}
+              onChange={setSimple}
+              catalog={catalog}
+              placeholder={t('inspector.modelDefault')}
+            />
           </Field>
         </>
       )}
       <ErrLine error={error} />
-      <SaveButton onClick={() => void save()} pending={pending} label={t('inspector.save')} />
+      <ErrLine error={catalog.error} />
+      <SaveButton
+        onClick={() => void save()}
+        pending={pending || catalog.loading}
+        label={t('inspector.save')}
+      />
     </div>
+  );
+}
+
+interface ModelCatalogState {
+  models: BuilderModelInfo[];
+  defaultId: string | null;
+  loading: boolean;
+  error: string | null;
+}
+
+function useModelCatalog(): ModelCatalogState {
+  const [state, setState] = useState<ModelCatalogState>({
+    models: [],
+    defaultId: null,
+    loading: true,
+    error: null,
+  });
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      try {
+        const res = await listBuilderModels();
+        if (!alive) return;
+        setState({
+          models: res.models,
+          defaultId: res.default ?? null,
+          loading: false,
+          error: null,
+        });
+      } catch (err) {
+        if (!alive) return;
+        setState({
+          models: [],
+          defaultId: null,
+          loading: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return state;
+}
+
+function ModelSelect({
+  value,
+  onChange,
+  catalog,
+  placeholder,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  catalog: ModelCatalogState;
+  placeholder: string;
+}): React.ReactElement {
+  // Stale-binding: a persisted value that no installed provider serves anymore.
+  // Keep it visible (disabled) so the operator sees what is set and can pick a
+  // replacement instead of having the field silently snap to a different model.
+  // Match the provider-qualified id, the bare vendor id (pre-picker configs and
+  // the platform default persist this form), and aliases — only a value that
+  // resolves to NO registered model is genuinely stale.
+  const known = catalog.models.some(
+    (m) => m.id === value || m.model_id === value || m.aliases.includes(value),
+  );
+  const showStale = value !== '' && !known && !catalog.loading;
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className={inputCls}
+      disabled={catalog.loading}
+    >
+      <option value="">{placeholder}</option>
+      {catalog.models.map((m) => (
+        <option key={m.id} value={m.id}>
+          {m.label} ({m.provider})
+        </option>
+      ))}
+      {showStale && (
+        <option value={value} disabled>
+          {value} — stale
+        </option>
+      )}
+    </select>
   );
 }
 
@@ -179,6 +303,10 @@ function SubAgentEditor({
   const [model, setModel] = useState(subAgent.model ?? '');
   const [prompt, setPrompt] = useState(subAgent.systemPromptOverride ?? '');
   const { pending, error, run } = useSaver();
+  // Issue #296 follow-up — sub-agent picker uses the same registry-driven
+  // dropdown as the parent agent so an operator cannot pin a sub-agent to a
+  // model id no installed provider serves.
+  const catalog = useModelCatalog();
 
   async function save(): Promise<void> {
     await run(async () => {
@@ -197,7 +325,12 @@ function SubAgentEditor({
         <input value={name} onChange={(e) => setName(e.target.value)} className={inputCls} />
       </Field>
       <Field label={t('inspector.model')}>
-        <input value={model} onChange={(e) => setModel(e.target.value)} className={inputCls} />
+        <ModelSelect
+          value={model}
+          onChange={setModel}
+          catalog={catalog}
+          placeholder={t('inspector.modelDefault')}
+        />
       </Field>
       <Field label={t('inspector.systemPrompt')}>
         <textarea
@@ -208,7 +341,12 @@ function SubAgentEditor({
         />
       </Field>
       <ErrLine error={error} />
-      <SaveButton onClick={() => void save()} pending={pending} label={t('inspector.save')} />
+      <ErrLine error={catalog.error} />
+      <SaveButton
+        onClick={() => void save()}
+        pending={pending || catalog.loading}
+        label={t('inspector.save')}
+      />
     </div>
   );
 }

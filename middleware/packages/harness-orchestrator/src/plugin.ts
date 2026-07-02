@@ -54,6 +54,7 @@ import type { TurnHookRunner } from './turnHooks.js';
 import type { ChatSessionStore } from './chatSessionStore.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import type { Orchestrator } from './orchestrator.js';
+import { DEFAULT_ORCHESTRATOR_MODEL } from './registry/agentRuntime.js';
 import { ConfigStore } from './registry/configStore.js';
 import {
   OrchestratorRegistry,
@@ -139,11 +140,11 @@ const GRAPH_POOL_SERVICE = 'graphPool';
 const PLUGIN_CAPABILITIES_SERVICE = 'pluginCapabilities';
 
 // Fallback when the operator has not set `orchestrator_model` in the install
-// config. Must be a currently-served Anthropic model id — a stale/typo'd id
-// makes every turn fail with `404 not_found_error` (the orchestrator main
-// loop has no other model source). Kept in sync with the kernel default
-// `ORCHESTRATOR_MODEL` in middleware/src/config.ts.
-const DEFAULT_MODEL = 'claude-opus-4-8';
+// config. Shared with the registry's per-instance resolution (tier 3) so the
+// install-config default and the per-Agent overlay fall back to the same id.
+// Kept in sync with the kernel default `ORCHESTRATOR_MODEL` in
+// middleware/src/config.ts.
+const DEFAULT_MODEL = DEFAULT_ORCHESTRATOR_MODEL;
 // 8192, not 4096: a verbose preamble + a large structured tool call (e.g. a
 // multi-sheet create_xlsx with formulas) truncates at 4096 → `max_tokens`
 // mid-tool-call, so the file is never built. Also enforced as a floor below so

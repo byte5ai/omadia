@@ -3,6 +3,7 @@ import type { LocalSubAgentTool } from '@omadia/plugin-api';
 
 import { createCliSubAgent } from '../cliSubAgent.js';
 import { LocalSubAgent } from '../localSubAgent.js';
+import { resolveModelIdForProvider } from './agentRuntime.js';
 import type {
   McpManager} from '../mcp/mcpClient.js';
 import {
@@ -97,15 +98,18 @@ export function buildSubAgentDomainTools(
       ? createCliSubAgent({
           name: sub.name,
           systemPrompt,
+          // Resolve the picker-stored ref to the bare `modelId` BEFORE the
+          // `-cli` strip — exactly like the orchestrator main model (issue #296
+          // BLOCKER). See `resolveCliSubAgentModel`.
           model: (deps.cliModelAlias ?? ((model) => model))(
-            sub.model ?? deps.defaultModel,
+            resolveCliSubAgentModel(sub.model, deps.defaultModel),
           ),
           tools: subTools,
         })
       : new LocalSubAgent({
           name: sub.name,
           provider: deps.provider,
-          model: sub.model ?? deps.defaultModel,
+          model: resolveSubAgentModel(sub.model, deps),
           maxTokens: sub.maxTokens ?? deps.defaultMaxTokens,
           maxIterations: sub.maxIterations ?? deps.defaultMaxIterations,
           systemPrompt,
@@ -122,6 +126,49 @@ export function buildSubAgentDomainTools(
     );
   }
   return tools;
+}
+
+/**
+ * Resolve a sub-agent's persisted `model` ref to the active provider's concrete
+ * bare `modelId` (issue #296 MAJOR 3). `LocalSubAgent` sends `model` RAW to the
+ * provider adapter, exactly like the orchestrator main loop — so a picker-stored
+ * provider-qualified id (`anthropic:claude-opus-4-8`) or alias (`opus`) would
+ * 404 every delegated turn. Shares the resolver with the orchestrator path
+ * (`resolveModelIdForProvider`); an empty / unknown / cross-provider ref
+ * degrades to the parent's default model instead of 404ing. The CLI sub-agent
+ * path keeps its own alias scheme (`cliModelAlias`) and is not routed here.
+ */
+export function resolveSubAgentModel(
+  ref: string | null | undefined,
+  deps: Pick<SubAgentToolDeps, 'provider' | 'defaultModel'>,
+): string {
+  return (
+    resolveModelIdForProvider(ref, deps.provider?.id) ?? deps.defaultModel
+  );
+}
+
+/**
+ * CLI-provider variant of `resolveSubAgentModel` (issue #296 BLOCKER). The CLI
+ * sub-agent runs the picked ref through `cliModelAlias` (which strips the `-cli`
+ * suffix back to `opus`/`sonnet`/`haiku`), so the ref must first be resolved to
+ * the bare CLI `modelId` — a picker-stored `claude-cli:opus-cli` must become
+ * `opus-cli` (→ `opus`), NOT reach the strip raw (→ the invalid `claude-cli:opus`).
+ *
+ * Resolves against `claude-cli` explicitly (the caller is inside the
+ * `hostIsCliProvider` branch and `deps.provider` may be absent on the hydrate
+ * path). A ref that does not resolve under `claude-cli` — a legacy bare alias
+ * (`opus`) or full vendor id — falls through untouched so `cliModelAlias`
+ * handles it exactly as before; an empty ref inherits the parent default.
+ * Mirrors the orchestrator main model's overlay resolution in `applyDiff`.
+ */
+export function resolveCliSubAgentModel(
+  ref: string | null | undefined,
+  defaultModel: string,
+): string {
+  return (
+    (resolveModelIdForProvider(ref, 'claude-cli') ?? ref?.trim()) ||
+    defaultModel
+  );
 }
 
 function resolveSubAgentTools(
