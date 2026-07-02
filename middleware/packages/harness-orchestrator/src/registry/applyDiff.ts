@@ -10,7 +10,11 @@ import type {
   SubAgentRow,
   ToolGrantRow,
 } from './agentGraphStore.js';
-import { resolveAgentModelRouting } from './agentRuntime.js';
+import {
+  DEFAULT_ORCHESTRATOR_MODEL,
+  resolveAgentModelRouting,
+  resolveModelIdForProvider,
+} from './agentRuntime.js';
 import type {
   AgentPluginRow,
   AgentRow,
@@ -160,18 +164,69 @@ export function buildForAgent(
   // platform default: `main` overrides the model, `triage` mode adds per-turn
   // Haiku→Sonnet/Opus routing. Falls back to the platform runtime when unset.
   const routing = resolveAgentModelRouting(agent.modelRouting);
+
+  // The orchestrator hands `model` to a SINGLE concrete provider adapter, which
+  // sends it RAW to the wire API (no ref→modelId resolution in the send path).
+  // The Admin picker stores a provider-qualified id / alias, so resolve the
+  // per-Agent overlay to the active provider's concrete `modelId` HERE — see
+  // `resolveModelIdForProvider` (issue #296).
+  //
+  // The CLI provider is resolved like any other — its models ARE registered
+  // (`claude-cli:opus-cli` etc.), so `resolveModelIdForProvider('claude-cli:opus-cli',
+  // 'claude-cli')` → `opus-cli` → (`-cli` stripped downstream) → `opus`, the
+  // alias the CLI expects. The old code special-cased CLI to pass the ref RAW,
+  // which left the picker's `claude-cli:opus-cli` unresolved → `claude-cli:opus`
+  // after the strip → an invalid `--model` on every turn (issue #296 BLOCKER).
+  //
+  // A ref the resolver returns `undefined` for (a registry-known CROSS-provider
+  // id, or a legacy bare CLI alias like `opus`) falls through to the raw trimmed
+  // ref. Cross-provider picks are rejected at WRITE time (the model-routing /
+  // sub-agent validators are scoped to the active provider, issue #296 MAJOR),
+  // so a cross-provider ref never reaches here for a fresh write; the raw
+  // fallthrough is what lets a CLI deployment's bare alias (`opus`) run. A
+  // registry-UNKNOWN same-context ref is already returned raw by the resolver.
+  // The platform default (`runtime.model`, operator-set env) is not passed
+  // through here — it works raw today and resolving it would change established
+  // behaviour.
+  const activeProvider = deps.provider?.id;
+  const resolveOverlay = (ref: string | undefined): string | undefined =>
+    (resolveModelIdForProvider(ref, activeProvider) ?? ref?.trim()) || undefined;
+
+  // Per-instance model resolution (issue #296 AC#2), three tiers:
+  //   1. the Agent's `model_routing.main` (operator's per-Agent choice)
+  //   2. the global seeded platform default `runtime.model`
+  //      (= `orchestrator_model` install config = `ORCHESTRATOR_MODEL` env)
+  //   3. `DEFAULT_ORCHESTRATOR_MODEL` — guards against an empty / whitespace
+  //      platform default so the turn loop never gets an empty model id.
+  const model =
+    resolveOverlay(routing.model) ||
+    runtime.model?.trim() ||
+    DEFAULT_ORCHESTRATOR_MODEL;
+
+  // Resolve the per-turn routing sub-models the same way. Any sub-model that
+  // does not resolve to the active provider falls back to the resolved `model`
+  // so every id the turn loop sends is a valid same-provider `modelId`.
+  const overlayRouting = routing.modelRouting
+    ? {
+        classifierModel:
+          resolveOverlay(routing.modelRouting.classifierModel) ?? model,
+        simpleModel: resolveOverlay(routing.modelRouting.simpleModel) ?? model,
+        complexModel: resolveOverlay(routing.modelRouting.complexModel) ?? model,
+      }
+    : undefined;
+
   return buildOrchestratorForAgent(
     {
       agentId: agent.slug,
-      model: routing.model ?? runtime.model,
+      model,
       maxTokens: runtime.maxTokens,
       maxToolIterations: runtime.maxToolIterations,
       // Per-turn model routing: prefer the agent's own persisted routing
       // (Agent Builder P5); otherwise fall back to the platform default
       // `runtime.modelRouting` so registry-managed orchestrators still emit
       // `turn_routing` and the UI renders the Haiku-triage badge (origin/main).
-      ...((routing.modelRouting ?? runtime.modelRouting)
-        ? { modelRouting: routing.modelRouting ?? runtime.modelRouting }
+      ...((overlayRouting ?? runtime.modelRouting)
+        ? { modelRouting: overlayRouting ?? runtime.modelRouting }
         : {}),
       ...(runtime.loopRepeatSoft !== undefined
         ? { loopRepeatSoft: runtime.loopRepeatSoft }

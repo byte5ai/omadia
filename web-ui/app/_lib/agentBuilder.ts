@@ -98,6 +98,13 @@ export interface AgentNode {
   privacyProfile: PrivacyProfile;
   status: NodeStatus;
   modelRouting: ModelRoutingConfig | null;
+  /**
+   * Resolved orchestrator model the registry currently runs this Agent on
+   * (per-Agent overlay applied to the platform default). `null` when the
+   * registry has not yet built the Agent (in-memory bootstrap / Agent
+   * disabled). Issue #296 acceptance #4.
+   */
+  effectiveModel: string | null;
   position: CanvasPosition | null;
 }
 

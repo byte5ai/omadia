@@ -147,6 +147,16 @@ export interface BuiltOrchestrator {
   readonly orchestrator: Orchestrator;
   /** The `chatAgent` bundle — verifier-wrapped agent + raw orchestrator. */
   readonly bundle: ChatAgentBundle;
+  /**
+   * The resolved orchestrator model after the per-Agent overlay was applied —
+   * i.e. the actual id the turn loop will send to the provider for this Agent.
+   * Mirrors `config.model`; carried out so callers (registry log, /admin UI)
+   * can read it without re-computing the overlay. Issue #296 acceptance #4.
+   */
+  readonly effectiveModel: string;
+  /** Same as `config.modelRouting` — surfaced so callers can describe the
+   *  per-turn routing the Agent is on without inspecting the orchestrator. */
+  readonly effectiveModelRouting?: ModelRoutingConfig;
 }
 
 /**
@@ -331,6 +341,8 @@ export function buildOrchestratorForAgent(
         sessionLogger,
         chatSessionStore,
       },
+      effectiveModel: config.model,
+      ...(config.modelRouting ? { effectiveModelRouting: config.modelRouting } : {}),
     };
   }
 
@@ -356,5 +368,7 @@ export function buildOrchestratorForAgent(
   return {
     orchestrator,
     bundle: { agent, raw: orchestrator, sessionLogger, chatSessionStore },
+    effectiveModel: config.model,
+    ...(config.modelRouting ? { effectiveModelRouting: config.modelRouting } : {}),
   };
 }
