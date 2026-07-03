@@ -22,7 +22,13 @@ export interface QualityConfig {
 export type BuilderModelId = string;
 
 export interface BuilderModelInfo {
+  /** Provider-qualified id (e.g. `anthropic:claude-opus-4-8`) — the value the
+   *  picker writes. */
   id: BuilderModelId;
+  /** Bare vendor model id (e.g. `claude-opus-4-8`). Persisted configs from
+   *  before the provider-qualified picker store this form, so the Inspector
+   *  matches against it to avoid flagging a valid model as "stale". */
+  model_id: string;
   label: string;
   provider: string;
   model_class: string;

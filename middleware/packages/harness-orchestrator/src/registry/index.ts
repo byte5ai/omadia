@@ -336,6 +336,10 @@ export class OrchestratorRegistry {
           agentId: action.agent.id,
           plugins: plugins.filter((p) => p.enabled).map((p) => p.pluginId),
           memoryScope,
+          effectiveModel: built.effectiveModel,
+          ...(built.effectiveModelRouting
+            ? { effectiveModelRouting: built.effectiveModelRouting }
+            : {}),
         });
         return;
       }
@@ -380,6 +384,10 @@ export class OrchestratorRegistry {
           agentId: action.agent.id,
           reason: action.reason,
           replaced: !!before,
+          effectiveModel: built.effectiveModel,
+          ...(built.effectiveModelRouting
+            ? { effectiveModelRouting: built.effectiveModelRouting }
+            : {}),
         });
         return;
       }

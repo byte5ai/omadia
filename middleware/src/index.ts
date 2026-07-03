@@ -250,6 +250,7 @@ import {
 } from './plugins/routines/index.js';
 import { ROUTINES_INTEGRATION_SERVICE_NAME } from '@omadia/plugin-api';
 import { createRoutinesRouter } from './routes/routines.js';
+import { createUiPrefsRouter } from './routes/uiPrefs.js';
 import { ExpressRouteRegistry } from './channels/routeRegistry.js';
 import { WebSocketRegistry } from './channels/webSocketRegistry.js';
 import { createCoreApi } from './channels/coreApi.js';
@@ -2023,6 +2024,20 @@ async function main(): Promise<void> {
     '[middleware] operator-channels endpoints ready at /api/v1/operator/channels/* (auth-gated)',
   );
 
+  // The orchestrator's single configured LLM provider id, live-read from the
+  // installed `@omadia/orchestrator` config so a runtime provider switch is
+  // picked up without a restart (mirrors `hostProviderId` / the sub-agent
+  // hydrate reader). Default `anthropic`. Shared by the operator model-write
+  // scoping and the builder model picker (issue #296).
+  const orchestratorActiveProviderId = (): string => {
+    const raw = installedRegistry.get('@omadia/orchestrator')?.config?.[
+      'llm_provider'
+    ];
+    return typeof raw === 'string' && raw.trim().length > 0
+      ? raw.trim()
+      : 'anthropic';
+  };
+
   // Agent Builder canvas backend (P1/P2). Mounted at the /api/v1/operator
   // parent so the /agents/:slug/graph|subagents|… subpaths fall through here
   // after the operator-agents router. 503s without a graphPool (in-memory KG
@@ -2038,6 +2053,10 @@ async function main(): Promise<void> {
         graphPool ? new AgentGraphStore(graphPool) : undefined,
       getRegistry: () =>
         serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
+      // Live-read the orchestrator's single configured provider so per-Agent /
+      // sub-agent model writes are scoped to it (issue #296 — a cross-provider
+      // pick is rejected instead of silently dropped at build).
+      getActiveProvider: orchestratorActiveProviderId,
     }),
   );
   console.log(
@@ -2445,6 +2464,18 @@ async function main(): Promise<void> {
       '[middleware] routines endpoints ready at /api/v1/routines (auth: required)',
     );
   }
+
+  // Per-user UI preferences (issue #287) — server-side home for the Lume
+  // palette + appearance choice, backed by the MemoryStore. Replaces the
+  // per-browser localStorage from #284 with a cross-device store.
+  app.use(
+    '/api/v1/ui-prefs',
+    requireAuth,
+    createUiPrefsRouter({ store: memoryStore, log: (m) => console.log(m) }),
+  );
+  console.log(
+    '[middleware] ui-prefs endpoints ready at /api/v1/ui-prefs (auth: required)',
+  );
 
   // `packageUploadService` is declared in the outer `main` scope so the
   // builder install endpoint (B.6-1) can reference it. When PACKAGE_UPLOAD_-
@@ -3257,6 +3288,9 @@ async function main(): Promise<void> {
       store: draftStore,
       quota: draftQuota,
       connectedProviders: builderConnectedProviders,
+      // Scope the model picker to the orchestrator's active provider so a
+      // cross-provider pick can't be offered (issue #296).
+      activeProvider: orchestratorActiveProviderId,
       preview: {
         draftStore,
         previewCache,

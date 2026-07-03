@@ -77,6 +77,8 @@ export type { ScopedMemoryStoreOptions } from './registry/scopedMemoryStore.js';
 export {
   ConfigStore,
   ConfigValidationError,
+  validateModelRef,
+  validateModelRoutingShape,
 } from './registry/configStore.js';
 export type {
   AgentInput,
@@ -135,7 +137,10 @@ export type {
   SubAgentGraph,
   SubAgentToolDeps,
 } from './registry/subAgentTools.js';
-export { resolveAgentModelRouting } from './registry/agentRuntime.js';
+export {
+  DEFAULT_ORCHESTRATOR_MODEL,
+  resolveAgentModelRouting,
+} from './registry/agentRuntime.js';
 export type { ResolvedAgentRuntime } from './registry/agentRuntime.js';
 
 // Per-Agent Orchestrator factory (US3) — re-exported so US4-style external

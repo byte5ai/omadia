@@ -10,6 +10,7 @@ import type {
   UploadPackageResponse,
 } from './storeTypes';
 import type { PersonaConfig } from './personaTypes';
+import type { UiPrefs } from './uiPrefs';
 import type {
   ImportBundleSuccess,
   ProfileApplyOutcome,
@@ -1091,6 +1092,42 @@ export async function postAuthSetup(body: {
 
 export async function postAuthLogout(): Promise<AuthLogoutResponse> {
   return postJson<AuthLogoutResponse>('/v1/auth/logout', undefined);
+}
+
+// -----------------------------------------------------------------------------
+// UI preferences (issue #287) — server-side per-user palette + appearance.
+// Replaces the per-browser localStorage from #284; the web-ui mirrors the
+// value into a non-secret cookie for the no-FOUC pre-paint bootstrap (the RSC
+// layout reads that cookie to set data-palette/data-theme on <html>). The
+// palette/appearance enums live in `_lib/uiPrefs` so this client, the
+// ThemeControls widget, and the layout share one source of truth.
+// -----------------------------------------------------------------------------
+
+export type { UiPrefs } from './uiPrefs';
+
+/** Current user's stored UI prefs; `{}` when none saved yet. */
+export async function getUiPrefs(): Promise<UiPrefs> {
+  return getJson<UiPrefs>('/v1/ui-prefs');
+}
+
+/** Upsert the current user's UI prefs. */
+export async function putUiPrefs(prefs: UiPrefs): Promise<void> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(botApi('/v1/ui-prefs'), {
+    method: 'PUT',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      ...forwarded,
+    },
+    body: JSON.stringify(prefs),
+    cache: 'no-store',
+    credentials: 'include',
+  });
+  if (res.status === 204) return;
+  const text = await res.text().catch(() => '');
+  maybeNavigateToLogin(res.status);
+  throw new ApiError(res.status, `PUT ui-prefs failed: ${res.status}`, text);
 }
 
 // -----------------------------------------------------------------------------

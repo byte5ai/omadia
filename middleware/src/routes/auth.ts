@@ -294,6 +294,10 @@ export function createAuthRouter(deps: AuthDeps): Router {
       }
     }
     res.clearCookie(SESSION_COOKIE, { path: '/' });
+    // Also clear the non-secret UI-prefs cookie (1-year max-age). On a shared
+    // browser this stops the next user's first server paint from rendering the
+    // previous user's palette/theme until the client's getUiPrefs() corrects it.
+    res.clearCookie('omadia-ui-prefs', { path: '/' });
 
     // Surface the IdP-side logout URL when the session was minted from an
     // oidc-provider so the SPA can bounce the browser to it. For local
