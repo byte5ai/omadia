@@ -35,6 +35,17 @@ export type ChatStreamEvent =
       classifierModel: string;
       model: string;
     }
+  /**
+   * Wave 8 — per-turn direct-answer persona verdict, emitted once at turn
+   * start, only when the Agent has one or more persona skills attached.
+   */
+  | {
+      type: 'turn_persona';
+      bucket: 'matched' | 'none' | 'fallback';
+      classifierModel: string;
+      skillId: string | null;
+      skillName: string | null;
+    }
   | { type: 'text_delta'; text: string }
   | {
       type: 'tool_use';
@@ -174,6 +185,16 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
           bucket: event.bucket,
           classifierModel: event.classifierModel,
           model: event.model,
+        },
+      };
+    case 'turn_persona':
+      return {
+        ...m,
+        persona: {
+          bucket: event.bucket,
+          classifierModel: event.classifierModel,
+          skillId: event.skillId,
+          skillName: event.skillName,
         },
       };
     case 'turn_annotation':

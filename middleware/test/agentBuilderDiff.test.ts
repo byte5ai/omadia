@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import type {
+  PersonaSkillRow,
   ScheduleRow,
   SkillRow,
   SubAgentRow,
@@ -24,6 +25,7 @@ import type {
 } from '../packages/harness-orchestrator/src/registry/configStore.js';
 
 const AGENT_ID = '00000000-0000-0000-0000-000000000001';
+const OTHER_AGENT_ID = '00000000-0000-0000-0000-000000000002';
 const SKILL_ID = '00000000-0000-0000-0000-0000000000a1';
 const SUB_ID = '00000000-0000-0000-0000-0000000000b1';
 
@@ -84,6 +86,8 @@ function skill(overrides: Partial<SkillRow> = {}): SkillRow {
     frontmatter: {},
     source: 'db',
     sourcePath: null,
+    contentHash: null,
+    forkedFrom: null,
     createdAt: new Date(0),
     updatedAt: new Date(0),
     ...overrides,
@@ -99,6 +103,16 @@ function grant(overrides: Partial<ToolGrantRow> = {}): ToolGrantRow {
     toolRef: 'web_search',
     mcpServerId: null,
     config: {},
+    createdAt: new Date(0),
+    ...overrides,
+  };
+}
+
+function personaLink(overrides: Partial<PersonaSkillRow> = {}): PersonaSkillRow {
+  return {
+    agentId: AGENT_ID,
+    skillId: SKILL_ID,
+    position: 0,
     createdAt: new Date(0),
     ...overrides,
   };
@@ -179,6 +193,56 @@ test('idempotent: identical graph-populated snapshot yields zero actions', () =>
     subAgents: [subAgent({ skillId: SKILL_ID })],
     skills: [skill()],
     toolGrants: [grant()],
+  });
+  assert.equal(diffSnapshots(populated, populated).actions.length, 0);
+});
+
+// ── Wave 8 — direct-answer persona-skill links ──────────────────────────────
+
+test('attaching a persona skill rebuilds the owning agent (reason: graph)', () => {
+  const before = snap({ skills: [skill()] });
+  const after = snap({ skills: [skill()], personaSkillLinks: [personaLink()] });
+  assert.match(onlyRebuild(diffSnapshots(before, after)).reason, /graph/);
+});
+
+test('removing a persona-skill link rebuilds the owning agent', () => {
+  const before = snap({ skills: [skill()], personaSkillLinks: [personaLink()] });
+  const after = snap({ skills: [skill()], personaSkillLinks: [] });
+  assert.match(onlyRebuild(diffSnapshots(before, after)).reason, /graph/);
+});
+
+test('editing a persona-referenced skill body rebuilds the agent (no sub-agent involved)', () => {
+  const before = snap({
+    skills: [skill()],
+    personaSkillLinks: [personaLink()],
+  });
+  const after = snap({
+    skills: [skill({ body: 'You are now upbeat and casual.' })],
+    personaSkillLinks: [personaLink()],
+  });
+  assert.match(onlyRebuild(diffSnapshots(before, after)).reason, /graph/);
+});
+
+test("another agent's persona-skill link does NOT rebuild this agent", () => {
+  const before = snap({
+    agents: [agent(), agent({ id: OTHER_AGENT_ID, slug: 'other' })],
+    skills: [skill()],
+  });
+  const after = snap({
+    agents: [agent(), agent({ id: OTHER_AGENT_ID, slug: 'other' })],
+    skills: [skill()],
+    personaSkillLinks: [personaLink({ agentId: OTHER_AGENT_ID })],
+  });
+  const plan = diffSnapshots(before, after);
+  // Only the OTHER agent (whose persona list actually changed) rebuilds.
+  assert.equal(plan.actions.length, 1);
+  assert.equal((plan.actions[0] as { agent: AgentRow }).agent.slug, 'other');
+});
+
+test('idempotent: identical persona-populated snapshot yields zero actions', () => {
+  const populated = snap({
+    skills: [skill()],
+    personaSkillLinks: [personaLink()],
   });
   assert.equal(diffSnapshots(populated, populated).actions.length, 0);
 });
