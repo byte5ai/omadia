@@ -110,15 +110,15 @@ three rows are why teams choose it; the rest is the groundwork done properly.
 
 | Capability | What you get |
 |---|---|
-| 🛡️ **Privacy Shield** | Raw tool results stay behind a data-plane boundary; the LLM sees only an identity-free digest. `guarded` by default, with `bypass`/`per_tool` opt-in and an org-wide clamp (`OMADIA_PRIVACY_FORCE_GUARDED`). Real data can run through omadia without running through the model. |
-| ✅ **Answer verification** | A verifier checks each answer's claims against the run's own sources and records a verdict (`approved` / `approved_with_disclaimer`) before it reaches the channel. |
-| 🧮 **Computed, not guessed** | Office and Excel output comes from a real spreadsheet engine, server-side, over real rows (`datasetId`). The figures are calculated by that engine rather than produced by the model. |
-| 🧾 **A receipt for every action** | Every agent run carries a full per-run trace and call-stack viewer: every step, tool call, and decision, replayable. |
-| 👥 **Multiplayer by design** | Agents run in your team's shared channels (Slack, Teams, Telegram, Discord), so several people work with them in one context, not a private one-on-one chatbot. |
-| 🤖 **Agent teams, not one chatbot** | An orchestrator routes each turn to the right specialist plugin agent. Channels, integrations, tools, and capability providers sit behind one stable API. |
-| 🔒 **Self-hosted and yours** | One `docker compose up` on a single machine. Your Postgres, your LLM key, all of the data on your own infrastructure. GDPR-aware and made in the EU. |
-| 🧩 **Signed plugin distribution** | Plugins ship as verifiable signed packages. The platform never pulls arbitrary npm at runtime. |
-| 🔌 **Enterprise integrations** | Microsoft 365, Odoo, Confluence, Teams, and Telegram, with the LLM provider a swappable plugin. |
+| 🛡️&nbsp;**Privacy&nbsp;Shield** | Raw tool results stay behind a data-plane boundary; the LLM sees only an identity-free digest. `guarded` by default, with `bypass`/`per_tool` opt-in and an org-wide clamp (`OMADIA_PRIVACY_FORCE_GUARDED`). Real data can run through omadia without running through the model. |
+| ✅&nbsp;**Answer&nbsp;verification** | A verifier checks each answer's claims against the run's own sources and records a verdict (`approved` / `approved_with_disclaimer`) before it reaches the channel. |
+| 🧮&nbsp;**Computed,&nbsp;not&nbsp;guessed** | Office and Excel output comes from a real spreadsheet engine, server-side, over real rows (`datasetId`). The figures are calculated by that engine rather than produced by the model. |
+| 🧾&nbsp;**A&nbsp;receipt&nbsp;for&nbsp;every&nbsp;action** | Every agent run carries a full per-run trace and call-stack viewer: every step, tool call, and decision, replayable. |
+| 👥&nbsp;**Multiplayer&nbsp;by&nbsp;design** | Agents run in your team's shared channels (Slack, Teams, Telegram, Discord), so several people work with them in one context, not a private one-on-one chatbot. |
+| 🤖&nbsp;**Agent&nbsp;teams,&nbsp;not&nbsp;one&nbsp;chatbot** | An orchestrator routes each turn to the right specialist plugin agent. Channels, integrations, tools, and capability providers sit behind one stable API. |
+| 🔒&nbsp;**Self-hosted&nbsp;and&nbsp;yours** | One `docker compose up` on a single machine. Your Postgres, your LLM key, all of the data on your own infrastructure. GDPR-aware and made in the EU. |
+| 🧩&nbsp;**Signed&nbsp;plugin&nbsp;distribution** | Plugins ship as verifiable signed packages. The platform never pulls arbitrary npm at runtime. |
+| 🔌&nbsp;**Enterprise&nbsp;integrations** | Microsoft 365, Odoo, Confluence, Teams, and Telegram, with the LLM provider a swappable plugin. |
 
 ## What's in the box
 
