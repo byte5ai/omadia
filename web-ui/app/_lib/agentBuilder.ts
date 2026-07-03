@@ -106,6 +106,8 @@ export interface AgentNode {
    */
   effectiveModel: string | null;
   position: CanvasPosition | null;
+  /** Wave 8 — direct-answer persona-skill ids attached to this Agent. */
+  personaSkillIds?: string[];
 }
 
 export interface ChannelNode {
@@ -134,6 +136,14 @@ export interface SkillNode {
   description: string | null;
   body: string;
   source: 'db' | 'file';
+  frontmatter?: Record<string, unknown>;
+  sourcePath?: string | null;
+  contentHash?: string | null;
+  forkedFrom?: string | null;
+  /** Wave 5 heuristic scan, current as of the last `GET /skills` list load
+   *  (only populated on the bulk-list endpoint, not on individual skill
+   *  reads/writes). */
+  risks?: SkillRisk[];
 }
 
 export type ToolKind = 'native' | 'mcp';
@@ -180,7 +190,8 @@ export type EdgeKind =
   | 'subagent'
   | 'skill'
   | 'tool_grant'
-  | 'schedule';
+  | 'schedule'
+  | 'persona_skill';
 
 export interface CanvasEdge {
   id: string;
@@ -303,6 +314,38 @@ export async function patchModelRouting(
   );
 }
 
+// -----------------------------------------------------------------------------
+// Wave 8 — direct-answer persona skills
+// -----------------------------------------------------------------------------
+
+export interface PersonaSkillLink {
+  agentId: string;
+  skillId: string;
+  position: number;
+  /** Wave 5 guard, re-run at attach time — warn-only, never blocks. */
+  risks: SkillRisk[];
+}
+
+export async function addPersonaSkill(
+  slug: string,
+  skillId: string,
+): Promise<PersonaSkillLink> {
+  return callJson<PersonaSkillLink>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/persona-skills`,
+    { method: 'POST', body: JSON.stringify({ skillId }) },
+  );
+}
+
+export async function removePersonaSkill(
+  slug: string,
+  skillId: string,
+): Promise<void> {
+  await callJson<void>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/persona-skills/${encodeURIComponent(skillId)}`,
+    { method: 'DELETE' },
+  );
+}
+
 export interface PositionsPatchInput {
   agent?: CanvasPosition;
   subAgents?: Array<{ id: string; position: CanvasPosition }>;
@@ -365,6 +408,109 @@ export async function deleteSkill(id: string): Promise<void> {
   await callJson(`/v1/operator/skills/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   });
+}
+
+export interface SkillDetail extends SkillNode {
+  usedByCount: number;
+  /** Wave 8 — Agents that carry this skill as a direct-answer persona. */
+  usedByAgentsCount: number;
+}
+
+export async function getSkill(id: string): Promise<SkillDetail> {
+  return callJson<SkillDetail>(`/v1/operator/skills/${encodeURIComponent(id)}`);
+}
+
+export type ImportOutcome = 'created' | 'updated' | 'unchanged';
+
+export interface ImportSkillInput {
+  /** Raw SKILL.md text (paste or uploaded file content). */
+  raw: string;
+  /** Optional provenance path (e.g. the original file name). */
+  sourcePath?: string;
+  /** When true, compute the outcome + preview without persisting. */
+  dryRun?: boolean;
+}
+
+export type SkillRiskCode =
+  | 'instruction_override'
+  | 'system_prompt_reference'
+  | 'tool_coercion'
+  | 'data_exfiltration'
+  | 'hidden_content';
+
+export interface SkillRisk {
+  code: SkillRiskCode;
+  severity: 'warn';
+  excerpt: string;
+}
+
+export interface SkillImportResult {
+  outcome: ImportOutcome;
+  skill: {
+    slug: string;
+    name: string;
+    description: string | null;
+    body: string;
+    frontmatter: Record<string, unknown>;
+    sourcePath: string | null;
+  };
+  contentHash: string;
+  risks: SkillRisk[];
+  resourceCount: number;
+  skillId?: string;
+}
+
+export interface SkillResource {
+  name: string;
+  content?: string;
+}
+
+/** List a skill's bundled resource files. Names only by default (cheap). */
+export async function listSkillResources(
+  id: string,
+  opts: { withContent?: boolean } = {},
+): Promise<SkillResource[]> {
+  const suffix = opts.withContent ? '' : '?names=1';
+  const res = await callJson<{ resources: SkillResource[] }>(
+    `/v1/operator/skills/${encodeURIComponent(id)}/resources${suffix}`,
+  );
+  return res.resources;
+}
+
+export async function importSkill(input: ImportSkillInput): Promise<SkillImportResult> {
+  return callJson<SkillImportResult>('/v1/operator/skills/import', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+/** Preview an import (dry-run) — computes outcome + normalized skill, no write. */
+export async function previewImportSkill(
+  input: Omit<ImportSkillInput, 'dryRun'>,
+): Promise<SkillImportResult> {
+  return importSkill({ ...input, dryRun: true });
+}
+
+/**
+ * Fork an imported (source:'file') skill into an editable db copy — used by the
+ * editor on first edit so provenance is preserved. Returns the fork (db) skill.
+ */
+export async function forkSkill(id: string): Promise<SkillNode> {
+  return callJson<SkillNode>(`/v1/operator/skills/${encodeURIComponent(id)}/fork`, {
+    method: 'POST',
+  });
+}
+
+/** Export a skill back to portable SKILL.md text (frontmatter + body). */
+export async function exportSkill(id: string): Promise<string> {
+  const res = await fetch(botApi(`/v1/operator/skills/${encodeURIComponent(id)}/export`), {
+    headers: { accept: 'text/markdown' },
+    cache: 'no-store',
+    credentials: 'include',
+  });
+  const text = await res.text();
+  if (!res.ok) throw new ApiError(res.status, `export ${id} failed: ${res.status}`, text);
+  return text;
 }
 
 // -----------------------------------------------------------------------------

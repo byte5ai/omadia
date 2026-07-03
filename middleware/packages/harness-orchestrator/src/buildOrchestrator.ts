@@ -43,7 +43,7 @@ import { ChatSessionStore } from './chatSessionStore.js';
 import type { Microsoft365Accessor } from './microsoft365-shim.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import type { ModelRoutingConfig } from './modelRouter.js';
-import { Orchestrator } from './orchestrator.js';
+import { Orchestrator, type OrchestratorPersonaSkill } from './orchestrator.js';
 import { CliChatAgent } from './cliChatAgent.js';
 import { ToolDispatchService } from './toolDispatchService.js';
 import { OrchestratorMemoryNamespacer } from './orchestratorMemoryNamespacer.js';
@@ -80,6 +80,10 @@ export interface AgentRuntimeConfig {
   readonly loopRepeatHard?: number;
   /** Optional per-turn wall-clock budget in seconds (0 / omitted = off). */
   readonly maxTurnSeconds?: number;
+  /** Wave 8 — this Agent's direct-answer persona-skill candidates, resolved
+   *  by the caller from `agent_persona_skills` (see {@link OrchestratorOptions}).
+   *  Per-agent, unlike the platform-shared `OrchestratorDeps` fields below. */
+  readonly personaSkills?: readonly OrchestratorPersonaSkill[];
 }
 
 /**
@@ -242,6 +246,9 @@ export function buildOrchestratorForAgent(
     provider: deps.provider,
     model: config.model,
     ...(config.modelRouting ? { modelRouting: config.modelRouting } : {}),
+    ...(config.personaSkills?.length
+      ? { personaSkills: config.personaSkills }
+      : {}),
     maxTokens: config.maxTokens,
     maxToolIterations: config.maxToolIterations,
     ...(config.loopRepeatSoft !== undefined

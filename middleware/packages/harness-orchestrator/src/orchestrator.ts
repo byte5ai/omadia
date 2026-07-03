@@ -120,6 +120,11 @@ import {
   type RoutingBucket,
   routeTurnModel,
 } from './modelRouter.js';
+import {
+  type PersonaCandidate,
+  type PersonaRoutingBucket,
+  routeTurnPersona,
+} from './personaRouter.js';
 import { fromLlmResponse, toLlmRequest } from './llmProviderSeam.js';
 import type {
   AnthropicBlock,
@@ -419,6 +424,22 @@ export interface OrchestratorOptions {
    * the concrete agent roster is still rendered live from `domainTools`.
    */
   assistantIdentity?: string;
+  /**
+   * Wave 8 — skills attached to this Agent as direct-answer persona
+   * candidates. When non-empty, each turn runs a Haiku classifier
+   * ({@link routeTurnPersona}) that picks at most one candidate whose `body`
+   * replaces `assistantIdentity` for that turn only — the rest of the system
+   * prompt (tool docs, privacy rules, routing block) is unchanged. Absent/
+   * empty → behaviour is identical to pre-Wave-8 (no classifier call).
+   */
+  personaSkills?: readonly OrchestratorPersonaSkill[];
+}
+
+/** A persona candidate resolved with its full body (Orchestrator-internal —
+ *  the classifier itself only ever sees {@link PersonaCandidate}'s cheap
+ *  `name`/`description` fields, never `body`). */
+export interface OrchestratorPersonaSkill extends PersonaCandidate {
+  readonly body: string;
 }
 
 // `ChatTurnInput` and `ChatTurnAttachment` were lifted to
@@ -892,6 +913,8 @@ export class Orchestrator {
   private readonly provider: LlmProvider;
   private readonly model: string;
   private readonly modelRouting: ModelRoutingConfig | undefined;
+  /** Wave 8 — direct-answer persona candidates; empty when none attached. */
+  private readonly personaSkills: readonly OrchestratorPersonaSkill[];
   private readonly maxTokens: number;
   private readonly maxIterations: number;
   /** Round-loop guard thresholds (see {@link LoopGuard}). */
@@ -967,6 +990,7 @@ export class Orchestrator {
     this.provider = options.provider;
     this.model = options.model;
     this.modelRouting = options.modelRouting;
+    this.personaSkills = options.personaSkills ?? [];
     this.maxTokens = options.maxTokens;
     this.maxIterations = options.maxToolIterations;
     this.loopRepeatSoft = options.loopRepeatSoft;
@@ -2260,6 +2284,53 @@ export class Orchestrator {
     };
   }
 
+  /**
+   * Wave 8 — resolves the direct-answer persona for a single turn. With
+   * persona skills attached, a Haiku classifier picks at most one candidate;
+   * its `body` should replace `assistantIdentity` for this turn only. Empty
+   * candidate list short-circuits before any classifier call — an Agent with
+   * no persona skills pays nothing extra. Never throws — falls back to the
+   * default identity (`skillBody: undefined`).
+   */
+  private async resolveTurnPersona(userMessage: string): Promise<{
+    skillBody: string | undefined;
+    persona?: {
+      bucket: PersonaRoutingBucket;
+      classifierModel: string;
+      skillId: string | null;
+      skillName: string | null;
+    };
+  }> {
+    if (this.personaSkills.length === 0) return { skillBody: undefined };
+    const r = await routeTurnPersona(
+      this.provider,
+      this.personaSkills,
+      userMessage,
+      // Reuses the model-routing classifier tier when configured (same
+      // Haiku-class model already paid for/warmed). Otherwise falls back to
+      // `this.model` (this Agent's own production model) rather than a
+      // hardcoded Anthropic id — `this.provider` may be bound to any vendor
+      // (OpenAI/Mistral/Ollama/…), and a hardcoded `claude-*` classifier
+      // model would 404/reject on every call, silently defeating the whole
+      // feature (every turn falls back to the default identity). `this.model`
+      // is guaranteed provider-compatible by construction; it costs more
+      // than a dedicated cheap-tier classifier, but it always works.
+      this.modelRouting?.classifierModel ?? this.model,
+    );
+    const picked = r.skillId
+      ? this.personaSkills.find((p) => p.skillId === r.skillId)
+      : undefined;
+    return {
+      skillBody: picked?.body,
+      persona: {
+        bucket: r.bucket,
+        classifierModel: r.classifierModel,
+        skillId: picked?.skillId ?? null,
+        skillName: picked?.name ?? null,
+      },
+    };
+  }
+
   private async chatInContextInner(
     input: ChatTurnInput,
     turnId: string,
@@ -2357,11 +2428,19 @@ export class Orchestrator {
     let obligationEscalationsUsed = 0;
     let forceObligationNext = false;
 
-    // Per-turn model routing (no-op unless configured). Resolved once so the
-    // whole turn — every tool-loop iteration — runs on one model. The
-    // non-streaming path has no event channel, so the routing decision is
-    // simply applied (channels that want to surface it use chatStream).
-    const turnModel = (await this.resolveTurnModel(input.userMessage)).model;
+    // Per-turn model routing (no-op unless configured) + Wave 8 persona
+    // routing (no-op unless persona skills are attached), resolved together
+    // — independent classifier calls, run in parallel so persona routing
+    // adds no serial latency on top of model routing. Both resolved once so
+    // the whole turn — every tool-loop iteration — is stable. The
+    // non-streaming path has no event channel, so both decisions are simply
+    // applied (channels that want to surface them use chatStream).
+    const [turnModelResolved, turnPersonaResolved] = await Promise.all([
+      this.resolveTurnModel(input.userMessage),
+      this.resolveTurnPersona(input.userMessage),
+    ]);
+    const turnModel = turnModelResolved.model;
+    const turnPersonaBody = turnPersonaResolved.skillBody;
 
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
@@ -2380,7 +2459,7 @@ export class Orchestrator {
           model: turnModel,
           max_tokens: this.maxTokens,
           system: buildSystemBlocks(
-            this.composeStableSystemPrompt(prependRules),
+            this.composeStableSystemPrompt(prependRules, turnPersonaBody),
             priorContext,
             withFinalizeHint(
               effectiveExtraSystemHint,
@@ -3017,10 +3096,16 @@ export class Orchestrator {
     // Mid-turn steering — same key the route enqueues under (see chatStream:
     // `sessionId`). Drained at the top of every iteration below.
     const steerKey = input.sessionScope ?? turnId;
-    // Per-turn model routing (no-op unless configured). Resolved once so the
-    // whole streamed turn runs on one model.
-    const resolved = await this.resolveTurnModel(input.userMessage);
+    // Per-turn model routing (no-op unless configured) + Wave 8 persona
+    // routing (no-op unless persona skills are attached). Independent
+    // classifier calls — run in parallel so persona routing adds no serial
+    // latency. Resolved once so the whole streamed turn runs on one model.
+    const [resolved, resolvedPersona] = await Promise.all([
+      this.resolveTurnModel(input.userMessage),
+      this.resolveTurnPersona(input.userMessage),
+    ]);
     const turnModel = resolved.model;
+    const turnPersonaBody = resolvedPersona.skillBody;
     // Surface the Haiku-triage decision inline, before the first model call —
     // the UI renders it at the top of the turn card so the operator sees the
     // classifier's verdict (simple/complex → model) as soon as it lands.
@@ -3030,6 +3115,18 @@ export class Orchestrator {
         bucket: resolved.routing.bucket,
         classifierModel: resolved.routing.classifierModel,
         model: resolved.routing.model,
+      };
+    }
+    // Wave 8 — surface the persona verdict the same way, only when at least
+    // one persona skill is attached (resolvedPersona.persona is undefined
+    // otherwise, matching turn_routing's own "only when configured" shape).
+    if (resolvedPersona.persona) {
+      yield {
+        type: 'turn_persona',
+        bucket: resolvedPersona.persona.bucket,
+        classifierModel: resolvedPersona.persona.classifierModel,
+        skillId: resolvedPersona.persona.skillId,
+        skillName: resolvedPersona.persona.skillName,
       };
     }
     try {
@@ -3083,7 +3180,7 @@ export class Orchestrator {
             model: turnModel,
             max_tokens: this.maxTokens,
             system: buildSystemBlocks(
-              this.composeStableSystemPrompt(prependRules),
+              this.composeStableSystemPrompt(prependRules, turnPersonaBody),
               priorContext,
               withFinalizeHint(
                 effectiveExtraSystemHint,
@@ -3936,8 +4033,14 @@ export class Orchestrator {
    * Builds the system prompt from the current DomainTool map. Called per
    * turn; stable feature flags come from the readonly fields, the
    * DomainTool list is live.
+   *
+   * `personaOverride` (Wave 8) replaces `assistantIdentity` for this call
+   * only — the resolved body of the turn's chosen direct-answer persona
+   * skill, when one was matched. Every other block (tool docs, privacy
+   * rules, Fach-Agent routing) is unaffected, so a persona skill can change
+   * *who* answers but never *how* tools/privacy rules are enforced.
    */
-  private getSystemPrompt(): string {
+  private getSystemPrompt(personaOverride?: string): string {
     // Plugin-contributed prompt docs, collected from the registry. The
     // kernel's hardcoded blocks (graph/diagram/…) remain in buildSystemPrompt
     // for their tools; plugin docs land in a separate bullet list so both
@@ -3947,7 +4050,7 @@ export class Orchestrator {
       .map((e) => e.promptDoc)
       .filter((doc): doc is string => typeof doc === 'string' && doc.length > 0);
     return buildSystemPrompt(
-      this.assistantIdentity,
+      personaOverride ?? this.assistantIdentity,
       Array.from(this.domainToolsByName.values()),
       this.knowledgeGraphTool !== undefined,
       // Diagrams is now plugin-contributed — its doc ships via extraDocs.
@@ -4003,10 +4106,14 @@ export class Orchestrator {
   /**
    * Combine the Phase-1 prependRules with the body system prompt. Empty
    * rules → returns the body unchanged so the prompt-cache key is byte-
-   * identical to pre-plugin runs.
+   * identical to pre-plugin runs. `personaOverride` (Wave 8) is threaded
+   * straight to {@link getSystemPrompt}.
    */
-  private composeStableSystemPrompt(prependRules: string): string {
-    const body = this.getSystemPrompt();
+  private composeStableSystemPrompt(
+    prependRules: string,
+    personaOverride?: string,
+  ): string {
+    const body = this.getSystemPrompt(personaOverride);
     if (prependRules.length === 0) return body;
     return `${prependRules}\n\n---\n\n${body}`;
   }
