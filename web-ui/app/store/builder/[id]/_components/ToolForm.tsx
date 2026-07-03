@@ -53,6 +53,7 @@ export function ToolForm({
   onPatch,
 }: ToolFormProps): React.ReactElement {
   const t = useTranslations('builder.tools.form');
+  const tValidation = useTranslations('builder.tools.validation');
   const idFieldId = useId();
   const descFieldId = useId();
   const [draftId, setDraftId] = useState<string>(tool.id);
@@ -92,7 +93,7 @@ export function ToolForm({
 
   function commitId(nextId: string): void {
     if (nextId === tool.id) return;
-    const idErr = validateToolId(nextId);
+    const idErr = validateToolId(nextId, tValidation);
     if (idErr) {
       setErrors((e) => ({ ...e, id: idErr }));
       return;
@@ -112,7 +113,7 @@ export function ToolForm({
 
   function commitDescription(nextDesc: string): void {
     if (nextDesc === (tool.description ?? '')) return;
-    const descErr = validateToolDescription(nextDesc);
+    const descErr = validateToolDescription(nextDesc, tValidation);
     if (descErr) {
       setErrors((e) => ({ ...e, description: descErr }));
       return;

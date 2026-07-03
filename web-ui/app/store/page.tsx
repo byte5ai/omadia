@@ -25,15 +25,6 @@ type CategoryFilter = 'all' | PluginKind;
  *  already in the runtime registry. */
 type SourceFilter = 'hub' | 'local' | 'installed';
 
-const FILTER_LABEL: Record<CategoryFilter, string> = {
-  all: 'Alle',
-  integration: 'Integrations',
-  agent: 'Agents',
-  channel: 'Channels',
-  tool: 'Tools',
-  extension: 'Extensions',
-};
-
 export default async function StorePage({
   searchParams,
 }: {
@@ -43,6 +34,7 @@ export default async function StorePage({
   const source = parseSource(params.source);
   const filter = parseFilter(params.kind);
   const t = await getTranslations('store.hero');
+  const tPage = await getTranslations('store.page');
 
   let plugins: Plugin[] = [];
   let loadError: string | null = null;
@@ -54,9 +46,7 @@ export default async function StorePage({
   } catch (err) {
     await redirectIfUnauthorized(err);
     loadError =
-      err instanceof Error
-        ? err.message
-        : 'Unbekannter Fehler beim Laden des Katalogs.';
+      err instanceof Error ? err.message : tPage('unknownLoadError');
   }
 
   // Profiles are best-effort: a missing /v1/profiles endpoint (older
@@ -140,7 +130,7 @@ export default async function StorePage({
       {/* Category filter tabs — scoped to the active source. */}
       <nav
         className="mt-8 flex flex-wrap items-center gap-2"
-        aria-label="Kategorie filtern"
+        aria-label={tPage('filterCategoryAria')}
       >
         {(['all', 'integration', 'agent', 'channel'] as CategoryFilter[]).map(
           (f) => {
@@ -161,7 +151,7 @@ export default async function StorePage({
                 )}
                 aria-current={active ? 'page' : undefined}
               >
-                <span>{FILTER_LABEL[f]}</span>
+                <span>{tPage(`filters.${f}`)}</span>
                 <span
                   className={cn(
                     'font-mono-num tabular-nums rounded-full px-2 text-[10px]',
@@ -196,7 +186,7 @@ export default async function StorePage({
       {/* Footer note */}
       <footer className="mt-20 flex items-center justify-between border-t border-[color:var(--divider)] pt-4 text-[11px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
         <span>
-          Quelle:{' '}
+          {tPage('footerSource')}{' '}
           <span className="font-mono-num normal-case tracking-normal text-[color:var(--fg-muted)]">
             docs/harness-platform/examples
           </span>
@@ -214,7 +204,7 @@ export default async function StorePage({
  * view and the Hub catalog. Server-rendered as two `<Link>`s so the active
  * view is sharable/bookmarkable via `?source=`.
  */
-function SourceTabs({
+async function SourceTabs({
   source,
   hubCount,
   localCount,
@@ -224,7 +214,8 @@ function SourceTabs({
   hubCount: number;
   localCount: number;
   installedCount: number;
-}): React.ReactElement {
+}): Promise<React.ReactElement> {
+  const t = await getTranslations('store.page');
   const tabs: Array<{
     key: SourceFilter;
     label: string;
@@ -233,19 +224,19 @@ function SourceTabs({
   }> = [
     {
       key: 'hub',
-      label: 'Registry',
+      label: t('sourceHub'),
       count: hubCount,
       icon: <Store className="size-4" aria-hidden />,
     },
     {
       key: 'local',
-      label: 'Lokal',
+      label: t('sourceLocal'),
       count: localCount,
       icon: <HardDrive className="size-4" aria-hidden />,
     },
     {
       key: 'installed',
-      label: 'Installiert',
+      label: t('sourceInstalled'),
       count: installedCount,
       icon: <PackageCheck className="size-4" aria-hidden />,
     },
@@ -254,7 +245,7 @@ function SourceTabs({
   return (
     <nav
       className="mt-8 inline-flex rounded-full border border-[color:var(--border)] bg-[color:var(--bg-soft)] p-1"
-      aria-label="Quelle wählen"
+      aria-label={t('sourceAria')}
     >
       {tabs.map((tab) => {
         const active = tab.key === source;
@@ -291,22 +282,36 @@ function SourceTabs({
   );
 }
 
-function EmptyState({
+async function EmptyState({
   source,
   filter,
 }: {
   source: SourceFilter;
   filter: CategoryFilter;
-}): React.ReactElement {
+}): Promise<React.ReactElement> {
+  const t = await getTranslations('store.page');
+
+  const link = (href: string) =>
+    function EmptyStateLink(chunks: React.ReactNode): React.ReactNode {
+      return (
+        <Link
+          href={href}
+          className="font-semibold text-[color:var(--accent)] underline-offset-4 hover:underline"
+        >
+          {chunks}
+        </Link>
+      );
+    };
+
   // Kind-filtered-into-emptiness inside a non-empty source: keep it short.
   if (filter !== 'all') {
     return (
       <div className="rounded-lg border border-dashed border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] p-12 text-center">
         <p className="font-display text-[22px] text-[color:var(--fg-strong)]">
-          Keine {FILTER_LABEL[filter]} in dieser Ansicht.
+          {t('emptyFilteredTitle', { category: t(`filters.${filter}`) })}
         </p>
         <p className="mt-3 text-sm leading-relaxed text-[color:var(--fg-muted)]">
-          Wechsle die Kategorie oder die Quelle oben.
+          {t('emptyFilteredHint')}
         </p>
       </div>
     );
@@ -316,24 +321,13 @@ function EmptyState({
     return (
       <div className="rounded-lg border border-dashed border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] p-12 text-center">
         <p className="font-display text-[22px] text-[color:var(--fg-strong)]">
-          Noch keine Plugins installiert.
+          {t('emptyInstalledTitle')}
         </p>
         <p className="mt-3 text-sm leading-relaxed text-[color:var(--fg-muted)]">
-          Wechsle zum{' '}
-          <Link
-            href={buildHref('hub', 'all')}
-            className="font-semibold text-[color:var(--accent)] underline-offset-4 hover:underline"
-          >
-            Hub
-          </Link>{' '}
-          oder{' '}
-          <Link
-            href={buildHref('local', 'all')}
-            className="font-semibold text-[color:var(--accent)] underline-offset-4 hover:underline"
-          >
-            Lokal
-          </Link>
-          , um verfügbare Plugins zu durchsuchen und zu installieren.
+          {t.rich('emptyInstalledBody', {
+            hubLink: link(buildHref('hub', 'all')),
+            localLink: link(buildHref('local', 'all')),
+          })}
         </p>
       </div>
     );
@@ -343,11 +337,10 @@ function EmptyState({
     return (
       <div className="rounded-lg border border-dashed border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] p-12 text-center">
         <p className="font-display text-[22px] text-[color:var(--fg-strong)]">
-          Keine lokalen Pakete.
+          {t('emptyLocalTitle')}
         </p>
         <p className="mt-3 text-sm leading-relaxed text-[color:var(--fg-muted)]">
-          Lade ein Plugin-Paket per Drag-&-Drop oben hoch — der Server validiert
-          das Manifest und registriert es im Katalog.
+          {t('emptyLocalHint')}
         </p>
       </div>
     );
@@ -359,52 +352,49 @@ function EmptyState({
   return (
     <div className="rounded-lg border border-dashed border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] p-12 text-center">
       <p className="font-display text-[22px] text-[color:var(--fg-strong)]">
-        Keine Plugins im Hub verfügbar.
+        {t('emptyHubTitle')}
       </p>
       <p className="mt-3 text-sm leading-relaxed text-[color:var(--fg-muted)]">
-        Verbinde eine Registry unter{' '}
-        <Link
-          href="/admin/registries"
-          className="font-semibold text-[color:var(--accent)] underline-offset-4 hover:underline"
-        >
-          Admin · Registries
-        </Link>{' '}
-        — oder lade ein eigenes Paket im{' '}
-        <Link
-          href={buildHref('local', 'all')}
-          className="font-semibold text-[color:var(--accent)] underline-offset-4 hover:underline"
-        >
-          Lokal
-        </Link>
-        -Tab hoch.
+        {t.rich('emptyHubBody', {
+          adminLink: link('/admin/registries'),
+          localLink: link(buildHref('local', 'all')),
+        })}
       </p>
     </div>
   );
 }
 
-function LoadErrorState({ message }: { message: string }): React.ReactElement {
+async function LoadErrorState({
+  message,
+}: {
+  message: string;
+}): Promise<React.ReactElement> {
+  const t = await getTranslations('store.page');
   return (
     <div className="rounded-lg border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/6 p-8">
       <div className="flex items-baseline gap-3 text-[11px] font-semibold uppercase tracking-[0.2em] text-[color:var(--danger)]">
-        <span>Fehler</span>
+        <span>{t('errorKicker')}</span>
         <span className="h-px flex-1 bg-[color:var(--danger)]/30" />
       </div>
       <p className="font-display mt-4 text-[26px] text-[color:var(--danger)]">
-        Katalog konnte nicht geladen werden.
+        {t('errorTitle')}
       </p>
       <p className="mt-3 font-mono-num text-sm text-[color:var(--fg-muted)]">
         {message}
       </p>
       <p className="mt-4 text-sm leading-relaxed text-[color:var(--fg-muted)]">
-        Prüfe, ob die Middleware unter{' '}
-        <span className="font-mono-num text-[color:var(--fg)]">
-          http://localhost:3979
-        </span>{' '}
-        erreichbar ist und der Endpoint{' '}
-        <span className="font-mono-num text-[color:var(--fg)]">
-          /api/v1/store/plugins
-        </span>{' '}
-        antwortet.
+        {t.rich('errorHint', {
+          host: (chunks) => (
+            <span className="font-mono-num text-[color:var(--fg)]">
+              {chunks}
+            </span>
+          ),
+          endpoint: (chunks) => (
+            <span className="font-mono-num text-[color:var(--fg)]">
+              {chunks}
+            </span>
+          ),
+        })}
       </p>
     </div>
   );

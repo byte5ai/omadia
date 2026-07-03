@@ -1,7 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+
 import Link from 'next/link';
+import { useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import {
@@ -40,6 +42,7 @@ const SEVERITY_RANK: Record<InconsistencySeverity, number> = {
 };
 
 export default function InconsistenciesListPage(): React.ReactElement {
+  const t = useTranslations('adminInconsistencies.list');
   const [statusFilter, setStatusFilter] = useState<InconsistencyStatus | 'all'>(
     'open',
   );
@@ -72,9 +75,7 @@ export default function InconsistenciesListPage(): React.ReactElement {
     if (bulkRunning) return;
     if (
       bulkLimit > BULK_CONFIRM_THRESHOLD &&
-      !window.confirm(
-        `Bulk-Detect für bis zu ${String(bulkLimit)} Memories starten? Pro Memory bis zu 5 Haiku-Calls — Kosten skalieren mit dem Limit.`,
-      )
+      !window.confirm(t('confirmBulkRun', { count: bulkLimit }))
     ) {
       return;
     }
@@ -92,7 +93,7 @@ export default function InconsistenciesListPage(): React.ReactElement {
     } finally {
       setBulkRunning(false);
     }
-  }, [bulkLimit, bulkRunning, loadBulkPreview]);
+  }, [bulkLimit, bulkRunning, loadBulkPreview, t]);
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -144,50 +145,52 @@ export default function InconsistenciesListPage(): React.ReactElement {
           ← /admin
         </Link>
         <h1 className="mt-2 font-display text-[clamp(2rem,4vw,3rem)] leading-[1.1] text-[color:var(--fg-strong)]">
-          Memory · Widersprüche
+          {t('title')}
         </h1>
         <p className="mt-3 max-w-2xl text-[16px] leading-[1.55] text-[color:var(--fg-muted)]">
-          Memories die semantisch verwandt sind aber inhaltlich widersprechen.
-          Klick auf einen Eintrag öffnet die Side-by-side-Ansicht zum Auflösen.
+          {t('intro')}
         </p>
       </header>
 
       {/* Slice 9.5 — Bulk-Detect-Panel. Sits above the filter row so
           the operator sees the marker-progress at a glance. */}
       <section
-        aria-label="Bulk inconsistency detect"
+        aria-label={t('bulkDetectAria')}
         className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4"
       >
         <div className="mb-3 flex flex-wrap items-baseline gap-3">
           <h2 className="text-sm font-semibold text-[color:var(--fg-strong)]">
-            Bulk-Detect
+            {t('bulkDetectTitle')}
           </h2>
           <p className="text-xs text-[color:var(--fg-muted)]">
-            Memories die noch keinen Inconsistency-Check hatten (= aus Zeiten
-            vor Slice 9).
+            {t('bulkDetectDescription')}
           </p>
         </div>
 
         {bulkPreviewError !== null && (
           <p className="mb-2 text-xs text-[color:var(--danger)]">
-            Preview fehlgeschlagen: {bulkPreviewError}
+            {t('previewFailed', { message: bulkPreviewError })}
           </p>
         )}
 
         {bulkPreview !== null && (
           <dl className="mb-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
             <div>
-              <dt className="text-[color:var(--fg-muted)]">ungeprüft</dt>
+              <dt className="text-[color:var(--fg-muted)]">{t('unchecked')}</dt>
               <dd className="font-mono text-base">{bulkPreview.unchecked}</dd>
             </div>
             <div>
-              <dt className="text-[color:var(--fg-muted)]">schon geprüft</dt>
+              <dt className="text-[color:var(--fg-muted)]">
+                {t('alreadyChecked')}
+              </dt>
               <dd className="font-mono text-base">
                 {bulkPreview.alreadyChecked}
               </dd>
             </div>
             <div>
-              <dt className="text-[color:var(--fg-muted)]">ohne Embedding</dt>
+              <dt className="text-[color:var(--fg-muted)]">
+                {t('withoutEmbedding')}
+              </dt>
               <dd className="font-mono text-base">
                 {bulkPreview.withoutEmbedding}
               </dd>
@@ -202,7 +205,9 @@ export default function InconsistenciesListPage(): React.ReactElement {
                     : 'text-[color:var(--warning)]',
                 ].join(' ')}
               >
-                {bulkPreview.detectorAvailable ? 'ready' : 'kein Key'}
+                {bulkPreview.detectorAvailable
+                  ? t('detectorReady')
+                  : t('detectorNoKey')}
               </dd>
             </div>
           </dl>
@@ -213,7 +218,7 @@ export default function InconsistenciesListPage(): React.ReactElement {
             htmlFor="bulk-limit"
             className="text-xs text-[color:var(--fg-muted)]"
           >
-            Limit
+            {t('limitLabel')}
           </label>
           <input
             id="bulk-limit"
@@ -239,27 +244,27 @@ export default function InconsistenciesListPage(): React.ReactElement {
               (bulkPreview !== null && bulkPreview.unchecked === 0)
             }
             busy={bulkRunning}
-            busyLabel="läuft"
+            busyLabel={t('running')}
           >
-            Bulk-Detect starten
+            {t('startBulkDetect')}
           </Button>
           {bulkLimit > BULK_CONFIRM_THRESHOLD && (
             <span className="text-[11px] text-[color:var(--warning)]">
-              ⚠️ Cost-Confirm bei Limit &gt; {BULK_CONFIRM_THRESHOLD}
+              {t('costConfirmHint', { limit: BULK_CONFIRM_THRESHOLD })}
             </span>
           )}
         </div>
 
         {bulkError !== null && (
           <p className="mt-3 text-xs text-[color:var(--danger)]">
-            Run fehlgeschlagen: {bulkError}
+            {t('runFailed', { message: bulkError })}
           </p>
         )}
 
         {bulkResult !== null && (
           <div className="mt-3 rounded border border-[color:var(--border)] bg-black/5 p-3 text-xs">
             <p className="mb-2 font-medium">
-              Ergebnis · {bulkResult.durationMs} ms
+              {t('resultTitle', { duration: bulkResult.durationMs })}
             </p>
             <dl className="grid grid-cols-2 gap-2 sm:grid-cols-5">
               <div>
@@ -271,17 +276,21 @@ export default function InconsistenciesListPage(): React.ReactElement {
                 <dd className="font-mono">{bulkResult.checked}</dd>
               </div>
               <div>
-                <dt className="text-[color:var(--fg-muted)]">neue Konflikte</dt>
+                <dt className="text-[color:var(--fg-muted)]">
+                  {t('newConflicts')}
+                </dt>
                 <dd className="font-mono">
                   {bulkResult.inconsistenciesCreated}
                 </dd>
               </div>
               <div>
-                <dt className="text-[color:var(--fg-muted)]">ohne Embedding</dt>
+                <dt className="text-[color:var(--fg-muted)]">
+                  {t('withoutEmbedding')}
+                </dt>
                 <dd className="font-mono">{bulkResult.skippedNoEmbedding}</dd>
               </div>
               <div>
-                <dt className="text-[color:var(--fg-muted)]">Fehler</dt>
+                <dt className="text-[color:var(--fg-muted)]">{t('errors')}</dt>
                 <dd className="font-mono">{bulkResult.failed}</dd>
               </div>
             </dl>
@@ -302,7 +311,7 @@ export default function InconsistenciesListPage(): React.ReactElement {
                 : 'border-[color:var(--border)] hover:border-[color:var(--border-strong)]',
             ].join(' ')}
           >
-            {s === 'all' ? 'alle' : s}
+            {s === 'all' ? t('statusAll') : s}
           </button>
         ))}
         <Button
@@ -312,19 +321,19 @@ export default function InconsistenciesListPage(): React.ReactElement {
           disabled={loading}
           className="ml-auto"
         >
-          {loading ? 'lädt…' : 'aktualisieren'}
+          {loading ? t('loading') : t('refresh')}
         </Button>
       </div>
 
       {error !== null && (
         <div className="mb-4 border-l-2 border-[color:var(--danger-edge)] px-3 py-2 text-xs text-[color:var(--danger)]">
-          Fehler: {error}
+          {t('error', { message: error })}
         </div>
       )}
 
       {sorted !== null && sorted.length === 0 && error === null && (
         <p className="text-sm italic text-[color:var(--fg-muted)]">
-          Keine Widersprüche in dieser Auswahl.
+          {t('empty')}
         </p>
       )}
 

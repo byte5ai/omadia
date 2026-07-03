@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
+import { getTranslations } from 'next-intl/server';
 
 import { Markdown } from '../../../../_components/Markdown';
 import {
@@ -27,6 +28,7 @@ export default async function RoutineRunDetailPage({
   params: Promise<RouteParams>;
 }): Promise<React.ReactElement> {
   const { id, runId } = await params;
+  const t = await getTranslations('routines.runDetail');
   let run: RoutineRunDetailDto | null = null;
   let loadError: string | null = null;
   try {
@@ -37,14 +39,14 @@ export default async function RoutineRunDetailPage({
       notFound();
     }
     loadError =
-      err instanceof Error ? err.message : 'Run-Detail nicht erreichbar.';
+      err instanceof Error ? err.message : t('errorUnreachableFallback');
   }
 
   return (
     <main className="mx-auto w-full max-w-[1280px] px-6 py-12 lg:px-8 lg:py-16">
       <nav className="text-[12px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
         <Link href="/routines" className="hover:text-[color:var(--accent)]">
-          Routinen
+          {t('breadcrumbRoutines')}
         </Link>
         <span className="px-2">/</span>
         <Link
@@ -61,7 +63,7 @@ export default async function RoutineRunDetailPage({
 
       {loadError ? (
         <div className="mt-8 rounded-lg border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/5 p-6 text-sm text-[color:var(--danger)]">
-          <div className="font-semibold">Run nicht erreichbar</div>
+          <div className="font-semibold">{t('loadErrorTitle')}</div>
           <div className="mt-2 font-mono text-xs">{loadError}</div>
         </div>
       ) : run ? (
@@ -71,7 +73,13 @@ export default async function RoutineRunDetailPage({
   );
 }
 
-function RunDetail({ run }: { run: RoutineRunDetailDto }): React.ReactElement {
+async function RunDetail({
+  run,
+}: {
+  run: RoutineRunDetailDto;
+}): Promise<React.ReactElement> {
+  const t = await getTranslations('routines.runDetail');
+  const tTrigger = await getTranslations('routines.trigger');
   return (
     <>
       <header className="mt-6 rounded-lg border border-[color:var(--divider)] bg-[color:var(--surface)] p-6 lg:p-8">
@@ -79,7 +87,7 @@ function RunDetail({ run }: { run: RoutineRunDetailDto }): React.ReactElement {
           Run · {formatDate(run.startedAt)}
         </h1>
         <dl className="mt-6 grid grid-cols-2 gap-x-6 gap-y-3 text-[12px] sm:grid-cols-4">
-          <Field label="Trigger" value={triggerLabel(run.trigger)} mono />
+          <Field label="Trigger" value={triggerLabel(run.trigger, tTrigger)} mono />
           <Field
             label="Status"
             value={run.status}
@@ -92,7 +100,11 @@ function RunDetail({ run }: { run: RoutineRunDetailDto }): React.ReactElement {
             }
             mono
           />
-          <Field label="Dauer" value={formatDuration(run.durationMs)} mono />
+          <Field
+            label={t('fieldDuration')}
+            value={formatDuration(run.durationMs)}
+            mono
+          />
           <Field
             label="Iter · Tools"
             value={`${run.iterations ?? '—'} · ${run.toolCalls ?? '—'}`}
@@ -110,7 +122,7 @@ function RunDetail({ run }: { run: RoutineRunDetailDto }): React.ReactElement {
         {run.errorMessage ? (
           <div className="mt-6 rounded-md border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/5 p-3 font-mono text-[12px] text-[color:var(--danger)]">
             <div className="text-[10px] uppercase tracking-[0.16em]">
-              Fehler
+              {t('errorLabel')}
             </div>
             <div className="mt-1 break-words">{run.errorMessage}</div>
           </div>
@@ -125,26 +137,23 @@ function RunDetail({ run }: { run: RoutineRunDetailDto }): React.ReactElement {
           </pre>
         </div>
         <div className="rounded-lg border border-[color:var(--divider)] bg-[color:var(--surface)] p-6">
-          <SectionTitle>Antwort</SectionTitle>
+          <SectionTitle>{t('sectionAnswer')}</SectionTitle>
           {run.answer ? (
             <div className="mt-3">
               <Markdown source={run.answer} />
             </div>
           ) : (
             <div className="mt-3 text-[12px] text-[color:var(--fg-subtle)]">
-              Keine Antwort gespeichert (Run vor Delivery abgebrochen oder
-              fehlgeschlagen).
+              {t('noAnswer')}
             </div>
           )}
         </div>
       </section>
 
       <section className="mt-8 rounded-lg border border-[color:var(--divider)] bg-[color:var(--surface)] p-6">
-        <SectionTitle>Call-Stack · Run-Trace</SectionTitle>
+        <SectionTitle>{t('sectionTrace')}</SectionTitle>
         <p className="mt-2 text-[12px] text-[color:var(--fg-subtle)]">
-          Vollständiger agentischer Trace dieses Runs — Iterationen,
-          orchestrator-tool-calls und sub-agent-invocations. Klick auf eine
-          Zeile expandiert / collapse-t den Knoten.
+          {t('traceDescription')}
         </p>
         <div className="mt-4">
           <RunTraceViewer trace={run.runTrace} />
@@ -199,12 +208,14 @@ function Field({
   );
 }
 
-function triggerLabel(trigger: 'cron' | 'catchup' | 'manual'): string {
+type TFn = (key: string, values?: Record<string, string | number>) => string;
+
+function triggerLabel(trigger: 'cron' | 'catchup' | 'manual', t: TFn): string {
   return trigger === 'cron'
-    ? 'Cron'
+    ? t('cron')
     : trigger === 'catchup'
-      ? 'Catch-up'
-      : 'Manuell';
+      ? t('catchup')
+      : t('manual');
 }
 
 function formatDate(iso: string): string {

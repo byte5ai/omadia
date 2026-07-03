@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslations } from 'next-intl';
 import { Markdown } from '../_components/Markdown';
 import { Button } from '@/app/_components/ui/Button';
 import { getMemoryBackend, type MemoryBackend } from '../_lib/api';
@@ -19,6 +20,7 @@ interface ListResponse {
 const ROOT = '/memories';
 
 export default function MemoryPage(): React.ReactElement {
+  const t = useTranslations('memory');
   const [cwd, setCwd] = useState<string>(ROOT);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
@@ -43,16 +45,14 @@ export default function MemoryPage(): React.ReactElement {
           contentType.includes('text/html') ||
           body.trimStart().toLowerCase().startsWith('<!doctype');
         if (res.status === 500 && looksHtml) {
-          setListError(
-            'Middleware nicht erreichbar (localhost:3979). Läuft `npm run dev` im middleware-Ordner?',
-          );
+          setListError(t('errorMiddlewareUnreachable'));
         } else if (res.status === 404) {
-          setListError(
-            'Dev-Memory-Endpoint nicht verfügbar. Setze DEV_ENDPOINTS_ENABLED=true in middleware/.env und starte die Middleware neu.',
-          );
+          setListError(t('errorDevEndpointUnavailable'));
         } else {
           setListError(
-            body && !looksHtml ? body : `List fehlgeschlagen (HTTP ${String(res.status)})`,
+            body && !looksHtml
+              ? body
+              : t('errorListFailed', { status: String(res.status) }),
           );
         }
         setEntries([]);
@@ -74,7 +74,7 @@ export default function MemoryPage(): React.ReactElement {
     } finally {
       setLoadingList(false);
     }
-  }, []);
+  }, [t]);
 
   const loadFile = useCallback(async (path: string): Promise<void> => {
     setLoadingFile(true);
@@ -84,7 +84,7 @@ export default function MemoryPage(): React.ReactElement {
         `/bot-api/dev/memory/file?path=${encodeURIComponent(path)}`,
       );
       if (!res.ok) {
-        setFileError(`File fehlgeschlagen (HTTP ${String(res.status)})`);
+        setFileError(t('errorFileFailed', { status: String(res.status) }));
         setContent('');
         return;
       }
@@ -96,7 +96,7 @@ export default function MemoryPage(): React.ReactElement {
     } finally {
       setLoadingFile(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     // Best-effort backend badge — needs an authed session; the dev memory
@@ -142,21 +142,22 @@ export default function MemoryPage(): React.ReactElement {
                     : 'bg-[color:var(--warning)]/10 text-[color:var(--warning)]',
                 ].join(' ')}
               >
-                {backend === 'postgres' ? 'Postgres' : 'In-Memory · flüchtig'}
+                {backend === 'postgres' ? 'Postgres' : t('backendInMemory')}
               </span>
             )}
           </div>
           <p className="mt-0.5 text-[11px] text-[color:var(--fg-muted)]">
-            Live-Browser des aktiven Memory-Stores
             {backend === 'inmemory'
-              ? ' (RAM, beim Neustart leer).'
+              ? t('descriptionInMemory')
               : backend === 'postgres'
-                ? ' (persistent in Postgres).'
-                : '.'}
+                ? t('descriptionPostgres')
+                : t('description')}
           </p>
         </div>
         <div className="border-b border-[color:var(--border)] px-3 py-2 text-xs">
-          <div className="mb-1 text-[color:var(--fg-muted)]">Pfad</div>
+          <div className="mb-1 text-[color:var(--fg-muted)]">
+            {t('pathLabel')}
+          </div>
           <div className="flex flex-wrap items-center gap-1 font-mono text-[11px]">
             {crumbs.map((c, i) => (
               <span key={c.path} className="flex items-center gap-1">
@@ -176,7 +177,7 @@ export default function MemoryPage(): React.ReactElement {
             onClick={() => void loadDir(cwd)}
             className="mt-2 text-[11px] text-[color:var(--fg-muted)] hover:text-[color:var(--fg-strong)]"
           >
-            ↻ neu laden
+            {t('reload')}
           </button>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">
@@ -190,7 +191,9 @@ export default function MemoryPage(): React.ReactElement {
             </button>
           )}
           {loadingList && (
-            <div className="px-3 py-2 text-xs text-[color:var(--fg-muted)]">lädt…</div>
+            <div className="px-3 py-2 text-xs text-[color:var(--fg-muted)]">
+              {t('loading')}
+            </div>
           )}
           {listError && (
             <div className="border-l-2 border-[color:var(--danger-edge)] px-3 py-2 text-xs text-[color:var(--danger)]">
@@ -198,7 +201,9 @@ export default function MemoryPage(): React.ReactElement {
             </div>
           )}
           {!loadingList && !listError && entries.length === 0 && (
-            <div className="px-3 py-2 text-xs text-[color:var(--fg-muted)]">leer</div>
+            <div className="px-3 py-2 text-xs text-[color:var(--fg-muted)]">
+              {t('empty')}
+            </div>
           )}
           {entries.map((e) => {
             const name = basename(e.virtualPath);
@@ -238,7 +243,7 @@ export default function MemoryPage(): React.ReactElement {
       <section className="flex min-w-0 flex-1 flex-col bg-[color:var(--bg-soft)]">
         {selected === null ? (
           <div className="flex h-full items-center justify-center text-sm text-[color:var(--fg-muted)]">
-            Eintrag links wählen…
+            {t('selectEntry')}
           </div>
         ) : (
           <>
@@ -259,7 +264,9 @@ export default function MemoryPage(): React.ReactElement {
             </div>
             <div className="min-h-0 flex-1 overflow-auto px-6 py-4">
               {loadingFile && (
-                <div className="text-xs text-[color:var(--fg-muted)]">lädt…</div>
+                <div className="text-xs text-[color:var(--fg-muted)]">
+                  {t('loading')}
+                </div>
               )}
               {fileError && (
                 <div className="border-l-2 border-[color:var(--danger-edge)] px-3 py-2 text-xs text-[color:var(--danger)]">

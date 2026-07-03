@@ -24,10 +24,11 @@ export interface PersonaConflictWarning {
    *  `'quality.sycophancy'`, `'persona.directness'`). The pillar uses
    *  these to attach inline-icons to the right Slider components. */
   axes: string[];
-  /** Operator-readable explanation; rendered verbatim in the banner /
-   *  hover-text. Includes the recommended fix wherever a clear one
-   *  exists ("→ directness ≥ 50 ODER sycophancy=medium"). */
-  message: string;
+  /** i18n key under `builder.persona.conflicts.*` — the render site
+   *  (ConflictBanner) translates it into the operator-readable
+   *  explanation shown in the banner / hover-text. Includes the
+   *  recommended fix wherever a clear one exists. */
+  messageKey: string;
 }
 
 /**
@@ -54,10 +55,7 @@ export function detectPersonaConflicts(
       severity: 'hard',
       id: 'sycophancy-high__directness-low',
       axes: ['quality.sycophancy', 'persona.directness'],
-      message:
-        'Sycophancy=high erzwingt Devil\'s-Advocate-Rules; directness ≤ 30 ' +
-        'sagt „diplomatisch". Modell wird eines der beiden ignorieren. ' +
-        'Empfehlung: directness ≥ 50 oder sycophancy=medium.',
+      messageKey: 'sycophancyHighDirectnessLow',
     });
   }
 
@@ -67,9 +65,7 @@ export function detectPersonaConflicts(
       severity: 'soft',
       id: 'sycophancy-high__directness-high',
       axes: ['quality.sycophancy', 'persona.directness'],
-      message:
-        'Verstärkung — kritische Bewertung + ohne Höflichkeitspuffer ' +
-        'kann streitlustig wirken.',
+      messageKey: 'sycophancyHighDirectnessHigh',
     });
   }
 
@@ -79,10 +75,7 @@ export function detectPersonaConflicts(
       severity: 'soft',
       id: 'sycophancy-off__directness-veryhigh',
       axes: ['quality.sycophancy', 'persona.directness'],
-      message:
-        'Hinweis: directness ≥ 90 hebt das Modell-Default-Schmeichel-' +
-        'Verhalten allein nicht auf. Für anti-Sycophancy bewusst ein ' +
-        'sycophancy-Level wählen.',
+      messageKey: 'sycophancyOffDirectnessVeryHigh',
     });
   }
 
@@ -92,8 +85,7 @@ export function detectPersonaConflicts(
       severity: 'soft',
       id: 'formality-high__humor-high',
       axes: ['persona.formality', 'persona.humor'],
-      message:
-        'Sehr formell + sehr humorvoll wirkt stilistisch inkonsistent.',
+      messageKey: 'formalityHighHumorHigh',
     });
   }
 
@@ -103,7 +95,7 @@ export function detectPersonaConflicts(
       severity: 'soft',
       id: 'sarcasm-high__warmth-high',
       axes: ['persona.sarcasm', 'persona.warmth'],
-      message: 'Hoher Sarkasmus + hohe Wärme — Antworten wirken widersprüchlich.',
+      messageKey: 'sarcasmHighWarmthHigh',
     });
   }
 

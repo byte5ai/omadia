@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslations } from 'next-intl';
 
 import Link from 'next/link';
 
@@ -18,13 +19,6 @@ const KIND_FILTERS: Array<MemorableKind | 'all'> = [
   'preference',
   'reference',
 ];
-
-const KIND_LABELS: Record<MemorableKind, string> = {
-  decision: 'Entscheidung',
-  insight: 'Erkenntnis',
-  preference: 'Präferenz',
-  reference: 'Referenz',
-};
 
 const KIND_BADGE: Record<MemorableKind, string> = {
   decision:
@@ -47,6 +41,7 @@ const KIND_BADGE: Record<MemorableKind, string> = {
  * stays untouched — different concept, different data.
  */
 export default function MemoriesPage(): React.ReactElement {
+  const t = useTranslations('memories');
   const [items, setItems] = useState<MemorableKnowledgeNode[]>([]);
   const [filter, setFilter] = useState<MemorableKind | 'all'>('all');
   const [loading, setLoading] = useState(true);
@@ -78,7 +73,7 @@ export default function MemoriesPage(): React.ReactElement {
           <div>
             <h1 className="text-lg font-medium">Memories</h1>
             <p className="text-xs text-[color:var(--fg-muted)]">
-              Kuratiertes Wissen — ACL-gefiltert auf dich als Owner.
+              {t('list.subtitle')}
             </p>
           </div>
           <Button
@@ -86,13 +81,13 @@ export default function MemoriesPage(): React.ReactElement {
             size="sm"
             onClick={() => void load()}
           >
-            ↻ neu laden
+            {t('list.reload')}
           </Button>
         </div>
         <div className="mt-3 flex flex-wrap gap-2">
           {KIND_FILTERS.map((k) => {
             const active = filter === k;
-            const label = k === 'all' ? 'alle' : KIND_LABELS[k];
+            const label = k === 'all' ? t('list.filterAll') : t(`kinds.${k}`);
             return (
               <button
                 key={k}
@@ -114,18 +109,20 @@ export default function MemoriesPage(): React.ReactElement {
 
       <section className="min-h-0 flex-1 overflow-y-auto bg-[color:var(--bg-soft)] px-6 py-4">
         {loading && (
-          <div className="text-xs text-[color:var(--fg-muted)]">lädt…</div>
+          <div className="text-xs text-[color:var(--fg-muted)]">
+            {t('list.loading')}
+          </div>
         )}
         {error !== null && (
           <div className="border-l-2 border-[color:var(--danger-edge)] px-3 py-2 text-xs text-[color:var(--danger)]">
-            Fehler: {error}
+            {t('list.errorPrefix', { error })}
           </div>
         )}
         {!loading && error === null && items.length === 0 && (
           <div className="text-xs text-[color:var(--fg-muted)]">
             {filter === 'all'
-              ? 'Noch keine Memories. Erstelle eine via Chat oder POST /api/v1/memory.'
-              : `Keine Memories vom Typ „${KIND_LABELS[filter]}". Filter zurücksetzen oder andere Art wählen.`}
+              ? t('list.emptyAll')
+              : t('list.emptyKind', { kind: t(`kinds.${filter}`) })}
           </div>
         )}
         {!loading && error === null && items.length > 0 && (
@@ -143,7 +140,7 @@ export default function MemoriesPage(): React.ReactElement {
                         KIND_BADGE[mk.props.kind],
                       ].join(' ')}
                     >
-                      {KIND_LABELS[mk.props.kind]}
+                      {t(`kinds.${mk.props.kind}`)}
                     </span>
                     <time
                       className="font-mono text-[10px] text-[color:var(--fg-muted)]"
@@ -163,7 +160,11 @@ export default function MemoriesPage(): React.ReactElement {
                   <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-[color:var(--fg-muted)]">
                     <span className="font-mono">{mk.id}</span>
                     <span aria-hidden>·</span>
-                    <span>{mk.props.acl_owners.length} Owner</span>
+                    <span>
+                      {t('list.ownerCount', {
+                        count: mk.props.acl_owners.length,
+                      })}
+                    </span>
                     {typeof mk.props.significance === 'number' && (
                       <>
                         <span aria-hidden>·</span>
