@@ -114,6 +114,16 @@
       "failed": "Installation fehlgeschlagen",
       "retry": "Erneut versuchen",
       "browseAll": "Alle Plugins ansehen",
+      "bringSkills": {
+        "kicker": "Optional",
+        "title": "Bring deine Skills mit",
+        "subtitle": "Du hast schon Skills, denen du vertraust — z. B. aus Claude? Importiere einen für einen schnellen ersten Erfolg mit deiner eigenen Arbeit. Du kannst das überspringen.",
+        "cta": "Skill importieren",
+        "imported": "\"{name}\" importiert — jetzt einen Agenten damit bauen.",
+        "toRegistry": "In Skills ansehen",
+        "toBuilder": "Agent bauen",
+        "importAnother": "Weiteren importieren"
+      },
       "dismiss": "Onboarding ausblenden",
       "reenable": "Onboarding anzeigen",
       "empty": "Keine Rollenprofile verfügbar. Verbinde eine Registry, um Empfehlungen zu sehen.",
@@ -229,7 +239,33 @@
         "tools": "Tools"
       },
       "palette": {
-        "title": "Hinzufügen"
+        "title": "Hinzufügen",
+        "importSkill": "Skill importieren"
+      },
+      "import": {
+        "title": "Skill importieren",
+        "hint": "Claude-SKILL.md, Codex-AGENTS.md oder einen ChatGPT-Export ablegen oder einfügen. Es wird nur der Text importiert — mitgelieferte Skripte müssen als Plugin hinzugefügt werden.",
+        "chooseFile": "SKILL.md-Datei wählen",
+        "fileChosen": "{name}",
+        "pastePlaceholder": "SKILL.md-Inhalt hier einfügen…",
+        "preview": "Vorschau",
+        "confirm": "Importieren",
+        "cancel": "Abbrechen",
+        "outcome": {
+          "created": "Wird als neuer Skill angelegt.",
+          "updated": "Aktualisiert den bestehenden importierten Skill.",
+          "unchanged": "Bereits importiert — keine Änderungen."
+        },
+        "risks": {
+          "title": "Vor dem Import prüfen — dieser Inhalt könnte versuchen:",
+          "code": {
+            "instruction_override": "Frühere Anweisungen zu überschreiben",
+            "system_prompt_reference": "Die Rolle / den System-Prompt des Agenten umzudefinieren",
+            "tool_coercion": "Tool-Aufrufe zu erzwingen oder Bestätigungen zu umgehen",
+            "data_exfiltration": "Daten oder Geheimnisse irgendwohin zu senden",
+            "hidden_content": "Versteckten oder verschleierten Inhalt zu enthalten"
+          }
+        }
       },
       "toolbox": {
         "native": "Native Tools",
@@ -263,6 +299,16 @@
         "endpoint": "Endpoint",
         "cron": "Cron",
         "timezone": "Zeitzone"
+      },
+      "persona": {
+        "title": "Direkt-Antwort-Personas",
+        "hintEmpty": "Keine Persona-Skills angehängt — dieser Agent antwortet mit der generischen Standard-Identität.",
+        "hintSome": "Der Agent wählt pro Turn eine dieser Personas, um direkt zu antworten — oder die Standard-Identität, falls keine eindeutig passt. Kein Sub-Agent-Umweg.",
+        "addPlaceholder": "Skill zum Anhängen wählen…",
+        "add": "Anhängen",
+        "remove": "Entfernen",
+        "noSkillsAvailable": "Keine weiteren Skills zum Anhängen verfügbar.",
+        "riskWarning": "Heuristischer Scan hat diesen Skill markiert: {codes}. Als Persona steuert er den Top-Level-Agent mit vollem Tool-Zugriff — vor Verwendung prüfen."
       }
     }
   },
@@ -335,6 +381,7 @@
     "admin": "Admin",
     "system": "System",
     "agentsCluster": "Orchestratoren",
+    "skills": "Skills",
     "agentsOverview": "Übersicht",
     "channels": "Channels",
     "pluginsCluster": "Plugins",
@@ -692,6 +739,12 @@
     "subCallCount": "{count, plural, one {# Sub-Call} other {# Sub-Calls}}",
     "inputLabel": "input",
     "outputLabel": "output",
+    "persona": {
+      "title": "Persona",
+      "matched": "Antwortet als {name}",
+      "none": "Standard-Identität",
+      "fallback": "Persona-Klassifikator nicht verfügbar — Standard-Identität"
+    },
     "subAgentTrace": "sub-agent trace",
     "iterationLabel": "── iteration {n}",
     "attachmentTitle": "{kind}{cachedSuffix} — klick für Originalgröße",
@@ -871,6 +924,36 @@
     "unavailableBody": "Der Orchestrator „{slug}\" wurde gelöscht oder deaktiviert. Wie soll diese Session weiterlaufen?",
     "actionReSnapshot": "Auf Standard umbinden",
     "actionDelete": "Session löschen"
+  },
+  "skills": {
+    "title": "Skills",
+    "subtitle": "Deine Skill-Bibliothek — Skills importieren, ansehen, bearbeiten und exportieren.",
+    "loadError": "Skills konnten nicht geladen werden.",
+    "search": "Skills durchsuchen…",
+    "import": "Importieren",
+    "empty": "Noch keine Skills.",
+    "selectHint": "Wähle einen Skill, um ihn anzusehen und zu bearbeiten.",
+    "scopeHint": "Hier verwaltest du deine geteilte Skill-Bibliothek. Importierte oder bearbeitete Skills landen in der Registry; über die Slots hängst du sie an diesen Agenten.",
+    "delete": "Löschen",
+    "confirmDelete": "Dieser Skill wird von {count} Agenten genutzt — sie verlieren ihn. Trotzdem löschen?",
+    "confirmDeleteAction": "Trotzdem löschen",
+    "cancel": "Abbrechen",
+    "usedBy": "Verwendet von {count} Agenten",
+    "usedByPersona": "Außerdem Direkt-Antwort-Persona für {count} Agenten",
+    "resources": "{count} gebündelte Ressourcen",
+    "source": {
+      "db": "erstellt",
+      "file": "importiert"
+    },
+    "editor": {
+      "name": "Name",
+      "description": "Beschreibung",
+      "body": "Skill-Inhalt (Markdown)",
+      "save": "Speichern",
+      "forkAndSave": "Als bearbeitbare Kopie speichern",
+      "forkNotice": "Dies ist ein importierter Skill. Beim Speichern wird eine bearbeitbare Kopie erstellt; das Original bleibt als Quelle erhalten.",
+      "export": "Exportieren"
+    }
   },
   "operatorAgents": {
     "title": "Orchestratoren",
@@ -1066,6 +1149,7 @@
       "tabSpec": "Spec",
       "tabSlots": "Slots",
       "tabPersona": "Persona",
+      "tabSkills": "Skills",
       "tabVersions": "Versionen",
       "paneChat": "Builder-Chat",
       "paneEditor": "Editor",

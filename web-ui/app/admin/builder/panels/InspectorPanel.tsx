@@ -4,21 +4,25 @@ import { useTranslations } from 'next-intl';
 import { useEffect, useState } from 'react';
 
 import {
+  addPersonaSkill,
   discoverMcpTools,
+  listSkills,
   patchModelRouting,
-  patchSkill,
   patchSubAgent,
+  removePersonaSkill,
   type AgentNode,
   type McpServerNode,
   type ModelRoutingConfig,
   type ModelRoutingMode,
   type ScheduleNode,
   type SkillNode,
+  type SkillRisk,
   type SubAgentNode,
 } from '../../../_lib/agentBuilder';
 import { listBuilderModels } from '../../../_lib/api';
 import type { BuilderModelInfo } from '../../../_lib/builderTypes';
 import { Button } from '@/app/_components/ui/Button';
+import { SkillEditor } from '../../../_components/admin/SkillEditor';
 import type { BuilderNodeData } from '../nodes/types';
 import { Field, inputCls, SaveButton } from './InspectorControls';
 
@@ -198,6 +202,177 @@ function AgentEditor({
         pending={pending || catalog.loading}
         label={t('inspector.save')}
       />
+      <div className="mt-2 border-t border-[color:var(--border)] pt-3">
+        <PersonaSkillsSection slug={slug} agent={agent} onSaved={onSaved} />
+      </div>
+    </div>
+  );
+}
+
+// ── Persona skills (Wave 8) ──────────────────────────────────────────────
+/**
+ * Direct-answer persona candidates for this Agent: skills attached straight
+ * to the Agent (no sub-agent) that the per-turn classifier may adopt as the
+ * top-level system prompt. Self-loads the full skill catalog once so the
+ * "attach" picker can exclude already-attached skills.
+ */
+function PersonaSkillsSection({
+  slug,
+  agent,
+  onSaved,
+}: {
+  slug: string;
+  agent: AgentNode;
+  onSaved: () => void;
+}): React.ReactElement {
+  const t = useTranslations('admin.builder');
+  const [allSkills, setAllSkills] = useState<SkillNode[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [selectedToAdd, setSelectedToAdd] = useState('');
+  const [pendingId, setPendingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [lastRisks, setLastRisks] = useState<SkillRisk[] | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    listSkills()
+      .then((res) => {
+        if (active) setAllSkills(res.skills);
+      })
+      .catch((err) => {
+        if (active) setLoadError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Attached chips are driven by `attachedIds` (always present on the agent,
+  // independent of catalog-load state) so a `listSkills()` failure never
+  // hides — and makes unremovable — a persona that is actively overriding
+  // the orchestrator's identity. Only the enriched name/slug/risks and the
+  // "attach" picker (which needs the full catalog) depend on `allSkills`.
+  const attachedIds = agent.personaSkillIds ?? [];
+  const skillById = new Map((allSkills ?? []).map((s) => [s.id, s]));
+  const available = (allSkills ?? []).filter((s) => !attachedIds.includes(s.id));
+
+  async function handleAdd(): Promise<void> {
+    if (!selectedToAdd) return;
+    setPendingId(selectedToAdd);
+    setError(null);
+    setLastRisks(null);
+    try {
+      const link = await addPersonaSkill(slug, selectedToAdd);
+      if (link.risks.length > 0) setLastRisks(link.risks);
+      setSelectedToAdd('');
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPendingId(null);
+    }
+  }
+
+  async function handleRemove(skillId: string): Promise<void> {
+    setPendingId(skillId);
+    setError(null);
+    try {
+      await removePersonaSkill(slug, skillId);
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPendingId(null);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="text-[13px] font-semibold text-[color:var(--fg-strong)]">
+        {t('persona.title')}
+      </p>
+      <p className="text-xs text-[color:var(--fg-muted)]">
+        {attachedIds.length === 0 ? t('persona.hintEmpty') : t('persona.hintSome')}
+      </p>
+      {attachedIds.length > 0 && (
+        <ul className="flex flex-wrap gap-1.5">
+          {attachedIds.map((id) => {
+            const s = skillById.get(id);
+            const risky = (s?.risks?.length ?? 0) > 0;
+            return (
+              <li
+                key={id}
+                title={
+                  risky
+                    ? t('persona.riskWarning', {
+                        codes: (s?.risks ?? [])
+                          .map((r) => t(`import.risks.code.${r.code}`))
+                          .join(', '),
+                      })
+                    : undefined
+                }
+                className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs ${
+                  risky
+                    ? 'border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 text-[color:var(--danger)]'
+                    : 'border-[color:var(--border)] bg-[color:var(--card)] text-[color:var(--fg-strong)]'
+                }`}
+              >
+                {risky && <span aria-hidden="true">⚠</span>}
+                <span className="truncate">{s?.name ?? id}</span>
+                {s && (
+                  <span className="font-mono text-[10px] text-[color:var(--fg-muted)]">
+                    {s.slug}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void handleRemove(id)}
+                  disabled={pendingId === id}
+                  aria-label={t('persona.remove')}
+                  className="text-[color:var(--fg-muted)] hover:text-[color:var(--danger)]"
+                >
+                  ×
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {allSkills !== null &&
+        (available.length > 0 ? (
+          <div className="flex gap-2">
+            <select
+              value={selectedToAdd}
+              onChange={(e) => setSelectedToAdd(e.target.value)}
+              className={inputCls}
+            >
+              <option value="">{t('persona.addPlaceholder')}</option>
+              {available.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name} ({s.slug}){(s.risks?.length ?? 0) > 0 ? ' ⚠' : ''}
+                </option>
+              ))}
+            </select>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void handleAdd()}
+              disabled={!selectedToAdd || pendingId !== null}
+            >
+              {t('persona.add')}
+            </Button>
+          </div>
+        ) : (
+          <p className="text-xs text-[color:var(--fg-muted)]">{t('persona.noSkillsAvailable')}</p>
+        ))}
+      {lastRisks && lastRisks.length > 0 && (
+        <p className="rounded-md border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 px-2 py-1.5 text-xs text-[color:var(--danger)]">
+          {t('persona.riskWarning', {
+            codes: lastRisks.map((r) => t(`import.risks.code.${r.code}`)).join(', '),
+          })}
+        </p>
+      )}
+      <ErrLine error={error ?? loadError} />
     </div>
   );
 }
@@ -347,59 +522,6 @@ function SubAgentEditor({
         pending={pending || catalog.loading}
         label={t('inspector.save')}
       />
-    </div>
-  );
-}
-
-// ── Skill ────────────────────────────────────────────────────────────────
-function SkillEditor({
-  skill,
-  onSaved,
-}: {
-  skill: SkillNode;
-  onSaved: () => void;
-}): React.ReactElement {
-  const t = useTranslations('admin.builder');
-  const [name, setName] = useState(skill.name);
-  const [body, setBody] = useState(skill.body);
-  const { pending, error, run } = useSaver();
-  const readOnly = skill.source === 'file';
-
-  async function save(): Promise<void> {
-    await run(async () => {
-      await patchSkill(skill.id, { name: name.trim(), body });
-      onSaved();
-    });
-  }
-
-  return (
-    <div className="flex flex-col gap-3">
-      {readOnly && (
-        <p className="rounded-md bg-[color:var(--warning)]/10 px-2 py-1 text-xs text-[color:var(--warning)]">
-          {t('inspector.skillFileReadOnly')}
-        </p>
-      )}
-      <Field label={t('inspector.name')}>
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          disabled={readOnly}
-          className={inputCls}
-        />
-      </Field>
-      <Field label={t('inspector.skillBody')}>
-        <textarea
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-          disabled={readOnly}
-          rows={12}
-          className={`${inputCls} font-mono text-xs`}
-        />
-      </Field>
-      <ErrLine error={error} />
-      {!readOnly && (
-        <SaveButton onClick={() => void save()} pending={pending} label={t('inspector.save')} />
-      )}
     </div>
   );
 }

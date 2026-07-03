@@ -31,6 +31,7 @@ const NAV: readonly NavItem[] = [
   // orchestrator and channel settings, so the old Overview/Channels dropdown
   // collapsed into a single destination.
   { kind: 'link', href: '/operator/agents', key: 'agentsCluster' },
+  { kind: 'link', href: '/operator/skills', key: 'skills' },
   {
     kind: 'cluster',
     key: 'pluginsCluster',

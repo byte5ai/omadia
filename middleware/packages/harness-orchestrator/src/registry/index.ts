@@ -7,6 +7,7 @@ import type {
 import type { ChatSessionStore, SessionConfigSnapshot } from '../chatSessionStore.js';
 
 import type {
+  PersonaSkillRow,
   SkillRow,
   SubAgentRow,
   ToolGrantRow,
@@ -14,6 +15,7 @@ import type {
 import {
   buildForAgent,
   diffSnapshots,
+  personaSkillsFor,
   type DiffAction,
   type DiffPlan,
 } from './applyDiff.js';
@@ -313,6 +315,7 @@ export class OrchestratorRegistry {
           action.agent,
           this.deps,
           this.options.defaultRuntimeConfig,
+          personaSkillsFor(graph.personaSkillsByAgent.get(action.agent.id) ?? []),
         );
         const plugins = pluginsByAgent.get(action.agent.id) ?? [];
         const bindings = bindingsByAgent.get(action.agent.id) ?? [];
@@ -360,6 +363,7 @@ export class OrchestratorRegistry {
           action.agent,
           this.deps,
           this.options.defaultRuntimeConfig,
+          personaSkillsFor(graph.personaSkillsByAgent.get(action.agent.id) ?? []),
         );
         const plugins = pluginsByAgent.get(action.agent.id) ?? [];
         const bindings = bindingsByAgent.get(action.agent.id) ?? [];
@@ -696,18 +700,33 @@ interface GraphIndex {
   readonly subAgentsByAgent: Map<string, SubAgentRow[]>;
   readonly grantsByAgent: Map<string, ToolGrantRow[]>;
   readonly skillsByAgent: Map<string, SkillRow[]>;
+  /** Wave 8 — direct-answer persona skills attached directly to the Agent
+   *  (via `agent_persona_skills`), independent of any sub-agent. */
+  readonly personaSkillsByAgent: Map<string, SkillRow[]>;
 }
 
 function indexGraph(snap: ConfigSnapshot): GraphIndex {
   const subAgents = snap.subAgents ?? [];
   const grants = snap.toolGrants ?? [];
   const skills = snap.skills ?? [];
+  const personaLinks: readonly PersonaSkillRow[] = snap.personaSkillLinks ?? [];
 
   const subAgentsByAgent = groupBy(subAgents, (s) => s.parentAgentId);
   const subParent = new Map<string, string>(
     subAgents.map((s) => [s.id, s.parentAgentId]),
   );
   const skillsById = new Map<string, SkillRow>(skills.map((s) => [s.id, s]));
+
+  const personaLinksByAgent = groupBy(personaLinks, (l) => l.agentId);
+  const personaSkillsByAgent = new Map<string, SkillRow[]>();
+  for (const [agentId, links] of personaLinksByAgent) {
+    const resolved: SkillRow[] = [];
+    for (const l of links) {
+      const sk = skillsById.get(l.skillId);
+      if (sk) resolved.push(sk);
+    }
+    personaSkillsByAgent.set(agentId, resolved);
+  }
 
   const grantsByAgent = new Map<string, ToolGrantRow[]>();
   for (const g of grants) {
@@ -731,7 +750,7 @@ function indexGraph(snap: ConfigSnapshot): GraphIndex {
     skillsByAgent.set(agentId, refSkills);
   }
 
-  return { subAgentsByAgent, grantsByAgent, skillsByAgent };
+  return { subAgentsByAgent, grantsByAgent, skillsByAgent, personaSkillsByAgent };
 }
 
 function groupBy<T, K>(
