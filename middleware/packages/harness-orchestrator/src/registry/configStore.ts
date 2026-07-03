@@ -2,6 +2,7 @@ import type { Pool } from 'pg';
 
 import {
   AgentGraphStore,
+  type PersonaSkillRow,
   type ScheduleRow,
   type SkillRow,
   type SubAgentRow,
@@ -493,6 +494,7 @@ export class ConfigStore {
       schedules,
       skills,
       mcpServers,
+      personaSkillLinks,
     ] = await Promise.all([
       this.listAgents(),
       this.listAllAgentPlugins(),
@@ -503,6 +505,7 @@ export class ConfigStore {
       graph.listAllSchedules(),
       graph.listSkills(),
       graph.listMcpServers(),
+      graph.listAllPersonaSkillLinks(),
     ]);
     return {
       agents,
@@ -514,6 +517,7 @@ export class ConfigStore {
       schedules,
       skills,
       mcpServers,
+      personaSkillLinks,
     };
   }
 }
@@ -529,6 +533,8 @@ export interface ConfigSnapshot {
   readonly toolGrants?: readonly ToolGrantRow[];
   readonly schedules?: readonly ScheduleRow[];
   readonly skills?: readonly SkillRow[];
+  /** Wave 8 — Agent → direct-answer persona-skill links. */
+  readonly personaSkillLinks?: readonly PersonaSkillRow[];
   readonly mcpServers?: readonly McpServerRow[];
 }
 

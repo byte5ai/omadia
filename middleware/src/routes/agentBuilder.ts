@@ -21,6 +21,7 @@ import {
   type McpServerConfig,
   type McpServerRow,
   type OrchestratorRegistry,
+  type PersonaSkillRow,
   type ScheduleRow,
   type SkillRow,
   type SubAgentRow,
@@ -29,6 +30,7 @@ import {
 import { McpManager } from '@omadia/orchestrator';
 import { Router, type Request, type Response } from 'express';
 
+import { scanSkillForRisks } from '../services/skillGuard.js';
 import { importSkillMarkdown } from '../services/skillImport.js';
 import { serializeSkillMarkdown } from '../services/skillLoader.js';
 
@@ -80,7 +82,7 @@ export function createAgentBuilderRouter(
     try {
       const agent = await agentOr404(l, str(req.params.slug), res);
       if (!agent) return;
-      const [bindings, subAgents, skills, grants, servers, schedules] =
+      const [bindings, subAgents, skills, grants, servers, schedules, personaSkillLinks] =
         await Promise.all([
           l.config.listChannelBindingsForAgent(agent.id),
           l.graph.listAllSubAgents(),
@@ -88,9 +90,19 @@ export function createAgentBuilderRouter(
           l.graph.listAllToolGrants(),
           l.graph.listMcpServers(),
           l.graph.listSchedulesForAgent(agent.id),
+          l.graph.listPersonaSkills(agent.id),
         ]);
       res.json(
-        assembleGraph(agent, bindings, subAgents, skills, grants, servers, schedules),
+        assembleGraph(
+          agent,
+          bindings,
+          subAgents,
+          skills,
+          grants,
+          servers,
+          schedules,
+          personaSkillLinks,
+        ),
       );
     } catch (err) {
       fail(res, err);
@@ -203,6 +215,66 @@ export function createAgentBuilderRouter(
     },
   );
 
+  // ── persona skills (Wave 8 — direct-answer identity candidates) ─────────
+  // Attached straight to the Agent, no sub-agent in between: the per-turn
+  // classifier (`routeTurnPersona`) picks at most one to answer as. Current
+  // links + names come back on `/agents/:slug/graph` (`agent.personaSkillIds`
+  // + `skills`) — no separate GET here to avoid a second source of truth.
+  router.post(
+    '/agents/:slug/persona-skills',
+    async (req: Request, res: Response) => {
+      const l = live(res);
+      if (!l) return;
+      try {
+        const agent = await agentOr404(l, str(req.params.slug), res);
+        if (!agent) return;
+        const skillId = str((req.body ?? {}).skillId);
+        if (!isUuid(skillId)) {
+          res.status(400).json({ error: 'invalid_skill_id' });
+          return;
+        }
+        const skill = await l.graph.getSkill(skillId);
+        if (!skill) {
+          res.status(400).json({ error: 'skill_not_found', skillId });
+          return;
+        }
+        // A persona skill drives the TOP-LEVEL orchestrator with its full
+        // tool access — a bigger blast radius than a scoped sub-agent skill
+        // grant. Re-scan at attach time (not just import time), same
+        // warn-only guard as Wave 5; the UI surfaces `risks` before the
+        // operator confirms, but the attach itself is never blocked.
+        const risks = scanSkillForRisks(skill.frontmatter, skill.body);
+        const link = await l.graph.addPersonaSkill(agent.id, skillId);
+        await reload(l);
+        res.json({
+          agentId: link.agentId,
+          skillId: link.skillId,
+          position: link.position,
+          risks,
+        });
+      } catch (err) {
+        fail(res, err);
+      }
+    },
+  );
+
+  router.delete(
+    '/agents/:slug/persona-skills/:skillId',
+    async (req: Request, res: Response) => {
+      const l = live(res);
+      if (!l) return;
+      try {
+        const agent = await agentOr404(l, str(req.params.slug), res);
+        if (!agent) return;
+        await l.graph.removePersonaSkill(agent.id, str(req.params.skillId));
+        await reload(l);
+        res.status(204).end();
+      } catch (err) {
+        fail(res, err);
+      }
+    },
+  );
+
   router.patch('/agents/:slug/positions', async (req: Request, res: Response) => {
     const l = live(res);
     if (!l) return;
@@ -228,7 +300,14 @@ export function createAgentBuilderRouter(
     const l = live(res);
     if (!l) return;
     try {
-      const skills = (await l.graph.listSkills()).map(skillNode);
+      // `risks` (Wave 5 heuristic scan, cheap/regex — no LLM call) rides on
+      // the bulk list so any skill-browsing surface (Registry, the Wave 8
+      // persona-attach picker) shows CURRENT risk state, not just a
+      // point-in-time snapshot from import/attach time.
+      const skills = (await l.graph.listSkills()).map((s) => ({
+        ...skillNode(s),
+        risks: scanSkillForRisks(s.frontmatter, s.body),
+      }));
       res.json({ skills });
     } catch (err) {
       fail(res, err);
@@ -252,8 +331,15 @@ export function createAgentBuilderRouter(
         res.status(404).json({ error: 'skill_not_found', id });
         return;
       }
-      const usedBy = await l.graph.listSubAgentsBySkillId(skill.id);
-      res.json({ ...skillNode(skill), usedByCount: usedBy.length });
+      const [usedBy, usedByAgents] = await Promise.all([
+        l.graph.listSubAgentsBySkillId(skill.id),
+        l.graph.listAgentsByPersonaSkillId(skill.id),
+      ]);
+      res.json({
+        ...skillNode(skill),
+        usedByCount: usedBy.length,
+        usedByAgentsCount: usedByAgents.length,
+      });
     } catch (err) {
       fail(res, err);
     }
@@ -641,8 +727,12 @@ function assembleGraph(
   grants: readonly ToolGrantRow[],
   servers: readonly McpServerRow[],
   schedules: readonly ScheduleRow[],
+  personaSkillLinks: readonly PersonaSkillRow[] = [],
 ) {
   const mySubs = subAgents.filter((s) => s.parentAgentId === agent.id);
+  const myPersonaLinks = personaSkillLinks.filter(
+    (l) => l.agentId === agent.id,
+  );
   const subIds = new Set(mySubs.map((s) => s.id));
   const myGrants = grants.filter(
     (g) =>
@@ -691,9 +781,19 @@ function assembleGraph(
       target: `agent:${agent.id}`,
     });
   }
+  // Wave 8 — direct-answer persona skills, attached straight to the Agent
+  // (no sub-agent in between).
+  for (const l of myPersonaLinks) {
+    edges.push({
+      id: `persona_skill:${agent.id}:${l.skillId}`,
+      kind: 'persona_skill',
+      source: `agent:${agent.id}`,
+      target: `skill:${l.skillId}`,
+    });
+  }
 
   return {
-    agent: agentNode(agent),
+    agent: { ...agentNode(agent), personaSkillIds: myPersonaLinks.map((l) => l.skillId) },
     channels: bindings.map((b) => ({
       channelType: b.channelType,
       channelKey: b.channelKey,

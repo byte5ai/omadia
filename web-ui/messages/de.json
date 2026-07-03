@@ -295,6 +295,16 @@
         "endpoint": "Endpoint",
         "cron": "Cron",
         "timezone": "Zeitzone"
+      },
+      "persona": {
+        "title": "Direkt-Antwort-Personas",
+        "hintEmpty": "Keine Persona-Skills angehängt — dieser Agent antwortet mit der generischen Standard-Identität.",
+        "hintSome": "Der Agent wählt pro Turn eine dieser Personas, um direkt zu antworten — oder die Standard-Identität, falls keine eindeutig passt. Kein Sub-Agent-Umweg.",
+        "addPlaceholder": "Skill zum Anhängen wählen…",
+        "add": "Anhängen",
+        "remove": "Entfernen",
+        "noSkillsAvailable": "Keine weiteren Skills zum Anhängen verfügbar.",
+        "riskWarning": "Heuristischer Scan hat diesen Skill markiert: {codes}. Als Persona steuert er den Top-Level-Agent mit vollem Tool-Zugriff — vor Verwendung prüfen."
       }
     }
   },
@@ -725,6 +735,12 @@
     "subCallCount": "{count, plural, one {# Sub-Call} other {# Sub-Calls}}",
     "inputLabel": "input",
     "outputLabel": "output",
+    "persona": {
+      "title": "Persona",
+      "matched": "Antwortet als {name}",
+      "none": "Standard-Identität",
+      "fallback": "Persona-Klassifikator nicht verfügbar — Standard-Identität"
+    },
     "subAgentTrace": "sub-agent trace",
     "iterationLabel": "── iteration {n}",
     "attachmentTitle": "{kind}{cachedSuffix} — klick für Originalgröße",
@@ -919,6 +935,7 @@
     "confirmDeleteAction": "Trotzdem löschen",
     "cancel": "Abbrechen",
     "usedBy": "Verwendet von {count} Agenten",
+    "usedByPersona": "Außerdem Direkt-Antwort-Persona für {count} Agenten",
     "resources": "{count} gebündelte Ressourcen",
     "source": {
       "db": "erstellt",

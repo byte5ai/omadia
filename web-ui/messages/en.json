@@ -295,6 +295,16 @@
         "endpoint": "Endpoint",
         "cron": "Cron",
         "timezone": "Timezone"
+      },
+      "persona": {
+        "title": "Direct-answer personas",
+        "hintEmpty": "No persona skills attached — this Agent answers with the generic default identity.",
+        "hintSome": "The Agent picks one of these per turn to answer as directly, or the default identity if none clearly fit — no sub-agent hop.",
+        "addPlaceholder": "Choose a skill to attach…",
+        "add": "Attach",
+        "remove": "Remove",
+        "noSkillsAvailable": "No more skills available to attach.",
+        "riskWarning": "Heuristic scan flagged this skill: {codes}. As a persona it drives the top-level agent with full tool access — review before relying on it."
       }
     }
   },
@@ -725,6 +735,12 @@
     "subCallCount": "{count, plural, one {# sub-call} other {# sub-calls}}",
     "inputLabel": "input",
     "outputLabel": "output",
+    "persona": {
+      "title": "Persona",
+      "matched": "Answering as {name}",
+      "none": "Default identity",
+      "fallback": "Persona classifier unavailable — default identity"
+    },
     "subAgentTrace": "sub-agent trace",
     "iterationLabel": "── iteration {n}",
     "attachmentTitle": "{kind}{cachedSuffix} — click for full size",
@@ -919,6 +935,7 @@
     "confirmDeleteAction": "Delete anyway",
     "cancel": "Cancel",
     "usedBy": "Used by {count} agents",
+    "usedByPersona": "Also the direct-answer persona for {count} agents",
     "resources": "{count} bundled resources",
     "source": {
       "db": "authored",

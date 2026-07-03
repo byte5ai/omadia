@@ -4,8 +4,10 @@ import {
   type BuiltOrchestrator,
   type OrchestratorDeps,
 } from '../buildOrchestrator.js';
+import type { OrchestratorPersonaSkill } from '../orchestrator.js';
 
 import type {
+  PersonaSkillRow,
   SkillRow,
   SubAgentRow,
   ToolGrantRow,
@@ -155,6 +157,10 @@ export function buildForAgent(
   agent: AgentRow,
   deps: OrchestratorDeps,
   runtime: Omit<AgentRuntimeConfig, 'agentId'>,
+  /** Wave 8 — this agent's resolved direct-answer persona skills (caller
+   *  resolves from `GraphIndex.personaSkillsByAgent`; per-agent, so passed
+   *  separately from the shared `runtime`/`deps`). */
+  personaSkills?: readonly OrchestratorPersonaSkill[],
 ): BuiltOrchestrator {
   // Agent Builder P5 — overlay the agent's persisted model_routing onto the
   // platform default: `main` overrides the model, `triage` mode adds per-turn
@@ -182,9 +188,26 @@ export function buildForAgent(
       ...(runtime.maxTurnSeconds !== undefined
         ? { maxTurnSeconds: runtime.maxTurnSeconds }
         : {}),
+      ...(personaSkills?.length ? { personaSkills } : {}),
     },
     deps,
   );
+}
+
+/** Wave 8 — maps this agent's persona-skill rows into the cheap+full shape
+ *  the Orchestrator's per-turn classifier needs. Co-located with
+ *  {@link graphSignature} since both derive agent-scoped data from the same
+ *  `skills` + `personaSkillLinks` snapshot slices. */
+export function personaSkillsFor(
+  skills: readonly SkillRow[],
+): OrchestratorPersonaSkill[] {
+  return skills.map((s) => ({
+    skillId: s.id,
+    slug: s.slug,
+    name: s.name,
+    description: s.description ?? '',
+    body: s.body,
+  }));
 }
 
 function runtimeChangeReasons(oldAgent: AgentRow, newAgent: AgentRow): string[] {
@@ -228,8 +251,9 @@ function graphChangeReasons(
 /**
  * Deterministic fingerprint of an agent's graph wiring within one snapshot:
  * its sub-agents, the tool grants targeting the agent or those sub-agents,
- * and the bodies of any skills those sub-agents reference. Order-independent
- * (everything is sorted) so it captures semantic, not row-order, change.
+ * its Wave 8 direct-answer persona-skill links, and the bodies of any skills
+ * referenced either way. Order-independent (everything is sorted) so it
+ * captures semantic, not row-order, change.
  */
 function graphSignature(
   agentId: string,
@@ -239,9 +263,13 @@ function graphSignature(
     (s) => s.parentAgentId === agentId,
   );
   const subAgentIds = new Set(subAgents.map((s) => s.id));
-  const skillIds = new Set(
-    subAgents.map((s) => s.skillId).filter((id): id is string => !!id),
-  );
+  const personaLinks: readonly PersonaSkillRow[] = (
+    snap?.personaSkillLinks ?? []
+  ).filter((l) => l.agentId === agentId);
+  const skillIds = new Set([
+    ...subAgents.map((s) => s.skillId).filter((id): id is string => !!id),
+    ...personaLinks.map((l) => l.skillId),
+  ]);
 
   const grants: readonly ToolGrantRow[] = (snap?.toolGrants ?? []).filter(
     (g) =>
@@ -274,8 +302,13 @@ function graphSignature(
       (sk) => `${sk.id}|${sk.name}|${sk.body}|${JSON.stringify(sk.frontmatter)}`,
     )
     .sort();
+  // Catches add/remove/reorder even when the skill body itself is unchanged
+  // (skillPart alone wouldn't see a link that disappeared).
+  const personaPart = personaLinks
+    .map((l) => `${l.agentId}|${l.skillId}|${l.position}`)
+    .sort();
 
-  return JSON.stringify({ subPart, grantPart, skillPart });
+  return JSON.stringify({ subPart, grantPart, skillPart, personaPart });
 }
 
 function equalPlugins(

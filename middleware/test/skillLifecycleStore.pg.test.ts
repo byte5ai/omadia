@@ -231,4 +231,73 @@ describe('AgentGraphStore skill lifecycle (pg)', { skip: !pgAvailable }, () => {
     await store.deleteSkill(s.id);
     assert.deepEqual(await store.listSkillResources(s.id), []);
   });
+
+  // ── Wave 8 — direct-answer persona skills ─────────────────────────────────
+
+  async function makeAgent(slug: string): Promise<string> {
+    const { rows } = await pool.query<{ id: string }>(
+      'INSERT INTO agents (slug, name) VALUES ($1,$2) RETURNING id',
+      [slug, slug],
+    );
+    return rows[0]!.id;
+  }
+
+  it('addPersonaSkill attaches a skill, is idempotent, listPersonaSkills returns it', async () => {
+    const agentId = await makeAgent(`${SLUG_PREFIX}persona-agent-a`);
+    const s = await store.upsertSkill({ slug: `${SLUG_PREFIX}persona-a`, name: 'PA', body: 'x' });
+
+    const first = await store.addPersonaSkill(agentId, s.id);
+    assert.equal(first.agentId, agentId);
+    assert.equal(first.skillId, s.id);
+
+    // Idempotent: re-attaching the same link returns the existing row, no dup.
+    const again = await store.addPersonaSkill(agentId, s.id);
+    assert.equal(again.position, first.position);
+
+    const list = await store.listPersonaSkills(agentId);
+    assert.equal(list.length, 1);
+    assert.equal(list[0]?.skillId, s.id);
+  });
+
+  it('removePersonaSkill detaches without affecting other agents', async () => {
+    const agentA = await makeAgent(`${SLUG_PREFIX}persona-agent-b1`);
+    const agentB = await makeAgent(`${SLUG_PREFIX}persona-agent-b2`);
+    const s = await store.upsertSkill({ slug: `${SLUG_PREFIX}persona-b`, name: 'PB', body: 'x' });
+
+    await store.addPersonaSkill(agentA, s.id);
+    await store.addPersonaSkill(agentB, s.id);
+    await store.removePersonaSkill(agentA, s.id);
+
+    assert.deepEqual(await store.listPersonaSkills(agentA), []);
+    assert.equal((await store.listPersonaSkills(agentB)).length, 1);
+  });
+
+  it('listAgentsByPersonaSkillId reflects attach/detach', async () => {
+    const agentId = await makeAgent(`${SLUG_PREFIX}persona-agent-c`);
+    const s = await store.upsertSkill({ slug: `${SLUG_PREFIX}persona-c`, name: 'PC', body: 'x' });
+
+    assert.deepEqual(await store.listAgentsByPersonaSkillId(s.id), []);
+    await store.addPersonaSkill(agentId, s.id);
+    assert.deepEqual(await store.listAgentsByPersonaSkillId(s.id), [agentId]);
+    await store.removePersonaSkill(agentId, s.id);
+    assert.deepEqual(await store.listAgentsByPersonaSkillId(s.id), []);
+  });
+
+  it('deleting a skill cascades: the persona link disappears', async () => {
+    const agentId = await makeAgent(`${SLUG_PREFIX}persona-agent-d`);
+    const s = await store.upsertSkill({ slug: `${SLUG_PREFIX}persona-d`, name: 'PD', body: 'x' });
+    await store.addPersonaSkill(agentId, s.id);
+
+    await store.deleteSkill(s.id);
+    assert.deepEqual(await store.listPersonaSkills(agentId), []);
+  });
+
+  it('deleting an agent cascades: the persona link disappears', async () => {
+    const agentId = await makeAgent(`${SLUG_PREFIX}persona-agent-e`);
+    const s = await store.upsertSkill({ slug: `${SLUG_PREFIX}persona-e`, name: 'PE', body: 'x' });
+    await store.addPersonaSkill(agentId, s.id);
+
+    await pool.query('DELETE FROM agents WHERE id = $1', [agentId]);
+    assert.deepEqual(await store.listAgentsByPersonaSkillId(s.id), []);
+  });
 });

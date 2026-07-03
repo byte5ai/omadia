@@ -99,6 +99,8 @@ export interface AgentNode {
   status: NodeStatus;
   modelRouting: ModelRoutingConfig | null;
   position: CanvasPosition | null;
+  /** Wave 8 — direct-answer persona-skill ids attached to this Agent. */
+  personaSkillIds?: string[];
 }
 
 export interface ChannelNode {
@@ -131,6 +133,10 @@ export interface SkillNode {
   sourcePath?: string | null;
   contentHash?: string | null;
   forkedFrom?: string | null;
+  /** Wave 5 heuristic scan, current as of the last `GET /skills` list load
+   *  (only populated on the bulk-list endpoint, not on individual skill
+   *  reads/writes). */
+  risks?: SkillRisk[];
 }
 
 export type ToolKind = 'native' | 'mcp';
@@ -177,7 +183,8 @@ export type EdgeKind =
   | 'subagent'
   | 'skill'
   | 'tool_grant'
-  | 'schedule';
+  | 'schedule'
+  | 'persona_skill';
 
 export interface CanvasEdge {
   id: string;
@@ -300,6 +307,38 @@ export async function patchModelRouting(
   );
 }
 
+// -----------------------------------------------------------------------------
+// Wave 8 — direct-answer persona skills
+// -----------------------------------------------------------------------------
+
+export interface PersonaSkillLink {
+  agentId: string;
+  skillId: string;
+  position: number;
+  /** Wave 5 guard, re-run at attach time — warn-only, never blocks. */
+  risks: SkillRisk[];
+}
+
+export async function addPersonaSkill(
+  slug: string,
+  skillId: string,
+): Promise<PersonaSkillLink> {
+  return callJson<PersonaSkillLink>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/persona-skills`,
+    { method: 'POST', body: JSON.stringify({ skillId }) },
+  );
+}
+
+export async function removePersonaSkill(
+  slug: string,
+  skillId: string,
+): Promise<void> {
+  await callJson<void>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/persona-skills/${encodeURIComponent(skillId)}`,
+    { method: 'DELETE' },
+  );
+}
+
 export interface PositionsPatchInput {
   agent?: CanvasPosition;
   subAgents?: Array<{ id: string; position: CanvasPosition }>;
@@ -366,6 +405,8 @@ export async function deleteSkill(id: string): Promise<void> {
 
 export interface SkillDetail extends SkillNode {
   usedByCount: number;
+  /** Wave 8 — Agents that carry this skill as a direct-answer persona. */
+  usedByAgentsCount: number;
 }
 
 export async function getSkill(id: string): Promise<SkillDetail> {

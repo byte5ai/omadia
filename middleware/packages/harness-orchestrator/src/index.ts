@@ -31,6 +31,14 @@ export type {
   RoutingBucket,
 } from './modelRouter.js';
 
+// Wave 8 — per-turn direct-answer persona routing (twin of modelRouter).
+export { routeTurnPersona } from './personaRouter.js';
+export type {
+  PersonaCandidate,
+  PersonaRouteResult,
+  PersonaRoutingBucket,
+} from './personaRouter.js';
+
 // Multi-orchestrator registry (US4) — read by US7 channel routing and US9 UI.
 export {
   OrchestratorRegistry,
@@ -93,6 +101,7 @@ export type {
   CanvasPos,
   McpServerInput,
   McpServerRow,
+  PersonaSkillRow,
   ScheduleInput,
   ScheduleRow,
   SkillInput,

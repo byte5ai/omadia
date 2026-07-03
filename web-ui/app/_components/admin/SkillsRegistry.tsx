@@ -158,6 +158,11 @@ export function SkillsRegistry({
                     {t('usedBy', { count: detail.usedByCount })}
                   </div>
                 )}
+                {detail && detail.usedByAgentsCount > 0 && (
+                  <div className="text-xs text-[color:var(--fg-muted)]">
+                    {t('usedByPersona', { count: detail.usedByAgentsCount })}
+                  </div>
+                )}
                 {resources.length > 0 && (
                   <div className="text-xs text-[color:var(--fg-muted)]">
                     {t('resources', { count: resources.length })}: {resources.map((r) => r.name).join(', ')}
@@ -167,7 +172,9 @@ export function SkillsRegistry({
               <button
                 type="button"
                 onClick={() => {
-                  if ((detail?.usedByCount ?? 0) > 0) setConfirmingDelete(true);
+                  const totalUsedBy =
+                    (detail?.usedByCount ?? 0) + (detail?.usedByAgentsCount ?? 0);
+                  if (totalUsedBy > 0) setConfirmingDelete(true);
                   else void onDelete(selected.id);
                 }}
                 className="shrink-0 rounded-md border border-[color:var(--danger-edge)] px-3 py-1.5 text-sm text-[color:var(--danger)]"
@@ -177,7 +184,11 @@ export function SkillsRegistry({
             </div>
             {confirmingDelete && (
               <div className="flex items-center justify-between gap-2 rounded-md border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 px-3 py-2 text-xs text-[color:var(--danger)]">
-                <span>{t('confirmDelete', { count: detail?.usedByCount ?? 0 })}</span>
+                <span>
+                  {t('confirmDelete', {
+                    count: (detail?.usedByCount ?? 0) + (detail?.usedByAgentsCount ?? 0),
+                  })}
+                </span>
                 <span className="flex shrink-0 gap-2">
                   <button
                     type="button"

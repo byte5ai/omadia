@@ -762,6 +762,7 @@ function MessageRow({
         ) : (
           <>
             {message.routing && <TriageBadge routing={message.routing} />}
+            {message.persona && <PersonaBadge persona={message.persona} />}
             {message.recalledContext && (
               <RecalledContextCard recalled={message.recalledContext} />
             )}
@@ -1040,6 +1041,50 @@ function TriageBadge({
       <span className="text-[color:var(--fg-subtle)]">→</span>
       <span className="rounded bg-current/10 px-2 py-0.5 font-medium">
         {shortModelName(routing.model)}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Wave 8 — inline persona chip — rendered at the top of an assistant turn as
+ * soon as the direct-answer persona classifier resolves (the `turn_persona`
+ * event). Shows which persona skill answered this turn, or that the Agent
+ * kept its default identity.
+ */
+function PersonaBadge({
+  persona,
+}: {
+  persona: {
+    bucket: 'matched' | 'none' | 'fallback';
+    classifierModel: string;
+    skillId: string | null;
+    skillName: string | null;
+  };
+}): React.ReactElement {
+  const t = useTranslations('chat');
+  const isMatched = persona.bucket === 'matched' && persona.skillName;
+  const isFallback = persona.bucket === 'fallback';
+  const cls = isMatched
+    ? 'bg-[color:var(--accent)]/10 text-[color:var(--accent)] ring-[color:var(--accent)]'
+    : isFallback
+      ? 'bg-[color:var(--warning)]/10 text-[color:var(--warning)] ring-[color:var(--warning)]'
+      : 'bg-[color:var(--fg-subtle)]/10 text-[color:var(--fg-subtle)] ring-[color:var(--fg-subtle)]';
+  const label = isMatched
+    ? t('persona.matched', { name: persona.skillName ?? '' })
+    : isFallback
+      ? t('persona.fallback')
+      : t('persona.none');
+  return (
+    <div
+      className="mb-2 inline-flex flex-wrap items-center gap-2 text-[11px] text-[color:var(--fg-muted)]"
+      title={`${t('persona.title')}: ${shortModelName(persona.classifierModel)} → ${persona.bucket}`}
+    >
+      <span className="font-medium uppercase tracking-[0.12em]">{t('persona.title')}</span>
+      <span
+        className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ring-1 ${cls}`}
+      >
+        {label}
       </span>
     </div>
   );

@@ -64,6 +64,20 @@ export interface SkillResourceRow {
   readonly createdAt: Date;
 }
 
+/**
+ * Wave 8 — a skill attached to an Agent as a "direct-answer" persona
+ * candidate: the top-level orchestrator (not a sub-agent) may adopt this
+ * skill's body as its own system prompt for a turn, chosen by the per-turn
+ * persona classifier. Distinct from `SubAgentRow.skillId`, which backs a
+ * delegated specialist reached via tool-call, not the primary chat identity.
+ */
+export interface PersonaSkillRow {
+  readonly agentId: string;
+  readonly skillId: string;
+  readonly position: number;
+  readonly createdAt: Date;
+}
+
 /** A bundled resource to attach to a skill (name + text content). */
 export interface SkillResourceInput {
   readonly name: string;
@@ -216,6 +230,13 @@ interface SkillResourceDbRow {
   created_at: Date;
 }
 
+interface PersonaSkillDbRow {
+  agent_id: string;
+  skill_id: string;
+  position: number;
+  created_at: Date;
+}
+
 interface McpServerDbRow {
   id: string;
   name: string;
@@ -294,6 +315,15 @@ function mapSkillResource(r: SkillResourceDbRow): SkillResourceRow {
     skillId: r.skill_id,
     name: r.name,
     content: r.content,
+    createdAt: r.created_at,
+  };
+}
+
+function mapPersonaSkill(r: PersonaSkillDbRow): PersonaSkillRow {
+  return {
+    agentId: r.agent_id,
+    skillId: r.skill_id,
+    position: r.position,
     createdAt: r.created_at,
   };
 }
@@ -747,6 +777,79 @@ export class AgentGraphStore {
     } finally {
       client.release();
     }
+  }
+
+  // ── agent_persona_skills (Wave 8) ────────────────────────────────────────────
+  /** Full cross-agent link set, for `ConfigStore.loadSnapshot`. */
+  async listAllPersonaSkillLinks(): Promise<readonly PersonaSkillRow[]> {
+    const { rows } = await this.pool.query<PersonaSkillDbRow>(
+      'SELECT * FROM agent_persona_skills ORDER BY agent_id, position, created_at',
+    );
+    return rows.map(mapPersonaSkill);
+  }
+
+  async listPersonaSkills(agentId: string): Promise<readonly PersonaSkillRow[]> {
+    const { rows } = await this.pool.query<PersonaSkillDbRow>(
+      'SELECT * FROM agent_persona_skills WHERE agent_id = $1 ORDER BY position, created_at',
+      [agentId],
+    );
+    return rows.map(mapPersonaSkill);
+  }
+
+  /**
+   * Attach a skill as a persona candidate. Idempotent: attaching an
+   * already-linked skill returns the existing link unchanged rather than
+   * erroring or bumping its position. Trusts the caller to have validated
+   * `agentId`/`skillId` exist (route-layer boundary check, mirrors the
+   * frontmatter guard on `POST /skills`) — an invalid id surfaces as a raw FK
+   * violation here, same precedent as `createSubAgent`'s `skill_id`.
+   */
+  async addPersonaSkill(
+    agentId: string,
+    skillId: string,
+    position?: number,
+  ): Promise<PersonaSkillRow> {
+    const { rows } = await this.pool.query<PersonaSkillDbRow>(
+      `INSERT INTO agent_persona_skills (agent_id, skill_id, position)
+       VALUES ($1,$2,COALESCE($3,0))
+       ON CONFLICT (agent_id, skill_id) DO NOTHING
+       RETURNING *`,
+      [agentId, skillId, position ?? null],
+    );
+    if (rows[0]) return mapPersonaSkill(rows[0]);
+    const { rows: existing } = await this.pool.query<PersonaSkillDbRow>(
+      'SELECT * FROM agent_persona_skills WHERE agent_id = $1 AND skill_id = $2',
+      [agentId, skillId],
+    );
+    const row = existing[0];
+    if (!row) {
+      throw new Error(
+        `addPersonaSkill: link vanished for agent ${agentId} skill ${skillId}`,
+      );
+    }
+    return mapPersonaSkill(row);
+  }
+
+  async removePersonaSkill(agentId: string, skillId: string): Promise<void> {
+    await this.pool.query(
+      'DELETE FROM agent_persona_skills WHERE agent_id = $1 AND skill_id = $2',
+      [agentId, skillId],
+    );
+  }
+
+  /**
+   * Agents that carry a given skill as a persona candidate — the reverse of
+   * the link, mirrors `listSubAgentsBySkillId`. Powers the Skill Registry's
+   * "used by" count and the fork/delete guard (a skill that drives an
+   * orchestrator's own identity is not "unused" just because no sub-agent
+   * references it).
+   */
+  async listAgentsByPersonaSkillId(skillId: string): Promise<readonly string[]> {
+    const { rows } = await this.pool.query<{ agent_id: string }>(
+      'SELECT agent_id FROM agent_persona_skills WHERE skill_id = $1 ORDER BY agent_id',
+      [skillId],
+    );
+    return rows.map((r) => r.agent_id);
   }
 
   // ── mcp_servers ─────────────────────────────────────────────────────────────
