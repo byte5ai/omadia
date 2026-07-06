@@ -20,6 +20,7 @@ import type { LocalSubAgentTool } from '@omadia/plugin-api';
 import {
   buildSubAgentDomainTools,
   mcpNativeHandler,
+  mcpToolNameFromRef,
   mcpToolToNativeSpec,
   type DomainTool,
   type DomainToolSpec,
@@ -58,6 +59,9 @@ export interface HydrateDeps {
   readonly defaultMaxIterations?: number;
   readonly hostIsCliProvider?: boolean;
   readonly cliModelAlias?: (model: string) => string;
+  /** Scan-verdict policy gate (issue #454) — see `mcpGrantPolicy.ts`. Applied
+   *  to both the sub-agent grant path and the top-level DomainTool pass. */
+  readonly blockedMcpGrant?: (serverId: string, toolName: string) => boolean;
   readonly log?: (msg: string) => void;
 }
 
@@ -175,6 +179,7 @@ export function registerDbSubAgentTools(
           mcpManager: deps.mcpManager,
           mcpServersById,
           nativeTool: (ref) => adaptNativeToolForSubAgent(deps.nativeToolRegistry, ref),
+          ...(deps.blockedMcpGrant ? { blockedMcpGrant: deps.blockedMcpGrant } : {}),
           ...(deps.hostIsCliProvider !== undefined
             ? { hostIsCliProvider: deps.hostIsCliProvider }
             : {}),
@@ -200,9 +205,16 @@ export function registerDbSubAgentTools(
       );
       continue;
     }
+    const toolName = mcpToolNameFromRef(g.toolRef, cfg.name);
+    if (deps.blockedMcpGrant?.(g.mcpServerId, toolName)) {
+      deps.log?.(
+        `subAgentToolHydration: top-level mcp tool "${toolName}" on "${cfg.name}" blocked by scan-verdict policy — skipped`,
+      );
+      continue;
+    }
     const row = deps.mcpServers.find((r) => r.id === g.mcpServerId);
     tools.push(
-      mcpGrantToDomainTool(deps.mcpManager, cfg, discoveredDescriptor(row, g.toolRef)),
+      mcpGrantToDomainTool(deps.mcpManager, cfg, discoveredDescriptor(row, toolName)),
     );
   }
 

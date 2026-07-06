@@ -61,6 +61,11 @@ export interface SubAgentToolDeps {
   readonly mcpManager?: McpManager;
   /** Resolves a native tool name → a sub-agent-callable tool, if available. */
   readonly nativeTool?: (toolRef: string) => LocalSubAgentTool | undefined;
+  /** Scan-verdict policy gate (epic #459 W1, issue #454): when it returns
+   *  true for (serverId, toolName), the grant is NOT materialized into a
+   *  callable tool — a high_risk/scan_failed verdict without a valid ack
+   *  must not stay callable just because the grant predates the verdict. */
+  readonly blockedMcpGrant?: (serverId: string, toolName: string) => boolean;
   readonly log?: (msg: string) => void;
 }
 
@@ -194,6 +199,12 @@ function resolveSubAgentTools(
       continue;
     }
     const toolName = mcpToolNameFromRef(g.toolRef, cfg.name);
+    if (deps.blockedMcpGrant?.(g.mcpServerId, toolName)) {
+      deps.log?.(
+        `sub-agent tool: mcp tool "${toolName}" on "${cfg.name}" blocked by scan-verdict policy — skipped`,
+      );
+      continue;
+    }
     out.push(
       mcpToolToLocalSubAgentTool(deps.mcpManager, cfg, { name: toolName }),
     );

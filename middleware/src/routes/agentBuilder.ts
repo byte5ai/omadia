@@ -27,9 +27,13 @@ import {
   type SubAgentRow,
   type ToolGrantRow,
 } from '@omadia/orchestrator';
-import { McpManager } from '@omadia/orchestrator';
+import { McpManager, mcpToolNameFromRef } from '@omadia/orchestrator';
 import { Router, type Request, type Response } from 'express';
 
+import {
+  MCP_SEVERITIES_NEEDING_ACK,
+  refreshMcpGrantPolicy,
+} from '../services/mcpGrantPolicy.js';
 import { scanDiscoveredTools } from '../services/mcpToolGuard.js';
 import { scanSkillForRisks } from '../services/skillGuard.js';
 import { importSkillMarkdown } from '../services/skillImport.js';
@@ -841,6 +845,11 @@ export function createAgentBuilderRouter(
         await l.graph.upsertMcpToolVerdict(verdict);
       }
       await l.graph.setMcpDiscoveredTools(row.id, tools);
+      // Re-discovery can change verdicts (and thus the runtime blocklist) and
+      // tool specs — refresh the policy and rebuild agents so live orchestrators
+      // drop newly-risky tools instead of serving them until the next reload.
+      await refreshMcpGrantPolicy(l.graph);
+      await reload(l);
       const updated = (await l.graph.listMcpServers()).find((s) => s.id === row.id);
       const [decorated] = await withToolVerdicts(l, [updated ?? row]);
       res.json(mcpNode(decorated ?? updated ?? row));
@@ -880,6 +889,10 @@ export function createAgentBuilderRouter(
           verdict.contentHash,
           actor,
         );
+        // An ack unblocks the (server, tool) pair for hydration — refresh the
+        // policy and rebuild so the tool becomes callable without a restart.
+        await refreshMcpGrantPolicy(l.graph);
+        await reload(l);
         res.json({
           serverId: id,
           toolName,
@@ -981,25 +994,42 @@ async function createEdge(
       if (!toolRef) {
         throw new ConfigValidationError('tool_grant requires a toolRef');
       }
-      // Grant gate (issue #454): a high_risk MCP tool needs an explicit,
-      // content-hash-matching operator ack before it can be granted. Enforced
-      // server-side, not just in the Builder UI dialog — unlike the skill-side
-      // attach gate, which is client-only (documented platform gap).
-      if (toolKind === 'mcp' && mcpServerId) {
+      // Grant gate (issue #454, fail-closed after codex review): an MCP tool
+      // is grantable only when a CURRENT verdict row exists — an unknown
+      // toolRef or a server discovered before the scan gate shipped must be
+      // (re-)discovered first, otherwise "never scanned" would be a bypass.
+      // high_risk/scan_failed/too_large_to_scan additionally need a
+      // content-hash-matching operator ack. Enforced server-side, not just in
+      // the Builder UI dialog — unlike the skill-side attach gate, which is
+      // client-only (documented platform gap).
+      if (toolKind === 'mcp') {
+        if (!mcpServerId) {
+          throw new ConfigValidationError('mcp tool_grant requires an mcpServerId');
+        }
+        const server = (await l.graph.listMcpServers()).find((s) => s.id === mcpServerId);
+        if (!server) {
+          throw new ConfigValidationError(`mcp server ${mcpServerId} not found`);
+        }
+        const toolName = mcpToolNameFromRef(toolRef, server.name);
         const verdict = await l.graph.getMcpToolVerdict(
           mcpServerId,
-          toolRef,
+          toolName,
           CURRENT_VERIFIER_VERSION,
         );
-        if (verdict && verdict.severity === 'high_risk') {
+        if (!verdict) {
+          throw new ConfigValidationError(
+            `mcp_tool_not_scanned: tool "${toolName}" has no current scan verdict; run Discover on server "${server.name}" before granting`,
+          );
+        }
+        if (MCP_SEVERITIES_NEEDING_ACK.has(verdict.severity)) {
           const ack = await l.graph.getMcpToolVerdictAck(
             mcpServerId,
-            toolRef,
+            toolName,
             CURRENT_VERIFIER_VERSION,
           );
           if (!ack || ack.contentHash !== verdict.contentHash) {
             throw new ConfigValidationError(
-              `mcp_tool_high_risk_unacked: tool "${toolRef}" carries a high_risk scan verdict; acknowledge it in the server's tool list before granting`,
+              `mcp_tool_unacked_risk: tool "${toolName}" carries a "${verdict.severity}" scan verdict; acknowledge it in the server's tool list before granting`,
             );
           }
         }

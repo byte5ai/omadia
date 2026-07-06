@@ -28,6 +28,7 @@ import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError } fro
 import { bindingKeyForTurn } from './conductor/principalId.js';
 import { createOperatorChannelsRouter } from './routes/operatorChannels.js';
 import { createAgentBuilderRouter } from './routes/agentBuilder.js';
+import { isMcpGrantBlocked, refreshMcpGrantPolicy } from './services/mcpGrantPolicy.js';
 import { createLlmVerifier, type LlmVerifier } from './services/skillVerdictLlmVerifier.js';
 import { ScheduleWorker } from './scheduler/scheduleWorker.js';
 import type {
@@ -1612,6 +1613,18 @@ async function main(): Promise<void> {
       // registers them on its orchestrator. Called on initial hydrate AND
       // from `onAgentBuilt` so a rebuilt agent re-acquires its sub-agents.
       const mcpManager = new McpManager();
+      // Scan-verdict grant policy (issue #454): load once before the initial
+      // hydration below so blocked (server, tool) pairs never materialize.
+      // The Builder routes refresh it after discover/ack and trigger reloads.
+      if (graphPool) {
+        try {
+          await refreshMcpGrantPolicy(new AgentGraphStore(graphPool));
+        } catch (err) {
+          console.warn(
+            `[middleware] mcp grant policy initial load failed (continuing warn-only): ${String(err)}`,
+          );
+        }
+      }
       const SUBAGENT_DEFAULT_MODEL = 'claude-sonnet-4-6';
       // Read the orchestrator provider from LIVE installed config on each
       // hydrate so a runtime switch to/from the CLI provider is picked up on
@@ -1648,6 +1661,7 @@ async function main(): Promise<void> {
             hostIsCliProvider: providerId === 'claude-cli',
             cliModelAlias: (model: string): string =>
               model.replace(/-cli$/, '') || 'sonnet',
+            blockedMcpGrant: isMcpGrantBlocked,
             log: (m: string) => console.log(`[middleware] ${m}`),
           },
         );

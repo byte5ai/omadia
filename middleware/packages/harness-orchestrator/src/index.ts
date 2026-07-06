@@ -134,6 +134,7 @@ export type {
 } from './mcp/mcpClient.js';
 export {
   buildSubAgentDomainTools,
+  mcpToolNameFromRef,
   subAgentToolName,
 } from './registry/subAgentTools.js';
 export type {
