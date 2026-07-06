@@ -1,7 +1,9 @@
 'use client';
 
 import { useCallback, useMemo, useState } from 'react';
+
 import Link from 'next/link';
+import { useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 
@@ -30,24 +32,22 @@ import {
  * same admin router as bulk-promote / inconsistencies).
  */
 
-const AXES: ReadonlyArray<{ value: MemoryPurgeAxis; label: string }> = [
-  { value: 'all', label: 'Alles' },
-  { value: 'agent', label: 'Agent' },
-  { value: 'user', label: 'User' },
-  { value: 'team', label: 'Team' },
-  { value: 'channel', label: 'Channel' },
+// Stable axis keys — labels and selector placeholders are translated at
+// render via `adminDangerZone.axes.*` / `adminDangerZone.selectorPlaceholder.*`.
+const AXES: ReadonlyArray<MemoryPurgeAxis> = [
+  'all',
+  'agent',
+  'user',
+  'team',
+  'channel',
 ];
 
+// Literal confirm phrase for axis 'all' — compared with === against the
+// operator's input and sent to the backend. Deliberately NOT translated.
 const CONFIRM_ALL = 'DELETE ALL MEMORY';
 
-const SELECTOR_PLACEHOLDER: Record<Exclude<MemoryPurgeAxis, 'all'>, string> = {
-  agent: 'de.byte5.agent.calendar',
-  user: 'user-id oder Selector',
-  team: 'team-id oder Selector',
-  channel: 'channel-id oder Selector',
-};
-
 export default function DangerZonePage(): React.ReactElement {
+  const t = useTranslations('adminDangerZone');
   const [axis, setAxis] = useState<MemoryPurgeAxis>('all');
   const [selector, setSelector] = useState('');
   const [reseed, setReseed] = useState(false);
@@ -95,7 +95,7 @@ export default function DangerZonePage(): React.ReactElement {
 
   const loadPreview = useCallback(async (): Promise<void> => {
     if (requiresSelector && trimmedSelector.length === 0) {
-      setPreviewError('Selector erforderlich für diese Achse.');
+      setPreviewError(t('selectorRequired'));
       return;
     }
     setPreviewLoading(true);
@@ -115,7 +115,7 @@ export default function DangerZonePage(): React.ReactElement {
     } finally {
       setPreviewLoading(false);
     }
-  }, [axis, requiresSelector, trimmedSelector]);
+  }, [axis, requiresSelector, trimmedSelector, t]);
 
   const confirmMatches = useMemo(
     () => requiredPhrase.length > 0 && confirmInput === requiredPhrase,
@@ -143,9 +143,7 @@ export default function DangerZonePage(): React.ReactElement {
       setConfirmInput('');
     } catch (err) {
       if (err instanceof ApiError && err.status === 403) {
-        setDeleteError(
-          'Nicht berechtigt (403) — Memory-Purge erfordert Admin-Rechte.',
-        );
+        setDeleteError(t('forbiddenError'));
       } else {
         setDeleteError(err instanceof Error ? err.message : String(err));
       }
@@ -159,6 +157,7 @@ export default function DangerZonePage(): React.ReactElement {
     requiresSelector,
     reseed,
     trimmedSelector,
+    t,
   ]);
 
   const warning = result?.warning ?? preview?.warning ?? null;
@@ -173,20 +172,21 @@ export default function DangerZonePage(): React.ReactElement {
           ← /admin
         </Link>
         <h1 className="mt-2 font-display text-[clamp(2rem,4vw,3rem)] leading-[1.1] text-[color:var(--danger)]">
-          Danger Zone · Memory-Purge
+          {t('title')}
         </h1>
         <p className="mt-3 max-w-2xl text-[16px] leading-[1.55] text-[color:var(--fg-muted)]">
-          Löscht Memory unwiderruflich entlang einer Achse. <strong>Alles</strong>{' '}
-          wischt Agent-Scratch <em>und</em> Knowledge-Graph; die Achsen
-          User / Team / Channel wirken nur im Knowledge-Graph. Es gibt kein
-          Undo — immer zuerst die Vorschau prüfen.
+          {t.rich('intro', {
+            strong: (chunks) => <strong>{chunks}</strong>,
+            em: (chunks) => <em>{chunks}</em>,
+          })}
         </p>
       </header>
 
       <section className="mb-6 rounded-lg border border-[color:var(--danger-edge)]/40 bg-[color:var(--danger)]/5 p-4 text-sm text-[color:var(--danger)]">
         <p>
-          <strong>Hinweis:</strong> Pro User / Team / Channel löschen wirkt nur
-          im Knowledge-Graph — der Agent-Scratch ist agent-scoped.
+          {t.rich('note', {
+            strong: (chunks) => <strong>{chunks}</strong>,
+          })}
         </p>
         {warning !== null && (
           <p className="mt-2 border-t border-[color:var(--danger-edge)]/30 pt-2 font-medium">
@@ -197,12 +197,12 @@ export default function DangerZonePage(): React.ReactElement {
 
       <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
         <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
-          Ziel
+          {t('targetTitle')}
         </h2>
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="flex flex-col gap-1">
             <span className="text-[11px] uppercase tracking-wider text-[color:var(--fg-muted)]">
-              Achse
+              {t('axisLabel')}
             </span>
             <select
               value={axis}
@@ -211,8 +211,8 @@ export default function DangerZonePage(): React.ReactElement {
               className="rounded border border-[color:var(--border)] px-2 py-1 text-sm"
             >
               {AXES.map((a) => (
-                <option key={a.value} value={a.value}>
-                  {a.label}
+                <option key={a} value={a}>
+                  {t(`axes.${a}`)}
                 </option>
               ))}
             </select>
@@ -221,15 +221,13 @@ export default function DangerZonePage(): React.ReactElement {
           {requiresSelector && (
             <label className="flex flex-col gap-1">
               <span className="text-[11px] uppercase tracking-wider text-[color:var(--fg-muted)]">
-                Selector
+                {t('selectorLabel')}
               </span>
               <input
                 type="text"
                 value={selector}
                 onChange={(e) => { onSelectorChange(e.target.value); }}
-                placeholder={
-                  SELECTOR_PLACEHOLDER[axis as Exclude<MemoryPurgeAxis, 'all'>]
-                }
+                placeholder={t(`selectorPlaceholder.${axis}`)}
                 disabled={deleting}
                 className="rounded border border-[color:var(--border)] px-2 py-1 text-sm"
               />
@@ -245,7 +243,7 @@ export default function DangerZonePage(): React.ReactElement {
               onChange={(e) => { setReseed(e.target.checked); }}
               disabled={deleting}
             />
-            Default-Memories nach dem Löschen neu seeden (re-seed defaults)
+            {t('reseedLabel')}
           </label>
         )}
 
@@ -260,28 +258,30 @@ export default function DangerZonePage(): React.ReactElement {
               (requiresSelector && trimmedSelector.length === 0)
             }
           >
-            {previewLoading ? 'lädt…' : 'Vorschau'}
+            {previewLoading ? t('loading') : t('previewButton')}
           </Button>
         </div>
       </section>
 
       {previewError !== null && (
         <section className="mb-6 rounded-lg border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-4 text-sm text-[color:var(--danger)]">
-          Vorschau-Fehler: {previewError}
+          {t('previewError', { message: previewError })}
         </section>
       )}
 
       {preview !== null && previewError === null && (
         <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
           <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
-            Vorschau — wird gelöscht
+            {t('previewTitle')}
           </h2>
           <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
-            <dt className="text-[color:var(--fg-muted)]">Agent-Scratch</dt>
+            <dt className="text-[color:var(--fg-muted)]">{t('agentScratch')}</dt>
             <dd className="font-mono text-[color:var(--danger)]">
               {preview.scratchCount}
             </dd>
-            <dt className="text-[color:var(--fg-muted)]">Knowledge-Graph</dt>
+            <dt className="text-[color:var(--fg-muted)]">
+              {t('knowledgeGraph')}
+            </dt>
             <dd className="font-mono text-[color:var(--danger)]">
               {preview.kgCount}
             </dd>
@@ -291,23 +291,27 @@ export default function DangerZonePage(): React.ReactElement {
 
       <section className="mb-6 rounded-lg border border-[color:var(--danger-edge)]/50 bg-[color:var(--danger)]/5 p-4">
         <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--danger)]">
-          Löschen bestätigen
+          {t('confirmTitle')}
         </h2>
         {preview === null ? (
           <p className="text-sm text-[color:var(--fg-muted)]">
-            Zuerst eine Vorschau ausführen — Löschen ist erst danach möglich.
+            {t('previewFirst')}
           </p>
         ) : requiresSelector && trimmedSelector.length === 0 ? (
           <p className="text-sm text-[color:var(--fg-muted)]">
-            Kein Selector gesetzt.
+            {t('noSelector')}
           </p>
         ) : (
           <>
             <p className="mb-2 text-sm text-[color:var(--fg-muted)]">
-              Zum Bestätigen exakt eingeben:{' '}
-              <code className="rounded bg-[color:var(--danger)]/15 px-2 py-0.5 font-mono text-[color:var(--danger)]">
-                {requiredPhrase}
-              </code>
+              {t.rich('confirmInstruction', {
+                phrase: requiredPhrase,
+                code: (chunks) => (
+                  <code className="rounded bg-[color:var(--danger)]/15 px-2 py-0.5 font-mono text-[color:var(--danger)]">
+                    {chunks}
+                  </code>
+                ),
+              })}
             </p>
             <input
               type="text"
@@ -323,7 +327,7 @@ export default function DangerZonePage(): React.ReactElement {
                 onClick={() => void runDelete()}
                 disabled={!canDelete}
               >
-                {deleting ? 'löscht…' : 'Unwiderruflich löschen'}
+                {deleting ? t('deleting') : t('deleteButton')}
               </Button>
             </div>
           </>
@@ -332,19 +336,21 @@ export default function DangerZonePage(): React.ReactElement {
 
       {deleteError !== null && (
         <section className="mb-6 rounded-lg border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-4 text-sm text-[color:var(--danger)]">
-          Lösch-Fehler: {deleteError}
+          {t('deleteError', { message: deleteError })}
         </section>
       )}
 
       {result !== null && (
         <section className="rounded-lg border border-[color:var(--success)]/40 bg-[color:var(--success)]/5 p-4">
           <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--success)]">
-            Gelöscht
+            {t('deletedTitle')}
           </h2>
           <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
-            <dt className="text-[color:var(--fg-muted)]">Agent-Scratch</dt>
+            <dt className="text-[color:var(--fg-muted)]">{t('agentScratch')}</dt>
             <dd className="font-mono">{result.scratchDeleted}</dd>
-            <dt className="text-[color:var(--fg-muted)]">Knowledge-Graph</dt>
+            <dt className="text-[color:var(--fg-muted)]">
+              {t('knowledgeGraph')}
+            </dt>
             <dd className="font-mono">{result.kgDeleted}</dd>
           </dl>
         </section>

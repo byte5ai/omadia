@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
+import { useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import {
@@ -22,6 +23,7 @@ interface Props {
  * tab. Errors surface inline (operator UI — no toast plumbing needed).
  */
 export function RoutineActions({ routine }: Props): React.ReactElement {
+  const t = useTranslations('routines.actions');
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -54,7 +56,7 @@ export function RoutineActions({ routine }: Props): React.ReactElement {
         // knows the click was received; the actual result arrives via
         // the proactive sender (Teams card / web channel).
         await triggerRoutineNow(routine.id);
-        setNotice('Gestartet — Ergebnis erscheint in ~30 Sekunden im Channel.');
+        setNotice(t('triggerNotice'));
         // Auto-clear after the typical run window so the row doesn't
         // stay decorated for ever.
         setTimeout(() => {
@@ -68,11 +70,7 @@ export function RoutineActions({ routine }: Props): React.ReactElement {
   };
 
   const handleDelete = (): void => {
-    if (
-      !window.confirm(
-        `Delete routine '${routine.name}'? This cannot be undone.`,
-      )
-    ) {
+    if (!window.confirm(t('deleteConfirm', { name: routine.name }))) {
       return;
     }
     setError(null);
@@ -95,10 +93,10 @@ export function RoutineActions({ routine }: Props): React.ReactElement {
           pill
           onClick={handleTriggerNow}
           disabled={pending}
-          title="Routine jetzt manuell auslösen — feuert einen Agent-Run und liefert das Ergebnis ins Channel."
+          title={t('triggerTitle')}
           className="text-[11px] font-semibold"
         >
-          Jetzt
+          {t('triggerButton')}
         </Button>
         <Button
           variant="secondary"

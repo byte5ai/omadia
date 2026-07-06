@@ -15,7 +15,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 
-import { getLocale } from 'next-intl/server';
+import { getLocale, getTranslations } from 'next-intl/server';
 
 import { Markdown } from '../../_components/Markdown';
 import { pickLocalized } from '../../_lib/localized';
@@ -50,7 +50,8 @@ export async function generateMetadata({
     const detail = await getStorePlugin(decodeURIComponent(id));
     return { title: `${detail.plugin.name} · Store` };
   } catch {
-    return { title: 'Plugin nicht gefunden · Store' };
+    const t = await getTranslations('store.detail');
+    return { title: t('notFoundTitle') };
   }
 }
 
@@ -90,6 +91,7 @@ export default async function PluginDetailPage({
   // language so a single-language guide still renders.
   const locale = await getLocale();
   const setupGuideText = pickLocalized(plugin.setup_guide, locale);
+  const t = await getTranslations('store.detail');
 
   // S+7.7 / 2026-05-04 — admin-ui mount path. Conditional on the manifest
   // declaring `admin_ui_path` AND the plugin being installed (or having an
@@ -111,7 +113,7 @@ export default async function PluginDetailPage({
         className="inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg-muted)] transition hover:text-[color:var(--accent)]"
       >
         <ArrowLeft className="size-3.5" aria-hidden />
-        Zurück zum Katalog
+        {t('backToCatalog')}
       </Link>
 
       {/* Hero */}
@@ -140,10 +142,10 @@ export default async function PluginDetailPage({
                 {plugin.signed ? (
                   <Chip tone="accent">
                     <ShieldCheck className="mr-1 size-3" aria-hidden />
-                    signiert
+                    {t('signed')}
                   </Chip>
                 ) : (
-                  <Chip tone="muted">unsigniert</Chip>
+                  <Chip tone="muted">{t('unsigned')}</Chip>
                 )}
               </div>
             </div>
@@ -155,11 +157,13 @@ export default async function PluginDetailPage({
       {connected === 'ok' ? (
         <div className="mt-8 flex items-center gap-2 rounded-lg border border-[color:var(--success)]/40 bg-[color:var(--success)]/10 px-4 py-3 text-[13px] font-semibold text-[color:var(--success)]">
           <ShieldCheck className="size-4" aria-hidden />
-          Verbindung hergestellt.
+          {t('connectedOk')}
         </div>
       ) : connected === 'error' ? (
         <div className="mt-8 rounded-lg border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/10 px-4 py-3 text-[13px] font-semibold text-[color:var(--danger)]">
-          Verbindung fehlgeschlagen{connectReason ? ` (${connectReason})` : ''}. Bitte erneut versuchen.
+          {connectReason
+            ? t('connectedErrorWithReason', { reason: connectReason })
+            : t('connectedError')}
         </div>
       ) : null}
 
@@ -178,7 +182,7 @@ export default async function PluginDetailPage({
             iframeSrc={adminUiIframeSrc}
             pluginName={plugin.name}
           >
-          <Section label="Beschreibung" numeral="I">
+          <Section label={t('sectionDescription')} numeral="I">
             <p className="text-[18px] font-semibold leading-[1.6] text-[color:var(--fg)]">
               {plugin.description ? (
                 <>
@@ -186,7 +190,7 @@ export default async function PluginDetailPage({
                 </>
               ) : (
                 <span className="text-[color:var(--fg-muted)]">
-                  Keine Beschreibung hinterlegt.
+                  {t('noDescription')}
                 </span>
               )}
             </p>
@@ -198,7 +202,7 @@ export default async function PluginDetailPage({
               registrieren, … Display-only. */}
           {setupGuideText ? (
             <Section
-              label="Installationsanleitung"
+              label={t('sectionSetupGuide')}
               numeral="I.b"
               icon={<BookOpen className="size-4" aria-hidden />}
             >
@@ -208,11 +212,11 @@ export default async function PluginDetailPage({
 
           {plugin.setup_fields.length > 0 ? (
             <Section
-              label="Setup-Felder"
+              label={t('sectionSetupFields')}
               numeral="II"
-              meta={`${plugin.setup_fields.length} Feld${
-                plugin.setup_fields.length === 1 ? '' : 'er'
-              }`}
+              meta={t('setupFieldsCount', {
+                count: plugin.setup_fields.length,
+              })}
               icon={<KeyRound className="size-4" aria-hidden />}
             >
               <div className="divide-y divide-[color:var(--rule)] border-y border-[color:var(--rule)]">
@@ -233,7 +237,7 @@ export default async function PluginDetailPage({
             plugin.install_state === 'update-available') &&
           plugin.setup_fields.length > 0 ? (
             <Section
-              label="Setup-Felder editieren"
+              label={t('sectionEditSetupFields')}
               numeral="II.b"
               icon={<KeyRound className="size-4" aria-hidden />}
             >
@@ -250,7 +254,7 @@ export default async function PluginDetailPage({
             plugin.install_state === 'update-available') &&
           plugin.permissions_summary.network_web_scanner === true ? (
             <Section
-              label="Audit-Modus"
+              label={t('sectionAuditMode')}
               numeral="II.c"
               icon={<ShieldAlert className="size-4" aria-hidden />}
             >
@@ -264,7 +268,7 @@ export default async function PluginDetailPage({
               See docs/harness-platform/DESIGN-plugin-self-extension.md. */}
           {plugin.install_state === 'installed' ? (
             <Section
-              label="Selbst-Erweiterung"
+              label={t('sectionSelfExtension')}
               numeral="II.d"
               icon={<Sparkles className="size-4" aria-hidden />}
             >
@@ -273,7 +277,7 @@ export default async function PluginDetailPage({
           ) : null}
 
           <Section
-            label="Berechtigungen"
+            label={t('sectionPermissions')}
             numeral="III"
             icon={<ShieldCheck className="size-4" aria-hidden />}
           >
@@ -285,10 +289,13 @@ export default async function PluginDetailPage({
           {(plugin.provides?.length ?? 0) + (plugin.requires?.length ?? 0) >
           0 ? (
             <Section
-              label="Capabilities"
+              label={t('sectionCapabilities')}
               numeral="IV"
               icon={<Plug className="size-4" aria-hidden />}
-              meta={`${plugin.provides?.length ?? 0} liefert · ${plugin.requires?.length ?? 0} benötigt`}
+              meta={t('capabilitiesMeta', {
+                provides: plugin.provides?.length ?? 0,
+                requires: plugin.requires?.length ?? 0,
+              })}
             >
               <CapabilitiesBlock
                 provides={plugin.provides ?? []}
@@ -299,7 +306,7 @@ export default async function PluginDetailPage({
 
           {plugin.integrations_summary.length > 0 ? (
             <Section
-              label="Integrationen"
+              label={t('sectionIntegrations')}
               numeral="V"
               icon={<Network className="size-4" aria-hidden />}
             >
@@ -361,7 +368,7 @@ export default async function PluginDetailPage({
 
           {visibleCategories.length > 0 ? (
             <div>
-              <SideLabel>Kategorien</SideLabel>
+              <SideLabel>{t('categories')}</SideLabel>
               <div className="mt-2 flex flex-wrap gap-2">
                 {visibleCategories.map((cat) => (
                   <Chip key={cat} tone="muted">
@@ -373,12 +380,16 @@ export default async function PluginDetailPage({
           ) : null}
 
           <dl className="space-y-4 border-y border-[color:var(--rule)] py-4">
-            <MetaRow label="Lizenz" value={plugin.license} />
-            <MetaRow label="Core-Kompatibilität" value={plugin.compat_core} mono />
-            <MetaRow label="Aktuelle Version" value={`v${plugin.version}`} mono />
+            <MetaRow label={t('license')} value={plugin.license} />
+            <MetaRow label={t('coreCompat')} value={plugin.compat_core} mono />
+            <MetaRow
+              label={t('currentVersion')}
+              value={`v${plugin.version}`}
+              mono
+            />
             {plugin.version !== plugin.latest_version ? (
               <MetaRow
-                label="Neueste Version"
+                label={t('latestVersion')}
                 value={`v${plugin.latest_version}`}
                 mono
               />
@@ -387,7 +398,7 @@ export default async function PluginDetailPage({
 
           {plugin.authors.length > 0 ? (
             <div>
-              <SideLabel>Autor:innen</SideLabel>
+              <SideLabel>{t('authors')}</SideLabel>
               <ul className="mt-2 space-y-2 text-sm">
                 {plugin.authors.map((a, idx) => (
                   <li key={idx} className="text-[color:var(--ink)]">
@@ -488,11 +499,12 @@ function SecretRow({
   );
 }
 
-function PermissionsBlock({
+async function PermissionsBlock({
   perms,
 }: {
   perms: Plugin['permissions_summary'];
-}): React.ReactElement {
+}): Promise<React.ReactElement> {
+  const t = await getTranslations('store.detail.permissions');
   const groups: Array<{
     label: string;
     icon: React.ReactNode;
@@ -500,31 +512,31 @@ function PermissionsBlock({
     mono?: boolean;
   }> = [
     {
-      label: 'Memory · Reads',
+      label: t('memoryReads'),
       icon: <Database className="size-3.5" aria-hidden />,
       items: perms.memory_reads,
       mono: true,
     },
     {
-      label: 'Memory · Writes',
+      label: t('memoryWrites'),
       icon: <Database className="size-3.5" aria-hidden />,
       items: perms.memory_writes,
       mono: true,
     },
     {
-      label: 'Graph · Reads',
+      label: t('graphReads'),
       icon: <Database className="size-3.5" aria-hidden />,
       items: perms.graph_reads,
       mono: true,
     },
     {
-      label: 'Graph · Writes',
+      label: t('graphWrites'),
       icon: <Database className="size-3.5" aria-hidden />,
       items: perms.graph_writes,
       mono: true,
     },
     {
-      label: 'Netzwerk · Outbound',
+      label: t('networkOutbound'),
       icon: <Globe className="size-3.5" aria-hidden />,
       items: perms.network_outbound,
       mono: true,
@@ -538,13 +550,13 @@ function PermissionsBlock({
   const flags: Array<{ label: string; icon: React.ReactNode }> = [];
   if (perms.secrets_runtime_write) {
     flags.push({
-      label: 'Schreibt eigene Credentials zur Laufzeit',
+      label: t('flagRuntimeSecrets'),
       icon: <KeyRound className="size-3.5" aria-hidden />,
     });
   }
   if (perms.flows) {
     flags.push({
-      label: 'Führt Credential-Flows auf eigenen Routes aus',
+      label: t('flagCredentialFlows'),
       icon: <ShieldAlert className="size-3.5" aria-hidden />,
     });
   }
@@ -552,7 +564,7 @@ function PermissionsBlock({
   if (active.length === 0 && flags.length === 0) {
     return (
       <p className="text-sm italic text-[color:var(--faint-ink)]">
-        Keine Berechtigungen deklariert.
+        {t('none')}
       </p>
     );
   }
@@ -563,7 +575,7 @@ function PermissionsBlock({
         <div>
           <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[color:var(--muted-ink)]">
             <KeyRound className="size-3.5" aria-hidden />
-            Laufzeit-Credentials
+            {t('runtimeCredentials')}
           </div>
           <ul className="mt-2 flex flex-wrap gap-2">
             {flags.map((flag) => (
@@ -649,22 +661,23 @@ function MetaRow({
  * Frontend zeigt hier deshalb keine Live-Resolution — kein
  * doppeltes Walking, keine Drift gegen den Server.
  */
-function CapabilitiesBlock({
+async function CapabilitiesBlock({
   provides,
   requires,
 }: {
   provides: string[];
   requires: string[];
-}): React.ReactElement {
+}): Promise<React.ReactElement> {
+  const t = await getTranslations('store.detail.capabilities');
   return (
     <div className="grid gap-6 sm:grid-cols-2">
       <div>
         <div className="text-[11px] uppercase tracking-[0.18em] text-[color:var(--muted-ink)]">
-          Liefert
+          {t('provides')}
         </div>
         {provides.length === 0 ? (
           <p className="mt-2 text-[12px] italic text-[color:var(--faint-ink)]">
-            Keine Capabilities deklariert.
+            {t('noneDeclared')}
           </p>
         ) : (
           <ul className="mt-2 flex flex-wrap gap-2">
@@ -680,11 +693,11 @@ function CapabilitiesBlock({
       </div>
       <div>
         <div className="text-[11px] uppercase tracking-[0.18em] text-[color:var(--muted-ink)]">
-          Benötigt
+          {t('requires')}
         </div>
         {requires.length === 0 ? (
           <p className="mt-2 text-[12px] italic text-[color:var(--faint-ink)]">
-            Keine Voraussetzungen.
+            {t('noRequirements')}
           </p>
         ) : (
           <>
@@ -698,9 +711,7 @@ function CapabilitiesBlock({
               ))}
             </ul>
             <p className="mt-2 text-[11px] leading-relaxed text-[color:var(--faint-ink)]">
-              Beim Install prüft die Middleware diese Voraussetzungen
-              transitiv. Fehlt ein Provider, öffnet sich ein Wizard
-              mit den passenden Plugins aus dem Katalog.
+              {t('installHint')}
             </p>
           </>
         )}

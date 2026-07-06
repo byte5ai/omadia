@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useTranslations } from 'next-intl';
 
 interface Props {
   trace: unknown;
@@ -24,11 +25,11 @@ interface Props {
  * child too (cheap recursion via `defaultExpanded` prop forwarding).
  */
 export function RunTraceViewer({ trace }: Props): React.ReactElement {
+  const t = useTranslations('routines.runTrace');
   if (trace === null || trace === undefined) {
     return (
       <div className="rounded-md border border-dashed border-[color:var(--border)] bg-[color:var(--surface)] p-4 text-[12px] text-[color:var(--fg-subtle)]">
-        Kein Run-Trace verfügbar (typisch bei Errors vor `runTurn` oder bei
-        älteren Runs vor Aktivierung der Trace-Persistierung).
+        {t('empty')}
       </div>
     );
   }
@@ -190,6 +191,7 @@ function StringLine({
   keyName: string | null;
   value: string;
 }): React.ReactElement {
+  const t = useTranslations('routines.runTrace');
   const [expanded, setExpanded] = useState(false);
   const tooLong = value.length > STRING_TRUNCATE_AT;
   const displayed = tooLong && !expanded ? value.slice(0, STRING_TRUNCATE_AT) : value;
@@ -210,7 +212,7 @@ function StringLine({
             onClick={(): void => setExpanded(true)}
             className="ml-2 text-[10px] uppercase tracking-[0.16em] text-[color:var(--accent)] underline-offset-2 hover:underline"
           >
-            mehr ({value.length - STRING_TRUNCATE_AT} Zeichen)
+            {t('showMore', { count: value.length - STRING_TRUNCATE_AT })}
           </button>
         </>
       ) : null}
@@ -222,7 +224,7 @@ function StringLine({
             onClick={(): void => setExpanded(false)}
             className="ml-2 text-[10px] uppercase tracking-[0.16em] text-[color:var(--accent)] underline-offset-2 hover:underline"
           >
-            weniger
+            {t('showLess')}
           </button>
         </>
       ) : !tooLong ? (

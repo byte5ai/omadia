@@ -18,9 +18,11 @@ import { useStickToBottom } from '../_lib/useStickToBottom';
 import { AgentPicker } from '../_components/AgentPicker';
 import { AgentUnavailableBanner } from '../_components/AgentUnavailableBanner';
 import { AgentUsagePills } from '../_components/chat/AgentUsagePills';
+import { AgentsConsultedFooter } from '../_components/chat/AgentsConsultedFooter';
 import { AutoPromotedBanner } from '../_components/chat/AutoPromotedBanner';
 import { CaptureDisclosure } from '../_components/chat/CaptureDisclosure';
 import { ConfirmDialog } from '../_components/ConfirmDialog';
+import { DelegatedAnswerCard } from '../_components/chat/DelegatedAnswerCard';
 import { NudgeCard, parseNudgeBlock } from '../_components/chat/NudgeCard';
 import { PlanProgressCard } from '../_components/chat/PlanProgressCard';
 import { RecalledContextCard } from '../_components/chat/RecalledContextCard';
@@ -838,6 +840,19 @@ function MessageRow({
   const liveElapsedSec = showLiveness
     ? Math.max(0, Math.round((liveNow - message.startedAt) / 1000))
     : null;
+  // #332 Layer 2 (gap-closure) — `content` already carries the delegated
+  // answer's verbatim text (backend graceful-degrade design: even a
+  // connector that ignores `delegatedAnswer` shows the specialist's words).
+  // `<DelegatedAnswerCard>` renders that verbatim block attributed; render
+  // the ordinary content block ONLY for whatever the orchestrator added
+  // beyond it (the guarded-mode `▸ omadia note: …` suffix), so the answer
+  // never appears twice. Falls back to the full content if it doesn't start
+  // with the expected prefix (defensive — never silently drops text).
+  const delegatedNote =
+    message.delegatedAnswer &&
+    message.content.startsWith(message.delegatedAnswer.text)
+      ? message.content.slice(message.delegatedAnswer.text.length).replace(/^\s+/, '')
+      : message.content;
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -878,18 +893,24 @@ function MessageRow({
             {(message.steers?.length ?? 0) > 0 && (
               <SteerList steers={message.steers ?? []} />
             )}
-            {message.content.length > 0 ? (
+            {message.delegatedAnswer && (
+              <DelegatedAnswerCard answer={message.delegatedAnswer} />
+            )}
+            {delegatedNote.length > 0 ? (
               /* §2.7: agent narration renders in the prose register
                  (Source Serif 4); headings/tables/code stay structural. */
               <div className="lume-prose">
                 <Markdown
-                  source={message.content}
+                  source={delegatedNote}
                   highlightTerms={message.maskedValues}
                 />
               </div>
             ) : message.streaming ? (
               <StreamingDots />
             ) : null}
+            {message.agentsConsulted && message.agentsConsulted.length > 0 && (
+              <AgentsConsultedFooter agents={message.agentsConsulted} />
+            )}
             {showLiveness && (
               <LivenessRow
                 liveness={message.liveness}

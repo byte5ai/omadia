@@ -26,6 +26,12 @@ import type { PersonaConfig } from '../../../../_lib/personaTypes';
  * patch resolves successfully.
  */
 
+/** kebab-case template id → camelCase i18n segment (e.g. `customer-service`
+ *  → `customerService`) under `builder.persona.gallery.templates.*`. */
+function templateMessageId(id: string): string {
+  return id.replace(/-([a-z])/g, (_m, c: string) => c.toUpperCase());
+}
+
 export interface PersonaTemplateGalleryProps {
   draftId: string;
   /** Current persona block — merged on apply so `custom_notes` survives. */
@@ -130,8 +136,12 @@ export function PersonaTemplateGallery({
                     : 'border-[color:var(--border)]'
                 }`}
               >
-                <div className="font-medium text-[color:var(--fg-strong)]">{tpl.labelDe}</div>
-                <div className="text-xs text-[color:var(--fg-muted)]">{tpl.description}</div>
+                <div className="font-medium text-[color:var(--fg-strong)]">
+                  {t(`templates.${templateMessageId(tpl.id)}.label`)}
+                </div>
+                <div className="text-xs text-[color:var(--fg-muted)]">
+                  {t(`templates.${templateMessageId(tpl.id)}.description`)}
+                </div>
                 {tpl.identity && (
                   <div className="text-xs italic text-[color:var(--fg-subtle)]">
                     {tpl.identity.creature} — {tpl.identity.vibe}

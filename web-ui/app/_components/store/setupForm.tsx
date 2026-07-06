@@ -1,5 +1,7 @@
 'use client';
 
+import { useTranslations } from 'next-intl';
+
 import { cn } from '../../_lib/cn';
 import type { InstallSetupField } from '../../_lib/storeTypes';
 
@@ -19,6 +21,7 @@ export function FieldRow({
   error?: string;
   idPrefix?: string;
 }): React.ReactElement {
+  const t = useTranslations('store.setupForm');
   const id = `${idPrefix}-${field.key}`;
   const common = cn(
     'w-full border bg-[color:var(--paper)] px-3 py-2 text-sm',
@@ -59,7 +62,7 @@ export function FieldRow({
               className="size-4 accent-[color:var(--oxblood)]"
             />
             <span className="text-[color:var(--muted-ink)]">
-              {field.help ?? 'Aktivieren'}
+              {field.help ?? t('enable')}
             </span>
           </label>
         ) : field.type === 'enum' ? (
@@ -70,7 +73,9 @@ export function FieldRow({
             defaultValue={typeof field.default === 'string' ? field.default : ''}
             className={common}
           >
-            {!field.required ? <option value="">(nicht setzen)</option> : null}
+            {!field.required ? (
+              <option value="">{t('dontSet')}</option>
+            ) : null}
             {(field.enum ?? []).map((opt) => (
               <option key={opt.value} value={opt.value}>
                 {opt.label}

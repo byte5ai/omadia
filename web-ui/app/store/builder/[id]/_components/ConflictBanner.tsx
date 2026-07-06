@@ -27,6 +27,7 @@ export function ConflictBanner({
   warnings,
 }: ConflictBannerProps): React.ReactElement | null {
   const t = useTranslations('builder.install');
+  const tConflict = useTranslations('builder.persona.conflicts');
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
   if (warnings.length === 0) return null;
 
@@ -57,7 +58,9 @@ export function ConflictBanner({
             <p className="font-medium text-[color:var(--danger)]">
               {t('conflictLabel')}
             </p>
-            <p className="mt-0.5 text-[color:var(--fg)]">{w.message}</p>
+            <p className="mt-0.5 text-[color:var(--fg)]">
+              {tConflict(w.messageKey)}
+            </p>
             <p className="mt-1 font-mono-num text-[10px] text-[color:var(--fg-subtle)]">
               {w.axes.join(' × ')}
             </p>
@@ -95,7 +98,7 @@ export function ConflictBanner({
                 className="size-3.5 shrink-0 text-[color:var(--warning)]"
                 aria-hidden
               />
-              <span>{w.message}</span>
+              <span>{tConflict(w.messageKey)}</span>
             </li>
           ))}
         </ul>

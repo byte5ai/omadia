@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { AlertTriangle, Pencil } from 'lucide-react';
+import { useTranslations } from 'next-intl';
 
 import { cloneBuilderDraftFromInstalled } from '../../_lib/api';
 import type { CloneFromInstalledResponse } from '../../_lib/builderTypes';
@@ -41,6 +42,7 @@ export function EditFromStoreButton({
   publishedAgentId,
   clone,
 }: EditFromStoreButtonProps): React.ReactElement {
+  const t = useTranslations('store.editFromStore');
   const router = useRouter();
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
 
@@ -53,10 +55,11 @@ export function EditFromStoreButton({
         router.push(`/store/builder/${encodeURIComponent(result.draftId)}`);
         return;
       }
+      const hintKey = HINT_KEYS[result.reason];
       setPhase({
         kind: 'failed',
         message: result.message,
-        hint: HINTS[result.reason] ?? null,
+        hint: hintKey ? t(hintKey) : null,
       });
     } catch (err) {
       setPhase({
@@ -77,11 +80,11 @@ export function EditFromStoreButton({
         onClick={() => void handleClick()}
         disabled={busy}
         busy={busy}
-        busyLabel="Klone Draft …"
+        busyLabel={t('cloning')}
         className="text-[12px] uppercase tracking-[0.18em]"
       >
         <Pencil className="size-3.5" aria-hidden />
-        Im Builder bearbeiten
+        {t('editInBuilder')}
       </Button>
       {phase.kind === 'failed' ? (
         <div className="rounded-md border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/6 px-3 py-2">
@@ -107,9 +110,10 @@ export function EditFromStoreButton({
   );
 }
 
-const HINTS: Partial<Record<'source_not_found' | 'quota_exceeded', string>> = {
-  source_not_found:
-    'Der Original-Draft des Builders existiert nicht mehr (gelöscht oder von einem anderen Operator installiert). Reverse-Codegen aus der installierten manifest.yaml kommt erst in B.7.',
-  quota_exceeded:
-    'Lösch bestehende Drafts unter „Drafts", bevor du diesen klonst.',
+/** Message-key leaves under `store.editFromStore` — translated at render. */
+const HINT_KEYS: Partial<
+  Record<'source_not_found' | 'quota_exceeded', string>
+> = {
+  source_not_found: 'hintSourceNotFound',
+  quota_exceeded: 'hintQuotaExceeded',
 };

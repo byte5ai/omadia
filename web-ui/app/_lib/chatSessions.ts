@@ -165,6 +165,40 @@ export interface PrivacyReceipt {
   bypassedTools?: readonly BypassedToolEntry[];
 }
 
+/**
+ * #332 Layer 1 (gap-closure) — one curated, tamper-evident entry per
+ * sub-agent invocation this turn. Harness-built from the deterministic
+ * run-trace, never from the orchestrator's own prose — a fabricated "I
+ * consulted X" with no real invocation yields an empty array, not a fake
+ * entry here. Mirrors `AgentConsultation` in
+ * `harness-channel-sdk/src/outgoing.ts`.
+ */
+export interface AgentConsultation {
+  /** Stable agent id when resolvable (e.g. `de.byte5.agent.strategist`). */
+  agentId?: string;
+  /** Human label for the footer (e.g. `Strategist`). Always present. */
+  label: string;
+  status: 'success' | 'error';
+  durationMs?: number;
+  /** Count of tool calls the sub-agent made — never the orchestrator's prose. */
+  toolCalls?: number;
+}
+
+/**
+ * #332 Layer 2 (gap-closure) — the harness-owned verbatim sub-agent segment
+ * for a Direct-Line turn (`#<agent> <question>`). Delivered independently of
+ * the orchestrator's own `content`; the orchestrator can neither remove nor
+ * reword it. Mirrors `DelegatedAnswer` in `harness-channel-sdk/src/outgoing.ts`.
+ */
+export interface DelegatedAnswer {
+  agentId: string;
+  label: string;
+  /** The sub-agent's verbatim answer (PII-masked when a privacy guard is
+   *  active), or a faithful failure line when `status === 'error'`. */
+  text: string;
+  status: 'success' | 'error';
+}
+
 /** Slice 2.5 — one entry in `PrivacyReceipt.bypassedTools`. */
 export interface BypassedToolEntry {
   toolName: string;
@@ -371,6 +405,18 @@ export interface Message {
    * answer or it exposed no masked field.
    */
   maskedValues?: readonly string[];
+  /**
+   * #332 Layer 1 (gap-closure) — which sub-agent(s) were actually consulted
+   * this turn, harness-sourced from the run-trace. Rendered as a compact
+   * footer. Absent when no sub-agent ran this turn.
+   */
+  agentsConsulted?: AgentConsultation[];
+  /**
+   * #332 Layer 2 (gap-closure) — the harness-owned, attributed verbatim
+   * answer for a Direct-Line turn. Rendered as a visually distinct block,
+   * separate from `content`. Absent on ordinary turns.
+   */
+  delegatedAnswer?: DelegatedAnswer;
   error?: boolean;
   startedAt: number;
   finishedAt?: number;

@@ -4,6 +4,8 @@ import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 
+import { useTranslations } from 'next-intl';
+
 import { Button } from '@/app/_components/ui/Button';
 import {
   AdminUser,
@@ -20,6 +22,7 @@ type State =
   | { kind: 'error'; message: string };
 
 export default function AdminUserEditPage(): React.ReactElement {
+  const t = useTranslations('adminUsers');
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const id = params?.id ?? '';
@@ -75,12 +78,10 @@ export default function AdminUserEditPage(): React.ReactElement {
         status,
       });
       setState({ kind: 'ready', user: res.user });
-      setPatchMessage('Gespeichert.');
+      setPatchMessage(t('edit.saved'));
     } catch (err) {
       if (err instanceof ApiError && err.body.includes('self_lockout')) {
-        setPatchError(
-          'Du kannst dich nicht selbst deaktivieren. Anderer Admin muss diese Aktion durchführen.',
-        );
+        setPatchError(t('errors.selfDisable'));
       } else {
         setPatchError(err instanceof Error ? err.message : String(err));
       }
@@ -93,19 +94,17 @@ export default function AdminUserEditPage(): React.ReactElement {
     setResetError(null);
     setResetMessage(null);
     if (newPassword.length < 8) {
-      setResetError('Passwort muss mindestens 8 Zeichen lang sein.');
+      setResetError(t('errors.passwordMinLength'));
       return;
     }
     setResetting(true);
     try {
       await resetAdminUserPassword(id, newPassword);
-      setResetMessage('Passwort wurde zurückgesetzt.');
+      setResetMessage(t('edit.resetSuccess'));
       setNewPassword('');
     } catch (err) {
       if (err instanceof ApiError && err.body.includes('not_local')) {
-        setResetError(
-          'Passwort-Reset funktioniert nur für lokale Konten. Föderierte Identitäten werden vom IdP verwaltet.',
-        );
+        setResetError(t('errors.notLocal'));
       } else {
         setResetError(err instanceof Error ? err.message : String(err));
       }
@@ -115,11 +114,7 @@ export default function AdminUserEditPage(): React.ReactElement {
   }
 
   async function handleDelete(): Promise<void> {
-    if (
-      !window.confirm(
-        'Diesen Nutzer wirklich löschen? Die Aktion ist nicht umkehrbar.',
-      )
-    ) {
+    if (!window.confirm(t('edit.confirmDelete'))) {
       return;
     }
     setDeleteError(null);
@@ -129,7 +124,7 @@ export default function AdminUserEditPage(): React.ReactElement {
       router.replace('/admin/users');
     } catch (err) {
       if (err instanceof ApiError && err.body.includes('self_lockout')) {
-        setDeleteError('Du kannst dich nicht selbst löschen.');
+        setDeleteError(t('errors.selfDelete'));
       } else {
         setDeleteError(err instanceof Error ? err.message : String(err));
       }
@@ -140,7 +135,7 @@ export default function AdminUserEditPage(): React.ReactElement {
   if (state.kind === 'loading') {
     return (
       <main className="mx-auto max-w-[720px] px-6 py-12">
-        <p className="text-sm opacity-70">Lädt …</p>
+        <p className="text-sm opacity-70">{t('loading')}</p>
       </main>
     );
   }
@@ -148,13 +143,13 @@ export default function AdminUserEditPage(): React.ReactElement {
     return (
       <main className="mx-auto max-w-[720px] px-6 py-12">
         <p className="text-sm text-[color:var(--danger)]">
-          Fehler beim Laden: {state.message}
+          {t('loadError', { message: state.message })}
         </p>
         <Link
           href="/admin/users"
           className="mt-4 inline-block text-sm text-[color:var(--accent)] hover:underline"
         >
-          ← zur Übersicht
+          ← {t('edit.backToList')}
         </Link>
       </main>
     );
@@ -168,7 +163,7 @@ export default function AdminUserEditPage(): React.ReactElement {
         href="/admin/users"
         className="text-sm text-[color:var(--accent)] hover:underline"
       >
-        ← zur Übersicht
+        ← {t('edit.backToList')}
       </Link>
 
       <header className="mb-8 mt-3">
@@ -176,17 +171,17 @@ export default function AdminUserEditPage(): React.ReactElement {
           {state.user.email}
         </h1>
         <p className="mt-1 text-xs uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
-          Provider: {state.user.provider} · ID: {state.user.id}
+          {t('edit.providerAndId', { provider: state.user.provider, id: state.user.id })}
         </p>
       </header>
 
       <section className="mb-8 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
         <h2 className="mb-3 text-[15px] font-semibold text-[color:var(--fg-strong)]">
-          Profil
+          {t('edit.profileHeading')}
         </h2>
         <form onSubmit={handlePatch} className="flex flex-col gap-4">
           <label className="flex flex-col gap-1 text-sm">
-            <span className="font-medium">Anzeigename</span>
+            <span className="font-medium">{t('edit.displayName')}</span>
             <input
               type="text"
               value={displayName}
@@ -195,7 +190,7 @@ export default function AdminUserEditPage(): React.ReactElement {
             />
           </label>
           <label className="flex flex-col gap-1 text-sm">
-            <span className="font-medium">Status</span>
+            <span className="font-medium">{t('edit.status')}</span>
             <select
               value={status}
               onChange={(e) =>
@@ -203,8 +198,8 @@ export default function AdminUserEditPage(): React.ReactElement {
               }
               className="rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[color:var(--accent)]"
             >
-              <option value="active">aktiv</option>
-              <option value="disabled">deaktiviert</option>
+              <option value="active">{t('edit.statusActive')}</option>
+              <option value="disabled">{t('edit.statusDisabled')}</option>
             </select>
           </label>
           {patchMessage && (
@@ -217,7 +212,7 @@ export default function AdminUserEditPage(): React.ReactElement {
             disabled={savingPatch}
             className="self-start"
           >
-            {savingPatch ? 'Speichere …' : 'Speichern'}
+            {savingPatch ? t('edit.saving') : t('edit.save')}
           </Button>
         </form>
       </section>
@@ -225,15 +220,14 @@ export default function AdminUserEditPage(): React.ReactElement {
       {isLocal && (
         <section className="mb-8 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
           <h2 className="mb-3 text-[15px] font-semibold text-[color:var(--fg-strong)]">
-            Passwort zurücksetzen
+            {t('edit.resetHeading')}
           </h2>
           <p className="mb-3 text-sm text-[color:var(--fg-muted)]">
-            Setzt das Passwort sofort. Der Nutzer wird nicht benachrichtigt —
-            teile das neue Passwort über einen sicheren Kanal mit.
+            {t('edit.resetHelp')}
           </p>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
             <label className="flex flex-1 flex-col gap-1 text-sm">
-              <span className="font-medium">Neues Passwort (mind. 8)</span>
+              <span className="font-medium">{t('edit.newPassword')}</span>
               <input
                 type="password"
                 minLength={8}
@@ -247,7 +241,7 @@ export default function AdminUserEditPage(): React.ReactElement {
               onClick={() => void handleResetPassword()}
               disabled={resetting}
             >
-              {resetting ? 'Setze …' : 'Zurücksetzen'}
+              {resetting ? t('edit.resetting') : t('edit.reset')}
             </Button>
           </div>
           {resetMessage && (
@@ -261,17 +255,17 @@ export default function AdminUserEditPage(): React.ReactElement {
 
       <section className="rounded-lg border border-[color:var(--danger-edge)]/30 bg-[color:var(--danger)]/5 p-4">
         <h2 className="mb-2 text-[15px] font-semibold text-[color:var(--danger)]">
-          Gefahrenzone
+          {t('edit.dangerHeading')}
         </h2>
         <p className="mb-3 text-sm text-[color:var(--fg-muted)]">
-          Löschen entfernt den Nutzer permanent. Audit-Log behält den Eintrag.
+          {t('edit.dangerHelp')}
         </p>
         <Button
           variant="danger"
           onClick={() => void handleDelete()}
           disabled={deleting}
         >
-          {deleting ? 'Lösche …' : 'Nutzer löschen'}
+          {deleting ? t('edit.deleting') : t('edit.delete')}
         </Button>
         {deleteError && (
           <p className="mt-3 text-sm text-[color:var(--danger)]">{deleteError}</p>

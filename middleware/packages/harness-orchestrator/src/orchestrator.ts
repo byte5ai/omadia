@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Pool } from 'pg';
 import {
+  deriveAgentsConsulted,
   toSemanticAnswer,
   type ChatStreamEvent,
   type ChatTurnInput,
@@ -222,6 +223,19 @@ export interface OrchestratorOptions {
    * mention/markup parsing (see directLine.ts).
    */
   directLinePrefix?: string;
+  /**
+   * #332 Layer 3 (gap-closure) — standing, per-orchestrator forced-delegation
+   * obligation. When set to one of this orchestrator's whitelisted domain
+   * tool names, EVERY ordinary (non-direct-line) turn carries that turn's
+   * obligation automatically — equivalent to the caller passing
+   * `expectedDomainTool` on every `ChatTurnInput`, without requiring the
+   * caller to wire it per turn. Opt-in; absent → no standing obligation (byte
+   * -identical pre-gap-closure behaviour). A per-turn `input.expectedDomainTool`
+   * still takes precedence when both are set. Gives OB-31 forced-tool-choice a
+   * real (minimal) production producer beyond the Conductor's own future,
+   * heavier per-step reuse.
+   */
+  requiredConsultToolName?: string;
   /** Kernel-shared native-tool registry. Created once at boot and shared
    *  between the orchestrator and the plugin-activation pipeline so plugin-
    *  contributed tools land in the same dispatch map as the kernel's own. */
@@ -929,6 +943,8 @@ export class Orchestrator {
   private readonly directLineMode: DirectLineMode;
   /** #332 Layer 2 — directive prefix (default `'#'`). */
   private readonly directLinePrefix: string;
+  /** #332 Layer 3 (gap-closure) — standing forced-consult tool name, if any. */
+  private readonly requiredConsultToolName: string | undefined;
   // systemPrompt is rebuilt live per turn from `buildSystemPrompt()` —
   // so hot-registered DomainTools show up in the preamble. Prompt caching
   // still applies within stable phases (between two register/unregister
@@ -1003,6 +1019,7 @@ export class Orchestrator {
     this.domainToolsByName = new Map(options.domainTools.map((t) => [t.name, t]));
     this.directLineMode = options.directLineMode ?? 'strict';
     this.directLinePrefix = options.directLinePrefix ?? '#';
+    this.requiredConsultToolName = options.requiredConsultToolName;
     this.knowledgeGraph = options.knowledgeGraph;
     this.knowledgeGraphTool = options.knowledgeGraph
       ? new KnowledgeGraphTool(options.knowledgeGraph, options.embeddingClient)
@@ -1951,15 +1968,21 @@ export class Orchestrator {
       scope: input.sessionScope ?? turnId,
       ...(input.userId ? { userId: input.userId } : {}),
     });
-    const handle = collector.beginInvocation(tool.name);
+    const handle = collector.beginInvocation(tool.name, candidate.agentId);
     const startedAt = Date.now();
     let verbatim: string;
     let status: 'success' | 'error';
     try {
       // The domain-tool contract takes `{ question }` (see createDomainTool);
       // bind it to the user's VERBATIM payload — the orchestrator never
-      // reshapes it.
-      verbatim = await tool.handle(
+      // reshapes it. Routed through the SAME `dispatchTool` choke point as
+      // every other domain-tool dispatch (not a raw `tool.handle` call) so
+      // the Privacy Shield v4 masking cascade applies here too — #332
+      // gap-closure: a raw `tool.handle` call bypassed `dispatchTool`
+      // entirely, so a verbatim delegated answer was never interned even
+      // when a privacy guard was active.
+      verbatim = await this.dispatchTool(
+        tool.name,
         { question: directive.payload },
         handle.observer,
       );
@@ -2083,10 +2106,14 @@ export class Orchestrator {
     obligationTool: string | undefined;
     forceObligation: { type: 'tool'; name: string } | undefined;
   } {
+    // #332 gap-closure — a per-turn `expectedDomainTool` still wins; absent,
+    // fall back to this orchestrator's standing `requiredConsultToolName`
+    // (if configured), so the forced-delegation primitive has a real,
+    // opt-in producer beyond a caller wiring it per turn.
+    const requested = input.expectedDomainTool ?? this.requiredConsultToolName;
     const tool =
-      input.expectedDomainTool &&
-      this.domainToolsByName.has(input.expectedDomainTool)
-        ? input.expectedDomainTool
+      requested && this.domainToolsByName.has(requested)
+        ? requested
         : undefined;
     return {
       obligationTool: tool,
@@ -2660,7 +2687,10 @@ export class Orchestrator {
         const invocations = toolUses.map((use: ContentBlock) => {
           const isNative = this.nativeTools.has(use.name);
           return !isNative && traceCollector
-            ? traceCollector.beginInvocation(use.name)
+            ? traceCollector.beginInvocation(
+                use.name,
+                this.domainToolsByName.get(use.name)?.agentId,
+              )
             : undefined;
         });
         const settled = await Promise.allSettled(
@@ -2892,6 +2922,7 @@ export class Orchestrator {
       // exactly like the normal done branch below.
       const direct = await this.executeDirectLine(input, turnId);
       if (direct) {
+        const directAgentsConsulted = deriveAgentsConsulted(direct.runTrace);
         let doneEvent: Extract<ChatStreamEvent, { type: 'done' }> = {
           type: 'done',
           answer: direct.answer,
@@ -2901,6 +2932,9 @@ export class Orchestrator {
           ...(direct.turnId ? { turnId: direct.turnId } : {}),
           ...(direct.delegatedAnswer
             ? { delegatedAnswer: direct.delegatedAnswer }
+            : {}),
+          ...(directAgentsConsulted && directAgentsConsulted.length > 0
+            ? { agentsConsulted: directAgentsConsulted }
             : {}),
         };
         if (privacyHandle) {
@@ -3353,6 +3387,7 @@ export class Orchestrator {
           // the freshly-inserted neighbourhood in the floating pane. Best-effort
           // & guarded; emitted before `done` so it lands with the final turn.
           yield* await this.toKgInsertAnnotationEvents(autoPromotedMkId);
+          const finalAgentsConsulted = deriveAgentsConsulted(runTrace);
           yield {
             type: 'done',
             answer,
@@ -3370,6 +3405,9 @@ export class Orchestrator {
             ...(pendingSlotCard ? { pendingSlotCard } : {}),
             ...(pendingRoutineList ? { pendingRoutineList } : {}),
             ...(pendingOAuthConsent ? { pendingOAuthConsent: true } : {}),
+            ...(finalAgentsConsulted && finalAgentsConsulted.length > 0
+              ? { agentsConsulted: finalAgentsConsulted }
+              : {}),
           };
           return;
         }
@@ -3579,6 +3617,7 @@ export class Orchestrator {
               );
             }
           }
+          const choiceAgentsConsulted = deriveAgentsConsulted(runTrace);
           yield {
             type: 'done',
             answer,
@@ -3588,6 +3627,9 @@ export class Orchestrator {
             pendingUserChoice,
             ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
             ...(runTrace ? { runTrace } : {}),
+            ...(choiceAgentsConsulted && choiceAgentsConsulted.length > 0
+              ? { agentsConsulted: choiceAgentsConsulted }
+              : {}),
           };
           return;
         }
@@ -3631,7 +3673,10 @@ export class Orchestrator {
     const isNative = this.nativeTools.has(use.name);
     const invocation =
       !isNative && traceCollector
-        ? traceCollector.beginInvocation(use.name)
+        ? traceCollector.beginInvocation(
+            use.name,
+            this.domainToolsByName.get(use.name)?.agentId,
+          )
         : undefined;
     const observer = this.makeSlotObserver(use.id, subEvents, invocation);
     const started = Date.now();
