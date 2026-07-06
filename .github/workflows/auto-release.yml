@@ -3,23 +3,24 @@ name: auto-release
 # Tag-only automated releases. On each merge to `main`, inspect conventional
 # commits since the last tag; if there's a feat/fix, create the next semver
 # tag + a GitHub Release with a categorized changelog (Added/Changed/Fixed,
-# generated from commit subjects by .github/scripts/generate-changelog.mjs),
-# then open a docs(changelog) PR that promotes docs/CHANGELOG.md's
-# [Unreleased] section into the same dated entry and auto-merges itself.
+# generated from commit subjects by .github/scripts/generate-changelog.mjs).
 #
-# HARD RULE: every tagged release gets a clean, categorized changelog —
-# both as GitHub Release notes and as a docs/CHANGELOG.md entry — with no
-# manual step required. See docs/CHANGELOG.md's header for the policy.
+# HARD RULE: every tagged release gets a clean, categorized changelog with no
+# manual step required — enforced by construction, since it's part of the
+# same job that creates the tag: there is no code path that tags a release
+# without also writing its changelog body.
 #
-# Uses only GITHUB_TOKEN (contents: write, pull-requests: write) — no PAT.
-# The changelog PR relies on the repo's existing auto-merge setting + zero
-# required approving reviews to land unattended once the (path-filter-free)
-# required CI checks pass. It ALSO requires the repo setting "Allow GitHub
-# Actions to create and approve pull requests" (Settings > Actions > General
-# > Workflow permissions) — without it, `gh pr create` fails with "GitHub
-# Actions is not permitted to create or approve pull requests" and the
-# changelog-pr job fails (harmlessly: it's isolated from publish-images /
-# desktop-apps below, see that job's comment).
+# Deliberately does NOT try to commit that changelog into docs/CHANGELOG.md
+# on every release: `main` requires a PR (branch protection, enforce_admins),
+# and this org disallows GitHub Actions from creating pull requests (org
+# policy, checked via `gh api orgs/byte5ai/actions/permissions/workflow` —
+# blocks even a repo-level opt-in). Working around that would mean either a
+# PAT-backed bot identity (a standing credential to maintain) or a PR per
+# release for someone to merge by hand (exactly the manual step this is
+# supposed to remove) — both worse than the problem. `docs/CHANGELOG.md`
+# stays a periodically-refreshed mirror: run
+# `node .github/scripts/generate-changelog.mjs backfill` locally when you
+# want it caught up; GitHub Releases are the automated source of truth.
 #
 #   fix:                      -> patch  (0.2.0 -> 0.2.1)
 #   feat:                     -> minor  (0.2.0 -> 0.3.0)
@@ -36,7 +37,6 @@ on:
 permissions:
   contents: write
   packages: write
-  pull-requests: write
 
 concurrency:
   group: auto-release
@@ -47,7 +47,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       new_tag: ${{ steps.rel.outputs.new_tag }}
-      latest_tag: ${{ steps.rel.outputs.latest_tag }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -109,62 +108,6 @@ jobs:
           # release does not fire a `release` event, so the image build must run
           # here in the same workflow rather than via an event trigger.
           echo "new_tag=$new" >> "$GITHUB_OUTPUT"
-          echo "latest_tag=$latest" >> "$GITHUB_OUTPUT"
-
-  # Promotes docs/CHANGELOG.md's [Unreleased] into the dated version section via
-  # an auto-merging PR. Deliberately its OWN job (not a step in `release`):
-  # a failure here must never cascade into `needs: release` on publish-images /
-  # desktop-apps below, since GitHub only runs those if the `release` JOB's
-  # overall conclusion is success — a failing step anywhere in that job would
-  # silently skip shipping the images/installers for a release that already
-  # exists. (This bit us on v0.55.0: the PR-creation step failed and both
-  # downstream jobs were skipped even though the tag + GitHub Release were
-  # already live.)
-  changelog-pr:
-    needs: release
-    if: ${{ needs.release.outputs.new_tag != '' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      NEW_TAG: ${{ needs.release.outputs.new_tag }}
-      LATEST_TAG: ${{ needs.release.outputs.latest_tag }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-
-      - name: Promote docs/CHANGELOG.md via an auto-merging PR
-        run: |
-          set -euo pipefail
-
-          version="${NEW_TAG#v}"
-          date="$(date -u +%F)"
-          branch="chore/changelog-${NEW_TAG}"
-
-          node .github/scripts/generate-changelog.mjs cut "$LATEST_TAG" "$NEW_TAG" "$version" "$date" /tmp/cut-notes.md
-
-          if git diff --quiet -- docs/CHANGELOG.md; then
-            echo "docs/CHANGELOG.md already has a [$version] section — nothing to PR."
-            exit 0
-          fi
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$branch"
-          git add docs/CHANGELOG.md
-          git commit -m "docs(changelog): ${NEW_TAG}"
-          git push origin "$branch"
-          gh pr create --title "docs(changelog): ${NEW_TAG}" \
-            --body "Automated changelog entry for **${NEW_TAG}**, generated by \`.github/scripts/generate-changelog.mjs\` from the conventional-commit messages since ${LATEST_TAG}." \
-            --base main --head "$branch"
-          gh pr merge "$branch" --squash --auto
 
   # Build + push the versioned + :latest images for the Release just cut.
   # Runs only when a release happened (new_tag set). In-run call, so it does

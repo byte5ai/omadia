@@ -5,11 +5,14 @@ All notable changes to omadia are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Every version section from `[0.2.1]` onward is generated automatically by
-`.github/workflows/auto-release.yml` from Conventional Commit messages via
-`.github/scripts/generate-changelog.mjs` — no release ships without one. Add
-hand-written notes under `## [Unreleased]` any time; they carry over verbatim
-into the next version's entry. See `CONTRIBUTING.md` § Releases & changelog.
+The canonical, always-current changelog per version is each release's GitHub
+Release notes — generated automatically by `.github/workflows/auto-release.yml`
+from Conventional Commit messages, no release ships without one. This file is
+a periodically-refreshed mirror of the same data (every section from
+`[0.2.1]` onward via `.github/scripts/generate-changelog.mjs backfill`), not
+auto-committed on every release. Add hand-written notes under
+`## [Unreleased]` any time; they carry over verbatim into the next version's
+entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ---
 
