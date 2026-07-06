@@ -1,11 +1,15 @@
 'use client';
 
+import { useTranslations } from 'next-intl';
+
 import type { CaptureDisclosure as CaptureDisclosureData } from '../../_lib/chatSessions';
 
 interface CaptureDisclosureProps {
   disclosure: CaptureDisclosureData;
   className?: string;
 }
+
+type TFn = (key: string, values?: Record<string, string | number>) => string;
 
 /**
  * Per-turn audit row showing what the orchestrator persisted into the
@@ -22,10 +26,11 @@ export function CaptureDisclosure({
   disclosure,
   className,
 }: CaptureDisclosureProps): React.ReactElement | null {
-  const summary = summarise(disclosure);
+  const t = useTranslations('chat.captureDisclosure');
+  const summary = summarise(disclosure, t);
   if (summary === null) return null;
 
-  const facts = collectFacts(disclosure);
+  const facts = collectFacts(disclosure, t);
 
   return (
     <details
@@ -36,7 +41,7 @@ export function CaptureDisclosure({
       ].join(' ')}
     >
       <summary className="cursor-pointer select-none px-2 py-1 font-medium text-[color:var(--success)]">
-        🧠 Memory-Auswirkung · {summary}
+        🧠 {t('heading')} · {summary}
       </summary>
       <div className="space-y-2 px-2 pb-2 pt-1 text-[color:var(--success)]">
         <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1">
@@ -52,7 +57,7 @@ export function CaptureDisclosure({
         {disclosure.reasons.length > 0 && (
           <div>
             <div className="text-[10px] font-semibold uppercase tracking-wider text-[color:var(--success)]/80">
-              Begründung
+              {t('reasonsHeading')}
             </div>
             <ul className="mt-1 space-y-0.5">
               {disclosure.reasons.map((reason, i) => (
@@ -69,7 +74,9 @@ export function CaptureDisclosure({
         {disclosure.graphRefs && disclosure.graphRefs.entityNodeIds.length > 0 && (
           <div>
             <div className="text-[10px] font-semibold uppercase tracking-wider text-[color:var(--success)]/80">
-              Verknüpfte Entitäten ({disclosure.graphRefs.entityNodeIds.length})
+              {t('linkedEntities', {
+                count: disclosure.graphRefs.entityNodeIds.length,
+              })}
             </div>
             <ul className="mt-1 max-h-32 space-y-0.5 overflow-y-auto">
               {disclosure.graphRefs.entityNodeIds.map((id) => (
@@ -93,18 +100,18 @@ interface Fact {
   value: string;
 }
 
-function summarise(d: CaptureDisclosureData): string | null {
+function summarise(d: CaptureDisclosureData, t: TFn): string | null {
   if (!d.persisted) {
     if (d.significance !== null) {
-      return `verworfen · score ${d.significance.toFixed(2)}`;
+      return t('summaryDiscardedScore', { score: d.significance.toFixed(2) });
     }
-    return 'verworfen';
+    return t('summaryDiscarded');
   }
-  const parts: string[] = ['persistiert'];
+  const parts: string[] = [t('summaryPersisted')];
   if (d.entryType) parts.push(d.entryType);
   if (d.significance !== null) parts.push(d.significance.toFixed(2));
   if (d.privacyBlocksStripped > 0) {
-    parts.push(`–${String(d.privacyBlocksStripped)}×privat`);
+    parts.push(t('summaryPrivateStripped', { count: d.privacyBlocksStripped }));
   }
   // Quiet fall-through: pre-OB-71 stub disclosures with no actionable data
   // (default-persist, no strip, no score) collapse to just "persistiert" —
@@ -114,28 +121,35 @@ function summarise(d: CaptureDisclosureData): string | null {
   return parts.join(' · ');
 }
 
-function collectFacts(d: CaptureDisclosureData): Fact[] {
+function collectFacts(d: CaptureDisclosureData, t: TFn): Fact[] {
   const facts: Fact[] = [
-    { title: 'Persistiert', value: d.persisted ? '✓ ja' : '✗ verworfen' },
+    {
+      title: t('factPersisted'),
+      value: d.persisted ? t('factPersistedYes') : t('factPersistedNo'),
+    },
   ];
-  if (d.entryType) facts.push({ title: 'Eintrag-Typ', value: d.entryType });
-  if (d.visibility) facts.push({ title: 'Sichtbarkeit', value: d.visibility });
+  if (d.entryType) {
+    facts.push({ title: t('factEntryType'), value: d.entryType });
+  }
+  if (d.visibility) {
+    facts.push({ title: t('factVisibility'), value: d.visibility });
+  }
   if (d.significance !== null) {
     facts.push({ title: 'Significance', value: d.significance.toFixed(2) });
   }
   facts.push({
     title: 'Embedding',
-    value: d.embedded ? '✓ vektorisiert' : '— kein Vektor',
+    value: d.embedded ? t('factEmbedded') : t('factNotEmbedded'),
   });
   if (d.privacyBlocksStripped > 0) {
     facts.push({
-      title: '<private>-Blöcke',
+      title: t('factPrivateBlocks'),
       value: String(d.privacyBlocksStripped),
     });
   }
   if (d.hintTagsProcessed > 0) {
     facts.push({
-      title: '<palaia-hint>-Tags',
+      title: t('factHintTags'),
       value: String(d.hintTagsProcessed),
     });
   }

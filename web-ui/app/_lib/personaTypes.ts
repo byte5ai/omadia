@@ -56,74 +56,28 @@ export interface PersonaConfig {
 /**
  * Slider label pair per axis. Mirrors Kemia's persona-dimensions.ts —
  * left = lower-end behaviour, right = upper-end behaviour. Range 0–100,
- * 50 = neutral / family-default.
+ * 50 = neutral / family-default. The per-axis one-line description
+ * (slider title hint) lives in the i18n catalog under
+ * `builder.persona.axes.<axisKey>.description`.
  */
 export const PERSONA_AXIS_LABELS: Record<
   PersonaAxisKey,
-  { left: string; right: string; description: string }
+  { left: string; right: string }
 > = {
   // Core (8) ──────────────────────────────────────────────────────────
-  formality: {
-    left: 'CASUAL',
-    right: 'FORMAL',
-    description: 'Du-Form & Umgangssprache vs. Sie-Form & Fachsprache.',
-  },
-  directness: {
-    left: 'DIPLOMATIC',
-    right: 'DIRECT',
-    description: 'Höflichkeitspuffer vs. Kernaussage zuerst.',
-  },
-  warmth: {
-    left: 'COOL',
-    right: 'WARM',
-    description: 'Sachlich-distanziert vs. empathisch & anerkennend.',
-  },
-  humor: {
-    left: 'SERIOUS',
-    right: 'PLAYFUL',
-    description: 'Ohne Witz vs. spielerisch (sparsam einsetzen).',
-  },
-  sarcasm: {
-    left: 'SINCERE',
-    right: 'SARCASTIC',
-    description: 'Ehrlich-direkt vs. ironisch (selten passend).',
-  },
-  conciseness: {
-    left: 'EXPANSIVE',
-    right: 'TERSE',
-    description: 'Ausführlich vs. minimaler Wort-Output.',
-  },
-  proactivity: {
-    left: 'REACTIVE',
-    right: 'PROACTIVE',
-    description: 'Antwortet auf Anfragen vs. schlägt von sich aus vor.',
-  },
-  autonomy: {
-    left: 'CONSULTING',
-    right: 'AUTONOMOUS',
-    description: 'Fragt zurück vs. handelt eigenständig.',
-  },
+  formality: { left: 'CASUAL', right: 'FORMAL' },
+  directness: { left: 'DIPLOMATIC', right: 'DIRECT' },
+  warmth: { left: 'COOL', right: 'WARM' },
+  humor: { left: 'SERIOUS', right: 'PLAYFUL' },
+  sarcasm: { left: 'SINCERE', right: 'SARCASTIC' },
+  conciseness: { left: 'EXPANSIVE', right: 'TERSE' },
+  proactivity: { left: 'REACTIVE', right: 'PROACTIVE' },
+  autonomy: { left: 'CONSULTING', right: 'AUTONOMOUS' },
   // Extended (4) ──────────────────────────────────────────────────────
-  risk_tolerance: {
-    left: 'CAUTIOUS',
-    right: 'BOLD',
-    description: 'Sicherheits-zuerst vs. Risiko-tolerant.',
-  },
-  creativity: {
-    left: 'CONVENTIONAL',
-    right: 'INVENTIVE',
-    description: 'Bewährte Lösungen vs. unkonventionelle Ideen.',
-  },
-  drama: {
-    left: 'UNDERSTATED',
-    right: 'DRAMATIC',
-    description: 'Sachlich vs. emotional aufgeladen.',
-  },
-  philosophy: {
-    left: 'PRAGMATIC',
-    right: 'PHILOSOPHICAL',
-    description: 'Lösung-orientiert vs. abstrakt-grundsätzlich.',
-  },
+  risk_tolerance: { left: 'CAUTIOUS', right: 'BOLD' },
+  creativity: { left: 'CONVENTIONAL', right: 'INVENTIVE' },
+  drama: { left: 'UNDERSTATED', right: 'DRAMATIC' },
+  philosophy: { left: 'PRAGMATIC', right: 'PHILOSOPHICAL' },
 };
 
 /** Default value when an axis is unset — visual mid-point, no delta emission. */

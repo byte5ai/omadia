@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { useTranslations } from 'next-intl';
 
 import {
   getInconsistencyDetail,
@@ -12,25 +13,17 @@ import {
   type MemorableKnowledgeNode,
 } from '../../../_lib/api';
 
-const RESOLUTION_LABEL: Record<InconsistencyResolution, string> = {
-  a_wins: 'A korrekt → B löschen',
-  b_wins: 'B korrekt → A löschen',
-  both: 'Beide korrekt (verschiedene Kontexte)',
-  dismiss: 'False-Positive (Detector lag falsch)',
-};
-
-const RESOLUTION_DESCRIPTION: Record<InconsistencyResolution, string> = {
-  a_wins:
-    'Markiert Memory A als richtig und löscht Memory B endgültig. Audit-Trail bleibt erhalten.',
-  b_wins:
-    'Markiert Memory B als richtig und löscht Memory A endgültig. Audit-Trail bleibt erhalten.',
-  both:
-    'Lässt beide Memories unverändert und markiert den Konflikt als aufgelöst. Verwende dies wenn beide in unterschiedlichen Kontexten korrekt sind.',
-  dismiss:
-    'Markiert die Erkennung als false-positive. Beide Memories bleiben unverändert. Der Konflikt wird nicht erneut geprüft.',
+// Stable message-key suffix per resolution — labels/descriptions live under
+// `adminInconsistencies.detail.resolutions.*` and are translated at render.
+const RESOLUTION_KEY: Record<InconsistencyResolution, string> = {
+  a_wins: 'aWins',
+  b_wins: 'bWins',
+  both: 'both',
+  dismiss: 'dismiss',
 };
 
 export default function InconsistencyDetailPage(): React.ReactElement {
+  const t = useTranslations('adminInconsistencies.detail');
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const id = useMemo(() => decodeURIComponent(params?.id ?? ''), [params]);
@@ -73,8 +66,10 @@ export default function InconsistencyDetailPage(): React.ReactElement {
             : null;
       const confirmText =
         destructive && target
-          ? `Memory wird endgültig gelöscht: "${target.props.summary.slice(0, 100)}". Fortfahren?`
-          : `Konflikt als "${RESOLUTION_LABEL[resolution]}" markieren?`;
+          ? t('confirmDelete', { summary: target.props.summary.slice(0, 100) })
+          : t('confirmResolve', {
+              label: t(`resolutions.${RESOLUTION_KEY[resolution]}.label`),
+            });
       if (!window.confirm(confirmText)) return;
       setBusy(true);
       setMutationError(null);
@@ -89,7 +84,7 @@ export default function InconsistencyDetailPage(): React.ReactElement {
         setBusy(false);
       }
     },
-    [id, detail, reason, router],
+    [id, detail, reason, router, t],
   );
 
   return (
@@ -102,14 +97,16 @@ export default function InconsistencyDetailPage(): React.ReactElement {
           ← /admin/inconsistencies
         </Link>
         <h1 className="mt-2 font-display text-[clamp(1.5rem,3vw,2.25rem)] leading-[1.1] text-[color:var(--fg-strong)]">
-          Konflikt auflösen
+          {t('title')}
         </h1>
       </header>
 
-      {loading && <p className="text-xs text-[color:var(--fg-muted)]">lädt…</p>}
+      {loading && (
+        <p className="text-xs text-[color:var(--fg-muted)]">{t('loading')}</p>
+      )}
       {loadError !== null && (
         <div className="border-l-2 border-[color:var(--danger-edge)] px-3 py-2 text-xs text-[color:var(--danger)]">
-          Fehler: {loadError}
+          {t('error', { message: loadError })}
         </div>
       )}
 
@@ -117,7 +114,7 @@ export default function InconsistencyDetailPage(): React.ReactElement {
         <>
           <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
             <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
-              Detector-Befund
+              {t('detectorFindingTitle')}
             </h2>
             <p className="text-sm">{detail.props.summary}</p>
             <dl className="mt-3 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-[11px]">
@@ -142,11 +139,11 @@ export default function InconsistencyDetailPage(): React.ReactElement {
           {detail.props.status === 'open' && (
             <section className="mt-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
               <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
-                Auflösung
+                {t('resolutionTitle')}
               </h2>
               <label className="mb-3 block">
                 <span className="mb-1 block text-[11px] uppercase tracking-wider text-[color:var(--fg-muted)]">
-                  Begründung (optional, im Audit-Log)
+                  {t('reasonLabel')}
                 </span>
                 <input
                   type="text"
@@ -159,7 +156,7 @@ export default function InconsistencyDetailPage(): React.ReactElement {
               </label>
               {mutationError !== null && (
                 <p className="mb-3 border-l-2 border-[color:var(--danger-edge)] px-2 py-1 text-xs text-[color:var(--danger)]">
-                  Fehler: {mutationError}
+                  {t('error', { message: mutationError })}
                 </p>
               )}
               <div className="grid gap-2 sm:grid-cols-2">
@@ -176,9 +173,11 @@ export default function InconsistencyDetailPage(): React.ReactElement {
                         : 'border-[color:var(--border)] hover:border-[color:var(--border-strong)]',
                     ].join(' ')}
                   >
-                    <div className="font-semibold">{RESOLUTION_LABEL[r]}</div>
+                    <div className="font-semibold">
+                      {t(`resolutions.${RESOLUTION_KEY[r]}.label`)}
+                    </div>
                     <div className="mt-1 text-[10px] text-[color:var(--fg-muted)]">
-                      {RESOLUTION_DESCRIPTION[r]}
+                      {t(`resolutions.${RESOLUTION_KEY[r]}.description`)}
                     </div>
                   </button>
                 ))}
@@ -198,6 +197,7 @@ function MemoryCard({
   label: string;
   mk: MemorableKnowledgeNode | null;
 }): React.ReactElement {
+  const t = useTranslations('adminInconsistencies.detail');
   return (
     <article className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
       <header className="mb-3 flex items-center justify-between">
@@ -209,13 +209,13 @@ function MemoryCard({
             href={`/memories/${encodeURIComponent(mk.id)}`}
             className="text-[10px] text-[color:var(--fg-muted)] underline-offset-2 hover:underline"
           >
-            zur Memory →
+            {t('openMemory')}
           </Link>
         )}
       </header>
       {!mk && (
         <p className="text-xs italic text-[color:var(--fg-muted)]">
-          Memory nicht zugänglich (gelöscht oder kein Owner).
+          {t('memoryUnavailable')}
         </p>
       )}
       {mk && (

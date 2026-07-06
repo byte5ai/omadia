@@ -1,12 +1,19 @@
+import { getTranslations } from 'next-intl/server';
+
 import type { VaultStatusResponse } from '../../_lib/api';
 
 interface Props {
   status: VaultStatusResponse;
 }
 
-export function VaultStatusCard({ status }: Props): React.ReactElement {
+type TFn = (key: string, values?: Record<string, string | number>) => string;
+
+export async function VaultStatusCard({
+  status,
+}: Props): Promise<React.ReactElement> {
+  const t = await getTranslations('system.vaultStatus');
   const { vault, backup } = status;
-  const keySourceLabel = formatKeySource(vault.master_key_source);
+  const keySourceLabel = formatKeySource(vault.master_key_source, t);
   const keyTone = vault.production_ready ? 'ok' : 'warn';
   const backupTone: Tone = backup.enabled
     ? backup.last_error
@@ -27,31 +34,31 @@ export function VaultStatusCard({ status }: Props): React.ReactElement {
             Vault
           </h2>
         </div>
-        <StatusDot tone={keyTone} />
+        <StatusDot tone={keyTone} label={dotLabel(keyTone, t)} />
       </header>
 
       <dl className="mt-6 grid grid-cols-1 gap-x-6 gap-y-3 text-sm sm:grid-cols-2">
-        <Row label="Master-Key" value={keySourceLabel} tone={keyTone} />
+        <Row label={t('masterKey')} value={keySourceLabel} tone={keyTone} />
         <Row
-          label="Persistenz"
+          label={t('persistence')}
           value={vault.data_dir}
           mono
         />
         <Row
-          label="Vault-Datei"
-          value={vault.exists ? shorten(vault.path) : 'noch nicht geschrieben'}
+          label={t('vaultFile')}
+          value={vault.exists ? shorten(vault.path) : t('notWrittenYet')}
           mono={vault.exists}
         />
         <Row
-          label="Größe"
+          label={t('size')}
           value={vault.size_bytes !== null ? `${vault.size_bytes} B` : '—'}
         />
         <Row
-          label="Zuletzt geändert"
+          label={t('lastModified')}
           value={formatDate(vault.last_modified)}
         />
         <Row
-          label="Agenten mit Secrets"
+          label={t('agentsWithSecrets')}
           value={String(vault.agent_count)}
         />
       </dl>
@@ -61,13 +68,13 @@ export function VaultStatusCard({ status }: Props): React.ReactElement {
       <div className="flex items-baseline justify-between gap-3">
         <div>
           <div className="text-[11px] uppercase tracking-[0.22em] text-[color:var(--fg-subtle)]">
-            Off-Site-Backup (Tigris)
+            {t('backupHeading')}
           </div>
           <h3 className="font-display mt-1 text-lg text-[color:var(--fg-strong)]">
-            {backup.enabled ? 'Aktiv' : 'Deaktiviert'}
+            {backup.enabled ? t('backupActive') : t('backupDisabled')}
           </h3>
         </div>
-        <StatusDot tone={backupTone} />
+        <StatusDot tone={backupTone} label={dotLabel(backupTone, t)} />
       </div>
 
       {backup.enabled ? (
@@ -75,29 +82,32 @@ export function VaultStatusCard({ status }: Props): React.ReactElement {
           <Row label="Bucket" value={backup.bucket} mono />
           <Row label="Prefix" value={backup.prefix} mono />
           <Row
-            label="Intervall"
-            value={`${backup.interval_hours}h · max ${backup.retention} Snapshots`}
+            label={t('interval')}
+            value={t('intervalValue', {
+              hours: backup.interval_hours,
+              retention: backup.retention,
+            })}
           />
           <Row
-            label="Letzter Lauf"
+            label={t('lastRun')}
             value={formatDate(backup.last_run_at)}
           />
           <Row
-            label="Letzter Erfolg"
+            label={t('lastSuccess')}
             value={formatDate(backup.last_success_at)}
             tone={backup.last_success_at ? 'ok' : 'warn'}
           />
           <Row
-            label="Nächster Lauf"
+            label={t('nextRun')}
             value={formatDate(backup.next_run_at)}
           />
           <Row
-            label="Gespeicherte Snapshots"
+            label={t('storedSnapshots')}
             value={backup.objects_kept !== null ? String(backup.objects_kept) : '—'}
           />
           {backup.last_error ? (
             <Row
-              label="Letzter Fehler"
+              label={t('lastError')}
               value={backup.last_error}
               tone="danger"
               mono
@@ -106,7 +116,7 @@ export function VaultStatusCard({ status }: Props): React.ReactElement {
         </dl>
       ) : (
         <p className="mt-3 text-sm text-[color:var(--fg-muted)]">
-          {backup.last_error ?? 'Kein Grund bekannt.'}
+          {backup.last_error ?? t('noReasonKnown')}
         </p>
       )}
     </article>
@@ -140,7 +150,13 @@ function Row({ label, value, mono, tone = 'muted' }: RowProps): React.ReactEleme
   );
 }
 
-function StatusDot({ tone }: { tone: Tone }): React.ReactElement {
+function StatusDot({
+  tone,
+  label,
+}: {
+  tone: Tone;
+  label: string;
+}): React.ReactElement {
   const color =
     tone === 'ok'
       ? 'bg-[color:var(--success)]/100'
@@ -152,15 +168,22 @@ function StatusDot({ tone }: { tone: Tone }): React.ReactElement {
   return (
     <span className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.22em] text-[color:var(--fg-subtle)]">
       <span className={`h-2 w-2 rounded-full ${color}`} />
-      {tone === 'ok'
-        ? 'OK'
-        : tone === 'warn'
-          ? 'Warnung'
-          : tone === 'danger'
-            ? 'Fehler'
-            : 'Inaktiv'}
+      {label}
     </span>
   );
+}
+
+function dotLabel(tone: Tone, t: TFn): string {
+  switch (tone) {
+    case 'ok':
+      return t('dotOk');
+    case 'warn':
+      return t('dotWarn');
+    case 'danger':
+      return t('dotDanger');
+    default:
+      return t('dotInactive');
+  }
 }
 
 function toneClass(tone: Tone): string {
@@ -178,14 +201,15 @@ function toneClass(tone: Tone): string {
 
 function formatKeySource(
   source: VaultStatusResponse['vault']['master_key_source'],
+  t: TFn,
 ): string {
   switch (source) {
     case 'env':
       return 'VAULT_KEY (env) — production';
     case 'dev-file-existed':
-      return 'dev-file (nicht für Produktion)';
+      return t('keySourceDevFile');
     case 'dev-file-created':
-      return 'dev-file (neu generiert — DEV ONLY)';
+      return t('keySourceDevFileCreated');
     default:
       return source;
   }

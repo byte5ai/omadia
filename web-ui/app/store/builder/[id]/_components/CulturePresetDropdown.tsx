@@ -24,6 +24,12 @@ import type { PersonaConfig } from '../../../../_lib/personaTypes';
  * Preset id itself is NOT persisted (one-shot overlay).
  */
 
+/** kebab-case preset id → camelCase i18n segment (e.g. `saas-startup` →
+ *  `saasStartup`) under `builder.persona.culture.presets.*`. */
+function presetMessageId(id: string): string {
+  return id.replace(/-([a-z])/g, (_m, c: string) => c.toUpperCase());
+}
+
 export interface CulturePresetDropdownProps {
   draftId: string;
   /** Full current persona block — needed for the full-replace tool call. */
@@ -92,7 +98,10 @@ export function CulturePresetDropdown({
         <option value="">{t('noSelection')}</option>
         {CULTURE_PRESETS.map((p) => (
           <option key={p.id} value={p.id}>
-            {p.labelDe} — {p.descriptionDe}
+            {t('presetOption', {
+              label: t(`presets.${presetMessageId(p.id)}.label`),
+              description: t(`presets.${presetMessageId(p.id)}.description`),
+            })}
           </option>
         ))}
       </select>

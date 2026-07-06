@@ -300,6 +300,7 @@
         "cron": "Cron",
         "timezone": "Timezone"
       },
+      "apiError": "Error {status}",
       "persona": {
         "title": "Direct-answer personas",
         "hintEmpty": "No persona skills attached — this Agent answers with the generic default identity.",
@@ -850,6 +851,24 @@
       "maximize": "Maximize",
       "restore": "Restore",
       "close": "Close"
+    },
+    "captureDisclosure": {
+      "heading": "Memory impact",
+      "summaryDiscarded": "discarded",
+      "summaryDiscardedScore": "discarded · score {score}",
+      "summaryPersisted": "persisted",
+      "summaryPrivateStripped": "–{count}×private",
+      "reasonsHeading": "Reasoning",
+      "linkedEntities": "Linked entities ({count})",
+      "factPersisted": "Persisted",
+      "factPersistedYes": "✓ yes",
+      "factPersistedNo": "✗ discarded",
+      "factEntryType": "Entry type",
+      "factVisibility": "Visibility",
+      "factEmbedded": "✓ vectorized",
+      "factNotEmbedded": "— no vector",
+      "factPrivateBlocks": "'<private>' blocks",
+      "factHintTags": "'<palaia-hint>' tags"
     }
   },
   "privacyReceipt": {
@@ -1303,6 +1322,19 @@
       "testResult": {
         "error": "Error",
         "success": "Success"
+      },
+      "validation": {
+        "idEmpty": "Tool ID must not be empty",
+        "idFormat": "Tool ID must be snake_case (lowercase letters, digits, underscores; must start with a letter)",
+        "descriptionEmpty": "Description must not be empty",
+        "notOpenApiRoot": "Not an OpenAPI root object",
+        "versionMissing": "openapi/swagger version missing",
+        "pathsMissing": "paths missing",
+        "noSummaryOrDescription": "neither summary nor description set",
+        "notArray": "Not an array",
+        "notObject": "Not an object",
+        "idMissing": "id missing or not a string",
+        "descriptionMissing": "description missing or not a string"
       }
     },
     "chat": {
@@ -1517,7 +1549,9 @@
           "saved": "saved",
           "error": "error"
         }
-      }
+      },
+      "prefillPrompt": "Fill the slot `{slotKey}` (target: {targetFile}) with the TypeScript implementation.",
+      "prefillPromptWithDescription": "Fill the slot `{slotKey}` (target: {targetFile}) — {description} with the TypeScript implementation."
     },
     "persona": {
       "pillar": {
@@ -1549,7 +1583,33 @@
         "prefillSkill": "Also prefill skill fields ({role})",
         "cancel": "Cancel",
         "apply": "Apply",
-        "applying": "Applying…"
+        "applying": "Applying…",
+        "templates": {
+          "customerService": {
+            "label": "Customer Service Agent",
+            "description": "Professional support with empathy and clear escalation."
+          },
+          "salesDev": {
+            "label": "Sales Development Rep",
+            "description": "Proactive sales with a personal touch and clear follow-up."
+          },
+          "contentMarketing": {
+            "label": "Content & Marketing Agent",
+            "description": "Creative brand voice with strategic thinking."
+          },
+          "researchAnalyst": {
+            "label": "Research Analyst",
+            "description": "Thorough research with structured presentation."
+          },
+          "softwareEngineer": {
+            "label": "Software Engineer",
+            "description": "Team-oriented developer with a clear communication style."
+          },
+          "teamLead": {
+            "label": "Team Lead / Coordinator",
+            "description": "Orchestrator managing delegation, escalation and team structure."
+          }
+        }
       },
       "boundaries": {
         "heading": "Boundaries",
@@ -1558,7 +1618,27 @@
         "customLabel": "Custom boundaries (one per line)",
         "save": "Save boundaries",
         "saving": "Saving boundaries…",
-        "saved": "Saved"
+        "saved": "Saved",
+        "categories": {
+          "data": "Data",
+          "scope": "Scope",
+          "authority": "Authority",
+          "communication": "Communication"
+        },
+        "presets": {
+          "presetNoFinancial": "No financial data",
+          "presetNoPii": "No personal data (PII)",
+          "presetNoMedical": "No medical data",
+          "presetNoLegal": "No legal advice",
+          "presetOwnDomain": "Own domain only",
+          "presetNoCode": "No code execution",
+          "presetNoExternal": "No external links",
+          "presetNoDiscount": "No discount authority",
+          "presetNoCommitments": "No binding commitments",
+          "presetNoPersonnel": "No personnel decisions",
+          "presetNoSpeculation": "No speculation",
+          "presetNoCompetitor": "No competitor discussion"
+        }
       },
       "culture": {
         "label": "Industry / Culture",
@@ -1569,7 +1649,34 @@
         "noChange": "No change — all values already match.",
         "apply": "Apply",
         "applying": "Applying…",
-        "cancel": "Cancel"
+        "cancel": "Cancel",
+        "presetOption": "{label} — {description}",
+        "presets": {
+          "saasStartup": {
+            "label": "SaaS startup",
+            "description": "Casual, direct, fast"
+          },
+          "enterpriseCorporate": {
+            "label": "Enterprise / large corporation",
+            "description": "Formal, process-driven, cautious"
+          },
+          "healthcare": {
+            "label": "Healthcare",
+            "description": "Formal, warm, low-risk"
+          },
+          "legal": {
+            "label": "Legal / compliance",
+            "description": "Very formal, precise, deliberate"
+          },
+          "ecommerce": {
+            "label": "E-commerce",
+            "description": "Warm, solution-oriented, proactive"
+          },
+          "creativeAgency": {
+            "label": "Creative agency",
+            "description": "Casual, original, bold"
+          }
+        }
       },
       "dimension": {
         "valueLabel": "{axis} value",
@@ -1603,6 +1710,51 @@
           "critical": "critical",
           "ok": "OK"
         }
+      },
+      "conflicts": {
+        "sycophancyHighDirectnessLow": "Sycophancy=high enforces devil's-advocate rules; directness ≤ 30 says \"diplomatic\". The model will ignore one of the two. Recommendation: directness ≥ 50 or sycophancy=medium.",
+        "sycophancyHighDirectnessHigh": "Amplification — critical evaluation plus no politeness buffer can come across as combative.",
+        "sycophancyOffDirectnessVeryHigh": "Note: directness ≥ 90 alone does not override the model's default flattery behaviour. For anti-sycophancy, deliberately pick a sycophancy level.",
+        "formalityHighHumorHigh": "Very formal + very humorous comes across as stylistically inconsistent.",
+        "sarcasmHighWarmthHigh": "High sarcasm + high warmth — replies come across as contradictory."
+      },
+      "axes": {
+        "formality": {
+          "description": "Casual address & colloquial language vs. formal address & technical language."
+        },
+        "directness": {
+          "description": "Politeness buffer vs. key point first."
+        },
+        "warmth": {
+          "description": "Matter-of-fact and distanced vs. empathetic & appreciative."
+        },
+        "humor": {
+          "description": "No jokes vs. playful (use sparingly)."
+        },
+        "sarcasm": {
+          "description": "Honest and direct vs. ironic (rarely appropriate)."
+        },
+        "conciseness": {
+          "description": "Detailed vs. minimal word output."
+        },
+        "proactivity": {
+          "description": "Responds to requests vs. makes suggestions on its own."
+        },
+        "autonomy": {
+          "description": "Asks back vs. acts independently."
+        },
+        "risk_tolerance": {
+          "description": "Safety first vs. risk-tolerant."
+        },
+        "creativity": {
+          "description": "Proven solutions vs. unconventional ideas."
+        },
+        "drama": {
+          "description": "Matter-of-fact vs. emotionally charged."
+        },
+        "philosophy": {
+          "description": "Solution-oriented vs. abstract and fundamental."
+        }
       }
     },
     "uiSurfaces": {
@@ -1616,7 +1768,8 @@
           "bodyLabel": "Admin UI Body (HTML)",
           "bodyHint": "Content between the marker regions. Inline style + script allowed.",
           "operatorContract": "<strong>Operator contract:</strong> Frontend fetches must use <strong>relative URLs</strong> (<code>fetch('api/devices')</code>, not <code>fetch('/api/...')</code>) — the UI runs behind a <code>/bot-api/*</code> rewrite. JSON responses need the <code>{ ok: boolean, ... }</code> schema, otherwise the RuntimeSmoke flags them as broken.",
-          "disabledHint": "Off. Plugins without <code>admin_ui_path</code> have no admin tile on the store detail page — that is the default."
+          "disabledHint": "Off. Plugins without <code>admin_ui_path</code> have no admin tile on the store detail page — that is the default.",
+          "stubEditHint": "Edit this block via fill_slot('admin-ui-body', ...) or directly in the Workspace."
         },
         "dashboardPages": {
           "title": "Dashboard Pages",
@@ -1679,6 +1832,10 @@
           "metaLabel": "Meta (optional)",
           "urlLabel": "URL (optional — makes the item clickable)",
           "suffixHelp": "Whitelisted suffixes: <code>.join(\", \")</code> for arrays, <code>.toLocaleString()</code> for numbers. Other function calls are ignored."
+        },
+        "stub": {
+          "fetchErrorPrefix": "Data could not be read:",
+          "noData": "No data."
         }
       },
       "pagesList": {
@@ -1970,6 +2127,28 @@
         "diagrams": "Diagrams & storage",
         "integrations": "Integrations (Microsoft, Teams, Telegram)"
       }
+    },
+    "title": "Configuration",
+    "intro": "All {envFile} values that are written to the config store or the secret vault at startup. Changes are saved automatically and the affected plugin is re-activated — they take effect immediately, without a restart. Secrets only show whether a value is set; the value itself is never displayed.",
+    "loading": "Loading …",
+    "loadError": "Failed to load: {message}",
+    "vaultUnavailable": "Vault unavailable — secrets cannot be edited.",
+    "notInstalled": "not installed",
+    "boolean": {
+      "on": "on",
+      "off": "off"
+    },
+    "secret": {
+      "set": "set",
+      "unset": "not set",
+      "replacePlaceholder": "•••••• (replace)",
+      "enterPlaceholder": "Enter value",
+      "remove": "Remove"
+    },
+    "status": {
+      "saving": "saving …",
+      "saved": "✓ saved",
+      "error": "✗ error"
     }
   },
   "adminProviders": {
@@ -2122,6 +2301,957 @@
       "eyebrow": "Hub",
       "headline": "Plugins for the omadia platform.",
       "lead": "The Hub is our catalog of ready-made plugins. It bundles integrations (credential containers), agents (domain capabilities) and channels (user channels like Teams and Telegram). Click a tile to see permissions, secrets and dependencies before you install."
+    },
+    "page": {
+      "filters": {
+        "all": "All",
+        "integration": "Integrations",
+        "agent": "Agents",
+        "channel": "Channels",
+        "tool": "Tools",
+        "extension": "Extensions"
+      },
+      "unknownLoadError": "Unknown error while loading the catalog.",
+      "filterCategoryAria": "Filter by category",
+      "sourceAria": "Choose source",
+      "sourceHub": "Registry",
+      "sourceLocal": "Local",
+      "sourceInstalled": "Installed",
+      "emptyFilteredTitle": "No {category} in this view.",
+      "emptyFilteredHint": "Switch the category or the source above.",
+      "emptyInstalledTitle": "No plugins installed yet.",
+      "emptyInstalledBody": "Switch to the <hubLink>Hub</hubLink> or <localLink>Local</localLink> tab to browse and install available plugins.",
+      "emptyLocalTitle": "No local packages.",
+      "emptyLocalHint": "Upload a plugin package via drag & drop above — the server validates the manifest and registers it in the catalog.",
+      "emptyHubTitle": "No plugins available in the Hub.",
+      "emptyHubBody": "Connect a registry under <adminLink>Admin · Registries</adminLink> — or upload your own package in the <localLink>Local</localLink> tab.",
+      "errorKicker": "Error",
+      "errorTitle": "The catalog could not be loaded.",
+      "errorHint": "Check that the middleware is reachable at <host>http://localhost:3979</host> and that the endpoint <endpoint>/api/v1/store/plugins</endpoint> responds.",
+      "footerSource": "Source:"
+    },
+    "detail": {
+      "notFoundTitle": "Plugin not found · Store",
+      "backToCatalog": "Back to catalog",
+      "signed": "signed",
+      "unsigned": "unsigned",
+      "connectedOk": "Connection established.",
+      "connectedError": "Connection failed. Please try again.",
+      "connectedErrorWithReason": "Connection failed ({reason}). Please try again.",
+      "sectionDescription": "Description",
+      "noDescription": "No description provided.",
+      "sectionSetupGuide": "Setup guide",
+      "sectionSetupFields": "Setup fields",
+      "setupFieldsCount": "{count, plural, one {# field} other {# fields}}",
+      "sectionEditSetupFields": "Edit setup fields",
+      "sectionAuditMode": "Audit mode",
+      "sectionSelfExtension": "Self-extension",
+      "sectionPermissions": "Permissions",
+      "sectionCapabilities": "Capabilities",
+      "capabilitiesMeta": "{provides} provided · {requires} required",
+      "sectionIntegrations": "Integrations",
+      "categories": "Categories",
+      "license": "License",
+      "coreCompat": "Core compatibility",
+      "currentVersion": "Current version",
+      "latestVersion": "Latest version",
+      "authors": "Authors",
+      "permissions": {
+        "memoryReads": "Memory · Reads",
+        "memoryWrites": "Memory · Writes",
+        "graphReads": "Graph · Reads",
+        "graphWrites": "Graph · Writes",
+        "networkOutbound": "Network · Outbound",
+        "flagRuntimeSecrets": "Writes its own credentials at runtime",
+        "flagCredentialFlows": "Runs credential flows on its own routes",
+        "none": "No permissions declared.",
+        "runtimeCredentials": "Runtime credentials"
+      },
+      "capabilities": {
+        "provides": "Provides",
+        "requires": "Requires",
+        "noneDeclared": "No capabilities declared.",
+        "noRequirements": "No prerequisites.",
+        "installHint": "During install the middleware checks these prerequisites transitively. If a provider is missing, a wizard opens with the matching plugins from the catalog."
+      }
+    },
+    "card": {
+      "updateTitle": "Update available",
+      "updateTitleWithVersion": "Update available: {from} → {to}",
+      "updateSticker": "Update",
+      "noDescription": "No description provided.",
+      "actionRequired": "Action required"
+    },
+    "stateBadge": {
+      "available": "Available",
+      "installed": "Installed",
+      "updateAvailable": "Update available",
+      "incompatible": "Incompatible",
+      "migrationNeeded": "Migration needed"
+    },
+    "workaroundBadge": {
+      "active": "Workaround active",
+      "updateAvailable": "Update available",
+      "labelWithIssue": "{label} (#{number})",
+      "openIssueAria": "{label} — open issue in browser"
+    },
+    "actionStatus": {
+      "errorTitle": "Error",
+      "actionRequired": "Action required"
+    },
+    "install": {
+      "blocked": "Installation blocked",
+      "installAria": "Install {name}",
+      "success": "Installation successful",
+      "installNow": "Install now",
+      "unknownError": "Unknown error.",
+      "unexpectedJobState": "Unexpected job state: {state}",
+      "updateAvailable": "Update available",
+      "updating": "Updating …",
+      "update": "Update",
+      "installed": "Installed",
+      "active": "active",
+      "uninstallAria": "Uninstall {name}",
+      "uninstall": "Uninstall",
+      "confirmRemove": "Remove <strong>{name}</strong>? The tool is immediately removed from the orchestrator, the vault namespace is cleared, and the registry entry is deleted.",
+      "deletePackageLabel": "Also remove the uploaded package file under <mono>.uploaded-packages/</mono>. <subtle>Left unchecked, the package stays in the catalog and can be reinstalled — only built-ins are unaffected.</subtle>",
+      "confirmUninstallDelete": "Yes, uninstall + delete",
+      "confirmUninstall": "Yes, uninstall",
+      "cancel": "Cancel",
+      "uninstalling": "Uninstalling …",
+      "uninstallFailed": "Uninstall failed: {message}",
+      "reset": "Reset",
+      "drawerAria": "Set up {name}",
+      "drawerKicker": "Setup",
+      "close": "Close",
+      "creatingJob": "Creating job …",
+      "setupGuide": "Setup guide",
+      "noConfigNeeded": "This plugin requires no configuration — confirm the installation at the bottom right.",
+      "secretsNote1": "Secrets are stored exclusively in the per-agent vault.",
+      "secretsNote2": "Other values go into the instance configuration.",
+      "installing": "Installing …",
+      "confirmInstall": "Confirm installation",
+      "errorKicker": "Error",
+      "privacyGuarded": "Guarded (Privacy Shield)",
+      "privacyBypass": "Bypass (pass through raw)",
+      "privacyPerTool": "Per-tool (whitelist)",
+      "privacyLoading": "Loading privacy mode …",
+      "privacyLoadFailed": "Privacy mode could not be loaded.",
+      "privacyLoadFailedWithError": "Privacy mode could not be loaded: {error}",
+      "privacyGuardedHelp": "Tool results are masked server-side behind Privacy Shield v4; the LLM only sees identity-free digests.",
+      "privacyBypassHelp": "Raw tool results reach the LLM unmasked. Suitable for trusted internal sources whose content the Privacy Shield cannot structurally digest (e.g. Confluence page bodies).",
+      "privacyPerToolHelp": "Per-tool whitelist: only explicitly listed tools are bypassed. Set the list via the `_privacy_bypass_scopes` field (comma-separated).",
+      "saving": "Saving …"
+    },
+    "auditMode": {
+      "singleHostHelp": "Only the hosts declared in the manifest.",
+      "allowlistHelp": "Manifest hosts plus the operator-maintained host list.",
+      "publicWebHelp": "Any public host. Private network ranges and cloud-metadata endpoints stay blocked.",
+      "confirmPublicWeb": "Public-Web allows this plugin to contact any public host. Private network ranges and cloud-metadata endpoints stay blocked. Continue?",
+      "confirmAllowlist": "Allowlist additionally allows this plugin to reach the operator-maintained host list. Continue?",
+      "intro": "Controls which hosts this audit plugin may reach via <code>ctx.http</code>. Default is <strong>Single-Host</strong>.",
+      "loading": "loading …",
+      "saving": "saving …",
+      "saved": "Mode saved.",
+      "error": "Error: {message}"
+    },
+    "credentials": {
+      "noFields": "This plugin declares no setup fields.",
+      "intro": "Fields marked <secret>Secret · Vault</secret> (passwords, OAuth tokens) are stored encrypted in the vault and only shown as “stored” — never the actual value. Fields marked <config>Config</config> (enum, URL, flags) are non-sensitive and show the current selection. Type or pick a new value to overwrite, or click <trashIcon></trashIcon> to delete the value.",
+      "secretBadgeTitle": "Secret — encrypted in the per-agent vault",
+      "configBadgeTitle": "Config — non-sensitive value in the instance configuration",
+      "pendingDelete": "will be deleted on save",
+      "storedSelectToOverwrite": "stored · select to overwrite",
+      "notSetWithDefault": "not set · default: {default}",
+      "notSet": "not set",
+      "storedRetypeToOverwrite": "stored · retype to overwrite",
+      "clearToDelete": "clear to delete, retype to overwrite",
+      "notSetYet": "not set yet",
+      "cancelDelete": "Cancel deletion",
+      "deleteSecretOnSave": "Delete secret on next save",
+      "deleteConfigOnSave": "Delete config value on next save",
+      "save": "Save",
+      "saveWithCount": "Save ({count})",
+      "savedCheck": "✓ Saved",
+      "connected": "Connected",
+      "notConnected": "Not connected",
+      "reconnect": "Reconnect",
+      "connect": "Connect",
+      "loadingOptions": "Loading options…",
+      "optionsUnavailable": "Options unavailable ({error}). Enter values/IDs comma-separated.",
+      "pluginInactive": "plugin inactive",
+      "noEntries": "No selectable entries (nothing shared with the integration?).",
+      "saving": "Saving",
+      "saveSelection": "Save selection",
+      "saveSelectionWithCount": "Save selection ({count})",
+      "refreshList": "Refresh list"
+    },
+    "editFromStore": {
+      "cloning": "Cloning draft …",
+      "editInBuilder": "Edit in Builder",
+      "hintSourceNotFound": "The original Builder draft no longer exists (deleted or installed by another operator). Reverse codegen from the installed manifest.yaml arrives in B.7.",
+      "hintQuotaExceeded": "Delete existing drafts under “Drafts” before cloning this one."
+    },
+    "requiresWizard": {
+      "dialogAria": "Install prerequisites for {name}",
+      "cancel": "Cancel",
+      "kicker": "Prerequisites",
+      "intro": "Before installation the following capability chain must be satisfied. Order: deepest prerequisite first, then the actual plugin.",
+      "close": "Close",
+      "reviewSummary": "{count, plural, one {# prerequisite} other {# prerequisites}} → {name}",
+      "stepOf": "Step {current} of {total}",
+      "allInstalledDot": "Everything installed.",
+      "aborted": "Installation aborted.",
+      "installAll": "Install all",
+      "confirmStep": "Confirm step",
+      "noProviderSelected": "No provider selected for ''{capability}''.",
+      "stepEndedInState": "Step ''{label}'' ended in state ''{state}''.",
+      "finalLabel": "Final",
+      "target": "Target",
+      "prerequisite": "Prerequisite",
+      "noProviderAvailable": "No provider in the catalog. Please upload a suitable plugin or provide the capability server-side.",
+      "recommended": "Recommended",
+      "active": "active",
+      "installedInactive": "installed · inactive",
+      "stepShort": "Step {current} / {total}",
+      "providerNeedsConfig": "This provider plugin needs configuration before it can be activated. Values are passed exclusively to this one plugin's vault.",
+      "installing": "Installing …",
+      "allInstalled": "Everything installed",
+      "allActive": "{name} and all prerequisites are active.",
+      "errorKicker": "Error"
+    },
+    "upload": {
+      "onlyZip": "Only .zip allowed, got: {name}",
+      "title": "Upload a new agent package.",
+      "intro": "Drag a <mono>.zip</mono> here or pick it via the button. The server validates the manifest, checks peer dependencies, and registers the agent in the catalog automatically.",
+      "chooseFile": "Choose file",
+      "orDragDrop": "or via drag & drop",
+      "cancel": "Cancel",
+      "uploadedKicker": "✓ Uploaded",
+      "inCatalog": "<idTag>{id}</idTag> <versionTag>v{version}</versionTag> is in the catalog. Select and install it below.",
+      "sizeLabel": "Size",
+      "peersMissing": "⚠ Missing peer deps: {peers} — the agent may fail at runtime.",
+      "close": "Close",
+      "failedKicker": "Upload failed",
+      "reset": "Reset"
+    },
+    "setupForm": {
+      "enable": "Enable",
+      "dontSet": "(leave unset)"
+    }
+  },
+  "adminAuth": {
+    "title": "Authentication Providers",
+    "intro": "Enable or disable the sign-in methods. The {envVar} env variable defines the permitted providers; here you choose which of them are currently active.",
+    "loading": "Loading …",
+    "loadError": "Failed to load: {message}",
+    "statusActive": "active",
+    "statusInactive": "inactive",
+    "enable": "Enable",
+    "disable": "Disable",
+    "errors": {
+      "selfLockout": "You cannot disable the provider you are currently signed in with.",
+      "lastActiveProvider": "At least one provider must stay active — otherwise nobody can get in anymore.",
+      "notInWhitelist": "This provider is not allowed in the AUTH_PROVIDERS whitelist.",
+      "enableFailed": "Error {status}: enabling failed.",
+      "disableFailed": "Error {status}: disabling failed."
+    }
+  },
+  "adminRegistries": {
+    "title": "Plugin Registries",
+    "intro": "Sources from which plugins are pulled into the store. New instances start with {hub}. The token is stored encrypted and never shown again — only whether one is set. Changes take effect without a restart.",
+    "addHeading": "Add registry",
+    "fields": {
+      "name": "Name",
+      "url": "URL",
+      "tokenOptional": "Token (optional)",
+      "replaceToken": "Replace token"
+    },
+    "placeholders": {
+      "token": "only for private registries",
+      "tokenUnchanged": "•••••• (unchanged)",
+      "tokenNone": "none"
+    },
+    "add": "Add",
+    "loading": "Loading …",
+    "loadError": "Failed to load: {message}",
+    "empty": "No registries configured.",
+    "edit": "Edit",
+    "cancel": "Cancel",
+    "save": "Save",
+    "remove": "Remove",
+    "removeToken": "Remove token",
+    "badge": {
+      "tokenSet": "Token set",
+      "public": "public"
+    },
+    "confirmDelete": "Really remove registry \"{name}\"?",
+    "errors": {
+      "duplicate": "A registry with this name already exists.",
+      "invalidUrl": "The URL is invalid (http(s) required).",
+      "invalidName": "The name may only contain letters, numbers, . _ -",
+      "notFound": "Registry not found — list reloaded.",
+      "missingFields": "Name and URL are required.",
+      "generic": "Error {status}."
+    }
+  },
+  "adminDomains": {
+    "title": "Plugin Domains",
+    "intro": "Overview of all registered plugins, grouped by the {domain} declared in their {manifest}. Domains are read by the Phase 8 nudge-pipeline multi-domain trigger and used by the operator UI for cross-agent grouping. Curation (renaming / merging / hierarchies) follows with OB-78 (Phase 9 agent profiles).",
+    "loading": "Loading …",
+    "loadError": "Failed to load: {message}",
+    "noData": "No data.",
+    "emptyCatalog": "No plugins in the catalog.",
+    "stats": {
+      "plugins": "Plugins",
+      "domains": "Domains",
+      "fallbacks": "Fallbacks"
+    },
+    "pluginCount": "{count, plural, one {# plugin} other {# plugins}}",
+    "fallbackWarning": "{count, plural, one {# plugin} other {# plugins}} without a declared domain — auto-fallback to {fallbackDomain}. Add an {manifestKey} line to the manifest (e.g. {exampleOne}, {exampleTwo}) or re-upload the agent via the Builder."
+  },
+  "adminUsage": {
+    "title": "Costs",
+    "intro": "Token consumption and LLM costs per model, source and time. Captures every Anthropic call — orchestrator, sub-agents and the Haiku background tasks.",
+    "loading": "Loading …",
+    "loadError": "Failed to load: {message}",
+    "ranges": {
+      "last24h": "24 hours",
+      "last7d": "7 days",
+      "last30d": "30 days",
+      "all": "All time"
+    },
+    "kpi": {
+      "totalCost": "Total cost",
+      "calls": "Calls",
+      "cacheHitRate": "Cache hit rate",
+      "cacheHitHint": "Share of input served from the warm cache",
+      "tokens": "Tokens (in / out)"
+    },
+    "panels": {
+      "costOverTime": "Cost over time",
+      "byModel": "By model",
+      "bySource": "By source"
+    },
+    "empty": "No data in this period.",
+    "barTitle": "{date} · {cost} · {calls, plural, one {# call} other {# calls}}",
+    "rowStats": "{calls} calls · {input} in · {output} out · {cache} cache"
+  },
+  "adminUsers": {
+    "loading": "Loading …",
+    "loadError": "Failed to load: {message}",
+    "errors": {
+      "passwordMinLength": "Password must be at least 8 characters long.",
+      "emailInUse": "This email is already registered as a local user.",
+      "passwordTooShort": "Password too short (min. 8 characters).",
+      "invalidEmail": "Invalid email address.",
+      "generic": "Error {status}: {message}",
+      "selfDisable": "You cannot disable yourself. Another admin must perform this action.",
+      "notLocal": "Password reset only works for local accounts. Federated identities are managed by the IdP.",
+      "selfDelete": "You cannot delete yourself."
+    },
+    "list": {
+      "title": "Users",
+      "intro": "Local accounts and federated identities. Only local users can be created here — federated accounts appear once the user has signed in through the IdP.",
+      "create": "Create new user",
+      "cancel": "Cancel",
+      "form": {
+        "email": "Email",
+        "displayName": "Display name (optional)",
+        "password": "Password (min. 8 characters)",
+        "submit": "Create",
+        "creating": "Creating …"
+      },
+      "table": {
+        "email": "Email",
+        "provider": "Provider",
+        "status": "Status",
+        "lastLogin": "Last sign-in",
+        "edit": "Edit"
+      }
+    },
+    "edit": {
+      "backToList": "Back to overview",
+      "providerAndId": "Provider: {provider} · ID: {id}",
+      "profileHeading": "Profile",
+      "displayName": "Display name",
+      "status": "Status",
+      "statusActive": "active",
+      "statusDisabled": "disabled",
+      "saved": "Saved.",
+      "save": "Save",
+      "saving": "Saving …",
+      "resetHeading": "Reset password",
+      "resetHelp": "Sets the password immediately. The user is not notified — share the new password through a secure channel.",
+      "newPassword": "New password (min. 8)",
+      "resetSuccess": "The password has been reset.",
+      "reset": "Reset",
+      "resetting": "Resetting …",
+      "dangerHeading": "Danger zone",
+      "dangerHelp": "Deleting removes the user permanently. The audit log keeps the entry.",
+      "confirmDelete": "Really delete this user? This action cannot be undone.",
+      "delete": "Delete user",
+      "deleting": "Deleting …"
+    }
+  },
+  "adminTopics": {
+    "loading": "loading…",
+    "error": "Error: {message}",
+    "memberCount": "{count, plural, one {# memory} other {# memories}}",
+    "list": {
+      "title": "Memory · Topics",
+      "intro": "Clusters of all MemorableKnowledge by embedding similarity. Re-clustering is destructive: all existing topics are replaced.",
+      "recluster": {
+        "heading": "Re-cluster",
+        "cosineThreshold": "Cosine threshold (0.3-0.95)",
+        "minClusterSize": "Min cluster size (2-20)",
+        "start": "Start re-cluster",
+        "running": "running",
+        "confirm": "{count} existing topics will be deleted and rebuilt. Continue?",
+        "resultDuration": "Result · {ms} ms",
+        "statCreated": "new topics",
+        "statDeleted": "removed topics",
+        "statUnclustered": "unclustered",
+        "statHaikuCalls": "Haiku calls"
+      },
+      "empty": "No topics. Start a re-cluster above.",
+      "fallbackBadge": "fallback name"
+    },
+    "detail": {
+      "membersHeading": "Members",
+      "emptyMembers": "No visible members (or an ACL hides them)."
+    }
+  },
+  "adminBulkPromote": {
+    "title": "Memory · Bulk Promotion",
+    "intro": "Scores historical turns with missing significance via Haiku and promotes the high-scoring ones as MemorableKnowledge. Idempotent — re-runs only do new work.",
+    "confirmRun": "Warning: up to {count} Haiku calls (~${cost}). Really start?",
+    "noScorerError": "No SignificanceScorer available — set ANTHROPIC_API_KEY in the middleware.",
+    "previewTitle": "Preview",
+    "loading": "loading…",
+    "error": "Error: {message}",
+    "turnsWithoutSignificance": "Turns without significance",
+    "eligibleForPromotion": "Eligible for promotion (≥ {threshold})",
+    "alreadyPromoted": "Already promoted",
+    "scorerAvailable": "Scorer available",
+    "scorerUnavailable": "✗ — ANTHROPIC_API_KEY not set",
+    "parametersTitle": "Parameters",
+    "thresholdLabel": "Threshold",
+    "scoreLimitLabel": "Score limit",
+    "promoteLimitLabel": "Promote limit",
+    "refreshPreview": "Refresh preview",
+    "running": "running",
+    "startRun": "Start bulk job",
+    "resultTitle": "Result ({duration} ms)",
+    "scorePhaseTitle": "Phase 1 · SCORE",
+    "promotePhaseTitle": "Phase 2 · PROMOTE"
+  },
+  "adminDangerZone": {
+    "title": "Danger Zone · Memory Purge",
+    "intro": "Deletes memory irreversibly along one axis. <strong>Everything</strong> wipes agent scratch <em>and</em> knowledge graph; the user / team / channel axes only affect the knowledge graph. There is no undo — always check the preview first.",
+    "note": "<strong>Note:</strong> Deleting per user / team / channel only affects the knowledge graph — the agent scratch is agent-scoped.",
+    "targetTitle": "Target",
+    "axisLabel": "Axis",
+    "axes": {
+      "all": "Everything",
+      "agent": "Agent",
+      "user": "User",
+      "team": "Team",
+      "channel": "Channel"
+    },
+    "selectorLabel": "Selector",
+    "selectorPlaceholder": {
+      "agent": "de.byte5.agent.calendar",
+      "user": "user id or selector",
+      "team": "team id or selector",
+      "channel": "channel id or selector"
+    },
+    "selectorRequired": "Selector required for this axis.",
+    "reseedLabel": "Re-seed default memories after deletion (re-seed defaults)",
+    "loading": "loading…",
+    "previewButton": "Preview",
+    "previewError": "Preview error: {message}",
+    "previewTitle": "Preview — will be deleted",
+    "agentScratch": "Agent scratch",
+    "knowledgeGraph": "Knowledge graph",
+    "confirmTitle": "Confirm deletion",
+    "previewFirst": "Run a preview first — deletion is only possible after that.",
+    "noSelector": "No selector set.",
+    "confirmInstruction": "To confirm, type exactly: <code>{phrase}</code>",
+    "deleting": "deleting…",
+    "deleteButton": "Delete irreversibly",
+    "deleteError": "Delete error: {message}",
+    "deletedTitle": "Deleted",
+    "forbiddenError": "Not authorized (403) — memory purge requires admin rights."
+  },
+  "adminDuplicates": {
+    "list": {
+      "title": "Memory · Possible Duplicates",
+      "intro": "Memories that are semantically almost identical. The “Memories” tab shows MK pairs (cosine ≥ 0.95), the “Excerpts” tab shows Palaia excerpt pairs (cosine ≥ 0.97). Clicking an entry opens the side-by-side view with a resolve button.",
+      "tabs": {
+        "memories": "Memories",
+        "excerpts": "Excerpts (Palaia)"
+      },
+      "confirmBulkRun": "Start bulk merge detect for up to {count} memories? Cosine-only, free of charge — but the bulk scan is O(n × top-k) cosine comparisons.",
+      "confirmExcerptBulkRun": "Bulk excerpt-duplicate detect for up to {count} excerpts? Cosine-only, free of charge.",
+      "bulkDetectAria": "Bulk merge detect",
+      "bulkDetectTitle": "Bulk Detect",
+      "bulkDetectDescription": "Memories that have not had a merge check yet. Cosine-only, no LLM, practically free.",
+      "bulkDetectExcerptsAria": "Bulk excerpt-merge detect",
+      "bulkDetectExcerptsTitle": "Bulk Detect (Excerpts)",
+      "bulkDetectExcerptsDescription": "Excerpts without a merge check (cosine ≥ 0.97). Cosine-only, free of charge.",
+      "previewFailed": "Preview failed: {message}",
+      "unchecked": "unchecked",
+      "alreadyChecked": "already checked",
+      "withoutEmbedding": "without embedding",
+      "limitLabel": "Limit",
+      "running": "running",
+      "startBulkDetect": "Start bulk detect",
+      "confirmHint": "⚠️ Confirmation at limit > {limit}",
+      "runFailed": "Run failed: {message}",
+      "resultTitle": "Result · {duration} ms",
+      "newDuplicates": "new duplicates",
+      "errors": "errors",
+      "statusAll": "all",
+      "loading": "loading…",
+      "refresh": "refresh",
+      "error": "Error: {message}",
+      "emptyMemories": "No duplicate candidates in this selection.",
+      "emptyExcerpts": "No excerpt duplicates in this selection."
+    },
+    "detail": {
+      "title": "Resolve duplicate",
+      "loading": "loading…",
+      "error": "Error: {message}",
+      "detectorFindingTitle": "Detector finding",
+      "cosineSummary": "Cosine similarity <cosine>{value}</cosine> — memories are almost identical.",
+      "resolutionTitle": "Resolution",
+      "reasonLabel": "Reason (optional, recorded in the audit log)",
+      "confirmDelete": "Memory will be permanently deleted: \"{summary}\". Continue?",
+      "confirmResolve": "Set duplicate status to \"{label}\"?",
+      "resolutions": {
+        "keepA": {
+          "label": "Keep A → delete B",
+          "description": "Marks memory A as the canonical variant and permanently deletes memory B. The audit trail is preserved."
+        },
+        "keepB": {
+          "label": "Keep B → delete A",
+          "description": "Marks memory B as the canonical variant and permanently deletes memory A. The audit trail is preserved."
+        },
+        "notDuplicate": {
+          "label": "Not a duplicate (detector overshot)",
+          "description": "Marks the pair as “not a duplicate”. Both memories remain unchanged. It will not be checked again."
+        }
+      },
+      "openMemory": "View memory →",
+      "memoryUnavailable": "Memory not accessible (deleted or no owner)."
+    },
+    "excerptDetail": {
+      "title": "Resolve excerpt duplicate",
+      "loading": "loading…",
+      "error": "Error: {message}",
+      "detectorFindingTitle": "Detector finding",
+      "cosineSummary": "Cosine similarity <cosine>{value}</cosine> — excerpts are almost verbatim identical.",
+      "resolutionTitle": "Resolution",
+      "reasonLabel": "Reason (optional, recorded in the audit log)",
+      "confirmDelete": "Excerpt will be permanently deleted: \"{text}\". Continue?",
+      "confirmResolve": "Set duplicate status to \"{label}\"?",
+      "resolutions": {
+        "keepA": {
+          "label": "Keep A → delete B",
+          "description": "Keeps excerpt A as the canonical quote and permanently deletes excerpt B from the parent MK. The provenance audit row (delete_excerpt) is kept in memory_acl_audit."
+        },
+        "keepB": {
+          "label": "Keep B → delete A",
+          "description": "Keeps excerpt B as the canonical quote and permanently deletes excerpt A."
+        },
+        "notDuplicate": {
+          "label": "Not a duplicate (detector overshot)",
+          "description": "Marks the pair as “not a duplicate”. Both excerpts remain unchanged. It will not be checked again."
+        }
+      },
+      "openParentMemory": "View parent memory →",
+      "excerptUnavailable": "Excerpt not accessible (deleted or no owner).",
+      "positionLine": "Position {position} · {source}",
+      "quotedText": "“{text}”",
+      "parentMemory": "Parent memory: {summary}"
+    }
+  },
+  "adminInconsistencies": {
+    "list": {
+      "title": "Memory · Inconsistencies",
+      "intro": "Memories that are semantically related but contradict each other in content. Clicking an entry opens the side-by-side view for resolving.",
+      "confirmBulkRun": "Start bulk detect for up to {count} memories? Up to 5 Haiku calls per memory — costs scale with the limit.",
+      "bulkDetectAria": "Bulk inconsistency detect",
+      "bulkDetectTitle": "Bulk Detect",
+      "bulkDetectDescription": "Memories that have not had an inconsistency check yet (= from before Slice 9).",
+      "previewFailed": "Preview failed: {message}",
+      "unchecked": "unchecked",
+      "alreadyChecked": "already checked",
+      "withoutEmbedding": "without embedding",
+      "detectorReady": "ready",
+      "detectorNoKey": "no key",
+      "limitLabel": "Limit",
+      "running": "running",
+      "startBulkDetect": "Start bulk detect",
+      "costConfirmHint": "⚠️ Cost confirmation at limit > {limit}",
+      "runFailed": "Run failed: {message}",
+      "resultTitle": "Result · {duration} ms",
+      "newConflicts": "new conflicts",
+      "errors": "errors",
+      "statusAll": "all",
+      "loading": "loading…",
+      "refresh": "refresh",
+      "error": "Error: {message}",
+      "empty": "No inconsistencies in this selection."
+    },
+    "detail": {
+      "title": "Resolve conflict",
+      "loading": "loading…",
+      "error": "Error: {message}",
+      "detectorFindingTitle": "Detector finding",
+      "resolutionTitle": "Resolution",
+      "reasonLabel": "Reason (optional, recorded in the audit log)",
+      "confirmDelete": "Memory will be permanently deleted: \"{summary}\". Continue?",
+      "confirmResolve": "Mark conflict as \"{label}\"?",
+      "resolutions": {
+        "aWins": {
+          "label": "A correct → delete B",
+          "description": "Marks memory A as correct and permanently deletes memory B. The audit trail is preserved."
+        },
+        "bWins": {
+          "label": "B correct → delete A",
+          "description": "Marks memory B as correct and permanently deletes memory A. The audit trail is preserved."
+        },
+        "both": {
+          "label": "Both correct (different contexts)",
+          "description": "Leaves both memories unchanged and marks the conflict as resolved. Use this when both are correct in different contexts."
+        },
+        "dismiss": {
+          "label": "False positive (detector was wrong)",
+          "description": "Marks the detection as a false positive. Both memories remain unchanged. The conflict will not be checked again."
+        }
+      },
+      "openMemory": "View memory →",
+      "memoryUnavailable": "Memory not accessible (deleted or no owner)."
+    }
+  },
+  "adminKgLifecycle": {
+    "quotaTooltip": "{percent}% of the quota",
+    "quotaOverTooltip": "{percent}% — will be evicted on the next GC sweep"
+  },
+  "adminKgPriorities": {
+    "intro": "Per-agent block/boost list for the token-budget assembler. Block drops a turn from the recall pool; boost multiplies the score by `weight` (default 1.3). `manuallyAuthored=true` additionally applies an independent ×1.3 boost — both combine.",
+    "agentIdLabel": "Agent ID",
+    "agentIdPlaceholder": "de.byte5.agent.calendar or orchestrator-default",
+    "load": "Load",
+    "newEntryTitle": "New entry",
+    "weightIgnoredTitle": "weight ignored for block",
+    "weightMultiplierTitle": "score multiplier",
+    "empty": "No entries for this agent."
+  },
+  "adminMemoryBackend": {
+    "title": "Memory · Storage Backend",
+    "intro": "Switches the memory storage between <strong>Postgres</strong> and <strong>In-Memory</strong> (volatile, no database). Postgres requires <code>DATABASE_URL</code> (Neon KG/graphPool). The choice is saved; the switch only takes effect after a restart.",
+    "loading": "loading…",
+    "loadFailed": "Loading failed: {message}",
+    "currentStateTitle": "Current state",
+    "activeBackend": "Active backend",
+    "envDefault": "Env default",
+    "activeProvider": "Active provider",
+    "dbUrlSet": "set",
+    "dbUrlNotSet": "not set",
+    "restartPending": "⚠ A switch has been saved but is not active yet — restart required for the switch to take effect.",
+    "chooseBackendTitle": "Choose backend",
+    "backends": {
+      "postgres": "Postgres (postgres)",
+      "inmemory": "In-memory (volatile, no database)"
+    },
+    "requiresDbUrl": "— requires DATABASE_URL (Neon KG/graphPool)",
+    "saving": "saving…",
+    "saveButton": "Save choice",
+    "savedMessage": "Backend <code>{backend}</code> saved.",
+    "restartRequired": "Restart required for the switch to take effect.",
+    "dbUrlRequiredError": "Postgres requires DATABASE_URL (Neon KG/graphPool). Set DATABASE_URL and restart before switching to Postgres.",
+    "forbiddenError": "Not authorized (403) — switching the backend requires admin rights.",
+    "noProviderError": "No memory provider registered (409) — the choice cannot be saved."
+  },
+  "graph": {
+    "page": {
+      "canvasLoading": "Loading graph canvas…",
+      "errorDevEndpoint": "Dev graph endpoint unavailable. Set DEV_ENDPOINTS_ENABLED=true in middleware/.env.",
+      "errorLoadFailed": "Graph load failed (stats={stats}, sessions={sessions})",
+      "reload": "↻ Reload",
+      "allSessions": "All sessions",
+      "allSessionsHint": "Entire cloud · {count} sessions",
+      "allMemories": "All memories",
+      "allMemoriesHint": "Palaia provenance · 2 hops",
+      "filterPlaceholder": "Filter sessions…",
+      "sessionsHeading": "Sessions",
+      "emptySessions": "none — ask a question in the chat",
+      "headerAllMemories": "🧠 All memories ({count})",
+      "headerAllSessions": "🌐 All sessions ({loaded}/{total})",
+      "memoryCount": "{count, plural, one {# memory} other {# memories}}",
+      "turnCount": "{count, plural, one {# turn} other {# turns}}",
+      "loadingMore": "loading…",
+      "loadingMemories": "Loading memories…",
+      "loadingSession": "Loading session…"
+    },
+    "sessionCard": {
+      "loading": "loading…"
+    },
+    "filters": {
+      "entities": "Entities",
+      "entitiesHint": "Odoo · Confluence",
+      "crossRefs": "Cross-refs",
+      "crossRefsHint": "RELATED · expanded",
+      "mentions": "Mentions",
+      "mentionsHint": "aggregated per session",
+      "trace": "Trace",
+      "traceHint": "Turn · Run · Agent · Tool",
+      "memories": "Memories",
+      "memoriesHint": "MK + excerpt + provenance (2 hops)",
+      "topics": "Topics",
+      "topicsHint": "Cluster nodes + HAS_TOPIC (slice 11)",
+      "issues": "Issues",
+      "issuesHint": "Conflicts + duplicate candidates",
+      "plans": "Plans",
+      "plansHint": "Plan DAG of the selected session (#133)"
+    },
+    "modes": {
+      "graph": "Graph",
+      "list": "List",
+      "memory": "Memory"
+    },
+    "canvas": {
+      "emptyState": "No nodes — select a session on the left or adjust the filters",
+      "help": "Click = select · Double-click = load neighbors · Wheel = zoom · Drag = pan",
+      "legend": {
+        "topicCluster": "Topic cluster",
+        "conflict": "Conflict",
+        "duplicateCandidate": "Duplicate candidate",
+        "excerptDuplicate": "Excerpt duplicate",
+        "planStep": "Plan step",
+        "hasTopicTransitive": "HAS_TOPIC (excerpt, transitive)"
+      }
+    },
+    "detailPanel": {
+      "manualTitle": "manually captured — score boost ×1.3 in the token-budget assembler",
+      "loadingNeighbors": "Loading neighbors…",
+      "expandNeighbors": "↔ Expand neighbors",
+      "neighborCount": "{count, plural, one {# neighbor} other {# neighbors}}",
+      "provenanceHeading": "Provenance (2 hops)",
+      "lvl1Memory": "Lvl 1 · Turn / User / Entities",
+      "lvl1Excerpt": "Lvl 1 · Parent memory",
+      "lvl2Memory": "Lvl 2 · Session",
+      "lvl2Excerpt": "Lvl 2 · Turn / User / Entities",
+      "none": "none"
+    },
+    "acl": {
+      "deleteConfirm": "Really delete this memory? The audit trail is preserved.",
+      "noOwners": "No owners — the memory is only visible to admins.",
+      "removeOwnerTitle": "Remove owner",
+      "addOwnerPlaceholder": "Add omadiaUserId (uuid)",
+      "reasonPlaceholder": "Reason (optional, recorded in the audit log)",
+      "addOwner": "+ Add owner",
+      "deleteTitle": "Hard-delete the memory (audit trail remains)",
+      "errorPrefix": "Error: {error}",
+      "auditUnreadable": "Audit log unreadable: {error}",
+      "auditLoading": "Loading audit trail…",
+      "auditEmpty": "No audit entries.",
+      "reasonQuoted": "“{reason}”"
+    }
+  },
+  "memory": {
+    "errorMiddlewareUnreachable": "Middleware unreachable (localhost:3979). Is `npm run dev` running in the middleware folder?",
+    "errorDevEndpointUnavailable": "Dev memory endpoint unavailable. Set DEV_ENDPOINTS_ENABLED=true in middleware/.env and restart the middleware.",
+    "errorListFailed": "Listing failed (HTTP {status})",
+    "errorFileFailed": "File load failed (HTTP {status})",
+    "backendInMemory": "In-memory · volatile",
+    "descriptionInMemory": "Live browser of the active memory store (RAM, empty after restart).",
+    "descriptionPostgres": "Live browser of the active memory store (persistent in Postgres).",
+    "description": "Live browser of the active memory store.",
+    "pathLabel": "Path",
+    "reload": "↻ Reload",
+    "loading": "Loading…",
+    "empty": "empty",
+    "selectEntry": "Select an entry on the left…"
+  },
+  "memories": {
+    "kinds": {
+      "decision": "Decision",
+      "insight": "Insight",
+      "preference": "Preference",
+      "reference": "Reference"
+    },
+    "list": {
+      "subtitle": "Curated knowledge — ACL-filtered to you as owner.",
+      "reload": "↻ Reload",
+      "filterAll": "all",
+      "loading": "Loading…",
+      "errorPrefix": "Error: {error}",
+      "emptyAll": "No memories yet. Create one via chat or POST /api/v1/memory.",
+      "emptyKind": "No memories of kind “{kind}”. Reset the filter or pick another kind.",
+      "ownerCount": "{count, plural, one {# owner} other {# owners}}"
+    },
+    "detail": {
+      "actions": {
+        "create": "created",
+        "expand": "owner added",
+        "shrink": "owner removed",
+        "delete": "deleted",
+        "edit": "edited",
+        "editExcerpt": "excerpt edited"
+      },
+      "sources": {
+        "llm": "LLM-extracted",
+        "hint": "taken from hint",
+        "fallback": "fallback"
+      },
+      "summaryRequired": "Summary must not be empty.",
+      "deleteConfirm": "Really delete this memory? The audit trail remains, but the item disappears from /memories.",
+      "notFound": "Memory not found or you are not an owner.",
+      "errorPrefix": "Error: {error}",
+      "loading": "Loading…",
+      "summaryLabel": "Summary",
+      "rationaleLabel": "Rationale",
+      "noRationale": "— none —",
+      "reasonLabel": "Reason for the change (optional, recorded in the audit log)",
+      "cancel": "Cancel",
+      "save": "Save",
+      "saving": "Saving…",
+      "delete": "Delete",
+      "edit": "Edit",
+      "excerptsHeading": "Source snippets",
+      "excerptsSubtitle": "Verbatim from the original turn — provenance anchor for the memory.",
+      "excerptsUnreadable": "Snippets unreadable: {error}",
+      "excerptsEmpty": "No source snippets — the memory was saved before slice 6.5 or the extractor returned no excerpts.",
+      "excerptCopyTitle": "Copy snippet to the clipboard",
+      "excerptCopied": "✓ copied",
+      "excerptCopy": "copy",
+      "excerptEdit": "edit",
+      "sourceLabel": "Source:",
+      "copyFailed": "Copy failed (browser blocked clipboard access).",
+      "auditAriaLabel": "Audit history",
+      "auditHeading": "History",
+      "refresh": "refresh",
+      "auditUnreadable": "History unreadable: {error}",
+      "auditEmpty": "No audit entries.",
+      "reasonQuoted": "“{reason}”"
+    }
+  },
+  "routines": {
+    "page": {
+      "kicker": "Routines",
+      "title": "Cron jobs & routines.",
+      "intro": "User-owned recurring agent invocations. They are created in the chat (manage_routine tool); here you can see everything at a glance and pause or delete.",
+      "summaryTotal": "Total",
+      "summaryActive": "Active",
+      "summaryPaused": "Paused",
+      "errorUnknownLoad": "Unknown error while loading routines.",
+      "loadErrorTitle": "Routines unreachable",
+      "columnLastRun": "Last run",
+      "columnActions": "Actions",
+      "emptyTitle": "No routines yet.",
+      "emptyBody": "Routines are created when a user says something like “remind me about X every Monday at 9 am” in the chat — the agent calls the {toolName} tool and creates it."
+    },
+    "row": {
+      "neverRan": "never",
+      "lastRun": "Last run",
+      "lastError": "Last error",
+      "historyTitle": "{count, plural, one {Last # run} other {Last # runs}}",
+      "loading": "Loading…",
+      "historyErrorTitle": "Run history unreachable",
+      "historyEmpty": "No run history for this routine yet — as soon as it fires for the first time, a row will appear here.",
+      "columnDuration": "Duration",
+      "columnError": "Error"
+    },
+    "trigger": {
+      "cron": "Cron",
+      "catchup": "Catch-up",
+      "manual": "Manual"
+    },
+    "actions": {
+      "triggerButton": "Now",
+      "triggerTitle": "Trigger the routine manually now — fires an agent run and delivers the result to the channel.",
+      "triggerNotice": "Started — the result will appear in the channel in ~30 seconds.",
+      "deleteConfirm": "Delete routine ''{name}''? This cannot be undone."
+    },
+    "templateEditor": {
+      "badgeActive": "active · {format}",
+      "description": "JSON schema: {schema}. On trigger the server renders all data + static sections itself; the LLM only fills the narrative-slot strings. Empty editor = remove the template, the routine runs on the legacy path again.",
+      "templatePlaceholder": "'{ \"format\": \"markdown\", \"sections\": [ { \"kind\": \"narrative-slot\", \"id\": \"intro\", \"hint\": \"One sentence of introduction.\" } ] }'",
+      "saveFailedLabel": "Save failed:",
+      "saved": "Saved.",
+      "save": "Save",
+      "savingBusy": "Saving…",
+      "discard": "Discard",
+      "clearEditor": "Clear editor",
+      "previewOpenButton": "Open preview",
+      "previewCloseButton": "Close preview",
+      "previewHeading": "Preview with synthetic data",
+      "previewDescription": "Server-side render preview without an LLM call. You provide the tool results + slot values that the renderer normally receives from C.2 + C.3 at trigger time.",
+      "previewRawLabel": "rawToolResults · per tool name",
+      "previewSlotsLabel": "slots · LLM narratives",
+      "previewSlotsPlaceholder": "'{\n  \"intro\": \"One person absent today.\"\n}'",
+      "previewNoTemplate": "No template in the editor — no preview possible.",
+      "templateJsonBroken": "Template JSON is broken: {message}",
+      "rawToolResultsNotObject": "rawToolResults must be a JSON object.",
+      "rawToolResultsJsonBroken": "rawToolResults JSON is broken: {message}",
+      "slotsNotObject": "slots must be a JSON object.",
+      "slotsJsonBroken": "slots JSON is broken: {message}",
+      "renderingBusy": "Rendering…",
+      "rendererRejected": "Renderer rejected:"
+    },
+    "runTrace": {
+      "empty": "No run trace available (typical for errors before `runTurn` or for older runs before trace persistence was enabled).",
+      "showMore": "more ({count, plural, one {# character} other {# characters}})",
+      "showLess": "less"
+    },
+    "runDetail": {
+      "errorUnreachableFallback": "Run detail unreachable.",
+      "breadcrumbRoutines": "Routines",
+      "loadErrorTitle": "Run unreachable",
+      "fieldDuration": "Duration",
+      "errorLabel": "Error",
+      "sectionAnswer": "Answer",
+      "sectionTrace": "Call Stack · Run Trace",
+      "noAnswer": "No answer stored (run aborted or failed before delivery).",
+      "traceDescription": "Complete agentic trace of this run — iterations, orchestrator tool calls and sub-agent invocations. Click a row to expand / collapse the node."
+    }
+  },
+  "system": {
+    "page": {
+      "title": "Platform health.",
+      "intro": "Runtime, persistence, backup. Metadata only — no secrets.",
+      "errorUnknownLoad": "Unknown error while loading the vault status.",
+      "loadErrorTitle": "Vault status unreachable"
+    },
+    "vaultStatus": {
+      "masterKey": "Master key",
+      "persistence": "Persistence",
+      "vaultFile": "Vault file",
+      "notWrittenYet": "not written yet",
+      "size": "Size",
+      "lastModified": "Last modified",
+      "agentsWithSecrets": "Agents with secrets",
+      "backupHeading": "Off-site backup (Tigris)",
+      "backupActive": "Active",
+      "backupDisabled": "Disabled",
+      "interval": "Interval",
+      "intervalValue": "{hours}h · max {retention} snapshots",
+      "lastRun": "Last run",
+      "lastSuccess": "Last success",
+      "nextRun": "Next run",
+      "storedSnapshots": "Stored snapshots",
+      "lastError": "Last error",
+      "noReasonKnown": "No reason known.",
+      "dotOk": "OK",
+      "dotWarn": "Warning",
+      "dotDanger": "Error",
+      "dotInactive": "Inactive",
+      "keySourceDevFile": "dev file (not for production)",
+      "keySourceDevFileCreated": "dev file (newly generated — DEV ONLY)"
     }
   }
 }

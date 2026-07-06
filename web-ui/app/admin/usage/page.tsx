@@ -2,12 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
+import { useTranslations } from 'next-intl';
+
 /**
  * Cost dashboard — visualises the LLM token-usage ledger written by
  * @omadia/usage-telemetry. Reads GET /api/usage/dashboard (via the /bot-api
  * proxy) and renders KPI cards, per-model / per-source breakdowns, and a cost
- * time series. Hardcoded-German labels follow the sibling admin pages (this
- * section does not use the i18n message catalog).
+ * time series. Labels resolve from the i18n catalog under `adminUsage`.
  */
 
 interface UsageTotals {
@@ -41,11 +42,12 @@ interface UsageDashboard {
 
 type RangeKey = '24h' | '7d' | '30d' | 'all';
 
-const RANGES: ReadonlyArray<{ key: RangeKey; label: string; hours: number | null; bucket: 'hour' | 'day' }> = [
-  { key: '24h', label: '24 Stunden', hours: 24, bucket: 'hour' },
-  { key: '7d', label: '7 Tage', hours: 24 * 7, bucket: 'day' },
-  { key: '30d', label: '30 Tage', hours: 24 * 30, bucket: 'day' },
-  { key: 'all', label: 'Gesamt', hours: null, bucket: 'day' },
+// `labelKey` resolves under `adminUsage.ranges` — translated at render.
+const RANGES: ReadonlyArray<{ key: RangeKey; labelKey: string; hours: number | null; bucket: 'hour' | 'day' }> = [
+  { key: '24h', labelKey: 'last24h', hours: 24, bucket: 'hour' },
+  { key: '7d', labelKey: 'last7d', hours: 24 * 7, bucket: 'day' },
+  { key: '30d', labelKey: 'last30d', hours: 24 * 30, bucket: 'day' },
+  { key: 'all', labelKey: 'all', hours: null, bucket: 'day' },
 ];
 
 const usd = (n: number): string =>
@@ -58,6 +60,7 @@ const compact = (n: number): string => new Intl.NumberFormat('de-DE', { notation
 const pct = (n: number): string => `${(n * 100).toFixed(1)}%`;
 
 export default function UsageDashboardPage(): React.ReactElement {
+  const t = useTranslations('adminUsage');
   const [range, setRange] = useState<RangeKey>('24h');
   const [data, setData] = useState<UsageDashboard | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -118,11 +121,10 @@ export default function UsageDashboardPage(): React.ReactElement {
       <header className="mb-8 flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="font-display text-[clamp(2rem,4vw,3rem)] leading-[1.1] text-[color:var(--fg-strong)]">
-            Kosten
+            {t('title')}
           </h1>
           <p className="mt-3 max-w-2xl text-[16px] leading-[1.55] text-[color:var(--fg-muted)]">
-            Token-Verbrauch und LLM-Kosten pro Modell, Quelle und Zeit. Erfasst jeden
-            Anthropic-Call — Orchestrator, Sub-Agents und die Haiku-Background-Tasks.
+            {t('intro')}
           </p>
         </div>
         <div className="flex gap-1 rounded-lg border border-[color:var(--border)] p-1">
@@ -137,7 +139,7 @@ export default function UsageDashboardPage(): React.ReactElement {
                   : 'text-[color:var(--fg-muted)] hover:text-[color:var(--fg-strong)]'
               }`}
             >
-              {r.label}
+              {t(`ranges.${r.labelKey}`)}
             </button>
           ))}
         </div>
@@ -145,29 +147,29 @@ export default function UsageDashboardPage(): React.ReactElement {
 
       {error && (
         <div className="mb-6 rounded-lg border border-[color:var(--danger-edge)]/40 bg-[color:var(--danger)]/10 px-4 py-3 text-sm text-[color:var(--danger)]">
-          Fehler beim Laden: {error}
+          {t('loadError', { message: error })}
         </div>
       )}
 
       {loading && !data ? (
-        <p className="text-[color:var(--fg-muted)]">Lädt …</p>
+        <p className="text-[color:var(--fg-muted)]">{t('loading')}</p>
       ) : data ? (
         <>
           <section className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <Kpi label="Gesamtkosten" value={usd(data.totals.costUsd)} />
-            <Kpi label="Calls" value={compact(data.totals.calls)} />
+            <Kpi label={t('kpi.totalCost')} value={usd(data.totals.costUsd)} />
+            <Kpi label={t('kpi.calls')} value={compact(data.totals.calls)} />
             <Kpi
-              label="Cache-Hit-Rate"
+              label={t('kpi.cacheHitRate')}
               value={pct(data.totals.cacheHitRatio)}
-              hint="Anteil Input aus dem warmen Cache"
+              hint={t('kpi.cacheHitHint')}
             />
             <Kpi
-              label="Tokens (in / out)"
+              label={t('kpi.tokens')}
               value={`${compact(data.totals.inputTokens)} / ${compact(data.totals.outputTokens)}`}
             />
           </section>
 
-          <Panel title="Kosten über Zeit">
+          <Panel title={t('panels.costOverTime')}>
             {data.timeSeries.length === 0 ? (
               <Empty />
             ) : (
@@ -176,7 +178,11 @@ export default function UsageDashboardPage(): React.ReactElement {
                   <div
                     key={b.bucket}
                     className="group relative flex-1"
-                    title={`${new Date(b.bucket).toLocaleString('de-DE')} · ${usd(b.costUsd)} · ${b.calls} Calls`}
+                    title={t('barTitle', {
+                      date: new Date(b.bucket).toLocaleString('de-DE'),
+                      cost: usd(b.costUsd),
+                      calls: b.calls,
+                    })}
                   >
                     <div
                       className="w-full rounded-t bg-[color:var(--accent)]/70 transition-colors group-hover:bg-[color:var(--accent)]"
@@ -189,10 +195,10 @@ export default function UsageDashboardPage(): React.ReactElement {
           </Panel>
 
           <div className="mt-6 grid gap-6 lg:grid-cols-2">
-            <Panel title="Nach Modell">
+            <Panel title={t('panels.byModel')}>
               <BreakdownTable rows={data.byModel} max={maxModelCost} />
             </Panel>
-            <Panel title="Nach Quelle">
+            <Panel title={t('panels.bySource')}>
               <BreakdownTable rows={data.bySource} max={maxSourceCost} />
             </Panel>
           </div>
@@ -222,10 +228,12 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
 }
 
 function Empty(): React.ReactElement {
-  return <p className="text-sm text-[color:var(--fg-muted)]">Keine Daten im Zeitraum.</p>;
+  const t = useTranslations('adminUsage');
+  return <p className="text-sm text-[color:var(--fg-muted)]">{t('empty')}</p>;
 }
 
 function BreakdownTable({ rows, max }: { rows: UsageByKey[]; max: number }): React.ReactElement {
+  const t = useTranslations('adminUsage');
   if (rows.length === 0) return <Empty />;
   return (
     <ul className="space-y-3">
@@ -242,7 +250,12 @@ function BreakdownTable({ rows, max }: { rows: UsageByKey[]; max: number }): Rea
             />
           </div>
           <div className="mt-1 text-xs text-[color:var(--fg-muted)]">
-            {compact(r.calls)} Calls · {compact(r.inputTokens)} in · {compact(r.outputTokens)} out · {compact(r.cacheReadTokens)} cache
+            {t('rowStats', {
+              calls: compact(r.calls),
+              input: compact(r.inputTokens),
+              output: compact(r.outputTokens),
+              cache: compact(r.cacheReadTokens),
+            })}
           </div>
         </li>
       ))}

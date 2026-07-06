@@ -1,18 +1,23 @@
 import { describe, expect, it } from 'vitest';
 
-import { mapJsonSchemaArray, mapOpenAPI } from '../openapiToTools';
+import { mapJsonSchemaArray, mapOpenAPI, type TFn } from '../openapiToTools';
+
+/** Fake translator (TFn pattern, see messages/README.md) — returns the
+ *  key so assertions stay catalog-independent. */
+const t: TFn = (key) => key;
 
 describe('mapOpenAPI', () => {
   it('rejects non-objects with a root error', () => {
-    const result = mapOpenAPI('not an object');
+    const result = mapOpenAPI('not an object', t);
     expect(result.tools).toEqual([]);
     expect(result.errors[0]?.path).toBe('<root>');
+    expect(result.errors[0]?.reason).toBe('notOpenApiRoot');
   });
 
   it('warns when paths is missing', () => {
-    const result = mapOpenAPI({ openapi: '3.0.0' });
+    const result = mapOpenAPI({ openapi: '3.0.0' }, t);
     expect(result.tools).toEqual([]);
-    expect(result.errors.some((e) => /paths fehlt/.test(e.reason))).toBe(true);
+    expect(result.errors.some((e) => e.reason === 'pathsMissing')).toBe(true);
   });
 
   it('maps a GET with query params into a snake_case tool id', () => {
@@ -39,7 +44,7 @@ describe('mapOpenAPI', () => {
           },
         },
       },
-    });
+    }, t);
     expect(result.errors).toEqual([]);
     expect(result.tools).toHaveLength(1);
     const tool = result.tools[0];
@@ -81,7 +86,7 @@ describe('mapOpenAPI', () => {
           },
         },
       },
-    });
+    }, t);
     expect(result.tools).toHaveLength(1);
     const input = result.tools[0]?.input as {
       properties: Record<string, unknown>;
@@ -97,17 +102,19 @@ describe('mapOpenAPI', () => {
       paths: {
         '/x': { get: { operationId: 'noDocs' } },
       },
-    });
+    }, t);
     expect(result.tools).toEqual([]);
-    expect(result.errors.some((e) => /summary/.test(e.reason))).toBe(true);
+    expect(
+      result.errors.some((e) => e.reason === 'noSummaryOrDescription'),
+    ).toBe(true);
   });
 });
 
 describe('mapJsonSchemaArray', () => {
   it('rejects non-arrays with a root error', () => {
-    expect(mapJsonSchemaArray({ not: 'array' }).errors[0]?.path).toBe(
-      '<root>',
-    );
+    const result = mapJsonSchemaArray({ not: 'array' }, t);
+    expect(result.errors[0]?.path).toBe('<root>');
+    expect(result.errors[0]?.reason).toBe('notArray');
   });
 
   it('maps each entry into a ToolSpec, skipping invalid rows', () => {
@@ -120,9 +127,13 @@ describe('mapJsonSchemaArray', () => {
         description: 'with input',
         input: { type: 'object', properties: {} },
       },
-    ]);
+    ], t);
     expect(result.tools).toHaveLength(2);
-    expect(result.tools.map((t) => t.id)).toEqual(['foo', 'qux']);
+    expect(result.tools.map((tool) => tool.id)).toEqual(['foo', 'qux']);
     expect(result.errors).toHaveLength(2);
+    expect(result.errors.map((e) => e.reason)).toEqual([
+      'idMissing',
+      'descriptionMissing',
+    ]);
   });
 });

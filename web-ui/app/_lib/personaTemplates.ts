@@ -31,10 +31,6 @@ export interface PersonaTemplateSuggestedSkill {
 export interface PersonaTemplate {
   id: PersonaTemplateId;
   labelKey: string;
-  /** German display label for the card title. */
-  labelDe: string;
-  /** Subtitle description. */
-  description: string;
   axes: Required<PersonaAxes>;
   identity?: PersonaTemplateIdentity;
   suggested_skill?: PersonaTemplateSuggestedSkill;
@@ -72,8 +68,6 @@ export const PERSONA_TEMPLATES: readonly PersonaTemplate[] = [
   {
     id: 'customer-service',
     labelKey: 'template.customer-service',
-    labelDe: 'Customer Service Agent',
-    description: 'Professioneller Support mit Empathie und klarer Eskalation.',
     axes: FULL_AXES(75, 30, 85, 20, 0, 40, 30, 20, 15, 25, 10, 5),
     identity: { creature: 'Assistent', vibe: 'Hilfsbereit, geduldig, lösungsorientiert' },
     suggested_skill: {
@@ -84,8 +78,6 @@ export const PERSONA_TEMPLATES: readonly PersonaTemplate[] = [
   {
     id: 'sales-dev',
     labelKey: 'template.sales-dev',
-    labelDe: 'Sales Development Rep',
-    description: 'Proaktiver Vertrieb mit persönlicher Note und klarem Follow-up.',
     axes: FULL_AXES(70, 65, 70, 30, 10, 60, 85, 50, 55, 45, 20, 10),
     identity: { creature: 'Berater', vibe: 'Überzeugend, authentisch, hartnäckig' },
     suggested_skill: {
@@ -96,8 +88,6 @@ export const PERSONA_TEMPLATES: readonly PersonaTemplate[] = [
   {
     id: 'content-marketing',
     labelKey: 'template.content-marketing',
-    labelDe: 'Content & Marketing Agent',
-    description: 'Kreative Brand Voice mit strategischem Denken.',
     axes: FULL_AXES(40, 50, 60, 50, 25, 50, 80, 65, 60, 80, 45, 30),
     identity: { creature: 'Kreativer', vibe: 'Inspirierend, originell, markenaffin' },
     suggested_skill: {
@@ -108,8 +98,6 @@ export const PERSONA_TEMPLATES: readonly PersonaTemplate[] = [
   {
     id: 'research-analyst',
     labelKey: 'template.research-analyst',
-    labelDe: 'Research Analyst',
-    description: 'Gründliche Recherche mit strukturierter Aufbereitung.',
     axes: FULL_AXES(80, 70, 40, 10, 5, 30, 75, 70, 30, 40, 5, 55),
     identity: { creature: 'Analyst', vibe: 'Präzise, methodisch, quellenbasiert' },
     suggested_skill: {
@@ -120,8 +108,6 @@ export const PERSONA_TEMPLATES: readonly PersonaTemplate[] = [
   {
     id: 'software-engineer',
     labelKey: 'template.software-engineer',
-    labelDe: 'Software Engineer',
-    description: 'Teamorientierter Entwickler mit klarem Kommunikationsstil.',
     axes: FULL_AXES(30, 80, 45, 40, 30, 80, 60, 75, 45, 55, 10, 20),
     identity: { creature: 'Entwickler', vibe: 'Pragmatisch, direkt, qualitätsbewusst' },
     suggested_skill: {
@@ -132,8 +118,6 @@ export const PERSONA_TEMPLATES: readonly PersonaTemplate[] = [
   {
     id: 'team-lead',
     labelKey: 'template.team-lead',
-    labelDe: 'Team Lead / Coordinator',
-    description: 'Orchestrator, der Delegation, Eskalation und Teamstruktur steuert.',
     axes: FULL_AXES(55, 50, 70, 25, 15, 70, 85, 55, 40, 35, 15, 40),
     identity: { creature: 'Koordinator', vibe: 'Übersichtlich, diplomatisch, verbindlich' },
     suggested_skill: {
