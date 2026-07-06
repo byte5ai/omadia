@@ -1,6 +1,8 @@
 'use client';
 
 import { Button } from '@/app/_components/ui/Button';
+import { ScrollToBottomButton } from '@/app/_components/ScrollToBottomButton';
+import { useStickToBottom } from '@/app/_lib/useStickToBottom';
 import {
   useCallback,
   useEffect,
@@ -222,11 +224,9 @@ export function PreviewChatPane({
     return `${prefix}-${String(counterRef.current)}`;
   }, []);
 
-  useEffect(() => {
-    const node = scrollRef.current;
-    if (!node) return;
-    node.scrollTop = node.scrollHeight;
-  }, [items]);
+  // Issue #404 — only keep following the transcript while the user is
+  // actually at the bottom; scrolling up mid-stream now holds position.
+  const { isAtBottom, scrollToBottom } = useStickToBottom(scrollRef, [items]);
 
   useEffect(() => {
     return () => {
@@ -250,6 +250,7 @@ export function PreviewChatPane({
     setInflight(true);
     setTurnStartedAt(Date.now());
     if (override === undefined) setInput('');
+    scrollToBottom();
 
     try {
       for await (const ev of streamPreviewTurn(draftId, trimmed, {
@@ -362,7 +363,7 @@ export function PreviewChatPane({
         });
       }
     }
-  }, [draftId, inflight, input, nextKey, t]);
+  }, [draftId, inflight, input, nextKey, scrollToBottom, t]);
 
   const onStop = useCallback(() => {
     abortRef.current?.abort();
@@ -501,37 +502,44 @@ export function PreviewChatPane({
         </div>
       ) : null}
 
-      <div
-        ref={scrollRef}
-        className="flex-1 space-y-3 overflow-y-auto px-4 py-4"
-      >
-        {items.length === 0 ? (
-          <EmptyHint />
-        ) : (
-          items.map((item) => {
-            // Render an `ask_user_choice` tool_use as a real Smart-Card
-            // instead of the generic ToolCard's raw JSON dump. The
-            // preview-agent doesn't pause server-side — clicking just
-            // submits the chosen value as a fresh user turn (same as
-            // typing the option label).
-            if (item.kind === 'tool' && item.toolId === 'ask_user_choice') {
-              const parsed = parseAskUserChoiceInput(item.input);
-              if (parsed) {
-                return (
-                  <ChoiceCard
-                    key={item.key}
-                    choice={parsed}
-                    disabled={inflight}
-                    onChoose={(v) => {
-                      void onSend(v);
-                    }}
-                  />
-                );
+      <div className="relative min-h-0 flex-1">
+        <div
+          ref={scrollRef}
+          className="h-full space-y-3 overflow-y-auto px-4 py-4"
+        >
+          {items.length === 0 ? (
+            <EmptyHint />
+          ) : (
+            items.map((item) => {
+              // Render an `ask_user_choice` tool_use as a real Smart-Card
+              // instead of the generic ToolCard's raw JSON dump. The
+              // preview-agent doesn't pause server-side — clicking just
+              // submits the chosen value as a fresh user turn (same as
+              // typing the option label).
+              if (item.kind === 'tool' && item.toolId === 'ask_user_choice') {
+                const parsed = parseAskUserChoiceInput(item.input);
+                if (parsed) {
+                  return (
+                    <ChoiceCard
+                      key={item.key}
+                      choice={parsed}
+                      disabled={inflight}
+                      onChoose={(v) => {
+                        void onSend(v);
+                      }}
+                    />
+                  );
+                }
               }
-            }
-            return <ChatItemView key={item.key} item={item} />;
-          })
-        )}
+              return <ChatItemView key={item.key} item={item} />;
+            })
+          )}
+        </div>
+        <ScrollToBottomButton
+          visible={!isAtBottom}
+          onClick={scrollToBottom}
+          ariaLabel={t('scrollToBottomAriaLabel')}
+        />
       </div>
 
       {error ? (

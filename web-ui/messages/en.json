@@ -717,6 +717,7 @@
     "clearTabButton": "Clear history",
     "composerResetTitle": "Reset chat (⌘⇧K) — history goes, memory stays",
     "composerResetAriaLabel": "Reset chat",
+    "scrollToBottomAriaLabel": "Jump to latest message",
     "resetConfirmTitle": "Restart this chat?",
     "resetConfirmBody": "The conversation in this chat will be cleared and the agent forgets its current context. Memory and Knowledge-Graph entries are preserved.",
     "resetConfirmAction": "Reset chat",
@@ -1113,6 +1114,7 @@
         "example2": "A helper that summarizes incoming emails.",
         "example3": "An assistant for questions about our vacation policy.",
         "inputLabel": "Describe your assistant",
+        "scrollToBottomAriaLabel": "Jump to latest message",
         "placeholderIdle": "Describe in your own words what your assistant should do.",
         "placeholderBusy": "Your assistant is being built …",
         "send": "Send",
@@ -1301,6 +1303,7 @@
         "choiceSaveFailed": "Could not save selection."
       },
       "inputLabel": "Builder message",
+      "scrollToBottomAriaLabel": "Jump to latest message",
       "placeholder": {
         "thinking": "Builder is thinking …",
         "idle": "Describe what the agent should do. Enter to send, Shift+Enter for a line break."
@@ -1343,6 +1346,7 @@
         "rebuild": "Rebuild",
         "rebuildSuccess": "Rebuild #{buildN} ✓ — preview is ready",
         "inputLabel": "Preview message",
+        "scrollToBottomAriaLabel": "Jump to latest message",
         "placeholder": {
           "inflight": "Preview agent is responding …",
           "idle": "Test the agent. Press Enter to send."

@@ -717,6 +717,7 @@
     "clearTabButton": "Verlauf leeren",
     "composerResetTitle": "Chat zurücksetzen (⌘⇧K) — Verlauf weg, Memory bleibt",
     "composerResetAriaLabel": "Chat zurücksetzen",
+    "scrollToBottomAriaLabel": "Zur neuesten Nachricht springen",
     "resetConfirmTitle": "Chat neu starten?",
     "resetConfirmBody": "Der Verlauf in diesem Chat wird gelöscht und der Agent vergisst den bisherigen Kontext. Memory und Knowledge-Graph-Einträge bleiben erhalten.",
     "resetConfirmAction": "Chat zurücksetzen",
@@ -1113,6 +1114,7 @@
         "example2": "Ein Helfer, der eingehende E-Mails zusammenfasst.",
         "example3": "Ein Assistent für Fragen rund um unsere Urlaubsregeln.",
         "inputLabel": "Beschreibe deinen Assistenten",
+        "scrollToBottomAriaLabel": "Zur neuesten Nachricht springen",
         "placeholderIdle": "Beschreibe in eigenen Worten, was dein Assistent können soll.",
         "placeholderBusy": "Dein Assistent wird gebaut …",
         "send": "Senden",
@@ -1301,6 +1303,7 @@
         "choiceSaveFailed": "Auswahl konnte nicht gespeichert werden."
       },
       "inputLabel": "Builder-Nachricht",
+      "scrollToBottomAriaLabel": "Zur neuesten Nachricht springen",
       "placeholder": {
         "thinking": "Builder denkt nach …",
         "idle": "Beschreibe was der Agent tun soll. Enter zum Senden, Shift+Enter für Zeilenumbruch."
@@ -1343,6 +1346,7 @@
         "rebuild": "Rebuild",
         "rebuildSuccess": "Rebuild #{buildN} ✓ — Preview ist bereit",
         "inputLabel": "Preview-Nachricht",
+        "scrollToBottomAriaLabel": "Zur neuesten Nachricht springen",
         "placeholder": {
           "inflight": "Preview-Agent antwortet …",
           "idle": "Teste den Agent. Enter zum Senden."

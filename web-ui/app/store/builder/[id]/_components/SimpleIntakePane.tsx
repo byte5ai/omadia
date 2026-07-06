@@ -4,6 +4,8 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
+import { ScrollToBottomButton } from '@/app/_components/ScrollToBottomButton';
+import { useStickToBottom } from '@/app/_lib/useStickToBottom';
 import { motion } from 'framer-motion';
 import { Send, Sparkles, StopCircle } from 'lucide-react';
 
@@ -113,11 +115,13 @@ export function SimpleIntakePane({
     return `${prefix}-${String(counterRef.current)}`;
   }, []);
 
-  useEffect(() => {
-    const node = scrollRef.current;
-    if (!node) return;
-    node.scrollTop = node.scrollHeight;
-  }, [messages, inflight, statusKey]);
+  // Issue #404 — only keep following the transcript while the user is
+  // actually at the bottom; scrolling up mid-stream now holds position.
+  const { isAtBottom, scrollToBottom } = useStickToBottom(scrollRef, [
+    messages,
+    inflight,
+    statusKey,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -140,6 +144,7 @@ export function SimpleIntakePane({
         ...prev,
         { key: nextKey('msg'), role: 'user', text: trimmed },
       ]);
+      scrollToBottom();
 
       try {
         for await (const ev of streamBuilderTurn(draftId, trimmed, {
@@ -182,7 +187,7 @@ export function SimpleIntakePane({
         }
       }
     },
-    [draftId, inflight, input, model, nextKey, t],
+    [draftId, inflight, input, model, nextKey, scrollToBottom, t],
   );
 
   const onStop = useCallback(() => {
@@ -214,6 +219,7 @@ export function SimpleIntakePane({
         ...prev,
         { key: nextKey('msg'), role: 'user', text: transcriptText },
       ]);
+      scrollToBottom();
       setChoiceSubmitting(true);
       setError(null);
       onUserChoiceResolved?.();
@@ -231,60 +237,75 @@ export function SimpleIntakePane({
         setChoiceSubmitting(false);
       }
     },
-    [pendingUserChoice, choiceSubmitting, draftId, nextKey, onUserChoiceResolved, t],
+    [
+      pendingUserChoice,
+      choiceSubmitting,
+      draftId,
+      nextKey,
+      onUserChoiceResolved,
+      scrollToBottom,
+      t,
+    ],
   );
 
   const empty = messages.length === 0;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto px-6 py-4">
-        {empty && !inflight ? (
-          <IntakeHero onPick={(text) => void onSend(text)} />
-        ) : (
-          messages.map((m) => (
-            <motion.div
-              key={m.key}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.32, ease: EASE_OUT }}
-              className={cn('flex', m.role === 'user' ? 'justify-end' : 'justify-start')}
-            >
-              <div
-                className={cn(
-                  'max-w-[86%] px-4 py-3 text-[14.5px] leading-relaxed',
-                  m.role === 'user'
-                    ? 'rounded-lg rounded-br-sm bg-[color:var(--accent)] text-[color:var(--fg-on-dark)] shadow-[var(--shadow-sm)]'
-                    : 'rounded-lg rounded-bl-sm bg-[color:var(--bg-soft)] text-[color:var(--fg-strong)]',
-                )}
+      <div className="relative min-h-0 flex-1">
+        <div ref={scrollRef} className="h-full space-y-3 overflow-y-auto px-6 py-4">
+          {empty && !inflight ? (
+            <IntakeHero onPick={(text) => void onSend(text)} />
+          ) : (
+            messages.map((m) => (
+              <motion.div
+                key={m.key}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.32, ease: EASE_OUT }}
+                className={cn('flex', m.role === 'user' ? 'justify-end' : 'justify-start')}
               >
-                {m.role === 'user' ? (
-                  <p className="whitespace-pre-wrap break-words">{m.text}</p>
-                ) : (
-                  <BuilderMarkdown source={m.text} />
-                )}
-              </div>
-            </motion.div>
-          ))
-        )}
+                <div
+                  className={cn(
+                    'max-w-[86%] px-4 py-3 text-[14.5px] leading-relaxed',
+                    m.role === 'user'
+                      ? 'rounded-lg rounded-br-sm bg-[color:var(--accent)] text-[color:var(--fg-on-dark)] shadow-[var(--shadow-sm)]'
+                      : 'rounded-lg rounded-bl-sm bg-[color:var(--bg-soft)] text-[color:var(--fg-strong)]',
+                  )}
+                >
+                  {m.role === 'user' ? (
+                    <p className="whitespace-pre-wrap break-words">{m.text}</p>
+                  ) : (
+                    <BuilderMarkdown source={m.text} />
+                  )}
+                </div>
+              </motion.div>
+            ))
+          )}
 
-        {pendingUserChoice ? (
-          <ChoiceCard
-            choice={{
-              question: pendingUserChoice.question,
-              options: pendingUserChoice.options.map((o) => ({
-                value: o.value,
-                label: o.label,
-              })),
-            }}
-            disabled={choiceSubmitting}
-            onChoose={(v) => {
-              void onChooseUserChoice(v);
-            }}
-          />
-        ) : null}
+          {pendingUserChoice ? (
+            <ChoiceCard
+              choice={{
+                question: pendingUserChoice.question,
+                options: pendingUserChoice.options.map((o) => ({
+                  value: o.value,
+                  label: o.label,
+                })),
+              }}
+              disabled={choiceSubmitting}
+              onChoose={(v) => {
+                void onChooseUserChoice(v);
+              }}
+            />
+          ) : null}
 
-        {inflight ? <LoadingLine status={t(statusKey)} /> : null}
+          {inflight ? <LoadingLine status={t(statusKey)} /> : null}
+        </div>
+        <ScrollToBottomButton
+          visible={!isAtBottom}
+          onClick={scrollToBottom}
+          ariaLabel={t('scrollToBottomAriaLabel')}
+        />
       </div>
 
       {error ? (

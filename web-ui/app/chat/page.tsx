@@ -12,7 +12,9 @@ import {
 import { useTranslations } from 'next-intl';
 import { Eraser, GitBranch, Navigation, Network } from 'lucide-react';
 import { ChatTabs } from '../_components/ChatTabs';
+import { ScrollToBottomButton } from '../_components/ScrollToBottomButton';
 import { Button } from '../_components/ui/Button';
+import { useStickToBottom } from '../_lib/useStickToBottom';
 import { AgentPicker } from '../_components/AgentPicker';
 import { AgentUnavailableBanner } from '../_components/AgentUnavailableBanner';
 import { AgentUsagePills } from '../_components/chat/AgentUsagePills';
@@ -212,14 +214,12 @@ export default function ChatPage(): React.ReactElement {
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // Keep the newest message in view as it streams. Smooth scrolling can't
-  // keep pace with rapid token deltas — the animation restarts further
-  // behind on every tick and never reaches the bottom, leaving the latest
-  // content hidden under the input footer — so this jumps instantly.
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [activeSession.messages]);
+  // Issue #404 — only keep following the stream while the user is actually
+  // at the bottom; scrolling up to read earlier messages now holds position
+  // instead of getting yanked back down on every token delta.
+  const { isAtBottom, scrollToBottom } = useStickToBottom(scrollRef, [
+    activeSession.messages,
+  ]);
 
   // Slice 4c — clear the auto-promoted-MK marker on a message after the
   // user Discards it. The manual save-as-memory button then comes back so
@@ -286,6 +286,9 @@ export default function ChatPage(): React.ReactElement {
         };
       });
       if (overrideText === undefined) setInput('');
+      // A sent message always lands at the bottom, even if the user had
+      // scrolled up to read earlier messages before sending.
+      scrollToBottom();
 
       // Hand the stream off to <StreamRunner /> via the store. The runner
       // owns the fetch + NDJSON-parse loop and writes deltas back into
@@ -313,6 +316,7 @@ export default function ChatPage(): React.ReactElement {
       streamStore,
       activeSession.messages.length,
       selectedAgentSlug,
+      scrollToBottom,
     ],
   );
 
@@ -553,7 +557,7 @@ export default function ChatPage(): React.ReactElement {
         );
       })()}
 
-      <div className="flex min-h-0 flex-1">
+      <div className="relative flex min-h-0 flex-1">
         <div
           ref={scrollRef}
           className="flex-1 overflow-y-auto px-6 py-6"
@@ -576,6 +580,11 @@ export default function ChatPage(): React.ReactElement {
             ))}
           </div>
         </div>
+        <ScrollToBottomButton
+          visible={!isAtBottom}
+          onClick={scrollToBottom}
+          ariaLabel={t('scrollToBottomAriaLabel')}
+        />
       </div>
 
       {/* KG-walk — togglable floating pane (launcher chip → flying window) for
