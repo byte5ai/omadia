@@ -3,6 +3,7 @@
 import { useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Check, X } from 'lucide-react';
+import { useTranslations } from 'next-intl';
 
 import { cn } from '../../_lib/cn';
 import {
@@ -77,6 +78,7 @@ export function RequiresWizard({
   resolution,
   onClose,
 }: RequiresWizardProps): React.ReactElement {
+  const t = useTranslations('store.requiresWizard');
   const router = useRouter();
 
   const initialSelections = useMemo<ProviderSelection[]>(
@@ -109,12 +111,12 @@ export function RequiresWizard({
       className="fixed inset-0 z-50 flex items-center justify-center px-4 py-6"
       role="dialog"
       aria-modal="true"
-      aria-label={`Voraussetzungen für ${targetPluginName} installieren`}
+      aria-label={t('dialogAria', { name: targetPluginName })}
     >
       <button
         type="button"
         onClick={installing ? undefined : onClose}
-        aria-label="Abbrechen"
+        aria-label={t('cancel')}
         disabled={installing}
         className="absolute inset-0 bg-[color:var(--ink)]/40 backdrop-blur-sm transition disabled:cursor-wait"
       />
@@ -130,15 +132,13 @@ export function RequiresWizard({
         <header className="flex items-start justify-between gap-6 border-b border-[color:var(--rule)] px-6 py-4">
           <div className="min-w-0">
             <div className="text-[11px] uppercase tracking-[0.22em] text-[color:var(--faint-ink)]">
-              Voraussetzungen
+              {t('kicker')}
             </div>
             <h2 className="font-display mt-1 text-2xl font-medium leading-tight text-[color:var(--ink)]">
               {targetPluginName}
             </h2>
             <p className="mt-2 text-[12px] leading-relaxed text-[color:var(--muted-ink)]">
-              Vor der Installation muss die folgende Capability-Kette
-              erfüllt sein. Reihenfolge: tiefste Voraussetzung zuerst,
-              dann das eigentliche Plugin.
+              {t('intro')}
             </p>
           </div>
           <button
@@ -146,7 +146,7 @@ export function RequiresWizard({
             onClick={onClose}
             disabled={installing}
             className="text-[color:var(--muted-ink)] transition hover:text-[color:var(--ink)] disabled:opacity-40"
-            aria-label="Schließen"
+            aria-label={t('close')}
           >
             <X className="size-4" aria-hidden />
           </button>
@@ -186,12 +186,18 @@ export function RequiresWizard({
         <footer className="flex items-center justify-between gap-3 border-t border-[color:var(--rule)] bg-[color:var(--paper-soft)] px-6 py-4">
           <p className="text-[11px] leading-relaxed text-[color:var(--faint-ink)]">
             {phase.kind === 'review'
-              ? `${selections.length} Voraussetzung${selections.length === 1 ? '' : 'en'} → ${targetPluginName}`
+              ? t('reviewSummary', {
+                  count: selections.length,
+                  name: targetPluginName,
+                })
               : phase.kind === 'installing'
-                ? `Schritt ${phase.stepIndex + 1} von ${phase.stepCount}`
+                ? t('stepOf', {
+                    current: phase.stepIndex + 1,
+                    total: phase.stepCount,
+                  })
                 : phase.kind === 'success'
-                  ? 'Alles installiert.'
-                  : 'Installation abgebrochen.'}
+                  ? t('allInstalledDot')
+                  : t('aborted')}
           </p>
           <div className="flex items-center gap-2">
             {phase.kind === 'review' ? (
@@ -203,7 +209,7 @@ export function RequiresWizard({
                   onClick={onClose}
                   className="font-semibold text-[color:var(--fg-muted)]"
                 >
-                  Abbrechen
+                  {t('cancel')}
                 </Button>
                 <Button
                   variant="primary"
@@ -212,7 +218,7 @@ export function RequiresWizard({
                   disabled={!allResolved}
                 >
                   <span className="text-[13px] font-semibold">
-                    Alle installieren
+                    {t('installAll')}
                   </span>
                 </Button>
               </>
@@ -223,7 +229,7 @@ export function RequiresWizard({
                 onClick={() => formRef.current?.requestSubmit()}
               >
                 <span className="text-[13px] font-semibold">
-                  Schritt bestätigen
+                  {t('confirmStep')}
                 </span>
               </Button>
             ) : phase.kind === 'success' ? (
@@ -235,7 +241,7 @@ export function RequiresWizard({
                   router.refresh();
                 }}
               >
-                Schließen
+                {t('close')}
               </Button>
             ) : phase.kind === 'error' ? (
               <Button
@@ -245,7 +251,7 @@ export function RequiresWizard({
                 onClick={onClose}
                 className="font-semibold text-[color:var(--fg-muted)]"
               >
-                Schließen
+                {t('close')}
               </Button>
             ) : null}
           </div>
@@ -265,7 +271,7 @@ export function RequiresWizard({
       if (!sel.providerId) {
         setPhase({
           kind: 'error',
-          message: `Kein Provider gewählt für '${sel.capability}'.`,
+          message: t('noProviderSelected', { capability: sel.capability }),
         });
         return;
       }
@@ -322,7 +328,10 @@ export function RequiresWizard({
         if (configured.job.state !== 'active') {
           const message =
             configured.job.error?.message ??
-            `Schritt '${step.label}' endete im Zustand '${configured.job.state}'.`;
+            t('stepEndedInState', {
+              label: step.label,
+              state: configured.job.state,
+            });
           setPhase({ kind: 'error', message });
           return;
         }
@@ -350,6 +359,7 @@ function ReviewBody({
   targetPluginName: string;
   onChange: (idx: number, providerId: string | null) => void;
 }): React.ReactElement {
+  const t = useTranslations('store.requiresWizard');
   return (
     <div className="space-y-4">
       {selections.map((sel, idx) => (
@@ -362,14 +372,14 @@ function ReviewBody({
       ))}
       <div className="border-t border-[color:var(--rule)] pt-4">
         <div className="flex items-center justify-between text-[11px] uppercase tracking-[0.18em] text-[color:var(--faint-ink)]">
-          <span>Final</span>
+          <span>{t('finalLabel')}</span>
           <span className="font-mono-num">{selections.length + 1}</span>
         </div>
         <div className="mt-2 flex items-baseline gap-3">
           <span className="text-[14px] font-semibold text-[color:var(--ink)]">
             {targetPluginName}
           </span>
-          <Chip tone="accent">Ziel</Chip>
+          <Chip tone="accent">{t('target')}</Chip>
         </div>
       </div>
     </div>
@@ -385,6 +395,7 @@ function ProviderPickRow({
   selection: ProviderSelection;
   onChange: (providerId: string | null) => void;
 }): React.ReactElement {
+  const t = useTranslations('store.requiresWizard');
   const groupName = `requires-pick-${index}`;
   const noProviders = selection.candidates.length === 0;
   const singleProvider = selection.candidates.length === 1;
@@ -394,7 +405,7 @@ function ProviderPickRow({
       <div className="flex items-baseline justify-between gap-3">
         <div>
           <div className="text-[11px] uppercase tracking-[0.18em] text-[color:var(--faint-ink)]">
-            Voraussetzung
+            {t('prerequisite')}
           </div>
           <div className="font-mono-num mt-1 text-[14px] text-[color:var(--ink)]">
             {selection.capability}
@@ -407,8 +418,7 @@ function ProviderPickRow({
 
       {noProviders ? (
         <p className="mt-3 text-[12px] text-[color:var(--oxblood)]">
-          Kein Provider im Katalog. Bitte ein passendes Plugin hochladen
-          oder die Capability serverseitig bereitstellen.
+          {t('noProviderAvailable')}
         </p>
       ) : (
         <div className="mt-3 space-y-2">
@@ -440,11 +450,13 @@ function ProviderPickRow({
                   <span className="font-mono-num text-[11px] text-[color:var(--faint-ink)]">
                     v{cand.version}
                   </span>
-                  {singleProvider ? <Chip tone="accent">Empfohlen</Chip> : null}
+                  {singleProvider ? (
+                    <Chip tone="accent">{t('recommended')}</Chip>
+                  ) : null}
                   {cand.already_installed && cand.active ? (
-                    <Chip tone="muted">aktiv</Chip>
+                    <Chip tone="muted">{t('active')}</Chip>
                   ) : cand.already_installed ? (
-                    <Chip tone="muted">installiert · inaktiv</Chip>
+                    <Chip tone="muted">{t('installedInactive')}</Chip>
                   ) : null}
                   <Chip tone="mono">{cand.kind}</Chip>
                 </div>
@@ -471,6 +483,7 @@ function InstallingBody({
   formRef: React.MutableRefObject<HTMLFormElement | null>;
   onFormSubmit: (values: Record<string, unknown>) => void;
 }): React.ReactElement {
+  const t = useTranslations('store.requiresWizard');
   // Mirror the install drawer: flow-managed `install_hidden` fields are kept
   // out of the setup form (editable later via the store-detail editor).
   const fields: InstallSetupField[] = (
@@ -483,7 +496,10 @@ function InstallingBody({
         <span className="lume-busy-dots" aria-hidden />
         <div>
           <div className="text-[11px] uppercase tracking-[0.18em] text-[color:var(--faint-ink)]">
-            Schritt {phase.stepIndex + 1} / {phase.stepCount}
+            {t('stepShort', {
+              current: phase.stepIndex + 1,
+              total: phase.stepCount,
+            })}
           </div>
           <div className="font-display text-lg leading-tight text-[color:var(--ink)]">
             {phase.currentLabel}
@@ -502,9 +518,7 @@ function InstallingBody({
           className="space-y-4 border-t border-[color:var(--rule)] pt-4"
         >
           <p className="text-[12px] leading-relaxed text-[color:var(--muted-ink)]">
-            Dieses Provider-Plugin braucht Konfiguration, bevor es
-            aktiviert werden kann. Werte werden ausschließlich an den
-            Vault dieses einen Plugins übergeben.
+            {t('providerNeedsConfig')}
           </p>
           <div className="space-y-4">
             {fields.map((field) => (
@@ -519,7 +533,7 @@ function InstallingBody({
         </form>
       ) : (
         <p className="text-[12px] text-[color:var(--muted-ink)]">
-          Wird installiert …
+          {t('installing')}
         </p>
       )}
 
@@ -539,26 +553,28 @@ function SuccessBody({
 }: {
   targetPluginName: string;
 }): React.ReactElement {
+  const t = useTranslations('store.requiresWizard');
   return (
     <div className="flex flex-col items-center gap-3 py-6 text-center">
       <div className="flex size-12 items-center justify-center text-[color:var(--success)]">
         <Check className="size-6" aria-hidden />
       </div>
       <div className="font-display text-xl text-[color:var(--ink)]">
-        Alles installiert
+        {t('allInstalled')}
       </div>
       <p className="text-[12px] text-[color:var(--muted-ink)]">
-        {targetPluginName} und alle Voraussetzungen sind aktiv.
+        {t('allActive', { name: targetPluginName })}
       </p>
     </div>
   );
 }
 
 function ErrorBody({ message }: { message: string }): React.ReactElement {
+  const t = useTranslations('store.requiresWizard');
   return (
     <div className="border border-[color:var(--oxblood)] bg-[color:var(--oxblood)]/5 p-4">
       <div className="text-[11px] uppercase tracking-[0.18em] text-[color:var(--oxblood)]">
-        Fehler
+        {t('errorKicker')}
       </div>
       <p className="font-mono-num mt-2 text-[13px] text-[color:var(--oxblood-ink)]">
         {message}

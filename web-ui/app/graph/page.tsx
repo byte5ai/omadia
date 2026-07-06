@@ -2,6 +2,7 @@
 
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslations } from 'next-intl';
 import ListView from './_components/ListView';
 import DetailPanel from './_components/DetailPanel';
 import {
@@ -23,13 +24,18 @@ import {
 // Shared across the page lifetime: at most 4 concurrent /session fetches.
 const sessionFetchLimit = createLimiter(4);
 
+function GraphCanvasLoading(): React.ReactElement {
+  const t = useTranslations('graph.page');
+  return (
+    <div className="flex h-full items-center justify-center text-sm text-[color:var(--fg-muted)]">
+      {t('canvasLoading')}
+    </div>
+  );
+}
+
 const GraphCanvas = dynamic(() => import('./_components/GraphCanvas'), {
   ssr: false,
-  loading: () => (
-    <div className="flex h-full items-center justify-center text-sm text-[color:var(--fg-muted)]">
-      lade Graph-Canvas…
-    </div>
-  ),
+  loading: GraphCanvasLoading,
 });
 
 type ViewMode = 'graph' | 'list' | 'memory';
@@ -40,6 +46,7 @@ const ALL = '__ALL__';
 const MEMORIES = '__MEMORIES__';
 
 export default function GraphPage(): React.ReactElement {
+  const t = useTranslations('graph');
   const [mode, setMode] = useState<ViewMode>('graph');
   const [stats, setStats] = useState<Stats | null>(null);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -97,14 +104,15 @@ export default function GraphPage(): React.ReactElement {
         fetch('/bot-api/dev/graph/sessions'),
       ]);
       if (statsRes.status === 404 || sessionsRes.status === 404) {
-        setError(
-          'Dev-Graph-Endpoint nicht verfügbar. Setze DEV_ENDPOINTS_ENABLED=true in middleware/.env.',
-        );
+        setError(t('page.errorDevEndpoint'));
         return;
       }
       if (!statsRes.ok || !sessionsRes.ok) {
         setError(
-          `Graph-Load fehlgeschlagen (stats=${String(statsRes.status)}, sessions=${String(sessionsRes.status)})`,
+          t('page.errorLoadFailed', {
+            stats: String(statsRes.status),
+            sessions: String(sessionsRes.status),
+          }),
         );
         return;
       }
@@ -114,7 +122,7 @@ export default function GraphPage(): React.ReactElement {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     // Fetch-on-mount: refresh()'s only synchronous setState is setError(null),
@@ -468,9 +476,12 @@ export default function GraphPage(): React.ReactElement {
   const memoryCount = activeMemoryView?.memories.length ?? 0;
   const headerTitle =
     selected === MEMORIES
-      ? `🧠 Alle Memories (${memoryCount})`
+      ? t('page.headerAllMemories', { count: memoryCount })
       : selected === ALL
-        ? `🌐 Alle Sessions (${allLoadedCount}/${allTotal})`
+        ? t('page.headerAllSessions', {
+            loaded: allLoadedCount,
+            total: allTotal,
+          })
         : (activeView?.session.id ?? selected);
 
   const turnSum =
@@ -510,7 +521,7 @@ export default function GraphPage(): React.ReactElement {
             onClick={() => void refresh()}
             className="mt-2 text-[11px] text-[color:var(--fg-muted)] hover:text-[color:var(--fg-strong)]"
           >
-            ↻ neu laden
+            {t('page.reload')}
           </button>
         </div>
 
@@ -530,9 +541,9 @@ export default function GraphPage(): React.ReactElement {
         >
           <span className="text-base">🌐</span>
           <span className="flex flex-col">
-            <span className="font-semibold">Alle Sessions</span>
+            <span className="font-semibold">{t('page.allSessions')}</span>
             <span className="text-[10px] text-[color:var(--fg-muted)]">
-              Gesamte Wolke · {allTotal} Sessions
+              {t('page.allSessionsHint', { count: allTotal })}
             </span>
           </span>
         </button>
@@ -553,9 +564,9 @@ export default function GraphPage(): React.ReactElement {
         >
           <span className="text-base">🧠</span>
           <span className="flex flex-col">
-            <span className="font-semibold">Alle Memories</span>
+            <span className="font-semibold">{t('page.allMemories')}</span>
             <span className="text-[10px] text-[color:var(--fg-muted)]">
-              Palaia-Provenance · 2-Hops
+              {t('page.allMemoriesHint')}
             </span>
           </span>
         </button>
@@ -563,7 +574,7 @@ export default function GraphPage(): React.ReactElement {
         <div className="mx-2 mb-2">
           <input
             type="text"
-            placeholder="Sessions filtern…"
+            placeholder={t('page.filterPlaceholder')}
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             className="w-full rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-2 py-1 text-xs outline-none placeholder:text-[color:var(--fg-subtle)] focus:border-[color:var(--border-strong)]"
@@ -573,7 +584,7 @@ export default function GraphPage(): React.ReactElement {
         <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="flex items-center justify-between px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-[color:var(--fg-subtle)]">
             <span>
-              Sessions ({filteredSessions.length}
+              {t('page.sessionsHeading')} ({filteredSessions.length}
               {filter ? `/${sessions.length}` : ''})
             </span>
           </div>
@@ -584,7 +595,7 @@ export default function GraphPage(): React.ReactElement {
           )}
           {sessions.length === 0 && !error && (
             <div className="px-3 py-2 text-xs text-[color:var(--fg-muted)]">
-              keine — stell eine Frage im Chat
+              {t('page.emptySessions')}
             </div>
           )}
           {filteredSessions.map((s) => (
@@ -609,45 +620,45 @@ export default function GraphPage(): React.ReactElement {
           </span>
           <span className="text-[11px] text-[color:var(--fg-muted)]">
             {selected === MEMORIES
-              ? `${turnSum} Memor${turnSum === 1 ? 'y' : 'ies'}`
-              : `${turnSum} Turn${turnSum === 1 ? '' : 's'}`}
-            {loadingAll ? ' · lade…' : ''}
+              ? t('page.memoryCount', { count: turnSum })
+              : t('page.turnCount', { count: turnSum })}
+            {loadingAll ? <> · {t('page.loadingMore')}</> : null}
           </span>
           {mode !== 'list' && (
             <div className="ml-auto flex flex-wrap items-center gap-1">
               {mode === 'graph' && (
                 <>
                   <FilterChip
-                    label="Entitäten"
-                    hint="Odoo · Confluence"
+                    label={t('filters.entities')}
+                    hint={t('filters.entitiesHint')}
                     active={graphFilter.showEntities}
                     onClick={() => toggleFilter('showEntities')}
                     tone="emerald"
                   />
                   <FilterChip
-                    label="Cross-Refs"
-                    hint="RELATED · expandiert"
+                    label={t('filters.crossRefs')}
+                    hint={t('filters.crossRefsHint')}
                     active={graphFilter.showCrossRefs}
                     onClick={() => toggleFilter('showCrossRefs')}
                     tone="purple"
                   />
                   <FilterChip
-                    label="Mentions"
-                    hint="aggregiert pro Session"
+                    label={t('filters.mentions')}
+                    hint={t('filters.mentionsHint')}
                     active={graphFilter.showMentions}
                     onClick={() => toggleFilter('showMentions')}
                     tone="slate"
                   />
                   <FilterChip
-                    label="Trace"
-                    hint="Turn · Run · Agent · Tool"
+                    label={t('filters.trace')}
+                    hint={t('filters.traceHint')}
                     active={graphFilter.showTrace}
                     onClick={() => toggleFilter('showTrace')}
                     tone="amber"
                   />
                   <FilterChip
-                    label="Memories"
-                    hint="MK + Excerpt + Provenance (2 Hops)"
+                    label={t('filters.memories')}
+                    hint={t('filters.memoriesHint')}
                     active={graphFilter.showMemories}
                     onClick={() => toggleFilter('showMemories')}
                     tone="fuchsia"
@@ -658,22 +669,22 @@ export default function GraphPage(): React.ReactElement {
                   sowohl im graph-Modus als Overlay, als auch im
                   memory-Modus als Cluster-Brücke zwischen MKs. */}
               <FilterChip
-                label="Topics"
-                hint="Cluster-Knoten + HAS_TOPIC (Slice 11)"
+                label={t('filters.topics')}
+                hint={t('filters.topicsHint')}
                 active={graphFilter.showTopics}
                 onClick={() => toggleFilter('showTopics')}
                 tone="teal"
               />
               <FilterChip
-                label="Issues"
-                hint="Konflikte + Duplikat-Kandidaten"
+                label={t('filters.issues')}
+                hint={t('filters.issuesHint')}
                 active={graphFilter.showIssues}
                 onClick={() => toggleFilter('showIssues')}
                 tone="red"
               />
               <FilterChip
-                label="Pläne"
-                hint="Plan-DAG der gewählten Session (#133)"
+                label={t('filters.plans')}
+                hint={t('filters.plansHint')}
                 active={graphFilter.showPlans}
                 onClick={() => toggleFilter('showPlans')}
                 tone="fuchsia"
@@ -689,19 +700,19 @@ export default function GraphPage(): React.ReactElement {
             <ModeBtn
               active={mode === 'graph'}
               onClick={() => setMode('graph')}
-              label="Graph"
+              label={t('modes.graph')}
               disabled={selected === MEMORIES}
             />
             <ModeBtn
               active={mode === 'list'}
               onClick={() => setMode('list')}
-              label="Liste"
+              label={t('modes.list')}
               disabled={selected === ALL || selected === MEMORIES}
             />
             <ModeBtn
               active={mode === 'memory'}
               onClick={() => setMode('memory')}
-              label="Memory"
+              label={t('modes.memory')}
             />
           </div>
         </div>
@@ -726,7 +737,7 @@ export default function GraphPage(): React.ReactElement {
               />
             ) : (
               <div className="flex h-full items-center justify-center text-sm text-[color:var(--fg-muted)]">
-                lade Memories…
+                {t('page.loadingMemories')}
               </div>
             )}
           </div>
@@ -751,7 +762,7 @@ export default function GraphPage(): React.ReactElement {
           </div>
         ) : !activeView ? (
           <div className="flex h-full items-center justify-center text-sm text-[color:var(--fg-muted)]">
-            lade Session…
+            {t('page.loadingSession')}
           </div>
         ) : mode === 'memory' ? (
           <div className="min-h-0 flex-1">
@@ -772,7 +783,7 @@ export default function GraphPage(): React.ReactElement {
               />
             ) : (
               <div className="flex h-full items-center justify-center text-sm text-[color:var(--fg-muted)]">
-                lade Memories…
+                {t('page.loadingMemories')}
               </div>
             )}
           </div>
@@ -841,6 +852,7 @@ function SessionCard({
   active: boolean;
   onClick: () => void;
 }): React.ReactElement {
+  const t = useTranslations('graph.sessionCard');
   const ready = view && view !== 'loading' && view !== 'missing';
   const firstUserMsg = ready
     ? String(view.turns[0]?.turn.props['userMessage'] ?? '').trim()
@@ -898,7 +910,9 @@ function SessionCard({
             </span>
           ))}
         {view === 'loading' && (
-          <span className="text-[10px] text-[color:var(--fg-subtle)]">lädt…</span>
+          <span className="text-[10px] text-[color:var(--fg-subtle)]">
+            {t('loading')}
+          </span>
         )}
       </div>
     </button>

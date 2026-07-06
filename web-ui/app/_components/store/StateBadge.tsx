@@ -1,3 +1,5 @@
+import { useTranslations } from 'next-intl';
+
 import type { PluginInstallState } from '../../_lib/storeTypes';
 import { cn } from '../../_lib/cn';
 
@@ -7,11 +9,12 @@ interface StateBadgeProps {
   className?: string;
 }
 
-const LABEL: Record<PluginInstallState, string> = {
-  available: 'Verfügbar',
-  installed: 'Installiert',
-  'update-available': 'Update verfügbar',
-  incompatible: 'Inkompatibel',
+/** Message-key leaves under `store.stateBadge` — translated at render. */
+const LABEL_KEY: Record<PluginInstallState, string> = {
+  available: 'available',
+  installed: 'installed',
+  'update-available': 'updateAvailable',
+  incompatible: 'incompatible',
 };
 
 const STYLE: Record<PluginInstallState, string> = {
@@ -30,6 +33,7 @@ export function StateBadge({
   isLegacy,
   className,
 }: StateBadgeProps): React.ReactElement {
+  const t = useTranslations('store.stateBadge');
   if (isLegacy) {
     return (
       <span
@@ -43,7 +47,7 @@ export function StateBadge({
         <span className="-mt-0.5" aria-hidden>
           ⚠
         </span>
-        Migration&nbsp;nötig
+        {t('migrationNeeded')}
       </span>
     );
   }
@@ -57,7 +61,7 @@ export function StateBadge({
         className,
       )}
     >
-      {LABEL[state]}
+      {t(LABEL_KEY[state])}
     </span>
   );
 }

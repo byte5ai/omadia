@@ -23,8 +23,6 @@ export type CulturePresetId =
 export interface CulturePreset {
   id: CulturePresetId;
   labelKey: string;
-  labelDe: string;
-  descriptionDe: string;
   dimensions: Partial<PersonaAxes>;
 }
 
@@ -32,8 +30,6 @@ export const CULTURE_PRESETS: readonly CulturePreset[] = [
   {
     id: 'saas-startup',
     labelKey: 'culture.saas-startup',
-    labelDe: 'SaaS-Startup',
-    descriptionDe: 'Locker, direkt, schnell',
     dimensions: {
       formality: 30,
       directness: 75,
@@ -49,8 +45,6 @@ export const CULTURE_PRESETS: readonly CulturePreset[] = [
   {
     id: 'enterprise-corporate',
     labelKey: 'culture.enterprise-corporate',
-    labelDe: 'Konzern / Großunternehmen',
-    descriptionDe: 'Formell, prozesstreu, vorsichtig',
     dimensions: {
       formality: 85,
       directness: 45,
@@ -67,8 +61,6 @@ export const CULTURE_PRESETS: readonly CulturePreset[] = [
   {
     id: 'healthcare',
     labelKey: 'culture.healthcare',
-    labelDe: 'Gesundheitswesen',
-    descriptionDe: 'Formell, warm, risikoarm',
     dimensions: {
       formality: 75,
       directness: 60,
@@ -86,8 +78,6 @@ export const CULTURE_PRESETS: readonly CulturePreset[] = [
   {
     id: 'legal',
     labelKey: 'culture.legal',
-    labelDe: 'Recht / Compliance',
-    descriptionDe: 'Sehr formell, präzise, abwägend',
     dimensions: {
       formality: 90,
       directness: 70,
@@ -105,8 +95,6 @@ export const CULTURE_PRESETS: readonly CulturePreset[] = [
   {
     id: 'ecommerce',
     labelKey: 'culture.ecommerce',
-    labelDe: 'E-Commerce',
-    descriptionDe: 'Warm, lösungsorientiert, proaktiv',
     dimensions: {
       formality: 45,
       directness: 55,
@@ -123,8 +111,6 @@ export const CULTURE_PRESETS: readonly CulturePreset[] = [
   {
     id: 'creative-agency',
     labelKey: 'culture.creative-agency',
-    labelDe: 'Kreativagentur',
-    descriptionDe: 'Locker, originell, mutig',
     dimensions: {
       formality: 20,
       directness: 60,

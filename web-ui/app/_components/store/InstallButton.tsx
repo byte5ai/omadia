@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
-import { useLocale } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import {
   ArrowRight,
   Check,
@@ -79,6 +79,7 @@ export function InstallButton({
   availableVersion,
   setupGuide,
 }: InstallButtonProps): React.ReactElement {
+  const t = useTranslations('store.install');
   const router = useRouter();
   const locale = useLocale();
   const setupGuideText = pickLocalized(setupGuide, locale);
@@ -121,7 +122,7 @@ export function InstallButton({
           <span className="flex items-center gap-3">
             <Lock className="size-4" aria-hidden />
             <span className="text-[15px] font-semibold">
-              Installation blockiert
+              {t('blocked')}
             </span>
           </span>
         </Button>
@@ -153,12 +154,12 @@ export function InstallButton({
         pill
         fullWidth
         onClick={handleOpen}
-        aria-label={`${pluginName} installieren`}
+        aria-label={t('installAria', { name: pluginName })}
         className="group justify-between gap-3 px-6 py-3"
         disabled={phase.kind === 'creating' || phase.kind === 'success'}
       >
         <span className="text-[15px] font-semibold">
-          {phase.kind === 'success' ? 'Installation erfolgreich' : 'Jetzt installieren'}
+          {phase.kind === 'success' ? t('success') : t('installNow')}
         </span>
         {phase.kind === 'creating' ? (
           <span className="lume-busy-dots" aria-hidden />
@@ -233,7 +234,7 @@ export function InstallButton({
           ? safeMessage(err.body) ?? err.message
           : err instanceof Error
             ? err.message
-            : 'Unbekannter Fehler.';
+            : t('unknownError');
       setPhase({ kind: 'error', job: null, message });
     }
   }
@@ -267,7 +268,7 @@ export function InstallButton({
         setPhase({
           kind: 'error',
           job: resp.job,
-          message: `Unerwarteter Job-Zustand: ${resp.job.state}`,
+          message: t('unexpectedJobState', { state: resp.job.state }),
         });
       }
     } catch (err) {
@@ -335,6 +336,7 @@ function InstalledPanel({
   /** C6 — present when a registry advertises a newer version. */
   update?: { from: string; to: string };
 }): React.ReactElement {
+  const t = useTranslations('store.install');
   const router = useRouter();
   const [state, setState] = useState<
     | { kind: 'idle' }
@@ -416,7 +418,7 @@ function InstalledPanel({
           <div className="flex flex-wrap items-center justify-between gap-3">
             <span className="flex items-center gap-2 text-[13px] text-[color:var(--fg)]">
               <RefreshCw className="size-4 text-[color:var(--accent)]" aria-hidden />
-              Update verfügbar
+              {t('updateAvailable')}
               <span className="font-mono-num text-[color:var(--fg-muted)]">
                 {update.from ? `${update.from} → ${update.to}` : `→ ${update.to}`}
               </span>
@@ -427,9 +429,9 @@ function InstalledPanel({
               onClick={() => void doUpdate()}
               disabled={updating}
               busy={updating}
-              busyLabel="Aktualisiere …"
+              busyLabel={t('updating')}
             >
-              Aktualisieren
+              {t('update')}
             </Button>
           </div>
           {updateError ? (
@@ -447,9 +449,9 @@ function InstalledPanel({
         )}
       >
         <Check className="size-5" aria-hidden />
-        <span className="text-[15px] font-semibold">Installiert</span>
+        <span className="text-[15px] font-semibold">{t('installed')}</span>
         <span className="ml-auto text-[11px] uppercase tracking-[0.16em] text-[color:var(--success)]/80">
-          aktiv
+          {t('active')}
         </span>
       </div>
 
@@ -470,19 +472,20 @@ function InstalledPanel({
             'inline-flex items-center gap-2 text-[12px] font-semibold',
             'text-[color:var(--fg-muted)] transition hover:text-[color:var(--danger,#b03030)]',
           )}
-          aria-label={`${pluginName} deinstallieren`}
+          aria-label={t('uninstallAria', { name: pluginName })}
         >
           <Trash2 className="size-3.5" aria-hidden />
-          Deinstallieren
+          {t('uninstall')}
         </button>
       )}
 
       {state.kind === 'confirming' && (
         <div className="rounded-md border border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] p-3">
           <p className="text-[12px] leading-relaxed text-[color:var(--fg)]">
-            <strong>{pluginName}</strong> entfernen? Tool wird sofort aus dem
-            Orchestrator abgebaut, der Vault-Namespace wird geleert, Registry-
-            Eintrag gelöscht.
+            {t.rich('confirmRemove', {
+              name: pluginName,
+              strong: (chunks) => <strong>{chunks}</strong>,
+            })}
           </p>
           <label className="mt-3 flex items-start gap-2 text-[12px] leading-relaxed text-[color:var(--fg)]">
             <input
@@ -492,21 +495,25 @@ function InstalledPanel({
               className="mt-0.5 size-3.5 accent-[color:var(--danger,#b03030)]"
             />
             <span>
-              Auch die hochgeladene Paketdatei unter{' '}
-              <span className="font-mono-num text-[color:var(--fg-muted)]">
-                .uploaded-packages/
-              </span>{' '}
-              entfernen. <span className="text-[color:var(--fg-subtle)]">
-                Ohne Haken bleibt das Package im Katalog und ist neu
-                installierbar — nur Built-ins sind davon unberührt.
-              </span>
+              {t.rich('deletePackageLabel', {
+                mono: (chunks) => (
+                  <span className="font-mono-num text-[color:var(--fg-muted)]">
+                    {chunks}
+                  </span>
+                ),
+                subtle: (chunks) => (
+                  <span className="text-[color:var(--fg-subtle)]">
+                    {chunks}
+                  </span>
+                ),
+              })}
             </span>
           </label>
           <div className="mt-3 flex gap-2">
             <Button variant="danger" pill onClick={doUninstall}>
               {alsoDeletePackage
-                ? 'Ja, deinstallieren + löschen'
-                : 'Ja, deinstallieren'}
+                ? t('confirmUninstallDelete')
+                : t('confirmUninstall')}
             </Button>
             <Button
               variant="secondary"
@@ -515,7 +522,7 @@ function InstalledPanel({
               onClick={() => setState({ kind: 'idle' })}
               className="font-semibold text-[color:var(--fg-muted)]"
             >
-              Abbrechen
+              {t('cancel')}
             </Button>
           </div>
         </div>
@@ -524,21 +531,21 @@ function InstalledPanel({
       {working && (
         <div className="inline-flex items-center gap-2 text-[12px] text-[color:var(--fg-muted)]">
           <span className="lume-busy-dots" aria-hidden />
-          Wird deinstalliert …
+          {t('uninstalling')}
         </div>
       )}
 
       {state.kind === 'error' && (
         <div className="rounded-md border border-[color:var(--danger,#b03030)]/40 bg-[color:var(--danger,#b03030)]/6 px-3 py-2">
           <p className="text-[12px] text-[color:var(--danger,#b03030)]">
-            Deinstallation fehlgeschlagen: {state.message}
+            {t('uninstallFailed', { message: state.message })}
           </p>
           <button
             type="button"
             onClick={() => setState({ kind: 'idle' })}
             className="mt-1 text-[11px] text-[color:var(--fg-subtle)] hover:text-[color:var(--fg)]"
           >
-            Zurücksetzen
+            {t('reset')}
           </button>
         </div>
       )}
@@ -568,6 +575,7 @@ function InstallDrawer({
   onSubmit,
   setupGuide,
 }: InstallDrawerProps): React.ReactElement {
+  const t = useTranslations('store.install');
   const jobFromPhase =
     phase.kind === 'form'
       ? phase.job
@@ -595,12 +603,12 @@ function InstallDrawer({
       className="fixed inset-0 z-50 flex justify-end"
       role="dialog"
       aria-modal="true"
-      aria-label={`${pluginName} einrichten`}
+      aria-label={t('drawerAria', { name: pluginName })}
     >
       <button
         type="button"
         onClick={onClose}
-        aria-label="Abbrechen"
+        aria-label={t('cancel')}
         className="absolute inset-0 bg-[color:var(--ink)]/40 backdrop-blur-sm transition"
       />
 
@@ -614,7 +622,7 @@ function InstallDrawer({
         <header className="flex items-start justify-between gap-6 border-b border-[color:var(--rule)] px-8 py-6">
           <div>
             <div className="text-[11px] uppercase tracking-[0.22em] text-[color:var(--faint-ink)]">
-              Einrichtung
+              {t('drawerKicker')}
             </div>
             <h2 className="font-display mt-2 text-3xl font-medium leading-tight text-[color:var(--ink)]">
               {pluginName}
@@ -633,14 +641,14 @@ function InstallDrawer({
             onClick={onClose}
             className="text-[11px] uppercase tracking-[0.16em] text-[color:var(--muted-ink)] transition hover:text-[color:var(--ink)]"
           >
-            Schließen
+            {t('close')}
           </button>
         </header>
 
         {phase.kind === 'creating' ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-[color:var(--muted-ink)]">
             <span className="lume-busy-dots" aria-hidden />
-            <span className="text-sm">Job wird erstellt …</span>
+            <span className="text-sm">{t('creatingJob')}</span>
           </div>
         ) : phase.kind === 'error' && !jobFromPhase ? (
           <div className="min-h-0 flex-1 overflow-y-auto p-8">
@@ -661,7 +669,7 @@ function InstallDrawer({
               {setupGuide ? (
                 <div className="mb-6 border-b border-[color:var(--rule)] pb-6">
                   <div className="mb-3 text-[11px] uppercase tracking-[0.22em] text-[color:var(--faint-ink)]">
-                    Installationsanleitung
+                    {t('setupGuide')}
                   </div>
                   <Markdown source={setupGuide} />
                 </div>
@@ -669,8 +677,7 @@ function InstallDrawer({
 
               {fields.length === 0 ? (
                 <p className="text-sm italic text-[color:var(--muted-ink)]">
-                  Dieses Plugin erfordert keine Konfiguration — bestätige die
-                  Installation rechts unten.
+                  {t('noConfigNeeded')}
                 </p>
               ) : (
                 <div className="space-y-4">
@@ -693,9 +700,9 @@ function InstallDrawer({
 
             <footer className="flex items-center justify-between gap-3 border-t border-[color:var(--rule)] bg-[color:var(--paper-soft)] px-8 py-4">
               <p className="text-[11px] leading-relaxed text-[color:var(--muted-ink)]">
-                Secrets werden ausschließlich im per-Agent-Vault abgelegt.
+                {t('secretsNote1')}
                 <br />
-                Andere Werte landen in der Instanz-Konfiguration.
+                {t('secretsNote2')}
               </p>
               <Button
                 type="submit"
@@ -704,10 +711,10 @@ function InstallDrawer({
                 size="lg"
                 disabled={submitting}
                 busy={submitting}
-                busyLabel="Wird installiert …"
+                busyLabel={t('installing')}
               >
                 <span className="text-[15px] font-semibold">
-                  Installation bestätigen
+                  {t('confirmInstall')}
                 </span>
               </Button>
             </footer>
@@ -724,10 +731,11 @@ function InstallErrorBlock({
 }: {
   message: string;
 }): React.ReactElement {
+  const t = useTranslations('store.install');
   return (
     <div className="border border-[color:var(--oxblood)] bg-[color:var(--oxblood)]/5 p-4">
       <div className="text-[11px] uppercase tracking-[0.18em] text-[color:var(--oxblood)]">
-        Fehler
+        {t('errorKicker')}
       </div>
       <p className="font-mono-num mt-2 text-sm text-[color:var(--oxblood-ink)]">
         {message}
@@ -771,10 +779,11 @@ function safeMessage(body: string): string | null {
 
 type PrivacyMode = 'guarded' | 'bypass' | 'per_tool';
 
-const PRIVACY_MODE_LABELS: Record<PrivacyMode, string> = {
-  guarded: 'Geschützt (Privacy Shield)',
-  bypass: 'Bypass (roh durchlassen)',
-  per_tool: 'Per-Tool (Whitelist)',
+/** Message-key leaves under `store.install` — translated at render. */
+const PRIVACY_MODE_LABEL_KEYS: Record<PrivacyMode, string> = {
+  guarded: 'privacyGuarded',
+  bypass: 'privacyBypass',
+  per_tool: 'privacyPerTool',
 };
 
 function isPrivacyMode(v: unknown): v is PrivacyMode {
@@ -786,6 +795,7 @@ function PrivacyModePicker({
 }: {
   pluginId: string;
 }): React.ReactElement | null {
+  const t = useTranslations('store.install');
   // `null` initial state → "loading". Once loaded we know what mode the
   // backend currently has stored (default 'guarded' when unset).
   const [mode, setMode] = useState<PrivacyMode | null>(null);
@@ -849,7 +859,7 @@ function PrivacyModePicker({
       <div className="rounded-md border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-3 py-3">
         <div className="flex items-center gap-2 text-[11px] text-[color:var(--fg-subtle)]">
           <span className="lume-busy-dots" aria-hidden />
-          Privacy-Mode wird geladen …
+          {t('privacyLoading')}
         </div>
       </div>
     );
@@ -858,7 +868,9 @@ function PrivacyModePicker({
     return (
       <div className="rounded-md border border-[color:var(--danger,#b03030)]/40 bg-[color:var(--danger,#b03030)]/5 px-3 py-2">
         <p className="text-[12px] text-[color:var(--danger,#b03030)]">
-          Privacy-Mode konnte nicht geladen werden{error ? `: ${error}` : '.'}
+          {error
+            ? t('privacyLoadFailedWithError', { error })
+            : t('privacyLoadFailed')}
         </p>
       </div>
     );
@@ -890,25 +902,25 @@ function PrivacyModePicker({
           saving ? 'opacity-60' : '',
         )}
       >
-        {(Object.entries(PRIVACY_MODE_LABELS) as Array<[PrivacyMode, string]>).map(
-          ([value, label]) => (
-            <option key={value} value={value}>
-              {label}
-            </option>
-          ),
-        )}
+        {(
+          Object.entries(PRIVACY_MODE_LABEL_KEYS) as Array<[PrivacyMode, string]>
+        ).map(([value, labelKey]) => (
+          <option key={value} value={value}>
+            {t(labelKey)}
+          </option>
+        ))}
       </select>
       <p className="mt-2 text-[11px] leading-relaxed text-[color:var(--fg-subtle)]">
         {mode === 'guarded'
-          ? 'Tool-Ergebnisse werden serverseitig hinter dem Privacy Shield v4 maskiert; der LLM sieht nur identitätsfreie Digests.'
+          ? t('privacyGuardedHelp')
           : mode === 'bypass'
-            ? 'Rohe Tool-Ergebnisse erreichen den LLM unmaskiert. Geeignet für vertrauenswürdige interne Quellen, deren Inhalte der Privacy Shield strukturell nicht digestieren kann (z. B. Confluence-Seiten-Bodies).'
-            : 'Per-Tool-Whitelist: nur explizit gelistete Tools werden bypassed. Liste über das Feld `_privacy_bypass_scopes` setzen (Komma-getrennt).'}
+            ? t('privacyBypassHelp')
+            : t('privacyPerToolHelp')}
       </p>
       {saving && (
         <div className="mt-2 flex items-center gap-2 text-[11px] text-[color:var(--fg-subtle)]">
           <span className="lume-busy-dots" aria-hidden />
-          Speichere …
+          {t('saving')}
         </div>
       )}
       {error && (

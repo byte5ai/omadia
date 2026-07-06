@@ -1,7 +1,12 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 
-import type { LlmProvider, LlmResponse } from '@omadia/llm-provider';
+import type {
+  LlmProvider,
+  LlmRequest,
+  LlmResponse,
+  LlmStreamEvent,
+} from '@omadia/llm-provider';
 import {
   NativeToolRegistry,
   Orchestrator,
@@ -9,6 +14,7 @@ import {
   parseDirectLineDirective,
   resolveDirectLineTarget,
   directLineLabel,
+  type ChatStreamEvent,
   type DirectLineCandidate,
 } from '@omadia/orchestrator';
 import {
@@ -151,6 +157,112 @@ describe('#332 toSemanticAnswer agentsConsulted projection', () => {
     const sa = toSemanticAnswer(base);
     assert.equal(sa.agentsConsulted, undefined);
     assert.equal(agentsConsultedFooterText(sa), undefined);
+  });
+
+  it('#332 gap-closure — carries agentId through the projection when the run-trace resolved one', () => {
+    const r: ChatTurnResult = {
+      ...base,
+      runTrace: {
+        scope: 's',
+        startedAt: '2026-01-01T00:00:00.000Z',
+        finishedAt: '2026-01-01T00:00:01.000Z',
+        durationMs: 100,
+        status: 'success',
+        iterations: 1,
+        orchestratorToolCalls: [],
+        agentInvocations: [
+          {
+            index: 0,
+            agentName: 'ask_strategist',
+            agentId: 'de.byte5.agent.strategist',
+            durationMs: 50,
+            subIterations: 1,
+            status: 'success',
+            toolCalls: [],
+          },
+        ],
+      },
+    };
+    const sa = toSemanticAnswer(r);
+    assert.equal(sa.agentsConsulted?.[0]?.agentId, 'de.byte5.agent.strategist');
+  });
+
+  it('#332 gap-closure — two agents sharing a display label still resolve to distinct agentIds', () => {
+    // Both tool names humanize to the SAME label ("Strategist") — the bug
+    // this closes: before agentId was threaded through, these were
+    // indistinguishable in the projection.
+    const r: ChatTurnResult = {
+      ...base,
+      runTrace: {
+        scope: 's',
+        startedAt: '2026-01-01T00:00:00.000Z',
+        finishedAt: '2026-01-01T00:00:01.000Z',
+        durationMs: 100,
+        status: 'success',
+        iterations: 1,
+        orchestratorToolCalls: [],
+        agentInvocations: [
+          {
+            index: 0,
+            agentName: 'ask_strategist',
+            agentId: 'de.byte5.agent.strategist',
+            durationMs: 50,
+            subIterations: 1,
+            status: 'success',
+            toolCalls: [],
+          },
+          {
+            index: 1,
+            agentName: 'consult_strategist',
+            agentId: 'com.other.agent.strategist',
+            durationMs: 40,
+            subIterations: 1,
+            status: 'success',
+            toolCalls: [],
+          },
+        ],
+      },
+    };
+    const sa = toSemanticAnswer(r);
+    assert.equal(sa.agentsConsulted?.length, 2);
+    assert.equal(sa.agentsConsulted?.[0]?.label, 'Strategist');
+    assert.equal(sa.agentsConsulted?.[1]?.label, 'Strategist');
+    assert.equal(sa.agentsConsulted?.[0]?.agentId, 'de.byte5.agent.strategist');
+    assert.equal(sa.agentsConsulted?.[1]?.agentId, 'com.other.agent.strategist');
+    assert.notEqual(
+      sa.agentsConsulted?.[0]?.agentId,
+      sa.agentsConsulted?.[1]?.agentId,
+    );
+  });
+
+  it('#332 gap-closure — agentId is absent from the plain-text footer fallback (internal id stays internal)', () => {
+    const r: ChatTurnResult = {
+      ...base,
+      runTrace: {
+        scope: 's',
+        startedAt: '2026-01-01T00:00:00.000Z',
+        finishedAt: '2026-01-01T00:00:01.000Z',
+        durationMs: 100,
+        status: 'success',
+        iterations: 1,
+        orchestratorToolCalls: [],
+        agentInvocations: [
+          {
+            index: 0,
+            agentName: 'ask_strategist',
+            agentId: 'de.byte5.agent.strategist',
+            durationMs: 50,
+            subIterations: 1,
+            status: 'success',
+            toolCalls: [],
+          },
+        ],
+      },
+    };
+    const sa = toSemanticAnswer(r);
+    const footer = agentsConsultedFooterText(sa);
+    assert.ok(footer);
+    assert.doesNotMatch(footer ?? '', /de\.byte5\.agent\.strategist/);
   });
 });
 
@@ -367,13 +479,22 @@ describe('#332 Layer 2 — Direct Line (strict passthrough, non-streaming/Teams)
   });
 });
 
-// Minimal privacy-guard service stub — enough for runTurn's post-turn block
-// (takeRenderedAnswerV4 + finalizeTurn). Direct-line never interns, so the
-// other methods are not exercised.
+// Minimal privacy-guard service stub. #332 gap-closure: direct-line now
+// routes through the same `dispatchTool` choke point as every other
+// domain-tool dispatch, so `internToolResultV4` IS exercised here — the
+// digest it returns is what a masked delegated answer looks like. The
+// digest text is deterministic-but-distinguishable from the raw input so
+// tests can assert masking actually happened (not just pass through).
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const fakePrivacyGuard = (): any => () =>
   ({
-    internToolResultV4: async () => ({ digest: '', datasetId: '' }),
+    internToolResultV4: async (input: {
+      toolName: string;
+      rawResult: string;
+    }) => ({
+      digestText: `[masked:${input.toolName}:${input.rawResult.length}]`,
+      datasetId: 'ds-test-1',
+    }),
     subAgentResultV4: async (i: { narration: string }) => ({
       resultText: i.narration,
     }),
@@ -416,8 +537,54 @@ describe('#332 Layer 2 — guarded-additive mode', () => {
       privacyGuard: fakePrivacyGuard(),
     });
     const sa = await orch.chat({ userMessage: '#strategist plan?', sessionScope: 'g2' });
-    assert.equal(sa.delegatedAnswer?.text, 'VERBATIM-Y');
-    assert.equal(sa.text, 'VERBATIM-Y'); // no note appended → no provider call
+    // #332 gap-closure: the verbatim answer is now routed through the same
+    // masking cascade as every other domain-tool dispatch — the raw
+    // 'VERBATIM-Y' must NOT reach the user when a privacy guard is active.
+    assert.equal(sa.delegatedAnswer?.text, '[masked:ask_strategist:10]');
+    assert.equal(sa.text, '[masked:ask_strategist:10]'); // no note appended → no provider call
+  });
+});
+
+describe('#332 gap-closure — Direct Line answers are actually PII-masked', () => {
+  it('a verbatim answer is interned (masked) when a privacy guard is active (strict mode)', async () => {
+    const tool = strategistTool(
+      async () => 'contact jane.doe@example.com for details',
+    );
+    const orch = new Orchestrator({
+      provider: neverCalledProvider(),
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [tool],
+      nativeToolRegistry: new NativeToolRegistry(),
+      privacyGuard: fakePrivacyGuard(), // strict is the default directLineMode
+    });
+    const sa = await orch.chat({ userMessage: '#strategist plan?', sessionScope: 'pii1' });
+    assert.ok(sa.delegatedAnswer);
+    assert.doesNotMatch(sa.delegatedAnswer?.text ?? '', /jane\.doe@example\.com/);
+    assert.match(sa.delegatedAnswer?.text ?? '', /^\[masked:ask_strategist:/);
+    assert.doesNotMatch(sa.text, /jane\.doe@example\.com/);
+  });
+
+  it('the raw verbatim text passes through unmasked when NO privacy guard is configured (documented contract)', async () => {
+    const tool = strategistTool(
+      async () => 'contact jane.doe@example.com for details',
+    );
+    const orch = new Orchestrator({
+      provider: neverCalledProvider(),
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [tool],
+      nativeToolRegistry: new NativeToolRegistry(),
+      // no privacyGuard configured — matches production hosts that never
+      // registered a `privacy.redact@1` provider.
+    });
+    const sa = await orch.chat({ userMessage: '#strategist plan?', sessionScope: 'pii2' });
+    assert.equal(
+      sa.delegatedAnswer?.text,
+      'contact jane.doe@example.com for details',
+    );
   });
 });
 
@@ -468,5 +635,198 @@ describe('#332 Layer 3 — forced-delegation obligation (non-streaming)', () => 
     const sa = await orch.chat({ userMessage: 'hello', sessionScope: 's5' });
     assert.equal(asked, false);
     assert.equal(sa.text, 'plain answer');
+  });
+});
+
+describe('#332 gap-closure — standing requiredConsultToolName (L3 real producer)', () => {
+  it('forces the consult from a standing orchestrator-level obligation, with no per-turn expectedDomainTool', async () => {
+    const captured: { q?: string } = {};
+    const tool = strategistTool(async () => 'STANDING-CONSULTED', captured);
+    const { provider, calls } = scriptedCompleteProvider([
+      textResponse('ignoring the specialist'),
+      toolResponse('ask_strategist', { question: 'standing-forced question' }),
+      textResponse('final synthesis'),
+    ]);
+    const orch = new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 6,
+      domainTools: [tool],
+      nativeToolRegistry: new NativeToolRegistry(),
+      requiredConsultToolName: 'ask_strategist',
+    });
+    const sa = await orch.chat({
+      userMessage: 'run the strategy process',
+      sessionScope: 's6',
+      // no expectedDomainTool — the STANDING config must be what forces it
+    });
+    assert.equal(captured.q, 'standing-forced question');
+    assert.ok(calls() >= 2, 'the harness escalated at least once');
+    assert.ok(sa.text.length > 0);
+  });
+
+  it('a standing obligation for an unknown tool name is ignored (isolation — never forces a non-whitelisted tool)', async () => {
+    let asked = false;
+    const tool = strategistTool(async () => {
+      asked = true;
+      return 'x';
+    });
+    const { provider } = scriptedCompleteProvider([textResponse('plain answer')]);
+    const orch = new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 6,
+      domainTools: [tool],
+      nativeToolRegistry: new NativeToolRegistry(),
+      requiredConsultToolName: 'ask_nonexistent',
+    });
+    const sa = await orch.chat({ userMessage: 'hello', sessionScope: 's7' });
+    assert.equal(asked, false);
+    assert.equal(sa.text, 'plain answer');
+  });
+
+  it('a per-turn expectedDomainTool overrides the standing requiredConsultToolName', async () => {
+    const captured: { strategist?: string; twin?: string } = {};
+    const strategist = strategistTool(async (q) => {
+      captured.strategist = q;
+      return 'S';
+    });
+    const twin = createDomainTool({
+      name: 'ask_twin',
+      description: 'twin',
+      domain: 'x',
+      agentId: 'com.other.agent.twin',
+      agent: {
+        ask: async (q: string) => {
+          captured.twin = q;
+          return 'T';
+        },
+      },
+    });
+    const { provider, calls } = scriptedCompleteProvider([
+      textResponse('ignoring both specialists'),
+      toolResponse('ask_twin', { question: 'per-turn wins' }),
+      textResponse('final synthesis'),
+    ]);
+    const orch = new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 6,
+      domainTools: [strategist, twin],
+      nativeToolRegistry: new NativeToolRegistry(),
+      requiredConsultToolName: 'ask_strategist', // standing default
+    });
+    const sa = await orch.chat({
+      userMessage: 'run the process',
+      sessionScope: 's8',
+      expectedDomainTool: 'ask_twin', // per-turn override
+    });
+    assert.equal(captured.twin, 'per-turn wins', 'the per-turn obligation must win');
+    assert.equal(captured.strategist, undefined, 'the standing default must not also fire');
+    assert.ok(calls() >= 2);
+    assert.ok(sa.text.length > 0);
+  });
+});
+
+describe('#332 gap-closure — agentsConsulted on the STREAMING done event (web-ui path)', () => {
+  it('a Direct Line streamed turn carries agentsConsulted on its done event', async () => {
+    const tool = strategistTool(async () => 'STREAMED-VERBATIM');
+    const orch = new Orchestrator({
+      provider: neverCalledProvider(),
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [tool],
+      nativeToolRegistry: new NativeToolRegistry(),
+    });
+    let doneEvent: Extract<ChatStreamEvent, { type: 'done' }> | undefined;
+    for await (const event of orch.chatStream({
+      userMessage: '#strategist plan?',
+      sessionScope: 'stream1',
+    })) {
+      if (event.type === 'done') doneEvent = event;
+    }
+    assert.ok(doneEvent, 'a done event must be yielded');
+    assert.equal(doneEvent?.delegatedAnswer?.text, 'STREAMED-VERBATIM');
+    assert.equal(doneEvent?.agentsConsulted?.length, 1);
+    assert.equal(doneEvent?.agentsConsulted?.[0]?.label, 'Strategist');
+    assert.equal(
+      doneEvent?.agentsConsulted?.[0]?.agentId,
+      'de.byte5.agent.strategist',
+    );
+  });
+
+  it('an ordinary orchestrator-driven streamed turn carries agentsConsulted on its done event', async () => {
+    const tool = strategistTool(async () => 'ORDINARY-STREAMED');
+    // `chatStream` drives the LLM via `provider.stream()` (an SSE-shaped
+    // event protocol), NOT `provider.complete()` — mirrors the pattern in
+    // parallelTool.test.ts. Two scripted calls: 1st yields a tool_use, 2nd
+    // yields the final text.
+    let callIdx = 0;
+    const streams: LlmStreamEvent[][] = [
+      [
+        { type: 'tool_use_start' },
+        { type: 'tool_input_delta', text: JSON.stringify({ question: 'what now?' }) },
+        {
+          type: 'final',
+          response: {
+            content: [
+              { type: 'tool_call', id: 'u1', name: 'ask_strategist', input: { question: 'what now?' } },
+            ],
+            finishReason: 'tool_calls',
+            providerFinishReason: 'tool_use',
+            model: 'test',
+            usage,
+          } as unknown as LlmResponse,
+        },
+      ],
+      [
+        { type: 'text_delta', text: 'final synthesis' },
+        {
+          type: 'final',
+          response: textResponse('final synthesis'),
+        },
+      ],
+    ];
+    const provider = {
+      id: 'anthropic',
+      capabilities: providerCapabilities,
+      complete: async (): Promise<LlmResponse> => {
+        throw new Error('complete() not scripted for this streaming test');
+      },
+      stream: (_req: LlmRequest): AsyncIterable<LlmStreamEvent> => {
+        const events = streams[callIdx] ?? [];
+        callIdx += 1;
+        return {
+          async *[Symbol.asyncIterator]() {
+            for (const ev of events) yield ev;
+          },
+        };
+      },
+      classifyError: () => ({ retryable: false, kind: 'other' as const }),
+    } as unknown as LlmProvider;
+    const orch = new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [tool],
+      nativeToolRegistry: new NativeToolRegistry(),
+    });
+    let sawAgentsConsulted = false;
+    for await (const event of orch.chatStream({
+      userMessage: 'consult the strategist',
+      sessionScope: 'stream2',
+    })) {
+      if (event.type === 'done') {
+        sawAgentsConsulted =
+          (event.agentsConsulted?.length ?? 0) === 1 &&
+          event.agentsConsulted?.[0]?.label === 'Strategist';
+      }
+    }
+    assert.ok(sawAgentsConsulted, 'the done event must carry agentsConsulted');
   });
 });

@@ -15,35 +15,43 @@
 
 export const TOOL_ID_PATTERN = /^[a-z][a-z0-9_]*$/;
 
-const TOOL_ID_RULE_HUMAN =
-  'Tool-ID muss snake_case sein (Kleinbuchstaben, Ziffern, Unterstrich; Beginn mit Buchstabe)';
+/** Translator signature (see messages/README.md "Helper functions that
+ *  need to translate"). Render sites pass a `useTranslations(
+ *  'builder.tools.validation')`-scoped translator; tests pass a fake. */
+export type TFn = (key: string, values?: Record<string, string | number>) => string;
 
 export interface ToolFieldErrors {
   id?: string;
   description?: string;
 }
 
-export function validateToolId(value: string): string | undefined {
-  if (value.length === 0) return 'Tool-ID darf nicht leer sein';
-  if (!TOOL_ID_PATTERN.test(value)) return TOOL_ID_RULE_HUMAN;
+export function validateToolId(value: string, t: TFn): string | undefined {
+  if (value.length === 0) return t('idEmpty');
+  if (!TOOL_ID_PATTERN.test(value)) return t('idFormat');
   return undefined;
 }
 
-export function validateToolDescription(value: string): string | undefined {
-  if (value.trim().length === 0) return 'Beschreibung darf nicht leer sein';
+export function validateToolDescription(
+  value: string,
+  t: TFn,
+): string | undefined {
+  if (value.trim().length === 0) return t('descriptionEmpty');
   return undefined;
 }
 
 /** Validate a tool's mutable fields and return per-field error messages.
  *  Empty object means valid. */
-export function validateToolFields(input: {
-  id: string;
-  description: string;
-}): ToolFieldErrors {
+export function validateToolFields(
+  input: {
+    id: string;
+    description: string;
+  },
+  t: TFn,
+): ToolFieldErrors {
   const errors: ToolFieldErrors = {};
-  const idErr = validateToolId(input.id);
+  const idErr = validateToolId(input.id, t);
   if (idErr) errors.id = idErr;
-  const descErr = validateToolDescription(input.description);
+  const descErr = validateToolDescription(input.description, t);
   if (descErr) errors.description = descErr;
   return errors;
 }

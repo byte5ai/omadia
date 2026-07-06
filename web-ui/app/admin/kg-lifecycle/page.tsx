@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 
+import { useTranslations } from 'next-intl';
+
 import { Button } from '@/app/_components/ui/Button';
 
 /**
@@ -465,6 +467,7 @@ function QuotaPill({
   value: number;
   limit?: number;
 }): JSX.Element {
+  const t = useTranslations('adminKgLifecycle');
   if (limit === undefined || limit <= 0) {
     return (
       <span className="text-xs text-[color:var(--fg-muted)]">—</span>
@@ -478,10 +481,11 @@ function QuotaPill({
         ? 'bg-[color:var(--warning)]/20 text-[color:var(--warning)]'
         : 'bg-[color:var(--success)]/20 text-[color:var(--success)]';
   const formatted = `${value.toLocaleString()}/${limit.toLocaleString()}`;
+  const percent = (ratio * 100).toFixed(0);
   const tooltip =
     ratio > 1.0
-      ? `${(ratio * 100).toFixed(0)}% — wird beim nächsten GC-Sweep evicted`
-      : `${(ratio * 100).toFixed(0)}% des Quota`;
+      ? t('quotaOverTooltip', { percent })
+      : t('quotaTooltip', { percent });
   return (
     <span
       className={`inline-block rounded-full px-2 py-0.5 text-[11px] font-medium ${tone}`}

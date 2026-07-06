@@ -1,7 +1,9 @@
 'use client';
 
 import type {
+  AgentConsultation,
   ChatSession,
+  DelegatedAnswer,
   DiagramAttachment,
   FollowUpOption,
   KgWalkEdge,
@@ -129,6 +131,10 @@ export type ChatStreamEvent =
       followUpOptions?: FollowUpOption[];
       privacyReceipt?: PrivacyReceipt;
       maskedValues?: readonly string[];
+      /** #332 Layer 1 (gap-closure) — see `Message.agentsConsulted`. */
+      agentsConsulted?: AgentConsultation[];
+      /** #332 Layer 2 (gap-closure) — see `Message.delegatedAnswer`. */
+      delegatedAnswer?: DelegatedAnswer;
     }
   /** #133 (E9) — opaque turn annotation the orchestrator forwarded from a
    *  turn-hook. `channel: 'plan'` carries a live PlanSnapshot. */
@@ -355,6 +361,12 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
         ...(event.privacyReceipt ? { privacyReceipt: event.privacyReceipt } : {}),
         ...(event.maskedValues && event.maskedValues.length > 0
           ? { maskedValues: event.maskedValues }
+          : {}),
+        ...(event.agentsConsulted && event.agentsConsulted.length > 0
+          ? { agentsConsulted: event.agentsConsulted }
+          : {}),
+        ...(event.delegatedAnswer
+          ? { delegatedAnswer: event.delegatedAnswer }
           : {}),
         finishedAt: Date.now(),
         streaming: false,

@@ -6,16 +6,18 @@ import * as api from '../../../../../_lib/api';
 import { PersonaPillar } from '../PersonaPillar';
 import { renderWithIntl } from './personaIntlHelper';
 
-const render = (ui: ReactElement) => renderWithIntl(ui, { locale: 'de' });
+const render = (ui: ReactElement) => renderWithIntl(ui);
 
 /**
  * Phase 3 / OB-67 Slice 4 — PersonaPillar integration tests.
  *
+ * Rendered at the default locale 'en' against the real catalogs.
+ *
  * Coverage:
  *   - Initial render shows Core 8 sliders by default; Extended 4 collapsed.
  *   - Slider onChange writes to local state (rendered value updates).
- *   - "Speichern" calls setPersonaConfig with compact persona payload.
- *   - "Zurücksetzen" reverts to initial.
+ *   - "Save" calls setPersonaConfig with compact persona payload.
+ *   - "Reset" reverts to initial.
  *   - Conflict banner appears for hard sycophancy=high + directness <= 30.
  *   - Empty initial persona renders without crashing.
  */
@@ -83,14 +85,14 @@ describe('<PersonaPillar />', () => {
     expect(warmth.value).toBe('30');
   });
 
-  it('Speichern fires setPersonaConfig with compact payload', async () => {
+  it('Save fires setPersonaConfig with compact payload', async () => {
     render(<PersonaPillar draftId="draft-7" />);
     const directness = screen
       .getByTestId('dimension-slider-directness')
       .querySelector('input[type="range"]') as HTMLInputElement;
     fireEvent.change(directness, { target: { value: '75' } });
 
-    const saveBtn = screen.getByRole('button', { name: /Speichern/ });
+    const saveBtn = screen.getByRole('button', { name: /^Save$/ });
     expect(saveBtn).not.toBeDisabled();
     fireEvent.click(saveBtn);
 
@@ -103,7 +105,7 @@ describe('<PersonaPillar />', () => {
     expect(payload).toEqual({ axes: { directness: 75 } });
   });
 
-  it('Zurücksetzen reverts to initialPersona', () => {
+  it('Reset reverts to initialPersona', () => {
     render(
       <PersonaPillar
         draftId="draft-1"
@@ -116,7 +118,7 @@ describe('<PersonaPillar />', () => {
     fireEvent.change(warmth, { target: { value: '90' } });
     expect(warmth.value).toBe('90');
 
-    fireEvent.click(screen.getByRole('button', { name: /Zurücksetzen/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^Reset$/ }));
     expect(warmth.value).toBe('40');
   });
 
@@ -135,9 +137,9 @@ describe('<PersonaPillar />', () => {
     ).toBeInTheDocument();
   });
 
-  it('Speichern disabled when nothing changed', () => {
+  it('Save disabled when nothing changed', () => {
     render(<PersonaPillar draftId="draft-1" />);
-    expect(screen.getByRole('button', { name: /Speichern/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /^Save$/ })).toBeDisabled();
   });
 
   it('renders without crash for empty initialPersona', () => {

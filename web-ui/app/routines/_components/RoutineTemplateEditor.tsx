@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useMemo, useState } from 'react';
+import { useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import {
@@ -39,6 +40,7 @@ interface Props {
  * and the rest of the row reflects the new template state.
  */
 export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
+  const t = useTranslations('routines.templateEditor');
   const router = useRouter();
 
   const persistedJson = useMemo(
@@ -121,7 +123,7 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
     setPreviewResult(null);
     const trimmed = draft.trim();
     if (trimmed.length === 0) {
-      setPreviewError('Kein Template im Editor — kein Preview möglich.');
+      setPreviewError(t('previewNoTemplate'));
       return;
     }
     let template: RoutineOutputTemplateDto;
@@ -129,7 +131,9 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
       template = JSON.parse(trimmed) as RoutineOutputTemplateDto;
     } catch (err) {
       setPreviewError(
-        `Template-JSON kaputt: ${err instanceof Error ? err.message : String(err)}`,
+        t('templateJsonBroken', {
+          message: err instanceof Error ? err.message : String(err),
+        }),
       );
       return;
     }
@@ -142,13 +146,15 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
           typeof parsed !== 'object' ||
           Array.isArray(parsed)
         ) {
-          setPreviewError('rawToolResults muss ein JSON-Objekt sein.');
+          setPreviewError(t('rawToolResultsNotObject'));
           return;
         }
         rawToolResults = parsed as Record<string, unknown>;
       } catch (err) {
         setPreviewError(
-          `rawToolResults-JSON kaputt: ${err instanceof Error ? err.message : String(err)}`,
+          t('rawToolResultsJsonBroken', {
+            message: err instanceof Error ? err.message : String(err),
+          }),
         );
         return;
       }
@@ -162,13 +168,15 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
           typeof parsed !== 'object' ||
           Array.isArray(parsed)
         ) {
-          setPreviewError('slots muss ein JSON-Objekt sein.');
+          setPreviewError(t('slotsNotObject'));
           return;
         }
         slots = parsed as Record<string, string>;
       } catch (err) {
         setPreviewError(
-          `slots-JSON kaputt: ${err instanceof Error ? err.message : String(err)}`,
+          t('slotsJsonBroken', {
+            message: err instanceof Error ? err.message : String(err),
+          }),
         );
         return;
       }
@@ -197,7 +205,7 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
         <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.16em] text-[color:var(--fg-subtle)]">
           {routine.outputTemplate ? (
             <span className="rounded-full border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/5 px-2 py-0.5 font-semibold text-[color:var(--accent)]">
-              aktiv · {routine.outputTemplate.format}
+              {t('badgeActive', { format: routine.outputTemplate.format })}
             </span>
           ) : (
             <span className="rounded-full border border-[color:var(--border)] px-2 py-0.5 font-semibold text-[color:var(--fg-muted)]">
@@ -208,13 +216,13 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
       </div>
 
       <p className="text-[12px] leading-relaxed text-[color:var(--fg-muted)]">
-        JSON-Schema:{' '}
-        <code className="font-mono text-[11px]">
-          {`{ format, sections: [...] }`}
-        </code>
-        . Beim Trigger rendert der Server alle data- + static-Sektionen
-        selbst; der LLM füllt nur die narrative-slot-Strings. Leerer Editor
-        = Template entfernen, Routine läuft wieder im Legacy-Pfad.
+        {t.rich('description', {
+          schema: () => (
+            <code className="font-mono text-[11px]">
+              {`{ format, sections: [...] }`}
+            </code>
+          ),
+        })}
       </p>
 
       <textarea
@@ -226,7 +234,7 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
         spellCheck={false}
         rows={16}
         className="w-full rounded-md border border-[color:var(--border)] bg-[color:var(--surface)] p-3 font-mono text-[12px] leading-relaxed text-[color:var(--fg-strong)] focus:border-[color:var(--accent)] focus:outline-none"
-        placeholder='{ "format": "markdown", "sections": [ { "kind": "narrative-slot", "id": "intro", "hint": "Ein Satz Einleitung." } ] }'
+        placeholder={t('templatePlaceholder')}
       />
 
       {draftParseError ? (
@@ -238,14 +246,14 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
 
       {saveError ? (
         <div className="rounded-md border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/5 p-2 text-[11px] text-[color:var(--danger)]">
-          <span className="font-semibold">Save fehlgeschlagen:</span>{' '}
+          <span className="font-semibold">{t('saveFailedLabel')}</span>{' '}
           <span className="font-mono">{saveError}</span>
         </div>
       ) : null}
 
       {saveOk ? (
         <div className="rounded-md border border-[color:var(--ok)]/40 bg-[color:var(--ok)]/5 p-2 text-[11px] text-[color:var(--ok)]">
-          Gespeichert.
+          {t('saved')}
         </div>
       ) : null}
 
@@ -259,10 +267,10 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
           }}
           disabled={saving || draftParseError !== null || !dirty}
           busy={saving}
-          busyLabel="Speichert…"
+          busyLabel={t('savingBusy')}
           className="text-[11px] font-semibold uppercase tracking-[0.16em]"
         >
-          Speichern
+          {t('save')}
         </Button>
         <Button
           variant="secondary"
@@ -272,7 +280,7 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
           disabled={saving || !dirty}
           className="text-[11px] uppercase tracking-[0.16em]"
         >
-          Verwerfen
+          {t('discard')}
         </Button>
         <button
           type="button"
@@ -280,7 +288,7 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
           disabled={saving || draft.trim().length === 0}
           className="rounded-full border border-[color:var(--warn)]/40 bg-[color:var(--warn)]/5 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-[color:var(--warn)] transition hover:border-[color:var(--warn)] disabled:opacity-40"
         >
-          Editor leeren
+          {t('clearEditor')}
         </button>
 
         <span className="ml-auto" />
@@ -291,19 +299,17 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
           className="rounded-full border border-[color:var(--border)] bg-[color:var(--surface)] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-subtle)] transition hover:border-[color:var(--accent)] hover:text-[color:var(--fg-strong)]"
           aria-expanded={previewOpen}
         >
-          {previewOpen ? 'Preview schließen' : 'Preview öffnen'}
+          {previewOpen ? t('previewCloseButton') : t('previewOpenButton')}
         </button>
       </div>
 
       {previewOpen ? (
         <div className="space-y-3 rounded-md border border-dashed border-[color:var(--border)] bg-[color:var(--surface)] p-3">
           <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
-            Preview mit synthetischen Daten
+            {t('previewHeading')}
           </div>
           <p className="text-[11px] leading-relaxed text-[color:var(--fg-muted)]">
-            Server-side Render-Preview ohne LLM-Call. Du gibst die
-            tool-Ergebnisse + Slot-Werte vor, die der Renderer normalerweise
-            zur Trigger-Zeit aus C.2 + C.3 bekommt.
+            {t('previewDescription')}
           </p>
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
             <div className="space-y-1">
@@ -311,7 +317,7 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
                 htmlFor={`preview-raw-${routine.id}`}
                 className="block text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-subtle)]"
               >
-                rawToolResults · per Tool-Name
+                {t('previewRawLabel')}
               </label>
               <textarea
                 id={`preview-raw-${routine.id}`}
@@ -328,7 +334,7 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
                 htmlFor={`preview-slots-${routine.id}`}
                 className="block text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-subtle)]"
               >
-                slots · LLM-Narrative
+                {t('previewSlotsLabel')}
               </label>
               <textarea
                 id={`preview-slots-${routine.id}`}
@@ -337,7 +343,7 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
                 spellCheck={false}
                 rows={10}
                 className="w-full rounded-md border border-[color:var(--border)] bg-[color:var(--surface-muted)] p-2 font-mono text-[11px] leading-relaxed text-[color:var(--fg-strong)] focus:border-[color:var(--accent)] focus:outline-none"
-                placeholder='{\n  "intro": "Heute eine Person abwesend."\n}'
+                placeholder={t('previewSlotsPlaceholder')}
               />
             </div>
           </div>
@@ -351,7 +357,7 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
               }}
               disabled={previewLoading}
               busy={previewLoading}
-              busyLabel="Rendert…"
+              busyLabel={t('renderingBusy')}
               className="text-[11px] font-semibold uppercase tracking-[0.16em]"
             >
               Preview
@@ -376,10 +382,11 @@ function PreviewOutput({
 }: {
   result: PreviewRoutineTemplateResponse;
 }): React.ReactElement {
+  const t = useTranslations('routines.templateEditor');
   if (!result.ok) {
     return (
       <div className="rounded-md border border-[color:var(--warn)]/40 bg-[color:var(--warn)]/5 p-3 text-[11px] text-[color:var(--warn)]">
-        <span className="font-semibold">Renderer abgelehnt:</span>{' '}
+        <span className="font-semibold">{t('rendererRejected')}</span>{' '}
         <span className="font-mono">{result.reason}</span>
       </div>
     );

@@ -1,5 +1,6 @@
 import type { PrivacyReceipt, RecalledContext } from '@omadia/plugin-api';
 import type {
+  AgentConsultation,
   DelegatedAnswer,
   FollowUpOption,
   SemanticAnswer,
@@ -159,6 +160,11 @@ export interface RunAgentInvocation {
   /** 0-based index across the Run — ties back the INVOKED_AGENT edge ordering. */
   index: number;
   agentName: string;
+  /** Stable agent id when resolvable (e.g. `de.byte5.agent.strategist`). Lets
+   *  consumers disambiguate invocations whose human-facing label collides
+   *  (#332 gap-closure). Absent when the invoked tool has no registered
+   *  agentId (native/kernel tools). */
+  agentId?: string;
   durationMs: number;
   subIterations: number;
   status: RunStatus;
@@ -667,6 +673,15 @@ export type ChatStreamEvent =
        * The orchestrator cannot suppress or reword it.
        */
       delegatedAnswer?: DelegatedAnswer;
+      /**
+       * #332 Layer 1 (gap-closure) — curated, tamper-evident projection of
+       * `runTrace.agentInvocations`, identical in shape and derivation to
+       * `SemanticAnswer.agentsConsulted` (see `deriveAgentsConsulted` in
+       * `toSemanticAnswer.ts`). Streaming clients (web-ui) previously had to
+       * either re-derive this from the raw `runTrace` or go without; this
+       * field gives every channel the SAME harness-built array.
+       */
+      agentsConsulted?: AgentConsultation[];
     }
   /**
    * Emitted after `done` by the verifier wrapper (only when enabled). The

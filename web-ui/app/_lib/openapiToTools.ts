@@ -14,6 +14,11 @@
 
 import type { ToolSpec } from './builderTypes';
 
+/** Translator signature (see messages/README.md "Helper functions that
+ *  need to translate"). Render sites pass a `useTranslations(
+ *  'builder.tools.validation')`-scoped translator; tests pass a fake. */
+export type TFn = (key: string, values?: Record<string, string | number>) => string;
+
 export interface ImportError {
   path: string;
   reason: string;
@@ -65,21 +70,21 @@ const HTTP_METHODS = [
   'options',
 ] as const;
 
-export function mapOpenAPI(spec: unknown): ImportResult {
+export function mapOpenAPI(spec: unknown, t: TFn): ImportResult {
   const errors: ImportError[] = [];
   const tools: ToolSpec[] = [];
   const root = spec as OpenAPIRoot | undefined;
   if (!root || typeof root !== 'object') {
     return {
       tools: [],
-      errors: [{ path: '<root>', reason: 'Kein OpenAPI-Root-Objekt' }],
+      errors: [{ path: '<root>', reason: t('notOpenApiRoot') }],
     };
   }
   if (!root.openapi && !root.swagger) {
-    errors.push({ path: '<root>', reason: 'openapi/swagger-Version fehlt' });
+    errors.push({ path: '<root>', reason: t('versionMissing') });
   }
   if (!root.paths) {
-    errors.push({ path: '<root>', reason: 'paths fehlt' });
+    errors.push({ path: '<root>', reason: t('pathsMissing') });
     return { tools, errors };
   }
 
@@ -93,7 +98,7 @@ export function mapOpenAPI(spec: unknown): ImportResult {
       const op = pathItem[method] as OpenAPIOperation | undefined;
       if (!op || typeof op !== 'object') continue;
       try {
-        const tool = mapOperation(method, pathKey, op, sharedParams, usedIds);
+        const tool = mapOperation(method, pathKey, op, sharedParams, usedIds, t);
         usedIds.add(tool.id);
         tools.push(tool);
       } catch (err) {
@@ -113,6 +118,7 @@ function mapOperation(
   op: OpenAPIOperation,
   sharedParams: ReadonlyArray<OpenAPIParameter>,
   usedIds: ReadonlySet<string>,
+  t: TFn,
 ): ToolSpec {
   const baseId =
     op.operationId && op.operationId.length > 0
@@ -121,7 +127,7 @@ function mapOperation(
   const id = uniqueId(baseId, usedIds);
   const description = (op.summary || op.description || '').trim();
   if (!description) {
-    throw new Error('weder summary noch description gesetzt');
+    throw new Error(t('noSummaryOrDescription'));
   }
 
   const allParams = [...sharedParams, ...(op.parameters ?? [])];
@@ -235,30 +241,30 @@ function uniqueId(base: string, taken: ReadonlySet<string>): string {
 // Used as a low-level path when OpenAPI doesn't fit (e.g. internal JSON-RPC).
 // ---------------------------------------------------------------------------
 
-export function mapJsonSchemaArray(input: unknown): ImportResult {
+export function mapJsonSchemaArray(input: unknown, t: TFn): ImportResult {
   const errors: ImportError[] = [];
   if (!Array.isArray(input)) {
     return {
       tools: [],
-      errors: [{ path: '<root>', reason: 'Kein Array' }],
+      errors: [{ path: '<root>', reason: t('notArray') }],
     };
   }
   const usedIds = new Set<string>();
   const tools: ToolSpec[] = [];
   input.forEach((entry, i) => {
     if (!entry || typeof entry !== 'object') {
-      errors.push({ path: `[${String(i)}]`, reason: 'Kein Objekt' });
+      errors.push({ path: `[${String(i)}]`, reason: t('notObject') });
       return;
     }
     const e = entry as { id?: unknown; description?: unknown; input?: unknown };
     if (typeof e.id !== 'string' || e.id.length === 0) {
-      errors.push({ path: `[${String(i)}]`, reason: 'id fehlt oder ist nicht string' });
+      errors.push({ path: `[${String(i)}]`, reason: t('idMissing') });
       return;
     }
     if (typeof e.description !== 'string' || e.description.length === 0) {
       errors.push({
         path: `[${String(i)}]`,
-        reason: 'description fehlt oder ist nicht string',
+        reason: t('descriptionMissing'),
       });
       return;
     }

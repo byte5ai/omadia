@@ -300,6 +300,7 @@
         "cron": "Cron",
         "timezone": "Zeitzone"
       },
+      "apiError": "Fehler {status}",
       "persona": {
         "title": "Direkt-Antwort-Personas",
         "hintEmpty": "Keine Persona-Skills angehängt — dieser Agent antwortet mit der generischen Standard-Identität.",
@@ -850,6 +851,24 @@
       "maximize": "Maximieren",
       "restore": "Wiederherstellen",
       "close": "Schließen"
+    },
+    "captureDisclosure": {
+      "heading": "Memory-Auswirkung",
+      "summaryDiscarded": "verworfen",
+      "summaryDiscardedScore": "verworfen · score {score}",
+      "summaryPersisted": "persistiert",
+      "summaryPrivateStripped": "–{count}×privat",
+      "reasonsHeading": "Begründung",
+      "linkedEntities": "Verknüpfte Entitäten ({count})",
+      "factPersisted": "Persistiert",
+      "factPersistedYes": "✓ ja",
+      "factPersistedNo": "✗ verworfen",
+      "factEntryType": "Eintrag-Typ",
+      "factVisibility": "Sichtbarkeit",
+      "factEmbedded": "✓ vektorisiert",
+      "factNotEmbedded": "— kein Vektor",
+      "factPrivateBlocks": "'<private>'-Blöcke",
+      "factHintTags": "'<palaia-hint>'-Tags"
     }
   },
   "privacyReceipt": {
@@ -875,6 +894,12 @@
     "bypassedReasonOperatorSetting": "Operator-Setting: Bypass",
     "bypassedBytes": "{kb} KB roh",
     "explainerBypassed": "Der Operator hat für mindestens ein Plugin den Privacy-Mode auf »Bypass« gestellt — dessen Tool-Ergebnisse erreichten das Modell unmaskiert. Eingesetzt für vertrauenswürdige interne Quellen, deren Inhalte der Privacy Shield strukturell nicht sinnvoll digestieren kann."
+  },
+  "directLine": {
+    "consultedLabel": "🔎 Konsultiert:",
+    "stepsCount": "{count, plural, one {# Schritt} other {# Schritte}}",
+    "delegatedAnswerFrom": "Direkte Antwort von {label}",
+    "delegatedAnswerCaption": "Wortgetreu übermittelt — der Orchestrator kann diese Antwort nicht bearbeiten oder entfernen."
   },
   "privacyOperator": {
     "eyebrow": "Privacy Operator",
@@ -1297,6 +1322,19 @@
       "testResult": {
         "error": "Fehler",
         "success": "Erfolg"
+      },
+      "validation": {
+        "idEmpty": "Tool-ID darf nicht leer sein",
+        "idFormat": "Tool-ID muss snake_case sein (Kleinbuchstaben, Ziffern, Unterstrich; Beginn mit Buchstabe)",
+        "descriptionEmpty": "Beschreibung darf nicht leer sein",
+        "notOpenApiRoot": "Kein OpenAPI-Root-Objekt",
+        "versionMissing": "openapi/swagger-Version fehlt",
+        "pathsMissing": "paths fehlt",
+        "noSummaryOrDescription": "weder summary noch description gesetzt",
+        "notArray": "Kein Array",
+        "notObject": "Kein Objekt",
+        "idMissing": "id fehlt oder ist nicht string",
+        "descriptionMissing": "description fehlt oder ist nicht string"
       }
     },
     "chat": {
@@ -1511,7 +1549,9 @@
           "saved": "gespeichert",
           "error": "Fehler"
         }
-      }
+      },
+      "prefillPrompt": "Fülle den Slot `{slotKey}` (target: {targetFile}) mit der TypeScript-Implementierung.",
+      "prefillPromptWithDescription": "Fülle den Slot `{slotKey}` (target: {targetFile}) — {description} mit der TypeScript-Implementierung."
     },
     "persona": {
       "pillar": {
@@ -1543,7 +1583,33 @@
         "prefillSkill": "Skill-Felder ebenfalls vorbefüllen ({role})",
         "cancel": "Abbrechen",
         "apply": "Anwenden",
-        "applying": "Anwenden…"
+        "applying": "Anwenden…",
+        "templates": {
+          "customerService": {
+            "label": "Customer Service Agent",
+            "description": "Professioneller Support mit Empathie und klarer Eskalation."
+          },
+          "salesDev": {
+            "label": "Sales Development Rep",
+            "description": "Proaktiver Vertrieb mit persönlicher Note und klarem Follow-up."
+          },
+          "contentMarketing": {
+            "label": "Content & Marketing Agent",
+            "description": "Kreative Brand Voice mit strategischem Denken."
+          },
+          "researchAnalyst": {
+            "label": "Research Analyst",
+            "description": "Gründliche Recherche mit strukturierter Aufbereitung."
+          },
+          "softwareEngineer": {
+            "label": "Software Engineer",
+            "description": "Teamorientierter Entwickler mit klarem Kommunikationsstil."
+          },
+          "teamLead": {
+            "label": "Team Lead / Coordinator",
+            "description": "Orchestrator, der Delegation, Eskalation und Teamstruktur steuert."
+          }
+        }
       },
       "boundaries": {
         "heading": "Boundaries",
@@ -1552,7 +1618,27 @@
         "customLabel": "Eigene Boundaries (eine pro Zeile)",
         "save": "Boundaries speichern",
         "saving": "Boundaries speichern…",
-        "saved": "Gespeichert"
+        "saved": "Gespeichert",
+        "categories": {
+          "data": "Daten",
+          "scope": "Geltungsbereich",
+          "authority": "Befugnisse",
+          "communication": "Kommunikation"
+        },
+        "presets": {
+          "presetNoFinancial": "Keine Finanzdaten",
+          "presetNoPii": "Keine personenbezogenen Daten (PII)",
+          "presetNoMedical": "Keine medizinischen Daten",
+          "presetNoLegal": "Keine Rechtsberatung",
+          "presetOwnDomain": "Nur eigene Domäne",
+          "presetNoCode": "Keine Code-Ausführung",
+          "presetNoExternal": "Keine externen Links",
+          "presetNoDiscount": "Keine Rabatt-Befugnis",
+          "presetNoCommitments": "Keine bindenden Zusagen",
+          "presetNoPersonnel": "Keine Personalentscheidungen",
+          "presetNoSpeculation": "Keine Spekulationen",
+          "presetNoCompetitor": "Keine Wettbewerber-Diskussion"
+        }
       },
       "culture": {
         "label": "Branche / Kultur",
@@ -1563,7 +1649,34 @@
         "noChange": "Keine Änderung — alle Werte stimmen bereits überein.",
         "apply": "Anwenden",
         "applying": "Anwenden…",
-        "cancel": "Abbrechen"
+        "cancel": "Abbrechen",
+        "presetOption": "{label} — {description}",
+        "presets": {
+          "saasStartup": {
+            "label": "SaaS-Startup",
+            "description": "Locker, direkt, schnell"
+          },
+          "enterpriseCorporate": {
+            "label": "Konzern / Großunternehmen",
+            "description": "Formell, prozesstreu, vorsichtig"
+          },
+          "healthcare": {
+            "label": "Gesundheitswesen",
+            "description": "Formell, warm, risikoarm"
+          },
+          "legal": {
+            "label": "Recht / Compliance",
+            "description": "Sehr formell, präzise, abwägend"
+          },
+          "ecommerce": {
+            "label": "E-Commerce",
+            "description": "Warm, lösungsorientiert, proaktiv"
+          },
+          "creativeAgency": {
+            "label": "Kreativagentur",
+            "description": "Locker, originell, mutig"
+          }
+        }
       },
       "dimension": {
         "valueLabel": "{axis} Wert",
@@ -1597,6 +1710,51 @@
           "critical": "kritisch",
           "ok": "OK"
         }
+      },
+      "conflicts": {
+        "sycophancyHighDirectnessLow": "Sycophancy=high erzwingt Devil's-Advocate-Rules; directness ≤ 30 sagt „diplomatisch\". Modell wird eines der beiden ignorieren. Empfehlung: directness ≥ 50 oder sycophancy=medium.",
+        "sycophancyHighDirectnessHigh": "Verstärkung — kritische Bewertung + ohne Höflichkeitspuffer kann streitlustig wirken.",
+        "sycophancyOffDirectnessVeryHigh": "Hinweis: directness ≥ 90 hebt das Modell-Default-Schmeichel-Verhalten allein nicht auf. Für anti-Sycophancy bewusst ein sycophancy-Level wählen.",
+        "formalityHighHumorHigh": "Sehr formell + sehr humorvoll wirkt stilistisch inkonsistent.",
+        "sarcasmHighWarmthHigh": "Hoher Sarkasmus + hohe Wärme — Antworten wirken widersprüchlich."
+      },
+      "axes": {
+        "formality": {
+          "description": "Du-Form & Umgangssprache vs. Sie-Form & Fachsprache."
+        },
+        "directness": {
+          "description": "Höflichkeitspuffer vs. Kernaussage zuerst."
+        },
+        "warmth": {
+          "description": "Sachlich-distanziert vs. empathisch & anerkennend."
+        },
+        "humor": {
+          "description": "Ohne Witz vs. spielerisch (sparsam einsetzen)."
+        },
+        "sarcasm": {
+          "description": "Ehrlich-direkt vs. ironisch (selten passend)."
+        },
+        "conciseness": {
+          "description": "Ausführlich vs. minimaler Wort-Output."
+        },
+        "proactivity": {
+          "description": "Antwortet auf Anfragen vs. schlägt von sich aus vor."
+        },
+        "autonomy": {
+          "description": "Fragt zurück vs. handelt eigenständig."
+        },
+        "risk_tolerance": {
+          "description": "Sicherheits-zuerst vs. Risiko-tolerant."
+        },
+        "creativity": {
+          "description": "Bewährte Lösungen vs. unkonventionelle Ideen."
+        },
+        "drama": {
+          "description": "Sachlich vs. emotional aufgeladen."
+        },
+        "philosophy": {
+          "description": "Lösung-orientiert vs. abstrakt-grundsätzlich."
+        }
       }
     },
     "uiSurfaces": {
@@ -1610,7 +1768,8 @@
           "bodyLabel": "Admin UI Body (HTML)",
           "bodyHint": "Inhalt zwischen den Marker-Regions. inline style + script erlaubt.",
           "operatorContract": "<strong>Operator-Contract:</strong> Frontend-Fetches müssen <strong>relative URLs</strong> nutzen (<code>fetch('api/devices')</code>, nicht <code>fetch('/api/...')</code>) — die UI läuft hinter einem <code>/bot-api/*</code>-Rewrite. JSON-Responses brauchen das <code>{ ok: boolean, ... }</code>-Schema, sonst flagged der RuntimeSmoke sie als kaputt.",
-          "disabledHint": "Aus. Plugins ohne <code>admin_ui_path</code> haben keine Admin-Tile in der Store-Detail-Seite — das ist der Default."
+          "disabledHint": "Aus. Plugins ohne <code>admin_ui_path</code> haben keine Admin-Tile in der Store-Detail-Seite — das ist der Default.",
+          "stubEditHint": "Editier diesen Block via fill_slot('admin-ui-body', ...) oder direkt im Workspace."
         },
         "dashboardPages": {
           "title": "Dashboard Pages",
@@ -1673,6 +1832,10 @@
           "metaLabel": "Meta (optional)",
           "urlLabel": "URL (optional — macht das Item klickbar)",
           "suffixHelp": "Whitelisted Suffixe: <code>.join(\", \")</code> für Arrays, <code>.toLocaleString()</code> für Zahlen. Sonstige Function-Calls werden ignoriert."
+        },
+        "stub": {
+          "fetchErrorPrefix": "Daten konnten nicht gelesen werden:",
+          "noData": "Keine Daten."
         }
       },
       "pagesList": {
@@ -1964,6 +2127,28 @@
         "diagrams": "Diagramme & Speicher",
         "integrations": "Integrationen (Microsoft, Teams, Telegram)"
       }
+    },
+    "title": "Konfiguration",
+    "intro": "Alle {envFile}-Werte, die beim Start in den Config-Store bzw. den Secret-Vault geschrieben werden. Änderungen werden automatisch gespeichert und das betroffene Plugin neu aktiviert — sie wirken sofort, ohne Neustart. Secrets zeigen nur, ob ein Wert hinterlegt ist; der Wert selbst wird nie angezeigt.",
+    "loading": "Lädt …",
+    "loadError": "Fehler beim Laden: {message}",
+    "vaultUnavailable": "Vault nicht verfügbar — Secrets können nicht bearbeitet werden.",
+    "notInstalled": "nicht installiert",
+    "boolean": {
+      "on": "an",
+      "off": "aus"
+    },
+    "secret": {
+      "set": "gesetzt",
+      "unset": "nicht gesetzt",
+      "replacePlaceholder": "•••••• (ersetzen)",
+      "enterPlaceholder": "Wert eingeben",
+      "remove": "Entfernen"
+    },
+    "status": {
+      "saving": "speichert …",
+      "saved": "✓ gespeichert",
+      "error": "✗ Fehler"
     }
   },
   "adminProviders": {
@@ -2116,6 +2301,957 @@
       "eyebrow": "Hub",
       "headline": "Plugins für die omadia-Plattform.",
       "lead": "Der Hub ist unser Katalog für die bereitgestellten Plugins. Er bündelt Integrations (Credential-Container), Agents (Domain-Capabilities) und Channels (User-Kanäle wie Teams, Telegram). Ein Klick auf eine Kachel zeigt Berechtigungen, Secrets und Abhängigkeiten vor der Installation."
+    },
+    "page": {
+      "filters": {
+        "all": "Alle",
+        "integration": "Integrations",
+        "agent": "Agents",
+        "channel": "Channels",
+        "tool": "Tools",
+        "extension": "Extensions"
+      },
+      "unknownLoadError": "Unbekannter Fehler beim Laden des Katalogs.",
+      "filterCategoryAria": "Kategorie filtern",
+      "sourceAria": "Quelle wählen",
+      "sourceHub": "Registry",
+      "sourceLocal": "Lokal",
+      "sourceInstalled": "Installiert",
+      "emptyFilteredTitle": "Keine {category} in dieser Ansicht.",
+      "emptyFilteredHint": "Wechsle die Kategorie oder die Quelle oben.",
+      "emptyInstalledTitle": "Noch keine Plugins installiert.",
+      "emptyInstalledBody": "Wechsle zum <hubLink>Hub</hubLink> oder <localLink>Lokal</localLink>, um verfügbare Plugins zu durchsuchen und zu installieren.",
+      "emptyLocalTitle": "Keine lokalen Pakete.",
+      "emptyLocalHint": "Lade ein Plugin-Paket per Drag-&-Drop oben hoch — der Server validiert das Manifest und registriert es im Katalog.",
+      "emptyHubTitle": "Keine Plugins im Hub verfügbar.",
+      "emptyHubBody": "Verbinde eine Registry unter <adminLink>Admin · Registries</adminLink> — oder lade ein eigenes Paket im <localLink>Lokal</localLink>-Tab hoch.",
+      "errorKicker": "Fehler",
+      "errorTitle": "Katalog konnte nicht geladen werden.",
+      "errorHint": "Prüfe, ob die Middleware unter <host>http://localhost:3979</host> erreichbar ist und der Endpoint <endpoint>/api/v1/store/plugins</endpoint> antwortet.",
+      "footerSource": "Quelle:"
+    },
+    "detail": {
+      "notFoundTitle": "Plugin nicht gefunden · Store",
+      "backToCatalog": "Zurück zum Katalog",
+      "signed": "signiert",
+      "unsigned": "unsigniert",
+      "connectedOk": "Verbindung hergestellt.",
+      "connectedError": "Verbindung fehlgeschlagen. Bitte erneut versuchen.",
+      "connectedErrorWithReason": "Verbindung fehlgeschlagen ({reason}). Bitte erneut versuchen.",
+      "sectionDescription": "Beschreibung",
+      "noDescription": "Keine Beschreibung hinterlegt.",
+      "sectionSetupGuide": "Installationsanleitung",
+      "sectionSetupFields": "Setup-Felder",
+      "setupFieldsCount": "{count, plural, one {# Feld} other {# Felder}}",
+      "sectionEditSetupFields": "Setup-Felder editieren",
+      "sectionAuditMode": "Audit-Modus",
+      "sectionSelfExtension": "Selbst-Erweiterung",
+      "sectionPermissions": "Berechtigungen",
+      "sectionCapabilities": "Capabilities",
+      "capabilitiesMeta": "{provides} liefert · {requires} benötigt",
+      "sectionIntegrations": "Integrationen",
+      "categories": "Kategorien",
+      "license": "Lizenz",
+      "coreCompat": "Core-Kompatibilität",
+      "currentVersion": "Aktuelle Version",
+      "latestVersion": "Neueste Version",
+      "authors": "Autor:innen",
+      "permissions": {
+        "memoryReads": "Memory · Reads",
+        "memoryWrites": "Memory · Writes",
+        "graphReads": "Graph · Reads",
+        "graphWrites": "Graph · Writes",
+        "networkOutbound": "Netzwerk · Outbound",
+        "flagRuntimeSecrets": "Schreibt eigene Credentials zur Laufzeit",
+        "flagCredentialFlows": "Führt Credential-Flows auf eigenen Routes aus",
+        "none": "Keine Berechtigungen deklariert.",
+        "runtimeCredentials": "Laufzeit-Credentials"
+      },
+      "capabilities": {
+        "provides": "Liefert",
+        "requires": "Benötigt",
+        "noneDeclared": "Keine Capabilities deklariert.",
+        "noRequirements": "Keine Voraussetzungen.",
+        "installHint": "Beim Install prüft die Middleware diese Voraussetzungen transitiv. Fehlt ein Provider, öffnet sich ein Wizard mit den passenden Plugins aus dem Katalog."
+      }
+    },
+    "card": {
+      "updateTitle": "Update verfügbar",
+      "updateTitleWithVersion": "Update verfügbar: {from} → {to}",
+      "updateSticker": "Update",
+      "noDescription": "Keine Beschreibung hinterlegt.",
+      "actionRequired": "Aktion erforderlich"
+    },
+    "stateBadge": {
+      "available": "Verfügbar",
+      "installed": "Installiert",
+      "updateAvailable": "Update verfügbar",
+      "incompatible": "Inkompatibel",
+      "migrationNeeded": "Migration nötig"
+    },
+    "workaroundBadge": {
+      "active": "Workaround aktiv",
+      "updateAvailable": "Update verfügbar",
+      "labelWithIssue": "{label} (#{number})",
+      "openIssueAria": "{label} — Issue im Browser öffnen"
+    },
+    "actionStatus": {
+      "errorTitle": "Fehler",
+      "actionRequired": "Aktion erforderlich"
+    },
+    "install": {
+      "blocked": "Installation blockiert",
+      "installAria": "{name} installieren",
+      "success": "Installation erfolgreich",
+      "installNow": "Jetzt installieren",
+      "unknownError": "Unbekannter Fehler.",
+      "unexpectedJobState": "Unerwarteter Job-Zustand: {state}",
+      "updateAvailable": "Update verfügbar",
+      "updating": "Aktualisiere …",
+      "update": "Aktualisieren",
+      "installed": "Installiert",
+      "active": "aktiv",
+      "uninstallAria": "{name} deinstallieren",
+      "uninstall": "Deinstallieren",
+      "confirmRemove": "<strong>{name}</strong> entfernen? Tool wird sofort aus dem Orchestrator abgebaut, der Vault-Namespace wird geleert, Registry-Eintrag gelöscht.",
+      "deletePackageLabel": "Auch die hochgeladene Paketdatei unter <mono>.uploaded-packages/</mono> entfernen. <subtle>Ohne Haken bleibt das Package im Katalog und ist neu installierbar — nur Built-ins sind davon unberührt.</subtle>",
+      "confirmUninstallDelete": "Ja, deinstallieren + löschen",
+      "confirmUninstall": "Ja, deinstallieren",
+      "cancel": "Abbrechen",
+      "uninstalling": "Wird deinstalliert …",
+      "uninstallFailed": "Deinstallation fehlgeschlagen: {message}",
+      "reset": "Zurücksetzen",
+      "drawerAria": "{name} einrichten",
+      "drawerKicker": "Einrichtung",
+      "close": "Schließen",
+      "creatingJob": "Job wird erstellt …",
+      "setupGuide": "Installationsanleitung",
+      "noConfigNeeded": "Dieses Plugin erfordert keine Konfiguration — bestätige die Installation rechts unten.",
+      "secretsNote1": "Secrets werden ausschließlich im per-Agent-Vault abgelegt.",
+      "secretsNote2": "Andere Werte landen in der Instanz-Konfiguration.",
+      "installing": "Wird installiert …",
+      "confirmInstall": "Installation bestätigen",
+      "errorKicker": "Fehler",
+      "privacyGuarded": "Geschützt (Privacy Shield)",
+      "privacyBypass": "Bypass (roh durchlassen)",
+      "privacyPerTool": "Per-Tool (Whitelist)",
+      "privacyLoading": "Privacy-Mode wird geladen …",
+      "privacyLoadFailed": "Privacy-Mode konnte nicht geladen werden.",
+      "privacyLoadFailedWithError": "Privacy-Mode konnte nicht geladen werden: {error}",
+      "privacyGuardedHelp": "Tool-Ergebnisse werden serverseitig hinter dem Privacy Shield v4 maskiert; der LLM sieht nur identitätsfreie Digests.",
+      "privacyBypassHelp": "Rohe Tool-Ergebnisse erreichen den LLM unmaskiert. Geeignet für vertrauenswürdige interne Quellen, deren Inhalte der Privacy Shield strukturell nicht digestieren kann (z. B. Confluence-Seiten-Bodies).",
+      "privacyPerToolHelp": "Per-Tool-Whitelist: nur explizit gelistete Tools werden bypassed. Liste über das Feld `_privacy_bypass_scopes` setzen (Komma-getrennt).",
+      "saving": "Speichere …"
+    },
+    "auditMode": {
+      "singleHostHelp": "Nur die im Manifest deklarierten Hosts.",
+      "allowlistHelp": "Manifest-Hosts plus die vom Operator gepflegte Host-Liste.",
+      "publicWebHelp": "Beliebige öffentliche Hosts. Private Netzbereiche und Cloud-Metadata-Endpoints bleiben blockiert.",
+      "confirmPublicWeb": "Public-Web erlaubt diesem Plugin, beliebige öffentliche Hosts zu kontaktieren. Private Netzbereiche und Cloud-Metadata-Endpoints bleiben blockiert. Fortfahren?",
+      "confirmAllowlist": "Allowlist erlaubt diesem Plugin zusätzlich die operator-gepflegte Host-Liste. Fortfahren?",
+      "intro": "Steuert, welche Hosts dieses Audit-Plugin über <code>ctx.http</code> erreichen darf. Standard ist <strong>Single-Host</strong>.",
+      "loading": "lädt …",
+      "saving": "speichert …",
+      "saved": "Modus gespeichert.",
+      "error": "Fehler: {message}"
+    },
+    "credentials": {
+      "noFields": "Dieses Plugin deklariert keine Setup-Felder.",
+      "intro": "Felder mit <secret>Secret · Vault</secret> (Passwörter, OAuth-Tokens) werden verschlüsselt im Vault gespeichert und nur als „gespeichert“ angezeigt — niemals der eigentliche Wert. Felder mit <config>Config</config> (Enum, URL, Flags) sind nicht-sensitiv und zeigen die aktuelle Auswahl. Tippe oder wähle einen neuen Wert um zu überschreiben, oder klicke auf <trashIcon></trashIcon> um den Wert zu löschen.",
+      "secretBadgeTitle": "Secret — verschlüsselt im per-Agent-Vault",
+      "configBadgeTitle": "Config — nicht-sensitiver Wert in der Instanz-Konfiguration",
+      "pendingDelete": "wird beim Speichern gelöscht",
+      "storedSelectToOverwrite": "gespeichert · auswählen zum Überschreiben",
+      "notSetWithDefault": "nicht gesetzt · Default: {default}",
+      "notSet": "nicht gesetzt",
+      "storedRetypeToOverwrite": "gespeichert · neu eintippen zum Überschreiben",
+      "clearToDelete": "leeren zum Löschen, neu eintippen zum Überschreiben",
+      "notSetYet": "noch nicht gesetzt",
+      "cancelDelete": "Löschung abbrechen",
+      "deleteSecretOnSave": "Secret beim nächsten Speichern löschen",
+      "deleteConfigOnSave": "Config-Wert beim nächsten Speichern löschen",
+      "save": "Speichern",
+      "saveWithCount": "Speichern ({count})",
+      "savedCheck": "✓ Gespeichert",
+      "connected": "Verbunden",
+      "notConnected": "Nicht verbunden",
+      "reconnect": "Neu verbinden",
+      "connect": "Verbinden",
+      "loadingOptions": "Optionen werden geladen …",
+      "optionsUnavailable": "Optionen nicht verfügbar ({error}). Werte/IDs kommagetrennt eingeben.",
+      "pluginInactive": "Plugin inaktiv",
+      "noEntries": "Keine auswählbaren Einträge (nichts mit der Integration geteilt?).",
+      "saving": "Speichern",
+      "saveSelection": "Auswahl speichern",
+      "saveSelectionWithCount": "Auswahl speichern ({count})",
+      "refreshList": "Liste aktualisieren"
+    },
+    "editFromStore": {
+      "cloning": "Klone Draft …",
+      "editInBuilder": "Im Builder bearbeiten",
+      "hintSourceNotFound": "Der Original-Draft des Builders existiert nicht mehr (gelöscht oder von einem anderen Operator installiert). Reverse-Codegen aus der installierten manifest.yaml kommt erst in B.7.",
+      "hintQuotaExceeded": "Lösch bestehende Drafts unter „Drafts“, bevor du diesen klonst."
+    },
+    "requiresWizard": {
+      "dialogAria": "Voraussetzungen für {name} installieren",
+      "cancel": "Abbrechen",
+      "kicker": "Voraussetzungen",
+      "intro": "Vor der Installation muss die folgende Capability-Kette erfüllt sein. Reihenfolge: tiefste Voraussetzung zuerst, dann das eigentliche Plugin.",
+      "close": "Schließen",
+      "reviewSummary": "{count, plural, one {# Voraussetzung} other {# Voraussetzungen}} → {name}",
+      "stepOf": "Schritt {current} von {total}",
+      "allInstalledDot": "Alles installiert.",
+      "aborted": "Installation abgebrochen.",
+      "installAll": "Alle installieren",
+      "confirmStep": "Schritt bestätigen",
+      "noProviderSelected": "Kein Provider gewählt für ''{capability}''.",
+      "stepEndedInState": "Schritt ''{label}'' endete im Zustand ''{state}''.",
+      "finalLabel": "Final",
+      "target": "Ziel",
+      "prerequisite": "Voraussetzung",
+      "noProviderAvailable": "Kein Provider im Katalog. Bitte ein passendes Plugin hochladen oder die Capability serverseitig bereitstellen.",
+      "recommended": "Empfohlen",
+      "active": "aktiv",
+      "installedInactive": "installiert · inaktiv",
+      "stepShort": "Schritt {current} / {total}",
+      "providerNeedsConfig": "Dieses Provider-Plugin braucht Konfiguration, bevor es aktiviert werden kann. Werte werden ausschließlich an den Vault dieses einen Plugins übergeben.",
+      "installing": "Wird installiert …",
+      "allInstalled": "Alles installiert",
+      "allActive": "{name} und alle Voraussetzungen sind aktiv.",
+      "errorKicker": "Fehler"
+    },
+    "upload": {
+      "onlyZip": "Nur .zip erlaubt, bekommen: {name}",
+      "title": "Neues Agent-Package hochladen.",
+      "intro": "Zieh ein <mono>.zip</mono> hierher oder wähl es über den Button. Der Server validiert das Manifest, prüft Peer-Dependencies und registriert den Agent automatisch im Katalog.",
+      "chooseFile": "Datei wählen",
+      "orDragDrop": "oder per Drag & Drop",
+      "cancel": "Abbrechen",
+      "uploadedKicker": "✓ Hochgeladen",
+      "inCatalog": "<idTag>{id}</idTag> <versionTag>v{version}</versionTag> ist im Katalog. Unten wählen und installieren.",
+      "sizeLabel": "Größe",
+      "peersMissing": "⚠ Fehlende Peer-Deps: {peers} — Agent kann zur Laufzeit fehlschlagen.",
+      "close": "Schließen",
+      "failedKicker": "Upload fehlgeschlagen",
+      "reset": "Zurücksetzen"
+    },
+    "setupForm": {
+      "enable": "Aktivieren",
+      "dontSet": "(nicht setzen)"
+    }
+  },
+  "adminAuth": {
+    "title": "Authentifizierungs-Provider",
+    "intro": "Aktiviere oder deaktiviere die Anmelde-Verfahren. Die env-Variable {envVar} definiert die zulässigen Provider; hier wählst du, welche davon aktuell aktiv sind.",
+    "loading": "Lädt …",
+    "loadError": "Fehler beim Laden: {message}",
+    "statusActive": "aktiv",
+    "statusInactive": "inaktiv",
+    "enable": "Aktivieren",
+    "disable": "Deaktivieren",
+    "errors": {
+      "selfLockout": "Du kannst nicht den Provider deaktivieren, mit dem du gerade angemeldet bist.",
+      "lastActiveProvider": "Mindestens ein Provider muss aktiv bleiben — sonst kommt niemand mehr rein.",
+      "notInWhitelist": "Dieser Provider ist nicht in der AUTH_PROVIDERS-Whitelist erlaubt.",
+      "enableFailed": "Fehler {status}: Aktivieren fehlgeschlagen.",
+      "disableFailed": "Fehler {status}: Deaktivieren fehlgeschlagen."
+    }
+  },
+  "adminRegistries": {
+    "title": "Plugin-Registries",
+    "intro": "Quellen, aus denen Plugins in den Store gezogen werden. Neue Instanzen starten mit {hub}. Der Token wird verschlüsselt gespeichert und nie wieder angezeigt — nur, ob einer hinterlegt ist. Änderungen wirken ohne Neustart.",
+    "addHeading": "Registry hinzufügen",
+    "fields": {
+      "name": "Name",
+      "url": "URL",
+      "tokenOptional": "Token (optional)",
+      "replaceToken": "Token ersetzen"
+    },
+    "placeholders": {
+      "token": "nur für private Registries",
+      "tokenUnchanged": "•••••• (unverändert)",
+      "tokenNone": "keiner"
+    },
+    "add": "Hinzufügen",
+    "loading": "Lädt …",
+    "loadError": "Fehler beim Laden: {message}",
+    "empty": "Keine Registries konfiguriert.",
+    "edit": "Bearbeiten",
+    "cancel": "Abbrechen",
+    "save": "Speichern",
+    "remove": "Entfernen",
+    "removeToken": "Token entfernen",
+    "badge": {
+      "tokenSet": "Token gesetzt",
+      "public": "öffentlich"
+    },
+    "confirmDelete": "Registry „{name}\" wirklich entfernen?",
+    "errors": {
+      "duplicate": "Eine Registry mit diesem Namen existiert bereits.",
+      "invalidUrl": "Die URL ist ungültig (http(s) erforderlich).",
+      "invalidName": "Der Name darf nur Buchstaben, Zahlen, . _ - enthalten.",
+      "notFound": "Registry nicht gefunden — Liste neu geladen.",
+      "missingFields": "Name und URL sind erforderlich.",
+      "generic": "Fehler {status}."
+    }
+  },
+  "adminDomains": {
+    "title": "Plugin-Domains",
+    "intro": "Übersicht aller registrierten Plugins, gruppiert nach ihrer in der {manifest} deklarierten {domain}. Domains werden vom Phase-8 Nudge-Pipeline-Multi-Domain-Trigger gelesen und vom Operator-UI für Cross-Agent-Gruppierung verwendet. Curation (Umbenennen / Mergen / Hierarchien) folgt mit OB-78 (Phase 9 Agent-Profile).",
+    "loading": "Lade …",
+    "loadError": "Fehler beim Laden: {message}",
+    "noData": "Keine Daten.",
+    "emptyCatalog": "Keine Plugins im Katalog.",
+    "stats": {
+      "plugins": "Plugins",
+      "domains": "Domains",
+      "fallbacks": "Fallbacks"
+    },
+    "pluginCount": "{count, plural, one {# Plugin} other {# Plugins}}",
+    "fallbackWarning": "{count, plural, one {# Plugin} other {# Plugins}} ohne deklarierte Domain — auto-fallback auf {fallbackDomain}. Füge dem Manifest eine {manifestKey}-Zeile hinzu (z.B. {exampleOne}, {exampleTwo}) oder lade den Agent über den Builder neu hoch."
+  },
+  "adminUsage": {
+    "title": "Kosten",
+    "intro": "Token-Verbrauch und LLM-Kosten pro Modell, Quelle und Zeit. Erfasst jeden Anthropic-Call — Orchestrator, Sub-Agents und die Haiku-Background-Tasks.",
+    "loading": "Lädt …",
+    "loadError": "Fehler beim Laden: {message}",
+    "ranges": {
+      "last24h": "24 Stunden",
+      "last7d": "7 Tage",
+      "last30d": "30 Tage",
+      "all": "Gesamt"
+    },
+    "kpi": {
+      "totalCost": "Gesamtkosten",
+      "calls": "Calls",
+      "cacheHitRate": "Cache-Hit-Rate",
+      "cacheHitHint": "Anteil Input aus dem warmen Cache",
+      "tokens": "Tokens (in / out)"
+    },
+    "panels": {
+      "costOverTime": "Kosten über Zeit",
+      "byModel": "Nach Modell",
+      "bySource": "Nach Quelle"
+    },
+    "empty": "Keine Daten im Zeitraum.",
+    "barTitle": "{date} · {cost} · {calls, plural, one {# Call} other {# Calls}}",
+    "rowStats": "{calls} Calls · {input} in · {output} out · {cache} cache"
+  },
+  "adminUsers": {
+    "loading": "Lädt …",
+    "loadError": "Fehler beim Laden: {message}",
+    "errors": {
+      "passwordMinLength": "Passwort muss mindestens 8 Zeichen lang sein.",
+      "emailInUse": "Diese Email ist bereits als lokaler Nutzer registriert.",
+      "passwordTooShort": "Passwort zu kurz (mind. 8 Zeichen).",
+      "invalidEmail": "Ungültige Email-Adresse.",
+      "generic": "Fehler {status}: {message}",
+      "selfDisable": "Du kannst dich nicht selbst deaktivieren. Anderer Admin muss diese Aktion durchführen.",
+      "notLocal": "Passwort-Reset funktioniert nur für lokale Konten. Föderierte Identitäten werden vom IdP verwaltet.",
+      "selfDelete": "Du kannst dich nicht selbst löschen."
+    },
+    "list": {
+      "title": "Benutzer",
+      "intro": "Lokale Konten und föderierte Identitäten. Nur lokale Nutzer können hier neu angelegt werden — föderierte Konten erscheinen, sobald der Nutzer sich einmal über den IdP angemeldet hat.",
+      "create": "Neuen Nutzer anlegen",
+      "cancel": "Abbrechen",
+      "form": {
+        "email": "Email",
+        "displayName": "Anzeigename (optional)",
+        "password": "Passwort (mind. 8 Zeichen)",
+        "submit": "Anlegen",
+        "creating": "Lege an …"
+      },
+      "table": {
+        "email": "Email",
+        "provider": "Provider",
+        "status": "Status",
+        "lastLogin": "Letzte Anmeldung",
+        "edit": "Bearbeiten"
+      }
+    },
+    "edit": {
+      "backToList": "zur Übersicht",
+      "providerAndId": "Provider: {provider} · ID: {id}",
+      "profileHeading": "Profil",
+      "displayName": "Anzeigename",
+      "status": "Status",
+      "statusActive": "aktiv",
+      "statusDisabled": "deaktiviert",
+      "saved": "Gespeichert.",
+      "save": "Speichern",
+      "saving": "Speichere …",
+      "resetHeading": "Passwort zurücksetzen",
+      "resetHelp": "Setzt das Passwort sofort. Der Nutzer wird nicht benachrichtigt — teile das neue Passwort über einen sicheren Kanal mit.",
+      "newPassword": "Neues Passwort (mind. 8)",
+      "resetSuccess": "Passwort wurde zurückgesetzt.",
+      "reset": "Zurücksetzen",
+      "resetting": "Setze …",
+      "dangerHeading": "Gefahrenzone",
+      "dangerHelp": "Löschen entfernt den Nutzer permanent. Audit-Log behält den Eintrag.",
+      "confirmDelete": "Diesen Nutzer wirklich löschen? Die Aktion ist nicht umkehrbar.",
+      "delete": "Nutzer löschen",
+      "deleting": "Lösche …"
+    }
+  },
+  "adminTopics": {
+    "loading": "lädt…",
+    "error": "Fehler: {message}",
+    "memberCount": "{count, plural, one {# Memory} other {# Memories}}",
+    "list": {
+      "title": "Memory · Themen",
+      "intro": "Cluster aller MemorableKnowledge nach Embedding-Ähnlichkeit. Re-Cluster ist destruktiv: alle bestehenden Topics werden ersetzt.",
+      "recluster": {
+        "heading": "Re-Cluster",
+        "cosineThreshold": "Cosine-Threshold (0.3-0.95)",
+        "minClusterSize": "Min Cluster-Größe (2-20)",
+        "start": "Re-Cluster starten",
+        "running": "läuft",
+        "confirm": "{count} bestehende Topics werden gelöscht und neu gebaut. Fortfahren?",
+        "resultDuration": "Ergebnis · {ms} ms",
+        "statCreated": "topics neu",
+        "statDeleted": "topics weg",
+        "statUnclustered": "ungeclustert",
+        "statHaikuCalls": "Haiku-Calls"
+      },
+      "empty": "Keine Topics. Starte einen Re-Cluster oben.",
+      "fallbackBadge": "fallback-name"
+    },
+    "detail": {
+      "membersHeading": "Mitglieder",
+      "emptyMembers": "Keine sichtbaren Mitglieder (oder ACL verbirgt sie)."
+    }
+  },
+  "adminBulkPromote": {
+    "title": "Memory · Bulk-Promotion",
+    "intro": "Scoret historische Turns mit fehlender Significance via Haiku und promotet die hochbewerteten als MemorableKnowledge. Idempotent — Re-Runs machen nur neue Arbeit.",
+    "confirmRun": "Achtung: bis zu {count} Haiku-Calls (~${cost}). Wirklich starten?",
+    "noScorerError": "Kein SignificanceScorer verfügbar — ANTHROPIC_API_KEY in der Middleware setzen.",
+    "previewTitle": "Vorschau",
+    "loading": "lädt…",
+    "error": "Fehler: {message}",
+    "turnsWithoutSignificance": "Turns ohne Significance",
+    "eligibleForPromotion": "Eligible für Promotion (≥ {threshold})",
+    "alreadyPromoted": "Bereits promoted",
+    "scorerAvailable": "Scorer verfügbar",
+    "scorerUnavailable": "✗ — ANTHROPIC_API_KEY nicht gesetzt",
+    "parametersTitle": "Parameter",
+    "thresholdLabel": "Threshold",
+    "scoreLimitLabel": "Score-Limit",
+    "promoteLimitLabel": "Promote-Limit",
+    "refreshPreview": "Vorschau aktualisieren",
+    "running": "läuft",
+    "startRun": "Bulk-Job starten",
+    "resultTitle": "Ergebnis ({duration} ms)",
+    "scorePhaseTitle": "Phase 1 · SCORE",
+    "promotePhaseTitle": "Phase 2 · PROMOTE"
+  },
+  "adminDangerZone": {
+    "title": "Danger Zone · Memory-Purge",
+    "intro": "Löscht Memory unwiderruflich entlang einer Achse. <strong>Alles</strong> wischt Agent-Scratch <em>und</em> Knowledge-Graph; die Achsen User / Team / Channel wirken nur im Knowledge-Graph. Es gibt kein Undo — immer zuerst die Vorschau prüfen.",
+    "note": "<strong>Hinweis:</strong> Pro User / Team / Channel löschen wirkt nur im Knowledge-Graph — der Agent-Scratch ist agent-scoped.",
+    "targetTitle": "Ziel",
+    "axisLabel": "Achse",
+    "axes": {
+      "all": "Alles",
+      "agent": "Agent",
+      "user": "User",
+      "team": "Team",
+      "channel": "Channel"
+    },
+    "selectorLabel": "Selector",
+    "selectorPlaceholder": {
+      "agent": "de.byte5.agent.calendar",
+      "user": "user-id oder Selector",
+      "team": "team-id oder Selector",
+      "channel": "channel-id oder Selector"
+    },
+    "selectorRequired": "Selector erforderlich für diese Achse.",
+    "reseedLabel": "Default-Memories nach dem Löschen neu seeden (re-seed defaults)",
+    "loading": "lädt…",
+    "previewButton": "Vorschau",
+    "previewError": "Vorschau-Fehler: {message}",
+    "previewTitle": "Vorschau — wird gelöscht",
+    "agentScratch": "Agent-Scratch",
+    "knowledgeGraph": "Knowledge-Graph",
+    "confirmTitle": "Löschen bestätigen",
+    "previewFirst": "Zuerst eine Vorschau ausführen — Löschen ist erst danach möglich.",
+    "noSelector": "Kein Selector gesetzt.",
+    "confirmInstruction": "Zum Bestätigen exakt eingeben: <code>{phrase}</code>",
+    "deleting": "löscht…",
+    "deleteButton": "Unwiderruflich löschen",
+    "deleteError": "Lösch-Fehler: {message}",
+    "deletedTitle": "Gelöscht",
+    "forbiddenError": "Nicht berechtigt (403) — Memory-Purge erfordert Admin-Rechte."
+  },
+  "adminDuplicates": {
+    "list": {
+      "title": "Memory · Mögliche Duplikate",
+      "intro": "Memories die semantisch fast identisch sind. Tab „Memories“ zeigt MK-Paare (cosine ≥ 0.95), Tab „Excerpts“ zeigt Palaia-Excerpt-Paare (cosine ≥ 0.97). Klick auf einen Eintrag öffnet die Side-by-side-Ansicht mit Resolve-Knopf.",
+      "tabs": {
+        "memories": "Memories",
+        "excerpts": "Excerpts (Palaia)"
+      },
+      "confirmBulkRun": "Bulk-Merge-Detect für bis zu {count} Memories starten? Cosine-only, kostenfrei — aber der Bulk-Scan ist O(n × top-k) cosine-Vergleiche.",
+      "confirmExcerptBulkRun": "Bulk Excerpt-Duplicate-Detect für bis zu {count} Excerpts? Cosine-only, kostenfrei.",
+      "bulkDetectAria": "Bulk-Merge-Detect",
+      "bulkDetectTitle": "Bulk-Detect",
+      "bulkDetectDescription": "Memories die noch keinen Merge-Check hatten. Cosine-only, kein LLM, praktisch kostenfrei.",
+      "bulkDetectExcerptsAria": "Bulk-Excerpt-Merge-Detect",
+      "bulkDetectExcerptsTitle": "Bulk-Detect (Excerpts)",
+      "bulkDetectExcerptsDescription": "Excerpts ohne Merge-Check (cosine ≥ 0.97). Cosine-only, kostenfrei.",
+      "previewFailed": "Preview fehlgeschlagen: {message}",
+      "unchecked": "ungeprüft",
+      "alreadyChecked": "schon geprüft",
+      "withoutEmbedding": "ohne Embedding",
+      "limitLabel": "Limit",
+      "running": "läuft",
+      "startBulkDetect": "Bulk-Detect starten",
+      "confirmHint": "⚠️ Confirm bei Limit > {limit}",
+      "runFailed": "Run fehlgeschlagen: {message}",
+      "resultTitle": "Ergebnis · {duration} ms",
+      "newDuplicates": "neue Duplikate",
+      "errors": "Fehler",
+      "statusAll": "alle",
+      "loading": "lädt…",
+      "refresh": "aktualisieren",
+      "error": "Fehler: {message}",
+      "emptyMemories": "Keine Duplikat-Kandidaten in dieser Auswahl.",
+      "emptyExcerpts": "Keine Excerpt-Duplikate in dieser Auswahl."
+    },
+    "detail": {
+      "title": "Duplikat auflösen",
+      "loading": "lädt…",
+      "error": "Fehler: {message}",
+      "detectorFindingTitle": "Detector-Befund",
+      "cosineSummary": "Cosine-Ähnlichkeit <cosine>{value}</cosine> — Memories sind fast identisch.",
+      "resolutionTitle": "Auflösung",
+      "reasonLabel": "Begründung (optional, im Audit-Log)",
+      "confirmDelete": "Memory wird endgültig gelöscht: \"{summary}\". Fortfahren?",
+      "confirmResolve": "Duplikat-Status auf \"{label}\" setzen?",
+      "resolutions": {
+        "keepA": {
+          "label": "A behalten → B löschen",
+          "description": "Markiert Memory A als kanonische Variante und löscht Memory B endgültig. Audit-Trail bleibt erhalten."
+        },
+        "keepB": {
+          "label": "B behalten → A löschen",
+          "description": "Markiert Memory B als kanonische Variante und löscht Memory A endgültig. Audit-Trail bleibt erhalten."
+        },
+        "notDuplicate": {
+          "label": "Kein Duplikat (Detector hat überschossen)",
+          "description": "Markiert das Paar als „kein Duplikat\". Beide Memories bleiben unverändert. Wird nicht erneut geprüft."
+        }
+      },
+      "openMemory": "zur Memory →",
+      "memoryUnavailable": "Memory nicht zugänglich (gelöscht oder kein Owner)."
+    },
+    "excerptDetail": {
+      "title": "Excerpt-Duplikat auflösen",
+      "loading": "lädt…",
+      "error": "Fehler: {message}",
+      "detectorFindingTitle": "Detector-Befund",
+      "cosineSummary": "Cosine-Ähnlichkeit <cosine>{value}</cosine> — Excerpts sind fast wörtlich identisch.",
+      "resolutionTitle": "Auflösung",
+      "reasonLabel": "Begründung (optional, im Audit-Log)",
+      "confirmDelete": "Excerpt wird endgültig gelöscht: \"{text}\". Fortfahren?",
+      "confirmResolve": "Duplikat-Status auf \"{label}\" setzen?",
+      "resolutions": {
+        "keepA": {
+          "label": "A behalten → B löschen",
+          "description": "Behält Excerpt A als kanonisches Zitat und löscht Excerpt B endgültig vom Parent-MK. Provenance-Audit-Row (delete_excerpt) bleibt im memory_acl_audit erhalten."
+        },
+        "keepB": {
+          "label": "B behalten → A löschen",
+          "description": "Behält Excerpt B als kanonisches Zitat und löscht Excerpt A endgültig."
+        },
+        "notDuplicate": {
+          "label": "Kein Duplikat (Detector hat überschossen)",
+          "description": "Markiert das Paar als „kein Duplikat\". Beide Excerpts bleiben unverändert. Wird nicht erneut geprüft."
+        }
+      },
+      "openParentMemory": "zur Parent-Memory →",
+      "excerptUnavailable": "Excerpt nicht zugänglich (gelöscht oder kein Owner).",
+      "positionLine": "Position {position} · {source}",
+      "quotedText": "„{text}“",
+      "parentMemory": "Parent-Memory: {summary}"
+    }
+  },
+  "adminInconsistencies": {
+    "list": {
+      "title": "Memory · Widersprüche",
+      "intro": "Memories die semantisch verwandt sind aber inhaltlich widersprechen. Klick auf einen Eintrag öffnet die Side-by-side-Ansicht zum Auflösen.",
+      "confirmBulkRun": "Bulk-Detect für bis zu {count} Memories starten? Pro Memory bis zu 5 Haiku-Calls — Kosten skalieren mit dem Limit.",
+      "bulkDetectAria": "Bulk-Inconsistency-Detect",
+      "bulkDetectTitle": "Bulk-Detect",
+      "bulkDetectDescription": "Memories die noch keinen Inconsistency-Check hatten (= aus Zeiten vor Slice 9).",
+      "previewFailed": "Preview fehlgeschlagen: {message}",
+      "unchecked": "ungeprüft",
+      "alreadyChecked": "schon geprüft",
+      "withoutEmbedding": "ohne Embedding",
+      "detectorReady": "ready",
+      "detectorNoKey": "kein Key",
+      "limitLabel": "Limit",
+      "running": "läuft",
+      "startBulkDetect": "Bulk-Detect starten",
+      "costConfirmHint": "⚠️ Cost-Confirm bei Limit > {limit}",
+      "runFailed": "Run fehlgeschlagen: {message}",
+      "resultTitle": "Ergebnis · {duration} ms",
+      "newConflicts": "neue Konflikte",
+      "errors": "Fehler",
+      "statusAll": "alle",
+      "loading": "lädt…",
+      "refresh": "aktualisieren",
+      "error": "Fehler: {message}",
+      "empty": "Keine Widersprüche in dieser Auswahl."
+    },
+    "detail": {
+      "title": "Konflikt auflösen",
+      "loading": "lädt…",
+      "error": "Fehler: {message}",
+      "detectorFindingTitle": "Detector-Befund",
+      "resolutionTitle": "Auflösung",
+      "reasonLabel": "Begründung (optional, im Audit-Log)",
+      "confirmDelete": "Memory wird endgültig gelöscht: \"{summary}\". Fortfahren?",
+      "confirmResolve": "Konflikt als \"{label}\" markieren?",
+      "resolutions": {
+        "aWins": {
+          "label": "A korrekt → B löschen",
+          "description": "Markiert Memory A als richtig und löscht Memory B endgültig. Audit-Trail bleibt erhalten."
+        },
+        "bWins": {
+          "label": "B korrekt → A löschen",
+          "description": "Markiert Memory B als richtig und löscht Memory A endgültig. Audit-Trail bleibt erhalten."
+        },
+        "both": {
+          "label": "Beide korrekt (verschiedene Kontexte)",
+          "description": "Lässt beide Memories unverändert und markiert den Konflikt als aufgelöst. Verwende dies wenn beide in unterschiedlichen Kontexten korrekt sind."
+        },
+        "dismiss": {
+          "label": "False-Positive (Detector lag falsch)",
+          "description": "Markiert die Erkennung als false-positive. Beide Memories bleiben unverändert. Der Konflikt wird nicht erneut geprüft."
+        }
+      },
+      "openMemory": "zur Memory →",
+      "memoryUnavailable": "Memory nicht zugänglich (gelöscht oder kein Owner)."
+    }
+  },
+  "adminKgLifecycle": {
+    "quotaTooltip": "{percent}% des Quota",
+    "quotaOverTooltip": "{percent}% — wird beim nächsten GC-Sweep evicted"
+  },
+  "adminKgPriorities": {
+    "intro": "Per-Agent Block/Boost-Liste für den Token-Budget-Assembler. Block droppt einen Turn aus dem Recall-Pool; Boost multipliziert den Score mit `weight` (Default 1.3). `manuallyAuthored=true` bringt zusätzlich einen unabhängigen ×1.3 Boost — beide kombinieren.",
+    "agentIdLabel": "Agent-ID",
+    "agentIdPlaceholder": "de.byte5.agent.calendar oder orchestrator-default",
+    "load": "Laden",
+    "newEntryTitle": "Neuer Eintrag",
+    "weightIgnoredTitle": "weight ignoriert für block",
+    "weightMultiplierTitle": "score multiplier",
+    "empty": "Keine Einträge für diesen Agent."
+  },
+  "adminMemoryBackend": {
+    "title": "Memory · Speicher-Backend",
+    "intro": "Schaltet das Memory-Storage zwischen <strong>Postgres</strong> und <strong>In-Memory</strong> (flüchtig, ohne Datenbank) um. Postgres benötigt <code>DATABASE_URL</code> (Neon-KG/graphPool). Die Auswahl wird gespeichert, der Wechsel greift erst nach einem Neustart.",
+    "loading": "lädt…",
+    "loadFailed": "Laden fehlgeschlagen: {message}",
+    "currentStateTitle": "Aktueller Stand",
+    "activeBackend": "Aktives Backend",
+    "envDefault": "Env-Default",
+    "activeProvider": "Aktiver Provider",
+    "dbUrlSet": "gesetzt",
+    "dbUrlNotSet": "nicht gesetzt",
+    "restartPending": "⚠ Ein Wechsel ist gespeichert, aber noch nicht aktiv — Neustart erforderlich, damit der Wechsel greift.",
+    "chooseBackendTitle": "Backend wählen",
+    "backends": {
+      "postgres": "Postgres (postgres)",
+      "inmemory": "In-Memory (flüchtig, ohne Datenbank)"
+    },
+    "requiresDbUrl": "— benötigt DATABASE_URL (Neon-KG/graphPool)",
+    "saving": "speichert…",
+    "saveButton": "Auswahl speichern",
+    "savedMessage": "Backend <code>{backend}</code> gespeichert.",
+    "restartRequired": "Neustart erforderlich, damit der Wechsel greift.",
+    "dbUrlRequiredError": "Postgres benötigt DATABASE_URL (Neon-KG/graphPool). Setze DATABASE_URL und starte neu, bevor du auf Postgres wechselst.",
+    "forbiddenError": "Nicht berechtigt (403) — das Umschalten des Backends erfordert Admin-Rechte.",
+    "noProviderError": "Kein Memory-Provider registriert (409) — die Auswahl kann nicht gespeichert werden."
+  },
+  "graph": {
+    "page": {
+      "canvasLoading": "lade Graph-Canvas…",
+      "errorDevEndpoint": "Dev-Graph-Endpoint nicht verfügbar. Setze DEV_ENDPOINTS_ENABLED=true in middleware/.env.",
+      "errorLoadFailed": "Graph-Load fehlgeschlagen (stats={stats}, sessions={sessions})",
+      "reload": "↻ neu laden",
+      "allSessions": "Alle Sessions",
+      "allSessionsHint": "Gesamte Wolke · {count} Sessions",
+      "allMemories": "Alle Memories",
+      "allMemoriesHint": "Palaia-Provenance · 2-Hops",
+      "filterPlaceholder": "Sessions filtern…",
+      "sessionsHeading": "Sessions",
+      "emptySessions": "keine — stell eine Frage im Chat",
+      "headerAllMemories": "🧠 Alle Memories ({count})",
+      "headerAllSessions": "🌐 Alle Sessions ({loaded}/{total})",
+      "memoryCount": "{count, plural, one {# Memory} other {# Memories}}",
+      "turnCount": "{count, plural, one {# Turn} other {# Turns}}",
+      "loadingMore": "lade…",
+      "loadingMemories": "lade Memories…",
+      "loadingSession": "lade Session…"
+    },
+    "sessionCard": {
+      "loading": "lädt…"
+    },
+    "filters": {
+      "entities": "Entitäten",
+      "entitiesHint": "Odoo · Confluence",
+      "crossRefs": "Cross-Refs",
+      "crossRefsHint": "RELATED · expandiert",
+      "mentions": "Mentions",
+      "mentionsHint": "aggregiert pro Session",
+      "trace": "Trace",
+      "traceHint": "Turn · Run · Agent · Tool",
+      "memories": "Memories",
+      "memoriesHint": "MK + Excerpt + Provenance (2 Hops)",
+      "topics": "Topics",
+      "topicsHint": "Cluster-Knoten + HAS_TOPIC (Slice 11)",
+      "issues": "Issues",
+      "issuesHint": "Konflikte + Duplikat-Kandidaten",
+      "plans": "Pläne",
+      "plansHint": "Plan-DAG der gewählten Session (#133)"
+    },
+    "modes": {
+      "graph": "Graph",
+      "list": "Liste",
+      "memory": "Memory"
+    },
+    "canvas": {
+      "emptyState": "keine Knoten — Session links wählen oder Filter anpassen",
+      "help": "Klick = Auswählen · Doppelklick = Nachbarn laden · Rad = Zoom · Ziehen = Pan",
+      "legend": {
+        "topicCluster": "Topic-Cluster",
+        "conflict": "Konflikt",
+        "duplicateCandidate": "Duplikat-Kandidat",
+        "excerptDuplicate": "Excerpt-Duplikat",
+        "planStep": "Plan-Schritt",
+        "hasTopicTransitive": "HAS_TOPIC (Excerpt, transitiv)"
+      }
+    },
+    "detailPanel": {
+      "manualTitle": "manuell erfasst — Score-Boost ×1.3 im Token-Budget-Assembler",
+      "loadingNeighbors": "lade Nachbarn…",
+      "expandNeighbors": "↔ Nachbarn expandieren",
+      "neighborCount": "{count, plural, one {# Nachbar} other {# Nachbarn}}",
+      "provenanceHeading": "Provenance (2 Hops)",
+      "lvl1Memory": "Lvl 1 · Turn / User / Entitäten",
+      "lvl1Excerpt": "Lvl 1 · Parent-Memory",
+      "lvl2Memory": "Lvl 2 · Session",
+      "lvl2Excerpt": "Lvl 2 · Turn / User / Entitäten",
+      "none": "keine"
+    },
+    "acl": {
+      "deleteConfirm": "Memory wirklich löschen? Audit-Trail bleibt erhalten.",
+      "noOwners": "Keine Owner — Memory ist Admin-only invisible.",
+      "removeOwnerTitle": "Owner entfernen",
+      "addOwnerPlaceholder": "omadiaUserId (uuid) hinzufügen",
+      "reasonPlaceholder": "Grund (optional, im Audit-Log)",
+      "addOwner": "+ Owner hinzufügen",
+      "deleteTitle": "Memory hart löschen (Audit-Trail bleibt)",
+      "errorPrefix": "Fehler: {error}",
+      "auditUnreadable": "Audit nicht lesbar: {error}",
+      "auditLoading": "lädt Audit-Trail…",
+      "auditEmpty": "Keine Audit-Einträge.",
+      "reasonQuoted": "„{reason}“"
+    }
+  },
+  "memory": {
+    "errorMiddlewareUnreachable": "Middleware nicht erreichbar (localhost:3979). Läuft `npm run dev` im middleware-Ordner?",
+    "errorDevEndpointUnavailable": "Dev-Memory-Endpoint nicht verfügbar. Setze DEV_ENDPOINTS_ENABLED=true in middleware/.env und starte die Middleware neu.",
+    "errorListFailed": "List fehlgeschlagen (HTTP {status})",
+    "errorFileFailed": "File fehlgeschlagen (HTTP {status})",
+    "backendInMemory": "In-Memory · flüchtig",
+    "descriptionInMemory": "Live-Browser des aktiven Memory-Stores (RAM, beim Neustart leer).",
+    "descriptionPostgres": "Live-Browser des aktiven Memory-Stores (persistent in Postgres).",
+    "description": "Live-Browser des aktiven Memory-Stores.",
+    "pathLabel": "Pfad",
+    "reload": "↻ neu laden",
+    "loading": "lädt…",
+    "empty": "leer",
+    "selectEntry": "Eintrag links wählen…"
+  },
+  "memories": {
+    "kinds": {
+      "decision": "Entscheidung",
+      "insight": "Erkenntnis",
+      "preference": "Präferenz",
+      "reference": "Referenz"
+    },
+    "list": {
+      "subtitle": "Kuratiertes Wissen — ACL-gefiltert auf dich als Owner.",
+      "reload": "↻ neu laden",
+      "filterAll": "alle",
+      "loading": "lädt…",
+      "errorPrefix": "Fehler: {error}",
+      "emptyAll": "Noch keine Memories. Erstelle eine via Chat oder POST /api/v1/memory.",
+      "emptyKind": "Keine Memories vom Typ „{kind}“. Filter zurücksetzen oder andere Art wählen.",
+      "ownerCount": "{count, plural, one {# Owner} other {# Owner}}"
+    },
+    "detail": {
+      "actions": {
+        "create": "angelegt",
+        "expand": "Owner ergänzt",
+        "shrink": "Owner entfernt",
+        "delete": "gelöscht",
+        "edit": "bearbeitet",
+        "editExcerpt": "Excerpt bearbeitet"
+      },
+      "sources": {
+        "llm": "LLM-extrahiert",
+        "hint": "Hint-übernommen",
+        "fallback": "Fallback"
+      },
+      "summaryRequired": "Zusammenfassung darf nicht leer sein.",
+      "deleteConfirm": "Memory wirklich löschen? Audit-Trail bleibt, aber das Item verschwindet aus /memories.",
+      "notFound": "Memory nicht gefunden oder du bist kein Owner.",
+      "errorPrefix": "Fehler: {error}",
+      "loading": "lädt…",
+      "summaryLabel": "Zusammenfassung",
+      "rationaleLabel": "Begründung",
+      "noRationale": "— keine —",
+      "reasonLabel": "Grund für die Änderung (optional, im Audit-Log)",
+      "cancel": "Abbrechen",
+      "save": "Speichern",
+      "saving": "speichert…",
+      "delete": "Löschen",
+      "edit": "Bearbeiten",
+      "excerptsHeading": "Quellen-Snippets",
+      "excerptsSubtitle": "Verbatim aus dem ursprünglichen Turn — Provenance-Anker für die Memory.",
+      "excerptsUnreadable": "Snippets nicht lesbar: {error}",
+      "excerptsEmpty": "Keine Quellen-Snippets — Memory wurde vor Slice 6.5 gespeichert oder der Extractor lieferte keine Excerpts.",
+      "excerptCopyTitle": "Snippet in die Zwischenablage kopieren",
+      "excerptCopied": "✓ kopiert",
+      "excerptCopy": "kopieren",
+      "excerptEdit": "bearbeiten",
+      "sourceLabel": "Quelle:",
+      "copyFailed": "Kopieren fehlgeschlagen (Browser blockiert Clipboard).",
+      "auditAriaLabel": "Audit-Verlauf",
+      "auditHeading": "Verlauf",
+      "refresh": "aktualisieren",
+      "auditUnreadable": "Verlauf nicht lesbar: {error}",
+      "auditEmpty": "Keine Audit-Einträge.",
+      "reasonQuoted": "„{reason}“"
+    }
+  },
+  "routines": {
+    "page": {
+      "kicker": "Routinen",
+      "title": "Cronjobs & Routinen.",
+      "intro": "User-eigene wiederkehrende Agent-Aufrufe. Anlegen passiert im Chat (manage_routine Tool); hier siehst du alles auf einen Blick und kannst pausieren oder löschen.",
+      "summaryTotal": "Total",
+      "summaryActive": "Aktiv",
+      "summaryPaused": "Pausiert",
+      "errorUnknownLoad": "Unbekannter Fehler beim Laden der Routinen.",
+      "loadErrorTitle": "Routinen nicht erreichbar",
+      "columnLastRun": "Letzter Lauf",
+      "columnActions": "Aktionen",
+      "emptyTitle": "Noch keine Routinen.",
+      "emptyBody": "Routinen entstehen, wenn ein User im Chat etwas wie „erinnere mich jeden Montag um 9 Uhr an X“ sagt — der Agent ruft das {toolName} Tool und legt sie an."
+    },
+    "row": {
+      "neverRan": "noch nie",
+      "lastRun": "Letzter Lauf",
+      "lastError": "Letzter Fehler",
+      "historyTitle": "{count, plural, one {Letzter # Run} other {Letzte # Runs}}",
+      "loading": "Lädt…",
+      "historyErrorTitle": "Run-Historie nicht erreichbar",
+      "historyEmpty": "Noch keine Run-Historie für diese Routine — sobald sie zum ersten Mal feuert, erscheint hier eine Zeile.",
+      "columnDuration": "Dauer",
+      "columnError": "Fehler"
+    },
+    "trigger": {
+      "cron": "Cron",
+      "catchup": "Catch-up",
+      "manual": "Manuell"
+    },
+    "actions": {
+      "triggerButton": "Jetzt",
+      "triggerTitle": "Routine jetzt manuell auslösen — feuert einen Agent-Run und liefert das Ergebnis ins Channel.",
+      "triggerNotice": "Gestartet — Ergebnis erscheint in ~30 Sekunden im Channel.",
+      "deleteConfirm": "Routine ''{name}'' löschen? Das kann nicht rückgängig gemacht werden."
+    },
+    "templateEditor": {
+      "badgeActive": "aktiv · {format}",
+      "description": "JSON-Schema: {schema}. Beim Trigger rendert der Server alle data- + static-Sektionen selbst; der LLM füllt nur die narrative-slot-Strings. Leerer Editor = Template entfernen, Routine läuft wieder im Legacy-Pfad.",
+      "templatePlaceholder": "'{ \"format\": \"markdown\", \"sections\": [ { \"kind\": \"narrative-slot\", \"id\": \"intro\", \"hint\": \"Ein Satz Einleitung.\" } ] }'",
+      "saveFailedLabel": "Save fehlgeschlagen:",
+      "saved": "Gespeichert.",
+      "save": "Speichern",
+      "savingBusy": "Speichert…",
+      "discard": "Verwerfen",
+      "clearEditor": "Editor leeren",
+      "previewOpenButton": "Preview öffnen",
+      "previewCloseButton": "Preview schließen",
+      "previewHeading": "Preview mit synthetischen Daten",
+      "previewDescription": "Server-side Render-Preview ohne LLM-Call. Du gibst die tool-Ergebnisse + Slot-Werte vor, die der Renderer normalerweise zur Trigger-Zeit aus C.2 + C.3 bekommt.",
+      "previewRawLabel": "rawToolResults · per Tool-Name",
+      "previewSlotsLabel": "slots · LLM-Narrative",
+      "previewSlotsPlaceholder": "'{\n  \"intro\": \"Heute eine Person abwesend.\"\n}'",
+      "previewNoTemplate": "Kein Template im Editor — kein Preview möglich.",
+      "templateJsonBroken": "Template-JSON kaputt: {message}",
+      "rawToolResultsNotObject": "rawToolResults muss ein JSON-Objekt sein.",
+      "rawToolResultsJsonBroken": "rawToolResults-JSON kaputt: {message}",
+      "slotsNotObject": "slots muss ein JSON-Objekt sein.",
+      "slotsJsonBroken": "slots-JSON kaputt: {message}",
+      "renderingBusy": "Rendert…",
+      "rendererRejected": "Renderer abgelehnt:"
+    },
+    "runTrace": {
+      "empty": "Kein Run-Trace verfügbar (typisch bei Errors vor `runTurn` oder bei älteren Runs vor Aktivierung der Trace-Persistierung).",
+      "showMore": "mehr ({count, plural, one {# Zeichen} other {# Zeichen}})",
+      "showLess": "weniger"
+    },
+    "runDetail": {
+      "errorUnreachableFallback": "Run-Detail nicht erreichbar.",
+      "breadcrumbRoutines": "Routinen",
+      "loadErrorTitle": "Run nicht erreichbar",
+      "fieldDuration": "Dauer",
+      "errorLabel": "Fehler",
+      "sectionAnswer": "Antwort",
+      "sectionTrace": "Call-Stack · Run-Trace",
+      "noAnswer": "Keine Antwort gespeichert (Run vor Delivery abgebrochen oder fehlgeschlagen).",
+      "traceDescription": "Vollständiger agentischer Trace dieses Runs — Iterationen, orchestrator-tool-calls und sub-agent-invocations. Klick auf eine Zeile expandiert / collapse-t den Knoten."
+    }
+  },
+  "system": {
+    "page": {
+      "title": "Plattform-Zustand.",
+      "intro": "Laufzeit, Persistenz, Backup. Nur Metadaten — keine Secrets.",
+      "errorUnknownLoad": "Unbekannter Fehler beim Laden des Vault-Status.",
+      "loadErrorTitle": "Vault-Status nicht erreichbar"
+    },
+    "vaultStatus": {
+      "masterKey": "Master-Key",
+      "persistence": "Persistenz",
+      "vaultFile": "Vault-Datei",
+      "notWrittenYet": "noch nicht geschrieben",
+      "size": "Größe",
+      "lastModified": "Zuletzt geändert",
+      "agentsWithSecrets": "Agenten mit Secrets",
+      "backupHeading": "Off-Site-Backup (Tigris)",
+      "backupActive": "Aktiv",
+      "backupDisabled": "Deaktiviert",
+      "interval": "Intervall",
+      "intervalValue": "{hours}h · max {retention} Snapshots",
+      "lastRun": "Letzter Lauf",
+      "lastSuccess": "Letzter Erfolg",
+      "nextRun": "Nächster Lauf",
+      "storedSnapshots": "Gespeicherte Snapshots",
+      "lastError": "Letzter Fehler",
+      "noReasonKnown": "Kein Grund bekannt.",
+      "dotOk": "OK",
+      "dotWarn": "Warnung",
+      "dotDanger": "Fehler",
+      "dotInactive": "Inaktiv",
+      "keySourceDevFile": "dev-file (nicht für Produktion)",
+      "keySourceDevFileCreated": "dev-file (neu generiert — DEV ONLY)"
     }
   }
 }
