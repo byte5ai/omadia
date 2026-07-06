@@ -579,7 +579,7 @@ export async function triggerSkillVerdictLlmScan(
 /** One row of the read-only MCP grant matrix (issue #461). */
 export interface McpGrantMatrixRow {
   grantId: string;
-  holderKind: 'agent' | 'subagent';
+  holderKind: 'agent' | 'subagent' | 'skill' | 'plugin';
   agentSlug: string | null;
   agentName: string | null;
   subAgentId: string | null;
@@ -610,6 +610,27 @@ export interface McpCallLogEntry {
 
 export async function listMcpGrants(): Promise<{ grants: McpGrantMatrixRow[] }> {
   return callJson('/v1/operator/mcp-grants');
+}
+
+/** Test-call sandbox (issue #463): guarded + audited like runtime dispatch. */
+export async function testCallMcpTool(
+  serverId: string,
+  toolName: string,
+  args: Record<string, unknown>,
+): Promise<{ result: string; ok: boolean; durationMs: number }> {
+  return callJson(
+    `/v1/operator/mcp-servers/${encodeURIComponent(serverId)}/tools/${encodeURIComponent(toolName)}/test-call`,
+    { method: 'POST', body: JSON.stringify({ args }) },
+  );
+}
+
+/** Bulk re-discover + re-scan of every enabled server (issue #463). */
+export async function rescanAllMcpServers(): Promise<{
+  scannedServers: number;
+  scannedTools: number;
+  failures: { serverId: string; serverName: string; error: string }[];
+}> {
+  return callJson('/v1/operator/mcp-servers/rescan-all', { method: 'POST' });
 }
 
 export async function listMcpCallLog(opts?: {

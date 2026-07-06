@@ -33,6 +33,7 @@ import {
   mcpDispatchDenial,
   refreshMcpGrantPolicy,
 } from './services/mcpGrantPolicy.js';
+import { rescanAllMcpServers } from './services/mcpRescan.js';
 import { createLlmVerifier, type LlmVerifier } from './services/skillVerdictLlmVerifier.js';
 import { ScheduleWorker } from './scheduler/scheduleWorker.js';
 import type {
@@ -1751,6 +1752,29 @@ async function main(): Promise<void> {
         );
       });
 
+      // Periodic MCP re-scan (epic #459 W6, #455 Phase 3): re-discovers and
+      // re-scans every enabled server so post-import drift surfaces without
+      // operator action. Default every 6h; MCP_RESCAN_INTERVAL_MS=0 disables.
+      const rescanIntervalMs = Number(
+        process.env['MCP_RESCAN_INTERVAL_MS'] ?? String(6 * 60 * 60 * 1000),
+      );
+      if (graphPool && Number.isFinite(rescanIntervalMs) && rescanIntervalMs > 0) {
+        const rescanStore = new AgentGraphStore(graphPool);
+        const rescanTimer = setInterval(() => {
+          void rescanAllMcpServers(rescanStore, mcpManager, (m) =>
+            console.log(`[middleware] ${m}`),
+          )
+            .then(() => registryForHydrate.reload())
+            .catch((err: unknown) => {
+              console.warn(`[middleware] periodic mcp re-scan failed: ${String(err)}`);
+            });
+        }, rescanIntervalMs);
+        rescanTimer.unref();
+        console.log(
+          `[middleware] periodic mcp re-scan armed (every ${String(Math.round(rescanIntervalMs / 60000))}min)`,
+        );
+      }
+
     }
   }
 
@@ -2146,6 +2170,19 @@ async function main(): Promise<void> {
       // pick is rejected instead of silently dropped at build).
       getActiveProvider: orchestratorActiveProviderId,
       getLlmVerifier: getSkillVerdictLlmVerifier,
+      // Epic #459 W6 (issue #463): the router's manager gets the same audit
+      // observer + dispatch guard as the runtime pool, so sandbox test-calls
+      // are policy-enforced and audit-logged.
+      ...(graphPool
+        ? {
+            mcpCallObserver: (entry: McpCallLogEntry) => {
+              void new AgentGraphStore(graphPool).insertMcpCallLog(entry).catch((err: unknown) => {
+                console.warn(`[middleware] mcp sandbox audit write failed: ${String(err)}`);
+              });
+            },
+          }
+        : {}),
+      mcpCallGuard: mcpDispatchDenial,
     }),
   );
   console.log(

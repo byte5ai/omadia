@@ -2636,10 +2636,18 @@
       "acked": "bestätigt",
       "marketplaceSource": "Marketplace",
       "sourceLink": "Quelle",
+      "rescanAll": "Alle neu scannen",
       "state": {
         "enabled": "aktiv",
         "disabled": "deaktiviert"
       }
+    },
+    "sandbox": {
+      "toggle": "Testen",
+      "run": "Testaufruf ausführen",
+      "noParams": "Dieses Tool deklariert keine Parameter.",
+      "ok": "ok",
+      "failed": "fehlgeschlagen"
     },
     "marketplace": {
       "registry": "Registry",
@@ -2672,7 +2680,17 @@
       "revoke": "Entziehen",
       "revokeTitle": "Grant entziehen",
       "revokeBody": "\"{tool}\" von {holder} entziehen?",
-      "revokeConfirm": "Grant entziehen"
+      "revokeConfirm": "Grant entziehen",
+      "kind": {
+        "agent": "Agent",
+        "subagent": "Sub-Agent",
+        "skill": "Skill",
+        "plugin": "Plugin"
+      },
+      "manageHint": {
+        "skill": "im Skill-Editor verwalten",
+        "plugin": "über Plugin-Grants verwalten"
+      }
     },
     "audit": {
       "time": "Zeit",

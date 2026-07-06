@@ -11,6 +11,8 @@ import {
   ackMcpToolVerdict,
   addMcpRegistry,
   createMcpServer,
+  rescanAllMcpServers,
+  testCallMcpTool,
   deleteGraphEdge,
   deleteMcpRegistry,
   deleteMcpServer,
@@ -174,6 +176,14 @@ function ServersPane(): React.ReactElement {
         >
           {t('servers.add')}
         </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          busy={busy === 'rescan'}
+          onClick={() => void act('rescan', () => rescanAllMcpServers())}
+        >
+          {t('servers.rescanAll')}
+        </Button>
       </div>
 
       {error ? <div className="text-sm text-[color:var(--danger)]">{error}</div> : null}
@@ -321,6 +331,7 @@ function ServerDetail({
   const t = useTranslations('adminMcp');
   const [ackArm, setAckArm] = useState<string | null>(null);
   const [ackBusy, setAckBusy] = useState<string | null>(null);
+  const [testTool, setTestTool] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   if (server.discoveredTools.length === 0) {
@@ -377,43 +388,204 @@ function ServerDetail({
         return (
           <div
             key={tool.name}
-            className="flex items-start justify-between gap-3 rounded border border-[color:var(--border)] px-2 py-1.5"
+            className="flex flex-col gap-1.5 rounded border border-[color:var(--border)] px-2 py-1.5"
           >
-            <div className="min-w-0">
-              <div className="text-sm">{tool.name}</div>
-              {tool.description ? (
-                <div className="truncate text-xs text-[color:var(--fg-muted)]">{tool.description}</div>
-              ) : null}
-              {v && v.riskCodes.length > 0 ? (
-                <div className="text-[10px] text-[color:var(--fg-muted)]">{v.riskCodes.join(', ')}</div>
-              ) : null}
-            </div>
-            <div className="flex shrink-0 items-center gap-1.5">
-              <SkillVerdictBadge severity={v?.severity ?? 'not_yet_scanned'} />
-              {v?.acked && !v.ackStale ? (
-                <span className="text-[10px] text-[color:var(--fg-muted)]">{t('servers.acked')}</span>
-              ) : null}
-              {needsAck ? (
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-sm">{tool.name}</div>
+                {tool.description ? (
+                  <div className="truncate text-xs text-[color:var(--fg-muted)]">{tool.description}</div>
+                ) : null}
+                {v && v.riskCodes.length > 0 ? (
+                  <div className="text-[10px] text-[color:var(--fg-muted)]">{v.riskCodes.join(', ')}</div>
+                ) : null}
+              </div>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <SkillVerdictBadge severity={v?.severity ?? 'not_yet_scanned'} />
+                {v?.acked && !v.ackStale ? (
+                  <span className="text-[10px] text-[color:var(--fg-muted)]">{t('servers.acked')}</span>
+                ) : null}
+                {needsAck ? (
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    busy={ackBusy === tool.name}
+                    onClick={() => {
+                      if (ackArm !== tool.name) {
+                        setAckArm(tool.name);
+                        return;
+                      }
+                      void ack(tool.name);
+                    }}
+                  >
+                    {ackArm === tool.name ? t('servers.ackConfirm') : t('servers.ack')}
+                  </Button>
+                ) : null}
                 <Button
                   size="sm"
-                  variant="danger"
-                  busy={ackBusy === tool.name}
-                  onClick={() => {
-                    if (ackArm !== tool.name) {
-                      setAckArm(tool.name);
-                      return;
-                    }
-                    void ack(tool.name);
-                  }}
+                  variant="ghost"
+                  onClick={() => setTestTool(testTool === tool.name ? null : tool.name)}
                 >
-                  {ackArm === tool.name ? t('servers.ackConfirm') : t('servers.ack')}
+                  {t('sandbox.toggle')}
                 </Button>
-              ) : null}
+              </div>
             </div>
+            {testTool === tool.name ? (
+              <ToolTestForm serverId={server.id} tool={tool} />
+            ) : null}
           </div>
         );
       })}
       {error ? <div className="text-sm text-[color:var(--danger)]">{error}</div> : null}
+    </div>
+  );
+}
+
+// ── Test-call sandbox (issue #463) ───────────────────────────────────────────
+
+interface SchemaProp {
+  name: string;
+  type: string;
+  description: string | null;
+  required: boolean;
+}
+
+function schemaProps(inputSchema: Record<string, unknown> | undefined): SchemaProp[] {
+  const properties = inputSchema?.['properties'];
+  if (!properties || typeof properties !== 'object') return [];
+  const required = new Set(
+    Array.isArray(inputSchema?.['required']) ? (inputSchema['required'] as string[]) : [],
+  );
+  return Object.entries(properties as Record<string, unknown>).map(([name, def]) => {
+    const d = (def ?? {}) as Record<string, unknown>;
+    return {
+      name,
+      type: typeof d['type'] === 'string' ? (d['type'] as string) : 'string',
+      description: typeof d['description'] === 'string' ? (d['description'] as string) : null,
+      required: required.has(name),
+    };
+  });
+}
+
+/** Auto-generated form from a tool's inputSchema (epic item 4): primitive
+ *  top-level properties render as typed inputs, everything else falls back to
+ *  a JSON textarea per field. The call runs through the guarded + audited
+ *  manager server-side. */
+function ToolTestForm({
+  serverId,
+  tool,
+}: {
+  serverId: string;
+  tool: { name: string; inputSchema?: Record<string, unknown> };
+}): React.ReactElement {
+  const t = useTranslations('adminMcp');
+  const props = schemaProps(tool.inputSchema);
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [pending, setPending] = useState(false);
+  const [outcome, setOutcome] = useState<{ ok: boolean; result: string; durationMs: number } | null>(
+    null,
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  function buildArgs(): Record<string, unknown> {
+    const args: Record<string, unknown> = {};
+    for (const p of props) {
+      const raw = values[p.name];
+      if (raw === undefined || raw === '') continue;
+      if (p.type === 'number' || p.type === 'integer') {
+        const n = Number(raw);
+        if (Number.isFinite(n)) args[p.name] = n;
+      } else if (p.type === 'boolean') {
+        args[p.name] = raw === 'true';
+      } else if (p.type === 'string') {
+        args[p.name] = raw;
+      } else {
+        try {
+          args[p.name] = JSON.parse(raw);
+        } catch {
+          args[p.name] = raw;
+        }
+      }
+    }
+    return args;
+  }
+
+  async function run(): Promise<void> {
+    setPending(true);
+    setError(null);
+    setOutcome(null);
+    try {
+      setOutcome(await testCallMcpTool(serverId, tool.name, buildArgs()));
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5 rounded border border-[color:var(--border)]/60 bg-[color:var(--bg-soft)]/40 p-2">
+      {props.length === 0 ? (
+        <div className="text-xs text-[color:var(--fg-muted)]">{t('sandbox.noParams')}</div>
+      ) : (
+        props.map((p) => (
+          <label key={p.name} className="flex flex-col gap-0.5 text-xs">
+            <span>
+              {p.name}
+              {p.required ? ' *' : ''}
+              {p.description ? (
+                <span className="text-[color:var(--fg-muted)]"> · {p.description}</span>
+              ) : null}
+            </span>
+            {p.type === 'boolean' ? (
+              <select
+                value={values[p.name] ?? ''}
+                onChange={(e) => setValues((v) => ({ ...v, [p.name]: e.target.value }))}
+                className="rounded border border-[color:var(--border)] bg-transparent px-2 py-1"
+              >
+                <option value="">–</option>
+                <option value="true">true</option>
+                <option value="false">false</option>
+              </select>
+            ) : p.type === 'object' || p.type === 'array' ? (
+              <textarea
+                value={values[p.name] ?? ''}
+                onChange={(e) => setValues((v) => ({ ...v, [p.name]: e.target.value }))}
+                rows={2}
+                placeholder="{ }"
+                className="rounded border border-[color:var(--border)] bg-transparent px-2 py-1 font-mono"
+              />
+            ) : (
+              <input
+                value={values[p.name] ?? ''}
+                onChange={(e) => setValues((v) => ({ ...v, [p.name]: e.target.value }))}
+                className="rounded border border-[color:var(--border)] bg-transparent px-2 py-1"
+              />
+            )}
+          </label>
+        ))
+      )}
+      <div>
+        <Button size="sm" variant="secondary" busy={pending} onClick={() => void run()}>
+          {t('sandbox.run')}
+        </Button>
+      </div>
+      {outcome ? (
+        <div className="flex flex-col gap-1">
+          <div className="text-[10px] text-[color:var(--fg-muted)]">
+            {outcome.ok ? (
+              <span className="text-[color:var(--success)]">{t('sandbox.ok')}</span>
+            ) : (
+              <span className="text-[color:var(--danger)]">{t('sandbox.failed')}</span>
+            )}{' '}
+            · {outcome.durationMs} ms
+          </div>
+          <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded border border-[color:var(--border)] p-2 text-[11px]">
+            {outcome.result}
+          </pre>
+        </div>
+      ) : null}
+      {error ? <div className="text-xs text-[color:var(--danger)]">{error}</div> : null}
     </div>
   );
 }
@@ -705,8 +877,11 @@ function GrantsPane(): React.ReactElement {
               {rows.map((r) => (
                 <tr key={r.grantId} className="border-b border-[color:var(--border)]/60">
                   <td className={tdCls}>
+                    <span className="mr-1.5 rounded-full border border-[color:var(--border)] px-1.5 py-0.5 text-[10px] uppercase tracking-[0.08em] text-[color:var(--fg-muted)]">
+                      {t(`grants.kind.${r.holderKind}`)}
+                    </span>
                     {r.agentName ?? r.agentSlug ?? '?'}
-                    {r.holderKind === 'subagent' && r.subAgentName ? (
+                    {(r.holderKind === 'subagent' || r.holderKind === 'skill') && r.subAgentName ? (
                       <span className="text-xs text-[color:var(--fg-muted)]"> → {r.subAgentName}</span>
                     ) : null}
                   </td>
@@ -725,9 +900,15 @@ function GrantsPane(): React.ReactElement {
                     )}
                   </td>
                   <td className={tdCls}>
-                    <Button size="sm" variant="danger" onClick={() => setConfirmRevoke(r)}>
-                      {t('grants.revoke')}
-                    </Button>
+                    {r.holderKind === 'agent' || r.holderKind === 'subagent' ? (
+                      <Button size="sm" variant="danger" onClick={() => setConfirmRevoke(r)}>
+                        {t('grants.revoke')}
+                      </Button>
+                    ) : (
+                      <span className="text-[10px] text-[color:var(--fg-muted)]">
+                        {t(`grants.manageHint.${r.holderKind}`)}
+                      </span>
+                    )}
                   </td>
                 </tr>
               ))}

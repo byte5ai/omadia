@@ -2636,10 +2636,18 @@
       "acked": "acknowledged",
       "marketplaceSource": "marketplace",
       "sourceLink": "source",
+      "rescanAll": "Re-scan all",
       "state": {
         "enabled": "enabled",
         "disabled": "disabled"
       }
+    },
+    "sandbox": {
+      "toggle": "Test",
+      "run": "Run test call",
+      "noParams": "This tool declares no parameters.",
+      "ok": "ok",
+      "failed": "failed"
     },
     "marketplace": {
       "registry": "Registry",
@@ -2672,7 +2680,17 @@
       "revoke": "Revoke",
       "revokeTitle": "Revoke grant",
       "revokeBody": "Revoke \"{tool}\" from {holder}?",
-      "revokeConfirm": "Revoke grant"
+      "revokeConfirm": "Revoke grant",
+      "kind": {
+        "agent": "Agent",
+        "subagent": "Sub-agent",
+        "skill": "Skill",
+        "plugin": "Plugin"
+      },
+      "manageHint": {
+        "skill": "manage in the skill editor",
+        "plugin": "manage via plugin grants"
+      }
     },
     "audit": {
       "time": "Time",

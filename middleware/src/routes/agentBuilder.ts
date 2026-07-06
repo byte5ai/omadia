@@ -27,10 +27,11 @@ import {
   type SubAgentRow,
   type ToolGrantRow,
 } from '@omadia/orchestrator';
-import { McpManager, mcpToolNameFromRef } from '@omadia/orchestrator';
+import { McpManager, mcpToolNameFromRef, type McpCallLogEntry } from '@omadia/orchestrator';
 import { Router, type Request, type Response } from 'express';
 
 import { parseRequiresTools } from '../agents/subAgentToolHydration.js';
+import { rescanAllMcpServers } from '../services/mcpRescan.js';
 import {
   MCP_SEVERITIES_NEEDING_ACK,
   refreshMcpGrantPolicy,
@@ -69,6 +70,11 @@ export interface AgentBuilderRouterOptions {
    *  Deliberately explicit-trigger only (see `/verdict/llm-scan` below), never
    *  auto-fired from a list/bulk path, to keep LLM cost a deliberate action. */
   readonly getLlmVerifier?: () => Promise<LlmVerifier | undefined>;
+  /** Epic #459 W6 (issue #463): audit observer + dispatch guard for the
+   *  router's own McpManager, so sandbox test-calls share the same
+   *  enforcement + audit trail as runtime dispatch. */
+  readonly mcpCallObserver?: (entry: McpCallLogEntry) => void;
+  readonly mcpCallGuard?: (serverId: string, toolName: string) => string | null;
 }
 
 interface Live {
@@ -136,7 +142,10 @@ export function createAgentBuilderRouter(
   options: AgentBuilderRouterOptions,
 ): Router {
   const router = Router();
-  const mcp = new McpManager();
+  const mcp = new McpManager({
+    ...(options.mcpCallObserver ? { onToolCall: options.mcpCallObserver } : {}),
+    ...(options.mcpCallGuard ? { guard: options.mcpCallGuard } : {}),
+  });
   // Marketplace catalog client (epic #459 W3, issue #455): server-side proxy
   // with a 5-minute cache, so registry tokens never reach the browser.
   const mcpRegistryClient = new McpRegistryClient();
@@ -1280,6 +1289,61 @@ export function createAgentBuilderRouter(
     }
   });
 
+  // ── mcp control center v2 (epic #459 W6, issue #463) ──────────────────────
+
+  /** Test-call sandbox: execute one discovered tool directly, for operator
+   *  debugging without starting an agent conversation. Runs through the
+   *  router's guarded + audited McpManager, so scan-policy denials apply and
+   *  every sandbox call lands in the audit log (as unattributed). */
+  router.post(
+    '/mcp-servers/:id/tools/:toolName/test-call',
+    async (req: Request, res: Response) => {
+      const l = live(res);
+      if (!l) return;
+      try {
+        const id = str(req.params.id);
+        const toolName = str(req.params.toolName);
+        const server = (await l.graph.listMcpServers()).find((s) => s.id === id);
+        if (!server) {
+          res.status(404).json({ error: 'mcp_server_not_found' });
+          return;
+        }
+        if (server.status === 'disabled') {
+          res.status(409).json({ error: 'mcp_server_disabled' });
+          return;
+        }
+        const args =
+          req.body?.args && typeof req.body.args === 'object'
+            ? (req.body.args as Record<string, unknown>)
+            : {};
+        const startedAt = Date.now();
+        const result = await mcp.callTool(toMcpConfig(server), toolName, args);
+        res.json({
+          serverId: id,
+          toolName,
+          result,
+          ok: !result.startsWith('Error:'),
+          durationMs: Date.now() - startedAt,
+        });
+      } catch (err) {
+        fail(res, err);
+      }
+    },
+  );
+
+  /** Bulk re-discover + re-scan of every enabled server (#455 Phase 3). */
+  router.post('/mcp-servers/rescan-all', async (_req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const result = await rescanAllMcpServers(l.graph, mcp, (m) => console.log(m));
+      await reload(l);
+      res.json(result);
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
   // ── mcp audit log + grant matrix (epic #459 W2, issues #461/#462) ─────────
   router.get('/mcp-call-log', async (req: Request, res: Response) => {
     const l = live(res);
@@ -1325,14 +1389,18 @@ export function createAgentBuilderRouter(
     const l = live(res);
     if (!l) return;
     try {
-      const [grants, agents, subAgents, servers, verdicts, acks] = await Promise.all([
-        l.graph.listAllToolGrants(),
-        l.config.listAgents(),
-        l.graph.listAllSubAgents(),
-        l.graph.listMcpServers(),
-        l.graph.listMcpToolVerdicts(CURRENT_VERIFIER_VERSION),
-        l.graph.listMcpToolVerdictAcks(CURRENT_VERIFIER_VERSION),
-      ]);
+      const [grants, agents, subAgents, servers, verdicts, acks, bindings, pluginGrants, skills] =
+        await Promise.all([
+          l.graph.listAllToolGrants(),
+          l.config.listAgents(),
+          l.graph.listAllSubAgents(),
+          l.graph.listMcpServers(),
+          l.graph.listMcpToolVerdicts(CURRENT_VERIFIER_VERSION),
+          l.graph.listMcpToolVerdictAcks(CURRENT_VERIFIER_VERSION),
+          l.graph.listAllSkillToolBindings(),
+          l.graph.listPluginMcpGrants(),
+          l.graph.listSkills(),
+        ]);
       const agentById = new Map(agents.map((a) => [a.id, a]));
       const subById = new Map(subAgents.map((s) => [s.id, s]));
       const serverById = new Map(servers.map((s) => [s.id, s]));
@@ -1368,7 +1436,47 @@ export function createAgentBuilderRouter(
             blocked: v !== undefined && MCP_SEVERITIES_NEEDING_ACK.has(v.severity) && !ackValid,
           };
         });
-      res.json({ grants: rows });
+      // Matrix extension (W6, issue #463): skill bindings (#456) and plugin
+      // grants (#458) as additional holder rows, so all four caller surfaces
+      // render from one response.
+      const skillById = new Map(skills.map((s) => [s.id, s]));
+      const bindingRows = bindings.map((b) => {
+        const server = serverById.get(b.mcpServerId);
+        const v = vmap.get(`${b.mcpServerId} ${b.toolName}`);
+        const a = amap.get(`${b.mcpServerId} ${b.toolName}`);
+        const ackValid = v !== undefined && a !== undefined && a.contentHash === v.contentHash;
+        return {
+          grantId: `binding:${b.skillId}:${b.contract}`,
+          holderKind: 'skill' as const,
+          agentSlug: null,
+          agentName: skillById.get(b.skillId)?.name ?? b.skillId,
+          subAgentId: null,
+          subAgentName: b.contract,
+          serverId: b.mcpServerId,
+          serverName: server?.name ?? null,
+          toolName: b.toolName,
+          severity: v?.severity ?? null,
+          notYetScanned: v === undefined,
+          acked: ackValid,
+          blocked: v !== undefined && MCP_SEVERITIES_NEEDING_ACK.has(v.severity) && !ackValid,
+        };
+      });
+      const pluginRows = pluginGrants.map((g) => ({
+        grantId: `plugin:${g.pluginId}:${g.mcpServerId}`,
+        holderKind: 'plugin' as const,
+        agentSlug: null,
+        agentName: g.pluginId,
+        subAgentId: null,
+        subAgentName: null,
+        serverId: g.mcpServerId,
+        serverName: serverById.get(g.mcpServerId)?.name ?? null,
+        toolName: '*',
+        severity: null,
+        notYetScanned: false,
+        acked: false,
+        blocked: false,
+      }));
+      res.json({ grants: [...rows, ...bindingRows, ...pluginRows] });
     } catch (err) {
       fail(res, err);
     }
