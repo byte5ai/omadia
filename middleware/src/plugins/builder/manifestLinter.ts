@@ -45,7 +45,14 @@ export type ViolationKind =
   | 'ui_route_path_duplicate'
   | 'ui_route_tab_label_duplicate'
   | 'multi_instance_justification_missing'
-  | 'privacy_class_invalid';
+  | 'privacy_class_invalid'
+  // Spec 005 (#371) — OAuth descriptor cross-references.
+  | 'oauth_provider_id_duplicate'
+  | 'oauth_field_provider_unresolved'
+  | 'oauth_provider_client_field_missing'
+  | 'oauth_provider_unreferenced'
+  | 'oauth_provider_client_secret_not_secret'
+  | 'setup_field_provider_on_non_oauth';
 
 export interface ManifestViolation {
   kind: ViolationKind;
@@ -320,6 +327,124 @@ export function validateSpec(
       });
     }
   }
+
+  // Spec 005 (#371) — OAuth descriptor cross-references Zod can't express:
+  // unique ids, field↔descriptor references resolve both ways, client fields
+  // exist and the secret is type:'secret'. A failure leaves the broker unarmed
+  // or `ctx.oauthTokens` undefined at runtime.
+  const oauthProviders = Array.isArray(s.oauth_providers)
+    ? (s.oauth_providers as Array<Record<string, unknown>>)
+    : [];
+  const providerIdIndices = new Map<string, number[]>();
+  oauthProviders.forEach((p, i) => {
+    const id = p?.['id'];
+    if (typeof id !== 'string') return;
+    const list = providerIdIndices.get(id) ?? [];
+    list.push(i);
+    providerIdIndices.set(id, list);
+  });
+  for (const [id, indices] of providerIdIndices) {
+    if (indices.length > 1) {
+      violations.push({
+        kind: 'oauth_provider_id_duplicate',
+        path: `/oauth_providers/${String(indices[0] ?? 0)}/id`,
+        message:
+          `oauth_providers id '${id}' is duplicated at indices ${indices.join(', ')}. ` +
+          'Each descriptor id must be unique — a type:oauth field references exactly one.',
+      });
+    }
+  }
+  // key → type, for the client-field existence + secret-type checks below.
+  const setupFieldTypes = new Map<string, unknown>();
+  for (const f of setupFields) {
+    if (!f || typeof f !== 'object') continue;
+    const field = f as { key?: unknown; type?: unknown };
+    if (typeof field.key === 'string') setupFieldTypes.set(field.key, field.type);
+  }
+  // provider/scopes are the type:oauth wiring — the Zod schema makes both
+  // optional on every field type, so a non-oauth field can carry a stray
+  // provider. The loader only reads them inside `if (type === 'oauth')` and
+  // codegen now gates the forward, so such a field is silently inert. Reject
+  // it up-front rather than let a malformed field slip past.
+  setupFields.forEach((f, i) => {
+    if (!f || typeof f !== 'object') return;
+    const field = f as { type?: unknown; provider?: unknown; scopes?: unknown };
+    if (field.type === 'oauth') return;
+    const hasProvider =
+      typeof field.provider === 'string' && field.provider.length > 0;
+    const hasScopes = Array.isArray(field.scopes) && field.scopes.length > 0;
+    if (hasProvider || hasScopes) {
+      violations.push({
+        kind: 'setup_field_provider_on_non_oauth',
+        path: `/setup_fields/${i}/${hasProvider ? 'provider' : 'scopes'}`,
+        message:
+          `setup_fields[${i}] is type:'${String(field.type)}' but carries ` +
+          `${hasProvider ? 'a provider' : 'scopes'} — those belong to a ` +
+          "type:'oauth' field only. Set type:'oauth' or drop the field.",
+      });
+    }
+  });
+  // type:oauth field → must reference a declared descriptor; collect referenced
+  // ids so orphan descriptors can be flagged below.
+  const referencedProviderIds = new Set<string>();
+  setupFields.forEach((f, i) => {
+    if (!f || typeof f !== 'object') return;
+    const field = f as { type?: unknown; provider?: unknown };
+    if (field.type !== 'oauth') return;
+    const provider = field.provider;
+    if (typeof provider === 'string') referencedProviderIds.add(provider);
+    if (typeof provider !== 'string' || !providerIdIndices.has(provider)) {
+      violations.push({
+        kind: 'oauth_field_provider_unresolved',
+        path: `/setup_fields/${i}/provider`,
+        message:
+          `setup_fields[${i}] is type:oauth but its provider ` +
+          `'${typeof provider === 'string' ? provider : ''}' does not match any ` +
+          'oauth_providers[].id. Declare the descriptor so the broker can arm.',
+      });
+    }
+  });
+  // Orphan descriptor: declared but unreferenced. Loader still arms the broker
+  // + acquires_oauth chip from descriptor presence, but ctx.oauthTokens only
+  // arms from a type:oauth field — so OAuth is advertised with no accessor.
+  for (const [id, indices] of providerIdIndices) {
+    if (!referencedProviderIds.has(id)) {
+      violations.push({
+        kind: 'oauth_provider_unreferenced',
+        path: `/oauth_providers/${String(indices[0] ?? 0)}/id`,
+        message:
+          `oauth_providers id '${id}' is declared but no type:oauth setup_field ` +
+          'references it via its `provider`. Add the field or drop the descriptor — ' +
+          'an orphan descriptor arms the broker but leaves ctx.oauthTokens undefined.',
+      });
+    }
+  }
+  // client_id_field / client_secret_field must exist; the secret must be
+  // type:'secret' so it's vault-stored, not plaintext config.
+  oauthProviders.forEach((p, i) => {
+    for (const key of ['client_id_field', 'client_secret_field'] as const) {
+      const ref = p?.[key];
+      if (typeof ref !== 'string') continue;
+      if (!setupFieldTypes.has(ref)) {
+        violations.push({
+          kind: 'oauth_provider_client_field_missing',
+          path: `/oauth_providers/${i}/${key}`,
+          message:
+            `oauth_providers[${i}].${key} '${ref}' does not reference an existing ` +
+            'setup_fields key. Add the credential field or fix the reference.',
+        });
+      } else if (key === 'client_secret_field' && setupFieldTypes.get(ref) !== 'secret') {
+        violations.push({
+          kind: 'oauth_provider_client_secret_not_secret',
+          path: `/oauth_providers/${i}/client_secret_field`,
+          message:
+            `oauth_providers[${i}].client_secret_field '${ref}' must reference a ` +
+            `type:'secret' setup_field (got type:'${String(setupFieldTypes.get(ref))}'). ` +
+            'The OAuth client secret must be vault-stored, not plaintext config.',
+        });
+      }
+    }
+  });
 
   // Multi-orchestrator runtime (US2) — manifest extension validation.
   // Zod's schema enforces field types + the privacy_class enum + the

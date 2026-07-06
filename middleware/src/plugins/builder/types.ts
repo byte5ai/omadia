@@ -59,6 +59,10 @@ export interface AgentSpecSkeleton {
   tools: unknown[];
   skill: { role: string; tonality?: string };
   setup_fields: unknown[];
+  /** Spec 005 (#371) — OAuth-provider descriptors (shape: `OAuthProvider` from
+   *  agentSpec.ts). Optional in the skeleton because legacy drafts predate the
+   *  field; Zod parse fills the default `[]`. */
+  oauth_providers?: unknown[];
   playbook: {
     when_to_use: string;
     not_for: string[];

@@ -22,7 +22,13 @@ export interface QualityConfig {
 export type BuilderModelId = string;
 
 export interface BuilderModelInfo {
+  /** Provider-qualified id (e.g. `anthropic:claude-opus-4-8`) — the value the
+   *  picker writes. */
   id: BuilderModelId;
+  /** Bare vendor model id (e.g. `claude-opus-4-8`). Persisted configs from
+   *  before the provider-qualified picker store this form, so the Inspector
+   *  matches against it to avoid flagging a valid model as "stale". */
+  model_id: string;
   label: string;
   provider: string;
   model_class: string;
@@ -124,8 +130,29 @@ export interface SetupField {
   key: string;
   label?: string;
   description?: string;
-  type?: 'string' | 'secret' | 'url' | 'number' | 'boolean';
+  type?: 'string' | 'secret' | 'url' | 'number' | 'boolean' | 'oauth';
   required?: boolean;
+  /** Spec 005 (#371) — for `type: 'oauth'` fields: the oauth_providers[].id
+   *  this field connects through, plus the requested scopes. */
+  provider?: string;
+  scopes?: string[];
+}
+
+/** Spec 005 (#371) — declarative OAuth-provider descriptor. Mirrors
+ *  middleware OAuthProviderSchema / OAuthProviderDescriptor. A `type:oauth`
+ *  setup_field references one by `id` via its `provider`. */
+export interface OAuthProvider {
+  id: string;
+  authorize_url: string;
+  token_url: string;
+  token_auth_style: 'body_form' | 'body_json' | 'basic';
+  /** Required to mirror the kernel contract (admin-v1 `OAuthProviderDescriptor`
+   *  + middleware Zod, which defaults it to true on parse). Served specs always
+   *  carry it. */
+  pkce: boolean;
+  extra_authorize_params?: Record<string, string>;
+  client_id_field: string;
+  client_secret_field: string;
 }
 
 export interface AgentSpecSkeleton {
@@ -147,6 +174,9 @@ export interface AgentSpecSkeleton {
   tools: ToolSpec[];
   skill: { role: string; tonality?: string };
   setup_fields: SetupField[];
+  /** Spec 005 (#371) — declarative OAuth-provider descriptors. Optional;
+   *  defaults to [] in spec. Mirrors middleware AgentSpecSkeleton. */
+  oauth_providers?: OAuthProvider[];
   playbook: {
     when_to_use: string;
     not_for: string[];

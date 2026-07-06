@@ -1,4 +1,5 @@
 import type { SemanticAnswer } from '@omadia/channel-sdk';
+import type { ApprovalReminder } from '@omadia/plugin-api';
 
 /**
  * Channel-agnostic proactive-send capability. A routine fires at scheduled
@@ -54,6 +55,14 @@ export interface ProactiveSender {
      * defines, so a future renderer change doesn't break consumers.
      */
     cardBody?: readonly unknown[];
+    /**
+     * Conductor human-await approval payload (WHAT is being approved +
+     * the workflow's current step/progress). Set when this proactive
+     * send is an approval reminder; channels that render a rich
+     * approve/reject card (Teams) build it from this, others ignore it
+     * and fall back to `message.text`.
+     */
+    approval?: ApprovalReminder;
   }): Promise<void>;
 }
 

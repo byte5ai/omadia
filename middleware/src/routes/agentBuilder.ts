@@ -21,6 +21,7 @@ import {
   type McpServerConfig,
   type McpServerRow,
   type OrchestratorRegistry,
+  type PersonaSkillRow,
   type ScheduleRow,
   type SkillRow,
   type SubAgentRow,
@@ -29,10 +30,19 @@ import {
 import { McpManager } from '@omadia/orchestrator';
 import { Router, type Request, type Response } from 'express';
 
+import { scanSkillForRisks } from '../services/skillGuard.js';
+import { importSkillMarkdown } from '../services/skillImport.js';
+import { serializeSkillMarkdown } from '../services/skillLoader.js';
+
 export interface AgentBuilderRouterOptions {
   readonly getConfigStore: () => ConfigStore | undefined;
   readonly getGraphStore: () => AgentGraphStore | undefined;
   readonly getRegistry: () => OrchestratorRegistry | undefined;
+  /** The orchestrator's single configured LLM provider id (live-read from the
+   *  installed `@omadia/orchestrator` config, default `anthropic`). Scopes
+   *  per-Agent / sub-agent model writes to this provider so a cross-provider
+   *  pick is rejected instead of silently dropped at build (issue #296). */
+  readonly getActiveProvider?: () => string | undefined;
 }
 
 interface Live {
@@ -77,7 +87,7 @@ export function createAgentBuilderRouter(
     try {
       const agent = await agentOr404(l, str(req.params.slug), res);
       if (!agent) return;
-      const [bindings, subAgents, skills, grants, servers, schedules] =
+      const [bindings, subAgents, skills, grants, servers, schedules, personaSkillLinks] =
         await Promise.all([
           l.config.listChannelBindingsForAgent(agent.id),
           l.graph.listAllSubAgents(),
@@ -85,9 +95,20 @@ export function createAgentBuilderRouter(
           l.graph.listAllToolGrants(),
           l.graph.listMcpServers(),
           l.graph.listSchedulesForAgent(agent.id),
+          l.graph.listPersonaSkills(agent.id),
         ]);
       res.json(
-        assembleGraph(agent, bindings, subAgents, skills, grants, servers, schedules),
+        assembleGraph(
+          agent,
+          bindings,
+          subAgents,
+          skills,
+          grants,
+          servers,
+          schedules,
+          l.registry,
+          personaSkillLinks,
+        ),
       );
     } catch (err) {
       fail(res, err);
@@ -133,17 +154,20 @@ export function createAgentBuilderRouter(
       const agent = await agentOr404(l, str(req.params.slug), res);
       if (!agent) return;
       const b = req.body ?? {};
-      const row = await l.graph.createSubAgent({
-        parentAgentId: agent.id,
-        name: String(b.name ?? '').trim(),
-        skillId: b.skillId ?? null,
-        model: b.model ?? null,
-        maxTokens: b.maxTokens ?? null,
-        maxIterations: b.maxIterations ?? null,
-        systemPromptOverride: b.systemPromptOverride ?? null,
-        status: b.status ?? 'enabled',
-        position: b.position ?? null,
-      });
+      const row = await l.graph.createSubAgent(
+        {
+          parentAgentId: agent.id,
+          name: String(b.name ?? '').trim(),
+          skillId: b.skillId ?? null,
+          model: b.model ?? null,
+          maxTokens: b.maxTokens ?? null,
+          maxIterations: b.maxIterations ?? null,
+          systemPromptOverride: b.systemPromptOverride ?? null,
+          status: b.status ?? 'enabled',
+          position: b.position ?? null,
+        },
+        options.getActiveProvider?.(),
+      );
       await reload(l);
       res.json(subAgentNode(row));
     } catch (err) {
@@ -157,7 +181,11 @@ export function createAgentBuilderRouter(
       const l = live(res);
       if (!l) return;
       try {
-        const row = await l.graph.updateSubAgent(str(req.params.id), req.body ?? {});
+        const row = await l.graph.updateSubAgent(
+          str(req.params.id),
+          req.body ?? {},
+          options.getActiveProvider?.(),
+        );
         await reload(l);
         res.json(subAgentNode(row));
       } catch (err) {
@@ -191,9 +219,73 @@ export function createAgentBuilderRouter(
         const agent = await agentOr404(l, str(req.params.slug), res);
         if (!agent) return;
         const routing = (req.body ?? {}).modelRouting ?? null;
-        const updated = await l.config.setModelRouting(agent.id, routing);
+        const updated = await l.config.setModelRouting(
+          agent.id,
+          routing,
+          options.getActiveProvider?.(),
+        );
         await reload(l);
-        res.json(agentNode(updated));
+        res.json(agentNode(updated, l.registry));
+      } catch (err) {
+        fail(res, err);
+      }
+    },
+  );
+
+  // ── persona skills (Wave 8 — direct-answer identity candidates) ─────────
+  // Attached straight to the Agent, no sub-agent in between: the per-turn
+  // classifier (`routeTurnPersona`) picks at most one to answer as. Current
+  // links + names come back on `/agents/:slug/graph` (`agent.personaSkillIds`
+  // + `skills`) — no separate GET here to avoid a second source of truth.
+  router.post(
+    '/agents/:slug/persona-skills',
+    async (req: Request, res: Response) => {
+      const l = live(res);
+      if (!l) return;
+      try {
+        const agent = await agentOr404(l, str(req.params.slug), res);
+        if (!agent) return;
+        const skillId = str((req.body ?? {}).skillId);
+        if (!isUuid(skillId)) {
+          res.status(400).json({ error: 'invalid_skill_id' });
+          return;
+        }
+        const skill = await l.graph.getSkill(skillId);
+        if (!skill) {
+          res.status(400).json({ error: 'skill_not_found', skillId });
+          return;
+        }
+        // A persona skill drives the TOP-LEVEL orchestrator with its full
+        // tool access — a bigger blast radius than a scoped sub-agent skill
+        // grant. Re-scan at attach time (not just import time), same
+        // warn-only guard as Wave 5; the UI surfaces `risks` before the
+        // operator confirms, but the attach itself is never blocked.
+        const risks = scanSkillForRisks(skill.frontmatter, skill.body);
+        const link = await l.graph.addPersonaSkill(agent.id, skillId);
+        await reload(l);
+        res.json({
+          agentId: link.agentId,
+          skillId: link.skillId,
+          position: link.position,
+          risks,
+        });
+      } catch (err) {
+        fail(res, err);
+      }
+    },
+  );
+
+  router.delete(
+    '/agents/:slug/persona-skills/:skillId',
+    async (req: Request, res: Response) => {
+      const l = live(res);
+      if (!l) return;
+      try {
+        const agent = await agentOr404(l, str(req.params.slug), res);
+        if (!agent) return;
+        await l.graph.removePersonaSkill(agent.id, str(req.params.skillId));
+        await reload(l);
+        res.status(204).end();
       } catch (err) {
         fail(res, err);
       }
@@ -225,8 +317,46 @@ export function createAgentBuilderRouter(
     const l = live(res);
     if (!l) return;
     try {
-      const skills = (await l.graph.listSkills()).map(skillNode);
+      // `risks` (Wave 5 heuristic scan, cheap/regex — no LLM call) rides on
+      // the bulk list so any skill-browsing surface (Registry, the Wave 8
+      // persona-attach picker) shows CURRENT risk state, not just a
+      // point-in-time snapshot from import/attach time.
+      const skills = (await l.graph.listSkills()).map((s) => ({
+        ...skillNode(s),
+        risks: scanSkillForRisks(s.frontmatter, s.body),
+      }));
       res.json({ skills });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  router.get('/skills/:id', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const id = str(req.params.id);
+      // Guard the id shape so a malformed id is a clean 404 rather than a
+      // Postgres "invalid input syntax for type uuid" 500 that leaks the raw
+      // DB error.
+      if (!isUuid(id)) {
+        res.status(404).json({ error: 'skill_not_found', id });
+        return;
+      }
+      const skill = await l.graph.getSkill(id);
+      if (!skill) {
+        res.status(404).json({ error: 'skill_not_found', id });
+        return;
+      }
+      const [usedBy, usedByAgents] = await Promise.all([
+        l.graph.listSubAgentsBySkillId(skill.id),
+        l.graph.listAgentsByPersonaSkillId(skill.id),
+      ]);
+      res.json({
+        ...skillNode(skill),
+        usedByCount: usedBy.length,
+        usedByAgentsCount: usedByAgents.length,
+      });
     } catch (err) {
       fail(res, err);
     }
@@ -237,13 +367,61 @@ export function createAgentBuilderRouter(
     if (!l) return;
     try {
       const b = req.body ?? {};
+      // Validate provenance fields at the boundary: `source` is a closed set,
+      // `frontmatter` must be a plain object. Bad input falls back to defaults
+      // rather than tripping a DB CHECK.
+      const source = b.source === 'file' ? 'file' : b.source === 'db' ? 'db' : undefined;
+      const frontmatter =
+        b.frontmatter && typeof b.frontmatter === 'object' && !Array.isArray(b.frontmatter)
+          ? (b.frontmatter as Record<string, unknown>)
+          : undefined;
       const row = await l.graph.upsertSkill({
         slug: String(b.slug ?? '').trim(),
         name: String(b.name ?? '').trim(),
         description: b.description ?? null,
         body: b.body ?? '',
+        frontmatter,
+        source,
+        sourcePath: typeof b.sourcePath === 'string' ? b.sourcePath : null,
       });
       res.json(skillNode(row));
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  // Import a SKILL.md (paste or uploaded file content) into the registry as a
+  // `source:'file'` skill. `dryRun:true` returns the computed outcome +
+  // normalized preview without persisting. Only frontmatter+body are ingested;
+  // bundled executable code is never run (that is the signed plugin path).
+  router.post('/skills/import', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const b = req.body ?? {};
+      const raw = typeof b.raw === 'string' ? b.raw : '';
+      if (!raw.trim()) {
+        res.status(400).json({ error: 'empty_skill', message: 'raw SKILL.md content is required' });
+        return;
+      }
+      const sourcePath = typeof b.sourcePath === 'string' ? b.sourcePath : undefined;
+      const dryRun = b.dryRun === true;
+      // Validate bundled resources at the boundary: array of {name, content}.
+      const resources = Array.isArray(b.resources)
+        ? b.resources
+            .filter(
+              (r: unknown): r is { name: string; content: string } =>
+                !!r &&
+                typeof r === 'object' &&
+                typeof (r as { name?: unknown }).name === 'string' &&
+                typeof (r as { content?: unknown }).content === 'string' &&
+                isSafeResourceName((r as { name: string }).name),
+            )
+            .map((r: { name: string; content: string }) => ({ name: r.name, content: r.content }))
+        : undefined;
+      const result = await importSkillMarkdown(l.graph, { raw, sourcePath, resources }, { dryRun });
+      if (!dryRun && result.outcome !== 'unchanged') await reload(l);
+      res.json(result);
     } catch (err) {
       fail(res, err);
     }
@@ -253,7 +431,26 @@ export function createAgentBuilderRouter(
     const l = live(res);
     if (!l) return;
     try {
-      const row = await l.graph.updateSkill(str(req.params.id), req.body ?? {});
+      // Validate at the boundary like POST: only forward known fields, and
+      // reject a non-object `frontmatter` so it can't corrupt the jsonb column
+      // (there is no DB CHECK on frontmatter shape) or break the
+      // Record<string, unknown> contract that skillNode now exposes.
+      const b = req.body ?? {};
+      const patch: {
+        name?: string;
+        description?: string | null;
+        body?: string;
+        frontmatter?: Record<string, unknown>;
+      } = {};
+      if (typeof b.name === 'string') patch.name = b.name;
+      if (b.description === null || typeof b.description === 'string') {
+        patch.description = b.description;
+      }
+      if (typeof b.body === 'string') patch.body = b.body;
+      if (b.frontmatter && typeof b.frontmatter === 'object' && !Array.isArray(b.frontmatter)) {
+        patch.frontmatter = b.frontmatter as Record<string, unknown>;
+      }
+      const row = await l.graph.updateSkill(str(req.params.id), patch);
       await reload(l);
       res.json(skillNode(row));
     } catch (err) {
@@ -268,6 +465,78 @@ export function createAgentBuilderRouter(
       await l.graph.deleteSkill(str(req.params.id));
       await reload(l);
       res.status(204).end();
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  // Fork an imported (source:'file') skill into an editable db copy (fork-on-
+  // edit). Migrates sub-agent references to the fork; preserves provenance.
+  router.post('/skills/:id/fork', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const id = str(req.params.id);
+      if (!isUuid(id)) {
+        res.status(404).json({ error: 'skill_not_found', id });
+        return;
+      }
+      const row = await l.graph.forkSkill(id);
+      await reload(l);
+      res.json(skillNode(row));
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  // Export a skill back to a portable SKILL.md (frontmatter + body).
+  router.get('/skills/:id/export', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const id = str(req.params.id);
+      if (!isUuid(id)) {
+        res.status(404).json({ error: 'skill_not_found', id });
+        return;
+      }
+      const skill = await l.graph.getSkill(id);
+      if (!skill) {
+        res.status(404).json({ error: 'skill_not_found', id });
+        return;
+      }
+      const frontmatter: Record<string, unknown> = {
+        ...skill.frontmatter,
+        name: skill.name,
+        ...(skill.description !== null ? { description: skill.description } : {}),
+      };
+      // Sanitize the filename: slugs are server-generated kebab, but db-source
+      // slugs come from POST /skills unvalidated, so never trust them in a header.
+      const safeName = skill.slug.replace(/[^a-zA-Z0-9._-]/g, '_') || 'skill';
+      res.setHeader('content-type', 'text/markdown; charset=utf-8');
+      res.setHeader('content-disposition', `attachment; filename="${safeName}.SKILL.md"`);
+      res.send(serializeSkillMarkdown(frontmatter, skill.body));
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  // List a skill's bundled resources (#391 bundles).
+  router.get('/skills/:id/resources', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const id = str(req.params.id);
+      if (!isUuid(id)) {
+        res.status(404).json({ error: 'skill_not_found', id });
+        return;
+      }
+      // `?names=1` returns metadata only — the registry lists names and
+      // shouldn't pull potentially large resource bodies to do so.
+      const namesOnly = str(req.query.names) === '1';
+      const resources = (await l.graph.listSkillResources(id)).map((r) =>
+        namesOnly ? { name: r.name } : { name: r.name, content: r.content },
+      );
+      res.json({ resources });
     } catch (err) {
       fail(res, err);
     }
@@ -475,8 +744,13 @@ function assembleGraph(
   grants: readonly ToolGrantRow[],
   servers: readonly McpServerRow[],
   schedules: readonly ScheduleRow[],
+  registry: OrchestratorRegistry | undefined,
+  personaSkillLinks: readonly PersonaSkillRow[] = [],
 ) {
   const mySubs = subAgents.filter((s) => s.parentAgentId === agent.id);
+  const myPersonaLinks = personaSkillLinks.filter(
+    (l) => l.agentId === agent.id,
+  );
   const subIds = new Set(mySubs.map((s) => s.id));
   const myGrants = grants.filter(
     (g) =>
@@ -525,9 +799,22 @@ function assembleGraph(
       target: `agent:${agent.id}`,
     });
   }
+  // Wave 8 — direct-answer persona skills, attached straight to the Agent
+  // (no sub-agent in between).
+  for (const l of myPersonaLinks) {
+    edges.push({
+      id: `persona_skill:${agent.id}:${l.skillId}`,
+      kind: 'persona_skill',
+      source: `agent:${agent.id}`,
+      target: `skill:${l.skillId}`,
+    });
+  }
 
   return {
-    agent: agentNode(agent),
+    agent: {
+      ...agentNode(agent, registry),
+      personaSkillIds: myPersonaLinks.map((l) => l.skillId),
+    },
     channels: bindings.map((b) => ({
       channelType: b.channelType,
       channelKey: b.channelKey,
@@ -544,7 +831,18 @@ function assembleGraph(
 
 // ── node mappers ─────────────────────────────────────────────────────────────
 
-function agentNode(a: AgentRow) {
+/**
+ * Map an `AgentRow` to the canvas `agent` node payload. Exported for unit
+ * tests so the `effectiveModel` surface stays covered without spinning up
+ * the express app.
+ */
+export function agentNode(a: AgentRow, registry: OrchestratorRegistry | undefined) {
+  // Issue #296 acceptance #4 — surface the orchestrator model the registry
+  // actually resolved for this Agent (per-Agent overlay applied to the
+  // platform default). Absent when the registry has not yet built the Agent
+  // (in-memory bootstrap / Agent disabled); UI then shows just the persisted
+  // `modelRouting.main` as a hint.
+  const built = registry?.get(a.slug)?.built;
   return {
     id: a.id,
     slug: a.slug,
@@ -553,6 +851,7 @@ function agentNode(a: AgentRow) {
     privacyProfile: a.privacyProfile,
     status: a.status,
     modelRouting: (a.modelRouting as Record<string, unknown> | null) ?? null,
+    effectiveModel: built?.effectiveModel ?? null,
     position: a.canvasPosition ?? null,
   };
 }
@@ -579,7 +878,11 @@ function skillNode(s: SkillRow) {
     name: s.name,
     description: s.description,
     body: s.body,
+    frontmatter: s.frontmatter,
     source: s.source,
+    sourcePath: s.sourcePath,
+    contentHash: s.contentHash,
+    forkedFrom: s.forkedFrom,
   };
 }
 
@@ -677,4 +980,22 @@ function str(v: unknown): string {
   if (typeof v === 'string') return v;
   if (Array.isArray(v) && typeof v[0] === 'string') return v[0];
   return '';
+}
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** True for a canonical UUID string — guards `:id` routes against non-UUID input. */
+function isUuid(v: string): boolean {
+  return UUID_RE.test(v);
+}
+
+/**
+ * Reject empty / path-like resource names at the boundary. Resources are DB
+ * blobs today, but a stored `../x` name would become a path-traversal write if
+ * the future runtime materializes them as files — cheaper to guard now.
+ */
+function isSafeResourceName(name: string): boolean {
+  const n = name.trim();
+  return n.length > 0 && !n.includes('/') && !n.includes('\\') && !n.includes('..');
 }

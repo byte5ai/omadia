@@ -45,6 +45,10 @@ import {
   type SubAgentAccessor,
   type UiRoutesAccessor,
   type ToolsAccessor,
+  type EventsAccessor,
+  type EmitResult,
+  EventNotDeclaredError,
+  ConductorUnavailableError,
 } from '@omadia/plugin-api';
 import type { DomainTool } from '@omadia/orchestrator';
 import { turnContext } from '@omadia/orchestrator';
@@ -701,6 +705,31 @@ export function createPluginContext(
     vault,
   });
 
+  // US4 Conductor Surface — ctx.events.emit, gated on permissions.events.emit and deny-by-default
+  // against the plugin's declared { id, event_emit:true } capabilities. The Conductor event router
+  // is resolved lazily from the service registry (Conductor wires it after its own boot block, so
+  // it may not exist when this context is built — only when emit() is actually called).
+  interface ConductorEventRouterLike {
+    emit(eventId: string, payload: Record<string, unknown>, sourcePluginId?: string): Promise<EmitResult>;
+  }
+  interface EventCatalogAllows {
+    allows(pluginId: string, eventId: string): boolean;
+  }
+  const eventsAllowed = catalog.get(agentId)?.plugin.permissions_summary.events_emit === true;
+  const events: EventsAccessor | undefined = eventsAllowed
+    ? {
+        emit(id: string, payload: Record<string, unknown>) {
+          const router = serviceRegistry.get<ConductorEventRouterLike>('conductorEventRouter');
+          if (!router) throw new ConductorUnavailableError();
+          // Deny-by-default fails CLOSED: with no catalog we cannot prove the plugin declared
+          // this id, so we reject rather than allow an unverified emit.
+          const eventCatalog = serviceRegistry.get<EventCatalogAllows>('eventCatalogRegistry');
+          if (!eventCatalog || !eventCatalog.allows(agentId, id)) throw new EventNotDeclaredError(agentId, id);
+          return router.emit(id, payload, agentId);
+        },
+      }
+    : undefined;
+
   return {
     agentId,
     domain,
@@ -722,6 +751,7 @@ export function createPluginContext(
     ...(llm ? { llm } : {}),
     ...(flows ? { flows } : {}),
     ...(oauthTokens ? { oauthTokens } : {}),
+    ...(events ? { events } : {}),
     status,
     log,
   };

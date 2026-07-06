@@ -12,7 +12,9 @@ import {
 import { useTranslations } from 'next-intl';
 import { Eraser, GitBranch, Navigation, Network } from 'lucide-react';
 import { ChatTabs } from '../_components/ChatTabs';
+import { ScrollToBottomButton } from '../_components/ScrollToBottomButton';
 import { Button } from '../_components/ui/Button';
+import { useStickToBottom } from '../_lib/useStickToBottom';
 import { AgentPicker } from '../_components/AgentPicker';
 import { AgentUnavailableBanner } from '../_components/AgentUnavailableBanner';
 import { AgentUsagePills } from '../_components/chat/AgentUsagePills';
@@ -212,14 +214,12 @@ export default function ChatPage(): React.ReactElement {
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // Keep the newest message in view as it streams. Smooth scrolling can't
-  // keep pace with rapid token deltas — the animation restarts further
-  // behind on every tick and never reaches the bottom, leaving the latest
-  // content hidden under the input footer — so this jumps instantly.
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [activeSession.messages]);
+  // Issue #404 — only keep following the stream while the user is actually
+  // at the bottom; scrolling up to read earlier messages now holds position
+  // instead of getting yanked back down on every token delta.
+  const { isAtBottom, scrollToBottom } = useStickToBottom(scrollRef, [
+    activeSession.messages,
+  ]);
 
   // Slice 4c — clear the auto-promoted-MK marker on a message after the
   // user Discards it. The manual save-as-memory button then comes back so
@@ -286,6 +286,9 @@ export default function ChatPage(): React.ReactElement {
         };
       });
       if (overrideText === undefined) setInput('');
+      // A sent message always lands at the bottom, even if the user had
+      // scrolled up to read earlier messages before sending.
+      scrollToBottom();
 
       // Hand the stream off to <StreamRunner /> via the store. The runner
       // owns the fetch + NDJSON-parse loop and writes deltas back into
@@ -313,6 +316,7 @@ export default function ChatPage(): React.ReactElement {
       streamStore,
       activeSession.messages.length,
       selectedAgentSlug,
+      scrollToBottom,
     ],
   );
 
@@ -553,7 +557,7 @@ export default function ChatPage(): React.ReactElement {
         );
       })()}
 
-      <div className="flex min-h-0 flex-1">
+      <div className="relative flex min-h-0 flex-1">
         <div
           ref={scrollRef}
           className="flex-1 overflow-y-auto px-6 py-6"
@@ -576,6 +580,11 @@ export default function ChatPage(): React.ReactElement {
             ))}
           </div>
         </div>
+        <ScrollToBottomButton
+          visible={!isAtBottom}
+          onClick={scrollToBottom}
+          ariaLabel={t('scrollToBottomAriaLabel')}
+        />
       </div>
 
       {/* KG-walk — togglable floating pane (launcher chip → flying window) for
@@ -762,6 +771,7 @@ function MessageRow({
         ) : (
           <>
             {message.routing && <TriageBadge routing={message.routing} />}
+            {message.persona && <PersonaBadge persona={message.persona} />}
             {message.recalledContext && (
               <RecalledContextCard recalled={message.recalledContext} />
             )}
@@ -1040,6 +1050,50 @@ function TriageBadge({
       <span className="text-[color:var(--fg-subtle)]">→</span>
       <span className="rounded bg-current/10 px-2 py-0.5 font-medium">
         {shortModelName(routing.model)}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Wave 8 — inline persona chip — rendered at the top of an assistant turn as
+ * soon as the direct-answer persona classifier resolves (the `turn_persona`
+ * event). Shows which persona skill answered this turn, or that the Agent
+ * kept its default identity.
+ */
+function PersonaBadge({
+  persona,
+}: {
+  persona: {
+    bucket: 'matched' | 'none' | 'fallback';
+    classifierModel: string;
+    skillId: string | null;
+    skillName: string | null;
+  };
+}): React.ReactElement {
+  const t = useTranslations('chat');
+  const isMatched = persona.bucket === 'matched' && persona.skillName;
+  const isFallback = persona.bucket === 'fallback';
+  const cls = isMatched
+    ? 'bg-[color:var(--accent)]/10 text-[color:var(--accent)] ring-[color:var(--accent)]'
+    : isFallback
+      ? 'bg-[color:var(--warning)]/10 text-[color:var(--warning)] ring-[color:var(--warning)]'
+      : 'bg-[color:var(--fg-subtle)]/10 text-[color:var(--fg-subtle)] ring-[color:var(--fg-subtle)]';
+  const label = isMatched
+    ? t('persona.matched', { name: persona.skillName ?? '' })
+    : isFallback
+      ? t('persona.fallback')
+      : t('persona.none');
+  return (
+    <div
+      className="mb-2 inline-flex flex-wrap items-center gap-2 text-[11px] text-[color:var(--fg-muted)]"
+      title={`${t('persona.title')}: ${shortModelName(persona.classifierModel)} → ${persona.bucket}`}
+    >
+      <span className="font-medium uppercase tracking-[0.12em]">{t('persona.title')}</span>
+      <span
+        className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ring-1 ${cls}`}
+      >
+        {label}
       </span>
     </div>
   );

@@ -15,6 +15,7 @@ import type { z } from 'zod';
 
 import { canvasOutputToolIds } from '../platform/canvasOutputRegistry.js';
 import { deterministicActionToolIds } from '../platform/deterministicActionRegistry.js';
+import { eventEmitIds } from '../platform/eventCatalogRegistry.js';
 import { createPluginContext } from '../platform/pluginContext.js';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
 import type { NotificationRouter } from '../platform/notificationRouter.js';
@@ -183,7 +184,29 @@ export interface DynamicAgentRuntimeDeps {
     register(pluginId: string, toolIds: readonly string[]): void;
     unregister(pluginId: string): void;
   };
+  /** Event-catalog autodiscovery (US4 Conductor Surface): manifest capability entries declaring
+   *  `event_emit: true` are resolved into this registry on (de)activation so the Conductor
+   *  Designer can list emittable events and `ctx.events.emit` can enforce deny-by-default.
+   *  Optional — absent in narrow test contexts. */
+  eventCatalogRegistry?: {
+    register(pluginId: string, eventIds: readonly string[]): void;
+    unregister(pluginId: string): void;
+  };
   log?: (...args: unknown[]) => void;
+}
+
+/** Thrown by {@link DynamicAgentRuntime.resolveSetupOptions} for conditions the
+ *  post-install setup-options endpoint maps to specific HTTP codes. A plain
+ *  throw from the provider's own run() is deliberately NOT this type — the route
+ *  maps that to 502 (provider failed). */
+export class SetupOptionsResolveError extends Error {
+  constructor(
+    public readonly code: 'agent_inactive' | 'tool_not_found',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'SetupOptionsResolveError';
+  }
 }
 
 export class DynamicAgentRuntime {
@@ -555,6 +578,16 @@ export class DynamicAgentRuntime {
       );
     }
 
+    // Event-catalog autodiscovery (US4): same declare → resolve path. Capability entries with
+    // `event_emit: true` become emittable via ctx.events.emit and discoverable by the Designer.
+    const eventEmitIdList = eventEmitIds(catalogEntry.manifest);
+    if (eventEmitIdList.length > 0) {
+      this.deps.eventCatalogRegistry?.register(agentId, eventEmitIdList);
+      log(
+        `[dynamic-runtime] event-emit capabilities registered for ${agentId}: ${eventEmitIdList.join(', ')}`,
+      );
+    }
+
     // Circuit-breaker: clear any prior failure counter so an agent that
     // recovers (e.g. after a config fix + re-upload) returns to a healthy
     // starting state for the next boot. Best-effort — registry write errors
@@ -585,6 +618,7 @@ export class DynamicAgentRuntime {
     // Symmetric to the activate-time canvas-output registration.
     this.deps.canvasOutputRegistry?.unregister(agentId);
     this.deps.deterministicActionRegistry?.unregister(agentId);
+    this.deps.eventCatalogRegistry?.unregister(agentId);
     try {
       await withTimeout(
         entry.handle.close(),
@@ -709,6 +743,40 @@ export class DynamicAgentRuntime {
       if (tool && isStreamingUploadedToolkitTool(tool)) return tool;
     }
     return undefined;
+  }
+
+  /** Resolve dynamic setup options from an ACTIVE plugin's toolkit tool, for the
+   *  post-install setup-options endpoint. Looks up ONLY the named agent (never a
+   *  cross-agent scan — that would be a confused-deputy leak), finds the raw
+   *  toolkit tool by id, and invokes it DIRECTLY (not via the bridged string
+   *  path) so a structured value or a real throw both surface to the caller.
+   *  Read-only by contract; the caller wraps this in a timeout. */
+  async resolveSetupOptions(
+    agentId: string,
+    toolId: string,
+    input: unknown,
+  ): Promise<unknown> {
+    const entry = this.active.get(agentId);
+    if (!entry) {
+      throw new SetupOptionsResolveError(
+        'agent_inactive',
+        `agent '${agentId}' is not active`,
+      );
+    }
+    const tool = entry.rawTools.find((c) => toolIdentifier(c) === toolId);
+    if (!tool) {
+      throw new SetupOptionsResolveError(
+        'tool_not_found',
+        `tool '${toolId}' is not exposed by agent '${agentId}'`,
+      );
+    }
+    // LocalSubAgentTool exposes handle() (string-ish); the Zod toolkit shape
+    // exposes run() (structured). Prefer run() for real data.
+    if (isLocalSubAgentTool(tool)) {
+      const res = await tool.handle(input);
+      return typeof res === 'string' ? res : res.output;
+    }
+    return tool.run(input);
   }
 }
 
@@ -1126,7 +1194,7 @@ async function ensureReadable(absPath: string): Promise<void> {
   }
 }
 
-async function withTimeout<T>(
+export async function withTimeout<T>(
   promise: Promise<T>,
   ms: number,
   message: string,

@@ -56,6 +56,8 @@ function skill(): SkillRow {
     frontmatter: {},
     source: 'db',
     sourcePath: null,
+    contentHash: null,
+    forkedFrom: null,
     createdAt: new Date(0),
     updatedAt: new Date(0),
   };

@@ -24,6 +24,8 @@ import { createMemoryPurgeRouter } from './routes/memoryPurge.js';
 import { createMemoryBackendRouter } from './routes/memoryBackend.js';
 import { createChatRouter } from './routes/chat.js';
 import { createOperatorAgentsRouter } from './routes/operatorAgents.js';
+import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError } from './conductor/index.js';
+import { bindingKeyForTurn } from './conductor/principalId.js';
 import { createOperatorChannelsRouter } from './routes/operatorChannels.js';
 import { createAgentBuilderRouter } from './routes/agentBuilder.js';
 import { ScheduleWorker } from './scheduler/scheduleWorker.js';
@@ -221,6 +223,7 @@ import { NotificationRouter } from './platform/notificationRouter.js';
 import { PluginStatusRegistry } from './platform/pluginStatusRegistry.js';
 import { UiRouteCatalog } from './platform/uiRouteCatalog.js';
 import { CanvasOutputRegistry } from './platform/canvasOutputRegistry.js';
+import { EventCatalogRegistry } from './platform/eventCatalogRegistry.js';
 import { DeterministicActionRegistry } from './platform/deterministicActionRegistry.js';
 import { ServiceRegistry } from './platform/serviceRegistry.js';
 import { TurnHookRegistry } from './platform/turnHookRegistry.js';
@@ -247,6 +250,7 @@ import {
 } from './plugins/routines/index.js';
 import { ROUTINES_INTEGRATION_SERVICE_NAME } from '@omadia/plugin-api';
 import { createRoutinesRouter } from './routes/routines.js';
+import { createUiPrefsRouter } from './routes/uiPrefs.js';
 import { ExpressRouteRegistry } from './channels/routeRegistry.js';
 import { WebSocketRegistry } from './channels/webSocketRegistry.js';
 import { createCoreApi } from './channels/coreApi.js';
@@ -359,6 +363,11 @@ async function main(): Promise<void> {
   // it lazily. The `deterministic_action_tools` config field stays as override.
   const deterministicActionRegistry = new DeterministicActionRegistry();
   serviceRegistry.provide('deterministicActionRegistry', deterministicActionRegistry);
+  // Event-catalog autodiscovery (US4 Conductor Surface): plugins declaring `event_emit: true`
+  // capabilities resolve into this registry on (de)activation from BOTH runtimes (dynamic + tool),
+  // so the Designer can list emittable events and ctx.events.emit enforces deny-by-default.
+  const eventCatalogRegistry = new EventCatalogRegistry();
+  serviceRegistry.provide('eventCatalogRegistry', eventCatalogRegistry);
   // #133 E0 — expose the kernel turn-hook registry to the orchestrator plugin
   // so it can fire onBeforeTurn / onAfterToolCall / onAfterTurn during turns.
   serviceRegistry.provide('turnHookRegistry', turnHookRegistry);
@@ -730,6 +739,7 @@ async function main(): Promise<void> {
     flowPublicBaseUrl,
     pluginStatusRegistry,
     canvasOutputRegistry,
+    eventCatalogRegistry,
     deterministicActionRegistry,
     log: (...a) => console.log(...a),
   });
@@ -802,6 +812,7 @@ async function main(): Promise<void> {
     pluginStatusRegistry,
     selfExtendRegistry,
     extensionStore,
+    eventCatalogRegistry,
     // When an integration plugin activates — at boot OR via a live hot-
     // install — register every `manifest.service_types` entry into the
     // agent-builder's `serviceTypeRegistry`, and link its package into the
@@ -1720,7 +1731,22 @@ async function main(): Promise<void> {
     // builders) without constructor-injected Deps.
     serviceRegistry.provide(
       ROUTINES_INTEGRATION_SERVICE_NAME,
-      createRoutinesIntegration(routinesHandle),
+      createRoutinesIntegration(routinesHandle, (info) => {
+        // US5: persist a Conductor channel binding per inbound turn so awaits can be reminded.
+        // Lazy-resolve the store (Conductor wires later in boot); fire-and-forget — a turn must
+        // never be blocked or broken by it.
+        const bindings = serviceRegistry.get<{ upsert(u: string, c: string, r: unknown): Promise<void> }>(
+          'conductorChannelBindings',
+        );
+        // Key the binding by the operator-addressable principalRef (Teams: the user's email) when the
+        // channel supplied one, so it matches a human-step principal / role holder; otherwise fall back
+        // to the channel-native userId (e.g. AAD object id). The store canonicalizes the key on write.
+        if (bindings) {
+          void bindings
+            .upsert(bindingKeyForTurn(info), String(info.channel), info.conversationRef)
+            .catch(() => undefined);
+        }
+      }),
     );
     console.log(
       '[middleware] routines feature ready (manage_routine tool registered, routinesIntegration published)',
@@ -1998,6 +2024,20 @@ async function main(): Promise<void> {
     '[middleware] operator-channels endpoints ready at /api/v1/operator/channels/* (auth-gated)',
   );
 
+  // The orchestrator's single configured LLM provider id, live-read from the
+  // installed `@omadia/orchestrator` config so a runtime provider switch is
+  // picked up without a restart (mirrors `hostProviderId` / the sub-agent
+  // hydrate reader). Default `anthropic`. Shared by the operator model-write
+  // scoping and the builder model picker (issue #296).
+  const orchestratorActiveProviderId = (): string => {
+    const raw = installedRegistry.get('@omadia/orchestrator')?.config?.[
+      'llm_provider'
+    ];
+    return typeof raw === 'string' && raw.trim().length > 0
+      ? raw.trim()
+      : 'anthropic';
+  };
+
   // Agent Builder canvas backend (P1/P2). Mounted at the /api/v1/operator
   // parent so the /agents/:slug/graph|subagents|… subpaths fall through here
   // after the operator-agents router. 503s without a graphPool (in-memory KG
@@ -2013,6 +2053,10 @@ async function main(): Promise<void> {
         graphPool ? new AgentGraphStore(graphPool) : undefined,
       getRegistry: () =>
         serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
+      // Live-read the orchestrator's single configured provider so per-Agent /
+      // sub-agent model writes are scoped to it (issue #296 — a cross-provider
+      // pick is rejected instead of silently dropped at build).
+      getActiveProvider: orchestratorActiveProviderId,
     }),
   );
   console.log(
@@ -2105,6 +2149,52 @@ async function main(): Promise<void> {
     await runAuthMigrations(graphPool, (m) => console.log(m));
     await runProfileStorageMigrations(graphPool, (m) => console.log(m));
     await runProfileSnapshotMigrations(graphPool, (m) => console.log(m));
+
+    // Conductor (Spec 005) — deterministic workflow engine. Migrations + stores +
+    // run executor + operator API, all behind the graphPool (inert in-memory).
+    // Agent steps run real turns on Agents (orchestrator instances) resolved by slug
+    // from the registry; action steps invoke real connector tools.
+    const conductorWiring = await wireConductor({
+      pool: graphPool,
+      app,
+      requireAuth,
+      getRegistry,
+      invokeAction: (toolId, input) => dynamicAgentRuntime.invokeAgentTool(toolId, input),
+      listActions: () => deterministicActionRegistry.list(),
+      eventCatalog: eventCatalogRegistry,
+      // US5 reminders: resolve a channel's proactive sender from the routines senderRegistry. Adapt
+      // ProactiveSender → the worker's minimal shape ({ text } is a valid SemanticAnswer).
+      getProactiveSender: (channel) => {
+        const sender = routinesHandle?.senderRegistry.get(channel);
+        return sender ? { send: (opts) => sender.send(opts) } : undefined;
+      },
+      log: (m) => console.log(m),
+    });
+    // Expose the event router so plugin contexts (ctx.events.emit) resolve it lazily — US4.
+    serviceRegistry.provide('conductorEventRouter', conductorWiring.eventRouter);
+    // Expose the channel-binding store so the routines turn-capture hook can populate it — US5.
+    serviceRegistry.provide('conductorChannelBindings', conductorWiring.channelBindingStore);
+    // Expose await resolution so a channel plugin can resolve a human approval in-process when the
+    // user clicks an approve/reject card button — no HTTP round-trip. `approved` maps to the engine's
+    // fail-open response shape ({ approved }); resolveAwait records the response + resumes the run.
+    serviceRegistry.provide('conductorAwaitResolver', {
+      resolve: async (
+        awaitId: string,
+        responderId: string,
+        approved: boolean,
+      ): Promise<'resumed' | 'recorded' | 'already_resolved' | 'not_a_holder'> => {
+        try {
+          const run = await conductorWiring.executor.resolveAwait(awaitId, responderId, { approved });
+          // 'waiting' ⇒ vote recorded but a quorum='all' await still needs other holders.
+          return run.status === 'waiting' ? 'recorded' : 'resumed';
+        } catch (err) {
+          if (err instanceof AwaitResponderNotHolderError) return 'not_a_holder';
+          if (err instanceof AwaitNotPendingError) return 'already_resolved'; // stale card / double-click
+          throw err;
+        }
+      },
+    });
+    console.log('[middleware] conductor wired at /api/v1/operator/conductors/* (auth-gated)');
     const userStore = new UserStore(graphPool);
 
     const bootstrapResult = await runAuthBootstrap({
@@ -2375,6 +2465,18 @@ async function main(): Promise<void> {
     );
   }
 
+  // Per-user UI preferences (issue #287) — server-side home for the Lume
+  // palette + appearance choice, backed by the MemoryStore. Replaces the
+  // per-browser localStorage from #284 with a cross-device store.
+  app.use(
+    '/api/v1/ui-prefs',
+    requireAuth,
+    createUiPrefsRouter({ store: memoryStore, log: (m) => console.log(m) }),
+  );
+  console.log(
+    '[middleware] ui-prefs endpoints ready at /api/v1/ui-prefs (auth: required)',
+  );
+
   // `packageUploadService` is declared in the outer `main` scope so the
   // builder install endpoint (B.6-1) can reference it. When PACKAGE_UPLOAD_-
   // ENABLED is false the variable stays null and the install route is omitted
@@ -2564,6 +2666,7 @@ async function main(): Promise<void> {
       vault: secretVault,
       catalog: pluginCatalog,
       reactivate: reactivateAgent,
+      dynamicAgentRuntime,
     }),
   );
   console.log('[middleware] runtime introspection endpoint ready at /api/v1/admin/runtime (auth: required)');
@@ -3185,6 +3288,9 @@ async function main(): Promise<void> {
       store: draftStore,
       quota: draftQuota,
       connectedProviders: builderConnectedProviders,
+      // Scope the model picker to the orchestrator's active provider so a
+      // cross-provider pick can't be offered (issue #296).
+      activeProvider: orchestratorActiveProviderId,
       preview: {
         draftStore,
         previewCache,
@@ -3439,6 +3545,7 @@ async function main(): Promise<void> {
     flowSigningKey: sessionSigningKey,
     flowPublicBaseUrl,
     pluginStatusRegistry,
+    eventCatalogRegistry,
     resolver: channelPluginResolver,
     coreApi: channelCoreApi,
     routes: routeRegistry,

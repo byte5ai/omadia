@@ -3,6 +3,7 @@ import { pathToFileURL } from 'node:url';
 import { promises as fs } from 'node:fs';
 
 import { createPluginContext } from '../platform/pluginContext.js';
+import { eventEmitIds } from '../platform/eventCatalogRegistry.js';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
 import type { NotificationRouter } from '../platform/notificationRouter.js';
 import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
@@ -86,6 +87,14 @@ export interface ToolPluginRuntimeDeps {
   flowPublicBaseUrl?: string;
   /** Spec 004 — backing store for `ctx.status`; cleared on deactivate. */
   pluginStatusRegistry?: PluginStatusRegistry;
+  /** Event-catalog autodiscovery (US4 Conductor Surface): capability entries declaring
+   *  `event_emit: true` are resolved into this registry on (de)activation. This runtime is the
+   *  ONLY resolve site for built-in/static tool plugins (landmine K — the dynamic runtime has its
+   *  own). Optional — absent in narrow test contexts. */
+  eventCatalogRegistry?: {
+    register(pluginId: string, eventIds: readonly string[]): void;
+    unregister(pluginId: string): void;
+  };
   /**
    * Fired after a plugin's activate() succeeds and it is recorded active.
    * Used to register the plugin's manifest-declared `service_types` into the
@@ -291,6 +300,15 @@ export class ToolPluginRuntime {
 
     this.active.set(agentId, { agentId, handle, extDisposes });
 
+    // Event-catalog autodiscovery (US4 / landmine K): static + built-in tool plugins resolve their
+    // `event_emit: true` capabilities here — the only place they are picked up (the dynamic runtime
+    // covers hot-installed agents). Lets the Designer list emittable events + ctx.events.emit deny-by-default.
+    const eventEmitIdList = eventEmitIds(catalogEntry.manifest);
+    if (eventEmitIdList.length > 0) {
+      this.deps.eventCatalogRegistry?.register(agentId, eventEmitIdList);
+      log(`[tool-runtime] event-emit capabilities registered for ${agentId}: ${eventEmitIdList.join(', ')}`);
+    }
+
     try {
       await this.deps.registry.markActivationSucceeded(agentId);
     } catch (err) {
@@ -329,6 +347,7 @@ export class ToolPluginRuntime {
       }
     }
     this.deps.selfExtendRegistry?.unregister(agentId);
+    this.deps.eventCatalogRegistry?.unregister(agentId);
     try {
       await withTimeout(
         entry.handle.close(),

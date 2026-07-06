@@ -31,6 +31,14 @@ export type {
   RoutingBucket,
 } from './modelRouter.js';
 
+// Wave 8 — per-turn direct-answer persona routing (twin of modelRouter).
+export { routeTurnPersona } from './personaRouter.js';
+export type {
+  PersonaCandidate,
+  PersonaRouteResult,
+  PersonaRoutingBucket,
+} from './personaRouter.js';
+
 // Multi-orchestrator registry (US4) — read by US7 channel routing and US9 UI.
 export {
   OrchestratorRegistry,
@@ -69,6 +77,8 @@ export type { ScopedMemoryStoreOptions } from './registry/scopedMemoryStore.js';
 export {
   ConfigStore,
   ConfigValidationError,
+  validateModelRef,
+  validateModelRoutingShape,
 } from './registry/configStore.js';
 export type {
   AgentInput,
@@ -88,14 +98,18 @@ export { runMultiOrchestratorMigrations } from './registry/migrator.js';
 // Agent Builder — editable graph store, MCP client, sub-agent materialisation,
 // and the persisted-routing → runtime mapping.
 export { AgentGraphStore } from './registry/agentGraphStore.js';
+export { computeSkillHash } from './registry/skillHash.js';
 export type {
   CanvasPos,
   McpServerInput,
   McpServerRow,
+  PersonaSkillRow,
   ScheduleInput,
   ScheduleRow,
   SkillInput,
   SkillPatch,
+  SkillResourceInput,
+  SkillResourceRow,
   SkillRow,
   SubAgentInput,
   SubAgentPatch,
@@ -123,7 +137,10 @@ export type {
   SubAgentGraph,
   SubAgentToolDeps,
 } from './registry/subAgentTools.js';
-export { resolveAgentModelRouting } from './registry/agentRuntime.js';
+export {
+  DEFAULT_ORCHESTRATOR_MODEL,
+  resolveAgentModelRouting,
+} from './registry/agentRuntime.js';
 export type { ResolvedAgentRuntime } from './registry/agentRuntime.js';
 
 // Per-Agent Orchestrator factory (US3) — re-exported so US4-style external

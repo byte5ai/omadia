@@ -63,6 +63,7 @@ import {
 import { SimpleWorkspace } from './SimpleWorkspace';
 import { SlotEditor } from './SlotEditor';
 import { SpecEditor } from './SpecEditor';
+import { SkillsRegistry } from '../../../../_components/admin/SkillsRegistry';
 import { SpecOverview } from './SpecOverview';
 import { UiSurfacesTabPane } from './UiSurfacesTabPane';
 import { AuditTimelinePane } from './AuditTimelinePane';
@@ -74,7 +75,7 @@ interface WorkspaceProps {
   initialDraft: Draft;
 }
 
-type EditorTab = 'overview' | 'spec' | 'slots' | 'persona' | 'versions';
+type EditorTab = 'overview' | 'spec' | 'slots' | 'persona' | 'skills' | 'versions';
 type MobilePane = 'chat' | 'editor' | 'preview' | 'ui-surfaces';
 type ViewMode = 'simple' | 'extended';
 
@@ -87,6 +88,7 @@ const TAB_KEY: Record<EditorTab, string> = {
   spec: 'tabSpec',
   slots: 'tabSlots',
   persona: 'tabPersona',
+  skills: 'tabSkills',
   versions: 'tabVersions',
 };
 
@@ -636,6 +638,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
     spec: 0,
     slots: missingRequiredSlots,
     persona: 0,
+    skills: 0,
     versions: 0,
   };
   const editorWarningTotal = Object.values(editorWarnings).reduce(
@@ -878,6 +881,11 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
                   draftId={draft.id}
                   refetchKey={draft.updatedAt}
                 />
+              </div>
+            )}
+            {tab === 'skills' && (
+              <div className="overflow-y-auto p-1">
+                <SkillsRegistry showScopeHint />
               </div>
             )}
             {tab === 'versions' && (
@@ -1821,7 +1829,7 @@ function EditorTabs({
   const tw = useTranslations('builder.workspace');
   return (
     <div role="tablist" className="flex items-center gap-1">
-      {(['overview', 'spec', 'slots', 'persona', 'versions'] as EditorTab[]).map((t) => {
+      {(['overview', 'spec', 'slots', 'persona', 'skills', 'versions'] as EditorTab[]).map((t) => {
         const active = t === current;
         const warningCount = warnings?.[t] ?? 0;
         return (

@@ -10,6 +10,7 @@ import type {
   UploadPackageResponse,
 } from './storeTypes';
 import type { PersonaConfig } from './personaTypes';
+import type { UiPrefs } from './uiPrefs';
 import type {
   ImportBundleSuccess,
   ProfileApplyOutcome,
@@ -1094,6 +1095,42 @@ export async function postAuthLogout(): Promise<AuthLogoutResponse> {
 }
 
 // -----------------------------------------------------------------------------
+// UI preferences (issue #287) — server-side per-user palette + appearance.
+// Replaces the per-browser localStorage from #284; the web-ui mirrors the
+// value into a non-secret cookie for the no-FOUC pre-paint bootstrap (the RSC
+// layout reads that cookie to set data-palette/data-theme on <html>). The
+// palette/appearance enums live in `_lib/uiPrefs` so this client, the
+// ThemeControls widget, and the layout share one source of truth.
+// -----------------------------------------------------------------------------
+
+export type { UiPrefs } from './uiPrefs';
+
+/** Current user's stored UI prefs; `{}` when none saved yet. */
+export async function getUiPrefs(): Promise<UiPrefs> {
+  return getJson<UiPrefs>('/v1/ui-prefs');
+}
+
+/** Upsert the current user's UI prefs. */
+export async function putUiPrefs(prefs: UiPrefs): Promise<void> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(botApi('/v1/ui-prefs'), {
+    method: 'PUT',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      ...forwarded,
+    },
+    body: JSON.stringify(prefs),
+    cache: 'no-store',
+    credentials: 'include',
+  });
+  if (res.status === 204) return;
+  const text = await res.text().catch(() => '');
+  maybeNavigateToLogin(res.status);
+  throw new ApiError(res.status, `PUT ui-prefs failed: ${res.status}`, text);
+}
+
+// -----------------------------------------------------------------------------
 // Admin — auth-provider toggle (OB-50)
 // -----------------------------------------------------------------------------
 
@@ -2082,6 +2119,68 @@ export async function patchInstalledSecrets(
     );
   }
   return (await res.json()) as InstalledSecretsState;
+}
+
+/** A selectable choice for a setup field that declares `options_provider`. */
+export interface SetupOption {
+  value: string;
+  label: string;
+  group?: string;
+}
+
+/**
+ * Fetch live options for a post-install multiselect field from the running
+ * plugin's options-provider tool. Throws ApiError on failure — notably 409
+ * (plugin inactive), 502 (provider failed), 504 (timeout) — which the editor
+ * uses to degrade to a free-text input.
+ */
+export async function fetchSetupFieldOptions(
+  pluginId: string,
+  fieldKey: string,
+): Promise<SetupOption[]> {
+  const { options } = await getJson<{ options: SetupOption[] }>(
+    `/v1/admin/runtime/installed/${encodeURIComponent(
+      pluginId,
+    )}/setup-options/${encodeURIComponent(fieldKey)}`,
+  );
+  return options;
+}
+
+/**
+ * Patch non-secret config for an installed plugin (array-capable, unlike
+ * patchInstalledSecrets which only carries strings). Used to persist
+ * multiselect selections; the middleware re-validates each submitted value
+ * against the live provider before storing.
+ */
+export async function patchInstalledConfig(
+  pluginId: string,
+  patch: Record<string, unknown>,
+): Promise<void> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(
+    botApi(
+      `/v1/admin/runtime/installed/${encodeURIComponent(pluginId)}/config`,
+    ),
+    {
+      method: 'PATCH',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+        ...forwarded,
+      },
+      body: JSON.stringify(patch),
+      credentials: 'include',
+      cache: 'no-store',
+    },
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new ApiError(
+      res.status,
+      `PATCH installed/${pluginId}/config failed: ${res.status}`,
+      text,
+    );
+  }
 }
 
 /**
@@ -3593,6 +3692,213 @@ export async function installSelfExtensionProposal(
     templateId: resp.templateId,
     proposal: resp.proposal,
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Conductor (Spec 005) — deterministic workflow engine operator API.
+// Backed by the middleware /api/v1/operator/conductors router (cookie auth).
+// ─────────────────────────────────────────────────────────────────────────
+
+export interface ConductorWorkflow {
+  id: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  status: 'enabled' | 'disabled';
+  activeVersionId: string | null;
+}
+
+export interface ConductorRun {
+  id: string;
+  workflowVersionId: string;
+  status: 'running' | 'waiting' | 'completed' | 'failed';
+  currentStepId: string | null;
+  context: unknown;
+  triggerKind: string;
+  startedAt: string;
+  endedAt: string | null;
+}
+
+export interface ConductorRunStep {
+  id: string;
+  runId: string;
+  stepId: string;
+  seq: number;
+  actor: unknown;
+  postconditionOutcome: string | null;
+  transitionTaken: string | null;
+}
+
+export interface ConductorRunResult {
+  run: ConductorRun;
+  steps: ConductorRunStep[];
+}
+
+const CONDUCTOR_BASE = '/v1/operator/conductors';
+
+export async function listConductorWorkflows(): Promise<{ workflows: ConductorWorkflow[] }> {
+  return getJson(CONDUCTOR_BASE);
+}
+
+export async function getConductorWorkflowGraph(
+  slug: string,
+): Promise<{ workflow: ConductorWorkflow; graph: unknown }> {
+  return getJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}`);
+}
+
+/** Declared emittable domain events (US4), for the Designer's event-trigger picker. */
+export async function getConductorEventCatalog(): Promise<{ events: string[]; byPlugin: Record<string, string[]> }> {
+  return getJson(`${CONDUCTOR_BASE}/events/catalog`);
+}
+
+/** Conductor roles (US6), for the Designer's human-step principal picker. */
+export async function getConductorRoles(): Promise<{ roles: Array<{ key: string; label?: string }> }> {
+  return getJson(`${CONDUCTOR_BASE}/roles`);
+}
+
+/** Live orchestrator agents, for the Designer's agent-step dropdown. */
+export async function getConductorAgents(): Promise<{ agents: Array<{ slug: string; name: string }> }> {
+  return getJson(`${CONDUCTOR_BASE}/agents`);
+}
+
+/** Registered deterministic-action / tool ids, for the Designer's action-step dropdown. */
+export async function getConductorActions(): Promise<{ actions: string[] }> {
+  return getJson(`${CONDUCTOR_BASE}/actions`);
+}
+
+export interface ConductorAwait {
+  id: string;
+  runId: string;
+  stepId: string;
+  principalKind: 'user' | 'role';
+  principalRef: string;
+  channelType: string;
+  message: string;
+  quorum: 'any' | 'all';
+  deadlineAt: string | null;
+  status: string;
+  resolvedHolders?: string[];
+}
+
+export async function listPendingAwaits(): Promise<{ awaits: ConductorAwait[] }> {
+  return getJson(`${CONDUCTOR_BASE}/awaits/pending`);
+}
+
+export interface ConductorRole {
+  key: string;
+  label: string;
+  description: string | null;
+  scope: string | null;
+  holders: string[];
+}
+
+export async function listConductorRoles(): Promise<{ roles: ConductorRole[] }> {
+  return getJson(`${CONDUCTOR_BASE}/roles`);
+}
+
+export async function createConductorRole(key: string, label: string): Promise<void> {
+  return postJson(`${CONDUCTOR_BASE}/roles`, { key, label });
+}
+
+export async function assignRoleHolder(key: string, holderId: string, action: 'add' | 'remove'): Promise<{ holders: string[] }> {
+  return postJson(`${CONDUCTOR_BASE}/roles/${encodeURIComponent(key)}/holders`, { holderId, action });
+}
+
+export interface ConductorEmitResult {
+  eventId: string;
+  matchedWorkflows: number;
+  startedRuns: Array<{ workflowSlug: string; runId: string }>;
+}
+
+export async function emitConductorEvent(eventId: string, payload: unknown): Promise<ConductorEmitResult> {
+  return postJson(`${CONDUCTOR_BASE}/emit`, { eventId, payload });
+}
+
+export async function respondToAwait(awaitId: string, response: unknown): Promise<{ run: ConductorRun }> {
+  return postJson(`${CONDUCTOR_BASE}/awaits/${encodeURIComponent(awaitId)}/respond`, { response });
+}
+
+export async function publishConductorWorkflow(body: {
+  slug: string;
+  name: string;
+  description?: string;
+  graph: unknown;
+  enable?: boolean;
+}): Promise<{ workflow: ConductorWorkflow; version: { id: string; version: number } }> {
+  return postJson(CONDUCTOR_BASE, body);
+}
+
+export async function startConductorRun(slug: string, payload: unknown): Promise<ConductorRunResult> {
+  return postJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/runs`, { payload });
+}
+
+export interface ConductorPreviewStep {
+  stepId: string;
+  kind: string;
+  actor: string;
+  postcondition: string;
+  transition: string | null;
+  result: unknown;
+}
+
+export interface ConductorPreviewResult {
+  status: string;
+  steps: ConductorPreviewStep[];
+  context: unknown;
+}
+
+export async function previewConductorWorkflow(slug: string, payload: unknown): Promise<ConductorPreviewResult> {
+  return postJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/preview`, { payload });
+}
+
+export async function listConductorRuns(slug: string): Promise<{ runs: ConductorRun[] }> {
+  return getJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/runs`);
+}
+
+export async function getConductorRun(slug: string, runId: string): Promise<ConductorRunResult> {
+  return getJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/runs/${encodeURIComponent(runId)}`);
+}
+
+// Conversational builder (US7) — co-design a draft graph by chat. A turn is stateless: the
+// client posts the current draft graph + the message, and gets back the patched draft, the
+// applied patches, the assistant's reply, and a validation verdict. The draft stays client-side
+// (parity with the visual designer), so there is no draft id — the graph IS the state.
+
+export interface ConductorValidationError {
+  code: string;
+  message: string;
+  nodeIds: string[];
+}
+
+export interface ConductorValidationResult {
+  ok: boolean;
+  errors: ConductorValidationError[];
+}
+
+export interface ConductorGraphPatch {
+  op: string;
+  [key: string]: unknown;
+}
+
+export interface ConductorBuilderMessage {
+  role: 'user' | 'assistant';
+  text: string;
+}
+
+export interface ConductorBuilderTurnResult {
+  graph: unknown;
+  patches: ConductorGraphPatch[];
+  reply: string;
+  validation: ConductorValidationResult;
+  applyErrors: string[];
+}
+
+export async function conductorBuilderTurn(body: {
+  graph: unknown;
+  message: string;
+  history?: ConductorBuilderMessage[];
+}): Promise<ConductorBuilderTurnResult> {
+  return postJson(`${CONDUCTOR_BASE}/builder/turn`, body);
 }
 
 // -----------------------------------------------------------------------------

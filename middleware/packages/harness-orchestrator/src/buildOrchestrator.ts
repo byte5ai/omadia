@@ -43,7 +43,7 @@ import { ChatSessionStore } from './chatSessionStore.js';
 import type { Microsoft365Accessor } from './microsoft365-shim.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import type { ModelRoutingConfig } from './modelRouter.js';
-import { Orchestrator } from './orchestrator.js';
+import { Orchestrator, type OrchestratorPersonaSkill } from './orchestrator.js';
 import { CliChatAgent } from './cliChatAgent.js';
 import { ToolDispatchService } from './toolDispatchService.js';
 import { OrchestratorMemoryNamespacer } from './orchestratorMemoryNamespacer.js';
@@ -80,6 +80,10 @@ export interface AgentRuntimeConfig {
   readonly loopRepeatHard?: number;
   /** Optional per-turn wall-clock budget in seconds (0 / omitted = off). */
   readonly maxTurnSeconds?: number;
+  /** Wave 8 — this Agent's direct-answer persona-skill candidates, resolved
+   *  by the caller from `agent_persona_skills` (see {@link OrchestratorOptions}).
+   *  Per-agent, unlike the platform-shared `OrchestratorDeps` fields below. */
+  readonly personaSkills?: readonly OrchestratorPersonaSkill[];
 }
 
 /**
@@ -147,6 +151,16 @@ export interface BuiltOrchestrator {
   readonly orchestrator: Orchestrator;
   /** The `chatAgent` bundle — verifier-wrapped agent + raw orchestrator. */
   readonly bundle: ChatAgentBundle;
+  /**
+   * The resolved orchestrator model after the per-Agent overlay was applied —
+   * i.e. the actual id the turn loop will send to the provider for this Agent.
+   * Mirrors `config.model`; carried out so callers (registry log, /admin UI)
+   * can read it without re-computing the overlay. Issue #296 acceptance #4.
+   */
+  readonly effectiveModel: string;
+  /** Same as `config.modelRouting` — surfaced so callers can describe the
+   *  per-turn routing the Agent is on without inspecting the orchestrator. */
+  readonly effectiveModelRouting?: ModelRoutingConfig;
 }
 
 /**
@@ -232,6 +246,9 @@ export function buildOrchestratorForAgent(
     provider: deps.provider,
     model: config.model,
     ...(config.modelRouting ? { modelRouting: config.modelRouting } : {}),
+    ...(config.personaSkills?.length
+      ? { personaSkills: config.personaSkills }
+      : {}),
     maxTokens: config.maxTokens,
     maxToolIterations: config.maxToolIterations,
     ...(config.loopRepeatSoft !== undefined
@@ -331,6 +348,8 @@ export function buildOrchestratorForAgent(
         sessionLogger,
         chatSessionStore,
       },
+      effectiveModel: config.model,
+      ...(config.modelRouting ? { effectiveModelRouting: config.modelRouting } : {}),
     };
   }
 
@@ -356,5 +375,7 @@ export function buildOrchestratorForAgent(
   return {
     orchestrator,
     bundle: { agent, raw: orchestrator, sessionLogger, chatSessionStore },
+    effectiveModel: config.model,
+    ...(config.modelRouting ? { effectiveModelRouting: config.modelRouting } : {}),
   };
 }

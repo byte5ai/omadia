@@ -1,7 +1,10 @@
 import type { Pool } from 'pg';
 
+import { resolveModelRef } from '@omadia/llm-provider';
+
 import {
   AgentGraphStore,
+  type PersonaSkillRow,
   type ScheduleRow,
   type SkillRow,
   type SubAgentRow,
@@ -109,6 +112,90 @@ export class ConfigValidationError extends Error {
 }
 
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
+
+/**
+ * Validate persisted `model_routing` JSON before write. Shape:
+ *   { mode: 'single'|'triage', main: <ref>, triage?: <ref>, simple?: <ref> }
+ * Each `<ref>` must resolve via `resolveModelRef` (provider-qualified id,
+ * legacy alias, bare vendor id, or `class:*`). An empty `main` is illegal —
+ * use `null` to clear. Optional fields may be absent or empty-string (latter
+ * treated as absent so a UI dropdown's "(default)" choice round-trips cleanly).
+ */
+export function validateModelRoutingShape(
+  routing: Record<string, unknown>,
+  activeProvider?: string,
+): void {
+  const mode = routing['mode'];
+  if (mode !== 'single' && mode !== 'triage') {
+    throw new ConfigValidationError(
+      `modelRouting.mode must be 'single' or 'triage' (got ${JSON.stringify(mode)})`,
+    );
+  }
+  const main = routing['main'];
+  if (typeof main !== 'string' || main.trim() === '') {
+    throw new ConfigValidationError(
+      `modelRouting.main is required (clear routing by passing null instead)`,
+    );
+  }
+  validateModelRef(`modelRouting.main`, main.trim(), activeProvider);
+  if (mode === 'triage') {
+    for (const key of ['triage', 'simple'] as const) {
+      const raw = routing[key];
+      if (raw === undefined || raw === null) continue;
+      if (typeof raw !== 'string') {
+        throw new ConfigValidationError(
+          `modelRouting.${key} must be a string (got ${typeof raw})`,
+        );
+      }
+      const trimmed = raw.trim();
+      if (trimmed === '') continue;
+      validateModelRef(`modelRouting.${key}`, trimmed, activeProvider);
+    }
+  }
+}
+
+/**
+ * Throw `ConfigValidationError` when `ref` is non-empty and does not resolve
+ * to any model registered with `@omadia/llm-provider`. Used by every persisted
+ * model-id surface (orchestrator routing, sub-agent overrides) so the operator
+ * cannot pin runtime to an id the live provider set does not serve — an
+ * unknown id would 404 at every turn. Empty / whitespace `ref` is rejected —
+ * callers should skip the validator when clearing the field instead.
+ *
+ * When `activeProvider` is given (the orchestrator's single configured
+ * provider), the ref is resolved in that provider's context AND a ref that
+ * resolves to a DIFFERENT provider is rejected: cross-provider routing is out
+ * of scope (issue #296) and would be silently dropped to the platform default
+ * at build, so the picker must not be able to persist a model the Agent never
+ * actually runs on. Without it the check is provider-agnostic (legacy).
+ */
+export function validateModelRef(
+  field: string,
+  ref: string,
+  activeProvider?: string,
+): void {
+  if (typeof ref !== 'string' || ref.trim() === '') {
+    throw new ConfigValidationError(
+      `${field} must be a non-empty model ref (clear with null instead)`,
+    );
+  }
+  const info = resolveModelRef(
+    ref.trim(),
+    activeProvider ? { defaultProvider: activeProvider } : {},
+  );
+  if (info === undefined) {
+    throw new ConfigValidationError(
+      `${field} '${ref}' is not registered with any installed LLM provider`,
+    );
+  }
+  if (activeProvider && info.provider !== activeProvider) {
+    throw new ConfigValidationError(
+      `${field} '${ref}' resolves to provider '${info.provider}', but the ` +
+        `orchestrator runs on '${activeProvider}' — cross-provider model ` +
+        `selection is not supported; pick a '${activeProvider}' model`,
+    );
+  }
+}
 
 interface AgentDbRow {
   id: string;
@@ -283,11 +370,19 @@ export class ConfigStore {
   }
 
   /** Agent Builder — set (or clear, with null) the per-agent model routing.
-   *  Direct write (not COALESCE) so the operator can disable routing. */
+   *  Direct write (not COALESCE) so the operator can disable routing.
+   *
+   *  Validates `main`/`triage`/`simple` against `@omadia/llm-provider` so an
+   *  operator (or a stale REST client) cannot pin an agent to a model id that
+   *  no installed provider serves — that would crash every turn at runtime
+   *  with `404 not_found_error`. `null` clears routing back to the platform
+   *  default and skips validation. */
   async setModelRouting(
     id: string,
     routing: Record<string, unknown> | null,
+    activeProvider?: string,
   ): Promise<AgentRow> {
+    if (routing) validateModelRoutingShape(routing, activeProvider);
     const { rows } = await this.pool.query<AgentDbRow>(
       `UPDATE agents SET model_routing = $2::jsonb, updated_at = now()
        WHERE id = $1 RETURNING *`,
@@ -493,6 +588,7 @@ export class ConfigStore {
       schedules,
       skills,
       mcpServers,
+      personaSkillLinks,
     ] = await Promise.all([
       this.listAgents(),
       this.listAllAgentPlugins(),
@@ -503,6 +599,7 @@ export class ConfigStore {
       graph.listAllSchedules(),
       graph.listSkills(),
       graph.listMcpServers(),
+      graph.listAllPersonaSkillLinks(),
     ]);
     return {
       agents,
@@ -514,6 +611,7 @@ export class ConfigStore {
       schedules,
       skills,
       mcpServers,
+      personaSkillLinks,
     };
   }
 }
@@ -529,6 +627,8 @@ export interface ConfigSnapshot {
   readonly toolGrants?: readonly ToolGrantRow[];
   readonly schedules?: readonly ScheduleRow[];
   readonly skills?: readonly SkillRow[];
+  /** Wave 8 — Agent → direct-answer persona-skill links. */
+  readonly personaSkillLinks?: readonly PersonaSkillRow[];
   readonly mcpServers?: readonly McpServerRow[];
 }
 

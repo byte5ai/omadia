@@ -70,6 +70,22 @@ export interface PluginSetupField {
   provider?: string;
   /** Spec 005 — OAuth scopes requested for a `type === 'oauth'` field. */
   scopes?: string[];
+  /** Dynamic post-install options: the toolkit-tool id (on the SAME plugin)
+   *  that returns selectable `SetupOption[]` for this field. The field `type`
+   *  stays a normal union member (typically `string`); the post-install editor
+   *  fetches options live and stores the picks. Additive + optional — fields
+   *  without it behave exactly as before. */
+  options_provider?: string;
+  /** When true, this field holds MULTIPLE selected values (stored as a
+   *  JSON-encoded `string[]`). Only meaningful alongside `options_provider`. */
+  multi?: boolean;
+}
+
+/** A single selectable choice returned by a field's `options_provider` tool. */
+export interface SetupOption {
+  value: string;
+  label: string;
+  group?: string;
 }
 
 /**
@@ -167,6 +183,9 @@ export interface PluginPermissionsSummary {
    *  the `ctx.flows` accessor (public-callback-URL resolution + kernel-held
    *  state signing) is provisioned. Loader defaults to `false`. */
   flows?: boolean;
+  /** Spec 005 (US4 Conductor Surface): plugin declares `permissions.events.emit: true` and may
+   *  emit declared domain events via `ctx.events`. Loader defaults to `false`. */
+  events_emit?: boolean;
   /** Spec 005: true when the manifest declares >=1 `oauth_providers`
    *  descriptor — the plugin acquires standard authorization-code credentials
    *  through the kernel OAuth broker (tokens stored + refreshed kernel-side;
