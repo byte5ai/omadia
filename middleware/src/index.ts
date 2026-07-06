@@ -234,7 +234,7 @@ import { DeterministicActionRegistry } from './platform/deterministicActionRegis
 import { ServiceRegistry } from './platform/serviceRegistry.js';
 import { TurnHookRegistry } from './platform/turnHookRegistry.js';
 import { NativeToolRegistry } from '@omadia/orchestrator';
-import { McpManager, type McpCallLogEntry } from '@omadia/orchestrator';
+import { McpManager, type McpCallLogEntry, type McpServerConfig } from '@omadia/orchestrator';
 import { AgentGraphStore } from '@omadia/orchestrator';
 import { registerDbSubAgentTools } from './agents/subAgentToolHydration.js';
 import {
@@ -1633,6 +1633,17 @@ async function main(): Promise<void> {
         // Dispatch-time policy gate (issue #454): fail-closed on unscanned or
         // unacknowledged-risk tools, evaluated on every call.
         guard: mcpDispatchDenial,
+      });
+      // Host MCP service for plugin ctx.mcp (epic #459 W5, issue #458):
+      // resolved lazily by createPluginContext, exactly like the 'llm'
+      // provider. Grants are read live per call (deny-by-default).
+      serviceRegistry.provide('mcp', {
+        listTools: (cfg: McpServerConfig) => mcpManager.listTools(cfg),
+        callTool: (cfg: McpServerConfig, toolName: string, args: Record<string, unknown>) =>
+          mcpManager.callTool(cfg, toolName, args),
+        listServers: async () => (mcpAuditStore ? mcpAuditStore.listMcpServers() : []),
+        listGrantedServerIds: async (pluginId: string) =>
+          mcpAuditStore ? mcpAuditStore.listGrantedServerIdsForPlugin(pluginId) : [],
       });
       // Scan-verdict grant policy (issue #454): load once before the initial
       // hydration below so blocked (server, tool) pairs never materialize.

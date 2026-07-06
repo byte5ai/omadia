@@ -84,9 +84,19 @@ function normalizeEntry(raw: Record<string, unknown>): McpCatalogEntry | null {
   if (remote) {
     const kind = str(remote['type'] ?? remote['transport_type'] ?? remote['transport']);
     const url = str(remote['url']);
+    // Catalog entries are UNTRUSTED (codex fold): only well-formed https
+    // remotes become endpoints — a catalog must not be able to point the
+    // middleware at plain-http, custom schemes, or metadata addresses.
     if (url && kind) {
-      transport = kind.includes('sse') ? 'sse' : 'http';
-      endpoint = url;
+      try {
+        const parsed = new URL(url);
+        if (parsed.protocol === 'https:') {
+          transport = kind.includes('sse') ? 'sse' : 'http';
+          endpoint = url;
+        }
+      } catch {
+        /* malformed remote URL → browse-only entry */
+      }
     }
   }
   if (!endpoint) {
@@ -98,7 +108,9 @@ function normalizeEntry(raw: Record<string, unknown>): McpCatalogEntry | null {
         (str((p as Record<string, unknown>)['registry_name'] ?? (p as Record<string, unknown>)['registry_type'] ?? (p as Record<string, unknown>)['registryType']) ?? '').includes('npm'),
     );
     const identifier = npmPkg ? str(npmPkg['name'] ?? npmPkg['identifier']) : null;
-    if (identifier) {
+    // Strict npm-name grammar (codex fold): refuses flags ("-e …"), paths,
+    // and shell metacharacters. Non-conforming entries stay browse-only.
+    if (identifier && NPM_NAME_RE.test(identifier) && identifier.length <= 214) {
       transport = 'stdio';
       endpoint = `npx -y ${identifier}`;
     }
@@ -118,6 +130,66 @@ function normalizeEntry(raw: Record<string, unknown>): McpCatalogEntry | null {
     sourceUrl: repoUrl ?? str(server['website_url']),
   };
 }
+
+/**
+ * Registry URLs are OPERATOR configuration (same trust class as an SMTP relay
+ * in `netAccessor.ts`): private/loopback hosts stay reachable because a
+ * private registry on the intranet is a legitimate setup. What we refuse,
+ * matching the netAccessor precedent, is the link-local/cloud-metadata block —
+ * a classic SSRF pivot nothing legitimate serves catalogs from.
+ */
+function assertFetchableRegistryUrl(raw: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new McpRegistryError('invalid_url', `not a valid URL: ${raw}`);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new McpRegistryError('invalid_url', `unsupported protocol: ${parsed.protocol}`);
+  }
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  const v4 = host.startsWith('::ffff:') ? host.slice('::ffff:'.length) : host;
+  if (/^169\.254\./.test(v4) || /^fe[89ab][0-9a-f]:/.test(host)) {
+    throw new McpRegistryError('blocked_host', `link-local/metadata address refused: ${host}`);
+  }
+}
+
+/** Stream the body up to `cap` bytes; abort with a typed error beyond it. */
+async function readTextCapped(res: Response, cap: number, url: string): Promise<string> {
+  const lengthHeader = Number(res.headers.get('content-length'));
+  if (Number.isFinite(lengthHeader) && lengthHeader > cap) {
+    throw new McpRegistryError('catalog_too_large', `${url} exceeded the size limit`);
+  }
+  if (!res.body) {
+    const text = await res.text();
+    if (Buffer.byteLength(text, 'utf8') > cap) {
+      throw new McpRegistryError('catalog_too_large', `${url} exceeded the size limit`);
+    }
+    return text;
+  }
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      total += value.byteLength;
+      if (total > cap) {
+        await reader.cancel();
+        throw new McpRegistryError('catalog_too_large', `${url} exceeded the size limit`);
+      }
+      chunks.push(value);
+    }
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+/** npm package-name grammar (scoped or unscoped). Anything else is refused —
+ *  a catalog entry must never smuggle CLI flags or shell syntax into the
+ *  `npx -y <identifier>` stdio endpoint (codex fold). */
+const NPM_NAME_RE = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/;
 
 export interface McpRegistryClientDeps {
   readonly fetchImpl?: typeof fetch;
@@ -216,6 +288,7 @@ export class McpRegistryClient {
   }
 
   private async fetchJson(url: string, registry: McpRegistryConfig): Promise<unknown> {
+    assertFetchableRegistryUrl(url);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
@@ -227,14 +300,16 @@ export class McpRegistryClient {
             : {}),
         },
         signal: controller.signal,
+        // A redirect could bounce the (token-carrying) request to a host the
+        // operator never configured — refuse instead of following (codex fold).
+        redirect: 'error',
       });
       if (!res.ok) {
         throw new McpRegistryError('http_error', `${url} answered ${String(res.status)}`);
       }
-      const text = await res.text();
-      if (Buffer.byteLength(text, 'utf8') > MAX_CATALOG_BYTES) {
-        throw new McpRegistryError('catalog_too_large', `${url} exceeded the size limit`);
-      }
+      // Enforce the size cap WHILE streaming, not after buffering the full
+      // body (codex fold) — a broken registry cannot balloon process memory.
+      const text = await readTextCapped(res, MAX_CATALOG_BYTES, url);
       return JSON.parse(text) as unknown;
     } finally {
       clearTimeout(timer);

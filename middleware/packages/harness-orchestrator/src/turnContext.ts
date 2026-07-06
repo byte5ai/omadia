@@ -134,6 +134,15 @@ export interface TurnContextValue {
    */
   mcpCallerKind?: 'skill' | 'plugin';
   mcpCallerId?: string;
+  /**
+   * Epic #459 W4/W5 (codex fold) — the persona skill the W8 per-turn router
+   * selected as this turn's acting identity, or undefined when no persona is
+   * active. Skill-bound MCP DomainTools check it at dispatch: a tool bound to
+   * skill X must not be callable on a turn where X is not the active persona
+   * (that would exceed the bind-time consent). Set by the orchestrator right
+   * after persona routing, mutated on the live store so nested scopes see it.
+   */
+  activePersonaSkillId?: string;
 }
 
 const storage = new AsyncLocalStorage<TurnContextValue>();

@@ -1073,10 +1073,70 @@ export class AgentGraphStore {
     );
   }
 
+  /** Touch every binding on a server (codex fold): bound_at is part of the
+   *  graph signature, so discover/ack/status changes rebuild binding-only
+   *  agents the same way bumpMcpGrantEpoch covers grant-holding agents. */
+  async bumpSkillBindingEpoch(serverId: string): Promise<number> {
+    const { rowCount } = await this.pool.query(
+      'UPDATE skill_tool_bindings SET bound_at = now() WHERE mcp_server_id = $1',
+      [serverId],
+    );
+    return rowCount ?? 0;
+  }
+
   async deleteSkillToolBinding(skillId: string, contract: string): Promise<void> {
     await this.pool.query(
       'DELETE FROM skill_tool_bindings WHERE skill_id = $1 AND contract = $2',
       [skillId, contract],
+    );
+  }
+
+  // ── Plugin → MCP server grants (epic #459 W5, issue #458) ───────────────────
+
+  async listPluginMcpGrants(): Promise<
+    readonly { pluginId: string; mcpServerId: string; grantedBy: string; grantedAt: Date }[]
+  > {
+    const { rows } = await this.pool.query<{
+      plugin_id: string;
+      mcp_server_id: string;
+      granted_by: string;
+      granted_at: Date;
+    }>('SELECT * FROM plugin_mcp_grants');
+    return rows.map((r) => ({
+      pluginId: r.plugin_id,
+      mcpServerId: r.mcp_server_id,
+      grantedBy: r.granted_by,
+      grantedAt: r.granted_at,
+    }));
+  }
+
+  async listGrantedServerIdsForPlugin(pluginId: string): Promise<readonly string[]> {
+    const { rows } = await this.pool.query<{ mcp_server_id: string }>(
+      'SELECT mcp_server_id FROM plugin_mcp_grants WHERE plugin_id = $1',
+      [pluginId],
+    );
+    return rows.map((r) => r.mcp_server_id);
+  }
+
+  async upsertPluginMcpGrant(
+    pluginId: string,
+    mcpServerId: string,
+    grantedBy: string,
+  ): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO plugin_mcp_grants (plugin_id, mcp_server_id, granted_by)
+       VALUES ($1,$2,$3)
+       ON CONFLICT (plugin_id, mcp_server_id) DO UPDATE SET
+         granted_by = EXCLUDED.granted_by,
+         granted_at = now()`,
+      [pluginId, mcpServerId, grantedBy],
+    );
+  }
+
+  async deletePluginMcpGrant(pluginId: string, mcpServerId: string): Promise<void> {
+    await this.pool.query(
+      'DELETE FROM plugin_mcp_grants WHERE plugin_id = $1 AND mcp_server_id = $2',
+      [pluginId, mcpServerId],
     );
   }
 

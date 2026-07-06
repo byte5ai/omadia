@@ -151,9 +151,48 @@ describe('skill capability bindings at hydration (#456)', () => {
     assert.equal(n, 1);
     const tool = h.registered.get('mcp__crm__lookup_customer');
     assert.ok(tool);
-    await tool.handle({ q: 'acme' });
+    const { turnContext } = await import('@omadia/orchestrator');
+    const result = await turnContext.run(
+      { turnId: 't1', turnDate: '2026-07-06', agentSlug: 'main', activePersonaSkillId: SKILL_ID },
+      () => tool.handle({ q: 'acme' }),
+    );
+    assert.equal(result, 'ok');
     assert.equal(recorded[0]?.callerKind, 'skill');
     assert.equal(recorded[0]?.callerId, 'crm-helper');
+  });
+
+  it('a bound tool is denied when its skill is not the active persona (codex fold)', async () => {
+    const recorded: Recorded[] = [];
+    const h = host();
+    registerDbSubAgentTools(
+      { subAgents: [], skills: [], toolGrants: [] },
+      h,
+      makeDeps(recorded, {
+        personaSkills: [skill({ requires_tools: [{ contract: 'customer-lookup' }] })],
+        skillToolBindings: [binding()],
+      }),
+    );
+    const tool = h.registered.get('mcp__crm__lookup_customer');
+    assert.ok(tool);
+    const { turnContext } = await import('@omadia/orchestrator');
+    const noPersona = await turnContext.run(
+      { turnId: 't2', turnDate: '2026-07-06', agentSlug: 'main' },
+      () => tool.handle({}),
+    );
+    assert.ok(noPersona.includes('not the active persona'));
+    const otherPersona = await turnContext.run(
+      {
+        turnId: 't3',
+        turnDate: '2026-07-06',
+        agentSlug: 'main',
+        activePersonaSkillId: '00000000-0000-4000-8000-0000000000ee',
+      },
+      () => tool.handle({}),
+    );
+    assert.ok(otherPersona.includes('not the active persona'));
+    const outside = await tool.handle({});
+    assert.ok(outside.includes('not the active persona'));
+    assert.equal(recorded.length, 0);
   });
 
   it('an unbound contract fails closed (no tool, log line)', () => {

@@ -366,9 +366,19 @@ function graphSignature(
   // Epic #459 W4 (issue #456): a bind/unbind of a skill capability contract
   // changes the tool surface of every agent using that skill — include the
   // bindings of this agent's referenced skills so reload() rebuilds it.
+  const serverStatusById = new Map(
+    (snap?.mcpServers ?? []).map((s) => [s.id, s.status] as const),
+  );
   const bindingPart = (snap?.skillToolBindings ?? [])
     .filter((b) => skillIds.has(b.skillId))
-    .map((b) => `${b.skillId}|${b.contract}|${b.mcpServerId}|${b.toolName}`)
+    .map(
+      (b) =>
+        // boundAt + server status included (codex fold): a re-bind touch or a
+        // server enable/disable must rebuild binding-only agents too.
+        `${b.skillId}|${b.contract}|${b.mcpServerId}|${b.toolName}|${b.boundAt.toISOString()}|${
+          serverStatusById.get(b.mcpServerId) ?? ''
+        }`,
+    )
     .sort();
 
   return JSON.stringify({ subPart, grantPart, skillPart, personaPart, bindingPart });

@@ -2347,6 +2347,15 @@ export class Orchestrator {
     const picked = r.skillId
       ? this.personaSkills.find((p) => p.skillId === r.skillId)
       : undefined;
+    // Publish the routed persona on the live turn context (epic #459 W4
+    // codex fold): skill-bound MCP tools gate on it at dispatch, so a tool
+    // bound to skill X is unusable on turns where X is not the acting
+    // persona. Mutation (not re-run) so every scope of this turn sees it.
+    const activeTurn = turnContext.current();
+    if (activeTurn) {
+      if (picked?.skillId !== undefined) activeTurn.activePersonaSkillId = picked.skillId;
+      else delete activeTurn.activePersonaSkillId;
+    }
     return {
       skillBody: picked?.body,
       persona: {

@@ -861,6 +861,7 @@ export function createAgentBuilderRouter(
       // (policy refresh) and the visible tool surface (epoch bump + rebuild).
       await refreshMcpGrantPolicy(l.graph);
       await l.graph.bumpMcpGrantEpoch(id);
+      await l.graph.bumpSkillBindingEpoch(id);
       await reload(l);
       const updated = (await l.graph.listMcpServers()).find((s) => s.id === id);
       const [decorated] = await withToolVerdicts(l, updated ? [updated] : []);
@@ -909,6 +910,7 @@ export function createAgentBuilderRouter(
       // either way; the rebuild re-aligns the visible tool surface.
       await refreshMcpGrantPolicy(l.graph);
       await l.graph.bumpMcpGrantEpoch(row.id);
+      await l.graph.bumpSkillBindingEpoch(row.id);
       await reload(l);
       const updated = (await l.graph.listMcpServers()).find((s) => s.id === row.id);
       const [decorated] = await withToolVerdicts(l, [updated ?? row]);
@@ -955,6 +957,7 @@ export function createAgentBuilderRouter(
         // spec without a restart.
         await refreshMcpGrantPolicy(l.graph);
         await l.graph.bumpMcpGrantEpoch(id);
+        await l.graph.bumpSkillBindingEpoch(id);
         await reload(l);
         res.json({
           serverId: id,
@@ -970,6 +973,77 @@ export function createAgentBuilderRouter(
       }
     },
   );
+
+  // ── plugin mcp grants (epic #459 W5, issue #458) ──────────────────────────
+  router.get('/plugin-mcp-grants', async (_req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const [grants, servers] = await Promise.all([
+        l.graph.listPluginMcpGrants(),
+        l.graph.listMcpServers(),
+      ]);
+      const serverById = new Map(servers.map((s) => [s.id, s]));
+      res.json({
+        grants: grants.map((g) => ({
+          pluginId: g.pluginId,
+          serverId: g.mcpServerId,
+          serverName: serverById.get(g.mcpServerId)?.name ?? null,
+          grantedBy: g.grantedBy,
+          grantedAt: g.grantedAt.toISOString(),
+        })),
+      });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  /** Server-level grant (issue #458): explicit and auditable, never ambient.
+   *  Per-tool safety comes from the dispatch guard, which applies to plugin
+   *  calls unchanged (unscanned or unacked-risk tools are denied). */
+  router.put('/plugin-mcp-grants', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const pluginId = String(req.body?.pluginId ?? '').trim();
+      const mcpServerId = String(req.body?.mcpServerId ?? '');
+      if (pluginId === '' || !isUuid(mcpServerId)) {
+        res.status(400).json({ error: 'invalid_grant' });
+        return;
+      }
+      const server = (await l.graph.listMcpServers()).find((s) => s.id === mcpServerId);
+      if (!server) {
+        res.status(404).json({ error: 'mcp_server_not_found' });
+        return;
+      }
+      const actor = req.session?.sub || req.session?.email;
+      if (!actor) {
+        res.status(401).json({ error: 'unauthenticated' });
+        return;
+      }
+      await l.graph.upsertPluginMcpGrant(pluginId, mcpServerId, actor);
+      res.json({ pluginId, serverId: mcpServerId, grantedBy: actor });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  router.delete('/plugin-mcp-grants', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const pluginId = String(req.body?.pluginId ?? '').trim();
+      const mcpServerId = String(req.body?.mcpServerId ?? '');
+      if (pluginId === '' || !isUuid(mcpServerId)) {
+        res.status(400).json({ error: 'invalid_grant' });
+        return;
+      }
+      await l.graph.deletePluginMcpGrant(pluginId, mcpServerId);
+      res.status(204).end();
+    } catch (err) {
+      fail(res, err);
+    }
+  });
 
   // ── skill capability bindings (epic #459 W4, issue #456) ──────────────────
   router.get('/skills/:id/tool-bindings', async (req: Request, res: Response) => {

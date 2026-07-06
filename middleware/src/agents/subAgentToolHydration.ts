@@ -291,18 +291,28 @@ export function registerDbSubAgentTools(
         discoveredDescriptor(row, binding.toolName),
       );
       const skillSlug = skill.slug;
+      const skillId = skill.id;
       tools.push({
         ...base,
         handle: (input: unknown) => {
           const current = turnContext.current();
+          // Bind-time consent covers "when this skill is active" — a turn
+          // where a DIFFERENT (or no) persona is acting must not reach the
+          // tool, even though it is registered on the agent (codex fold).
+          if (current?.activePersonaSkillId !== skillId) {
+            return Promise.resolve(
+              `Error: tool "${base.name}" is bound to skill "${skillSlug}", which is not the active persona for this turn.`,
+            );
+          }
           // Attribute the call to the skill in the audit log (issue #462
           // taxonomy) while inheriting the rest of the active turn context.
           return turnContext.run(
             {
-              turnId: current?.turnId ?? '',
-              turnDate: current?.turnDate ?? new Date().toISOString().slice(0, 10),
-              ...(current?.agentSlug ? { agentSlug: current.agentSlug } : {}),
-              ...(current?.privacyHandle ? { privacyHandle: current.privacyHandle } : {}),
+              turnId: current.turnId,
+              turnDate: current.turnDate,
+              ...(current.agentSlug ? { agentSlug: current.agentSlug } : {}),
+              ...(current.privacyHandle ? { privacyHandle: current.privacyHandle } : {}),
+              activePersonaSkillId: skillId,
               mcpCallerKind: 'skill',
               mcpCallerId: skillSlug,
             },

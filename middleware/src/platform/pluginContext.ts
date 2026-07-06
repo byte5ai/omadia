@@ -27,6 +27,8 @@ import {
   type LlmCompleteRequest,
   type LlmCompleteResult,
   type LlmProvider,
+  type McpAccessor,
+  type McpAccessorToolDescriptor,
   type MemoryAccessor,
   type MemoryStore,
   type MigrationContext,
@@ -715,6 +717,16 @@ export function createPluginContext(
   interface EventCatalogAllows {
     allows(pluginId: string, eventId: string): boolean;
   }
+  // Epic #459 W5 (issue #458) — ctx.mcp: present iff the manifest declares
+  // permissions.mcp. The backing host service ('mcp') is resolved LAZILY per
+  // call, mirroring ctx.events' router resolution; grants are read live so a
+  // revoke applies without re-activation. Calls run with plugin attribution
+  // so the #462 audit log and the scan-policy dispatch guard see the plugin.
+  const mcpAllowed = catalog.get(agentId)?.plugin.permissions_summary.mcp === true;
+  const mcp: McpAccessor | undefined = mcpAllowed
+    ? createPluginMcpAccessor(agentId, serviceRegistry)
+    : undefined;
+
   const eventsAllowed = catalog.get(agentId)?.plugin.permissions_summary.events_emit === true;
   const events: EventsAccessor | undefined = eventsAllowed
     ? {
@@ -749,11 +761,115 @@ export function createPluginContext(
     ...(subAgent ? { subAgent } : {}),
     ...(knowledgeGraph ? { knowledgeGraph } : {}),
     ...(llm ? { llm } : {}),
+    ...(mcp ? { mcp } : {}),
     ...(flows ? { flows } : {}),
     ...(oauthTokens ? { oauthTokens } : {}),
     ...(events ? { events } : {}),
     status,
     log,
+  };
+}
+
+/** Minimal server row shape the host MCP service exposes. */
+interface McpHostServerRow {
+  readonly id: string;
+  readonly name: string;
+  readonly transport: 'stdio' | 'http' | 'sse';
+  readonly endpoint: string | null;
+  readonly headers: Record<string, unknown>;
+  readonly status: 'enabled' | 'disabled';
+}
+
+interface McpHostServiceConfig {
+  readonly id: string;
+  readonly name: string;
+  readonly transport: 'stdio' | 'http' | 'sse';
+  readonly endpoint: string | null;
+  readonly headers?: Record<string, string>;
+}
+
+/** Host service registered by the kernel under 'mcp' (issue #458). */
+interface McpHostService {
+  listTools(cfg: McpHostServiceConfig): Promise<readonly McpAccessorToolDescriptor[]>;
+  callTool(
+    cfg: McpHostServiceConfig,
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<string>;
+  listServers(): Promise<readonly McpHostServerRow[]>;
+  listGrantedServerIds(pluginId: string): Promise<readonly string[]>;
+}
+
+function mcpHostRowToConfig(row: McpHostServerRow): McpHostServiceConfig {
+  const headers: Record<string, string> = {};
+  for (const [k, v] of Object.entries(row.headers)) {
+    if (typeof v === 'string') headers[k] = v;
+  }
+  return {
+    id: row.id,
+    name: row.name,
+    transport: row.transport,
+    endpoint: row.endpoint,
+    ...(Object.keys(headers).length > 0 ? { headers } : {}),
+  };
+}
+
+/** Exported for direct unit testing (issue #458). */
+export function createPluginMcpAccessor(
+  pluginId: string,
+  serviceRegistry: { get<T>(name: string): T | undefined },
+): McpAccessor {
+  const host = (): McpHostService => {
+    const service = serviceRegistry.get<McpHostService>('mcp');
+    if (!service) {
+      throw new Error('MCP host service unavailable — the core did not wire ctx.mcp');
+    }
+    return service;
+  };
+  const resolveGranted = async (serverId: string): Promise<McpHostServiceConfig> => {
+    const service = host();
+    const granted = await service.listGrantedServerIds(pluginId);
+    if (!granted.includes(serverId)) {
+      // Deny-by-default fails CLOSED, and the message never reveals whether
+      // the server exists — only that this plugin has no grant for the id.
+      throw new Error(`MCP server "${serverId}" is not granted to plugin "${pluginId}"`);
+    }
+    const row = (await service.listServers()).find((s) => s.id === serverId);
+    if (!row || row.status === 'disabled') {
+      throw new Error(`MCP server "${serverId}" is not available (missing or disabled)`);
+    }
+    return mcpHostRowToConfig(row);
+  };
+  return {
+    async listServers(): Promise<readonly string[]> {
+      return host().listGrantedServerIds(pluginId);
+    },
+    async listTools(serverId: string): Promise<readonly McpAccessorToolDescriptor[]> {
+      const cfg = await resolveGranted(serverId);
+      return host().listTools(cfg);
+    },
+    async callTool(
+      serverId: string,
+      toolName: string,
+      args: Record<string, unknown>,
+    ): Promise<string> {
+      const cfg = await resolveGranted(serverId);
+      const current = turnContext.current();
+      // Plugin attribution for the audit log (#462) + the dispatch guard;
+      // inherits the active turn where one exists (tool-handler paths), and
+      // degrades to a turn-less scope for activate-time/job calls.
+      return turnContext.run(
+        {
+          turnId: current?.turnId ?? '',
+          turnDate: current?.turnDate ?? new Date().toISOString().slice(0, 10),
+          ...(current?.agentSlug ? { agentSlug: current.agentSlug } : {}),
+          ...(current?.privacyHandle ? { privacyHandle: current.privacyHandle } : {}),
+          mcpCallerKind: 'plugin',
+          mcpCallerId: pluginId,
+        },
+        () => host().callTool(cfg, toolName, args),
+      );
+    },
   };
 }
 
