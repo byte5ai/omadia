@@ -103,6 +103,8 @@ export type {
   CanvasPos,
   McpServerInput,
   McpServerRow,
+  McpToolVerdictAckRow,
+  McpToolVerdictRow,
   PersonaSkillRow,
   ScheduleInput,
   ScheduleRow,

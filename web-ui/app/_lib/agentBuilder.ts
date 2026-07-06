@@ -187,10 +187,22 @@ export interface ToolGrantNode {
   mcpServerId: string | null;
 }
 
+/** Scan verdict decoration on a discovered MCP tool (issue #454). Absent on
+ *  payloads from middleware builds that predate the scan gate. */
+export interface McpToolVerdictField {
+  severity: SkillVerdictSeverity | null;
+  riskCodes: string[];
+  notYetScanned: boolean;
+  acked: boolean;
+  /** An ack exists but was given for different tool content — treated as absent. */
+  ackStale: boolean;
+}
+
 export interface McpDiscoveredTool {
   name: string;
   description?: string;
   inputSchema?: Record<string, unknown>;
+  verdict?: McpToolVerdictField;
 }
 
 export type McpTransport = 'stdio' | 'http' | 'sse';
@@ -556,6 +568,21 @@ export async function triggerSkillVerdictLlmScan(
   return callJson(`/v1/operator/skills/${encodeURIComponent(id)}/verdict/llm-scan`, {
     method: 'POST',
   });
+}
+
+/**
+ * Acknowledge a high_risk MCP tool verdict (issue #454). Server-side the ack
+ * pins the verdict's current content hash — a re-discover that changes the
+ * tool's content invalidates it, mirroring the skill-side ack semantics.
+ */
+export async function ackMcpToolVerdict(
+  serverId: string,
+  toolName: string,
+): Promise<{ severity: SkillVerdictSeverity; acked: boolean; ackedBy: string; ackedAt: string }> {
+  return callJson(
+    `/v1/operator/mcp-servers/${encodeURIComponent(serverId)}/tools/${encodeURIComponent(toolName)}/verdict/ack`,
+    { method: 'POST' },
+  );
 }
 
 /** Export a skill back to portable SKILL.md text (frontmatter + body). */

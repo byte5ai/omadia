@@ -320,6 +320,48 @@ interface McpServerDbRow {
   updated_at: Date;
 }
 
+/** Verdict row for one discovered MCP tool (epic #459 W1, issue #454).
+ *  Keyed (server, tool, verifier_version); `contentHash` pins the scanned
+ *  name+description+inputSchema so re-discovery with changed content
+ *  overwrites, while acks are compared against it (stale ack never masks). */
+export interface McpToolVerdictRow {
+  readonly serverId: string;
+  readonly toolName: string;
+  readonly verifierVersion: string;
+  readonly contentHash: string;
+  readonly severity: Severity;
+  readonly riskCodes: readonly SkillVerdictRiskCodesEntry[];
+  readonly computedAt: Date;
+}
+
+export interface McpToolVerdictAckRow {
+  readonly serverId: string;
+  readonly toolName: string;
+  readonly verifierVersion: string;
+  readonly contentHash: string;
+  readonly ackedBy: string;
+  readonly ackedAt: Date;
+}
+
+interface McpToolVerdictDbRow {
+  server_id: string;
+  tool_name: string;
+  verifier_version: string;
+  content_hash: string;
+  severity: string;
+  risk_codes: unknown;
+  computed_at: Date;
+}
+
+interface McpToolVerdictAckDbRow {
+  server_id: string;
+  tool_name: string;
+  verifier_version: string;
+  content_hash: string;
+  acked_by: string;
+  acked_at: Date;
+}
+
 interface ToolGrantDbRow {
   id: string;
   agent_id: string | null;
@@ -442,6 +484,32 @@ function mapSkillVerdict(r: SkillVerdictDbRow): SkillVerdictRow {
     riskCodes: parseSkillVerdictRiskCodes(r.risk_codes),
     rationale: r.rationale,
     computedAt: r.computed_at,
+  };
+}
+
+function mapMcpToolVerdict(r: McpToolVerdictDbRow): McpToolVerdictRow {
+  if (!isSeverity(r.severity)) {
+    throw new Error(`unexpected mcp tool verdict severity in DB: ${String(r.severity)}`);
+  }
+  return {
+    serverId: r.server_id,
+    toolName: r.tool_name,
+    verifierVersion: r.verifier_version,
+    contentHash: r.content_hash,
+    severity: r.severity,
+    riskCodes: parseSkillVerdictRiskCodes(r.risk_codes),
+    computedAt: r.computed_at,
+  };
+}
+
+function mapMcpToolVerdictAck(r: McpToolVerdictAckDbRow): McpToolVerdictAckRow {
+  return {
+    serverId: r.server_id,
+    toolName: r.tool_name,
+    verifierVersion: r.verifier_version,
+    contentHash: r.content_hash,
+    ackedBy: r.acked_by,
+    ackedAt: r.acked_at,
   };
 }
 
@@ -784,6 +852,104 @@ export class AgentGraphStore {
     );
     const row = rows[0]!;
     return { ackedBy: row.acked_by, ackedAt: row.acked_at };
+  }
+
+  // ── MCP tool verdicts (epic #459 W1, issue #454) ───────────────────────────
+
+  /** All verdicts for the given verifier version, across all servers — one
+   *  query, grouped by server id by the caller. Used to decorate discovered
+   *  tool lists in operator responses. */
+  async listMcpToolVerdicts(
+    verifierVersion: string,
+  ): Promise<readonly McpToolVerdictRow[]> {
+    const { rows } = await this.pool.query<McpToolVerdictDbRow>(
+      'SELECT * FROM mcp_tool_verdicts WHERE verifier_version = $1',
+      [verifierVersion],
+    );
+    return rows.map(mapMcpToolVerdict);
+  }
+
+  async getMcpToolVerdict(
+    serverId: string,
+    toolName: string,
+    verifierVersion: string,
+  ): Promise<McpToolVerdictRow | undefined> {
+    const { rows } = await this.pool.query<McpToolVerdictDbRow>(
+      `SELECT * FROM mcp_tool_verdicts
+       WHERE server_id = $1 AND tool_name = $2 AND verifier_version = $3`,
+      [serverId, toolName, verifierVersion],
+    );
+    const row = rows[0];
+    return row ? mapMcpToolVerdict(row) : undefined;
+  }
+
+  async upsertMcpToolVerdict(row: McpToolVerdictRow): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO mcp_tool_verdicts
+         (server_id, tool_name, verifier_version, content_hash, severity, risk_codes, computed_at)
+       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7)
+       ON CONFLICT (server_id, tool_name, verifier_version) DO UPDATE SET
+         content_hash = EXCLUDED.content_hash,
+         severity     = EXCLUDED.severity,
+         risk_codes   = EXCLUDED.risk_codes,
+         computed_at  = EXCLUDED.computed_at`,
+      [
+        row.serverId,
+        row.toolName,
+        row.verifierVersion,
+        row.contentHash,
+        row.severity,
+        JSON.stringify(row.riskCodes),
+        row.computedAt,
+      ],
+    );
+  }
+
+  async listMcpToolVerdictAcks(
+    verifierVersion: string,
+  ): Promise<readonly McpToolVerdictAckRow[]> {
+    const { rows } = await this.pool.query<McpToolVerdictAckDbRow>(
+      'SELECT * FROM mcp_tool_verdict_acks WHERE verifier_version = $1',
+      [verifierVersion],
+    );
+    return rows.map(mapMcpToolVerdictAck);
+  }
+
+  async getMcpToolVerdictAck(
+    serverId: string,
+    toolName: string,
+    verifierVersion: string,
+  ): Promise<McpToolVerdictAckRow | undefined> {
+    const { rows } = await this.pool.query<McpToolVerdictAckDbRow>(
+      `SELECT * FROM mcp_tool_verdict_acks
+       WHERE server_id = $1 AND tool_name = $2 AND verifier_version = $3`,
+      [serverId, toolName, verifierVersion],
+    );
+    const row = rows[0];
+    return row ? mapMcpToolVerdictAck(row) : undefined;
+  }
+
+  /** Record an operator ack for a high-risk tool. Stores the content hash the
+   *  ack was given for; the grant gate compares it against the current
+   *  verdict's hash, so a content change on re-discover invalidates the ack. */
+  async upsertMcpToolVerdictAck(
+    serverId: string,
+    toolName: string,
+    verifierVersion: string,
+    contentHash: string,
+    ackedBy: string,
+  ): Promise<McpToolVerdictAckRow> {
+    const { rows } = await this.pool.query<McpToolVerdictAckDbRow>(
+      `INSERT INTO mcp_tool_verdict_acks (server_id, tool_name, verifier_version, content_hash, acked_by)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (server_id, tool_name, verifier_version) DO UPDATE SET
+         content_hash = EXCLUDED.content_hash,
+         acked_by     = EXCLUDED.acked_by,
+         acked_at     = now()
+       RETURNING *`,
+      [serverId, toolName, verifierVersion, contentHash, ackedBy],
+    );
+    return mapMcpToolVerdictAck(rows[0]!);
   }
 
   /** Look up a skill by its unique slug — for import update-vs-create routing. */

@@ -30,6 +30,7 @@ import {
 import { McpManager } from '@omadia/orchestrator';
 import { Router, type Request, type Response } from 'express';
 
+import { scanDiscoveredTools } from '../services/mcpToolGuard.js';
 import { scanSkillForRisks } from '../services/skillGuard.js';
 import { importSkillMarkdown } from '../services/skillImport.js';
 import { serializeSkillMarkdown } from '../services/skillLoader.js';
@@ -167,7 +168,7 @@ export function createAgentBuilderRouter(
           l.graph.listAllSubAgents(),
           l.graph.listSkills(),
           l.graph.listAllToolGrants(),
-          l.graph.listMcpServers(),
+          l.graph.listMcpServers().then((rows) => withToolVerdicts(l, rows)),
           l.graph.listSchedulesForAgent(agent.id),
           l.graph.listPersonaSkills(agent.id),
         ]);
@@ -786,7 +787,7 @@ export function createAgentBuilderRouter(
     const l = live(res);
     if (!l) return;
     try {
-      res.json({ servers: (await l.graph.listMcpServers()).map(mcpNode) });
+      res.json({ servers: (await withToolVerdicts(l, await l.graph.listMcpServers())).map(mcpNode) });
     } catch (err) {
       fail(res, err);
     }
@@ -832,14 +833,67 @@ export function createAgentBuilderRouter(
         return;
       }
       const tools = await mcp.listTools(toMcpConfig(row));
+      // Scan gate (epic #459 W1, issue #454): every discovered tool is scanned
+      // and its verdict persisted BEFORE the tool list itself is stored, so no
+      // unscanned tool ever becomes visible or grantable.
+      const verdicts = scanDiscoveredTools(row.id, tools);
+      for (const verdict of verdicts) {
+        await l.graph.upsertMcpToolVerdict(verdict);
+      }
       await l.graph.setMcpDiscoveredTools(row.id, tools);
       const updated = (await l.graph.listMcpServers()).find((s) => s.id === row.id);
-      res.json(updated ? mcpNode(updated) : mcpNode(row));
+      const [decorated] = await withToolVerdicts(l, [updated ?? row]);
+      res.json(mcpNode(decorated ?? updated ?? row));
     } catch (err) {
       // Discovery talks to an external process — report as a 502, not a 5xx crash.
       res.status(502).json({ error: 'mcp_discover_failed', message: msg(err) });
     }
   });
+
+  // Operator ack for a high-risk MCP tool verdict (issue #454). Mirrors the
+  // skill-side `/skills/:id/verdict/ack` audit-trail semantics: keyed by
+  // (server, tool, verifier_version) and pinned to the verdict's content hash,
+  // so neither a verifier upgrade nor a content change on re-discover lets a
+  // stale ack carry forward.
+  router.post(
+    '/mcp-servers/:id/tools/:toolName/verdict/ack',
+    async (req: Request, res: Response) => {
+      const l = live(res);
+      if (!l) return;
+      try {
+        const id = str(req.params.id);
+        const toolName = str(req.params.toolName);
+        const verdict = await l.graph.getMcpToolVerdict(id, toolName, CURRENT_VERIFIER_VERSION);
+        if (!verdict) {
+          res.status(404).json({ error: 'mcp_tool_verdict_not_found', serverId: id, toolName });
+          return;
+        }
+        const actor = req.session?.sub || req.session?.email;
+        if (!actor) {
+          res.status(401).json({ error: 'unauthenticated' });
+          return;
+        }
+        const ack = await l.graph.upsertMcpToolVerdictAck(
+          id,
+          toolName,
+          CURRENT_VERIFIER_VERSION,
+          verdict.contentHash,
+          actor,
+        );
+        res.json({
+          serverId: id,
+          toolName,
+          severity: verdict.severity,
+          riskCodes: flattenRiskCodes(verdict.riskCodes),
+          acked: true,
+          ackedBy: ack.ackedBy,
+          ackedAt: ack.ackedAt.toISOString(),
+        });
+      } catch (err) {
+        fail(res, err);
+      }
+    },
+  );
 
   // ── schedules ─────────────────────────────────────────────────────────────
   router.get('/agents/:slug/schedules', async (req: Request, res: Response) => {
@@ -926,6 +980,29 @@ async function createEdge(
       const mcpServerId = (config['mcpServerId'] as string | null) ?? null;
       if (!toolRef) {
         throw new ConfigValidationError('tool_grant requires a toolRef');
+      }
+      // Grant gate (issue #454): a high_risk MCP tool needs an explicit,
+      // content-hash-matching operator ack before it can be granted. Enforced
+      // server-side, not just in the Builder UI dialog — unlike the skill-side
+      // attach gate, which is client-only (documented platform gap).
+      if (toolKind === 'mcp' && mcpServerId) {
+        const verdict = await l.graph.getMcpToolVerdict(
+          mcpServerId,
+          toolRef,
+          CURRENT_VERIFIER_VERSION,
+        );
+        if (verdict && verdict.severity === 'high_risk') {
+          const ack = await l.graph.getMcpToolVerdictAck(
+            mcpServerId,
+            toolRef,
+            CURRENT_VERIFIER_VERSION,
+          );
+          if (!ack || ack.contentHash !== verdict.contentHash) {
+            throw new ConfigValidationError(
+              `mcp_tool_high_risk_unacked: tool "${toolRef}" carries a high_risk scan verdict; acknowledge it in the server's tool list before granting`,
+            );
+          }
+        }
       }
       const grant = await l.graph.createToolGrant({
         agentId: onAgent ? agent.id : null,
@@ -1134,6 +1211,54 @@ function toolGrantNode(g: ToolGrantRow) {
     toolRef: g.toolRef,
     mcpServerId: g.mcpServerId,
   };
+}
+
+interface McpToolVerdictField {
+  readonly severity: Severity | null;
+  readonly riskCodes: readonly string[];
+  readonly notYetScanned: boolean;
+  readonly acked: boolean;
+  readonly ackStale: boolean;
+}
+
+/** Decorates each server's `discoveredTools` entries with a `verdict` field
+ *  (severity, flattened risk codes, ack state). Two bulk queries total, so
+ *  list/graph renders stay O(1) in query count regardless of server count. */
+async function withToolVerdicts(
+  l: Live,
+  servers: readonly McpServerRow[],
+): Promise<readonly McpServerRow[]> {
+  const hasTools = servers.some(
+    (s) => Array.isArray(s.discoveredTools) && s.discoveredTools.length > 0,
+  );
+  if (!hasTools) return servers;
+  const [verdicts, acks] = await Promise.all([
+    l.graph.listMcpToolVerdicts(CURRENT_VERIFIER_VERSION),
+    l.graph.listMcpToolVerdictAcks(CURRENT_VERIFIER_VERSION),
+  ]);
+  const vmap = new Map(verdicts.map((v) => [`${v.serverId} ${v.toolName}`, v]));
+  const amap = new Map(acks.map((a) => [`${a.serverId} ${a.toolName}`, a]));
+  return servers.map((s) => ({
+    ...s,
+    discoveredTools: (s.discoveredTools as ReadonlyArray<Record<string, unknown>>).map(
+      (tool) => {
+        const name = typeof tool['name'] === 'string' ? (tool['name'] as string) : '';
+        const v = vmap.get(`${s.id} ${name}`);
+        const a = amap.get(`${s.id} ${name}`);
+        const ackValid = v !== undefined && a !== undefined && a.contentHash === v.contentHash;
+        const verdict: McpToolVerdictField = v
+          ? {
+              severity: v.severity,
+              riskCodes: flattenRiskCodes(v.riskCodes),
+              notYetScanned: false,
+              acked: ackValid,
+              ackStale: a !== undefined && !ackValid,
+            }
+          : { severity: null, riskCodes: [], notYetScanned: true, acked: false, ackStale: false };
+        return { ...tool, verdict };
+      },
+    ),
+  }));
 }
 
 function mcpNode(s: McpServerRow) {
