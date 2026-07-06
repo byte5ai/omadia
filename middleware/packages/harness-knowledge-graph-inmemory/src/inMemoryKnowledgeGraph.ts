@@ -518,6 +518,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         props: {
           runId,
           agentName: inv.agentName,
+          ...(inv.agentId !== undefined ? { agentId: inv.agentId } : {}),
           index: inv.index,
           durationMs: inv.durationMs,
           subIterations: inv.subIterations,
