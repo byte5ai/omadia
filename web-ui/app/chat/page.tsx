@@ -10,7 +10,7 @@ import {
   type KeyboardEvent,
 } from 'react';
 import { useTranslations } from 'next-intl';
-import { Eraser, GitBranch, Navigation, Network, X } from 'lucide-react';
+import { ChevronDown, Eraser, GitBranch, Navigation, Network } from 'lucide-react';
 import { ChatTabs } from '../_components/ChatTabs';
 import { ScrollToBottomButton } from '../_components/ScrollToBottomButton';
 import { Button } from '../_components/ui/Button';
@@ -694,81 +694,87 @@ export default function ChatPage(): React.ReactElement {
   );
 }
 
-// Persisted "hidden" flag for the chat intro banner, keyed in localStorage —
+// Persisted collapse state for the chat intro header, keyed in localStorage —
 // same module-level-store + useSyncExternalStore shape as the dashboard
-// onboarding dismiss ([[DashboardOnboarding]]), so a close click sticks
-// across reloads without a setState-in-effect.
-const CHAT_INTRO_HIDDEN_KEY = 'omadia.chat.intro.hidden';
-let chatIntroHiddenCache: boolean | null = null;
-const chatIntroHiddenListeners = new Set<() => void>();
+// onboarding dismiss ([[DashboardOnboarding]]), so a toggle sticks across
+// reloads without a setState-in-effect. Server + initial-client snapshot are
+// both `false` (expanded) — an operator only ever collapses it explicitly.
+const CHAT_INTRO_COLLAPSED_KEY = 'omadia.chat.intro.collapsed';
+let chatIntroCollapsedCache: boolean | null = null;
+const chatIntroCollapsedListeners = new Set<() => void>();
 
-function readChatIntroHidden(): boolean {
+function readChatIntroCollapsed(): boolean {
   try {
-    return window.localStorage.getItem(CHAT_INTRO_HIDDEN_KEY) === '1';
+    return window.localStorage.getItem(CHAT_INTRO_COLLAPSED_KEY) === '1';
   } catch {
     return false;
   }
 }
 
-function subscribeChatIntroHidden(cb: () => void): () => void {
-  chatIntroHiddenListeners.add(cb);
-  return () => chatIntroHiddenListeners.delete(cb);
+function subscribeChatIntroCollapsed(cb: () => void): () => void {
+  chatIntroCollapsedListeners.add(cb);
+  return () => chatIntroCollapsedListeners.delete(cb);
 }
 
-function getChatIntroHiddenSnapshot(): boolean {
-  if (chatIntroHiddenCache === null) chatIntroHiddenCache = readChatIntroHidden();
-  return chatIntroHiddenCache;
+function getChatIntroCollapsedSnapshot(): boolean {
+  if (chatIntroCollapsedCache === null) {
+    chatIntroCollapsedCache = readChatIntroCollapsed();
+  }
+  return chatIntroCollapsedCache;
 }
 
-function getChatIntroHiddenServerSnapshot(): boolean {
+function getChatIntroCollapsedServerSnapshot(): boolean {
   return false;
 }
 
-function setChatIntroHiddenPersisted(value: boolean): void {
-  chatIntroHiddenCache = value;
+function setChatIntroCollapsedPersisted(value: boolean): void {
+  chatIntroCollapsedCache = value;
   try {
-    if (value) window.localStorage.setItem(CHAT_INTRO_HIDDEN_KEY, '1');
-    else window.localStorage.removeItem(CHAT_INTRO_HIDDEN_KEY);
+    if (value) window.localStorage.setItem(CHAT_INTRO_COLLAPSED_KEY, '1');
+    else window.localStorage.removeItem(CHAT_INTRO_COLLAPSED_KEY);
   } catch {
     /* private mode / no storage */
   }
-  for (const l of chatIntroHiddenListeners) l();
+  for (const l of chatIntroCollapsedListeners) l();
 }
 
 /**
- * What-is-this-page header — same kicker + body + close-button language as
- * the dashboard onboarding card, scaled down for a top-of-chat banner.
- * Dismissing persists in localStorage, so it stays gone across reloads
- * instead of coming back to eat chat space every session.
+ * What-is-this-page header — kicker + body in the same `b5-hero-bg` treatment
+ * as the Hub page hero, scaled down for a top-of-chat banner. Starts
+ * expanded; the chevron toggles collapse and the choice persists in
+ * localStorage, so a collapsed operator doesn't see it re-expand every
+ * reload.
  */
-function ChatIntro(): React.ReactElement | null {
+function ChatIntro(): React.ReactElement {
   const t = useTranslations('chat');
-  const hidden = useSyncExternalStore(
-    subscribeChatIntroHidden,
-    getChatIntroHiddenSnapshot,
-    getChatIntroHiddenServerSnapshot,
+  const collapsed = useSyncExternalStore(
+    subscribeChatIntroCollapsed,
+    getChatIntroCollapsedSnapshot,
+    getChatIntroCollapsedServerSnapshot,
   );
-  if (hidden) return null;
   return (
     <div className="b5-hero-bg border-b border-[color:var(--border)] px-6 py-4">
-      <div className="mx-auto flex max-w-4xl items-start justify-between gap-4">
-        <div className="min-w-0">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[color:var(--accent)]">
-            {t('intro.kicker')}
-          </div>
+      <div className="mx-auto max-w-4xl">
+        <button
+          type="button"
+          onClick={() => setChatIntroCollapsedPersisted(!collapsed)}
+          aria-expanded={!collapsed}
+          className="flex w-full items-center gap-2 text-left text-[11px] font-semibold uppercase tracking-[0.22em] text-[color:var(--accent)]"
+        >
+          <ChevronDown
+            className={[
+              'size-3.5 shrink-0 transition-transform',
+              collapsed ? '-rotate-90' : '',
+            ].join(' ')}
+            aria-hidden
+          />
+          {t('intro.kicker')}
+        </button>
+        {!collapsed && (
           <p className="mt-1.5 max-w-2xl text-[13px] leading-relaxed text-[color:var(--fg)]">
             {t('intro.body')}
           </p>
-        </div>
-        <button
-          type="button"
-          onClick={() => setChatIntroHiddenPersisted(true)}
-          className="shrink-0 text-[color:var(--fg-subtle)] transition-colors hover:text-[color:var(--fg-strong)]"
-          aria-label={t('intro.dismiss')}
-          title={t('intro.dismiss')}
-        >
-          <X className="size-4" aria-hidden />
-        </button>
+        )}
       </div>
     </div>
   );

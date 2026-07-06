@@ -714,8 +714,7 @@
     "errorAborted": "Aborted.",
     "intro": {
       "kicker": "What is this chat?",
-      "body": "This is the operator debug chat — a direct line to your orchestrators for testing prompts and inspecting tool calls, plans, and knowledge-graph walks as they happen. It's not the end-user experience; it's built for debugging.",
-      "dismiss": "Hide this note"
+      "body": "This is the operator debug chat — a direct line to your orchestrators for testing prompts and inspecting tool calls, plans, and knowledge-graph walks as they happen. It's not the end-user experience; it's built for debugging."
     },
     "streamLabel": "Stream:",
     "clearTabTitle": "Clear only the active tab",
