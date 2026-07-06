@@ -71,7 +71,7 @@ export class RunTraceCollector {
     });
   }
 
-  beginInvocation(agentName: string): InvocationHandle {
+  beginInvocation(agentName: string, agentId?: string): InvocationHandle {
     const index = this.invocationIndex++;
     const toolCallStarts = new Map<string, { name: string }>();
     const subToolCalls: RunToolCall[] = [];
@@ -112,6 +112,7 @@ export class RunTraceCollector {
         push({
           index,
           agentName,
+          ...(agentId !== undefined ? { agentId } : {}),
           durationMs,
           subIterations,
           status,
