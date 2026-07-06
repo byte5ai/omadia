@@ -856,6 +856,10 @@ export function createAgentBuilderRouter(
         }
       }
       await l.graph.setMcpServerStatus(id, status);
+      // Status changes must reach both enforcement layers: the dispatch guard
+      // (policy refresh) and the visible tool surface (epoch bump + rebuild).
+      await refreshMcpGrantPolicy(l.graph);
+      await l.graph.bumpMcpGrantEpoch(id);
       await reload(l);
       const updated = (await l.graph.listMcpServers()).find((s) => s.id === id);
       const [decorated] = await withToolVerdicts(l, updated ? [updated] : []);
@@ -1093,14 +1097,24 @@ export function createAgentBuilderRouter(
     if (!l) return;
     try {
       const limitRaw = Number(req.query['limit']);
-      const serverId =
+      const serverIdRaw =
         typeof req.query['serverId'] === 'string' && req.query['serverId'] !== ''
           ? req.query['serverId']
           : undefined;
-      const beforeId =
+      const beforeIdRaw =
         typeof req.query['beforeId'] === 'string' && req.query['beforeId'] !== ''
           ? req.query['beforeId']
           : undefined;
+      if (serverIdRaw !== undefined && !isUuid(serverIdRaw)) {
+        res.status(400).json({ error: 'invalid_server_id' });
+        return;
+      }
+      if (beforeIdRaw !== undefined && !/^\d+$/.test(beforeIdRaw)) {
+        res.status(400).json({ error: 'invalid_before_id' });
+        return;
+      }
+      const serverId = serverIdRaw;
+      const beforeId = beforeIdRaw;
       const entries = await l.graph.listMcpCallLog({
         ...(Number.isFinite(limitRaw) ? { limit: limitRaw } : {}),
         ...(serverId ? { serverId } : {}),

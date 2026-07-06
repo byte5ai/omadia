@@ -767,10 +767,13 @@ function AuditPane(): React.ReactElement {
   const [entries, setEntries] = useState<McpCallLogEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      setEntries((await listMcpCallLog({ limit: 100 })).entries);
+      const page = (await listMcpCallLog({ limit: 100 })).entries;
+      setEntries(page);
+      setHasMore(page.length === 100);
       setError(null);
     } catch (err) {
       setError(errText(err));
@@ -786,8 +789,9 @@ function AuditPane(): React.ReactElement {
     setLoadingMore(true);
     try {
       const last = entries[entries.length - 1];
-      const more = await listMcpCallLog({ limit: 100, beforeId: last?.id });
-      setEntries([...entries, ...more.entries]);
+      const more = (await listMcpCallLog({ limit: 100, beforeId: last?.id })).entries;
+      setEntries((prev) => [...(prev ?? []), ...more]);
+      setHasMore(more.length === 100);
     } catch (err) {
       setError(errText(err));
     } finally {
@@ -843,7 +847,7 @@ function AuditPane(): React.ReactElement {
           </table>
         </div>
       ) : null}
-      {entries && entries.length >= 100 ? (
+      {hasMore ? (
         <Button size="sm" variant="ghost" busy={loadingMore} onClick={() => void loadMore()}>
           {t('audit.loadMore')}
         </Button>

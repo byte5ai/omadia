@@ -40,6 +40,7 @@ function key(serverId: string, toolName: string): string {
 
 let blockedBySeverity: ReadonlyMap<string, Severity> = new Map<string, Severity>();
 let scannedPairs: ReadonlySet<string> = new Set<string>();
+let disabledServers: ReadonlySet<string> = new Set<string>();
 let refreshGeneration = 0;
 
 /** Recompute the policy state from the persisted verdicts + acks. Concurrent
@@ -49,9 +50,10 @@ let refreshGeneration = 0;
 export async function refreshMcpGrantPolicy(graph: AgentGraphStore): Promise<void> {
   refreshGeneration += 1;
   const generation = refreshGeneration;
-  const [verdicts, acks] = await Promise.all([
+  const [verdicts, acks, servers] = await Promise.all([
     graph.listMcpToolVerdicts(CURRENT_VERIFIER_VERSION),
     graph.listMcpToolVerdictAcks(CURRENT_VERIFIER_VERSION),
+    graph.listMcpServers(),
   ]);
   if (generation !== refreshGeneration) return; // a newer refresh superseded us
   const ackByKey = new Map(acks.map((a) => [key(a.serverId, a.toolName), a]));
@@ -68,6 +70,10 @@ export async function refreshMcpGrantPolicy(graph: AgentGraphStore): Promise<voi
   }
   blockedBySeverity = nextBlocked;
   scannedPairs = nextScanned;
+  // Disabling a server must stop its already-materialized tools too (codex
+  // W2 finding): existing DomainTool closures keep pointing at the server,
+  // so the dispatch guard is the layer that actually cuts them off.
+  disabledServers = new Set(servers.filter((s) => s.status === 'disabled').map((s) => s.id));
 }
 
 /** Hydration filter: known-bad pairs only (spec stays out of model context). */
@@ -78,6 +84,9 @@ export function isMcpGrantBlocked(serverId: string, toolName: string): boolean {
 /** Dispatch guard for `McpManager` — returns a model-facing denial string, or
  *  null to allow. Fail-closed on unscanned pairs. */
 export function mcpDispatchDenial(serverId: string, toolName: string): string | null {
+  if (disabledServers.has(serverId)) {
+    return `Error: MCP tool "${toolName}" is unavailable because its server is disabled. An operator can re-enable it in the MCP Control Center.`;
+  }
   const k = key(serverId, toolName);
   const severity = blockedBySeverity.get(k);
   if (severity) {
@@ -93,5 +102,6 @@ export function mcpDispatchDenial(serverId: string, toolName: string): string | 
 export function resetMcpGrantPolicyForTests(): void {
   blockedBySeverity = new Map<string, Severity>();
   scannedPairs = new Set<string>();
+  disabledServers = new Set<string>();
   refreshGeneration = 0;
 }

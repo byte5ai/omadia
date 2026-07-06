@@ -165,8 +165,12 @@ export function registerDbSubAgentTools(
   built: DomainToolHost,
   deps: HydrateDeps,
 ): number {
+  // Disabled servers never materialize tools — neither for sub-agents nor
+  // top-level grants (codex W2 finding: status was ignored end to end).
   const mcpServersById = new Map<string, McpServerConfig>(
-    deps.mcpServers.map((r) => [r.id, mcpRowToConfig(r)]),
+    deps.mcpServers
+      .filter((r) => r.status !== 'disabled')
+      .map((r) => [r.id, mcpRowToConfig(r)]),
   );
   const tools: DomainTool[] =
     slice.subAgents.length === 0

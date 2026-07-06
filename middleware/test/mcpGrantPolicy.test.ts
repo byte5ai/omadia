@@ -40,10 +40,12 @@ function ack(toolName: string, contentHash = 'h1'): McpToolVerdictAckRow {
 function fakeGraph(
   verdicts: McpToolVerdictRow[],
   acks: McpToolVerdictAckRow[],
+  servers: Array<{ id: string; status: 'enabled' | 'disabled' }> = [],
 ): AgentGraphStore {
   return {
     listMcpToolVerdicts: async () => verdicts,
     listMcpToolVerdictAcks: async () => acks,
+    listMcpServers: async () => servers,
   } as unknown as AgentGraphStore;
 }
 
@@ -95,6 +97,13 @@ describe('mcpGrantPolicy', () => {
     assert.equal(mcpDispatchDenial(SERVER, 'sum'), null);
   });
 
+  it('dispatch denial: a disabled server blocks every tool on it', async () => {
+    await refreshMcpGrantPolicy(
+      fakeGraph([verdict('sum', 'no_signals')], [], [{ id: SERVER, status: 'disabled' }]),
+    );
+    assert.ok(mcpDispatchDenial(SERVER, 'sum')?.includes('disabled'));
+  });
+
   it('an older refresh finishing late cannot overwrite a newer blocklist (generation race)', async () => {
     let releaseOld: () => void = () => undefined;
     const oldGate = new Promise<void>((resolve) => {
@@ -107,6 +116,7 @@ describe('mcpGrantPolicy', () => {
         return [verdict('evil', 'no_signals')];
       },
       listMcpToolVerdictAcks: async () => [],
+      listMcpServers: async () => [],
     } as unknown as AgentGraphStore;
     // New refresh: sees the tool as high_risk, resolves immediately.
     const newGraph = fakeGraph([verdict('evil', 'high_risk')], []);

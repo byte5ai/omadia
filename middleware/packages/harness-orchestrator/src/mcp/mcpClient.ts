@@ -130,7 +130,9 @@ export class McpManager {
         callerAgent: ctx?.mcpCallerId ?? ctx?.agentSlug ?? null,
         turnId: inTurn ? ctx.turnId : null,
         ok,
-        error,
+        // Bounded: external error strings can carry upstream data; the audit
+        // table is append-only, so cap what gets persisted (codex W2 finding).
+        error: error === null ? null : error.length > 300 ? `${error.slice(0, 300)}…` : error,
         durationMs: Date.now() - startedAt,
         calledAt: new Date(),
       });
@@ -188,7 +190,11 @@ export class McpManager {
         arguments: args,
       });
       const rendered = renderToolResult(res);
-      this.emitCall(cfg, toolName, true, null, startedAt);
+      // MCP protocol errors resolve (isError result) instead of throwing —
+      // the audit row must reflect the failure (codex W2 finding).
+      const protocolError =
+        res !== null && typeof res === 'object' && (res as { isError?: unknown }).isError === true;
+      this.emitCall(cfg, toolName, !protocolError, protocolError ? rendered : null, startedAt);
       return rendered;
     } catch (err) {
       // Drop the connection so the next call reconnects (server may have died).
