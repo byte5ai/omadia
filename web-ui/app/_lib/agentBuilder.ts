@@ -144,6 +144,36 @@ export interface SkillNode {
    *  (only populated on the bulk-list endpoint, not on individual skill
    *  reads/writes). */
   risks?: SkillRisk[];
+  /** Cached verdict (issue #436) — read-only signal, never a safety guarantee. */
+  verdict?: SkillVerdict;
+}
+
+/**
+ * Heuristic-signal severities (issue #436 — Nvidia OpenClaw/SkillSpector eval).
+ * Deliberately never "clean"/"safe"/"verified": a regex/LLM scan is evidence,
+ * not proof, and labeling its best case as an affirmative safety claim would
+ * make operators *less* cautious than today's warn-only baseline.
+ */
+export type SkillVerdictSeverity =
+  | 'no_signals'
+  | 'flagged'
+  | 'high_risk'
+  | 'scan_failed'
+  | 'too_large_to_scan'
+  | 'pending'
+  | 'not_yet_scanned';
+
+export interface SkillVerdict {
+  // Nullable to match what the backend can actually emit (no deterministic
+  // row and no LLM row yet) — every call site already coalesces via
+  // `?? 'not_yet_scanned'`, this just makes the type honest about it.
+  severity: SkillVerdictSeverity | null;
+  riskCodes: string[];
+  computedAt?: string | null;
+  ackedBy?: string | null;
+  ackedAt?: string | null;
+  /** Phase 1b LLM sub-result, surfaced by GET /skills/:id only. */
+  llm?: { severity: SkillVerdictSeverity; rationale: string | null; computedAt: string } | null;
 }
 
 export type ToolKind = 'native' | 'mcp';
@@ -436,7 +466,9 @@ export type SkillRiskCode =
   | 'system_prompt_reference'
   | 'tool_coercion'
   | 'data_exfiltration'
-  | 'hidden_content';
+  | 'hidden_content'
+  | 'credential_harvest'
+  | 'silent_permission_escalation';
 
 export interface SkillRisk {
   code: SkillRiskCode;
@@ -497,6 +529,31 @@ export async function previewImportSkill(
  */
 export async function forkSkill(id: string): Promise<SkillNode> {
   return callJson<SkillNode>(`/v1/operator/skills/${encodeURIComponent(id)}/fork`, {
+    method: 'POST',
+  });
+}
+
+/**
+ * Acknowledge/suppress a skill's current verdict (issue #436). Scoped to the
+ * skill's CURRENT content_hash + verifier_version server-side — editing the
+ * skill's content invalidates the ack automatically, it never carries over.
+ */
+export async function acknowledgeSkillVerdict(id: string): Promise<SkillVerdict> {
+  return callJson<SkillVerdict>(`/v1/operator/skills/${encodeURIComponent(id)}/verdict/ack`, {
+    method: 'POST',
+  });
+}
+
+/**
+ * Explicit-trigger only (issue #436 Phase 1b) — an LLM call is a real cost,
+ * so this never fires automatically; the operator asks for it. Returns just
+ * the LLM sub-result — callers should re-fetch the skill via `getSkill()` to
+ * pick up the recombined (deterministic ⊕ LLM) severity.
+ */
+export async function triggerSkillVerdictLlmScan(
+  id: string,
+): Promise<{ llm: { severity: SkillVerdictSeverity; rationale: string | null; computedAt: string } }> {
+  return callJson(`/v1/operator/skills/${encodeURIComponent(id)}/verdict/llm-scan`, {
     method: 'POST',
   });
 }

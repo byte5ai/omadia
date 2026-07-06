@@ -263,7 +263,9 @@
             "system_prompt_reference": "Die Rolle / den System-Prompt des Agenten umzudefinieren",
             "tool_coercion": "Tool-Aufrufe zu erzwingen oder Bestätigungen zu umgehen",
             "data_exfiltration": "Daten oder Geheimnisse irgendwohin zu senden",
-            "hidden_content": "Versteckten oder verschleierten Inhalt zu enthalten"
+            "hidden_content": "Versteckten oder verschleierten Inhalt zu enthalten",
+            "credential_harvest": "API-Schlüssel, Passwörter oder Geheimnisse zu sammeln",
+            "silent_permission_escalation": "Erweiterten Zugriff anzufordern, ohne den Nutzer zu informieren"
           }
         }
       },
@@ -309,7 +311,9 @@
         "add": "Anhängen",
         "remove": "Entfernen",
         "noSkillsAvailable": "Keine weiteren Skills zum Anhängen verfügbar.",
-        "riskWarning": "Heuristischer Scan hat diesen Skill markiert: {codes}. Als Persona steuert er den Top-Level-Agent mit vollem Tool-Zugriff — vor Verwendung prüfen."
+        "riskWarning": "Heuristischer Scan hat diesen Skill markiert: {codes}. Als Persona steuert er den Top-Level-Agent mit vollem Tool-Zugriff — vor Verwendung prüfen.",
+        "confirmAttachAction": "Trotzdem anhängen",
+        "confirmAttachHighRisk": "Der heuristische Scan dieses Skills zeigt hohes Risiko ({codes}). Als Persona steuert er den Top-Level-Agent mit vollem Tool-Zugriff. Bestätige, dass du ihn geprüft hast, bevor du ihn anhängst."
       }
     }
   },
@@ -983,6 +987,31 @@
       "forkAndSave": "Als bearbeitbare Kopie speichern",
       "forkNotice": "Dies ist ein importierter Skill. Beim Speichern wird eine bearbeitbare Kopie erstellt; das Original bleibt als Quelle erhalten.",
       "export": "Exportieren"
+    },
+    "verdict": {
+      "noSignals": "Keine bekannten Risikosignale",
+      "flagged": "Markiert — Prüfung empfohlen",
+      "highRisk": "Hohes Risiko — Prüfung erforderlich",
+      "scanFailed": "Scan fehlgeschlagen",
+      "tooLargeToScan": "Zu groß zum Scannen",
+      "pending": "Wird gescannt…",
+      "notYetScanned": "Noch nicht gescannt",
+      "filterLabel": "Nach Verdict filtern",
+      "filterAll": "Alle Verdicts",
+      "acknowledge": "Bestätigen",
+      "acked": "Bestätigt von {by}",
+      "runDeepScan": "Tiefen-Scan ausführen",
+      "why": "Heuristischer Scan hat markiert: {codes}. Das ist ein Signal, kein Beweis, dass der Inhalt sicher ist.",
+      "llmRationale": "Tiefen-Scan-Hinweis: {rationale}",
+      "riskCode": {
+        "instruction_override": "Frühere Anweisungen überschreiben",
+        "system_prompt_reference": "Rolle / System-Prompt des Agenten neu zuweisen",
+        "tool_coercion": "Tool-Aufrufe erzwingen oder Bestätigung umgehen",
+        "data_exfiltration": "Daten oder Geheimnisse irgendwohin senden",
+        "hidden_content": "Versteckten oder verschleierten Inhalt enthalten",
+        "credential_harvest": "API-Schlüssel, Passwörter oder Geheimnisse sammeln",
+        "silent_permission_escalation": "Erweiterten Zugriff anfordern, ohne den Nutzer zu informieren"
+      }
     }
   },
   "operatorAgents": {

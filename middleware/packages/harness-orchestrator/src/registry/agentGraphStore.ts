@@ -56,6 +56,64 @@ export interface SkillRow {
   readonly updatedAt: Date;
 }
 
+/**
+ * Mirrored from `middleware/src/services/skillVerdict.ts`; keep in sync.
+ * The route layer wires these together via structural typing.
+ */
+export type SkillVerdictRiskCode =
+  | 'instruction_override'
+  | 'system_prompt_reference'
+  | 'tool_coercion'
+  | 'data_exfiltration'
+  | 'hidden_content'
+  | 'credential_harvest'
+  | 'silent_permission_escalation';
+
+/**
+ * Mirrored from `middleware/src/services/skillVerdict.ts`; keep in sync.
+ * The route layer wires these together via structural typing.
+ */
+export type Severity =
+  | 'no_signals'
+  | 'flagged'
+  | 'high_risk'
+  | 'scan_failed'
+  | 'pending'
+  | 'too_large_to_scan';
+
+/**
+ * Mirrored from `middleware/src/services/skillVerdict.ts`; keep in sync.
+ * The route layer wires these together via structural typing.
+ */
+export interface SkillVerdictRiskCodeEntry {
+  readonly code: SkillVerdictRiskCode;
+  readonly severity: 'warn';
+}
+
+/**
+ * Mirrored from `middleware/src/services/skillVerdict.ts`; keep in sync.
+ * The route layer wires these together via structural typing.
+ */
+export interface SkillVerdictRiskCodesEntry {
+  readonly verifier: string;
+  readonly risks: readonly SkillVerdictRiskCodeEntry[];
+}
+
+/**
+ * Mirrored from `middleware/src/services/skillVerdict.ts`; keep in sync.
+ * The route layer wires these together via structural typing.
+ */
+export interface SkillVerdictRow {
+  readonly contentHash: string;
+  readonly verifierVersion: string;
+  readonly modelId: string;
+  readonly promptHash: string;
+  readonly severity: Severity;
+  readonly riskCodes: readonly SkillVerdictRiskCodesEntry[];
+  readonly rationale: string | null;
+  readonly computedAt: Date;
+}
+
 export interface SkillResourceRow {
   readonly id: string;
   readonly skillId: string;
@@ -222,6 +280,17 @@ interface SkillDbRow {
   updated_at: Date;
 }
 
+interface SkillVerdictDbRow {
+  content_hash: string;
+  verifier_version: string;
+  model_id: string;
+  prompt_hash: string;
+  severity: string;
+  risk_codes: unknown;
+  rationale: string | null;
+  computed_at: Date;
+}
+
 interface SkillResourceDbRow {
   id: string;
   skill_id: string;
@@ -306,6 +375,73 @@ function mapSkill(r: SkillDbRow): SkillRow {
     forkedFrom: r.forked_from,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+  };
+}
+
+const VALID_SKILL_VERDICT_RISK_CODES = new Set<SkillVerdictRiskCode>([
+  'instruction_override',
+  'system_prompt_reference',
+  'tool_coercion',
+  'data_exfiltration',
+  'hidden_content',
+  'credential_harvest',
+  'silent_permission_escalation',
+]);
+
+const VALID_SKILL_VERDICT_SEVERITIES = new Set<Severity>([
+  'no_signals',
+  'flagged',
+  'high_risk',
+  'scan_failed',
+  'pending',
+  'too_large_to_scan',
+]);
+
+function isSkillVerdictRiskCode(value: unknown): value is SkillVerdictRiskCode {
+  return typeof value === 'string' && VALID_SKILL_VERDICT_RISK_CODES.has(value as SkillVerdictRiskCode);
+}
+
+function isSeverity(value: unknown): value is Severity {
+  return typeof value === 'string' && VALID_SKILL_VERDICT_SEVERITIES.has(value as Severity);
+}
+
+function parseSkillVerdictRiskCodes(value: unknown): readonly SkillVerdictRiskCodesEntry[] {
+  const raw = typeof value === 'string' ? JSON.parse(value) : value;
+  if (!Array.isArray(raw)) return [];
+
+  const parsed: SkillVerdictRiskCodesEntry[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const verifier = 'verifier' in entry ? entry.verifier : undefined;
+    const risks = 'risks' in entry ? entry.risks : undefined;
+    if (typeof verifier !== 'string' || !Array.isArray(risks)) continue;
+
+    const parsedRisks: SkillVerdictRiskCodeEntry[] = [];
+    for (const risk of risks) {
+      if (!risk || typeof risk !== 'object') continue;
+      const code = 'code' in risk ? risk.code : undefined;
+      const severity = 'severity' in risk ? risk.severity : undefined;
+      if (!isSkillVerdictRiskCode(code) || severity !== 'warn') continue;
+      parsedRisks.push({ code, severity });
+    }
+    parsed.push({ verifier, risks: parsedRisks });
+  }
+  return parsed;
+}
+
+function mapSkillVerdict(r: SkillVerdictDbRow): SkillVerdictRow {
+  if (!isSeverity(r.severity)) {
+    throw new Error(`unexpected skill verdict severity in DB: ${String(r.severity)}`);
+  }
+  return {
+    contentHash: r.content_hash,
+    verifierVersion: r.verifier_version,
+    modelId: r.model_id,
+    promptHash: r.prompt_hash,
+    severity: r.severity,
+    riskCodes: parseSkillVerdictRiskCodes(r.risk_codes),
+    rationale: r.rationale,
+    computedAt: r.computed_at,
   };
 }
 
@@ -547,6 +683,107 @@ export class AgentGraphStore {
         );
     const row = rows[0];
     return row ? mapSkill(row) : undefined;
+  }
+
+  async getSkillVerdict(
+    contentHash: string,
+    verifierVersion: string,
+  ): Promise<SkillVerdictRow | undefined> {
+    const { rows } = await this.pool.query<SkillVerdictDbRow>(
+      `SELECT * FROM skill_verdicts
+       WHERE content_hash = $1 AND verifier_version = $2 AND model_id = '' AND prompt_hash = ''`,
+      [contentHash, verifierVersion],
+    );
+    const row = rows[0];
+    return row ? mapSkillVerdict(row) : undefined;
+  }
+
+  /**
+   * LLM-sourced verdict row lookup (issue #436 Phase 1b) — unlike
+   * `getSkillVerdict` (which hardcodes the deterministic row's empty-string
+   * model_id/prompt_hash sentinel), this reads by the real model_id +
+   * prompt_hash an LLM verifier's scan identity carries.
+   */
+  async getSkillVerdictByModel(
+    contentHash: string,
+    verifierVersion: string,
+    modelId: string,
+    promptHash: string,
+  ): Promise<SkillVerdictRow | undefined> {
+    const { rows } = await this.pool.query<SkillVerdictDbRow>(
+      `SELECT * FROM skill_verdicts
+       WHERE content_hash = $1 AND verifier_version = $2 AND model_id = $3 AND prompt_hash = $4`,
+      [contentHash, verifierVersion, modelId, promptHash],
+    );
+    const row = rows[0];
+    return row ? mapSkillVerdict(row) : undefined;
+  }
+
+  async upsertSkillVerdict(row: SkillVerdictRow): Promise<void> {
+    await this.pool.query<SkillVerdictDbRow>(
+      `INSERT INTO skill_verdicts
+         (content_hash, verifier_version, model_id, prompt_hash, severity, risk_codes, rationale, computed_at)
+       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8)
+       ON CONFLICT (content_hash, verifier_version, model_id, prompt_hash) DO UPDATE SET
+         severity    = EXCLUDED.severity,
+         risk_codes  = EXCLUDED.risk_codes,
+         rationale   = EXCLUDED.rationale,
+         computed_at = EXCLUDED.computed_at`,
+      [
+        row.contentHash,
+        row.verifierVersion,
+        row.modelId,
+        row.promptHash,
+        row.severity,
+        JSON.stringify(row.riskCodes),
+        row.rationale,
+        row.computedAt,
+      ],
+    );
+  }
+
+  async getSkillVerdictsByContentHashes(
+    contentHashes: readonly string[],
+    verifierVersion: string,
+  ): Promise<Map<string, SkillVerdictRow>> {
+    if (contentHashes.length === 0) return new Map<string, SkillVerdictRow>();
+    const { rows } = await this.pool.query<SkillVerdictDbRow>(
+      `SELECT * FROM skill_verdicts
+       WHERE content_hash = ANY($1) AND verifier_version = $2 AND model_id = '' AND prompt_hash = ''`,
+      [contentHashes, verifierVersion],
+    );
+    return new Map(rows.map((row) => [row.content_hash, mapSkillVerdict(row)]));
+  }
+
+  async getSkillVerdictAck(
+    contentHash: string,
+    verifierVersion: string,
+  ): Promise<{ ackedBy: string; ackedAt: Date } | undefined> {
+    const { rows } = await this.pool.query<{ acked_by: string; acked_at: Date }>(
+      `SELECT acked_by, acked_at FROM skill_verdict_acks
+       WHERE content_hash = $1 AND verifier_version = $2`,
+      [contentHash, verifierVersion],
+    );
+    const row = rows[0];
+    return row ? { ackedBy: row.acked_by, ackedAt: row.acked_at } : undefined;
+  }
+
+  async upsertSkillVerdictAck(
+    contentHash: string,
+    verifierVersion: string,
+    ackedBy: string,
+  ): Promise<{ ackedBy: string; ackedAt: Date }> {
+    const { rows } = await this.pool.query<{ acked_by: string; acked_at: Date }>(
+      `INSERT INTO skill_verdict_acks (content_hash, verifier_version, acked_by)
+       VALUES ($1,$2,$3)
+       ON CONFLICT (content_hash, verifier_version) DO UPDATE SET
+         acked_by = EXCLUDED.acked_by,
+         acked_at = now()
+       RETURNING acked_by, acked_at`,
+      [contentHash, verifierVersion, ackedBy],
+    );
+    const row = rows[0]!;
+    return { ackedBy: row.acked_by, ackedAt: row.acked_at };
   }
 
   /** Look up a skill by its unique slug — for import update-vs-create routing. */

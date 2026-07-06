@@ -33,6 +33,20 @@ import { Router, type Request, type Response } from 'express';
 import { scanSkillForRisks } from '../services/skillGuard.js';
 import { importSkillMarkdown } from '../services/skillImport.js';
 import { serializeSkillMarkdown } from '../services/skillLoader.js';
+import {
+  combineWithLlmSeverity,
+  CURRENT_VERIFIER_VERSION,
+  getOrComputeVerdict,
+  type Severity,
+  type SkillVerdictRiskCodesEntry,
+  type SkillVerdictRow,
+  type SkillVerdictStore,
+} from '../services/skillVerdict.js';
+import {
+  getOrComputeLlmVerdict,
+  type LlmVerdictStore,
+  type LlmVerifier,
+} from '../services/skillVerdictLlmVerifier.js';
 
 export interface AgentBuilderRouterOptions {
   readonly getConfigStore: () => ConfigStore | undefined;
@@ -43,12 +57,72 @@ export interface AgentBuilderRouterOptions {
    *  per-Agent / sub-agent model writes to this provider so a cross-provider
    *  pick is rejected instead of silently dropped at build (issue #296). */
   readonly getActiveProvider?: () => string | undefined;
+  /** Phase 1b (issue #436) — resolves the configured LLM instruction-intent
+   *  verifier, or `undefined` if no LLM provider is configured/available.
+   *  Deliberately explicit-trigger only (see `/verdict/llm-scan` below), never
+   *  auto-fired from a list/bulk path, to keep LLM cost a deliberate action. */
+  readonly getLlmVerifier?: () => Promise<LlmVerifier | undefined>;
 }
 
 interface Live {
   readonly config: ConfigStore;
   readonly graph: AgentGraphStore;
   readonly registry: OrchestratorRegistry | undefined;
+}
+
+interface SkillVerdictField {
+  readonly severity: Severity | null;
+  readonly riskCodes: readonly string[];
+  readonly notYetScanned: boolean;
+}
+
+const EMPTY_SKILL_VERDICTS = new Map<string, SkillVerdictRow>();
+
+/** Adapter from the orchestrator's model-scoped verdict methods to the
+ *  `LlmVerdictStore` port `skillVerdictLlmVerifier.ts` depends on. */
+function llmVerdictStoreFor(l: Live): LlmVerdictStore {
+  return {
+    getVerdictByModel: (contentHash, verifierVersion, modelId, promptHash) =>
+      l.graph.getSkillVerdictByModel(contentHash, verifierVersion, modelId, promptHash),
+    upsertVerdict: (row) => l.graph.upsertSkillVerdict(row),
+  };
+}
+
+/** Adapter for the deterministic (regex) verifier's cache-aside compute —
+ *  cheap and synchronous-safe (no LLM/network I/O), so it's fine to `await`
+ *  directly in a mutating request handler (import/patch), unlike the LLM
+ *  path which stays explicit-trigger + backgrounded. */
+function deterministicVerdictStoreFor(l: Live): SkillVerdictStore {
+  return {
+    getVerdict: (contentHash, verifierVersion) => l.graph.getSkillVerdict(contentHash, verifierVersion),
+    upsertVerdict: (row) => l.graph.upsertSkillVerdict(row),
+    getAck: (contentHash, verifierVersion) => l.graph.getSkillVerdictAck(contentHash, verifierVersion),
+    upsertAck: (contentHash, verifierVersion, ackedBy) =>
+      l.graph.upsertSkillVerdictAck(contentHash, verifierVersion, ackedBy).then(() => undefined),
+  };
+}
+
+/** Flattens the nested per-verifier risk-code entries to a plain list of
+ *  codes — the wire shape the web-ui's `SkillVerdict.riskCodes: string[]`
+ *  actually expects (post-review fix: the nested shape was leaking straight
+ *  to the client and crashing the "why" panel render). */
+function flattenRiskCodes(entries: readonly SkillVerdictRiskCodesEntry[]): string[] {
+  return entries.flatMap((entry) => entry.risks.map((risk) => risk.code));
+}
+
+function skillVerdictField(
+  contentHash: string | null,
+  verdicts: ReadonlyMap<string, SkillVerdictRow>,
+): SkillVerdictField {
+  const row = contentHash ? verdicts.get(contentHash) : undefined;
+  if (!row) {
+    return { severity: null, riskCodes: [], notYetScanned: true };
+  }
+  return {
+    severity: row.severity,
+    riskCodes: flattenRiskCodes(row.riskCodes),
+    notYetScanned: false,
+  };
 }
 
 export function createAgentBuilderRouter(
@@ -317,12 +391,23 @@ export function createAgentBuilderRouter(
     const l = live(res);
     if (!l) return;
     try {
+      const rows = await l.graph.listSkills();
+      const hashes = rows
+        .map((s) => s.contentHash)
+        .filter((hash): hash is string => typeof hash === 'string' && hash.length > 0);
+      // Read-only lookup only: GET /skills must never compute verdicts or
+      // trigger any LLM/scan path for this field.
+      const verdicts = await l.graph.getSkillVerdictsByContentHashes(
+        hashes,
+        CURRENT_VERIFIER_VERSION,
+      );
       // `risks` (Wave 5 heuristic scan, cheap/regex — no LLM call) rides on
       // the bulk list so any skill-browsing surface (Registry, the Wave 8
       // persona-attach picker) shows CURRENT risk state, not just a
       // point-in-time snapshot from import/attach time.
-      const skills = (await l.graph.listSkills()).map((s) => ({
+      const skills = rows.map((s) => ({
         ...skillNode(s),
+        verdict: skillVerdictField(s.contentHash, verdicts),
         risks: scanSkillForRisks(s.frontmatter, s.body),
       }));
       res.json({ skills });
@@ -348,15 +433,151 @@ export function createAgentBuilderRouter(
         res.status(404).json({ error: 'skill_not_found', id });
         return;
       }
-      const [usedBy, usedByAgents] = await Promise.all([
+      // Read-only lookup only: detail fetch may surface a persisted verdict but
+      // must never compute one on demand (the LLM scan is explicit-trigger
+      // only, via POST /verdict/llm-scan below — never fired from a GET).
+      const [row, llmVerifier, usedBy, usedByAgents] = await Promise.all([
+        skill.contentHash === null
+          ? Promise.resolve(undefined)
+          : l.graph.getSkillVerdict(skill.contentHash, CURRENT_VERIFIER_VERSION),
+        options.getLlmVerifier?.() ?? Promise.resolve(undefined),
         l.graph.listSubAgentsBySkillId(skill.id),
         l.graph.listAgentsByPersonaSkillId(skill.id),
       ]);
+      const llmRow =
+        skill.contentHash !== null && llmVerifier
+          ? await l.graph.getSkillVerdictByModel(
+              skill.contentHash,
+              CURRENT_VERIFIER_VERSION,
+              llmVerifier.modelId,
+              llmVerifier.promptHash,
+            )
+          : undefined;
+      const deterministicField = skillVerdictField(
+        skill.contentHash,
+        row ? new Map<string, SkillVerdictRow>([[row.contentHash, row]]) : EMPTY_SKILL_VERDICTS,
+      );
       res.json({
         ...skillNode(skill),
+        verdict: {
+          ...deterministicField,
+          // Combined severity (deterministic ⊕ LLM, worst-wins) is what the
+          // frontend's single badge renders — the LLM layer can only
+          // escalate, never soften, the deterministic finding.
+          severity:
+            llmRow && deterministicField.severity
+              ? combineWithLlmSeverity(deterministicField.severity, llmRow.severity)
+              : llmRow?.severity ?? deterministicField.severity,
+          llm: llmRow
+            ? { severity: llmRow.severity, rationale: llmRow.rationale, computedAt: llmRow.computedAt }
+            : null,
+        },
         usedByCount: usedBy.length,
         usedByAgentsCount: usedByAgents.length,
       });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  // Audit + RBAC note: this is the first persisted audit trail for a skill-side
+  // mutation (`acked_by`/`acked_at` records who acted and when). Access stays
+  // at the router-level `requireAuth` gate, matching every other skill route:
+  // omadia does not have role differentiation today (`sessionJwt.ts`
+  // hardcodes `role:'admin'`), so a finer-grained "who may suppress a
+  // high_risk verdict" policy is a pre-existing platform gap and must not be
+  // invented unilaterally here. Acks key to `(content_hash, verifier_version)`,
+  // so a suppression never carries forward across a verifier upgrade.
+  router.post('/skills/:id/verdict/ack', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const id = str(req.params.id);
+      if (!isUuid(id)) {
+        res.status(404).json({ error: 'skill_not_found', id });
+        return;
+      }
+      const skill = await l.graph.getSkill(id);
+      if (!skill) {
+        res.status(404).json({ error: 'skill_not_found', id });
+        return;
+      }
+      // Acks are keyed by canonical `(content_hash, verifier_version)`, so a
+      // skill that has never been hashed cannot carry a durable suppression.
+      if (skill.contentHash === null) {
+        res.status(409).json({ error: 'skill_not_hashed', id });
+        return;
+      }
+      const actor = req.session?.sub || req.session?.email;
+      if (!actor) {
+        res.status(401).json({ error: 'unauthenticated' });
+        return;
+      }
+      const ack = await l.graph.upsertSkillVerdictAck(
+        skill.contentHash,
+        CURRENT_VERIFIER_VERSION,
+        actor,
+      );
+      // Post-review fix: the response must be a full verdict (severity +
+      // riskCodes), not just the ack fields — the client does a wholesale
+      // `setVerdict(response)` and was previously left with an
+      // effectively-empty verdict object, which flipped the badge back to
+      // "not yet scanned" instead of showing the acknowledged finding.
+      const verdictRow = await getOrComputeVerdict(
+        deterministicVerdictStoreFor(l),
+        skill.contentHash,
+        skill.frontmatter,
+        skill.body,
+      );
+      res.json({
+        severity: verdictRow.severity,
+        riskCodes: flattenRiskCodes(verdictRow.riskCodes),
+        computedAt: verdictRow.computedAt,
+        ackedBy: ack.ackedBy,
+        ackedAt: ack.ackedAt,
+      });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  // Phase 1b (issue #436) — explicit trigger only. Deliberately NOT fired
+  // automatically from any GET: an LLM call is a real cost, so an operator
+  // (or a future "scan on import" opt-in) must ask for it. Returns
+  // immediately — `getOrComputeLlmVerdict` persists a `pending` row and runs
+  // the actual scan in a detached background task, never blocking this
+  // response on the LLM call itself.
+  router.post('/skills/:id/verdict/llm-scan', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const id = str(req.params.id);
+      if (!isUuid(id)) {
+        res.status(404).json({ error: 'skill_not_found', id });
+        return;
+      }
+      const skill = await l.graph.getSkill(id);
+      if (!skill) {
+        res.status(404).json({ error: 'skill_not_found', id });
+        return;
+      }
+      if (skill.contentHash === null) {
+        res.status(409).json({ error: 'skill_not_hashed', id });
+        return;
+      }
+      const verifier = await options.getLlmVerifier?.();
+      if (!verifier) {
+        res.status(503).json({ error: 'llm_verifier_unavailable' });
+        return;
+      }
+      const row = await getOrComputeLlmVerdict(
+        llmVerdictStoreFor(l),
+        verifier,
+        skill.contentHash,
+        skill.frontmatter,
+        skill.body,
+      );
+      res.json({ llm: { severity: row.severity, rationale: row.rationale, computedAt: row.computedAt } });
     } catch (err) {
       fail(res, err);
     }
@@ -420,7 +641,20 @@ export function createAgentBuilderRouter(
             .map((r: { name: string; content: string }) => ({ name: r.name, content: r.content }))
         : undefined;
       const result = await importSkillMarkdown(l.graph, { raw, sourcePath, resources }, { dryRun });
-      if (!dryRun && result.outcome !== 'unchanged') await reload(l);
+      if (!dryRun && result.outcome !== 'unchanged') {
+        await reload(l);
+        // Post-review fix: the deterministic verdict was previously only ever
+        // computed by the offline backfill script — a skill imported through
+        // this route (the primary onboarding path) never got scanned until
+        // someone manually ran that script. Cheap (regex-only), so safe to
+        // await inline here, unlike the Phase 1b LLM path.
+        await getOrComputeVerdict(
+          deterministicVerdictStoreFor(l),
+          result.contentHash,
+          result.skill.frontmatter,
+          result.skill.body,
+        );
+      }
       res.json(result);
     } catch (err) {
       fail(res, err);
@@ -452,6 +686,11 @@ export function createAgentBuilderRouter(
       }
       const row = await l.graph.updateSkill(str(req.params.id), patch);
       await reload(l);
+      // Post-review fix: re-scan on edit — the same "never scanned outside
+      // manual backfill" gap as the import route, for the edit path.
+      if (row.contentHash !== null) {
+        await getOrComputeVerdict(deterministicVerdictStoreFor(l), row.contentHash, row.frontmatter, row.body);
+      }
       res.json(skillNode(row));
     } catch (err) {
       fail(res, err);

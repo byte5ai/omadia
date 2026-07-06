@@ -28,6 +28,7 @@ import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError } fro
 import { bindingKeyForTurn } from './conductor/principalId.js';
 import { createOperatorChannelsRouter } from './routes/operatorChannels.js';
 import { createAgentBuilderRouter } from './routes/agentBuilder.js';
+import { createLlmVerifier, type LlmVerifier } from './services/skillVerdictLlmVerifier.js';
 import { ScheduleWorker } from './scheduler/scheduleWorker.js';
 import type {
   ConfigStore as MultiOrchestratorConfigStore,
@@ -2038,6 +2039,36 @@ async function main(): Promise<void> {
       : 'anthropic';
   };
 
+  // Phase 1b (issue #436) — resolves the skill-verdict LLM instruction-intent
+  // verifier lazily, on each explicit-trigger request, so a runtime provider
+  // switch (or a not-yet-configured API key) is picked up without a restart.
+  // Mirrors `defaultResolveLlm` in issues/issuesRouter.ts (resolved fresh per
+  // call, no caching, same as that router). Returns undefined (never throws)
+  // when no provider is configured — the route surfaces that as 503
+  // `llm_verifier_unavailable`, not a 500.
+  const getSkillVerdictLlmVerifier = async (): Promise<LlmVerifier | undefined> => {
+    const providerId = orchestratorActiveProviderId();
+    const provider = await resolveLlmProvider({
+      providerId,
+      getSecret: (k) => secretVault.get('@omadia/orchestrator', k),
+      catalog: llmProviderCatalog,
+      maxRetries: 3,
+    });
+    if (!provider) {
+      console.warn(
+        `[middleware] skill-verdict LLM verifier unavailable (providerId=${providerId}) — is the primary provider's API key set?`,
+      );
+      return undefined;
+    }
+    const model =
+      providerId === 'openai'
+        ? 'gpt-4o-mini'
+        : providerId === 'mistral'
+          ? 'mistral-small-latest'
+          : 'claude-haiku-4-5';
+    return createLlmVerifier({ provider, model });
+  };
+
   // Agent Builder canvas backend (P1/P2). Mounted at the /api/v1/operator
   // parent so the /agents/:slug/graph|subagents|… subpaths fall through here
   // after the operator-agents router. 503s without a graphPool (in-memory KG
@@ -2057,6 +2088,7 @@ async function main(): Promise<void> {
       // sub-agent model writes are scoped to it (issue #296 — a cross-provider
       // pick is rejected instead of silently dropped at build).
       getActiveProvider: orchestratorActiveProviderId,
+      getLlmVerifier: getSkillVerdictLlmVerifier,
     }),
   );
   console.log(

@@ -226,12 +226,27 @@ function PersonaSkillsSection({
   onSaved: () => void;
 }): React.ReactElement {
   const t = useTranslations('admin.builder');
+  /** Falls back to the raw code for anything without a catalog entry yet
+   *  (post-review fix: 2 unguarded call sites crashed/rendered raw keys on
+   *  the new `credential_harvest`/`silent_permission_escalation` codes). */
+  function riskCodeLabel(code: string): string {
+    const key = `import.risks.code.${code}`;
+    return t.has(key) ? t(key) : code.replace(/_/g, ' ');
+  }
   const [allSkills, setAllSkills] = useState<SkillNode[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedToAdd, setSelectedToAdd] = useState('');
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastRisks, setLastRisks] = useState<SkillRisk[] | null>(null);
+  // Attach-boundary confirm gate (issue #436): a persona skill drives the
+  // top-level agent with full tool access. Post-review fix: the persisted
+  // verdict is NOT always present (a skill imported/edited before this
+  // feature, or before the online-compute fix landed, has none until
+  // backfilled) — so the gate also falls back to the live regex `risks`
+  // array (the same cheap, always-fresh signal the dropdown's ⚠ icon
+  // already uses), never blocking on an in-flight/pending LLM scan.
+  const [confirmHighRiskId, setConfirmHighRiskId] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -258,6 +273,17 @@ function PersonaSkillsSection({
 
   async function handleAdd(): Promise<void> {
     if (!selectedToAdd) return;
+    // Fail OPEN if the verdict is missing/pending (not yet scanned or the
+    // async LLM pass hasn't landed) — the gate only fires on a CONFIRMED
+    // high_risk deterministic verdict, never blocking on absence of signal.
+    const target = skillById.get(selectedToAdd);
+    const highRisk =
+      target?.verdict?.severity === 'high_risk' || (target?.risks?.length ?? 0) > 0;
+    if (highRisk && confirmHighRiskId !== selectedToAdd) {
+      setConfirmHighRiskId(selectedToAdd);
+      return;
+    }
+    setConfirmHighRiskId(null);
     setPendingId(selectedToAdd);
     setError(null);
     setLastRisks(null);
@@ -305,9 +331,7 @@ function PersonaSkillsSection({
                 title={
                   risky
                     ? t('persona.riskWarning', {
-                        codes: (s?.risks ?? [])
-                          .map((r) => t(`import.risks.code.${r.code}`))
-                          .join(', '),
+                        codes: (s?.risks ?? []).map((r) => riskCodeLabel(r.code)).join(', '),
                       })
                     : undefined
                 }
@@ -343,7 +367,10 @@ function PersonaSkillsSection({
           <div className="flex gap-2">
             <select
               value={selectedToAdd}
-              onChange={(e) => setSelectedToAdd(e.target.value)}
+              onChange={(e) => {
+                setSelectedToAdd(e.target.value);
+                setConfirmHighRiskId(null);
+              }}
               className={inputCls}
             >
               <option value="">{t('persona.addPlaceholder')}</option>
@@ -359,16 +386,29 @@ function PersonaSkillsSection({
               onClick={() => void handleAdd()}
               disabled={!selectedToAdd || pendingId !== null}
             >
-              {t('persona.add')}
+              {confirmHighRiskId === selectedToAdd ? t('persona.confirmAttachAction') : t('persona.add')}
             </Button>
           </div>
         ) : (
           <p className="text-xs text-[color:var(--fg-muted)]">{t('persona.noSkillsAvailable')}</p>
         ))}
+      {confirmHighRiskId && confirmHighRiskId === selectedToAdd && (
+        <p className="rounded-md border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 px-2 py-1.5 text-xs text-[color:var(--danger)]">
+          {t('persona.confirmAttachHighRisk', {
+            codes: (
+              skillById.get(confirmHighRiskId)?.verdict?.riskCodes.length
+                ? (skillById.get(confirmHighRiskId)?.verdict?.riskCodes ?? [])
+                : (skillById.get(confirmHighRiskId)?.risks ?? []).map((r) => r.code)
+            )
+              .map(riskCodeLabel)
+              .join(', '),
+          })}
+        </p>
+      )}
       {lastRisks && lastRisks.length > 0 && (
         <p className="rounded-md border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 px-2 py-1.5 text-xs text-[color:var(--danger)]">
           {t('persona.riskWarning', {
-            codes: lastRisks.map((r) => t(`import.risks.code.${r.code}`)).join(', '),
+            codes: lastRisks.map((r) => riskCodeLabel(r.code)).join(', '),
           })}
         </p>
       )}

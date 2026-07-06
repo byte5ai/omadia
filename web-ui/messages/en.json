@@ -263,7 +263,9 @@
             "system_prompt_reference": "Reassign the agent's role / system prompt",
             "tool_coercion": "Force tool calls or bypass confirmation",
             "data_exfiltration": "Send data or secrets somewhere",
-            "hidden_content": "Contain hidden or obfuscated content"
+            "hidden_content": "Contain hidden or obfuscated content",
+            "credential_harvest": "Collect API keys, passwords, or secrets",
+            "silent_permission_escalation": "Request broader access without telling the user"
           }
         }
       },
@@ -309,7 +311,9 @@
         "add": "Attach",
         "remove": "Remove",
         "noSkillsAvailable": "No more skills available to attach.",
-        "riskWarning": "Heuristic scan flagged this skill: {codes}. As a persona it drives the top-level agent with full tool access — review before relying on it."
+        "riskWarning": "Heuristic scan flagged this skill: {codes}. As a persona it drives the top-level agent with full tool access — review before relying on it.",
+        "confirmAttachAction": "Attach anyway",
+        "confirmAttachHighRisk": "This skill's heuristic scan is at high risk ({codes}). As a persona it drives the top-level agent with full tool access. Confirm you've reviewed it before attaching."
       }
     }
   },
@@ -983,6 +987,31 @@
       "forkAndSave": "Save as editable copy",
       "forkNotice": "This is an imported skill. Saving creates an editable copy and keeps the original as its source.",
       "export": "Export"
+    },
+    "verdict": {
+      "noSignals": "No known risk signals",
+      "flagged": "Flagged — review recommended",
+      "highRisk": "High risk — review required",
+      "scanFailed": "Scan failed",
+      "tooLargeToScan": "Too large to scan",
+      "pending": "Scanning…",
+      "notYetScanned": "Not yet scanned",
+      "filterLabel": "Filter by verdict",
+      "filterAll": "All verdicts",
+      "acknowledge": "Acknowledge",
+      "acked": "Acknowledged by {by}",
+      "runDeepScan": "Run deep scan",
+      "why": "Heuristic scan flagged: {codes}. This is a signal, not proof the content is safe.",
+      "llmRationale": "Deep scan note: {rationale}",
+      "riskCode": {
+        "instruction_override": "Override earlier instructions",
+        "system_prompt_reference": "Reassign the agent's role / system prompt",
+        "tool_coercion": "Force tool calls or bypass confirmation",
+        "data_exfiltration": "Send data or secrets somewhere",
+        "hidden_content": "Contain hidden or obfuscated content",
+        "credential_harvest": "Collect API keys, passwords, or secrets",
+        "silent_permission_escalation": "Request broader access without telling the user"
+      }
     }
   },
   "operatorAgents": {
