@@ -10,7 +10,7 @@ import {
   type KeyboardEvent,
 } from 'react';
 import { useTranslations } from 'next-intl';
-import { Eraser, GitBranch, Navigation, Network } from 'lucide-react';
+import { Eraser, GitBranch, Navigation, Network, X } from 'lucide-react';
 import { ChatTabs } from '../_components/ChatTabs';
 import { ScrollToBottomButton } from '../_components/ScrollToBottomButton';
 import { Button } from '../_components/ui/Button';
@@ -694,23 +694,83 @@ export default function ChatPage(): React.ReactElement {
   );
 }
 
+// Persisted "hidden" flag for the chat intro banner, keyed in localStorage —
+// same module-level-store + useSyncExternalStore shape as the dashboard
+// onboarding dismiss ([[DashboardOnboarding]]), so a close click sticks
+// across reloads without a setState-in-effect.
+const CHAT_INTRO_HIDDEN_KEY = 'omadia.chat.intro.hidden';
+let chatIntroHiddenCache: boolean | null = null;
+const chatIntroHiddenListeners = new Set<() => void>();
+
+function readChatIntroHidden(): boolean {
+  try {
+    return window.localStorage.getItem(CHAT_INTRO_HIDDEN_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function subscribeChatIntroHidden(cb: () => void): () => void {
+  chatIntroHiddenListeners.add(cb);
+  return () => chatIntroHiddenListeners.delete(cb);
+}
+
+function getChatIntroHiddenSnapshot(): boolean {
+  if (chatIntroHiddenCache === null) chatIntroHiddenCache = readChatIntroHidden();
+  return chatIntroHiddenCache;
+}
+
+function getChatIntroHiddenServerSnapshot(): boolean {
+  return false;
+}
+
+function setChatIntroHiddenPersisted(value: boolean): void {
+  chatIntroHiddenCache = value;
+  try {
+    if (value) window.localStorage.setItem(CHAT_INTRO_HIDDEN_KEY, '1');
+    else window.localStorage.removeItem(CHAT_INTRO_HIDDEN_KEY);
+  } catch {
+    /* private mode / no storage */
+  }
+  for (const l of chatIntroHiddenListeners) l();
+}
+
 /**
- * What-is-this-page explainer. Native `<details>` — same collapsed-by-
- * default disclosure pattern as `<ToolTrace>` below — so the explanation is
- * one click away without permanently eating vertical space from the chat
- * area on every load.
+ * What-is-this-page header — same kicker + body + close-button language as
+ * the dashboard onboarding card, scaled down for a top-of-chat banner.
+ * Dismissing persists in localStorage, so it stays gone across reloads
+ * instead of coming back to eat chat space every session.
  */
-function ChatIntro(): React.ReactElement {
+function ChatIntro(): React.ReactElement | null {
   const t = useTranslations('chat');
+  const hidden = useSyncExternalStore(
+    subscribeChatIntroHidden,
+    getChatIntroHiddenSnapshot,
+    getChatIntroHiddenServerSnapshot,
+  );
+  if (hidden) return null;
   return (
-    <details className="border-b border-[color:var(--border)] bg-[color:var(--bg-elevated)]/50 px-6 text-xs">
-      <summary className="mx-auto max-w-4xl cursor-pointer select-none py-2 font-medium text-[color:var(--fg-muted)]">
-        {t('intro.summary')}
-      </summary>
-      <div className="mx-auto max-w-4xl pb-3 text-[color:var(--fg-subtle)]">
-        {t('intro.body')}
+    <div className="b5-hero-bg border-b border-[color:var(--border)] px-6 py-4">
+      <div className="mx-auto flex max-w-4xl items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[color:var(--accent)]">
+            {t('intro.kicker')}
+          </div>
+          <p className="mt-1.5 max-w-2xl text-[13px] leading-relaxed text-[color:var(--fg)]">
+            {t('intro.body')}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setChatIntroHiddenPersisted(true)}
+          className="shrink-0 text-[color:var(--fg-subtle)] transition-colors hover:text-[color:var(--fg-strong)]"
+          aria-label={t('intro.dismiss')}
+          title={t('intro.dismiss')}
+        >
+          <X className="size-4" aria-hidden />
+        </button>
       </div>
-    </details>
+    </div>
   );
 }
 
