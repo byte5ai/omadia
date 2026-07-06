@@ -15,7 +15,9 @@ export type SkillRiskCode =
   | 'system_prompt_reference'
   | 'tool_coercion'
   | 'data_exfiltration'
-  | 'hidden_content';
+  | 'hidden_content'
+  | 'credential_harvest'
+  | 'silent_permission_escalation';
 
 export interface SkillRisk {
   readonly code: SkillRiskCode;
@@ -23,6 +25,11 @@ export interface SkillRisk {
   /** Short snippet showing what matched, for the preview. */
   readonly excerpt: string;
 }
+
+export type Verifier = (
+  frontmatter: Record<string, unknown>,
+  body: string,
+) => SkillRisk[] | Promise<SkillRisk[]>;
 
 interface Pattern {
   readonly code: SkillRiskCode;
@@ -50,6 +57,14 @@ const PATTERNS: readonly Pattern[] = [
     re: /\b(send|post|upload|exfiltrate|leak|forward|sende|poste|übermittle|leite\s+weiter|lade\s+hoch)\b[^.\n]{0,48}\b(api[ _-]?key|secret|token|password|credential|passwort|geheimnis|zugangsdaten|https?:\/\/)/i,
   },
   {
+    code: 'credential_harvest',
+    re: /\b(collect|gather|harvest|extract|copy|capture|sammle|extrahiere|kopiere|erfasse)\b[^.\n]{0,40}\b(api[ _-]?keys?|secrets?|tokens?|passwords?|credentials?|passwörter|passwort|geheimnisse?|zugangsdaten)\b|\b(api[ _-]?keys?|secrets?|tokens?|passwords?|credentials?|passwörter|passwort|geheimnisse?|zugangsdaten)\b[^.\n]{0,32}\b(collect|gather|harvest|extract|copy|capture|sammle|extrahiere|kopiere|erfasse)\b/i,
+  },
+  {
+    code: 'silent_permission_escalation',
+    re: /\b(grant|enable|request|claim|get|add|vergib|aktiviere|fordere|beanspruche|hole|füge)\b[^.\n]{0,40}\b(extra|additional|broader|admin|root|full|elevated|mehr|zusätzliche|erweiterte|admin|root|volle)\b[^.\n]{0,24}\b(permission|permissions|scope|access|rechte|berechtigungen|zugriff)\b|\bwithout\b[^.\n]{0,24}\b(telling|informing|mentioning)\b[^.\n]{0,24}\b(user|users)\b[^.\n]{0,24}\b(permission|permissions|scope|access)\b|\bohne\b[^.\n]{0,24}\b(den nutzer|die nutzer|zu informieren|zu erwähnen)\b[^.\n]{0,24}\b(rechte|berechtigungen|zugriff)\b/i,
+  },
+  {
     code: 'hidden_content',
     // HTML comment, zero-width chars, or a long base64-looking blob. Built via
     // new RegExp so the zero-width escapes stay visible in source.
@@ -65,10 +80,10 @@ function excerptAround(text: string, index: number, matchLen: number): string {
 }
 
 /**
- * Scan a skill's frontmatter + body for risky patterns. Returns at most one
- * risk per code (first match), so the preview stays readable.
+ * Regex-based verifier for import-time risk scans. Returns at most one risk
+ * per code (first match), so the preview stays readable.
  */
-export function scanSkillForRisks(
+export function regexPatternVerifier(
   frontmatter: Record<string, unknown>,
   body: string,
 ): SkillRisk[] {
@@ -79,6 +94,28 @@ export function scanSkillForRisks(
     if (m) {
       risks.push({ code, severity: 'warn', excerpt: excerptAround(haystack, m.index, m[0].length) });
     }
+  }
+  return risks;
+}
+
+const SYNC_VERIFIERS: readonly Verifier[] = [regexPatternVerifier];
+
+/**
+ * Scan a skill's frontmatter + body for risky patterns. This synchronous path
+ * only runs synchronous verifiers; async verifiers (Phase 1b LLM checks) are
+ * invoked separately by the verdict service, never from this import-time path.
+ */
+export function scanSkillForRisks(
+  frontmatter: Record<string, unknown>,
+  body: string,
+): SkillRisk[] {
+  const risks: SkillRisk[] = [];
+  for (const verifier of SYNC_VERIFIERS) {
+    const result = verifier(frontmatter, body);
+    if (result instanceof Promise) {
+      throw new TypeError('scanSkillForRisks only supports synchronous verifiers');
+    }
+    risks.push(...result);
   }
   return risks;
 }
