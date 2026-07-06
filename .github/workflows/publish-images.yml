@@ -26,6 +26,20 @@ on:
         required: false
         type: string
         default: ''
+  # Manual escape hatch: publish images for a tag whose automated publish-images
+  # call was skipped or failed (e.g. a downstream job failure in auto-release.yml
+  # caused this to be skipped even though the Release itself already exists).
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref to build, e.g. v0.55.0'
+        required: true
+        type: string
+      version:
+        description: 'Release tag like v0.55.0 (empty = edge build)'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
