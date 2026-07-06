@@ -40,6 +40,12 @@ export async function rescanAllMcpServers(
       for (const verdict of verdicts) {
         await graph.upsertMcpToolVerdict(verdict);
       }
+      // Prune verdicts for tools that disappeared since the last scan (codex
+      // fold): the fail-closed guard then denies a repurposed old name.
+      await graph.pruneMcpToolVerdicts(
+        server.id,
+        tools.map((t) => t.name),
+      );
       await graph.setMcpDiscoveredTools(server.id, tools);
       // Signature-relevant epochs: rebuilds pick up spec/verdict changes for
       // both grant-holding and binding-only agents.

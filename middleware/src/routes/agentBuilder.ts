@@ -910,6 +910,12 @@ export function createAgentBuilderRouter(
       for (const verdict of verdicts) {
         await l.graph.upsertMcpToolVerdict(verdict);
       }
+      // Prune verdicts for tools this server no longer exposes (codex fold):
+      // a hidden/renamed tool must not keep a stale clean verdict.
+      await l.graph.pruneMcpToolVerdicts(
+        row.id,
+        tools.map((t) => t.name),
+      );
       await l.graph.setMcpDiscoveredTools(row.id, tools);
       // Re-discovery can change verdicts (and thus the runtime blocklist) and
       // tool specs. Refresh the policy, then bump the server's grant epoch so

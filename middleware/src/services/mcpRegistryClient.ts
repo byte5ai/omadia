@@ -90,7 +90,9 @@ function normalizeEntry(raw: Record<string, unknown>): McpCatalogEntry | null {
     if (url && kind) {
       try {
         const parsed = new URL(url);
-        if (parsed.protocol === 'https:') {
+        // https only, and the host must clear the untrusted-remote block —
+        // an untrusted catalog must not yield an internal/metadata endpoint.
+        if (parsed.protocol === 'https:' && isUntrustedRemoteHostSafe(parsed.hostname)) {
           transport = kind.includes('sse') ? 'sse' : 'http';
           endpoint = url;
         }
@@ -112,7 +114,8 @@ function normalizeEntry(raw: Record<string, unknown>): McpCatalogEntry | null {
     // and shell metacharacters. Non-conforming entries stay browse-only.
     if (identifier && NPM_NAME_RE.test(identifier) && identifier.length <= 214) {
       transport = 'stdio';
-      endpoint = `npx -y ${identifier}`;
+      // `--` separator: the identifier can never be read as an npx option.
+      endpoint = `npx -y -- ${identifier}`;
     }
   }
 
@@ -131,14 +134,44 @@ function normalizeEntry(raw: Record<string, unknown>): McpCatalogEntry | null {
   };
 }
 
+/** Hostname aliases for cloud-metadata endpoints — refused even before DNS,
+ *  since a name can front a link-local address (codex fold). */
+const METADATA_HOSTNAMES = new Set([
+  'metadata.google.internal',
+  'metadata.goog',
+  'metadata',
+]);
+
+/** Sync host classification, no DNS. Returns a refusal reason or null. */
+function classifyHostSync(host: string): string | null {
+  const h = host.toLowerCase().replace(/^\[|\]$/g, '');
+  const v4 = h.startsWith('::ffff:') ? h.slice('::ffff:'.length) : h;
+  if (METADATA_HOSTNAMES.has(h)) return `metadata hostname refused: ${h}`;
+  // Link-local (covers 169.254.169.254 IMDS) + IPv6 link-local.
+  if (/^169\.254\./.test(v4) || /^fe[89ab][0-9a-f]:/.test(h)) {
+    return `link-local/metadata address refused: ${h}`;
+  }
+  return null;
+}
+
+/** True for a resolved IP in a range a server-side fetch must never reach. */
+function isBlockedResolvedIp(ip: string): boolean {
+  const v = ip.toLowerCase();
+  const v4 = v.startsWith('::ffff:') ? v.slice('::ffff:'.length) : v;
+  // Link-local / IMDS.
+  if (/^169\.254\./.test(v4) || /^fe[89ab][0-9a-f]:/.test(v)) return true;
+  return false;
+}
+
 /**
  * Registry URLs are OPERATOR configuration (same trust class as an SMTP relay
  * in `netAccessor.ts`): private/loopback hosts stay reachable because a
- * private registry on the intranet is a legitimate setup. What we refuse,
- * matching the netAccessor precedent, is the link-local/cloud-metadata block —
- * a classic SSRF pivot nothing legitimate serves catalogs from.
+ * private registry on the intranet is a legitimate setup. What we refuse is
+ * the link-local/cloud-metadata block — a classic SSRF pivot. The check is
+ * two-layer (codex fold): the literal host string AND the RESOLVED address, so
+ * a hostname or DNS alias that points at link-local is caught too.
  */
-function assertFetchableRegistryUrl(raw: string): void {
+async function assertFetchableRegistryUrl(raw: string): Promise<void> {
   let parsed: URL;
   try {
     parsed = new URL(raw);
@@ -148,11 +181,49 @@ function assertFetchableRegistryUrl(raw: string): void {
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new McpRegistryError('invalid_url', `unsupported protocol: ${parsed.protocol}`);
   }
-  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
-  const v4 = host.startsWith('::ffff:') ? host.slice('::ffff:'.length) : host;
-  if (/^169\.254\./.test(v4) || /^fe[89ab][0-9a-f]:/.test(host)) {
-    throw new McpRegistryError('blocked_host', `link-local/metadata address refused: ${host}`);
+  const host = parsed.hostname;
+  const syncReason = classifyHostSync(host);
+  if (syncReason) throw new McpRegistryError('blocked_host', syncReason);
+  // Resolve and re-check: a DNS alias (metadata.google.internal, or an
+  // attacker-controlled name resolving to 169.254.x) only shows its true
+  // target after resolution.
+  try {
+    const { lookup } = await import('node:dns/promises');
+    const results = await lookup(host, { all: true });
+    for (const r of results) {
+      if (isBlockedResolvedIp(r.address)) {
+        throw new McpRegistryError(
+          'blocked_host',
+          `host "${host}" resolves to a link-local/metadata address (${r.address})`,
+        );
+      }
+    }
+  } catch (err) {
+    if (err instanceof McpRegistryError) throw err;
+    // DNS failure is surfaced by the fetch itself; don't hard-fail here.
   }
+}
+
+/**
+ * Catalog-provided remote endpoints are UNTRUSTED (a registry we browsed, not
+ * operator config). Stricter than the registry URL: loopback, private, and
+ * link-local hosts are all refused, so an untrusted catalog cannot point the
+ * middleware at internal infrastructure at discover/test-call time. Sync
+ * (normalizeEntry is sync) — literal + hostname classes only; the
+ * connect-time guard in the runtime layer is the resolved-IP backstop.
+ */
+function isUntrustedRemoteHostSafe(host: string): boolean {
+  const h = host.toLowerCase().replace(/^\[|\]$/g, '');
+  if (classifyHostSync(h) !== null) return false;
+  if (h === 'localhost' || h.endsWith('.localhost')) return false;
+  if (h.endsWith('.internal') || h.endsWith('.local')) return false;
+  const v4 = h.startsWith('::ffff:') ? h.slice('::ffff:'.length) : h;
+  // Loopback + RFC-1918 + CGNAT literals.
+  if (/^127\./.test(v4) || v4 === '::1') return false;
+  if (/^10\./.test(v4) || /^192\.168\./.test(v4)) return false;
+  if (/^172\.(1[6-9]|2[0-9]|3[01])\./.test(v4)) return false;
+  if (/^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\./.test(v4)) return false;
+  return true;
 }
 
 /** Stream the body up to `cap` bytes; abort with a typed error beyond it. */
@@ -186,10 +257,13 @@ async function readTextCapped(res: Response, cap: number, url: string): Promise<
   return Buffer.concat(chunks).toString('utf8');
 }
 
-/** npm package-name grammar (scoped or unscoped). Anything else is refused —
- *  a catalog entry must never smuggle CLI flags or shell syntax into the
- *  `npx -y <identifier>` stdio endpoint (codex fold). */
-const NPM_NAME_RE = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/;
+/** npm package-name grammar (scoped or unscoped). The first char of each
+ *  segment must NOT be a hyphen or dot (codex fold): `-y`/`--foo`-shaped
+ *  identifiers would be parsed by npx as CLI options, not package names. The
+ *  stdio endpoint additionally uses `npx -y -- <identifier>` so the `--`
+ *  separator makes the identifier un-optionable even if the grammar ever
+ *  loosened. */
+const NPM_NAME_RE = /^(@[a-z0-9~][a-z0-9-._~]*\/)?[a-z0-9~][a-z0-9-._~]*$/;
 
 export interface McpRegistryClientDeps {
   readonly fetchImpl?: typeof fetch;
@@ -288,7 +362,7 @@ export class McpRegistryClient {
   }
 
   private async fetchJson(url: string, registry: McpRegistryConfig): Promise<unknown> {
-    assertFetchableRegistryUrl(url);
+    await assertFetchableRegistryUrl(url);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {

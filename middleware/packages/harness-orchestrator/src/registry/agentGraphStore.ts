@@ -986,6 +986,24 @@ export class AgentGraphStore {
     );
   }
 
+  /** Prune verdict + ack rows for tools a server no longer exposes (codex
+   *  fold): after a re-discover, a name that disappeared must lose its
+   *  verdict so the fail-closed dispatch guard treats a later re-appearance
+   *  (possibly repurposed) as unscanned. Keeps only the current tool set. */
+  async pruneMcpToolVerdicts(
+    serverId: string,
+    keepToolNames: readonly string[],
+  ): Promise<void> {
+    await this.pool.query(
+      'DELETE FROM mcp_tool_verdicts WHERE server_id = $1 AND NOT (tool_name = ANY($2))',
+      [serverId, keepToolNames],
+    );
+    await this.pool.query(
+      'DELETE FROM mcp_tool_verdict_acks WHERE server_id = $1 AND NOT (tool_name = ANY($2))',
+      [serverId, keepToolNames],
+    );
+  }
+
   async listMcpToolVerdictAcks(
     verifierVersion: string,
   ): Promise<readonly McpToolVerdictAckRow[]> {

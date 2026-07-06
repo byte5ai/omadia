@@ -38,6 +38,7 @@ describe('rescanAllMcpServers (#463)', () => {
   it('scans enabled servers, skips disabled, degrades on dead ones, refreshes the policy', async () => {
     const upserted: McpToolVerdictRow[] = [];
     const persisted: Array<{ id: string; count: number }> = [];
+    const pruned: Array<{ id: string; keep: string[] }> = [];
     const bumps: string[] = [];
     const graph = {
       listMcpServers: async () => [server(GOOD, 'good', 'enabled'), server(DEAD, 'dead', 'enabled'), server(OFF, 'off', 'disabled')],
@@ -46,6 +47,9 @@ describe('rescanAllMcpServers (#463)', () => {
       },
       setMcpDiscoveredTools: async (id: string, tools: unknown[]) => {
         persisted.push({ id, count: tools.length });
+      },
+      pruneMcpToolVerdicts: async (id: string, keep: readonly string[]) => {
+        pruned.push({ id, keep: [...keep] });
       },
       bumpMcpGrantEpoch: async (id: string) => {
         bumps.push(`grant:${id}`);
@@ -75,6 +79,7 @@ describe('rescanAllMcpServers (#463)', () => {
     assert.equal(result.failures.length, 1);
     assert.equal(result.failures[0]?.serverName, 'dead');
     assert.deepEqual(persisted, [{ id: GOOD, count: 2 }]);
+    assert.deepEqual(pruned, [{ id: GOOD, keep: ['sum', 'evil'] }]);
     assert.ok(bumps.includes(`grant:${GOOD}`) && bumps.includes(`binding:${GOOD}`));
     // The policy refresh at the end picked up the newly-risky tool:
     assert.equal(isMcpGrantBlocked(GOOD, 'evil'), true);

@@ -61,7 +61,7 @@ describe('McpRegistryClient', () => {
     assert.equal(http?.author, 'acme');
     assert.equal(http?.sourceUrl, 'https://github.com/acme/billing-mcp');
     assert.equal(npm?.transport, 'stdio');
-    assert.equal(npm?.endpoint, 'npx -y @acme/notes-mcp');
+    assert.equal(npm?.endpoint, 'npx -y -- @acme/notes-mcp');
     assert.equal(browseOnly?.transport, null);
     assert.equal(browseOnly?.endpoint, null);
   });
@@ -105,6 +105,40 @@ describe('McpRegistryClient', () => {
     const client = new McpRegistryClient({ fetchImpl: capturing, log: () => {} });
     await client.catalog({ ...REGISTRY, id: 'reg-2', authKind: 'bearer', token: 's3cret' });
     assert.equal(seenAuth, 'Bearer s3cret');
+  });
+
+  it('refuses internal/link-local catalog remotes (browse-only), keeps public https', async () => {
+    const doc = {
+      servers: [
+        { name: 'public', remotes: [{ type: 'http', url: 'https://mcp.public.example/http' }] },
+        { name: 'metadata', remotes: [{ type: 'http', url: 'https://metadata.google.internal/mcp' }] },
+        { name: 'loopback', remotes: [{ type: 'http', url: 'https://127.0.0.1/mcp' }] },
+        { name: 'private', remotes: [{ type: 'http', url: 'https://10.1.2.3/mcp' }] },
+        { name: 'plainhttp', remotes: [{ type: 'http', url: 'http://mcp.public.example/http' }] },
+      ],
+    };
+    const client = new McpRegistryClient({ fetchImpl: fetchOk(doc), log: () => {} });
+    const byName = new Map((await client.catalog(REGISTRY)).map((e) => [e.name, e]));
+    assert.equal(byName.get('public')?.transport, 'http');
+    assert.equal(byName.get('metadata')?.transport, null);
+    assert.equal(byName.get('loopback')?.transport, null);
+    assert.equal(byName.get('private')?.transport, null);
+    assert.equal(byName.get('plainhttp')?.transport, null);
+  });
+
+  it('refuses npx option-shaped npm names, accepts real ones with a -- separator', async () => {
+    const doc = {
+      servers: [
+        { name: 'ok', packages: [{ registry_name: 'npm', name: '@acme/notes-mcp' }] },
+        { name: 'flag', packages: [{ registry_name: 'npm', name: '-y' }] },
+        { name: 'dashdash', packages: [{ registry_name: 'npm', name: '--yes' }] },
+      ],
+    };
+    const client = new McpRegistryClient({ fetchImpl: fetchOk(doc), log: () => {} });
+    const byName = new Map((await client.catalog(REGISTRY)).map((e) => [e.name, e]));
+    assert.equal(byName.get('ok')?.endpoint, 'npx -y -- @acme/notes-mcp');
+    assert.equal(byName.get('flag')?.transport, null);
+    assert.equal(byName.get('dashdash')?.transport, null);
   });
 
   it('falls back to a plain servers document at the base URL', async () => {
