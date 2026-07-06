@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { cookies } from 'next/headers';
-import { Geist, Geist_Mono, Source_Serif_4 } from 'next/font/google';
+import { Days_One, Geist, Geist_Mono, Source_Serif_4 } from 'next/font/google';
 import { NextIntlClientProvider } from 'next-intl';
 import { getLocale, getMessages, getTranslations } from 'next-intl/server';
 
@@ -51,6 +51,20 @@ const mono = Geist_Mono({
 });
 
 /**
+ * Brand wordmark only — the omadia logo (header + login card) keeps the
+ * original Days One face. Lume headings elsewhere stay on Geist per §2.7
+ * (see globals.css .font-display); this is a separate `.font-logo` class
+ * so the wordmark can diverge without reopening that decision sitewide.
+ */
+const logo = Days_One({
+  subsets: ['latin'],
+  weight: '400',
+  variable: '--font-days-one',
+  display: 'swap',
+  preload: false,
+});
+
+/**
  * No-FOUC palette/theme (issue #287). The choice now lives in a server-side
  * per-user store (/api/v1/ui-prefs); the browser mirrors it into the
  * `omadia-ui-prefs` cookie, which ThemeControls writes on every change. We
@@ -84,7 +98,7 @@ export default async function RootLayout({
   return (
     <html
       lang={locale}
-      className={`${sans.variable} ${serif.variable} ${mono.variable}`}
+      className={`${sans.variable} ${serif.variable} ${mono.variable} ${logo.variable}`}
       data-palette={palette}
       {...(theme ? { 'data-theme': theme } : {})}
       suppressHydrationWarning
@@ -101,7 +115,7 @@ export default async function RootLayout({
                     aria-label={t('logoAriaLabel')}
                   >
                     <span className="flex flex-col leading-none">
-                      <span className="font-display text-lg text-[color:var(--fg-strong)]">
+                      <span className="font-logo text-lg text-[color:var(--fg-strong)]">
                         omadia
                       </span>
                       <span className="mt-1 text-[10px] uppercase tracking-[0.14em] text-[color:var(--fg-muted)]">
