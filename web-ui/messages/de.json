@@ -995,6 +995,16 @@
       "forkNotice": "Dies ist ein importierter Skill. Beim Speichern wird eine bearbeitbare Kopie erstellt; das Original bleibt als Quelle erhalten.",
       "export": "Exportieren"
     },
+    "capabilities": {
+      "heading": "Benötigte Tools",
+      "boundTo": "Gebunden an {server} · {tool}",
+      "unbind": "Lösen",
+      "pickServer": "Server wählen…",
+      "pickTool": "Tool wählen…",
+      "bind": "Binden",
+      "bindConfirm": "Wirklich binden",
+      "bindWarning": "Wenn dieser Skill aktiv ist, auch wenn er automatisch für einen Turn ausgewählt wird, darf er Server \"{server}\" im Rahmen dieser Bindung nutzen."
+    },
     "verdict": {
       "noSignals": "Keine bekannten Risikosignale",
       "flagged": "Markiert — Prüfung empfohlen",

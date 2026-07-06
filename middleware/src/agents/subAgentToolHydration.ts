@@ -22,6 +22,7 @@ import {
   mcpNativeHandler,
   mcpToolNameFromRef,
   mcpToolToNativeSpec,
+  turnContext,
   type DomainTool,
   type DomainToolSpec,
   type McpManager,
@@ -30,6 +31,7 @@ import {
   type McpToolDescriptor,
   type NativeToolRegistry,
   type SkillRow,
+  type SkillToolBindingRow,
   type SubAgentRow,
   type ToolGrantRow,
 } from '@omadia/orchestrator';
@@ -62,7 +64,38 @@ export interface HydrateDeps {
   /** Scan-verdict policy gate (issue #454) — see `mcpGrantPolicy.ts`. Applied
    *  to both the sub-agent grant path and the top-level DomainTool pass. */
   readonly blockedMcpGrant?: (serverId: string, toolName: string) => boolean;
+  /** Persona skills attached to this agent (issue #456): skills whose
+   *  frontmatter declares `requires_tools` contracts get their OPERATOR-bound
+   *  MCP tools registered as DomainTools with skill attribution. */
+  readonly personaSkills?: readonly SkillRow[];
+  /** Operator bindings for skill capability contracts (issue #456). */
+  readonly skillToolBindings?: readonly SkillToolBindingRow[];
   readonly log?: (msg: string) => void;
+}
+
+interface RequiredToolContract {
+  readonly contract: string;
+  readonly description?: string;
+}
+
+/** Lenient parse of a skill's `requires_tools` frontmatter (issue #456). The
+ *  field is author-declared third-party data: anything malformed is dropped,
+ *  never thrown on. */
+export function parseRequiresTools(frontmatter: Record<string, unknown>): RequiredToolContract[] {
+  const raw = frontmatter['requires_tools'];
+  if (!Array.isArray(raw)) return [];
+  const out: RequiredToolContract[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const contract = (item as Record<string, unknown>)['contract'];
+    if (typeof contract !== 'string' || contract.trim() === '') continue;
+    const description = (item as Record<string, unknown>)['description'];
+    out.push({
+      contract: contract.trim(),
+      ...(typeof description === 'string' ? { description } : {}),
+    });
+  }
+  return out;
 }
 
 /** Coerce a `mcp_servers` row into the client config the manager consumes. */
@@ -220,6 +253,64 @@ export function registerDbSubAgentTools(
     tools.push(
       mcpGrantToDomainTool(deps.mcpManager, cfg, discoveredDescriptor(row, toolName)),
     );
+  }
+
+  // Skill capability contracts (epic #459 W4, issue #456): persona skills may
+  // declare `requires_tools`; only OPERATOR-bound contracts materialize, and
+  // unbound contracts fail closed (skill text attaches, capability absent).
+  // Calls run with skill attribution so the audit log names the skill.
+  const bindingByKey = new Map(
+    (deps.skillToolBindings ?? []).map((b) => [`${b.skillId} ${b.contract}`, b]),
+  );
+  for (const skill of deps.personaSkills ?? []) {
+    for (const required of parseRequiresTools(skill.frontmatter)) {
+      const binding = bindingByKey.get(`${skill.id} ${required.contract}`);
+      if (!binding) {
+        deps.log?.(
+          `subAgentToolHydration: skill "${skill.slug}" contract "${required.contract}" is unbound — capability absent (fail closed)`,
+        );
+        continue;
+      }
+      const cfg = mcpServersById.get(binding.mcpServerId);
+      if (!cfg) {
+        deps.log?.(
+          `subAgentToolHydration: skill "${skill.slug}" binding "${required.contract}" references unknown/disabled server ${binding.mcpServerId} — skipped`,
+        );
+        continue;
+      }
+      if (deps.blockedMcpGrant?.(binding.mcpServerId, binding.toolName)) {
+        deps.log?.(
+          `subAgentToolHydration: skill-bound mcp tool "${binding.toolName}" on "${cfg.name}" blocked by scan-verdict policy — skipped`,
+        );
+        continue;
+      }
+      const row = deps.mcpServers.find((r) => r.id === binding.mcpServerId);
+      const base = mcpGrantToDomainTool(
+        deps.mcpManager,
+        cfg,
+        discoveredDescriptor(row, binding.toolName),
+      );
+      const skillSlug = skill.slug;
+      tools.push({
+        ...base,
+        handle: (input: unknown) => {
+          const current = turnContext.current();
+          // Attribute the call to the skill in the audit log (issue #462
+          // taxonomy) while inheriting the rest of the active turn context.
+          return turnContext.run(
+            {
+              turnId: current?.turnId ?? '',
+              turnDate: current?.turnDate ?? new Date().toISOString().slice(0, 10),
+              ...(current?.agentSlug ? { agentSlug: current.agentSlug } : {}),
+              ...(current?.privacyHandle ? { privacyHandle: current.privacyHandle } : {}),
+              mcpCallerKind: 'skill',
+              mcpCallerId: skillSlug,
+            },
+            () => base.handle(input),
+          );
+        },
+      });
+    }
   }
 
   let n = 0;

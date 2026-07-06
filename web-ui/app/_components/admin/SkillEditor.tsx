@@ -15,6 +15,7 @@ import {
 } from '../../_lib/agentBuilder';
 import { ApiError } from '../../_lib/api';
 import { Field, inputCls, SaveButton } from '../../admin/builder/panels/InspectorControls';
+import { SkillCapabilityBindings } from './SkillCapabilityBindings';
 import { SkillVerdictBadge } from './SkillVerdictBadge';
 
 /**
@@ -176,6 +177,7 @@ export function SkillEditor({
           {t('editor.forkNotice')}
         </p>
       )}
+      <SkillCapabilityBindings skillId={forkId ?? skill.id} />
       <Field label={t('editor.name')}>
         <input value={name} onChange={(e) => setName(e.target.value)} className={inputCls} />
       </Field>

@@ -114,6 +114,7 @@ export type {
   SkillPatch,
   SkillResourceInput,
   SkillResourceRow,
+  SkillToolBindingRow,
   SkillVerdictRow,
   SkillRow,
   SubAgentInput,

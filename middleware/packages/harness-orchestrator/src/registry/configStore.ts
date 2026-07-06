@@ -7,6 +7,7 @@ import {
   type PersonaSkillRow,
   type ScheduleRow,
   type SkillRow,
+  type SkillToolBindingRow,
   type SubAgentRow,
   type McpServerRow,
   type ToolGrantRow,
@@ -589,6 +590,7 @@ export class ConfigStore {
       skills,
       mcpServers,
       personaSkillLinks,
+      skillToolBindings,
     ] = await Promise.all([
       this.listAgents(),
       this.listAllAgentPlugins(),
@@ -600,6 +602,7 @@ export class ConfigStore {
       graph.listSkills(),
       graph.listMcpServers(),
       graph.listAllPersonaSkillLinks(),
+      graph.listAllSkillToolBindings(),
     ]);
     return {
       agents,
@@ -612,6 +615,7 @@ export class ConfigStore {
       skills,
       mcpServers,
       personaSkillLinks,
+      skillToolBindings,
     };
   }
 }
@@ -630,6 +634,8 @@ export interface ConfigSnapshot {
   /** Wave 8 — Agent → direct-answer persona-skill links. */
   readonly personaSkillLinks?: readonly PersonaSkillRow[];
   readonly mcpServers?: readonly McpServerRow[];
+  /** Epic #459 W4 — operator bindings of skill capability contracts. */
+  readonly skillToolBindings?: readonly SkillToolBindingRow[];
 }
 
 function isUniqueViolation(err: unknown, constraint?: string): boolean {

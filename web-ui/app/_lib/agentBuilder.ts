@@ -625,6 +625,46 @@ export async function listMcpCallLog(opts?: {
   return callJson(`/v1/operator/mcp-call-log${qs ? `?${qs}` : ''}`);
 }
 
+// ── Skill capability bindings (issue #456) ───────────────────────────────────
+
+export interface SkillContractBinding {
+  contract: string;
+  description: string | null;
+  binding: {
+    mcpServerId: string;
+    serverName: string | null;
+    toolName: string;
+    boundBy: string;
+    boundAt: string;
+  } | null;
+}
+
+export async function listSkillToolBindings(
+  skillId: string,
+): Promise<{ contracts: SkillContractBinding[] }> {
+  return callJson(`/v1/operator/skills/${encodeURIComponent(skillId)}/tool-bindings`);
+}
+
+/** Bind-time gate applies server-side: the tool must be scanned, and
+ *  not-scanned-clean severities need an ack first. */
+export async function bindSkillContract(
+  skillId: string,
+  contract: string,
+  input: { mcpServerId: string; toolName: string },
+): Promise<void> {
+  await callJson(
+    `/v1/operator/skills/${encodeURIComponent(skillId)}/tool-bindings/${encodeURIComponent(contract)}`,
+    { method: 'PUT', body: JSON.stringify(input) },
+  );
+}
+
+export async function unbindSkillContract(skillId: string, contract: string): Promise<void> {
+  await callJson(
+    `/v1/operator/skills/${encodeURIComponent(skillId)}/tool-bindings/${encodeURIComponent(contract)}`,
+    { method: 'DELETE' },
+  );
+}
+
 // ── MCP marketplace (issue #455) ─────────────────────────────────────────────
 
 export interface McpRegistryInfo {

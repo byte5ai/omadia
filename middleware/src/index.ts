@@ -1664,7 +1664,16 @@ async function main(): Promise<void> {
       ): number => {
         const entry = registryForHydrate.get(slug);
         if (!entry) return 0;
-        const mcpServers = registryForHydrate.currentSnapshot()?.mcpServers ?? [];
+        const snapshot = registryForHydrate.currentSnapshot();
+        const mcpServers = snapshot?.mcpServers ?? [];
+        // Persona skills + operator bindings for skill capability contracts
+        // (issue #456) — resolved from the same snapshot the registry built
+        // this agent from, so tool surface and signature stay consistent.
+        const skillsById = new Map((snapshot?.skills ?? []).map((s) => [s.id, s]));
+        const personaSkills = (snapshot?.personaSkillLinks ?? [])
+          .filter((l) => l.agentId === entry.agent.id)
+          .map((l) => skillsById.get(l.skillId))
+          .filter((s): s is NonNullable<typeof s> => s !== undefined);
         const providerId = orchestratorProviderId();
         return registerDbSubAgentTools(
           {
@@ -1678,6 +1687,8 @@ async function main(): Promise<void> {
             nativeToolRegistry,
             mcpManager,
             mcpServers,
+            personaSkills,
+            skillToolBindings: snapshot?.skillToolBindings ?? [],
             defaultModel: SUBAGENT_DEFAULT_MODEL,
             hostIsCliProvider: providerId === 'claude-cli',
             cliModelAlias: (model: string): string =>

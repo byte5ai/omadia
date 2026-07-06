@@ -243,6 +243,16 @@ export interface McpServerInput {
   readonly sourceUrl?: string | null;
 }
 
+/** One operator-performed skill-contract → MCP-tool binding (issue #456). */
+export interface SkillToolBindingRow {
+  readonly skillId: string;
+  readonly contract: string;
+  readonly mcpServerId: string;
+  readonly toolName: string;
+  readonly boundBy: string;
+  readonly boundAt: Date;
+}
+
 /** One configured MCP registry catalog source (issue #455). */
 export interface McpRegistryRow {
   readonly id: string;
@@ -1021,6 +1031,53 @@ export class AgentGraphStore {
       [serverId, toolName, verifierVersion, contentHash, ackedBy],
     );
     return mapMcpToolVerdictAck(rows[0]!);
+  }
+
+  // ── Skill → MCP tool bindings (epic #459 W4, issue #456) ────────────────────
+
+  async listAllSkillToolBindings(): Promise<readonly SkillToolBindingRow[]> {
+    const { rows } = await this.pool.query<{
+      skill_id: string;
+      contract: string;
+      mcp_server_id: string;
+      tool_name: string;
+      bound_by: string;
+      bound_at: Date;
+    }>('SELECT * FROM skill_tool_bindings');
+    return rows.map((r) => ({
+      skillId: r.skill_id,
+      contract: r.contract,
+      mcpServerId: r.mcp_server_id,
+      toolName: r.tool_name,
+      boundBy: r.bound_by,
+      boundAt: r.bound_at,
+    }));
+  }
+
+  async upsertSkillToolBinding(input: {
+    readonly skillId: string;
+    readonly contract: string;
+    readonly mcpServerId: string;
+    readonly toolName: string;
+    readonly boundBy: string;
+  }): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO skill_tool_bindings (skill_id, contract, mcp_server_id, tool_name, bound_by)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (skill_id, contract) DO UPDATE SET
+         mcp_server_id = EXCLUDED.mcp_server_id,
+         tool_name     = EXCLUDED.tool_name,
+         bound_by      = EXCLUDED.bound_by,
+         bound_at      = now()`,
+      [input.skillId, input.contract, input.mcpServerId, input.toolName, input.boundBy],
+    );
+  }
+
+  async deleteSkillToolBinding(skillId: string, contract: string): Promise<void> {
+    await this.pool.query(
+      'DELETE FROM skill_tool_bindings WHERE skill_id = $1 AND contract = $2',
+      [skillId, contract],
+    );
   }
 
   // ── MCP registries (epic #459 W3, issue #455) ──────────────────────────────

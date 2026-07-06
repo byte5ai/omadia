@@ -995,6 +995,16 @@
       "forkNotice": "This is an imported skill. Saving creates an editable copy and keeps the original as its source.",
       "export": "Export"
     },
+    "capabilities": {
+      "heading": "Required tools",
+      "boundTo": "Bound to {server} · {tool}",
+      "unbind": "Unbind",
+      "pickServer": "Pick server…",
+      "pickTool": "Pick tool…",
+      "bind": "Bind",
+      "bindConfirm": "Really bind",
+      "bindWarning": "When this skill is active, including when it is auto-selected for a turn, it may use server \"{server}\" with the least privilege of this binding."
+    },
     "verdict": {
       "noSignals": "No known risk signals",
       "flagged": "Flagged — review recommended",

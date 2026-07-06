@@ -363,7 +363,15 @@ function graphSignature(
     .map((l) => `${l.agentId}|${l.skillId}|${l.position}`)
     .sort();
 
-  return JSON.stringify({ subPart, grantPart, skillPart, personaPart });
+  // Epic #459 W4 (issue #456): a bind/unbind of a skill capability contract
+  // changes the tool surface of every agent using that skill — include the
+  // bindings of this agent's referenced skills so reload() rebuilds it.
+  const bindingPart = (snap?.skillToolBindings ?? [])
+    .filter((b) => skillIds.has(b.skillId))
+    .map((b) => `${b.skillId}|${b.contract}|${b.mcpServerId}|${b.toolName}`)
+    .sort();
+
+  return JSON.stringify({ subPart, grantPart, skillPart, personaPart, bindingPart });
 }
 
 function equalPlugins(

@@ -30,6 +30,7 @@ import {
 import { McpManager, mcpToolNameFromRef } from '@omadia/orchestrator';
 import { Router, type Request, type Response } from 'express';
 
+import { parseRequiresTools } from '../agents/subAgentToolHydration.js';
 import {
   MCP_SEVERITIES_NEEDING_ACK,
   refreshMcpGrantPolicy,
@@ -970,6 +971,120 @@ export function createAgentBuilderRouter(
     },
   );
 
+  // ── skill capability bindings (epic #459 W4, issue #456) ──────────────────
+  router.get('/skills/:id/tool-bindings', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const id = str(req.params.id);
+      if (!isUuid(id)) {
+        res.status(404).json({ error: 'skill_not_found', id });
+        return;
+      }
+      const skill = await l.graph.getSkill(id);
+      if (!skill) {
+        res.status(404).json({ error: 'skill_not_found', id });
+        return;
+      }
+      const contracts = parseRequiresTools(skill.frontmatter);
+      const [bindings, servers] = await Promise.all([
+        l.graph.listAllSkillToolBindings(),
+        l.graph.listMcpServers(),
+      ]);
+      const serverById = new Map(servers.map((s) => [s.id, s]));
+      const bindingByContract = new Map(
+        bindings.filter((b) => b.skillId === id).map((b) => [b.contract, b]),
+      );
+      res.json({
+        contracts: contracts.map((c) => {
+          const binding = bindingByContract.get(c.contract);
+          return {
+            contract: c.contract,
+            description: c.description ?? null,
+            binding: binding
+              ? {
+                  mcpServerId: binding.mcpServerId,
+                  serverName: serverById.get(binding.mcpServerId)?.name ?? null,
+                  toolName: binding.toolName,
+                  boundBy: binding.boundBy,
+                  boundAt: binding.boundAt.toISOString(),
+                }
+              : null,
+          };
+        }),
+      });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  /** Bind-time gate (issue #456): binding is the point where trust is
+   *  applied — same fail-closed verdict rules as tool grants. The registry
+   *  graph signature includes bindings, so the reload rebuilds every agent
+   *  using this skill. */
+  router.put(
+    '/skills/:id/tool-bindings/:contract',
+    async (req: Request, res: Response) => {
+      const l = live(res);
+      if (!l) return;
+      try {
+        const id = str(req.params.id);
+        const contract = str(req.params.contract);
+        if (!isUuid(id)) {
+          res.status(404).json({ error: 'skill_not_found', id });
+          return;
+        }
+        const skill = await l.graph.getSkill(id);
+        if (!skill) {
+          res.status(404).json({ error: 'skill_not_found', id });
+          return;
+        }
+        if (!parseRequiresTools(skill.frontmatter).some((c) => c.contract === contract)) {
+          res.status(404).json({ error: 'contract_not_declared', contract });
+          return;
+        }
+        const actor = req.session?.sub || req.session?.email;
+        if (!actor) {
+          res.status(401).json({ error: 'unauthenticated' });
+          return;
+        }
+        const mcpServerId = String(req.body?.mcpServerId ?? '');
+        const toolRef = String(req.body?.toolName ?? '');
+        if (!isUuid(mcpServerId) || toolRef === '') {
+          res.status(400).json({ error: 'invalid_binding' });
+          return;
+        }
+        const toolName = await assertMcpToolAllowed(l, mcpServerId, toolRef);
+        await l.graph.upsertSkillToolBinding({
+          skillId: id,
+          contract,
+          mcpServerId,
+          toolName,
+          boundBy: actor,
+        });
+        await reload(l);
+        res.json({ skillId: id, contract, mcpServerId, toolName, boundBy: actor });
+      } catch (err) {
+        fail(res, err);
+      }
+    },
+  );
+
+  router.delete(
+    '/skills/:id/tool-bindings/:contract',
+    async (req: Request, res: Response) => {
+      const l = live(res);
+      if (!l) return;
+      try {
+        await l.graph.deleteSkillToolBinding(str(req.params.id), str(req.params.contract));
+        await reload(l);
+        res.status(204).end();
+      } catch (err) {
+        fail(res, err);
+      }
+    },
+  );
+
   // ── mcp marketplace (epic #459 W3, issue #455) ────────────────────────────
   router.get('/mcp-registries', async (_req: Request, res: Response) => {
     const l = live(res);
@@ -1238,6 +1353,49 @@ export function createAgentBuilderRouter(
   return router;
 }
 
+/**
+ * Fail-closed MCP tool gate (issues #454/#456): the tool must have a CURRENT
+ * scan verdict (an unknown ref or a pre-scan-gate discovery must be
+ * re-discovered first — "never scanned" is not a bypass), and every
+ * not-scanned-clean severity needs a content-hash-matching operator ack.
+ * Returns the normalized bare tool name. Shared by the grant edge dispatcher
+ * and the skill capability bind route.
+ */
+async function assertMcpToolAllowed(
+  l: Live,
+  mcpServerId: string,
+  toolRef: string,
+): Promise<string> {
+  const server = (await l.graph.listMcpServers()).find((s) => s.id === mcpServerId);
+  if (!server) {
+    throw new ConfigValidationError(`mcp server ${mcpServerId} not found`);
+  }
+  const toolName = mcpToolNameFromRef(toolRef, server.name);
+  const verdict = await l.graph.getMcpToolVerdict(
+    mcpServerId,
+    toolName,
+    CURRENT_VERIFIER_VERSION,
+  );
+  if (!verdict) {
+    throw new ConfigValidationError(
+      `mcp_tool_not_scanned: tool "${toolName}" has no current scan verdict; run Discover on server "${server.name}" first`,
+    );
+  }
+  if (MCP_SEVERITIES_NEEDING_ACK.has(verdict.severity)) {
+    const ack = await l.graph.getMcpToolVerdictAck(
+      mcpServerId,
+      toolName,
+      CURRENT_VERIFIER_VERSION,
+    );
+    if (!ack || ack.contentHash !== verdict.contentHash) {
+      throw new ConfigValidationError(
+        `mcp_tool_unacked_risk: tool "${toolName}" carries a "${verdict.severity}" scan verdict; acknowledge it in the server's tool list first`,
+      );
+    }
+  }
+  return toolName;
+}
+
 // ── edge dispatchers ─────────────────────────────────────────────────────────
 
 async function createEdge(
@@ -1271,45 +1429,13 @@ async function createEdge(
       if (!toolRef) {
         throw new ConfigValidationError('tool_grant requires a toolRef');
       }
-      // Grant gate (issue #454, fail-closed after codex review): an MCP tool
-      // is grantable only when a CURRENT verdict row exists — an unknown
-      // toolRef or a server discovered before the scan gate shipped must be
-      // (re-)discovered first, otherwise "never scanned" would be a bypass.
-      // high_risk/scan_failed/too_large_to_scan additionally need a
-      // content-hash-matching operator ack. Enforced server-side, not just in
-      // the Builder UI dialog — unlike the skill-side attach gate, which is
-      // client-only (documented platform gap).
+      // Grant gate (issue #454, fail-closed after codex review) — shared with
+      // the skill-binding route (#456), see `assertMcpToolAllowed`.
       if (toolKind === 'mcp') {
         if (!mcpServerId) {
           throw new ConfigValidationError('mcp tool_grant requires an mcpServerId');
         }
-        const server = (await l.graph.listMcpServers()).find((s) => s.id === mcpServerId);
-        if (!server) {
-          throw new ConfigValidationError(`mcp server ${mcpServerId} not found`);
-        }
-        const toolName = mcpToolNameFromRef(toolRef, server.name);
-        const verdict = await l.graph.getMcpToolVerdict(
-          mcpServerId,
-          toolName,
-          CURRENT_VERIFIER_VERSION,
-        );
-        if (!verdict) {
-          throw new ConfigValidationError(
-            `mcp_tool_not_scanned: tool "${toolName}" has no current scan verdict; run Discover on server "${server.name}" before granting`,
-          );
-        }
-        if (MCP_SEVERITIES_NEEDING_ACK.has(verdict.severity)) {
-          const ack = await l.graph.getMcpToolVerdictAck(
-            mcpServerId,
-            toolName,
-            CURRENT_VERIFIER_VERSION,
-          );
-          if (!ack || ack.contentHash !== verdict.contentHash) {
-            throw new ConfigValidationError(
-              `mcp_tool_unacked_risk: tool "${toolName}" carries a "${verdict.severity}" scan verdict; acknowledge it in the server's tool list before granting`,
-            );
-          }
-        }
+        await assertMcpToolAllowed(l, mcpServerId, toolRef);
       }
       const grant = await l.graph.createToolGrant({
         agentId: onAgent ? agent.id : null,
