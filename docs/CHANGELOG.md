@@ -15,6 +15,10 @@ into the next version's entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+---
+
+## [0.55.0] - 2026-07-06
+
 ### Added — pluggable LLM provider (OpenAI as an admin-selectable provider)
 
 - **`@omadia/llm-provider`**: a neutral LLM provider contract with Anthropic and
@@ -46,6 +50,14 @@ into the next version's entry. See `CONTRIBUTING.md` § Releases & changelog.
   params and read Anthropic-shaped responses; only the boundary call path now
   translates through `llmProviderSeam`, including streaming final-event usage
   telemetry and provider-based retry classification.
+
+### ⚠ BREAKING CHANGES
+
+- **release**: automate a categorized changelog for every release (#443)
+
+### Added
+
+- **release**: automate a categorized changelog for every release (#443)
 
 ---
 
@@ -964,7 +976,8 @@ Initial public release of Omadia — *An Agentic OS*.
 - The full pre-release development history is preserved in the maintainer's
   internal repository and is not part of the public git history.
 
-[Unreleased]: https://github.com/byte5ai/omadia/compare/v0.54.0...HEAD
+[Unreleased]: https://github.com/byte5ai/omadia/compare/v0.55.0...HEAD
+[0.55.0]: https://github.com/byte5ai/omadia/compare/v0.54.0...v0.55.0
 [0.54.0]: https://github.com/byte5ai/omadia/compare/v0.53.0...v0.54.0
 [0.53.0]: https://github.com/byte5ai/omadia/compare/v0.52.3...v0.53.0
 [0.52.3]: https://github.com/byte5ai/omadia/compare/v0.52.2...v0.52.3
