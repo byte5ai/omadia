@@ -19,9 +19,14 @@ import {
 import type { LocalSubAgentTool } from '@omadia/plugin-api';
 import {
   buildSubAgentDomainTools,
+  mcpNativeHandler,
+  mcpToolToNativeSpec,
+  type DomainTool,
+  type DomainToolSpec,
   type McpManager,
   type McpServerConfig,
   type McpServerRow,
+  type McpToolDescriptor,
   type NativeToolRegistry,
   type SkillRow,
   type SubAgentRow,
@@ -93,6 +98,59 @@ export function adaptNativeToolForSubAgent(
   };
 }
 
+/** Resolve the discovered descriptor for a granted tool from the server row,
+ *  so the DomainTool spec carries the real description + inputSchema. Falls
+ *  back to a name-only descriptor (schema-less, still callable) when the
+ *  server has not been re-discovered since the grant. */
+function discoveredDescriptor(
+  row: McpServerRow | undefined,
+  toolRef: string,
+): McpToolDescriptor {
+  const tools = (row?.discoveredTools ?? []) as ReadonlyArray<Record<string, unknown>>;
+  const hit = tools.find((t) => t['name'] === toolRef);
+  if (hit) {
+    return {
+      name: toolRef,
+      ...(typeof hit['description'] === 'string' ? { description: hit['description'] } : {}),
+      ...(hit['inputSchema'] && typeof hit['inputSchema'] === 'object'
+        ? { inputSchema: hit['inputSchema'] as Record<string, unknown> }
+        : {}),
+    };
+  }
+  return { name: toolRef };
+}
+
+/**
+ * Adapt one top-level MCP tool grant into a per-agent DomainTool (epic #459
+ * W0, issue #457). Composes the previously-unwired adapters: spec via
+ * `mcpToolToNativeSpec`, dispatch via `mcpNativeHandler` → `McpManager.callTool`.
+ * Registered on the agent's own orchestrator, NOT the process-wide
+ * `NativeToolRegistry` — per-agent isolation and rebuild idempotency come from
+ * the DomainTool seam (`hasDomainTool` skip guard), see the scoping decision
+ * recorded on #457.
+ */
+export function mcpGrantToDomainTool(
+  manager: McpManager,
+  cfg: McpServerConfig,
+  descriptor: McpToolDescriptor,
+): DomainTool {
+  const spec = mcpToolToNativeSpec(cfg.name, descriptor);
+  const handler = mcpNativeHandler(manager, cfg, descriptor.name);
+  return {
+    name: spec.name,
+    spec: {
+      name: spec.name,
+      description: spec.description,
+      // MCP schemas are JSON-Schema-shaped but looser than DomainToolSpec's
+      // property map; the orchestrator forwards specs verbatim to the LLM, so
+      // the structural cast is safe here.
+      input_schema: spec.input_schema as DomainToolSpec['input_schema'],
+    },
+    domain: spec.domain ?? `mcp.${cfg.name}`,
+    handle: (input: unknown) => handler(input),
+  };
+}
+
 /**
  * Build + register the sub-agent DomainTools for one agent. Returns the number
  * of tools newly registered (skips names already present so it is safe to call
@@ -103,26 +161,51 @@ export function registerDbSubAgentTools(
   built: DomainToolHost,
   deps: HydrateDeps,
 ): number {
-  if (slice.subAgents.length === 0) return 0;
   const mcpServersById = new Map<string, McpServerConfig>(
     deps.mcpServers.map((r) => [r.id, mcpRowToConfig(r)]),
   );
-  const tools = buildSubAgentDomainTools(slice, {
-    provider: createAnthropicProvider({ client: deps.client }),
-    defaultModel: deps.defaultModel,
-    defaultMaxTokens: deps.defaultMaxTokens ?? 4096,
-    defaultMaxIterations: deps.defaultMaxIterations ?? 8,
-    mcpManager: deps.mcpManager,
-    mcpServersById,
-    nativeTool: (ref) => adaptNativeToolForSubAgent(deps.nativeToolRegistry, ref),
-    ...(deps.hostIsCliProvider !== undefined
-      ? { hostIsCliProvider: deps.hostIsCliProvider }
-      : {}),
-    ...(deps.cliModelAlias !== undefined
-      ? { cliModelAlias: deps.cliModelAlias }
-      : {}),
-    ...(deps.log ? { log: deps.log } : {}),
-  });
+  const tools: DomainTool[] =
+    slice.subAgents.length === 0
+      ? []
+      : buildSubAgentDomainTools(slice, {
+          provider: createAnthropicProvider({ client: deps.client }),
+          defaultModel: deps.defaultModel,
+          defaultMaxTokens: deps.defaultMaxTokens ?? 4096,
+          defaultMaxIterations: deps.defaultMaxIterations ?? 8,
+          mcpManager: deps.mcpManager,
+          mcpServersById,
+          nativeTool: (ref) => adaptNativeToolForSubAgent(deps.nativeToolRegistry, ref),
+          ...(deps.hostIsCliProvider !== undefined
+            ? { hostIsCliProvider: deps.hostIsCliProvider }
+            : {}),
+          ...(deps.cliModelAlias !== undefined
+            ? { cliModelAlias: deps.cliModelAlias }
+            : {}),
+          ...(deps.log ? { log: deps.log } : {}),
+        });
+
+  // Top-level grants (epic #459 W0, issue #457): rows with agentId set and
+  // subAgentId null were persisted by the Builder but never materialized —
+  // `buildSubAgentDomainTools` correctly skips them (they belong to no
+  // sub-agent bucket). Register each MCP grant as a per-agent DomainTool.
+  // `toolKind='native'` top-level grants stay a no-op: native tools are
+  // process-wide and already reachable by the orchestrator.
+  for (const g of slice.toolGrants) {
+    if (g.subAgentId !== null) continue;
+    if (g.toolKind !== 'mcp' || !g.mcpServerId) continue;
+    const cfg = mcpServersById.get(g.mcpServerId);
+    if (!cfg) {
+      deps.log?.(
+        `subAgentToolHydration: top-level grant "${g.toolRef}" references unknown mcp server ${g.mcpServerId}, skipped`,
+      );
+      continue;
+    }
+    const row = deps.mcpServers.find((r) => r.id === g.mcpServerId);
+    tools.push(
+      mcpGrantToDomainTool(deps.mcpManager, cfg, discoveredDescriptor(row, g.toolRef)),
+    );
+  }
+
   let n = 0;
   for (const t of tools) {
     if (!built.orchestrator.hasDomainTool(t.name)) {
