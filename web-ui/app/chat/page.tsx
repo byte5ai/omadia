@@ -10,9 +10,11 @@ import {
   type KeyboardEvent,
 } from 'react';
 import { useTranslations } from 'next-intl';
-import { Eraser, GitBranch, Navigation, Network } from 'lucide-react';
+import { ChevronDown, Eraser, GitBranch, Navigation, Network } from 'lucide-react';
 import { ChatTabs } from '../_components/ChatTabs';
+import { ScrollToBottomButton } from '../_components/ScrollToBottomButton';
 import { Button } from '../_components/ui/Button';
+import { useStickToBottom } from '../_lib/useStickToBottom';
 import { AgentPicker } from '../_components/AgentPicker';
 import { AgentUnavailableBanner } from '../_components/AgentUnavailableBanner';
 import { AgentUsagePills } from '../_components/chat/AgentUsagePills';
@@ -212,14 +214,12 @@ export default function ChatPage(): React.ReactElement {
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // Keep the newest message in view as it streams. Smooth scrolling can't
-  // keep pace with rapid token deltas — the animation restarts further
-  // behind on every tick and never reaches the bottom, leaving the latest
-  // content hidden under the input footer — so this jumps instantly.
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [activeSession.messages]);
+  // Issue #404 — only keep following the stream while the user is actually
+  // at the bottom; scrolling up to read earlier messages now holds position
+  // instead of getting yanked back down on every token delta.
+  const { isAtBottom, scrollToBottom } = useStickToBottom(scrollRef, [
+    activeSession.messages,
+  ]);
 
   // Slice 4c — clear the auto-promoted-MK marker on a message after the
   // user Discards it. The manual save-as-memory button then comes back so
@@ -286,6 +286,9 @@ export default function ChatPage(): React.ReactElement {
         };
       });
       if (overrideText === undefined) setInput('');
+      // A sent message always lands at the bottom, even if the user had
+      // scrolled up to read earlier messages before sending.
+      scrollToBottom();
 
       // Hand the stream off to <StreamRunner /> via the store. The runner
       // owns the fetch + NDJSON-parse loop and writes deltas back into
@@ -313,6 +316,7 @@ export default function ChatPage(): React.ReactElement {
       streamStore,
       activeSession.messages.length,
       selectedAgentSlug,
+      scrollToBottom,
     ],
   );
 
@@ -447,6 +451,8 @@ export default function ChatPage(): React.ReactElement {
         disabled={sending}
       />
 
+      <ChatIntro />
+
       <div className="border-b border-[color:var(--border)] bg-[color:var(--bg-elevated)]/75 px-6 py-2 text-xs">
         <div className="mx-auto flex max-w-4xl flex-col gap-2">
           {/* Row 1 — orchestrator picker. The stream-path + session-scope
@@ -553,7 +559,7 @@ export default function ChatPage(): React.ReactElement {
         );
       })()}
 
-      <div className="flex min-h-0 flex-1">
+      <div className="relative flex min-h-0 flex-1">
         <div
           ref={scrollRef}
           className="flex-1 overflow-y-auto px-6 py-6"
@@ -576,6 +582,11 @@ export default function ChatPage(): React.ReactElement {
             ))}
           </div>
         </div>
+        <ScrollToBottomButton
+          visible={!isAtBottom}
+          onClick={scrollToBottom}
+          ariaLabel={t('scrollToBottomAriaLabel')}
+        />
       </div>
 
       {/* KG-walk — togglable floating pane (launcher chip → flying window) for
@@ -683,6 +694,92 @@ export default function ChatPage(): React.ReactElement {
   );
 }
 
+// Persisted collapse state for the chat intro header, keyed in localStorage —
+// same module-level-store + useSyncExternalStore shape as the dashboard
+// onboarding dismiss ([[DashboardOnboarding]]), so a toggle sticks across
+// reloads without a setState-in-effect. Server + initial-client snapshot are
+// both `false` (expanded) — an operator only ever collapses it explicitly.
+const CHAT_INTRO_COLLAPSED_KEY = 'omadia.chat.intro.collapsed';
+let chatIntroCollapsedCache: boolean | null = null;
+const chatIntroCollapsedListeners = new Set<() => void>();
+
+function readChatIntroCollapsed(): boolean {
+  try {
+    return window.localStorage.getItem(CHAT_INTRO_COLLAPSED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function subscribeChatIntroCollapsed(cb: () => void): () => void {
+  chatIntroCollapsedListeners.add(cb);
+  return () => chatIntroCollapsedListeners.delete(cb);
+}
+
+function getChatIntroCollapsedSnapshot(): boolean {
+  if (chatIntroCollapsedCache === null) {
+    chatIntroCollapsedCache = readChatIntroCollapsed();
+  }
+  return chatIntroCollapsedCache;
+}
+
+function getChatIntroCollapsedServerSnapshot(): boolean {
+  return false;
+}
+
+function setChatIntroCollapsedPersisted(value: boolean): void {
+  chatIntroCollapsedCache = value;
+  try {
+    if (value) window.localStorage.setItem(CHAT_INTRO_COLLAPSED_KEY, '1');
+    else window.localStorage.removeItem(CHAT_INTRO_COLLAPSED_KEY);
+  } catch {
+    /* private mode / no storage */
+  }
+  for (const l of chatIntroCollapsedListeners) l();
+}
+
+/**
+ * What-is-this-page header — kicker + body in the same `b5-hero-bg` treatment
+ * as the Hub page hero, scaled down for a top-of-chat banner. Starts
+ * expanded; the chevron toggles collapse and the choice persists in
+ * localStorage, so a collapsed operator doesn't see it re-expand every
+ * reload.
+ */
+function ChatIntro(): React.ReactElement {
+  const t = useTranslations('chat');
+  const collapsed = useSyncExternalStore(
+    subscribeChatIntroCollapsed,
+    getChatIntroCollapsedSnapshot,
+    getChatIntroCollapsedServerSnapshot,
+  );
+  return (
+    <div className="b5-hero-bg border-b border-[color:var(--border)] px-6 py-4">
+      <div className="mx-auto max-w-4xl">
+        <button
+          type="button"
+          onClick={() => setChatIntroCollapsedPersisted(!collapsed)}
+          aria-expanded={!collapsed}
+          className="flex w-full items-center gap-2 text-left text-[11px] font-semibold uppercase tracking-[0.22em] text-[color:var(--accent)]"
+        >
+          <ChevronDown
+            className={[
+              'size-3.5 shrink-0 transition-transform',
+              collapsed ? '-rotate-90' : '',
+            ].join(' ')}
+            aria-hidden
+          />
+          {t('intro.kicker')}
+        </button>
+        {!collapsed && (
+          <p className="mt-1.5 max-w-2xl text-[13px] leading-relaxed text-[color:var(--fg)]">
+            {t('intro.body')}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function EmptyState({
   hydrating,
   session,
@@ -762,6 +859,7 @@ function MessageRow({
         ) : (
           <>
             {message.routing && <TriageBadge routing={message.routing} />}
+            {message.persona && <PersonaBadge persona={message.persona} />}
             {message.recalledContext && (
               <RecalledContextCard recalled={message.recalledContext} />
             )}
@@ -1040,6 +1138,50 @@ function TriageBadge({
       <span className="text-[color:var(--fg-subtle)]">→</span>
       <span className="rounded bg-current/10 px-2 py-0.5 font-medium">
         {shortModelName(routing.model)}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Wave 8 — inline persona chip — rendered at the top of an assistant turn as
+ * soon as the direct-answer persona classifier resolves (the `turn_persona`
+ * event). Shows which persona skill answered this turn, or that the Agent
+ * kept its default identity.
+ */
+function PersonaBadge({
+  persona,
+}: {
+  persona: {
+    bucket: 'matched' | 'none' | 'fallback';
+    classifierModel: string;
+    skillId: string | null;
+    skillName: string | null;
+  };
+}): React.ReactElement {
+  const t = useTranslations('chat');
+  const isMatched = persona.bucket === 'matched' && persona.skillName;
+  const isFallback = persona.bucket === 'fallback';
+  const cls = isMatched
+    ? 'bg-[color:var(--accent)]/10 text-[color:var(--accent)] ring-[color:var(--accent)]'
+    : isFallback
+      ? 'bg-[color:var(--warning)]/10 text-[color:var(--warning)] ring-[color:var(--warning)]'
+      : 'bg-[color:var(--fg-subtle)]/10 text-[color:var(--fg-subtle)] ring-[color:var(--fg-subtle)]';
+  const label = isMatched
+    ? t('persona.matched', { name: persona.skillName ?? '' })
+    : isFallback
+      ? t('persona.fallback')
+      : t('persona.none');
+  return (
+    <div
+      className="mb-2 inline-flex flex-wrap items-center gap-2 text-[11px] text-[color:var(--fg-muted)]"
+      title={`${t('persona.title')}: ${shortModelName(persona.classifierModel)} → ${persona.bucket}`}
+    >
+      <span className="font-medium uppercase tracking-[0.12em]">{t('persona.title')}</span>
+      <span
+        className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ring-1 ${cls}`}
+      >
+        {label}
       </span>
     </div>
   );

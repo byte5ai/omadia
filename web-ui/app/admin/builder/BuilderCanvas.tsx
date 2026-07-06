@@ -272,7 +272,7 @@ function CanvasInner({ slug }: BuilderCanvasProps): React.ReactElement {
 
   return (
     <div className="flex h-full w-full">
-      <PalettePanel />
+      <PalettePanel onImported={() => void reload()} />
       <div
         ref={wrapRef}
         className="relative h-full flex-1"

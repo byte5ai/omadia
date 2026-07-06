@@ -114,6 +114,16 @@
       "failed": "Could not install",
       "retry": "Try again",
       "browseAll": "Browse all plugins",
+      "bringSkills": {
+        "kicker": "Optional",
+        "title": "Bring your skills",
+        "subtitle": "Already have skills you trust — e.g. from Claude? Import one to get an early win with your own work. You can skip this.",
+        "cta": "Import a skill",
+        "imported": "Imported \"{name}\" — now build an agent that uses it.",
+        "toRegistry": "View in Skills",
+        "toBuilder": "Build an agent",
+        "importAnother": "Import another"
+      },
       "dismiss": "Hide onboarding",
       "reenable": "Show onboarding",
       "empty": "No role profiles available. Connect a registry to see recommendations.",
@@ -229,7 +239,33 @@
         "tools": "tools"
       },
       "palette": {
-        "title": "Add"
+        "title": "Add",
+        "importSkill": "Import skill"
+      },
+      "import": {
+        "title": "Import a skill",
+        "hint": "Drop or paste a Claude SKILL.md, a Codex AGENTS.md, or a ChatGPT export. Only the text is imported — bundled scripts must be added as a plugin.",
+        "chooseFile": "Choose a SKILL.md file",
+        "fileChosen": "{name}",
+        "pastePlaceholder": "Paste SKILL.md content here…",
+        "preview": "Preview",
+        "confirm": "Import",
+        "cancel": "Cancel",
+        "outcome": {
+          "created": "Will be created as a new skill.",
+          "updated": "Will update the existing imported skill.",
+          "unchanged": "Already imported — no changes."
+        },
+        "risks": {
+          "title": "Review before importing — this content looks like it may try to:",
+          "code": {
+            "instruction_override": "Override earlier instructions",
+            "system_prompt_reference": "Reassign the agent's role / system prompt",
+            "tool_coercion": "Force tool calls or bypass confirmation",
+            "data_exfiltration": "Send data or secrets somewhere",
+            "hidden_content": "Contain hidden or obfuscated content"
+          }
+        }
       },
       "toolbox": {
         "native": "Native tools",
@@ -264,7 +300,17 @@
         "cron": "Cron",
         "timezone": "Timezone"
       },
-      "apiError": "Error {status}"
+      "apiError": "Error {status}",
+      "persona": {
+        "title": "Direct-answer personas",
+        "hintEmpty": "No persona skills attached — this Agent answers with the generic default identity.",
+        "hintSome": "The Agent picks one of these per turn to answer as directly, or the default identity if none clearly fit — no sub-agent hop.",
+        "addPlaceholder": "Choose a skill to attach…",
+        "add": "Attach",
+        "remove": "Remove",
+        "noSkillsAvailable": "No more skills available to attach.",
+        "riskWarning": "Heuristic scan flagged this skill: {codes}. As a persona it drives the top-level agent with full tool access — review before relying on it."
+      }
     }
   },
   "selfExtension": {
@@ -336,6 +382,7 @@
     "admin": "Admin",
     "system": "System",
     "agentsCluster": "Orchestrators",
+    "skills": "Skills",
     "agentsOverview": "Overview",
     "channels": "Channels",
     "pluginsCluster": "Plugins",
@@ -666,11 +713,16 @@
     "errorMiddlewareUnreachable": "Middleware unreachable on localhost:3979. Is `npm run dev` running in the middleware folder?",
     "errorProxyFailure": "Proxy error (HTTP {status}). Check the middleware logs.",
     "errorAborted": "Aborted.",
+    "intro": {
+      "kicker": "What is this chat?",
+      "body": "This is the operator debug chat — a direct line to your orchestrators for testing prompts and inspecting tool calls, plans, and knowledge-graph walks as they happen. It's not the end-user experience; it's built for debugging."
+    },
     "streamLabel": "Stream:",
     "clearTabTitle": "Clear only the active tab",
     "clearTabButton": "Clear history",
     "composerResetTitle": "Reset chat (⌘⇧K) — history goes, memory stays",
     "composerResetAriaLabel": "Reset chat",
+    "scrollToBottomAriaLabel": "Jump to latest message",
     "resetConfirmTitle": "Restart this chat?",
     "resetConfirmBody": "The conversation in this chat will be cleared and the agent forgets its current context. Memory and Knowledge-Graph entries are preserved.",
     "resetConfirmAction": "Reset chat",
@@ -693,6 +745,12 @@
     "subCallCount": "{count, plural, one {# sub-call} other {# sub-calls}}",
     "inputLabel": "input",
     "outputLabel": "output",
+    "persona": {
+      "title": "Persona",
+      "matched": "Answering as {name}",
+      "none": "Default identity",
+      "fallback": "Persona classifier unavailable — default identity"
+    },
     "subAgentTrace": "sub-agent trace",
     "iterationLabel": "── iteration {n}",
     "attachmentTitle": "{kind}{cachedSuffix} — click for full size",
@@ -891,6 +949,36 @@
     "actionReSnapshot": "Re-bind to standard",
     "actionDelete": "Delete session"
   },
+  "skills": {
+    "title": "Skills",
+    "subtitle": "Your skill library — import, view, edit and export skills used across agents.",
+    "loadError": "Could not load skills.",
+    "search": "Search skills…",
+    "import": "Import",
+    "empty": "No skills yet.",
+    "selectHint": "Select a skill to view and edit it.",
+    "scopeHint": "This manages your shared skill library. Imported or edited skills land in the registry; attach them to this agent via its slots.",
+    "delete": "Delete",
+    "confirmDelete": "This skill is used by {count} agents — they will lose it. Delete anyway?",
+    "confirmDeleteAction": "Delete anyway",
+    "cancel": "Cancel",
+    "usedBy": "Used by {count} agents",
+    "usedByPersona": "Also the direct-answer persona for {count} agents",
+    "resources": "{count} bundled resources",
+    "source": {
+      "db": "authored",
+      "file": "imported"
+    },
+    "editor": {
+      "name": "Name",
+      "description": "Description",
+      "body": "Skill body (Markdown)",
+      "save": "Save",
+      "forkAndSave": "Save as editable copy",
+      "forkNotice": "This is an imported skill. Saving creates an editable copy and keeps the original as its source.",
+      "export": "Export"
+    }
+  },
   "operatorAgents": {
     "title": "Orchestrators",
     "subtitle": "Multi-orchestrator runtime — create, edit, disable, drain, or kill Orchestrators and watch the registry react in real time via the LISTEN/NOTIFY hot-reload bus.",
@@ -1049,6 +1137,7 @@
         "example2": "A helper that summarizes incoming emails.",
         "example3": "An assistant for questions about our vacation policy.",
         "inputLabel": "Describe your assistant",
+        "scrollToBottomAriaLabel": "Jump to latest message",
         "placeholderIdle": "Describe in your own words what your assistant should do.",
         "placeholderBusy": "Your assistant is being built …",
         "send": "Send",
@@ -1085,6 +1174,7 @@
       "tabSpec": "Spec",
       "tabSlots": "Slots",
       "tabPersona": "Persona",
+      "tabSkills": "Skills",
       "tabVersions": "Versions",
       "paneChat": "Builder Chat",
       "paneEditor": "Editor",
@@ -1249,6 +1339,7 @@
         "choiceSaveFailed": "Could not save selection."
       },
       "inputLabel": "Builder message",
+      "scrollToBottomAriaLabel": "Jump to latest message",
       "placeholder": {
         "thinking": "Builder is thinking …",
         "idle": "Describe what the agent should do. Enter to send, Shift+Enter for a line break."
@@ -1291,6 +1382,7 @@
         "rebuild": "Rebuild",
         "rebuildSuccess": "Rebuild #{buildN} ✓ — preview is ready",
         "inputLabel": "Preview message",
+        "scrollToBottomAriaLabel": "Jump to latest message",
         "placeholder": {
           "inflight": "Preview agent is responding …",
           "idle": "Test the agent. Press Enter to send."
@@ -1414,6 +1506,13 @@
         "validation": {
           "keyExists": "Key already exists.",
           "keyFormat": "Key must be snake_case (a-z, 0-9, _; start with a letter)."
+        },
+        "oauth": {
+          "provider": "provider",
+          "selectProvider": "— select provider —",
+          "noProviders": "Declare an oauth_providers descriptor first (ask the builder agent) — then pick it here.",
+          "scopes": "scopes",
+          "scopesPlaceholder": "comma-separated, e.g. profile, email"
         }
       }
     },
@@ -2058,6 +2157,9 @@
       "connected": "connected",
       "notConnected": "no key",
       "addKey": "Add key",
+      "changeKey": "Change key",
+      "removeKey": "Remove key",
+      "removeKeyConfirm": "Remove the stored API key for {provider}? Agents assigned to it will stop working until a new key is added.",
       "logIn": "Log in",
       "manageCli": "Manage",
       "keyInputLabel": "{provider} API key",

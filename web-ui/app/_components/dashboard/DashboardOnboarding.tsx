@@ -33,6 +33,8 @@ import {
   type BusinessCase,
   type PluginCategory,
 } from '../../_lib/businessCases';
+import { SkillImportModal } from '../admin/SkillImportModal';
+import type { SkillImportResult } from '../../_lib/agentBuilder';
 
 /**
  * Dashboard onboarding wizard. A guided, business-case-first flow:
@@ -282,6 +284,8 @@ function ChooseCase({
           );
         })}
       </div>
+      <BringYourSkills />
+
       <div className="mt-6 flex items-center justify-end">
         <Link
           href="/store"
@@ -290,6 +294,73 @@ function ChooseCase({
           {t('browseAll')}
         </Link>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Optional, skippable onboarding offer (#396): bring skills you already trust
+ * (e.g. from Claude) via the same import path as everywhere else. Never a gate —
+ * just a card. On import it points at the registry and the builder so the user
+ * can reach a working agent that uses their own skill.
+ */
+function BringYourSkills(): React.ReactElement {
+  const t = useTranslations('dashboard.onboarding.bringSkills');
+  const [importing, setImporting] = useState(false);
+  const [imported, setImported] = useState<SkillImportResult | null>(null);
+
+  return (
+    <div className="mt-8 rounded-lg border border-dashed border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] p-5">
+      <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-[color:var(--fg-subtle)]">
+        <Sparkles className="size-3.5" aria-hidden />
+        {t('kicker')}
+      </div>
+      <h3 className="font-display mt-1 text-lg font-medium text-[color:var(--fg-strong)]">
+        {t('title')}
+      </h3>
+      <p className="mt-2 max-w-2xl text-[13px] leading-relaxed text-[color:var(--fg-muted)]">
+        {t('subtitle')}
+      </p>
+      {imported ? (
+        <div className="mt-4 flex flex-wrap items-center gap-4">
+          <span className="inline-flex items-center gap-1 text-[13px] text-[color:var(--success)]">
+            <Check className="size-4" aria-hidden />
+            {t('imported', { name: imported.skill.name })}
+          </span>
+          <Link href="/operator/skills" className="text-[12px] font-semibold text-[color:var(--accent)] hover:underline">
+            {t('toRegistry')}
+          </Link>
+          <Link href="/store/builder" className="inline-flex items-center gap-1 text-[12px] font-semibold text-[color:var(--accent)] hover:underline">
+            <Hammer className="size-3.5" aria-hidden />
+            {t('toBuilder')}
+          </Link>
+          <button
+            type="button"
+            onClick={() => setImporting(true)}
+            className="text-[12px] font-semibold text-[color:var(--fg-subtle)] transition-colors hover:text-[color:var(--fg-strong)]"
+          >
+            {t('importAnother')}
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setImporting(true)}
+          className="mt-4 inline-flex items-center gap-2 rounded-full border border-[color:var(--accent)] px-4 py-2 text-[12px] font-semibold uppercase tracking-[0.16em] text-[color:var(--accent)] transition-colors hover:bg-[color:var(--accent-subtle)]"
+        >
+          <ArrowUpRight className="size-3.5" aria-hidden />
+          {t('cta')}
+        </button>
+      )}
+      {importing && (
+        <SkillImportModal
+          onClose={() => setImporting(false)}
+          onImported={(result) => {
+            setImporting(false);
+            setImported(result);
+          }}
+        />
+      )}
     </div>
   );
 }

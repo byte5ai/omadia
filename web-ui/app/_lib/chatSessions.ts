@@ -427,6 +427,18 @@ export interface Message {
     classifierModel: string;
     model: string;
   };
+  /**
+   * Wave 8 — per-turn direct-answer persona verdict, from the `turn_persona`
+   * event emitted at turn start. Present only when the Agent has one or more
+   * persona skills attached. `skillId: null` means the classifier kept the
+   * Agent's default identity. Rendered inline next to `routing`.
+   */
+  persona?: {
+    bucket: 'matched' | 'none' | 'fallback';
+    classifierModel: string;
+    skillId: string | null;
+    skillName: string | null;
+  };
 }
 
 /**

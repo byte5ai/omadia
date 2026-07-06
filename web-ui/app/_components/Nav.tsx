@@ -26,11 +26,7 @@ type NavItem = NavLeaf | NavCluster;
 
 const NAV: readonly NavItem[] = [
   { kind: 'link', href: '/', key: 'dashboard' },
-  { kind: 'link', href: '/chat', key: 'chat' },
-  // Orchestrators is a direct link: the overview page now carries both the
-  // orchestrator and channel settings, so the old Overview/Channels dropdown
-  // collapsed into a single destination.
-  { kind: 'link', href: '/operator/agents', key: 'agentsCluster' },
+  { kind: 'link', href: '/operator/skills', key: 'skills' },
   {
     kind: 'cluster',
     key: 'pluginsCluster',
@@ -40,13 +36,17 @@ const NAV: readonly NavItem[] = [
     ],
   },
   { kind: 'link', href: '/routines', key: 'routines' },
-  { kind: 'link', href: '/conductor', key: 'conductor' },
+  { kind: 'link', href: '/chat', key: 'chat' },
   {
     kind: 'cluster',
     key: 'adminCluster',
     children: [
       { kind: 'link', href: '/admin', key: 'admin' },
       { kind: 'link', href: '/system', key: 'system' },
+      // Orchestrators and Conductor moved here from the top level — they're
+      // operator-facing configuration surfaces, same audience as Admin/System.
+      { kind: 'link', href: '/operator/agents', key: 'agentsCluster' },
+      { kind: 'link', href: '/conductor', key: 'conductor' },
     ],
   },
 ] as const;
@@ -184,7 +184,7 @@ function ClusterDropdown({
         ].join(' ')}
       >
         {label}
-        <span aria-hidden="true" className="text-[10px]">
+        <span aria-hidden="true" className="text-[15px] leading-none">
           ▾
         </span>
         {containsActive ? (

@@ -1,0 +1,283 @@
+import {
+  computeSkillHash,
+  type SkillInput,
+  type SkillResourceInput,
+  type SkillRow,
+} from '@omadia/orchestrator';
+
+import { parseSkillMarkdown } from './skillLoader.js';
+import { scanSkillForRisks, type SkillRisk } from './skillGuard.js';
+
+/**
+ * Skill import (epic #391, Part 1). Turns a raw SKILL.md string (pasted or read
+ * from an uploaded file) into a first-class registry skill, keyed for
+ * convergence: identical content is a no-op, a changed version of an already
+ * imported skill updates in place, and everything else is created as a
+ * `source:'file'` skill. Only the SKILL.md body + frontmatter are ingested —
+ * bundled executable code never enters through here (that is the signed plugin
+ * path); callers should surface that to the user.
+ */
+
+export interface SkillImportRequest {
+  /** Raw SKILL.md text (frontmatter + body). */
+  readonly raw: string;
+  /** Optional provenance path (e.g. the original file/folder name). */
+  readonly sourcePath?: string;
+  /** Optional bundled resource files (from an expanded skill folder/zip). */
+  readonly resources?: readonly SkillResourceInput[];
+}
+
+export interface NormalizedSkill {
+  readonly slug: string;
+  readonly name: string;
+  readonly description: string | null;
+  readonly body: string;
+  readonly frontmatter: Record<string, unknown>;
+  readonly sourcePath: string | null;
+}
+
+export type ImportOutcome = 'created' | 'updated' | 'unchanged';
+
+export interface SkillImportResult {
+  readonly outcome: ImportOutcome;
+  /** Normalized skill (drives the preview card). */
+  readonly skill: NormalizedSkill;
+  readonly contentHash: string;
+  /** Heuristic pre-activation risk findings surfaced in the preview. */
+  readonly risks: SkillRisk[];
+  /** Number of bundled resource files carried by this import. */
+  readonly resourceCount: number;
+  /** Id of the affected/existing skill (absent for a dry-run create). */
+  readonly skillId?: string;
+}
+
+/** Minimal store surface the importer needs — keeps it unit-testable. */
+export interface SkillImportStore {
+  getSkillByContentHash(contentHash: string, source?: 'db' | 'file'): Promise<SkillRow | undefined>;
+  getSkillBySlug(slug: string): Promise<SkillRow | undefined>;
+  insertSkill(input: SkillInput): Promise<SkillRow | undefined>;
+  upsertSkill(input: SkillInput): Promise<SkillRow>;
+  replaceSkillResources(
+    skillId: string,
+    resources: readonly SkillResourceInput[],
+  ): Promise<readonly unknown[]>;
+}
+
+const MAX_SLUG_LEN = 63;
+
+/** lowercase kebab-case slug; falls back to `imported-skill` when empty. */
+export function slugify(input: string): string {
+  const slug = input
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, MAX_SLUG_LEN)
+    .replace(/-+$/g, '');
+  return slug || 'imported-skill';
+}
+
+/** Parse + derive name/slug/description from a raw SKILL.md (Claude format). */
+export function normalizeSkillMarkdown(req: SkillImportRequest): NormalizedSkill {
+  const parsed = parseSkillMarkdown(req.raw);
+  const fmName = typeof parsed.frontmatter['name'] === 'string' ? parsed.frontmatter['name'].trim() : '';
+  const name = fmName || parsed.description || 'Imported skill';
+  return {
+    slug: slugify(fmName || name),
+    name,
+    description: parsed.description ?? null,
+    body: parsed.body,
+    frontmatter: parsed.frontmatter,
+    sourcePath: req.sourcePath ?? null,
+  };
+}
+
+/** Supported import source formats. One front door, per-source adapters (#391). */
+export type SkillSourceFormat = 'claude-skill' | 'openai-gpt-json' | 'agents-md';
+
+function firstString(...vals: unknown[]): string | undefined {
+  for (const v of vals) if (typeof v === 'string' && v.trim()) return v.trim();
+  return undefined;
+}
+
+/** OpenAI custom-GPT / ChatGPT export JSON → skill (instructions become body). */
+function normalizeOpenAiGptJson(gpt: Record<string, unknown>, req: SkillImportRequest): NormalizedSkill | null {
+  const instructions = firstString(
+    gpt['instructions'],
+    gpt['system_prompt'],
+    gpt['systemPrompt'],
+    gpt['prompt'],
+  );
+  if (instructions === undefined) return null;
+  const name = firstString(gpt['name'], gpt['title']) ?? 'Imported skill';
+  const description = firstString(gpt['description']) ?? null;
+  return {
+    slug: slugify(name),
+    name,
+    description,
+    body: instructions,
+    frontmatter: { name, ...(description !== null ? { description } : {}) },
+    sourcePath: req.sourcePath ?? null,
+  };
+}
+
+/** Codex AGENTS.md / plain instruction markdown → skill (whole text is body). */
+function normalizeAgentsMarkdown(req: SkillImportRequest): NormalizedSkill {
+  const body = req.raw.replace(/\r\n/g, '\n').trim();
+  const heading = /^#\s+(.+)$/m.exec(body)?.[1]?.trim();
+  const name = heading || 'Imported skill';
+  return {
+    slug: slugify(name),
+    name,
+    description: null,
+    body,
+    frontmatter: { name },
+    sourcePath: req.sourcePath ?? null,
+  };
+}
+
+/**
+ * Detect the source format and normalize to the canonical skill shape. One
+ * front door for Claude skills, OpenAI/ChatGPT exports, and Codex AGENTS.md —
+ * adding a source later is a new adapter, not a new import path.
+ */
+export function detectAndNormalize(req: SkillImportRequest): {
+  skill: NormalizedSkill;
+  format: SkillSourceFormat;
+} {
+  // Normalize + trim ONCE and route all branches off the same string, so a
+  // stray leading newline or BOM (common on copy/paste) can't send a Claude
+  // SKILL.md down the agents-md path — which would leak the frontmatter fence
+  // into the prompt and defeat content-hash dedup.
+  const normalizedRaw = req.raw.replace(/\r\n/g, '\n');
+  const trimmed = normalizedRaw.trimStart();
+  // 1. ChatGPT / custom-GPT JSON export.
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const gpt = normalizeOpenAiGptJson(parsed as Record<string, unknown>, req);
+        if (gpt) return { skill: gpt, format: 'openai-gpt-json' };
+      }
+    } catch {
+      /* not JSON — fall through to the text adapters */
+    }
+  }
+  // 2. Claude SKILL.md (has a YAML frontmatter block). Feed the trimmed raw so
+  //    the parser's own `startsWith('---\n')` check also succeeds.
+  if (trimmed.startsWith('---\n')) {
+    return { skill: normalizeSkillMarkdown({ ...req, raw: trimmed }), format: 'claude-skill' };
+  }
+  // 3. Codex AGENTS.md / plain instruction markdown.
+  return { skill: normalizeAgentsMarkdown(req), format: 'agents-md' };
+}
+
+/** Dedupe bundled resources by name (last-wins), so the count never lies. */
+function dedupeResources(list: readonly SkillResourceInput[]): SkillResourceInput[] {
+  const byName = new Map<string, SkillResourceInput>();
+  for (const r of list) byName.set(r.name, r);
+  return [...byName.values()];
+}
+
+/** Find a free slug near `base`, never colliding with an existing row. */
+async function uniqueSlug(store: SkillImportStore, base: string): Promise<string> {
+  if (!(await store.getSkillBySlug(base))) return base;
+  for (let i = 2; i < 1000; i++) {
+    const candidate = `${base.slice(0, MAX_SLUG_LEN - 5)}-${i}`;
+    if (!(await store.getSkillBySlug(candidate))) return candidate;
+  }
+  throw new Error(`could not find a free slug for "${base}"`);
+}
+
+/**
+ * Import (or preview) a SKILL.md. `dryRun` computes the outcome without
+ * writing. Dedup order:
+ *  1. identical content already imported (hash match on a `source:'file'`
+ *     row) → `unchanged`, no write. A host `db` skill with identical content
+ *     does NOT count — the import still lands as its own file skill.
+ *  2. an existing `file` skill from the *same origin file* (same
+ *     `sourcePath`) → `updated` in place — this is the "re-import a newer
+ *     version" path.
+ *  3. otherwise `created`. If the target slug is taken (by any skill,
+ *     including a host `db` skill or an unrelated import that merely shares a
+ *     name/fallback slug), it is disambiguated to a free slug — a slug clash
+ *     is never treated as "the same skill", so nothing is ever clobbered.
+ */
+export async function importSkillMarkdown(
+  store: SkillImportStore,
+  req: SkillImportRequest,
+  opts: { dryRun?: boolean } = {},
+): Promise<SkillImportResult> {
+  const normalized = detectAndNormalize(req).skill;
+  const contentHash = computeSkillHash(normalized.frontmatter, normalized.body);
+  const risks = scanSkillForRisks(normalized.frontmatter, normalized.body);
+  // Distinguish "no resources key sent" (leave bundle untouched) from an
+  // explicit array (replace it, empty = clear). Dedupe by name.
+  const providedResources = req.resources;
+  const resources = dedupeResources(providedResources ?? []);
+  const resourceCount = resources.length;
+
+  // 1. Already imported, byte-identical → no-op. Scoped to file skills so an
+  //    identical host skill can't produce a self-inconsistent "unchanged".
+  const byHash = await store.getSkillByContentHash(contentHash, 'file');
+  if (byHash) {
+    // Body/frontmatter unchanged, but the caller may still be re-syncing the
+    // bundle (content_hash intentionally excludes resources).
+    if (providedResources !== undefined) await store.replaceSkillResources(byHash.id, resources);
+    return { outcome: 'unchanged', skill: normalized, contentHash, risks, resourceCount, skillId: byHash.id };
+  }
+
+  // 2. Newer version of the same origin file → update in place. Requires a
+  //    concrete sourcePath match so unrelated skills that merely share a slug
+  //    (e.g. two nameless imports, or a name collision) never overwrite one
+  //    another.
+  const bySlug = await store.getSkillBySlug(normalized.slug);
+  if (
+    bySlug &&
+    bySlug.source === 'file' &&
+    normalized.sourcePath !== null &&
+    bySlug.sourcePath === normalized.sourcePath
+  ) {
+    if (opts.dryRun) {
+      return { outcome: 'updated', skill: normalized, contentHash, risks, resourceCount, skillId: bySlug.id };
+    }
+    const row = await store.upsertSkill({
+      slug: bySlug.slug,
+      name: normalized.name,
+      description: normalized.description,
+      body: normalized.body,
+      frontmatter: normalized.frontmatter,
+      source: 'file',
+      sourcePath: normalized.sourcePath,
+    });
+    if (providedResources !== undefined) await store.replaceSkillResources(row.id, resources);
+    return { outcome: 'updated', skill: { ...normalized, slug: bySlug.slug }, contentHash, risks, resourceCount, skillId: row.id };
+  }
+
+  // 3. Create, disambiguating the slug against any existing skill.
+  const targetSlug = bySlug ? await uniqueSlug(store, normalized.slug) : normalized.slug;
+  const created = { ...normalized, slug: targetSlug };
+  if (opts.dryRun) {
+    return { outcome: 'created', skill: created, contentHash, risks, resourceCount };
+  }
+
+  // Race-safe insert: ON CONFLICT DO NOTHING, re-disambiguate if a concurrent
+  // writer took the slug between the check and the insert.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const slug = attempt === 0 ? targetSlug : await uniqueSlug(store, normalized.slug);
+    const row = await store.insertSkill({
+      slug,
+      name: normalized.name,
+      description: normalized.description,
+      body: normalized.body,
+      frontmatter: normalized.frontmatter,
+      source: 'file',
+      sourcePath: normalized.sourcePath,
+    });
+    if (row) {
+      if (providedResources !== undefined) await store.replaceSkillResources(row.id, resources);
+      return { outcome: 'created', skill: { ...normalized, slug }, contentHash, risks, resourceCount, skillId: row.id };
+    }
+  }
+  throw new Error(`could not create imported skill "${normalized.slug}" after repeated slug conflicts`);
+}

@@ -5,6 +5,12 @@ All notable changes to omadia are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+Every version section from `[0.2.1]` onward is generated automatically by
+`.github/workflows/auto-release.yml` from Conventional Commit messages via
+`.github/scripts/generate-changelog.mjs` — no release ships without one. Add
+hand-written notes under `## [Unreleased]` any time; they carry over verbatim
+into the next version's entry. See `CONTRIBUTING.md` § Releases & changelog.
+
 ---
 
 ## [Unreleased]
@@ -40,6 +46,751 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   params and read Anthropic-shaped responses; only the boundary call path now
   translates through `llmProviderSeam`, including streaming final-event usage
   telemetry and provider-based retry classification.
+
+---
+
+## [0.54.0] - 2026-07-06
+
+### Added
+
+- **web-ui/chat**: collapsible debug-chat intro banner (#428)
+
+---
+
+## [0.53.0] - 2026-07-06
+
+### Added
+
+- **web-ui**: restore Days One face for the omadia wordmark (#427)
+
+---
+
+## [0.52.3] - 2026-07-06
+
+### Fixed
+
+- **channels**: rebind inbound route handler on hot-reinstall (#395) (#407)
+
+---
+
+## [0.52.2] - 2026-07-06
+
+### Changed
+
+- move Orchestrators/Conductor into Admin cluster, enlarge chevron (#424)
+
+### Fixed
+
+- **web-ui**: stop chat auto-scroll from yanking user back to bottom (#404) (#425)
+
+---
+
+## [0.52.1] - 2026-07-06
+
+### Fixed
+
+- **web-ui**: allow changing or removing an LLM provider's API key (#402) (#423)
+
+---
+
+## [0.52.0] - 2026-07-03
+
+### Added
+
+- **builder**: wire type:oauth UI + gate provider/scopes
+- **builder**: add oauth_providers descriptor + type:oauth wiring for AgentSpec (#371)
+
+---
+
+## [0.51.0] - 2026-07-03
+
+### Added
+
+- **skills**: skill lifecycle — import, edit, safety guard, multi-source adapters, bundles, and direct-answer persona skills (#411)
+
+---
+
+## [0.50.1] - 2026-07-03
+
+### Fixed
+
+- **store**: portal install drawer above global header
+
+---
+
+## [0.50.0] - 2026-07-02
+
+### Added
+
+- **orchestrator**: per-Agent LLM model selection
+
+### Fixed
+
+- **orchestrator**: address per-Agent model selection review
+
+---
+
+## [0.49.0] - 2026-07-02
+
+### Added
+
+- **ui-prefs**: persist Lume palette/appearance server-side per user (#287)
+
+### Fixed
+
+- **ui-prefs**: avoid 401 bounce; clear prefs cookie on logout
+
+---
+
+## [0.48.0] - 2026-07-01
+
+### Added
+
+- **store**: dynamic post-install setup options for plugin fields (#393)
+
+---
+
+## [0.47.0] - 2026-07-01
+
+### Added
+
+- **conductor**: guided designer UX — dropdowns + builders replace raw ISO/cron/JSON inputs (#398)
+
+---
+
+## [0.46.1] - 2026-06-30
+
+### Fixed
+
+- **ui**: update table rendering behavior (#366)
+
+---
+
+## [0.46.0] - 2026-06-30
+
+### Added
+
+- **conductor**: approval-card reminder contract + holder-authorized await resolution (#394)
+
+---
+
+## [0.45.0] - 2026-06-30
+
+### Added
+
+- **conductor**: principalRef identity-bridge for channel-binding delivery (P2a) (#389)
+
+---
+
+## [0.44.0] - 2026-06-30
+
+### Added
+
+- Omadia Conductor — deterministic workflow engine (Spec 005, US1–US9 + waves 1–6 + channel event-emit) (#388)
+
+---
+
+## [0.43.1] - 2026-06-29
+
+### Fixed
+
+- implement pr feedback
+- **ui**: update dropdown font + bg color
+
+---
+
+## [0.43.0] - 2026-06-29
+
+### Added
+
+- **platform**: plugin egress primitives — ctx.net (raw TCP) + $config.* in network.outbound (#370)
+
+---
+
+## [0.42.0] - 2026-06-29
+
+### Added
+
+- implement pr feedback
+
+### Fixed
+
+- **auth**: redirect /login to dashboard if already logged in
+
+---
+
+## [0.41.0] - 2026-06-24
+
+### Added
+
+- **#309**: run agents on LLM subscriptions via the official CLIs (#367)
+
+---
+
+## [0.40.0] - 2026-06-24
+
+### Added
+
+- in-app "Create Issue" button (operator GitHub device flow) (#363)
+
+---
+
+## [0.39.0] - 2026-06-23
+
+### Added
+
+- **builder**: run codegen + preview on any configured LLM provider (#297) (#320)
+
+---
+
+## [0.38.0] - 2026-06-22
+
+### Added
+
+- **platform**: declarative kernel OAuth broker (descriptor engine) — spec 005 core (#325)
+
+---
+
+## [0.37.3] - 2026-06-22
+
+### Fixed
+
+- **web-ui**: lowercase the omadia brand name in user-facing text (#359)
+
+---
+
+## [0.37.2] - 2026-06-22
+
+### Fixed
+
+- **desktop**: rename wizard bridge const to avoid global name collision (#358)
+
+---
+
+## [0.37.1] - 2026-06-22
+
+### Fixed
+
+- **desktop**: bundle preload so the onboarding wizard works (+ install verbosity) (#357)
+
+---
+
+## [0.37.0] - 2026-06-22
+
+### Added
+
+- **desktop**: native one-click installer with bundled PostgreSQL 17 + pgvector (macOS/Linux/Windows) (#355)
+
+---
+
+## [0.36.0] - 2026-06-19
+
+### Added
+
+- **desktop**: native one-click installer (Electron + embedded PGlite) + signing CI (#341)
+
+---
+
+## [0.35.1] - 2026-06-19
+
+### Fixed
+
+- **ci**: publish versioned + latest images on auto-release (#340)
+
+---
+
+## [0.35.0] - 2026-06-19
+
+### Added
+
+- minimal-core onboarding stack (prebuilt images + opt-in overlays) (#339)
+
+---
+
+## [0.34.0] - 2026-06-18
+
+### Added
+
+- **orchestrator**: agent transparency + Direct Line + forced delegation (#332) (#335)
+
+---
+
+## [0.33.2] - 2026-06-18
+
+### Fixed
+
+- **builder**: persist preview test-credentials on apply + host-backed preview ctx.llm (#334)
+
+---
+
+## [0.33.1] - 2026-06-18
+
+### Fixed
+
+- **builder**: provide ctx.jobs + ctx.status stubs in preview harness (#328)
+
+---
+
+## [0.33.0] - 2026-06-17
+
+### Added
+
+- **privacy-guard**: render V4 results as a structured, guard-flagged canvas table (#324)
+
+---
+
+## [0.32.0] - 2026-06-17
+
+### Added
+
+- **llm**: contract-only SDK-free core + wire-format adapter packages (#298) (#323)
+
+---
+
+## [0.31.0] - 2026-06-16
+
+### Added
+
+- **kg**: automatic self-curation — durable coverage grows + duplicates auto-merge (#322)
+
+---
+
+## [0.30.0] - 2026-06-16
+
+### Added
+
+- **platform**: runtime credentials + flow toolkit + plugin status (spec 004) (#318)
+
+---
+
+## [0.29.0] - 2026-06-16
+
+### Added
+
+- Lumens (Live Interactivity) 1.1 — canvas-core + Tier-2 producer (server) (#315)
+
+---
+
+## [0.28.0] - 2026-06-16
+
+### Added
+
+- **orchestrator**: durable long-term knowledge tier + auto-promotion (#317)
+
+---
+
+## [0.27.1] - 2026-06-16
+
+### Fixed
+
+- **web-ui**: widen markdown table cell spacing to Lume density (#316)
+
+---
+
+## [0.27.0] - 2026-06-15
+
+### Added
+
+- **orchestrator-extras**: relevance-gate + LLM-agnostic judge for cross-session recall (#310)
+
+---
+
+## [0.26.0] - 2026-06-15
+
+### Added
+
+- **llm-provider**: support keyless local providers (e.g. Ollama) (#308)
+
+---
+
+## [0.25.2] - 2026-06-15
+
+### Fixed
+
+- **ui-orchestrator**: canvas composition uses model classes + mirror provider keys (fixes stuck "Working on it…") (#307)
+
+---
+
+## [0.25.1] - 2026-06-15
+
+### Fixed
+
+- **llm**: register provider plugins on hot-install, not just at boot (#306)
+
+---
+
+## [0.25.0] - 2026-06-15
+
+### Added
+
+- **install**: multiline setup fields for string/secret values (#305)
+
+---
+
+## [0.24.1] - 2026-06-15
+
+### Fixed
+
+- **llm**: preserve server tools through the provider seam (live 400 hotfix) (#304)
+
+---
+
+## [0.24.0] - 2026-06-15
+
+### Added
+
+- **pairing**: friction-free Omadia UI ↔ host pairing — server side (#293) (#303)
+
+---
+
+## [0.23.0] - 2026-06-15
+
+### Added
+
+- **admin**: data-driven provider compliance flags (requiresAvvDisclosure/euHosted) (#302)
+
+---
+
+## [0.22.0] - 2026-06-15
+
+### Added
+
+- **llm**: everything-is-a-plugin — pluggable provider seam + empty core (Anthropic/OpenAI/Mistral/MiniMax plugins) (#300)
+
+---
+
+## [0.21.0] - 2026-06-14
+
+### Added
+
+- **llm**: Mistral as a first-class admin-selectable provider (#299)
+
+---
+
+## [0.20.0] - 2026-06-14
+
+### Added
+
+- **llm**: pluggable LLM provider — OpenAI (GPT-5.x) as admin-selectable provider (#292)
+
+---
+
+## [0.19.0] - 2026-06-14
+
+### Added
+
+- **canvas**: publish privacy-shield datasets — canvas_publish_rows accepts datasetId
+
+### Fixed
+
+- **canvas**: carry the sentinel sink through the STREAMING turn scope too
+- **canvas**: carry the sentinel sink into the turn scope — the tap never fired
+- **canvas**: tap raw sentinels before privacy interning — guarded servers never rendered
+
+---
+
+## [0.18.0] - 2026-06-12
+
+### Added
+
+- **omadia-ui**: Tier-2 canvas pipeline — skeleton fix, producer tools (rows/charts/choice), typed UI actions, per-user canvas registry (#277)
+
+---
+
+## [0.17.1] - 2026-06-12
+
+### Fixed
+
+- **builder**: resolve Anthropic client per turn so vault-seeded keys reach the Builder (#281)
+
+---
+
+## [0.17.0] - 2026-06-10
+
+### Added
+
+- **builder**: one-click agent export from dashboard cards (#270) (#279)
+
+---
+
+## [0.16.2] - 2026-06-10
+
+### Changed
+
+- **plan-runner**: reuse stored processes + batch plan-step reads, cache overlay (#276)
+
+### Fixed
+
+- **memory**: stop logging expected memory-tool errors as crashes (#278)
+
+---
+
+## [0.16.1] - 2026-06-10
+
+### Fixed
+
+- **builder-preview**: wire ctx.http into the preview runtime (#275)
+
+---
+
+## [0.16.0] - 2026-06-09
+
+### Added
+
+- **ui-orchestrator**: skeleton composition + requirement handoff (#273)
+
+---
+
+## [0.15.0] - 2026-06-09
+
+### Added
+
+- **ui-channel**: thread localOperations + turn action into metadata (#272)
+
+---
+
+## [0.14.0] - 2026-06-08
+
+### Added
+
+- **admin**: de-duplicate per-plugin settings out of the .env admin page (#265)
+
+---
+
+## [0.13.2] - 2026-06-08
+
+### Fixed
+
+- **agent-builder**: propagate runtime agent installs to fallback even when boot was chat-disabled (#266)
+
+---
+
+## [0.13.1] - 2026-06-08
+
+### Fixed
+
+- **orchestrator**: forward modelRouting to per-Agent orchestrators (#263)
+
+---
+
+## [0.13.0] - 2026-06-08
+
+### Added
+
+- **chat**: show the Haiku-triage decision inline in the turn card (#261)
+
+---
+
+## [0.12.1] - 2026-06-08
+
+### Fixed
+
+- **web-ui**: dismiss stream toasts visually + explicit abort with confirm (#260)
+
+---
+
+## [0.12.0] - 2026-06-08
+
+### Added
+
+- **admin**: .env-based settings overview with live auto-apply + model-routing env wiring (#259)
+
+---
+
+## [0.11.1] - 2026-06-07
+
+### Fixed
+
+- **web-ui**: usage dashboard 404 + show per-turn model & tokens in chat (#258)
+
+---
+
+## [0.11.0] - 2026-06-07
+
+### Added
+
+- **plugins**: auto-author self-extension + standalone-plugin SDK (#255)
+
+---
+
+## [0.10.0] - 2026-06-07
+
+### Added
+
+- LLM cost telemetry, dashboard & per-turn Sonnet/Opus routing (#253)
+
+---
+
+## [0.9.0] - 2026-06-07
+
+### Added
+
+- **routines**: cold-start delivery-target model for proactive 1:1 outreach (#252)
+
+---
+
+## [0.8.2] - 2026-06-07
+
+### Fixed
+
+- **middleware**: propagate runtime plugin (de)activation to per-Agent orchestrators (#257)
+
+---
+
+## [0.8.1] - 2026-06-07
+
+### Fixed
+
+- **dynamic-runtime**: late-resolve vault-armed Anthropic client for sub-agents (#256)
+
+---
+
+## [0.8.0] - 2026-06-07
+
+### Added
+
+- **plugins**: operator-gated, non-escalating plugin self-extension (#254)
+
+---
+
+## [0.7.0] - 2026-06-07
+
+### Added
+
+- **plan-runner**: GC semantically-duplicate plans on materialise (#241)
+
+---
+
+## [0.6.1] - 2026-06-06
+
+### Fixed
+
+- **orchestrator**: raise tool-loop cap 25→100 with round-loop guard + best-effort finalize (#240)
+
+---
+
+## [0.6.0] - 2026-06-06
+
+### Added
+
+- **orchestrator**: live mid-turn steering of a running chat turn (#239)
+
+---
+
+## [0.5.2] - 2026-06-06
+
+### Fixed
+
+- **orchestrator**: raise tool-loop cap 12→25 with floor on stale configs (#237)
+
+---
+
+## [0.5.1] - 2026-06-06
+
+### Fixed
+
+- **config**: treat empty optional diagram/S3 env vars as unset, not a boot-crash (#238)
+
+---
+
+## [0.5.0] - 2026-06-06
+
+### Added
+
+- **ui-orchestrator**: Tier-2 surface synthesis in canvasChatAgent (PR-9b-1) (#235)
+
+---
+
+## [0.4.0] - 2026-06-06
+
+### Added
+
+- **builder**: codegen/build/runtime observability tools for the Builder agent (#227) (#236)
+
+---
+
+## [0.3.8] - 2026-06-05
+
+### Fixed
+
+- **middleware**: arm host-LLM plugins on vault key-entry so plan-runner works on fresh installs (#234)
+
+---
+
+## [0.3.7] - 2026-06-05
+
+### Fixed
+
+- **builder**: author plugins from spec.author, not hardcoded "byte5 GmbH" (#225) (#233)
+
+---
+
+## [0.3.6] - 2026-06-05
+
+### Fixed
+
+- **builder**: prevent message loss when toggling simple/extended view (#224) (#231)
+
+---
+
+## [0.3.5] - 2026-06-05
+
+### Fixed
+
+- **web-ui**: install drawer overlays render above global header (#232)
+
+---
+
+## [0.3.4] - 2026-06-05
+
+### Fixed
+
+- **web-ui**: survive stale/foreign chat-session shapes instead of a blank crash (#230)
+
+---
+
+## [0.3.3] - 2026-06-05
+
+### Fixed
+
+- **builder**: raise report_platform_issue summary cap 280→500 (#229)
+
+---
+
+## [0.3.2] - 2026-06-05
+
+### Fixed
+
+- **orchestrator**: boot gracefully without ANTHROPIC_API_KEY (Setup-Wizard key entry) (#228)
+
+---
+
+## [0.3.1] - 2026-06-05
+
+### Fixed
+
+- **knowledge-graph**: survive first-boot Postgres race instead of crash-looping (#226)
+
+---
+
+## [0.3.0] - 2026-06-05
+
+### Added
+
+- **builder**: native core-bug reporting — GitHub App direct-create + UI (#223)
+
+---
+
+## [0.2.1] - 2026-06-05
+
+### Changed
+
+- **builder**: user-facing 'Veröffentlichen' → 'Bereitstellen' (i18n de, redo of #208) (#217)
+
+### Fixed
+
+- **ci**: set git identity before annotated release tag (#218)
+- **builder**: ctx.memory in preview runtime, accessor permission lint, and setup_fields rename (#207)
 
 ---
 
@@ -213,6 +964,95 @@ Initial public release of Omadia — *An Agentic OS*.
 - The full pre-release development history is preserved in the maintainer's
   internal repository and is not part of the public git history.
 
-[Unreleased]: https://github.com/byte5ai/omadia/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/byte5ai/omadia/compare/v0.54.0...HEAD
+[0.54.0]: https://github.com/byte5ai/omadia/compare/v0.53.0...v0.54.0
+[0.53.0]: https://github.com/byte5ai/omadia/compare/v0.52.3...v0.53.0
+[0.52.3]: https://github.com/byte5ai/omadia/compare/v0.52.2...v0.52.3
+[0.52.2]: https://github.com/byte5ai/omadia/compare/v0.52.1...v0.52.2
+[0.52.1]: https://github.com/byte5ai/omadia/compare/v0.52.0...v0.52.1
+[0.52.0]: https://github.com/byte5ai/omadia/compare/v0.51.0...v0.52.0
+[0.51.0]: https://github.com/byte5ai/omadia/compare/v0.50.1...v0.51.0
+[0.50.1]: https://github.com/byte5ai/omadia/compare/v0.50.0...v0.50.1
+[0.50.0]: https://github.com/byte5ai/omadia/compare/v0.49.0...v0.50.0
+[0.49.0]: https://github.com/byte5ai/omadia/compare/v0.48.0...v0.49.0
+[0.48.0]: https://github.com/byte5ai/omadia/compare/v0.47.0...v0.48.0
+[0.47.0]: https://github.com/byte5ai/omadia/compare/v0.46.1...v0.47.0
+[0.46.1]: https://github.com/byte5ai/omadia/compare/v0.46.0...v0.46.1
+[0.46.0]: https://github.com/byte5ai/omadia/compare/v0.45.0...v0.46.0
+[0.45.0]: https://github.com/byte5ai/omadia/compare/v0.44.0...v0.45.0
+[0.44.0]: https://github.com/byte5ai/omadia/compare/v0.43.1...v0.44.0
+[0.43.1]: https://github.com/byte5ai/omadia/compare/v0.43.0...v0.43.1
+[0.43.0]: https://github.com/byte5ai/omadia/compare/v0.42.0...v0.43.0
+[0.42.0]: https://github.com/byte5ai/omadia/compare/v0.41.0...v0.42.0
+[0.41.0]: https://github.com/byte5ai/omadia/compare/v0.40.0...v0.41.0
+[0.40.0]: https://github.com/byte5ai/omadia/compare/v0.39.0...v0.40.0
+[0.39.0]: https://github.com/byte5ai/omadia/compare/v0.38.0...v0.39.0
+[0.38.0]: https://github.com/byte5ai/omadia/compare/v0.37.3...v0.38.0
+[0.37.3]: https://github.com/byte5ai/omadia/compare/v0.37.2...v0.37.3
+[0.37.2]: https://github.com/byte5ai/omadia/compare/v0.37.1...v0.37.2
+[0.37.1]: https://github.com/byte5ai/omadia/compare/v0.37.0...v0.37.1
+[0.37.0]: https://github.com/byte5ai/omadia/compare/v0.36.0...v0.37.0
+[0.36.0]: https://github.com/byte5ai/omadia/compare/v0.35.1...v0.36.0
+[0.35.1]: https://github.com/byte5ai/omadia/compare/v0.35.0...v0.35.1
+[0.35.0]: https://github.com/byte5ai/omadia/compare/v0.34.0...v0.35.0
+[0.34.0]: https://github.com/byte5ai/omadia/compare/v0.33.2...v0.34.0
+[0.33.2]: https://github.com/byte5ai/omadia/compare/v0.33.1...v0.33.2
+[0.33.1]: https://github.com/byte5ai/omadia/compare/v0.33.0...v0.33.1
+[0.33.0]: https://github.com/byte5ai/omadia/compare/v0.32.0...v0.33.0
+[0.32.0]: https://github.com/byte5ai/omadia/compare/v0.31.0...v0.32.0
+[0.31.0]: https://github.com/byte5ai/omadia/compare/v0.30.0...v0.31.0
+[0.30.0]: https://github.com/byte5ai/omadia/compare/v0.29.0...v0.30.0
+[0.29.0]: https://github.com/byte5ai/omadia/compare/v0.28.0...v0.29.0
+[0.28.0]: https://github.com/byte5ai/omadia/compare/v0.27.1...v0.28.0
+[0.27.1]: https://github.com/byte5ai/omadia/compare/v0.27.0...v0.27.1
+[0.27.0]: https://github.com/byte5ai/omadia/compare/v0.26.0...v0.27.0
+[0.26.0]: https://github.com/byte5ai/omadia/compare/v0.25.2...v0.26.0
+[0.25.2]: https://github.com/byte5ai/omadia/compare/v0.25.1...v0.25.2
+[0.25.1]: https://github.com/byte5ai/omadia/compare/v0.25.0...v0.25.1
+[0.25.0]: https://github.com/byte5ai/omadia/compare/v0.24.1...v0.25.0
+[0.24.1]: https://github.com/byte5ai/omadia/compare/v0.24.0...v0.24.1
+[0.24.0]: https://github.com/byte5ai/omadia/compare/v0.23.0...v0.24.0
+[0.23.0]: https://github.com/byte5ai/omadia/compare/v0.22.0...v0.23.0
+[0.22.0]: https://github.com/byte5ai/omadia/compare/v0.21.0...v0.22.0
+[0.21.0]: https://github.com/byte5ai/omadia/compare/v0.20.0...v0.21.0
+[0.20.0]: https://github.com/byte5ai/omadia/compare/v0.19.0...v0.20.0
+[0.19.0]: https://github.com/byte5ai/omadia/compare/v0.18.0...v0.19.0
+[0.18.0]: https://github.com/byte5ai/omadia/compare/v0.17.1...v0.18.0
+[0.17.1]: https://github.com/byte5ai/omadia/compare/v0.17.0...v0.17.1
+[0.17.0]: https://github.com/byte5ai/omadia/compare/v0.16.2...v0.17.0
+[0.16.2]: https://github.com/byte5ai/omadia/compare/v0.16.1...v0.16.2
+[0.16.1]: https://github.com/byte5ai/omadia/compare/v0.16.0...v0.16.1
+[0.16.0]: https://github.com/byte5ai/omadia/compare/v0.15.0...v0.16.0
+[0.15.0]: https://github.com/byte5ai/omadia/compare/v0.14.0...v0.15.0
+[0.14.0]: https://github.com/byte5ai/omadia/compare/v0.13.2...v0.14.0
+[0.13.2]: https://github.com/byte5ai/omadia/compare/v0.13.1...v0.13.2
+[0.13.1]: https://github.com/byte5ai/omadia/compare/v0.13.0...v0.13.1
+[0.13.0]: https://github.com/byte5ai/omadia/compare/v0.12.1...v0.13.0
+[0.12.1]: https://github.com/byte5ai/omadia/compare/v0.12.0...v0.12.1
+[0.12.0]: https://github.com/byte5ai/omadia/compare/v0.11.1...v0.12.0
+[0.11.1]: https://github.com/byte5ai/omadia/compare/v0.11.0...v0.11.1
+[0.11.0]: https://github.com/byte5ai/omadia/compare/v0.10.0...v0.11.0
+[0.10.0]: https://github.com/byte5ai/omadia/compare/v0.9.0...v0.10.0
+[0.9.0]: https://github.com/byte5ai/omadia/compare/v0.8.2...v0.9.0
+[0.8.2]: https://github.com/byte5ai/omadia/compare/v0.8.1...v0.8.2
+[0.8.1]: https://github.com/byte5ai/omadia/compare/v0.8.0...v0.8.1
+[0.8.0]: https://github.com/byte5ai/omadia/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/byte5ai/omadia/compare/v0.6.1...v0.7.0
+[0.6.1]: https://github.com/byte5ai/omadia/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/byte5ai/omadia/compare/v0.5.2...v0.6.0
+[0.5.2]: https://github.com/byte5ai/omadia/compare/v0.5.1...v0.5.2
+[0.5.1]: https://github.com/byte5ai/omadia/compare/v0.5.0...v0.5.1
+[0.5.0]: https://github.com/byte5ai/omadia/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/byte5ai/omadia/compare/v0.3.8...v0.4.0
+[0.3.8]: https://github.com/byte5ai/omadia/compare/v0.3.7...v0.3.8
+[0.3.7]: https://github.com/byte5ai/omadia/compare/v0.3.6...v0.3.7
+[0.3.6]: https://github.com/byte5ai/omadia/compare/v0.3.5...v0.3.6
+[0.3.5]: https://github.com/byte5ai/omadia/compare/v0.3.4...v0.3.5
+[0.3.4]: https://github.com/byte5ai/omadia/compare/v0.3.3...v0.3.4
+[0.3.3]: https://github.com/byte5ai/omadia/compare/v0.3.2...v0.3.3
+[0.3.2]: https://github.com/byte5ai/omadia/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/byte5ai/omadia/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/byte5ai/omadia/compare/v0.2.1...v0.3.0
+[0.2.1]: https://github.com/byte5ai/omadia/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/byte5ai/omadia/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/byte5ai/omadia/releases/tag/v0.1.0

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { useLocale, useTranslations } from 'next-intl';
 import {
@@ -593,7 +594,11 @@ function InstallDrawer({
   );
   const submitting = phase.kind === 'submitting';
 
-  return (
+  // Portal to <body> so the drawer escapes the store sidebar's
+  // `position: sticky` stacking context (which always creates one, even at
+  // z-index auto). Without this, the drawer's z-50 is trapped inside that
+  // context and the global header (z-40) paints on top of it.
+  return createPortal(
     <div
       className="fixed inset-0 z-50 flex justify-end"
       role="dialog"
@@ -609,7 +614,7 @@ function InstallDrawer({
 
       <aside
         className={cn(
-          'relative z-10 flex h-full max-h-screen w-full max-w-xl flex-col',
+          'relative flex h-full max-h-screen w-full max-w-xl flex-col',
           'border-l border-[color:var(--rule-strong)] bg-[color:var(--paper)]',
           'shadow-[-20px_0_60px_-20px_rgba(0,0,0,0.3)]',
         )}
@@ -716,7 +721,8 @@ function InstallDrawer({
           </form>
         )}
       </aside>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

@@ -243,6 +243,27 @@ function ProviderRow({
     }
   };
 
+  const removeKey = async (): Promise<void> => {
+    if (saveStatus === 'saving') return;
+    if (!confirm(t('providers.removeKeyConfirm', { provider: p.label }))) return;
+    setSaveStatus('saving');
+    setSaveError(undefined);
+    try {
+      const res = await patchSettings([{ key: envKey, value: null }]);
+      const fieldErr = res.errors.find((e) => e.key === envKey);
+      if (fieldErr) {
+        setSaveStatus('error');
+        setSaveError(fieldErr.message);
+        return;
+      }
+      setSaveStatus('saved');
+      await onReload();
+    } catch (err) {
+      setSaveStatus('error');
+      setSaveError(friendlyError(err));
+    }
+  };
+
   return (
     <li className="flex flex-col gap-3 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 px-4 py-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -277,8 +298,28 @@ function ProviderRow({
               {(p.connected ? t('providers.manageCli') : t('providers.logIn'))} →
             </button>
           ) : (
-            !p.connected &&
-            !editing && (
+            !editing &&
+            (p.connected ? (
+              <span className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setEditing(true)}
+                  disabled={saveStatus === 'saving'}
+                  className="text-[13px] font-medium text-[color:var(--accent)] disabled:opacity-50"
+                >
+                  {t('providers.changeKey')} →
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void removeKey()}
+                  disabled={saveStatus === 'saving'}
+                  className="text-[13px] font-medium text-[color:var(--danger)] disabled:opacity-50"
+                >
+                  {t('providers.removeKey')}
+                </button>
+                {saveStatus === 'saving' && <StatusChip status={saveStatus} t={t} />}
+              </span>
+            ) : (
               <button
                 type="button"
                 onClick={() => setEditing(true)}
@@ -286,7 +327,7 @@ function ProviderRow({
               >
                 {t('providers.addKey')} →
               </button>
-            )
+            ))
           )}
         </span>
       </div>
@@ -338,6 +379,12 @@ function ProviderRow({
             <p className="text-[12px] text-[color:var(--danger)]">{saveError}</p>
           )}
         </div>
+      )}
+
+      {/* removeKey runs while `editing` is false, so surface its failures here —
+          otherwise a destructive remove that errors gives the operator no feedback. */}
+      {!p.toolLess && !editing && saveError && (
+        <p className="text-[12px] text-[color:var(--danger)]">{saveError}</p>
       )}
     </li>
   );

@@ -114,6 +114,16 @@
       "failed": "Installation fehlgeschlagen",
       "retry": "Erneut versuchen",
       "browseAll": "Alle Plugins ansehen",
+      "bringSkills": {
+        "kicker": "Optional",
+        "title": "Bring deine Skills mit",
+        "subtitle": "Du hast schon Skills, denen du vertraust — z. B. aus Claude? Importiere einen für einen schnellen ersten Erfolg mit deiner eigenen Arbeit. Du kannst das überspringen.",
+        "cta": "Skill importieren",
+        "imported": "\"{name}\" importiert — jetzt einen Agenten damit bauen.",
+        "toRegistry": "In Skills ansehen",
+        "toBuilder": "Agent bauen",
+        "importAnother": "Weiteren importieren"
+      },
       "dismiss": "Onboarding ausblenden",
       "reenable": "Onboarding anzeigen",
       "empty": "Keine Rollenprofile verfügbar. Verbinde eine Registry, um Empfehlungen zu sehen.",
@@ -229,7 +239,33 @@
         "tools": "Tools"
       },
       "palette": {
-        "title": "Hinzufügen"
+        "title": "Hinzufügen",
+        "importSkill": "Skill importieren"
+      },
+      "import": {
+        "title": "Skill importieren",
+        "hint": "Claude-SKILL.md, Codex-AGENTS.md oder einen ChatGPT-Export ablegen oder einfügen. Es wird nur der Text importiert — mitgelieferte Skripte müssen als Plugin hinzugefügt werden.",
+        "chooseFile": "SKILL.md-Datei wählen",
+        "fileChosen": "{name}",
+        "pastePlaceholder": "SKILL.md-Inhalt hier einfügen…",
+        "preview": "Vorschau",
+        "confirm": "Importieren",
+        "cancel": "Abbrechen",
+        "outcome": {
+          "created": "Wird als neuer Skill angelegt.",
+          "updated": "Aktualisiert den bestehenden importierten Skill.",
+          "unchanged": "Bereits importiert — keine Änderungen."
+        },
+        "risks": {
+          "title": "Vor dem Import prüfen — dieser Inhalt könnte versuchen:",
+          "code": {
+            "instruction_override": "Frühere Anweisungen zu überschreiben",
+            "system_prompt_reference": "Die Rolle / den System-Prompt des Agenten umzudefinieren",
+            "tool_coercion": "Tool-Aufrufe zu erzwingen oder Bestätigungen zu umgehen",
+            "data_exfiltration": "Daten oder Geheimnisse irgendwohin zu senden",
+            "hidden_content": "Versteckten oder verschleierten Inhalt zu enthalten"
+          }
+        }
       },
       "toolbox": {
         "native": "Native Tools",
@@ -264,7 +300,17 @@
         "cron": "Cron",
         "timezone": "Zeitzone"
       },
-      "apiError": "Fehler {status}"
+      "apiError": "Fehler {status}",
+      "persona": {
+        "title": "Direkt-Antwort-Personas",
+        "hintEmpty": "Keine Persona-Skills angehängt — dieser Agent antwortet mit der generischen Standard-Identität.",
+        "hintSome": "Der Agent wählt pro Turn eine dieser Personas, um direkt zu antworten — oder die Standard-Identität, falls keine eindeutig passt. Kein Sub-Agent-Umweg.",
+        "addPlaceholder": "Skill zum Anhängen wählen…",
+        "add": "Anhängen",
+        "remove": "Entfernen",
+        "noSkillsAvailable": "Keine weiteren Skills zum Anhängen verfügbar.",
+        "riskWarning": "Heuristischer Scan hat diesen Skill markiert: {codes}. Als Persona steuert er den Top-Level-Agent mit vollem Tool-Zugriff — vor Verwendung prüfen."
+      }
     }
   },
   "selfExtension": {
@@ -336,6 +382,7 @@
     "admin": "Admin",
     "system": "System",
     "agentsCluster": "Orchestratoren",
+    "skills": "Skills",
     "agentsOverview": "Übersicht",
     "channels": "Channels",
     "pluginsCluster": "Plugins",
@@ -666,11 +713,16 @@
     "errorMiddlewareUnreachable": "Middleware nicht erreichbar auf localhost:3979. Läuft `npm run dev` im middleware-Ordner?",
     "errorProxyFailure": "Proxy-Fehler (HTTP {status}). Prüf die Middleware-Logs.",
     "errorAborted": "Abgebrochen.",
+    "intro": {
+      "kicker": "Wofür ist dieser Chat?",
+      "body": "Das ist der Debug-Chat für Operatoren — eine direkte Leitung zu deinen Orchestratoren zum Testen von Prompts und zum Beobachten von Tool-Aufrufen, Plänen und Knowledge-Graph-Walks in Echtzeit. Das ist nicht die Endnutzer-Erfahrung, sondern zum Debuggen gedacht."
+    },
     "streamLabel": "Stream:",
     "clearTabTitle": "Nur den aktiven Tab leeren",
     "clearTabButton": "Verlauf leeren",
     "composerResetTitle": "Chat zurücksetzen (⌘⇧K) — Verlauf weg, Memory bleibt",
     "composerResetAriaLabel": "Chat zurücksetzen",
+    "scrollToBottomAriaLabel": "Zur neuesten Nachricht springen",
     "resetConfirmTitle": "Chat neu starten?",
     "resetConfirmBody": "Der Verlauf in diesem Chat wird gelöscht und der Agent vergisst den bisherigen Kontext. Memory und Knowledge-Graph-Einträge bleiben erhalten.",
     "resetConfirmAction": "Chat zurücksetzen",
@@ -693,6 +745,12 @@
     "subCallCount": "{count, plural, one {# Sub-Call} other {# Sub-Calls}}",
     "inputLabel": "input",
     "outputLabel": "output",
+    "persona": {
+      "title": "Persona",
+      "matched": "Antwortet als {name}",
+      "none": "Standard-Identität",
+      "fallback": "Persona-Klassifikator nicht verfügbar — Standard-Identität"
+    },
     "subAgentTrace": "sub-agent trace",
     "iterationLabel": "── iteration {n}",
     "attachmentTitle": "{kind}{cachedSuffix} — klick für Originalgröße",
@@ -891,6 +949,36 @@
     "actionReSnapshot": "Auf Standard umbinden",
     "actionDelete": "Session löschen"
   },
+  "skills": {
+    "title": "Skills",
+    "subtitle": "Deine Skill-Bibliothek — Skills importieren, ansehen, bearbeiten und exportieren.",
+    "loadError": "Skills konnten nicht geladen werden.",
+    "search": "Skills durchsuchen…",
+    "import": "Importieren",
+    "empty": "Noch keine Skills.",
+    "selectHint": "Wähle einen Skill, um ihn anzusehen und zu bearbeiten.",
+    "scopeHint": "Hier verwaltest du deine geteilte Skill-Bibliothek. Importierte oder bearbeitete Skills landen in der Registry; über die Slots hängst du sie an diesen Agenten.",
+    "delete": "Löschen",
+    "confirmDelete": "Dieser Skill wird von {count} Agenten genutzt — sie verlieren ihn. Trotzdem löschen?",
+    "confirmDeleteAction": "Trotzdem löschen",
+    "cancel": "Abbrechen",
+    "usedBy": "Verwendet von {count} Agenten",
+    "usedByPersona": "Außerdem Direkt-Antwort-Persona für {count} Agenten",
+    "resources": "{count} gebündelte Ressourcen",
+    "source": {
+      "db": "erstellt",
+      "file": "importiert"
+    },
+    "editor": {
+      "name": "Name",
+      "description": "Beschreibung",
+      "body": "Skill-Inhalt (Markdown)",
+      "save": "Speichern",
+      "forkAndSave": "Als bearbeitbare Kopie speichern",
+      "forkNotice": "Dies ist ein importierter Skill. Beim Speichern wird eine bearbeitbare Kopie erstellt; das Original bleibt als Quelle erhalten.",
+      "export": "Exportieren"
+    }
+  },
   "operatorAgents": {
     "title": "Orchestratoren",
     "subtitle": "Multi-Orchestrator-Runtime — Orchestratoren anlegen, editieren, deaktivieren, drainen oder killen und der Registry live beim Reagieren zuschauen über den LISTEN/NOTIFY-Hot-Reload-Bus.",
@@ -1049,6 +1137,7 @@
         "example2": "Ein Helfer, der eingehende E-Mails zusammenfasst.",
         "example3": "Ein Assistent für Fragen rund um unsere Urlaubsregeln.",
         "inputLabel": "Beschreibe deinen Assistenten",
+        "scrollToBottomAriaLabel": "Zur neuesten Nachricht springen",
         "placeholderIdle": "Beschreibe in eigenen Worten, was dein Assistent können soll.",
         "placeholderBusy": "Dein Assistent wird gebaut …",
         "send": "Senden",
@@ -1085,6 +1174,7 @@
       "tabSpec": "Spec",
       "tabSlots": "Slots",
       "tabPersona": "Persona",
+      "tabSkills": "Skills",
       "tabVersions": "Versionen",
       "paneChat": "Builder-Chat",
       "paneEditor": "Editor",
@@ -1249,6 +1339,7 @@
         "choiceSaveFailed": "Auswahl konnte nicht gespeichert werden."
       },
       "inputLabel": "Builder-Nachricht",
+      "scrollToBottomAriaLabel": "Zur neuesten Nachricht springen",
       "placeholder": {
         "thinking": "Builder denkt nach …",
         "idle": "Beschreibe was der Agent tun soll. Enter zum Senden, Shift+Enter für Zeilenumbruch."
@@ -1291,6 +1382,7 @@
         "rebuild": "Rebuild",
         "rebuildSuccess": "Rebuild #{buildN} ✓ — Preview ist bereit",
         "inputLabel": "Preview-Nachricht",
+        "scrollToBottomAriaLabel": "Zur neuesten Nachricht springen",
         "placeholder": {
           "inflight": "Preview-Agent antwortet …",
           "idle": "Teste den Agent. Enter zum Senden."
@@ -1414,6 +1506,13 @@
         "validation": {
           "keyExists": "Key existiert bereits.",
           "keyFormat": "Key muss snake_case sein (a-z, 0-9, _; mit Buchstaben starten)."
+        },
+        "oauth": {
+          "provider": "Provider",
+          "selectProvider": "— Provider wählen —",
+          "noProviders": "Zuerst einen oauth_providers-Deskriptor anlegen (den Builder-Agent fragen) — dann hier auswählen.",
+          "scopes": "Scopes",
+          "scopesPlaceholder": "kommagetrennt, z.B. profile, email"
         }
       }
     },
@@ -2058,6 +2157,9 @@
       "connected": "verbunden",
       "notConnected": "kein Schlüssel",
       "addKey": "Schlüssel hinterlegen",
+      "changeKey": "Schlüssel ändern",
+      "removeKey": "Schlüssel entfernen",
+      "removeKeyConfirm": "Den gespeicherten API-Key für {provider} entfernen? Agenten, die diesem Provider zugeordnet sind, funktionieren dann nicht mehr, bis ein neuer Schlüssel hinterlegt wird.",
       "logIn": "Anmelden",
       "manageCli": "Verwalten",
       "keyInputLabel": "{provider} API-Key",
