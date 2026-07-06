@@ -1,6 +1,8 @@
 'use client';
 
 import { Button } from '@/app/_components/ui/Button';
+import { ScrollToBottomButton } from '@/app/_components/ScrollToBottomButton';
+import { useStickToBottom } from '@/app/_lib/useStickToBottom';
 import {
   useCallback,
   useEffect,
@@ -204,15 +206,9 @@ export function BuilderChatPane({
     return `${prefix}-${String(counterRef.current)}`;
   }, []);
 
-  // Scroll-to-bottom whenever the transcript grows. Only matters when the
-  // user is already at/near the bottom; we cheap out and always scroll
-  // since the pane is short and a hard scroll on each new event reads as
-  // attentive rather than jarring.
-  useEffect(() => {
-    const node = scrollRef.current;
-    if (!node) return;
-    node.scrollTop = node.scrollHeight;
-  }, [items]);
+  // Issue #404 — only keep following the transcript while the user is
+  // actually at the bottom; scrolling up mid-stream now holds position.
+  const { isAtBottom, scrollToBottom } = useStickToBottom(scrollRef, [items]);
 
   // Make sure we don't leak an in-flight stream across unmount.
   useEffect(() => {
@@ -238,6 +234,7 @@ export function BuilderChatPane({
     setInflight(true);
     setTurnStartedAt(Date.now());
     setInput('');
+    scrollToBottom();
 
     try {
       for await (const ev of streamBuilderTurn(draftId, trimmed, {
@@ -425,7 +422,7 @@ export function BuilderChatPane({
         ]);
       }
     }
-  }, [draftId, inflight, input, model, nextKey, onAgentMutation, t]);
+  }, [draftId, inflight, input, model, nextKey, onAgentMutation, scrollToBottom, t]);
 
   const onStop = useCallback(() => {
     abortRef.current?.abort();
@@ -510,6 +507,7 @@ export function BuilderChatPane({
           ts: Date.now(),
         },
       ]);
+      scrollToBottom();
       setChoiceSubmitting(true);
       setError(null);
       onUserChoiceResolved?.();
@@ -533,36 +531,44 @@ export function BuilderChatPane({
       draftId,
       nextKey,
       onUserChoiceResolved,
+      scrollToBottom,
       t,
     ],
   );
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div
-        ref={scrollRef}
-        className="flex-1 space-y-3 overflow-y-auto px-4 py-4"
-      >
-        {empty ? (
-          <EmptyHint />
-        ) : (
-          items.map((item) => <ChatItemView key={item.key} item={item} />)
-        )}
-        {pendingUserChoice ? (
-          <ChoiceCard
-            choice={{
-              question: pendingUserChoice.question,
-              options: pendingUserChoice.options.map((o) => ({
-                value: o.value,
-                label: o.label,
-              })),
-            }}
-            disabled={choiceSubmitting}
-            onChoose={(v) => {
-              void onChooseUserChoice(v);
-            }}
-          />
-        ) : null}
+      <div className="relative min-h-0 flex-1">
+        <div
+          ref={scrollRef}
+          className="h-full space-y-3 overflow-y-auto px-4 py-4"
+        >
+          {empty ? (
+            <EmptyHint />
+          ) : (
+            items.map((item) => <ChatItemView key={item.key} item={item} />)
+          )}
+          {pendingUserChoice ? (
+            <ChoiceCard
+              choice={{
+                question: pendingUserChoice.question,
+                options: pendingUserChoice.options.map((o) => ({
+                  value: o.value,
+                  label: o.label,
+                })),
+              }}
+              disabled={choiceSubmitting}
+              onChoose={(v) => {
+                void onChooseUserChoice(v);
+              }}
+            />
+          ) : null}
+        </div>
+        <ScrollToBottomButton
+          visible={!isAtBottom}
+          onClick={scrollToBottom}
+          ariaLabel={t('scrollToBottomAriaLabel')}
+        />
       </div>
 
       {error ? (
