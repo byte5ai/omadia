@@ -215,6 +215,12 @@ export interface McpServerNode {
   status: NodeStatus;
   lastDiscoveredAt: string | null;
   discoveredTools: McpDiscoveredTool[];
+  /** Marketplace provenance (issue #455); absent on older middleware builds. */
+  source?: 'manual' | 'marketplace';
+  registryId?: string | null;
+  license?: string | null;
+  author?: string | null;
+  sourceUrl?: string | null;
 }
 
 export interface ScheduleNode {
@@ -617,6 +623,72 @@ export async function listMcpCallLog(opts?: {
   if (opts?.beforeId) params.set('beforeId', opts.beforeId);
   const qs = params.toString();
   return callJson(`/v1/operator/mcp-call-log${qs ? `?${qs}` : ''}`);
+}
+
+// ── MCP marketplace (issue #455) ─────────────────────────────────────────────
+
+export interface McpRegistryInfo {
+  id: string;
+  name: string;
+  url: string;
+  authKind: 'none' | 'bearer';
+  hasToken: boolean;
+}
+
+export interface McpCatalogEntry {
+  id: string;
+  name: string;
+  description: string | null;
+  version: string | null;
+  transport: McpTransport | null;
+  endpoint: string | null;
+  license: string | null;
+  author: string | null;
+  sourceUrl: string | null;
+}
+
+export async function listMcpRegistries(): Promise<{ registries: McpRegistryInfo[] }> {
+  return callJson('/v1/operator/mcp-registries');
+}
+
+export async function addMcpRegistry(input: {
+  name: string;
+  url: string;
+  authKind?: 'none' | 'bearer';
+  token?: string;
+}): Promise<McpRegistryInfo> {
+  return callJson('/v1/operator/mcp-registries', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function deleteMcpRegistry(id: string): Promise<void> {
+  await callJson(`/v1/operator/mcp-registries/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export async function searchMcpCatalog(
+  registryId: string,
+  q: string,
+): Promise<{ entries: McpCatalogEntry[] }> {
+  const params = new URLSearchParams();
+  if (q) params.set('q', q);
+  const qs = params.toString();
+  return callJson(
+    `/v1/operator/mcp-registries/${encodeURIComponent(registryId)}/catalog${qs ? `?${qs}` : ''}`,
+  );
+}
+
+/** Gated import: the created server arrives DISABLED with provenance; the
+ *  operator runs Discover (scan) and enables explicitly. */
+export async function importMcpServerFromRegistry(
+  registryId: string,
+  catalogEntryId: string,
+): Promise<McpServerNode> {
+  return callJson('/v1/operator/mcp-servers/from-registry', {
+    method: 'POST',
+    body: JSON.stringify({ registryId, catalogEntryId }),
+  });
 }
 
 /** Enable/disable a server (issue #460). Triggers a registry reload server-side. */

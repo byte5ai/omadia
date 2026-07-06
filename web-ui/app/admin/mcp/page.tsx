@@ -9,22 +9,29 @@ import { ConfirmDialog } from '../../_components/ConfirmDialog';
 import { SkillVerdictBadge } from '../../_components/admin/SkillVerdictBadge';
 import {
   ackMcpToolVerdict,
+  addMcpRegistry,
   createMcpServer,
   deleteGraphEdge,
+  deleteMcpRegistry,
   deleteMcpServer,
   discoverMcpTools,
+  importMcpServerFromRegistry,
   listMcpCallLog,
   listMcpGrants,
+  listMcpRegistries,
   listMcpServers,
+  searchMcpCatalog,
   setMcpServerStatus,
   type McpCallLogEntry,
+  type McpCatalogEntry,
   type McpGrantMatrixRow,
+  type McpRegistryInfo,
   type McpServerNode,
   type McpTransport,
   type SkillVerdictSeverity,
 } from '../../_lib/agentBuilder';
 
-type Tab = 'servers' | 'grants' | 'audit';
+type Tab = 'servers' | 'marketplace' | 'grants' | 'audit';
 
 /**
  * MCP Control Center v1 (epic #459 W2, issues #460/#461/#462): the standalone
@@ -40,7 +47,7 @@ export default function AdminMcpPage(): React.ReactElement {
       <h1 className="text-lg font-semibold">{t('title')}</h1>
       <p className="text-sm text-[color:var(--fg-muted)]">{t('intro')}</p>
       <div className="flex gap-2">
-        {(['servers', 'grants', 'audit'] as const).map((k) => (
+        {(['servers', 'marketplace', 'grants', 'audit'] as const).map((k) => (
           <Button
             key={k}
             size="sm"
@@ -52,6 +59,7 @@ export default function AdminMcpPage(): React.ReactElement {
         ))}
       </div>
       {tab === 'servers' ? <ServersPane /> : null}
+      {tab === 'marketplace' ? <MarketplacePane /> : null}
       {tab === 'grants' ? <GrantsPane /> : null}
       {tab === 'audit' ? <AuditPane /> : null}
     </div>
@@ -338,6 +346,27 @@ function ServerDetail({
       <div className="text-xs text-[color:var(--fg-muted)]">
         {server.endpoint ?? ''} {server.lastDiscoveredAt ? `· ${server.lastDiscoveredAt}` : ''}
       </div>
+      {server.source === 'marketplace' ? (
+        <div className="flex flex-wrap gap-2 text-[10px]">
+          <span className="text-[color:var(--accent)]">{t('servers.marketplaceSource')}</span>
+          {server.license ? (
+            <span className="text-[color:var(--fg-muted)]">{server.license}</span>
+          ) : (
+            <span className="text-[color:var(--warning)]">{t('marketplace.unlicensed')}</span>
+          )}
+          {server.author ? <span className="text-[color:var(--fg-muted)]">@{server.author}</span> : null}
+          {server.sourceUrl ? (
+            <a
+              href={server.sourceUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="text-[color:var(--fg-muted)] underline underline-offset-2"
+            >
+              {t('servers.sourceLink')}
+            </a>
+          ) : null}
+        </div>
+      ) : null}
       {server.discoveredTools.map((tool) => {
         const v = tool.verdict;
         const needsAck =
@@ -385,6 +414,238 @@ function ServerDetail({
         );
       })}
       {error ? <div className="text-sm text-[color:var(--danger)]">{error}</div> : null}
+    </div>
+  );
+}
+
+// ── Marketplace (issue #455) ─────────────────────────────────────────────────
+
+function MarketplacePane(): React.ReactElement {
+  const t = useTranslations('adminMcp');
+  const [registries, setRegistries] = useState<McpRegistryInfo[] | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [entries, setEntries] = useState<McpCatalogEntry[] | null>(null);
+  const [query, setQuery] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [connected, setConnected] = useState<string | null>(null);
+  const [regName, setRegName] = useState('');
+  const [regUrl, setRegUrl] = useState('');
+  const [regToken, setRegToken] = useState('');
+
+  const refreshRegistries = useCallback(async () => {
+    try {
+      const list = (await listMcpRegistries()).registries;
+      setRegistries(list);
+      setSelected((prev) => prev ?? list[0]?.id ?? null);
+      setError(null);
+    } catch (err) {
+      setError(errText(err));
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshRegistries();
+  }, [refreshRegistries]);
+
+  async function browse(): Promise<void> {
+    if (!selected) return;
+    setBusy('browse');
+    setError(null);
+    setConnected(null);
+    try {
+      setEntries((await searchMcpCatalog(selected, query)).entries);
+    } catch (err) {
+      setError(errText(err));
+      setEntries(null);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function connect(entry: McpCatalogEntry): Promise<void> {
+    if (!selected) return;
+    setBusy(`connect:${entry.id}`);
+    setError(null);
+    try {
+      const server = await importMcpServerFromRegistry(selected, entry.id);
+      setConnected(server.name);
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-end gap-2 rounded-md border border-[color:var(--border)] p-3">
+        <label className="flex flex-col gap-1 text-xs">
+          {t('marketplace.registry')}
+          <select
+            value={selected ?? ''}
+            onChange={(e) => {
+              setSelected(e.target.value || null);
+              setEntries(null);
+            }}
+            className="rounded border border-[color:var(--border)] bg-transparent px-2 py-1 text-sm"
+          >
+            {(registries ?? []).map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex grow flex-col gap-1 text-xs">
+          {t('marketplace.search')}
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void browse();
+            }}
+            className="rounded border border-[color:var(--border)] bg-transparent px-2 py-1 text-sm"
+          />
+        </label>
+        <Button size="sm" busy={busy === 'browse'} onClick={() => void browse()}>
+          {t('marketplace.browse')}
+        </Button>
+        {selected && registries && registries.length > 1 ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() =>
+              void deleteMcpRegistry(selected).then(() => {
+                setSelected(null);
+                setEntries(null);
+                return refreshRegistries();
+              })
+            }
+          >
+            {t('marketplace.removeRegistry')}
+          </Button>
+        ) : null}
+      </div>
+
+      <details className="rounded-md border border-[color:var(--border)] p-3">
+        <summary className="cursor-pointer text-xs text-[color:var(--fg-muted)]">
+          {t('marketplace.addRegistry')}
+        </summary>
+        <div className="mt-2 flex flex-wrap items-end gap-2">
+          <label className="flex flex-col gap-1 text-xs">
+            {t('marketplace.registryName')}
+            <input
+              value={regName}
+              onChange={(e) => setRegName(e.target.value)}
+              className="rounded border border-[color:var(--border)] bg-transparent px-2 py-1 text-sm"
+            />
+          </label>
+          <label className="flex grow flex-col gap-1 text-xs">
+            {t('marketplace.registryUrl')}
+            <input
+              value={regUrl}
+              onChange={(e) => setRegUrl(e.target.value)}
+              placeholder="https://…"
+              className="rounded border border-[color:var(--border)] bg-transparent px-2 py-1 text-sm"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-xs">
+            {t('marketplace.registryToken')}
+            <input
+              type="password"
+              value={regToken}
+              onChange={(e) => setRegToken(e.target.value)}
+              className="rounded border border-[color:var(--border)] bg-transparent px-2 py-1 text-sm"
+            />
+          </label>
+          <Button
+            size="sm"
+            busy={busy === 'addRegistry'}
+            onClick={() => {
+              setBusy('addRegistry');
+              setError(null);
+              void addMcpRegistry({
+                name: regName.trim(),
+                url: regUrl.trim(),
+                ...(regToken.trim() !== ''
+                  ? { authKind: 'bearer' as const, token: regToken.trim() }
+                  : {}),
+              })
+                .then(() => {
+                  setRegName('');
+                  setRegUrl('');
+                  setRegToken('');
+                  return refreshRegistries();
+                })
+                .catch((err: unknown) => setError(errText(err)))
+                .finally(() => setBusy(null));
+            }}
+          >
+            {t('marketplace.addRegistryConfirm')}
+          </Button>
+        </div>
+      </details>
+
+      {error ? <div className="text-sm text-[color:var(--danger)]">{error}</div> : null}
+      {connected ? (
+        <div className="rounded-md border border-[color:var(--success)]/50 bg-[color:var(--success)]/8 px-3 py-2 text-sm">
+          {t('marketplace.connected', { name: connected })}
+        </div>
+      ) : null}
+
+      {entries ? (
+        entries.length === 0 ? (
+          <div className="text-sm text-[color:var(--fg-muted)]">{t('marketplace.noResults')}</div>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {entries.map((entry) => (
+              <div
+                key={entry.id}
+                className="flex items-start justify-between gap-3 rounded-md border border-[color:var(--border)] px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <div className="text-sm">
+                    {entry.name}
+                    {entry.version ? (
+                      <span className="text-xs text-[color:var(--fg-muted)]"> · v{entry.version}</span>
+                    ) : null}
+                  </div>
+                  {entry.description ? (
+                    <div className="text-xs text-[color:var(--fg-muted)]">{entry.description}</div>
+                  ) : null}
+                  <div className="mt-1 flex flex-wrap gap-2 text-[10px]">
+                    {entry.license ? (
+                      <span className="text-[color:var(--fg-muted)]">{entry.license}</span>
+                    ) : (
+                      <span className="text-[color:var(--warning)]">{t('marketplace.unlicensed')}</span>
+                    )}
+                    {entry.author ? (
+                      <span className="text-[color:var(--fg-muted)]">@{entry.author}</span>
+                    ) : null}
+                    {entry.transport ? (
+                      <span className="text-[color:var(--fg-muted)]">{entry.transport}</span>
+                    ) : (
+                      <span className="text-[color:var(--fg-muted)]">{t('marketplace.browseOnly')}</span>
+                    )}
+                  </div>
+                </div>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  busy={busy === `connect:${entry.id}`}
+                  disabled={!entry.transport}
+                  onClick={() => void connect(entry)}
+                >
+                  {t('marketplace.connect')}
+                </Button>
+              </div>
+            ))}
+          </div>
+        )
+      ) : (
+        <div className="text-sm text-[color:var(--fg-muted)]">{t('marketplace.hint')}</div>
+      )}
     </div>
   );
 }

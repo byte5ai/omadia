@@ -2624,10 +2624,29 @@
       "ack": "Acknowledge risk",
       "ackConfirm": "Really acknowledge",
       "acked": "acknowledged",
+      "marketplaceSource": "marketplace",
+      "sourceLink": "source",
       "state": {
         "enabled": "enabled",
         "disabled": "disabled"
       }
+    },
+    "marketplace": {
+      "registry": "Registry",
+      "search": "Search",
+      "browse": "Browse catalog",
+      "hint": "Pick a registry and browse its catalog. Connected servers arrive disabled: run Discover, review the verdicts, then enable.",
+      "noResults": "No catalog entries match.",
+      "connect": "Connect",
+      "connected": "Server \"{name}\" created (disabled). Run Discover on the Servers tab, review verdicts, then enable it.",
+      "unlicensed": "unlicensed, review before enabling",
+      "browseOnly": "browse-only entry",
+      "addRegistry": "Add a registry",
+      "addRegistryConfirm": "Add registry",
+      "removeRegistry": "Remove registry",
+      "registryName": "Name",
+      "registryUrl": "URL",
+      "registryToken": "Bearer token (optional)"
     },
     "grants": {
       "holder": "Granted to",

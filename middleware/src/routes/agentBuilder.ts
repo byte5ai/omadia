@@ -34,6 +34,7 @@ import {
   MCP_SEVERITIES_NEEDING_ACK,
   refreshMcpGrantPolicy,
 } from '../services/mcpGrantPolicy.js';
+import { McpRegistryClient, McpRegistryError } from '../services/mcpRegistryClient.js';
 import { scanDiscoveredTools } from '../services/mcpToolGuard.js';
 import { scanSkillForRisks } from '../services/skillGuard.js';
 import { importSkillMarkdown } from '../services/skillImport.js';
@@ -135,6 +136,9 @@ export function createAgentBuilderRouter(
 ): Router {
   const router = Router();
   const mcp = new McpManager();
+  // Marketplace catalog client (epic #459 W3, issue #455): server-side proxy
+  // with a 5-minute cache, so registry tokens never reach the browser.
+  const mcpRegistryClient = new McpRegistryClient();
 
   function live(res: Response): Live | undefined {
     const config = options.getConfigStore();
@@ -831,6 +835,26 @@ export function createAgentBuilderRouter(
         res.status(404).json({ error: 'mcp_server_not_found' });
         return;
       }
+      // Enable gate (issue #455): a server with unacknowledged ack-requiring
+      // verdicts cannot be enabled — the operator reviews and acks first.
+      if (status === 'enabled') {
+        const verdicts = await l.graph.listMcpToolVerdicts(CURRENT_VERIFIER_VERSION);
+        const acks = await l.graph.listMcpToolVerdictAcks(CURRENT_VERIFIER_VERSION);
+        const ackByTool = new Map(
+          acks.filter((a) => a.serverId === id).map((a) => [a.toolName, a]),
+        );
+        const unacked = verdicts
+          .filter((v) => v.serverId === id && MCP_SEVERITIES_NEEDING_ACK.has(v.severity))
+          .filter((v) => {
+            const ack = ackByTool.get(v.toolName);
+            return !ack || ack.contentHash !== v.contentHash;
+          })
+          .map((v) => ({ toolName: v.toolName, severity: v.severity }));
+        if (unacked.length > 0) {
+          res.status(409).json({ error: 'mcp_server_has_unacked_risks', tools: unacked });
+          return;
+        }
+      }
       await l.graph.setMcpServerStatus(id, status);
       await reload(l);
       const updated = (await l.graph.listMcpServers()).find((s) => s.id === id);
@@ -941,6 +965,127 @@ export function createAgentBuilderRouter(
       }
     },
   );
+
+  // ── mcp marketplace (epic #459 W3, issue #455) ────────────────────────────
+  router.get('/mcp-registries', async (_req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const registries = await l.graph.listMcpRegistries();
+      res.json({
+        registries: registries.map((r) => ({
+          id: r.id,
+          name: r.name,
+          url: r.url,
+          authKind: r.authKind,
+          hasToken: r.token !== null && r.token !== '',
+        })),
+      });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  router.post('/mcp-registries', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const b = req.body ?? {};
+      const name = String(b.name ?? '').trim();
+      const url = String(b.url ?? '').trim();
+      if (name === '' || !/^https?:\/\//.test(url)) {
+        res.status(400).json({ error: 'invalid_registry' });
+        return;
+      }
+      const row = await l.graph.createMcpRegistry({
+        name,
+        url,
+        authKind: b.authKind === 'bearer' ? 'bearer' : 'none',
+        token: typeof b.token === 'string' && b.token !== '' ? b.token : null,
+      });
+      res.json({ id: row.id, name: row.name, url: row.url, authKind: row.authKind, hasToken: row.token !== null });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  router.delete('/mcp-registries/:id', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      await l.graph.deleteMcpRegistry(str(req.params.id));
+      mcpRegistryClient.invalidate(str(req.params.id));
+      res.status(204).end();
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  /** Server-side catalog proxy: registry tokens never reach the browser. */
+  router.get('/mcp-registries/:id/catalog', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const registry = (await l.graph.listMcpRegistries()).find(
+        (r) => r.id === str(req.params.id),
+      );
+      if (!registry) {
+        res.status(404).json({ error: 'mcp_registry_not_found' });
+        return;
+      }
+      const q = typeof req.query['q'] === 'string' ? req.query['q'] : '';
+      const entries = await mcpRegistryClient.search(registry, q);
+      res.json({ entries });
+    } catch (err) {
+      if (err instanceof McpRegistryError) {
+        res.status(502).json({ error: 'mcp_registry_unreachable', code: err.code, message: err.message });
+        return;
+      }
+      fail(res, err);
+    }
+  });
+
+  /** Gated import (issue #455 Phase 2): resolves the catalog entry
+   *  server-side and creates the row DISABLED with full provenance — the
+   *  operator then runs Discover (scan gate) and enables explicitly. */
+  router.post('/mcp-servers/from-registry', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const b = req.body ?? {};
+      const registryId = String(b.registryId ?? '');
+      const catalogEntryId = String(b.catalogEntryId ?? '');
+      const registry = (await l.graph.listMcpRegistries()).find((r) => r.id === registryId);
+      if (!registry) {
+        res.status(404).json({ error: 'mcp_registry_not_found' });
+        return;
+      }
+      const entry = await mcpRegistryClient.resolve(registry, catalogEntryId);
+      if (!entry.transport || !entry.endpoint) {
+        res.status(422).json({ error: 'mcp_catalog_entry_not_importable', id: entry.id });
+        return;
+      }
+      const row = await l.graph.createMcpServer({
+        name: entry.name,
+        transport: entry.transport,
+        endpoint: entry.endpoint,
+        status: 'disabled',
+        source: 'marketplace',
+        registryId,
+        license: entry.license,
+        author: entry.author,
+        sourceUrl: entry.sourceUrl,
+      });
+      res.json(mcpNode(row));
+    } catch (err) {
+      if (err instanceof McpRegistryError) {
+        const status = err.code === 'catalog_entry_not_found' ? 404 : 502;
+        res.status(status).json({ error: err.code, message: err.message });
+        return;
+      }
+      fail(res, err);
+    }
+  });
 
   // ── mcp audit log + grant matrix (epic #459 W2, issues #461/#462) ─────────
   router.get('/mcp-call-log', async (req: Request, res: Response) => {
@@ -1418,6 +1563,11 @@ function mcpNode(s: McpServerRow) {
     status: s.status,
     lastDiscoveredAt: s.lastDiscoveredAt ? s.lastDiscoveredAt.toISOString() : null,
     discoveredTools: s.discoveredTools,
+    source: s.source,
+    registryId: s.registryId,
+    license: s.license,
+    author: s.author,
+    sourceUrl: s.sourceUrl,
   };
 }
 

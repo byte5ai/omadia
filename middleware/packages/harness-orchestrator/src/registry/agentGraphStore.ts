@@ -154,6 +154,12 @@ export interface McpServerRow {
   readonly discoveredTools: readonly unknown[];
   readonly createdAt: Date;
   readonly updatedAt: Date;
+  /** Marketplace provenance (issue #455). `manual` for pre-0010 rows. */
+  readonly source: 'manual' | 'marketplace';
+  readonly registryId: string | null;
+  readonly license: string | null;
+  readonly author: string | null;
+  readonly sourceUrl: string | null;
 }
 
 export interface ToolGrantRow {
@@ -229,6 +235,22 @@ export interface McpServerInput {
   readonly headers?: Record<string, unknown>;
   readonly secretRef?: string | null;
   readonly status?: 'enabled' | 'disabled';
+  /** Marketplace provenance (epic #459 W3, issue #455). Defaults to manual. */
+  readonly source?: 'manual' | 'marketplace';
+  readonly registryId?: string | null;
+  readonly license?: string | null;
+  readonly author?: string | null;
+  readonly sourceUrl?: string | null;
+}
+
+/** One configured MCP registry catalog source (issue #455). */
+export interface McpRegistryRow {
+  readonly id: string;
+  readonly name: string;
+  readonly url: string;
+  readonly authKind: 'none' | 'bearer';
+  readonly token: string | null;
+  readonly createdAt: Date;
 }
 
 export interface ToolGrantInput {
@@ -318,6 +340,21 @@ interface McpServerDbRow {
   discovered_tools: unknown[];
   created_at: Date;
   updated_at: Date;
+  // Marketplace provenance (issue #455); absent on pre-0010 rows in tests.
+  source?: 'manual' | 'marketplace';
+  registry_id?: string | null;
+  license?: string | null;
+  author?: string | null;
+  source_url?: string | null;
+}
+
+interface McpRegistryDbRow {
+  id: string;
+  name: string;
+  url: string;
+  auth_kind: 'none' | 'bearer';
+  token: string | null;
+  created_at: Date;
 }
 
 /** Verdict row for one discovered MCP tool (epic #459 W1, issue #454).
@@ -574,6 +611,11 @@ function mapMcpServer(r: McpServerDbRow): McpServerRow {
     discoveredTools: r.discovered_tools,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    source: r.source ?? 'manual',
+    registryId: r.registry_id ?? null,
+    license: r.license ?? null,
+    author: r.author ?? null,
+    sourceUrl: r.source_url ?? null,
   };
 }
 
@@ -979,6 +1021,49 @@ export class AgentGraphStore {
       [serverId, toolName, verifierVersion, contentHash, ackedBy],
     );
     return mapMcpToolVerdictAck(rows[0]!);
+  }
+
+  // ── MCP registries (epic #459 W3, issue #455) ──────────────────────────────
+
+  async listMcpRegistries(): Promise<readonly McpRegistryRow[]> {
+    const { rows } = await this.pool.query<McpRegistryDbRow>(
+      'SELECT * FROM mcp_registries ORDER BY created_at',
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      url: r.url,
+      authKind: r.auth_kind,
+      token: r.token,
+      createdAt: r.created_at,
+    }));
+  }
+
+  async createMcpRegistry(input: {
+    readonly name: string;
+    readonly url: string;
+    readonly authKind?: 'none' | 'bearer';
+    readonly token?: string | null;
+  }): Promise<McpRegistryRow> {
+    const { rows } = await this.pool.query<McpRegistryDbRow>(
+      `INSERT INTO mcp_registries (name, url, auth_kind, token)
+       VALUES ($1,$2,COALESCE($3,'none'),$4)
+       RETURNING *`,
+      [input.name, input.url, input.authKind ?? null, input.token ?? null],
+    );
+    const r = rows[0]!;
+    return {
+      id: r.id,
+      name: r.name,
+      url: r.url,
+      authKind: r.auth_kind,
+      token: r.token,
+      createdAt: r.created_at,
+    };
+  }
+
+  async deleteMcpRegistry(id: string): Promise<void> {
+    await this.pool.query('DELETE FROM mcp_registries WHERE id = $1', [id]);
   }
 
   /** Bump the config epoch of every grant on a server (epic #459, codex
@@ -1423,8 +1508,9 @@ export class AgentGraphStore {
   async createMcpServer(input: McpServerInput): Promise<McpServerRow> {
     try {
       const { rows } = await this.pool.query<McpServerDbRow>(
-        `INSERT INTO mcp_servers (name, transport, endpoint, headers, secret_ref, status)
-         VALUES ($1,$2,$3,COALESCE($4::jsonb,'{}'::jsonb),$5,COALESCE($6,'enabled'))
+        `INSERT INTO mcp_servers
+           (name, transport, endpoint, headers, secret_ref, status, source, registry_id, license, author, source_url)
+         VALUES ($1,$2,$3,COALESCE($4::jsonb,'{}'::jsonb),$5,COALESCE($6,'enabled'),COALESCE($7,'manual'),$8,$9,$10,$11)
          RETURNING *`,
         [
           input.name,
@@ -1433,6 +1519,11 @@ export class AgentGraphStore {
           input.headers ? JSON.stringify(input.headers) : null,
           input.secretRef ?? null,
           input.status ?? null,
+          input.source ?? null,
+          input.registryId ?? null,
+          input.license ?? null,
+          input.author ?? null,
+          input.sourceUrl ?? null,
         ],
       );
       return mapMcpServer(rows[0]!);

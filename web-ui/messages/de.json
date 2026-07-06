@@ -2624,10 +2624,29 @@
       "ack": "Risiko bestätigen",
       "ackConfirm": "Wirklich bestätigen",
       "acked": "bestätigt",
+      "marketplaceSource": "Marketplace",
+      "sourceLink": "Quelle",
       "state": {
         "enabled": "aktiv",
         "disabled": "deaktiviert"
       }
+    },
+    "marketplace": {
+      "registry": "Registry",
+      "search": "Suche",
+      "browse": "Katalog durchsuchen",
+      "hint": "Registry wählen und Katalog durchsuchen. Verbundene Server starten deaktiviert: erst Discover ausführen, Verdicts prüfen, dann aktivieren.",
+      "noResults": "Keine passenden Katalog-Einträge.",
+      "connect": "Verbinden",
+      "connected": "Server \"{name}\" angelegt (deaktiviert). Auf dem Server-Tab Discover ausführen, Verdicts prüfen, dann aktivieren.",
+      "unlicensed": "ohne Lizenz, vor Aktivierung prüfen",
+      "browseOnly": "nur Ansicht",
+      "addRegistry": "Registry hinzufügen",
+      "addRegistryConfirm": "Registry hinzufügen",
+      "removeRegistry": "Registry entfernen",
+      "registryName": "Name",
+      "registryUrl": "URL",
+      "registryToken": "Bearer-Token (optional)"
     },
     "grants": {
       "holder": "Vergeben an",
