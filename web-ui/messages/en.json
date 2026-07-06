@@ -712,6 +712,10 @@
     "errorMiddlewareUnreachable": "Middleware unreachable on localhost:3979. Is `npm run dev` running in the middleware folder?",
     "errorProxyFailure": "Proxy error (HTTP {status}). Check the middleware logs.",
     "errorAborted": "Aborted.",
+    "intro": {
+      "summary": "What is this chat?",
+      "body": "This is the operator debug chat — a direct line to your orchestrators for testing prompts and inspecting tool calls, plans, and knowledge-graph walks as they happen. It's not the end-user experience; it's built for debugging."
+    },
     "streamLabel": "Stream:",
     "clearTabTitle": "Clear only the active tab",
     "clearTabButton": "Clear history",

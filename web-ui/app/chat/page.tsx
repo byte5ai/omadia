@@ -451,6 +451,8 @@ export default function ChatPage(): React.ReactElement {
         disabled={sending}
       />
 
+      <ChatIntro />
+
       <div className="border-b border-[color:var(--border)] bg-[color:var(--bg-elevated)]/75 px-6 py-2 text-xs">
         <div className="mx-auto flex max-w-4xl flex-col gap-2">
           {/* Row 1 — orchestrator picker. The stream-path + session-scope
@@ -689,6 +691,26 @@ export default function ChatPage(): React.ReactElement {
         }}
       />
     </main>
+  );
+}
+
+/**
+ * What-is-this-page explainer. Native `<details>` — same collapsed-by-
+ * default disclosure pattern as `<ToolTrace>` below — so the explanation is
+ * one click away without permanently eating vertical space from the chat
+ * area on every load.
+ */
+function ChatIntro(): React.ReactElement {
+  const t = useTranslations('chat');
+  return (
+    <details className="border-b border-[color:var(--border)] bg-[color:var(--bg-elevated)]/50 px-6 text-xs">
+      <summary className="mx-auto max-w-4xl cursor-pointer select-none py-2 font-medium text-[color:var(--fg-muted)]">
+        {t('intro.summary')}
+      </summary>
+      <div className="mx-auto max-w-4xl pb-3 text-[color:var(--fg-subtle)]">
+        {t('intro.body')}
+      </div>
+    </details>
   );
 }
 
