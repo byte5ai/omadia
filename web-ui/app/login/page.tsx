@@ -67,6 +67,13 @@ function LoginPageInner(): React.ReactElement {
     return raw;
   }, [searchParams]);
 
+  // Explicit re-login request (SessionWatcher's "Relogin now" button). The
+  // current session may still be valid, but the operator asked to mint a
+  // fresh token — so skip the already-authenticated short-circuit below and
+  // render the login form. Without this the page would bounce straight back
+  // and the button would appear to do nothing.
+  const forceReauth = searchParams.get('reauth') === '1';
+
   const [state, setState] = useState<State>({ kind: 'loading' });
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -85,7 +92,7 @@ function LoginPageInner(): React.ReactElement {
           getAuthProviders(),
         ]);
         if (cancelled) return;
-        if (session.authenticated) {
+        if (session.authenticated && !forceReauth) {
           // Guard against ?return=/login which would re-enter this page
           // and loop. Only reachable via hand-crafted URLs today.
           router.replace(returnPath === '/login' ? '/' : returnPath);
@@ -118,7 +125,7 @@ function LoginPageInner(): React.ReactElement {
     return () => {
       cancelled = true;
     };
-  }, [returnPath, router]);
+  }, [returnPath, router, forceReauth]);
 
   async function handlePasswordSubmit(
     e: React.FormEvent<HTMLFormElement>,
