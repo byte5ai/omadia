@@ -895,6 +895,12 @@
     "bypassedBytes": "{kb} KB roh",
     "explainerBypassed": "Der Operator hat für mindestens ein Plugin den Privacy-Mode auf »Bypass« gestellt — dessen Tool-Ergebnisse erreichten das Modell unmaskiert. Eingesetzt für vertrauenswürdige interne Quellen, deren Inhalte der Privacy Shield strukturell nicht sinnvoll digestieren kann."
   },
+  "directLine": {
+    "consultedLabel": "🔎 Konsultiert:",
+    "stepsCount": "{count, plural, one {# Schritt} other {# Schritte}}",
+    "delegatedAnswerFrom": "Direkte Antwort von {label}",
+    "delegatedAnswerCaption": "Wortgetreu übermittelt — der Orchestrator kann diese Antwort nicht bearbeiten oder entfernen."
+  },
   "privacyOperator": {
     "eyebrow": "Privacy Operator",
     "heroTitle": "Privacy Shield.",

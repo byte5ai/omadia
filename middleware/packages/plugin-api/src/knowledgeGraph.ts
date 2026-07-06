@@ -1537,6 +1537,11 @@ export interface RunAgentInvocation {
   /** 0-based index across the Run — ties back the INVOKED_AGENT edge ordering. */
   index: number;
   agentName: string;
+  /** Stable agent id when resolvable (e.g. `de.byte5.agent.strategist`). Lets
+   *  consumers disambiguate invocations whose human-facing label collides
+   *  (#332 gap-closure). Absent when the invoked tool has no registered
+   *  agentId (native/kernel tools). */
+  agentId?: string;
   durationMs: number;
   subIterations: number;
   status: RunStatus;

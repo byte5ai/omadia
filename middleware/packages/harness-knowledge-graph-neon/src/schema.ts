@@ -217,6 +217,8 @@ const AgentInvocationPropsSchema = z
   .object({
     runId: z.string().min(1),
     agentName: z.string().min(1),
+    /** Stable agent id when resolvable (#332 gap-closure). */
+    agentId: z.string().optional(),
     index: z.number().int().nonnegative(),
     durationMs: z.number().int().nonnegative(),
     subIterations: z.number().int().nonnegative(),

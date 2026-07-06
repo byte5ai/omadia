@@ -905,6 +905,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         const invProps = validateNodeProps('AgentInvocation', {
           runId: runExtId,
           agentName: inv.agentName,
+          ...(inv.agentId !== undefined ? { agentId: inv.agentId } : {}),
           index: inv.index,
           durationMs: inv.durationMs,
           subIterations: inv.subIterations,
