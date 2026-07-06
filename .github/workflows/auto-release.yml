@@ -11,10 +11,15 @@ name: auto-release
 # both as GitHub Release notes and as a docs/CHANGELOG.md entry — with no
 # manual step required. See docs/CHANGELOG.md's header for the policy.
 #
-# Uses only GITHUB_TOKEN (contents: write, pull-requests: write) — no PAT, no
-# repo-settings change. The changelog PR relies on the repo's existing
-# auto-merge setting + zero required approving reviews to land unattended
-# once the (path-filter-free) required CI checks pass.
+# Uses only GITHUB_TOKEN (contents: write, pull-requests: write) — no PAT.
+# The changelog PR relies on the repo's existing auto-merge setting + zero
+# required approving reviews to land unattended once the (path-filter-free)
+# required CI checks pass. It ALSO requires the repo setting "Allow GitHub
+# Actions to create and approve pull requests" (Settings > Actions > General
+# > Workflow permissions) — without it, `gh pr create` fails with "GitHub
+# Actions is not permitted to create or approve pull requests" and the
+# changelog-pr job fails (harmlessly: it's isolated from publish-images /
+# desktop-apps below, see that job's comment).
 #
 #   fix:                      -> patch  (0.2.0 -> 0.2.1)
 #   feat:                     -> minor  (0.2.0 -> 0.3.0)
@@ -42,6 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       new_tag: ${{ steps.rel.outputs.new_tag }}
+      latest_tag: ${{ steps.rel.outputs.latest_tag }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -105,12 +111,36 @@ jobs:
           echo "new_tag=$new" >> "$GITHUB_OUTPUT"
           echo "latest_tag=$latest" >> "$GITHUB_OUTPUT"
 
+  # Promotes docs/CHANGELOG.md's [Unreleased] into the dated version section via
+  # an auto-merging PR. Deliberately its OWN job (not a step in `release`):
+  # a failure here must never cascade into `needs: release` on publish-images /
+  # desktop-apps below, since GitHub only runs those if the `release` JOB's
+  # overall conclusion is success — a failing step anywhere in that job would
+  # silently skip shipping the images/installers for a release that already
+  # exists. (This bit us on v0.55.0: the PR-creation step failed and both
+  # downstream jobs were skipped even though the tag + GitHub Release were
+  # already live.)
+  changelog-pr:
+    needs: release
+    if: ${{ needs.release.outputs.new_tag != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      NEW_TAG: ${{ needs.release.outputs.new_tag }}
+      LATEST_TAG: ${{ needs.release.outputs.latest_tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
       - name: Promote docs/CHANGELOG.md via an auto-merging PR
-        if: steps.rel.outputs.new_tag != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          NEW_TAG: ${{ steps.rel.outputs.new_tag }}
-          LATEST_TAG: ${{ steps.rel.outputs.latest_tag }}
         run: |
           set -euo pipefail
 
