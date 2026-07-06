@@ -814,6 +814,33 @@ export function createAgentBuilderRouter(
     }
   });
 
+  /** Enable/disable a server (issue #460). Disabling does not delete grants;
+   *  the registry reload drops the server's tools from live orchestrators. */
+  router.patch('/mcp-servers/:id', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const id = str(req.params.id);
+      const status = req.body?.status;
+      if (status !== 'enabled' && status !== 'disabled') {
+        res.status(400).json({ error: 'invalid_status' });
+        return;
+      }
+      const row = (await l.graph.listMcpServers()).find((s) => s.id === id);
+      if (!row) {
+        res.status(404).json({ error: 'mcp_server_not_found' });
+        return;
+      }
+      await l.graph.setMcpServerStatus(id, status);
+      await reload(l);
+      const updated = (await l.graph.listMcpServers()).find((s) => s.id === id);
+      const [decorated] = await withToolVerdicts(l, updated ? [updated] : []);
+      res.json(decorated ? mcpNode(decorated) : { id, status });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
   router.delete('/mcp-servers/:id', async (req: Request, res: Response) => {
     const l = live(res);
     if (!l) return;
@@ -846,9 +873,13 @@ export function createAgentBuilderRouter(
       }
       await l.graph.setMcpDiscoveredTools(row.id, tools);
       // Re-discovery can change verdicts (and thus the runtime blocklist) and
-      // tool specs — refresh the policy and rebuild agents so live orchestrators
-      // drop newly-risky tools instead of serving them until the next reload.
+      // tool specs. Refresh the policy, then bump the server's grant epoch so
+      // the reload's diff actually rebuilds the affected agents — verdict rows
+      // alone are invisible to the graph signature (codex finding). The
+      // dispatch guard in McpManager enforces the new policy immediately
+      // either way; the rebuild re-aligns the visible tool surface.
       await refreshMcpGrantPolicy(l.graph);
+      await l.graph.bumpMcpGrantEpoch(row.id);
       await reload(l);
       const updated = (await l.graph.listMcpServers()).find((s) => s.id === row.id);
       const [decorated] = await withToolVerdicts(l, [updated ?? row]);
@@ -889,9 +920,12 @@ export function createAgentBuilderRouter(
           verdict.contentHash,
           actor,
         );
-        // An ack unblocks the (server, tool) pair for hydration — refresh the
-        // policy and rebuild so the tool becomes callable without a restart.
+        // An ack unblocks the (server, tool) pair. Refresh the policy (the
+        // dispatch guard allows immediately), then bump the grant epoch +
+        // reload so hydration re-materializes the previously-filtered tool
+        // spec without a restart.
         await refreshMcpGrantPolicy(l.graph);
+        await l.graph.bumpMcpGrantEpoch(id);
         await reload(l);
         res.json({
           serverId: id,
@@ -907,6 +941,90 @@ export function createAgentBuilderRouter(
       }
     },
   );
+
+  // ── mcp audit log + grant matrix (epic #459 W2, issues #461/#462) ─────────
+  router.get('/mcp-call-log', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const limitRaw = Number(req.query['limit']);
+      const serverId =
+        typeof req.query['serverId'] === 'string' && req.query['serverId'] !== ''
+          ? req.query['serverId']
+          : undefined;
+      const beforeId =
+        typeof req.query['beforeId'] === 'string' && req.query['beforeId'] !== ''
+          ? req.query['beforeId']
+          : undefined;
+      const entries = await l.graph.listMcpCallLog({
+        ...(Number.isFinite(limitRaw) ? { limit: limitRaw } : {}),
+        ...(serverId ? { serverId } : {}),
+        ...(beforeId ? { beforeId } : {}),
+      });
+      res.json({
+        entries: entries.map((e) => ({ ...e, calledAt: e.calledAt.toISOString() })),
+      });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  /** Read-only grant matrix (issue #461): every persisted MCP grant with its
+   *  holder (agent or sub-agent), server, normalized tool name, and current
+   *  verdict/ack/blocked state — "granted but not callable" is visible instead
+   *  of silent. */
+  router.get('/mcp-grants', async (_req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const [grants, agents, subAgents, servers, verdicts, acks] = await Promise.all([
+        l.graph.listAllToolGrants(),
+        l.config.listAgents(),
+        l.graph.listAllSubAgents(),
+        l.graph.listMcpServers(),
+        l.graph.listMcpToolVerdicts(CURRENT_VERIFIER_VERSION),
+        l.graph.listMcpToolVerdictAcks(CURRENT_VERIFIER_VERSION),
+      ]);
+      const agentById = new Map(agents.map((a) => [a.id, a]));
+      const subById = new Map(subAgents.map((s) => [s.id, s]));
+      const serverById = new Map(servers.map((s) => [s.id, s]));
+      const vmap = new Map(verdicts.map((v) => [`${v.serverId} ${v.toolName}`, v]));
+      const amap = new Map(acks.map((a) => [`${a.serverId} ${a.toolName}`, a]));
+      const rows = grants
+        .filter((g) => g.toolKind === 'mcp' && g.mcpServerId !== null)
+        .map((g) => {
+          const server = g.mcpServerId ? serverById.get(g.mcpServerId) : undefined;
+          const toolName = server ? mcpToolNameFromRef(g.toolRef, server.name) : g.toolRef;
+          const v = vmap.get(`${g.mcpServerId ?? ''} ${toolName}`);
+          const a = amap.get(`${g.mcpServerId ?? ''} ${toolName}`);
+          const ackValid = v !== undefined && a !== undefined && a.contentHash === v.contentHash;
+          const sub = g.subAgentId ? subById.get(g.subAgentId) : undefined;
+          const holderAgent = g.agentId
+            ? agentById.get(g.agentId)
+            : sub
+              ? agentById.get(sub.parentAgentId)
+              : undefined;
+          return {
+            grantId: g.id,
+            holderKind: g.subAgentId ? 'subagent' : 'agent',
+            agentSlug: holderAgent?.slug ?? null,
+            agentName: holderAgent?.name ?? null,
+            subAgentId: g.subAgentId,
+            subAgentName: sub?.name ?? null,
+            serverId: g.mcpServerId,
+            serverName: server?.name ?? null,
+            toolName,
+            severity: v?.severity ?? null,
+            notYetScanned: v === undefined,
+            acked: ackValid,
+            blocked: v !== undefined && MCP_SEVERITIES_NEEDING_ACK.has(v.severity) && !ackValid,
+          };
+        });
+      res.json({ grants: rows });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
 
   // ── schedules ─────────────────────────────────────────────────────────────
   router.get('/agents/:slug/schedules', async (req: Request, res: Response) => {

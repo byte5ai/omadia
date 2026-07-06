@@ -123,6 +123,17 @@ export interface TurnContextValue {
    * underlying tool. Undefined outside a domain-tool dispatch.
    */
   subAgentOwnerPluginId?: string;
+  /**
+   * MCP call attribution overrides (epic #459 W2, issue #462). The audit
+   * observer in `McpManager.callTool` derives the caller taxonomy
+   * (agent | subagent | skill | plugin | unattributed) from the turn context;
+   * these two fields let a non-agent dispatch surface identify itself: the
+   * skill-binding path (#456) sets `mcpCallerKind: 'skill'` +
+   * `mcpCallerId: <skill slug>`, the plugin accessor (#458) sets
+   * `'plugin'` + the plugin id. Unset for plain agent/sub-agent turns.
+   */
+  mcpCallerKind?: 'skill' | 'plugin';
+  mcpCallerId?: string;
 }
 
 const storage = new AsyncLocalStorage<TurnContextValue>();

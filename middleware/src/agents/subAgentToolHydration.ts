@@ -223,6 +223,14 @@ export function registerDbSubAgentTools(
     if (!built.orchestrator.hasDomainTool(t.name)) {
       built.orchestrator.registerDomainTool(t);
       n += 1;
+    } else if (t.domain.startsWith('mcp.')) {
+      // A fresh rebuild starts from an empty tool surface, so a hit here means
+      // another tool already claimed this (sanitized, possibly truncated)
+      // name — surface it instead of silently dropping the grant (codex
+      // finding: collisions were invisible).
+      deps.log?.(
+        `subAgentToolHydration: mcp tool name "${t.name}" already registered — grant not materialized (name collision)`,
+      );
     }
   }
   return n;

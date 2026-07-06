@@ -4,6 +4,7 @@ import { strict as assert } from 'node:assert';
 import {
   isMcpGrantBlocked,
   MCP_SEVERITIES_NEEDING_ACK,
+  mcpDispatchDenial,
   refreshMcpGrantPolicy,
   resetMcpGrantPolicyForTests,
 } from '../src/services/mcpGrantPolicy.js';
@@ -80,8 +81,42 @@ describe('mcpGrantPolicy', () => {
     assert.equal(isMcpGrantBlocked(SERVER, 'evil'), false);
   });
 
-  it('unknown pairs are not runtime-blocked (pre-0008 grants keep working until re-discover)', async () => {
+  it('unknown pairs are not hydration-blocked (specs stay visible on existing installs)', async () => {
     await refreshMcpGrantPolicy(fakeGraph([], []));
     assert.equal(isMcpGrantBlocked(SERVER, 'never_scanned'), false);
+  });
+
+  it('dispatch denial: blocked pair names the severity, unscanned pair demands discover, clean pair passes', async () => {
+    await refreshMcpGrantPolicy(
+      fakeGraph([verdict('evil', 'high_risk'), verdict('sum', 'no_signals')], []),
+    );
+    assert.ok(mcpDispatchDenial(SERVER, 'evil')?.includes('high_risk'));
+    assert.ok(mcpDispatchDenial(SERVER, 'never_scanned')?.includes('no current scan verdict'));
+    assert.equal(mcpDispatchDenial(SERVER, 'sum'), null);
+  });
+
+  it('an older refresh finishing late cannot overwrite a newer blocklist (generation race)', async () => {
+    let releaseOld: () => void = () => undefined;
+    const oldGate = new Promise<void>((resolve) => {
+      releaseOld = resolve;
+    });
+    // Old refresh: reads CLEAN data, but its reads resolve only after the gate.
+    const oldGraph = {
+      listMcpToolVerdicts: async () => {
+        await oldGate;
+        return [verdict('evil', 'no_signals')];
+      },
+      listMcpToolVerdictAcks: async () => [],
+    } as unknown as AgentGraphStore;
+    // New refresh: sees the tool as high_risk, resolves immediately.
+    const newGraph = fakeGraph([verdict('evil', 'high_risk')], []);
+
+    const oldRefresh = refreshMcpGrantPolicy(oldGraph);
+    await refreshMcpGrantPolicy(newGraph);
+    assert.equal(isMcpGrantBlocked(SERVER, 'evil'), true);
+    releaseOld();
+    await oldRefresh;
+    // The stale result must NOT have reopened the tool.
+    assert.equal(isMcpGrantBlocked(SERVER, 'evil'), true);
   });
 });

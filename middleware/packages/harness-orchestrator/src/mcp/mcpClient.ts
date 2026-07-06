@@ -27,6 +27,8 @@ import type {
   NativeToolSpec,
 } from '@omadia/plugin-api';
 
+import { turnContext } from '../turnContext.js';
+
 export type McpTransportKind = 'stdio' | 'http' | 'sse';
 
 export interface McpServerConfig {
@@ -45,6 +47,43 @@ export interface McpToolDescriptor {
   readonly inputSchema?: Record<string, unknown>;
 }
 
+/** Caller taxonomy for the MCP call audit log (epic #459 W2, issue #462).
+ *  Defined once here; skill (#456) and plugin (#458) surfaces identify
+ *  themselves via `turnContext.mcpCallerKind`. */
+export type McpCallerKind = 'agent' | 'subagent' | 'skill' | 'plugin' | 'unattributed';
+
+/** One audit entry per `callTool` invocation. Deliberately carries NO tool
+ *  arguments — identity and outcome only. */
+export interface McpCallLogEntry {
+  readonly serverId: string;
+  readonly serverName: string;
+  readonly toolName: string;
+  readonly callerKind: McpCallerKind;
+  readonly callerAgent: string | null;
+  readonly turnId: string | null;
+  readonly ok: boolean;
+  readonly error: string | null;
+  readonly durationMs: number;
+  readonly calledAt: Date;
+}
+
+/** Observer invoked after every tool call. Implementations must be fast and
+ *  MUST NOT throw; the manager additionally guards with try/catch so the
+ *  audit path can never break a tool call. */
+export type McpCallObserver = (entry: McpCallLogEntry) => void;
+
+/** Dispatch-time policy gate (issue #454, codex-fold 2). Returns a
+ *  model-facing error string to DENY the call, or null to allow it. Runs on
+ *  every `callTool`, so policy changes (re-discover found a risk, operator
+ *  acked one) apply immediately — no registry rebuild required for
+ *  enforcement. Denied calls are still audit-logged. */
+export type McpCallGuard = (serverId: string, toolName: string) => string | null;
+
+export interface McpManagerOptions {
+  readonly onToolCall?: McpCallObserver;
+  readonly guard?: McpCallGuard;
+}
+
 interface Pooled {
   readonly client: Client;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -56,6 +95,49 @@ const CLIENT_INFO = { name: 'omadia-agent-builder', version: '0.1.0' } as const;
 export class McpManager {
   private readonly pool = new Map<string, Pooled>();
   private readonly connecting = new Map<string, Promise<Pooled>>();
+
+  /** Optional audit observer + dispatch guard (issues #462/#454). Existing
+   *  `new McpManager()` call sites keep working unchanged. */
+  constructor(private readonly options?: McpManagerOptions) {}
+
+  /** Emit one audit entry. Caller identity comes from the turn context
+   *  (AsyncLocalStorage), so every dispatch path is covered without call-site
+   *  threading; non-turn paths degrade deterministically to `unattributed`.
+   *  Never throws into the tool-call path. */
+  private emitCall(
+    cfg: McpServerConfig,
+    toolName: string,
+    ok: boolean,
+    error: string | null,
+    startedAt: number,
+  ): void {
+    if (!this.options?.onToolCall) return;
+    try {
+      const ctx = turnContext.current();
+      const inTurn = ctx !== undefined && ctx.turnId !== '';
+      const callerKind: McpCallerKind =
+        ctx?.mcpCallerKind ??
+        (ctx?.subAgentOwnerPluginId !== undefined
+          ? 'subagent'
+          : inTurn
+            ? 'agent'
+            : 'unattributed');
+      this.options.onToolCall({
+        serverId: cfg.id,
+        serverName: cfg.name,
+        toolName,
+        callerKind,
+        callerAgent: ctx?.mcpCallerId ?? ctx?.agentSlug ?? null,
+        turnId: inTurn ? ctx.turnId : null,
+        ok,
+        error,
+        durationMs: Date.now() - startedAt,
+        calledAt: new Date(),
+      });
+    } catch {
+      /* the audit trail must never break a tool call */
+    }
+  }
 
   /** Discover the tool list a server exposes. Throws on connection failure so
    *  the operator-facing `/discover` endpoint can report it. */
@@ -79,22 +161,41 @@ export class McpManager {
     toolName: string,
     args: Record<string, unknown>,
   ): Promise<string> {
+    const startedAt = Date.now();
+    // Dispatch-time policy gate (issue #454): checked on EVERY call, so a
+    // verdict that turned risky on re-discover blocks immediately and an
+    // operator ack unblocks immediately — independent of registry rebuilds.
+    try {
+      const denial = this.options?.guard?.(cfg.id, toolName);
+      if (denial) {
+        this.emitCall(cfg, toolName, false, denial, startedAt);
+        return denial;
+      }
+    } catch {
+      /* a broken guard must not take down tool dispatch — fall through */
+    }
     let pooled: Pooled;
     try {
       pooled = await this.getOrConnect(cfg);
     } catch (err) {
-      return `Error: could not connect to MCP server "${cfg.name}": ${msg(err)}`;
+      const failure = `Error: could not connect to MCP server "${cfg.name}": ${msg(err)}`;
+      this.emitCall(cfg, toolName, false, failure, startedAt);
+      return failure;
     }
     try {
       const res = await pooled.client.callTool({
         name: toolName,
         arguments: args,
       });
-      return renderToolResult(res);
+      const rendered = renderToolResult(res);
+      this.emitCall(cfg, toolName, true, null, startedAt);
+      return rendered;
     } catch (err) {
       // Drop the connection so the next call reconnects (server may have died).
       await this.close(cfg.id);
-      return `Error: MCP tool "${toolName}" on "${cfg.name}" failed: ${msg(err)}`;
+      const failure = `Error: MCP tool "${toolName}" on "${cfg.name}" failed: ${msg(err)}`;
+      this.emitCall(cfg, toolName, false, failure, startedAt);
+      return failure;
     }
   }
 

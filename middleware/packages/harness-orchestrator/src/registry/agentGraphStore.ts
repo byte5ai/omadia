@@ -362,6 +362,35 @@ interface McpToolVerdictAckDbRow {
   acked_at: Date;
 }
 
+/** One persisted MCP call audit row (epic #459 W2, issue #462). */
+export interface McpCallLogRow {
+  readonly id: string;
+  readonly serverId: string | null;
+  readonly serverName: string;
+  readonly toolName: string;
+  readonly callerKind: 'agent' | 'subagent' | 'skill' | 'plugin' | 'unattributed';
+  readonly callerAgent: string | null;
+  readonly turnId: string | null;
+  readonly ok: boolean;
+  readonly error: string | null;
+  readonly durationMs: number;
+  readonly calledAt: Date;
+}
+
+interface McpCallLogDbRow {
+  id: string;
+  server_id: string | null;
+  server_name: string;
+  tool_name: string;
+  caller_kind: 'agent' | 'subagent' | 'skill' | 'plugin' | 'unattributed';
+  caller_agent: string | null;
+  turn_id: string | null;
+  ok: boolean;
+  error: string | null;
+  duration_ms: number;
+  called_at: Date;
+}
+
 interface ToolGrantDbRow {
   id: string;
   agent_id: string | null;
@@ -950,6 +979,103 @@ export class AgentGraphStore {
       [serverId, toolName, verifierVersion, contentHash, ackedBy],
     );
     return mapMcpToolVerdictAck(rows[0]!);
+  }
+
+  /** Bump the config epoch of every grant on a server (epic #459, codex
+   *  fold): verdict/ack rows are not part of the registry's graph signature,
+   *  so a bare reload after discover/ack rebuilds nothing. Touching the
+   *  grants' config JSONB changes the signature for exactly the agents whose
+   *  MCP tool surface may have changed, and the next reload rebuilds them. */
+  async bumpMcpGrantEpoch(serverId: string): Promise<number> {
+    const { rowCount } = await this.pool.query(
+      `UPDATE agent_tool_grants
+       SET config = jsonb_set(COALESCE(config, '{}'::jsonb), '{verdictEpoch}', to_jsonb(now()::text))
+       WHERE mcp_server_id = $1`,
+      [serverId],
+    );
+    return rowCount ?? 0;
+  }
+
+  /** Enable/disable an MCP server (epic #459 W2, issue #460). */
+  async setMcpServerStatus(id: string, status: 'enabled' | 'disabled'): Promise<void> {
+    await this.pool.query(
+      `UPDATE mcp_servers SET status = $2, updated_at = now() WHERE id = $1`,
+      [id, status],
+    );
+  }
+
+  // ── MCP call audit log (epic #459 W2, issue #462) ──────────────────────────
+
+  /** Append one audit row. Fire-and-forget from the manager's observer —
+   *  callers must not await this on the tool-call path. */
+  async insertMcpCallLog(entry: {
+    readonly serverId: string | null;
+    readonly serverName: string;
+    readonly toolName: string;
+    readonly callerKind: McpCallLogRow['callerKind'];
+    readonly callerAgent: string | null;
+    readonly turnId: string | null;
+    readonly ok: boolean;
+    readonly error: string | null;
+    readonly durationMs: number;
+    readonly calledAt: Date;
+  }): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO mcp_call_log
+         (server_id, server_name, tool_name, caller_kind, caller_agent, turn_id, ok, error, duration_ms, called_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [
+        entry.serverId,
+        entry.serverName,
+        entry.toolName,
+        entry.callerKind,
+        entry.callerAgent,
+        entry.turnId,
+        entry.ok,
+        entry.error,
+        entry.durationMs,
+        entry.calledAt,
+      ],
+    );
+  }
+
+  /** Time-ordered audit page, newest first. Server-side pagination only —
+   *  this table is append-only and unbounded. */
+  async listMcpCallLog(opts?: {
+    readonly limit?: number;
+    readonly beforeId?: string;
+    readonly serverId?: string;
+  }): Promise<readonly McpCallLogRow[]> {
+    const limit = Math.min(Math.max(opts?.limit ?? 100, 1), 500);
+    const conds: string[] = [];
+    const params: unknown[] = [];
+    if (opts?.serverId) {
+      params.push(opts.serverId);
+      conds.push(`server_id = $${String(params.length)}`);
+    }
+    if (opts?.beforeId) {
+      params.push(opts.beforeId);
+      conds.push(`id < $${String(params.length)}`);
+    }
+    params.push(limit);
+    const where = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : '';
+    const { rows } = await this.pool.query<McpCallLogDbRow>(
+      `SELECT * FROM mcp_call_log ${where} ORDER BY id DESC LIMIT $${String(params.length)}`,
+      params,
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      serverId: r.server_id,
+      serverName: r.server_name,
+      toolName: r.tool_name,
+      callerKind: r.caller_kind,
+      callerAgent: r.caller_agent,
+      turnId: r.turn_id,
+      ok: r.ok,
+      error: r.error,
+      durationMs: r.duration_ms,
+      calledAt: r.called_at,
+    }));
   }
 
   /** Look up a skill by its unique slug — for import update-vs-create routing. */

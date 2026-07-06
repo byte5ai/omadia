@@ -570,6 +570,66 @@ export async function triggerSkillVerdictLlmScan(
   });
 }
 
+/** One row of the read-only MCP grant matrix (issue #461). */
+export interface McpGrantMatrixRow {
+  grantId: string;
+  holderKind: 'agent' | 'subagent';
+  agentSlug: string | null;
+  agentName: string | null;
+  subAgentId: string | null;
+  subAgentName: string | null;
+  serverId: string | null;
+  serverName: string | null;
+  toolName: string;
+  severity: SkillVerdictSeverity | null;
+  notYetScanned: boolean;
+  acked: boolean;
+  blocked: boolean;
+}
+
+/** One MCP call audit entry (issue #462). No tool arguments by design. */
+export interface McpCallLogEntry {
+  id: string;
+  serverId: string | null;
+  serverName: string;
+  toolName: string;
+  callerKind: 'agent' | 'subagent' | 'skill' | 'plugin' | 'unattributed';
+  callerAgent: string | null;
+  turnId: string | null;
+  ok: boolean;
+  error: string | null;
+  durationMs: number;
+  calledAt: string;
+}
+
+export async function listMcpGrants(): Promise<{ grants: McpGrantMatrixRow[] }> {
+  return callJson('/v1/operator/mcp-grants');
+}
+
+export async function listMcpCallLog(opts?: {
+  limit?: number;
+  serverId?: string;
+  beforeId?: string;
+}): Promise<{ entries: McpCallLogEntry[] }> {
+  const params = new URLSearchParams();
+  if (opts?.limit) params.set('limit', String(opts.limit));
+  if (opts?.serverId) params.set('serverId', opts.serverId);
+  if (opts?.beforeId) params.set('beforeId', opts.beforeId);
+  const qs = params.toString();
+  return callJson(`/v1/operator/mcp-call-log${qs ? `?${qs}` : ''}`);
+}
+
+/** Enable/disable a server (issue #460). Triggers a registry reload server-side. */
+export async function setMcpServerStatus(
+  id: string,
+  status: 'enabled' | 'disabled',
+): Promise<McpServerNode> {
+  return callJson<McpServerNode>(`/v1/operator/mcp-servers/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status }),
+  });
+}
+
 /**
  * Acknowledge a high_risk MCP tool verdict (issue #454). Server-side the ack
  * pins the verdict's current content hash — a re-discover that changes the

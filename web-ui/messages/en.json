@@ -203,6 +203,10 @@
           "title": "Registries",
           "description": "Manage store sources, including private registries with tokens; changes apply without a restart."
         },
+        "mcp": {
+          "title": "MCP Control Center",
+          "description": "MCP servers, discovered tools with scan verdicts, grants, and the call audit log in one place."
+        },
         "auth": {
           "title": "Authentication Providers",
           "description": "Enable or disable local login and Entra ID sign-in; changes apply without a restart."
@@ -2587,6 +2591,78 @@
       "notInWhitelist": "This provider is not allowed in the AUTH_PROVIDERS whitelist.",
       "enableFailed": "Error {status}: enabling failed.",
       "disableFailed": "Error {status}: disabling failed."
+    }
+  },
+  "adminMcp": {
+    "title": "MCP Control Center",
+    "intro": "Manage MCP servers, review scan verdicts of discovered tools, see who holds which grant, and follow the call audit log. The Builder canvas stays the place to wire grants.",
+    "loading": "Loading…",
+    "cancel": "Cancel",
+    "tabs": {
+      "servers": "Servers",
+      "grants": "Grants",
+      "audit": "Audit log"
+    },
+    "servers": {
+      "name": "Name",
+      "transport": "Transport",
+      "endpoint": "Endpoint",
+      "status": "Status",
+      "tools": "Tools",
+      "worstVerdict": "Worst verdict",
+      "actions": "Actions",
+      "add": "Add server",
+      "empty": "No MCP servers registered yet.",
+      "noTools": "No tools discovered yet. Run Discover first.",
+      "discover": "Discover",
+      "enable": "Enable",
+      "disable": "Disable",
+      "delete": "Delete",
+      "deleteTitle": "Delete MCP server",
+      "deleteBody": "Delete server \"{name}\" and all of its grants? Agents lose these tools immediately.",
+      "deleteConfirm": "Delete server",
+      "ack": "Acknowledge risk",
+      "ackConfirm": "Really acknowledge",
+      "acked": "acknowledged",
+      "state": {
+        "enabled": "enabled",
+        "disabled": "disabled"
+      }
+    },
+    "grants": {
+      "holder": "Granted to",
+      "server": "Server",
+      "tool": "Tool",
+      "verdict": "Verdict",
+      "state": "State",
+      "actions": "Actions",
+      "empty": "No MCP tool grants exist yet.",
+      "blocked": "blocked by policy",
+      "unscanned": "not scanned, blocked at dispatch",
+      "active": "active",
+      "revoke": "Revoke",
+      "revokeTitle": "Revoke grant",
+      "revokeBody": "Revoke \"{tool}\" from {holder}?",
+      "revokeConfirm": "Revoke grant"
+    },
+    "audit": {
+      "time": "Time",
+      "server": "Server",
+      "tool": "Tool",
+      "caller": "Caller",
+      "outcome": "Outcome",
+      "duration": "Duration",
+      "empty": "No MCP calls recorded yet.",
+      "ok": "ok",
+      "failed": "failed",
+      "loadMore": "Load more",
+      "kind": {
+        "agent": "Agent",
+        "subagent": "Sub-agent",
+        "skill": "Skill",
+        "plugin": "Plugin",
+        "unattributed": "Unattributed"
+      }
     }
   },
   "adminRegistries": {

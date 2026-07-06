@@ -28,7 +28,11 @@ import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError } fro
 import { bindingKeyForTurn } from './conductor/principalId.js';
 import { createOperatorChannelsRouter } from './routes/operatorChannels.js';
 import { createAgentBuilderRouter } from './routes/agentBuilder.js';
-import { isMcpGrantBlocked, refreshMcpGrantPolicy } from './services/mcpGrantPolicy.js';
+import {
+  isMcpGrantBlocked,
+  mcpDispatchDenial,
+  refreshMcpGrantPolicy,
+} from './services/mcpGrantPolicy.js';
 import { createLlmVerifier, type LlmVerifier } from './services/skillVerdictLlmVerifier.js';
 import { ScheduleWorker } from './scheduler/scheduleWorker.js';
 import type {
@@ -230,7 +234,7 @@ import { DeterministicActionRegistry } from './platform/deterministicActionRegis
 import { ServiceRegistry } from './platform/serviceRegistry.js';
 import { TurnHookRegistry } from './platform/turnHookRegistry.js';
 import { NativeToolRegistry } from '@omadia/orchestrator';
-import { McpManager } from '@omadia/orchestrator';
+import { McpManager, type McpCallLogEntry } from '@omadia/orchestrator';
 import { AgentGraphStore } from '@omadia/orchestrator';
 import { registerDbSubAgentTools } from './agents/subAgentToolHydration.js';
 import {
@@ -1612,7 +1616,24 @@ async function main(): Promise<void> {
       // materialises each agent's DB-defined sub-agents into DomainTools and
       // registers them on its orchestrator. Called on initial hydrate AND
       // from `onAgentBuilt` so a rebuilt agent re-acquires its sub-agents.
-      const mcpManager = new McpManager();
+      // Audit observer (issue #462): every callTool lands one row in
+      // mcp_call_log, fire-and-forget so the tool-call path never blocks on
+      // the database. Identity comes from turnContext inside the manager.
+      const mcpAuditStore = graphPool ? new AgentGraphStore(graphPool) : undefined;
+      const mcpManager = new McpManager({
+        ...(mcpAuditStore
+          ? {
+              onToolCall: (entry: McpCallLogEntry) => {
+                void mcpAuditStore.insertMcpCallLog(entry).catch((err: unknown) => {
+                  console.warn(`[middleware] mcp call audit write failed: ${String(err)}`);
+                });
+              },
+            }
+          : {}),
+        // Dispatch-time policy gate (issue #454): fail-closed on unscanned or
+        // unacknowledged-risk tools, evaluated on every call.
+        guard: mcpDispatchDenial,
+      });
       // Scan-verdict grant policy (issue #454): load once before the initial
       // hydration below so blocked (server, tool) pairs never materialize.
       // The Builder routes refresh it after discover/ack and trigger reloads.

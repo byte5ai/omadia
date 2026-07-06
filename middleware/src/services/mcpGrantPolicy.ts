@@ -1,26 +1,29 @@
 /**
  * Runtime enforcement policy for MCP tool grants (epic #459 W1, issue #454 —
- * codex-review fold).
+ * hardened across two codex-review folds).
  *
- * The grant-time gate in the Builder routes fails closed, but grants that
- * already exist can go stale: a tool that was benign when granted may come
- * back `high_risk` on re-discover, or an ack may be invalidated by a content
- * change. This module keeps a process-wide blocklist of (server, tool) pairs
- * whose CURRENT verdict needs an ack that is missing or stale; both hydration
- * paths (sub-agent tools and top-level DomainTools) consult it synchronously.
+ * Two enforcement layers consume this module:
  *
- * Refresh points: boot (before initial hydration), after every discover scan,
- * and after every ack — each followed by a registry reload so rebuilt agents
- * pick the new policy up. Residual gap, documented on #454: grants created
- * before migration 0008 have no verdict rows and stay callable until their
- * server is re-discovered once (the W6 periodic re-scan closes this for good);
- * blocking every unknown pair at runtime would silently strip working tools
- * from existing installs on upgrade.
+ * 1. **Dispatch guard** (`mcpDispatchDenial`, wired into `McpManager` as its
+ *    call guard): runs on EVERY tool call, so policy changes apply instantly
+ *    without waiting for a registry rebuild. Denies (a) pairs whose current
+ *    verdict needs an ack that is missing or stale, and (b) pairs with no
+ *    current verdict at all — "never scanned" must not be a bypass (codex
+ *    fold 2; pre-0008 installs see a clear re-discover message on first use
+ *    instead of a silent unscanned call).
+ * 2. **Hydration filter** (`isMcpGrantBlocked`): keeps known-risky tool specs
+ *    out of the model context entirely. Only known-bad pairs are filtered
+ *    here (not unknowns), so existing installs keep their tool surface
+ *    visible while the dispatch guard enforces scanning.
+ *
+ * Refresh points: boot, after every discover scan, after every ack. The
+ * discover/ack routes additionally bump the affected grants' config epoch so
+ * the registry diff actually rebuilds the agents whose tool surface changed
+ * (a bare `reload()` sees no graph change from verdict rows alone).
  */
-import { type Severity } from './skillVerdict.js';
+import { CURRENT_VERIFIER_VERSION, type Severity } from './skillVerdict.js';
 
 import type { AgentGraphStore } from '@omadia/orchestrator';
-import { CURRENT_VERIFIER_VERSION } from './skillVerdict.js';
 
 /** Severities that must be explicitly acknowledged before a grant is usable.
  *  `scan_failed`/`too_large_to_scan` are "not scanned clean" — treating them
@@ -35,33 +38,60 @@ function key(serverId: string, toolName: string): string {
   return `${serverId} ${toolName}`;
 }
 
-let blockedPairs: ReadonlySet<string> = new Set<string>();
+let blockedBySeverity: ReadonlyMap<string, Severity> = new Map<string, Severity>();
+let scannedPairs: ReadonlySet<string> = new Set<string>();
+let refreshGeneration = 0;
 
-/** Recompute the blocklist from the persisted verdicts + acks. Never throws
- *  into callers' request paths — callers decide how to handle a rejection. */
+/** Recompute the policy state from the persisted verdicts + acks. Concurrent
+ *  refreshes are serialized by generation: only the most recently STARTED
+ *  refresh publishes, so an older read finishing late can never overwrite a
+ *  newer blocklist with stale data (codex fold 2, race finding). */
 export async function refreshMcpGrantPolicy(graph: AgentGraphStore): Promise<void> {
+  refreshGeneration += 1;
+  const generation = refreshGeneration;
   const [verdicts, acks] = await Promise.all([
     graph.listMcpToolVerdicts(CURRENT_VERIFIER_VERSION),
     graph.listMcpToolVerdictAcks(CURRENT_VERIFIER_VERSION),
   ]);
+  if (generation !== refreshGeneration) return; // a newer refresh superseded us
   const ackByKey = new Map(acks.map((a) => [key(a.serverId, a.toolName), a]));
-  const next = new Set<string>();
+  const nextBlocked = new Map<string, Severity>();
+  const nextScanned = new Set<string>();
   for (const v of verdicts) {
+    const k = key(v.serverId, v.toolName);
+    nextScanned.add(k);
     if (!MCP_SEVERITIES_NEEDING_ACK.has(v.severity)) continue;
-    const ack = ackByKey.get(key(v.serverId, v.toolName));
+    const ack = ackByKey.get(k);
     if (!ack || ack.contentHash !== v.contentHash) {
-      next.add(key(v.serverId, v.toolName));
+      nextBlocked.set(k, v.severity);
     }
   }
-  blockedPairs = next;
+  blockedBySeverity = nextBlocked;
+  scannedPairs = nextScanned;
 }
 
-/** Synchronous read for hydration paths. */
+/** Hydration filter: known-bad pairs only (spec stays out of model context). */
 export function isMcpGrantBlocked(serverId: string, toolName: string): boolean {
-  return blockedPairs.has(key(serverId, toolName));
+  return blockedBySeverity.has(key(serverId, toolName));
+}
+
+/** Dispatch guard for `McpManager` — returns a model-facing denial string, or
+ *  null to allow. Fail-closed on unscanned pairs. */
+export function mcpDispatchDenial(serverId: string, toolName: string): string | null {
+  const k = key(serverId, toolName);
+  const severity = blockedBySeverity.get(k);
+  if (severity) {
+    return `Error: MCP tool "${toolName}" is blocked by the scan-verdict policy (unacknowledged "${severity}"). An operator must acknowledge it in the MCP Control Center before it can run.`;
+  }
+  if (!scannedPairs.has(k)) {
+    return `Error: MCP tool "${toolName}" has no current scan verdict. An operator must run Discover on its server in the MCP Control Center so the tool is scanned before use.`;
+  }
+  return null;
 }
 
 /** Test seam: reset the module state. */
 export function resetMcpGrantPolicyForTests(): void {
-  blockedPairs = new Set<string>();
+  blockedBySeverity = new Map<string, Severity>();
+  scannedPairs = new Set<string>();
+  refreshGeneration = 0;
 }

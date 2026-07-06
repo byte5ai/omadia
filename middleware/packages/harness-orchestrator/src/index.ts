@@ -101,6 +101,7 @@ export { AgentGraphStore } from './registry/agentGraphStore.js';
 export { computeSkillHash } from './registry/skillHash.js';
 export type {
   CanvasPos,
+  McpCallLogRow,
   McpServerInput,
   McpServerRow,
   McpToolVerdictAckRow,
@@ -128,6 +129,11 @@ export {
   mcpToolToNativeSpec,
 } from './mcp/mcpClient.js';
 export type {
+  McpCallerKind,
+  McpCallGuard,
+  McpCallLogEntry,
+  McpCallObserver,
+  McpManagerOptions,
   McpServerConfig,
   McpToolDescriptor,
   McpTransportKind,
