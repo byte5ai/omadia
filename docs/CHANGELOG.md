@@ -49,6 +49,30 @@ into the next version's entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ---
 
+## [0.54.0] - 2026-07-06
+
+### Added
+
+- **web-ui/chat**: collapsible debug-chat intro banner (#428)
+
+---
+
+## [0.53.0] - 2026-07-06
+
+### Added
+
+- **web-ui**: restore Days One face for the omadia wordmark (#427)
+
+---
+
+## [0.52.3] - 2026-07-06
+
+### Fixed
+
+- **channels**: rebind inbound route handler on hot-reinstall (#395) (#407)
+
+---
+
 ## [0.52.2] - 2026-07-06
 
 ### Changed
@@ -940,7 +964,10 @@ Initial public release of Omadia — *An Agentic OS*.
 - The full pre-release development history is preserved in the maintainer's
   internal repository and is not part of the public git history.
 
-[Unreleased]: https://github.com/byte5ai/omadia/compare/v0.52.2...HEAD
+[Unreleased]: https://github.com/byte5ai/omadia/compare/v0.54.0...HEAD
+[0.54.0]: https://github.com/byte5ai/omadia/compare/v0.53.0...v0.54.0
+[0.53.0]: https://github.com/byte5ai/omadia/compare/v0.52.3...v0.53.0
+[0.52.3]: https://github.com/byte5ai/omadia/compare/v0.52.2...v0.52.3
 [0.52.2]: https://github.com/byte5ai/omadia/compare/v0.52.1...v0.52.2
 [0.52.1]: https://github.com/byte5ai/omadia/compare/v0.52.0...v0.52.1
 [0.52.0]: https://github.com/byte5ai/omadia/compare/v0.51.0...v0.52.0
