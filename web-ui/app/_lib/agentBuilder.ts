@@ -221,6 +221,8 @@ export interface McpServerNode {
   license?: string | null;
   author?: string | null;
   sourceUrl?: string | null;
+  /** Epic #459 — server opted out of Privacy Shield masking (results unmasked). */
+  privacyBypass?: boolean;
 }
 
 export interface ScheduleNode {
@@ -874,6 +876,18 @@ export async function setMcpServerStatus(
   return callJson<McpServerNode>(`/v1/operator/mcp-servers/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     body: JSON.stringify({ status }),
+  });
+}
+
+/** Toggle Privacy Shield bypass for a server (epic #459): its tool results are
+ *  returned unmasked. Triggers a registry reload so the change takes effect. */
+export async function setMcpServerPrivacyBypass(
+  id: string,
+  privacyBypass: boolean,
+): Promise<McpServerNode> {
+  return callJson<McpServerNode>(`/v1/operator/mcp-servers/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ privacyBypass }),
   });
 }
 

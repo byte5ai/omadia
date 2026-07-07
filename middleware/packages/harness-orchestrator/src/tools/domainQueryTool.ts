@@ -93,6 +93,13 @@ export interface DomainTool {
    * call that runs within its dispatch.
    */
   agentId?: string;
+  /**
+   * Epic #459 — this tool's server was marked privacy-bypass by an operator, so
+   * the orchestrator passes its result through Privacy Shield unmasked (and
+   * records a bypass entry on the receipt). Independent of any owning-agent
+   * `_privacy_mode`; still clamped by `OMADIA_PRIVACY_FORCE_GUARDED`.
+   */
+  privacyBypass?: boolean;
   handle(input: unknown, observer?: AskObserver): Promise<string>;
   /**
    * Privacy-Shield v3 (stable-id tokenization, slice 1) — optional PII

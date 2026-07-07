@@ -2645,6 +2645,12 @@
       "discover": "Discover",
       "enable": "Enable",
       "disable": "Disable",
+      "privacy": {
+        "masked": "Masked",
+        "bypassed": "Unmasked",
+        "maskedHint": "Privacy Shield masks PII in this server's tool results. Click to pass results through unmasked.",
+        "bypassedHint": "This server's tool results are passed through UNMASKED (PII visible). Click to re-enable masking."
+      },
       "delete": "Delete",
       "deleteTitle": "Delete MCP server",
       "deleteBody": "Delete server \"{name}\" and all of its grants? Agents lose these tools immediately.",

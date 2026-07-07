@@ -160,6 +160,9 @@ export interface McpServerRow {
   readonly license: string | null;
   readonly author: string | null;
   readonly sourceUrl: string | null;
+  /** Epic #459 — operator opted this server out of Privacy Shield masking; its
+   *  tool results pass through unmasked (recorded on the receipt). */
+  readonly privacyBypass: boolean;
 }
 
 export interface ToolGrantRow {
@@ -358,6 +361,7 @@ interface McpServerDbRow {
   license?: string | null;
   author?: string | null;
   source_url?: string | null;
+  privacy_bypass?: boolean;
 }
 
 interface McpRegistryDbRow {
@@ -641,6 +645,7 @@ function mapMcpServer(r: McpServerDbRow): McpServerRow {
     license: r.license ?? null,
     author: r.author ?? null,
     sourceUrl: r.source_url ?? null,
+    privacyBypass: r.privacy_bypass ?? false,
   };
 }
 
@@ -1407,6 +1412,14 @@ export class AgentGraphStore {
     await this.pool.query(
       `UPDATE mcp_servers SET status = $2, updated_at = now() WHERE id = $1`,
       [id, status],
+    );
+  }
+
+  /** Epic #459 — toggle Privacy Shield bypass for a server. */
+  async setMcpServerPrivacyBypass(id: string, value: boolean): Promise<void> {
+    await this.pool.query(
+      `UPDATE mcp_servers SET privacy_bypass = $2, updated_at = now() WHERE id = $1`,
+      [id, value],
     );
   }
 

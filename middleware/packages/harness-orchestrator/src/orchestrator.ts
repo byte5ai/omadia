@@ -3995,6 +3995,21 @@ export class Orchestrator {
     const resolveBypass = (
       toolName: string,
     ): { pluginId: string } | undefined => {
+      // Path 0 — per-MCP-server operator bypass (epic #459). A server flagged
+      // `privacy_bypass` marks its DomainTools; that opts the tool out of
+      // masking regardless of any owning-agent `_privacy_mode`. Still routed
+      // through resolveEffectivePrivacyMode so `OMADIA_PRIVACY_FORCE_GUARDED`
+      // can clamp it back to guarded org-wide.
+      const bypassTool = domainTools.get(toolName);
+      if (bypassTool?.privacyBypass === true) {
+        const effective = resolveEffectivePrivacyMode({
+          storedMode: 'bypass',
+          storedScopes: undefined,
+          toolName,
+          env: process.env,
+        });
+        if (effective === 'bypass') return { pluginId: bypassTool.domain };
+      }
       // Path 1 — kernel tool with attached config closure.
       const reg = nativeTools.get(toolName);
       if (reg?.agentId !== undefined && reg.readConfig !== undefined) {

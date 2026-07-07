@@ -863,9 +863,16 @@ export function createAgentBuilderRouter(
     if (!l) return;
     try {
       const id = str(req.params.id);
-      const status = req.body?.status;
-      if (status !== 'enabled' && status !== 'disabled') {
+      const status = req.body?.status as unknown;
+      const privacyBypass = req.body?.privacyBypass as unknown;
+      const hasStatus = status === 'enabled' || status === 'disabled';
+      const hasBypass = typeof privacyBypass === 'boolean';
+      if (status !== undefined && !hasStatus) {
         res.status(400).json({ error: 'invalid_status' });
+        return;
+      }
+      if (!hasStatus && !hasBypass) {
+        res.status(400).json({ error: 'invalid_patch' });
         return;
       }
       const row = (await l.graph.listMcpServers()).find((s) => s.id === id);
@@ -893,7 +900,10 @@ export function createAgentBuilderRouter(
           return;
         }
       }
-      await l.graph.setMcpServerStatus(id, status);
+      if (hasStatus) await l.graph.setMcpServerStatus(id, status as 'enabled' | 'disabled');
+      // Privacy-bypass (epic #459) is read live off the rebuilt DomainTool, so a
+      // reload below is what makes the toggle take effect.
+      if (hasBypass) await l.graph.setMcpServerPrivacyBypass(id, privacyBypass as boolean);
       // Status changes must reach both enforcement layers: the dispatch guard
       // (policy refresh) and the visible tool surface (epoch bump + rebuild).
       await refreshMcpGrantPolicy(l.graph);
@@ -2203,6 +2213,7 @@ function mcpNode(s: McpServerRow) {
     license: s.license,
     author: s.author,
     sourceUrl: s.sourceUrl,
+    privacyBypass: s.privacyBypass,
   };
 }
 
@@ -2229,6 +2240,7 @@ function toMcpConfig(row: McpServerRow): McpServerConfig {
     transport: row.transport,
     endpoint: row.endpoint,
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
+    ...(row.privacyBypass ? { privacyBypass: true } : {}),
   };
 }
 

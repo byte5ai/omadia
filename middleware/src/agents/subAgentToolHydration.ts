@@ -110,6 +110,7 @@ export function mcpRowToConfig(row: McpServerRow): McpServerConfig {
     transport: row.transport,
     endpoint: row.endpoint,
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
+    ...(row.privacyBypass ? { privacyBypass: true } : {}),
   };
 }
 
@@ -184,6 +185,7 @@ export function mcpGrantToDomainTool(
       input_schema: spec.input_schema as DomainToolSpec['input_schema'],
     },
     domain: spec.domain ?? `mcp.${cfg.name}`,
+    ...(cfg.privacyBypass ? { privacyBypass: true } : {}),
     handle: (input: unknown) => handler(input),
   };
 }

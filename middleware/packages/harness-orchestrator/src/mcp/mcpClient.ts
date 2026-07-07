@@ -60,6 +60,8 @@ export interface McpServerConfig {
   readonly endpoint: string | null;
   /** Non-sensitive headers for http/sse. Secrets resolve via `secretRef`. */
   readonly headers?: Record<string, string>;
+  /** Epic #459 — operator opted this server out of Privacy Shield masking. */
+  readonly privacyBypass?: boolean;
 }
 
 export interface McpToolDescriptor {
@@ -134,6 +136,19 @@ function looksUnauthorized(text: string): boolean {
     /unauthorized/i.test(text) ||
     /authentication (error|required)/i.test(text) ||
     /invalid[_ ]token/i.test(text)
+  );
+}
+
+/** True when a failure looks like a transient transport hiccup worth one retry
+ *  (request timeout, dropped/closed connection, socket reset) — NOT an auth or
+ *  application-level tool error. */
+function looksTransient(text: string): boolean {
+  return (
+    /-?32001\b/.test(text) ||
+    /timed?\s*out|timeout/i.test(text) ||
+    /connection closed|connection reset|econnreset|socket hang ?up|network error|fetch failed|und_err/i.test(
+      text,
+    )
   );
 }
 
@@ -240,45 +255,63 @@ export class McpManager {
         /* token resolution must not break the call path */
       }
     }
-    let pooled: Pooled;
-    try {
-      pooled = await this.getOrConnect(cfg, token);
-    } catch (err) {
-      // A server that requires OAuth often refuses the connection outright
-      // (streamable-HTTP surfaces the 401 as "-32000 Connection closed"), so
-      // this path must also offer the auth prompt — not just tool-level errors.
-      const failure = `Error: could not connect to MCP server "${cfg.name}": ${msg(err)}`;
-      return this.handleFailure(cfg, toolName, token, failure, startedAt);
-    }
-    try {
-      const res = await pooled.client.callTool(
-        {
-          name: toolName,
-          arguments: args,
-        },
-        // Tolerate off-spec `structuredContent` (some third-party MCP servers —
-        // e.g. the hosted Strava proxy — return it as a JSON array instead of an
-        // object). The strict SDK schema otherwise rejects the whole result and
-        // the failure surfaces to the model as "-32000 Connection closed",
-        // making every tool call on that server look like a transport failure.
-        LENIENT_CALL_TOOL_RESULT_SCHEMA,
-      );
-      const rendered = renderToolResult(res);
-      // MCP protocol errors resolve (isError result) instead of throwing —
-      // the audit row must reflect the failure (codex W2 finding).
-      const protocolError =
-        res !== null && typeof res === 'object' && (res as { isError?: unknown }).isError === true;
-      if (protocolError) {
-        return this.handleFailure(cfg, toolName, token, rendered, startedAt);
+    // Retry once on a transient transport failure (e.g. a flaky hosted proxy
+    // that intermittently returns "-32001 Request timed out" or drops the
+    // connection). The retry drops the pooled connection first so it reconnects
+    // fresh; auth-looking and real tool errors are NOT retried.
+    let lastFailure = `Error: MCP tool "${toolName}" on "${cfg.name}" failed.`;
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      let pooled: Pooled;
+      try {
+        pooled = await this.getOrConnect(cfg, token);
+      } catch (err) {
+        // A server that requires OAuth often refuses the connection outright
+        // (streamable-HTTP surfaces the 401 as "-32000 Connection closed"), so
+        // this path must also offer the auth prompt — not just tool-level errors.
+        const failure = `Error: could not connect to MCP server "${cfg.name}": ${msg(err)}`;
+        if (attempt < 2 && looksTransient(failure) && token !== null) {
+          await this.close(this.poolKey(cfg, token));
+          lastFailure = failure;
+          continue;
+        }
+        return this.handleFailure(cfg, toolName, token, failure, startedAt);
       }
-      this.emitCall(cfg, toolName, true, null, startedAt);
-      return rendered;
-    } catch (err) {
-      // Drop the connection so the next call reconnects (server may have died).
-      await this.close(this.poolKey(cfg, token));
-      const failure = `Error: MCP tool "${toolName}" on "${cfg.name}" failed: ${msg(err)}`;
-      return this.handleFailure(cfg, toolName, token, failure, startedAt);
+      try {
+        const res = await pooled.client.callTool(
+          {
+            name: toolName,
+            arguments: args,
+          },
+          // Tolerate off-spec `structuredContent` (some third-party MCP servers —
+          // e.g. the hosted Strava proxy — return it as a JSON array instead of an
+          // object). The strict SDK schema otherwise rejects the whole result and
+          // the failure surfaces to the model as "-32000 Connection closed",
+          // making every tool call on that server look like a transport failure.
+          LENIENT_CALL_TOOL_RESULT_SCHEMA,
+        );
+        const rendered = renderToolResult(res);
+        // MCP protocol errors resolve (isError result) instead of throwing —
+        // the audit row must reflect the failure (codex W2 finding).
+        const protocolError =
+          res !== null && typeof res === 'object' && (res as { isError?: unknown }).isError === true;
+        if (protocolError) {
+          return this.handleFailure(cfg, toolName, token, rendered, startedAt);
+        }
+        this.emitCall(cfg, toolName, true, null, startedAt);
+        return rendered;
+      } catch (err) {
+        // Drop the connection so the next call reconnects (server may have died).
+        await this.close(this.poolKey(cfg, token));
+        const failure = `Error: MCP tool "${toolName}" on "${cfg.name}" failed: ${msg(err)}`;
+        if (attempt < 2 && looksTransient(failure)) {
+          lastFailure = failure;
+          continue;
+        }
+        return this.handleFailure(cfg, toolName, token, failure, startedAt);
+      }
     }
+    // Both attempts hit a transient failure.
+    return this.handleFailure(cfg, toolName, token, lastFailure, startedAt);
   }
 
   /**

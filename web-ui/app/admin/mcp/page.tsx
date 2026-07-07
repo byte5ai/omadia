@@ -31,6 +31,7 @@ import {
   revokePluginMcpServer,
   searchMcpCatalog,
   setMcpServerStatus,
+  setMcpServerPrivacyBypass,
   type McpCallLogEntry,
   type McpCatalogEntry,
   type McpGrantMatrixRow,
@@ -239,6 +240,11 @@ function ServersPane(): React.ReactElement {
                       setMcpServerStatus(s.id, s.status === 'enabled' ? 'disabled' : 'enabled'),
                     )
                   }
+                  onTogglePrivacy={() =>
+                    void act(`privacy:${s.id}`, () =>
+                      setMcpServerPrivacyBypass(s.id, !s.privacyBypass),
+                    )
+                  }
                   onDelete={() => setConfirmDelete(s)}
                   onAcked={() => void refresh()}
                 />
@@ -273,6 +279,7 @@ function ServerRows({
   busy,
   onDiscover,
   onToggleStatus,
+  onTogglePrivacy,
   onDelete,
   onAcked,
 }: {
@@ -282,6 +289,7 @@ function ServerRows({
   busy: string | null;
   onDiscover: () => void;
   onToggleStatus: () => void;
+  onTogglePrivacy: () => void;
   onDelete: () => void;
   onAcked: () => void;
 }): React.ReactElement {
@@ -322,6 +330,21 @@ function ServerRows({
             </Button>
             <Button size="sm" variant="ghost" busy={busy === `status:${server.id}`} onClick={onToggleStatus}>
               {server.status === 'enabled' ? t('servers.disable') : t('servers.enable')}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              busy={busy === `privacy:${server.id}`}
+              onClick={onTogglePrivacy}
+              title={
+                server.privacyBypass
+                  ? t('servers.privacy.bypassedHint')
+                  : t('servers.privacy.maskedHint')
+              }
+            >
+              {server.privacyBypass
+                ? `🔓 ${t('servers.privacy.bypassed')}`
+                : `🛡️ ${t('servers.privacy.masked')}`}
             </Button>
             <Button size="sm" variant="danger" onClick={onDelete}>
               {t('servers.delete')}
