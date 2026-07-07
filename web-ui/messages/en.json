@@ -2659,6 +2659,15 @@
         "onHint": "Successful tool results from this server are ingested into your Knowledge Graph (recallable, owner-scoped). Raw values only if this server is also unmasked; otherwise a value-free digest. Click to stop ingesting.",
         "offHint": "Tool results from this server are NOT written to the Knowledge Graph. Click to ingest them as recallable, owner-scoped observations."
       },
+      "config": {
+        "title": "Configuration",
+        "intro": "Fill in the values for this server's placeholders. Non-secret values are stored in the database; fields marked secret are stored encrypted in the Vault. Values are substituted into the endpoint/headers at connect time.",
+        "secret": "secret",
+        "secretStored": "•••••••• (stored — leave blank to keep)",
+        "secretPlaceholder": "enter secret value",
+        "save": "Save config",
+        "saved": "Saved"
+      },
       "delete": "Delete",
       "deleteTitle": "Delete MCP server",
       "deleteBody": "Delete server \"{name}\" and all of its grants? Agents lose these tools immediately.",

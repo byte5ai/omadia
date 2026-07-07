@@ -25,6 +25,7 @@ import {
   turnContext,
   type DomainTool,
   type DomainToolSpec,
+  type McpConfigField,
   type McpManager,
   type McpServerConfig,
   type McpServerRow,
@@ -98,17 +99,61 @@ export function parseRequiresTools(frontmatter: Record<string, unknown>): Requir
   return out;
 }
 
-/** Coerce a `mcp_servers` row into the client config the manager consumes. */
+/** Substitute `{key}` placeholders in a string from NON-SECRET config values
+ *  (epic #459). Unknown keys are left as-is (secret values are resolved into
+ *  headers at connect time; genuinely-missing ones are caught by the
+ *  unconfigured-placeholder guard on Discover). */
+export function substituteMcpConfig(
+  value: string,
+  config: Record<string, unknown> | undefined,
+): string {
+  if (!config) return value;
+  return value.replace(/\{([^}]+)\}/g, (match, key: string) =>
+    key in config && config[key] != null ? String(config[key]) : match,
+  );
+}
+
+/** Derive config fields from `{key}` placeholders in an endpoint + header values
+ *  (epic #459). Preserves any existing field (keeps its label/secret/type);
+ *  new placeholders default to a required non-secret string — the operator can
+ *  flip `secret` per field in the UI. Returns fields for every placeholder found. */
+export function deriveMcpConfigSchema(
+  endpoint: string | null,
+  headers: Record<string, unknown> | undefined,
+  existing: readonly McpConfigField[] = [],
+): McpConfigField[] {
+  const keys = new Set<string>();
+  const scan = (s: string): void => {
+    for (const m of s.matchAll(/\{([^}]+)\}/g)) keys.add(m[1]!);
+  };
+  if (endpoint) scan(endpoint);
+  for (const v of Object.values(headers ?? {})) if (typeof v === 'string') scan(v);
+  const byKey = new Map(existing.map((f) => [f.key, f]));
+  return [...keys].map(
+    (key) =>
+      byKey.get(key) ?? {
+        key,
+        label: key,
+        type: 'string' as const,
+        required: true,
+        secret: false,
+      },
+  );
+}
+
+/** Coerce a `mcp_servers` row into the client config the manager consumes.
+ *  Non-secret `{key}` placeholders in the endpoint + headers are substituted
+ *  from `row.config`; secret ones are injected as headers at connect time. */
 export function mcpRowToConfig(row: McpServerRow): McpServerConfig {
   const headers: Record<string, string> = {};
   for (const [k, v] of Object.entries(row.headers ?? {})) {
-    if (typeof v === 'string') headers[k] = v;
+    if (typeof v === 'string') headers[k] = substituteMcpConfig(v, row.config);
   }
   return {
     id: row.id,
     name: row.name,
     transport: row.transport,
-    endpoint: row.endpoint,
+    endpoint: row.endpoint ? substituteMcpConfig(row.endpoint, row.config) : row.endpoint,
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
     ...(row.privacyBypass ? { privacyBypass: true } : {}),
   };

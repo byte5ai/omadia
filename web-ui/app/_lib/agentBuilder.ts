@@ -225,6 +225,47 @@ export interface McpServerNode {
   privacyBypass?: boolean;
   /** Epic #459 — server opted into Knowledge-Graph ingestion of tool results. */
   kgIngest?: boolean;
+  /** Epic #459 — declared config fields (from placeholders or a registry). */
+  configSchema?: McpConfigField[];
+}
+
+/** Epic #459 — a declared MCP server config field. */
+export interface McpConfigField {
+  key: string;
+  label: string;
+  type: 'string' | 'number';
+  required: boolean;
+  secret: boolean;
+}
+
+export interface McpServerConfigState {
+  schema: McpConfigField[];
+  config: Record<string, unknown>;
+  /** Which secret fields currently have a stored value (not the values). */
+  secretsSet: Record<string, boolean>;
+}
+
+/** Fetch a server's config schema + non-secret values + which secrets are set. */
+export async function getMcpServerConfig(id: string): Promise<McpServerConfigState> {
+  return callJson<McpServerConfigState>(
+    `/v1/operator/mcp-servers/${encodeURIComponent(id)}/config`,
+  );
+}
+
+/** Save a server's config: schema (incl. per-field secret flags), non-secret
+ *  values, and any secret values (secrets go to the Vault server-side). */
+export async function saveMcpServerConfig(
+  id: string,
+  body: {
+    schema?: McpConfigField[];
+    config?: Record<string, unknown>;
+    secrets?: Record<string, string>;
+  },
+): Promise<McpServerNode> {
+  return callJson<McpServerNode>(`/v1/operator/mcp-servers/${encodeURIComponent(id)}/config`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
 }
 
 export interface ScheduleNode {

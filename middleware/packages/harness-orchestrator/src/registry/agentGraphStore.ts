@@ -142,6 +142,19 @@ export interface SkillResourceInput {
   readonly content: string;
 }
 
+/** Epic #459 — one declared config field for an MCP server. `{key}` in the
+ *  endpoint/headers is substituted from the value; secret values live in the
+ *  Vault, non-secret ones in `McpServerRow.config`. */
+export interface McpConfigField {
+  readonly key: string;
+  readonly label: string;
+  readonly type: 'string' | 'number';
+  readonly required: boolean;
+  /** Secret values are stored in the Vault (never in the DB row) and resolved
+   *  into headers at connect time. */
+  readonly secret: boolean;
+}
+
 export interface McpServerRow {
   readonly id: string;
   readonly name: string;
@@ -166,6 +179,11 @@ export interface McpServerRow {
   /** Epic #459 — operator opted this server into Knowledge-Graph ingestion:
    *  successful tool results are written as recallable observations. */
   readonly kgIngest: boolean;
+  /** Epic #459 — declared config fields (from placeholders or a registry). */
+  readonly configSchema: readonly McpConfigField[];
+  /** Epic #459 — NON-SECRET config values `{ key: value }`. Secrets are in the
+   *  Vault, not here. */
+  readonly config: Record<string, unknown>;
 }
 
 export interface ToolGrantRow {
@@ -366,6 +384,8 @@ interface McpServerDbRow {
   source_url?: string | null;
   privacy_bypass?: boolean;
   kg_ingest?: boolean;
+  config_schema?: McpConfigField[];
+  config?: Record<string, unknown>;
 }
 
 interface McpRegistryDbRow {
@@ -651,6 +671,8 @@ function mapMcpServer(r: McpServerDbRow): McpServerRow {
     sourceUrl: r.source_url ?? null,
     privacyBypass: r.privacy_bypass ?? false,
     kgIngest: r.kg_ingest ?? false,
+    configSchema: Array.isArray(r.config_schema) ? r.config_schema : [],
+    config: r.config ?? {},
   };
 }
 
@@ -1433,6 +1455,26 @@ export class AgentGraphStore {
     await this.pool.query(
       `UPDATE mcp_servers SET kg_ingest = $2, updated_at = now() WHERE id = $1`,
       [id, value],
+    );
+  }
+
+  /** Epic #459 — set the declared config schema for a server. */
+  async setMcpServerConfigSchema(
+    id: string,
+    schema: readonly McpConfigField[],
+  ): Promise<void> {
+    await this.pool.query(
+      `UPDATE mcp_servers SET config_schema = $2::jsonb, updated_at = now() WHERE id = $1`,
+      [id, JSON.stringify(schema)],
+    );
+  }
+
+  /** Epic #459 — set the NON-SECRET config values for a server (secrets go to
+   *  the Vault, never here). */
+  async setMcpServerConfig(id: string, config: Record<string, unknown>): Promise<void> {
+    await this.pool.query(
+      `UPDATE mcp_servers SET config = $2::jsonb, updated_at = now() WHERE id = $1`,
+      [id, JSON.stringify(config)],
     );
   }
 

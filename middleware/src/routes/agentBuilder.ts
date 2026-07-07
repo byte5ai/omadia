@@ -30,7 +30,12 @@ import {
 import { McpManager, mcpToolNameFromRef, type McpCallLogEntry } from '@omadia/orchestrator';
 import { Router, type Request, type Response } from 'express';
 
-import { parseRequiresTools } from '../agents/subAgentToolHydration.js';
+import {
+  parseRequiresTools,
+  mcpRowToConfig,
+  substituteMcpConfig,
+  deriveMcpConfigSchema,
+} from '../agents/subAgentToolHydration.js';
 import { rescanAllMcpServers } from '../services/mcpRescan.js';
 import {
   MCP_SEVERITIES_NEEDING_ACK,
@@ -103,6 +108,12 @@ export interface AgentBuilderRouterOptions {
     getValidAccessToken(server: McpServerRow, userKey: string): Promise<string | null>;
   };
   readonly mcpOAuthUserKey?: string;
+  /** Schema-driven MCP config with Vault-backed secrets (epic #459). */
+  readonly mcpConfig?: {
+    setSecret(serverId: string, key: string, value: string): Promise<void>;
+    deleteSecret(serverId: string, key: string): Promise<void>;
+    secretsSet(server: McpServerRow): Promise<Record<string, boolean>>;
+  };
 }
 
 interface Live {
@@ -943,11 +954,11 @@ export function createAgentBuilderRouter(
         res.status(404).json({ error: 'mcp_server_not_found' });
         return;
       }
-      // Fail fast with a clear message when the endpoint still has an unfilled
-      // template placeholder (e.g. an M365 marketplace entry left as
-      // `.../tenants/{tenant_id}/...`) — otherwise the upstream 400 surfaces as a
-      // cryptic 502 (issue #459).
-      const placeholders = row.endpoint?.match(/\{[^}]+\}/g);
+      // Fail fast with a clear message when the endpoint still has an UNFILLED
+      // template placeholder AFTER config substitution (e.g. an M365 entry left
+      // as `.../tenants/{tenant_id}/...` with no configured tenant_id) —
+      // otherwise the upstream 400 surfaces as a cryptic 502 (issue #459).
+      const placeholders = substituteMcpConfig(row.endpoint ?? '', row.config).match(/\{[^}]+\}/g);
       if (placeholders && placeholders.length > 0) {
         res.status(422).json({
           error: 'mcp_endpoint_placeholder',
@@ -1013,6 +1024,74 @@ export function createAgentBuilderRouter(
       }
       // Discovery talks to an external process — report as a 502, not a 5xx crash.
       res.status(502).json({ error: 'mcp_discover_failed', message: raw });
+    }
+  });
+
+  // Config schema + values (epic #459). GET returns the declared fields (derived
+  // from endpoint/header placeholders when none saved yet), the non-secret
+  // values, and which secret fields are set (never the secret values).
+  router.get('/mcp-servers/:id/config', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const id = str(req.params.id);
+      const row = (await l.graph.listMcpServers()).find((s) => s.id === id);
+      if (!row) {
+        res.status(404).json({ error: 'mcp_server_not_found' });
+        return;
+      }
+      const schema =
+        row.configSchema.length > 0
+          ? row.configSchema
+          : deriveMcpConfigSchema(row.endpoint, row.headers);
+      const secretsSet = options.mcpConfig
+        ? await options.mcpConfig.secretsSet({ ...row, configSchema: schema })
+        : {};
+      res.json({ schema, config: row.config, secretsSet });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  // PUT saves the schema (incl. per-field secret flags), the non-secret values,
+  // and any provided secret values (secrets → Vault, never the DB row).
+  router.put('/mcp-servers/:id/config', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const id = str(req.params.id);
+      const row = (await l.graph.listMcpServers()).find((s) => s.id === id);
+      if (!row) {
+        res.status(404).json({ error: 'mcp_server_not_found' });
+        return;
+      }
+      const body = (req.body ?? {}) as {
+        schema?: unknown;
+        config?: unknown;
+        secrets?: unknown;
+      };
+      if (Array.isArray(body.schema)) {
+        await l.graph.setMcpServerConfigSchema(id, body.schema as never);
+      }
+      if (body.config && typeof body.config === 'object') {
+        await l.graph.setMcpServerConfig(id, body.config as Record<string, unknown>);
+      }
+      if (body.secrets && typeof body.secrets === 'object' && options.mcpConfig) {
+        for (const [k, v] of Object.entries(body.secrets as Record<string, unknown>)) {
+          if (typeof v === 'string' && v.length > 0) {
+            await options.mcpConfig.setSecret(id, k, v);
+          }
+        }
+      }
+      // Config feeds connect-time substitution — refresh + reload so it applies.
+      await refreshMcpGrantPolicy(l.graph);
+      await l.graph.bumpMcpGrantEpoch(id);
+      await reload(l);
+      const updated = (await l.graph.listMcpServers()).find((s) => s.id === id);
+      const [decorated] = await withToolVerdicts(l, [updated ?? row]);
+      res.json(mcpNode(decorated ?? updated ?? row));
+    } catch (err) {
+      fail(res, err);
     }
   });
 
@@ -2257,6 +2336,10 @@ function mcpNode(s: McpServerRow) {
     sourceUrl: s.sourceUrl,
     privacyBypass: s.privacyBypass,
     kgIngest: s.kgIngest,
+    // Declared config fields, derived from endpoint/header placeholders when the
+    // operator hasn't saved a schema yet (epic #459).
+    configSchema:
+      s.configSchema.length > 0 ? s.configSchema : deriveMcpConfigSchema(s.endpoint, s.headers),
   };
 }
 
@@ -2272,20 +2355,9 @@ function scheduleNode(s: ScheduleRow) {
   };
 }
 
-function toMcpConfig(row: McpServerRow): McpServerConfig {
-  const headers: Record<string, string> = {};
-  for (const [k, v] of Object.entries(row.headers ?? {})) {
-    if (typeof v === 'string') headers[k] = v;
-  }
-  return {
-    id: row.id,
-    name: row.name,
-    transport: row.transport,
-    endpoint: row.endpoint,
-    ...(Object.keys(headers).length > 0 ? { headers } : {}),
-    ...(row.privacyBypass ? { privacyBypass: true } : {}),
-  };
-}
+// Single source of truth for row → connect config (substitutes non-secret
+// `{key}` placeholders from row.config); epic #459.
+const toMcpConfig = mcpRowToConfig;
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 

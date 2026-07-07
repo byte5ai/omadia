@@ -35,6 +35,9 @@ import {
   setMcpServerStatus,
   setMcpServerPrivacyBypass,
   setMcpServerKgIngest,
+  getMcpServerConfig,
+  saveMcpServerConfig,
+  type McpConfigField,
   type McpCallLogEntry,
   type McpCatalogEntry,
   type McpGrantMatrixRow,
@@ -466,6 +469,125 @@ function ServerRows({
   );
 }
 
+const cfgInputCls =
+  'rounded-md border border-[color:var(--border)] bg-transparent px-2.5 py-1.5 text-xs outline-none focus:border-[color:var(--accent)]';
+
+/** Epic #459 — per-server config form, rendered from the config schema.
+ *  Non-secret values go to the DB; secret values (per-field flag) go to the
+ *  Vault; `{key}` placeholders in the endpoint/headers are substituted from them. */
+function ServerConfigForm({ server }: { server: McpServerNode }): React.ReactElement | null {
+  const t = useTranslations('adminMcp');
+  const [schema, setSchema] = useState<McpConfigField[]>(server.configSchema ?? []);
+  const [config, setConfig] = useState<Record<string, string>>({});
+  const [secrets, setSecrets] = useState<Record<string, string>>({});
+  const [secretsSet, setSecretsSet] = useState<Record<string, boolean>>({});
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const s = await getMcpServerConfig(server.id);
+      setSchema(s.schema);
+      const cfg: Record<string, string> = {};
+      for (const [k, v] of Object.entries(s.config)) cfg[k] = v == null ? '' : String(v);
+      setConfig(cfg);
+      setSecretsSet(s.secretsSet);
+    } catch (err) {
+      setError(errText(err));
+    }
+  }, [server.id]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  if (schema.length === 0) return null;
+
+  async function save(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    setSaved(false);
+    try {
+      const nonSecret: Record<string, unknown> = {};
+      const secretVals: Record<string, string> = {};
+      for (const f of schema) {
+        if (f.secret) {
+          if (secrets[f.key]) secretVals[f.key] = secrets[f.key]!;
+        } else {
+          nonSecret[f.key] = config[f.key] ?? '';
+        }
+      }
+      await saveMcpServerConfig(server.id, { schema, config: nonSecret, secrets: secretVals });
+      setSaved(true);
+      setSecrets({});
+      await load();
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-[color:var(--border)] bg-[color:var(--card)]/40 p-2.5">
+      <div className="text-xs font-medium text-[color:var(--fg-strong)]">
+        {t('servers.config.title')}
+      </div>
+      <div className="text-[11px] text-[color:var(--fg-muted)]">{t('servers.config.intro')}</div>
+      {schema.map((f, i) => (
+        <div key={f.key} className="flex flex-col gap-1">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] text-[color:var(--fg-muted)]">
+              {f.label}
+              {f.required ? ' *' : ''}{' '}
+              <code className="rounded bg-[color:var(--card)] px-1">{`{${f.key}}`}</code>
+            </span>
+            <label className="flex items-center gap-1 text-[10px] text-[color:var(--fg-subtle)]">
+              <input
+                type="checkbox"
+                checked={f.secret}
+                onChange={(e) =>
+                  setSchema(schema.map((x, j) => (j === i ? { ...x, secret: e.target.checked } : x)))
+                }
+              />
+              {t('servers.config.secret')}
+            </label>
+          </div>
+          {f.secret ? (
+            <input
+              type="password"
+              value={secrets[f.key] ?? ''}
+              onChange={(e) => setSecrets({ ...secrets, [f.key]: e.target.value })}
+              placeholder={
+                secretsSet[f.key]
+                  ? t('servers.config.secretStored')
+                  : t('servers.config.secretPlaceholder')
+              }
+              className={cfgInputCls}
+            />
+          ) : (
+            <input
+              value={config[f.key] ?? ''}
+              onChange={(e) => setConfig({ ...config, [f.key]: e.target.value })}
+              placeholder={f.key}
+              className={cfgInputCls}
+            />
+          )}
+        </div>
+      ))}
+      <div className="flex items-center gap-2">
+        <Button size="sm" busy={busy} onClick={() => void save()}>
+          {t('servers.config.save')}
+        </Button>
+        {saved ? (
+          <span className="text-[11px] text-[color:var(--success)]">{t('servers.config.saved')}</span>
+        ) : null}
+      </div>
+      {error ? <div className="text-xs text-[color:var(--danger)]">{error}</div> : null}
+    </div>
+  );
+}
+
 function ServerDetail({
   server,
   onAcked,
@@ -479,8 +601,24 @@ function ServerDetail({
   const [testTool, setTestTool] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Config + auth must render even before tools are discovered (e.g. an M365
+  // server that needs its tenant_id filled in before Discover can work).
+  const head = (
+    <>
+      <div className="text-xs text-[color:var(--fg-muted)]">
+        {server.endpoint ?? ''} {server.lastDiscoveredAt ? `· ${server.lastDiscoveredAt}` : ''}
+      </div>
+      <McpAuthSection serverId={server.id} />
+      <ServerConfigForm server={server} />
+    </>
+  );
   if (server.discoveredTools.length === 0) {
-    return <div className="text-sm text-[color:var(--fg-muted)]">{t('servers.noTools')}</div>;
+    return (
+      <div className="flex flex-col gap-2">
+        {head}
+        <div className="text-sm text-[color:var(--fg-muted)]">{t('servers.noTools')}</div>
+      </div>
+    );
   }
 
   async function ack(toolName: string): Promise<void> {
@@ -499,10 +637,7 @@ function ServerDetail({
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="text-xs text-[color:var(--fg-muted)]">
-        {server.endpoint ?? ''} {server.lastDiscoveredAt ? `· ${server.lastDiscoveredAt}` : ''}
-      </div>
-      <McpAuthSection serverId={server.id} />
+      {head}
       {server.source === 'marketplace' ? (
         <div className="flex flex-wrap gap-2 text-[10px]">
           <span className="text-[color:var(--accent)]">{t('servers.marketplaceSource')}</span>

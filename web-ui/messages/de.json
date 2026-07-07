@@ -2659,6 +2659,15 @@
         "onHint": "Erfolgreiche Tool-Ergebnisse dieses Servers werden in deinen Knowledge Graph geschrieben (recallbar, nur für dich sichtbar). Rohwerte nur, wenn der Server zusätzlich unmaskiert ist; sonst ein wertfreier Digest. Klicken, um die Aufnahme zu stoppen.",
         "offHint": "Tool-Ergebnisse dieses Servers werden NICHT in den Knowledge Graph geschrieben. Klicken, um sie als recallbare, nutzer-eigene Observations aufzunehmen."
       },
+      "config": {
+        "title": "Konfiguration",
+        "intro": "Trage die Werte für die Platzhalter dieses Servers ein. Nicht-geheime Werte werden in der Datenbank gespeichert; als geheim markierte Felder landen verschlüsselt in der Vault. Die Werte werden zur Connect-Zeit in Endpoint/Header eingesetzt.",
+        "secret": "geheim",
+        "secretStored": "•••••••• (gespeichert — leer lassen zum Behalten)",
+        "secretPlaceholder": "Geheimwert eingeben",
+        "save": "Konfiguration speichern",
+        "saved": "Gespeichert"
+      },
       "delete": "Löschen",
       "deleteTitle": "MCP-Server löschen",
       "deleteBody": "Server \"{name}\" mit allen Grants löschen? Agents verlieren diese Tools sofort.",

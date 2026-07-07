@@ -237,6 +237,7 @@ import { TurnHookRegistry } from './platform/turnHookRegistry.js';
 import { NativeToolRegistry } from '@omadia/orchestrator';
 import { McpManager, type McpCallLogEntry, type McpServerConfig } from '@omadia/orchestrator';
 import { McpOAuthService } from './services/mcpOAuthService.js';
+import { McpConfigService } from './services/mcpConfigService.js';
 import { AgentGraphStore } from '@omadia/orchestrator';
 import { registerDbSubAgentTools } from './agents/subAgentToolHydration.js';
 import {
@@ -1439,6 +1440,10 @@ async function main(): Promise<void> {
           log: (m) => console.log(`[middleware] ${m}`),
         })
       : undefined;
+  // Schema-driven MCP config with Vault-backed secrets (epic #459).
+  const mcpConfigService = graphPool
+    ? new McpConfigService({ graph: new AgentGraphStore(graphPool), vault: secretVault })
+    : undefined;
 
   // Phase 5B: publish so dynamic-imported channel plugins can late-resolve
   // the tenant id via ctx.services.get('graphTenantId') instead of being
@@ -1700,6 +1705,13 @@ async function main(): Promise<void> {
                     return `🔒 The MCP server "${server.name}" needs authorization, but it isn't set up yet. Click Connect to register it${desc.issuerHost ? ` — it delegates OAuth to ${desc.issuerHost}, which needs a one-time app registration` : ''}.${authBlock(true)}`;
                   }
                 },
+                // Vault-resolved secret config headers (epic #459).
+                ...(mcpConfigService
+                  ? {
+                      getConfigHeaders: (cfg: McpServerConfig) =>
+                        mcpConfigService.getConfigHeaders(cfg),
+                    }
+                  : {}),
               },
             }
           : {}),
@@ -2264,6 +2276,7 @@ async function main(): Promise<void> {
         })),
       // Generic MCP OAuth (epic #459 W9) — begin/callback/manual-client routes.
       ...(mcpOAuthService ? { mcpOAuth: mcpOAuthService, mcpOAuthUserKey } : {}),
+      ...(mcpConfigService ? { mcpConfig: mcpConfigService } : {}),
     }),
   );
   console.log(

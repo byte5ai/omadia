@@ -120,6 +120,13 @@ export interface McpAuthProvider {
    * decision, so the manager needs no OAuth knowledge.
    */
   onAuthFailure(cfg: McpServerConfig): Promise<string | null>;
+  /**
+   * Secret config values to inject as request headers for this server (epic
+   * #459). Resolved from the Vault per call so secrets never live on the pooled
+   * config or the DB row. Per-server (not per-caller), so pooling by server id
+   * stays correct. Optional — returns `{}` when the server has no secret config.
+   */
+  getConfigHeaders?(cfg: McpServerConfig): Promise<Record<string, string>>;
 }
 
 export interface McpManagerOptions {
@@ -224,7 +231,7 @@ export class McpManager {
         /* token resolution must not break discovery */
       }
     }
-    const { client } = await this.getOrConnect(cfg, token);
+    const { client } = await this.getOrConnect(await this.withConfigHeaders(cfg), token);
     const res = await client.listTools();
     const tools = Array.isArray(res?.tools) ? res.tools : [];
     return tools.map((t) => ({
@@ -267,6 +274,9 @@ export class McpManager {
         /* token resolution must not break the call path */
       }
     }
+    // Merge Vault-resolved secret config headers (epic #459) into the cfg used
+    // for the connection. Per-server, so pooling by id stays valid.
+    cfg = await this.withConfigHeaders(cfg);
     // Retry once on a transient transport failure (e.g. a flaky hosted proxy
     // that intermittently returns "-32001 Request timed out" or drops the
     // connection). The retry drops the pooled connection first so it reconnects
@@ -413,6 +423,21 @@ export class McpManager {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  /** Merge Vault-resolved secret config headers into a cfg (epic #459). Returns
+   *  the cfg unchanged when the provider has none. */
+  private async withConfigHeaders(cfg: McpServerConfig): Promise<McpServerConfig> {
+    const get = this.options?.auth?.getConfigHeaders;
+    if (!get) return cfg;
+    let extra: Record<string, string> = {};
+    try {
+      extra = await get.call(this.options!.auth, cfg);
+    } catch {
+      /* secret resolution must not break the call path */
+    }
+    if (!extra || Object.keys(extra).length === 0) return cfg;
+    return { ...cfg, headers: { ...(cfg.headers ?? {}), ...extra } };
+  }
+
   private makeTransport(cfg: McpServerConfig, token: string | null = null): any {
     if (!cfg.endpoint) {
       throw new Error(`MCP server "${cfg.name}" has no endpoint configured`);

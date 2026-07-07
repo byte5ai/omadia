@@ -102,6 +102,7 @@ export { computeSkillHash } from './registry/skillHash.js';
 export type {
   CanvasPos,
   McpCallLogRow,
+  McpConfigField,
   McpRegistryRow,
   McpServerInput,
   McpServerRow,
