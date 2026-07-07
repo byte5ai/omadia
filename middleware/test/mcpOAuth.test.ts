@@ -168,7 +168,7 @@ describe('McpOAuthService.describeAuth (broker classification)', () => {
   const server = { id: 's', name: 'srv', endpoint: 'https://srv.example/mcp' } as never;
   const deps = { graph: {} as never, vault: {} as never, redirectUri: 'https://host/cb' };
 
-  it('brokered=true when the server offers DCR (zero-setup)', async () => {
+  it('brokered=true when DCR actually succeeds (zero-setup)', async () => {
     const { McpOAuthService } = await import('../src/services/mcpOAuthService.js');
     const discovery = {
       discover: async () => ({
@@ -176,11 +176,31 @@ describe('McpOAuthService.describeAuth (broker classification)', () => {
         server: { ...AS, registrationEndpoint: 'https://as.example/register', tokenEndpoint: 'https://as.example/token' },
       }),
     } as never;
-    const svc = new McpOAuthService({ ...deps, discovery });
+    // "brokered" now reflects a REAL DCR probe: no stored client → register →
+    // success persists it → brokered.
+    const graph = { getMcpOAuthClient: async () => null, upsertMcpOAuthClient: async () => {} } as never;
+    const client = { registerClient: async () => ({ clientId: 'cid', clientSecret: 'sec' }) } as never;
+    const vault = { get: async () => null, set: async () => {} } as never;
+    const svc = new McpOAuthService({ graph, vault, redirectUri: 'https://host/cb', discovery, client });
     const d = await svc.describeAuth(server);
     assert.equal(d.protected, true);
     assert.equal(d.brokered, true);
     assert.equal(d.issuerHost, 'as.example');
+  });
+
+  it('brokered=false when advertised DCR is gated (registration declined, e.g. Figma)', async () => {
+    const { McpOAuthService } = await import('../src/services/mcpOAuthService.js');
+    const discovery = {
+      discover: async () => ({
+        resource: { resource: 'https://srv.example', authorizationServers: ['https://as.example'], scopesSupported: ['read'], bearerMethods: ['header'] },
+        server: { ...AS, registrationEndpoint: 'https://as.example/register', tokenEndpoint: 'https://as.example/token' },
+      }),
+    } as never;
+    const graph = { getMcpOAuthClient: async () => null } as never;
+    const client = { registerClient: async () => null } as never; // DCR 403 → null
+    const vault = { get: async () => null } as never;
+    const svc = new McpOAuthService({ graph, vault, redirectUri: 'https://host/cb', discovery, client });
+    assert.equal((await svc.describeAuth(server)).brokered, false);
   });
 
   it('brokered=false when the server delegates raw with no DCR (needs manual app)', async () => {

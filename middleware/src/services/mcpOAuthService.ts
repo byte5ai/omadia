@@ -49,9 +49,16 @@ export class McpOAuthNeedsClientError extends Error {
   }
 }
 
+const DCR_PROBE_TTL_MS = 10 * 60 * 1000;
+
 export class McpOAuthService {
   private readonly discovery: McpAuthDiscovery;
   private readonly client: McpOAuthClient;
+  /** Per-issuer cache of whether Dynamic Client Registration actually works.
+   *  A server can ADVERTISE a registration_endpoint yet gate it (e.g. Figma
+   *  hard-403s third-party DCR), so "brokered" must reflect a real probe, not
+   *  the advertised flag. Cached to avoid re-probing on every status check. */
+  private readonly dcrProbeCache = new Map<string, { at: number; ok: boolean }>();
 
   /** The redirect URI the operator must register with the OAuth provider. */
   readonly redirectUri: string;
@@ -271,8 +278,36 @@ export class McpOAuthService {
       protected: true,
       issuer,
       issuerHost,
-      brokered: discovered.server.registrationEndpoint !== null,
+      // "brokered" = DCR REALLY works, not just that it's advertised. Probe it
+      // (result cached) so the UI never promises zero-setup for a server whose
+      // registration is gated.
+      brokered:
+        discovered.server.registrationEndpoint !== null &&
+        (await this.canBrokerClient(discovered)),
     };
+  }
+
+  /** True when we can obtain an OAuth client for this issuer WITHOUT operator
+   *  setup — either one is already stored, or Dynamic Client Registration
+   *  actually succeeds. A success also persists the client, so a later Connect
+   *  is instant. Failure (e.g. a gated DCR endpoint) is cached as not-brokered. */
+  private async canBrokerClient(discovered: DiscoveredAuth): Promise<boolean> {
+    const issuer = discovered.server.issuer;
+    try {
+      if (await this.loadClient(issuer)) return true;
+    } catch {
+      /* fall through to a probe */
+    }
+    const cached = this.dcrProbeCache.get(issuer);
+    if (cached && Date.now() - cached.at < DCR_PROBE_TTL_MS) return cached.ok;
+    try {
+      await this.ensureClient(discovered); // registers + persists on success
+      this.dcrProbeCache.set(issuer, { at: Date.now(), ok: true });
+      return true;
+    } catch {
+      this.dcrProbeCache.set(issuer, { at: Date.now(), ok: false });
+      return false;
+    }
   }
 
   private async persistToken(

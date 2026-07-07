@@ -275,7 +275,7 @@ function ServersPane(): React.ReactElement {
                 <th className={thCls}>{t('servers.status')}</th>
                 <th className={thCls}>{t('servers.tools')}</th>
                 <th className={thCls}>{t('servers.worstVerdict')}</th>
-                <th className={thCls}>{t('servers.actions')}</th>
+                <th className={thCls} colSpan={5}>{t('servers.actions')}</th>
               </tr>
             </thead>
             <tbody>
@@ -380,47 +380,54 @@ function ServerRows({
             <span className="text-xs text-[color:var(--fg-muted)]">–</span>
           )}
         </td>
-        <td className={tdCls}>
-          <span className="flex flex-wrap gap-1.5">
-            <Button size="sm" variant="secondary" busy={busy === `discover:${server.id}`} onClick={onDiscover}>
-              {t('servers.discover')}
-            </Button>
-            <Button size="sm" variant="ghost" busy={busy === `status:${server.id}`} onClick={onToggleStatus}>
-              {server.status === 'enabled' ? t('servers.disable') : t('servers.enable')}
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              busy={busy === `privacy:${server.id}`}
-              onClick={onTogglePrivacy}
-              title={
-                server.privacyBypass
-                  ? t('servers.privacy.bypassedHint')
-                  : t('servers.privacy.maskedHint')
-              }
-            >
-              {server.privacyBypass
-                ? `🔓 ${t('servers.privacy.bypassed')}`
-                : `🛡️ ${t('servers.privacy.masked')}`}
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              busy={busy === `kg:${server.id}`}
-              onClick={onToggleKg}
-              title={server.kgIngest ? t('servers.kg.onHint') : t('servers.kg.offHint')}
-            >
-              {server.kgIngest ? `🧠 ${t('servers.kg.on')}` : `🧠 ${t('servers.kg.off')}`}
-            </Button>
-            <Button size="sm" variant="danger" onClick={onDelete}>
-              {t('servers.delete')}
-            </Button>
-          </span>
+        {/* Each action is its own table column so they align across rows. */}
+        <td className={`${tdCls} whitespace-nowrap`}>
+          <Button size="sm" variant="secondary" busy={busy === `discover:${server.id}`} onClick={onDiscover}>
+            {t('servers.discover')}
+          </Button>
+        </td>
+        <td className={`${tdCls} whitespace-nowrap`}>
+          <Button size="sm" variant="ghost" busy={busy === `status:${server.id}`} onClick={onToggleStatus}>
+            {server.status === 'enabled' ? t('servers.disable') : t('servers.enable')}
+          </Button>
+        </td>
+        <td className={`${tdCls} whitespace-nowrap`}>
+          <Button
+            size="sm"
+            variant="ghost"
+            busy={busy === `privacy:${server.id}`}
+            onClick={onTogglePrivacy}
+            title={
+              server.privacyBypass
+                ? t('servers.privacy.bypassedHint')
+                : t('servers.privacy.maskedHint')
+            }
+          >
+            {server.privacyBypass
+              ? `🔓 ${t('servers.privacy.bypassed')}`
+              : `🛡️ ${t('servers.privacy.masked')}`}
+          </Button>
+        </td>
+        <td className={`${tdCls} whitespace-nowrap`}>
+          <Button
+            size="sm"
+            variant="ghost"
+            busy={busy === `kg:${server.id}`}
+            onClick={onToggleKg}
+            title={server.kgIngest ? t('servers.kg.onHint') : t('servers.kg.offHint')}
+          >
+            {server.kgIngest ? `🧠 ${t('servers.kg.on')}` : `🧠 ${t('servers.kg.off')}`}
+          </Button>
+        </td>
+        <td className={`${tdCls} whitespace-nowrap`}>
+          <Button size="sm" variant="danger" onClick={onDelete}>
+            {t('servers.delete')}
+          </Button>
         </td>
       </tr>
       {expanded ? (
         <tr className="border-b border-[color:var(--border)]/60 bg-[color:var(--bg-soft)]/40">
-          <td className={tdCls} colSpan={6}>
+          <td className={tdCls} colSpan={10}>
             <ServerDetail server={server} onAcked={onAcked} />
           </td>
         </tr>
