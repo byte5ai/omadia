@@ -2719,6 +2719,7 @@
       "connected": "Server \"{name}\" created (disabled). Run Discover on the Servers tab, review verdicts, then enable it.",
       "unlicensed": "unlicensed, review before enabling",
       "browseOnly": "browse-only entry",
+      "browseOnlyHint": "This registry entry has no connectable endpoint — it only points at the source (a self-hosted server). Host it yourself, then add it manually via \"Add server\".",
       "authHintRemote": "🔒 may require authorization",
       "authHintLocal": "local (env credentials)",
       "addRegistry": "Add a registry",

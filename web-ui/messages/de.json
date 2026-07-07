@@ -2719,6 +2719,7 @@
       "connected": "Server \"{name}\" angelegt (deaktiviert). Auf dem Server-Tab Discover ausführen, Verdicts prüfen, dann aktivieren.",
       "unlicensed": "ohne Lizenz, vor Aktivierung prüfen",
       "browseOnly": "nur Ansicht",
+      "browseOnlyHint": "Dieser Registry-Eintrag hat keinen verbindbaren Endpoint — er verweist nur auf die Quelle (ein selbst gehosteter Server). Hoste ihn selbst und füge ihn dann manuell über „Server hinzufügen\" hinzu.",
       "authHintRemote": "🔒 braucht evtl. Autorisierung",
       "authHintLocal": "lokal (Env-Zugangsdaten)",
       "addRegistry": "Registry hinzufügen",

@@ -1121,15 +1121,20 @@ function MarketplacePane(): React.ReactElement {
                     ) : null}
                   </div>
                 </div>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  busy={busy === `connect:${entry.id}`}
-                  disabled={!entry.transport}
-                  onClick={() => void connect(entry)}
+                <span
+                  className="shrink-0"
+                  title={!entry.transport ? t('marketplace.browseOnlyHint') : undefined}
                 >
-                  {t('marketplace.connect')}
-                </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    busy={busy === `connect:${entry.id}`}
+                    disabled={!entry.transport}
+                    onClick={() => void connect(entry)}
+                  >
+                    {t('marketplace.connect')}
+                  </Button>
+                </span>
               </div>
             ))}
           </div>
