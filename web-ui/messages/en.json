@@ -2686,7 +2686,7 @@
       "notConnected": "🔒 Not authorized",
       "connect": "Connect",
       "disconnect": "Disconnect",
-      "hintBrokered": "This server handles authentication itself — just connect and log in. No setup needed.",
+      "hintBrokered": "This server advertises automatic client registration — just connect and log in, usually no setup needed. If it declines registration, you'll be asked to register an app once.",
       "hintDelegated": "This server does not broker OAuth — it delegates directly to {host}, so a one-time app registration is required. Well-built MCP servers do not need this.",
       "needsClientWhy": "This server delegates OAuth straight to {host} and offers no automatic client registration. Register a one-time OAuth app at {host} and paste its credentials — then connect.",
       "redirectUri": "Register this redirect URI",

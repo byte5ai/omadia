@@ -2686,7 +2686,7 @@
       "notConnected": "🔒 Nicht autorisiert",
       "connect": "Verbinden",
       "disconnect": "Trennen",
-      "hintBrokered": "Dieser Server übernimmt die Authentifizierung selbst — einfach verbinden und einloggen. Kein Setup nötig.",
+      "hintBrokered": "Dieser Server bietet automatische Client-Registrierung — einfach verbinden und einloggen, meist ohne Setup. Falls die Registrierung abgelehnt wird, wirst du gebeten, einmalig eine App zu registrieren.",
       "hintDelegated": "Dieser Server brokert OAuth nicht — er delegiert direkt an {host}, deshalb ist eine einmalige App-Registrierung nötig. Gut gebaute MCP-Server brauchen das nicht.",
       "needsClientWhy": "Dieser Server delegiert OAuth direkt an {host} und bietet keine automatische Client-Registrierung. Registriere einmalig eine OAuth-App bei {host} und trage die Zugangsdaten ein — dann verbinden.",
       "redirectUri": "Diese Redirect-URI registrieren",

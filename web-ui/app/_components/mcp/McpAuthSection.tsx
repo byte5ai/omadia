@@ -136,7 +136,7 @@ export function McpAuthSection({
           </Button>
         )}
       </div>
-      {!status.connected ? (
+      {!status.connected && !showClientForm ? (
         <div className="text-[11px] text-[color:var(--fg-muted)]">
           {status.brokered
             ? t('auth.hintBrokered')
