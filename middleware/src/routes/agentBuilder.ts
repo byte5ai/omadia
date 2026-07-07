@@ -1070,6 +1070,17 @@ export function createAgentBuilderRouter(
         res.status(400).json({ error: 'invalid_grant' });
         return;
       }
+      // The plugin must exist in the live catalog AND currently declare
+      // permissions.mcp (codex W7 fold): otherwise a direct request could
+      // create a stale grant that silently becomes effective if a plugin with
+      // that id later declares MCP. Matches the candidate route's policy.
+      const candidate = (options.listMcpPluginCandidates?.() ?? []).find(
+        (p) => p.id === pluginId && p.mcp,
+      );
+      if (!candidate) {
+        res.status(404).json({ error: 'plugin_not_mcp_capable', pluginId });
+        return;
+      }
       const server = (await l.graph.listMcpServers()).find((s) => s.id === mcpServerId);
       if (!server) {
         res.status(404).json({ error: 'mcp_server_not_found' });

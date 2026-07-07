@@ -211,6 +211,31 @@ describe('McpRegistryClient', () => {
     await assert.rejects(client.resolve(smithery, 'acme/evil'), /blocked_host|not_importable|refused/);
   });
 
+  it('drops non-http(s) sourceUrl (no javascript: hrefs)', async () => {
+    const doc = {
+      servers: [
+        { qualifiedName: 'acme/x', displayName: 'X', remote: true, homepage: 'javascript:alert(1)' },
+      ],
+    };
+    const smithery = { ...REGISTRY, id: 'sm3', name: 'smithery', kind: 'smithery' as const };
+    const client = new McpRegistryClient({ fetchImpl: fetchOk(doc), log: () => {} });
+    const entries = await client.catalog(smithery);
+    assert.equal(entries[0]?.sourceUrl, null);
+  });
+
+  it('resolve refuses a marketplace endpoint on a literal internal host', async () => {
+    // Generic registry whose catalog entry carries an internal https remote —
+    // the sync host block (via resolve's assertUntrustedEndpointSafe) refuses it.
+    const doc = {
+      servers: [{ name: 'io.x/internal', remotes: [{ type: 'http', url: 'https://192.168.0.5/mcp' }] }],
+    };
+    const client = new McpRegistryClient({ fetchImpl: fetchOk(doc), log: () => {} });
+    const entries = await client.catalog(REGISTRY);
+    // Internal remote never became an endpoint at normalize time (browse-only):
+    assert.equal(entries[0]?.transport, null);
+    assert.equal(entries[0]?.endpoint, null);
+  });
+
   it('falls back to a plain servers document at the base URL', async () => {
     const plainDoc = { servers: [{ name: 'simple', remotes: [{ type: 'sse', url: 'https://x/sse' }] }] };
     const fetchImpl: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {

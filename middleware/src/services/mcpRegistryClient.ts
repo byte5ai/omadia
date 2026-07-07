@@ -132,7 +132,7 @@ function normalizeEntry(raw: Record<string, unknown>): McpCatalogEntry | null {
     endpoint,
     license: str(server['license']) ?? str(raw['license']),
     author: deriveAuthor(name, repoUrl),
-    sourceUrl: repoUrl ?? str(server['website_url']),
+    sourceUrl: safeHttpUrl(repoUrl ?? str(server['website_url'])),
   };
 }
 
@@ -178,7 +178,7 @@ function normalizeSmitheryEntry(raw: Record<string, unknown>): McpCatalogEntry |
     endpoint: null,
     license: null,
     author: str(raw['owner']) ?? str(raw['namespace']),
-    sourceUrl: str(raw['homepage']),
+    sourceUrl: safeHttpUrl(str(raw['homepage'])),
   };
 }
 
@@ -209,6 +209,68 @@ function isBlockedResolvedIp(ip: string): boolean {
   // Link-local / IMDS.
   if (/^169\.254\./.test(v4) || /^fe[89ab][0-9a-f]:/.test(v)) return true;
   return false;
+}
+
+/** True for a resolved IP an UNTRUSTED (catalog-sourced) endpoint must never
+ *  reach — the full internal set, not just link-local. */
+function isPrivateResolvedIp(ip: string): boolean {
+  const v = ip.toLowerCase();
+  const v4 = v.startsWith('::ffff:') ? v.slice('::ffff:'.length) : v;
+  if (isBlockedResolvedIp(ip)) return true;
+  if (/^127\./.test(v4) || v4 === '::1') return true;
+  if (/^10\./.test(v4) || /^192\.168\./.test(v4)) return true;
+  if (/^172\.(1[6-9]|2[0-9]|3[01])\./.test(v4)) return true;
+  if (/^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\./.test(v4)) return true;
+  if (v4 === '0.0.0.0' || /^fc[0-9a-f]|^fd[0-9a-f]/.test(v)) return true; // unspecified + ULA
+  return false;
+}
+
+/**
+ * Validate a catalog-sourced connection endpoint before it is persisted
+ * (codex W7 fold): https-only, the literal host must clear the untrusted-remote
+ * block, AND the resolved addresses must all be public — so a public-looking
+ * hostname that DNS-resolves to internal infrastructure is refused at import,
+ * not connected to at discover time. Redirect validation at the MCP client
+ * layer is a separate broader item (noted on #463).
+ */
+async function assertUntrustedEndpointSafe(rawUrl: string): Promise<void> {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new McpRegistryError('mcp_catalog_entry_not_importable', `bad endpoint URL: ${rawUrl}`);
+  }
+  if (parsed.protocol !== 'https:' || !isUntrustedRemoteHostSafe(parsed.hostname)) {
+    throw new McpRegistryError('blocked_host', `endpoint host refused: ${parsed.hostname}`);
+  }
+  try {
+    const { lookup } = await import('node:dns/promises');
+    const results = await lookup(parsed.hostname, { all: true });
+    for (const r of results) {
+      if (isPrivateResolvedIp(r.address)) {
+        throw new McpRegistryError(
+          'blocked_host',
+          `endpoint host "${parsed.hostname}" resolves to a private address (${r.address})`,
+        );
+      }
+    }
+  } catch (err) {
+    if (err instanceof McpRegistryError) throw err;
+    // Unresolvable: the connect attempt will fail loudly anyway.
+  }
+}
+
+/** Accept only http(s) URLs for display/provenance fields; drop anything else
+ *  (javascript:, data:, …) so a catalog-controlled string can never become a
+ *  live href (codex W7 fold). */
+function safeHttpUrl(url: string | null): string | null {
+  if (!url) return null;
+  try {
+    const p = new URL(url);
+    return p.protocol === 'http:' || p.protocol === 'https:' ? url : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -366,10 +428,18 @@ export class McpRegistryClient {
         `entry "${entryId}" not found in registry "${registry.name}"`,
       );
     }
-    if (registry.kind === 'smithery' && hit.endpoint === null && hit.transport !== null) {
-      return this.resolveSmitheryEndpoint(registry, hit);
+    const resolved =
+      registry.kind === 'smithery' && hit.endpoint === null && hit.transport !== null
+        ? await this.resolveSmitheryEndpoint(registry, hit)
+        : hit;
+    // Resolved-IP SSRF check before the endpoint is handed to the import route
+    // (codex W7 fold): covers every marketplace import path uniformly, so a
+    // public-looking host that resolves to internal infrastructure is refused
+    // now rather than connected to at discover time.
+    if ((resolved.transport === 'http' || resolved.transport === 'sse') && resolved.endpoint) {
+      await assertUntrustedEndpointSafe(resolved.endpoint);
     }
-    return hit;
+    return resolved;
   }
 
   /** Second-hop fetch for Smithery: GET {url}/servers/{qualifiedName} →
@@ -396,6 +466,8 @@ export class McpRegistryClient {
         `Smithery entry "${entry.id}" exposes no deployment URL`,
       );
     }
+    // Sync host classification here; the resolved-IP check runs once in
+    // resolve() for every marketplace path (see assertUntrustedEndpointSafe).
     try {
       const parsed = new URL(url);
       if (parsed.protocol !== 'https:' || !isUntrustedRemoteHostSafe(parsed.hostname)) {
