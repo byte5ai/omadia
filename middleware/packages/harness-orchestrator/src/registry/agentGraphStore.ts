@@ -1703,21 +1703,37 @@ export class AgentGraphStore {
         'tool grant must target an agent or a sub-agent',
       );
     }
+    const params = [
+      input.agentId ?? null,
+      input.subAgentId ?? null,
+      input.toolKind,
+      input.toolRef,
+      input.mcpServerId ?? null,
+      input.config ? JSON.stringify(input.config) : null,
+    ];
+    // ON CONFLICT DO NOTHING makes a top-level MCP grant idempotent at the DB
+    // level (unique index from migration 0014, codex W8 fold); a duplicate
+    // returns the existing row instead of erroring. Sub-agent/native grants
+    // are not covered by the index, so they insert as before.
     const { rows } = await this.pool.query<ToolGrantDbRow>(
       `INSERT INTO agent_tool_grants
          (agent_id, subagent_id, tool_kind, tool_ref, mcp_server_id, config)
        VALUES ($1,$2,$3,$4,$5,COALESCE($6::jsonb,'{}'::jsonb))
+       ON CONFLICT (agent_id, mcp_server_id, tool_ref)
+         WHERE agent_id IS NOT NULL AND tool_kind = 'mcp'
+         DO NOTHING
        RETURNING *`,
-      [
-        input.agentId ?? null,
-        input.subAgentId ?? null,
-        input.toolKind,
-        input.toolRef,
-        input.mcpServerId ?? null,
-        input.config ? JSON.stringify(input.config) : null,
-      ],
+      params,
     );
-    return mapToolGrant(rows[0]!);
+    if (rows[0]) return mapToolGrant(rows[0]);
+    // Conflict: fetch the pre-existing identical grant.
+    const { rows: existing } = await this.pool.query<ToolGrantDbRow>(
+      `SELECT * FROM agent_tool_grants
+       WHERE agent_id = $1 AND mcp_server_id = $5 AND tool_ref = $4 AND tool_kind = 'mcp'
+       LIMIT 1`,
+      params,
+    );
+    return mapToolGrant(existing[0]!);
   }
 
   async deleteToolGrant(id: string): Promise<void> {

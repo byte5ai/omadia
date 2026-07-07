@@ -1152,24 +1152,17 @@ export function createAgentBuilderRouter(
         return;
       }
       const toolName = await assertMcpToolAllowed(l, mcpServerId, toolRef);
-      // Idempotent: skip if this exact grant already exists.
-      const existing = (await l.graph.listAllToolGrants()).find(
-        (g) =>
-          g.agentId === agent.id &&
-          g.toolKind === 'mcp' &&
-          g.mcpServerId === mcpServerId &&
-          mcpToolNameFromRef(g.toolRef, '') === mcpToolNameFromRef(toolName, ''),
-      );
-      if (!existing) {
-        await l.graph.createToolGrant({
-          agentId: agent.id,
-          subAgentId: null,
-          toolKind: 'mcp',
-          toolRef: toolName,
-          mcpServerId,
-        });
-        await reload(l);
-      }
+      // createToolGrant is idempotent for top-level MCP grants (ON CONFLICT via
+      // migration 0014), so a repeat is a clean no-op; reload picks up a real
+      // change and is itself a no-op otherwise.
+      await l.graph.createToolGrant({
+        agentId: agent.id,
+        subAgentId: null,
+        toolKind: 'mcp',
+        toolRef: toolName,
+        mcpServerId,
+      });
+      await reload(l);
       res.json({ agentSlug, mcpServerId, toolName, granted: true });
     } catch (err) {
       fail(res, err);
@@ -1180,7 +1173,24 @@ export function createAgentBuilderRouter(
     const l = live(res);
     if (!l) return;
     try {
-      await l.graph.deleteToolGrant(str(req.params.grantId));
+      const grantId = str(req.params.grantId);
+      if (!isUuid(grantId)) {
+        res.status(400).json({ error: 'invalid_grant_id' });
+        return;
+      }
+      // Scope guard (codex W8 fold): this MCP endpoint only deletes MCP tool
+      // grants — never a native grant or an unrelated row, even if the caller
+      // knows its id. Verify the row exists and is toolKind='mcp' first.
+      const grant = (await l.graph.listAllToolGrants()).find((g) => g.id === grantId);
+      if (!grant) {
+        res.status(404).json({ error: 'grant_not_found' });
+        return;
+      }
+      if (grant.toolKind !== 'mcp') {
+        res.status(400).json({ error: 'not_an_mcp_grant' });
+        return;
+      }
+      await l.graph.deleteToolGrant(grantId);
       await reload(l);
       res.status(204).end();
     } catch (err) {
