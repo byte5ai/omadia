@@ -2645,6 +2645,7 @@
       "discover": "Discover",
       "enable": "Enable",
       "disable": "Disable",
+      "needsAuth": "\"{name}\" needs authorization before its tools can be discovered. Connect it below (it signs in via {host}), then run Discover again.",
       "privacy": {
         "masked": "Masked",
         "bypassed": "Unmasked",

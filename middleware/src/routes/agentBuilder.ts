@@ -969,8 +969,33 @@ export function createAgentBuilderRouter(
       const [decorated] = await withToolVerdicts(l, [updated ?? row]);
       res.json(mcpNode(decorated ?? updated ?? row));
     } catch (err) {
+      const raw = msg(err);
+      // A protected server can't even list tools without a token — a failed
+      // discovery is almost always "not authorized yet". Tell the client to
+      // prompt Connect instead of surfacing a cryptic 502 (issue #459).
+      if (options.mcpOAuth) {
+        try {
+          const row = (await l.graph.listMcpServers()).find((s) => s.id === str(req.params.id));
+          const desc = row ? await options.mcpOAuth.describeAuth(row) : null;
+          if (desc?.protected) {
+            res.status(409).json({
+              error: 'mcp_needs_auth',
+              needsAuth: true,
+              serverId: str(req.params.id),
+              serverName: row?.name ?? null,
+              issuer: desc.issuer,
+              issuerHost: desc.issuerHost,
+              brokered: desc.brokered,
+              message: raw,
+            });
+            return;
+          }
+        } catch {
+          /* discovery of the auth metadata itself failed — fall through */
+        }
+      }
       // Discovery talks to an external process — report as a 502, not a 5xx crash.
-      res.status(502).json({ error: 'mcp_discover_failed', message: msg(err) });
+      res.status(502).json({ error: 'mcp_discover_failed', message: raw });
     }
   });
 

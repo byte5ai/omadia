@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
+import { ApiError } from '../../_lib/api';
 import { ConfirmDialog } from '../../_components/ConfirmDialog';
 import { SkillVerdictBadge } from '../../_components/admin/SkillVerdictBadge';
 import { McpAuthSection } from '../../_components/mcp/McpAuthSection';
@@ -89,6 +90,32 @@ function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** Detect the discover route's 409 "needs authorization" response so the UI can
+ *  prompt Connect instead of showing a raw 502/error (issue #459). */
+function parseNeedsAuth(
+  err: unknown,
+): { serverId: string; serverName: string; issuerHost: string } | null {
+  if (!(err instanceof ApiError) || err.status !== 409) return null;
+  try {
+    const b = JSON.parse(err.body) as {
+      error?: string;
+      serverId?: string;
+      serverName?: string;
+      issuerHost?: string;
+    };
+    if (b.error === 'mcp_needs_auth' && b.serverId) {
+      return {
+        serverId: b.serverId,
+        serverName: b.serverName ?? '',
+        issuerHost: b.issuerHost ?? '',
+      };
+    }
+  } catch {
+    /* not a needs-auth body */
+  }
+  return null;
+}
+
 const thCls =
   'px-2 py-1.5 text-left text-[11px] font-medium uppercase tracking-[0.1em] text-[color:var(--fg-muted)]';
 const tdCls = 'px-2 py-1.5 text-sm align-top';
@@ -116,6 +143,7 @@ function ServersPane(): React.ReactElement {
   const t = useTranslations('adminMcp');
   const [servers, setServers] = useState<McpServerNode[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [authNotice, setAuthNotice] = useState<{ name: string; host: string } | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<McpServerNode | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -139,11 +167,20 @@ function ServersPane(): React.ReactElement {
   async function act(key: string, fn: () => Promise<unknown>): Promise<void> {
     setBusy(key);
     setError(null);
+    setAuthNotice(null);
     try {
       await fn();
       await refresh();
     } catch (err) {
-      setError(errText(err));
+      const na = parseNeedsAuth(err);
+      if (na) {
+        // Discover failed because the server needs OAuth — guide to Connect
+        // instead of a raw 502: open the row's auth panel + a friendly prompt.
+        setExpanded(na.serverId);
+        setAuthNotice({ name: na.serverName, host: na.issuerHost });
+      } else {
+        setError(errText(err));
+      }
     } finally {
       setBusy(null);
     }
@@ -207,6 +244,11 @@ function ServersPane(): React.ReactElement {
       </div>
 
       {error ? <div className="text-sm text-[color:var(--danger)]">{error}</div> : null}
+      {authNotice ? (
+        <div className="rounded-md border border-[color:var(--accent)] bg-[color:var(--accent)]/10 px-3 py-2 text-sm text-[color:var(--fg-default)]">
+          🔒 {t('servers.needsAuth', { name: authNotice.name, host: authNotice.host || '?' })}
+        </div>
+      ) : null}
       {!servers ? <div className="text-sm text-[color:var(--fg-muted)]">{t('loading')}</div> : null}
 
       {servers && servers.length === 0 ? (

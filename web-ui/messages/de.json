@@ -2645,6 +2645,7 @@
       "discover": "Discover",
       "enable": "Aktivieren",
       "disable": "Deaktivieren",
+      "needsAuth": "\"{name}\" benötigt eine Autorisierung, bevor die Tools gefunden werden können. Verbinde ihn unten (Login über {host}) und starte dann erneut Discover.",
       "privacy": {
         "masked": "Maskiert",
         "bypassed": "Unmaskiert",
