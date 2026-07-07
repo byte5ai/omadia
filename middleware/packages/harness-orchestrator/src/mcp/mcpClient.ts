@@ -21,7 +21,10 @@ import { createHash } from 'node:crypto';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import {
+  StdioClientTransport,
+  getDefaultEnvironment,
+} from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
@@ -60,6 +63,10 @@ export interface McpServerConfig {
   readonly endpoint: string | null;
   /** Non-sensitive headers for http/sse. Secrets resolve via `secretRef`. */
   readonly headers?: Record<string, string>;
+  /** Epic #459 — environment variables for a stdio command (config values +
+   *  Vault-resolved secrets), merged over a safe base env when the process
+   *  spawns. Ignored for http/sse. */
+  readonly env?: Record<string, string>;
   /** Epic #459 — operator opted this server out of Privacy Shield masking. */
   readonly privacyBypass?: boolean;
 }
@@ -127,6 +134,12 @@ export interface McpAuthProvider {
    * stays correct. Optional — returns `{}` when the server has no secret config.
    */
   getConfigHeaders?(cfg: McpServerConfig): Promise<Record<string, string>>;
+  /**
+   * Environment variables for a stdio server (epic #459): config values + Vault
+   * secrets, passed to the spawned process. Resolved per call so secrets never
+   * live on the pooled config or the DB row.
+   */
+  getConfigEnv?(cfg: McpServerConfig): Promise<Record<string, string>>;
 }
 
 export interface McpManagerOptions {
@@ -231,7 +244,7 @@ export class McpManager {
         /* token resolution must not break discovery */
       }
     }
-    const { client } = await this.getOrConnect(await this.withConfigHeaders(cfg), token);
+    const { client } = await this.getOrConnect(await this.withResolvedConfig(cfg), token);
     const res = await client.listTools();
     const tools = Array.isArray(res?.tools) ? res.tools : [];
     return tools.map((t) => ({
@@ -276,7 +289,7 @@ export class McpManager {
     }
     // Merge Vault-resolved secret config headers (epic #459) into the cfg used
     // for the connection. Per-server, so pooling by id stays valid.
-    cfg = await this.withConfigHeaders(cfg);
+    cfg = await this.withResolvedConfig(cfg);
     // Retry once on a transient transport failure (e.g. a flaky hosted proxy
     // that intermittently returns "-32001 Request timed out" or drops the
     // connection). The retry drops the pooled connection first so it reconnects
@@ -423,14 +436,27 @@ export class McpManager {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  /** Merge Vault-resolved secret config headers into a cfg (epic #459). Returns
-   *  the cfg unchanged when the provider has none. */
-  private async withConfigHeaders(cfg: McpServerConfig): Promise<McpServerConfig> {
-    const get = this.options?.auth?.getConfigHeaders;
-    if (!get) return cfg;
+  /** Resolve Vault-backed config into a cfg (epic #459): secret headers for
+   *  http/sse, environment variables for stdio. Returns cfg unchanged when the
+   *  provider has none. */
+  private async withResolvedConfig(cfg: McpServerConfig): Promise<McpServerConfig> {
+    const auth = this.options?.auth;
+    if (!auth) return cfg;
+    if (cfg.transport === 'stdio') {
+      if (!auth.getConfigEnv) return cfg;
+      let env: Record<string, string> = {};
+      try {
+        env = await auth.getConfigEnv.call(auth, cfg);
+      } catch {
+        /* config resolution must not break the call path */
+      }
+      if (!env || Object.keys(env).length === 0) return cfg;
+      return { ...cfg, env: { ...(cfg.env ?? {}), ...env } };
+    }
+    if (!auth.getConfigHeaders) return cfg;
     let extra: Record<string, string> = {};
     try {
-      extra = await get.call(this.options!.auth, cfg);
+      extra = await auth.getConfigHeaders.call(auth, cfg);
     } catch {
       /* secret resolution must not break the call path */
     }
@@ -447,7 +473,14 @@ export class McpManager {
       if (!command) {
         throw new Error(`MCP server "${cfg.name}" stdio command is empty`);
       }
-      return new StdioClientTransport({ command, args });
+      // Merge our config env (values + Vault secrets) over a SAFE base env
+      // (PATH/HOME/… from getDefaultEnvironment — not the full process env) so
+      // the spawned server gets its required credentials (epic #459).
+      const env =
+        cfg.env && Object.keys(cfg.env).length > 0
+          ? { ...getDefaultEnvironment(), ...cfg.env }
+          : undefined;
+      return new StdioClientTransport({ command, args, ...(env ? { env } : {}) });
     }
     const url = new URL(cfg.endpoint);
     // Merge the OAuth bearer token (issue #459 W9) with any configured headers;

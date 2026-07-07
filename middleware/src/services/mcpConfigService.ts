@@ -79,4 +79,25 @@ export class McpConfigService {
     }
     return out;
   }
+
+  /**
+   * Environment variables for a stdio server: every declared config field
+   * (field key = env var name) → its value — non-secret from the row, secret
+   * from the Vault. Passed to the spawned process by the McpManager.
+   */
+  async getConfigEnv(cfg: McpServerConfig): Promise<Record<string, string>> {
+    const server = (await this.deps.graph.listMcpServers()).find((s) => s.id === cfg.id);
+    if (!server) return {};
+    const out: Record<string, string> = {};
+    for (const f of server.configSchema) {
+      if (f.secret) {
+        const v = await this.getSecret(server.id, f.key);
+        if (v != null) out[f.key] = v;
+      } else {
+        const v = server.config[f.key];
+        if (v != null) out[f.key] = String(v);
+      }
+    }
+    return out;
+  }
 }

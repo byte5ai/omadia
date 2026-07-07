@@ -1721,6 +1721,7 @@ export function createAgentBuilderRouter(
         license: entry.license,
         author: entry.author,
         sourceUrl: entry.sourceUrl,
+        configSchema: entry.configSchema ?? [],
       });
       res.json(mcpNode(row));
     } catch (err) {

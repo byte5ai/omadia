@@ -265,6 +265,8 @@ export interface McpServerInput {
   readonly license?: string | null;
   readonly author?: string | null;
   readonly sourceUrl?: string | null;
+  /** Epic #459 — config fields declared at import (from the registry). */
+  readonly configSchema?: readonly McpConfigField[];
 }
 
 /** One operator-performed skill-contract → MCP-tool binding (issue #456). */
@@ -1898,8 +1900,8 @@ export class AgentGraphStore {
     try {
       const { rows } = await this.pool.query<McpServerDbRow>(
         `INSERT INTO mcp_servers
-           (name, transport, endpoint, headers, secret_ref, status, source, registry_id, license, author, source_url)
-         VALUES ($1,$2,$3,COALESCE($4::jsonb,'{}'::jsonb),$5,COALESCE($6,'enabled'),COALESCE($7,'manual'),$8,$9,$10,$11)
+           (name, transport, endpoint, headers, secret_ref, status, source, registry_id, license, author, source_url, config_schema)
+         VALUES ($1,$2,$3,COALESCE($4::jsonb,'{}'::jsonb),$5,COALESCE($6,'enabled'),COALESCE($7,'manual'),$8,$9,$10,$11,COALESCE($12::jsonb,'[]'::jsonb))
          RETURNING *`,
         [
           input.name,

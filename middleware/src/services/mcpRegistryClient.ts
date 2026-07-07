@@ -12,6 +12,8 @@
  * official API.
  */
 
+import type { McpConfigField } from '@omadia/orchestrator';
+
 export interface McpRegistryConfig {
   readonly id: string;
   readonly name: string;
@@ -35,6 +37,35 @@ export interface McpCatalogEntry {
   readonly license: string | null;
   readonly author: string | null;
   readonly sourceUrl: string | null;
+  /** Epic #459 — config fields declared by the registry (env vars for stdio,
+   *  JSON-Schema properties for Smithery). Empty when the entry declares none. */
+  readonly configSchema?: readonly McpConfigField[];
+}
+
+/** Map a registry package's `environmentVariables[]` (official server.json,
+ *  camelCase; snake_case tolerated for generic catalogs) to config fields:
+ *  name→key, description→label, isRequired→required, isSecret→secret. */
+function packageEnvSchema(pkg: unknown): McpConfigField[] {
+  if (!pkg || typeof pkg !== 'object') return [];
+  const evs =
+    (pkg as Record<string, unknown>)['environmentVariables'] ??
+    (pkg as Record<string, unknown>)['environment_variables'];
+  if (!Array.isArray(evs)) return [];
+  const out: McpConfigField[] = [];
+  for (const e of evs) {
+    if (!e || typeof e !== 'object') continue;
+    const ev = e as Record<string, unknown>;
+    const name = str(ev['name']);
+    if (!name) continue;
+    out.push({
+      key: name,
+      label: str(ev['description']) ?? name,
+      type: 'string',
+      required: (ev['isRequired'] ?? ev['is_required']) === true,
+      secret: (ev['isSecret'] ?? ev['is_secret']) === true,
+    });
+  }
+  return out;
 }
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -121,6 +152,20 @@ function normalizeEntry(raw: Record<string, unknown>): McpCatalogEntry | null {
     }
   }
 
+  // Config fields declared by the registry (epic #459): the env vars the
+  // package/server requires. Prefer the package that ships them.
+  const allPackages = Array.isArray(server['packages']) ? server['packages'] : [];
+  const cfgPkg = allPackages.find(
+    (p) =>
+      !!p &&
+      typeof p === 'object' &&
+      Array.isArray(
+        (p as Record<string, unknown>)['environmentVariables'] ??
+          (p as Record<string, unknown>)['environment_variables'],
+      ),
+  );
+  const configSchema = packageEnvSchema(cfgPkg);
+
   return {
     id: name,
     name,
@@ -133,6 +178,7 @@ function normalizeEntry(raw: Record<string, unknown>): McpCatalogEntry | null {
     license: str(server['license']) ?? str(raw['license']),
     author: deriveAuthor(name, repoUrl),
     sourceUrl: safeHttpUrl(repoUrl ?? str(server['website_url'])),
+    ...(configSchema.length > 0 ? { configSchema } : {}),
   };
 }
 

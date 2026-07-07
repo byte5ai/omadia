@@ -1705,11 +1705,13 @@ async function main(): Promise<void> {
                     return `🔒 The MCP server "${server.name}" needs authorization, but it isn't set up yet. Click Connect to register it${desc.issuerHost ? ` — it delegates OAuth to ${desc.issuerHost}, which needs a one-time app registration` : ''}.${authBlock(true)}`;
                   }
                 },
-                // Vault-resolved secret config headers (epic #459).
+                // Vault-resolved config: secret headers (http) + env (stdio).
                 ...(mcpConfigService
                   ? {
                       getConfigHeaders: (cfg: McpServerConfig) =>
                         mcpConfigService.getConfigHeaders(cfg),
+                      getConfigEnv: (cfg: McpServerConfig) =>
+                        mcpConfigService.getConfigEnv(cfg),
                     }
                   : {}),
               },
