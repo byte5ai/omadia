@@ -9,6 +9,7 @@ import { ApiError } from '../../_lib/api';
 import { ConfirmDialog } from '../../_components/ConfirmDialog';
 import { SkillVerdictBadge } from '../../_components/admin/SkillVerdictBadge';
 import { McpAuthSection } from '../../_components/mcp/McpAuthSection';
+import { McpConnectModal } from '../../_components/mcp/McpConnectModal';
 import {
   ackMcpToolVerdict,
   addMcpRegistry,
@@ -144,6 +145,7 @@ function ServersPane(): React.ReactElement {
   const [servers, setServers] = useState<McpServerNode[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [authNotice, setAuthNotice] = useState<{ name: string; host: string } | null>(null);
+  const [connectModal, setConnectModal] = useState<{ serverId: string; name: string } | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<McpServerNode | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -174,9 +176,9 @@ function ServersPane(): React.ReactElement {
     } catch (err) {
       const na = parseNeedsAuth(err);
       if (na) {
-        // Discover failed because the server needs OAuth — guide to Connect
-        // instead of a raw 502: open the row's auth panel + a friendly prompt.
-        setExpanded(na.serverId);
+        // Discover failed because the server needs OAuth — open the same Connect
+        // login modal as the chat UI directly, instead of a raw 502.
+        setConnectModal({ serverId: na.serverId, name: na.serverName });
         setAuthNotice({ name: na.serverName, host: na.issuerHost });
       } else {
         setError(errText(err));
@@ -245,9 +247,16 @@ function ServersPane(): React.ReactElement {
 
       {error ? <div className="text-sm text-[color:var(--danger)]">{error}</div> : null}
       {authNotice ? (
-        <div className="rounded-md border border-[color:var(--accent)] bg-[color:var(--accent)]/10 px-3 py-2 text-sm text-[color:var(--fg-default)]">
-          🔒 {t('servers.needsAuth', { name: authNotice.name, host: authNotice.host || '?' })}
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-[color:var(--accent)] bg-[color:var(--accent)]/10 px-3 py-2 text-sm text-[color:var(--fg-default)]">
+          <span>🔒 {t('servers.needsAuth', { name: authNotice.name, host: authNotice.host || '?' })}</span>
         </div>
+      ) : null}
+      {connectModal ? (
+        <McpConnectModal
+          serverId={connectModal.serverId}
+          serverName={connectModal.name}
+          onClose={() => setConnectModal(null)}
+        />
       ) : null}
       {!servers ? <div className="text-sm text-[color:var(--fg-muted)]">{t('loading')}</div> : null}
 
