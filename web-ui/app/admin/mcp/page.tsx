@@ -49,10 +49,14 @@ export default function AdminMcpPage(): React.ReactElement {
   const t = useTranslations('adminMcp');
   const [tab, setTab] = useState<Tab>('servers');
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-4 p-6">
-      <h1 className="text-lg font-semibold">{t('title')}</h1>
-      <p className="text-sm text-[color:var(--fg-muted)]">{t('intro')}</p>
-      <div className="flex gap-2">
+    <div className="mx-auto w-full max-w-[1400px] px-6 py-12 lg:px-8 lg:py-16">
+      <h1 className="font-display text-[clamp(1.75rem,3.5vw,2.5rem)] leading-[1.1] text-[color:var(--fg-strong)]">
+        {t('title')}
+      </h1>
+      <p className="mt-3 max-w-2xl text-[15px] leading-[1.55] text-[color:var(--fg-muted)]">
+        {t('intro')}
+      </p>
+      <div className="mt-8 flex flex-wrap gap-2">
         {(['servers', 'marketplace', 'grants', 'plugins', 'audit'] as const).map((k) => (
           <Button
             key={k}
@@ -64,11 +68,13 @@ export default function AdminMcpPage(): React.ReactElement {
           </Button>
         ))}
       </div>
-      {tab === 'servers' ? <ServersPane /> : null}
-      {tab === 'marketplace' ? <MarketplacePane /> : null}
-      {tab === 'grants' ? <GrantsPane /> : null}
-      {tab === 'plugins' ? <PluginGrantsPane /> : null}
-      {tab === 'audit' ? <AuditPane /> : null}
+      <div className="mt-6">
+        {tab === 'servers' ? <ServersPane /> : null}
+        {tab === 'marketplace' ? <MarketplacePane /> : null}
+        {tab === 'grants' ? <GrantsPane /> : null}
+        {tab === 'plugins' ? <PluginGrantsPane /> : null}
+        {tab === 'audit' ? <AuditPane /> : null}
+      </div>
     </div>
   );
 }
@@ -142,13 +148,13 @@ function ServersPane(): React.ReactElement {
       <p className="rounded-md border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/8 px-3 py-2 text-xs text-[color:var(--fg-muted)]">
         {t('servers.flowHint')}
       </p>
-      <div className="flex flex-wrap items-end gap-2 rounded-md border border-[color:var(--border)] p-3">
+      <div className="flex flex-wrap items-end gap-2 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
         <label className="flex flex-col gap-1 text-xs">
           {t('servers.name')}
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="rounded border border-[color:var(--border)] bg-transparent px-2 py-1 text-sm"
+            className="rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[color:var(--accent)]"
           />
         </label>
         <label className="flex flex-col gap-1 text-xs">
@@ -156,7 +162,7 @@ function ServersPane(): React.ReactElement {
           <select
             value={transport}
             onChange={(e) => setTransport(e.target.value as McpTransport)}
-            className="rounded border border-[color:var(--border)] bg-transparent px-2 py-1 text-sm"
+            className="rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[color:var(--accent)]"
           >
             <option value="http">http</option>
             <option value="sse">sse</option>
@@ -168,7 +174,7 @@ function ServersPane(): React.ReactElement {
           <input
             value={endpoint}
             onChange={(e) => setEndpoint(e.target.value)}
-            className="rounded border border-[color:var(--border)] bg-transparent px-2 py-1 text-sm"
+            className="rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[color:var(--accent)]"
           />
         </label>
         <Button
@@ -202,7 +208,7 @@ function ServersPane(): React.ReactElement {
       ) : null}
 
       {servers && servers.length > 0 ? (
-        <div className="overflow-x-auto rounded-md border border-[color:var(--border)]">
+        <div className="overflow-x-auto rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40">
           <table className="w-full border-collapse">
             <thead>
               <tr className="border-b border-[color:var(--border)]">
@@ -549,7 +555,7 @@ function ToolTestForm({
               <select
                 value={values[p.name] ?? ''}
                 onChange={(e) => setValues((v) => ({ ...v, [p.name]: e.target.value }))}
-                className="rounded border border-[color:var(--border)] bg-transparent px-2 py-1"
+                className="rounded-md border border-[color:var(--border)] bg-transparent px-2.5 py-1.5 outline-none focus:border-[color:var(--accent)]"
               >
                 <option value="">–</option>
                 <option value="true">true</option>
@@ -561,13 +567,13 @@ function ToolTestForm({
                 onChange={(e) => setValues((v) => ({ ...v, [p.name]: e.target.value }))}
                 rows={2}
                 placeholder="{ }"
-                className="rounded border border-[color:var(--border)] bg-transparent px-2 py-1 font-mono"
+                className="rounded-md border border-[color:var(--border)] bg-transparent px-2.5 py-1.5 font-mono outline-none focus:border-[color:var(--accent)]"
               />
             ) : (
               <input
                 value={values[p.name] ?? ''}
                 onChange={(e) => setValues((v) => ({ ...v, [p.name]: e.target.value }))}
-                className="rounded border border-[color:var(--border)] bg-transparent px-2 py-1"
+                className="rounded-md border border-[color:var(--border)] bg-transparent px-2.5 py-1.5 outline-none focus:border-[color:var(--accent)]"
               />
             )}
           </label>
@@ -659,7 +665,7 @@ function MarketplacePane(): React.ReactElement {
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-end gap-2 rounded-md border border-[color:var(--border)] p-3">
+      <div className="flex flex-wrap items-end gap-2 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
         <label className="flex flex-col gap-1 text-xs">
           {t('marketplace.registry')}
           <select
@@ -668,7 +674,7 @@ function MarketplacePane(): React.ReactElement {
               setSelected(e.target.value || null);
               setEntries(null);
             }}
-            className="rounded border border-[color:var(--border)] bg-transparent px-2 py-1 text-sm"
+            className="rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[color:var(--accent)]"
           >
             {(registries ?? []).map((r) => (
               <option key={r.id} value={r.id}>
@@ -685,7 +691,7 @@ function MarketplacePane(): React.ReactElement {
             onKeyDown={(e) => {
               if (e.key === 'Enter') void browse();
             }}
-            className="rounded border border-[color:var(--border)] bg-transparent px-2 py-1 text-sm"
+            className="rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[color:var(--accent)]"
           />
         </label>
         <Button size="sm" busy={busy === 'browse'} onClick={() => void browse()}>
@@ -708,7 +714,7 @@ function MarketplacePane(): React.ReactElement {
         ) : null}
       </div>
 
-      <details className="rounded-md border border-[color:var(--border)] p-3">
+      <details className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
         <summary className="cursor-pointer text-xs text-[color:var(--fg-muted)]">
           {t('marketplace.addRegistry')}
         </summary>
@@ -718,7 +724,7 @@ function MarketplacePane(): React.ReactElement {
             <input
               value={regName}
               onChange={(e) => setRegName(e.target.value)}
-              className="rounded border border-[color:var(--border)] bg-transparent px-2 py-1 text-sm"
+              className="rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[color:var(--accent)]"
             />
           </label>
           <label className="flex grow flex-col gap-1 text-xs">
@@ -727,7 +733,7 @@ function MarketplacePane(): React.ReactElement {
               value={regUrl}
               onChange={(e) => setRegUrl(e.target.value)}
               placeholder="https://…"
-              className="rounded border border-[color:var(--border)] bg-transparent px-2 py-1 text-sm"
+              className="rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[color:var(--accent)]"
             />
           </label>
           <label className="flex flex-col gap-1 text-xs">
@@ -736,7 +742,7 @@ function MarketplacePane(): React.ReactElement {
               type="password"
               value={regToken}
               onChange={(e) => setRegToken(e.target.value)}
-              className="rounded border border-[color:var(--border)] bg-transparent px-2 py-1 text-sm"
+              className="rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[color:var(--accent)]"
             />
           </label>
           <Button
@@ -869,7 +875,7 @@ function GrantsPane(): React.ReactElement {
         <div className="text-sm text-[color:var(--fg-muted)]">{t('grants.empty')}</div>
       ) : null}
       {rows && rows.length > 0 ? (
-        <div className="overflow-x-auto rounded-md border border-[color:var(--border)]">
+        <div className="overflow-x-auto rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40">
           <table className="w-full border-collapse">
             <thead>
               <tr className="border-b border-[color:var(--border)]">
@@ -999,7 +1005,7 @@ function PluginGrantsPane(): React.ReactElement {
         ? data.plugins.map((p) => (
             <div
               key={p.pluginId}
-              className="flex flex-col gap-2 rounded-md border border-[color:var(--border)] p-3"
+              className="flex flex-col gap-2 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4"
             >
               <div>
                 <div className="text-sm">{p.name}</div>
@@ -1084,7 +1090,7 @@ function AuditPane(): React.ReactElement {
         <div className="text-sm text-[color:var(--fg-muted)]">{t('audit.empty')}</div>
       ) : null}
       {entries && entries.length > 0 ? (
-        <div className="overflow-x-auto rounded-md border border-[color:var(--border)]">
+        <div className="overflow-x-auto rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40">
           <table className="w-full border-collapse">
             <thead>
               <tr className="border-b border-[color:var(--border)]">
