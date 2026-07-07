@@ -236,6 +236,7 @@ import { ServiceRegistry } from './platform/serviceRegistry.js';
 import { TurnHookRegistry } from './platform/turnHookRegistry.js';
 import { NativeToolRegistry } from '@omadia/orchestrator';
 import { McpManager, type McpCallLogEntry, type McpServerConfig } from '@omadia/orchestrator';
+import { McpOAuthService } from './services/mcpOAuthService.js';
 import { AgentGraphStore } from '@omadia/orchestrator';
 import { registerDbSubAgentTools } from './agents/subAgentToolHydration.js';
 import {
@@ -1410,6 +1411,22 @@ async function main(): Promise<void> {
   const graphPool = serviceRegistry.get<Pool>('graphPool');
   const graphTenantId = process.env['GRAPH_TENANT_ID'] ?? 'default';
 
+  // Generic MCP OAuth service (epic #459 W9) — outer scope so both the
+  // McpManager (auth provider) and the operator router (begin/callback routes)
+  // reference the same instance. userKey='operator' for the operator chat.
+  const mcpOAuthUserKey = 'operator';
+  const mcpOAuthService =
+    graphPool && flowPublicBaseUrl
+      ? new McpOAuthService({
+          graph: new AgentGraphStore(graphPool),
+          vault: secretVault,
+          redirectUri:
+            config.MCP_OAUTH_REDIRECT_URI ??
+            `${flowPublicBaseUrl}/api/v1/operator/mcp-oauth/callback`,
+          log: (m) => console.log(`[middleware] ${m}`),
+        })
+      : undefined;
+
   // Phase 5B: publish so dynamic-imported channel plugins can late-resolve
   // the tenant id via ctx.services.get('graphTenantId') instead of being
   // threaded through constructor Deps.
@@ -1621,6 +1638,8 @@ async function main(): Promise<void> {
       // mcp_call_log, fire-and-forget so the tool-call path never blocks on
       // the database. Identity comes from turnContext inside the manager.
       const mcpAuditStore = graphPool ? new AgentGraphStore(graphPool) : undefined;
+      // Generic MCP OAuth (epic #459 W9) wired as the manager's auth provider;
+      // the service instance is created at outer scope (shared with the router).
       const mcpManager = new McpManager({
         ...(mcpAuditStore
           ? {
@@ -1634,6 +1653,27 @@ async function main(): Promise<void> {
         // Dispatch-time policy gate (issue #454): fail-closed on unscanned or
         // unacknowledged-risk tools, evaluated on every call.
         guard: mcpDispatchDenial,
+        ...(mcpOAuthService && mcpAuditStore
+          ? {
+              auth: {
+                getToken: async (cfg: McpServerConfig) => {
+                  const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
+                  return server ? mcpOAuthService.getValidAccessToken(server, mcpOAuthUserKey) : null;
+                },
+                onUnauthorized: async (cfg: McpServerConfig) => {
+                  const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
+                  if (!server) return null;
+                  try {
+                    return (await mcpOAuthService.beginAuthorization(server, mcpOAuthUserKey)).authorizeUrl;
+                  } catch {
+                    // No client for the issuer yet (needs a one-time manual
+                    // registration) — surface the raw error instead of a URL.
+                    return null;
+                  }
+                },
+              },
+            }
+          : {}),
       });
       // Host MCP service for plugin ctx.mcp (epic #459 W5, issue #458):
       // resolved lazily by createPluginContext, exactly like the 'llm'
@@ -2193,6 +2233,8 @@ async function main(): Promise<void> {
           mcp: e.plugin.permissions_summary.mcp === true,
           serversHint: e.plugin.permissions_summary.mcp_servers_hint ?? [],
         })),
+      // Generic MCP OAuth (epic #459 W9) — begin/callback/manual-client routes.
+      ...(mcpOAuthService ? { mcpOAuth: mcpOAuthService, mcpOAuthUserKey } : {}),
     }),
   );
   console.log(

@@ -131,6 +131,7 @@ export {
   mcpToolToNativeSpec,
 } from './mcp/mcpClient.js';
 export type {
+  McpAuthProvider,
   McpCallerKind,
   McpCallGuard,
   McpCallLogEntry,

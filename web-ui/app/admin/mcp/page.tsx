@@ -10,8 +10,12 @@ import { SkillVerdictBadge } from '../../_components/admin/SkillVerdictBadge';
 import {
   ackMcpToolVerdict,
   addMcpRegistry,
+  authorizeMcpServer,
   createMcpServer,
+  disconnectMcpServer,
+  getMcpAuthStatus,
   rescanAllMcpServers,
+  setMcpOAuthClient,
   testCallMcpTool,
   deleteGraphEdge,
   deleteMcpRegistry,
@@ -30,6 +34,7 @@ import {
   revokePluginMcpServer,
   searchMcpCatalog,
   setMcpServerStatus,
+  type McpAuthStatus,
   type McpCallLogEntry,
   type McpCatalogEntry,
   type McpGrantMatrixRow,
@@ -375,6 +380,7 @@ function ServerDetail({
       <div className="text-xs text-[color:var(--fg-muted)]">
         {server.endpoint ?? ''} {server.lastDiscoveredAt ? `· ${server.lastDiscoveredAt}` : ''}
       </div>
+      <McpAuthSection serverId={server.id} />
       {server.source === 'marketplace' ? (
         <div className="flex flex-wrap gap-2 text-[10px]">
           <span className="text-[color:var(--accent)]">{t('servers.marketplaceSource')}</span>
@@ -455,6 +461,139 @@ function ServerDetail({
         );
       })}
       {error ? <div className="text-sm text-[color:var(--danger)]">{error}</div> : null}
+    </div>
+  );
+}
+
+// ── Generic MCP OAuth (issue #459 W9) ────────────────────────────────────────
+
+/** Auth section on a server's detail: shows connection state and drives the
+ *  generic OAuth flow. Renders nothing for servers that aren't OAuth-protected
+ *  (auto-detected — no per-server config). */
+function McpAuthSection({ serverId }: { serverId: string }): React.ReactElement | null {
+  const t = useTranslations('adminMcp');
+  const [status, setStatus] = useState<McpAuthStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showClientForm, setShowClientForm] = useState(false);
+  const [clientId, setClientId] = useState('');
+  const [clientSecret, setClientSecret] = useState('');
+
+  const refresh = useCallback(async () => {
+    try {
+      setStatus(await getMcpAuthStatus(serverId));
+    } catch (err) {
+      setError(errText(err));
+    }
+  }, [serverId]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  if (!status || !status.protected) return null;
+
+  async function connect(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await authorizeMcpServer(serverId);
+      if (r.needsClient) {
+        setShowClientForm(true);
+      } else if (r.authorizeUrl) {
+        window.open(r.authorizeUrl, '_blank', 'noopener');
+      }
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveClient(): Promise<void> {
+    if (!status?.issuer || clientId.trim() === '') return;
+    setBusy(true);
+    setError(null);
+    try {
+      await setMcpOAuthClient(status.issuer, clientId.trim(), clientSecret.trim());
+      setShowClientForm(false);
+      setClientId('');
+      setClientSecret('');
+      await refresh();
+      await connect();
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/8 px-3 py-2.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm">
+          {status.connected ? (
+            <span className="text-[color:var(--success)]">{t('auth.connected')}</span>
+          ) : (
+            <span className="text-[color:var(--warning)]">{t('auth.notConnected')}</span>
+          )}
+        </span>
+        {status.connected ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            busy={busy}
+            onClick={() => {
+              setBusy(true);
+              void disconnectMcpServer(serverId)
+                .then(refresh)
+                .catch((err: unknown) => setError(errText(err)))
+                .finally(() => setBusy(false));
+            }}
+          >
+            {t('auth.disconnect')}
+          </Button>
+        ) : (
+          <Button size="sm" variant="secondary" busy={busy} onClick={() => void connect()}>
+            {t('auth.connect')}
+          </Button>
+        )}
+      </div>
+      {!status.connected ? (
+        <div className="text-[11px] text-[color:var(--fg-muted)]">{t('auth.hint')}</div>
+      ) : null}
+      {showClientForm ? (
+        <div className="flex flex-col gap-1.5 rounded-md border border-[color:var(--border)] bg-[color:var(--card)]/40 p-2.5">
+          <div className="text-xs text-[color:var(--fg-muted)]">
+            {t('auth.needsClient', { issuer: status.issuer ?? '' })}
+          </div>
+          {status.redirectUri ? (
+            <div className="text-[11px] text-[color:var(--fg-muted)]">
+              {t('auth.redirectUri')}:{' '}
+              <code className="rounded bg-[color:var(--card)] px-1 py-0.5">{status.redirectUri}</code>
+            </div>
+          ) : null}
+          <input
+            value={clientId}
+            onChange={(e) => setClientId(e.target.value)}
+            placeholder={t('auth.clientId')}
+            className="rounded-md border border-[color:var(--border)] bg-transparent px-2.5 py-1.5 text-xs outline-none focus:border-[color:var(--accent)]"
+          />
+          <input
+            type="password"
+            value={clientSecret}
+            onChange={(e) => setClientSecret(e.target.value)}
+            placeholder={t('auth.clientSecret')}
+            className="rounded-md border border-[color:var(--border)] bg-transparent px-2.5 py-1.5 text-xs outline-none focus:border-[color:var(--accent)]"
+          />
+          <div>
+            <Button size="sm" busy={busy} onClick={() => void saveClient()}>
+              {t('auth.saveClientAndConnect')}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+      {error ? <div className="text-xs text-[color:var(--danger)]">{error}</div> : null}
     </div>
   );
 }

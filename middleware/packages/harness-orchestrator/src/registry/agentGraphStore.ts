@@ -1124,6 +1124,167 @@ export class AgentGraphStore {
     );
   }
 
+  // ── MCP OAuth (epic #459 W9) — provider-agnostic authorization state ────────
+
+  async getMcpOAuthClient(
+    issuer: string,
+  ): Promise<{ issuer: string; clientId: string; clientSecretRef: string | null; registeredVia: 'dcr' | 'manual' } | undefined> {
+    const { rows } = await this.pool.query<{
+      issuer: string;
+      client_id: string;
+      client_secret_ref: string | null;
+      registered_via: 'dcr' | 'manual';
+    }>('SELECT * FROM mcp_oauth_clients WHERE issuer = $1', [issuer]);
+    const r = rows[0];
+    return r
+      ? { issuer: r.issuer, clientId: r.client_id, clientSecretRef: r.client_secret_ref, registeredVia: r.registered_via }
+      : undefined;
+  }
+
+  async upsertMcpOAuthClient(input: {
+    issuer: string;
+    clientId: string;
+    clientSecretRef: string | null;
+    registeredVia: 'dcr' | 'manual';
+  }): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO mcp_oauth_clients (issuer, client_id, client_secret_ref, registered_via)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (issuer) DO UPDATE SET
+         client_id = EXCLUDED.client_id,
+         client_secret_ref = EXCLUDED.client_secret_ref,
+         registered_via = EXCLUDED.registered_via`,
+      [input.issuer, input.clientId, input.clientSecretRef, input.registeredVia],
+    );
+  }
+
+  async getMcpOAuthToken(
+    serverId: string,
+    userKey: string,
+  ): Promise<
+    | {
+        serverId: string;
+        userKey: string;
+        accessTokenRef: string;
+        refreshTokenRef: string | null;
+        expiresAt: Date | null;
+        scopes: string | null;
+      }
+    | undefined
+  > {
+    const { rows } = await this.pool.query<{
+      server_id: string;
+      user_key: string;
+      access_token_ref: string;
+      refresh_token_ref: string | null;
+      expires_at: Date | null;
+      scopes: string | null;
+    }>('SELECT * FROM mcp_oauth_tokens WHERE server_id = $1 AND user_key = $2', [serverId, userKey]);
+    const r = rows[0];
+    return r
+      ? {
+          serverId: r.server_id,
+          userKey: r.user_key,
+          accessTokenRef: r.access_token_ref,
+          refreshTokenRef: r.refresh_token_ref,
+          expiresAt: r.expires_at,
+          scopes: r.scopes,
+        }
+      : undefined;
+  }
+
+  async upsertMcpOAuthToken(input: {
+    serverId: string;
+    userKey: string;
+    accessTokenRef: string;
+    refreshTokenRef: string | null;
+    expiresAt: Date | null;
+    scopes: string | null;
+  }): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO mcp_oauth_tokens
+         (server_id, user_key, access_token_ref, refresh_token_ref, expires_at, scopes, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6, now())
+       ON CONFLICT (server_id, user_key) DO UPDATE SET
+         access_token_ref = EXCLUDED.access_token_ref,
+         refresh_token_ref = EXCLUDED.refresh_token_ref,
+         expires_at = EXCLUDED.expires_at,
+         scopes = EXCLUDED.scopes,
+         updated_at = now()`,
+      [input.serverId, input.userKey, input.accessTokenRef, input.refreshTokenRef, input.expiresAt, input.scopes],
+    );
+  }
+
+  async deleteMcpOAuthToken(serverId: string, userKey: string): Promise<void> {
+    await this.pool.query('DELETE FROM mcp_oauth_tokens WHERE server_id = $1 AND user_key = $2', [
+      serverId,
+      userKey,
+    ]);
+  }
+
+  /** True if the given user has any token for the server (for status display). */
+  async listMcpOAuthTokenUserKeys(serverId: string): Promise<readonly string[]> {
+    const { rows } = await this.pool.query<{ user_key: string }>(
+      'SELECT user_key FROM mcp_oauth_tokens WHERE server_id = $1',
+      [serverId],
+    );
+    return rows.map((r) => r.user_key);
+  }
+
+  async createMcpOAuthFlow(input: {
+    state: string;
+    serverId: string;
+    userKey: string;
+    issuer: string;
+    codeVerifier: string;
+    redirectUri: string;
+    scopes: string | null;
+  }): Promise<void> {
+    // Opportunistic prune of stale flows (older than 15 min) on each create.
+    await this.pool.query("DELETE FROM mcp_oauth_flows WHERE created_at < now() - interval '15 minutes'");
+    await this.pool.query(
+      `INSERT INTO mcp_oauth_flows (state, server_id, user_key, issuer, code_verifier, redirect_uri, scopes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [input.state, input.serverId, input.userKey, input.issuer, input.codeVerifier, input.redirectUri, input.scopes],
+    );
+  }
+
+  /** Atomically consume a pending flow (one-shot): returns it and deletes it. */
+  async takeMcpOAuthFlow(state: string): Promise<
+    | {
+        state: string;
+        serverId: string;
+        userKey: string;
+        issuer: string;
+        codeVerifier: string;
+        redirectUri: string;
+        scopes: string | null;
+      }
+    | undefined
+  > {
+    const { rows } = await this.pool.query<{
+      state: string;
+      server_id: string;
+      user_key: string;
+      issuer: string;
+      code_verifier: string;
+      redirect_uri: string;
+      scopes: string | null;
+    }>('DELETE FROM mcp_oauth_flows WHERE state = $1 RETURNING *', [state]);
+    const r = rows[0];
+    return r
+      ? {
+          state: r.state,
+          serverId: r.server_id,
+          userKey: r.user_key,
+          issuer: r.issuer,
+          codeVerifier: r.code_verifier,
+          redirectUri: r.redirect_uri,
+          scopes: r.scopes,
+        }
+      : undefined;
+  }
+
   // ── Plugin → MCP server grants (epic #459 W5, issue #458) ───────────────────
 
   async listPluginMcpGrants(): Promise<

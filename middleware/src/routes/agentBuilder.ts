@@ -85,6 +85,18 @@ export interface AgentBuilderRouterOptions {
     mcp: boolean;
     serversHint: readonly string[];
   }>;
+  /** Generic MCP OAuth service (epic #459 W9). Decoupled to a minimal surface
+   *  so the router stays testable; the concrete impl is McpOAuthService. */
+  readonly mcpOAuth?: {
+    readonly redirectUri: string;
+    isProtected(server: McpServerRow): Promise<boolean>;
+    issuerFor(server: McpServerRow): Promise<string | null>;
+    beginAuthorization(server: McpServerRow, userKey: string): Promise<{ authorizeUrl: string }>;
+    completeAuthorization(state: string, code: string): Promise<{ serverId: string }>;
+    setManualClient(issuer: string, clientId: string, clientSecret: string | null): Promise<void>;
+    getValidAccessToken(server: McpServerRow, userKey: string): Promise<string | null>;
+  };
+  readonly mcpOAuthUserKey?: string;
 }
 
 interface Live {
@@ -1112,6 +1124,146 @@ export function createAgentBuilderRouter(
       res.status(204).end();
     } catch (err) {
       fail(res, err);
+    }
+  });
+
+  // ── generic MCP OAuth (epic #459 W9) ──────────────────────────────────────
+  const oauthUserKey = options.mcpOAuthUserKey ?? 'operator';
+
+  /** Auth status for a server: is it OAuth-protected, is the user connected,
+   *  and (if protected) does its issuer still need a one-time manual client. */
+  router.get('/mcp-servers/:id/auth-status', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const server = (await l.graph.listMcpServers()).find((s) => s.id === str(req.params.id));
+      if (!server) {
+        res.status(404).json({ error: 'mcp_server_not_found' });
+        return;
+      }
+      if (!options.mcpOAuth) {
+        res.json({ protected: false, connected: false, issuer: null, needsClient: false });
+        return;
+      }
+      const isProtected = await options.mcpOAuth.isProtected(server);
+      if (!isProtected) {
+        res.json({ protected: false, connected: false, issuer: null, needsClient: false });
+        return;
+      }
+      const issuer = await options.mcpOAuth.issuerFor(server);
+      const token = await l.graph.getMcpOAuthToken(server.id, oauthUserKey);
+      const client = issuer ? await l.graph.getMcpOAuthClient(issuer) : undefined;
+      res.json({
+        protected: true,
+        connected: token !== undefined,
+        issuer,
+        needsClient: issuer !== null && client === undefined,
+        redirectUri: options.mcpOAuth.redirectUri,
+      });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  /** Start the OAuth flow — returns the authorize URL to open. */
+  router.post('/mcp-servers/:id/authorize', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      if (!options.mcpOAuth) {
+        res.status(501).json({ error: 'mcp_oauth_unavailable' });
+        return;
+      }
+      const server = (await l.graph.listMcpServers()).find((s) => s.id === str(req.params.id));
+      if (!server) {
+        res.status(404).json({ error: 'mcp_server_not_found' });
+        return;
+      }
+      try {
+        const { authorizeUrl } = await options.mcpOAuth.beginAuthorization(server, oauthUserKey);
+        res.json({ authorizeUrl });
+      } catch (err) {
+        // Issuer without DCR needs a one-time manual client first.
+        if (err instanceof Error && err.name === 'McpOAuthNeedsClientError') {
+          const issuer = await options.mcpOAuth.issuerFor(server);
+          res.status(409).json({ error: 'needs_oauth_client', issuer });
+          return;
+        }
+        throw err;
+      }
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  /** Register a one-time OAuth client for an issuer that lacks DCR. */
+  router.put('/mcp-oauth-clients', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      if (!options.mcpOAuth) {
+        res.status(501).json({ error: 'mcp_oauth_unavailable' });
+        return;
+      }
+      const issuer = String(req.body?.issuer ?? '').trim();
+      const clientId = String(req.body?.clientId ?? '').trim();
+      const clientSecret =
+        typeof req.body?.clientSecret === 'string' && req.body.clientSecret !== ''
+          ? req.body.clientSecret
+          : null;
+      if (!/^https?:\/\//.test(issuer) || clientId === '') {
+        res.status(400).json({ error: 'invalid_oauth_client' });
+        return;
+      }
+      await options.mcpOAuth.setManualClient(issuer, clientId, clientSecret);
+      res.json({ issuer, clientId });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  /** Disconnect: drop the stored token for this user + server. */
+  router.delete('/mcp-servers/:id/token', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      await l.graph.deleteMcpOAuthToken(str(req.params.id), oauthUserKey);
+      res.status(204).end();
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  /** OAuth callback: exchange the code, store the token, show a done page.
+   *  Hit by the operator's own browser redirect (session cookie present); the
+   *  `state` param is the CSRF guard. */
+  router.get('/mcp-oauth/callback', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    const donePage = (ok: boolean, detail: string): string =>
+      `<!doctype html><meta charset="utf-8"><title>MCP authorization</title><body style="font-family:system-ui;padding:2rem;max-width:32rem">
+       <h2>${ok ? '✅ Connected' : '⚠️ Authorization failed'}</h2><p>${detail}</p>
+       <p>You can close this tab and return to the MCP Control Center.</p></body>`;
+    try {
+      if (!options.mcpOAuth) {
+        res.status(501).send(donePage(false, 'MCP OAuth is not configured.'));
+        return;
+      }
+      const code = typeof req.query['code'] === 'string' ? req.query['code'] : '';
+      const state = typeof req.query['state'] === 'string' ? req.query['state'] : '';
+      const providerError = typeof req.query['error'] === 'string' ? req.query['error'] : '';
+      if (providerError) {
+        res.status(400).send(donePage(false, `The provider returned: ${providerError}`));
+        return;
+      }
+      if (code === '' || state === '') {
+        res.status(400).send(donePage(false, 'Missing code or state.'));
+        return;
+      }
+      await options.mcpOAuth.completeAuthorization(state, code);
+      res.status(200).send(donePage(true, 'The server is now authorized for you.'));
+    } catch (err) {
+      res.status(400).send(donePage(false, msg(err)));
     }
   });
 

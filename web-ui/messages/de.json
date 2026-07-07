@@ -2658,6 +2658,18 @@
       "ok": "ok",
       "failed": "fehlgeschlagen"
     },
+    "auth": {
+      "connected": "🔓 Autorisiert",
+      "notConnected": "🔒 Nicht autorisiert",
+      "connect": "Verbinden",
+      "disconnect": "Trennen",
+      "hint": "Dieser Server braucht eine Autorisierung. Einmal verbinden — das Token wird sicher gespeichert und automatisch erneuert.",
+      "needsClient": "Dieser Provider ({issuer}) braucht eine einmalige OAuth-App-Registrierung. Lege beim Provider eine App an und trage die Zugangsdaten unten ein.",
+      "redirectUri": "Diese Redirect-URI registrieren",
+      "clientId": "Client-ID",
+      "clientSecret": "Client-Secret (falls nötig)",
+      "saveClientAndConnect": "Speichern und verbinden"
+    },
     "marketplace": {
       "registry": "Registry",
       "search": "Suche",

@@ -809,6 +809,60 @@ export async function importMcpServerFromRegistry(
   });
 }
 
+// ── Generic MCP OAuth (issue #459 W9) ────────────────────────────────────────
+
+export interface McpAuthStatus {
+  protected: boolean;
+  connected: boolean;
+  issuer: string | null;
+  needsClient: boolean;
+  redirectUri?: string;
+}
+
+export async function getMcpAuthStatus(serverId: string): Promise<McpAuthStatus> {
+  return callJson(`/v1/operator/mcp-servers/${encodeURIComponent(serverId)}/auth-status`);
+}
+
+/** Begin the OAuth flow. Returns the authorize URL, or a needs-client marker
+ *  (409) when the issuer must be registered once first. */
+export async function authorizeMcpServer(
+  serverId: string,
+): Promise<{ authorizeUrl?: string; needsClient?: boolean; issuer?: string | null }> {
+  try {
+    return await callJson(`/v1/operator/mcp-servers/${encodeURIComponent(serverId)}/authorize`, {
+      method: 'POST',
+    });
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 409) {
+      let issuer: string | null = null;
+      try {
+        issuer = (JSON.parse(err.body) as { issuer?: string }).issuer ?? null;
+      } catch {
+        /* keep null */
+      }
+      return { needsClient: true, issuer };
+    }
+    throw err;
+  }
+}
+
+export async function setMcpOAuthClient(
+  issuer: string,
+  clientId: string,
+  clientSecret: string,
+): Promise<void> {
+  await callJson('/v1/operator/mcp-oauth-clients', {
+    method: 'PUT',
+    body: JSON.stringify({ issuer, clientId, clientSecret: clientSecret || undefined }),
+  });
+}
+
+export async function disconnectMcpServer(serverId: string): Promise<void> {
+  await callJson(`/v1/operator/mcp-servers/${encodeURIComponent(serverId)}/token`, {
+    method: 'DELETE',
+  });
+}
+
 /** Enable/disable a server (issue #460). Triggers a registry reload server-side. */
 export async function setMcpServerStatus(
   id: string,

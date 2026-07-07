@@ -17,6 +17,8 @@
  * string so a tool failure degrades the turn instead of killing it.
  */
 
+import { createHash } from 'node:crypto';
+
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -79,9 +81,35 @@ export type McpCallObserver = (entry: McpCallLogEntry) => void;
  *  enforcement. Denied calls are still audit-logged. */
 export type McpCallGuard = (serverId: string, toolName: string) => string | null;
 
+/**
+ * Generic MCP authorization hook (epic #459 W9). Provider-agnostic: the manager
+ * asks for a bearer token to inject per call, and — when a call fails with an
+ * auth error and no working token — asks for an authorize URL to surface. All
+ * OAuth/discovery logic lives outside the manager (mcpOAuthService).
+ */
+export interface McpAuthProvider {
+  /** A live bearer token for this server + the current caller, or null. */
+  getToken(cfg: McpServerConfig): Promise<string | null>;
+  /** Called when a call failed auth without a working token — returns an
+   *  authorize URL to send the user to, or null if none can be produced. */
+  onUnauthorized(cfg: McpServerConfig): Promise<string | null>;
+}
+
 export interface McpManagerOptions {
   readonly onToolCall?: McpCallObserver;
   readonly guard?: McpCallGuard;
+  readonly auth?: McpAuthProvider;
+}
+
+/** True when an error/result string looks like an authorization failure. */
+function looksUnauthorized(text: string): boolean {
+  return (
+    /-?32401\b/.test(text) ||
+    /\b401\b/.test(text) ||
+    /unauthorized/i.test(text) ||
+    /authentication (error|required)/i.test(text) ||
+    /invalid[_ ]token/i.test(text)
+  );
 }
 
 interface Pooled {
@@ -176,9 +204,20 @@ export class McpManager {
     } catch {
       /* a broken guard must not take down tool dispatch — fall through */
     }
+    // Generic auth (issue #459 W9): inject a bearer token if the auth provider
+    // has one for this server + caller. Provider-agnostic — the manager knows
+    // nothing about OAuth, only "here is a token" / "here is where to log in".
+    let token: string | null = null;
+    if (this.options?.auth) {
+      try {
+        token = await this.options.auth.getToken(cfg);
+      } catch {
+        /* token resolution must not break the call path */
+      }
+    }
     let pooled: Pooled;
     try {
-      pooled = await this.getOrConnect(cfg);
+      pooled = await this.getOrConnect(cfg, token);
     } catch (err) {
       const failure = `Error: could not connect to MCP server "${cfg.name}": ${msg(err)}`;
       this.emitCall(cfg, toolName, false, failure, startedAt);
@@ -194,15 +233,58 @@ export class McpManager {
       // the audit row must reflect the failure (codex W2 finding).
       const protocolError =
         res !== null && typeof res === 'object' && (res as { isError?: unknown }).isError === true;
+      if (protocolError && looksUnauthorized(rendered)) {
+        return this.handleUnauthorized(cfg, toolName, token, rendered, startedAt);
+      }
       this.emitCall(cfg, toolName, !protocolError, protocolError ? rendered : null, startedAt);
       return rendered;
     } catch (err) {
       // Drop the connection so the next call reconnects (server may have died).
-      await this.close(cfg.id);
+      await this.close(this.poolKey(cfg, token));
       const failure = `Error: MCP tool "${toolName}" on "${cfg.name}" failed: ${msg(err)}`;
+      if (looksUnauthorized(failure)) {
+        return this.handleUnauthorized(cfg, toolName, token, failure, startedAt);
+      }
       this.emitCall(cfg, toolName, false, failure, startedAt);
       return failure;
     }
+  }
+
+  /** Turn an auth failure into a user-actionable "authorize here" message when
+   *  the auth provider can produce a URL, else surface the raw failure. */
+  private async handleUnauthorized(
+    cfg: McpServerConfig,
+    toolName: string,
+    token: string | null,
+    rawFailure: string,
+    startedAt: number,
+  ): Promise<string> {
+    // A stale token was rejected — drop its pooled connection so a re-auth uses
+    // a fresh one.
+    if (token) await this.close(this.poolKey(cfg, token));
+    let authorizeUrl: string | null = null;
+    if (this.options?.auth) {
+      try {
+        authorizeUrl = await this.options.auth.onUnauthorized(cfg);
+      } catch {
+        /* fall back to the raw failure */
+      }
+    }
+    if (authorizeUrl) {
+      const message = `Authorization required for MCP server "${cfg.name}". The user must connect it first — send them to authorize, then retry: ${authorizeUrl}`;
+      this.emitCall(cfg, toolName, false, `auth_required: ${authorizeUrl}`, startedAt);
+      return message;
+    }
+    this.emitCall(cfg, toolName, false, rawFailure, startedAt);
+    return rawFailure;
+  }
+
+  private poolKey(cfg: McpServerConfig, token: string | null): string {
+    // A per-token pool key keeps different callers' authenticated connections
+    // separate and lets a refreshed token transparently open a new connection.
+    if (!token) return cfg.id;
+    const h = createHash('sha256').update(token).digest('hex').slice(0, 12);
+    return `${cfg.id}#${h}`;
   }
 
   async close(id: string): Promise<void> {
@@ -221,35 +303,36 @@ export class McpManager {
     await Promise.all([...this.pool.keys()].map((id) => this.close(id)));
   }
 
-  private getOrConnect(cfg: McpServerConfig): Promise<Pooled> {
-    const existing = this.pool.get(cfg.id);
+  private getOrConnect(cfg: McpServerConfig, token: string | null = null): Promise<Pooled> {
+    const key = this.poolKey(cfg, token);
+    const existing = this.pool.get(key);
     if (existing) return Promise.resolve(existing);
-    const inflight = this.connecting.get(cfg.id);
+    const inflight = this.connecting.get(key);
     if (inflight) return inflight;
 
-    const p = this.connect(cfg)
+    const p = this.connect(cfg, token)
       .then((pooled) => {
-        this.pool.set(cfg.id, pooled);
-        this.connecting.delete(cfg.id);
+        this.pool.set(key, pooled);
+        this.connecting.delete(key);
         return pooled;
       })
       .catch((err) => {
-        this.connecting.delete(cfg.id);
+        this.connecting.delete(key);
         throw err;
       });
-    this.connecting.set(cfg.id, p);
+    this.connecting.set(key, p);
     return p;
   }
 
-  private async connect(cfg: McpServerConfig): Promise<Pooled> {
-    const transport = this.makeTransport(cfg);
+  private async connect(cfg: McpServerConfig, token: string | null): Promise<Pooled> {
+    const transport = this.makeTransport(cfg, token);
     const client = new Client(CLIENT_INFO);
     await client.connect(transport);
     return { client, transport };
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private makeTransport(cfg: McpServerConfig): any {
+  private makeTransport(cfg: McpServerConfig, token: string | null = null): any {
     if (!cfg.endpoint) {
       throw new Error(`MCP server "${cfg.name}" has no endpoint configured`);
     }
@@ -261,7 +344,11 @@ export class McpManager {
       return new StdioClientTransport({ command, args });
     }
     const url = new URL(cfg.endpoint);
-    const requestInit = cfg.headers ? { headers: cfg.headers } : undefined;
+    // Merge the OAuth bearer token (issue #459 W9) with any configured headers;
+    // bearer_methods_supported is 'header' for spec-compliant servers.
+    const headers: Record<string, string> = { ...(cfg.headers ?? {}) };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const requestInit = Object.keys(headers).length > 0 ? { headers } : undefined;
     if (cfg.transport === 'sse') {
       return new SSEClientTransport(url, requestInit ? { requestInit } : {});
     }

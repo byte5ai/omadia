@@ -133,6 +133,10 @@ const ConfigSchema = z.object({
   // it only when flow callbacks must land on a different origin than the rest
   // of the admin UI (rare). Mirrors the AUTH_REDIRECT_URI precedent.
   FLOW_PUBLIC_BASE_URL: z.string().url().optional(),
+  // Epic #459 W9 — absolute redirect URI the MCP OAuth callback lands on. Set
+  // only when the callback must resolve on a different origin than
+  // FLOW_PUBLIC_BASE_URL/api/v1/operator/mcp-oauth/callback (the default).
+  MCP_OAUTH_REDIRECT_URI: z.string().url().optional(),
   // Absolute URL Azure AD redirects to after login. MUST be registered
   // verbatim in the MS365 App Registration. In prod: middleware's own
   // /api/v1/auth/callback. In dev: http://localhost:3000/bot-api/v1/auth/callback
