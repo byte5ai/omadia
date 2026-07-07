@@ -2605,7 +2605,7 @@
   },
   "adminMcp": {
     "title": "MCP Control Center",
-    "intro": "Manage MCP servers, review scan verdicts of discovered tools, see who holds which grant, and follow the call audit log. The Builder canvas stays the place to wire grants.",
+    "intro": "Manage MCP servers, review scan verdicts of discovered tools, grant tools to orchestrators, skills and plugins, and follow the call audit log — everything in one place.",
     "loading": "Loading…",
     "cancel": "Cancel",
     "tabs": {
@@ -2645,7 +2645,7 @@
       "marketplaceSource": "marketplace",
       "sourceLink": "source",
       "rescanAll": "Re-scan all",
-      "flowHint": "How it works: add a server (or import one from the Marketplace tab), run Discover to scan its tools, acknowledge any high-risk verdicts — then grant its tools to an orchestrator on the Builder canvas, to a skill in the skill editor, or to a plugin on the Plugin access tab.",
+      "flowHint": "How it works: add a server (or import one from the Marketplace tab), run Discover to scan its tools, acknowledge any high-risk verdicts — then grant its tools to an orchestrator on the Grants tab, to a plugin on the Plugin access tab, or to a skill in the skill editor. Registering a server alone does not make it usable in chat — the grant is the step that does.",
       "state": {
         "enabled": "enabled",
         "disabled": "disabled"

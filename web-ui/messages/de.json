@@ -2605,7 +2605,7 @@
   },
   "adminMcp": {
     "title": "MCP Control Center",
-    "intro": "MCP-Server verwalten, Scan-Verdicts erkannter Tools prüfen, Grant-Übersicht einsehen und das Call-Audit-Log verfolgen. Grants werden weiterhin im Builder-Canvas verdrahtet.",
+    "intro": "MCP-Server verwalten, Scan-Verdicts erkannter Tools prüfen, Tools an Orchestratoren, Skills und Plugins zuweisen und das Call-Audit-Log verfolgen — alles an einem Ort.",
     "loading": "Lädt…",
     "cancel": "Abbrechen",
     "tabs": {
@@ -2645,7 +2645,7 @@
       "marketplaceSource": "Marketplace",
       "sourceLink": "Quelle",
       "rescanAll": "Alle neu scannen",
-      "flowHint": "So funktioniert es: Server anlegen (oder im Marketplace-Tab importieren), Discover ausführen um die Tools zu scannen, hochriskante Verdicts bestätigen — dann die Tools einem Orchestrator auf dem Builder-Canvas, einem Skill im Skill-Editor oder einem Plugin im Plugin-Zugriff-Tab zuweisen.",
+      "flowHint": "So funktioniert es: Server anlegen (oder im Marketplace-Tab importieren), Discover ausführen um die Tools zu scannen, hochriskante Verdicts bestätigen — dann die Tools einem Orchestrator im Grants-Tab, einem Plugin im Plugin-Zugriff-Tab oder einem Skill im Skill-Editor zuweisen. Einen Server nur zu registrieren macht ihn noch nicht im Chat nutzbar — erst der Grant tut das.",
       "state": {
         "enabled": "aktiv",
         "disabled": "deaktiviert"
