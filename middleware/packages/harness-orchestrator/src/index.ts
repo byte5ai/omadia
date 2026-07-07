@@ -292,6 +292,10 @@ export {
   buildDateHeader,
 } from './turnContext.js';
 export type { TurnContextValue } from './turnContext.js';
+export {
+  setMcpPrivacyBypassServers,
+  isMcpServerPrivacyBypassed,
+} from './mcpPrivacyBypass.js';
 export type {
   TurnAnnotation,
   TurnHook,

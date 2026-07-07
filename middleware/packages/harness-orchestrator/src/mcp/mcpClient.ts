@@ -212,7 +212,19 @@ export class McpManager {
   /** Discover the tool list a server exposes. Throws on connection failure so
    *  the operator-facing `/discover` endpoint can report it. */
   async listTools(cfg: McpServerConfig): Promise<McpToolDescriptor[]> {
-    const { client } = await this.getOrConnect(cfg);
+    // Attach the OAuth token (issue #459 W9): some servers (e.g. Figma) require
+    // authorization even to `initialize`/`tools/list`, so discovery must use the
+    // caller's token exactly like a tool call — otherwise every OAuth-protected
+    // server 401s on Discover and can never be onboarded.
+    let token: string | null = null;
+    if (this.options?.auth) {
+      try {
+        token = await this.options.auth.getToken(cfg);
+      } catch {
+        /* token resolution must not break discovery */
+      }
+    }
+    const { client } = await this.getOrConnect(cfg, token);
     const res = await client.listTools();
     const tools = Array.isArray(res?.tools) ? res.tools : [];
     return tools.map((t) => ({

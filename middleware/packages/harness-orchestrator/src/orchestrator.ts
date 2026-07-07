@@ -135,6 +135,7 @@ import type {
 import { streamMessageEvents } from './streaming.js';
 import { steeringBus } from './steeringBus.js';
 import { buildDateHeader, today, turnContext } from './turnContext.js';
+import { isMcpServerPrivacyBypassed } from './mcpPrivacyBypass.js';
 
 // S+10-2 back-compat re-exports: kernel-side callers that still
 // `import { … } from './orchestrator.js'` (verifierService.ts, routes/chat.ts,
@@ -3996,19 +3997,20 @@ export class Orchestrator {
       toolName: string,
     ): { pluginId: string } | undefined => {
       // Path 0 — per-MCP-server operator bypass (epic #459). A server flagged
-      // `privacy_bypass` marks its DomainTools; that opts the tool out of
-      // masking regardless of any owning-agent `_privacy_mode`. Still routed
-      // through resolveEffectivePrivacyMode so `OMADIA_PRIVACY_FORCE_GUARDED`
-      // can clamp it back to guarded org-wide.
+      // `privacy_bypass` opts its tool results out of masking regardless of any
+      // owning-agent `_privacy_mode`. The flag is read LIVE by server id (a
+      // reload is additive and won't update a baked marker), then routed through
+      // resolveEffectivePrivacyMode so `OMADIA_PRIVACY_FORCE_GUARDED` can still
+      // clamp it back to guarded org-wide.
       const bypassTool = domainTools.get(toolName);
-      if (bypassTool?.privacyBypass === true) {
+      if (isMcpServerPrivacyBypassed(bypassTool?.mcpServerId)) {
         const effective = resolveEffectivePrivacyMode({
           storedMode: 'bypass',
           storedScopes: undefined,
           toolName,
           env: process.env,
         });
-        if (effective === 'bypass') return { pluginId: bypassTool.domain };
+        if (effective === 'bypass') return { pluginId: bypassTool?.domain ?? toolName };
       }
       // Path 1 — kernel tool with attached config closure.
       const reg = nativeTools.get(toolName);
