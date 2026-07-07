@@ -8,6 +8,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 
 import type { AuthServerMetadata } from './mcpAuthDiscovery.js';
+import { assertPublicHttpsUrl } from './ssrfGuard.js';
 
 export interface OAuthClientCredentials {
   readonly clientId: string;
@@ -170,6 +171,10 @@ export class McpOAuthClient {
   }
 
   private async postForm(url: string, form: URLSearchParams): Promise<Record<string, unknown>> {
+    // SSRF guard (codex W9 fold): the token/registration endpoints come from
+    // attacker-influenced metadata — never POST a code/secret to an internal
+    // host, and never follow a redirect that could bounce it there.
+    await assertPublicHttpsUrl(url);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
@@ -178,6 +183,7 @@ export class McpOAuthClient {
         headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
         body: form.toString(),
         signal: controller.signal,
+        redirect: 'error',
       });
       const text = await res.text();
       let doc: Record<string, unknown> = {};
@@ -200,6 +206,7 @@ export class McpOAuthClient {
     body: unknown,
     headers: Record<string, string>,
   ): Promise<Record<string, unknown>> {
+    await assertPublicHttpsUrl(url);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
@@ -208,6 +215,7 @@ export class McpOAuthClient {
         headers: { 'content-type': 'application/json', accept: 'application/json', ...headers },
         body: JSON.stringify(body),
         signal: controller.signal,
+        redirect: 'error',
       });
       const text = await res.text();
       try {

@@ -1661,13 +1661,18 @@ async function main(): Promise<void> {
               auth: {
                 getToken: async (cfg: McpServerConfig) => {
                   const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
-                  return server ? mcpOAuthService.getValidAccessToken(server, mcpOAuthUserKey) : null;
+                  if (!server) return null;
+                  // Per-user token (codex W9 fold): the turn's authenticated
+                  // user when the entry point set it, else the operator scope.
+                  const userKey = turnContext.current()?.mcpUserKey ?? mcpOAuthUserKey;
+                  return mcpOAuthService.getValidAccessToken(server, userKey);
                 },
                 onUnauthorized: async (cfg: McpServerConfig) => {
                   const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
                   if (!server) return null;
+                  const userKey = turnContext.current()?.mcpUserKey ?? mcpOAuthUserKey;
                   try {
-                    return (await mcpOAuthService.beginAuthorization(server, mcpOAuthUserKey)).authorizeUrl;
+                    return (await mcpOAuthService.beginAuthorization(server, userKey)).authorizeUrl;
                   } catch {
                     // No client for the issuer yet (needs a one-time manual
                     // registration) — surface the raw error instead of a URL.

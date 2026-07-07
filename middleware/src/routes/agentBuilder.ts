@@ -1128,7 +1128,13 @@ export function createAgentBuilderRouter(
   });
 
   // ── generic MCP OAuth (epic #459 W9) ──────────────────────────────────────
-  const oauthUserKey = options.mcpOAuthUserKey ?? 'operator';
+  // Tokens are keyed to the authenticated operator's identity (codex W9 fold):
+  // one operator's token is never reused for another. Falls back to a shared
+  // key only when no session identity is available (single-admin/dev).
+  const oauthUserKey = (req: Request): string =>
+    req.session?.sub || req.session?.email || options.mcpOAuthUserKey || 'operator';
+  const escapeHtml = (s: string): string =>
+    s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
   /** Auth status for a server: is it OAuth-protected, is the user connected,
    *  and (if protected) does its issuer still need a one-time manual client. */
@@ -1151,7 +1157,7 @@ export function createAgentBuilderRouter(
         return;
       }
       const issuer = await options.mcpOAuth.issuerFor(server);
-      const token = await l.graph.getMcpOAuthToken(server.id, oauthUserKey);
+      const token = await l.graph.getMcpOAuthToken(server.id, oauthUserKey(req));
       const client = issuer ? await l.graph.getMcpOAuthClient(issuer) : undefined;
       res.json({
         protected: true,
@@ -1180,7 +1186,7 @@ export function createAgentBuilderRouter(
         return;
       }
       try {
-        const { authorizeUrl } = await options.mcpOAuth.beginAuthorization(server, oauthUserKey);
+        const { authorizeUrl } = await options.mcpOAuth.beginAuthorization(server, oauthUserKey(req));
         res.json({ authorizeUrl });
       } catch (err) {
         // Issuer without DCR needs a one-time manual client first.
@@ -1227,7 +1233,7 @@ export function createAgentBuilderRouter(
     const l = live(res);
     if (!l) return;
     try {
-      await l.graph.deleteMcpOAuthToken(str(req.params.id), oauthUserKey);
+      await l.graph.deleteMcpOAuthToken(str(req.params.id), oauthUserKey(req));
       res.status(204).end();
     } catch (err) {
       fail(res, err);
@@ -1240,9 +1246,11 @@ export function createAgentBuilderRouter(
   router.get('/mcp-oauth/callback', async (req: Request, res: Response) => {
     const l = live(res);
     if (!l) return;
+    // Escape the detail — it can carry attacker-controlled provider error text
+    // (codex W9 fold: reflected XSS on an auth-gated admin origin otherwise).
     const donePage = (ok: boolean, detail: string): string =>
       `<!doctype html><meta charset="utf-8"><title>MCP authorization</title><body style="font-family:system-ui;padding:2rem;max-width:32rem">
-       <h2>${ok ? '✅ Connected' : '⚠️ Authorization failed'}</h2><p>${detail}</p>
+       <h2>${ok ? '✅ Connected' : '⚠️ Authorization failed'}</h2><p>${escapeHtml(detail)}</p>
        <p>You can close this tab and return to the MCP Control Center.</p></body>`;
     try {
       if (!options.mcpOAuth) {

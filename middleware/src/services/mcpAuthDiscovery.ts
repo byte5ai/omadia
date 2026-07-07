@@ -14,6 +14,8 @@
  * falls back to the raw error.
  */
 
+import { assertPublicHttpsUrl } from './ssrfGuard.js';
+
 const DEFAULT_TIMEOUT_MS = 10_000;
 const MAX_METADATA_BYTES = 256 * 1024;
 
@@ -145,13 +147,20 @@ export class McpAuthDiscovery {
   }
 
   private async getJson(url: string): Promise<Record<string, unknown> | null> {
+    // SSRF guard (codex W9 fold): the well-known chain + endpoints are
+    // attacker-influenced; refuse internal hosts and disable redirects.
+    try {
+      await assertPublicHttpsUrl(url);
+    } catch {
+      return null;
+    }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
       const res = await this.fetchImpl(url, {
         headers: { accept: 'application/json' },
         signal: controller.signal,
-        redirect: 'follow',
+        redirect: 'error',
       });
       if (res.status === 404) return null;
       if (!res.ok) return null;

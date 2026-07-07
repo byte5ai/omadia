@@ -1239,17 +1239,32 @@ export class AgentGraphStore {
     codeVerifier: string;
     redirectUri: string;
     scopes: string | null;
+    tokenEndpoint: string;
+    authorizationEndpoint: string;
   }): Promise<void> {
     // Opportunistic prune of stale flows (older than 15 min) on each create.
     await this.pool.query("DELETE FROM mcp_oauth_flows WHERE created_at < now() - interval '15 minutes'");
     await this.pool.query(
-      `INSERT INTO mcp_oauth_flows (state, server_id, user_key, issuer, code_verifier, redirect_uri, scopes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-      [input.state, input.serverId, input.userKey, input.issuer, input.codeVerifier, input.redirectUri, input.scopes],
+      `INSERT INTO mcp_oauth_flows
+         (state, server_id, user_key, issuer, code_verifier, redirect_uri, scopes, token_endpoint, authorization_endpoint)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [
+        input.state,
+        input.serverId,
+        input.userKey,
+        input.issuer,
+        input.codeVerifier,
+        input.redirectUri,
+        input.scopes,
+        input.tokenEndpoint,
+        input.authorizationEndpoint,
+      ],
     );
   }
 
-  /** Atomically consume a pending flow (one-shot): returns it and deletes it. */
+  /** Atomically consume a pending flow (one-shot, ≤15 min old): returns it and
+   *  deletes it. The age check is enforced HERE (not only at create) so a
+   *  leaked stale state cannot be redeemed later (codex W9 fold). */
   async takeMcpOAuthFlow(state: string): Promise<
     | {
         state: string;
@@ -1259,6 +1274,8 @@ export class AgentGraphStore {
         codeVerifier: string;
         redirectUri: string;
         scopes: string | null;
+        tokenEndpoint: string | null;
+        authorizationEndpoint: string | null;
       }
     | undefined
   > {
@@ -1270,7 +1287,12 @@ export class AgentGraphStore {
       code_verifier: string;
       redirect_uri: string;
       scopes: string | null;
-    }>('DELETE FROM mcp_oauth_flows WHERE state = $1 RETURNING *', [state]);
+      token_endpoint: string | null;
+      authorization_endpoint: string | null;
+    }>(
+      "DELETE FROM mcp_oauth_flows WHERE state = $1 AND created_at > now() - interval '15 minutes' RETURNING *",
+      [state],
+    );
     const r = rows[0];
     return r
       ? {
@@ -1281,6 +1303,8 @@ export class AgentGraphStore {
           codeVerifier: r.code_verifier,
           redirectUri: r.redirect_uri,
           scopes: r.scopes,
+          tokenEndpoint: r.token_endpoint,
+          authorizationEndpoint: r.authorization_endpoint,
         }
       : undefined;
   }

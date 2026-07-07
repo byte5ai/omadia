@@ -135,6 +135,13 @@ export interface TurnContextValue {
   mcpCallerKind?: 'skill' | 'plugin';
   mcpCallerId?: string;
   /**
+   * Epic #459 W9 (codex fold) — the identity MCP OAuth tokens are keyed to for
+   * this turn. Set by the turn's entry point to the authenticated user so the
+   * manager resolves that user's token. Unset outside a user turn; the auth
+   * provider then falls back to the operator scope.
+   */
+  mcpUserKey?: string;
+  /**
    * Epic #459 W4/W5 (codex fold) — the persona skill the W8 per-turn router
    * selected as this turn's acting identity, or undefined when no persona is
    * active. Skill-bound MCP DomainTools check it at dispatch: a tool bound to

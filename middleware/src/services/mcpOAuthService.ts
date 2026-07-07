@@ -135,22 +135,37 @@ export class McpOAuthService {
       codeVerifier,
       redirectUri: this.deps.redirectUri,
       scopes: scopes.length > 0 ? scopes.join(' ') : null,
+      // Persist the authorize-time endpoints (codex W9 critical fold): the
+      // callback exchanges against THESE, never a re-discovered token endpoint
+      // that a malicious server could have switched in the meantime.
+      tokenEndpoint: discovered.server.tokenEndpoint,
+      authorizationEndpoint: discovered.server.authorizationEndpoint,
     });
     return { authorizeUrl: url };
   }
 
-  /** Finish the flow at the callback: exchange the code and store the token. */
+  /** Finish the flow at the callback: exchange the code and store the token.
+   *  Uses the endpoints captured when the flow started — NOT a fresh discovery
+   *  (codex W9 critical fold: a malicious server could otherwise switch its
+   *  token endpoint to steal the code + PKCE verifier + client secret). */
   async completeAuthorization(state: string, code: string): Promise<{ serverId: string }> {
     const flow = await this.deps.graph.takeMcpOAuthFlow(state);
     if (!flow) throw new Error('unknown or expired authorization state');
-    const server = (await this.deps.graph.listMcpServers()).find((s) => s.id === flow.serverId);
-    if (!server?.endpoint) throw new Error('server no longer exists');
-    const discovered = await this.discovery.discover(server.endpoint);
-    if (!discovered) throw new Error('server no longer advertises OAuth metadata');
+    if (!flow.tokenEndpoint) throw new Error('flow is missing its bound token endpoint');
     const client = await this.loadClient(flow.issuer);
     if (!client) throw new McpOAuthNeedsClientError(flow.issuer);
+    // Reconstruct the minimal server metadata from the FLOW-BOUND values.
+    const boundServer = {
+      issuer: flow.issuer,
+      authorizationEndpoint: flow.authorizationEndpoint ?? '',
+      tokenEndpoint: flow.tokenEndpoint,
+      registrationEndpoint: null,
+      codeChallengeMethods: [] as string[],
+      grantTypes: [] as string[],
+      scopesSupported: [] as string[],
+    };
     const tok = await this.client.exchangeCode({
-      server: discovered.server,
+      server: boundServer,
       client,
       code,
       codeVerifier: flow.codeVerifier,
