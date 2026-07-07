@@ -86,16 +86,23 @@ export class McpAuthDiscovery {
    *  auth-protected). Throws only on a malformed/partial advertisement.
    *  Cached per origin (5 min) so a per-call auth check is cheap. */
   async discover(serverEndpoint: string): Promise<DiscoveredAuth | null> {
-    const origin = serverOrigin(serverEndpoint);
-    const cached = this.cache.get(origin);
+    // Cache by the FULL endpoint, not just origin: RFC 9728 metadata can be
+    // path-specific (e.g. M365 exposes one resource-metadata doc per server).
+    const cached = this.cache.get(serverEndpoint);
     if (cached && Date.now() - cached.at < DISCOVERY_CACHE_TTL_MS) return cached.value;
-    const value = await this.discoverUncached(origin);
-    this.cache.set(origin, { at: Date.now(), value });
+    const value = await this.discoverUncached(serverEndpoint);
+    this.cache.set(serverEndpoint, { at: Date.now(), value });
     return value;
   }
 
-  private async discoverUncached(origin: string): Promise<DiscoveredAuth | null> {
-    const resource = await this.fetchProtectedResource(origin);
+  private async discoverUncached(serverEndpoint: string): Promise<DiscoveredAuth | null> {
+    const origin = serverOrigin(serverEndpoint);
+    // (1) Well-known at the origin root, then (2) the RFC 9728 pointer the server
+    // returns in its 401 `WWW-Authenticate: Bearer resource_metadata="…"` header
+    // (M365 serves a path-specific metadata doc there, not at the root).
+    const resource =
+      (await this.fetchProtectedResource(origin)) ??
+      (await this.fetchProtectedResourceViaChallenge(serverEndpoint));
     if (!resource) return null;
     const issuer = resource.authorizationServers[0];
     if (!issuer) {
@@ -112,11 +119,65 @@ export class McpAuthDiscovery {
     origin: string,
   ): Promise<ProtectedResourceMetadata | null> {
     const doc = await this.getJson(`${origin}/.well-known/oauth-protected-resource`);
+    return this.parseProtectedResource(doc, origin);
+  }
+
+  /** RFC 9728: read the `resource_metadata` URL the server advertises in the
+   *  `WWW-Authenticate: Bearer resource_metadata="…"` header of its 401, then
+   *  fetch the protected-resource doc from there. Handles servers (e.g. M365)
+   *  that expose a path-specific metadata doc rather than the origin root. */
+  private async fetchProtectedResourceViaChallenge(
+    serverEndpoint: string,
+  ): Promise<ProtectedResourceMetadata | null> {
+    try {
+      await assertPublicHttpsUrl(serverEndpoint);
+    } catch {
+      return null;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    let metadataUrl: string | null = null;
+    try {
+      const res = await this.fetchImpl(serverEndpoint, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: {
+            protocolVersion: '2025-06-18',
+            capabilities: {},
+            clientInfo: { name: 'omadia', version: '1' },
+          },
+        }),
+        signal: controller.signal,
+        redirect: 'error',
+      });
+      const wa = res.headers.get('www-authenticate');
+      if (wa) {
+        const m = /resource_metadata="?([^",\s]+)"?/i.exec(wa);
+        if (m?.[1]) metadataUrl = m[1];
+      }
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!metadataUrl) return null;
+    const doc = await this.getJson(metadataUrl);
+    return this.parseProtectedResource(doc, serverEndpoint);
+  }
+
+  private parseProtectedResource(
+    doc: Record<string, unknown> | null,
+    fallbackResource: string,
+  ): ProtectedResourceMetadata | null {
     if (!doc) return null;
     const authServers = strArr(doc['authorization_servers']);
     if (authServers.length === 0) return null;
     return {
-      resource: str(doc['resource']) ?? origin,
+      resource: str(doc['resource']) ?? fallbackResource,
       authorizationServers: authServers,
       scopesSupported: strArr(doc['scopes_supported']),
       bearerMethods: strArr(doc['bearer_methods_supported']),

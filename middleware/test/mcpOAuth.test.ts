@@ -53,6 +53,40 @@ describe('McpAuthDiscovery', () => {
     assert.equal(await d.discover('https://plain.example/mcp'), null);
   });
 
+  it('follows the RFC 9728 WWW-Authenticate resource_metadata pointer (M365-shaped)', async () => {
+    // Root well-known 404s; the endpoint 401s with a path-specific metadata URL.
+    const metaUrl = 'https://srv.example/.well-known/oauth-protected-resource/tenants/t/mcp';
+    const fetchImpl: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/mcp') && init?.method === 'POST') {
+        return new Response('', {
+          status: 401,
+          headers: { 'www-authenticate': `Bearer resource_metadata="${metaUrl}"` },
+        });
+      }
+      if (url === metaUrl) {
+        return new Response(
+          JSON.stringify({ authorization_servers: ['https://as.example'], scopes_supported: ['x'] }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url.includes('/.well-known/oauth-authorization-server')) {
+        return new Response(
+          JSON.stringify({
+            issuer: 'https://as.example',
+            authorization_endpoint: 'https://as.example/authorize',
+            token_endpoint: 'https://as.example/token',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response('not found', { status: 404 });
+    }) as typeof fetch;
+    const out = await new McpAuthDiscovery({ fetchImpl }).discover('https://srv.example/tenants/t/mcp');
+    assert.ok(out, 'should discover via the WWW-Authenticate pointer');
+    assert.equal(out.server.tokenEndpoint, 'https://as.example/token');
+  });
+
   it('treats a registration_endpoint that equals the authorize URL as absent (no fake DCR)', async () => {
     const fetchImpl = jsonResponder({
       '/.well-known/oauth-protected-resource': {

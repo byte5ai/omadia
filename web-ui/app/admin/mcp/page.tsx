@@ -472,23 +472,25 @@ function ServerRows({
 const cfgInputCls =
   'rounded-md border border-[color:var(--border)] bg-transparent px-2.5 py-1.5 text-xs outline-none focus:border-[color:var(--accent)]';
 
-/** Tool-card border + tint by verdict severity (epic #459 UI). Hover is applied
- *  per-card (not the whole panel) so only the hovered card highlights. */
+/** Tool-card border + a STATIC subtle tint by verdict severity (epic #459 UI).
+ *  No hover-fill — hovering only nudges the border, so the card is never flooded
+ *  with colour on hover; the coloured left-border is the persistent marker. */
 function toolCardCls(severity: string | null | undefined): string {
+  const base = 'border-l-2 hover:border-[color:var(--accent)]/50';
   switch (severity) {
     case 'high_risk':
-      return 'border-[color:var(--danger)]/40 bg-[color:var(--danger)]/5 hover:bg-[color:var(--danger)]/10';
+      return `${base} border-[color:var(--border)] border-l-[color:var(--danger)] bg-[color:var(--danger)]/[0.03]`;
     case 'flagged':
-      return 'border-[color:var(--warning)]/40 bg-[color:var(--warning)]/5 hover:bg-[color:var(--warning)]/10';
+      return `${base} border-[color:var(--border)] border-l-[color:var(--warning)] bg-[color:var(--warning)]/[0.03]`;
     case 'scan_failed':
     case 'too_large_to_scan':
-      return 'border-[color:var(--border-strong)] bg-[color:var(--bg-soft)]/40 hover:bg-[color:var(--bg-soft)]/70';
+      return `${base} border-[color:var(--border)] border-l-[color:var(--border-strong)]`;
     case 'pending':
-      return 'border-[color:var(--accent)]/40 bg-[color:var(--accent)]/5 hover:bg-[color:var(--accent)]/10';
+      return `${base} border-[color:var(--border)] border-l-[color:var(--accent)]`;
     case 'no_signals':
-      return 'border-[color:var(--success)]/30 bg-[color:var(--success)]/5 hover:bg-[color:var(--success)]/10';
+      return `${base} border-[color:var(--border)] border-l-[color:var(--success)]`;
     default: // not_yet_scanned / unknown
-      return 'border-[color:var(--border)] bg-[color:var(--card)]/40 hover:bg-[color:var(--card)]/70';
+      return `${base} border-[color:var(--border)] border-l-[color:var(--border)]`;
   }
 }
 
