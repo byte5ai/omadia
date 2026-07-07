@@ -459,7 +459,7 @@ function ServerRows({
         </td>
       </tr>
       {expanded ? (
-        <tr className="border-b border-[color:var(--border)]/60 bg-[color:var(--bg-soft)]/40">
+        <tr className="border-b border-[color:var(--border)]/60">
           <td className={tdCls} colSpan={10}>
             <ServerDetail server={server} onAcked={onAcked} />
           </td>
@@ -471,6 +471,26 @@ function ServerRows({
 
 const cfgInputCls =
   'rounded-md border border-[color:var(--border)] bg-transparent px-2.5 py-1.5 text-xs outline-none focus:border-[color:var(--accent)]';
+
+/** Tool-card border + tint by verdict severity (epic #459 UI). Hover is applied
+ *  per-card (not the whole panel) so only the hovered card highlights. */
+function toolCardCls(severity: string | null | undefined): string {
+  switch (severity) {
+    case 'high_risk':
+      return 'border-[color:var(--danger)]/40 bg-[color:var(--danger)]/5 hover:bg-[color:var(--danger)]/10';
+    case 'flagged':
+      return 'border-[color:var(--warning)]/40 bg-[color:var(--warning)]/5 hover:bg-[color:var(--warning)]/10';
+    case 'scan_failed':
+    case 'too_large_to_scan':
+      return 'border-[color:var(--border-strong)] bg-[color:var(--bg-soft)]/40 hover:bg-[color:var(--bg-soft)]/70';
+    case 'pending':
+      return 'border-[color:var(--accent)]/40 bg-[color:var(--accent)]/5 hover:bg-[color:var(--accent)]/10';
+    case 'no_signals':
+      return 'border-[color:var(--success)]/30 bg-[color:var(--success)]/5 hover:bg-[color:var(--success)]/10';
+    default: // not_yet_scanned / unknown
+      return 'border-[color:var(--border)] bg-[color:var(--card)]/40 hover:bg-[color:var(--card)]/70';
+  }
+}
 
 /** Epic #459 — per-server config form, rendered from the config schema.
  *  Non-secret values go to the DB; secret values (per-field flag) go to the
@@ -659,6 +679,10 @@ function ServerDetail({
           ) : null}
         </div>
       ) : null}
+      {/* Separate the auth/config block above from the discovery results. */}
+      <div className="mt-1 border-t border-[color:var(--border)] pt-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[color:var(--fg-muted)]">
+        {t('servers.discoveredTools', { count: server.discoveredTools.length })}
+      </div>
       {server.discoveredTools.map((tool) => {
         const v = tool.verdict;
         const needsAck =
@@ -669,16 +693,22 @@ function ServerDetail({
         return (
           <div
             key={tool.name}
-            className="flex flex-col gap-1.5 rounded-md border border-[color:var(--border)] bg-[color:var(--card)]/40 px-3 py-2.5"
+            className={[
+              'flex flex-col gap-1.5 rounded-md border px-3 py-2.5 transition-colors',
+              toolCardCls(v?.severity),
+            ].join(' ')}
           >
-            {/* Badge sits inline next to the name; nothing is right-anchored, so
-                the row never needs horizontal scrolling regardless of width. */}
-            <div className="flex flex-wrap items-center gap-2">
+            {/* Name on the left; verdict pinned to the far right of the row. */}
+            <div className="flex items-center justify-between gap-2">
               <span className="text-sm font-medium text-[color:var(--fg-strong)]">{tool.name}</span>
-              <SkillVerdictBadge severity={v?.severity ?? 'not_yet_scanned'} />
-              {v?.acked && !v.ackStale ? (
-                <span className="text-[11px] text-[color:var(--fg-muted)]">{t('servers.acked')}</span>
-              ) : null}
+              <div className="flex shrink-0 items-center gap-2">
+                {v?.acked && !v.ackStale ? (
+                  <span className="text-[11px] text-[color:var(--fg-muted)]">
+                    {t('servers.acked')}
+                  </span>
+                ) : null}
+                <SkillVerdictBadge severity={v?.severity ?? 'not_yet_scanned'} />
+              </div>
             </div>
             {tool.description ? (
               <div className="text-sm leading-[1.5] text-[color:var(--fg-muted)]">{tool.description}</div>

@@ -2642,6 +2642,7 @@
       "add": "Add server",
       "empty": "No MCP servers registered yet.",
       "noTools": "No tools discovered yet. Run Discover first.",
+      "discoveredTools": "Discovered tools ({count})",
       "discover": "Discover",
       "enable": "Enable",
       "disable": "Disable",

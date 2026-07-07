@@ -2642,6 +2642,7 @@
       "add": "Server hinzufügen",
       "empty": "Noch keine MCP-Server registriert.",
       "noTools": "Noch keine Tools erkannt. Zuerst Discover ausführen.",
+      "discoveredTools": "Erkannte Tools ({count})",
       "discover": "Discover",
       "enable": "Aktivieren",
       "disable": "Deaktivieren",
