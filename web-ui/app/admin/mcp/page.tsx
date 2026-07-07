@@ -459,7 +459,7 @@ function ServerRows({
         </td>
       </tr>
       {expanded ? (
-        <tr className="border-b border-[color:var(--border)]/60">
+        <tr data-detail-row className="border-b border-[color:var(--border)]/60">
           <td className={tdCls} colSpan={10}>
             <ServerDetail server={server} onAcked={onAcked} />
           </td>

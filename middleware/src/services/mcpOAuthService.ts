@@ -12,6 +12,7 @@
  */
 import { McpAuthDiscovery, serverOrigin, type DiscoveredAuth } from './mcpAuthDiscovery.js';
 import { McpOAuthClient, type OAuthClientCredentials } from './mcpOAuthClient.js';
+import { substituteMcpConfig } from '../agents/subAgentToolHydration.js';
 
 import type { AgentGraphStore, McpServerRow } from '@omadia/orchestrator';
 
@@ -77,11 +78,18 @@ export class McpOAuthService {
     return `client/${encodeURIComponent(issuer)}/secret`;
   }
 
+  /** The connect-ready endpoint with non-secret `{key}` config placeholders
+   *  substituted (epic #459) — OAuth discovery must hit the SAME URL a tool call
+   *  connects to, not the raw `.../tenants/{tenant_id}/...` template. */
+  private resolveEndpoint(server: McpServerRow): string {
+    return substituteMcpConfig(server.endpoint ?? '', server.config);
+  }
+
   /** Whether a server is discoverably OAuth-protected (cheap, cached upstream). */
   async isProtected(server: McpServerRow): Promise<boolean> {
     if (!server.endpoint) return false;
     try {
-      return (await this.discovery.discover(server.endpoint)) !== null;
+      return (await this.discovery.discover(this.resolveEndpoint(server))) !== null;
     } catch {
       return true; // partial advertisement still means "needs auth"
     }
@@ -104,7 +112,7 @@ export class McpOAuthService {
     const refreshToken = await this.deps.vault.get(VAULT_NS, row.refreshTokenRef);
     if (!refreshToken) return (await this.deps.vault.get(VAULT_NS, row.accessTokenRef)) ?? null;
     try {
-      const discovered = await this.discovery.discover(server.endpoint);
+      const discovered = await this.discovery.discover(this.resolveEndpoint(server));
       if (!discovered) return null;
       const client = await this.loadClient(discovered.server.issuer);
       if (!client) return null;
@@ -120,7 +128,7 @@ export class McpOAuthService {
   /** Start the authorization flow: returns the URL to send the user to. */
   async beginAuthorization(server: McpServerRow, userKey: string): Promise<BeginAuthResult> {
     if (!server.endpoint) throw new Error('server has no endpoint');
-    const discovered = await this.discovery.discover(server.endpoint);
+    const discovered = await this.discovery.discover(this.resolveEndpoint(server));
     if (!discovered) throw new Error('server does not advertise OAuth protected-resource metadata');
     const client = await this.ensureClient(discovered);
     const scopes =
@@ -240,7 +248,7 @@ export class McpOAuthService {
   async issuerFor(server: McpServerRow): Promise<string | null> {
     if (!server.endpoint) return null;
     try {
-      const d = await this.discovery.discover(server.endpoint);
+      const d = await this.discovery.discover(this.resolveEndpoint(server));
       return d?.server.issuer ?? null;
     } catch {
       return null;
@@ -262,7 +270,7 @@ export class McpOAuthService {
     if (!server.endpoint) return { protected: false, issuer: null, issuerHost: null, brokered: false };
     let discovered;
     try {
-      discovered = await this.discovery.discover(server.endpoint);
+      discovered = await this.discovery.discover(this.resolveEndpoint(server));
     } catch {
       return { protected: true, issuer: null, issuerHost: null, brokered: false };
     }
