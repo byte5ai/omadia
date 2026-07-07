@@ -2679,7 +2679,11 @@
       "redirectUri": "Register this redirect URI",
       "clientId": "Client ID",
       "clientSecret": "Client secret (if required)",
-      "saveClientAndConnect": "Save and connect"
+      "saveClientAndConnect": "Save and connect",
+      "readyToLogin": "Client saved. Now sign in at {host} to authorize access.",
+      "continueLogin": "Continue to {host} login ↗",
+      "afterLoginHint": "Opens in a new tab. After you approve, come back here — the status refreshes automatically.",
+      "checkStatus": "Check status"
     },
     "marketplace": {
       "registry": "Registry",

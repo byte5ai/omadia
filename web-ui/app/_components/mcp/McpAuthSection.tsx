@@ -28,11 +28,8 @@ function errText(err: unknown): string {
  */
 export function McpAuthSection({
   serverId,
-  onConnected,
 }: {
   serverId: string;
-  /** Fired after a successful connect so a host (e.g. the chat card) can react. */
-  onConnected?: () => void;
 }): React.ReactElement | null {
   const t = useTranslations('adminMcp');
   const [status, setStatus] = useState<McpAuthStatus | null>(null);
@@ -41,6 +38,10 @@ export function McpAuthSection({
   const [showClientForm, setShowClientForm] = useState(false);
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');
+  // The OAuth authorize URL, once the flow has started. We render it as a
+  // user-clickable link rather than auto-opening it: window.open() called after
+  // an await chain is not treated as a user gesture and gets popup-blocked.
+  const [authorizeUrl, setAuthorizeUrl] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -54,6 +55,17 @@ export function McpAuthSection({
     void refresh();
   }, [refresh]);
 
+  // While an authorize link is pending, re-check status when the user returns to
+  // this tab (they just finished login in the provider tab → the callback stored
+  // a token). Once connected, the link block hides via the render guard below.
+  const connected = status?.connected ?? false;
+  useEffect(() => {
+    if (!authorizeUrl || connected) return;
+    const onFocus = (): void => void refresh();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [authorizeUrl, connected, refresh]);
+
   if (!status || !status.protected) return null;
 
   async function connect(): Promise<void> {
@@ -64,8 +76,9 @@ export function McpAuthSection({
       if (r.needsClient) {
         setShowClientForm(true);
       } else if (r.authorizeUrl) {
-        window.open(r.authorizeUrl, '_blank', 'noopener');
-        onConnected?.();
+        // Surface the URL as a link the user clicks (fresh gesture opens it
+        // reliably); auto-window.open here would be popup-blocked.
+        setAuthorizeUrl(r.authorizeUrl);
       }
     } catch (err) {
       setError(errText(err));
@@ -157,6 +170,29 @@ export function McpAuthSection({
           <div>
             <Button size="sm" busy={busy} onClick={() => void saveClient()}>
               {t('auth.saveClientAndConnect')}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+      {authorizeUrl && !status.connected ? (
+        <div className="flex flex-col gap-1.5 rounded-md border border-[color:var(--accent)] bg-[color:var(--accent)]/10 p-2.5">
+          <div className="text-xs text-[color:var(--fg-default)]">
+            {t('auth.readyToLogin', { host: status.issuerHost ?? status.issuer ?? '?' })}
+          </div>
+          <a
+            href={authorizeUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex w-fit items-center gap-1 rounded-md bg-[color:var(--accent)] px-2.5 py-1.5 text-xs font-medium text-[color:var(--fg-on-dark)] hover:opacity-90"
+          >
+            {t('auth.continueLogin', { host: status.issuerHost ?? status.issuer ?? '?' })}
+          </a>
+          <div className="text-[11px] text-[color:var(--fg-muted)]">
+            {t('auth.afterLoginHint')}
+          </div>
+          <div>
+            <Button size="sm" variant="ghost" busy={busy} onClick={() => void refresh()}>
+              {t('auth.checkStatus')}
             </Button>
           </div>
         </div>
