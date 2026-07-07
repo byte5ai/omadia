@@ -1667,16 +1667,21 @@ async function main(): Promise<void> {
                   const userKey = turnContext.current()?.mcpUserKey ?? mcpOAuthUserKey;
                   return mcpOAuthService.getValidAccessToken(server, userKey);
                 },
-                onUnauthorized: async (cfg: McpServerConfig) => {
+                onAuthFailure: async (cfg: McpServerConfig) => {
                   const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
                   if (!server) return null;
+                  // Only OAuth-protected servers get an auth prompt (cached
+                  // discovery keeps this cheap per call).
+                  const desc = await mcpOAuthService.describeAuth(server);
+                  if (!desc.protected) return null;
                   const userKey = turnContext.current()?.mcpUserKey ?? mcpOAuthUserKey;
                   try {
-                    return (await mcpOAuthService.beginAuthorization(server, userKey)).authorizeUrl;
+                    const { authorizeUrl } = await mcpOAuthService.beginAuthorization(server, userKey);
+                    return `🔒 The MCP server "${server.name}" needs authorization before it can be used. Ask the user to authorize it (this opens the provider's login), then retry: ${authorizeUrl}`;
                   } catch {
-                    // No client for the issuer yet (needs a one-time manual
-                    // registration) — surface the raw error instead of a URL.
-                    return null;
+                    // Delegating server with no registered client yet — point
+                    // the user at the one-time setup instead of a raw error.
+                    return `🔒 The MCP server "${server.name}" needs authorization, but it isn't set up yet. An operator must connect it in the MCP Control Center (Admin → MCP Control Center → Servers → "${server.name}" → Connect)${desc.issuerHost ? ` — it delegates OAuth to ${desc.issuerHost}, which needs a one-time app registration` : ''}.`;
                   }
                 },
               },

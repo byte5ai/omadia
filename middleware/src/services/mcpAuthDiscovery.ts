@@ -69,9 +69,12 @@ export interface McpAuthDiscoveryDeps {
   readonly timeoutMs?: number;
 }
 
+const DISCOVERY_CACHE_TTL_MS = 5 * 60 * 1000;
+
 export class McpAuthDiscovery {
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
+  private readonly cache = new Map<string, { at: number; value: DiscoveredAuth | null }>();
 
   constructor(deps?: McpAuthDiscoveryDeps) {
     this.fetchImpl = deps?.fetchImpl ?? globalThis.fetch;
@@ -80,9 +83,18 @@ export class McpAuthDiscovery {
 
   /** Full discovery from a server endpoint URL. Returns null when the server
    *  advertises no OAuth-protected-resource document (i.e. not discoverably
-   *  auth-protected). Throws only on a malformed/partial advertisement. */
+   *  auth-protected). Throws only on a malformed/partial advertisement.
+   *  Cached per origin (5 min) so a per-call auth check is cheap. */
   async discover(serverEndpoint: string): Promise<DiscoveredAuth | null> {
     const origin = serverOrigin(serverEndpoint);
+    const cached = this.cache.get(origin);
+    if (cached && Date.now() - cached.at < DISCOVERY_CACHE_TTL_MS) return cached.value;
+    const value = await this.discoverUncached(origin);
+    this.cache.set(origin, { at: Date.now(), value });
+    return value;
+  }
+
+  private async discoverUncached(origin: string): Promise<DiscoveredAuth | null> {
     const resource = await this.fetchProtectedResource(origin);
     if (!resource) return null;
     const issuer = resource.authorizationServers[0];

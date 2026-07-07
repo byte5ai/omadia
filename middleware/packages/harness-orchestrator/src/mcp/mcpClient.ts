@@ -90,9 +90,15 @@ export type McpCallGuard = (serverId: string, toolName: string) => string | null
 export interface McpAuthProvider {
   /** A live bearer token for this server + the current caller, or null. */
   getToken(cfg: McpServerConfig): Promise<string | null>;
-  /** Called when a call failed auth without a working token — returns an
-   *  authorize URL to send the user to, or null if none can be produced. */
-  onUnauthorized(cfg: McpServerConfig): Promise<string | null>;
+  /**
+   * Called when a call failed and the server may need authorization. Returns a
+   * ready-to-show user message (an "authorize here: <url>" prompt, or a "set it
+   * up in the Control Center" instruction when no client is registered yet), or
+   * null when the server is not OAuth-protected — in which case the raw error
+   * stands. The provider owns the messaging + the protected/needs-client
+   * decision, so the manager needs no OAuth knowledge.
+   */
+  onAuthFailure(cfg: McpServerConfig): Promise<string | null>;
 }
 
 export interface McpManagerOptions {
@@ -219,9 +225,11 @@ export class McpManager {
     try {
       pooled = await this.getOrConnect(cfg, token);
     } catch (err) {
+      // A server that requires OAuth often refuses the connection outright
+      // (streamable-HTTP surfaces the 401 as "-32000 Connection closed"), so
+      // this path must also offer the auth prompt — not just tool-level errors.
       const failure = `Error: could not connect to MCP server "${cfg.name}": ${msg(err)}`;
-      this.emitCall(cfg, toolName, false, failure, startedAt);
-      return failure;
+      return this.handleFailure(cfg, toolName, token, failure, startedAt);
     }
     try {
       const res = await pooled.client.callTool({
@@ -233,47 +241,48 @@ export class McpManager {
       // the audit row must reflect the failure (codex W2 finding).
       const protocolError =
         res !== null && typeof res === 'object' && (res as { isError?: unknown }).isError === true;
-      if (protocolError && looksUnauthorized(rendered)) {
-        return this.handleUnauthorized(cfg, toolName, token, rendered, startedAt);
+      if (protocolError) {
+        return this.handleFailure(cfg, toolName, token, rendered, startedAt);
       }
-      this.emitCall(cfg, toolName, !protocolError, protocolError ? rendered : null, startedAt);
+      this.emitCall(cfg, toolName, true, null, startedAt);
       return rendered;
     } catch (err) {
       // Drop the connection so the next call reconnects (server may have died).
       await this.close(this.poolKey(cfg, token));
       const failure = `Error: MCP tool "${toolName}" on "${cfg.name}" failed: ${msg(err)}`;
-      if (looksUnauthorized(failure)) {
-        return this.handleUnauthorized(cfg, toolName, token, failure, startedAt);
-      }
-      this.emitCall(cfg, toolName, false, failure, startedAt);
-      return failure;
+      return this.handleFailure(cfg, toolName, token, failure, startedAt);
     }
   }
 
-  /** Turn an auth failure into a user-actionable "authorize here" message when
-   *  the auth provider can produce a URL, else surface the raw failure. */
-  private async handleUnauthorized(
+  /**
+   * Any failed call goes through here. When the failure looks like auth OR the
+   * call ran without a token, ask the auth provider — an OAuth-protected server
+   * that the caller has not authorized should always surface a connect prompt,
+   * regardless of the exact error string (a 401 can arrive as "-32000
+   * Connection closed" over streamable HTTP). Otherwise the raw error stands.
+   */
+  private async handleFailure(
     cfg: McpServerConfig,
     toolName: string,
     token: string | null,
     rawFailure: string,
     startedAt: number,
   ): Promise<string> {
-    // A stale token was rejected — drop its pooled connection so a re-auth uses
-    // a fresh one.
-    if (token) await this.close(this.poolKey(cfg, token));
-    let authorizeUrl: string | null = null;
-    if (this.options?.auth) {
+    const maybeAuth = token === null || looksUnauthorized(rawFailure);
+    if (maybeAuth && this.options?.auth) {
+      // A stale token was rejected — drop its pooled connection so re-auth uses
+      // a fresh one.
+      if (token) await this.close(this.poolKey(cfg, token));
+      let authMessage: string | null = null;
       try {
-        authorizeUrl = await this.options.auth.onUnauthorized(cfg);
+        authMessage = await this.options.auth.onAuthFailure(cfg);
       } catch {
         /* fall back to the raw failure */
       }
-    }
-    if (authorizeUrl) {
-      const message = `Authorization required for MCP server "${cfg.name}". The user must connect it first — send them to authorize, then retry: ${authorizeUrl}`;
-      this.emitCall(cfg, toolName, false, `auth_required: ${authorizeUrl}`, startedAt);
-      return message;
+      if (authMessage) {
+        this.emitCall(cfg, toolName, false, 'auth_required', startedAt);
+        return authMessage;
+      }
     }
     this.emitCall(cfg, toolName, false, rawFailure, startedAt);
     return rawFailure;

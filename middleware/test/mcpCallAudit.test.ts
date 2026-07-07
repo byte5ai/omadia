@@ -119,4 +119,30 @@ describe('McpManager call audit observer (#462)', () => {
     const result = await manager.callTool(UNREACHABLE, 'ping', {});
     assert.ok(result.startsWith('Error:'));
   });
+
+  it('surfaces the auth message on ANY failure with no token (not just 401 text)', async () => {
+    // The connection error here is "could not connect", not a 401 — but with no
+    // token, a protected server should still prompt to authorize (#459 W9 fix:
+    // a 401 can arrive as "-32000 Connection closed").
+    const manager = new McpManager({
+      auth: {
+        getToken: async () => null,
+        onAuthFailure: async () => '🔒 connect me first: https://auth.example/authorize',
+      },
+    });
+    const result = await manager.callTool(UNREACHABLE, 'ping', {});
+    assert.ok(result.includes('connect me first'));
+    assert.ok(result.includes('https://auth.example/authorize'));
+  });
+
+  it('leaves the raw error when the provider says the server is not protected', async () => {
+    const manager = new McpManager({
+      auth: {
+        getToken: async () => null,
+        onAuthFailure: async () => null, // not OAuth-protected
+      },
+    });
+    const result = await manager.callTool(UNREACHABLE, 'ping', {});
+    assert.ok(result.startsWith('Error: could not connect'));
+  });
 });
