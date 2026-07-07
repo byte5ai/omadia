@@ -915,7 +915,9 @@
     "explainerBypassed": "The operator set Privacy Mode to »Bypass« for at least one plugin — its tool results reached the model unmasked. Used for trusted internal sources whose content the Privacy Shield cannot usefully digest structurally."
   },
   "directLine": {
-    "consultedLabel": "🔎 Consulted:",
+    "consultedLabel": "🔎 Consulted",
+    "consultedCount": "· {count, plural, one {# tool} other {# tools}}",
+    "viewTrace": "trace ▾",
     "stepsCount": "{count, plural, one {# step} other {# steps}}",
     "delegatedAnswerFrom": "Direct answer from {label}",
     "delegatedAnswerCaption": "Delivered verbatim — the orchestrator cannot edit or remove this answer."

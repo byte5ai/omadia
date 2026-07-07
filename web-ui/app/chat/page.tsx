@@ -853,11 +853,16 @@ function MessageRow({
   // beyond it (the guarded-mode `▸ omadia note: …` suffix), so the answer
   // never appears twice. Falls back to the full content if it doesn't start
   // with the expected prefix (defensive — never silently drops text).
-  const delegatedNote =
+  const rawNote =
     message.delegatedAnswer &&
     message.content.startsWith(message.delegatedAnswer.text)
       ? message.content.slice(message.delegatedAnswer.text.length).replace(/^\s+/, '')
       : message.content;
+  // A sub-agent's MCP auth-required tool result can bubble the machine
+  // <mcp-auth-required> block into the final answer text — strip it from the
+  // prose (it renders as the Connect card via McpAuthRequiredList instead).
+  const authFromNote = parseMcpAuthRequired(rawNote);
+  const delegatedNote = authFromNote.cleaned;
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -892,7 +897,7 @@ function MessageRow({
             {(message.tools?.length ?? 0) > 0 && (
               <ToolTrace tools={message.tools ?? []} />
             )}
-            <McpAuthRequiredList tools={message.tools ?? []} />
+            <McpAuthRequiredList tools={message.tools ?? []} content={rawNote} />
             {(message.nudges?.length ?? 0) > 0 && (
               <NudgeList nudges={message.nudges ?? []} />
             )}
@@ -915,7 +920,10 @@ function MessageRow({
               <StreamingDots />
             ) : null}
             {message.agentsConsulted && message.agentsConsulted.length > 0 && (
-              <AgentsConsultedFooter agents={message.agentsConsulted} />
+              <AgentsConsultedFooter
+                agents={message.agentsConsulted}
+                tools={message.tools ?? []}
+              />
             )}
             {showLiveness && (
               <LivenessRow
@@ -1275,17 +1283,28 @@ function NudgeList({ nudges }: { nudges: NudgeEvent[] }): React.ReactElement {
  * Scans the turn's tool outputs client-side (no extra stream event needed);
  * deduped by serverId so repeated failures don't stack duplicate cards.
  */
-function McpAuthRequiredList({ tools }: { tools: ToolEvent[] }): React.ReactElement | null {
+function McpAuthRequiredList({
+  tools,
+  content,
+}: {
+  tools: ToolEvent[];
+  content: string;
+}): React.ReactElement | null {
   const seen = new Set<string>();
   const auths: ParsedMcpAuthRequired[] = [];
-  for (const tool of tools) {
-    if (tool.output === undefined) continue;
-    const { auth } = parseMcpAuthRequired(tool.output);
+  const scan = (text: string | undefined): void => {
+    if (!text) return;
+    const { auth } = parseMcpAuthRequired(text);
     if (auth && !seen.has(auth.serverId)) {
       seen.add(auth.serverId);
       auths.push(auth);
     }
-  }
+  };
+  // Top-level tool outputs (direct calls) …
+  for (const tool of tools) scan(tool.output);
+  // … and the answer prose, where a sub-agent's auth-required result bubbles up
+  // (the block rides through as text even when the failing call was nested).
+  scan(content);
   if (auths.length === 0) return null;
   return (
     <div className="mt-2 space-y-2">
