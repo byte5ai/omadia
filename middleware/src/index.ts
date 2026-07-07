@@ -1415,14 +1415,17 @@ async function main(): Promise<void> {
   // McpManager (auth provider) and the operator router (begin/callback routes)
   // reference the same instance. userKey='operator' for the operator chat.
   const mcpOAuthUserKey = 'operator';
+  // Redirect URI the OAuth callback lands on: explicit override, else derived
+  // from the public base. The service activates when either is configured.
+  const mcpOAuthRedirectUri =
+    config.MCP_OAUTH_REDIRECT_URI ??
+    (flowPublicBaseUrl ? `${flowPublicBaseUrl}/api/v1/operator/mcp-oauth/callback` : undefined);
   const mcpOAuthService =
-    graphPool && flowPublicBaseUrl
+    graphPool && mcpOAuthRedirectUri
       ? new McpOAuthService({
           graph: new AgentGraphStore(graphPool),
           vault: secretVault,
-          redirectUri:
-            config.MCP_OAUTH_REDIRECT_URI ??
-            `${flowPublicBaseUrl}/api/v1/operator/mcp-oauth/callback`,
+          redirectUri: mcpOAuthRedirectUri,
           log: (m) => console.log(`[middleware] ${m}`),
         })
       : undefined;
