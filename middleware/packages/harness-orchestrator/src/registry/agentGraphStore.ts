@@ -260,6 +260,8 @@ export interface McpRegistryRow {
   readonly url: string;
   readonly authKind: 'none' | 'bearer';
   readonly token: string | null;
+  /** Catalog-API dialect selecting the client normalizer (issue #455 W7). */
+  readonly kind: 'official' | 'smithery' | 'generic';
   readonly createdAt: Date;
 }
 
@@ -364,7 +366,20 @@ interface McpRegistryDbRow {
   url: string;
   auth_kind: 'none' | 'bearer';
   token: string | null;
+  kind?: 'official' | 'smithery' | 'generic';
   created_at: Date;
+}
+
+function mapMcpRegistry(r: McpRegistryDbRow): McpRegistryRow {
+  return {
+    id: r.id,
+    name: r.name,
+    url: r.url,
+    authKind: r.auth_kind,
+    token: r.token,
+    kind: r.kind ?? 'generic',
+    createdAt: r.created_at,
+  };
 }
 
 /** Verdict row for one discovered MCP tool (epic #459 W1, issue #454).
@@ -1164,14 +1179,7 @@ export class AgentGraphStore {
     const { rows } = await this.pool.query<McpRegistryDbRow>(
       'SELECT * FROM mcp_registries ORDER BY created_at',
     );
-    return rows.map((r) => ({
-      id: r.id,
-      name: r.name,
-      url: r.url,
-      authKind: r.auth_kind,
-      token: r.token,
-      createdAt: r.created_at,
-    }));
+    return rows.map(mapMcpRegistry);
   }
 
   async createMcpRegistry(input: {
@@ -1179,22 +1187,15 @@ export class AgentGraphStore {
     readonly url: string;
     readonly authKind?: 'none' | 'bearer';
     readonly token?: string | null;
+    readonly kind?: 'official' | 'smithery' | 'generic';
   }): Promise<McpRegistryRow> {
     const { rows } = await this.pool.query<McpRegistryDbRow>(
-      `INSERT INTO mcp_registries (name, url, auth_kind, token)
-       VALUES ($1,$2,COALESCE($3,'none'),$4)
+      `INSERT INTO mcp_registries (name, url, auth_kind, token, kind)
+       VALUES ($1,$2,COALESCE($3,'none'),$4,COALESCE($5,'generic'))
        RETURNING *`,
-      [input.name, input.url, input.authKind ?? null, input.token ?? null],
+      [input.name, input.url, input.authKind ?? null, input.token ?? null, input.kind ?? null],
     );
-    const r = rows[0]!;
-    return {
-      id: r.id,
-      name: r.name,
-      url: r.url,
-      authKind: r.auth_kind,
-      token: r.token,
-      createdAt: r.created_at,
-    };
+    return mapMcpRegistry(rows[0]!);
   }
 
   async deleteMcpRegistry(id: string): Promise<void> {

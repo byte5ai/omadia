@@ -75,6 +75,16 @@ export interface AgentBuilderRouterOptions {
    *  enforcement + audit trail as runtime dispatch. */
   readonly mcpCallObserver?: (entry: McpCallLogEntry) => void;
   readonly mcpCallGuard?: (serverId: string, toolName: string) => string | null;
+  /** Epic #459 W7 (issue #458 UX): lists installed plugins so the operator
+   *  grant surface can show which plugins declare `permissions.mcp` and their
+   *  manifest `servers_hint`. Returns the plugin id, display name, the mcp
+   *  permission flag, and the servers hint. */
+  readonly listMcpPluginCandidates?: () => ReadonlyArray<{
+    id: string;
+    name: string;
+    mcp: boolean;
+    serversHint: readonly string[];
+  }>;
 }
 
 interface Live {
@@ -990,6 +1000,40 @@ export function createAgentBuilderRouter(
   );
 
   // ── plugin mcp grants (epic #459 W5, issue #458) ──────────────────────────
+
+  /** MCP-capable plugins + their current server grants (W7 UX): one payload
+   *  that drives the operator's plugin-grant surface. A plugin only appears if
+   *  its manifest declares `permissions.mcp`; the servers_hint is the author's
+   *  suggestion, binding stays an explicit operator action. */
+  router.get('/mcp-plugin-candidates', async (_req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const candidates = (options.listMcpPluginCandidates?.() ?? []).filter((p) => p.mcp);
+      const [grants, servers] = await Promise.all([
+        l.graph.listPluginMcpGrants(),
+        l.graph.listMcpServers(),
+      ]);
+      const grantsByPlugin = new Map<string, string[]>();
+      for (const g of grants) {
+        const list = grantsByPlugin.get(g.pluginId) ?? [];
+        list.push(g.mcpServerId);
+        grantsByPlugin.set(g.pluginId, list);
+      }
+      res.json({
+        servers: servers.map((s) => ({ id: s.id, name: s.name, status: s.status })),
+        plugins: candidates.map((p) => ({
+          pluginId: p.id,
+          name: p.name,
+          serversHint: p.serversHint,
+          grantedServerIds: grantsByPlugin.get(p.id) ?? [],
+        })),
+      });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
   router.get('/plugin-mcp-grants', async (_req: Request, res: Response) => {
     const l = live(res);
     if (!l) return;

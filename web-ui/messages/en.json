@@ -2610,8 +2610,16 @@
     "cancel": "Cancel",
     "tabs": {
       "servers": "Servers",
+      "marketplace": "Marketplace",
       "grants": "Grants",
+      "plugins": "Plugin access",
       "audit": "Audit log"
+    },
+    "plugins": {
+      "intro": "Plugins that declare MCP access in their manifest. Grant each the specific servers it may reach — nothing is ambient. Per-tool safety still applies: an unscanned or high-risk tool is refused at call time.",
+      "empty": "No installed plugin declares MCP access yet.",
+      "noServers": "No MCP servers registered yet — add one on the Servers tab first.",
+      "hint": "Author suggests: {hint}"
     },
     "servers": {
       "name": "Name",
@@ -2637,6 +2645,7 @@
       "marketplaceSource": "marketplace",
       "sourceLink": "source",
       "rescanAll": "Re-scan all",
+      "flowHint": "How it works: add a server (or import one from the Marketplace tab), run Discover to scan its tools, acknowledge any high-risk verdicts — then grant its tools to an orchestrator on the Builder canvas, to a skill in the skill editor, or to a plugin on the Plugin access tab.",
       "state": {
         "enabled": "enabled",
         "disabled": "disabled"

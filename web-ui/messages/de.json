@@ -2610,8 +2610,16 @@
     "cancel": "Abbrechen",
     "tabs": {
       "servers": "Server",
+      "marketplace": "Marketplace",
       "grants": "Grants",
+      "plugins": "Plugin-Zugriff",
       "audit": "Audit-Log"
+    },
+    "plugins": {
+      "intro": "Plugins, die im Manifest MCP-Zugriff deklarieren. Weise jedem gezielt die Server zu, die es erreichen darf — nichts ist implizit. Die Per-Tool-Sicherheit greift weiterhin: ein ungescanntes oder hochriskantes Tool wird zur Aufrufzeit abgelehnt.",
+      "empty": "Noch kein installiertes Plugin deklariert MCP-Zugriff.",
+      "noServers": "Noch keine MCP-Server registriert — lege zuerst einen auf dem Server-Tab an.",
+      "hint": "Autor schlägt vor: {hint}"
     },
     "servers": {
       "name": "Name",
@@ -2637,6 +2645,7 @@
       "marketplaceSource": "Marketplace",
       "sourceLink": "Quelle",
       "rescanAll": "Alle neu scannen",
+      "flowHint": "So funktioniert es: Server anlegen (oder im Marketplace-Tab importieren), Discover ausführen um die Tools zu scannen, hochriskante Verdicts bestätigen — dann die Tools einem Orchestrator auf dem Builder-Canvas, einem Skill im Skill-Editor oder einem Plugin im Plugin-Zugriff-Tab zuweisen.",
       "state": {
         "enabled": "aktiv",
         "disabled": "deaktiviert"

@@ -612,6 +612,36 @@ export async function listMcpGrants(): Promise<{ grants: McpGrantMatrixRow[] }> 
   return callJson('/v1/operator/mcp-grants');
 }
 
+// ── Plugin MCP grants (issue #458 UX / W7) ───────────────────────────────────
+
+export interface McpPluginCandidate {
+  pluginId: string;
+  name: string;
+  serversHint: string[];
+  grantedServerIds: string[];
+}
+
+export async function listMcpPluginCandidates(): Promise<{
+  servers: { id: string; name: string; status: 'enabled' | 'disabled' }[];
+  plugins: McpPluginCandidate[];
+}> {
+  return callJson('/v1/operator/mcp-plugin-candidates');
+}
+
+export async function grantPluginMcpServer(pluginId: string, mcpServerId: string): Promise<void> {
+  await callJson('/v1/operator/plugin-mcp-grants', {
+    method: 'PUT',
+    body: JSON.stringify({ pluginId, mcpServerId }),
+  });
+}
+
+export async function revokePluginMcpServer(pluginId: string, mcpServerId: string): Promise<void> {
+  await callJson('/v1/operator/plugin-mcp-grants', {
+    method: 'DELETE',
+    body: JSON.stringify({ pluginId, mcpServerId }),
+  });
+}
+
 /** Test-call sandbox (issue #463): guarded + audited like runtime dispatch. */
 export async function testCallMcpTool(
   serverId: string,

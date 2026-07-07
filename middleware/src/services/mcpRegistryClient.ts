@@ -18,6 +18,8 @@ export interface McpRegistryConfig {
   readonly url: string;
   readonly authKind: 'none' | 'bearer';
   readonly token: string | null;
+  /** Catalog-API dialect (issue #455 W7). Defaults to 'generic'. */
+  readonly kind?: 'official' | 'smithery' | 'generic';
 }
 
 export interface McpCatalogEntry {
@@ -131,6 +133,52 @@ function normalizeEntry(raw: Record<string, unknown>): McpCatalogEntry | null {
     license: str(server['license']) ?? str(raw['license']),
     author: deriveAuthor(name, repoUrl),
     sourceUrl: repoUrl ?? str(server['website_url']),
+  };
+}
+
+/**
+ * Smithery list entry (issue #455 W7). The listing has no connection URL, so
+ * the endpoint is resolved per-server at connect time (`resolveSmithery`). We
+ * mark it http-connectable when the registry reports it as remote/deployed;
+ * the actual deploymentUrl is fetched lazily. `qualifiedName` is the id.
+ */
+/** Official registry lists every version of a server; keep one row per name,
+ *  preferring the entry flagged latest, else the first seen (issue #455 W7). */
+function dedupOfficialToLatest(
+  rawList: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  const byName = new Map<string, Record<string, unknown>>();
+  for (const raw of rawList) {
+    if (!raw || typeof raw !== 'object') continue;
+    const server = (raw['server'] ?? raw) as Record<string, unknown>;
+    const name = str(server['name']);
+    if (!name) continue;
+    const meta = (raw['_meta'] ?? {}) as Record<string, unknown>;
+    const isLatest =
+      meta['isLatest'] === true ||
+      (meta['io.modelcontextprotocol.registry/official'] as Record<string, unknown> | undefined)?.[
+        'isLatest'
+      ] === true;
+    if (isLatest || !byName.has(name)) byName.set(name, raw);
+  }
+  return [...byName.values()];
+}
+
+function normalizeSmitheryEntry(raw: Record<string, unknown>): McpCatalogEntry | null {
+  const qualifiedName = str(raw['qualifiedName']);
+  if (!qualifiedName) return null;
+  const remote = raw['remote'] === true || raw['isDeployed'] === true;
+  return {
+    id: qualifiedName,
+    name: str(raw['displayName']) ?? qualifiedName,
+    description: str(raw['description']),
+    version: null,
+    // Remote Smithery servers are streamable-http; endpoint deferred to connect.
+    transport: remote ? 'http' : null,
+    endpoint: null,
+    license: null,
+    author: str(raw['owner']) ?? str(raw['namespace']),
+    sourceUrl: str(raw['homepage']),
   };
 }
 
@@ -306,7 +354,9 @@ export class McpRegistryClient {
     );
   }
 
-  /** Resolve one entry by its catalog id — the from-registry import path. */
+  /** Resolve one entry by its catalog id — the from-registry import path.
+   *  For Smithery the listing carries no endpoint, so this does the second
+   *  fetch to the per-server detail endpoint to obtain the deploymentUrl. */
   async resolve(registry: McpRegistryConfig, entryId: string): Promise<McpCatalogEntry> {
     const entries = await this.catalog(registry);
     const hit = entries.find((e) => e.id === entryId);
@@ -316,7 +366,46 @@ export class McpRegistryClient {
         `entry "${entryId}" not found in registry "${registry.name}"`,
       );
     }
+    if (registry.kind === 'smithery' && hit.endpoint === null && hit.transport !== null) {
+      return this.resolveSmitheryEndpoint(registry, hit);
+    }
     return hit;
+  }
+
+  /** Second-hop fetch for Smithery: GET {url}/servers/{qualifiedName} →
+   *  connections[].deploymentUrl. The resolved host still passes the
+   *  untrusted-remote guard, and https is required. */
+  private async resolveSmitheryEndpoint(
+    registry: McpRegistryConfig,
+    entry: McpCatalogEntry,
+  ): Promise<McpCatalogEntry> {
+    const base = registry.url.replace(/\/+$/, '');
+    const doc = (await this.fetchJson(
+      `${base}/servers/${encodeURIComponent(entry.id)}`,
+      registry,
+    )) as Record<string, unknown>;
+    const connections = Array.isArray(doc['connections']) ? doc['connections'] : [];
+    const httpConn = connections.find(
+      (c): c is Record<string, unknown> =>
+        !!c && typeof c === 'object' && str((c as Record<string, unknown>)['deploymentUrl']) !== null,
+    );
+    const url = str(httpConn?.['deploymentUrl']) ?? str(doc['deploymentUrl']);
+    if (!url) {
+      throw new McpRegistryError(
+        'mcp_catalog_entry_not_importable',
+        `Smithery entry "${entry.id}" exposes no deployment URL`,
+      );
+    }
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== 'https:' || !isUntrustedRemoteHostSafe(parsed.hostname)) {
+        throw new McpRegistryError('blocked_host', `Smithery endpoint refused: ${url}`);
+      }
+    } catch (err) {
+      if (err instanceof McpRegistryError) throw err;
+      throw new McpRegistryError('mcp_catalog_entry_not_importable', `bad Smithery URL: ${url}`);
+    }
+    return { ...entry, endpoint: url };
   }
 
   /** Test seam / operator action: drop the cache for one or all registries. */
@@ -329,7 +418,14 @@ export class McpRegistryClient {
     registry: McpRegistryConfig,
   ): Promise<readonly McpCatalogEntry[]> {
     const base = registry.url.replace(/\/+$/, '');
-    const candidates = [`${base}/v0/servers?limit=100`, base];
+    // Kind selects the list endpoint + normalizer. Smithery has its own API;
+    // official/generic share the official-shape parser (which also reads a
+    // plain { servers:[...] } document).
+    const candidates =
+      registry.kind === 'smithery'
+        ? [`${base}/servers?pageSize=100`, `${base}/servers`]
+        : [`${base}/v0/servers?limit=100`, base];
+    const normalize = registry.kind === 'smithery' ? normalizeSmitheryEntry : normalizeEntry;
     let lastError: McpRegistryError | null = null;
     for (const url of candidates) {
       try {
@@ -343,12 +439,19 @@ export class McpRegistryClient {
           lastError = new McpRegistryError('bad_catalog_shape', `no servers array at ${url}`);
           continue;
         }
-        const entries = rawList
+        // isLatest dedup for the official registry (issue #455 W7 fix): the
+        // list carries multiple versions of the same name; keep the newest so
+        // browse shows one row per server.
+        const filtered =
+          registry.kind === 'smithery'
+            ? rawList
+            : dedupOfficialToLatest(rawList as Array<Record<string, unknown>>);
+        const entries = filtered
           .filter((r): r is Record<string, unknown> => !!r && typeof r === 'object')
-          .map(normalizeEntry)
+          .map(normalize)
           .filter((e): e is McpCatalogEntry => e !== null);
         this.log(
-          `[mcpRegistry] "${registry.name}": ${String(entries.length)} catalog entries from ${url}`,
+          `[mcpRegistry] "${registry.name}" (${registry.kind ?? 'generic'}): ${String(entries.length)} catalog entries from ${url}`,
         );
         return entries;
       } catch (err) {

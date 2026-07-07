@@ -2183,6 +2183,16 @@ async function main(): Promise<void> {
           }
         : {}),
       mcpCallGuard: mcpDispatchDenial,
+      // W7 UX (issue #458): MCP-capable plugins + their manifest servers_hint,
+      // for the operator grant surface. Read live from the catalog so a
+      // freshly-installed plugin shows up without a restart.
+      listMcpPluginCandidates: () =>
+        pluginCatalog.list().map((e) => ({
+          id: e.plugin.id,
+          name: e.plugin.name,
+          mcp: e.plugin.permissions_summary.mcp === true,
+          serversHint: e.plugin.permissions_summary.mcp_servers_hint ?? [],
+        })),
     }),
   );
   console.log(

@@ -141,6 +141,76 @@ describe('McpRegistryClient', () => {
     assert.equal(byName.get('dashdash')?.transport, null);
   });
 
+  it('official: dedups to the latest version per server name', async () => {
+    const doc = {
+      servers: [
+        { server: { name: 'io.x/a', version: '1.0.0', remotes: [{ type: 'streamable-http', url: 'https://a.example/mcp' }] }, _meta: { isLatest: false } },
+        { server: { name: 'io.x/a', version: '2.0.0', remotes: [{ type: 'streamable-http', url: 'https://a.example/mcp' }] }, _meta: { isLatest: true } },
+      ],
+    };
+    const client = new McpRegistryClient({ fetchImpl: fetchOk(doc), log: () => {} });
+    const entries = await client.catalog(REGISTRY);
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0]?.version, '2.0.0');
+  });
+
+  it('official: reads registryType/identifier npm packages (current schema)', async () => {
+    const doc = {
+      servers: [
+        { server: { name: 'io.x/np', packages: [{ registryType: 'npm', identifier: '@acme/tool-mcp', transport: { type: 'stdio' } }] } },
+      ],
+    };
+    const client = new McpRegistryClient({ fetchImpl: fetchOk(doc), log: () => {} });
+    const entries = await client.catalog(REGISTRY);
+    assert.equal(entries[0]?.transport, 'stdio');
+    assert.equal(entries[0]?.endpoint, 'npx -y -- @acme/tool-mcp');
+  });
+
+  it('smithery: normalizes list entries and resolves endpoint on a second fetch', async () => {
+    const list = {
+      servers: [
+        { qualifiedName: 'acme/search', displayName: 'Acme Search', description: 'Search things.', remote: true, owner: 'acme', homepage: 'https://acme.example' },
+        { qualifiedName: 'acme/local', displayName: 'Local only', remote: false },
+      ],
+      pagination: { totalCount: 2 },
+    };
+    const detail = {
+      qualifiedName: 'acme/search',
+      connections: [{ type: 'http', deploymentUrl: 'https://server.smithery.ai/acme/search/mcp' }],
+    };
+    const fetchImpl: typeof fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const body = url.includes('/servers/acme') ? detail : list;
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    const smithery = { ...REGISTRY, id: 'sm', name: 'smithery', kind: 'smithery' as const };
+    const client = new McpRegistryClient({ fetchImpl, log: () => {} });
+    const entries = await client.catalog(smithery);
+    assert.equal(entries.length, 2);
+    const search = entries.find((e) => e.id === 'acme/search');
+    assert.equal(search?.transport, 'http');
+    assert.equal(search?.endpoint, null); // deferred
+    assert.equal(entries.find((e) => e.id === 'acme/local')?.transport, null);
+    // resolve() does the second-hop fetch to fill the endpoint:
+    const resolved = await client.resolve(smithery, 'acme/search');
+    assert.equal(resolved.endpoint, 'https://server.smithery.ai/acme/search/mcp');
+  });
+
+  it('smithery: refuses a detail endpoint on an internal host', async () => {
+    const list = { servers: [{ qualifiedName: 'acme/evil', displayName: 'Evil', remote: true }] };
+    const detail = { connections: [{ type: 'http', deploymentUrl: 'https://10.0.0.1/mcp' }] };
+    const fetchImpl: typeof fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      return new Response(JSON.stringify(url.includes('/servers/acme') ? detail : list), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    const smithery = { ...REGISTRY, id: 'sm2', name: 'smithery', kind: 'smithery' as const };
+    const client = new McpRegistryClient({ fetchImpl, log: () => {} });
+    await assert.rejects(client.resolve(smithery, 'acme/evil'), /blocked_host|not_importable|refused/);
+  });
+
   it('falls back to a plain servers document at the base URL', async () => {
     const plainDoc = { servers: [{ name: 'simple', remotes: [{ type: 'sse', url: 'https://x/sse' }] }] };
     const fetchImpl: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {

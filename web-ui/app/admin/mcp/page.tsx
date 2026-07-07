@@ -18,22 +18,26 @@ import {
   deleteMcpServer,
   discoverMcpTools,
   importMcpServerFromRegistry,
+  grantPluginMcpServer,
   listMcpCallLog,
   listMcpGrants,
+  listMcpPluginCandidates,
   listMcpRegistries,
   listMcpServers,
+  revokePluginMcpServer,
   searchMcpCatalog,
   setMcpServerStatus,
   type McpCallLogEntry,
   type McpCatalogEntry,
   type McpGrantMatrixRow,
+  type McpPluginCandidate,
   type McpRegistryInfo,
   type McpServerNode,
   type McpTransport,
   type SkillVerdictSeverity,
 } from '../../_lib/agentBuilder';
 
-type Tab = 'servers' | 'marketplace' | 'grants' | 'audit';
+type Tab = 'servers' | 'marketplace' | 'grants' | 'plugins' | 'audit';
 
 /**
  * MCP Control Center v1 (epic #459 W2, issues #460/#461/#462): the standalone
@@ -49,7 +53,7 @@ export default function AdminMcpPage(): React.ReactElement {
       <h1 className="text-lg font-semibold">{t('title')}</h1>
       <p className="text-sm text-[color:var(--fg-muted)]">{t('intro')}</p>
       <div className="flex gap-2">
-        {(['servers', 'marketplace', 'grants', 'audit'] as const).map((k) => (
+        {(['servers', 'marketplace', 'grants', 'plugins', 'audit'] as const).map((k) => (
           <Button
             key={k}
             size="sm"
@@ -63,6 +67,7 @@ export default function AdminMcpPage(): React.ReactElement {
       {tab === 'servers' ? <ServersPane /> : null}
       {tab === 'marketplace' ? <MarketplacePane /> : null}
       {tab === 'grants' ? <GrantsPane /> : null}
+      {tab === 'plugins' ? <PluginGrantsPane /> : null}
       {tab === 'audit' ? <AuditPane /> : null}
     </div>
   );
@@ -134,6 +139,9 @@ function ServersPane(): React.ReactElement {
 
   return (
     <div className="flex flex-col gap-3">
+      <p className="rounded-md border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/8 px-3 py-2 text-xs text-[color:var(--fg-muted)]">
+        {t('servers.flowHint')}
+      </p>
       <div className="flex flex-wrap items-end gap-2 rounded-md border border-[color:var(--border)] p-3">
         <label className="flex flex-col gap-1 text-xs">
           {t('servers.name')}
@@ -937,6 +945,94 @@ function GrantsPane(): React.ReactElement {
           if (target) void revoke(target);
         }}
       />
+    </div>
+  );
+}
+
+// ── Plugin grants (issue #458 UX / W7) ───────────────────────────────────────
+
+function PluginGrantsPane(): React.ReactElement {
+  const t = useTranslations('adminMcp');
+  const [data, setData] = useState<{
+    servers: { id: string; name: string; status: 'enabled' | 'disabled' }[];
+    plugins: McpPluginCandidate[];
+  } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      setData(await listMcpPluginCandidates());
+      setError(null);
+    } catch (err) {
+      setError(errText(err));
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  async function toggle(pluginId: string, serverId: string, granted: boolean): Promise<void> {
+    setBusy(`${pluginId} ${serverId}`);
+    setError(null);
+    try {
+      if (granted) await revokePluginMcpServer(pluginId, serverId);
+      else await grantPluginMcpServer(pluginId, serverId);
+      await refresh();
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-xs text-[color:var(--fg-muted)]">{t('plugins.intro')}</p>
+      {error ? <div className="text-sm text-[color:var(--danger)]">{error}</div> : null}
+      {!data ? <div className="text-sm text-[color:var(--fg-muted)]">{t('loading')}</div> : null}
+      {data && data.plugins.length === 0 ? (
+        <div className="text-sm text-[color:var(--fg-muted)]">{t('plugins.empty')}</div>
+      ) : null}
+      {data
+        ? data.plugins.map((p) => (
+            <div
+              key={p.pluginId}
+              className="flex flex-col gap-2 rounded-md border border-[color:var(--border)] p-3"
+            >
+              <div>
+                <div className="text-sm">{p.name}</div>
+                <div className="text-[10px] text-[color:var(--fg-muted)]">{p.pluginId}</div>
+                {p.serversHint.length > 0 ? (
+                  <div className="mt-0.5 text-[10px] text-[color:var(--fg-muted)]">
+                    {t('plugins.hint', { hint: p.serversHint.join(', ') })}
+                  </div>
+                ) : null}
+              </div>
+              {data.servers.length === 0 ? (
+                <div className="text-xs text-[color:var(--warning)]">{t('plugins.noServers')}</div>
+              ) : (
+                <div className="flex flex-wrap gap-1.5">
+                  {data.servers.map((s) => {
+                    const granted = p.grantedServerIds.includes(s.id);
+                    return (
+                      <Button
+                        key={s.id}
+                        size="sm"
+                        variant={granted ? 'primary' : 'ghost'}
+                        busy={busy === `${p.pluginId} ${s.id}`}
+                        onClick={() => void toggle(p.pluginId, s.id, granted)}
+                      >
+                        {granted ? `✓ ${s.name}` : s.name}
+                      </Button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          ))
+        : null}
     </div>
   );
 }
