@@ -612,6 +612,33 @@ export async function listMcpGrants(): Promise<{ grants: McpGrantMatrixRow[] }> 
   return callJson('/v1/operator/mcp-grants');
 }
 
+export interface McpOrchestrator {
+  id: string;
+  slug: string;
+  name: string;
+}
+
+export async function listMcpOrchestrators(): Promise<{ orchestrators: McpOrchestrator[] }> {
+  return callJson('/v1/operator/mcp-orchestrators');
+}
+
+/** Grant one server tool to an orchestrator from the Control Center (W8).
+ *  Same fail-closed verdict gate as the Builder canvas. */
+export async function grantMcpToolToOrchestrator(
+  agentSlug: string,
+  mcpServerId: string,
+  toolName: string,
+): Promise<void> {
+  await callJson('/v1/operator/mcp-grants', {
+    method: 'PUT',
+    body: JSON.stringify({ agentSlug, mcpServerId, toolName }),
+  });
+}
+
+export async function revokeMcpGrant(grantId: string): Promise<void> {
+  await callJson(`/v1/operator/mcp-grants/${encodeURIComponent(grantId)}`, { method: 'DELETE' });
+}
+
 // ── Plugin MCP grants (issue #458 UX / W7) ───────────────────────────────────
 
 export interface McpPluginCandidate {

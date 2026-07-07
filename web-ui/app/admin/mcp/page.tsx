@@ -18,18 +18,22 @@ import {
   deleteMcpServer,
   discoverMcpTools,
   importMcpServerFromRegistry,
+  grantMcpToolToOrchestrator,
   grantPluginMcpServer,
   listMcpCallLog,
   listMcpGrants,
+  listMcpOrchestrators,
   listMcpPluginCandidates,
   listMcpRegistries,
   listMcpServers,
+  revokeMcpGrant,
   revokePluginMcpServer,
   searchMcpCatalog,
   setMcpServerStatus,
   type McpCallLogEntry,
   type McpCatalogEntry,
   type McpGrantMatrixRow,
+  type McpOrchestrator,
   type McpPluginCandidate,
   type McpRegistryInfo,
   type McpServerNode,
@@ -310,8 +314,8 @@ function ServerRows({
             <span className="text-xs text-[color:var(--fg-muted)]">–</span>
           )}
         </td>
-        <td className={`${tdCls} whitespace-nowrap`}>
-          <span className="inline-flex gap-1.5">
+        <td className={tdCls}>
+          <span className="flex flex-wrap gap-1.5">
             <Button size="sm" variant="secondary" busy={busy === `discover:${server.id}`} onClick={onDiscover}>
               {t('servers.discover')}
             </Button>
@@ -402,47 +406,47 @@ function ServerDetail({
         return (
           <div
             key={tool.name}
-            className="flex flex-col gap-1.5 rounded border border-[color:var(--border)] px-2 py-1.5"
+            className="flex flex-col gap-1.5 rounded-md border border-[color:var(--border)] bg-[color:var(--card)]/40 px-3 py-2.5"
           >
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="text-sm">{tool.name}</div>
-                {tool.description ? (
-                  <div className="truncate text-xs text-[color:var(--fg-muted)]">{tool.description}</div>
-                ) : null}
-                {v && v.riskCodes.length > 0 ? (
-                  <div className="text-[10px] text-[color:var(--fg-muted)]">{v.riskCodes.join(', ')}</div>
-                ) : null}
-              </div>
-              <div className="flex shrink-0 items-center gap-1.5">
-                <SkillVerdictBadge severity={v?.severity ?? 'not_yet_scanned'} />
-                {v?.acked && !v.ackStale ? (
-                  <span className="text-[10px] text-[color:var(--fg-muted)]">{t('servers.acked')}</span>
-                ) : null}
-                {needsAck ? (
-                  <Button
-                    size="sm"
-                    variant="danger"
-                    busy={ackBusy === tool.name}
-                    onClick={() => {
-                      if (ackArm !== tool.name) {
-                        setAckArm(tool.name);
-                        return;
-                      }
-                      void ack(tool.name);
-                    }}
-                  >
-                    {ackArm === tool.name ? t('servers.ackConfirm') : t('servers.ack')}
-                  </Button>
-                ) : null}
+            {/* Badge sits inline next to the name; nothing is right-anchored, so
+                the row never needs horizontal scrolling regardless of width. */}
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-medium text-[color:var(--fg-strong)]">{tool.name}</span>
+              <SkillVerdictBadge severity={v?.severity ?? 'not_yet_scanned'} />
+              {v?.acked && !v.ackStale ? (
+                <span className="text-[11px] text-[color:var(--fg-muted)]">{t('servers.acked')}</span>
+              ) : null}
+            </div>
+            {tool.description ? (
+              <div className="text-sm leading-[1.5] text-[color:var(--fg-muted)]">{tool.description}</div>
+            ) : null}
+            {v && v.riskCodes.length > 0 ? (
+              <div className="text-[11px] text-[color:var(--fg-muted)]">{v.riskCodes.join(', ')}</div>
+            ) : null}
+            <div className="flex flex-wrap gap-1.5">
+              {needsAck ? (
                 <Button
                   size="sm"
-                  variant="ghost"
-                  onClick={() => setTestTool(testTool === tool.name ? null : tool.name)}
+                  variant="danger"
+                  busy={ackBusy === tool.name}
+                  onClick={() => {
+                    if (ackArm !== tool.name) {
+                      setAckArm(tool.name);
+                      return;
+                    }
+                    void ack(tool.name);
+                  }}
                 >
-                  {t('sandbox.toggle')}
+                  {ackArm === tool.name ? t('servers.ackConfirm') : t('servers.ack')}
                 </Button>
-              </div>
+              ) : null}
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setTestTool(testTool === tool.name ? null : tool.name)}
+              >
+                {t('sandbox.toggle')}
+              </Button>
             </div>
             {testTool === tool.name ? (
               <ToolTestForm serverId={server.id} tool={tool} />
@@ -841,12 +845,21 @@ function MarketplacePane(): React.ReactElement {
 function GrantsPane(): React.ReactElement {
   const t = useTranslations('adminMcp');
   const [rows, setRows] = useState<McpGrantMatrixRow[] | null>(null);
+  const [orchestrators, setOrchestrators] = useState<McpOrchestrator[]>([]);
+  const [servers, setServers] = useState<McpServerNode[]>([]);
+  const [pickAgent, setPickAgent] = useState('');
+  const [pickServer, setPickServer] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
   const [confirmRevoke, setConfirmRevoke] = useState<McpGrantMatrixRow | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      setRows((await listMcpGrants()).grants);
+      const [g, o, s] = await Promise.all([listMcpGrants(), listMcpOrchestrators(), listMcpServers()]);
+      setRows(g.grants);
+      setOrchestrators(o.orchestrators);
+      setServers(s.servers.filter((sv) => sv.status === 'enabled'));
+      setPickAgent((prev) => prev || o.orchestrators[0]?.slug || '');
       setError(null);
     } catch (err) {
       setError(errText(err));
@@ -858,17 +871,122 @@ function GrantsPane(): React.ReactElement {
   }, [refresh]);
 
   async function revoke(row: McpGrantMatrixRow): Promise<void> {
-    if (!row.agentSlug) return;
     try {
-      await deleteGraphEdge(row.agentSlug, `tool_grant:${row.grantId}`, 'tool_grant');
+      await revokeMcpGrant(row.grantId);
       await refresh();
     } catch (err) {
       setError(errText(err));
     }
   }
 
+  const chosenServer = servers.find((s) => s.id === pickServer);
+  const grantedSet = new Set(
+    (rows ?? [])
+      .filter((r) => r.holderKind === 'agent' && r.agentSlug === pickAgent && r.serverId === pickServer)
+      .map((r) => r.toolName),
+  );
+
+  async function grant(toolName: string): Promise<void> {
+    if (!pickAgent || !pickServer) return;
+    setBusy(toolName);
+    setError(null);
+    try {
+      await grantMcpToolToOrchestrator(pickAgent, pickServer, toolName);
+      await refresh();
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function grantAll(): Promise<void> {
+    if (!chosenServer) return;
+    setBusy('all');
+    setError(null);
+    try {
+      for (const tool of chosenServer.discoveredTools) {
+        if (!grantedSet.has(tool.name)) {
+          await grantMcpToolToOrchestrator(pickAgent, pickServer, tool.name);
+        }
+      }
+      await refresh();
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   return (
     <div className="flex flex-col gap-3">
+      {/* Grant surface (W8): the step that makes a scanned server usable — pick
+          an orchestrator + server, then grant its tools. No Builder canvas. */}
+      <div className="flex flex-col gap-3 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
+        <div className="text-[11px] uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
+          {t('grants.grantHeading')}
+        </div>
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="flex flex-col gap-1 text-xs">
+            {t('grants.orchestrator')}
+            <select
+              value={pickAgent}
+              onChange={(e) => setPickAgent(e.target.value)}
+              className="rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[color:var(--accent)]"
+            >
+              {orchestrators.map((o) => (
+                <option key={o.id} value={o.slug}>
+                  {o.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-xs">
+            {t('grants.server')}
+            <select
+              value={pickServer}
+              onChange={(e) => setPickServer(e.target.value)}
+              className="rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[color:var(--accent)]"
+            >
+              <option value="">{t('grants.pickServer')}</option>
+              {servers.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          {chosenServer && chosenServer.discoveredTools.length > 0 ? (
+            <Button size="sm" busy={busy === 'all'} onClick={() => void grantAll()}>
+              {t('grants.grantAll')}
+            </Button>
+          ) : null}
+        </div>
+        {pickServer === '' ? (
+          <div className="text-xs text-[color:var(--fg-muted)]">{t('grants.grantHint')}</div>
+        ) : chosenServer && chosenServer.discoveredTools.length === 0 ? (
+          <div className="text-xs text-[color:var(--warning)]">{t('grants.noToolsDiscover')}</div>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {chosenServer?.discoveredTools.map((tool) => {
+              const granted = grantedSet.has(tool.name);
+              return (
+                <Button
+                  key={tool.name}
+                  size="sm"
+                  variant={granted ? 'primary' : 'ghost'}
+                  busy={busy === tool.name}
+                  disabled={granted}
+                  onClick={() => void grant(tool.name)}
+                  title={tool.description ?? tool.name}
+                >
+                  {granted ? `✓ ${tool.name}` : tool.name}
+                </Button>
+              );
+            })}
+          </div>
+        )}
+      </div>
       {error ? <div className="text-sm text-[color:var(--danger)]">{error}</div> : null}
       {!rows ? <div className="text-sm text-[color:var(--fg-muted)]">{t('loading')}</div> : null}
       {rows && rows.length === 0 ? (

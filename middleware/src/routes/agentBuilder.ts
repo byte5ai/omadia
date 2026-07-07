@@ -1115,6 +1115,79 @@ export function createAgentBuilderRouter(
     }
   });
 
+  // ── orchestrator MCP grants from the Control Center (epic #459 W8) ────────
+  // The missing "make it usable" step: registering + scanning a server only
+  // makes its tools available; they still have to be GRANTED to the
+  // orchestrator that handles a chat. This is the same grant the Builder
+  // canvas creates (same fail-closed gate), reachable without the canvas.
+
+  router.get('/mcp-orchestrators', async (_req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const agents = await l.config.listAgents();
+      res.json({ orchestrators: agents.map((a) => ({ id: a.id, slug: a.slug, name: a.name })) });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  /** Grant one server tool to an orchestrator (top-level agent). Runs the same
+   *  fail-closed verdict gate as the canvas, then reloads so the orchestrator
+   *  picks the tool up on its next turn. */
+  router.put('/mcp-grants', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const agentSlug = String(req.body?.agentSlug ?? '').trim();
+      const mcpServerId = String(req.body?.mcpServerId ?? '');
+      const toolRef = String(req.body?.toolName ?? '');
+      if (agentSlug === '' || !isUuid(mcpServerId) || toolRef === '') {
+        res.status(400).json({ error: 'invalid_grant' });
+        return;
+      }
+      const agent = (await l.config.listAgents()).find((a) => a.slug === agentSlug);
+      if (!agent) {
+        res.status(404).json({ error: 'orchestrator_not_found', agentSlug });
+        return;
+      }
+      const toolName = await assertMcpToolAllowed(l, mcpServerId, toolRef);
+      // Idempotent: skip if this exact grant already exists.
+      const existing = (await l.graph.listAllToolGrants()).find(
+        (g) =>
+          g.agentId === agent.id &&
+          g.toolKind === 'mcp' &&
+          g.mcpServerId === mcpServerId &&
+          mcpToolNameFromRef(g.toolRef, '') === mcpToolNameFromRef(toolName, ''),
+      );
+      if (!existing) {
+        await l.graph.createToolGrant({
+          agentId: agent.id,
+          subAgentId: null,
+          toolKind: 'mcp',
+          toolRef: toolName,
+          mcpServerId,
+        });
+        await reload(l);
+      }
+      res.json({ agentSlug, mcpServerId, toolName, granted: true });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  router.delete('/mcp-grants/:grantId', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      await l.graph.deleteToolGrant(str(req.params.grantId));
+      await reload(l);
+      res.status(204).end();
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
   // ── skill capability bindings (epic #459 W4, issue #456) ──────────────────
   router.get('/skills/:id/tool-bindings', async (req: Request, res: Response) => {
     const l = live(res);
