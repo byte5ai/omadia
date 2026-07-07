@@ -86,6 +86,10 @@ export class McpAuthDiscovery {
    *  auth-protected). Throws only on a malformed/partial advertisement.
    *  Cached per origin (5 min) so a per-call auth check is cheap. */
   async discover(serverEndpoint: string): Promise<DiscoveredAuth | null> {
+    // Only http(s) endpoints have discoverable OAuth. A stdio command
+    // ("npx …") or any non-URL endpoint is not OAuth-protected — don't throw
+    // on `new URL(...)` downstream (epic #459).
+    if (!/^https?:\/\//i.test(serverEndpoint)) return null;
     // Cache by the FULL endpoint, not just origin: RFC 9728 metadata can be
     // path-specific (e.g. M365 exposes one resource-metadata doc per server).
     const cached = this.cache.get(serverEndpoint);

@@ -87,7 +87,7 @@ export class McpOAuthService {
 
   /** Whether a server is discoverably OAuth-protected (cheap, cached upstream). */
   async isProtected(server: McpServerRow): Promise<boolean> {
-    if (!server.endpoint) return false;
+    if (!server.endpoint || server.transport === 'stdio') return false;
     try {
       return (await this.discovery.discover(this.resolveEndpoint(server))) !== null;
     } catch {
@@ -128,6 +128,7 @@ export class McpOAuthService {
   /** Start the authorization flow: returns the URL to send the user to. */
   async beginAuthorization(server: McpServerRow, userKey: string): Promise<BeginAuthResult> {
     if (!server.endpoint) throw new Error('server has no endpoint');
+    if (server.transport === 'stdio') throw new Error('stdio servers do not use OAuth');
     const discovered = await this.discovery.discover(this.resolveEndpoint(server));
     if (!discovered) throw new Error('server does not advertise OAuth protected-resource metadata');
     const client = await this.ensureClient(discovered);
@@ -268,6 +269,11 @@ export class McpOAuthService {
     server: McpServerRow,
   ): Promise<{ protected: boolean; issuer: string | null; issuerHost: string | null; brokered: boolean }> {
     if (!server.endpoint) return { protected: false, issuer: null, issuerHost: null, brokered: false };
+    // stdio servers are local commands, not OAuth-protected HTTP endpoints —
+    // never run OAuth discovery/connect for them (epic #459).
+    if (server.transport === 'stdio') {
+      return { protected: false, issuer: null, issuerHost: null, brokered: false };
+    }
     let discovered;
     try {
       discovered = await this.discovery.discover(this.resolveEndpoint(server));
