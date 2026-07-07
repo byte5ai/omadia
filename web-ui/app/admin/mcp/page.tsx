@@ -560,12 +560,16 @@ function McpAuthSection({ serverId }: { serverId: string }): React.ReactElement 
         )}
       </div>
       {!status.connected ? (
-        <div className="text-[11px] text-[color:var(--fg-muted)]">{t('auth.hint')}</div>
+        <div className="text-[11px] text-[color:var(--fg-muted)]">
+          {status.brokered
+            ? t('auth.hintBrokered')
+            : t('auth.hintDelegated', { host: status.issuerHost ?? status.issuer ?? '?' })}
+        </div>
       ) : null}
       {showClientForm ? (
         <div className="flex flex-col gap-1.5 rounded-md border border-[color:var(--border)] bg-[color:var(--card)]/40 p-2.5">
           <div className="text-xs text-[color:var(--fg-muted)]">
-            {t('auth.needsClient', { issuer: status.issuer ?? '' })}
+            {t('auth.needsClientWhy', { host: status.issuerHost ?? status.issuer ?? '?' })}
           </div>
           {status.redirectUri ? (
             <div className="text-[11px] text-[color:var(--fg-muted)]">
@@ -957,6 +961,11 @@ function MarketplacePane(): React.ReactElement {
                     ) : (
                       <span className="text-[color:var(--fg-muted)]">{t('marketplace.browseOnly')}</span>
                     )}
+                    {entry.transport === 'http' || entry.transport === 'sse' ? (
+                      <span className="text-[color:var(--warning)]">{t('marketplace.authHintRemote')}</span>
+                    ) : entry.transport === 'stdio' ? (
+                      <span className="text-[color:var(--fg-muted)]">{t('marketplace.authHintLocal')}</span>
+                    ) : null}
                   </div>
                 </div>
                 <Button

@@ -240,6 +240,41 @@ export class McpOAuthService {
     }
   }
 
+  /**
+   * Classify a server's auth so the UI can explain the tradeoff:
+   *  - protected=false      → no authorization needed.
+   *  - brokered=true        → the server offers Dynamic Client Registration,
+   *    so connecting is zero-setup (it holds its own downstream app).
+   *  - brokered=false       → the server delegates raw to its issuer with no
+   *    DCR, so a one-time operator OAuth app is required (a weaker server).
+   * `issuerHost` is the human-readable host the OAuth actually goes to.
+   */
+  async describeAuth(
+    server: McpServerRow,
+  ): Promise<{ protected: boolean; issuer: string | null; issuerHost: string | null; brokered: boolean }> {
+    if (!server.endpoint) return { protected: false, issuer: null, issuerHost: null, brokered: false };
+    let discovered;
+    try {
+      discovered = await this.discovery.discover(server.endpoint);
+    } catch {
+      return { protected: true, issuer: null, issuerHost: null, brokered: false };
+    }
+    if (!discovered) return { protected: false, issuer: null, issuerHost: null, brokered: false };
+    const issuer = discovered.server.issuer;
+    let issuerHost: string | null = null;
+    try {
+      issuerHost = new URL(discovered.server.tokenEndpoint).host;
+    } catch {
+      /* keep null */
+    }
+    return {
+      protected: true,
+      issuer,
+      issuerHost,
+      brokered: discovered.server.registrationEndpoint !== null,
+    };
+  }
+
   private async persistToken(
     serverId: string,
     userKey: string,

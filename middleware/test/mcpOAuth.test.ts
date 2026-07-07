@@ -163,3 +163,44 @@ describe('McpOAuthClient', () => {
     assert.equal(reg?.clientSecret, 'newsec');
   });
 });
+
+describe('McpOAuthService.describeAuth (broker classification)', () => {
+  const server = { id: 's', name: 'srv', endpoint: 'https://srv.example/mcp' } as never;
+  const deps = { graph: {} as never, vault: {} as never, redirectUri: 'https://host/cb' };
+
+  it('brokered=true when the server offers DCR (zero-setup)', async () => {
+    const { McpOAuthService } = await import('../src/services/mcpOAuthService.js');
+    const discovery = {
+      discover: async () => ({
+        resource: { resource: 'https://srv.example', authorizationServers: ['https://as.example'], scopesSupported: ['read'], bearerMethods: ['header'] },
+        server: { ...AS, registrationEndpoint: 'https://as.example/register', tokenEndpoint: 'https://as.example/token' },
+      }),
+    } as never;
+    const svc = new McpOAuthService({ ...deps, discovery });
+    const d = await svc.describeAuth(server);
+    assert.equal(d.protected, true);
+    assert.equal(d.brokered, true);
+    assert.equal(d.issuerHost, 'as.example');
+  });
+
+  it('brokered=false when the server delegates raw with no DCR (needs manual app)', async () => {
+    const { McpOAuthService } = await import('../src/services/mcpOAuthService.js');
+    const discovery = {
+      discover: async () => ({
+        resource: { resource: 'https://srv.example', authorizationServers: ['https://www.strava.com'], scopesSupported: ['read'], bearerMethods: ['header'] },
+        server: { ...AS, issuer: 'https://www.strava.com', registrationEndpoint: null, tokenEndpoint: 'https://www.strava.com/api/v3/oauth/token' },
+      }),
+    } as never;
+    const svc = new McpOAuthService({ ...deps, discovery });
+    const d = await svc.describeAuth(server);
+    assert.equal(d.brokered, false);
+    assert.equal(d.issuerHost, 'www.strava.com');
+  });
+
+  it('protected=false when the server advertises no OAuth', async () => {
+    const { McpOAuthService } = await import('../src/services/mcpOAuthService.js');
+    const discovery = { discover: async () => null } as never;
+    const svc = new McpOAuthService({ ...deps, discovery });
+    assert.equal((await svc.describeAuth(server)).protected, false);
+  });
+});

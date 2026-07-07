@@ -815,6 +815,9 @@ export interface McpAuthStatus {
   protected: boolean;
   connected: boolean;
   issuer: string | null;
+  issuerHost?: string | null;
+  /** The server offers Dynamic Client Registration — connecting is zero-setup. */
+  brokered?: boolean;
   needsClient: boolean;
   redirectUri?: string;
 }

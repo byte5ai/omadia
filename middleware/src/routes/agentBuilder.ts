@@ -91,6 +91,12 @@ export interface AgentBuilderRouterOptions {
     readonly redirectUri: string;
     isProtected(server: McpServerRow): Promise<boolean>;
     issuerFor(server: McpServerRow): Promise<string | null>;
+    describeAuth(server: McpServerRow): Promise<{
+      protected: boolean;
+      issuer: string | null;
+      issuerHost: string | null;
+      brokered: boolean;
+    }>;
     beginAuthorization(server: McpServerRow, userKey: string): Promise<{ authorizeUrl: string }>;
     completeAuthorization(state: string, code: string): Promise<{ serverId: string }>;
     setManualClient(issuer: string, clientId: string, clientSecret: string | null): Promise<void>;
@@ -1148,22 +1154,25 @@ export function createAgentBuilderRouter(
         return;
       }
       if (!options.mcpOAuth) {
-        res.json({ protected: false, connected: false, issuer: null, needsClient: false });
+        res.json({ protected: false, connected: false, issuer: null, needsClient: false, brokered: false });
         return;
       }
-      const isProtected = await options.mcpOAuth.isProtected(server);
-      if (!isProtected) {
-        res.json({ protected: false, connected: false, issuer: null, needsClient: false });
+      const desc = await options.mcpOAuth.describeAuth(server);
+      if (!desc.protected) {
+        res.json({ protected: false, connected: false, issuer: null, needsClient: false, brokered: false });
         return;
       }
-      const issuer = await options.mcpOAuth.issuerFor(server);
       const token = await l.graph.getMcpOAuthToken(server.id, oauthUserKey(req));
-      const client = issuer ? await l.graph.getMcpOAuthClient(issuer) : undefined;
+      const client = desc.issuer ? await l.graph.getMcpOAuthClient(desc.issuer) : undefined;
       res.json({
         protected: true,
         connected: token !== undefined,
-        issuer,
-        needsClient: issuer !== null && client === undefined,
+        issuer: desc.issuer,
+        issuerHost: desc.issuerHost,
+        // A brokered server (offers DCR) needs no manual client even without one
+        // stored — DCR self-registers at connect. Only a delegating server does.
+        brokered: desc.brokered,
+        needsClient: !desc.brokered && desc.issuer !== null && client === undefined,
         redirectUri: options.mcpOAuth.redirectUri,
       });
     } catch (err) {
