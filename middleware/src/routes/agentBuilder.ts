@@ -1040,10 +1040,30 @@ export function createAgentBuilderRouter(
         res.status(404).json({ error: 'mcp_server_not_found' });
         return;
       }
-      const schema =
+      let schema =
         row.configSchema.length > 0
           ? row.configSchema
           : deriveMcpConfigSchema(row.endpoint, row.headers);
+      // Self-heal: a marketplace server imported before env-var capture has no
+      // stored schema, and a stdio command has no endpoint placeholders to
+      // derive from. Re-resolve its registry entry once and persist the
+      // declared config fields so it becomes configurable without a re-add.
+      if (schema.length === 0 && row.source === 'marketplace' && row.registryId) {
+        try {
+          const registry = (await l.graph.listMcpRegistries()).find(
+            (r) => r.id === row.registryId,
+          );
+          if (registry) {
+            const entry = await mcpRegistryClient.resolve(registry, row.name);
+            if (entry.configSchema && entry.configSchema.length > 0) {
+              schema = entry.configSchema;
+              await l.graph.setMcpServerConfigSchema(id, schema as never);
+            }
+          }
+        } catch {
+          /* registry unreachable — keep the empty/derived schema */
+        }
+      }
       const secretsSet = options.mcpConfig
         ? await options.mcpConfig.secretsSet({ ...row, configSchema: schema })
         : {};
