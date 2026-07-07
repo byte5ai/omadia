@@ -2646,6 +2646,7 @@
       "enable": "Aktivieren",
       "disable": "Deaktivieren",
       "needsAuth": "\"{name}\" benötigt eine Autorisierung, bevor die Tools gefunden werden können. Verbinde ihn unten (Login über {host}) und starte dann erneut Discover.",
+      "endpointPlaceholder": "\"{name}\" kann nicht gefunden werden: der Endpoint enthält noch einen nicht konfigurierten Platzhalter ({placeholders}). Lege den Server mit dem echten Wert neu an (z. B. deine Microsoft-365-Tenant-ID).",
       "privacy": {
         "masked": "Maskiert",
         "bypassed": "Unmaskiert",

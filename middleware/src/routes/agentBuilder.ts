@@ -943,6 +943,20 @@ export function createAgentBuilderRouter(
         res.status(404).json({ error: 'mcp_server_not_found' });
         return;
       }
+      // Fail fast with a clear message when the endpoint still has an unfilled
+      // template placeholder (e.g. an M365 marketplace entry left as
+      // `.../tenants/{tenant_id}/...`) — otherwise the upstream 400 surfaces as a
+      // cryptic 502 (issue #459).
+      const placeholders = row.endpoint?.match(/\{[^}]+\}/g);
+      if (placeholders && placeholders.length > 0) {
+        res.status(422).json({
+          error: 'mcp_endpoint_placeholder',
+          serverId: row.id,
+          serverName: row.name,
+          placeholders: [...new Set(placeholders)],
+        });
+        return;
+      }
       const tools = await mcp.listTools(toMcpConfig(row));
       // Scan gate (epic #459 W1, issue #454): every discovered tool is scanned
       // and its verdict persisted BEFORE the tool list itself is stored, so no

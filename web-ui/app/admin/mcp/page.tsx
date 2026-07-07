@@ -118,6 +118,27 @@ function parseNeedsAuth(
   return null;
 }
 
+/** Detect the discover route's 422 "endpoint has an unconfigured placeholder"
+ *  response (e.g. an M365 endpoint left as `.../tenants/{tenant_id}/...`). */
+function parseEndpointPlaceholder(
+  err: unknown,
+): { serverName: string; placeholders: string[] } | null {
+  if (!(err instanceof ApiError) || err.status !== 422) return null;
+  try {
+    const b = JSON.parse(err.body) as {
+      error?: string;
+      serverName?: string;
+      placeholders?: string[];
+    };
+    if (b.error === 'mcp_endpoint_placeholder') {
+      return { serverName: b.serverName ?? '', placeholders: b.placeholders ?? [] };
+    }
+  } catch {
+    /* not a placeholder body */
+  }
+  return null;
+}
+
 const thCls =
   'px-2 py-1.5 text-left text-[11px] font-medium uppercase tracking-[0.1em] text-[color:var(--fg-muted)]';
 const tdCls = 'px-2 py-1.5 text-sm align-top';
@@ -176,11 +197,20 @@ function ServersPane(): React.ReactElement {
       await refresh();
     } catch (err) {
       const na = parseNeedsAuth(err);
+      const ph = parseEndpointPlaceholder(err);
       if (na) {
         // Discover failed because the server needs OAuth — open the same Connect
         // login modal as the chat UI directly, instead of a raw 502.
         setConnectModal({ serverId: na.serverId, name: na.serverName });
         setAuthNotice({ name: na.serverName, host: na.issuerHost });
+      } else if (ph) {
+        // Endpoint still has an unconfigured template placeholder.
+        setError(
+          t('servers.endpointPlaceholder', {
+            name: ph.serverName,
+            placeholders: ph.placeholders.join(', '),
+          }),
+        );
       } else {
         setError(errText(err));
       }
