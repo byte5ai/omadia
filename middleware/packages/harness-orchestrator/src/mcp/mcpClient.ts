@@ -23,6 +23,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
+import { z } from 'zod';
 import type {
   LocalSubAgentTool,
   NativeToolHandler,
@@ -30,6 +32,23 @@ import type {
 } from '@omadia/plugin-api';
 
 import { turnContext } from '../turnContext.js';
+
+/**
+ * Relaxed CallToolResult schema: the MCP spec says `structuredContent` MUST be a
+ * JSON object, but some hosted proxies (e.g. strava.run.mcp.com.ai) return it as
+ * an array. The SDK's strict schema rejects the entire result, and callTool then
+ * throws — which we surface as "-32000 Connection closed", making every call on
+ * that server look like a dead connection. Accepting any `structuredContent`
+ * keeps well-formed servers unchanged while tolerating this one deviation; we
+ * only read `content`/`isError` downstream anyway.
+ */
+// Cast back to the base schema type: the SDK's callTool overload is typed to the
+// strict CallToolResultSchema, but our runtime schema only *widens* what parses
+// (any structuredContent), so it is a safe superset. We never read
+// structuredContent downstream — only `content`/`isError`.
+const LENIENT_CALL_TOOL_RESULT_SCHEMA = CallToolResultSchema.extend({
+  structuredContent: z.unknown().optional(),
+}) as unknown as typeof CallToolResultSchema;
 
 export type McpTransportKind = 'stdio' | 'http' | 'sse';
 
@@ -232,10 +251,18 @@ export class McpManager {
       return this.handleFailure(cfg, toolName, token, failure, startedAt);
     }
     try {
-      const res = await pooled.client.callTool({
-        name: toolName,
-        arguments: args,
-      });
+      const res = await pooled.client.callTool(
+        {
+          name: toolName,
+          arguments: args,
+        },
+        // Tolerate off-spec `structuredContent` (some third-party MCP servers —
+        // e.g. the hosted Strava proxy — return it as a JSON array instead of an
+        // object). The strict SDK schema otherwise rejects the whole result and
+        // the failure surfaces to the model as "-32000 Connection closed",
+        // making every tool call on that server look like a transport failure.
+        LENIENT_CALL_TOOL_RESULT_SCHEMA,
+      );
       const rendered = renderToolResult(res);
       // MCP protocol errors resolve (isError result) instead of throwing —
       // the audit row must reflect the failure (codex W2 finding).
