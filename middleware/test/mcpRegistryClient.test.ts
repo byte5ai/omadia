@@ -236,6 +236,37 @@ describe('McpRegistryClient', () => {
     assert.equal(entries[0]?.endpoint, null);
   });
 
+  it('passes the query to the server-side search param (official=search, smithery=q)', async () => {
+    const seen: string[] = [];
+    const fetchImpl: typeof fetch = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return fetchOk(OFFICIAL_DOC)(input);
+    }) as typeof fetch;
+    const official = { ...REGISTRY, id: 'of', kind: 'official' as const };
+    const smithery = { ...REGISTRY, id: 'sm', kind: 'smithery' as const };
+    const client = new McpRegistryClient({ fetchImpl, log: () => {} });
+    await client.search(official, 'postgres');
+    await client.search(smithery, 'postgres');
+    assert.ok(seen.some((u) => u.includes('/v0/servers') && u.includes('search=postgres')), 'official uses ?search=');
+    assert.ok(seen.some((u) => u.includes('/servers') && u.includes('q=postgres')), 'smithery uses ?q=');
+  });
+
+  it('resolves a searched entry that is not on the browsed first page (official)', async () => {
+    // Browse page has only "a"; a search for "deep" returns "io.x/deep".
+    const browse = { servers: [{ server: { name: 'io.x/a' } }] };
+    const searchDoc = { servers: [{ server: { name: 'io.x/deep', remotes: [{ type: 'streamable-http', url: 'https://deep.example/mcp' }] } }] };
+    const fetchImpl: typeof fetch = (async (input: RequestInfo | URL) => {
+      const u = String(input);
+      const body = u.includes('search=io.x') ? searchDoc : browse;
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    const official = { ...REGISTRY, id: 'of2', kind: 'official' as const };
+    const client = new McpRegistryClient({ fetchImpl, log: () => {} });
+    // Not in browse cache, but resolve() looks it up by id server-side:
+    const resolved = await client.resolve(official, 'io.x/deep');
+    assert.equal(resolved.endpoint, 'https://deep.example/mcp');
+  });
+
   it('falls back to a plain servers document at the base URL', async () => {
     const plainDoc = { servers: [{ name: 'simple', remotes: [{ type: 'sse', url: 'https://x/sse' }] }] };
     const fetchImpl: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {

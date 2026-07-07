@@ -404,11 +404,28 @@ export class McpRegistryClient {
     return entries;
   }
 
-  /** Case-insensitive substring search over name + description. */
+  /**
+   * Search the registry. A non-empty query is passed to the registry's
+   * SERVER-SIDE search (Smithery `?q=`, official/generic `?search=`) so the
+   * whole catalog is reachable, not just the first browsed page. The result is
+   * additionally substring-filtered locally as a safety net (a registry that
+   * ignores the param still returns something sensible). An empty query serves
+   * the cached full-first-page browse.
+   */
   async search(registry: McpRegistryConfig, q: string): Promise<readonly McpCatalogEntry[]> {
-    const entries = await this.catalog(registry);
     const needle = q.trim().toLowerCase();
-    if (needle === '') return entries;
+    if (needle === '') return this.catalog(registry);
+    // official (?search=) and smithery (?q=) honor the query server-side — trust
+    // their relevance ranking and return as-is.
+    if (registry.kind === 'official' || registry.kind === 'smithery') {
+      try {
+        return await this.fetchCatalog(registry, q.trim());
+      } catch {
+        /* fall through to the local-filter fallback below */
+      }
+    }
+    // A generic registry may ignore the param, so substring-filter its page.
+    const entries = await this.catalog(registry);
     return entries.filter(
       (e) =>
         e.name.toLowerCase().includes(needle) ||
@@ -420,13 +437,13 @@ export class McpRegistryClient {
    *  For Smithery the listing carries no endpoint, so this does the second
    *  fetch to the per-server detail endpoint to obtain the deploymentUrl. */
   async resolve(registry: McpRegistryConfig, entryId: string): Promise<McpCatalogEntry> {
-    const entries = await this.catalog(registry);
-    const hit = entries.find((e) => e.id === entryId);
+    // Fast path: the entry is on the browsed first page. Otherwise (a
+    // server-side search hit beyond that page), look it up directly by id so
+    // Connect works for the whole catalog, not just the browse window.
+    const cached = await this.catalog(registry);
+    let hit = cached.find((e) => e.id === entryId);
     if (!hit) {
-      throw new McpRegistryError(
-        'catalog_entry_not_found',
-        `entry "${entryId}" not found in registry "${registry.name}"`,
-      );
+      hit = await this.resolveById(registry, entryId);
     }
     const resolved =
       registry.kind === 'smithery' && hit.endpoint === null && hit.transport !== null
@@ -442,9 +459,34 @@ export class McpRegistryClient {
     return resolved;
   }
 
+  /** Look up one entry by id when it is not on the browsed first page — a
+   *  server-side search hit deeper in the catalog. Smithery has a per-id
+   *  detail endpoint; official/generic get a targeted server-side search on
+   *  the id with an exact-id match. */
+  private async resolveById(
+    registry: McpRegistryConfig,
+    entryId: string,
+  ): Promise<McpCatalogEntry> {
+    if (registry.kind === 'smithery') {
+      // A minimal entry; resolveSmitheryEndpoint fills the endpoint + enriches
+      // name/description from the detail doc.
+      return { id: entryId, name: entryId, description: null, version: null, transport: 'http', endpoint: null, license: null, author: null, sourceUrl: null };
+    }
+    const results = await this.fetchCatalog(registry, entryId);
+    const exact = results.find((e) => e.id === entryId);
+    if (!exact) {
+      throw new McpRegistryError(
+        'catalog_entry_not_found',
+        `entry "${entryId}" not found in registry "${registry.name}"`,
+      );
+    }
+    return exact;
+  }
+
   /** Second-hop fetch for Smithery: GET {url}/servers/{qualifiedName} →
    *  connections[].deploymentUrl. The resolved host still passes the
-   *  untrusted-remote guard, and https is required. */
+   *  untrusted-remote guard, and https is required. Also enriches the entry's
+   *  name/description from the detail doc (for direct-by-id resolves). */
   private async resolveSmitheryEndpoint(
     registry: McpRegistryConfig,
     entry: McpCatalogEntry,
@@ -477,7 +519,15 @@ export class McpRegistryClient {
       if (err instanceof McpRegistryError) throw err;
       throw new McpRegistryError('mcp_catalog_entry_not_importable', `bad Smithery URL: ${url}`);
     }
-    return { ...entry, endpoint: url };
+    return {
+      ...entry,
+      // Enrich from the detail doc when the entry came straight from a by-id
+      // resolve (name was just the id there).
+      name: str(doc['displayName']) ?? str(doc['qualifiedName']) ?? entry.name,
+      description: entry.description ?? str(doc['description']),
+      sourceUrl: entry.sourceUrl ?? safeHttpUrl(str(doc['homepage'])),
+      endpoint: url,
+    };
   }
 
   /** Test seam / operator action: drop the cache for one or all registries. */
@@ -488,15 +538,26 @@ export class McpRegistryClient {
 
   private async fetchCatalog(
     registry: McpRegistryConfig,
+    query?: string,
   ): Promise<readonly McpCatalogEntry[]> {
     const base = registry.url.replace(/\/+$/, '');
+    // A non-empty query is passed to the registry's SERVER-SIDE search param
+    // (Smithery `q`, official/generic `search`) so the full catalog is
+    // reachable, not just the first browsed page (issue #455 W7 follow-up).
+    const q = query && query.trim() !== '' ? query.trim() : null;
     // Kind selects the list endpoint + normalizer. Smithery has its own API;
     // official/generic share the official-shape parser (which also reads a
     // plain { servers:[...] } document).
     const candidates =
       registry.kind === 'smithery'
-        ? [`${base}/servers?pageSize=100`, `${base}/servers`]
-        : [`${base}/v0/servers?limit=100`, base];
+        ? [
+            `${base}/servers?pageSize=100${q ? `&q=${encodeURIComponent(q)}` : ''}`,
+            `${base}/servers`,
+          ]
+        : [
+            `${base}/v0/servers?limit=100${q ? `&search=${encodeURIComponent(q)}` : ''}`,
+            base,
+          ];
     const normalize = registry.kind === 'smithery' ? normalizeSmitheryEntry : normalizeEntry;
     let lastError: McpRegistryError | null = null;
     for (const url of candidates) {
