@@ -296,6 +296,10 @@ export {
   setMcpPrivacyBypassServers,
   isMcpServerPrivacyBypassed,
 } from './mcpPrivacyBypass.js';
+export {
+  setMcpKgIngestServers,
+  isMcpServerKgIngest,
+} from './mcpKgIngest.js';
 export type {
   TurnAnnotation,
   TurnHook,

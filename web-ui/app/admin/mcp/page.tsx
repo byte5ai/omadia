@@ -34,6 +34,7 @@ import {
   searchMcpCatalog,
   setMcpServerStatus,
   setMcpServerPrivacyBypass,
+  setMcpServerKgIngest,
   type McpCallLogEntry,
   type McpCatalogEntry,
   type McpGrantMatrixRow,
@@ -296,6 +297,9 @@ function ServersPane(): React.ReactElement {
                       setMcpServerPrivacyBypass(s.id, !s.privacyBypass),
                     )
                   }
+                  onToggleKg={() =>
+                    void act(`kg:${s.id}`, () => setMcpServerKgIngest(s.id, !s.kgIngest))
+                  }
                   onDelete={() => setConfirmDelete(s)}
                   onAcked={() => void refresh()}
                 />
@@ -331,6 +335,7 @@ function ServerRows({
   onDiscover,
   onToggleStatus,
   onTogglePrivacy,
+  onToggleKg,
   onDelete,
   onAcked,
 }: {
@@ -341,6 +346,7 @@ function ServerRows({
   onDiscover: () => void;
   onToggleStatus: () => void;
   onTogglePrivacy: () => void;
+  onToggleKg: () => void;
   onDelete: () => void;
   onAcked: () => void;
 }): React.ReactElement {
@@ -396,6 +402,15 @@ function ServerRows({
               {server.privacyBypass
                 ? `🔓 ${t('servers.privacy.bypassed')}`
                 : `🛡️ ${t('servers.privacy.masked')}`}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              busy={busy === `kg:${server.id}`}
+              onClick={onToggleKg}
+              title={server.kgIngest ? t('servers.kg.onHint') : t('servers.kg.offHint')}
+            >
+              {server.kgIngest ? `🧠 ${t('servers.kg.on')}` : `🧠 ${t('servers.kg.off')}`}
             </Button>
             <Button size="sm" variant="danger" onClick={onDelete}>
               {t('servers.delete')}

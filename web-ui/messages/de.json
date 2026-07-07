@@ -2652,6 +2652,12 @@
         "maskedHint": "Privacy Shield maskiert PII in den Tool-Ergebnissen dieses Servers. Klicken, um Ergebnisse unmaskiert durchzureichen.",
         "bypassedHint": "Die Tool-Ergebnisse dieses Servers werden UNMASKIERT durchgereicht (PII sichtbar). Klicken, um die Maskierung wieder zu aktivieren."
       },
+      "kg": {
+        "on": "KG an",
+        "off": "KG aus",
+        "onHint": "Erfolgreiche Tool-Ergebnisse dieses Servers werden in deinen Knowledge Graph geschrieben (recallbar, nur für dich sichtbar). Rohwerte nur, wenn der Server zusätzlich unmaskiert ist; sonst ein wertfreier Digest. Klicken, um die Aufnahme zu stoppen.",
+        "offHint": "Tool-Ergebnisse dieses Servers werden NICHT in den Knowledge Graph geschrieben. Klicken, um sie als recallbare, nutzer-eigene Observations aufzunehmen."
+      },
       "delete": "Löschen",
       "deleteTitle": "MCP-Server löschen",
       "deleteBody": "Server \"{name}\" mit allen Grants löschen? Agents verlieren diese Tools sofort.",

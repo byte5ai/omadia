@@ -44,6 +44,14 @@ export interface TurnContextValue {
    * `'default'`.
    */
   agentSlug?: string;
+  /**
+   * Omadia user id of the human driving this turn (= turn input `userId`).
+   * Set by the orchestrator at turn start. Used by dispatch-time consumers
+   * that must attribute per-user data — e.g. MCP→KG ingestion writes the
+   * observation with `aclOwners: [userId]` so it is recallable only by its
+   * owner. Undefined for system/ad-hoc turns.
+   */
+  userId?: string;
   chatParticipants?: ChatParticipantsProvider;
   /**
    * Privacy-Proxy Slice 2.1: per-turn privacy handle threaded through the

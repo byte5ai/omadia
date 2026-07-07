@@ -163,6 +163,9 @@ export interface McpServerRow {
   /** Epic #459 — operator opted this server out of Privacy Shield masking; its
    *  tool results pass through unmasked (recorded on the receipt). */
   readonly privacyBypass: boolean;
+  /** Epic #459 — operator opted this server into Knowledge-Graph ingestion:
+   *  successful tool results are written as recallable observations. */
+  readonly kgIngest: boolean;
 }
 
 export interface ToolGrantRow {
@@ -362,6 +365,7 @@ interface McpServerDbRow {
   author?: string | null;
   source_url?: string | null;
   privacy_bypass?: boolean;
+  kg_ingest?: boolean;
 }
 
 interface McpRegistryDbRow {
@@ -646,6 +650,7 @@ function mapMcpServer(r: McpServerDbRow): McpServerRow {
     author: r.author ?? null,
     sourceUrl: r.source_url ?? null,
     privacyBypass: r.privacy_bypass ?? false,
+    kgIngest: r.kg_ingest ?? false,
   };
 }
 
@@ -1419,6 +1424,14 @@ export class AgentGraphStore {
   async setMcpServerPrivacyBypass(id: string, value: boolean): Promise<void> {
     await this.pool.query(
       `UPDATE mcp_servers SET privacy_bypass = $2, updated_at = now() WHERE id = $1`,
+      [id, value],
+    );
+  }
+
+  /** Epic #459 — toggle Knowledge-Graph ingestion for a server. */
+  async setMcpServerKgIngest(id: string, value: boolean): Promise<void> {
+    await this.pool.query(
+      `UPDATE mcp_servers SET kg_ingest = $2, updated_at = now() WHERE id = $1`,
       [id, value],
     );
   }

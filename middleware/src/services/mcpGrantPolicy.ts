@@ -24,7 +24,7 @@
 import { CURRENT_VERIFIER_VERSION, type Severity } from './skillVerdict.js';
 
 import type { AgentGraphStore } from '@omadia/orchestrator';
-import { setMcpPrivacyBypassServers } from '@omadia/orchestrator';
+import { setMcpPrivacyBypassServers, setMcpKgIngestServers } from '@omadia/orchestrator';
 
 /** Severities that must be explicitly acknowledged before a grant is usable.
  *  `scan_failed`/`too_large_to_scan` are "not scanned clean" — treating them
@@ -79,6 +79,7 @@ export async function refreshMcpGrantPolicy(graph: AgentGraphStore): Promise<voi
   // reload is additive and won't update a baked marker, so publish the current
   // bypass set here — an operator toggle takes effect on the next call.
   setMcpPrivacyBypassServers(servers.filter((s) => s.privacyBypass).map((s) => s.id));
+  setMcpKgIngestServers(servers.filter((s) => s.kgIngest).map((s) => s.id));
 }
 
 /** Hydration filter: known-bad pairs only (spec stays out of model context). */

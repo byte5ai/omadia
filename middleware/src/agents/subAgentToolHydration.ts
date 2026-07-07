@@ -185,9 +185,11 @@ export function mcpGrantToDomainTool(
       input_schema: spec.input_schema as DomainToolSpec['input_schema'],
     },
     domain: spec.domain ?? `mcp.${cfg.name}`,
-    // Stable key for the LIVE per-server privacy-bypass lookup (see
-    // mcpPrivacyBypass.ts). Baked once; the bypass decision itself is read live.
+    // Stable key for the LIVE per-server privacy-bypass / KG-ingest lookups
+    // (see mcpPrivacyBypass.ts, mcpKgIngest.ts). Baked once; the decisions
+    // themselves are read live.
     mcpServerId: cfg.id,
+    mcpServerName: cfg.name,
     handle: (input: unknown) => handler(input),
   };
 }

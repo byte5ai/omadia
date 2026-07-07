@@ -223,6 +223,8 @@ export interface McpServerNode {
   sourceUrl?: string | null;
   /** Epic #459 — server opted out of Privacy Shield masking (results unmasked). */
   privacyBypass?: boolean;
+  /** Epic #459 — server opted into Knowledge-Graph ingestion of tool results. */
+  kgIngest?: boolean;
 }
 
 export interface ScheduleNode {
@@ -888,6 +890,19 @@ export async function setMcpServerPrivacyBypass(
   return callJson<McpServerNode>(`/v1/operator/mcp-servers/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     body: JSON.stringify({ privacyBypass }),
+  });
+}
+
+/** Toggle Knowledge-Graph ingestion for a server (epic #459): successful tool
+ *  results are written as recallable observations (masked digest, or raw when
+ *  the server is also privacy-bypassed). */
+export async function setMcpServerKgIngest(
+  id: string,
+  kgIngest: boolean,
+): Promise<McpServerNode> {
+  return callJson<McpServerNode>(`/v1/operator/mcp-servers/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ kgIngest }),
   });
 }
 

@@ -100,6 +100,9 @@ export interface DomainTool {
    * so an operator toggle takes effect without a restart.
    */
   mcpServerId?: string;
+  /** Display name of the originating MCP server (epic #459) — used to label
+   *  KG observation nodes ingested from this tool. */
+  mcpServerName?: string;
   handle(input: unknown, observer?: AskObserver): Promise<string>;
   /**
    * Privacy-Shield v3 (stable-id tokenization, slice 1) — optional PII
