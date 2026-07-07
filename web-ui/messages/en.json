@@ -763,6 +763,14 @@
       "fallback": "Persona classifier unavailable — default identity"
     },
     "subAgentTrace": "sub-agent trace",
+    "mcpAuth": {
+      "kicker": "Authorization required",
+      "body": "{server} needs to be connected before it can be used.",
+      "connect": "Connect {server}",
+      "modalTitle": "Connect {server}",
+      "modalBody": "Authorize {server} so this and future requests can use it.",
+      "close": "Close"
+    },
     "iterationLabel": "── iteration {n}",
     "attachmentTitle": "{kind}{cachedSuffix} — click for full size",
     "attachmentCachedSuffix": " · cached",

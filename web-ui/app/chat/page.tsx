@@ -24,6 +24,11 @@ import { CaptureDisclosure } from '../_components/chat/CaptureDisclosure';
 import { ConfirmDialog } from '../_components/ConfirmDialog';
 import { DelegatedAnswerCard } from '../_components/chat/DelegatedAnswerCard';
 import { NudgeCard, parseNudgeBlock } from '../_components/chat/NudgeCard';
+import {
+  McpAuthRequiredCard,
+  parseMcpAuthRequired,
+  type ParsedMcpAuthRequired,
+} from '../_components/chat/McpAuthRequiredCard';
 import { PlanProgressCard } from '../_components/chat/PlanProgressCard';
 import { RecalledContextCard } from '../_components/chat/RecalledContextCard';
 import { PrivacyReceiptCard } from '../_components/chat/PrivacyReceiptCard';
@@ -887,6 +892,7 @@ function MessageRow({
             {(message.tools?.length ?? 0) > 0 && (
               <ToolTrace tools={message.tools ?? []} />
             )}
+            <McpAuthRequiredList tools={message.tools ?? []} />
             {(message.nudges?.length ?? 0) > 0 && (
               <NudgeList nudges={message.nudges ?? []} />
             )}
@@ -1210,7 +1216,11 @@ function PersonaBadge({
 
 function ToolOutputWithNudge({ output }: { output: string }): React.ReactElement {
   const t = useTranslations('chat');
-  const { cleaned } = parseNudgeBlock(output);
+  // Strip both the inline <nudge> block and the <mcp-auth-required> block so the
+  // raw <pre> stays clean; the auth block renders as an actionable card at the
+  // message level (McpAuthRequiredList), mirroring how nudges surface.
+  const { cleaned: noNudge } = parseNudgeBlock(output);
+  const { cleaned } = parseMcpAuthRequired(noNudge);
   return (
     <>
       <div className="mt-2 text-[color:var(--fg-muted)]">{t('outputLabel')}</div>
@@ -1254,6 +1264,33 @@ function NudgeList({ nudges }: { nudges: NudgeEvent[] }): React.ReactElement {
             console.warn(`[nudge] suppress requested for ${id}`);
           }}
         />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Epic #459 W9 — collects any `<mcp-auth-required>` blocks emitted by failed
+ * MCP tool calls in this turn and renders a Connect card per distinct server.
+ * Scans the turn's tool outputs client-side (no extra stream event needed);
+ * deduped by serverId so repeated failures don't stack duplicate cards.
+ */
+function McpAuthRequiredList({ tools }: { tools: ToolEvent[] }): React.ReactElement | null {
+  const seen = new Set<string>();
+  const auths: ParsedMcpAuthRequired[] = [];
+  for (const tool of tools) {
+    if (tool.output === undefined) continue;
+    const { auth } = parseMcpAuthRequired(tool.output);
+    if (auth && !seen.has(auth.serverId)) {
+      seen.add(auth.serverId);
+      auths.push(auth);
+    }
+  }
+  if (auths.length === 0) return null;
+  return (
+    <div className="mt-2 space-y-2">
+      {auths.map((auth) => (
+        <McpAuthRequiredCard key={auth.serverId} auth={auth} />
       ))}
     </div>
   );

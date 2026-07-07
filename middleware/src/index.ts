@@ -292,6 +292,16 @@ interface Microsoft365AccessorShim {
   readonly app: unknown;
 }
 
+/** Escape a value for safe inclusion inside a double-quoted XML/HTML attribute
+ *  (used for the <mcp-auth-required> chat block, #459 W9). */
+function xmlAttr(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 async function main(): Promise<void> {
   // Install process-level guards FIRST — before any plugin code runs. Keeps
   // the host alive when a plugin's detached async (timers, resolved promises,
@@ -1675,13 +1685,19 @@ async function main(): Promise<void> {
                   const desc = await mcpOAuthService.describeAuth(server);
                   if (!desc.protected) return null;
                   const userKey = turnContext.current()?.mcpUserKey ?? mcpOAuthUserKey;
+                  // Machine block the chat parses into an in-line "Connect" card
+                  // + modal (web-ui McpAuthRequiredCard). Mirrors the <nudge>
+                  // block contract: human text stays readable for the model and
+                  // the raw <pre>; the block is stripped from the UI output.
+                  const authBlock = (needsClient: boolean): string =>
+                    `\n<mcp-auth-required serverId="${xmlAttr(server.id)}" server="${xmlAttr(server.name)}"${desc.issuerHost ? ` host="${xmlAttr(desc.issuerHost)}"` : ''} needsClient="${needsClient ? 'true' : 'false'}"></mcp-auth-required>`;
                   try {
                     const { authorizeUrl } = await mcpOAuthService.beginAuthorization(server, userKey);
-                    return `🔒 The MCP server "${server.name}" needs authorization before it can be used. Ask the user to authorize it (this opens the provider's login), then retry: ${authorizeUrl}`;
+                    return `🔒 The MCP server "${server.name}" needs authorization before it can be used. Ask the user to click Connect (this opens the provider's login), then retry: ${authorizeUrl}${authBlock(false)}`;
                   } catch {
                     // Delegating server with no registered client yet — point
                     // the user at the one-time setup instead of a raw error.
-                    return `🔒 The MCP server "${server.name}" needs authorization, but it isn't set up yet. An operator must connect it in the MCP Control Center (Admin → MCP Control Center → Servers → "${server.name}" → Connect)${desc.issuerHost ? ` — it delegates OAuth to ${desc.issuerHost}, which needs a one-time app registration` : ''}.`;
+                    return `🔒 The MCP server "${server.name}" needs authorization, but it isn't set up yet. Click Connect to register it${desc.issuerHost ? ` — it delegates OAuth to ${desc.issuerHost}, which needs a one-time app registration` : ''}.${authBlock(true)}`;
                   }
                 },
               },

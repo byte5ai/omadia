@@ -763,6 +763,14 @@
       "fallback": "Persona-Klassifikator nicht verfügbar — Standard-Identität"
     },
     "subAgentTrace": "sub-agent trace",
+    "mcpAuth": {
+      "kicker": "Autorisierung erforderlich",
+      "body": "{server} muss verbunden werden, bevor es genutzt werden kann.",
+      "connect": "{server} verbinden",
+      "modalTitle": "{server} verbinden",
+      "modalBody": "Autorisiere {server}, damit diese und künftige Anfragen es nutzen können.",
+      "close": "Schließen"
+    },
     "iterationLabel": "── iteration {n}",
     "attachmentTitle": "{kind}{cachedSuffix} — klick für Originalgröße",
     "attachmentCachedSuffix": " · cached",
