@@ -26,6 +26,7 @@ import {
   getDefaultEnvironment,
 } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import type {
@@ -464,7 +465,7 @@ export class McpManager {
     return { ...cfg, headers: { ...(cfg.headers ?? {}), ...extra } };
   }
 
-  private makeTransport(cfg: McpServerConfig, token: string | null = null): any {
+  private makeTransport(cfg: McpServerConfig, token: string | null = null): Transport {
     if (!cfg.endpoint) {
       throw new Error(`MCP server "${cfg.name}" has no endpoint configured`);
     }
