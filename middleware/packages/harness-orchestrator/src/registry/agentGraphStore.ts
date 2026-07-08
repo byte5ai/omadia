@@ -1915,6 +1915,7 @@ export class AgentGraphStore {
           input.license ?? null,
           input.author ?? null,
           input.sourceUrl ?? null,
+          input.configSchema ? JSON.stringify(input.configSchema) : null,
         ],
       );
       return mapMcpServer(rows[0]!);
