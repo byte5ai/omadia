@@ -11,7 +11,7 @@
  * (agent()/parallel()/pipeline()/log() are provided by that runtime). Run it with:
  *
  *   Workflow({ scriptPath: "scripts/issue-triage.workflow.mjs", args: {
- *     repo:     "byte5ai/omadia",              // owner/name
+ *     repo:     "<owner>/<name>",              // any GitHub repo, e.g. "octo/hello"
  *     repoPath: "/abs/path/to/checkout",       // read-only checkout of the branch to triage against
  *     headSha:  "<short-sha>",                 // the commit the checkout is on (for comment footers)
  *     issues:   [ { number, title, labels: [], comments: <int>, updated: "YYYY-MM-DD" }, ... ]
