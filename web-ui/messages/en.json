@@ -2755,7 +2755,7 @@
       "revokeBody": "Revoke \"{tool}\" from {holder}?",
       "revokeConfirm": "Revoke grant",
       "kind": {
-        "agent": "Agent",
+        "agent": "Orchestrator",
         "subagent": "Sub-agent",
         "skill": "Skill",
         "plugin": "Plugin"
@@ -2777,7 +2777,7 @@
       "failed": "failed",
       "loadMore": "Load more",
       "kind": {
-        "agent": "Agent",
+        "agent": "Orchestrator",
         "subagent": "Sub-agent",
         "skill": "Skill",
         "plugin": "Plugin",

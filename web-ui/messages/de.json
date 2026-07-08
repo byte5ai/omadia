@@ -2755,7 +2755,7 @@
       "revokeBody": "\"{tool}\" von {holder} entziehen?",
       "revokeConfirm": "Grant entziehen",
       "kind": {
-        "agent": "Agent",
+        "agent": "Orchestrator",
         "subagent": "Sub-Agent",
         "skill": "Skill",
         "plugin": "Plugin"
@@ -2777,7 +2777,7 @@
       "failed": "fehlgeschlagen",
       "loadMore": "Mehr laden",
       "kind": {
-        "agent": "Agent",
+        "agent": "Orchestrator",
         "subagent": "Sub-Agent",
         "skill": "Skill",
         "plugin": "Plugin",
