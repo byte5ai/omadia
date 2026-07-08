@@ -1262,6 +1262,15 @@ function GrantsPane({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [confirmRevoke, setConfirmRevoke] = useState<McpGrantMatrixRow | null>(null);
+  const [openGroups, setOpenGroups] = useState<Set<string>>(new Set());
+  const toggleGroup = useCallback((key: string) => {
+    setOpenGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -1414,12 +1423,26 @@ function GrantsPane({
       ) : null}
       {rows && rows.length > 0 ? (
         <div className="flex flex-col gap-2">
-          {groupGrants(rows).map((g) => (
+          {groupGrants(rows).map((g) => {
+            const open = openGroups.has(g.key);
+            return (
             <div
               key={g.key}
-              className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-3"
+              className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40"
             >
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <button
+                type="button"
+                onClick={() => toggleGroup(g.key)}
+                aria-expanded={open}
+                className="flex w-full flex-wrap items-center gap-x-2 gap-y-1 rounded-lg px-3 py-2.5 text-left hover:bg-[color:var(--accent)]/6"
+              >
+                <span
+                  aria-hidden
+                  className="text-[color:var(--fg-muted)] transition-transform"
+                  style={{ transform: open ? 'rotate(90deg)' : 'none' }}
+                >
+                  ▸
+                </span>
                 <span className="rounded-full border border-[color:var(--border)] px-1.5 py-0.5 text-[10px] uppercase tracking-[0.08em] text-[color:var(--fg-muted)]">
                   {t(`grants.kind.${g.holderKind}`)}
                 </span>
@@ -1434,8 +1457,9 @@ function GrantsPane({
                 <span className="ml-auto text-[11px] text-[color:var(--fg-muted)]">
                   {t('grants.toolCount', { count: g.tools.length })}
                 </span>
-              </div>
-              <div className="mt-2 flex flex-wrap gap-1.5">
+              </button>
+              {open ? (
+              <div className="flex flex-wrap gap-1.5 px-3 pb-3">
                 {g.tools.map((r) => {
                   const revocable = r.holderKind === 'agent' || r.holderKind === 'subagent';
                   const dot = r.blocked
@@ -1476,13 +1500,15 @@ function GrantsPane({
                   );
                 })}
               </div>
-              {g.holderKind === 'skill' || g.holderKind === 'plugin' ? (
-                <div className="mt-1.5 text-[10px] text-[color:var(--fg-muted)]">
+              ) : null}
+              {open && (g.holderKind === 'skill' || g.holderKind === 'plugin') ? (
+                <div className="px-3 pb-3 text-[10px] text-[color:var(--fg-muted)]">
                   {t(`grants.manageHint.${g.holderKind}`)}
                 </div>
               ) : null}
             </div>
-          ))}
+            );
+          })}
         </div>
       ) : null}
       <ConfirmDialog
