@@ -5,13 +5,14 @@ import {
   ArrowUpRight,
   Boxes,
   MessageSquare,
+  Plug,
   RefreshCw,
   Settings,
   Store,
 } from 'lucide-react';
 
 import { getProviders, listStorePlugins } from './_lib/api';
-import { listOperatorAgents } from './_lib/agents';
+import { getMcpServerSummary, listOperatorAgents } from './_lib/agents';
 import { redirectIfUnauthorized } from './_lib/authRedirect';
 import { cn } from './_lib/cn';
 import { DashboardOnboarding } from './_components/dashboard/DashboardOnboarding';
@@ -39,20 +40,22 @@ type Tone = 'ok' | 'warn' | 'down' | 'neutral';
 export default async function DashboardPage(): Promise<React.ReactElement> {
   const t = await getTranslations('dashboard');
 
-  const [provP, plugP, agentP] = await Promise.allSettled([
+  const [provP, plugP, agentP, mcpP] = await Promise.allSettled([
     getProviders(),
     listStorePlugins(),
     listOperatorAgents(),
+    getMcpServerSummary(),
   ]);
 
   // 401 anywhere → re-login (redirect throws and escapes before render).
-  for (const r of [provP, plugP, agentP]) {
+  for (const r of [provP, plugP, agentP, mcpP]) {
     if (r.status === 'rejected') await redirectIfUnauthorized(r.reason);
   }
 
   const providers = provP.status === 'fulfilled' ? provP.value : null;
   const plugins = plugP.status === 'fulfilled' ? plugP.value : null;
   const agents = agentP.status === 'fulfilled' ? agentP.value : null;
+  const mcp = mcpP.status === 'fulfilled' ? mcpP.value : null;
 
   // Middleware is "connected" if any call came back at all — a transport
   // failure rejects every call with the same network error.
@@ -123,12 +126,41 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
       href: '/store',
       manage: t('health.manage'),
     },
+    {
+      title: t('health.mcp.title'),
+      tone: !middlewareOk
+        ? 'down'
+        : mcp && mcp.total > 0
+          ? mcp.enabled > 0
+            ? 'ok'
+            : 'warn'
+          : 'neutral',
+      status: mcp && mcp.enabled > 0 ? t('health.ok') : t('health.warn'),
+      detail:
+        mcp && mcp.total > 0
+          ? mcp.needsDiscovery > 0
+            ? t('health.mcp.summaryPending', {
+                enabled: mcp.enabled,
+                total: mcp.total,
+                tools: mcp.tools,
+                pending: mcp.needsDiscovery,
+              })
+            : t('health.mcp.summary', {
+                enabled: mcp.enabled,
+                total: mcp.total,
+                tools: mcp.tools,
+              })
+          : t('health.mcp.none'),
+      href: '/admin/mcp',
+      manage: t('health.manage'),
+    },
   ];
 
   const quick: QuickCardProps[] = [
     { href: '/chat', icon: <MessageSquare className="size-5" aria-hidden />, title: t('quick.chat.title'), description: t('quick.chat.description') },
     { href: '/store', icon: <Store className="size-5" aria-hidden />, title: t('quick.hub.title'), description: t('quick.hub.description') },
     { href: '/operator/agents', icon: <Boxes className="size-5" aria-hidden />, title: t('quick.orchestrators.title'), description: t('quick.orchestrators.description') },
+    { href: '/admin/mcp', icon: <Plug className="size-5" aria-hidden />, title: t('quick.mcp.title'), description: t('quick.mcp.description') },
     { href: '/routines', icon: <RefreshCw className="size-5" aria-hidden />, title: t('quick.routines.title'), description: t('quick.routines.description') },
     { href: '/admin', icon: <Settings className="size-5" aria-hidden />, title: t('quick.admin.title'), description: t('quick.admin.description') },
   ];

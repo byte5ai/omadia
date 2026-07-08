@@ -30,6 +30,12 @@
         "title": "Plugins",
         "installed": "{count, plural, one {# plugin installed} other {# plugins installed}}",
         "none": "No plugins installed yet"
+      },
+      "mcp": {
+        "title": "MCP servers",
+        "summary": "{enabled} of {total} connected · {tools} tools",
+        "summaryPending": "{enabled} of {total} connected · {tools} tools · {pending} need Discover",
+        "none": "No MCP servers yet"
       }
     },
     "quick": {
@@ -46,6 +52,10 @@
       "orchestrators": {
         "title": "Orchestrators",
         "description": "Configure agents, bindings, and channels."
+      },
+      "mcp": {
+        "title": "MCP servers",
+        "description": "Connect external tools and assign them to orchestrators."
       },
       "routines": {
         "title": "Routines",
