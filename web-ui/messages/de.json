@@ -30,6 +30,12 @@
         "title": "Plugins",
         "installed": "{count, plural, one {# Plugin installiert} other {# Plugins installiert}}",
         "none": "Noch keine Plugins installiert"
+      },
+      "mcp": {
+        "title": "MCP-Server",
+        "summary": "{enabled} von {total} verbunden · {tools} Tools",
+        "summaryPending": "{enabled} von {total} verbunden · {tools} Tools · {pending} brauchen Discover",
+        "none": "Noch keine MCP-Server"
       }
     },
     "quick": {
@@ -46,6 +52,10 @@
       "orchestrators": {
         "title": "Orchestratoren",
         "description": "Agenten, Bindings und Channels konfigurieren."
+      },
+      "mcp": {
+        "title": "MCP-Server",
+        "description": "Externe Tools verbinden und Orchestratoren zuweisen."
       },
       "routines": {
         "title": "Routinen",
@@ -203,6 +213,10 @@
           "title": "Registries",
           "description": "Store-Quellen verwalten, inklusive privater Registries mit Token; Änderungen wirken ohne Neustart."
         },
+        "mcp": {
+          "title": "MCP Control Center",
+          "description": "MCP-Server, erkannte Tools mit Scan-Verdicts, Grants und das Call-Audit-Log an einem Ort."
+        },
         "auth": {
           "title": "Authentifizierungs-Provider",
           "description": "Lokale Anmeldung und Entra-ID aktivieren oder deaktivieren; Änderungen wirken ohne Neustart."
@@ -283,6 +297,9 @@
         "close": "Schließen",
         "save": "Speichern",
         "discover": "Tools erkennen",
+        "ackTool": "Risiko bestätigen",
+        "ackToolConfirm": "Wirklich bestätigen",
+        "ackDone": "Risiko bestätigt, Tool kann zugewiesen werden",
         "readOnly": "Dieser Node hat keine editierbaren Eigenschaften.",
         "name": "Name",
         "model": "Modell",
@@ -756,6 +773,14 @@
       "fallback": "Persona-Klassifikator nicht verfügbar — Standard-Identität"
     },
     "subAgentTrace": "sub-agent trace",
+    "mcpAuth": {
+      "kicker": "Autorisierung erforderlich",
+      "body": "{server} muss verbunden werden, bevor es genutzt werden kann.",
+      "connect": "{server} verbinden",
+      "modalTitle": "{server} verbinden",
+      "modalBody": "Autorisiere {server}, damit diese und künftige Anfragen es nutzen können.",
+      "close": "Schließen"
+    },
     "iterationLabel": "── iteration {n}",
     "attachmentTitle": "{kind}{cachedSuffix} — klick für Originalgröße",
     "attachmentCachedSuffix": " · cached",
@@ -900,7 +925,9 @@
     "explainerBypassed": "Der Operator hat für mindestens ein Plugin den Privacy-Mode auf »Bypass« gestellt — dessen Tool-Ergebnisse erreichten das Modell unmaskiert. Eingesetzt für vertrauenswürdige interne Quellen, deren Inhalte der Privacy Shield strukturell nicht sinnvoll digestieren kann."
   },
   "directLine": {
-    "consultedLabel": "🔎 Konsultiert:",
+    "consultedLabel": "🔎 Konsultiert",
+    "consultedCount": "· {count, plural, one {# Tool} other {# Tools}}",
+    "viewTrace": "Trace ▾",
     "stepsCount": "{count, plural, one {# Schritt} other {# Schritte}}",
     "delegatedAnswerFrom": "Direkte Antwort von {label}",
     "delegatedAnswerCaption": "Wortgetreu übermittelt — der Orchestrator kann diese Antwort nicht bearbeiten oder entfernen."
@@ -987,6 +1014,16 @@
       "forkAndSave": "Als bearbeitbare Kopie speichern",
       "forkNotice": "Dies ist ein importierter Skill. Beim Speichern wird eine bearbeitbare Kopie erstellt; das Original bleibt als Quelle erhalten.",
       "export": "Exportieren"
+    },
+    "capabilities": {
+      "heading": "Benötigte Tools",
+      "boundTo": "Gebunden an {server} · {tool}",
+      "unbind": "Lösen",
+      "pickServer": "Server wählen…",
+      "pickTool": "Tool wählen…",
+      "bind": "Binden",
+      "bindConfirm": "Wirklich binden",
+      "bindWarning": "Wenn dieser Skill aktiv ist, auch wenn er automatisch für einen Turn ausgewählt wird, darf er Server \"{server}\" im Rahmen dieser Bindung nutzen."
     },
     "verdict": {
       "noSignals": "Keine bekannten Risikosignale",
@@ -2584,6 +2621,178 @@
       "notInWhitelist": "Dieser Provider ist nicht in der AUTH_PROVIDERS-Whitelist erlaubt.",
       "enableFailed": "Fehler {status}: Aktivieren fehlgeschlagen.",
       "disableFailed": "Fehler {status}: Deaktivieren fehlgeschlagen."
+    }
+  },
+  "adminMcp": {
+    "title": "MCP Control Center",
+    "intro": "MCP-Server verwalten, Scan-Verdicts erkannter Tools prüfen, Tools an Orchestratoren, Skills und Plugins zuweisen und das Call-Audit-Log verfolgen — alles an einem Ort.",
+    "loading": "Lädt…",
+    "cancel": "Abbrechen",
+    "tabs": {
+      "servers": "Server",
+      "marketplace": "Marketplace",
+      "grants": "Grants",
+      "plugins": "Plugin-Zugriff",
+      "audit": "Audit-Log"
+    },
+    "plugins": {
+      "intro": "Plugins, die im Manifest MCP-Zugriff deklarieren. Weise jedem gezielt die Server zu, die es erreichen darf — nichts ist implizit. Die Per-Tool-Sicherheit greift weiterhin: ein ungescanntes oder hochriskantes Tool wird zur Aufrufzeit abgelehnt.",
+      "empty": "Noch kein installiertes Plugin deklariert MCP-Zugriff.",
+      "noServers": "Noch keine MCP-Server registriert — lege zuerst einen auf dem Server-Tab an.",
+      "hint": "Autor schlägt vor: {hint}"
+    },
+    "servers": {
+      "name": "Name",
+      "transport": "Transport",
+      "endpoint": "Endpoint",
+      "status": "Status",
+      "tools": "Tools",
+      "worstVerdict": "Schlechtestes Verdict",
+      "actions": "Aktionen",
+      "add": "Server hinzufügen",
+      "empty": "Noch keine MCP-Server registriert.",
+      "noTools": "Noch keine Tools erkannt. Zuerst Discover ausführen.",
+      "discoveredTools": "Erkannte Tools ({count})",
+      "discover": "Discover",
+      "assignTools": "Tools zuweisen →",
+      "assignPrompt": "{count} Tools erkannt — weise sie einem Orchestrator zu, um sie im Chat nutzbar zu machen.",
+      "enable": "Aktivieren",
+      "disable": "Deaktivieren",
+      "needsAuth": "\"{name}\" benötigt eine Autorisierung, bevor die Tools gefunden werden können. Verbinde ihn unten (Login über {host}) und starte dann erneut Discover.",
+      "endpointPlaceholder": "\"{name}\" kann nicht gefunden werden: der Endpoint enthält noch einen nicht konfigurierten Platzhalter ({placeholders}). Lege den Server mit dem echten Wert neu an (z. B. deine Microsoft-365-Tenant-ID).",
+      "configRequired": "\"{name}\" braucht erst seine erforderlichen Einstellungen, bevor die Tools gefunden werden können ({fields}). Trage sie unten im Konfigurationsformular ein, speichere und starte dann erneut Discover.",
+      "privacy": {
+        "masked": "Maskiert",
+        "bypassed": "Unmaskiert",
+        "maskedHint": "Privacy Shield maskiert PII in den Tool-Ergebnissen dieses Servers. Klicken, um Ergebnisse unmaskiert durchzureichen.",
+        "bypassedHint": "Die Tool-Ergebnisse dieses Servers werden UNMASKIERT durchgereicht (PII sichtbar). Klicken, um die Maskierung wieder zu aktivieren."
+      },
+      "kg": {
+        "on": "KG an",
+        "off": "KG aus",
+        "onHint": "Erfolgreiche Tool-Ergebnisse dieses Servers werden in deinen Knowledge Graph geschrieben (recallbar, nur für dich sichtbar). Rohwerte nur, wenn der Server zusätzlich unmaskiert ist; sonst ein wertfreier Digest. Klicken, um die Aufnahme zu stoppen.",
+        "offHint": "Tool-Ergebnisse dieses Servers werden NICHT in den Knowledge Graph geschrieben. Klicken, um sie als recallbare, nutzer-eigene Observations aufzunehmen."
+      },
+      "config": {
+        "title": "Konfiguration",
+        "intro": "Trage die Werte für die Platzhalter dieses Servers ein. Nicht-geheime Werte werden in der Datenbank gespeichert; als geheim markierte Felder landen verschlüsselt in der Vault. Die Werte werden zur Connect-Zeit in Endpoint/Header eingesetzt.",
+        "secret": "geheim",
+        "secretStored": "•••••••• (gespeichert — leer lassen zum Behalten)",
+        "secretPlaceholder": "Geheimwert eingeben",
+        "save": "Konfiguration speichern",
+        "saved": "Gespeichert"
+      },
+      "delete": "Löschen",
+      "deleteTitle": "MCP-Server löschen",
+      "deleteBody": "Server \"{name}\" mit allen Grants löschen? Agents verlieren diese Tools sofort.",
+      "deleteConfirm": "Server löschen",
+      "ack": "Risiko bestätigen",
+      "ackConfirm": "Wirklich bestätigen",
+      "acked": "bestätigt",
+      "marketplaceSource": "Marketplace",
+      "sourceLink": "Quelle",
+      "rescanAll": "Alle neu scannen",
+      "flowHint": "So funktioniert es: Server anlegen (oder im Marketplace-Tab importieren), Discover ausführen um die Tools zu scannen, hochriskante Verdicts bestätigen — dann die Tools einem Orchestrator im Grants-Tab, einem Plugin im Plugin-Zugriff-Tab oder einem Skill im Skill-Editor zuweisen. Einen Server nur zu registrieren macht ihn noch nicht im Chat nutzbar — erst der Grant tut das.",
+      "state": {
+        "enabled": "aktiv",
+        "disabled": "deaktiviert"
+      }
+    },
+    "sandbox": {
+      "toggle": "Testen",
+      "run": "Testaufruf ausführen",
+      "noParams": "Dieses Tool deklariert keine Parameter.",
+      "ok": "ok",
+      "failed": "fehlgeschlagen"
+    },
+    "auth": {
+      "connected": "🔓 Autorisiert",
+      "notConnected": "🔒 Nicht autorisiert",
+      "connect": "Verbinden",
+      "disconnect": "Trennen",
+      "hintBrokered": "Dieser Server bietet automatische Client-Registrierung — einfach verbinden und einloggen, meist ohne Setup. Falls die Registrierung abgelehnt wird, wirst du gebeten, einmalig eine App zu registrieren.",
+      "hintDelegated": "Dieser Server brokert OAuth nicht — er delegiert direkt an {host}, deshalb ist eine einmalige App-Registrierung nötig. Gut gebaute MCP-Server brauchen das nicht.",
+      "needsClientWhy": "Dieser Server delegiert OAuth direkt an {host} und bietet keine automatische Client-Registrierung. Registriere einmalig eine OAuth-App bei {host} und trage die Zugangsdaten ein — dann verbinden.",
+      "redirectUri": "Diese Redirect-URI registrieren",
+      "clientId": "Client-ID",
+      "clientSecret": "Client-Secret (falls nötig)",
+      "saveClientAndConnect": "Speichern und verbinden",
+      "readyToLogin": "Client gespeichert. Melde dich jetzt bei {host} an, um den Zugriff zu autorisieren.",
+      "continueLogin": "Weiter zum Login bei {host} ↗",
+      "afterLoginHint": "Öffnet in einem neuen Tab. Nach der Bestätigung hierher zurückkehren — der Status aktualisiert sich automatisch.",
+      "checkStatus": "Status prüfen"
+    },
+    "marketplace": {
+      "registry": "Registry",
+      "search": "Suche",
+      "browse": "Katalog durchsuchen",
+      "hint": "Registry wählen und Katalog durchsuchen. Verbundene Server starten deaktiviert: erst Discover ausführen, Verdicts prüfen, dann aktivieren.",
+      "noResults": "Keine passenden Katalog-Einträge.",
+      "connect": "Verbinden",
+      "connected": "Server \"{name}\" angelegt (deaktiviert). Auf dem Server-Tab Discover ausführen, Verdicts prüfen, dann aktivieren.",
+      "unlicensed": "ohne Lizenz, vor Aktivierung prüfen",
+      "browseOnly": "nur Ansicht",
+      "browseOnlyHint": "Dieser Registry-Eintrag hat keinen verbindbaren Endpoint — er verweist nur auf die Quelle (ein selbst gehosteter Server). Hoste ihn selbst und füge ihn dann manuell über „Server hinzufügen\" hinzu.",
+      "authHintRemote": "🔒 braucht evtl. Autorisierung",
+      "authHintLocal": "lokal (Env-Zugangsdaten)",
+      "addRegistry": "Registry hinzufügen",
+      "addRegistryConfirm": "Registry hinzufügen",
+      "removeRegistry": "Registry entfernen",
+      "registryName": "Name",
+      "registryUrl": "URL",
+      "registryToken": "Bearer-Token (optional)"
+    },
+    "grants": {
+      "grantHeading": "Tools einem Orchestrator zuweisen",
+      "orchestrator": "Orchestrator",
+      "pickServer": "Server wählen…",
+      "grantAll": "Alle Tools zuweisen",
+      "grantHint": "Orchestrator und Server wählen, dann die Tools zuweisen, die er nutzen darf. Das ist der Schritt, der einen registrierten Server im Chat nutzbar macht.",
+      "noToolsDiscover": "Dieser Server hat noch keine erkannten Tools — führe zuerst auf dem Server-Tab Discover aus.",
+      "toolCount": "{count} Tools",
+      "holder": "Vergeben an",
+      "server": "Server",
+      "tool": "Tool",
+      "verdict": "Verdict",
+      "state": "Zustand",
+      "actions": "Aktionen",
+      "empty": "Es existieren noch keine MCP-Tool-Grants — oben einen zuweisen.",
+      "blocked": "durch Policy blockiert",
+      "unscanned": "nicht gescannt, am Dispatch blockiert",
+      "active": "aktiv",
+      "revoke": "Entziehen",
+      "revokeTitle": "Grant entziehen",
+      "revokeBody": "\"{tool}\" von {holder} entziehen?",
+      "revokeConfirm": "Grant entziehen",
+      "kind": {
+        "agent": "Orchestrator",
+        "subagent": "Sub-Agent",
+        "skill": "Skill",
+        "plugin": "Plugin"
+      },
+      "manageHint": {
+        "skill": "im Skill-Editor verwalten",
+        "plugin": "über Plugin-Grants verwalten"
+      }
+    },
+    "audit": {
+      "time": "Zeit",
+      "server": "Server",
+      "tool": "Tool",
+      "caller": "Aufrufer",
+      "outcome": "Ergebnis",
+      "duration": "Dauer",
+      "empty": "Noch keine MCP-Aufrufe protokolliert.",
+      "ok": "ok",
+      "failed": "fehlgeschlagen",
+      "loadMore": "Mehr laden",
+      "kind": {
+        "agent": "Orchestrator",
+        "subagent": "Sub-Agent",
+        "skill": "Skill",
+        "plugin": "Plugin",
+        "unattributed": "Nicht zugeordnet"
+      }
     }
   },
   "adminRegistries": {

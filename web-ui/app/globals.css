@@ -775,7 +775,7 @@ summary:focus-visible,
 table:not(.md-view table) thead th {
   background: linear-gradient(180deg, var(--bg-surface-sunken-top) 0%, var(--bg-surface-sunken-btm) 100%);
 }
-table:not(.md-view table) tbody tr:hover {
+table:not(.md-view table) tbody tr:not([data-detail-row]):hover {
   background: var(--accent-subtle);
 }
 th[aria-sort='ascending'],

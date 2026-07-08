@@ -4,6 +4,7 @@ import { useTranslations } from 'next-intl';
 import { useEffect, useState } from 'react';
 
 import {
+  ackMcpToolVerdict,
   addPersonaSkill,
   discoverMcpTools,
   listSkills,
@@ -11,6 +12,7 @@ import {
   patchSubAgent,
   removePersonaSkill,
   type AgentNode,
+  type McpDiscoveredTool,
   type McpServerNode,
   type ModelRoutingConfig,
   type ModelRoutingMode,
@@ -23,6 +25,7 @@ import { listBuilderModels } from '../../../_lib/api';
 import type { BuilderModelInfo } from '../../../_lib/builderTypes';
 import { Button } from '@/app/_components/ui/Button';
 import { SkillEditor } from '../../../_components/admin/SkillEditor';
+import { SkillVerdictBadge } from '../../../_components/admin/SkillVerdictBadge';
 import type { BuilderNodeData } from '../nodes/types';
 import { Field, inputCls, SaveButton } from './InspectorControls';
 
@@ -579,6 +582,7 @@ function McpEditor({
   // selected server changes (id mismatch), the override is ignored and we
   // fall back to the prop — no setState-in-effect needed.
   const [override, setOverride] = useState<McpServerNode | null>(null);
+  const [confirmAckTool, setConfirmAckTool] = useState<string | null>(null);
   const live = override && override.id === server.id ? override : server;
   const { pending, error, run } = useSaver();
 
@@ -605,8 +609,99 @@ function McpEditor({
         {live.discoveredTools.length} {t('nodes.tools')}
         {live.lastDiscoveredAt ? ` · ${live.lastDiscoveredAt}` : ''}
       </div>
+      {live.discoveredTools.length > 0 ? (
+        <div className="flex flex-col gap-1.5">
+          {live.discoveredTools.map((tool) => (
+            <McpToolRow
+              key={tool.name}
+              serverId={server.id}
+              tool={tool}
+              armed={confirmAckTool === tool.name}
+              onArm={() => setConfirmAckTool(tool.name)}
+              onAcked={(name) => {
+                setConfirmAckTool(null);
+                setOverride({
+                  ...live,
+                  discoveredTools: live.discoveredTools.map((dt) =>
+                    dt.name === name && dt.verdict
+                      ? { ...dt, verdict: { ...dt.verdict, acked: true, ackStale: false } }
+                      : dt,
+                  ),
+                });
+                onSaved();
+              }}
+            />
+          ))}
+        </div>
+      ) : null}
       <ErrLine error={error} />
       <SaveButton onClick={() => void discover()} pending={pending} label={t('inspector.discover')} />
+    </div>
+  );
+}
+
+/** One discovered tool with its scan verdict (issue #454). Acknowledging a
+ *  high_risk verdict is a deliberate two-click action (arm, then confirm),
+ *  mirroring the #436 persona attach gate. */
+function McpToolRow({
+  serverId,
+  tool,
+  armed,
+  onArm,
+  onAcked,
+}: {
+  serverId: string;
+  tool: McpDiscoveredTool;
+  armed: boolean;
+  onArm: () => void;
+  onAcked: (toolName: string) => void;
+}): React.ReactElement {
+  const t = useTranslations('admin.builder');
+  const { pending, error, run } = useSaver();
+  const verdict = tool.verdict;
+  const needsAck =
+    verdict?.severity === 'high_risk' && (!verdict.acked || verdict.ackStale);
+
+  async function ack(): Promise<void> {
+    await run(async () => {
+      await ackMcpToolVerdict(serverId, tool.name);
+      onAcked(tool.name);
+    });
+  }
+
+  return (
+    <div className="flex flex-col gap-1 rounded-md border border-[color:var(--border)] px-2 py-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="truncate text-xs" title={tool.description ?? tool.name}>
+          {tool.name}
+        </span>
+        <SkillVerdictBadge severity={verdict?.severity ?? 'not_yet_scanned'} />
+      </div>
+      {verdict && verdict.riskCodes.length > 0 ? (
+        <div className="text-[10px] text-[color:var(--fg-muted)]">
+          {verdict.riskCodes.join(', ')}
+        </div>
+      ) : null}
+      {needsAck ? (
+        <Button
+          size="sm"
+          variant="danger"
+          busy={pending}
+          onClick={() => {
+            if (!armed) {
+              onArm();
+              return;
+            }
+            void ack();
+          }}
+        >
+          {armed ? t('inspector.ackToolConfirm') : t('inspector.ackTool')}
+        </Button>
+      ) : null}
+      {verdict?.acked && !verdict.ackStale ? (
+        <div className="text-[10px] text-[color:var(--fg-muted)]">{t('inspector.ackDone')}</div>
+      ) : null}
+      <ErrLine error={error} />
     </div>
   );
 }

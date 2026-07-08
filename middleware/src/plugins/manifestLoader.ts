@@ -630,6 +630,11 @@ function extractPermissions(
       : 4096;
   // Spec 004 — runtime credential write + flow toolkit gates.
   const secretsBlock = asRecord(permissions?.['secrets']);
+  // Epic #459 W5 (issue #458) — ctx.mcp gate. `permissions.mcp: true` or a
+  // block ({ servers_hint: [...] }) opts in; absent → no accessor.
+  const mcpBlock = permissions?.['mcp'];
+  const mcpDeclared =
+    mcpBlock === true || (typeof mcpBlock === 'object' && mcpBlock !== null);
   return {
     memory_reads: extractStringArray(memory?.['reads']),
     memory_writes: extractStringArray(memory?.['writes']),
@@ -653,6 +658,8 @@ function extractPermissions(
     flows: permissions?.['flows'] === true,
     // Spec 005 (US4 Conductor Surface) — plugin may emit declared domain events via ctx.events.emit.
     events_emit: asRecord(permissions?.['events'])?.['emit'] === true,
+    mcp: mcpDeclared,
+    mcp_servers_hint: extractStringArray(asRecord(mcpBlock)?.['servers_hint']),
     // Spec 005 — overridden to true in adaptManifestV1 when the manifest
     // declares >=1 valid oauth_providers descriptor.
     acquires_oauth: false,

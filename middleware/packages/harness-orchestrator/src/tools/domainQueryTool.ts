@@ -93,6 +93,16 @@ export interface DomainTool {
    * call that runs within its dispatch.
    */
   agentId?: string;
+  /**
+   * Epic #459 — for MCP-backed tools, the originating server's id. Stable (set
+   * once at hydration, never changes), it is the key the orchestrator uses to
+   * look up the LIVE per-server Privacy Shield bypass flag at dispatch time —
+   * so an operator toggle takes effect without a restart.
+   */
+  mcpServerId?: string;
+  /** Display name of the originating MCP server (epic #459) — used to label
+   *  KG observation nodes ingested from this tool. */
+  mcpServerName?: string;
   handle(input: unknown, observer?: AskObserver): Promise<string>;
   /**
    * Privacy-Shield v3 (stable-id tokenization, slice 1) — optional PII

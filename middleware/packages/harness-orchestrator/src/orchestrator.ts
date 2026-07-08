@@ -135,6 +135,8 @@ import type {
 import { streamMessageEvents } from './streaming.js';
 import { steeringBus } from './steeringBus.js';
 import { buildDateHeader, today, turnContext } from './turnContext.js';
+import { isMcpServerPrivacyBypassed } from './mcpPrivacyBypass.js';
+import { isMcpServerKgIngest } from './mcpKgIngest.js';
 
 // S+10-2 back-compat re-exports: kernel-side callers that still
 // `import { … } from './orchestrator.js'` (verifierService.ts, routes/chat.ts,
@@ -919,6 +921,25 @@ export function parseToolEmittedRoutineList(
     totals: { all: t['all'], active: t['active'], paused: t['paused'] },
     routines,
   };
+}
+
+/**
+ * Value-free structural digest of a raw MCP tool result for KG ingestion when
+ * the server is NOT privacy-bypassed: records the SHAPE (top-level fields /
+ * record count) without any PII/values, so recall knows the data exists and its
+ * shape without persisting sensitive contents. */
+function mcpObservationDigest(raw: string): string {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed)) return `${String(parsed.length)} records (values masked)`;
+    if (parsed !== null && typeof parsed === 'object') {
+      const keys = Object.keys(parsed as Record<string, unknown>);
+      return `Fields: ${keys.slice(0, 40).join(', ')} (values masked)`;
+    }
+  } catch {
+    /* not JSON — fall through to a byte-size note */
+  }
+  return `(${String(Buffer.byteLength(raw, 'utf8'))} bytes, values masked)`;
 }
 
 export class Orchestrator {
@@ -1837,6 +1858,9 @@ export class Orchestrator {
         // Per-orchestrator isolation: expose THIS Agent's identity to the
         // per-call MemoryAccessor (plugin/sub-agent memory namespacing).
         agentSlug: this.agentId,
+        // Human user id — dispatch-time consumers (MCP→KG ingestion) attribute
+        // per-user data with it.
+        ...(input.userId ? { userId: input.userId } : {}),
         ...(parent?.chatParticipants
           ? { chatParticipants: parent.chatParticipants }
           : {}),
@@ -2347,6 +2371,15 @@ export class Orchestrator {
     const picked = r.skillId
       ? this.personaSkills.find((p) => p.skillId === r.skillId)
       : undefined;
+    // Publish the routed persona on the live turn context (epic #459 W4
+    // codex fold): skill-bound MCP tools gate on it at dispatch, so a tool
+    // bound to skill X is unusable on turns where X is not the acting
+    // persona. Mutation (not re-run) so every scope of this turn sees it.
+    const activeTurn = turnContext.current();
+    if (activeTurn) {
+      if (picked?.skillId !== undefined) activeTurn.activePersonaSkillId = picked.skillId;
+      else delete activeTurn.activePersonaSkillId;
+    }
     return {
       skillBody: picked?.body,
       persona: {
@@ -3847,6 +3880,40 @@ export class Orchestrator {
       if (isInternExemptTool(name)) {
         return result;
       }
+      // MCP → Knowledge-Graph ingestion (epic #459, opt-in per server). Runs
+      // before masking so it sees the raw result; fire-and-forget so it never
+      // affects the tool call. Stores a value-free structural digest by default
+      // and the raw result only when the server is privacy-bypassed; always
+      // ACL-gated to the turn's user.
+      const kgTool = this.domainToolsByName.get(name);
+      if (
+        kgTool?.mcpServerId !== undefined &&
+        isMcpServerKgIngest(kgTool.mcpServerId) &&
+        this.knowledgeGraph !== undefined
+      ) {
+        const tc = turnContext.current();
+        const userId = tc?.userId;
+        if (userId) {
+          const bypassed = isMcpServerPrivacyBypassed(kgTool.mcpServerId);
+          const detail = bypassed
+            ? result.slice(0, 8000)
+            : mcpObservationDigest(result);
+          void this.knowledgeGraph
+            .createMemorableKnowledge({
+              kind: 'reference',
+              summary: `MCP ${kgTool.mcpServerName ?? kgTool.mcpServerId} · ${name}`.slice(0, 2000),
+              rationale: detail.slice(0, 10000),
+              createdBy: `auto:${userId}`,
+              involvedOmadiaUserIds: [userId],
+              aclOwners: [userId],
+              ...(tc?.agentSlug ? { originAgent: tc.agentSlug } : {}),
+              ...(tc?.turnId ? { derivedFromTurnIds: [tc.turnId] } : {}),
+            })
+            .catch(() => {
+              /* KG ingestion is best-effort — never break the tool call */
+            });
+        }
+      }
       // Slice 2.5 — Operator-owned per-plugin bypass. If the originating
       // plugin's `_privacy_mode` is `bypass` (or per-tool whitelist hits
       // this name), pass the raw result through unmasked AND record an
@@ -3986,6 +4053,22 @@ export class Orchestrator {
     const resolveBypass = (
       toolName: string,
     ): { pluginId: string } | undefined => {
+      // Path 0 — per-MCP-server operator bypass (epic #459). A server flagged
+      // `privacy_bypass` opts its tool results out of masking regardless of any
+      // owning-agent `_privacy_mode`. The flag is read LIVE by server id (a
+      // reload is additive and won't update a baked marker), then routed through
+      // resolveEffectivePrivacyMode so `OMADIA_PRIVACY_FORCE_GUARDED` can still
+      // clamp it back to guarded org-wide.
+      const bypassTool = domainTools.get(toolName);
+      if (isMcpServerPrivacyBypassed(bypassTool?.mcpServerId)) {
+        const effective = resolveEffectivePrivacyMode({
+          storedMode: 'bypass',
+          storedScopes: undefined,
+          toolName,
+          env: process.env,
+        });
+        if (effective === 'bypass') return { pluginId: bypassTool?.domain ?? toolName };
+      }
       // Path 1 — kernel tool with attached config closure.
       const reg = nativeTools.get(toolName);
       if (reg?.agentId !== undefined && reg.readConfig !== undefined) {

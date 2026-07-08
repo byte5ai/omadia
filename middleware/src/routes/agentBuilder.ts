@@ -18,6 +18,7 @@ import {
   type AgentGraphStore,
   type AgentRow,
   type ConfigStore,
+  type McpConfigField,
   type McpServerConfig,
   type McpServerRow,
   type OrchestratorRegistry,
@@ -27,9 +28,22 @@ import {
   type SubAgentRow,
   type ToolGrantRow,
 } from '@omadia/orchestrator';
-import { McpManager } from '@omadia/orchestrator';
+import { McpManager, mcpToolNameFromRef, type McpCallLogEntry } from '@omadia/orchestrator';
 import { Router, type Request, type Response } from 'express';
 
+import {
+  parseRequiresTools,
+  mcpRowToConfig,
+  substituteMcpConfig,
+  deriveMcpConfigSchema,
+} from '../agents/subAgentToolHydration.js';
+import { rescanAllMcpServers } from '../services/mcpRescan.js';
+import {
+  MCP_SEVERITIES_NEEDING_ACK,
+  refreshMcpGrantPolicy,
+} from '../services/mcpGrantPolicy.js';
+import { McpRegistryClient, McpRegistryError } from '../services/mcpRegistryClient.js';
+import { scanDiscoveredTools } from '../services/mcpToolGuard.js';
 import { scanSkillForRisks } from '../services/skillGuard.js';
 import { importSkillMarkdown } from '../services/skillImport.js';
 import { serializeSkillMarkdown } from '../services/skillLoader.js';
@@ -62,6 +76,47 @@ export interface AgentBuilderRouterOptions {
    *  Deliberately explicit-trigger only (see `/verdict/llm-scan` below), never
    *  auto-fired from a list/bulk path, to keep LLM cost a deliberate action. */
   readonly getLlmVerifier?: () => Promise<LlmVerifier | undefined>;
+  /** Epic #459 W6 (issue #463): audit observer + dispatch guard for the
+   *  router's own McpManager, so sandbox test-calls share the same
+   *  enforcement + audit trail as runtime dispatch. */
+  readonly mcpCallObserver?: (entry: McpCallLogEntry) => void;
+  readonly mcpCallGuard?: (serverId: string, toolName: string) => string | null;
+  /** Epic #459 W7 (issue #458 UX): lists installed plugins so the operator
+   *  grant surface can show which plugins declare `permissions.mcp` and their
+   *  manifest `servers_hint`. Returns the plugin id, display name, the mcp
+   *  permission flag, and the servers hint. */
+  readonly listMcpPluginCandidates?: () => ReadonlyArray<{
+    id: string;
+    name: string;
+    mcp: boolean;
+    serversHint: readonly string[];
+  }>;
+  /** Generic MCP OAuth service (epic #459 W9). Decoupled to a minimal surface
+   *  so the router stays testable; the concrete impl is McpOAuthService. */
+  readonly mcpOAuth?: {
+    readonly redirectUri: string;
+    isProtected(server: McpServerRow): Promise<boolean>;
+    issuerFor(server: McpServerRow): Promise<string | null>;
+    describeAuth(server: McpServerRow): Promise<{
+      protected: boolean;
+      issuer: string | null;
+      issuerHost: string | null;
+      brokered: boolean;
+    }>;
+    beginAuthorization(server: McpServerRow, userKey: string): Promise<{ authorizeUrl: string }>;
+    completeAuthorization(state: string, code: string): Promise<{ serverId: string }>;
+    setManualClient(issuer: string, clientId: string, clientSecret: string | null): Promise<void>;
+    getValidAccessToken(server: McpServerRow, userKey: string): Promise<string | null>;
+  };
+  readonly mcpOAuthUserKey?: string;
+  /** Schema-driven MCP config with Vault-backed secrets (epic #459). */
+  readonly mcpConfig?: {
+    setSecret(serverId: string, key: string, value: string): Promise<void>;
+    deleteSecret(serverId: string, key: string): Promise<void>;
+    secretsSet(server: McpServerRow): Promise<Record<string, boolean>>;
+    getConfigHeaders(cfg: McpServerConfig): Promise<Record<string, string>>;
+    getConfigEnv(cfg: McpServerConfig): Promise<Record<string, string>>;
+  };
 }
 
 interface Live {
@@ -129,7 +184,83 @@ export function createAgentBuilderRouter(
   options: AgentBuilderRouterOptions,
 ): Router {
   const router = Router();
-  const mcp = new McpManager();
+  const mcp = new McpManager({
+    ...(options.mcpCallObserver ? { onToolCall: options.mcpCallObserver } : {}),
+    ...(options.mcpCallGuard ? { guard: options.mcpCallGuard } : {}),
+    // Resolve Vault-backed config (stdio env + http secret headers) and OAuth
+    // tokens at connect time — the SAME provider the orchestrator's manager
+    // gets. Without it, discover/test-call spawn stdio servers with NO env, so
+    // a server needing credentials dies with "-32000 Connection closed" even
+    // though its config is saved (epic #459).
+    auth: {
+      getToken: async (cfg: McpServerConfig): Promise<string | null> => {
+        if (!options.mcpOAuth) return null;
+        const graph = options.getGraphStore();
+        const server = graph
+          ? (await graph.listMcpServers()).find((s) => s.id === cfg.id)
+          : undefined;
+        if (!server) return null;
+        return options.mcpOAuth.getValidAccessToken(server, options.mcpOAuthUserKey ?? 'operator');
+      },
+      // Discover/test-call surface needs-auth via the route's describeAuth path,
+      // so the manager itself doesn't need to synthesize a prompt here.
+      onAuthFailure: async (): Promise<string | null> => null,
+      ...(options.mcpConfig
+        ? {
+            getConfigHeaders: (cfg: McpServerConfig): Promise<Record<string, string>> =>
+              options.mcpConfig!.getConfigHeaders(cfg),
+            getConfigEnv: (cfg: McpServerConfig): Promise<Record<string, string>> =>
+              options.mcpConfig!.getConfigEnv(cfg),
+          }
+        : {}),
+    },
+  });
+  // Marketplace catalog client (epic #459 W3, issue #455): server-side proxy
+  // with a 5-minute cache, so registry tokens never reach the browser.
+  const mcpRegistryClient = new McpRegistryClient();
+
+  /**
+   * Epic #459 — the config fields a server declares, self-healed on demand, plus
+   * which REQUIRED fields still have no value. A marketplace server imported
+   * before env-var capture has an empty `config_schema` (and a stdio command has
+   * no endpoint placeholders to derive from), so re-resolve its registry entry
+   * once and persist the declared fields. `missing` lists required fields with
+   * no value yet (non-secret from the row, secret from the Vault) — the caller
+   * turns that into a config prompt instead of letting the process crash.
+   */
+  async function resolveServerConfigSchema(
+    graph: AgentGraphStore,
+    row: McpServerRow,
+  ): Promise<{ schema: readonly McpConfigField[]; missing: string[] }> {
+    let schema: readonly McpConfigField[] =
+      row.configSchema.length > 0
+        ? row.configSchema
+        : deriveMcpConfigSchema(row.endpoint, row.headers);
+    if (schema.length === 0 && row.source === 'marketplace' && row.registryId) {
+      try {
+        const registry = (await graph.listMcpRegistries()).find((r) => r.id === row.registryId);
+        if (registry) {
+          const entry = await mcpRegistryClient.resolve(registry, row.name);
+          if (entry.configSchema && entry.configSchema.length > 0) {
+            schema = entry.configSchema;
+            await graph.setMcpServerConfigSchema(row.id, schema as never);
+          }
+        }
+      } catch {
+        /* registry unreachable — keep the empty/derived schema */
+      }
+    }
+    const secretsSet = options.mcpConfig
+      ? await options.mcpConfig.secretsSet({ ...row, configSchema: schema })
+      : {};
+    const missing = schema
+      .filter((f) => f.required)
+      .filter((f) =>
+        f.secret ? !secretsSet[f.key] : row.config[f.key] == null || row.config[f.key] === '',
+      )
+      .map((f) => f.key);
+    return { schema, missing };
+  }
 
   function live(res: Response): Live | undefined {
     const config = options.getConfigStore();
@@ -167,7 +298,7 @@ export function createAgentBuilderRouter(
           l.graph.listAllSubAgents(),
           l.graph.listSkills(),
           l.graph.listAllToolGrants(),
-          l.graph.listMcpServers(),
+          l.graph.listMcpServers().then((rows) => withToolVerdicts(l, rows)),
           l.graph.listSchedulesForAgent(agent.id),
           l.graph.listPersonaSkills(agent.id),
         ]);
@@ -786,7 +917,7 @@ export function createAgentBuilderRouter(
     const l = live(res);
     if (!l) return;
     try {
-      res.json({ servers: (await l.graph.listMcpServers()).map(mcpNode) });
+      res.json({ servers: (await withToolVerdicts(l, await l.graph.listMcpServers())).map(mcpNode) });
     } catch (err) {
       fail(res, err);
     }
@@ -804,6 +935,71 @@ export function createAgentBuilderRouter(
         status: b.status ?? 'enabled',
       });
       res.json(mcpNode(row));
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  /** Enable/disable a server (issue #460). Disabling does not delete grants;
+   *  the registry reload drops the server's tools from live orchestrators. */
+  router.patch('/mcp-servers/:id', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const id = str(req.params.id);
+      const status = req.body?.status as unknown;
+      const privacyBypass = req.body?.privacyBypass as unknown;
+      const kgIngest = req.body?.kgIngest as unknown;
+      const hasStatus = status === 'enabled' || status === 'disabled';
+      const hasBypass = typeof privacyBypass === 'boolean';
+      const hasKg = typeof kgIngest === 'boolean';
+      if (status !== undefined && !hasStatus) {
+        res.status(400).json({ error: 'invalid_status' });
+        return;
+      }
+      if (!hasStatus && !hasBypass && !hasKg) {
+        res.status(400).json({ error: 'invalid_patch' });
+        return;
+      }
+      const row = (await l.graph.listMcpServers()).find((s) => s.id === id);
+      if (!row) {
+        res.status(404).json({ error: 'mcp_server_not_found' });
+        return;
+      }
+      // Enable gate (issue #455): a server with unacknowledged ack-requiring
+      // verdicts cannot be enabled — the operator reviews and acks first.
+      if (status === 'enabled') {
+        const verdicts = await l.graph.listMcpToolVerdicts(CURRENT_VERIFIER_VERSION);
+        const acks = await l.graph.listMcpToolVerdictAcks(CURRENT_VERIFIER_VERSION);
+        const ackByTool = new Map(
+          acks.filter((a) => a.serverId === id).map((a) => [a.toolName, a]),
+        );
+        const unacked = verdicts
+          .filter((v) => v.serverId === id && MCP_SEVERITIES_NEEDING_ACK.has(v.severity))
+          .filter((v) => {
+            const ack = ackByTool.get(v.toolName);
+            return !ack || ack.contentHash !== v.contentHash;
+          })
+          .map((v) => ({ toolName: v.toolName, severity: v.severity }));
+        if (unacked.length > 0) {
+          res.status(409).json({ error: 'mcp_server_has_unacked_risks', tools: unacked });
+          return;
+        }
+      }
+      if (hasStatus) await l.graph.setMcpServerStatus(id, status as 'enabled' | 'disabled');
+      // Privacy-bypass (epic #459) is read live off the rebuilt DomainTool, so a
+      // reload below is what makes the toggle take effect.
+      if (hasBypass) await l.graph.setMcpServerPrivacyBypass(id, privacyBypass as boolean);
+      if (hasKg) await l.graph.setMcpServerKgIngest(id, kgIngest as boolean);
+      // Status changes must reach both enforcement layers: the dispatch guard
+      // (policy refresh) and the visible tool surface (epoch bump + rebuild).
+      await refreshMcpGrantPolicy(l.graph);
+      await l.graph.bumpMcpGrantEpoch(id);
+      await l.graph.bumpSkillBindingEpoch(id);
+      await reload(l);
+      const updated = (await l.graph.listMcpServers()).find((s) => s.id === id);
+      const [decorated] = await withToolVerdicts(l, updated ? [updated] : []);
+      res.json(decorated ? mcpNode(decorated) : { id, status });
     } catch (err) {
       fail(res, err);
     }
@@ -831,13 +1027,990 @@ export function createAgentBuilderRouter(
         res.status(404).json({ error: 'mcp_server_not_found' });
         return;
       }
+      // Fail fast with a clear message when the endpoint still has an UNFILLED
+      // template placeholder AFTER config substitution (e.g. an M365 entry left
+      // as `.../tenants/{tenant_id}/...` with no configured tenant_id) —
+      // otherwise the upstream 400 surfaces as a cryptic 502 (issue #459).
+      const placeholders = substituteMcpConfig(row.endpoint ?? '', row.config).match(/\{[^}]+\}/g);
+      if (placeholders && placeholders.length > 0) {
+        res.status(422).json({
+          error: 'mcp_endpoint_placeholder',
+          serverId: row.id,
+          serverName: row.name,
+          placeholders: [...new Set(placeholders)],
+        });
+        return;
+      }
+      // Fail fast (the stdio analog of the placeholder guard): a server that
+      // declares required config/env fields can't even start until they're set.
+      // Self-heal the schema for pre-capture imports and prompt the config form
+      // with a clear 422 instead of letting the process crash into an opaque
+      // 502 — "nicht erst gegen einen Fehler laufen lassen" (issue #459).
+      const { missing } = await resolveServerConfigSchema(l.graph, row);
+      if (missing.length > 0) {
+        res.status(422).json({
+          error: 'mcp_config_required',
+          serverId: row.id,
+          serverName: row.name,
+          missing,
+        });
+        return;
+      }
       const tools = await mcp.listTools(toMcpConfig(row));
+      // Scan gate (epic #459 W1, issue #454): every discovered tool is scanned
+      // and its verdict persisted BEFORE the tool list itself is stored, so no
+      // unscanned tool ever becomes visible or grantable.
+      const verdicts = scanDiscoveredTools(row.id, tools);
+      for (const verdict of verdicts) {
+        await l.graph.upsertMcpToolVerdict(verdict);
+      }
+      // Prune verdicts for tools this server no longer exposes (codex fold):
+      // a hidden/renamed tool must not keep a stale clean verdict.
+      await l.graph.pruneMcpToolVerdicts(
+        row.id,
+        tools.map((t) => t.name),
+      );
       await l.graph.setMcpDiscoveredTools(row.id, tools);
+      // Re-discovery can change verdicts (and thus the runtime blocklist) and
+      // tool specs. Refresh the policy, then bump the server's grant epoch so
+      // the reload's diff actually rebuilds the affected agents — verdict rows
+      // alone are invisible to the graph signature (codex finding). The
+      // dispatch guard in McpManager enforces the new policy immediately
+      // either way; the rebuild re-aligns the visible tool surface.
+      await refreshMcpGrantPolicy(l.graph);
+      await l.graph.bumpMcpGrantEpoch(row.id);
+      await l.graph.bumpSkillBindingEpoch(row.id);
+      await reload(l);
       const updated = (await l.graph.listMcpServers()).find((s) => s.id === row.id);
-      res.json(updated ? mcpNode(updated) : mcpNode(row));
+      const [decorated] = await withToolVerdicts(l, [updated ?? row]);
+      res.json(mcpNode(decorated ?? updated ?? row));
     } catch (err) {
+      const raw = msg(err);
+      // A protected server can't even list tools without a token — a failed
+      // discovery is almost always "not authorized yet". Tell the client to
+      // prompt Connect instead of surfacing a cryptic 502 (issue #459).
+      if (options.mcpOAuth) {
+        try {
+          const row = (await l.graph.listMcpServers()).find((s) => s.id === str(req.params.id));
+          const desc = row ? await options.mcpOAuth.describeAuth(row) : null;
+          if (desc?.protected) {
+            res.status(409).json({
+              error: 'mcp_needs_auth',
+              needsAuth: true,
+              serverId: str(req.params.id),
+              serverName: row?.name ?? null,
+              issuer: desc.issuer,
+              issuerHost: desc.issuerHost,
+              brokered: desc.brokered,
+              message: raw,
+            });
+            return;
+          }
+        } catch {
+          /* discovery of the auth metadata itself failed — fall through */
+        }
+      }
       // Discovery talks to an external process — report as a 502, not a 5xx crash.
-      res.status(502).json({ error: 'mcp_discover_failed', message: msg(err) });
+      res.status(502).json({ error: 'mcp_discover_failed', message: raw });
+    }
+  });
+
+  // Config schema + values (epic #459). GET returns the declared fields (derived
+  // from endpoint/header placeholders when none saved yet), the non-secret
+  // values, and which secret fields are set (never the secret values).
+  router.get('/mcp-servers/:id/config', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const id = str(req.params.id);
+      const row = (await l.graph.listMcpServers()).find((s) => s.id === id);
+      if (!row) {
+        res.status(404).json({ error: 'mcp_server_not_found' });
+        return;
+      }
+      // Self-heals a pre-capture marketplace server's schema and reports
+      // required-but-unset fields (shared with the discover config guard).
+      const { schema } = await resolveServerConfigSchema(l.graph, row);
+      const secretsSet = options.mcpConfig
+        ? await options.mcpConfig.secretsSet({ ...row, configSchema: schema })
+        : {};
+      res.json({ schema, config: row.config, secretsSet });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  // PUT saves the schema (incl. per-field secret flags), the non-secret values,
+  // and any provided secret values (secrets → Vault, never the DB row).
+  router.put('/mcp-servers/:id/config', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const id = str(req.params.id);
+      const row = (await l.graph.listMcpServers()).find((s) => s.id === id);
+      if (!row) {
+        res.status(404).json({ error: 'mcp_server_not_found' });
+        return;
+      }
+      const body = (req.body ?? {}) as {
+        schema?: unknown;
+        config?: unknown;
+        secrets?: unknown;
+      };
+      if (Array.isArray(body.schema)) {
+        await l.graph.setMcpServerConfigSchema(id, body.schema as never);
+      }
+      if (body.config && typeof body.config === 'object') {
+        await l.graph.setMcpServerConfig(id, body.config as Record<string, unknown>);
+      }
+      if (body.secrets && typeof body.secrets === 'object' && options.mcpConfig) {
+        for (const [k, v] of Object.entries(body.secrets as Record<string, unknown>)) {
+          if (typeof v === 'string' && v.length > 0) {
+            await options.mcpConfig.setSecret(id, k, v);
+          }
+        }
+      }
+      // Config feeds connect-time substitution — refresh + reload so it applies.
+      await refreshMcpGrantPolicy(l.graph);
+      await l.graph.bumpMcpGrantEpoch(id);
+      await reload(l);
+      const updated = (await l.graph.listMcpServers()).find((s) => s.id === id);
+      const [decorated] = await withToolVerdicts(l, [updated ?? row]);
+      res.json(mcpNode(decorated ?? updated ?? row));
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  // Operator ack for a high-risk MCP tool verdict (issue #454). Mirrors the
+  // skill-side `/skills/:id/verdict/ack` audit-trail semantics: keyed by
+  // (server, tool, verifier_version) and pinned to the verdict's content hash,
+  // so neither a verifier upgrade nor a content change on re-discover lets a
+  // stale ack carry forward.
+  router.post(
+    '/mcp-servers/:id/tools/:toolName/verdict/ack',
+    async (req: Request, res: Response) => {
+      const l = live(res);
+      if (!l) return;
+      try {
+        const id = str(req.params.id);
+        const toolName = str(req.params.toolName);
+        const verdict = await l.graph.getMcpToolVerdict(id, toolName, CURRENT_VERIFIER_VERSION);
+        if (!verdict) {
+          res.status(404).json({ error: 'mcp_tool_verdict_not_found', serverId: id, toolName });
+          return;
+        }
+        const actor = req.session?.sub || req.session?.email;
+        if (!actor) {
+          res.status(401).json({ error: 'unauthenticated' });
+          return;
+        }
+        const ack = await l.graph.upsertMcpToolVerdictAck(
+          id,
+          toolName,
+          CURRENT_VERIFIER_VERSION,
+          verdict.contentHash,
+          actor,
+        );
+        // An ack unblocks the (server, tool) pair. Refresh the policy (the
+        // dispatch guard allows immediately), then bump the grant epoch +
+        // reload so hydration re-materializes the previously-filtered tool
+        // spec without a restart.
+        await refreshMcpGrantPolicy(l.graph);
+        await l.graph.bumpMcpGrantEpoch(id);
+        await l.graph.bumpSkillBindingEpoch(id);
+        await reload(l);
+        res.json({
+          serverId: id,
+          toolName,
+          severity: verdict.severity,
+          riskCodes: flattenRiskCodes(verdict.riskCodes),
+          acked: true,
+          ackedBy: ack.ackedBy,
+          ackedAt: ack.ackedAt.toISOString(),
+        });
+      } catch (err) {
+        fail(res, err);
+      }
+    },
+  );
+
+  // ── plugin mcp grants (epic #459 W5, issue #458) ──────────────────────────
+
+  /** MCP-capable plugins + their current server grants (W7 UX): one payload
+   *  that drives the operator's plugin-grant surface. A plugin only appears if
+   *  its manifest declares `permissions.mcp`; the servers_hint is the author's
+   *  suggestion, binding stays an explicit operator action. */
+  router.get('/mcp-plugin-candidates', async (_req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const candidates = (options.listMcpPluginCandidates?.() ?? []).filter((p) => p.mcp);
+      const [grants, servers] = await Promise.all([
+        l.graph.listPluginMcpGrants(),
+        l.graph.listMcpServers(),
+      ]);
+      const grantsByPlugin = new Map<string, string[]>();
+      for (const g of grants) {
+        const list = grantsByPlugin.get(g.pluginId) ?? [];
+        list.push(g.mcpServerId);
+        grantsByPlugin.set(g.pluginId, list);
+      }
+      res.json({
+        servers: servers.map((s) => ({ id: s.id, name: s.name, status: s.status })),
+        plugins: candidates.map((p) => ({
+          pluginId: p.id,
+          name: p.name,
+          serversHint: p.serversHint,
+          grantedServerIds: grantsByPlugin.get(p.id) ?? [],
+        })),
+      });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  router.get('/plugin-mcp-grants', async (_req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const [grants, servers] = await Promise.all([
+        l.graph.listPluginMcpGrants(),
+        l.graph.listMcpServers(),
+      ]);
+      const serverById = new Map(servers.map((s) => [s.id, s]));
+      res.json({
+        grants: grants.map((g) => ({
+          pluginId: g.pluginId,
+          serverId: g.mcpServerId,
+          serverName: serverById.get(g.mcpServerId)?.name ?? null,
+          grantedBy: g.grantedBy,
+          grantedAt: g.grantedAt.toISOString(),
+        })),
+      });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  /** Server-level grant (issue #458): explicit and auditable, never ambient.
+   *  Per-tool safety comes from the dispatch guard, which applies to plugin
+   *  calls unchanged (unscanned or unacked-risk tools are denied). */
+  router.put('/plugin-mcp-grants', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const pluginId = String(req.body?.pluginId ?? '').trim();
+      const mcpServerId = String(req.body?.mcpServerId ?? '');
+      if (pluginId === '' || !isUuid(mcpServerId)) {
+        res.status(400).json({ error: 'invalid_grant' });
+        return;
+      }
+      // The plugin must exist in the live catalog AND currently declare
+      // permissions.mcp (codex W7 fold): otherwise a direct request could
+      // create a stale grant that silently becomes effective if a plugin with
+      // that id later declares MCP. Matches the candidate route's policy.
+      const candidate = (options.listMcpPluginCandidates?.() ?? []).find(
+        (p) => p.id === pluginId && p.mcp,
+      );
+      if (!candidate) {
+        res.status(404).json({ error: 'plugin_not_mcp_capable', pluginId });
+        return;
+      }
+      const server = (await l.graph.listMcpServers()).find((s) => s.id === mcpServerId);
+      if (!server) {
+        res.status(404).json({ error: 'mcp_server_not_found' });
+        return;
+      }
+      const actor = req.session?.sub || req.session?.email;
+      if (!actor) {
+        res.status(401).json({ error: 'unauthenticated' });
+        return;
+      }
+      await l.graph.upsertPluginMcpGrant(pluginId, mcpServerId, actor);
+      res.json({ pluginId, serverId: mcpServerId, grantedBy: actor });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  router.delete('/plugin-mcp-grants', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const pluginId = String(req.body?.pluginId ?? '').trim();
+      const mcpServerId = String(req.body?.mcpServerId ?? '');
+      if (pluginId === '' || !isUuid(mcpServerId)) {
+        res.status(400).json({ error: 'invalid_grant' });
+        return;
+      }
+      await l.graph.deletePluginMcpGrant(pluginId, mcpServerId);
+      res.status(204).end();
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  // ── generic MCP OAuth (epic #459 W9) ──────────────────────────────────────
+  // Tokens are keyed to the authenticated operator's identity (codex W9 fold):
+  // one operator's token is never reused for another. Falls back to a shared
+  // key only when no session identity is available (single-admin/dev).
+  const oauthUserKey = (req: Request): string =>
+    req.session?.sub || req.session?.email || options.mcpOAuthUserKey || 'operator';
+  const escapeHtml = (s: string): string =>
+    s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
+  /** Auth status for a server: is it OAuth-protected, is the user connected,
+   *  and (if protected) does its issuer still need a one-time manual client. */
+  router.get('/mcp-servers/:id/auth-status', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const server = (await l.graph.listMcpServers()).find((s) => s.id === str(req.params.id));
+      if (!server) {
+        res.status(404).json({ error: 'mcp_server_not_found' });
+        return;
+      }
+      if (!options.mcpOAuth) {
+        res.json({ protected: false, connected: false, issuer: null, needsClient: false, brokered: false });
+        return;
+      }
+      const desc = await options.mcpOAuth.describeAuth(server);
+      if (!desc.protected) {
+        res.json({ protected: false, connected: false, issuer: null, needsClient: false, brokered: false });
+        return;
+      }
+      const token = await l.graph.getMcpOAuthToken(server.id, oauthUserKey(req));
+      const client = desc.issuer ? await l.graph.getMcpOAuthClient(desc.issuer) : undefined;
+      res.json({
+        protected: true,
+        connected: token !== undefined,
+        issuer: desc.issuer,
+        issuerHost: desc.issuerHost,
+        // A brokered server (offers DCR) needs no manual client even without one
+        // stored — DCR self-registers at connect. Only a delegating server does.
+        brokered: desc.brokered,
+        needsClient: !desc.brokered && desc.issuer !== null && client === undefined,
+        redirectUri: options.mcpOAuth.redirectUri,
+      });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  /** Start the OAuth flow — returns the authorize URL to open. */
+  router.post('/mcp-servers/:id/authorize', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      if (!options.mcpOAuth) {
+        res.status(501).json({ error: 'mcp_oauth_unavailable' });
+        return;
+      }
+      const server = (await l.graph.listMcpServers()).find((s) => s.id === str(req.params.id));
+      if (!server) {
+        res.status(404).json({ error: 'mcp_server_not_found' });
+        return;
+      }
+      try {
+        const { authorizeUrl } = await options.mcpOAuth.beginAuthorization(server, oauthUserKey(req));
+        res.json({ authorizeUrl });
+      } catch (err) {
+        // Issuer without DCR needs a one-time manual client first.
+        if (err instanceof Error && err.name === 'McpOAuthNeedsClientError') {
+          const issuer = await options.mcpOAuth.issuerFor(server);
+          res.status(409).json({ error: 'needs_oauth_client', issuer });
+          return;
+        }
+        throw err;
+      }
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  /** Register a one-time OAuth client for an issuer that lacks DCR. */
+  router.put('/mcp-oauth-clients', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      if (!options.mcpOAuth) {
+        res.status(501).json({ error: 'mcp_oauth_unavailable' });
+        return;
+      }
+      const issuer = String(req.body?.issuer ?? '').trim();
+      const clientId = String(req.body?.clientId ?? '').trim();
+      const clientSecret =
+        typeof req.body?.clientSecret === 'string' && req.body.clientSecret !== ''
+          ? req.body.clientSecret
+          : null;
+      if (!/^https?:\/\//.test(issuer) || clientId === '') {
+        res.status(400).json({ error: 'invalid_oauth_client' });
+        return;
+      }
+      await options.mcpOAuth.setManualClient(issuer, clientId, clientSecret);
+      res.json({ issuer, clientId });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  /** Disconnect: drop the stored token for this user + server. */
+  router.delete('/mcp-servers/:id/token', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      await l.graph.deleteMcpOAuthToken(str(req.params.id), oauthUserKey(req));
+      res.status(204).end();
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  /** OAuth callback: exchange the code, store the token, show a done page.
+   *  Hit by the operator's own browser redirect (session cookie present); the
+   *  `state` param is the CSRF guard. */
+  router.get('/mcp-oauth/callback', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    // Escape the detail — it can carry attacker-controlled provider error text
+    // (codex W9 fold: reflected XSS on an auth-gated admin origin otherwise).
+    const donePage = (ok: boolean, detail: string): string =>
+      `<!doctype html><meta charset="utf-8"><title>MCP authorization</title><body style="font-family:system-ui;padding:2rem;max-width:32rem">
+       <h2>${ok ? '✅ Connected' : '⚠️ Authorization failed'}</h2><p>${escapeHtml(detail)}</p>
+       <p>You can close this tab and return to the MCP Control Center.</p></body>`;
+    try {
+      if (!options.mcpOAuth) {
+        res.status(501).send(donePage(false, 'MCP OAuth is not configured.'));
+        return;
+      }
+      const code = typeof req.query['code'] === 'string' ? req.query['code'] : '';
+      const state = typeof req.query['state'] === 'string' ? req.query['state'] : '';
+      const providerError = typeof req.query['error'] === 'string' ? req.query['error'] : '';
+      if (providerError) {
+        res.status(400).send(donePage(false, `The provider returned: ${providerError}`));
+        return;
+      }
+      if (code === '' || state === '') {
+        res.status(400).send(donePage(false, 'Missing code or state.'));
+        return;
+      }
+      await options.mcpOAuth.completeAuthorization(state, code);
+      res.status(200).send(donePage(true, 'The server is now authorized for you.'));
+    } catch (err) {
+      res.status(400).send(donePage(false, msg(err)));
+    }
+  });
+
+  // ── orchestrator MCP grants from the Control Center (epic #459 W8) ────────
+  // The missing "make it usable" step: registering + scanning a server only
+  // makes its tools available; they still have to be GRANTED to the
+  // orchestrator that handles a chat. This is the same grant the Builder
+  // canvas creates (same fail-closed gate), reachable without the canvas.
+
+  router.get('/mcp-orchestrators', async (_req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const agents = await l.config.listAgents();
+      res.json({ orchestrators: agents.map((a) => ({ id: a.id, slug: a.slug, name: a.name })) });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  /** Grant one server tool to an orchestrator (top-level agent). Runs the same
+   *  fail-closed verdict gate as the canvas, then reloads so the orchestrator
+   *  picks the tool up on its next turn. */
+  router.put('/mcp-grants', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const agentSlug = String(req.body?.agentSlug ?? '').trim();
+      const mcpServerId = String(req.body?.mcpServerId ?? '');
+      const toolRef = String(req.body?.toolName ?? '');
+      if (agentSlug === '' || !isUuid(mcpServerId) || toolRef === '') {
+        res.status(400).json({ error: 'invalid_grant' });
+        return;
+      }
+      const agent = (await l.config.listAgents()).find((a) => a.slug === agentSlug);
+      if (!agent) {
+        res.status(404).json({ error: 'orchestrator_not_found', agentSlug });
+        return;
+      }
+      const toolName = await assertMcpToolAllowed(l, mcpServerId, toolRef);
+      // createToolGrant is idempotent for top-level MCP grants (ON CONFLICT via
+      // migration 0014), so a repeat is a clean no-op; reload picks up a real
+      // change and is itself a no-op otherwise.
+      await l.graph.createToolGrant({
+        agentId: agent.id,
+        subAgentId: null,
+        toolKind: 'mcp',
+        toolRef: toolName,
+        mcpServerId,
+      });
+      await reload(l);
+      res.json({ agentSlug, mcpServerId, toolName, granted: true });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  router.delete('/mcp-grants/:grantId', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const grantId = str(req.params.grantId);
+      if (!isUuid(grantId)) {
+        res.status(400).json({ error: 'invalid_grant_id' });
+        return;
+      }
+      // Scope guard (codex W8 fold): this MCP endpoint only deletes MCP tool
+      // grants — never a native grant or an unrelated row, even if the caller
+      // knows its id. Verify the row exists and is toolKind='mcp' first.
+      const grant = (await l.graph.listAllToolGrants()).find((g) => g.id === grantId);
+      if (!grant) {
+        res.status(404).json({ error: 'grant_not_found' });
+        return;
+      }
+      if (grant.toolKind !== 'mcp') {
+        res.status(400).json({ error: 'not_an_mcp_grant' });
+        return;
+      }
+      await l.graph.deleteToolGrant(grantId);
+      await reload(l);
+      res.status(204).end();
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  // ── skill capability bindings (epic #459 W4, issue #456) ──────────────────
+  router.get('/skills/:id/tool-bindings', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const id = str(req.params.id);
+      if (!isUuid(id)) {
+        res.status(404).json({ error: 'skill_not_found', id });
+        return;
+      }
+      const skill = await l.graph.getSkill(id);
+      if (!skill) {
+        res.status(404).json({ error: 'skill_not_found', id });
+        return;
+      }
+      const contracts = parseRequiresTools(skill.frontmatter);
+      const [bindings, servers] = await Promise.all([
+        l.graph.listAllSkillToolBindings(),
+        l.graph.listMcpServers(),
+      ]);
+      const serverById = new Map(servers.map((s) => [s.id, s]));
+      const bindingByContract = new Map(
+        bindings.filter((b) => b.skillId === id).map((b) => [b.contract, b]),
+      );
+      res.json({
+        contracts: contracts.map((c) => {
+          const binding = bindingByContract.get(c.contract);
+          return {
+            contract: c.contract,
+            description: c.description ?? null,
+            binding: binding
+              ? {
+                  mcpServerId: binding.mcpServerId,
+                  serverName: serverById.get(binding.mcpServerId)?.name ?? null,
+                  toolName: binding.toolName,
+                  boundBy: binding.boundBy,
+                  boundAt: binding.boundAt.toISOString(),
+                }
+              : null,
+          };
+        }),
+      });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  /** Bind-time gate (issue #456): binding is the point where trust is
+   *  applied — same fail-closed verdict rules as tool grants. The registry
+   *  graph signature includes bindings, so the reload rebuilds every agent
+   *  using this skill. */
+  router.put(
+    '/skills/:id/tool-bindings/:contract',
+    async (req: Request, res: Response) => {
+      const l = live(res);
+      if (!l) return;
+      try {
+        const id = str(req.params.id);
+        const contract = str(req.params.contract);
+        if (!isUuid(id)) {
+          res.status(404).json({ error: 'skill_not_found', id });
+          return;
+        }
+        const skill = await l.graph.getSkill(id);
+        if (!skill) {
+          res.status(404).json({ error: 'skill_not_found', id });
+          return;
+        }
+        if (!parseRequiresTools(skill.frontmatter).some((c) => c.contract === contract)) {
+          res.status(404).json({ error: 'contract_not_declared', contract });
+          return;
+        }
+        const actor = req.session?.sub || req.session?.email;
+        if (!actor) {
+          res.status(401).json({ error: 'unauthenticated' });
+          return;
+        }
+        const mcpServerId = String(req.body?.mcpServerId ?? '');
+        const toolRef = String(req.body?.toolName ?? '');
+        if (!isUuid(mcpServerId) || toolRef === '') {
+          res.status(400).json({ error: 'invalid_binding' });
+          return;
+        }
+        const toolName = await assertMcpToolAllowed(l, mcpServerId, toolRef);
+        await l.graph.upsertSkillToolBinding({
+          skillId: id,
+          contract,
+          mcpServerId,
+          toolName,
+          boundBy: actor,
+        });
+        await reload(l);
+        res.json({ skillId: id, contract, mcpServerId, toolName, boundBy: actor });
+      } catch (err) {
+        fail(res, err);
+      }
+    },
+  );
+
+  router.delete(
+    '/skills/:id/tool-bindings/:contract',
+    async (req: Request, res: Response) => {
+      const l = live(res);
+      if (!l) return;
+      try {
+        await l.graph.deleteSkillToolBinding(str(req.params.id), str(req.params.contract));
+        await reload(l);
+        res.status(204).end();
+      } catch (err) {
+        fail(res, err);
+      }
+    },
+  );
+
+  // ── mcp marketplace (epic #459 W3, issue #455) ────────────────────────────
+  router.get('/mcp-registries', async (_req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const registries = await l.graph.listMcpRegistries();
+      res.json({
+        registries: registries.map((r) => ({
+          id: r.id,
+          name: r.name,
+          url: r.url,
+          authKind: r.authKind,
+          hasToken: r.token !== null && r.token !== '',
+        })),
+      });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  router.post('/mcp-registries', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const b = req.body ?? {};
+      const name = String(b.name ?? '').trim();
+      const url = String(b.url ?? '').trim();
+      if (name === '' || !/^https?:\/\//.test(url)) {
+        res.status(400).json({ error: 'invalid_registry' });
+        return;
+      }
+      const row = await l.graph.createMcpRegistry({
+        name,
+        url,
+        authKind: b.authKind === 'bearer' ? 'bearer' : 'none',
+        token: typeof b.token === 'string' && b.token !== '' ? b.token : null,
+      });
+      res.json({ id: row.id, name: row.name, url: row.url, authKind: row.authKind, hasToken: row.token !== null });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  router.delete('/mcp-registries/:id', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      await l.graph.deleteMcpRegistry(str(req.params.id));
+      mcpRegistryClient.invalidate(str(req.params.id));
+      res.status(204).end();
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  /** Server-side catalog proxy: registry tokens never reach the browser. */
+  router.get('/mcp-registries/:id/catalog', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const registry = (await l.graph.listMcpRegistries()).find(
+        (r) => r.id === str(req.params.id),
+      );
+      if (!registry) {
+        res.status(404).json({ error: 'mcp_registry_not_found' });
+        return;
+      }
+      const q = typeof req.query['q'] === 'string' ? req.query['q'] : '';
+      const entries = await mcpRegistryClient.search(registry, q);
+      res.json({ entries });
+    } catch (err) {
+      if (err instanceof McpRegistryError) {
+        res.status(502).json({ error: 'mcp_registry_unreachable', code: err.code, message: err.message });
+        return;
+      }
+      fail(res, err);
+    }
+  });
+
+  /** Gated import (issue #455 Phase 2): resolves the catalog entry
+   *  server-side and creates the row DISABLED with full provenance — the
+   *  operator then runs Discover (scan gate) and enables explicitly. */
+  router.post('/mcp-servers/from-registry', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const b = req.body ?? {};
+      const registryId = String(b.registryId ?? '');
+      const catalogEntryId = String(b.catalogEntryId ?? '');
+      const registry = (await l.graph.listMcpRegistries()).find((r) => r.id === registryId);
+      if (!registry) {
+        res.status(404).json({ error: 'mcp_registry_not_found' });
+        return;
+      }
+      const entry = await mcpRegistryClient.resolve(registry, catalogEntryId);
+      if (!entry.transport || !entry.endpoint) {
+        res.status(422).json({ error: 'mcp_catalog_entry_not_importable', id: entry.id });
+        return;
+      }
+      const row = await l.graph.createMcpServer({
+        name: entry.name,
+        transport: entry.transport,
+        endpoint: entry.endpoint,
+        status: 'disabled',
+        source: 'marketplace',
+        registryId,
+        license: entry.license,
+        author: entry.author,
+        sourceUrl: entry.sourceUrl,
+        configSchema: entry.configSchema ?? [],
+      });
+      res.json(mcpNode(row));
+    } catch (err) {
+      if (err instanceof McpRegistryError) {
+        const status = err.code === 'catalog_entry_not_found' ? 404 : 502;
+        res.status(status).json({ error: err.code, message: err.message });
+        return;
+      }
+      fail(res, err);
+    }
+  });
+
+  // ── mcp control center v2 (epic #459 W6, issue #463) ──────────────────────
+
+  /** Test-call sandbox: execute one discovered tool directly, for operator
+   *  debugging without starting an agent conversation. Runs through the
+   *  router's guarded + audited McpManager, so scan-policy denials apply and
+   *  every sandbox call lands in the audit log (as unattributed). */
+  router.post(
+    '/mcp-servers/:id/tools/:toolName/test-call',
+    async (req: Request, res: Response) => {
+      const l = live(res);
+      if (!l) return;
+      try {
+        const id = str(req.params.id);
+        const toolName = str(req.params.toolName);
+        const server = (await l.graph.listMcpServers()).find((s) => s.id === id);
+        if (!server) {
+          res.status(404).json({ error: 'mcp_server_not_found' });
+          return;
+        }
+        if (server.status === 'disabled') {
+          res.status(409).json({ error: 'mcp_server_disabled' });
+          return;
+        }
+        const args =
+          req.body?.args && typeof req.body.args === 'object'
+            ? (req.body.args as Record<string, unknown>)
+            : {};
+        const startedAt = Date.now();
+        const result = await mcp.callTool(toMcpConfig(server), toolName, args);
+        res.json({
+          serverId: id,
+          toolName,
+          result,
+          ok: !result.startsWith('Error:'),
+          durationMs: Date.now() - startedAt,
+        });
+      } catch (err) {
+        fail(res, err);
+      }
+    },
+  );
+
+  /** Bulk re-discover + re-scan of every enabled server (#455 Phase 3). */
+  router.post('/mcp-servers/rescan-all', async (_req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const result = await rescanAllMcpServers(l.graph, mcp, (m) => console.log(m));
+      await reload(l);
+      res.json(result);
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  // ── mcp audit log + grant matrix (epic #459 W2, issues #461/#462) ─────────
+  router.get('/mcp-call-log', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const limitRaw = Number(req.query['limit']);
+      const serverIdRaw =
+        typeof req.query['serverId'] === 'string' && req.query['serverId'] !== ''
+          ? req.query['serverId']
+          : undefined;
+      const beforeIdRaw =
+        typeof req.query['beforeId'] === 'string' && req.query['beforeId'] !== ''
+          ? req.query['beforeId']
+          : undefined;
+      if (serverIdRaw !== undefined && !isUuid(serverIdRaw)) {
+        res.status(400).json({ error: 'invalid_server_id' });
+        return;
+      }
+      if (beforeIdRaw !== undefined && !/^\d+$/.test(beforeIdRaw)) {
+        res.status(400).json({ error: 'invalid_before_id' });
+        return;
+      }
+      const serverId = serverIdRaw;
+      const beforeId = beforeIdRaw;
+      const entries = await l.graph.listMcpCallLog({
+        ...(Number.isFinite(limitRaw) ? { limit: limitRaw } : {}),
+        ...(serverId ? { serverId } : {}),
+        ...(beforeId ? { beforeId } : {}),
+      });
+      res.json({
+        entries: entries.map((e) => ({ ...e, calledAt: e.calledAt.toISOString() })),
+      });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  /** Read-only grant matrix (issue #461): every persisted MCP grant with its
+   *  holder (agent or sub-agent), server, normalized tool name, and current
+   *  verdict/ack/blocked state — "granted but not callable" is visible instead
+   *  of silent. */
+  router.get('/mcp-grants', async (_req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const [grants, agents, subAgents, servers, verdicts, acks, bindings, pluginGrants, skills] =
+        await Promise.all([
+          l.graph.listAllToolGrants(),
+          l.config.listAgents(),
+          l.graph.listAllSubAgents(),
+          l.graph.listMcpServers(),
+          l.graph.listMcpToolVerdicts(CURRENT_VERIFIER_VERSION),
+          l.graph.listMcpToolVerdictAcks(CURRENT_VERIFIER_VERSION),
+          l.graph.listAllSkillToolBindings(),
+          l.graph.listPluginMcpGrants(),
+          l.graph.listSkills(),
+        ]);
+      const agentById = new Map(agents.map((a) => [a.id, a]));
+      const subById = new Map(subAgents.map((s) => [s.id, s]));
+      const serverById = new Map(servers.map((s) => [s.id, s]));
+      const vmap = new Map(verdicts.map((v) => [`${v.serverId} ${v.toolName}`, v]));
+      const amap = new Map(acks.map((a) => [`${a.serverId} ${a.toolName}`, a]));
+      const rows = grants
+        .filter((g) => g.toolKind === 'mcp' && g.mcpServerId !== null)
+        .map((g) => {
+          const server = g.mcpServerId ? serverById.get(g.mcpServerId) : undefined;
+          const toolName = server ? mcpToolNameFromRef(g.toolRef, server.name) : g.toolRef;
+          const v = vmap.get(`${g.mcpServerId ?? ''} ${toolName}`);
+          const a = amap.get(`${g.mcpServerId ?? ''} ${toolName}`);
+          const ackValid = v !== undefined && a !== undefined && a.contentHash === v.contentHash;
+          const sub = g.subAgentId ? subById.get(g.subAgentId) : undefined;
+          const holderAgent = g.agentId
+            ? agentById.get(g.agentId)
+            : sub
+              ? agentById.get(sub.parentAgentId)
+              : undefined;
+          return {
+            grantId: g.id,
+            holderKind: g.subAgentId ? 'subagent' : 'agent',
+            agentSlug: holderAgent?.slug ?? null,
+            agentName: holderAgent?.name ?? null,
+            subAgentId: g.subAgentId,
+            subAgentName: sub?.name ?? null,
+            serverId: g.mcpServerId,
+            serverName: server?.name ?? null,
+            toolName,
+            severity: v?.severity ?? null,
+            notYetScanned: v === undefined,
+            acked: ackValid,
+            blocked: v !== undefined && MCP_SEVERITIES_NEEDING_ACK.has(v.severity) && !ackValid,
+          };
+        });
+      // Matrix extension (W6, issue #463): skill bindings (#456) and plugin
+      // grants (#458) as additional holder rows, so all four caller surfaces
+      // render from one response.
+      const skillById = new Map(skills.map((s) => [s.id, s]));
+      const bindingRows = bindings.map((b) => {
+        const server = serverById.get(b.mcpServerId);
+        const v = vmap.get(`${b.mcpServerId} ${b.toolName}`);
+        const a = amap.get(`${b.mcpServerId} ${b.toolName}`);
+        const ackValid = v !== undefined && a !== undefined && a.contentHash === v.contentHash;
+        return {
+          grantId: `binding:${b.skillId}:${b.contract}`,
+          holderKind: 'skill' as const,
+          agentSlug: null,
+          agentName: skillById.get(b.skillId)?.name ?? b.skillId,
+          subAgentId: null,
+          subAgentName: b.contract,
+          serverId: b.mcpServerId,
+          serverName: server?.name ?? null,
+          toolName: b.toolName,
+          severity: v?.severity ?? null,
+          notYetScanned: v === undefined,
+          acked: ackValid,
+          blocked: v !== undefined && MCP_SEVERITIES_NEEDING_ACK.has(v.severity) && !ackValid,
+        };
+      });
+      const pluginRows = pluginGrants.map((g) => ({
+        grantId: `plugin:${g.pluginId}:${g.mcpServerId}`,
+        holderKind: 'plugin' as const,
+        agentSlug: null,
+        agentName: g.pluginId,
+        subAgentId: null,
+        subAgentName: null,
+        serverId: g.mcpServerId,
+        serverName: serverById.get(g.mcpServerId)?.name ?? null,
+        toolName: '*',
+        severity: null,
+        notYetScanned: false,
+        acked: false,
+        blocked: false,
+      }));
+      res.json({ grants: [...rows, ...bindingRows, ...pluginRows] });
+    } catch (err) {
+      fail(res, err);
     }
   });
 
@@ -894,6 +2067,49 @@ export function createAgentBuilderRouter(
   return router;
 }
 
+/**
+ * Fail-closed MCP tool gate (issues #454/#456): the tool must have a CURRENT
+ * scan verdict (an unknown ref or a pre-scan-gate discovery must be
+ * re-discovered first — "never scanned" is not a bypass), and every
+ * not-scanned-clean severity needs a content-hash-matching operator ack.
+ * Returns the normalized bare tool name. Shared by the grant edge dispatcher
+ * and the skill capability bind route.
+ */
+async function assertMcpToolAllowed(
+  l: Live,
+  mcpServerId: string,
+  toolRef: string,
+): Promise<string> {
+  const server = (await l.graph.listMcpServers()).find((s) => s.id === mcpServerId);
+  if (!server) {
+    throw new ConfigValidationError(`mcp server ${mcpServerId} not found`);
+  }
+  const toolName = mcpToolNameFromRef(toolRef, server.name);
+  const verdict = await l.graph.getMcpToolVerdict(
+    mcpServerId,
+    toolName,
+    CURRENT_VERIFIER_VERSION,
+  );
+  if (!verdict) {
+    throw new ConfigValidationError(
+      `mcp_tool_not_scanned: tool "${toolName}" has no current scan verdict; run Discover on server "${server.name}" first`,
+    );
+  }
+  if (MCP_SEVERITIES_NEEDING_ACK.has(verdict.severity)) {
+    const ack = await l.graph.getMcpToolVerdictAck(
+      mcpServerId,
+      toolName,
+      CURRENT_VERIFIER_VERSION,
+    );
+    if (!ack || ack.contentHash !== verdict.contentHash) {
+      throw new ConfigValidationError(
+        `mcp_tool_unacked_risk: tool "${toolName}" carries a "${verdict.severity}" scan verdict; acknowledge it in the server's tool list first`,
+      );
+    }
+  }
+  return toolName;
+}
+
 // ── edge dispatchers ─────────────────────────────────────────────────────────
 
 async function createEdge(
@@ -926,6 +2142,14 @@ async function createEdge(
       const mcpServerId = (config['mcpServerId'] as string | null) ?? null;
       if (!toolRef) {
         throw new ConfigValidationError('tool_grant requires a toolRef');
+      }
+      // Grant gate (issue #454, fail-closed after codex review) — shared with
+      // the skill-binding route (#456), see `assertMcpToolAllowed`.
+      if (toolKind === 'mcp') {
+        if (!mcpServerId) {
+          throw new ConfigValidationError('mcp tool_grant requires an mcpServerId');
+        }
+        await assertMcpToolAllowed(l, mcpServerId, toolRef);
       }
       const grant = await l.graph.createToolGrant({
         agentId: onAgent ? agent.id : null,
@@ -1136,6 +2360,54 @@ function toolGrantNode(g: ToolGrantRow) {
   };
 }
 
+interface McpToolVerdictField {
+  readonly severity: Severity | null;
+  readonly riskCodes: readonly string[];
+  readonly notYetScanned: boolean;
+  readonly acked: boolean;
+  readonly ackStale: boolean;
+}
+
+/** Decorates each server's `discoveredTools` entries with a `verdict` field
+ *  (severity, flattened risk codes, ack state). Two bulk queries total, so
+ *  list/graph renders stay O(1) in query count regardless of server count. */
+async function withToolVerdicts(
+  l: Live,
+  servers: readonly McpServerRow[],
+): Promise<readonly McpServerRow[]> {
+  const hasTools = servers.some(
+    (s) => Array.isArray(s.discoveredTools) && s.discoveredTools.length > 0,
+  );
+  if (!hasTools) return servers;
+  const [verdicts, acks] = await Promise.all([
+    l.graph.listMcpToolVerdicts(CURRENT_VERIFIER_VERSION),
+    l.graph.listMcpToolVerdictAcks(CURRENT_VERIFIER_VERSION),
+  ]);
+  const vmap = new Map(verdicts.map((v) => [`${v.serverId} ${v.toolName}`, v]));
+  const amap = new Map(acks.map((a) => [`${a.serverId} ${a.toolName}`, a]));
+  return servers.map((s) => ({
+    ...s,
+    discoveredTools: (s.discoveredTools as ReadonlyArray<Record<string, unknown>>).map(
+      (tool) => {
+        const name = typeof tool['name'] === 'string' ? (tool['name'] as string) : '';
+        const v = vmap.get(`${s.id} ${name}`);
+        const a = amap.get(`${s.id} ${name}`);
+        const ackValid = v !== undefined && a !== undefined && a.contentHash === v.contentHash;
+        const verdict: McpToolVerdictField = v
+          ? {
+              severity: v.severity,
+              riskCodes: flattenRiskCodes(v.riskCodes),
+              notYetScanned: false,
+              acked: ackValid,
+              ackStale: a !== undefined && !ackValid,
+            }
+          : { severity: null, riskCodes: [], notYetScanned: true, acked: false, ackStale: false };
+        return { ...tool, verdict };
+      },
+    ),
+  }));
+}
+
 function mcpNode(s: McpServerRow) {
   return {
     id: s.id,
@@ -1145,6 +2417,17 @@ function mcpNode(s: McpServerRow) {
     status: s.status,
     lastDiscoveredAt: s.lastDiscoveredAt ? s.lastDiscoveredAt.toISOString() : null,
     discoveredTools: s.discoveredTools,
+    source: s.source,
+    registryId: s.registryId,
+    license: s.license,
+    author: s.author,
+    sourceUrl: s.sourceUrl,
+    privacyBypass: s.privacyBypass,
+    kgIngest: s.kgIngest,
+    // Declared config fields, derived from endpoint/header placeholders when the
+    // operator hasn't saved a schema yet (epic #459).
+    configSchema:
+      s.configSchema.length > 0 ? s.configSchema : deriveMcpConfigSchema(s.endpoint, s.headers),
   };
 }
 
@@ -1160,19 +2443,9 @@ function scheduleNode(s: ScheduleRow) {
   };
 }
 
-function toMcpConfig(row: McpServerRow): McpServerConfig {
-  const headers: Record<string, string> = {};
-  for (const [k, v] of Object.entries(row.headers ?? {})) {
-    if (typeof v === 'string') headers[k] = v;
-  }
-  return {
-    id: row.id,
-    name: row.name,
-    transport: row.transport,
-    endpoint: row.endpoint,
-    ...(Object.keys(headers).length > 0 ? { headers } : {}),
-  };
-}
+// Single source of truth for row → connect config (substitutes non-secret
+// `{key}` placeholders from row.config); epic #459.
+const toMcpConfig = mcpRowToConfig;
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 

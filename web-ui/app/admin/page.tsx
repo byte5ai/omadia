@@ -48,6 +48,7 @@ const GROUPS: readonly GroupDef[] = [
     cards: [
       { href: '/admin/domains', key: 'domains' },
       { href: '/admin/registries', key: 'registries' },
+      { href: '/admin/mcp', key: 'mcp' },
     ],
   },
   {
