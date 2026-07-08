@@ -114,6 +114,8 @@ export interface AgentBuilderRouterOptions {
     setSecret(serverId: string, key: string, value: string): Promise<void>;
     deleteSecret(serverId: string, key: string): Promise<void>;
     secretsSet(server: McpServerRow): Promise<Record<string, boolean>>;
+    getConfigHeaders(cfg: McpServerConfig): Promise<Record<string, string>>;
+    getConfigEnv(cfg: McpServerConfig): Promise<Record<string, string>>;
   };
 }
 
@@ -185,6 +187,33 @@ export function createAgentBuilderRouter(
   const mcp = new McpManager({
     ...(options.mcpCallObserver ? { onToolCall: options.mcpCallObserver } : {}),
     ...(options.mcpCallGuard ? { guard: options.mcpCallGuard } : {}),
+    // Resolve Vault-backed config (stdio env + http secret headers) and OAuth
+    // tokens at connect time — the SAME provider the orchestrator's manager
+    // gets. Without it, discover/test-call spawn stdio servers with NO env, so
+    // a server needing credentials dies with "-32000 Connection closed" even
+    // though its config is saved (epic #459).
+    auth: {
+      getToken: async (cfg: McpServerConfig): Promise<string | null> => {
+        if (!options.mcpOAuth) return null;
+        const graph = options.getGraphStore();
+        const server = graph
+          ? (await graph.listMcpServers()).find((s) => s.id === cfg.id)
+          : undefined;
+        if (!server) return null;
+        return options.mcpOAuth.getValidAccessToken(server, options.mcpOAuthUserKey ?? 'operator');
+      },
+      // Discover/test-call surface needs-auth via the route's describeAuth path,
+      // so the manager itself doesn't need to synthesize a prompt here.
+      onAuthFailure: async (): Promise<string | null> => null,
+      ...(options.mcpConfig
+        ? {
+            getConfigHeaders: (cfg: McpServerConfig): Promise<Record<string, string>> =>
+              options.mcpConfig!.getConfigHeaders(cfg),
+            getConfigEnv: (cfg: McpServerConfig): Promise<Record<string, string>> =>
+              options.mcpConfig!.getConfigEnv(cfg),
+          }
+        : {}),
+    },
   });
   // Marketplace catalog client (epic #459 W3, issue #455): server-side proxy
   // with a 5-minute cache, so registry tokens never reach the browser.
