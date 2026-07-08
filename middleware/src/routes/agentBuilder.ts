@@ -18,6 +18,7 @@ import {
   type AgentGraphStore,
   type AgentRow,
   type ConfigStore,
+  type McpConfigField,
   type McpServerConfig,
   type McpServerRow,
   type OrchestratorRegistry,
@@ -188,6 +189,49 @@ export function createAgentBuilderRouter(
   // Marketplace catalog client (epic #459 W3, issue #455): server-side proxy
   // with a 5-minute cache, so registry tokens never reach the browser.
   const mcpRegistryClient = new McpRegistryClient();
+
+  /**
+   * Epic #459 — the config fields a server declares, self-healed on demand, plus
+   * which REQUIRED fields still have no value. A marketplace server imported
+   * before env-var capture has an empty `config_schema` (and a stdio command has
+   * no endpoint placeholders to derive from), so re-resolve its registry entry
+   * once and persist the declared fields. `missing` lists required fields with
+   * no value yet (non-secret from the row, secret from the Vault) — the caller
+   * turns that into a config prompt instead of letting the process crash.
+   */
+  async function resolveServerConfigSchema(
+    graph: AgentGraphStore,
+    row: McpServerRow,
+  ): Promise<{ schema: readonly McpConfigField[]; missing: string[] }> {
+    let schema: readonly McpConfigField[] =
+      row.configSchema.length > 0
+        ? row.configSchema
+        : deriveMcpConfigSchema(row.endpoint, row.headers);
+    if (schema.length === 0 && row.source === 'marketplace' && row.registryId) {
+      try {
+        const registry = (await graph.listMcpRegistries()).find((r) => r.id === row.registryId);
+        if (registry) {
+          const entry = await mcpRegistryClient.resolve(registry, row.name);
+          if (entry.configSchema && entry.configSchema.length > 0) {
+            schema = entry.configSchema;
+            await graph.setMcpServerConfigSchema(row.id, schema as never);
+          }
+        }
+      } catch {
+        /* registry unreachable — keep the empty/derived schema */
+      }
+    }
+    const secretsSet = options.mcpConfig
+      ? await options.mcpConfig.secretsSet({ ...row, configSchema: schema })
+      : {};
+    const missing = schema
+      .filter((f) => f.required)
+      .filter((f) =>
+        f.secret ? !secretsSet[f.key] : row.config[f.key] == null || row.config[f.key] === '',
+      )
+      .map((f) => f.key);
+    return { schema, missing };
+  }
 
   function live(res: Response): Live | undefined {
     const config = options.getConfigStore();
@@ -968,6 +1012,21 @@ export function createAgentBuilderRouter(
         });
         return;
       }
+      // Fail fast (the stdio analog of the placeholder guard): a server that
+      // declares required config/env fields can't even start until they're set.
+      // Self-heal the schema for pre-capture imports and prompt the config form
+      // with a clear 422 instead of letting the process crash into an opaque
+      // 502 — "nicht erst gegen einen Fehler laufen lassen" (issue #459).
+      const { missing } = await resolveServerConfigSchema(l.graph, row);
+      if (missing.length > 0) {
+        res.status(422).json({
+          error: 'mcp_config_required',
+          serverId: row.id,
+          serverName: row.name,
+          missing,
+        });
+        return;
+      }
       const tools = await mcp.listTools(toMcpConfig(row));
       // Scan gate (epic #459 W1, issue #454): every discovered tool is scanned
       // and its verdict persisted BEFORE the tool list itself is stored, so no
@@ -1040,30 +1099,9 @@ export function createAgentBuilderRouter(
         res.status(404).json({ error: 'mcp_server_not_found' });
         return;
       }
-      let schema =
-        row.configSchema.length > 0
-          ? row.configSchema
-          : deriveMcpConfigSchema(row.endpoint, row.headers);
-      // Self-heal: a marketplace server imported before env-var capture has no
-      // stored schema, and a stdio command has no endpoint placeholders to
-      // derive from. Re-resolve its registry entry once and persist the
-      // declared config fields so it becomes configurable without a re-add.
-      if (schema.length === 0 && row.source === 'marketplace' && row.registryId) {
-        try {
-          const registry = (await l.graph.listMcpRegistries()).find(
-            (r) => r.id === row.registryId,
-          );
-          if (registry) {
-            const entry = await mcpRegistryClient.resolve(registry, row.name);
-            if (entry.configSchema && entry.configSchema.length > 0) {
-              schema = entry.configSchema;
-              await l.graph.setMcpServerConfigSchema(id, schema as never);
-            }
-          }
-        } catch {
-          /* registry unreachable — keep the empty/derived schema */
-        }
-      }
+      // Self-heals a pre-capture marketplace server's schema and reports
+      // required-but-unset fields (shared with the discover config guard).
+      const { schema } = await resolveServerConfigSchema(l.graph, row);
       const secretsSet = options.mcpConfig
         ? await options.mcpConfig.secretsSet({ ...row, configSchema: schema })
         : {};

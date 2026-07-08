@@ -142,6 +142,33 @@ function parseEndpointPlaceholder(
   return null;
 }
 
+/** Detect the discover route's 422 "required config/env values are missing"
+ *  response (e.g. a stdio server needing ODOO_URL/ODOO_DB/…) so the UI can open
+ *  the config form instead of letting the process crash into a raw 502. */
+function parseConfigRequired(
+  err: unknown,
+): { serverId: string; serverName: string; missing: string[] } | null {
+  if (!(err instanceof ApiError) || err.status !== 422) return null;
+  try {
+    const b = JSON.parse(err.body) as {
+      error?: string;
+      serverId?: string;
+      serverName?: string;
+      missing?: string[];
+    };
+    if (b.error === 'mcp_config_required') {
+      return {
+        serverId: b.serverId ?? '',
+        serverName: b.serverName ?? '',
+        missing: b.missing ?? [],
+      };
+    }
+  } catch {
+    /* not a config-required body */
+  }
+  return null;
+}
+
 const thCls =
   'px-2 py-1.5 text-left text-[11px] font-medium uppercase tracking-[0.1em] text-[color:var(--fg-muted)]';
 const tdCls = 'px-2 py-1.5 text-sm align-top';
@@ -201,11 +228,22 @@ function ServersPane(): React.ReactElement {
     } catch (err) {
       const na = parseNeedsAuth(err);
       const ph = parseEndpointPlaceholder(err);
+      const cfg = parseConfigRequired(err);
       if (na) {
         // Discover failed because the server needs OAuth — open the same Connect
         // login modal as the chat UI directly, instead of a raw 502.
         setConnectModal({ serverId: na.serverId, name: na.serverName });
         setAuthNotice({ name: na.serverName, host: na.issuerHost });
+      } else if (cfg) {
+        // Server needs required config/env values before it can start — open its
+        // config form and say which fields, instead of a raw 502 crash.
+        if (cfg.serverId) setExpanded(cfg.serverId);
+        setError(
+          t('servers.configRequired', {
+            name: cfg.serverName,
+            fields: cfg.missing.join(', '),
+          }),
+        );
       } else if (ph) {
         // Endpoint still has an unconfigured template placeholder.
         setError(

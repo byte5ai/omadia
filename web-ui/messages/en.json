@@ -2648,6 +2648,7 @@
       "disable": "Disable",
       "needsAuth": "\"{name}\" needs authorization before its tools can be discovered. Connect it below (it signs in via {host}), then run Discover again.",
       "endpointPlaceholder": "\"{name}\" can't be discovered: its endpoint still has an unconfigured placeholder ({placeholders}). Recreate the server with the real value filled in (e.g. your Microsoft 365 tenant id).",
+      "configRequired": "\"{name}\" needs its required settings before its tools can be discovered ({fields}). Fill them in the config form below, save, then run Discover again.",
       "privacy": {
         "masked": "Masked",
         "bypassed": "Unmasked",
