@@ -189,10 +189,7 @@ export class McpAuthDiscovery {
   }
 
   private async fetchAuthServer(issuer: string): Promise<AuthServerMetadata> {
-    const base = issuer.replace(/\/+$/, '');
-    const doc =
-      (await this.getJson(`${base}/.well-known/oauth-authorization-server`)) ??
-      (await this.getJson(`${base}/.well-known/openid-configuration`));
+    const doc = await this.fetchAuthServerDoc(issuer);
     if (!doc) {
       throw new McpAuthDiscoveryError(
         'no_auth_server_metadata',
@@ -221,6 +218,45 @@ export class McpAuthDiscovery {
       grantTypes: strArr(doc['grant_types_supported']),
       scopesSupported: strArr(doc['scopes_supported']),
     };
+  }
+
+  /**
+   * Fetch an issuer's authorization-server metadata, trying every well-known
+   * form. For an issuer WITH a path component (e.g.
+   * `https://auth.smithery.ai/smithery/notion`) RFC 8414 §3.1 INSERTS the
+   * well-known segment between host and path
+   * (`…/.well-known/oauth-authorization-server/smithery/notion`), whereas OIDC
+   * Discovery APPENDS it. Path-less issuers make the two forms identical. We try
+   * the RFC 8414 insertion form first (it's what path-scoped brokers like
+   * Smithery actually serve), then the appended fallbacks.
+   */
+  private async fetchAuthServerDoc(
+    issuer: string,
+  ): Promise<Record<string, unknown> | null> {
+    const base = issuer.replace(/\/+$/, '');
+    const candidates: string[] = [];
+    try {
+      const u = new URL(base);
+      const path = u.pathname.replace(/\/+$/, ''); // '' or '/smithery/notion'
+      if (path) {
+        // RFC 8414 §3.1 — well-known segment inserted before the issuer path.
+        candidates.push(`${u.origin}/.well-known/oauth-authorization-server${path}`);
+        candidates.push(`${u.origin}/.well-known/openid-configuration${path}`);
+      }
+    } catch {
+      /* malformed issuer — fall back to the appended forms below */
+    }
+    // OIDC-style path-appended forms (also correct for path-less issuers).
+    candidates.push(`${base}/.well-known/oauth-authorization-server`);
+    candidates.push(`${base}/.well-known/openid-configuration`);
+    const seen = new Set<string>();
+    for (const url of candidates) {
+      if (seen.has(url)) continue;
+      seen.add(url);
+      const doc = await this.getJson(url);
+      if (doc) return doc;
+    }
+    return null;
   }
 
   private async getJson(url: string): Promise<Record<string, unknown> | null> {
