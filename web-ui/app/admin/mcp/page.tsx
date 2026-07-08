@@ -60,6 +60,13 @@ type Tab = 'servers' | 'marketplace' | 'grants' | 'plugins' | 'audit';
 export default function AdminMcpPage(): React.ReactElement {
   const t = useTranslations('adminMcp');
   const [tab, setTab] = useState<Tab>('servers');
+  // Deep-link a freshly added/discovered server straight into the assignment
+  // step: switch to the Grants tab with that server preselected (issue #459 UX).
+  const [assignServer, setAssignServer] = useState<string | null>(null);
+  const goAssign = useCallback((serverId: string) => {
+    setAssignServer(serverId);
+    setTab('grants');
+  }, []);
   return (
     <div className="mx-auto w-full max-w-[1400px] px-6 py-12 lg:px-8 lg:py-16">
       <h1 className="font-display text-[clamp(1.75rem,3.5vw,2.5rem)] leading-[1.1] text-[color:var(--fg-strong)]">
@@ -81,9 +88,11 @@ export default function AdminMcpPage(): React.ReactElement {
         ))}
       </div>
       <div className="mt-6">
-        {tab === 'servers' ? <ServersPane /> : null}
+        {tab === 'servers' ? <ServersPane onAssign={goAssign} /> : null}
         {tab === 'marketplace' ? <MarketplacePane /> : null}
-        {tab === 'grants' ? <GrantsPane /> : null}
+        {tab === 'grants' ? (
+          <GrantsPane initialServer={assignServer} onConsumed={() => setAssignServer(null)} />
+        ) : null}
         {tab === 'plugins' ? <PluginGrantsPane /> : null}
         {tab === 'audit' ? <AuditPane /> : null}
       </div>
@@ -192,7 +201,7 @@ function worstSeverityOf(server: McpServerNode): SkillVerdictSeverity {
   return worst;
 }
 
-function ServersPane(): React.ReactElement {
+function ServersPane({ onAssign }: { onAssign: (serverId: string) => void }): React.ReactElement {
   const t = useTranslations('adminMcp');
   const [servers, setServers] = useState<McpServerNode[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -373,6 +382,7 @@ function ServersPane(): React.ReactElement {
                   }
                   onDelete={() => setConfirmDelete(s)}
                   onAcked={() => void refresh()}
+                  onAssign={() => onAssign(s.id)}
                 />
               ))}
             </tbody>
@@ -409,6 +419,7 @@ function ServerRows({
   onToggleKg,
   onDelete,
   onAcked,
+  onAssign,
 }: {
   server: McpServerNode;
   expanded: boolean;
@@ -420,6 +431,7 @@ function ServerRows({
   onToggleKg: () => void;
   onDelete: () => void;
   onAcked: () => void;
+  onAssign: () => void;
 }): React.ReactElement {
   const t = useTranslations('adminMcp');
   const worst = worstSeverityOf(server);
@@ -499,7 +511,7 @@ function ServerRows({
       {expanded ? (
         <tr data-detail-row className="border-b border-[color:var(--border)]/60">
           <td className={tdCls} colSpan={10}>
-            <ServerDetail server={server} onAcked={onAcked} />
+            <ServerDetail server={server} onAcked={onAcked} onAssign={onAssign} />
           </td>
         </tr>
       ) : null}
@@ -651,9 +663,11 @@ function ServerConfigForm({ server }: { server: McpServerNode }): React.ReactEle
 function ServerDetail({
   server,
   onAcked,
+  onAssign,
 }: {
   server: McpServerNode;
   onAcked: () => void;
+  onAssign: () => void;
 }): React.ReactElement {
   const t = useTranslations('adminMcp');
   const [ackArm, setAckArm] = useState<string | null>(null);
@@ -698,6 +712,18 @@ function ServerDetail({
   return (
     <div className="flex flex-col gap-2">
       {head}
+      {/* Next-step CTA (issue #459 UX): a discovered server is inert until its
+          tools are granted to an orchestrator — link straight into that step. */}
+      {server.status === 'enabled' ? (
+        <div className="flex flex-wrap items-center gap-3 rounded-md border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/8 px-3 py-2">
+          <span className="text-xs text-[color:var(--fg-muted)]">
+            {t('servers.assignPrompt', { count: server.discoveredTools.length })}
+          </span>
+          <Button size="sm" onClick={onAssign}>
+            {t('servers.assignTools')}
+          </Button>
+        </div>
+      ) : null}
       {server.source === 'marketplace' ? (
         <div className="flex flex-wrap gap-2 text-[10px]">
           <span className="text-[color:var(--accent)]">{t('servers.marketplaceSource')}</span>
@@ -1186,7 +1212,47 @@ function MarketplacePane(): React.ReactElement {
 
 // ── Grants (read-only matrix, issue #461) ────────────────────────────────────
 
-function GrantsPane(): React.ReactElement {
+interface GrantGroup {
+  key: string;
+  holderKind: McpGrantMatrixRow['holderKind'];
+  holderLabel: string;
+  subLabel: string | null;
+  serverLabel: string;
+  tools: McpGrantMatrixRow[];
+}
+
+/** Collapse the flat (holder × server × tool) grant matrix into one card per
+ *  holder+server, so a server's granted tools read as a group instead of a
+ *  repetitive row per tool (issue #459 UX). */
+function groupGrants(rows: readonly McpGrantMatrixRow[]): GrantGroup[] {
+  const map = new Map<string, GrantGroup>();
+  for (const r of rows) {
+    const sub = r.holderKind === 'subagent' || r.holderKind === 'skill' ? r.subAgentName : null;
+    const key = `${r.holderKind}|${r.agentSlug ?? r.agentName ?? ''}|${r.subAgentId ?? sub ?? ''}|${r.serverId ?? r.serverName ?? ''}`;
+    let g = map.get(key);
+    if (!g) {
+      g = {
+        key,
+        holderKind: r.holderKind,
+        holderLabel: r.agentName ?? r.agentSlug ?? '?',
+        subLabel: sub,
+        serverLabel: r.serverName ?? r.serverId ?? '?',
+        tools: [],
+      };
+      map.set(key, g);
+    }
+    g.tools.push(r);
+  }
+  return [...map.values()];
+}
+
+function GrantsPane({
+  initialServer,
+  onConsumed,
+}: {
+  initialServer?: string | null;
+  onConsumed?: () => void;
+}): React.ReactElement {
   const t = useTranslations('adminMcp');
   const [rows, setRows] = useState<McpGrantMatrixRow[] | null>(null);
   const [orchestrators, setOrchestrators] = useState<McpOrchestrator[]>([]);
@@ -1213,6 +1279,16 @@ function GrantsPane(): React.ReactElement {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // Deep-link from a just-added server (issue #459 UX): once its enabled row is
+  // loaded, preselect it in the assign form and clear the one-shot target.
+  useEffect(() => {
+    if (!initialServer) return;
+    if (servers.some((s) => s.id === initialServer)) {
+      setPickServer(initialServer);
+      onConsumed?.();
+    }
+  }, [initialServer, servers, onConsumed]);
 
   async function revoke(row: McpGrantMatrixRow): Promise<void> {
     try {
@@ -1337,59 +1413,76 @@ function GrantsPane(): React.ReactElement {
         <div className="text-sm text-[color:var(--fg-muted)]">{t('grants.empty')}</div>
       ) : null}
       {rows && rows.length > 0 ? (
-        <div className="overflow-x-auto rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40">
-          <table className="w-full border-collapse">
-            <thead>
-              <tr className="border-b border-[color:var(--border)]">
-                <th className={thCls}>{t('grants.holder')}</th>
-                <th className={thCls}>{t('grants.server')}</th>
-                <th className={thCls}>{t('grants.tool')}</th>
-                <th className={thCls}>{t('grants.verdict')}</th>
-                <th className={thCls}>{t('grants.state')}</th>
-                <th className={thCls}>{t('grants.actions')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.grantId} className="border-b border-[color:var(--border)]/60">
-                  <td className={tdCls}>
-                    <span className="mr-1.5 rounded-full border border-[color:var(--border)] px-1.5 py-0.5 text-[10px] uppercase tracking-[0.08em] text-[color:var(--fg-muted)]">
-                      {t(`grants.kind.${r.holderKind}`)}
+        <div className="flex flex-col gap-2">
+          {groupGrants(rows).map((g) => (
+            <div
+              key={g.key}
+              className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-3"
+            >
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="rounded-full border border-[color:var(--border)] px-1.5 py-0.5 text-[10px] uppercase tracking-[0.08em] text-[color:var(--fg-muted)]">
+                  {t(`grants.kind.${g.holderKind}`)}
+                </span>
+                <span className="text-sm font-medium text-[color:var(--fg-strong)]">
+                  {g.holderLabel}
+                </span>
+                {g.subLabel ? (
+                  <span className="text-xs text-[color:var(--fg-muted)]">→ {g.subLabel}</span>
+                ) : null}
+                <span className="text-[color:var(--fg-muted)]">·</span>
+                <span className="text-sm text-[color:var(--fg-muted)]">{g.serverLabel}</span>
+                <span className="ml-auto text-[11px] text-[color:var(--fg-muted)]">
+                  {t('grants.toolCount', { count: g.tools.length })}
+                </span>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {g.tools.map((r) => {
+                  const revocable = r.holderKind === 'agent' || r.holderKind === 'subagent';
+                  const dot = r.blocked
+                    ? 'var(--danger)'
+                    : r.notYetScanned
+                      ? 'var(--warning)'
+                      : 'var(--success)';
+                  return (
+                    <span
+                      key={r.grantId}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)]/40 px-2 py-1 text-xs"
+                      title={
+                        r.blocked
+                          ? t('grants.blocked')
+                          : r.notYetScanned
+                            ? t('grants.unscanned')
+                            : t('grants.active')
+                      }
+                    >
+                      <span
+                        aria-hidden
+                        className="h-1.5 w-1.5 shrink-0 rounded-full"
+                        style={{ background: dot }}
+                      />
+                      <span className="text-[color:var(--fg-strong)]">{r.toolName}</span>
+                      {revocable ? (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmRevoke(r)}
+                          className="text-[color:var(--fg-muted)] transition-colors hover:text-[color:var(--danger)]"
+                          aria-label={t('grants.revoke')}
+                          title={t('grants.revoke')}
+                        >
+                          ✕
+                        </button>
+                      ) : null}
                     </span>
-                    {r.agentName ?? r.agentSlug ?? '?'}
-                    {(r.holderKind === 'subagent' || r.holderKind === 'skill') && r.subAgentName ? (
-                      <span className="text-xs text-[color:var(--fg-muted)]"> → {r.subAgentName}</span>
-                    ) : null}
-                  </td>
-                  <td className={tdCls}>{r.serverName ?? r.serverId ?? '?'}</td>
-                  <td className={tdCls}>{r.toolName}</td>
-                  <td className={tdCls}>
-                    <SkillVerdictBadge severity={r.severity ?? 'not_yet_scanned'} />
-                  </td>
-                  <td className={tdCls}>
-                    {r.blocked ? (
-                      <span className="text-[color:var(--danger)]">{t('grants.blocked')}</span>
-                    ) : r.notYetScanned ? (
-                      <span className="text-[color:var(--warning)]">{t('grants.unscanned')}</span>
-                    ) : (
-                      <span className="text-[color:var(--success)]">{t('grants.active')}</span>
-                    )}
-                  </td>
-                  <td className={tdCls}>
-                    {r.holderKind === 'agent' || r.holderKind === 'subagent' ? (
-                      <Button size="sm" variant="danger" onClick={() => setConfirmRevoke(r)}>
-                        {t('grants.revoke')}
-                      </Button>
-                    ) : (
-                      <span className="text-[10px] text-[color:var(--fg-muted)]">
-                        {t(`grants.manageHint.${r.holderKind}`)}
-                      </span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                  );
+                })}
+              </div>
+              {g.holderKind === 'skill' || g.holderKind === 'plugin' ? (
+                <div className="mt-1.5 text-[10px] text-[color:var(--fg-muted)]">
+                  {t(`grants.manageHint.${g.holderKind}`)}
+                </div>
+              ) : null}
+            </div>
+          ))}
         </div>
       ) : null}
       <ConfirmDialog
