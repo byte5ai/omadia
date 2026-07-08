@@ -1459,7 +1459,7 @@ function GrantsPane({
                 </span>
               </button>
               {open ? (
-              <div className="flex flex-wrap gap-1.5 px-3 pb-3">
+              <div className="flex flex-col border-t border-[color:var(--border)]/60">
                 {g.tools.map((r) => {
                   const revocable = r.holderKind === 'agent' || r.holderKind === 'subagent';
                   const dot = r.blocked
@@ -1467,17 +1467,15 @@ function GrantsPane({
                     : r.notYetScanned
                       ? 'var(--warning)'
                       : 'var(--success)';
+                  const stateLabel = r.blocked
+                    ? t('grants.blocked')
+                    : r.notYetScanned
+                      ? t('grants.unscanned')
+                      : t('grants.active');
                   return (
-                    <span
+                    <div
                       key={r.grantId}
-                      className="inline-flex items-center gap-1.5 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)]/40 px-2 py-1 text-xs"
-                      title={
-                        r.blocked
-                          ? t('grants.blocked')
-                          : r.notYetScanned
-                            ? t('grants.unscanned')
-                            : t('grants.active')
-                      }
+                      className="flex items-center gap-2 border-b border-[color:var(--border)]/40 px-3 py-1.5 text-sm last:border-b-0"
                     >
                       <span
                         aria-hidden
@@ -1485,26 +1483,22 @@ function GrantsPane({
                         style={{ background: dot }}
                       />
                       <span className="text-[color:var(--fg-strong)]">{r.toolName}</span>
+                      <span className="ml-auto text-[11px]" style={{ color: dot }}>
+                        {stateLabel}
+                      </span>
                       {revocable ? (
-                        <button
-                          type="button"
-                          onClick={() => setConfirmRevoke(r)}
-                          className="text-[color:var(--fg-muted)] transition-colors hover:text-[color:var(--danger)]"
-                          aria-label={t('grants.revoke')}
-                          title={t('grants.revoke')}
-                        >
-                          ✕
-                        </button>
-                      ) : null}
-                    </span>
+                        <Button size="sm" variant="danger" onClick={() => setConfirmRevoke(r)}>
+                          {t('grants.revoke')}
+                        </Button>
+                      ) : (
+                        <span className="text-[10px] text-[color:var(--fg-muted)]">
+                          {t(`grants.manageHint.${r.holderKind}`)}
+                        </span>
+                      )}
+                    </div>
                   );
                 })}
               </div>
-              ) : null}
-              {open && (g.holderKind === 'skill' || g.holderKind === 'plugin') ? (
-                <div className="px-3 pb-3 text-[10px] text-[color:var(--fg-muted)]">
-                  {t(`grants.manageHint.${g.holderKind}`)}
-                </div>
               ) : null}
             </div>
             );
