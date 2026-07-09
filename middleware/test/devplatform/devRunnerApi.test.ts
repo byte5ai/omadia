@@ -1,201 +1,24 @@
 import { describe, it, afterEach } from 'node:test';
 import { strict as assert } from 'node:assert';
-import type { Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
 
-import express from 'express';
-import type { Express } from 'express';
-
+import { RUNNER_PROTOCOL_VERSION } from '../../src/devplatform/types.js';
 import {
-  createDevRunnerRouter,
-  type DevRunnerJobStore,
-  type DevRunnerRouterDeps,
-} from '../../src/routes/devRunnerApi.js';
-import type { RunnerEventInput } from '../../src/devplatform/devJobStore.js';
-import type { FinalizeContext } from '../../src/devplatform/finalizeDevJob.js';
-import {
-  RUNNER_PROTOCOL_VERSION,
-  isTerminalDevJobStatus,
-  type DevJob,
-  type DevJobResult,
-  type DevJobStatus,
-  type DevRepo,
-} from '../../src/devplatform/types.js';
+  CLONE_TOKEN,
+  FIXED_NOW,
+  VALID,
+  auth,
+  hasCredentialKey,
+  makeHarness,
+  makeJob,
+  type Harness,
+} from './devRunnerApi.harness.js';
 
 /**
- * Epic #470 W0 — phone-home router (`/api/v1/dev-runner`). Verifies the job-token
- * auth gate (no `requireAuth`), the 401/409/410 status contract, and the six
- * endpoints against injected in-memory fakes. Regression-guards the reviewed
- * spec bug: `GET /spec` must carry NO credential field. No DB.
+ * Epic #470 W0 — phone-home router contract: the job-token auth gate (no
+ * `requireAuth`), the 401/409/410 status contract, and the six endpoints.
+ * Regression-guards the reviewed spec bug: `GET /spec` must carry NO credential.
+ * Adversarial cases live in devRunnerApi.hostile.test.ts. No DB.
  */
-
-const CLONE_TOKEN = 'CLONE-SECRET-DO-NOT-LEAK';
-const VALID = 'djr_valid-token';
-
-function makeJob(o: Partial<DevJob> = {}): DevJob {
-  const nowIso = new Date().toISOString();
-  const base: DevJob = {
-    id: 'job-1', repoId: 'repo-1', kind: 'implement', brief: 'implement the ticket',
-    source: 'admin', sourceRef: null, baseSha: 'base0000000000000000000000000000000000sha',
-    backend: 'local', agentKind: 'claude-cli', authMode: 'api_key', provision: 1,
-    phase: 'implement', status: 'provisioning', claimedBy: null, claimedAt: null,
-    lastHeartbeatAt: null, runnerHandle: null, runnerTokenHash: null,
-    branch: 'omadia/job-job-1-slug', prUrl: null, result: null, error: null,
-    tokensIn: 0, tokensOut: 0, costUsd: 0, createdBy: 'op', createdAt: nowIso,
-    startedAt: null, endedAt: null, updatedAt: nowIso,
-  };
-  return { ...base, ...o };
-}
-
-class FakeStore implements DevRunnerJobStore {
-  readonly jobs = new Map<string, DevJob>();
-  readonly tokens = new Map<string, string>();
-  readonly events: Array<{ jobId: string; provision: number; seq: number; type: string }> = [];
-  readonly artifacts: Array<{ id: string; jobId: string; kind: string; content: string; meta?: Record<string, unknown> }> = [];
-  readonly recorded: DevJobResult[] = [];
-  readonly markRunningCalls: string[] = [];
-  private readonly seen = new Set<string>();
-  private artifactSeq = 0;
-
-  add(job: DevJob, token = VALID): DevJob {
-    this.jobs.set(job.id, job);
-    this.tokens.set(job.id, token);
-    return job;
-  }
-
-  async verifyRunnerToken(jobId: string, token: string): Promise<boolean> {
-    return this.tokens.get(jobId) === token;
-  }
-  async getJob(jobId: string): Promise<DevJob | null> {
-    return this.jobs.get(jobId) ?? null;
-  }
-  readonly touchCalls: string[] = [];
-
-  /** Mirrors the real store: status-guarded, so a terminal job cannot revive. */
-  async touchHeartbeat(jobId: string): Promise<boolean> {
-    this.touchCalls.push(jobId);
-    const j = this.jobs.get(jobId);
-    if (!j) return false;
-    return j.status === 'provisioning' || j.status === 'running' || j.status === 'applying';
-  }
-
-  async markRunning(jobId: string): Promise<boolean> {
-    this.markRunningCalls.push(jobId);
-    const j = this.jobs.get(jobId);
-    if (j && j.status === 'provisioning') {
-      j.status = 'running';
-      return true;
-    }
-    return false;
-  }
-  async appendEvents(jobId: string, provision: number, evs: RunnerEventInput[]): Promise<number> {
-    let n = 0;
-    for (const e of evs) {
-      const k = `${jobId}#${String(provision)}#${String(e.seq)}`;
-      if (this.seen.has(k)) continue;
-      this.seen.add(k);
-      this.events.push({ jobId, provision, seq: e.seq, type: e.type });
-      n++;
-    }
-    return n;
-  }
-  async addArtifact(
-    jobId: string,
-    kind: string,
-    content: string,
-    meta?: Record<string, unknown>,
-  ): Promise<string> {
-    const id = `art-${String(++this.artifactSeq)}`;
-    this.artifacts.push({ id, jobId, kind, content, meta });
-    return id;
-  }
-  async recordResult(jobId: string, result: DevJobResult): Promise<void> {
-    this.recorded.push(result);
-    const j = this.jobs.get(jobId);
-    if (j && result.outcome === 'diff_ready' && !isTerminalDevJobStatus(j.status)) {
-      j.status = 'applying';
-    }
-  }
-}
-
-interface Harness {
-  server: Server;
-  baseUrl: string;
-  store: FakeStore;
-  finalizeCalls: Array<{ jobId: string; status: DevJobStatus; ctx?: FinalizeContext }>;
-  repoRunsTests: { value: boolean };
-  cloneToken: { value: string | undefined };
-  close(): Promise<void>;
-}
-
-const FIXED_NOW = Date.parse('2026-07-09T12:00:00.000Z');
-
-async function makeHarness(overrides: Partial<DevRunnerRouterDeps> = {}): Promise<Harness> {
-  const store = new FakeStore();
-  const finalizeCalls: Harness['finalizeCalls'] = [];
-  const repoRunsTests = { value: false };
-  const cloneToken: { value: string | undefined } = { value: CLONE_TOKEN };
-
-  const repos = {
-    getRepo: async (): Promise<Pick<DevRepo, 'cloneUrl' | 'defaultBranch' | 'runsTests'> | null> => ({
-      cloneUrl: 'https://github.com/o/r.git', defaultBranch: 'main', runsTests: repoRunsTests.value,
-    }),
-  };
-  const scmTokens = { resolve: async (): Promise<string | undefined> => cloneToken.value };
-  const finalizeDevJob = async (
-    jobId: string,
-    status: DevJobStatus,
-    ctx?: FinalizeContext,
-  ): Promise<DevJob | null> => {
-    finalizeCalls.push({ jobId, status, ctx });
-    const j = store.jobs.get(jobId);
-    if (j) j.status = status;
-    return j ?? null;
-  };
-
-  const app: Express = express();
-  app.use(
-    '/api/v1/dev-runner',
-    createDevRunnerRouter({
-      store,
-      repos,
-      scmTokens,
-      finalizeDevJob,
-      now: () => FIXED_NOW,
-      ...overrides,
-    }),
-  );
-
-  const server: Server = await new Promise((resolve) => {
-    const s = app.listen(0, () => resolve(s));
-  });
-  const port = (server.address() as AddressInfo).port;
-  return {
-    server,
-    baseUrl: `http://127.0.0.1:${String(port)}/api/v1/dev-runner`,
-    store,
-    finalizeCalls,
-    repoRunsTests,
-    cloneToken,
-    async close() {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-    },
-  };
-}
-
-function auth(token = VALID): Record<string, string> {
-  return { authorization: `Bearer ${token}` };
-}
-
-/** Recursively look for any key that smells like a credential. */
-function hasCredentialKey(v: unknown): boolean {
-  const re = /token|secret|credential|password/i;
-  if (Array.isArray(v)) return v.some(hasCredentialKey);
-  if (v && typeof v === 'object') {
-    return Object.entries(v).some(([k, val]) => re.test(k) || hasCredentialKey(val));
-  }
-  return false;
-}
 
 describe('devRunnerApi — auth gate', () => {
   let h: Harness;
@@ -344,9 +167,23 @@ describe('devRunnerApi — POST /events', () => {
       { seq: 1, type: 'tool' },
     ]);
     assert.equal(retry.accepted, 0);
-    // seq 0 under provision 2 is a distinct row → accepted.
+
+    // A colliding seq is accepted under a NEW provision — but only after a real
+    // re-provision bumps the job's own provision. The client does not get to
+    // choose: see the mismatch test below, without which the same seq could be
+    // replayed forever under invented provision numbers and idempotency would
+    // hold for cooperative clients only.
+    h.store.setProvision('job-1', 2);
     const p2 = await postEvents(h, 2, [{ seq: 0, type: 'log' }]);
     assert.equal(p2.accepted, 1);
+  });
+
+  it('409 when the client picks a provision that is not the job\'s (replay-dedupe bypass)', async () => {
+    h = await makeHarness();
+    h.store.add(makeJob({ status: 'running' })); // provision = 1
+    const spoofed = await postEvents(h, 999, [{ seq: 0, type: 'log' }]);
+    assert.equal(spoofed.status, 409);
+    assert.equal(h.store.events.length, 0);
   });
 
   it('400 on an invalid event type', async () => {
@@ -462,7 +299,10 @@ describe('devRunnerApi — POST /result', () => {
   it('diff_ready flips the job to applying via the store, not finalize', async () => {
     h = await makeHarness();
     h.store.add(makeJob({ status: 'running' }));
-    const res = await postResult(h, { outcome: 'diff_ready', diffArtifactId: 'art-1' });
+    // The artifact must exist and belong to this job. The earlier version of
+    // this test invented an id, which the ownership check now rejects.
+    const own = await h.store.addArtifact('job-1', 'diff', 'diff --git a/x b/x\n');
+    const res = await postResult(h, { outcome: 'diff_ready', diffArtifactId: own });
     assert.equal(res.status, 200);
     assert.equal(h.store.jobs.get('job-1')?.status, 'applying');
     assert.equal(h.store.recorded[0]?.outcome, 'diff_ready');

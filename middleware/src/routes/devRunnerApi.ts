@@ -59,6 +59,8 @@ export interface DevRunnerJobStore {
     content: string,
     meta?: Record<string, unknown>,
   ): Promise<string>;
+  /** Ownership check for a runner-named artifact id (see POST /result). */
+  artifactBelongsToJob(jobId: string, artifactId: string): Promise<boolean>;
   recordResult(jobId: string, result: DevJobResult): Promise<void>;
 }
 
@@ -96,6 +98,8 @@ export interface DevRunnerRouterDeps {
   maxDiffBytes?: number;
   /** Hard cap on events per `POST /events` batch. Default 1000. */
   maxEventsPerBatch?: number;
+  /** Hard cap on one event's serialized payload, in bytes. Default 64 KiB. */
+  maxEventPayloadBytes?: number;
   /** `spec.agent.model` — not persisted in W0's schema, injected if configured. */
   agentModel?: string;
   /** `spec.agent.maxTurns`. */
@@ -112,6 +116,9 @@ const DEFAULT_WALL_CLOCK_MS = 1_800_000; // 30 min
 const DEFAULT_SCM_TOKEN_TTL_MS = 15 * 60 * 1000; // 15 min
 const DEFAULT_MAX_DIFF_BYTES = 5 * 1024 * 1024; // 5 MiB
 const DEFAULT_MAX_EVENTS = 1000;
+const DEFAULT_MAX_EVENT_PAYLOAD_BYTES = 64 * 1024; // 64 KiB per event
+/** `seq` and `provision` land in int4 columns. */
+const MAX_SEQ = 2_147_483_647;
 
 /** `{ code, message }` — codes prefixed `devplatform.`, never a secret/stack. */
 function fail(res: Response, status: number, code: string, message: string): void {
@@ -161,6 +168,7 @@ export function createDevRunnerRouter(deps: DevRunnerRouterDeps): Router {
     scmTokenTtlMs = DEFAULT_SCM_TOKEN_TTL_MS,
     maxDiffBytes = DEFAULT_MAX_DIFF_BYTES,
     maxEventsPerBatch = DEFAULT_MAX_EVENTS,
+    maxEventPayloadBytes = DEFAULT_MAX_EVENT_PAYLOAD_BYTES,
     agentModel,
     maxTurns,
     now = Date.now,
@@ -260,19 +268,34 @@ export function createDevRunnerRouter(deps: DevRunnerRouterDeps): Router {
     const job = jobOf(res);
     if (!statusGate(res, job, ['provisioning', 'running'])) return;
 
+    // Reserve BEFORE the await, roll back on failure. `resolve` is a Vault
+    // round-trip; a check-then-await-then-add sequence lets two concurrent
+    // requests both pass the check and both receive a credential. In W0
+    // `resolve` returns the same static repo credential, so the race leaks
+    // nothing new — but W2 swaps it for a scoped App token minted on demand,
+    // and then the race mints two per provision. The guard is the only thing
+    // making this one-shot, so it must be atomic now, not later.
     const key = `${job.id}#${String(job.provision)}`;
     if (issuedScmTokens.has(key)) {
       fail(res, 409, 'devplatform.scm_token_already_issued', 'clone credential already issued for this provision');
       return;
     }
-    const token = await scmTokens.resolve(job.repoId);
+    issuedScmTokens.add(key);
+
+    let token: string | undefined;
+    try {
+      token = await scmTokens.resolve(job.repoId);
+    } catch (err) {
+      issuedScmTokens.delete(key);
+      throw err;
+    }
     if (!token) {
+      issuedScmTokens.delete(key);
       // Server-side misconfiguration (no stored repo credential). No secret in
       // the message; the runner cannot proceed and reports failed.
       fail(res, 500, 'devplatform.scm_token_unavailable', 'no clone credential available for this repository');
       return;
     }
-    issuedScmTokens.add(key);
     const expiresAt = new Date(now() + scmTokenTtlMs).toISOString();
     res.json({ token, expiresAt });
   });
@@ -288,6 +311,15 @@ export function createDevRunnerRouter(deps: DevRunnerRouterDeps): Router {
       fail(res, 400, 'devplatform.invalid_events', 'provision must be an integer');
       return;
     }
+    // Bind the provision to the job. Idempotency is `(job_id, provision, seq)`,
+    // so a client that picks its own provision defeats replay-dedupe entirely:
+    // the same `seq` under a fresh bogus provision is accepted forever. A real
+    // runner always has the current provision from `GET /spec`, and a
+    // re-provision bumps `job.provision` in lockstep.
+    if (body.provision !== job.provision) {
+      fail(res, 409, 'devplatform.provision_mismatch', 'provision does not match the job');
+      return;
+    }
     if (!Array.isArray(body.events)) {
       fail(res, 400, 'devplatform.invalid_events', 'events must be an array');
       return;
@@ -299,22 +331,32 @@ export function createDevRunnerRouter(deps: DevRunnerRouterDeps): Router {
     const events: RunnerEventInput[] = [];
     for (const raw of body.events) {
       const e = (raw ?? {}) as Record<string, unknown>;
-      if (!Number.isInteger(e['seq']) || (e['seq'] as number) < 0) {
-        fail(res, 400, 'devplatform.invalid_events', 'each event needs a non-negative integer seq');
+      const seq = e['seq'];
+      // Bounded, not merely non-negative: `seq` reaches an int4 column, and
+      // 2^53 would surface as a 500 a hostile runner can trigger at will.
+      if (!Number.isInteger(seq) || (seq as number) < 0 || (seq as number) > MAX_SEQ) {
+        fail(res, 400, 'devplatform.invalid_events', 'each event needs a seq in [0, 2147483647]');
         return;
       }
       if (!isDevJobEventType(e['type'])) {
         fail(res, 400, 'devplatform.invalid_events', 'each event needs a valid type');
         return;
       }
+      const payload =
+        e['payload'] && typeof e['payload'] === 'object'
+          ? (e['payload'] as Record<string, unknown>)
+          : {};
+      // The batch is capped, but a single event could otherwise carry the whole
+      // 4 MiB body as one payload and land in the log verbatim.
+      if (JSON.stringify(payload).length > maxEventPayloadBytes) {
+        fail(res, 413, 'devplatform.event_payload_too_large', 'event payload exceeds the per-event cap');
+        return;
+      }
       events.push({
-        seq: e['seq'] as number,
+        seq: seq as number,
         type: e['type'],
         ts: typeof e['ts'] === 'string' ? e['ts'] : null,
-        payload:
-          e['payload'] && typeof e['payload'] === 'object'
-            ? (e['payload'] as Record<string, unknown>)
-            : {},
+        payload,
       });
     }
     const accepted = await store.appendEvents(job.id, body.provision as number, events);
@@ -384,7 +426,23 @@ export function createDevRunnerRouter(deps: DevRunnerRouterDeps): Router {
     }
 
     const result: DevJobResult = { outcome };
-    if (typeof body['diffArtifactId'] === 'string') result.diffArtifactId = body['diffArtifactId'];
+
+    if (typeof body['diffArtifactId'] === 'string') {
+      // Bind the artifact to this job. The runner names the id; nothing else
+      // stops it naming another job's diff, which the host-side apply would
+      // then commit and open a pull request for.
+      if (!(await store.artifactBelongsToJob(job.id, body['diffArtifactId']))) {
+        fail(res, 400, 'devplatform.unknown_artifact', 'diffArtifactId does not belong to this job');
+        return;
+      }
+      result.diffArtifactId = body['diffArtifactId'];
+    }
+    // `diff_ready` flips the job to `applying`. Without a diff there is nothing
+    // to apply, and the worker would spin on an empty job.
+    if (outcome === 'diff_ready' && !result.diffArtifactId) {
+      fail(res, 400, 'devplatform.invalid_result', 'diff_ready requires a diffArtifactId');
+      return;
+    }
     if (typeof body['summary'] === 'string') result.summary = body['summary'];
     if (typeof body['error'] === 'string') result.error = body['error'];
     const usage = sanitizeUsage(body['usage']);

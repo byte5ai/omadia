@@ -14,16 +14,15 @@
 import { randomUUID } from 'node:crypto';
 import type { Pool } from 'pg';
 
+import * as artifacts from './devJobArtifactStore.js';
 import type { DevJobEventBus } from './devJobEventBus.js';
 import { verifyRunnerToken as verifyToken } from './jobToken.js';
 import { asObj, iso, isoN, num, str, strN, type Row } from './pgMappers.js';
 import {
-  isDevJobArtifactKind,
   isDevJobEventType,
   isTerminalDevJobStatus,
   type DevJob,
   type DevJobArtifact,
-  type DevJobArtifactKind,
   type DevJobEvent,
   type DevJobEventType,
   type DevJobResult,
@@ -86,7 +85,6 @@ const JOB_COLS =
   `runner_token_hash, branch, pr_url, result, error, tokens_in, tokens_out, cost_usd, ` +
   `created_by, created_at, started_at, ended_at, updated_at`;
 const EVENT_COLS = `id, job_id, provision, seq, type, ts, payload`;
-const ARTIFACT_COLS = `id, job_id, kind, content, meta, created_at`;
 
 function toJob(r: Row): DevJob {
   return {
@@ -132,17 +130,6 @@ function toEvent(r: Row): DevJobEvent {
     type: str(r['type']) as DevJobEventType,
     ts: iso(r['ts']),
     payload: asObj(r['payload'], {}),
-  };
-}
-
-function toArtifact(r: Row): DevJobArtifact {
-  return {
-    id: str(r['id']),
-    jobId: str(r['job_id']),
-    kind: str(r['kind']) as DevJobArtifactKind,
-    content: str(r['content']),
-    meta: asObj(r['meta'], {}),
-    createdAt: iso(r['created_at']),
   };
 }
 
@@ -401,37 +388,26 @@ export class DevJobStore {
   }
 
   // --- artifacts -----------------------------------------------------------
+  // --- artifacts (delegated to devJobArtifactStore.ts, 500-line rule) -------
+  async artifactBelongsToJob(jobId: string, artifactId: string): Promise<boolean> {
+    return artifacts.artifactBelongsToJob(this.pool, jobId, artifactId);
+  }
+
   async addArtifact(
     jobId: string,
     kind: string,
     content: string,
     meta: Record<string, unknown> = {},
   ): Promise<string> {
-    if (!isDevJobArtifactKind(kind)) {
-      throw new TypeError(`addArtifact: invalid artifact kind '${kind}'`);
-    }
-    const r = await this.pool.query<Row>(
-      `INSERT INTO dev_job_artifacts (job_id, kind, content, meta)
-       VALUES ($1, $2, $3, $4::jsonb) RETURNING id`,
-      [jobId, kind, content, JSON.stringify(meta)],
-    );
-    return str(r.rows[0]!['id']);
+    return artifacts.addArtifact(this.pool, jobId, kind, content, meta);
   }
 
   async getArtifact(id: string): Promise<DevJobArtifact | null> {
-    const r = await this.pool.query<Row>(
-      `SELECT ${ARTIFACT_COLS} FROM dev_job_artifacts WHERE id = $1`,
-      [id],
-    );
-    return r.rows[0] ? toArtifact(r.rows[0]) : null;
+    return artifacts.getArtifact(this.pool, id);
   }
 
   async listArtifacts(jobId: string): Promise<DevJobArtifact[]> {
-    const r = await this.pool.query<Row>(
-      `SELECT ${ARTIFACT_COLS} FROM dev_job_artifacts WHERE job_id = $1 ORDER BY created_at ASC`,
-      [jobId],
-    );
-    return r.rows.map(toArtifact);
+    return artifacts.listArtifacts(this.pool, jobId);
   }
 
   // --- tokens --------------------------------------------------------------
