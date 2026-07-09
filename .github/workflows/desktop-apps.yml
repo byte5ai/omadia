@@ -119,10 +119,12 @@ jobs:
           npm ci
           npm run build
 
-      - name: Build web-ui (bake the fixed kernel URL into the standalone build)
+      # No MIDDLEWARE_URL at build time: the /bot-api and /p proxies are route
+      # handlers that read it per request (web-ui/app/_lib/middlewareProxy.ts).
+      # The desktop supervisor injects the real kernel URL when it spawns the
+      # standalone server (desktop/src/supervisor.ts, uiEnv).
+      - name: Build web-ui
         working-directory: web-ui
-        env:
-          MIDDLEWARE_URL: ${{ env.KERNEL_URL }}
         run: |
           npm ci
           npm run build
