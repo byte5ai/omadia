@@ -209,19 +209,56 @@ function enrichPrompt(issue) {
   ].join('\n')
 }
 
-function reducePrompt(records) {
+const normPath = (f) => String(f).replace(/^NEW:\s*/i, '').trim()
+
+/**
+ * Hub files are touched by many unrelated issues: the plugin registration point, the
+ * i18n catalogs, the README, the config module. Two issues sharing `messages/en.json`
+ * are not coupled -- that file merges cleanly and every feature appends to it. Left in
+ * the signal they make every cluster look `dependent`, which collapses the whole
+ * sequential-vs-parallel decision to "always sequential" and silently kills the fan-out.
+ * Observed on the first live run: 7 of 7 clusters came back dependent, justified by
+ * en.json / de.json / index.ts overlap.
+ */
+function findHubFiles(records) {
+  const threshold = Math.max(3, Math.ceil(records.length * 0.1))
+  const counts = new Map()
+  for (const r of records) {
+    for (const f of new Set(r.touchedFiles.map(normPath))) counts.set(f, (counts.get(f) || 0) + 1)
+  }
+  return new Set([...counts].filter((e) => e[1] >= threshold).map((e) => e[0]))
+}
+
+function reducePrompt(records, hubFiles) {
   const table = records.map((r) => {
-    const files = r.touchedFiles.join(', ') || '(none identified)'
+    const all = r.touchedFiles.map(normPath)
+    const own = all.filter((f) => !hubFiles.has(f))
+    const hubs = all.filter((f) => hubFiles.has(f))
     const syms = r.keySymbols.join(', ') || '(none)'
     return [
       '#' + r.number + ' [' + r.category + '] impact=' + r.impact + ' effort=' + r.effort + ' readiness=' + r.readiness,
       '  summary: ' + r.summary,
-      '  touchedFiles: ' + files,
+      '  touchedFiles: ' + (own.join(', ') || '(none outside hub files)'),
+      '  alsoTouchesHubFiles: ' + (hubs.join(', ') || '(none)'),
       '  keySymbols: ' + syms,
     ].join('\n')
   }).join('\n\n')
 
+  const hubList = hubFiles.size
+    ? [
+        '## Hub files -- NOT evidence of coupling',
+        'These paths are touched by many unrelated issues in this repo. They are registration points,',
+        'i18n catalogs, config modules, and docs: append-only, merge-friendly, touched by every feature.',
+        'Two issues sharing one of these are NOT coupled. Never cite a hub file as cohesionEvidence.',
+        'They are listed per issue as alsoTouchesHubFiles purely so you understand what an issue does.',
+        '',
+        [...hubFiles].sort().map((f) => '  ' + f).join('\n'),
+        '',
+      ].join('\n')
+    : ''
+
   return [
+    hubList,
     'You are grouping the open issues of ' + REPO + ' into semantic clusters. Below are code-grounded',
     'descriptors for all ' + records.length + ' open issues, produced by one investigator each.',
     '',
@@ -233,17 +270,24 @@ function reducePrompt(records) {
     'cohesion is NOT "are these issues thematically similar". It is: "if I hand these issues to separate',
     'agents working on separate branches at the same time, do they collide?"',
     '',
-    '- dependent   -> two or more issues in the group share a touchedFile or a keySymbol, OR one issue',
-    '                 must land before another makes sense. Downstream this means: ONE branch, ONE pull',
-    '                 request closing all of them, implemented in order.',
-    '- independent -> the issues touch disjoint files. Downstream this means: one branch and one pull',
-    '                 request per issue, implemented in parallel.',
+    '- dependent   -> two or more issues in the group share a NON-HUB touchedFile or a keySymbol, OR one',
+    '                 issue must land before another makes sense, OR they would collide on the same new',
+    '                 migration number. Downstream this means: ONE branch, ONE pull request closing all',
+    '                 of them, implemented in order.',
+    '- independent -> the issues touch disjoint non-hub files. Downstream this means: one branch and one',
+    '                 pull request per issue, implemented in parallel.',
     '',
-    'Getting this wrong is the expensive failure. Three "auth" issues that all mutate the same middleware',
-    'file look like a natural group -- and if you tag them independent, three parallel agents will each',
-    'rewrite that file and produce three pull requests that revert one another. When the file overlap is',
-    'real, tag dependent. When you are uncertain, tag dependent: serialising costs time, colliding costs',
-    'a wasted run.',
+    'Getting this wrong is expensive in BOTH directions, so do not treat dependent as the safe default:',
+    '',
+    '- Tagging independent when they truly collide: three parallel agents each rewrite the same file and',
+    '  produce three pull requests that revert one another.',
+    '- Tagging dependent when they do not collide: five unrelated issues are chained onto one branch and',
+    '  one oversized pull request, so a single bad issue blocks the other four and nothing runs in',
+    '  parallel. A cluster where every member merely appends to en.json is NOT dependent.',
+    '',
+    'Judge on the touchedFiles line only. Ignore alsoTouchesHubFiles entirely for this decision. If the',
+    'only thing two issues share is a hub file, they are independent. Cite the actual shared non-hub path',
+    'or symbol in cohesionEvidence; if you cannot name one, the answer is independent.',
     '',
     'A group of exactly one issue is fine, and is always independent.',
     '',
@@ -287,9 +331,12 @@ if (enriched.length === 0) {
 }
 
 phase('Cluster')
-log('Grouping ' + enriched.length + ' descriptors in a single reduce agent')
 
-const grouped = await agent(reducePrompt(enriched), {
+const hubFiles = findHubFiles(enriched)
+log('Grouping ' + enriched.length + ' descriptors in a single reduce agent')
+if (hubFiles.size) log('Excluding ' + hubFiles.size + ' hub file(s) from the cohesion signal: ' + [...hubFiles].sort().slice(0, 6).join(', ') + (hubFiles.size > 6 ? ', ...' : ''))
+
+const grouped = await agent(reducePrompt(enriched, hubFiles), {
   label: 'cluster+cohesion',
   phase: 'Cluster',
   schema: CLUSTER_SCHEMA,
