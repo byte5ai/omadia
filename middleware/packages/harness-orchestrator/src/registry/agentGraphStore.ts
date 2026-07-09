@@ -285,7 +285,11 @@ export interface McpRegistryRow {
   readonly name: string;
   readonly url: string;
   readonly authKind: 'none' | 'bearer';
-  readonly token: string | null;
+  // NOTE: the bearer token is intentionally absent from the persisted row.
+  // It is a secret-at-rest and lives ONLY in the SecretVault (namespace
+  // `@omadia/mcp-registry`, key = id) — see McpRegistrySecretService and
+  // migration 0020 (issue #463 item 5). Resolve it at runtime when building
+  // the McpRegistryClient's McpRegistryConfig.
   /** Catalog-API dialect selecting the client normalizer (issue #455 W7). */
   readonly kind: 'official' | 'smithery' | 'generic';
   readonly createdAt: Date;
@@ -395,7 +399,8 @@ interface McpRegistryDbRow {
   name: string;
   url: string;
   auth_kind: 'none' | 'bearer';
-  token: string | null;
+  // token column still exists (migration 0020, expand phase) but is never
+  // mapped onto McpRegistryRow — the secret lives in the vault, not the row.
   kind?: 'official' | 'smithery' | 'generic';
   created_at: Date;
 }
@@ -406,7 +411,6 @@ function mapMcpRegistry(r: McpRegistryDbRow): McpRegistryRow {
     name: r.name,
     url: r.url,
     authKind: r.auth_kind,
-    token: r.token,
     kind: r.kind ?? 'generic',
     createdAt: r.created_at,
   };
@@ -1405,20 +1409,39 @@ export class AgentGraphStore {
     readonly name: string;
     readonly url: string;
     readonly authKind?: 'none' | 'bearer';
-    readonly token?: string | null;
     readonly kind?: 'official' | 'smithery' | 'generic';
   }): Promise<McpRegistryRow> {
+    // The bearer token is NOT written here — the caller persists it to the
+    // vault via McpRegistrySecretService.setToken(row.id, token) after create.
     const { rows } = await this.pool.query<McpRegistryDbRow>(
-      `INSERT INTO mcp_registries (name, url, auth_kind, token, kind)
-       VALUES ($1,$2,COALESCE($3,'none'),$4,COALESCE($5,'generic'))
+      `INSERT INTO mcp_registries (name, url, auth_kind, kind)
+       VALUES ($1,$2,COALESCE($3,'none'),COALESCE($4,'generic'))
        RETURNING *`,
-      [input.name, input.url, input.authKind ?? null, input.token ?? null, input.kind ?? null],
+      [input.name, input.url, input.authKind ?? null, input.kind ?? null],
     );
     return mapMcpRegistry(rows[0]!);
   }
 
   async deleteMcpRegistry(id: string): Promise<void> {
+    // The vault token (if any) is removed by the caller via
+    // McpRegistrySecretService.deleteToken(id) — the store has no vault handle.
     await this.pool.query('DELETE FROM mcp_registries WHERE id = $1', [id]);
+  }
+
+  // ── Legacy plaintext token backfill (issue #463 item 5) ────────────────────
+  // Source + clear helpers for the one-time boot migration of any pre-0020
+  // plaintext `mcp_registries.token` into the vault. Kept separate from
+  // mapMcpRegistry so the secret never rides on the ordinary row type.
+
+  async listLegacyMcpRegistryTokens(): Promise<readonly { id: string; token: string }[]> {
+    const { rows } = await this.pool.query<{ id: string; token: string }>(
+      `SELECT id, token FROM mcp_registries WHERE token IS NOT NULL`,
+    );
+    return rows;
+  }
+
+  async clearLegacyMcpRegistryToken(id: string): Promise<void> {
+    await this.pool.query('UPDATE mcp_registries SET token = NULL WHERE id = $1', [id]);
   }
 
   /** Bump the config epoch of every grant on a server (epic #459, codex

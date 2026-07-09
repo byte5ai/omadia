@@ -238,6 +238,10 @@ import { NativeToolRegistry } from '@omadia/orchestrator';
 import { McpManager, type McpCallLogEntry, type McpServerConfig } from '@omadia/orchestrator';
 import { McpOAuthService } from './services/mcpOAuthService.js';
 import { McpConfigService } from './services/mcpConfigService.js';
+import {
+  McpRegistrySecretService,
+  backfillMcpRegistryTokens,
+} from './services/mcpRegistrySecretService.js';
 import { AgentGraphStore } from '@omadia/orchestrator';
 import { registerDbSubAgentTools } from './agents/subAgentToolHydration.js';
 import {
@@ -1445,6 +1449,22 @@ async function main(): Promise<void> {
     ? new McpConfigService({ graph: new AgentGraphStore(graphPool), vault: secretVault })
     : undefined;
 
+  // MCP registry bearer tokens live in the vault, never on the DB row
+  // (issue #463 item 5). Move any legacy plaintext token (pre-0020) into the
+  // vault on boot — idempotent, a no-op once the column is NULL.
+  const mcpRegistrySecrets = graphPool
+    ? new McpRegistrySecretService({ vault: secretVault })
+    : undefined;
+  if (graphPool && mcpRegistrySecrets) {
+    await backfillMcpRegistryTokens({
+      store: new AgentGraphStore(graphPool),
+      secrets: mcpRegistrySecrets,
+      log: (m) => console.log(m),
+    }).catch((e: unknown) =>
+      console.error('[middleware] mcp registry token backfill failed:', e),
+    );
+  }
+
   // Phase 5B: publish so dynamic-imported channel plugins can late-resolve
   // the tenant id via ctx.services.get('graphTenantId') instead of being
   // threaded through constructor Deps.
@@ -2279,6 +2299,7 @@ async function main(): Promise<void> {
       // Generic MCP OAuth (epic #459 W9) — begin/callback/manual-client routes.
       ...(mcpOAuthService ? { mcpOAuth: mcpOAuthService, mcpOAuthUserKey } : {}),
       ...(mcpConfigService ? { mcpConfig: mcpConfigService } : {}),
+      ...(mcpRegistrySecrets ? { mcpRegistrySecrets } : {}),
     }),
   );
   console.log(
