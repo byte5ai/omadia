@@ -39,6 +39,12 @@ describe('privacyInternPolicy', () => {
     'odoo_search',
     'enrich_company',
     'web_search',
+    // #361 acceptance pin — MCP-sourced tools (adapted via
+    // `mcpNativeToolName` → `mcp__<server>__<tool>`, or exposed through a
+    // sub-agent toolkit) dispatch through the same choke points as
+    // first-party tools and MUST stay interned via `internToolResultV4`.
+    'mcp__strava__get_activities',
+    'mcp__confluence__search_pages',
   ];
 
   it('exempts exactly the agent self/infra tools', () => {

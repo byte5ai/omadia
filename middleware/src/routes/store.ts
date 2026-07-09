@@ -11,6 +11,7 @@ import type {
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
+import type { PluginVerdictLookup } from '../services/pluginVerdict.js';
 import type {
   RegistryClient,
   ResolvedRegistryPlugin,
@@ -27,6 +28,10 @@ interface StoreDeps {
   /** Spec 004 — read-only access to plugins' pushed `ctx.status` so the list
    *  and detail responses can carry `action_status` for the badge/banner. */
   pluginStatusRegistry?: PluginStatusRegistry;
+  /** Issue #453 — advisory code-scan verdicts for ingested packages. When
+   *  present, the detail response carries a read-only `verdict` and the
+   *  operator ack endpoint is mounted. Lookup only — GET never scans. */
+  verdicts?: PluginVerdictLookup;
 }
 
 /** Overlay the live `ctx.status` value (if any) onto a plugin record. Returns
@@ -194,6 +199,17 @@ export function createStoreRouter(deps: StoreDeps): Router {
       }
       const installAvailable = plugin.install_state === 'available';
       plugin = withActionStatus(plugin, deps.pluginStatusRegistry);
+      // Issue #453 — decorate with the advisory code-scan verdict. Pure
+      // lookup (never triggers a scan); a store hiccup degrades to "no
+      // verdict shown", never a 500.
+      let verdict;
+      if (deps.verdicts) {
+        try {
+          verdict = await deps.verdicts.getForPlugin(id);
+        } catch {
+          verdict = undefined;
+        }
+      }
       const body: StoreGetResponse = {
         plugin,
         manifest: entry.manifest,
@@ -201,11 +217,48 @@ export function createStoreRouter(deps: StoreDeps): Router {
         ...(plugin.incompatibility_reasons
           ? { blocking_reasons: plugin.incompatibility_reasons }
           : {}),
+        ...(verdict ? { verdict } : {}),
       };
       res.json(body);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({ code: 'store.get_failed', message });
+    }
+  });
+
+  // Issue #453 — operator acknowledgement of a code-scan verdict. Advisory
+  // model as in #452: any authenticated operator may ack (omadia has no role
+  // differentiation yet — see the acknowledged gap in agentBuilder.ts), but
+  // ack_by/ack_at are persisted for audit.
+  router.post('/:id/verdict/ack', async (req: Request, res: Response) => {
+    try {
+      const rawId = req.params['id'];
+      const id = typeof rawId === 'string' ? rawId : undefined;
+      if (!id) {
+        res.status(400).json({ code: 'store.invalid_id', message: 'missing id' });
+        return;
+      }
+      if (!deps.verdicts) {
+        res.status(404).json({
+          code: 'store.verdicts_unavailable',
+          message: 'code-scan verdicts are not enabled on this deployment',
+        });
+        return;
+      }
+      const session = (req as Request & { session?: { email: string } }).session;
+      const ackedBy = session?.email ?? 'unknown';
+      const ack = await deps.verdicts.ack(id, ackedBy);
+      if (!ack) {
+        res.status(404).json({
+          code: 'store.verdict_not_found',
+          message: `no code-scan verdict recorded for plugin '${id}'`,
+        });
+        return;
+      }
+      res.json({ ack });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ code: 'store.ack_failed', message });
     }
   });
 

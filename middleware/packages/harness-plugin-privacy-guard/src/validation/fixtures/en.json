@@ -1,0 +1,32 @@
+[
+  {
+    "text": "What should we pay Anna Schmidt (32, lives at Bahnhofstr. 5, 60311 Frankfurt) given her current salary of €72,000?",
+    "spans": [
+      { "value": "Anna Schmidt", "type": "person", "tier": "high" },
+      { "value": "Bahnhofstr. 5, 60311 Frankfurt", "type": "address", "tier": "high" },
+      { "value": "€72,000", "type": "amount", "tier": "critical" }
+    ]
+  },
+  {
+    "text": "Wire the bonus to GB29 NWBK 6016 1331 9268 19 and cc jane.doe@example-corp.com on the confirmation.",
+    "spans": [
+      { "value": "GB29 NWBK 6016 1331 9268 19", "type": "iban", "tier": "critical" },
+      { "value": "jane.doe@example-corp.com", "type": "email", "tier": "high" }
+    ]
+  },
+  {
+    "text": "Call the candidate at +44 20 7946 0958; her date of birth is 1990-06-15.",
+    "spans": [
+      { "value": "+44 20 7946 0958", "type": "phone", "tier": "high" },
+      { "value": "1990-06-15", "type": "date", "tier": "high" }
+    ]
+  },
+  {
+    "text": "Summarize our vacation carry-over policy for employees in their first year.",
+    "spans": []
+  },
+  {
+    "text": "Draft a follow-up on the roadmap review; keep the tone neutral.",
+    "spans": []
+  }
+]

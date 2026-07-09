@@ -1,0 +1,44 @@
+[
+  {
+    "text": "Was sollten wir Anna Schmidt (32, wohnhaft Bahnhofstr. 5, 60311 Frankfurt) zahlen, ausgehend von ihrem aktuellen Gehalt von €72.000?",
+    "spans": [
+      { "value": "Anna Schmidt", "type": "person", "tier": "high" },
+      { "value": "Bahnhofstr. 5, 60311 Frankfurt", "type": "address", "tier": "high" },
+      { "value": "€72.000", "type": "amount", "tier": "critical" }
+    ]
+  },
+  {
+    "text": "Bitte überweise das Gehalt auf DE89 3704 0044 0532 0130 00 und bestätige an m.vomberg@firma-beispiel.de.",
+    "spans": [
+      { "value": "DE89 3704 0044 0532 0130 00", "type": "iban", "tier": "critical" },
+      { "value": "m.vomberg@firma-beispiel.de", "type": "email", "tier": "high" }
+    ]
+  },
+  {
+    "text": "Ruf Marvin Vomberg unter +49 171 5551234 an, er ist am 24.12.1987 geboren.",
+    "spans": [
+      { "value": "Marvin Vomberg", "type": "person", "tier": "high" },
+      { "value": "+49 171 5551234", "type": "phone", "tier": "high" },
+      { "value": "24.12.1987", "type": "date", "tier": "high" }
+    ]
+  },
+  {
+    "text": "Die Rechnung über 1.250,50 € ging an die Musterallee 12, 10115 Berlin.",
+    "spans": [
+      { "value": "1.250,50 €", "type": "amount", "tier": "critical" },
+      { "value": "Musterallee 12, 10115 Berlin", "type": "address", "tier": "high" }
+    ]
+  },
+  {
+    "text": "Der Abwesenheitstyp Krankheit wird im HR-Modul separat ausgewiesen — bitte fasse die Regelung zusammen.",
+    "spans": []
+  },
+  {
+    "text": "Wie viele Urlaubstage stehen einem Mitarbeiter nach drei Jahren Betriebszugehörigkeit zu?",
+    "spans": []
+  },
+  {
+    "text": "Erstelle einen Statusbericht für das Q3-Projekt, Budgetrahmen unverändert.",
+    "spans": []
+  }
+]

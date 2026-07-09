@@ -19,6 +19,8 @@ import type {
   BypassedToolEntry,
   PrivacyBypassedToolRequest,
   PrivacyGuardService,
+  PrivacyPromptMaskRequest,
+  PrivacyPromptMaskResult,
   PrivacyReceipt,
   PrivacyRenderedAnswer,
   PrivacySubAgentResultV4Request,
@@ -26,6 +28,8 @@ import type {
   PrivacyToolResultV4Result,
   PrivacyV4ToolRequest,
   PrivacyV4ToolSpec,
+  PromptMaskedSpanInfo,
+  PromptPiiDetector,
 } from '@omadia/plugin-api';
 
 import { createDatasetStore } from './v4/datasetStore.js';
@@ -45,6 +49,10 @@ import {
   type LlmComplete,
   type PiiSchemaClassifier,
 } from './v4/piiClassifier.js';
+import { createBaselineDetector, maskPrompt } from './promptMask.js';
+import { findIdentityLeaks } from './v4/onTheWire.js';
+import { resolvePseudonyms } from './v4/pseudonym.js';
+import type { PseudonymMap } from './v4/types.js';
 
 /**
  * Collect the identity-bearing string(s) of a single field VALUE into `out`
@@ -76,6 +84,17 @@ interface V4ReceiptAccum {
   fieldsCleartext: number;
   readonly verbsExecuted: string[];
   pseudonymProjectionUsed: boolean;
+  /** #361 — PII-free records of prompt spans masked this turn. */
+  readonly maskedPromptSpans: PromptMaskedSpanInfo[];
+}
+
+/** #361 — config key on THIS plugin's install that turns prompt masking on.
+ *  Default off: absent/other values mean `maskUserPrompt` reports `disabled`
+ *  and the orchestrator proceeds byte-identically to legacy behavior. */
+export const MASK_USER_PROMPT_CONFIG_KEY = 'mask_user_prompt';
+
+function isPromptMaskEnabled(value: unknown): boolean {
+  return value === true || value === 'true' || value === 'on';
 }
 
 const V4_RENDER_NOTE =
@@ -141,6 +160,19 @@ export function createPrivacyGuardService(deps?: {
    * masking is wholly independent of this.
    */
   readonly llmComplete?: LlmComplete;
+  /**
+   * #361 — live config reader (`ctx.config.get`) for the default-off
+   * `mask_user_prompt` flag. Absent ⇒ prompt masking always reports
+   * `disabled` (byte-identical legacy behavior).
+   */
+  readonly readConfig?: (key: string) => unknown;
+  /**
+   * #361 — the C1 transformer detector slot (Piiranha / GLiNER). Absent ⇒
+   * only the C0 regex baseline runs. When present and it THROWS, masking
+   * degrades to C0 with a `promptMaskDegraded` audit log (failure-closed
+   * tier 1); it never silently passes an unmasked prompt.
+   */
+  readonly c1Detector?: PromptPiiDetector;
 }): PrivacyGuardService {
   // One turn-scoped Dataset Store per turn, minted lazily on the first
   // `internToolResultV4` and dropped by `finalizeTurn`.
@@ -160,6 +192,11 @@ export function createPrivacyGuardService(deps?: {
   // plugin). Drained into the receipt by `finalizeTurn`. Entries carry
   // only tool/plugin names + a byte count (no values).
   const bypassedTools = new Map<string, BypassedToolEntry[]>();
+  // #361 — per-turn prompt-surrogate map (real↔surrogate), server-side
+  // only. Extended across repeated mask calls within one turn (message +
+  // ingested attachment tail) so surrogates stay stable; inverted over the
+  // final answer by `restorePromptPseudonyms`; dropped by `finalizeTurn`.
+  const promptMaskMaps = new Map<string, PseudonymMap>();
   // Slice 2 — cached, Haiku-backed schema PII classifier. Process-scoped
   // (its cache spans turns — schema verdicts are tool-shape-stable). Absent
   // when no host LLM is wired.
@@ -195,6 +232,7 @@ export function createPrivacyGuardService(deps?: {
         fieldsCleartext: 0,
         verbsExecuted: [],
         pseudonymProjectionUsed: false,
+        maskedPromptSpans: [],
       };
       receipts.set(turnId, r);
     }
@@ -395,6 +433,110 @@ export function createPrivacyGuardService(deps?: {
       return answer;
     },
 
+    // #361 — free-text prompt masking. Failure-closed: there is no
+    // pass-through-unmasked outcome. Tier 1: the C1 transformer throwing
+    // degrades to C0 results with a `promptMaskDegraded` audit line.
+    // Tier 2: the C0 baseline itself failing, or a residual real span
+    // surviving substitution (asserted via `findIdentityLeaks`), BLOCKS
+    // the turn.
+    async maskUserPrompt(
+      request: PrivacyPromptMaskRequest,
+    ): Promise<PrivacyPromptMaskResult> {
+      if (!isPromptMaskEnabled(deps?.readConfig?.(MASK_USER_PROMPT_CONFIG_KEY))) {
+        return { outcome: 'disabled' };
+      }
+      const detectors = [createBaselineDetector()];
+      let degraded = false;
+      if (deps?.c1Detector) {
+        // Run the C1 detector up-front so its failure cannot take the C0
+        // baseline down with it (tier-1 degrade, audited); its spans are
+        // memoized into a pass-through detector for the mask pass.
+        const c1 = deps.c1Detector;
+        try {
+          const c1Spans = await c1.detect(request.text);
+          detectors.push({ id: c1.id, detect: async () => c1Spans });
+        } catch (err) {
+          degraded = true;
+          console.warn(
+            `[privacy-guard v4] promptMaskDegraded turn=${request.turnId} ` +
+              `detector=${c1.id}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+      try {
+        const result = await maskPrompt(
+          request.text,
+          detectors,
+          promptMaskMaps.get(request.turnId),
+        );
+        // Post-mask invariant: no detected real value may survive in the
+        // wire-bound text. A hit means substitution failed — block.
+        const residual = findIdentityLeaks(result.maskedText, [
+          ...result.map.forward.keys(),
+        ]);
+        if (residual.length > 0) {
+          console.error(
+            `[privacy-guard v4] promptMaskBlocked turn=${request.turnId} ` +
+              `residual=${String(residual.length)} span(s) survived substitution`,
+          );
+          return {
+            outcome: 'blocked',
+            reason: 'residual PII span survived substitution',
+          };
+        }
+        promptMaskMaps.set(request.turnId, result.map);
+        const spanInfos: PromptMaskedSpanInfo[] = result.spans.map((s) => ({
+          type: s.type,
+          detector: s.detector,
+        }));
+        if (spanInfos.length > 0) {
+          receiptFor(request.turnId).maskedPromptSpans.push(...spanInfos);
+        }
+        console.log(
+          `[privacy-guard v4] promptMask turn=${request.turnId} ` +
+            `spans=${String(spanInfos.length)}${degraded ? ' degraded=c0-only' : ''}`,
+        );
+        return {
+          outcome: 'masked',
+          maskedText: result.maskedText,
+          spans: spanInfos,
+          degraded,
+        };
+      } catch (err) {
+        // Tier 2 — the baseline path itself failed. Never pass unmasked.
+        console.error(
+          `[privacy-guard v4] promptMaskBlocked turn=${request.turnId}: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+        return {
+          outcome: 'blocked',
+          reason: 'prompt PII detection failed',
+        };
+      }
+    },
+
+    async restorePromptPseudonyms(turnId: string, text: string): Promise<string> {
+      const map = promptMaskMaps.get(turnId);
+      if (map === undefined || map.reverse.size === 0) return text;
+      return resolvePseudonyms(text, map);
+    },
+
+    snapshotPromptRestorer(
+      turnId: string,
+    ): ((text: string) => string) | undefined {
+      const map = promptMaskMaps.get(turnId);
+      if (map === undefined || map.reverse.size === 0) return undefined;
+      // Self-contained copy: the closure must keep working after
+      // `finalizeTurn` dropped the live map — fire-and-forget fact
+      // extraction restores extracted facts to real values long after the
+      // turn's answer went out.
+      const snapshot: PseudonymMap = {
+        forward: new Map(map.forward),
+        reverse: new Map(map.reverse),
+      };
+      return (text: string): string => resolvePseudonyms(text, snapshot);
+    },
+
     resolveDatasetForRender(turnId, datasetId) {
       const dataset = stores.get(turnId)?.get(datasetId);
       if (dataset === undefined) return undefined;
@@ -424,18 +566,23 @@ export function createPrivacyGuardService(deps?: {
       stores.get(turnId)?.finalizeTurn();
       stores.delete(turnId);
       renderedAnswers.delete(turnId);
+      // #361 — drop the prompt-surrogate map. `restorePromptPseudonyms`
+      // must have run over the final answer before this point.
+      promptMaskMaps.delete(turnId);
       const accum = receipts.get(turnId);
       receipts.delete(turnId);
       const piiValues = turnPiiValues.get(turnId);
       turnPiiValues.delete(turnId);
       const bypassed = bypassedTools.get(turnId);
       bypassedTools.delete(turnId);
-      // No receipt for a turn that touched neither the boundary nor a
-      // bypass — there is nothing to report and a zero receipt is just
-      // noise in the channel UI.
+      // No receipt for a turn that touched neither the boundary, a bypass,
+      // nor prompt masking — there is nothing to report and a zero receipt
+      // is just noise in the channel UI.
       const hasInterned = accum !== undefined && accum.datasetsInterned > 0;
       const hasBypassed = bypassed !== undefined && bypassed.length > 0;
-      if (!hasInterned && !hasBypassed) return undefined;
+      const hasMaskedPrompt =
+        accum !== undefined && accum.maskedPromptSpans.length > 0;
+      if (!hasInterned && !hasBypassed && !hasMaskedPrompt) return undefined;
       // identityValuesOnWire — personal-identity values the requester named
       // in their own message text. A transparency notice (the user put a
       // real identity on the wire), NOT a leak of tool data.
@@ -462,6 +609,9 @@ export function createPrivacyGuardService(deps?: {
         pseudonymProjectionUsed: accum?.pseudonymProjectionUsed ?? false,
         identityValuesOnWire,
         ...(hasBypassed ? { bypassedTools: [...bypassed] } : {}),
+        ...(hasMaskedPrompt
+          ? { maskedPromptSpans: [...accum.maskedPromptSpans] }
+          : {}),
       };
     },
   };

@@ -400,6 +400,13 @@ const ConfigSchema = z.object({
   PACKAGE_UPLOAD_MAX_BYTES: z.coerce.number().int().positive().default(15 * 1024 * 1024),
   PACKAGE_UPLOAD_MAX_EXTRACTED_BYTES: z.coerce.number().int().positive().default(80 * 1024 * 1024),
   PACKAGE_UPLOAD_MAX_ENTRIES: z.coerce.number().int().positive().default(2000),
+  /** Base URL of the SkillSpector code-scan sidecar (issue #453), e.g.
+   *  http://skillspector:8811. Unset → no scanning: ingests succeed
+   *  unchanged and NO verdict rows are written (`scan_failed` is reserved
+   *  for real sidecar failures). Advisory-only in v1 — a verdict never
+   *  blocks an install. */
+  SKILLSPECTOR_URL: z.string().url().optional(),
+  SKILLSPECTOR_TIMEOUT_MS: z.coerce.number().int().positive().default(20_000),
   /** Root of the built-in package tree (scanned for manifest.yaml files at
    *  boot). In dev this resolves to `<repo>/middleware/packages`; in the
    *  Docker image it's `/app/packages`. Each subdirectory with a valid
