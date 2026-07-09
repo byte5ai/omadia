@@ -93,6 +93,14 @@ describe('devRunnerApi — hostile runner', () => {
     h = await makeHarness({ maxEventPayloadBytes: 128 });
     h.store.add(makeJob({ status: 'running' }));
 
+    // Multibyte: 60 CJK chars = 60 UTF-16 units but 180 bytes. A .length cap
+    // would pass this; a byte cap must reject it.
+    const multibyte = await post('/jobs/job-1/events', {
+      provision: 1,
+      events: [{ seq: 5, type: 'log', payload: { text: '\u8eca'.repeat(60) } }],
+    });
+    assert.equal(multibyte.status, 413);
+
     const tooBig = await post('/jobs/job-1/events', {
       provision: 1,
       events: [{ seq: 0, type: 'log', payload: { text: 'y'.repeat(500) } }],

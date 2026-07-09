@@ -297,7 +297,17 @@ export function createDevRunnerRouter(deps: DevRunnerRouterDeps): Router {
       return;
     }
     const expiresAt = new Date(now() + scmTokenTtlMs).toISOString();
-    res.json({ token, expiresAt });
+    // Roll back the reservation if the send itself fails (client dropped the
+    // socket mid-body). Otherwise the key sticks and a legitimate same-provision
+    // retry is refused until the process restarts — the runner would then never
+    // get its clone credential and the job would fail. The reservation only
+    // holds once the response has actually left.
+    try {
+      res.json({ token, expiresAt });
+    } catch (err) {
+      issuedScmTokens.delete(key);
+      throw err;
+    }
   });
 
   // --- POST /jobs/:id/events -----------------------------------------------
@@ -348,7 +358,9 @@ export function createDevRunnerRouter(deps: DevRunnerRouterDeps): Router {
           : {};
       // The batch is capped, but a single event could otherwise carry the whole
       // 4 MiB body as one payload and land in the log verbatim.
-      if (JSON.stringify(payload).length > maxEventPayloadBytes) {
+      // Bytes, not UTF-16 code units: a multibyte payload (CJK, astral) would
+      // otherwise slip 2–3x past the nominal cap. Matches POST /diff.
+      if (Buffer.byteLength(JSON.stringify(payload), 'utf8') > maxEventPayloadBytes) {
         fail(res, 413, 'devplatform.event_payload_too_large', 'event payload exceeds the per-event cap');
         return;
       }

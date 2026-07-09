@@ -255,4 +255,17 @@ describe('devplatform/DevJobStore (pg)', { skip: !pgAvailable }, () => {
     assert.ok(stalled.some((j) => j.id === claimed!.id), 'the active job is a stall candidate');
     void job;
   });
+
+  it('a real addArtifact id is a uuid and passes the ownership pre-filter', async () => {
+    const localRepo = await newRepo();
+    const job = await newQueuedJob(localRepo.id);
+    const artifactId = await store.addArtifact(job.id, 'diff', 'diff --git a/x b/x\n', { bytes: 20 });
+    // The ownership guard rejects a non-uuid before it queries; a legitimate id
+    // must clear it, or the job's own diff would 400. gen_random_uuid() (0021)
+    // guarantees the shape, and this covers the pre-filter no unit test reaches.
+    assert.match(artifactId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    assert.equal(await store.artifactBelongsToJob(job.id, artifactId), true);
+    assert.equal(await store.artifactBelongsToJob('00000000-0000-0000-0000-000000000000', artifactId), false);
+    assert.equal(await store.artifactBelongsToJob(job.id, 'not-a-uuid'), false);
+  });
 });
