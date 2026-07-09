@@ -93,9 +93,16 @@ const CLUSTER_SLUG = safeSlug(input.clusterSlug, 'cluster')
  * model family and share its blind spots; a reviewer trained on a different corpus
  * is the cheapest way to find what both of them agree to overlook.
  *
- *   'auto'      run it when the codex CLI is available; do not block if it is not.
- *   'required'  a missing or failing codex review blocks the pull request.
- *   'off'       skip entirely.
+ *   'auto'      (default) run it when the codex CLI is installed AND authenticated.
+ *               If it is missing, unauthenticated, or errors out, SKIP the step and
+ *               carry on. An optional reviewer must never break the pipeline for the
+ *               many repos and machines that do not have it.
+ *   'required'  opt-in: a missing or failing codex review blocks the pull request.
+ *               Only choose this where codex is known to be set up.
+ *   'off'       skip entirely, do not even probe.
+ *
+ * Under 'auto', a skipped codex review is reported (codex.ran === false) but never
+ * turns prReady false. Only a codex verdict that actually says "not ready" does.
  */
 const CODEX_REVIEW = ['auto', 'required', 'off'].includes(input.codexReview) ? input.codexReview : 'auto'
 
@@ -286,8 +293,18 @@ function codexPrompt(impl, group) {
     'to run codex, capture its verdict, and return it VERBATIM. Do not soften, reinterpret, or override it.',
     'If codex says the branch is not ready, you report exactly that, even if you personally disagree.',
     '',
-    '## Step 1 -- check availability',
-    'Run `command -v codex`. If it is missing, return available=false, ran=false, prReady=false and stop.',
+    '## Step 1 -- is codex installed AND set up?',
+    'Two checks, in order. Both must pass before you go further.',
+    '',
+    '  1. `command -v codex`            -- installed?',
+    '  2. `codex login status </dev/null` -- authenticated? Expect output naming an account,',
+    '                                       e.g. "Logged in using ChatGPT". A non-zero exit, an',
+    '                                       empty result, or anything saying "not logged in" means no.',
+    '',
+    'If EITHER check fails, this is not an error and not your problem to fix. Return',
+    'available=false, ran=false, prReady=false, notes="<which check failed and what it printed>"',
+    'and STOP. Do not attempt to install codex. Do not attempt to log in. Do not prompt anyone.',
+    'The workflow treats a skipped codex review as a skip, not as a rejection.',
     '',
     '## Step 2 -- write the output schema',
     'Write this exact JSON to ' + schemaPath + ':',
@@ -424,9 +441,13 @@ const ready = results.filter((r) => r.prReady)
 const blocked = results.filter((r) => r.blocked)
 const rejected = results.filter((r) => !r.prReady && !r.blocked)
 const codexKilled = results.filter((r) => r.codex && r.codex.ran && !r.codex.prReady)
+const codexSkipped = results.filter((r) => r.codex && !r.codex.ran)
 
 log('Done: ' + ready.length + ' branch(es) ready for a pull request, ' + rejected.length + ' rejected by review, ' + blocked.length + ' blocked')
 if (codexKilled.length) log('Codex rejected ' + codexKilled.length + ' branch(es) the first reviewer had approved -- that is the cross-vendor review earning its cost')
+// A skipped second review is not a passed second review. Say so, or the absence of a
+// gate reads like the presence of a green one.
+if (codexSkipped.length) log('Codex review SKIPPED for ' + codexSkipped.length + ' branch(es) (cli missing or not authenticated); those diffs carry ONE review, not two')
 log('The caller pushes and opens the pull requests. This workflow wrote nothing to GitHub.')
 
 return {
