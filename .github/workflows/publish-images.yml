@@ -68,10 +68,45 @@ jobs:
             dockerfile: ./web-ui/Dockerfile
             build_args: |
               MIDDLEWARE_URL=http://middleware:8080
+          # Dev-platform images (epic #470 W1). Both ride THIS workflow so they
+          # stay version-locked to the middleware release under ghcr.io/byte5ai.
+          # `sha_on_release: true` also stamps an immutable :sha-<gitsha> on the
+          # release build so the runner daemon can pin the launch image by digest
+          # (middleware/web-ui keep sha on the edge build only — unchanged).
+          - name: dev-runner
+            image: ghcr.io/byte5ai/omadia-dev-runner
+            # Repo-root context: the shim it bundles is a workspace package under
+            # middleware/packages/, compiled inside the Dockerfile's build stage.
+            context: .
+            dockerfile: ./middleware/sidecars/dev-runner/Dockerfile
+            sha_on_release: 'true'
+          - name: dev-runner-daemon
+            image: ghcr.io/byte5ai/omadia-dev-runner-daemon
+            # One image, two entrypoints (daemon.mjs / proxy.mjs) — covers both
+            # the dev-runner-daemon and dev-egress-proxy compose services.
+            # The Dockerfile is created by the w1-daemon-service-api unit; the
+            # build step below is guarded so this workflow stays valid until it
+            # lands. Align the context here if that unit chooses a wider one.
+            context: ./middleware/sidecars/dev-runner-daemon
+            dockerfile: ./middleware/sidecars/dev-runner-daemon/Dockerfile
+            sha_on_release: 'true'
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
+      # Guard: skip a matrix image whose Dockerfile is not in the tree yet (the
+      # dev-runner-daemon Dockerfile ships in a later W1 unit). The job still
+      # goes green — nothing is published for that image until its Dockerfile
+      # lands, at which point the same run picks it up automatically.
+      - name: Resolve build inputs
+        id: guard
+        run: |
+          if [ -f "${{ matrix.dockerfile }}" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=publish-images::Skipping ${{ matrix.name }}: ${{ matrix.dockerfile }} not present yet (added by a later unit)."
+          fi
       - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
@@ -89,12 +124,13 @@ jobs:
             latest=auto
           tags: |
             type=edge,branch=main,enable=${{ inputs.version == '' }}
-            type=sha,prefix=sha-,enable=${{ inputs.version == '' }}
+            type=sha,prefix=sha-,enable=${{ inputs.version == '' || matrix.sha_on_release == 'true' }}
             type=semver,pattern={{version}},value=${{ inputs.version }},enable=${{ inputs.version != '' }}
             type=semver,pattern={{major}}.{{minor}},value=${{ inputs.version }},enable=${{ inputs.version != '' }}
             type=semver,pattern=v{{version}},value=${{ inputs.version }},enable=${{ inputs.version != '' }}
             type=semver,pattern=v{{major}}.{{minor}},value=${{ inputs.version }},enable=${{ inputs.version != '' }}
       - uses: docker/build-push-action@v6
+        if: steps.guard.outputs.build == 'true'
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
