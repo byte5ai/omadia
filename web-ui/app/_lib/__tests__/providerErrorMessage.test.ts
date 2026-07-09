@@ -20,12 +20,47 @@ describe('extractProviderErrorMessage', () => {
     );
   });
 
+  it('returns null for a status-less rate-limit envelope (no raw JSON leak)', () => {
+    // A real path: streamingRetry surfaces exactly this status-less envelope.
+    // The old brace-substring hunt leaked it verbatim to the chat surfaces.
+    expect(
+      extractProviderErrorMessage(
+        '{"type":"error","error":{"type":"rate_limit_error"}}',
+      ),
+    ).toBeNull();
+  });
+
+  it('leaves a status-less application message that embeds a JSON object untouched', () => {
+    const raw = 'Agent stopped: {"message":"waiting"}';
+    expect(extractProviderErrorMessage(raw)).toBe(raw);
+  });
+
+  it('mines error.message from a status-less JSON envelope', () => {
+    expect(
+      extractProviderErrorMessage('{"error":{"message":"Overloaded"}}'),
+    ).toBe('Overloaded');
+  });
+
   it('extracts error.message from an Anthropic JSON envelope', () => {
     const raw =
       '400 {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."},"request_id":"req_011Ccf9tf8Q1EgNHAcSZF7zP"}';
     expect(extractProviderErrorMessage(raw)).toBe(
       'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.',
     );
+  });
+
+  it('extracts error.message from a status-prefixed credit-balance envelope', () => {
+    expect(
+      extractProviderErrorMessage(
+        '400 {"error":{"message":"Your credit balance is too low."}}',
+      ),
+    ).toBe('Your credit balance is too low.');
+  });
+
+  it('strips the status prefix from a short plain-text quota error', () => {
+    expect(
+      extractProviderErrorMessage('429 You exceeded your current quota.'),
+    ).toBe('You exceeded your current quota.');
   });
 
   it('returns a top-level message when there is no nested error', () => {
@@ -51,6 +86,11 @@ describe('extractProviderErrorMessage', () => {
 
   it('leaves a status-less application message with non-JSON braces untouched', () => {
     const raw = 'Validation failed for {field: name}';
+    expect(extractProviderErrorMessage(raw)).toBe(raw);
+  });
+
+  it('leaves a plain application message with no braces untouched', () => {
+    const raw = 'Connection to the middleware was lost.';
     expect(extractProviderErrorMessage(raw)).toBe(raw);
   });
 
