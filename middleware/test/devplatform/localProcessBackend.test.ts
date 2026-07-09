@@ -409,6 +409,30 @@ describe('devplatform/localProcessBackend', () => {
     assert.deepEqual(leftovers.sort(), ['unrelated'], 'orphan workspace removed, stray dir untouched');
   });
 
+  it('reap SIGKILLs an orphan group whose leader is already dead but whose CLI child lives', async () => {
+    const { backend, procs, root } = await makeBackend();
+
+    // A previous middleware run left a workspace behind. Its shim leader was
+    // OOM-killed, so the pid file names a dead pid — but the leader's process
+    // group still holds the CLI child, which carries ANTHROPIC_* credentials.
+    const deadLeaderPid = nextFakePid++;
+    const liveChildPid = nextFakePid++;
+    procs.alive.add(liveChildPid);
+    procs.groups.set(deadLeaderPid, new Set([liveChildPid]));
+    const orphanDir = path.join(root, `${LOCAL_WORKSPACE_PREFIX}orphan-dead-leader`);
+    await mkdir(orphanDir, { recursive: true });
+    await writeFile(path.join(orphanDir, SHIM_PID_FILE), `${String(deadLeaderPid)}\n`, 'utf8');
+
+    const reaped = await backend.reap();
+
+    assert.equal(reaped.length, 1);
+    // The signal goes to the group (kill(-pgid)), which is recorded under the
+    // leader pid — the child dying is what proves the group was hit.
+    assert.deepEqual(procs.signalsFor(deadLeaderPid), ['SIGKILL'], 'the dead leader’s group is killed');
+    assert.equal(procs.alive.has(liveChildPid), false, 'no credential-bearing orphan outlives its job');
+    assert.deepEqual(await readdir(root), [], 'orphan workspace removed');
+  });
+
   it('reap returns dead tracked runners (for finalizeDevJob) and leaves live ones alone', async () => {
     const { backend, procs, root } = await makeBackend();
     const liveHandle = await backend.provision(ctx({ jobId: 'aaaaaaaa-1111-7bbb-8ccc-dddddddddddd' }));

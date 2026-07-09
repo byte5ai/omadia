@@ -323,9 +323,12 @@ export class LocalProcessBackend implements RunnerBackend {
         reaped.push(tracked);
         continue;
       }
-      // Orphan from a previous middleware run.
+      // Orphan from a previous middleware run. Kill the group unconditionally:
+      // the leader may be long dead while a CLI child of its group still runs
+      // with ANTHROPIC_* credentials. killTree no-ops on an already-gone group,
+      // so probing the leader pid first would only reintroduce that blind spot.
       const pid = await this.readPidFile(dir);
-      if (pid !== null && this.isAlive(pid)) this.killTree(pid, 'SIGKILL');
+      if (pid !== null) this.killTree(pid, 'SIGKILL');
       const startedAt = await stat(dir)
         .then((s) => s.mtime.toISOString())
         .catch(() => this.now().toISOString());
