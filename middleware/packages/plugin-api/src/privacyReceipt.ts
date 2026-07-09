@@ -80,6 +80,13 @@ export interface PrivacyReceipt {
    * count, never a raw value.
    */
   readonly bypassedTools?: readonly BypassedToolEntry[];
+  /**
+   * #361 — PII spans detected in the user's own prompt and substituted with
+   * pseudonyms before the prompt crossed the LLM wire. Absent when prompt
+   * masking is off (the default) or nothing was detected. PII-free: entries
+   * carry the span TYPE + detector id only, never the value.
+   */
+  readonly maskedPromptSpans?: readonly PromptMaskedSpanInfo[];
 }
 
 // ---------------------------------------------------------------------------
@@ -199,6 +206,74 @@ export interface PrivacyResolvedDataset {
   readonly rows: ReadonlyArray<Record<string, unknown>>;
 }
 
+// ---------------------------------------------------------------------------
+// #361 — free-text user-prompt PII masking (wire-substitution with
+// answer-side restore).
+//
+// Unlike the dataset boundary (real rows never leave the server), the user's
+// prompt itself must cross the wire — so detected PII spans are substituted
+// with realistic pseudonyms (the shipped US7 mechanism, `v4/pseudonym.ts`),
+// the surrogate-bearing text goes to the LLM, and the surrogate↔real map is
+// held server-side per turn and inverted over the final answer.
+// ---------------------------------------------------------------------------
+
+/** One PII span a detector found in a prompt text. Offsets are UTF-16 code
+ *  unit indices into the analyzed text; `end` is exclusive. */
+export interface PromptPiiSpan {
+  readonly start: number;
+  readonly end: number;
+  /** PII category, e.g. 'email' | 'iban' | 'phone' | 'address' | 'amount'
+   *  | 'date' | 'person'. Open set — detectors may add categories. */
+  readonly type: string;
+  /** Detection confidence in [0,1]. The C0 regex baseline reports 1. */
+  readonly confidence: number;
+}
+
+/**
+ * Pluggable prompt-PII detector seam (#361). C0 is the deterministic regex
+ * baseline shipped with the privacy-guard plugin; C1 is the transformer
+ * ensemble slot (Piiranha / GLiNER) — wired only after the committed
+ * validation harness passes its documented recall gates for a locale.
+ */
+export interface PromptPiiDetector {
+  /** Stable id recorded (PII-free) in the receipt, e.g. 'c0-regex'. */
+  readonly id: string;
+  detect(text: string): Promise<readonly PromptPiiSpan[]>;
+}
+
+/** PII-free record of one masked prompt span for the receipt. */
+export interface PromptMaskedSpanInfo {
+  readonly type: string;
+  readonly detector: string;
+}
+
+export interface PrivacyPromptMaskRequest {
+  readonly sessionId: string;
+  readonly turnId: string;
+  /** The prompt text to mask (user message or ingested attachment tail). */
+  readonly text: string;
+}
+
+/**
+ * Failure-closed result contract (#361): there is NO pass-through-unmasked
+ * outcome. `disabled` = the operator flag is off (caller uses the original
+ * text — byte-identical legacy behavior); `masked` = surrogates substituted
+ * (`degraded` when the C1 detector failed and only C0 ran, audited);
+ * `blocked` = masking was requested but could not be guaranteed (baseline
+ * detector failure or a residual real span survived substitution) — the
+ * caller MUST fail the turn instead of sending the prompt.
+ */
+export type PrivacyPromptMaskResult =
+  | { readonly outcome: 'disabled' }
+  | {
+      readonly outcome: 'masked';
+      readonly maskedText: string;
+      /** PII-free span records, also aggregated into the turn receipt. */
+      readonly spans: readonly PromptMaskedSpanInfo[];
+      readonly degraded: boolean;
+    }
+  | { readonly outcome: 'blocked'; readonly reason: string };
+
 /**
  * Service surface published by the `privacy.redact@1` provider plugin.
  */
@@ -262,6 +337,27 @@ export interface PrivacyGuardService {
     turnId: string,
     datasetId: string,
   ): PrivacyResolvedDataset | undefined;
+  /**
+   * #361 — mask PII spans in a free-text prompt before it crosses the LLM
+   * wire. Gated on the plugin's default-off `mask_user_prompt` config; when
+   * the flag is off the result is `{outcome:'disabled'}` and the caller
+   * proceeds byte-identically to legacy behavior. Repeated calls within one
+   * turn share the same server-held surrogate map (stable surrogates).
+   *
+   * Optional on the interface so alternative privacy providers (and test
+   * stubs) need not implement it; consumers feature-detect and degrade to
+   * `disabled`.
+   */
+  maskUserPrompt?(
+    request: PrivacyPromptMaskRequest,
+  ): Promise<PrivacyPromptMaskResult>;
+  /**
+   * #361 — invert this turn's prompt-surrogate map over a block of text
+   * (the final answer), restoring real values the user originally wrote.
+   * Identity when the turn masked nothing. MUST be called before
+   * `finalizeTurn` — finalize drops the map.
+   */
+  restorePromptPseudonyms?(turnId: string, text: string): Promise<string>;
   /**
    * Privacy Shield v4 — the verb + render tool specs to offer the LLM.
    */

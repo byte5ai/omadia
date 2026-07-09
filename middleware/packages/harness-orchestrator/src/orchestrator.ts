@@ -104,6 +104,7 @@ import { LoopGuard } from './loopGuard.js';
 import {
   createPrivacyTurnHandle,
   ensureWellFormedParams,
+  type PrivacyTurnHandle,
 } from './privacyHandle.js';
 import { RunTraceCollector, type InvocationHandle } from './runTraceCollector.js';
 import {
@@ -490,7 +491,12 @@ type Message = any;
 function buildUserContent(
   input: ChatTurnInput,
   extraText?: string,
+  wireUserMessage?: string,
 ): ContentBlock[] | string {
+  // #361 — when prompt masking is on, the caller passes the pseudonym-
+  // substituted variant for the LLM wire; `input.userMessage` stays the
+  // original for memory persistence and receipt attribution.
+  const message = wireUserMessage ?? input.userMessage;
   // #268 — server-side auto-ingested attachment text, appended as a trailing
   // block so the model sees the document content without a tool call. Kept
   // additive to the existing image/bytesBase64 multimodal path.
@@ -500,10 +506,8 @@ function buildUserContent(
     (a) => a.kind === 'image' && typeof a.bytesBase64 === 'string',
   );
   if (imageAtts.length === 0) {
-    if (!ingested) return input.userMessage;
-    return input.userMessage.length > 0
-      ? `${input.userMessage}${ingested}`
-      : ingested;
+    if (!ingested) return message;
+    return message.length > 0 ? `${message}${ingested}` : ingested;
   }
   const blocks: ContentBlock[] = [];
   for (const att of imageAtts) {
@@ -516,11 +520,59 @@ function buildUserContent(
       },
     });
   }
-  const trailingText = `${input.userMessage}${ingested ?? ''}`;
+  const trailingText = `${message}${ingested ?? ''}`;
   if (trailingText.trim().length > 0) {
     blocks.push({ type: 'text', text: trailingText });
   }
   return blocks;
+}
+
+// ---------------------------------------------------------------------------
+// #361 — free-text user-prompt PII masking (wire side).
+// ---------------------------------------------------------------------------
+
+/** Thrown when prompt masking was requested but could not be guaranteed —
+ *  failure-closed: the turn is blocked instead of sending PII to the model. */
+export class PromptMaskBlockedError extends Error {
+  constructor(reason: string) {
+    super(`[privacy] user-prompt masking failed (${reason}) — turn blocked`);
+    this.name = 'PromptMaskBlockedError';
+  }
+}
+
+/** User-facing answer for a prompt-mask-blocked turn. Deliberately generic —
+ *  it must not echo any detected value. */
+const PROMPT_MASK_BLOCKED_ANSWER =
+  'This message could not be processed: privacy protection for your text ' +
+  'could not be guaranteed (prompt masking failed), so it was not sent to ' +
+  'the language model. Please try again or contact your operator.';
+
+/**
+ * Mask a wire-bound prompt text through the turn's privacy handle. Returns
+ * the text unchanged when no handle is present, the operator flag is off,
+ * or the text is empty — byte-identical legacy behavior. Throws
+ * `PromptMaskBlockedError` on the failure-closed `blocked` outcome.
+ */
+async function maskPromptForWire(
+  privacy: PrivacyTurnHandle | undefined,
+  text: string,
+): Promise<string> {
+  if (privacy === undefined || text.length === 0) return text;
+  const result = await privacy.maskUserPrompt(text);
+  if (result.outcome === 'blocked') {
+    throw new PromptMaskBlockedError(result.reason);
+  }
+  return result.outcome === 'masked' ? result.maskedText : text;
+}
+
+/** `maskPromptForWire` for the #268 ingested attachment tail — skips the
+ *  empty/whitespace case (`ingestAttachments` returns '' without docs). */
+async function maskIngestedForWire(
+  privacy: PrivacyTurnHandle | undefined,
+  ingestedText: string,
+): Promise<string> {
+  if (ingestedText.trim().length === 0) return ingestedText;
+  return maskPromptForWire(privacy, ingestedText);
 }
 
 const MEMORY_TOOL_NAME = 'memory';
@@ -1231,6 +1283,9 @@ export class Orchestrator {
         arguments: Record<string, unknown>;
       };
     }) => void,
+    // #361 — the wire-bound (possibly masked) message variant; nudge
+    // provider output can land back in LLM-bound tool_result content.
+    wireUserMessage?: string,
   ): Promise<void> {
     if (!this.nudgeRegistry) return;
     const registry = this.nudgeRegistry;
@@ -1280,7 +1335,7 @@ export class Orchestrator {
           turnContext: {
             turnId,
             agentId,
-            userMessage: input.userMessage,
+            userMessage: wireUserMessage ?? input.userMessage,
             toolTrace,
             sessionScope,
           },
@@ -1630,6 +1685,10 @@ export class Orchestrator {
    */
   private async retrievePriorContext(
     input: ChatTurnInput,
+    // #361 — the wire-bound (possibly masked) message variant. The recalled
+    // text this returns flows INTO the LLM prompt, so the recall query must
+    // not itself carry a raw PII span the mask pass just removed.
+    wireUserMessage?: string,
   ): Promise<{ text: string | undefined; recalled: RecalledContext | undefined }> {
     // Use console.error so the trace lands on stderr — Fly's log aggregator
     // has been observed to drop some stdout INFO lines under load, and this
@@ -1656,7 +1715,7 @@ export class Orchestrator {
       // directly should pass their manifest identity.id so per-agent
       // priorities apply.
       const result = await this.contextRetriever.assembleForBudget({
-        userMessage: input.userMessage,
+        userMessage: wireUserMessage ?? input.userMessage,
         // Per-orchestrator isolation: the real Agent identity drives the KG
         // scope-prefix filter (and agent_priorities). The retriever expects
         // the sessionScope already agent-qualified — `graphScopeFor` is the
@@ -1882,7 +1941,20 @@ export class Orchestrator {
         // the privacy-finalize block below so the verbatim answer is PII-masked
         // (Pitfall 3) and a receipt is attached.
         const direct = await this.executeDirectLine(input, turnId);
-        let result = direct ?? (await this.chatInContext(input, turnId));
+        let result: ChatTurnResult;
+        try {
+          result = direct ?? (await this.chatInContext(input, turnId));
+        } catch (err) {
+          // #361 — failure-closed prompt masking: the prompt never reached
+          // the model; answer with a generic privacy error instead of a raw
+          // 500. Audited above by the guard service itself.
+          if (err instanceof PromptMaskBlockedError) {
+            console.error(`[orchestrator] ${err.message}`);
+            result = { answer: PROMPT_MASK_BLOCKED_ANSWER, toolCalls: 0, iterations: 0 };
+          } else {
+            throw err;
+          }
+        }
         // Privacy Shield v4 — when a v4_render_answer call produced the
         // answer this turn it is final and already safe (real values
         // materialized server-side from ground truth). Swap it in.
@@ -1896,6 +1968,22 @@ export class Orchestrator {
                 ? { maskedValues: v4Rendered.maskedValues }
                 : {}),
             };
+          }
+        }
+        // #361 — restore prompt surrogates → real values over the final
+        // answer (identity when the turn masked nothing). Must run BEFORE
+        // finalize, which drops the turn's surrogate map.
+        if (privacyHandle) {
+          try {
+            result = {
+              ...result,
+              answer: await privacyHandle.restorePromptPseudonyms(result.answer),
+            };
+          } catch (err) {
+            console.warn(
+              '[orchestrator] restorePromptPseudonyms threw — answer left as-is:',
+              err,
+            );
           }
         }
         if (privacyHandle) {
@@ -2398,14 +2486,30 @@ export class Orchestrator {
     await this.fireTurnHook('onBeforeTurn', turnId, input, {
       userMessage: input.userMessage,
     });
+    // #361 — mask the wire-bound prompt BEFORE anything LLM-adjacent sees
+    // it. `wireUserMessage` is the LLM-facing variant (pseudonyms for
+    // detected PII spans when the operator flag is on; the original text
+    // otherwise). `input.userMessage` stays untouched for memory
+    // persistence (sessionLogger / factExtractor) and receipt attribution.
+    // Failure-closed: a `blocked` outcome throws and the turn fails.
+    const privacyForPrompt = turnContext.current()?.privacyHandle;
+    const wireUserMessage = await maskPromptForWire(
+      privacyForPrompt,
+      input.userMessage,
+    );
     // Non-streaming path: `priorContext` is injected into the prompt; the
     // structured `recalled` payload rides out on the ChatTurnResult so
     // non-streaming channels (Teams) can render a recall card (the streaming
     // path emits it as a `kg_recall` annotation instead).
     const { text: priorContext, recalled } =
-      await this.retrievePriorContext(input);
+      await this.retrievePriorContext(input, wireUserMessage);
     // #268 — pre-fetch + extract any uploaded document text for this turn.
-    const ingestedText = await this.ingestAttachments(input);
+    // #361 — the ingested verbatim tail crosses the wire alongside the
+    // message, so it is masked through the SAME turn map (stable surrogates).
+    const ingestedText = await maskIngestedForWire(
+      privacyForPrompt,
+      await this.ingestAttachments(input),
+    );
     const effectiveExtraSystemHint = composeExtraSystemHint(input);
     // Palaia Phase 8 (OB-77) — per-turn nudge counter (shared across all
     // tool-call iterations of this turn so NUDGE_MAX_PER_TURN is enforced).
@@ -2443,7 +2547,7 @@ export class Orchestrator {
         }
         return pair;
       }),
-      { role: 'user', content: buildUserContent(input, ingestedText) },
+      { role: 'user', content: buildUserContent(input, ingestedText, wireUserMessage) },
     ];
 
     // Open an EntityRef collection keyed to this turn. Tool handlers that
@@ -2496,8 +2600,8 @@ export class Orchestrator {
     // non-streaming path has no event channel, so both decisions are simply
     // applied (channels that want to surface them use chatStream).
     const [turnModelResolved, turnPersonaResolved] = await Promise.all([
-      this.resolveTurnModel(input.userMessage),
-      this.resolveTurnPersona(input.userMessage),
+      this.resolveTurnModel(wireUserMessage),
+      this.resolveTurnPersona(wireUserMessage),
     ]);
     const turnModel = turnModelResolved.model;
     const turnPersonaBody = turnPersonaResolved.skillBody;
@@ -2672,7 +2776,7 @@ export class Orchestrator {
           // intent as prose; route it through the existing handlers before the
           // drains below pick it up. No-op on Anthropic and on trivial answers.
           await this.maybeRouteCardsFromText(
-            input.userMessage,
+            wireUserMessage,
             answer,
             turnModel,
           );
@@ -2789,6 +2893,8 @@ export class Orchestrator {
           nudgeTrace,
           input,
           turnId,
+          undefined,
+          wireUserMessage,
         );
         // Round-loop guard. A `nudge` steer is appended to THIS iteration's
         // tool-result user message (keeping a single well-formed user turn);
@@ -3000,7 +3106,29 @@ export class Orchestrator {
         yield doneEvent;
         return;
       }
-      for await (const event of this.chatStreamInner(input, turnId, observer)) {
+      // #361 — failure-closed prompt masking (streaming path): the inner
+      // generator throws before any model call when masking cannot be
+      // guaranteed; convert that into a graceful privacy-error `done` event
+      // instead of tearing the stream down with a raw 500.
+      const inner = this.chatStreamInner(input, turnId, observer);
+      const guardedInner = (async function* () {
+        try {
+          yield* inner;
+        } catch (err) {
+          if (err instanceof PromptMaskBlockedError) {
+            console.error(`[orchestrator] ${err.message}`);
+            yield {
+              type: 'done',
+              answer: PROMPT_MASK_BLOCKED_ANSWER,
+              toolCalls: 0,
+              iterations: 0,
+            } as Extract<ChatStreamEvent, { type: 'done' }>;
+            return;
+          }
+          throw err;
+        }
+      })();
+      for await (const event of guardedInner) {
         if (event.type === 'tool_use') {
           toolNameById.set(event.id, event.name);
         } else if (event.type === 'tool_result') {
@@ -3034,6 +3162,22 @@ export class Orchestrator {
                     : {}),
                 }
               : event;
+          // #361 — restore prompt surrogates → real values on the final
+          // answer, before finalize drops the turn's surrogate map. Note:
+          // streamed text deltas may transiently show a surrogate; the
+          // `done` answer is authoritative (same contract as the v4
+          // rendered-answer swap above).
+          try {
+            doneEvent = {
+              ...doneEvent,
+              answer: await privacyHandle.restorePromptPseudonyms(doneEvent.answer),
+            };
+          } catch (err) {
+            console.warn(
+              '[orchestrator] restorePromptPseudonyms threw — answer left as-is:',
+              err,
+            );
+          }
           try {
             const receipt = await privacyHandle.finalize(input.userMessage);
             if (receipt) {
@@ -3088,8 +3232,15 @@ export class Orchestrator {
     turnId: string,
     observer: AskObserver | undefined,
   ): AsyncGenerator<ChatStreamEvent> {
+    // #361 — wire-bound prompt masking; see chatInContextInner for the full
+    // rationale. Same seam, streaming path.
+    const privacyForPrompt = turnContext.current()?.privacyHandle;
+    const wireUserMessage = await maskPromptForWire(
+      privacyForPrompt,
+      input.userMessage,
+    );
     const { text: priorContext, recalled } =
-      await this.retrievePriorContext(input);
+      await this.retrievePriorContext(input, wireUserMessage);
     // Cross-session recall probe — surface plans/processes/insights pulled
     // from prior sessions as a visible `kg_recall` card before the answer
     // streams in. No-op when every recall leg was empty.
@@ -3099,7 +3250,11 @@ export class Orchestrator {
     // can never break or delay the turn; additive/opaque to the model.
     yield* await this.toKgGraphAnnotationEvents(recalled);
     // #268 — pre-fetch + extract any uploaded document text for this turn.
-    const ingestedText = await this.ingestAttachments(input);
+    // #361 — masked through the same turn map as the message (see above).
+    const ingestedText = await maskIngestedForWire(
+      privacyForPrompt,
+      await this.ingestAttachments(input),
+    );
     const effectiveExtraSystemHint = composeExtraSystemHint(input);
     // Palaia Phase 8 (OB-77) — see chatInContextInner for rationale.
     const nudgeCounter = createNudgeTurnCounter();
@@ -3129,7 +3284,7 @@ export class Orchestrator {
         }
         return pair;
       }),
-      { role: 'user', content: buildUserContent(input, ingestedText) },
+      { role: 'user', content: buildUserContent(input, ingestedText, wireUserMessage) },
     ];
 
     const entityCollection = this.entityRefBus?.beginCollection(turnId);
@@ -3168,8 +3323,8 @@ export class Orchestrator {
     // classifier calls — run in parallel so persona routing adds no serial
     // latency. Resolved once so the whole streamed turn runs on one model.
     const [resolved, resolvedPersona] = await Promise.all([
-      this.resolveTurnModel(input.userMessage),
-      this.resolveTurnPersona(input.userMessage),
+      this.resolveTurnModel(wireUserMessage),
+      this.resolveTurnPersona(wireUserMessage),
     ]);
     const turnModel = resolved.model;
     const turnPersonaBody = resolvedPersona.skillBody;
@@ -3387,7 +3542,7 @@ export class Orchestrator {
           // intent as prose; route it through the existing handlers before the
           // drains below pick it up. No-op on Anthropic and on trivial answers.
           await this.maybeRouteCardsFromText(
-            input.userMessage,
+            wireUserMessage,
             answer,
             turnModel,
           );
@@ -3401,8 +3556,10 @@ export class Orchestrator {
           // carrier and the chat UI wants the suggestion immediately;
           // accept the 300-800ms latency cost. Failure → undefined,
           // modal falls back to its 240-char prefill.
+          // #361 — the excerpt pass is a Haiku (LLM) call, so it gets the
+          // wire variant; a masked span in the suggestion beats leaking it.
           const palaiaExcerpt = await this.maybeExtractExcerpt(
-            input.userMessage,
+            wireUserMessage,
             answer,
           );
           // Slice 4b/4c — auto-promotion. Awaited so the resulting
@@ -3570,6 +3727,7 @@ export class Orchestrator {
           (event) => {
             stagedNudgeEvents.push({ type: 'nudge', ...event });
           },
+          wireUserMessage,
         );
         for (const ev of stagedNudgeEvents) {
           yield ev;

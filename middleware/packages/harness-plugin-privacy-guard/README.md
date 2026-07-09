@@ -14,9 +14,34 @@ every tool result:
 5. Each turn emits a PII-free **PrivacyReceipt** that the channel renderers
    (Teams Adaptive Card, web inline disclosure) surface to the user.
 
-There are no setup fields: the boundary is generic over JSON shape and value
-statistics — no per-tenant policy, allowlist, or detector configuration.
-The only permission is `llm` (see below).
+The boundary itself has no configuration: it is generic over JSON shape and
+value statistics — no per-tenant policy, allowlist, or detector tuning. The
+only permission is `llm` (see below).
+
+## Free-text user-prompt masking (#361, default off)
+
+The one setup field is `mask_user_prompt` (enum `off`/`on`, **default
+`off`** — flag-off is byte-identical to pre-#361 behavior). When on, PII
+spans detected in the user's own message (and the ingested attachment tail)
+are substituted with realistic, type-shaped pseudonyms before the prompt
+crosses the LLM wire; the surrogate↔real map is held server-side per turn
+and inverted over the final answer. Wire-substitution with answer-side
+restore — NOT server-side interning (the prompt must cross the wire) and
+NOT an on-wire token map (deleted for cause by #119/#126/#153).
+
+- **Detection:** pluggable `PromptPiiDetector` seam. Shipped: the
+  deterministic **C0 regex baseline** (email, IBAN, phone, German
+  postal+street, currency/salary amounts, DOB dates). Names/free-form
+  entities need the **C1 transformer** slot (Piiranha/GLiNER), which ships
+  as an inert stub until the committed validation harness
+  (`src/validation/`, runnable via `npx tsx …/promptDetectorEval.ts`)
+  passes its documented recall gates for a locale.
+- **Failure-closed:** the C1 detector throwing degrades to C0 with a
+  `promptMaskDegraded` audit line; a baseline failure or a residual real
+  span surviving substitution **blocks the turn** — there is no
+  pass-through-unmasked path.
+- **Transparency:** masked spans surface (type + detector only, PII-free)
+  as `maskedPromptSpans` on the turn's `PrivacyReceipt`.
 
 ## Canonical implementation path (resolved in #431)
 
@@ -41,9 +66,10 @@ behavioral gain.
 | `ctx.status` | skip | No external connection or degraded mode to report. |
 | `ctx.mcp` | skip | MCP tool results reach the boundary via the orchestrator choke point (`internToolResultV4`) like every other tool result; the guard must not source data itself. |
 
-Versioning: manifest and `package.json` are aligned at `0.2.0` (the
-`package.json 0.1.0` mismatch was fixed in #431). Stays independently
-versioned; does not bump in lockstep with core.
+Versioning: manifest and `package.json` are aligned (the `package.json
+0.1.0` vs manifest `0.2.0` mismatch was fixed in #431; both bumped to
+`0.3.0` with #361). Stays independently versioned; does not bump in
+lockstep with core.
 
 ## Tests
 

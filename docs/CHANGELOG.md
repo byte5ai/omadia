@@ -32,6 +32,30 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   `POST /api/v1/store/plugins/:id/verdict/ack`. Advisory-only in v1: nothing
   blocks. New env vars: `SKILLSPECTOR_URL`, `SKILLSPECTOR_TIMEOUT_MS`.
 
+### Added — free-text user-prompt PII masking, default off (#361)
+
+- `harness-plugin-privacy-guard` 0.3.0: new **default-off** setup field
+  `mask_user_prompt`. When on, PII spans detected in the user's own message
+  (C0 regex baseline: email, IBAN, phone, German street+postal address,
+  amounts, DOB dates) are replaced by realistic pseudonyms before the prompt
+  crosses the LLM wire (pseudonym projection via the shipped `v4/pseudonym`
+  mechanism — no on-wire token map); the real values are restored
+  server-side in the final answer, and the spans surface (PII-free) as
+  `maskedPromptSpans` on the `PrivacyReceipt`. Failure-closed: C1-detector
+  failure degrades to C0 with audit; a baseline failure or residual span
+  blocks the turn — there is no pass-through-unmasked path. Flag-off is
+  byte-identical to previous behavior.
+- Orchestrator: LLM-bound sites (message assembly, ingested attachment
+  tail, model/persona routing, KG-recall query, nudge pipeline, card
+  router, excerpt pass) consume the masked wire variant; memory persistence
+  and receipt attribution keep the original text. Streamed deltas may
+  transiently show a surrogate; the `done` answer is authoritative (same
+  contract as the v4 rendered-answer swap).
+- Committed runnable validation harness with pre-committed recall gates:
+  `harness-plugin-privacy-guard/src/validation/` (not a CI gate). The C1
+  transformer slot (Piiranha/GLiNER) ships inert until a locale passes its
+  gates.
+
 ### Changed — v1.0 readiness pass across the earliest core plugins (#431)
 
 - `harness-plugin-web-search`, `harness-plugin-privacy-guard`, and
