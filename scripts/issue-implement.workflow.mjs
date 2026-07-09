@@ -7,26 +7,21 @@
  * is considered fit for a pull request.
  *
  * The cluster's `cohesion` flag (from issue-cluster.workflow.mjs) selects the
- * strategy, and this is the whole reason that flag exists:
+ * strategy, and that is the whole reason the flag exists:
  *
- *   cohesion: 'dependent'    The issues overlap the same files. ONE agent
- *                            implements them all in priority order on ONE branch
- *                            -> one coherent pull request closing all of them.
- *                            Fanning these out would produce parallel branches
- *                            that each rewrite the same file and revert one another.
- *
- *   cohesion: 'independent'  The issues touch disjoint files. One worktree-isolated
- *                            agent per issue, running in parallel -> one branch and
- *                            one pull request per issue.
+ *   'dependent'    Issues overlap the same files. ONE agent implements them in
+ *                  priority order on ONE branch -> one pull request closing all.
+ *                  Fanning these out yields parallel branches that each rewrite
+ *                  the same file and revert one another.
+ *   'independent'  Disjoint files. One worktree-isolated agent per issue, in
+ *                  parallel -> one branch and one pull request each.
  *
  * The workflow NEVER writes to GitHub and NEVER pushes. It creates local branches
- * and returns metadata. Pushing and opening pull requests is the caller's job, so
- * the remote-write surface stays a single auditable choke point in the main loop,
- * downstream of the human's per-issue greenlight. A branch whose review stage
- * failed is reported, never proposed as a pull request.
- *
- * Branch refs created inside an agent's worktree live in the repository's shared
- * ref store, so the caller can push them after the worktree is torn down.
+ * and returns metadata; pushing and opening pull requests is the caller's job, so
+ * the remote-write surface stays a single auditable choke point downstream of the
+ * human's per-issue greenlight. A branch whose review failed is reported, never
+ * proposed as a pull request. Branch refs created inside an agent's worktree live
+ * in the shared ref store, so the caller can push them after teardown.
  *
  * This is NOT a standalone Node script -- it runs inside the Claude Code Workflow
  * tool (agent()/parallel()/pipeline()/log() are provided by that runtime).
@@ -106,16 +101,13 @@ const CLUSTER_SLUG = safeSlug(input.clusterSlug, 'cluster')
  * model family and share its blind spots; a reviewer trained on a different corpus
  * is the cheapest way to find what both of them agree to overlook.
  *
- *   'auto'      (default) run it when the codex CLI is installed AND authenticated.
- *               If it is missing, unauthenticated, or errors out, SKIP the step and
- *               carry on. An optional reviewer must never break the pipeline for the
- *               many repos and machines that do not have it.
+ *   'auto'      (default) run it when the codex CLI is installed AND authenticated;
+ *               otherwise SKIP and carry on. An optional reviewer must never break
+ *               the pipeline for the many repos and machines that lack it. A skipped
+ *               review is reported (codex.ran === false) but never turns prReady
+ *               false -- only a codex verdict that actually says "not ready" does.
  *   'required'  opt-in: a missing or failing codex review blocks the pull request.
- *               Only choose this where codex is known to be set up.
  *   'off'       skip entirely, do not even probe.
- *
- * Under 'auto', a skipped codex review is reported (codex.ran === false) but never
- * turns prReady false. Only a codex verdict that actually says "not ready" does.
  */
 const CODEX_REVIEW = ['auto', 'required', 'off'].includes(input.codexReview) ? input.codexReview : 'auto'
 
