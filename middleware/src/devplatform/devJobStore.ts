@@ -453,8 +453,14 @@ export class DevJobStore {
 
   // --- terminal transition (finalizeDevJob only) ---------------------------
   /**
-   * Flip a job to a terminal status. Brand-gated — only `finalizeDevJob.ts`
-   * holds {@link TERMINAL_FINISH_BRAND}, so this is the sole terminal write.
+   * Flip a job to a terminal status. Brand-gated: the caller must present
+   * {@link TERMINAL_FINISH_BRAND}, which in practice only `finalizeDevJob.ts`
+   * imports. Be precise about what that buys — the brand is an exported symbol,
+   * so a determined module could import it and call this directly. It prevents
+   * an *accidental* terminal write, not a deliberate one. The invariant that
+   * `finalizeDevJob` is the only terminal path is upheld by review, and the
+   * brand makes a violation loud rather than silent. If a later wave needs the
+   * stronger guarantee, move this method into `finalizeDevJob.ts`.
    * Idempotent: if the job is already terminal (or absent) the status-guarded
    * UPDATE touches 0 rows and the existing row is returned unchanged, so a
    * double-finalize is a no-op, not an error. NOT lease-fenced: cancel routes
