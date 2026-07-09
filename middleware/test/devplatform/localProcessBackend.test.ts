@@ -135,7 +135,10 @@ after(async () => {
   await Promise.all(tmpRoots.map((d) => rm(d, { recursive: true, force: true })));
 });
 
-async function makeBackend(over: Partial<LocalProcessBackendOptions> = {}, spawnOpts: { fail?: boolean } = {}) {
+async function makeBackend(
+  over: Partial<LocalProcessBackendOptions> = {},
+  spawnOpts: { fail?: boolean; unrefThrows?: boolean; immortal?: boolean } = {},
+) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'omadia-lpb-test-'));
   tmpRoots.push(root);
   const procs = new FakeProcs();
