@@ -50,6 +50,18 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   translates through `llmProviderSeam`, including streaming final-event usage
   telemetry and provider-based retry classification.
 
+### Fixed
+
+- **web-ui/chat**: provider errors (quota, rate-limit, billing) are now surfaced
+  as the provider's human-readable sentence across all chat surfaces — the main
+  chat bubble, the builder chat, the preview chat, and the default simple
+  builder intake — with a translated generic fallback, instead of the raw HTTP
+  status and JSON envelope. On the primary path the orchestrator failure arrives
+  as an in-band error event on an already-streaming 200 response; the background
+  stream toast now finishes that turn as a failure showing the same humanized
+  sentence, instead of reporting it as 'done' (a successful turn) as it did
+  before (#403).
+
 ---
 
 ## [0.54.0] - 2026-07-06
