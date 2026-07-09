@@ -7,14 +7,16 @@ import type { FinalizeStore } from '../../src/devplatform/finalizeDevJob.js';
 import { RunnerBackendError } from '../../src/devplatform/runnerBackend.js';
 import {
   DevJobWorker,
-  DevJobWorkerError,
-  NUMSTAT_MARKER,
-  assertAuthModeAdmissible,
-  splitDiffBundle,
   type DevJobApplyService,
   type DevJobWorkerRepoStore,
   type DevJobWorkerStore,
 } from '../../src/devplatform/devJobWorker.js';
+import {
+  DevJobWorkerError,
+  NUMSTAT_MARKER,
+  assertAuthModeAdmissible,
+  splitDiffBundle,
+} from '../../src/devplatform/devJobWorkerPolicy.js';
 import {
   isTerminalDevJobStatus,
   type DevJob,
@@ -399,6 +401,31 @@ describe('devplatform/devJobWorker — enforcement', () => {
     assert.equal(job?.status, 'budget_exceeded');
     assert.equal(store.finishCalls.get('j'), 1);
   });
+
+  it('leaves an applying job alone even when it is BOTH stale and over its wall clock', async () => {
+    // Regression (review major): an `applying` job has no runner to heartbeat, so
+    // across a restart / long agent run it looks both stale and over-budget. It
+    // must still be applied, never finalized stalled/budget_exceeded.
+    const store = new FakeStore();
+    const old = '2026-07-09T00:00:00.000Z';
+    store.add(
+      makeJob({
+        id: 'j',
+        status: 'applying',
+        claimedBy: 'lease',
+        startedAt: old,
+        lastHeartbeatAt: old,
+        result: { outcome: 'diff_ready', diffArtifactId: 'art-1' },
+      }),
+    );
+    const now = () => new Date('2026-07-09T01:00:00.000Z');
+    const h = makeWorker({ store, heartbeatTimeoutMs: 120_000, wallClockMs: 1_800_000, now });
+    await h.worker.enforceTimeouts();
+
+    const job = await store.getJob('j');
+    assert.equal(job?.status, 'applying', 'the host-side apply phase is exempt from liveness enforcement');
+    assert.equal(store.finishCalls.get('j') ?? 0, 0, 'no terminal write against an applying job');
+  });
 });
 
 describe('devplatform/devJobWorker — apply', () => {
@@ -574,6 +601,72 @@ describe('devplatform/devJobWorker — terminate + reap', () => {
     // run again. This is the idempotency guarantee the reap loop relies on.
     await h.worker.finalize('ja', 'stalled', { reason: 'again' });
     assert.equal(store.finishCalls.get('ja'), 1, 'no second terminal write on an already-terminal job');
+  });
+
+  it('reapBackends drops a reaped handle whose job is applying instead of stalling it', async () => {
+    // Regression (review blocker): the shim posts its diff and exits 0 by design,
+    // so the local backend reaps the dead pid while the job sits in `applying`.
+    // reapBackends must NOT finalize that as `stalled` — the apply still has to run.
+    const store = new FakeStore();
+    const handle: RunnerHandle = { backend: 'local', id: '/tmp/ws-dead', pid: 4242, startedAt: new Date().toISOString() };
+    store.add(
+      makeJob({
+        id: 'j',
+        status: 'applying',
+        claimedBy: 'lease',
+        runnerHandle: handle,
+        result: { outcome: 'diff_ready', diffArtifactId: 'art-1' },
+      }),
+    );
+    const h = makeWorker({ store });
+    h.backend.reapResult = [handle];
+
+    await h.worker.reapBackends();
+
+    const job = await store.getJob('j');
+    assert.equal(job?.status, 'applying', 'the applying job is left for applyReady, not finalized stalled');
+    assert.equal(store.finishCalls.get('j') ?? 0, 0, 'no terminal write');
+  });
+
+  it('a full tick applies an applying job whose runner pid is already dead, never stalling it', async () => {
+    // Regression (review blocker): drives the exact sequence — job in `applying`,
+    // its tracked handle already reaped (dead pid) — through a whole tick(). The
+    // host-side apply MUST fire (epic #470's core guarantee): pr_url stored, job
+    // `done`, and finalizeDevJob never called with `stalled`.
+    const store = new FakeStore();
+    const handle: RunnerHandle = { backend: 'local', id: '/tmp/ws-dead', pid: 4242, startedAt: new Date().toISOString() };
+    store.addArtifact({
+      id: 'art-1',
+      jobId: 'j',
+      kind: 'diff',
+      content: `diff --git a/x b/x${NUMSTAT_MARKER}1\t0\tx`,
+      meta: {},
+      createdAt: new Date().toISOString(),
+    });
+    store.add(
+      makeJob({
+        id: 'j',
+        status: 'applying',
+        claimedBy: 'lease',
+        runnerHandle: handle,
+        branch: 'omadia/job-abc',
+        result: { outcome: 'diff_ready', diffArtifactId: 'art-1' },
+      }),
+    );
+    const h = makeWorker({ store });
+    h.backend.reapResult = [handle]; // the backend already reaped the dead runner
+
+    await h.worker.tick();
+
+    assert.equal(h.apply.calls.length, 1, 'the host-side apply ran');
+    const job = await store.getJob('j');
+    assert.equal(job?.status, 'done', 'the apply drove the job to done, not stalled');
+    assert.equal(job?.prUrl, 'https://github.com/byte5ai/omadia/pull/7', 'the PR url was stored');
+    assert.equal(store.finishCalls.get('j'), 1, 'exactly one terminal write (done)');
+    assert.ok(
+      !store.hostEvents.some((e) => e.jobId === 'j' && e.payload['status'] === 'stalled'),
+      'finalizeDevJob was never called with stalled',
+    );
   });
 });
 

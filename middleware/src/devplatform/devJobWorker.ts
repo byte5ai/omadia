@@ -1,17 +1,23 @@
 /**
  * Epic #470 W0 — DevJobWorker: the in-process control loop for the job spine
- * (spec §4/§5/§8). One tick does four things:
+ * (spec §4/§5/§8). One tick does four things, in this order:
  *
- *   1. Claim — up to `DEV_PLATFORM_MAX_CONCURRENT_JOBS` queued jobs (each claim
+ *   1. Apply — a job the runner left in `applying` is committed host-side via
+ *      `DiffApplyService` (the runner never pushed; it uploaded a diff): success
+ *      ⇒ `done` + PR url, failure ⇒ `failed` with the diff artifact retained for
+ *      the `POST /jobs/:id/apply` retry. Runs FIRST so a normally-completed
+ *      apply is never pre-empted by the liveness sweeps below.
+ *   2. Enforce — stale heartbeat ⇒ `stalled`, past wall-clock ⇒ `budget_exceeded`.
+ *   3. Reap — dead/orphan runners from each backend, finalized `stalled` once.
+ *   4. Claim — up to `DEV_PLATFORM_MAX_CONCURRENT_JOBS` queued jobs (each claim
  *      stamps a fresh `randomUUID()` lease), admits the auth mode at the boundary
  *      (spec §6b — the create route gives a good error, the worker is the gate),
  *      and provisions a runner backend.
- *   2. Enforce — stale heartbeat ⇒ `stalled`, past wall-clock ⇒ `budget_exceeded`.
- *   3. Reap — dead/orphan runners from each backend, finalized `stalled` once.
- *   4. Apply — a job the runner left in `applying` is committed host-side via
- *      `DiffApplyService` (the runner never pushed; it uploaded a diff): success
- *      ⇒ `done` + PR url, failure ⇒ `failed` with the diff artifact retained for
- *      the `POST /jobs/:id/apply` retry.
+ *
+ * `applying` is a host-side phase with NO live runner (the shim posted its diff
+ * and exited 0 by design), so Enforce and Reap both skip it via
+ * `isHostSideApplyPhase` — otherwise a reaped-dead handle or stale heartbeat
+ * finalizes it `stalled` and the PR is lost (apply refuses to retry `stalled`).
  *
  * The one hard invariant: EVERY terminal transition routes through
  * `finalizeDevJob`. The worker owns the terminate dispatch and the `onError`
@@ -31,46 +37,23 @@ import {
   type FinalizeStore,
 } from './finalizeDevJob.js';
 import { RunnerBackendError, type DevJobProvisionContext } from './runnerBackend.js';
+// Pure policy + wire helpers live in `devJobWorkerPolicy.ts` (keeps this file
+// under the 500-line guideline); import from there, not here.
+import {
+  DevJobWorkerError,
+  assertAuthModeAdmissible,
+  isHostSideApplyPhase,
+  splitDiffBundle,
+} from './devJobWorkerPolicy.js';
 import type {
   DevJob,
   DevJobArtifact,
-  DevJobAuthMode,
-  DevJobSource,
   DevJobStatus,
   DevRepo,
   RunnerBackend,
   RunnerBackendKind,
   RunnerHandle,
 } from './types.js';
-
-// Diff bundle split (spec §8). The runner uploads `<unified diff><marker><numstat>`
-// as ONE `diff` artifact; the host-side apply needs the halves separately to
-// cross-check them. This marker MUST equal the shim's `NUMSTAT_MARKER`
-// (`packages/dev-runner-shim/src/diffUpload.ts`) — a cross-package wire constant,
-// bare/unprefixed so it cannot occur inside a unified diff. See the spec-delta note.
-export const NUMSTAT_MARKER = '\n===OMADIA-DEV-RUNNER-NUMSTAT-V1===\n';
-
-/** Inverse of the shim's `bundleDiff`. Marker absent ⇒ the whole body is the
- *  diff and the numstat is empty (a numstat-less diff fails the apply's
- *  cross-check loudly rather than silently applying an unverified change). */
-export function splitDiffBundle(bundle: string): { diff: string; numstat: string } {
-  const at = bundle.indexOf(NUMSTAT_MARKER);
-  if (at === -1) return { diff: bundle, numstat: '' };
-  return { diff: bundle.slice(0, at), numstat: bundle.slice(at + NUMSTAT_MARKER.length) };
-}
-
-// Errors + config defaults.
-
-/** A typed worker refusal. Lives below the HTTP layer (unlike the routes'
- *  `DevPlatformError`), so it carries a `devplatform.` code but no status. */
-export class DevJobWorkerError extends Error {
-  readonly code: string;
-  constructor(code: string, message: string) {
-    super(message);
-    this.name = 'DevJobWorkerError';
-    this.code = code;
-  }
-}
 
 /** Spec §10 defaults. */
 export const DEFAULT_MAX_CONCURRENT_JOBS = 1;
@@ -155,44 +138,6 @@ export interface DevJobWorkerDeps {
   log?: (msg: string) => void;
 }
 
-// ---------------------------------------------------------------------------
-// Admission (spec §6b / Q4). The worker half of `assertAuthModeAdmissible`: same
-// decision as the route's, expressed below the HTTP layer as a typed refusal.
-// Exported so a test can drive the non-admin/flag-unset branches directly.
-// ---------------------------------------------------------------------------
-
-/**
- * Subscription jobs run the CLI on the operator's Claude login, so the
- * credential IS inside the runner — admitted only where no repository code can
- * execute beside it: subscription mode on, a no-exec repo, an operator-initiated
- * job, and never the (W4) fly backend. A capability gate, not a trust gate.
- */
-export function assertAuthModeAdmissible(
-  job: { authMode: DevJobAuthMode; source: DevJobSource; backend: RunnerBackendKind },
-  repo: { runsTests: boolean },
-  cfg: { subscriptionModeEnabled: boolean },
-): void {
-  if (job.authMode !== 'subscription') return;
-  if (!cfg.subscriptionModeEnabled) {
-    throw new DevJobWorkerError('devplatform.subscription_disabled', 'subscription auth mode is disabled');
-  }
-  if (repo.runsTests) {
-    throw new DevJobWorkerError(
-      'devplatform.subscription_requires_no_exec',
-      'subscription auth mode requires a repo whose tests do not execute',
-    );
-  }
-  if (job.source !== 'admin') {
-    throw new DevJobWorkerError('devplatform.subscription_operator_only', 'subscription auth mode is admin-only');
-  }
-  if (job.backend === 'fly') {
-    throw new DevJobWorkerError(
-      'devplatform.subscription_backend_unsupported',
-      'subscription auth mode is not supported on the fly backend',
-    );
-  }
-}
-
 // The worker.
 
 export class DevJobWorker {
@@ -250,10 +195,13 @@ export class DevJobWorker {
     if (this.ticking) return;
     this.ticking = true;
     try {
+      // Apply FIRST: an `applying` job has no live runner, so commit it host-side
+      // before any liveness sweep runs — defense in depth behind the
+      // `isHostSideApplyPhase` carve-out in enforceTimeouts/reapBackends.
+      await this.applyReady();
       await this.enforceTimeouts();
       await this.reapBackends();
       await this.claimAndProvision();
-      await this.applyReady();
     } catch (err) {
       this.log(`[dev-platform] worker tick error: ${errText(err)}`);
     } finally {
@@ -286,8 +234,9 @@ export class DevJobWorker {
    *  then no-ops on it (finalize is idempotent). */
   async enforceTimeouts(): Promise<void> {
     const now = this.now().getTime();
-
-    const overBudget = await this.deps.store.findOverWallClock(new Date(now - this.wallClockMs));
+    // Skip `applying` jobs — no runner to heartbeat (header + `isHostSideApplyPhase`).
+    const overBudget = (await this.deps.store.findOverWallClock(new Date(now - this.wallClockMs)))
+      .filter((job) => !isHostSideApplyPhase(job.status));
     for (const job of overBudget) {
       await this.finalize(job.id, 'budget_exceeded', {
         reason: 'wall_clock_exceeded',
@@ -295,7 +244,8 @@ export class DevJobWorker {
       });
     }
 
-    const stalled = await this.deps.store.findStalled(new Date(now - this.heartbeatTimeoutMs));
+    const stalled = (await this.deps.store.findStalled(new Date(now - this.heartbeatTimeoutMs)))
+      .filter((job) => !isHostSideApplyPhase(job.status));
     for (const job of stalled) {
       await this.finalize(job.id, 'stalled', {
         reason: 'heartbeat_timeout',
@@ -319,6 +269,8 @@ export class DevJobWorker {
       for (const handle of reaped) {
         const job = await this.jobForHandle(handle);
         if (!job) continue;
+        // Reaped `applying` job = normal completion, not a stall (see header).
+        if (isHostSideApplyPhase(job.status)) continue;
         await this.finalize(job.id, 'stalled', {
           reason: 'runner_reaped',
           error: `runner ${handle.id} was reaped (dead or orphaned)`,
