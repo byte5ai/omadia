@@ -3,7 +3,7 @@
  *
  * Stage 2 of the interactive issue loop. Takes the issues a human explicitly
  * greenlit for one cluster, implements each on a branch inside an isolated git
- * worktree, and runs an adversarial reviewer over every diff before the branch
+ * worktree, and runs two independent reviewers over every diff before the branch
  * is considered fit for a pull request.
  *
  * The cluster's `cohesion` flag (from issue-cluster.workflow.mjs) selects the
@@ -50,8 +50,7 @@
  * name and a prReady flag. See the CHOREOGRAPHY block in issue-cluster.workflow.mjs
  * for how the caller drives both stages and where the user is asked.
  *
- * GitHub API: REST only, via `gh api repos/...`. Never `gh issue`, `gh pr`,
- * `gh search`, or GraphQL -- the GraphQL quota may be exhausted.
+ * GitHub API: REST only via `gh api repos/...`; never `gh issue`/`gh pr`/GraphQL.
  */
 
 export const meta = {
@@ -121,14 +120,16 @@ const dropped = requested.slice(limit)
 const GROUND_RULES = [
   '## Ground rules (hard constraints -- violating any of these fails the run)',
   '- You may NEVER: push to any remote, open or merge a pull request, enable auto-merge, force-push,',
-  '  delete or rename branches other than the one you create, or check out ' + BASE_BRANCH + ' and commit onto it.',
-  '- You may NEVER modify: .env files, secrets, CI configuration under .github/, or deployment config.',
-  '- You may NEVER edit files outside your own worktree.',
+  '  delete or rename branches other than the one you create, or commit onto ' + BASE_BRANCH + '.',
+  '- You may NEVER modify .env files, secrets, CI config under .github/, or deployment config, and you',
+  '  may NEVER edit files outside your own worktree.',
   '- GitHub API: read-only, REST only, via `gh api repos/...`. NEVER `gh issue`, `gh pr`, `gh search`,',
   '  or GraphQL -- the GraphQL quota may be exhausted and those commands can fail.',
   '- Do not add a Co-Authored-By trailer to commits.',
   '- Stay inside the scope of the issue(s) you were given. Unrelated refactors, drive-by formatting, and',
   '  opportunistic cleanups are scope creep; the reviewer will reject the branch for them.',
+  '- Read AGENTS.md and CONTRIBUTING.md at the repo root. They are mandatory and often require a',
+  '  changelog or doc update alongside the code change.',
 ].join('\n')
 
 function issueBrief(issue) {
