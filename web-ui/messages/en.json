@@ -1227,6 +1227,7 @@
         "statusBusy": "Working …",
         "errorLostConnection": "Connection lost: {message}",
         "errorUnknown": "Unknown error — please try again.",
+        "errorProviderGeneric": "Your assistant couldn't reach the AI service just now. Please try again in a moment.",
         "errorChoiceFailed": "Your choice could not be saved.",
         "errorChoiceFailedMessage": "Your choice could not be saved: {message}"
       }

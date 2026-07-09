@@ -1227,6 +1227,7 @@
         "statusBusy": "Arbeitet …",
         "errorLostConnection": "Verbindung verloren: {message}",
         "errorUnknown": "Unbekannter Fehler — bitte erneut versuchen.",
+        "errorProviderGeneric": "Dein Assistent konnte den KI-Dienst gerade nicht erreichen. Bitte versuch es gleich noch einmal.",
         "errorChoiceFailed": "Auswahl konnte nicht gespeichert werden.",
         "errorChoiceFailedMessage": "Auswahl konnte nicht gespeichert werden: {message}"
       }
