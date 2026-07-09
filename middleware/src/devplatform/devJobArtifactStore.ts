@@ -5,7 +5,7 @@
  * Standalone functions over a `Pool` rather than a second class: they carry no
  * state, and `DevJobStore` delegates so callers keep a single store surface.
  *
- * `kind` is validated here rather than by the database. Migration 0021
+ * `kind` is validated here rather than by the database. Migration 0022
  * deliberately dropped the CHECK on `dev_job_artifacts.kind` — the enum grows
  * in W1 through W3 — so TypeScript is the only enforcement left.
  */

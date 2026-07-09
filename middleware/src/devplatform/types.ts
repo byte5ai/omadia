@@ -1,7 +1,7 @@
 /**
  * Epic #470 W0 — dev platform shared types and runtime validators.
  *
- * Migration 0021 deliberately drops the CHECK constraints on
+ * Migration 0022 deliberately drops the CHECK constraints on
  * `dev_job_events.type` and `dev_job_artifacts.kind`: both enums grow every
  * wave (W1-W3), so a DB CHECK would be a liability. This module is therefore
  * the ONLY enforcement point for those unions — the runtime validators below
@@ -27,7 +27,7 @@ export const RUNNER_PROTOCOL_VERSION = 1;
 const isMember = <T extends string>(values: readonly T[], x: unknown): x is T =>
   typeof x === 'string' && (values as readonly string[]).includes(x);
 
-/** Job lifecycle. Mirrors the `dev_jobs.status` CHECK in 0021. */
+/** Job lifecycle. Mirrors the `dev_jobs.status` CHECK in 0022. */
 export const DEV_JOB_STATUSES = [
   'queued',
   'provisioning',
@@ -99,7 +99,7 @@ export function isDevJobSource(x: unknown): x is DevJobSource {
 }
 
 /**
- * Event type. NOT constrained by the DB (0021) — validated here. Grows in
+ * Event type. NOT constrained by the DB (0022) — validated here. Grows in
  * W1-W3, so a new value is added to this array alone.
  */
 export const DEV_JOB_EVENT_TYPES = [
@@ -126,7 +126,7 @@ export function isDevJobAuthMode(x: unknown): x is DevJobAuthMode {
 }
 
 /**
- * Artifact kind. NOT constrained by the DB (0021) — validated here. W0's known
+ * Artifact kind. NOT constrained by the DB (0022) — validated here. W0's known
  * set; W2/W3 add more (e.g. `test_report` gains meaning once tests execute).
  */
 export const DEV_JOB_ARTIFACT_KINDS = [
@@ -235,7 +235,7 @@ export interface DevJobResult {
 }
 
 // ---------------------------------------------------------------------------
-// Persisted rows (camelCase views of the 0021 tables).
+// Persisted rows (camelCase views of the 0022 tables).
 // ---------------------------------------------------------------------------
 
 /** A registered repository (`dev_repos`). Secrets live in Vault, never here. */

@@ -59,7 +59,7 @@ export const TERMINAL_FINISH_BRAND: unique symbol = Symbol('devplatform.terminal
 export const HOST_EVENT_PROVISION = 0;
 
 /** One event as posted by the runner (spec §4 POST /events). `type` is
- *  validated here — the DB no longer constrains it (0021). */
+ *  validated here — the DB no longer constrains it (0022). */
 export interface RunnerEventInput {
   seq: number;
   type: DevJobEventType;

@@ -20,14 +20,14 @@
   "units": [
     {
       "id": "w0-schema",
-      "title": "Migration 0021 + shared types and runtime validators",
+      "title": "Migration 0022 + shared types and runtime validators",
       "acceptance": [
-        "0021_dev_platform.sql applies on a fresh DB and re-applies as a no-op",
+        "0022_dev_platform.sql applies on a fresh DB and re-applies as a no-op",
         "four tables and three indexes exist; no CHECK on dev_job_events.type or dev_job_artifacts.kind",
         "dev_job_events has (job_id, provision, seq) unique and an IDENTITY id used for ordering"
       ],
       "touches": [
-        "middleware/migrations/0021_dev_platform.sql",
+        "middleware/migrations/0022_dev_platform.sql",
         "middleware/src/devplatform/types.ts"
       ],
       "dependsOn": [],

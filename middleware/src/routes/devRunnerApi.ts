@@ -7,7 +7,7 @@
  * stored sha256 hash with a timing-safe compare (`store.verifyRunnerToken`).
  * The runner runs inside the blast chamber over untrusted repo content, so
  * every field is treated as hostile: bodies are size-capped, event types are
- * validated in TypeScript (the DB dropped the CHECK, per 0021), and no error
+ * validated in TypeScript (the DB dropped the CHECK, per 0022), and no error
  * ever echoes the bearer, an upstream body, or a stack trace.
  *
  * Status contract, uniform across routes:
