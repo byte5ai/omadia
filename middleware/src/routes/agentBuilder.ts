@@ -19,6 +19,7 @@ import {
   type AgentRow,
   type ConfigStore,
   type McpConfigField,
+  type McpRegistryRow,
   type McpServerConfig,
   type McpServerRow,
   type OrchestratorRegistry,
@@ -42,7 +43,11 @@ import {
   MCP_SEVERITIES_NEEDING_ACK,
   refreshMcpGrantPolicy,
 } from '../services/mcpGrantPolicy.js';
-import { McpRegistryClient, McpRegistryError } from '../services/mcpRegistryClient.js';
+import {
+  McpRegistryClient,
+  McpRegistryError,
+  type McpRegistryConfig,
+} from '../services/mcpRegistryClient.js';
 import { scanDiscoveredTools } from '../services/mcpToolGuard.js';
 import { scanSkillForRisks } from '../services/skillGuard.js';
 import { importSkillMarkdown } from '../services/skillImport.js';
@@ -116,6 +121,15 @@ export interface AgentBuilderRouterOptions {
     secretsSet(server: McpServerRow): Promise<Record<string, boolean>>;
     getConfigHeaders(cfg: McpServerConfig): Promise<Record<string, string>>;
     getConfigEnv(cfg: McpServerConfig): Promise<Record<string, string>>;
+  };
+  /** Vault-backed MCP registry bearer tokens (issue #463 item 5). The token is
+   *  never persisted on the DB row — the create route stores it here, the
+   *  catalog/search proxy resolves it here, delete removes it. Absent → the
+   *  registry is treated as keyless. */
+  readonly mcpRegistrySecrets?: {
+    getToken(registryId: string): Promise<string | undefined>;
+    setToken(registryId: string, value: string): Promise<void>;
+    deleteToken(registryId: string): Promise<void>;
   };
 }
 
@@ -219,6 +233,23 @@ export function createAgentBuilderRouter(
   // with a 5-minute cache, so registry tokens never reach the browser.
   const mcpRegistryClient = new McpRegistryClient();
 
+  // Build the client's runtime config from the persisted row, resolving the
+  // bearer token from the Vault (issue #463 item 5) — it is never on the row.
+  async function toRegistryConfig(row: McpRegistryRow): Promise<McpRegistryConfig> {
+    const token =
+      row.authKind === 'bearer' && options.mcpRegistrySecrets
+        ? ((await options.mcpRegistrySecrets.getToken(row.id)) ?? null)
+        : null;
+    return {
+      id: row.id,
+      name: row.name,
+      url: row.url,
+      authKind: row.authKind,
+      token,
+      kind: row.kind,
+    };
+  }
+
   /**
    * Epic #459 — the config fields a server declares, self-healed on demand, plus
    * which REQUIRED fields still have no value. A marketplace server imported
@@ -240,7 +271,7 @@ export function createAgentBuilderRouter(
       try {
         const registry = (await graph.listMcpRegistries()).find((r) => r.id === row.registryId);
         if (registry) {
-          const entry = await mcpRegistryClient.resolve(registry, row.name);
+          const entry = await mcpRegistryClient.resolve(await toRegistryConfig(registry), row.name);
           if (entry.configSchema && entry.configSchema.length > 0) {
             schema = entry.configSchema;
             await graph.setMcpServerConfigSchema(row.id, schema as never);
@@ -1706,13 +1737,19 @@ export function createAgentBuilderRouter(
     try {
       const registries = await l.graph.listMcpRegistries();
       res.json({
-        registries: registries.map((r) => ({
-          id: r.id,
-          name: r.name,
-          url: r.url,
-          authKind: r.authKind,
-          hasToken: r.token !== null && r.token !== '',
-        })),
+        registries: await Promise.all(
+          registries.map(async (r) => ({
+            id: r.id,
+            name: r.name,
+            url: r.url,
+            authKind: r.authKind,
+            // presence only — the token value itself never leaves the vault
+            hasToken:
+              r.authKind === 'bearer' && options.mcpRegistrySecrets
+                ? (await options.mcpRegistrySecrets.getToken(r.id)) != null
+                : false,
+          })),
+        ),
       });
     } catch (err) {
       fail(res, err);
@@ -1730,13 +1767,21 @@ export function createAgentBuilderRouter(
         res.status(400).json({ error: 'invalid_registry' });
         return;
       }
-      const row = await l.graph.createMcpRegistry({
-        name,
-        url,
-        authKind: b.authKind === 'bearer' ? 'bearer' : 'none',
-        token: typeof b.token === 'string' && b.token !== '' ? b.token : null,
+      const authKind = b.authKind === 'bearer' ? 'bearer' : 'none';
+      const token =
+        authKind === 'bearer' && typeof b.token === 'string' && b.token !== '' ? b.token : null;
+      const row = await l.graph.createMcpRegistry({ name, url, authKind });
+      // Secret-at-rest: the bearer token goes to the Vault, never the DB row.
+      if (token && options.mcpRegistrySecrets) {
+        await options.mcpRegistrySecrets.setToken(row.id, token);
+      }
+      res.json({
+        id: row.id,
+        name: row.name,
+        url: row.url,
+        authKind: row.authKind,
+        hasToken: token !== null,
       });
-      res.json({ id: row.id, name: row.name, url: row.url, authKind: row.authKind, hasToken: row.token !== null });
     } catch (err) {
       fail(res, err);
     }
@@ -1746,8 +1791,10 @@ export function createAgentBuilderRouter(
     const l = live(res);
     if (!l) return;
     try {
-      await l.graph.deleteMcpRegistry(str(req.params.id));
-      mcpRegistryClient.invalidate(str(req.params.id));
+      const registryId = str(req.params.id);
+      await l.graph.deleteMcpRegistry(registryId);
+      await options.mcpRegistrySecrets?.deleteToken(registryId);
+      mcpRegistryClient.invalidate(registryId);
       res.status(204).end();
     } catch (err) {
       fail(res, err);
@@ -1767,7 +1814,7 @@ export function createAgentBuilderRouter(
         return;
       }
       const q = typeof req.query['q'] === 'string' ? req.query['q'] : '';
-      const entries = await mcpRegistryClient.search(registry, q);
+      const entries = await mcpRegistryClient.search(await toRegistryConfig(registry), q);
       res.json({ entries });
     } catch (err) {
       if (err instanceof McpRegistryError) {
@@ -1793,7 +1840,7 @@ export function createAgentBuilderRouter(
         res.status(404).json({ error: 'mcp_registry_not_found' });
         return;
       }
-      const entry = await mcpRegistryClient.resolve(registry, catalogEntryId);
+      const entry = await mcpRegistryClient.resolve(await toRegistryConfig(registry), catalogEntryId);
       if (!entry.transport || !entry.endpoint) {
         res.status(422).json({ error: 'mcp_catalog_entry_not_importable', id: entry.id });
         return;
