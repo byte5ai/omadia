@@ -1,0 +1,28 @@
+{
+  "name": "@omadia/dev-runner-shim",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Epic #470 dev-platform runner shim: clones a repo read-only, drives the headless Claude CLI, translates its stream-json to runner events, and uploads a diff. Node builtins only — never imports middleware. Ships as a bundle spawned by a backend (W0 child, W1 image entrypoint).",
+  "type": "module",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test 'test/**/*.test.ts'"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "tsx": "^4.23.0",
+    "typescript": "^5.9.0"
+  }
+}
