@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  collectScanPayload,
+  findUnscannableSegment,
   HttpSkillSpectorScanner,
   mapSkillSpectorSeverity,
   parseSidecarResponse,
@@ -100,5 +102,117 @@ describe('HttpSkillSpectorScanner', () => {
     const result = await scanner.scan(path.join(os.tmpdir(), 'scan-test-missing-dir'));
     assert.equal(result.status, 'failed');
     assert.equal(result.severity, 'scan_failed');
+  });
+});
+
+describe('findUnscannableSegment (#453 codex review fix)', () => {
+  it('flags node_modules, .git, and hidden segments', () => {
+    assert.equal(findUnscannableSegment('node_modules/payload/plugin.js'), 'node_modules');
+    assert.equal(findUnscannableSegment('dist/node_modules/x.js'), 'node_modules');
+    assert.equal(findUnscannableSegment('.git/hooks/plugin.js'), '.git');
+    assert.equal(findUnscannableSegment('.hidden/plugin.js'), '.hidden');
+  });
+
+  it('accepts the boilerplate layout', () => {
+    assert.equal(findUnscannableSegment('dist/plugin.js'), null);
+    assert.equal(findUnscannableSegment('dist/sub/plugin.js'), null);
+  });
+});
+
+describe('collectScanPayload — entry-point coverage guard (#453 codex review fix)', () => {
+  async function withTmpDir(
+    files: Record<string, string>,
+    fn: (dir: string) => Promise<void>,
+  ): Promise<void> {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'scan-coverage-'));
+    try {
+      for (const [rel, content] of Object.entries(files)) {
+        const abs = path.join(dir, rel);
+        await fs.mkdir(path.dirname(abs), { recursive: true });
+        await fs.writeFile(abs, content);
+      }
+      await fn(dir);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  const manifestWithEntry = (entry: string): string =>
+    `schema_version: "1"\nlifecycle:\n  entry: "${entry}"\n`;
+
+  it('force-includes an entry the directory walk skipped (node_modules)', async () => {
+    await withTmpDir(
+      {
+        'manifest.yaml': manifestWithEntry('node_modules/payload/plugin.js'),
+        'node_modules/payload/plugin.js': 'module.exports = { activate() {} };\n',
+        'dist/other.js': '// decoy the walk does collect\n',
+      },
+      async (dir) => {
+        const payload = await collectScanPayload(dir);
+        assert.equal(payload.coverageError, null);
+        assert.ok(
+          payload.files.some((f) => f.path === 'node_modules/payload/plugin.js'),
+          'the executed entry point must be part of the scan payload',
+        );
+        // The rest of node_modules stays skipped — only the entry is pulled in.
+        assert.equal(
+          payload.files.filter((f) => f.path.startsWith('node_modules/')).length,
+          1,
+        );
+      },
+    );
+  });
+
+  it('fails closed when the declared entry file is absent', async () => {
+    await withTmpDir(
+      { 'manifest.yaml': manifestWithEntry('dist/plugin.js') },
+      async (dir) => {
+        const payload = await collectScanPayload(dir);
+        assert.ok(payload.coverageError, 'missing entry must be a coverage error');
+        // End-to-end: the scanner surfaces it as scan_failed WITHOUT any
+        // sidecar round-trip (never as a no_signals all-clear).
+        const scanner = new HttpSkillSpectorScanner({
+          baseUrl: 'http://192.0.2.1:1',
+          timeoutMs: 500,
+          log: () => undefined,
+        });
+        const result = await scanner.scan(dir);
+        assert.equal(result.status, 'failed');
+        assert.equal(result.severity, 'scan_failed');
+        assert.ok(result.rationale?.includes('coverage'));
+      },
+    );
+  });
+
+  it('fails closed when the entry is a symlink (never silently included)', async () => {
+    await withTmpDir(
+      {
+        'manifest.yaml': manifestWithEntry('node_modules/payload/plugin.js'),
+        'real.js': 'module.exports = {};\n',
+      },
+      async (dir) => {
+        await fs.mkdir(path.join(dir, 'node_modules/payload'), { recursive: true });
+        await fs.symlink(
+          path.join(dir, 'real.js'),
+          path.join(dir, 'node_modules/payload/plugin.js'),
+        );
+        const payload = await collectScanPayload(dir);
+        assert.ok(payload.coverageError, 'a symlinked entry must be a coverage error');
+      },
+    );
+  });
+
+  it('covers the normal boilerplate layout without a coverage error', async () => {
+    await withTmpDir(
+      {
+        'manifest.yaml': manifestWithEntry('dist/plugin.js'),
+        'dist/plugin.js': 'module.exports = { activate() {} };\n',
+      },
+      async (dir) => {
+        const payload = await collectScanPayload(dir);
+        assert.equal(payload.coverageError, null);
+        assert.ok(payload.files.some((f) => f.path === 'dist/plugin.js'));
+      },
+    );
   });
 });

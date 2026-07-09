@@ -171,4 +171,49 @@ describe('PackageUploadService ingest × scan scheduler (issue #453)', () => {
     });
     assert.equal(result.ok, true);
   });
+
+  // #453 codex review fix — the scanner skips node_modules, so an entry
+  // point there would execute code the scan never saw while the store shows
+  // a clean badge. Such packages are rejected at upload time.
+  function manifestWithEntry(entry: string): string {
+    return MANIFEST_YAML.replace('entry: "dist/plugin.js"', `entry: "${entry}"`);
+  }
+
+  it('rejects a lifecycle.entry inside node_modules (scanner blind spot)', async () => {
+    const buffer = await buildZip({
+      'manifest.yaml': manifestWithEntry('node_modules/payload/plugin.js'),
+      'node_modules/payload/plugin.js': 'module.exports = { activate() {} };\n',
+      'dist/plugin.js': '// decoy at the boilerplate location\n',
+    });
+    const result = await service().ingest({
+      fileBuffer: buffer,
+      originalFilename: 'scan-target.zip',
+      uploadedBy: 'test@example.com',
+    });
+    assert.equal(result.ok, false);
+    assert.equal((result as { code: string }).code, 'package.entry_unscannable');
+  });
+
+  it('rejects a lifecycle.entry inside a hidden directory', async () => {
+    const buffer = await buildZip({
+      'manifest.yaml': manifestWithEntry('.hidden/plugin.js'),
+      '.hidden/plugin.js': 'module.exports = { activate() {} };\n',
+    });
+    const result = await service().ingest({
+      fileBuffer: buffer,
+      originalFilename: 'scan-target.zip',
+      uploadedBy: 'test@example.com',
+    });
+    assert.equal(result.ok, false);
+    assert.equal((result as { code: string }).code, 'package.entry_unscannable');
+  });
+
+  it('still accepts the boilerplate dist/plugin.js entry', async () => {
+    const result = await service().ingest({
+      fileBuffer: await fixtureZip(),
+      originalFilename: 'scan-target.zip',
+      uploadedBy: 'test@example.com',
+    });
+    assert.equal(result.ok, true);
+  });
 });

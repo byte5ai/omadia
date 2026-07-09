@@ -8,6 +8,7 @@ import {
   MigrationTimeoutError,
 } from '@omadia/plugin-api';
 
+import { findUnscannableSegment } from '../services/pluginScanner.js';
 import type { InstalledRegistry } from './installedRegistry.js';
 import type { PluginCatalog } from './manifestLoader.js';
 import { loadManifestFromPath } from './manifestLoader.js';
@@ -220,6 +221,19 @@ export class PackageUploadService {
         return fail(
           'package.entry_missing',
           `lifecycle.entry '${entryRel}' ist im Zip nicht vorhanden.`,
+        );
+      }
+      // #453 (codex review fix) — the code scan skips node_modules/.git, so
+      // an entry point below such a path would EXECUTE code the scanner
+      // never saw while the store shows a clean badge. No legitimate omadia
+      // plugin does this (the boilerplate uses dist/plugin.js) → reject.
+      const unscannable = findUnscannableSegment(
+        path.relative(packageRoot, absEntry),
+      );
+      if (unscannable !== null) {
+        return fail(
+          'package.entry_unscannable',
+          `lifecycle.entry '${entryRel}' liegt unter '${unscannable}' — Entry Points unter node_modules oder versteckten Verzeichnissen sind nicht erlaubt (der Code-Scan würde sie nicht erfassen).`,
         );
       }
 

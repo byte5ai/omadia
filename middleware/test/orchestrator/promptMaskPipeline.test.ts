@@ -21,7 +21,7 @@ import type {
   LlmResponse,
   LlmStreamEvent,
 } from '@omadia/llm-provider';
-import { NativeToolRegistry, Orchestrator } from '@omadia/orchestrator';
+import { NativeToolRegistry, Orchestrator, steeringBus } from '@omadia/orchestrator';
 import { FactExtractor } from '@omadia/orchestrator-extras';
 import type { FactIngest, KnowledgeGraph } from '@omadia/plugin-api';
 import { createPrivacyGuardService } from '@omadia/plugin-privacy-guard/dist/index.js';
@@ -345,5 +345,109 @@ describe('#361 prompt masking — orchestrator pipeline', () => {
     // echoed the surrogate, the user sees the real value.
     assert.ok(result.answer.includes(RAW_IBAN));
     assert.ok(!result.answer.includes(surrogate!));
+  });
+
+  it('mid-turn steering (/chat/steer) is masked before it crosses the wire', async () => {
+    // Codex review fix — the steering bus injects RAW user text into the
+    // running iteration loop (streaming path). That text is LLM-bound wire
+    // content like the original user message: with the flag on, a steered
+    // IBAN must reach the provider only as a surrogate, through the SAME
+    // turn map (so answer-side restore covers steered spans too).
+    const RAW_IBAN = 'DE89370400440532013000';
+    const IBAN_RE = /\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b/;
+    const streamRequests: string[] = [];
+    const provider = {
+      id: 'anthropic',
+      capabilities: providerCapabilities,
+      complete: async (): Promise<LlmResponse> => {
+        throw new Error('steering provider: complete() not scripted');
+      },
+      stream: (req: LlmRequest): AsyncIterable<LlmStreamEvent> => {
+        const serialized = JSON.stringify(req);
+        streamRequests.push(serialized);
+        const iban = IBAN_RE.exec(serialized)?.[0] ?? 'no-iban-in-request';
+        const text = `Verstanden, ich nutze ${iban}.`;
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield { type: 'text_delta', text } as LlmStreamEvent;
+            yield {
+              type: 'final',
+              response: {
+                content: [{ type: 'text', text }],
+                finishReason: 'stop',
+                providerFinishReason: 'end_turn',
+                model: 'test',
+                usage: {
+                  inputTokens: 10,
+                  outputTokens: 1,
+                  cacheReadTokens: 0,
+                  cacheWriteTokens: 0,
+                },
+              },
+            } as LlmStreamEvent;
+          },
+        };
+      },
+      classifyError: () => ({ retryable: false, kind: 'other' as const }),
+    } as unknown as LlmProvider;
+
+    const orch = new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 3,
+      domainTools: [],
+      nativeToolRegistry: new NativeToolRegistry(),
+      privacyGuard: () => maskingService(),
+    });
+
+    const events: Array<{ type: string } & Record<string, unknown>> = [];
+    let steered = false;
+    for await (const event of orch.chatStream({
+      userMessage: 'Bitte fasse den Stand kurz zusammen.',
+      sessionScope: 'sess-steer',
+      userId: 'u1',
+    })) {
+      events.push(event as { type: string } & Record<string, unknown>);
+      // The generator suspends at each yield: enqueueing on the first
+      // `iteration_start` lands in the bus BEFORE the loop's drain runs,
+      // exactly like a real /chat/steer request racing the model call.
+      if (event.type === 'iteration_start' && !steered) {
+        steered = true;
+        const enq = steeringBus.enqueue(
+          'sess-steer',
+          `Wichtig: nimm das Konto ${RAW_IBAN} dafür.`,
+        );
+        assert.equal(enq.live, true, 'the turn must be live for steering');
+      }
+    }
+
+    // The steer was applied — and echoed to the user RAW (user-facing).
+    const applied = events.find((e) => e.type === 'steer_applied');
+    assert.ok(applied, 'a steer_applied event must be emitted');
+    assert.ok(String(applied!['message']).includes(RAW_IBAN));
+
+    // ZERO raw detected spans in ANY outgoing streaming request body.
+    assert.ok(streamRequests.length >= 1);
+    for (const req of streamRequests) {
+      assert.ok(
+        !req.includes(RAW_IBAN),
+        'streamed LLM params must not contain the raw steered IBAN',
+      );
+    }
+    const withSurrogate = streamRequests.find((req) => IBAN_RE.test(req));
+    assert.ok(
+      withSurrogate,
+      'the steered text must reach the wire as an IBAN-shaped surrogate',
+    );
+    const surrogate = IBAN_RE.exec(withSurrogate!)?.[0];
+    assert.notEqual(surrogate, RAW_IBAN);
+
+    // Answer-side restore covers steered spans (same turn map): the
+    // provider echoed the surrogate, the final answer shows the real value.
+    const done = events.find((e) => e.type === 'done');
+    assert.ok(done, 'the stream must settle with a done event');
+    assert.ok(String(done!['answer']).includes(RAW_IBAN));
+    assert.ok(!String(done!['answer']).includes(surrogate!));
   });
 });

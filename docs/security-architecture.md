@@ -78,7 +78,14 @@ discovered from public registries. This keeps the supply chain explicit:
   verdict row is written. The result pipeline is **fail-closed**: only
   SkillSpector's positively-verified report schema counts as a scan; an
   unrecognized schema is recorded as `scan_failed`, never as a
-  `no_signals` all-clear. Operator acknowledgements persist
+  `no_signals` all-clear. Entry-point coverage is fail-closed too: upload
+  validation rejects a `lifecycle.entry` that resolves below
+  `node_modules` or a hidden directory (`package.entry_unscannable` —
+  the scanner's directory walk skips those, so the runtime would execute
+  code the scan never saw), and as defense in depth the scanner
+  force-includes the manifest's entry file in the scan payload when the
+  walk skipped it, recording `scan_failed` when coverage cannot be
+  guaranteed. Operator acknowledgements persist
   `ack_by`/`ack_at`/`ack_severity` for audit and are cleared automatically
   when a later re-scan worsens the verdict beyond the acked severity;
   turning the verdict into a hard install block is deferred until omadia

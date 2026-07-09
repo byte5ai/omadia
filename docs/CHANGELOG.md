@@ -31,7 +31,12 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   positively-verified SkillSpector report schema (exit 0, `issues` list +
   `risk_assessment` object — observed against the pinned commit, CLI
   v2.3.11) counts as a scan; any unrecognized output surfaces as
-  `scan_failed`, never as a false `no_signals` all-clear. The sidecar
+  `scan_failed`, never as a false `no_signals` all-clear. Coverage of the
+  executed entry point is guaranteed the same way: upload validation
+  rejects a `lifecycle.entry` below `node_modules`/hidden directories
+  (`package.entry_unscannable`), and the scanner force-includes the entry
+  file when the directory walk skipped it — failing closed (`scan_failed`)
+  when it cannot. The sidecar
   dependency is pinned to an exact upstream commit SHA (pin-bump procedure:
   sidecar README). Verdicts are cached by ZIP sha256 + scanner version
   (**migration `0021_plugin_verdict.sql`**, table `plugin_verdicts` incl.
@@ -58,10 +63,12 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   byte-identical to previous behavior.
 - Orchestrator: every LLM-bound site (message assembly, **live chat
   history/`priorTurns` — which replays persisted REAL values from earlier
-  turns**, ingested attachment tail, model/persona routing, KG-recall
-  query, recalled-context injection, **direct-line relay payloads**,
-  fact-extraction prompt, nudge pipeline, card router, excerpt pass)
-  consumes the masked wire variant. Server-side persistence stores real
+  turns**, ingested attachment tail, **mid-turn steering messages injected
+  via `POST /chat/steer`** (masked through the same per-turn map before the
+  iteration loop folds them into the conversation), model/persona routing,
+  KG-recall query, recalled-context injection, **direct-line relay
+  payloads**, fact-extraction prompt, nudge pipeline, card router, excerpt
+  pass) consumes the masked wire variant. Server-side persistence stores real
   values only: the session log / KG persist the POST-restore answer,
   extracted facts and the Palaia excerpt are restored surrogate→real before
   ingest/promotion (fire-and-forget extraction uses a snapshot of the

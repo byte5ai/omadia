@@ -3608,9 +3608,20 @@ export class Orchestrator {
         // present — at iteration ≥1 it's the tool_results turn) keeps roles
         // strictly alternating; otherwise we append a fresh user turn.
         for (const steerText of steeringBus.drain(steerKey)) {
+          // #361 (codex review fix) — steered text is LLM-bound wire content
+          // exactly like the original user message: mask it through the SAME
+          // per-turn map before it is appended, so answer-side restore covers
+          // steered spans too. Fails closed via PromptMaskBlockedError (the
+          // stream guard in chatStream converts it into a graceful privacy
+          // `done` event). The `steer_applied` event below stays RAW — it is
+          // user-facing echo, not wire content.
+          const wireSteerText = await maskPromptForWire(
+            privacyForPrompt,
+            steerText,
+          );
           const steerBlock = {
             type: 'text' as const,
-            text: `[Live user steering — added mid-turn]: ${steerText}`,
+            text: `[Live user steering — added mid-turn]: ${wireSteerText}`,
           };
           const last = messages[messages.length - 1];
           if (last && last.role === 'user') {

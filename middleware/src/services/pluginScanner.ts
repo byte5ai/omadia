@@ -1,6 +1,8 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
+import { parse as parseYaml } from 'yaml';
+
 import type { Severity } from './skillVerdict.js';
 
 /**
@@ -36,6 +38,25 @@ const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 30 * 1024 * 1024;
 /** Directories that carry no scannable plugin code. */
 const SKIPPED_DIRS = new Set(['node_modules', '.git']);
+
+/**
+ * #453 (codex review fix) — shared skip predicate for `lifecycle.entry`
+ * validation. Returns the first path segment that makes the path
+ * unscannable (a `SKIPPED_DIRS` member or any hidden `.`-prefixed
+ * segment), or `null` when every segment is scannable. Upload validation
+ * uses this to REJECT packages whose entry point the scanner would never
+ * see; no legitimate omadia plugin places its entry there (the boilerplate
+ * uses `dist/plugin.js`). Deliberately broader than `collectFiles`' own
+ * walk (which only skips `SKIPPED_DIRS`): hidden segments are rejected
+ * up-front too, so the accepted surface stays conservative.
+ */
+export function findUnscannableSegment(relPath: string): string | null {
+  for (const segment of relPath.split(/[\\/]+/)) {
+    if (segment === '' || segment === '.') continue;
+    if (SKIPPED_DIRS.has(segment) || segment.startsWith('.')) return segment;
+  }
+  return null;
+}
 
 export interface ScanFinding {
   /** SkillSpector detector id, e.g. 'E2', 'YR1', 'LP3', 'OH1'. */
@@ -104,9 +125,9 @@ export class HttpSkillSpectorScanner implements PluginScanner {
   async scan(dir: string): Promise<ScanResult> {
     const log = this.opts.log ?? (() => undefined);
 
-    let collected: CollectedFiles;
+    let collected: ScanPayload;
     try {
-      collected = await collectFiles(dir);
+      collected = await collectScanPayload(dir);
     } catch (err) {
       return failed(
         `Package directory unreadable: ${err instanceof Error ? err.message : String(err)}`,
@@ -120,6 +141,13 @@ export class HttpSkillSpectorScanner implements PluginScanner {
         scannerVersion: PLUGIN_SCANNER_VERSION,
         rationale: `Package exceeds the scan size cap (${MAX_TOTAL_BYTES} bytes total / ${MAX_FILE_BYTES} bytes per file).`,
       };
+    }
+    // #453 (codex review fix) — fail CLOSED when the executed entry point is
+    // not part of the payload: a package whose `lifecycle.entry` the scanner
+    // never saw must surface as `scan_failed`, never as a `no_signals`
+    // all-clear.
+    if (collected.coverageError !== null) {
+      return failed(collected.coverageError);
     }
 
     const controller = new AbortController();
@@ -156,6 +184,93 @@ export class HttpSkillSpectorScanner implements PluginScanner {
 interface CollectedFiles {
   files: { path: string; content_b64: string }[];
   tooLarge: boolean;
+}
+
+export interface ScanPayload extends CollectedFiles {
+  /** `null` when the manifest's `lifecycle.entry` file is guaranteed to be
+   *  part of `files`; otherwise the reason coverage cannot be guaranteed
+   *  (the caller degrades to `scan_failed`). Undefined semantics only when
+   *  `tooLarge` is set (the payload is discarded then anyway). */
+  coverageError: string | null;
+}
+
+/**
+ * #453 (codex review fix) — collect the file tree AND guarantee coverage of
+ * the executed entry point. `collectFiles` skips `SKIPPED_DIRS`
+ * (node_modules, .git) because they carry no scannable plugin code — but
+ * the manifest's `lifecycle.entry` may point exactly there, and the runtime
+ * would import it. Upload validation rejects such entries for NEW packages
+ * (`findUnscannableSegment`); this is the defense-in-depth layer behind it:
+ * when the walk dropped the entry file, it is force-included in the
+ * payload, and when it cannot be included (missing, symlink, oversize,
+ * escapes the root, undeterminable manifest) the scan fails CLOSED.
+ */
+export async function collectScanPayload(dir: string): Promise<ScanPayload> {
+  const collected = await collectFiles(dir);
+  if (collected.tooLarge) return { ...collected, coverageError: null };
+  const coverageError = await ensureEntryCovered(dir, collected.files);
+  return { ...collected, coverageError };
+}
+
+/** Read `lifecycle.entry` from the package manifest; defaults to
+ *  `dist/plugin.js` (mirroring `packageUploadService`). Returns `null` when
+ *  the manifest is missing or unparseable — the entry point cannot be
+ *  determined then, so coverage cannot be guaranteed. */
+async function readManifestEntry(dir: string): Promise<string | null> {
+  try {
+    const raw = await fs.readFile(path.join(dir, 'manifest.yaml'), 'utf-8');
+    const manifest: unknown = parseYaml(raw);
+    if (!manifest || typeof manifest !== 'object') return null;
+    const lifecycle = (manifest as Record<string, unknown>)['lifecycle'];
+    const entry =
+      lifecycle && typeof lifecycle === 'object'
+        ? (lifecycle as Record<string, unknown>)['entry']
+        : undefined;
+    return typeof entry === 'string' && entry.length > 0
+      ? entry
+      : 'dist/plugin.js';
+  } catch {
+    return null;
+  }
+}
+
+/** Returns `null` when the entry file is covered by `files` (force-including
+ *  it when the walk skipped it), or the fail-closed reason otherwise. */
+async function ensureEntryCovered(
+  dir: string,
+  files: { path: string; content_b64: string }[],
+): Promise<string | null> {
+  const entryRel = await readManifestEntry(dir);
+  if (entryRel === null) {
+    return (
+      'manifest.yaml is missing or unparseable — the executed entry point ' +
+      'cannot be determined, so scan coverage cannot be guaranteed.'
+    );
+  }
+  const root = path.resolve(dir);
+  const absEntry = path.resolve(root, entryRel);
+  if (!absEntry.startsWith(root + path.sep)) {
+    return `lifecycle.entry '${entryRel}' escapes the package root — scan coverage cannot be guaranteed.`;
+  }
+  const relPosix = path.relative(root, absEntry).split(path.sep).join('/');
+  if (files.some((f) => f.path === relPosix)) return null;
+  // The walk dropped it (skipped dir / symlink) or it is absent: force-
+  // include plain, in-cap regular files; anything else fails closed.
+  let stat;
+  try {
+    stat = await fs.lstat(absEntry);
+  } catch {
+    return `lifecycle.entry '${entryRel}' does not exist in the package — scan coverage cannot be guaranteed.`;
+  }
+  if (!stat.isFile()) {
+    return `lifecycle.entry '${entryRel}' is not a regular file — scan coverage cannot be guaranteed.`;
+  }
+  if (stat.size > MAX_FILE_BYTES) {
+    return `lifecycle.entry '${entryRel}' exceeds the per-file scan cap — scan coverage cannot be guaranteed.`;
+  }
+  const content = await fs.readFile(absEntry);
+  files.push({ path: relPosix, content_b64: content.toString('base64') });
+  return null;
 }
 
 async function collectFiles(dir: string): Promise<CollectedFiles> {
