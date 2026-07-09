@@ -66,7 +66,7 @@ export function StreamRunner(): null {
   return null;
 }
 
-interface DepsRef {
+export interface DepsRef {
   current: {
     t: ReturnType<typeof useTranslations>;
     sessions: ReturnType<typeof useChatSessionsCtx>;
@@ -74,7 +74,12 @@ interface DepsRef {
   };
 }
 
-async function runOneTurn(claim: ClaimedRequest, depsRef: DepsRef): Promise<void> {
+// Exported for unit tests (#403): drives the fetch + NDJSON-drain loop and the
+// terminal store outcome. Not part of the component's public surface otherwise.
+export async function runOneTurn(
+  claim: ClaimedRequest,
+  depsRef: DepsRef,
+): Promise<void> {
   const { request, signal } = claim;
   const { sessionId, pendingMessageId, message, agentSlug } = request;
   const { store } = depsRef.current;
@@ -87,6 +92,11 @@ async function runOneTurn(claim: ClaimedRequest, depsRef: DepsRef): Promise<void
   let tokensIn = 0;
   let tokensOut = 0;
   let cacheTokens = 0;
+  // #403 — an in-band `error` event on a 200 stream still means the turn
+  // failed. Capture its humanized message here so the terminal record (and
+  // the background stream toast) can report the failure instead of a false
+  // 'done'. Stays null on a clean turn.
+  let inbandErrorMessage: string | null = null;
 
   const applyEvent = (event: ChatStreamEvent): void => {
     const { sessions: liveSessions, t } = depsRef.current;
@@ -96,6 +106,7 @@ async function runOneTurn(claim: ClaimedRequest, depsRef: DepsRef): Promise<void
     let outgoing = event;
     if (event.type === 'error') {
       const clean = humanizeProviderError(event.message, t('errorProviderGeneric'));
+      inbandErrorMessage = clean;
       if (clean !== event.message) {
         console.warn('[chat] provider error', event.message);
         outgoing = { ...event, message: clean };
@@ -209,7 +220,11 @@ async function runOneTurn(claim: ClaimedRequest, depsRef: DepsRef): Promise<void
         /* ignore */
       }
     }
-    store.finish(sessionId, 'done');
+    if (inbandErrorMessage !== null) {
+      store.finish(sessionId, 'error', inbandErrorMessage);
+    } else {
+      store.finish(sessionId, 'done');
+    }
   } catch (err) {
     if ((err as Error).name === 'AbortError') {
       const { t } = depsRef.current;
