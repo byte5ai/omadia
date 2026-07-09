@@ -40,10 +40,26 @@
  *                     --jq '[.[] | select(.pull_request == null)]'
  *                 and the base sha: git rev-parse --short origin/main
  *   2. WORKFLOW   issue-cluster.workflow.mjs  -> clusters, each pre-ranked
- *   3. MAIN LOOP  renders the clusters, then AskUserQuestion: "which group?"
+ *   3. MAIN LOOP  AskUserQuestion: "which group?"
+ *
+ *                 Do NOT invent a rendering. The workflow returns `groups` -- every
+ *                 cluster plus every unclustered issue as its own single-issue group,
+ *                 ranked, each carrying a ready-made `card` string. Use the card as
+ *                 the AskUserQuestion option `preview`.
+ *
+ *                 AskUserQuestion allows at most 4 options per question, so `ui`
+ *                 carries `clusterPages`: group ids chunked 3-at-a-time. Offer one
+ *                 page as 3 options plus a 4th "weitere Gruppen zeigen" / "abbrechen".
+ *                 A backlog of 9 clusters plus 8 loose issues does not fit in one
+ *                 question, and silently showing only the top 3 would hide the rest.
+ *
  *   4. MAIN LOOP  (ranking already computed in step 2 -- no second pass)
  *   5. MAIN LOOP  AskUserQuestion per issue: implement / skip / defer.
- *                 Batch up to 4 issues per call (that is AskUserQuestion's limit).
+ *                 Batch up to `ui.issuesPerCall` (4) issues per call -- one question
+ *                 each, three options each, using the issue's own `card` as preview.
+ *                 An issue whose readiness is already-shipped, stale, or
+ *                 blocked-external should say so in its option descriptions; the
+ *                 right answer there is usually not "implement".
  *                 Persist every answer to the gitignored run-state file BEFORE
  *                 doing any work, so a compacted or crashed session resumes
  *                 without re-asking:
@@ -389,6 +405,49 @@ const clusters = grouped.clusters.map((c) => {
 const placed = new Set(clusters.flatMap((c) => c.issues.map((i) => i.number)))
 const unclustered = enriched.filter((r) => !placed.has(r.number)).map((r) => ({ ...r, score: Number(score(r).toFixed(3)) }))
 
+/**
+ * The human gate lives in the main loop, because a Workflow script cannot call
+ * AskUserQuestion. What the script CAN do is hand the main loop the exact cards to
+ * show, so the presentation does not get re-invented (and quietly degraded) by every
+ * session that runs this. AskUserQuestion allows at most 4 options per question and
+ * at most 4 questions per call, which is why clusters are paged 3-at-a-time with a
+ * "show the rest" slot, and issues are asked 4-at-a-time.
+ */
+const UI = { optionsPerQuestion: 4, clustersPerPage: 3, issuesPerCall: 4 }
+
+const pad = (s, n) => String(s).slice(0, n).padEnd(n)
+
+function issueCard(i) {
+  const files = i.touchedFiles.slice(0, 5).map((f) => '    ' + f).join('\n')
+  return [
+    '#' + i.number + '  impact ' + i.impact + ' / effort ' + i.effort + '  ->  score ' + i.score,
+    'readiness: ' + i.readiness,
+    '',
+    i.summary,
+    '',
+    'why: ' + i.readinessReason,
+    '',
+    'likely files:',
+    files || '    (none identified)',
+  ].join('\n')
+}
+
+function clusterCard(c) {
+  const rows = c.issues.map((i) => '  ' + pad('#' + i.number, 6) + pad(i.readiness, 22) + 'score ' + i.score).join('\n')
+  return [
+    c.label,
+    '',
+    c.cohesion === 'dependent'
+      ? 'ZUSAMMENHAENGEND -- ein Branch, ein Pull Request, der Reihe nach.'
+      : 'UNABHAENGIG -- ein Branch und ein Pull Request pro Issue, parallel.',
+    'evidence: ' + c.cohesionEvidence,
+    '',
+    c.theme,
+    '',
+    rows,
+  ].join('\n')
+}
+
 const listedValid = grouped.clusters.flatMap((c) => c.issueNumbers).filter((n) => byNumber.has(n)).length
 const duplicates = listedValid - claimed.size
 if (duplicates > 0) log('NOTE: the reduce agent placed ' + duplicates + ' issue(s) in more than one cluster; kept the first placement of each')
@@ -396,4 +455,31 @@ if (duplicates > 0) log('NOTE: the reduce agent placed ' + duplicates + ' issue(
 const dependentCount = clusters.filter((c) => c.cohesion === 'dependent').length
 log('Done: ' + clusters.length + ' clusters (' + dependentCount + ' dependent, ' + (clusters.length - dependentCount) + ' independent), ' + unclustered.length + ' unclustered')
 
-return { baseSha: BASE, clusters, unclustered }
+// Every unclustered issue is its own single-issue, independent group. Presenting them
+// as a separate leftover bucket makes them easy to forget; presenting them as groups
+// puts them on the same footing as everything else.
+const singles = unclustered.map((r) => ({
+  id: 'S' + r.number,
+  label: '#' + r.number + ' (einzeln)',
+  slug: 'issue-' + r.number,
+  theme: r.summary,
+  cohesion: 'independent',
+  cohesionEvidence: 'Single issue -- nothing to collide with.',
+  size: 1,
+  topScore: r.score,
+  issues: [r],
+}))
+
+const groups = clusters.concat(singles).sort((a, b) => b.topScore - a.topScore || a.id.localeCompare(b.id))
+for (const g of groups) {
+  g.card = clusterCard(g)
+  for (const i of g.issues) i.card = issueCard(i)
+}
+
+// Pages of 3 leave the 4th option slot for "show me the rest" / "stop".
+const clusterPages = []
+for (let n = 0; n < groups.length; n += UI.clustersPerPage) clusterPages.push(groups.slice(n, n + UI.clustersPerPage).map((g) => g.id))
+
+log('Gate: ' + groups.length + ' selectable groups across ' + clusterPages.length + ' page(s) of ' + UI.clustersPerPage)
+
+return { baseSha: BASE, clusters, unclustered, groups, ui: { ...UI, clusterPages } }
