@@ -83,6 +83,10 @@ export function registerDevPlatformRepoRoutes(router: Router, deps: DevPlatformR
       // Validate access + capture the default branch (spec §6).
       const access = await deps.probeRepoAccess({ owner, name, token });
       if (!access.ok) {
+        // Drop the staged device-flow token: it was parked under pending/<sub>
+        // and, without this, a failed repo add leaves a live credential in the
+        // vault staging slot with no owning repo to clean it up.
+        if (kind === 'device_flow') await deps.credentials.clearPending(caller.sub);
         throw new DevPlatformError(400, 'devplatform.repo_access_failed', 'could not access the repository with the supplied credential');
       }
 

@@ -44,6 +44,9 @@ import {
   handler,
   isPermittedLauncher,
   isTerminalStatusEvent,
+  loadAuthorizedJob,
+  loadJob,
+  callerMayReadRepo,
   readParam,
   requireCaller,
   sendError,
@@ -170,7 +173,7 @@ export function createDevPlatformRouter(deps: DevPlatformRouterDeps): Router {
   router.get(
     '/jobs',
     handler(async (req, res) => {
-      requireCaller(req);
+      const caller = requireCaller(req);
       const filter: ListJobsFilter = {};
       const repoId = asString(req.query['repoId']);
       if (repoId) filter.repoId = repoId;
@@ -178,7 +181,12 @@ export function createDevPlatformRouter(deps: DevPlatformRouterDeps): Router {
       if (typeof status === 'string' && isDevJobStatus(status)) filter.status = status;
       const limit = asIntOrNull(req.query['limit']);
       if (limit !== null) filter.limit = limit;
-      const jobs = await deps.jobStore.listJobs(filter);
+      // Only jobs on repos the caller may launch. Building the allowed-repo set
+      // once avoids a repo lookup per job.
+      const allowed = new Set(
+        (await deps.repoStore.listRepos()).filter((r) => isPermittedLauncher(r, caller)).map((r) => r.id),
+      );
+      const jobs = (await deps.jobStore.listJobs(filter)).filter((j) => allowed.has(j.repoId));
       res.json({ jobs: jobs.map(toJobView) });
     }),
   );
@@ -187,8 +195,8 @@ export function createDevPlatformRouter(deps: DevPlatformRouterDeps): Router {
   router.get(
     '/jobs/:id',
     handler(async (req, res) => {
-      requireCaller(req);
-      const job = await loadJob(deps, req);
+      const caller = requireCaller(req);
+      const job = await loadAuthorizedJob(deps, req, caller);
       res.json(toJobView(job));
     }),
   );
@@ -197,8 +205,8 @@ export function createDevPlatformRouter(deps: DevPlatformRouterDeps): Router {
   router.post(
     '/jobs/:id/cancel',
     handler(async (req, res) => {
-      requireCaller(req);
-      const job = await loadJob(deps, req);
+      const caller = requireCaller(req);
+      const job = await loadAuthorizedJob(deps, req, caller);
       // Both a queued and a live job route through the single choke point.
       await deps.finalizeDevJob(job.id, 'cancelled', { reason: 'cancelled by operator' });
       res.status(202).json({ ok: true, status: 'cancelled' });
@@ -210,8 +218,8 @@ export function createDevPlatformRouter(deps: DevPlatformRouterDeps): Router {
   router.post(
     '/jobs/:id/apply',
     handler(async (req, res) => {
-      requireCaller(req);
-      const job = await loadJob(deps, req);
+      const caller = requireCaller(req);
+      const job = await loadAuthorizedJob(deps, req, caller);
       const failedAfterDiff = job.status === 'failed' && Boolean(job.result?.diffArtifactId);
       if (job.status !== 'applying' && !failedAfterDiff) {
         throw new DevPlatformError(409, 'devplatform.apply_not_allowed', `cannot apply while job is '${job.status}'`);
@@ -261,8 +269,8 @@ export function createDevPlatformRouter(deps: DevPlatformRouterDeps): Router {
   router.get(
     '/jobs/:id/artifacts',
     handler(async (req, res) => {
-      requireCaller(req);
-      const job = await loadJob(deps, req);
+      const caller = requireCaller(req);
+      const job = await loadAuthorizedJob(deps, req, caller);
       const artifacts = await deps.jobStore.listArtifacts(job.id);
       res.json({
         artifacts: artifacts.map((a) => ({
@@ -281,11 +289,15 @@ export function createDevPlatformRouter(deps: DevPlatformRouterDeps): Router {
   router.get(
     '/artifacts/:id',
     handler(async (req, res) => {
-      requireCaller(req);
+      const caller = requireCaller(req);
       const id = readParam(req, 'id');
       if (!id) throw new DevPlatformError(400, 'devplatform.invalid_id', 'missing :id');
       const artifact = await deps.jobStore.getArtifact(id);
-      if (!artifact) throw new DevPlatformError(404, 'devplatform.artifact_not_found', 'no such artifact');
+      // Same-404 for missing and unauthorized: authorize via the owning job's
+      // repo before returning the content (agent output, diffs, test reports).
+      if (!artifact || !(await callerMayReadRepo(deps, artifact.jobId, caller))) {
+        throw new DevPlatformError(404, 'devplatform.artifact_not_found', 'no such artifact');
+      }
       res.status(200).type('text/plain; charset=utf-8').send(artifact.content);
     }),
   );
@@ -331,8 +343,9 @@ function registerJobEventsRoute(router: Router, deps: DevPlatformRouterDeps): vo
 
   router.get('/jobs/:id/events', (req: Request, res: Response) => {
     void (async () => {
+      let caller: DevPlatformCaller;
       try {
-        requireCaller(req);
+        caller = requireCaller(req);
       } catch (err) {
         sendError(res, err);
         return;
@@ -343,7 +356,11 @@ function registerJobEventsRoute(router: Router, deps: DevPlatformRouterDeps): vo
         return;
       }
       const job = await deps.jobStore.getJob(jobId);
-      if (!job) {
+      // Authorize against the job's repo BEFORE opening the stream. Events carry
+      // log/tool/egress/token payloads — another operator's agent output and
+      // egress targets. A missing and an unauthorized job return the same 404.
+      const jobRepo = job ? await deps.repoStore.getRepo(job.repoId) : null;
+      if (!job || !jobRepo || !isPermittedLauncher(jobRepo, caller)) {
         sendError(res, new DevPlatformError(404, 'devplatform.job_not_found', 'no such job'));
         return;
       }
@@ -439,14 +456,6 @@ function registerJobEventsRoute(router: Router, deps: DevPlatformRouterDeps): vo
 // ---------------------------------------------------------------------------
 // Local helpers.
 // ---------------------------------------------------------------------------
-
-async function loadJob(deps: DevPlatformRouterDeps, req: Request): Promise<DevJob> {
-  const id = readParam(req, 'id');
-  if (!id) throw new DevPlatformError(400, 'devplatform.invalid_id', 'missing :id');
-  const job = await deps.jobStore.getJob(id);
-  if (!job) throw new DevPlatformError(404, 'devplatform.job_not_found', 'no such job');
-  return job;
-}
 
 /** A human-readable, id-free branch label for the brief header. The authoritative
  *  `omadia/job-<id8>-<slug>` branch is pinned by the worker unit before provision;

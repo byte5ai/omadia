@@ -22,6 +22,7 @@ import {
   makeHarness,
   makeJob,
   makeRepo,
+  makeRepo,
   postJson,
   throwsCode,
 } from './devPlatformRoutes.harness.js';
@@ -201,6 +202,7 @@ describe('devPlatform — job views carry no secret', () => {
 
   it('GET /jobs/:id omits the runner-token hash and any credential key', async () => {
     h = await makeHarness();
+    h.repoStore.add(makeRepo({ id: 'repo-1', createdBy: 'alice' }));
     h.jobStore.add(makeJob({ id: 'job-1', runnerTokenHash: 'HASH-DO-NOT-LEAK' }));
     const res = await fetch(`${h.baseUrl}/jobs/job-1`, { headers: authHeaders() });
     assert.equal(res.status, 200);
@@ -216,6 +218,7 @@ describe('devPlatform — cancel routes through finalizeDevJob', () => {
 
   it('202 and hits the single choke point', async () => {
     h = await makeHarness();
+    h.repoStore.add(makeRepo({ id: 'repo-1', createdBy: 'alice' }));
     h.jobStore.add(makeJob({ id: 'job-1', status: 'queued' }));
     const res = await postJson(`${h.baseUrl}/jobs/job-1/cancel`, authHeaders(), {});
     assert.equal(res.status, 202);
@@ -285,6 +288,7 @@ describe('devPlatform — GET /jobs/:id/events (SSE)', () => {
 
   it('sets the SSE headers, replays after Last-Event-ID across a provision boundary, and delivers a live event', async () => {
     h = await makeHarness();
+    h.repoStore.add(makeRepo({ id: 'repo-1', createdBy: 'alice' }));
     h.jobStore.add(makeJob({ id: 'job-1', status: 'running' }));
     // Two provisions; ids are monotonic across them, seq collides (0,1 each).
     h.jobStore.addEvent(ev(1, 1, 0));
@@ -317,5 +321,56 @@ describe('devPlatform — GET /jobs/:id/events (SSE)', () => {
     h = await makeHarness();
     const res = await fetch(`${h.baseUrl}/jobs/nope/events`, { headers: authHeaders() });
     assert.equal(res.status, 404);
+  });
+});
+
+describe('devPlatform — cross-operator authorization (review finding)', () => {
+  let h: Harness;
+  afterEach(async () => {
+    if (h) await h.close();
+  });
+
+  // alice owns repo-1 and its job; bob is a different operator on no allowlist.
+  async function aliceJob(): Promise<Harness> {
+    const hh = await makeHarness();
+    hh.repoStore.add(makeRepo({ id: 'repo-1', createdBy: 'alice', allowedLaunchers: [] }));
+    hh.jobStore.add(makeJob({ id: 'job-1', status: 'running', createdBy: 'alice' }));
+    return hh;
+  }
+  const bob = (): Record<string, string> => authHeaders('bob', 'viewer');
+
+  it('a non-launcher cannot read another operator\'s job (404, same as missing)', async () => {
+    h = await aliceJob();
+    const res = await fetch(`${h.baseUrl}/jobs/job-1`, { headers: bob() });
+    assert.equal(res.status, 404);
+  });
+
+  it('a non-launcher cannot cancel another operator\'s job', async () => {
+    h = await aliceJob();
+    const res = await postJson(`${h.baseUrl}/jobs/job-1/cancel`, bob(), {});
+    assert.equal(res.status, 404);
+    assert.equal(h.finalizeCalls.length, 0, 'finalizeDevJob must not run for an unauthorized cancel');
+  });
+
+  it('a non-launcher cannot subscribe to another operator\'s SSE stream', async () => {
+    h = await aliceJob();
+    h.jobStore.addEvent({
+      id: 1, jobId: 'job-1', provision: 1, seq: 0, type: 'log',
+      ts: new Date().toISOString(), payload: { text: 'SECRET-INTERNAL-LOG-LINE' },
+    });
+    const res = await fetch(`${h.baseUrl}/jobs/job-1/events`, { headers: bob() });
+    assert.equal(res.status, 404);
+    const body = await res.text();
+    assert.ok(!body.includes('SECRET-INTERNAL-LOG-LINE'), 'no log payload may reach a non-launcher');
+  });
+
+  it('GET /jobs lists only jobs on repos the caller may launch', async () => {
+    h = await aliceJob();
+    h.repoStore.add(makeRepo({ id: 'repo-2', createdBy: 'bob', allowedLaunchers: [] }));
+    h.jobStore.add(makeJob({ id: 'job-2', repoId: 'repo-2', createdBy: 'bob' }));
+    const asAlice = await (await fetch(`${h.baseUrl}/jobs`, { headers: authHeaders() })).json() as { jobs: Array<{ id: string }> };
+    assert.deepEqual(asAlice.jobs.map((j) => j.id), ['job-1']);
+    const asBob = await (await fetch(`${h.baseUrl}/jobs`, { headers: bob() })).json() as { jobs: Array<{ id: string }> };
+    assert.deepEqual(asBob.jobs.map((j) => j.id), ['job-2']);
   });
 });

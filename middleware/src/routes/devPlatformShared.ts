@@ -201,9 +201,14 @@ export function readParam(req: Request, key: string): string {
  * exactly as the migration comments it.
  */
 export function isPermittedLauncher(repo: DevRepo, caller: DevPlatformCaller): boolean {
+  // The creator always may. Otherwise the caller must hold a ROLE named in the
+  // allowlist. Spec §6 defines allowed_launchers as role keys, so this matches
+  // only caller.role — not sub or email. Folding those in would let an operator
+  // whose opaque sub or IdP-controlled email happened to equal an allowlist
+  // entry launch unintended, a cross-namespace match. Empty role never matches.
   if (repo.createdBy === caller.sub) return true;
-  const held = new Set([caller.role, caller.sub, caller.email].filter((v) => v.length > 0));
-  return repo.allowedLaunchers.some((key) => held.has(key));
+  if (caller.role.length === 0) return false;
+  return repo.allowedLaunchers.includes(caller.role);
 }
 
 // ---------------------------------------------------------------------------
@@ -411,3 +416,47 @@ export function isTerminalStatusEvent(ev: DevJobEvent): boolean {
 
 /** The branch-protection default, shared by the repo routes. */
 export const defaultCheckBranchProtection = realCheckBranchProtection;
+
+// ---------------------------------------------------------------------------
+// Job load + authorization helpers.
+// ---------------------------------------------------------------------------
+
+export async function loadJob(deps: DevPlatformRouterDeps, req: Request): Promise<DevJob> {
+  const id = readParam(req, 'id');
+  if (!id) throw new DevPlatformError(400, 'devplatform.invalid_id', 'missing :id');
+  const job = await deps.jobStore.getJob(id);
+  if (!job) throw new DevPlatformError(404, 'devplatform.job_not_found', 'no such job');
+  return job;
+}
+
+/** Authorize a caller against the repo owning a given job id (for /artifacts/:id). */
+export async function callerMayReadRepo(
+  deps: DevPlatformRouterDeps,
+  jobId: string,
+  caller: DevPlatformCaller,
+): Promise<boolean> {
+  const job = await deps.jobStore.getJob(jobId);
+  if (!job) return false;
+  const repo = await deps.repoStore.getRepo(job.repoId);
+  return Boolean(repo && isPermittedLauncher(repo, caller));
+}
+
+/**
+ * Load a job AND authorize the caller against its repository. The launcher gate
+ * that protects who may START a job must equally protect who may read, stream,
+ * cancel, or apply one — events carry another operator's agent output and egress
+ * targets. A missing and an unauthorized job return the SAME 404 (no id oracle).
+ */
+export async function loadAuthorizedJob(
+  deps: DevPlatformRouterDeps,
+  req: Request,
+  caller: DevPlatformCaller,
+): Promise<DevJob> {
+  const job = await loadJob(deps, req);
+  const repo = await deps.repoStore.getRepo(job.repoId);
+  if (!repo || !isPermittedLauncher(repo, caller)) {
+    throw new DevPlatformError(404, 'devplatform.job_not_found', 'no such job');
+  }
+  return job;
+}
+

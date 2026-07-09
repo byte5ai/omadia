@@ -21,7 +21,7 @@ import type { DevRepo } from '../../src/devplatform/types.js';
 /**
  * Epic #470 W0 — DB-gated integration for DevJobStore (spec §11). Skips when no
  * test Postgres is reachable, mirroring the other `*.pg.test.ts`. Applies the
- * real top-level migrations (0021 included) via the same runner the app uses.
+ * real top-level migrations (0022_dev_platform included) via the same runner the app uses.
  */
 const PG_URL =
   process.env['GRAPH_PG_TEST_URL'] ??
