@@ -50,6 +50,17 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   translates through `llmProviderSeam`, including streaming final-event usage
   telemetry and provider-based retry classification.
 
+### Changed — background chat streams surface in-context, not as toasts
+
+- **Removed `StreamToasts`** (the bottom-right floating cards for background
+  chat turns). Per the Lume visual spec §7.6, toasts / floating notifications
+  are a ship-blocking anti-pattern; §7.4 makes the chat the surface of record.
+- **Background-stream state now lives on the chat tab**: a running background
+  turn shows a pulsing accent dot, a finished one an accent dot, an errored one
+  a danger dot — each carrying an aria-label + title so colour is never the sole
+  signal (§8). Selecting the tab clears its unread marker; active-session errors
+  continue to render inline on the turn. See [ADR-0006](adr/0006-in-context-background-stream-surfacing.md).
+
 ---
 
 ## [0.54.0] - 2026-07-06

@@ -676,7 +676,10 @@
     "tabTitleSuffix": "ID: {id}\nDoppelklick zum Umbenennen",
     "closeAriaLabel": "Tab schließen: {title}",
     "closeWhileBusyTitle": "Warten bis der Turn durch ist",
-    "closeTitle": "Tab schließen"
+    "closeTitle": "Tab schließen",
+    "streamRunningAria": "{title}: Antwort wird erstellt",
+    "streamDoneAria": "{title}: Antwort fertig",
+    "streamErrorAria": "{title}: Antwort fehlgeschlagen"
   },
   "authBadge": {
     "loginLink": "Login",
@@ -1132,25 +1135,6 @@
     "orphanDetachAllTooltip": "Entfernt alle veralteten Plugin-Zuordnungen (alte IDs aus früheren Deployments) auf einmal.",
     "orphanExplain": "Plugin-IDs aus früheren Seeds, die im aktuellen Katalog nicht mehr existieren (typisch: Umbenennung de.byte5.agent.* → @omadia/*). Werden beim nächsten „Speichern\" verworfen, außer du markierst sie als „Behalten\".",
     "orphanKeep": "Behalten"
-  },
-  "streamToasts": {
-    "phaseThinking": "Agent denkt",
-    "phaseStreaming": "Antwort läuft",
-    "phaseToolRunning": "Tool läuft",
-    "phaseDone": "Antwort fertig",
-    "phaseError": "Fehler",
-    "phaseAborted": "Abgebrochen",
-    "elapsedSec": "{sec}s",
-    "tokensInTitle": "{n} Input-Tokens (kumuliert über Iterationen)",
-    "tokensOutTitle": "{n} Output-Tokens (kumuliert über Iterationen)",
-    "cacheHitTitle": "{n} Cache-Read-Tokens",
-    "dismissAriaLabel": "Benachrichtigung schließen (Stream läuft weiter)",
-    "dismissTitle": "Schließen",
-    "abortButton": "Stream stoppen",
-    "abortConfirmTitle": "Stream wirklich stoppen?",
-    "abortConfirmBody": "Die laufende Antwort wird sofort abgebrochen und kann nicht fortgesetzt werden.",
-    "abortConfirmKeep": "Weiter laufen lassen",
-    "abortConfirmStop": "Ja, stoppen"
   },
   "builder": {
     "issueReport": {

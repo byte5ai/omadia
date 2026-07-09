@@ -9,6 +9,11 @@ import {
 } from 'react';
 import { useTranslations } from 'next-intl';
 import type { ChatSession } from '../_lib/chatSessions';
+import {
+  isStreamActive,
+  useStreamRecord,
+  type StreamRecord,
+} from '../_lib/streamStore';
 
 interface ChatTabsProps {
   sessions: ChatSession[];
@@ -71,6 +76,39 @@ export function ChatTabs({
   );
 }
 
+/** Background-stream state a tab surfaces as a dot. `null` = nothing to show
+ *  (active tab, no record, or a user-aborted turn). */
+type TabStreamState = 'running' | 'done' | 'error';
+
+function tabStreamState(
+  active: boolean,
+  rec: StreamRecord | undefined,
+): TabStreamState | null {
+  if (active || !rec) return null;
+  if (isStreamActive(rec)) return 'running';
+  if (rec.phase === 'error') return 'error';
+  if (rec.phase === 'done') return 'done';
+  return null;
+}
+
+function streamAriaKey(state: TabStreamState): string {
+  return state === 'running'
+    ? 'streamRunningAria'
+    : state === 'error'
+      ? 'streamErrorAria'
+      : 'streamDoneAria';
+}
+
+/** A dot, never a status pill (§7.6). Colour is never the sole signal —
+ *  each dot carries an aria-label + title (§8). */
+function streamDotClass(state: TabStreamState): string {
+  const base = 'ml-1 inline-block size-1.5 shrink-0 rounded-full';
+  if (state === 'error') return `${base} bg-[color:var(--danger)]`;
+  if (state === 'running')
+    return `${base} bg-[color:var(--accent)] animate-pulse`;
+  return `${base} bg-[color:var(--accent)]`;
+}
+
 interface TabProps {
   session: ChatSession;
   active: boolean;
@@ -94,6 +132,11 @@ function Tab({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(session.title);
   const inputRef = useRef<HTMLInputElement>(null);
+  // In-context surfacing (issue #286): a background session's stream state
+  // lives on its tab, not in a floating toast. The active tab shows nothing —
+  // its stream is already visible inline. `aborted` gets no marker: the user
+  // stopped it themselves, so there's nothing unread to flag.
+  const streamState = tabStreamState(active, useStreamRecord(session.id));
 
   useEffect(() => {
     if (editing) {
@@ -165,6 +208,14 @@ function Tab({
         />
       ) : (
         <span className="max-w-[18ch] truncate">{session.title}</span>
+      )}
+      {streamState && !editing && (
+        <span
+          role="img"
+          aria-label={t(streamAriaKey(streamState), { title: session.title })}
+          title={t(streamAriaKey(streamState), { title: session.title })}
+          className={streamDotClass(streamState)}
+        />
       )}
       {canClose && !editing && (
         <button

@@ -676,7 +676,10 @@
     "tabTitleSuffix": "ID: {id}\nDouble-click to rename",
     "closeAriaLabel": "Close tab: {title}",
     "closeWhileBusyTitle": "Wait until the turn is done",
-    "closeTitle": "Close tab"
+    "closeTitle": "Close tab",
+    "streamRunningAria": "{title}: response in progress",
+    "streamDoneAria": "{title}: response ready",
+    "streamErrorAria": "{title}: response failed"
   },
   "authBadge": {
     "loginLink": "Login",
@@ -1132,25 +1135,6 @@
     "orphanDetachAllTooltip": "Detach every stale plugin row (old ids from earlier deployments) at once.",
     "orphanExplain": "Plugin ids from earlier seeds that no longer exist in the current catalog (typically a rename like de.byte5.agent.* → @omadia/*). Dropped on next Save unless you tick \"Keep\".",
     "orphanKeep": "Keep"
-  },
-  "streamToasts": {
-    "phaseThinking": "Agent is thinking",
-    "phaseStreaming": "Answer streaming",
-    "phaseToolRunning": "Tool running",
-    "phaseDone": "Answer ready",
-    "phaseError": "Error",
-    "phaseAborted": "Aborted",
-    "elapsedSec": "{sec}s",
-    "tokensInTitle": "{n} input tokens (cumulative across iterations)",
-    "tokensOutTitle": "{n} output tokens (cumulative across iterations)",
-    "cacheHitTitle": "{n} cache-read tokens",
-    "dismissAriaLabel": "Dismiss notification (stream keeps running)",
-    "dismissTitle": "Dismiss",
-    "abortButton": "Stop stream",
-    "abortConfirmTitle": "Stop this stream?",
-    "abortConfirmBody": "The running response will be aborted immediately and can't be resumed.",
-    "abortConfirmKeep": "Keep running",
-    "abortConfirmStop": "Yes, stop"
   },
   "builder": {
     "issueReport": {
