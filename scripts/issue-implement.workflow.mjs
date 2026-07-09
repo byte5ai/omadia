@@ -39,17 +39,12 @@
  *     issues: [ { number, title, slug, summary, touchedFiles: [], keySymbols: [] }, ... ]
  *   }})
  *
- * ITERATION. When the reviewer rejects a branch it does not vanish -- the reviewer has
- * just written a precise, code-grounded spec of what is missing. Feed it straight back
- * by adding two fields to the issue, and the workflow fixes up the existing branch
- * instead of cutting a new one from base:
- *
- *     issues: [ { ...same fields..., resumeBranch: "feat/issue-403-quota-message",
- *                                    fixFindings: "<the reviewer's blockingFindings>" } ]
- *
- * The fixup agent checks the branch out, commits on top, never rebases or force-pushes,
- * and is told to argue back (blocked=true with a reasoned blockedReason) rather than
- * quietly skip a finding it believes is wrong. Both review stages then run again.
+ * ITERATION. A rejected branch is not a dead end -- the reviewer has just written a
+ * precise, code-grounded spec of what is missing. Add `resumeBranch` and `fixFindings`
+ * to the issue and the workflow fixes up that branch instead of cutting a new one from
+ * base. The fixup agent commits on top, never rebases or force-pushes, and is told to
+ * argue back (blocked=true, reasoned blockedReason) rather than quietly skip a finding
+ * it believes is wrong. Both review stages then run again over the full branch.
  *
  * Returns { baseSha, cohesion, results: [...] } where each result carries a branch
  * name and a prReady flag. See the CHOREOGRAPHY block in issue-cluster.workflow.mjs
@@ -347,18 +342,13 @@ function codexPrompt(impl, group) {
     'to run codex, capture its verdict, and return it VERBATIM. Do not soften, reinterpret, or override it.',
     'If codex says the branch is not ready, you report exactly that, even if you personally disagree.',
     '',
-    '## Step 1 -- is codex installed AND set up?',
-    'Two checks, in order. Both must pass before you go further.',
-    '',
-    '  1. `command -v codex`            -- installed?',
-    '  2. `codex login status </dev/null` -- authenticated? Expect output naming an account,',
-    '                                       e.g. "Logged in using ChatGPT". A non-zero exit, an',
-    '                                       empty result, or anything saying "not logged in" means no.',
-    '',
-    'If EITHER check fails, this is not an error and not your problem to fix. Return',
-    'available=false, ran=false, prReady=false, notes="<which check failed and what it printed>"',
-    'and STOP. Do not attempt to install codex. Do not attempt to log in. Do not prompt anyone.',
-    'The workflow treats a skipped codex review as a skip, not as a rejection.',
+    '## Step 1 -- is codex installed AND set up? Both checks must pass.',
+    '  1. `command -v codex`              -- installed?',
+    '  2. `codex login status </dev/null` -- authenticated? Expect output naming an account, e.g.',
+    '     "Logged in using ChatGPT". Non-zero exit, empty output, or "not logged in" all mean no.',
+    'If EITHER fails this is not an error and not yours to fix: return available=false, ran=false,',
+    'prReady=false, notes="<which check failed and what it printed>" and STOP. Do not install codex,',
+    'do not log in, do not prompt anyone. A skipped codex review is a skip, not a rejection.',
     '',
     '## Step 2 -- write the output schema',
     'Write this exact JSON to ' + schemaPath + ':',
