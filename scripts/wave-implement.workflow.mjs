@@ -217,7 +217,15 @@ function implementPrompt(unit, branch) {
     ...(unit.acceptance ?? []).map((a) => `- ${a}`),
     ``,
     `## How to work`,
-    `1. You are in an isolated git worktree on branch \`${branch}\`, cut from ${baseSha}.`,
+    `0. WORKSPACE SETUP — DO THIS FIRST. Your isolated worktree is cut from the repo's DEFAULT`,
+    `   branch, which is usually the WRONG base for this unit. Run:`,
+    `       git checkout -b ${branch} ${baseSha}`,
+    `   (all refs are available — the worktree shares the repo's ref store). Then VERIFY the base:`,
+    `       git merge-base --is-ancestor ${baseSha} HEAD   # must succeed`,
+    `   and confirm the wave's existing code is present in your tree. If checkout or verification`,
+    `   fails, STOP and return blocked with the evidence — never build on the default branch.`,
+    `   A fresh worktree has no node_modules: run the workspace installs you need before the gate.`,
+    `1. You are then on branch \`${branch}\`, cut from ${baseSha}.`,
     `2. Read the surrounding code first. Match its conventions, its error handling, its test style.`,
     `3. Write the code AND the test named in \`verifiedBy\`.`,
     `4. Run \`${verifyCommand}\` and the unit's test. Paste the real output tail into \`verifyLog\`.`,
@@ -240,6 +248,10 @@ function implementPrompt(unit, branch) {
 function fixupPrompt(unit, branch, findings) {
   return [
     `Branch \`${branch}\` (unit \`${unit.id}\`) was rejected in review. Fix it on the same branch.`,
+    ``,
+    `WORKSPACE SETUP FIRST: your isolated worktree is cut from the repo's default branch.`,
+    `Run \`git checkout ${branch}\` (the ref is in the shared store) and verify you see the`,
+    `branch's commits before touching anything. If checkout fails, STOP and return blocked.`,
     ``,
     `## Blocking findings — each is a precise spec of what is missing`,
     ...findings.map((f) => `- [${f.severity}] ${f.file}${f.line ? `:${f.line}` : ''} — ${f.issue}${f.suggestion ? ` (suggested: ${f.suggestion})` : ''}`),
@@ -296,18 +308,25 @@ function auditPrompt(unit, branch) {
 
 async function runUnit(unit) {
   const branch = `feat/${wave.toLowerCase()}-${unit.id}`;
-  const agentType = unit.longContext ? 'Anvil' : 'Engineer';
+  // Anvil (Kimi via Moonshot) needs MOONSHOT_API_KEY, which this machine does not have —
+  // an Anvil dispatch produces zero code and a blocked unit. Engineer handles longContext too.
+  const agentType = 'Engineer';
   const prompt = unit.fixFindings?.length
     ? fixupPrompt(unit, unit.resumeBranch ?? branch, unit.fixFindings)
     : implementPrompt(unit, branch);
 
-  const impl = await agent(prompt, {
-    label: `impl:${unit.id}`,
-    phase: 'Implement',
-    schema: IMPLEMENT_SCHEMA,
-    isolation: 'worktree',
-    agentType,
-  });
+  let impl = null;
+  try {
+    impl = await agent(prompt, {
+      label: `impl:${unit.id}`,
+      phase: 'Implement',
+      schema: IMPLEMENT_SCHEMA,
+      isolation: 'worktree',
+      agentType,
+    });
+  } catch (e) {
+    log(`${unit.id}: implementer crashed (${String(e).slice(0, 120)}) — unit reported failed, pipeline continues`);
+  }
 
   if (!impl || impl.blocked || !impl.committed) {
     log(`${unit.id}: no branch (${impl?.blockedReason ?? 'agent returned nothing'})`);
@@ -316,13 +335,27 @@ async function runUnit(unit) {
 
   // Forge is a different model family from the implementer. That is the entire point:
   // a same-family reviewer shares the implementer's blind spots.
-  const review = await agent(reviewPrompt(impl, unit, branch), {
-    label: `review:${unit.id}`,
-    phase: 'Review',
-    schema: REVIEW_SCHEMA,
-    agentType: 'Forge',
-    effort: 'high',
-  });
+  let review = null;
+  try {
+    review = await agent(reviewPrompt(impl, unit, branch), {
+      label: `review:${unit.id}`,
+      phase: 'Review',
+      schema: REVIEW_SCHEMA,
+      agentType: 'Forge',
+      effort: 'high',
+    });
+  } catch (e) {
+    log(`${unit.id}: Forge review crashed (${String(e).slice(0, 120)}) — retrying with default agent + codex CLI`);
+    try {
+      review = await agent(
+        reviewPrompt(impl, unit, branch) +
+          `\n\nRun the cross-family review through the codex CLI yourself: \`codex exec --cd <repo> -c model_reasoning_effort=high "<review question>" </dev/null\` and base your verdict on codex's findings plus your own reading of the diff.`,
+        { label: `review-fallback:${unit.id}`, phase: 'Review', schema: REVIEW_SCHEMA, effort: 'high' },
+      );
+    } catch (e2) {
+      log(`${unit.id}: review fallback also failed (${String(e2).slice(0, 120)}) — review missing, unit not pr-ready`);
+    }
+  }
 
   const reviewOk =
     Boolean(review?.prReady) && review.scopeClean && review.acceptanceMet && !review.undeclaredDrift && impl.verified;
@@ -333,12 +366,30 @@ async function runUnit(unit) {
     return { unit: unit.id, branch, prReady: reviewOk, impl, review, audit: null };
   }
 
-  const auditResult = await agent(auditPrompt(unit, branch), {
-    label: `audit:${unit.id}`,
-    phase: 'Audit',
-    schema: AUDIT_SCHEMA,
-    agentType: 'Cato',
-  });
+  // Cato (codex-driven) sometimes ends its turn without the StructuredOutput call, which
+  // would kill the whole pipeline. Catch that and fall back to the default workflow agent
+  // running codex itself; if that also fails, the unit is NOT pr-ready (fail closed).
+  let auditResult = null;
+  try {
+    auditResult = await agent(auditPrompt(unit, branch), {
+      label: `audit:${unit.id}`,
+      phase: 'Audit',
+      schema: AUDIT_SCHEMA,
+      agentType: 'Cato',
+    });
+  } catch (e) {
+    log(`${unit.id}: Cato audit crashed (${String(e).slice(0, 120)}) — retrying with default agent + codex CLI`);
+    try {
+      auditResult = await agent(
+        auditPrompt(unit, branch) +
+          `\n\nRun the audit through the codex CLI yourself: \`codex exec --cd <repo> -c model_reasoning_effort=high "<audit question>" </dev/null\` (the trailing </dev/null matters — codex hangs on open stdin). Base your verdict on codex's findings plus your own reading of the diff.`,
+        { label: `audit-fallback:${unit.id}`, phase: 'Audit', schema: AUDIT_SCHEMA },
+      );
+    } catch (e2) {
+      log(`${unit.id}: audit fallback also failed (${String(e2).slice(0, 120)}) — failing closed`);
+      auditResult = null;
+    }
+  }
 
   const prReady = reviewOk && Boolean(auditResult?.prReady);
   if (!prReady) log(`${unit.id}: security audit rejected — ${auditResult?.summary ?? 'no verdict'}`);
