@@ -58,6 +58,7 @@ export const meta = {
   phases: [
     { title: 'Implement', detail: 'worktree-isolated coding agent per branch' },
     { title: 'Review', detail: 'adversarial diff review; hard gate before any PR' },
+    { title: 'Codex', detail: 'cross-vendor second review via the codex CLI' },
   ],
 }
 
@@ -86,6 +87,17 @@ function safeSlug(raw, fallback) {
 }
 
 const CLUSTER_SLUG = safeSlug(input.clusterSlug, 'cluster')
+
+/**
+ * Cross-vendor second review. The implementer and the first reviewer are the same
+ * model family and share its blind spots; a reviewer trained on a different corpus
+ * is the cheapest way to find what both of them agree to overlook.
+ *
+ *   'auto'      run it when the codex CLI is available; do not block if it is not.
+ *   'required'  a missing or failing codex review blocks the pull request.
+ *   'off'       skip entirely.
+ */
+const CODEX_REVIEW = ['auto', 'required', 'off'].includes(input.codexReview) ? input.codexReview : 'auto'
 
 // Blast-radius cap. Even if the caller approved more, a single run stays small
 // enough that a human can actually review what came out of it.
@@ -252,6 +264,68 @@ function reviewPrompt(impl, group) {
   ].join('\n')
 }
 
+const CODEX_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['ran', 'available', 'prReady', 'blockingFindings', 'notes', 'rawVerdict'],
+  properties: {
+    ran: { type: 'boolean', description: 'true if codex exec actually produced a verdict' },
+    available: { type: 'boolean', description: 'false if the codex CLI is missing or not authenticated' },
+    prReady: { type: 'boolean', description: "codex's verdict, copied verbatim. Never soften it." },
+    blockingFindings: { type: 'string', description: "codex's blocking findings, copied verbatim; empty string if none" },
+    notes: { type: 'string' },
+    rawVerdict: { type: 'string', description: 'the raw JSON line codex emitted, for audit' },
+  },
+}
+
+function codexPrompt(impl, group) {
+  const numbers = group.map((i) => '#' + i.number).join(', ')
+  const schemaPath = '/tmp/codex-review-' + impl.branch.replace(/[^a-zA-Z0-9]+/g, '-') + '.json'
+  return [
+    'You are a thin wrapper around the `codex` CLI. You do NOT review the code yourself. Your only job is',
+    'to run codex, capture its verdict, and return it VERBATIM. Do not soften, reinterpret, or override it.',
+    'If codex says the branch is not ready, you report exactly that, even if you personally disagree.',
+    '',
+    '## Step 1 -- check availability',
+    'Run `command -v codex`. If it is missing, return available=false, ran=false, prReady=false and stop.',
+    '',
+    '## Step 2 -- write the output schema',
+    'Write this exact JSON to ' + schemaPath + ':',
+    '{"type":"object","additionalProperties":false,"required":["prReady","blockingFindings","notes"],',
+    ' "properties":{"prReady":{"type":"boolean"},"blockingFindings":{"type":"string"},"notes":{"type":"string"}}}',
+    '',
+    '## Step 3 -- run codex',
+    'From ' + REPO_PATH + ', run EXACTLY this shape (the stdin redirect is mandatory -- codex blocks forever',
+    'on an open stdin and the workflow will hang):',
+    '',
+    '  codex exec --sandbox read-only --output-schema ' + schemaPath + ' \\',
+    '    -c model_reasoning_effort=high "<the review prompt below>" </dev/null',
+    '',
+    'The review prompt you pass to codex:',
+    '',
+    '  Review the git diff of branch ' + impl.branch + ' against ' + BASE + ' in this repository.',
+    '  Read it with: git diff ' + BASE + '...' + impl.branch,
+    '  It claims to implement ' + numbers + ' of ' + REPO + '.',
+    '  Set prReady=false if ANY of these hold:',
+    '    - the diff adds credentials, tokens, .env content, or private keys',
+    '    - it touches files unrelated to ' + numbers + ', or modifies .github/ or deployment config',
+    '    - the code is incorrect: name a concrete failing input',
+    '    - it does not actually address every issue it claims to close',
+    '    - it introduces a regression in behaviour the surrounding code depends on',
+    '  You are the SECOND reviewer. A first reviewer from a different model family already approved this.',
+    '  Your value is finding what that reviewer, sharing the implementer\'s blind spots, would miss.',
+    '  Be specific. Do not restate the diff. Do not modify anything.',
+    '',
+    '## Step 4 -- return',
+    'codex prints its JSON as the last object in stdout. Parse it. Copy prReady, blockingFindings and notes',
+    'into your structured result unchanged, put the raw JSON line in rawVerdict, and set ran=true,',
+    'available=true. If codex errors or emits no parseable JSON, set ran=false and prReady=false and put the',
+    'error output in notes.',
+    '',
+    'Do not edit any file except ' + schemaPath + '. Do not push. Do not open a pull request.',
+  ].join('\n')
+}
+
 function skeleton(branch, group, reason) {
   return {
     branch,
@@ -287,8 +361,28 @@ function runGroup(group, branch) {
       schema: REVIEW_SCHEMA,
       effort: 'high',
     }).then((rev) => {
-      if (!rev) return { ...impl, prReady: false, review: { prReady: false, blockingFindings: 'review agent failed', scopeClean: false, notes: '' } }
-      return { ...impl, prReady: rev.prReady && rev.scopeClean && impl.verified, review: rev }
+      if (!rev) return { ...impl, prReady: false, review: { prReady: false, blockingFindings: 'review agent failed', scopeClean: false, notes: '' }, codex: null }
+
+      const claudeOk = rev.prReady && rev.scopeClean && impl.verified
+
+      // A branch the first reviewer already rejected does not need a second opinion.
+      if (!claudeOk || CODEX_REVIEW === 'off') {
+        return { ...impl, prReady: claudeOk, review: rev, codex: null }
+      }
+
+      return agent(codexPrompt(impl, group), {
+        label: 'codex:' + impl.branch,
+        phase: 'Codex',
+        schema: CODEX_SCHEMA,
+      }).then((cx) => {
+        if (!cx) {
+          const ok = CODEX_REVIEW !== 'required'
+          return { ...impl, prReady: ok && claudeOk, review: rev, codex: { ran: false, available: false, prReady: false, blockingFindings: 'codex agent failed', notes: '', rawVerdict: '' } }
+        }
+        // 'auto' does not punish a repo that has no codex CLI; 'required' does.
+        const codexOk = cx.ran ? cx.prReady : CODEX_REVIEW !== 'required'
+        return { ...impl, prReady: claudeOk && codexOk, review: rev, codex: cx }
+      })
     })
   })
 }
@@ -329,8 +423,10 @@ if (COHESION === 'dependent' && issues.length > 1) {
 const ready = results.filter((r) => r.prReady)
 const blocked = results.filter((r) => r.blocked)
 const rejected = results.filter((r) => !r.prReady && !r.blocked)
+const codexKilled = results.filter((r) => r.codex && r.codex.ran && !r.codex.prReady)
 
 log('Done: ' + ready.length + ' branch(es) ready for a pull request, ' + rejected.length + ' rejected by review, ' + blocked.length + ' blocked')
+if (codexKilled.length) log('Codex rejected ' + codexKilled.length + ' branch(es) the first reviewer had approved -- that is the cross-vendor review earning its cost')
 log('The caller pushes and opens the pull requests. This workflow wrote nothing to GitHub.')
 
 return {
