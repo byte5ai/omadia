@@ -308,9 +308,12 @@ function auditPrompt(unit, branch) {
 
 async function runUnit(unit) {
   const branch = `feat/${wave.toLowerCase()}-${unit.id}`;
-  // Anvil (Kimi via Moonshot) needs MOONSHOT_API_KEY, which this machine does not have —
-  // an Anvil dispatch produces zero code and a blocked unit. Engineer handles longContext too.
-  const agentType = 'Engineer';
+  // Implementers run as the DEFAULT workflow subagent. The custom personas repeatedly
+  // finish long implementation runs without the StructuredOutput call (observed with
+  // Engineer and Anvil; Anvil additionally lacks MOONSHOT_API_KEY on this machine), which
+  // loses the unit report even when the code was committed. The default agent is reliable
+  // here; cross-family diversity lives in the review (Forge) and audit (Cato) stages.
+  const agentType = undefined;
   const prompt = unit.fixFindings?.length
     ? fixupPrompt(unit, unit.resumeBranch ?? branch, unit.fixFindings)
     : implementPrompt(unit, branch);
