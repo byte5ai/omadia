@@ -66,8 +66,10 @@ jobs:
             image: ghcr.io/byte5ai/omadia-web-ui
             context: ./web-ui
             dockerfile: ./web-ui/Dockerfile
-            build_args: |
-              MIDDLEWARE_URL=http://middleware:8080
+            # MIDDLEWARE_URL is a runtime setting since the /bot-api and /p
+            # proxies became route handlers (app/_lib/middlewareProxy.ts) —
+            # nothing middleware-related is baked at build time anymore.
+            build_args: ''
     steps:
       - uses: actions/checkout@v7
         with:

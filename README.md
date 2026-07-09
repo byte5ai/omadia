@@ -268,6 +268,28 @@ the differentiating logic, and verifying with the smoke runner before install.
 ## Deployment
 
 - **Local / single-tenant**: `docker compose up`, see Quickstart above
+- **One-click cloud**: deploy the minimal core into your own Render
+  workspace — [`render.yaml`](render.yaml) provisions the middleware,
+  admin UI, and Postgres (pgvector), generates `VAULT_KEY`, and the
+  `/setup` wizard collects your LLM key on first boot. Runs on paid
+  instance types (the middleware needs a persistent disk).
+
+  [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/byte5ai/omadia)
+
+- **One-command Fly.io**: Fly has no blueprint-style deploy button, so the
+  equivalent is one command. [`fly/deploy.sh`](fly/deploy.sh) provisions
+  three apps in your Fly org — middleware (persistent `/data` volume),
+  admin UI, and a private [`pgvector/pgvector`](https://hub.docker.com/r/pgvector/pgvector)
+  Postgres (the same image the compose stack uses; Fly's own Postgres
+  offerings either lack pgvector or gate it behind a dashboard toggle) —
+  generates `VAULT_KEY` and the database password, and deploys the GHCR
+  images. Needs a logged-in `flyctl`; roughly $10/month:
+
+  ```bash
+  git clone https://github.com/byte5ai/omadia.git && cd omadia
+  ./fly/deploy.sh
+  ```
+
 - **Bring-your-own**: the runtime is a stock Node + Postgres app; any host
   that can run both works (Kubernetes, ECS, plain VM).
 

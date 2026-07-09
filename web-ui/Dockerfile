@@ -17,12 +17,11 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 # `output: 'standalone'` (next.config.ts) emits .next/standalone + .next/static
 ENV NEXT_TELEMETRY_DISABLED=1
-# Next.js bakes the /bot-api/* rewrite destination into routes-manifest.json
-# at build time, so MIDDLEWARE_URL has to be known here — not at runtime.
-# Override from fly.toml [build.args] or `fly deploy --build-arg` when moving
-# the middleware onto a different internal hostname.
-ARG MIDDLEWARE_URL=http://middleware:8080
-ENV MIDDLEWARE_URL=${MIDDLEWARE_URL}
+# MIDDLEWARE_URL is a pure RUNTIME setting: /bot-api/* and /p/* are proxied
+# by route handlers that read it per request (app/_lib/middlewareProxy.ts),
+# so the same image runs against any middleware host. Do not reintroduce a
+# build ARG for it — that was the bug that pinned the published image to
+# the compose hostname.
 RUN npm run build
 
 # --- runtime ----------------------------------------------------------------

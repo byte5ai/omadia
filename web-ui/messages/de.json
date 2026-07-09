@@ -614,7 +614,7 @@
     "shellLoading": "Lade Login…",
     "loadingProviders": "Lade Login…",
     "errorPrefix": "Login-Provider konnten nicht geladen werden:",
-    "noProviders": "Es sind keine Auth-Provider konfiguriert. Setze {envVar} im Middleware-Environment und starte neu.",
+    "noProviders": "Es sind keine Auth-Provider konfiguriert. Setze <envVar></envVar> im Middleware-Environment und starte neu.",
     "emailLabel": "E-Mail",
     "passwordLabel": "Passwort",
     "submit": "Anmelden",
@@ -661,13 +661,13 @@
     "apply": "Anwenden",
     "applying": "Installiere…",
     "pluginCount": "{count, plural, one {# Plugin} other {# Plugins}}",
-    "outcomeAppliedTitle": "Profil {id} angewendet",
+    "outcomeAppliedTitle": "Profil <id></id> angewendet",
     "outcomeStats": "{installed} installiert, {skipped} übersprungen, {errored} fehlgeschlagen",
     "sectionInstalled": "Neu installiert",
     "sectionSkipped": "Bereits installiert (übersprungen)",
     "sectionErrored": "Fehler — bitte manuell prüfen",
-    "secretsHint": "Plugins, die operator-Secrets benötigen (z.B. anthropic_api_key, telegram_bot_token), starten im Status {erroredTag} bis du die Secrets über den Wizard auf der jeweiligen Detail-Seite setzt. Aktiviere danach via {reactivateTag}.",
-    "errorTitle": "Profil {id} konnte nicht angewendet werden",
+    "secretsHint": "Plugins, die operator-Secrets benötigen (z.B. anthropic_api_key, telegram_bot_token), starten im Status <erroredTag></erroredTag> bis du die Secrets über den Wizard auf der jeweiligen Detail-Seite setzt. Aktiviere danach via <reactivateTag></reactivateTag>.",
+    "errorTitle": "Profil <id></id> konnte nicht angewendet werden",
     "tryAnother": "Anderes Profil wählen"
   },
   "chatTabs": {
@@ -701,6 +701,12 @@
     "expiredTitle": "Sitzung abgelaufen",
     "expiredBody": "Deine Sitzung ist abgelaufen. Bitte melde dich erneut an, um weiterzuarbeiten.",
     "expiredCta": "Neu anmelden"
+  },
+  "runtimeReadiness": {
+    "title": "LLM-API-Key fehlt",
+    "body": "Die Agent-Runtime ist offline — meistens, weil noch kein LLM-API-Key hinterlegt ist. Hinterlege deinen Key in den Einstellungen; Chat, Agenten, Channels und Skills sind danach sofort verfügbar. Routinen brauchen zusätzlich einen Neustart der Middleware.",
+    "cta": "Einstellungen öffnen",
+    "dismiss": "Später"
   },
   "agentDetailsModal": {
     "ariaLabelTitle": "{label} Tool-Aufrufe",
@@ -1472,7 +1478,7 @@
         },
         "externalReadsHint": "Preview führt Cross-Integration-Lookups (<code>spec.external_reads</code>) nicht aus — der Agent erkennt den fehlenden Service korrekt und wirft. Stelle den Agent in deiner Instanz bereit, um den echten Datenpfad zu testen.",
         "agentStuck": {
-          "title": "Builder-Agent kommt bei Slot {slot} nicht weiter ({attempts, plural, one {# Versuch} other {# Versuche}})",
+          "title": "Builder-Agent kommt bei Slot <slot></slot> nicht weiter ({attempts, plural, one {# Versuch} other {# Versuche}})",
           "body": "{summary}. Öffne den Slot-Editor, prüf die Errors manuell und korrigier den Code — der Agent versucht es nicht von alleine erneut.",
           "dismiss": "Schließen",
           "dismissTooltip": "Banner schließen"
@@ -2199,7 +2205,7 @@
       }
     },
     "title": "Konfiguration",
-    "intro": "Alle {envFile}-Werte, die beim Start in den Config-Store bzw. den Secret-Vault geschrieben werden. Änderungen werden automatisch gespeichert und das betroffene Plugin neu aktiviert — sie wirken sofort, ohne Neustart. Secrets zeigen nur, ob ein Wert hinterlegt ist; der Wert selbst wird nie angezeigt.",
+    "intro": "Alle <envFile></envFile>-Werte, die beim Start in den Config-Store bzw. den Secret-Vault geschrieben werden. Änderungen werden automatisch gespeichert und das betroffene Plugin neu aktiviert — sie wirken sofort, ohne Neustart. Secrets zeigen nur, ob ein Wert hinterlegt ist; der Wert selbst wird nie angezeigt.",
     "loading": "Lädt …",
     "loadError": "Fehler beim Laden: {message}",
     "vaultUnavailable": "Vault nicht verfügbar — Secrets können nicht bearbeitet werden.",
@@ -2612,7 +2618,7 @@
   },
   "adminAuth": {
     "title": "Authentifizierungs-Provider",
-    "intro": "Aktiviere oder deaktiviere die Anmelde-Verfahren. Die env-Variable {envVar} definiert die zulässigen Provider; hier wählst du, welche davon aktuell aktiv sind.",
+    "intro": "Aktiviere oder deaktiviere die Anmelde-Verfahren. Die env-Variable <envVar></envVar> definiert die zulässigen Provider; hier wählst du, welche davon aktuell aktiv sind.",
     "loading": "Lädt …",
     "loadError": "Fehler beim Laden: {message}",
     "statusActive": "aktiv",
@@ -2801,7 +2807,7 @@
   },
   "adminRegistries": {
     "title": "Plugin-Registries",
-    "intro": "Quellen, aus denen Plugins in den Store gezogen werden. Neue Instanzen starten mit {hub}. Der Token wird verschlüsselt gespeichert und nie wieder angezeigt — nur, ob einer hinterlegt ist. Änderungen wirken ohne Neustart.",
+    "intro": "Quellen, aus denen Plugins in den Store gezogen werden. Neue Instanzen starten mit <hub></hub>. Der Token wird verschlüsselt gespeichert und nie wieder angezeigt — nur, ob einer hinterlegt ist. Änderungen wirken ohne Neustart.",
     "addHeading": "Registry hinzufügen",
     "fields": {
       "name": "Name",
@@ -2839,7 +2845,7 @@
   },
   "adminDomains": {
     "title": "Plugin-Domains",
-    "intro": "Übersicht aller registrierten Plugins, gruppiert nach ihrer in der {manifest} deklarierten {domain}. Domains werden vom Phase-8 Nudge-Pipeline-Multi-Domain-Trigger gelesen und vom Operator-UI für Cross-Agent-Gruppierung verwendet. Curation (Umbenennen / Mergen / Hierarchien) folgt mit OB-78 (Phase 9 Agent-Profile).",
+    "intro": "Übersicht aller registrierten Plugins, gruppiert nach ihrer in der <manifest></manifest> deklarierten <domain></domain>. Domains werden vom Phase-8 Nudge-Pipeline-Multi-Domain-Trigger gelesen und vom Operator-UI für Cross-Agent-Gruppierung verwendet. Curation (Umbenennen / Mergen / Hierarchien) folgt mit OB-78 (Phase 9 Agent-Profile).",
     "loading": "Lade …",
     "loadError": "Fehler beim Laden: {message}",
     "noData": "Keine Daten.",
@@ -2850,7 +2856,7 @@
       "fallbacks": "Fallbacks"
     },
     "pluginCount": "{count, plural, one {# Plugin} other {# Plugins}}",
-    "fallbackWarning": "{count, plural, one {# Plugin} other {# Plugins}} ohne deklarierte Domain — auto-fallback auf {fallbackDomain}. Füge dem Manifest eine {manifestKey}-Zeile hinzu (z.B. {exampleOne}, {exampleTwo}) oder lade den Agent über den Builder neu hoch."
+    "fallbackWarning": "{count, plural, one {# Plugin} other {# Plugins}} ohne deklarierte Domain — auto-fallback auf <fallbackDomain></fallbackDomain>. Füge dem Manifest eine <manifestKey></manifestKey>-Zeile hinzu (z.B. <exampleOne></exampleOne>, <exampleTwo></exampleTwo>) oder lade den Agent über den Builder neu hoch."
   },
   "adminUsage": {
     "title": "Kosten",
@@ -3395,7 +3401,7 @@
       "columnLastRun": "Letzter Lauf",
       "columnActions": "Aktionen",
       "emptyTitle": "Noch keine Routinen.",
-      "emptyBody": "Routinen entstehen, wenn ein User im Chat etwas wie „erinnere mich jeden Montag um 9 Uhr an X“ sagt — der Agent ruft das {toolName} Tool und legt sie an."
+      "emptyBody": "Routinen entstehen, wenn ein User im Chat etwas wie „erinnere mich jeden Montag um 9 Uhr an X“ sagt — der Agent ruft das <toolName></toolName> Tool und legt sie an."
     },
     "row": {
       "neverRan": "noch nie",
@@ -3421,7 +3427,7 @@
     },
     "templateEditor": {
       "badgeActive": "aktiv · {format}",
-      "description": "JSON-Schema: {schema}. Beim Trigger rendert der Server alle data- + static-Sektionen selbst; der LLM füllt nur die narrative-slot-Strings. Leerer Editor = Template entfernen, Routine läuft wieder im Legacy-Pfad.",
+      "description": "JSON-Schema: <schema></schema>. Beim Trigger rendert der Server alle data- + static-Sektionen selbst; der LLM füllt nur die narrative-slot-Strings. Leerer Editor = Template entfernen, Routine läuft wieder im Legacy-Pfad.",
       "templatePlaceholder": "'{ \"format\": \"markdown\", \"sections\": [ { \"kind\": \"narrative-slot\", \"id\": \"intro\", \"hint\": \"Ein Satz Einleitung.\" } ] }'",
       "saveFailedLabel": "Save fehlgeschlagen:",
       "saved": "Gespeichert.",

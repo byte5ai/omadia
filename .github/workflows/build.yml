@@ -83,11 +83,9 @@ jobs:
           push: false
           load: true
           tags: omadia-web-ui:ci-${{ github.sha }}
-          # Same MIDDLEWARE_URL placeholder the production fly.toml uses;
-          # only baked into the standalone bundle, not used at runtime
-          # against this image.
-          build-args: |
-            MIDDLEWARE_URL=http://middleware:8080
+          # No MIDDLEWARE_URL build-arg: it is a runtime setting since the
+          # /bot-api and /p proxies became route handlers
+          # (app/_lib/middlewareProxy.ts).
           cache-from: type=gha,scope=web-ui
           # See the middleware job: a cache-export error is non-fatal.
           cache-to: type=gha,scope=web-ui,mode=max,ignore-error=true

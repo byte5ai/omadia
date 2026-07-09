@@ -614,7 +614,7 @@
     "shellLoading": "Loading login…",
     "loadingProviders": "Loading login…",
     "errorPrefix": "Failed to load login providers:",
-    "noProviders": "No auth providers are configured. Set {envVar} in the middleware environment and restart.",
+    "noProviders": "No auth providers are configured. Set <envVar></envVar> in the middleware environment and restart.",
     "emailLabel": "Email",
     "passwordLabel": "Password",
     "submit": "Sign in",
@@ -661,13 +661,13 @@
     "apply": "Apply",
     "applying": "Installing…",
     "pluginCount": "{count, plural, one {# plugin} other {# plugins}}",
-    "outcomeAppliedTitle": "Profile {id} applied",
+    "outcomeAppliedTitle": "Profile <id></id> applied",
     "outcomeStats": "{installed} installed, {skipped} skipped, {errored} failed",
     "sectionInstalled": "Newly installed",
     "sectionSkipped": "Already installed (skipped)",
     "sectionErrored": "Errors — please check manually",
-    "secretsHint": "Plugins that need operator secrets (e.g. anthropic_api_key, telegram_bot_token) start in status {erroredTag} until you set the secrets via the wizard on the respective detail page. Then activate via {reactivateTag}.",
-    "errorTitle": "Profile {id} could not be applied",
+    "secretsHint": "Plugins that need operator secrets (e.g. anthropic_api_key, telegram_bot_token) start in status <erroredTag></erroredTag> until you set the secrets via the wizard on the respective detail page. Then activate via <reactivateTag></reactivateTag>.",
+    "errorTitle": "Profile <id></id> could not be applied",
     "tryAnother": "Pick another profile"
   },
   "chatTabs": {
@@ -701,6 +701,12 @@
     "expiredTitle": "Session expired",
     "expiredBody": "Your session has expired. Please sign in again to continue working.",
     "expiredCta": "Sign in again"
+  },
+  "runtimeReadiness": {
+    "title": "LLM API key missing",
+    "body": "The agent runtime is offline — usually because no LLM API key is configured yet. Add your key in the settings; chat, agents, channels and skills come online right away. Routines additionally need one middleware restart.",
+    "cta": "Open settings",
+    "dismiss": "Later"
   },
   "agentDetailsModal": {
     "ariaLabelTitle": "{label} tool calls",
@@ -1472,7 +1478,7 @@
         },
         "externalReadsHint": "Preview does not run cross-integration lookups (<code>spec.external_reads</code>) — the agent correctly detects the missing service and throws. Publish the agent to the platform store to test the real data path.",
         "agentStuck": {
-          "title": "Builder agent is stuck on slot {slot} ({attempts, plural, one {# attempt} other {# attempts}})",
+          "title": "Builder agent is stuck on slot <slot></slot> ({attempts, plural, one {# attempt} other {# attempts}})",
           "body": "{summary}. Open the slot editor, review the errors manually and fix the code — the agent won't retry on its own.",
           "dismiss": "Dismiss",
           "dismissTooltip": "Dismiss banner"
@@ -2199,7 +2205,7 @@
       }
     },
     "title": "Configuration",
-    "intro": "All {envFile} values that are written to the config store or the secret vault at startup. Changes are saved automatically and the affected plugin is re-activated — they take effect immediately, without a restart. Secrets only show whether a value is set; the value itself is never displayed.",
+    "intro": "All <envFile></envFile> values that are written to the config store or the secret vault at startup. Changes are saved automatically and the affected plugin is re-activated — they take effect immediately, without a restart. Secrets only show whether a value is set; the value itself is never displayed.",
     "loading": "Loading …",
     "loadError": "Failed to load: {message}",
     "vaultUnavailable": "Vault unavailable — secrets cannot be edited.",
@@ -2612,7 +2618,7 @@
   },
   "adminAuth": {
     "title": "Authentication Providers",
-    "intro": "Enable or disable the sign-in methods. The {envVar} env variable defines the permitted providers; here you choose which of them are currently active.",
+    "intro": "Enable or disable the sign-in methods. The <envVar></envVar> env variable defines the permitted providers; here you choose which of them are currently active.",
     "loading": "Loading …",
     "loadError": "Failed to load: {message}",
     "statusActive": "active",
@@ -2801,7 +2807,7 @@
   },
   "adminRegistries": {
     "title": "Plugin Registries",
-    "intro": "Sources from which plugins are pulled into the store. New instances start with {hub}. The token is stored encrypted and never shown again — only whether one is set. Changes take effect without a restart.",
+    "intro": "Sources from which plugins are pulled into the store. New instances start with <hub></hub>. The token is stored encrypted and never shown again — only whether one is set. Changes take effect without a restart.",
     "addHeading": "Add registry",
     "fields": {
       "name": "Name",
@@ -2839,7 +2845,7 @@
   },
   "adminDomains": {
     "title": "Plugin Domains",
-    "intro": "Overview of all registered plugins, grouped by the {domain} declared in their {manifest}. Domains are read by the Phase 8 nudge-pipeline multi-domain trigger and used by the operator UI for cross-agent grouping. Curation (renaming / merging / hierarchies) follows with OB-78 (Phase 9 agent profiles).",
+    "intro": "Overview of all registered plugins, grouped by the <domain></domain> declared in their <manifest></manifest>. Domains are read by the Phase 8 nudge-pipeline multi-domain trigger and used by the operator UI for cross-agent grouping. Curation (renaming / merging / hierarchies) follows with OB-78 (Phase 9 agent profiles).",
     "loading": "Loading …",
     "loadError": "Failed to load: {message}",
     "noData": "No data.",
@@ -2850,7 +2856,7 @@
       "fallbacks": "Fallbacks"
     },
     "pluginCount": "{count, plural, one {# plugin} other {# plugins}}",
-    "fallbackWarning": "{count, plural, one {# plugin} other {# plugins}} without a declared domain — auto-fallback to {fallbackDomain}. Add an {manifestKey} line to the manifest (e.g. {exampleOne}, {exampleTwo}) or re-upload the agent via the Builder."
+    "fallbackWarning": "{count, plural, one {# plugin} other {# plugins}} without a declared domain — auto-fallback to <fallbackDomain></fallbackDomain>. Add an <manifestKey></manifestKey> line to the manifest (e.g. <exampleOne></exampleOne>, <exampleTwo></exampleTwo>) or re-upload the agent via the Builder."
   },
   "adminUsage": {
     "title": "Costs",
@@ -3395,7 +3401,7 @@
       "columnLastRun": "Last run",
       "columnActions": "Actions",
       "emptyTitle": "No routines yet.",
-      "emptyBody": "Routines are created when a user says something like “remind me about X every Monday at 9 am” in the chat — the agent calls the {toolName} tool and creates it."
+      "emptyBody": "Routines are created when a user says something like “remind me about X every Monday at 9 am” in the chat — the agent calls the <toolName></toolName> tool and creates it."
     },
     "row": {
       "neverRan": "never",
@@ -3421,7 +3427,7 @@
     },
     "templateEditor": {
       "badgeActive": "active · {format}",
-      "description": "JSON schema: {schema}. On trigger the server renders all data + static sections itself; the LLM only fills the narrative-slot strings. Empty editor = remove the template, the routine runs on the legacy path again.",
+      "description": "JSON schema: <schema></schema>. On trigger the server renders all data + static sections itself; the LLM only fills the narrative-slot strings. Empty editor = remove the template, the routine runs on the legacy path again.",
       "templatePlaceholder": "'{ \"format\": \"markdown\", \"sections\": [ { \"kind\": \"narrative-slot\", \"id\": \"intro\", \"hint\": \"One sentence of introduction.\" } ] }'",
       "saveFailedLabel": "Save failed:",
       "saved": "Saved.",

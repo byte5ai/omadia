@@ -5,7 +5,9 @@ import { ThemeControls } from '../ThemeControls';
 
 /**
  * Regression guard for issue #360 — the previous `<option>` markup carried
- * `className="bg-[color:var(...)] text-[color:var(...)]"` props, which the
+ * bg-/text- arbitrary-value color classNames (spelled out prosaically on
+ * purpose: Tailwind v4 scans comments too, and a literal bracket-class with
+ * `var(...)` inside compiles into invalid CSS that breaks `next dev`), which the
  * Windows native combobox widget silently ignores (CSS custom properties do
  * not reach option painting). Option colors now live in `[data-theme]`-
  * scoped rules in globals.css with concrete hex values; the per-option
