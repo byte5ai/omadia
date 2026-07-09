@@ -16,6 +16,7 @@ import { NUMSTAT_MARKER } from '../../src/devplatform/devJobWorkerPolicy.js';
 import { DevRepoStore } from '../../src/devplatform/devRepoStore.js';
 import { DevRepoCredentialStore } from '../../src/devplatform/devRepoCredentials.js';
 import { mintRunnerToken } from '../../src/devplatform/jobToken.js';
+import { publicPaths } from '../../src/auth/publicPaths.js';
 import { assembleDevPlatform, mountDevPlatform } from '../../src/devplatform/wireDevPlatform.js';
 import { InMemorySecretVault } from '../../src/secrets/vault.js';
 import type {
@@ -252,10 +253,18 @@ describe('devplatform e2e (pg)', { skip: !pgAvailable }, () => {
   let wired: ReturnType<typeof assembleDevPlatform>;
   let repo: DevRepo;
 
-  // A fake requireAuth: a session iff the `x-test-sub` header is present. This is
-  // the guard mountDevPlatform wraps the ADMIN router in — the runner router is
-  // mounted WITHOUT it, which is exactly the invariant under test.
+  // A fake requireAuth: a session iff the `x-test-sub` header is present. It
+  // consults the SAME public-paths allowlist production's createRequireAuth
+  // does, so a path dropped from that list fails this test instead of only
+  // failing in production. Mounted both at `/api` (like index.ts) and around
+  // the admin router (like mountDevPlatform).
+  const allowlist = publicPaths({ devEndpointsEnabled: false });
   const requireAuth: RequestHandler = (req, res, next) => {
+    const url = req.originalUrl || req.url;
+    if (allowlist.some((rx) => rx.test(url))) {
+      next();
+      return;
+    }
     const sub = req.header('x-test-sub');
     if (!sub) {
       res.status(401).json({ code: 'unauthorized', message: 'no session' });
@@ -303,6 +312,16 @@ describe('devplatform e2e (pg)', { skip: !pgAvailable }, () => {
     await credentials.save(repo.id, { token: 'ghp_e2e_token', kind: 'pat', login: 'e2e-owner' });
 
     const app = express();
+    // Reproduce production's guard topology, not a convenient subset. index.ts
+    // mounts `app.use('/api', requireAuth, chatRouter)` BEFORE the dev-platform
+    // routers, and express runs that middleware for every `/api/*` request
+    // whichever router answers. A bare express() app here would let the runner
+    // router look unguarded while it 401s in production — which is exactly the
+    // bug this test exists to prevent. The public-paths allowlist is imported
+    // from the same module index.ts uses, so the two cannot drift.
+    app.use('/api', requireAuth, (_req, _res, next) => {
+      next();
+    });
     server = app.listen(0);
     await new Promise<void>((r) => server.once('listening', r));
     baseUrl = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;

@@ -158,6 +158,7 @@ import {
   startMdnsAdvertiser,
   type MdnsAdvertisement,
 } from './pairing/mdns.js';
+import { publicPaths } from './auth/publicPaths.js';
 import { createRequireAuth } from './auth/requireAuth.js';
 import { assembleDevPlatform, mountDevPlatform } from './devplatform/wireDevPlatform.js';
 import { OAuthClient } from './auth/oauthClient.js';
@@ -1296,46 +1297,7 @@ async function main(): Promise<void> {
     // those so the channel plugins can run their own auth downstream —
     // same protection as before for `/api/chat`, `/api/v1/operator/*`,
     // `/api/v1/admin/*`, etc. since none of them match these regexes.
-    publicPaths: [
-      /^\/api\/v1\/auth(?:\/|$|\?)/,
-      /^\/api\/v1\/setup(?:\/|$|\?)/,
-      /^\/api\/auth(?:\/|$|\?)/,
-      // Spec 005 — kernel OAuth broker callback. The IdP redirects the
-      // operator's browser back here after consent; the session cookie may
-      // have lapsed during the round-trip, so the route is public and
-      // self-secures via the signed, single-use `state` token. `/oauth/start`
-      // is NOT listed — it stays behind the cookie gate (operator-initiated).
-      /^\/api\/v1\/install\/oauth\/callback(?:\/|$|\?)/,
-      // Bot Framework webhook for channel-teams. The Teams adapter
-      // validates the Bot-issued JWT inside the handler; the session
-      // cookie check would silently drop every inbound activity because
-      // Teams never sends one.
-      /^\/api\/messages(?:\/|$|\?)/,
-      // Plugin-served UI surfaces (`/p/<pluginId>/...`). Teams iframes
-      // these from inside the bot-app shell where there is no
-      // middleware session cookie — only a Teams SSO token. Routing
-      // them through the cookie gate redirects to /login inside the
-      // iframe, which shows the operator login form instead of the
-      // Tab content. Plugins that expose sensitive data are
-      // responsible for validating the Teams SSO token themselves;
-      // pages like /p/channel-teams/{hub,tab-config} are public-by-
-      // design and the reference dashboard is read-only demo state.
-      /^\/p\/[^/]+(?:\/|$|\?)/,
-      // Local dev surfaces. The `/api/dev/*` mount itself is conditional
-      // on `DEV_ENDPOINTS_ENABLED=true` further down (see graph +
-      // memory dev routers around the "DEV endpoints enabled" log line)
-      // — when that flag is on the operator has already opted into an
-      // unauthenticated surface and the local Next-UI relies on the
-      // routes being callable without a session cookie. When the flag
-      // is off, no `/api/dev/*` routes are mounted at all, so this
-      // bypass cannot leak anything. When the flag is on AND the stack
-      // is exposed beyond localhost, that is a separate operator
-      // mistake the compose `127.0.0.1` port bindings are designed to
-      // prevent.
-      ...(config.DEV_ENDPOINTS_ENABLED
-        ? [/^\/api\/dev(?:\/|$|\?)/]
-        : []),
-    ],
+    publicPaths: publicPaths({ devEndpointsEnabled: config.DEV_ENDPOINTS_ENABLED }),
   });
 
   // ContextRetriever + FactExtractor construction moved to AFTER
