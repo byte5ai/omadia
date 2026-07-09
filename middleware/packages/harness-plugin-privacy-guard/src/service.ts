@@ -521,6 +521,22 @@ export function createPrivacyGuardService(deps?: {
       return resolvePseudonyms(text, map);
     },
 
+    snapshotPromptRestorer(
+      turnId: string,
+    ): ((text: string) => string) | undefined {
+      const map = promptMaskMaps.get(turnId);
+      if (map === undefined || map.reverse.size === 0) return undefined;
+      // Self-contained copy: the closure must keep working after
+      // `finalizeTurn` dropped the live map — fire-and-forget fact
+      // extraction restores extracted facts to real values long after the
+      // turn's answer went out.
+      const snapshot: PseudonymMap = {
+        forward: new Map(map.forward),
+        reverse: new Map(map.reverse),
+      };
+      return (text: string): string => resolvePseudonyms(text, snapshot);
+    },
+
     resolveDatasetForRender(turnId, datasetId) {
       const dataset = stores.get(turnId)?.get(datasetId);
       if (dataset === undefined) return undefined;

@@ -218,9 +218,10 @@ function surrogateCandidates(type: string): Generator<string> {
  * Build (or extend) a pseudonym map for detected prompt spans. Guarantees:
  *   - stable: a value already in `existing` keeps its surrogate;
  *   - bijective: no two real values share a surrogate;
- *   - collision-free: a surrogate never equals a real value in the set,
- *     never appears as a substring of `avoidText` (the full prompt), and
- *     never collides with an existing surrogate.
+ *   - collision-free: a surrogate never equals a real value in the set OR
+ *     any real value from an earlier call this turn (`existing`), never
+ *     appears as a substring of `avoidText` (the full prompt), and never
+ *     collides with an existing surrogate.
  * Deterministic for the same inputs, so a person/value is stable within a
  * turn across multiple mask calls (message + ingested attachment tail).
  */
@@ -238,7 +239,13 @@ export function createPromptPseudonymMap(
     if (value.length === 0 || forward.has(value)) continue;
     if (!pending.has(value)) pending.set(value, type);
   }
+  // Collision domain = ALL real values seen so far this turn: the current
+  // call's pending values AND every real already in `existing` from earlier
+  // calls (message, ingested tail, recalled context). Without the latter, a
+  // later call could mint a surrogate equal to a real value masked earlier
+  // in the turn — answer-side restore would then corrupt that span.
   const realSet = new Set(pending.keys());
+  for (const real of forward.keys()) realSet.add(real);
 
   for (const [value, type] of [...pending.entries()].sort((a, b) =>
     a[0].localeCompare(b[0]),

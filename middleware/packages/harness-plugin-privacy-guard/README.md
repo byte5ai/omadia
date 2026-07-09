@@ -22,20 +22,28 @@ only permission is `llm` (see below).
 
 The one setup field is `mask_user_prompt` (enum `off`/`on`, **default
 `off`** — flag-off is byte-identical to pre-#361 behavior). When on, PII
-spans detected in the user's own message (and the ingested attachment tail)
-are substituted with realistic, type-shaped pseudonyms before the prompt
-crosses the LLM wire; the surrogate↔real map is held server-side per turn
-and inverted over the final answer. Wire-substitution with answer-side
-restore — NOT server-side interning (the prompt must cross the wire) and
-NOT an on-wire token map (deleted for cause by #119/#126/#153).
+spans detected in the user's own message are substituted with realistic,
+type-shaped pseudonyms in **every LLM-bound copy of the turn** — the main
+prompt, the ingested attachment tail, the recalled prior-context block,
+and auxiliary LLM passes (fact extraction, model/persona routing, card
+router, excerpt) — while the surrogate↔real map is held server-side per
+turn and inverted over the final answer **and over everything persisted**
+(session log, extracted KG facts, promoted memories store real values,
+never surrogates). Wire-substitution with answer-side restore — NOT
+server-side interning (the prompt must cross the wire) and NOT an on-wire
+token map (deleted for cause by #119/#126/#153).
 
-- **Detection:** pluggable `PromptPiiDetector` seam. Shipped: the
-  deterministic **C0 regex baseline** (email, IBAN, phone, German
+- **Detection:** pluggable `PromptPiiDetector` seam. Shipped today: the
+  deterministic **C0 regex baseline only** (email, IBAN, phone, German
   postal+street, currency/salary amounts, DOB dates). Names/free-form
   entities need the **C1 transformer** slot (Piiranha/GLiNER), which ships
-  as an inert stub until the committed validation harness
-  (`src/validation/`, runnable via `npx tsx …/promptDetectorEval.ts`)
-  passes its documented recall gates for a locale.
+  as an **inert stub** until the committed validation harness
+  (`src/validation/`, runnable via `npx tsx …/promptDetectorEval.ts`,
+  fixtures currently `de` + `en`) passes its documented gates for a locale
+  (structured-identifier recall ≥ 0.97, person recall ≥ 0.90 with C1,
+  precision proxy ≥ 0.85, p95 added latency ≤ 400 ms).
+- **Flag policy:** enabling `mask_user_prompt` for a locale requires
+  posting a green harness run for that locale to issue #361 first.
 - **Failure-closed:** the C1 detector throwing degrades to C0 with a
   `promptMaskDegraded` audit line; a baseline failure or a residual real
   span surviving substitution **blocks the turn** — there is no

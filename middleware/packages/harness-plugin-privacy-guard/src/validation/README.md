@@ -28,9 +28,11 @@ the masked output — any surviving identifying character is a leak.
 | Added latency, p95 per prompt | ≤ 400 ms |
 
 **Flag policy:** `mask_user_prompt` may be enabled only for locales whose
-fixture set passes ALL gates with the shipped detector set. C0 alone gates
-on structured identifiers only — a deployment that needs name masking must
-wire a C1 detector and re-run.
+fixture set passes ALL gates with the shipped detector set, and the harness
+results for that locale must be posted to issue #361 BEFORE the flag flips
+on. C0 alone gates on structured identifiers only — a deployment that needs
+name masking must wire a C1 detector (the shipped C1 slot is an inert stub)
+and re-run. Current coverage: `de` + `en` fixtures, C0 tier only.
 
 ## Fixtures
 

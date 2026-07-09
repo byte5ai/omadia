@@ -95,6 +95,14 @@ export interface PrivacyTurnHandle {
    */
   restorePromptPseudonyms(text: string): Promise<string>;
   /**
+   * #361 — snapshot this turn's surrogate→real inversion as a synchronous
+   * closure that stays valid after `finalize` dropped the live map. For the
+   * fire-and-forget fact-extraction path, which must restore extracted
+   * facts to real values before persisting them. `undefined` when nothing
+   * was masked this turn (or the provider predates the contract).
+   */
+  snapshotPromptRestorer(): ((text: string) => string) | undefined;
+  /**
    * Drop the turn's Dataset Store and drain the user-facing receipt.
    * `turnInput` — the requester's own message text — lets the receipt
    * report identity values the user named themselves. Returns `undefined`
@@ -183,6 +191,10 @@ export function createPrivacyTurnHandle(deps: {
     async restorePromptPseudonyms(text) {
       if (deps.service.restorePromptPseudonyms === undefined) return text;
       return deps.service.restorePromptPseudonyms(deps.turnId, text);
+    },
+
+    snapshotPromptRestorer() {
+      return deps.service.snapshotPromptRestorer?.(deps.turnId);
     },
 
     async finalize(turnInput) {

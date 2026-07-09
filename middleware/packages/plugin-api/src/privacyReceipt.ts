@@ -359,6 +359,17 @@ export interface PrivacyGuardService {
    */
   restorePromptPseudonyms?(turnId: string, text: string): Promise<string>;
   /**
+   * #361 — capture this turn's prompt-surrogate inversion as a synchronous,
+   * self-contained closure (a snapshot copy of the map). For consumers that
+   * complete AFTER `finalizeTurn` dropped the live map — e.g. fire-and-forget
+   * fact extraction, which must restore surrogates in extracted facts to
+   * real values before persisting them to the knowledge graph. Returns
+   * `undefined` when the turn masked nothing (callers skip the restore pass).
+   */
+  snapshotPromptRestorer?(
+    turnId: string,
+  ): ((text: string) => string) | undefined;
+  /**
    * Privacy Shield v4 — the verb + render tool specs to offer the LLM.
    */
   v4ToolSpecs(): ReadonlyArray<PrivacyV4ToolSpec>;

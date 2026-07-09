@@ -45,16 +45,27 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   failure degrades to C0 with audit; a baseline failure or residual span
   blocks the turn — there is no pass-through-unmasked path. Flag-off is
   byte-identical to previous behavior.
-- Orchestrator: LLM-bound sites (message assembly, ingested attachment
-  tail, model/persona routing, KG-recall query, nudge pipeline, card
-  router, excerpt pass) consume the masked wire variant; memory persistence
-  and receipt attribution keep the original text. Streamed deltas may
-  transiently show a surrogate; the `done` answer is authoritative (same
-  contract as the v4 rendered-answer swap).
-- Committed runnable validation harness with pre-committed recall gates:
-  `harness-plugin-privacy-guard/src/validation/` (not a CI gate). The C1
-  transformer slot (Piiranha/GLiNER) ships inert until a locale passes its
-  gates.
+- Orchestrator: every LLM-bound site (message assembly, ingested attachment
+  tail, model/persona routing, KG-recall query, recalled-context injection,
+  fact-extraction prompt, nudge pipeline, card router, excerpt pass)
+  consumes the masked wire variant. Server-side persistence stores real
+  values only: the session log / KG persist the POST-restore answer,
+  extracted facts and the Palaia excerpt are restored surrogate→real before
+  ingest/promotion (fire-and-forget extraction uses a snapshot of the
+  turn's map, `snapshotPromptRestorer`), and receipt attribution keeps the
+  original text. Direct-line turns mask the fact-extraction inputs the same
+  way and skip extraction (audited) if masking is blocked. Streamed deltas
+  may transiently show a surrogate; the `done` answer is authoritative
+  (same contract as the v4 rendered-answer swap).
+- Committed runnable validation harness with pre-committed gates:
+  `harness-plugin-privacy-guard/src/validation/` (not a CI gate). Current
+  coverage: `de` + `en` fixture sets, **C0 regex tier only** — the C1
+  transformer slot (Piiranha/GLiNER) is an inert stub. Gates: recall ≥ 0.97
+  for structured identifiers, ≥ 0.90 for names/free-form entities (needs
+  C1 — C0 does not detect names), precision proxy ≥ 0.85 on PII-free
+  negatives, p95 added latency ≤ 400 ms. Enabling `mask_user_prompt` for a
+  locale requires posting a green harness run for that locale to issue
+  #361 first.
 
 ### Changed — v1.0 readiness pass across the earliest core plugins (#431)
 
@@ -65,8 +76,10 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 - `agent-seo-analyst`: operator-catalog `identity.description` translated to
   English; README gains the same PluginContext-surface audit section.
 - `harness-plugin-privacy-guard`: `package.json` version aligned to the
-  manifest (`0.2.0`); the v4 path (`src/service.ts` + `src/v4/`) is declared
-  the single canonical implementation — no legacy branch exists (see README).
+  manifest (`0.2.0` at the time of #431; both sit at `0.3.0` after the #361
+  bump in this branch); the v4 path (`src/service.ts` + `src/v4/`) is
+  declared the single canonical implementation — no legacy branch exists
+  (see README).
 - Recorded decisions: plugins stay independently versioned (no lockstep bump
   with core); package layout is per-kind (tool plugins `src/`→`dist/`, agent
   packages flat, per `agent-reference-maximum` + boilerplate templates).
