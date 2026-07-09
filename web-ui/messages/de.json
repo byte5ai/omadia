@@ -2799,6 +2799,250 @@
       }
     }
   },
+  "adminDevPlatform": {
+    "title": "Dev-Plattform",
+    "intro": "Repositories, Dev-Jobs und Pull-Request-Pipelines, ausgeführt von omadia-Agenten. Jobs laufen isoliert und enden immer in einem Pull Request zur menschlichen Prüfung — omadia merged nie.",
+    "tabs": {
+      "repos": "Repositories",
+      "jobs": "Jobs"
+    },
+    "loading": "Lädt…",
+    "loadError": "Beim Laden ist etwas schiefgelaufen.",
+    "unauthorized": "Du brauchst Operator-Zugriff für die Dev-Plattform.",
+    "retry": "Erneut versuchen",
+    "repos": {
+      "count": "{count, plural, one {# Repository} other {# Repositories}}",
+      "name": "Repository",
+      "forge": "Forge",
+      "credential": "Credential-Modus",
+      "branch": "Default-Branch",
+      "protectionCol": "Protection",
+      "credentialExpired": "Credential abgelaufen",
+      "credentialModes": {
+        "githubApp": "GitHub App",
+        "deviceFlow": "Device Flow — User-Token",
+        "pat": "Personal Access Token"
+      },
+      "newJob": "Neuer Job",
+      "settings": "Einstellungen",
+      "add": "Repository hinzufügen",
+      "empty": {
+        "heading": "Noch keine Repositories",
+        "body": "Die Dev-Plattform führt isolierte Jobs gegen deine Repositories aus: ein Issue analysieren, planen, implementieren und einen Pull Request zur menschlichen Prüfung öffnen. omadia merged nie — das bleibt bei dir.",
+        "cta": "Repository hinzufügen"
+      },
+      "remove": {
+        "action": "Entfernen",
+        "title": "Repository entfernen?",
+        "body": "Laufende Jobs werden zuerst abgebrochen. Das gespeicherte Credential dieses Repositories wird aus dem Vault gelöscht.",
+        "confirm": "Repository entfernen",
+        "cancel": "Repository behalten"
+      },
+      "protection": {
+        "protected": "geschützt",
+        "unprotected": "ungeschützt",
+        "unchecked": "ungeprüft",
+        "recheck": "Neu prüfen",
+        "rechecking": "Prüft",
+        "warning": "Ohne Branch Protection könnte dein Token direkt auf den Default-Branch pushen. Die No-Merge-Garantie hängt daran."
+      }
+    },
+    "jobs": {
+      "job": "Job",
+      "repo": "Repo",
+      "kind": "Art",
+      "phase": "Phase",
+      "status": "Status",
+      "cost": "Kosten",
+      "age": "Alter",
+      "view": "Ansehen",
+      "cancel": "Abbrechen",
+      "empty": "Noch keine Jobs. Starte einen aus einer Repository-Zeile.",
+      "live": "live",
+      "liveLost": "Verbindung verloren — versucht erneut",
+      "filters": {
+        "allRepos": "Alle Repositories",
+        "allStatuses": "Alle Status"
+      },
+      "statuses": {
+        "queued": "wartet",
+        "provisioning": "provisioniert",
+        "running": "läuft",
+        "waiting": "wartet auf dich",
+        "applying": "wendet an",
+        "done": "fertig",
+        "failed": "fehlgeschlagen",
+        "cancelled": "abgebrochen",
+        "stalled": "hängt",
+        "budgetExceeded": "Budget überschritten"
+      },
+      "kinds": {
+        "analyze": "Analysieren",
+        "fixIssue": "Issue fixen",
+        "implement": "Implementieren"
+      },
+      "cancelConfirm": {
+        "title": "Job abbrechen?",
+        "body": "Der Runner wird beendet. Branch, Log und ein bereits hochgeladener Diff bleiben erhalten.",
+        "confirm": "Job abbrechen",
+        "cancel": "Weiterlaufen lassen"
+      }
+    },
+    "newJob": {
+      "title": "Neuer Job für {repo}",
+      "kind": "Art",
+      "kinds": {
+        "fixIssue": "Ein Issue fixen",
+        "analyze": "Analysieren",
+        "implement": "Implementieren"
+      },
+      "fromIssue": "Aus Issue",
+      "fromBrief": "Freitext-Brief",
+      "loadingIssues": "Lädt offene Issues",
+      "noIssues": "Keine offenen Issues in diesem Repository gefunden.",
+      "issue": "Issue",
+      "selectIssue": "Issue auswählen",
+      "brief": "Brief",
+      "briefPlaceholder": "Was soll der Agent tun?",
+      "error": "Der Job konnte nicht angelegt werden.",
+      "cancel": "Abbrechen",
+      "starting": "Startet",
+      "start": "Job starten"
+    },
+    "wizard": {
+      "title": "Repository hinzufügen",
+      "intro": "Verbinde ein Repository, damit die Dev-Plattform isolierte Jobs dagegen ausführen und Pull Requests zu deiner Prüfung öffnen kann.",
+      "backToRepos": "Zurück zu den Repositories",
+      "steps": {
+        "repo": "Repository",
+        "credentials": "Credentials",
+        "confirm": "Bestätigen"
+      },
+      "fields": {
+        "forge": "Forge",
+        "owner": "Owner",
+        "name": "Repository-Name",
+        "branch": "Default-Branch"
+      },
+      "next": "Weiter",
+      "back": "Zurück",
+      "finish": "Repository hinzufügen",
+      "adding": "Fügt hinzu",
+      "edit": "Bearbeiten",
+      "summary": {
+        "github_app": "GitHub App",
+        "device_flow": "Device Flow",
+        "pat": "Personal Access Token"
+      },
+      "error": {
+        "submit": "Das Repository konnte nicht hinzugefügt werden. Prüfe Owner, Name und Credential und versuche es erneut."
+      },
+      "done": {
+        "heading": "Repository hinzugefügt",
+        "body": "{repo} ist verbunden. Du kannst aus der Repository-Liste einen Job starten.",
+        "toList": "Zu den Repositories"
+      },
+      "credentials": {
+        "groupLabel": "Credential-Modus",
+        "githubApp": {
+          "title": "GitHub App — empfohlen",
+          "soon": "bald verfügbar",
+          "body": "Installation pro Repository, kurzlebige, eng gescopte Tokens, Commits als omadia-dev[bot]. Das Token kann nicht mergen — strukturell."
+        },
+        "deviceFlow": {
+          "title": "Device Flow — Schnellstart",
+          "body": "Melde dich per einmaligem Device-Code mit deinem GitHub-Account an. Der schnellste Weg, die Dev-Plattform auszuprobieren."
+        },
+        "deviceTradeoffs": {
+          "heading": "Was dieser Modus bedeutet",
+          "asUser": "Commits erscheinen als dein GitHub-User, nicht als Bot",
+          "repoWide": "das Token gewährt Zugriff auf alle deine Repositories, nicht nur dieses",
+          "canMerge": "das Token kann mergen — die No-Merge-Regel setzt nur die omadia-Policy durch, nicht der Token-Scope",
+          "noWebhooks": "Webhook-Trigger bleiben für dieses Repository deaktiviert"
+        },
+        "device": {
+          "codeAria": "Device-Code {code}",
+          "copyCode": "Code kopieren",
+          "copied": "Kopiert",
+          "waiting": "Wartet auf Autorisierung",
+          "authorizedAs": "Autorisiert als {login}",
+          "expired": "Code abgelaufen",
+          "error": "Autorisierung fehlgeschlagen",
+          "restart": "Neu starten"
+        },
+        "pat": {
+          "title": "Fine-grained PAT / Deploy-Key",
+          "body": "Füge ein fine-grained Personal Access Token ein, das auf dieses Repository gescopt ist. Auch der Weg für GitLab und Gitea.",
+          "label": "Token",
+          "placeholder": "github_pat_…"
+        }
+      },
+      "checks": {
+        "label": "Branch Protection auf {branch}",
+        "enabled": "aktiv",
+        "missing": "fehlt",
+        "unknown": "nicht prüfbar",
+        "warning": "Ohne Branch Protection könnte ein Device-Flow- oder PAT-Token direkt auf {branch} pushen. Aktiviere sie in den Repository-Einstellungen — die Dev-Plattform pusht nur auf omadia/job-*-Branches, aber Protection macht das strukturell.",
+        "unknownHint": "Das gespeicherte Token kann die Protection-Einstellungen nicht lesen — klassischen Device-Flow-Tokens fehlt meist der Admin-Lesezugriff. Du kannst jederzeit neu prüfen."
+      }
+    },
+    "detail": {
+      "jobLabel": "Job {hash}",
+      "loading": "Lädt…",
+      "notFound": "Diesen Job gibt es nicht.",
+      "railLabel": "Pipeline-Phasen",
+      "phases": {
+        "analyze": "analyze",
+        "bootstrap": "bootstrap",
+        "plan": "plan",
+        "clarify": "clarify",
+        "gate": "gate",
+        "implement": "implement",
+        "review": "review",
+        "pr": "pr"
+      },
+      "phaseSkipped": "übersprungen — keine Fragen",
+      "noArtifact": "Für diese Phase gibt es noch kein Artefakt.",
+      "openPr": "Pull Request öffnen",
+      "logEmpty": "Noch keine Log-Ausgabe.",
+      "scrollToBottom": "Nach unten scrollen",
+      "connection": {
+        "live": "live · letztes Event vor {seconds}s",
+        "reconnecting": "verbindet neu",
+        "closed": "Stream beendet — Job abgeschlossen"
+      },
+      "cancel": {
+        "action": "Abbrechen",
+        "title": "Job abbrechen?",
+        "body": "Der Runner wird beendet, der Branch bleibt erhalten.",
+        "confirm": "Job abbrechen",
+        "cancelLabel": "Weiterlaufen lassen"
+      },
+      "sidebar": {
+        "backend": "Backend",
+        "agent": "Agent",
+        "branch": "Branch",
+        "source": "Quelle",
+        "createdBy": "Angelegt von",
+        "tokens": "Tokens ein / aus",
+        "cost": "Kosten"
+      }
+    },
+    "repoDetail": {
+      "back": "Zurück zu den Repositories",
+      "loading": "Lädt…",
+      "loadError": "Dieses Repository konnte nicht geladen werden.",
+      "forge": "Forge",
+      "branch": "Default-Branch",
+      "credential": "Credential",
+      "runsTests": "Führt Tests aus",
+      "yes": "ja",
+      "no": "nein",
+      "protectionHeading": "Branch Protection",
+      "recheck": "Neu prüfen",
+      "rechecking": "Prüft"
+    }
+  },
   "adminRegistries": {
     "title": "Plugin-Registries",
     "intro": "Quellen, aus denen Plugins in den Store gezogen werden. Neue Instanzen starten mit {hub}. Der Token wird verschlüsselt gespeichert und nie wieder angezeigt — nur, ob einer hinterlegt ist. Änderungen wirken ohne Neustart.",
