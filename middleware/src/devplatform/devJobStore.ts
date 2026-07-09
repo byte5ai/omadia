@@ -11,11 +11,11 @@
  * point. Repo CRUD lives in `devRepoStore.ts` (file-size split).
  */
 
-import { randomUUID } from 'node:crypto';
 import type { Pool } from 'pg';
 
 import * as artifacts from './devJobArtifactStore.js';
 import type { DevJobEventBus } from './devJobEventBus.js';
+import * as seams from './devJobWorkerSeams.js';
 import { verifyRunnerToken as verifyToken } from './jobToken.js';
 import { asObj, iso, isoN, num, str, strN, type Row } from './pgMappers.js';
 import {
@@ -75,18 +75,20 @@ export interface TerminalPatch {
   prUrl?: string | null;
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const TERMINAL_SET_SQL = `'done','failed','cancelled','stalled','budget_exceeded'`;
-const ACTIVE_SET_SQL = `'provisioning','running','applying'`;
+/** Shared with `devJobWorkerSeams.ts` (worker-seam bodies live there for the
+ *  500-line rule); not part of the public store API. */
+export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const TERMINAL_SET_SQL = `'done','failed','cancelled','stalled','budget_exceeded'`;
+export const ACTIVE_SET_SQL = `'provisioning','running','applying'`;
 
-const JOB_COLS =
+export const JOB_COLS =
   `id, repo_id, kind, brief, source, source_ref, base_sha, backend, agent_kind, auth_mode, ` +
   `provision, phase, status, claimed_by, claimed_at, last_heartbeat_at, runner_handle, ` +
   `runner_token_hash, branch, pr_url, result, error, tokens_in, tokens_out, cost_usd, ` +
   `created_by, created_at, started_at, ended_at, updated_at`;
 const EVENT_COLS = `id, job_id, provision, seq, type, ts, payload`;
 
-function toJob(r: Row): DevJob {
+export function toJob(r: Row): DevJob {
   return {
     id: str(r['id']),
     repoId: str(r['repo_id']),
@@ -443,6 +445,22 @@ export class DevJobStore {
       [startedBefore],
     );
     return r.rows.map(toJob);
+  }
+
+  // --- worker seams (spec §4) — bodies in devJobWorkerSeams.ts (500-line rule) -
+  /** Jobs occupying a runner slot; the worker's concurrency gate. */
+  countActiveJobs(): Promise<number> {
+    return seams.countActiveJobs(this.pool);
+  }
+
+  /** Still-active (provisioning/running) job for a handle id — excludes `applying`. */
+  findActiveByHandleId(handleId: string): Promise<DevJob | null> {
+    return seams.findActiveByHandleId(this.pool, handleId);
+  }
+
+  /** Mint the one-time runner token + pin branch/base_sha (lease-fenced). */
+  prepareProvision(job: DevJob, lease: string, baseSha?: string | null): Promise<{ token: string; job: DevJob }> {
+    return seams.prepareProvision(this.pool, job, lease, baseSha);
   }
 
   // --- terminal transition (finalizeDevJob only) ---------------------------

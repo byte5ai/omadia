@@ -217,6 +217,10 @@
           "title": "MCP Control Center",
           "description": "MCP servers, discovered tools with scan verdicts, grants, and the call audit log in one place."
         },
+        "devPlatform": {
+          "title": "Dev Platform",
+          "description": "Register repositories and launch isolated code-runner jobs that open a pull request from a reviewed diff."
+        },
         "auth": {
           "title": "Authentication Providers",
           "description": "Enable or disable local login and Entra ID sign-in; changes apply without a restart."
@@ -407,7 +411,8 @@
     "agentsOverview": "Overview",
     "channels": "Channels",
     "pluginsCluster": "Plugins",
-    "adminCluster": "Admin"
+    "adminCluster": "Admin",
+    "devPlatform": "Dev Platform"
   },
   "conductor": {
     "title": "Conductor",

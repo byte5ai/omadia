@@ -217,6 +217,10 @@
           "title": "MCP Control Center",
           "description": "MCP-Server, erkannte Tools mit Scan-Verdicts, Grants und das Call-Audit-Log an einem Ort."
         },
+        "devPlatform": {
+          "title": "Dev-Plattform",
+          "description": "Repositories registrieren und isolierte Code-Runner-Jobs starten, die aus einem geprüften Diff einen Pull Request öffnen."
+        },
         "auth": {
           "title": "Authentifizierungs-Provider",
           "description": "Lokale Anmeldung und Entra-ID aktivieren oder deaktivieren; Änderungen wirken ohne Neustart."
@@ -407,7 +411,8 @@
     "agentsOverview": "Übersicht",
     "channels": "Channels",
     "pluginsCluster": "Plugins",
-    "adminCluster": "Admin"
+    "adminCluster": "Admin",
+    "devPlatform": "Dev-Plattform"
   },
   "conductor": {
     "title": "Conductor",

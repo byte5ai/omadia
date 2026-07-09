@@ -159,6 +159,7 @@ import {
   type MdnsAdvertisement,
 } from './pairing/mdns.js';
 import { createRequireAuth } from './auth/requireAuth.js';
+import { assembleDevPlatform, mountDevPlatform } from './devplatform/wireDevPlatform.js';
 import { OAuthClient } from './auth/oauthClient.js';
 import { RefreshStore } from './auth/refreshStore.js';
 import { EmailWhitelist } from './auth/whitelist.js';
@@ -2414,6 +2415,47 @@ async function main(): Promise<void> {
   } else {
     console.log(
       '[middleware] usage cost endpoint skipped — no graphPool (in-memory KG backend)',
+    );
+  }
+
+  // Dev platform (epic #470 W0) — isolated per-job code runners. DARK BY
+  // DEFAULT: with DEV_PLATFORM_ENABLED unset, nothing below runs — no router
+  // mounts and no worker starts. It also needs the Postgres graphPool (the job
+  // spine + repo/artifact tables live there); in-memory mode has nowhere to
+  // persist a durable queue. The two safety-critical modes (subscription auth,
+  // unsafe-local backend) already refused boot in config.ts if misconfigured.
+  if (config.DEV_PLATFORM_ENABLED && graphPool) {
+    const shimEntry = fileURLToPath(
+      new URL('../packages/dev-runner-shim/dist/src/index.js', import.meta.url),
+    );
+    const wiredDevPlatform = assembleDevPlatform({
+      pool: graphPool,
+      vault: secretVault,
+      baseUrl: config.DEV_PLATFORM_RUNNER_BASE_URL ?? `http://127.0.0.1:${String(config.PORT)}`,
+      cliBin: config.DEV_PLATFORM_CLI_BIN,
+      wallClockMs: config.DEV_PLATFORM_JOB_WALL_CLOCK_MS,
+      heartbeatTimeoutMs: config.DEV_PLATFORM_HEARTBEAT_TIMEOUT_MS,
+      maxConcurrentJobs: config.DEV_PLATFORM_MAX_CONCURRENT_JOBS,
+      commitAuthor: config.DEV_PLATFORM_COMMIT_AUTHOR,
+      subscriptionModeEnabled: config.DEV_PLATFORM_SUBSCRIPTION_MODE,
+      workspaceDir: config.DEV_PLATFORM_WORKSPACE_DIR,
+      unsafeLocal: config.DEV_PLATFORM_UNSAFE_LOCAL,
+      ...(config.DEV_PLATFORM_LOCAL_UID !== undefined ? { localUid: config.DEV_PLATFORM_LOCAL_UID } : {}),
+      shimEntry,
+      log: (msg) => console.log(msg),
+    });
+    mountDevPlatform(app, requireAuth, wiredDevPlatform, (msg) => console.log(msg));
+    // Start the claim/enforce/reap/apply loop; stop it cleanly on shutdown.
+    wiredDevPlatform.worker.start();
+    const stopDevPlatformWorker = (): void => wiredDevPlatform.worker.stop();
+    process.once('SIGTERM', stopDevPlatformWorker);
+    process.once('SIGINT', stopDevPlatformWorker);
+    console.log(
+      `[middleware] dev platform ENABLED — worker running (max ${String(config.DEV_PLATFORM_MAX_CONCURRENT_JOBS)} concurrent, ${String(wiredDevPlatform.backends.length)} backend(s))`,
+    );
+  } else if (config.DEV_PLATFORM_ENABLED) {
+    console.warn(
+      '[middleware] DEV_PLATFORM_ENABLED=true but no graphPool (in-memory KG backend) — dev platform NOT started; set DATABASE_URL to enable',
     );
   }
 

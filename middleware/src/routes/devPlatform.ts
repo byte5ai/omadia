@@ -28,12 +28,10 @@ import {
   isDevJobStatus,
   isRunnerBackendKind,
   isTerminalDevJobStatus,
-  type DevJob,
   type DevJobAuthMode,
   type DevJobEvent,
   type DevJobKind,
   type DevJobSource,
-  type RunnerBackendKind,
 } from '../devplatform/types.js';
 import { registerDevPlatformRepoRoutes } from './devPlatformRepos.js';
 import {
