@@ -186,6 +186,14 @@ export interface PluginPermissionsSummary {
   /** Spec 005 (US4 Conductor Surface): plugin declares `permissions.events.emit: true` and may
    *  emit declared domain events via `ctx.events`. Loader defaults to `false`. */
   events_emit?: boolean;
+  /** Epic #459 W5 (issue #458): plugin declares `permissions.mcp` (true or a
+   *  block) and receives `ctx.mcp`, scoped to operator-granted servers.
+   *  Loader defaults to `false`. */
+  mcp?: boolean;
+  /** Optional author hint (`permissions.mcp.servers_hint`): human-readable
+   *  descriptions of the servers the plugin expects, shown in the grant UI.
+   *  Granting is ALWAYS an explicit operator action. */
+  mcp_servers_hint?: string[];
   /** Spec 005: true when the manifest declares >=1 `oauth_providers`
    *  descriptor — the plugin acquires standard authorization-code credentials
    *  through the kernel OAuth broker (tokens stored + refreshed kernel-side;

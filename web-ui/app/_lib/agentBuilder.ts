@@ -187,10 +187,22 @@ export interface ToolGrantNode {
   mcpServerId: string | null;
 }
 
+/** Scan verdict decoration on a discovered MCP tool (issue #454). Absent on
+ *  payloads from middleware builds that predate the scan gate. */
+export interface McpToolVerdictField {
+  severity: SkillVerdictSeverity | null;
+  riskCodes: string[];
+  notYetScanned: boolean;
+  acked: boolean;
+  /** An ack exists but was given for different tool content — treated as absent. */
+  ackStale: boolean;
+}
+
 export interface McpDiscoveredTool {
   name: string;
   description?: string;
   inputSchema?: Record<string, unknown>;
+  verdict?: McpToolVerdictField;
 }
 
 export type McpTransport = 'stdio' | 'http' | 'sse';
@@ -203,6 +215,57 @@ export interface McpServerNode {
   status: NodeStatus;
   lastDiscoveredAt: string | null;
   discoveredTools: McpDiscoveredTool[];
+  /** Marketplace provenance (issue #455); absent on older middleware builds. */
+  source?: 'manual' | 'marketplace';
+  registryId?: string | null;
+  license?: string | null;
+  author?: string | null;
+  sourceUrl?: string | null;
+  /** Epic #459 — server opted out of Privacy Shield masking (results unmasked). */
+  privacyBypass?: boolean;
+  /** Epic #459 — server opted into Knowledge-Graph ingestion of tool results. */
+  kgIngest?: boolean;
+  /** Epic #459 — declared config fields (from placeholders or a registry). */
+  configSchema?: McpConfigField[];
+}
+
+/** Epic #459 — a declared MCP server config field. */
+export interface McpConfigField {
+  key: string;
+  label: string;
+  type: 'string' | 'number';
+  required: boolean;
+  secret: boolean;
+}
+
+export interface McpServerConfigState {
+  schema: McpConfigField[];
+  config: Record<string, unknown>;
+  /** Which secret fields currently have a stored value (not the values). */
+  secretsSet: Record<string, boolean>;
+}
+
+/** Fetch a server's config schema + non-secret values + which secrets are set. */
+export async function getMcpServerConfig(id: string): Promise<McpServerConfigState> {
+  return callJson<McpServerConfigState>(
+    `/v1/operator/mcp-servers/${encodeURIComponent(id)}/config`,
+  );
+}
+
+/** Save a server's config: schema (incl. per-field secret flags), non-secret
+ *  values, and any secret values (secrets go to the Vault server-side). */
+export async function saveMcpServerConfig(
+  id: string,
+  body: {
+    schema?: McpConfigField[];
+    config?: Record<string, unknown>;
+    secrets?: Record<string, string>;
+  },
+): Promise<McpServerNode> {
+  return callJson<McpServerNode>(`/v1/operator/mcp-servers/${encodeURIComponent(id)}/config`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
 }
 
 export interface ScheduleNode {
@@ -556,6 +619,347 @@ export async function triggerSkillVerdictLlmScan(
   return callJson(`/v1/operator/skills/${encodeURIComponent(id)}/verdict/llm-scan`, {
     method: 'POST',
   });
+}
+
+/** One row of the read-only MCP grant matrix (issue #461). */
+export interface McpGrantMatrixRow {
+  grantId: string;
+  holderKind: 'agent' | 'subagent' | 'skill' | 'plugin';
+  agentSlug: string | null;
+  agentName: string | null;
+  subAgentId: string | null;
+  subAgentName: string | null;
+  serverId: string | null;
+  serverName: string | null;
+  toolName: string;
+  severity: SkillVerdictSeverity | null;
+  notYetScanned: boolean;
+  acked: boolean;
+  blocked: boolean;
+}
+
+/** One MCP call audit entry (issue #462). No tool arguments by design. */
+export interface McpCallLogEntry {
+  id: string;
+  serverId: string | null;
+  serverName: string;
+  toolName: string;
+  callerKind: 'agent' | 'subagent' | 'skill' | 'plugin' | 'unattributed';
+  callerAgent: string | null;
+  turnId: string | null;
+  ok: boolean;
+  error: string | null;
+  durationMs: number;
+  calledAt: string;
+}
+
+export async function listMcpGrants(): Promise<{ grants: McpGrantMatrixRow[] }> {
+  return callJson('/v1/operator/mcp-grants');
+}
+
+export interface McpOrchestrator {
+  id: string;
+  slug: string;
+  name: string;
+}
+
+export async function listMcpOrchestrators(): Promise<{ orchestrators: McpOrchestrator[] }> {
+  return callJson('/v1/operator/mcp-orchestrators');
+}
+
+/** Grant one server tool to an orchestrator from the Control Center (W8).
+ *  Same fail-closed verdict gate as the Builder canvas. */
+export async function grantMcpToolToOrchestrator(
+  agentSlug: string,
+  mcpServerId: string,
+  toolName: string,
+): Promise<void> {
+  await callJson('/v1/operator/mcp-grants', {
+    method: 'PUT',
+    body: JSON.stringify({ agentSlug, mcpServerId, toolName }),
+  });
+}
+
+export async function revokeMcpGrant(grantId: string): Promise<void> {
+  await callJson(`/v1/operator/mcp-grants/${encodeURIComponent(grantId)}`, { method: 'DELETE' });
+}
+
+// ── Plugin MCP grants (issue #458 UX / W7) ───────────────────────────────────
+
+export interface McpPluginCandidate {
+  pluginId: string;
+  name: string;
+  serversHint: string[];
+  grantedServerIds: string[];
+}
+
+export async function listMcpPluginCandidates(): Promise<{
+  servers: { id: string; name: string; status: 'enabled' | 'disabled' }[];
+  plugins: McpPluginCandidate[];
+}> {
+  return callJson('/v1/operator/mcp-plugin-candidates');
+}
+
+export async function grantPluginMcpServer(pluginId: string, mcpServerId: string): Promise<void> {
+  await callJson('/v1/operator/plugin-mcp-grants', {
+    method: 'PUT',
+    body: JSON.stringify({ pluginId, mcpServerId }),
+  });
+}
+
+export async function revokePluginMcpServer(pluginId: string, mcpServerId: string): Promise<void> {
+  await callJson('/v1/operator/plugin-mcp-grants', {
+    method: 'DELETE',
+    body: JSON.stringify({ pluginId, mcpServerId }),
+  });
+}
+
+/** Test-call sandbox (issue #463): guarded + audited like runtime dispatch. */
+export async function testCallMcpTool(
+  serverId: string,
+  toolName: string,
+  args: Record<string, unknown>,
+): Promise<{ result: string; ok: boolean; durationMs: number }> {
+  return callJson(
+    `/v1/operator/mcp-servers/${encodeURIComponent(serverId)}/tools/${encodeURIComponent(toolName)}/test-call`,
+    { method: 'POST', body: JSON.stringify({ args }) },
+  );
+}
+
+/** Bulk re-discover + re-scan of every enabled server (issue #463). */
+export async function rescanAllMcpServers(): Promise<{
+  scannedServers: number;
+  scannedTools: number;
+  failures: { serverId: string; serverName: string; error: string }[];
+}> {
+  return callJson('/v1/operator/mcp-servers/rescan-all', { method: 'POST' });
+}
+
+export async function listMcpCallLog(opts?: {
+  limit?: number;
+  serverId?: string;
+  beforeId?: string;
+}): Promise<{ entries: McpCallLogEntry[] }> {
+  const params = new URLSearchParams();
+  if (opts?.limit) params.set('limit', String(opts.limit));
+  if (opts?.serverId) params.set('serverId', opts.serverId);
+  if (opts?.beforeId) params.set('beforeId', opts.beforeId);
+  const qs = params.toString();
+  return callJson(`/v1/operator/mcp-call-log${qs ? `?${qs}` : ''}`);
+}
+
+// ── Skill capability bindings (issue #456) ───────────────────────────────────
+
+export interface SkillContractBinding {
+  contract: string;
+  description: string | null;
+  binding: {
+    mcpServerId: string;
+    serverName: string | null;
+    toolName: string;
+    boundBy: string;
+    boundAt: string;
+  } | null;
+}
+
+export async function listSkillToolBindings(
+  skillId: string,
+): Promise<{ contracts: SkillContractBinding[] }> {
+  return callJson(`/v1/operator/skills/${encodeURIComponent(skillId)}/tool-bindings`);
+}
+
+/** Bind-time gate applies server-side: the tool must be scanned, and
+ *  not-scanned-clean severities need an ack first. */
+export async function bindSkillContract(
+  skillId: string,
+  contract: string,
+  input: { mcpServerId: string; toolName: string },
+): Promise<void> {
+  await callJson(
+    `/v1/operator/skills/${encodeURIComponent(skillId)}/tool-bindings/${encodeURIComponent(contract)}`,
+    { method: 'PUT', body: JSON.stringify(input) },
+  );
+}
+
+export async function unbindSkillContract(skillId: string, contract: string): Promise<void> {
+  await callJson(
+    `/v1/operator/skills/${encodeURIComponent(skillId)}/tool-bindings/${encodeURIComponent(contract)}`,
+    { method: 'DELETE' },
+  );
+}
+
+// ── MCP marketplace (issue #455) ─────────────────────────────────────────────
+
+export interface McpRegistryInfo {
+  id: string;
+  name: string;
+  url: string;
+  authKind: 'none' | 'bearer';
+  hasToken: boolean;
+}
+
+export interface McpCatalogEntry {
+  id: string;
+  name: string;
+  description: string | null;
+  version: string | null;
+  transport: McpTransport | null;
+  endpoint: string | null;
+  license: string | null;
+  author: string | null;
+  sourceUrl: string | null;
+}
+
+export async function listMcpRegistries(): Promise<{ registries: McpRegistryInfo[] }> {
+  return callJson('/v1/operator/mcp-registries');
+}
+
+export async function addMcpRegistry(input: {
+  name: string;
+  url: string;
+  authKind?: 'none' | 'bearer';
+  token?: string;
+}): Promise<McpRegistryInfo> {
+  return callJson('/v1/operator/mcp-registries', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function deleteMcpRegistry(id: string): Promise<void> {
+  await callJson(`/v1/operator/mcp-registries/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export async function searchMcpCatalog(
+  registryId: string,
+  q: string,
+): Promise<{ entries: McpCatalogEntry[] }> {
+  const params = new URLSearchParams();
+  if (q) params.set('q', q);
+  const qs = params.toString();
+  return callJson(
+    `/v1/operator/mcp-registries/${encodeURIComponent(registryId)}/catalog${qs ? `?${qs}` : ''}`,
+  );
+}
+
+/** Gated import: the created server arrives DISABLED with provenance; the
+ *  operator runs Discover (scan) and enables explicitly. */
+export async function importMcpServerFromRegistry(
+  registryId: string,
+  catalogEntryId: string,
+): Promise<McpServerNode> {
+  return callJson('/v1/operator/mcp-servers/from-registry', {
+    method: 'POST',
+    body: JSON.stringify({ registryId, catalogEntryId }),
+  });
+}
+
+// ── Generic MCP OAuth (issue #459 W9) ────────────────────────────────────────
+
+export interface McpAuthStatus {
+  protected: boolean;
+  connected: boolean;
+  issuer: string | null;
+  issuerHost?: string | null;
+  /** The server offers Dynamic Client Registration — connecting is zero-setup. */
+  brokered?: boolean;
+  needsClient: boolean;
+  redirectUri?: string;
+}
+
+export async function getMcpAuthStatus(serverId: string): Promise<McpAuthStatus> {
+  return callJson(`/v1/operator/mcp-servers/${encodeURIComponent(serverId)}/auth-status`);
+}
+
+/** Begin the OAuth flow. Returns the authorize URL, or a needs-client marker
+ *  (409) when the issuer must be registered once first. */
+export async function authorizeMcpServer(
+  serverId: string,
+): Promise<{ authorizeUrl?: string; needsClient?: boolean; issuer?: string | null }> {
+  try {
+    return await callJson(`/v1/operator/mcp-servers/${encodeURIComponent(serverId)}/authorize`, {
+      method: 'POST',
+    });
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 409) {
+      let issuer: string | null = null;
+      try {
+        issuer = (JSON.parse(err.body) as { issuer?: string }).issuer ?? null;
+      } catch {
+        /* keep null */
+      }
+      return { needsClient: true, issuer };
+    }
+    throw err;
+  }
+}
+
+export async function setMcpOAuthClient(
+  issuer: string,
+  clientId: string,
+  clientSecret: string,
+): Promise<void> {
+  await callJson('/v1/operator/mcp-oauth-clients', {
+    method: 'PUT',
+    body: JSON.stringify({ issuer, clientId, clientSecret: clientSecret || undefined }),
+  });
+}
+
+export async function disconnectMcpServer(serverId: string): Promise<void> {
+  await callJson(`/v1/operator/mcp-servers/${encodeURIComponent(serverId)}/token`, {
+    method: 'DELETE',
+  });
+}
+
+/** Enable/disable a server (issue #460). Triggers a registry reload server-side. */
+export async function setMcpServerStatus(
+  id: string,
+  status: 'enabled' | 'disabled',
+): Promise<McpServerNode> {
+  return callJson<McpServerNode>(`/v1/operator/mcp-servers/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status }),
+  });
+}
+
+/** Toggle Privacy Shield bypass for a server (epic #459): its tool results are
+ *  returned unmasked. Triggers a registry reload so the change takes effect. */
+export async function setMcpServerPrivacyBypass(
+  id: string,
+  privacyBypass: boolean,
+): Promise<McpServerNode> {
+  return callJson<McpServerNode>(`/v1/operator/mcp-servers/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ privacyBypass }),
+  });
+}
+
+/** Toggle Knowledge-Graph ingestion for a server (epic #459): successful tool
+ *  results are written as recallable observations (masked digest, or raw when
+ *  the server is also privacy-bypassed). */
+export async function setMcpServerKgIngest(
+  id: string,
+  kgIngest: boolean,
+): Promise<McpServerNode> {
+  return callJson<McpServerNode>(`/v1/operator/mcp-servers/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ kgIngest }),
+  });
+}
+
+/**
+ * Acknowledge a high_risk MCP tool verdict (issue #454). Server-side the ack
+ * pins the verdict's current content hash — a re-discover that changes the
+ * tool's content invalidates it, mirroring the skill-side ack semantics.
+ */
+export async function ackMcpToolVerdict(
+  serverId: string,
+  toolName: string,
+): Promise<{ severity: SkillVerdictSeverity; acked: boolean; ackedBy: string; ackedAt: string }> {
+  return callJson(
+    `/v1/operator/mcp-servers/${encodeURIComponent(serverId)}/tools/${encodeURIComponent(toolName)}/verdict/ack`,
+    { method: 'POST' },
+  );
 }
 
 /** Export a skill back to portable SKILL.md text (frontmatter + body). */

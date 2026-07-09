@@ -249,11 +249,24 @@ const LlmPermissionSchema = z
   })
   .strict();
 
+const McpPermissionSchema = z
+  .object({
+    /** Human-readable descriptions of the MCP servers this plugin expects
+     *  (epic #459 W7, issue #458). Shown as a suggestion in the operator's
+     *  grant UI — binding a specific server stays an explicit operator action.
+     *  Presence of this block enables `ctx.mcp` (deny-by-default until the
+     *  operator grants at least one server). */
+    servers_hint: z.array(z.string().min(1)).default([]),
+  })
+  .strict();
+
 export const PermissionsSchema = z
   .object({
     graph: GraphPermissionSchema.optional(),
     subAgents: SubAgentsPermissionSchema.optional(),
     llm: LlmPermissionSchema.optional(),
+    /** Epic #459 W7 (issue #458) — declaring this enables `ctx.mcp`. */
+    mcp: McpPermissionSchema.optional(),
   })
   .strict();
 

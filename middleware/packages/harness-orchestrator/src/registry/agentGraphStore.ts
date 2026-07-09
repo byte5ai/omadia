@@ -142,6 +142,19 @@ export interface SkillResourceInput {
   readonly content: string;
 }
 
+/** Epic #459 — one declared config field for an MCP server. `{key}` in the
+ *  endpoint/headers is substituted from the value; secret values live in the
+ *  Vault, non-secret ones in `McpServerRow.config`. */
+export interface McpConfigField {
+  readonly key: string;
+  readonly label: string;
+  readonly type: 'string' | 'number';
+  readonly required: boolean;
+  /** Secret values are stored in the Vault (never in the DB row) and resolved
+   *  into headers at connect time. */
+  readonly secret: boolean;
+}
+
 export interface McpServerRow {
   readonly id: string;
   readonly name: string;
@@ -154,6 +167,23 @@ export interface McpServerRow {
   readonly discoveredTools: readonly unknown[];
   readonly createdAt: Date;
   readonly updatedAt: Date;
+  /** Marketplace provenance (issue #455). `manual` for pre-0010 rows. */
+  readonly source: 'manual' | 'marketplace';
+  readonly registryId: string | null;
+  readonly license: string | null;
+  readonly author: string | null;
+  readonly sourceUrl: string | null;
+  /** Epic #459 — operator opted this server out of Privacy Shield masking; its
+   *  tool results pass through unmasked (recorded on the receipt). */
+  readonly privacyBypass: boolean;
+  /** Epic #459 — operator opted this server into Knowledge-Graph ingestion:
+   *  successful tool results are written as recallable observations. */
+  readonly kgIngest: boolean;
+  /** Epic #459 — declared config fields (from placeholders or a registry). */
+  readonly configSchema: readonly McpConfigField[];
+  /** Epic #459 — NON-SECRET config values `{ key: value }`. Secrets are in the
+   *  Vault, not here. */
+  readonly config: Record<string, unknown>;
 }
 
 export interface ToolGrantRow {
@@ -229,6 +259,40 @@ export interface McpServerInput {
   readonly headers?: Record<string, unknown>;
   readonly secretRef?: string | null;
   readonly status?: 'enabled' | 'disabled';
+  /** Marketplace provenance (epic #459 W3, issue #455). Defaults to manual. */
+  readonly source?: 'manual' | 'marketplace';
+  readonly registryId?: string | null;
+  readonly license?: string | null;
+  readonly author?: string | null;
+  readonly sourceUrl?: string | null;
+  /** Epic #459 — config fields declared at import (from the registry). */
+  readonly configSchema?: readonly McpConfigField[];
+}
+
+/** One operator-performed skill-contract → MCP-tool binding (issue #456). */
+export interface SkillToolBindingRow {
+  readonly skillId: string;
+  readonly contract: string;
+  readonly mcpServerId: string;
+  readonly toolName: string;
+  readonly boundBy: string;
+  readonly boundAt: Date;
+}
+
+/** One configured MCP registry catalog source (issue #455). */
+export interface McpRegistryRow {
+  readonly id: string;
+  readonly name: string;
+  readonly url: string;
+  readonly authKind: 'none' | 'bearer';
+  // NOTE: the bearer token is intentionally absent from the persisted row.
+  // It is a secret-at-rest and lives ONLY in the SecretVault (namespace
+  // `@omadia/mcp-registry`, key = id) — see McpRegistrySecretService and
+  // migration 0020 (issue #463 item 5). Resolve it at runtime when building
+  // the McpRegistryClient's McpRegistryConfig.
+  /** Catalog-API dialect selecting the client normalizer (issue #455 W7). */
+  readonly kind: 'official' | 'smithery' | 'generic';
+  readonly createdAt: Date;
 }
 
 export interface ToolGrantInput {
@@ -318,6 +382,109 @@ interface McpServerDbRow {
   discovered_tools: unknown[];
   created_at: Date;
   updated_at: Date;
+  // Marketplace provenance (issue #455); absent on pre-0010 rows in tests.
+  source?: 'manual' | 'marketplace';
+  registry_id?: string | null;
+  license?: string | null;
+  author?: string | null;
+  source_url?: string | null;
+  privacy_bypass?: boolean;
+  kg_ingest?: boolean;
+  config_schema?: McpConfigField[];
+  config?: Record<string, unknown>;
+}
+
+interface McpRegistryDbRow {
+  id: string;
+  name: string;
+  url: string;
+  auth_kind: 'none' | 'bearer';
+  // token column still exists (migration 0020, expand phase) but is never
+  // mapped onto McpRegistryRow — the secret lives in the vault, not the row.
+  kind?: 'official' | 'smithery' | 'generic';
+  created_at: Date;
+}
+
+function mapMcpRegistry(r: McpRegistryDbRow): McpRegistryRow {
+  return {
+    id: r.id,
+    name: r.name,
+    url: r.url,
+    authKind: r.auth_kind,
+    kind: r.kind ?? 'generic',
+    createdAt: r.created_at,
+  };
+}
+
+/** Verdict row for one discovered MCP tool (epic #459 W1, issue #454).
+ *  Keyed (server, tool, verifier_version); `contentHash` pins the scanned
+ *  name+description+inputSchema so re-discovery with changed content
+ *  overwrites, while acks are compared against it (stale ack never masks). */
+export interface McpToolVerdictRow {
+  readonly serverId: string;
+  readonly toolName: string;
+  readonly verifierVersion: string;
+  readonly contentHash: string;
+  readonly severity: Severity;
+  readonly riskCodes: readonly SkillVerdictRiskCodesEntry[];
+  readonly computedAt: Date;
+}
+
+export interface McpToolVerdictAckRow {
+  readonly serverId: string;
+  readonly toolName: string;
+  readonly verifierVersion: string;
+  readonly contentHash: string;
+  readonly ackedBy: string;
+  readonly ackedAt: Date;
+}
+
+interface McpToolVerdictDbRow {
+  server_id: string;
+  tool_name: string;
+  verifier_version: string;
+  content_hash: string;
+  severity: string;
+  risk_codes: unknown;
+  computed_at: Date;
+}
+
+interface McpToolVerdictAckDbRow {
+  server_id: string;
+  tool_name: string;
+  verifier_version: string;
+  content_hash: string;
+  acked_by: string;
+  acked_at: Date;
+}
+
+/** One persisted MCP call audit row (epic #459 W2, issue #462). */
+export interface McpCallLogRow {
+  readonly id: string;
+  readonly serverId: string | null;
+  readonly serverName: string;
+  readonly toolName: string;
+  readonly callerKind: 'agent' | 'subagent' | 'skill' | 'plugin' | 'unattributed';
+  readonly callerAgent: string | null;
+  readonly turnId: string | null;
+  readonly ok: boolean;
+  readonly error: string | null;
+  readonly durationMs: number;
+  readonly calledAt: Date;
+}
+
+interface McpCallLogDbRow {
+  id: string;
+  server_id: string | null;
+  server_name: string;
+  tool_name: string;
+  caller_kind: 'agent' | 'subagent' | 'skill' | 'plugin' | 'unattributed';
+  caller_agent: string | null;
+  turn_id: string | null;
+  ok: boolean;
+  error: string | null;
+  duration_ms: number;
+  called_at: Date;
 }
 
 interface ToolGrantDbRow {
@@ -445,6 +612,32 @@ function mapSkillVerdict(r: SkillVerdictDbRow): SkillVerdictRow {
   };
 }
 
+function mapMcpToolVerdict(r: McpToolVerdictDbRow): McpToolVerdictRow {
+  if (!isSeverity(r.severity)) {
+    throw new Error(`unexpected mcp tool verdict severity in DB: ${String(r.severity)}`);
+  }
+  return {
+    serverId: r.server_id,
+    toolName: r.tool_name,
+    verifierVersion: r.verifier_version,
+    contentHash: r.content_hash,
+    severity: r.severity,
+    riskCodes: parseSkillVerdictRiskCodes(r.risk_codes),
+    computedAt: r.computed_at,
+  };
+}
+
+function mapMcpToolVerdictAck(r: McpToolVerdictAckDbRow): McpToolVerdictAckRow {
+  return {
+    serverId: r.server_id,
+    toolName: r.tool_name,
+    verifierVersion: r.verifier_version,
+    contentHash: r.content_hash,
+    ackedBy: r.acked_by,
+    ackedAt: r.acked_at,
+  };
+}
+
 function mapSkillResource(r: SkillResourceDbRow): SkillResourceRow {
   return {
     id: r.id,
@@ -477,6 +670,15 @@ function mapMcpServer(r: McpServerDbRow): McpServerRow {
     discoveredTools: r.discovered_tools,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    source: r.source ?? 'manual',
+    registryId: r.registry_id ?? null,
+    license: r.license ?? null,
+    author: r.author ?? null,
+    sourceUrl: r.source_url ?? null,
+    privacyBypass: r.privacy_bypass ?? false,
+    kgIngest: r.kg_ingest ?? false,
+    configSchema: Array.isArray(r.config_schema) ? r.config_schema : [],
+    config: r.config ?? {},
   };
 }
 
@@ -784,6 +986,595 @@ export class AgentGraphStore {
     );
     const row = rows[0]!;
     return { ackedBy: row.acked_by, ackedAt: row.acked_at };
+  }
+
+  // ── MCP tool verdicts (epic #459 W1, issue #454) ───────────────────────────
+
+  /** All verdicts for the given verifier version, across all servers — one
+   *  query, grouped by server id by the caller. Used to decorate discovered
+   *  tool lists in operator responses. */
+  async listMcpToolVerdicts(
+    verifierVersion: string,
+  ): Promise<readonly McpToolVerdictRow[]> {
+    const { rows } = await this.pool.query<McpToolVerdictDbRow>(
+      'SELECT * FROM mcp_tool_verdicts WHERE verifier_version = $1',
+      [verifierVersion],
+    );
+    return rows.map(mapMcpToolVerdict);
+  }
+
+  async getMcpToolVerdict(
+    serverId: string,
+    toolName: string,
+    verifierVersion: string,
+  ): Promise<McpToolVerdictRow | undefined> {
+    const { rows } = await this.pool.query<McpToolVerdictDbRow>(
+      `SELECT * FROM mcp_tool_verdicts
+       WHERE server_id = $1 AND tool_name = $2 AND verifier_version = $3`,
+      [serverId, toolName, verifierVersion],
+    );
+    const row = rows[0];
+    return row ? mapMcpToolVerdict(row) : undefined;
+  }
+
+  async upsertMcpToolVerdict(row: McpToolVerdictRow): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO mcp_tool_verdicts
+         (server_id, tool_name, verifier_version, content_hash, severity, risk_codes, computed_at)
+       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7)
+       ON CONFLICT (server_id, tool_name, verifier_version) DO UPDATE SET
+         content_hash = EXCLUDED.content_hash,
+         severity     = EXCLUDED.severity,
+         risk_codes   = EXCLUDED.risk_codes,
+         computed_at  = EXCLUDED.computed_at`,
+      [
+        row.serverId,
+        row.toolName,
+        row.verifierVersion,
+        row.contentHash,
+        row.severity,
+        JSON.stringify(row.riskCodes),
+        row.computedAt,
+      ],
+    );
+  }
+
+  /** Prune verdict + ack rows for tools a server no longer exposes (codex
+   *  fold): after a re-discover, a name that disappeared must lose its
+   *  verdict so the fail-closed dispatch guard treats a later re-appearance
+   *  (possibly repurposed) as unscanned. Keeps only the current tool set. */
+  async pruneMcpToolVerdicts(
+    serverId: string,
+    keepToolNames: readonly string[],
+  ): Promise<void> {
+    await this.pool.query(
+      'DELETE FROM mcp_tool_verdicts WHERE server_id = $1 AND NOT (tool_name = ANY($2))',
+      [serverId, keepToolNames],
+    );
+    await this.pool.query(
+      'DELETE FROM mcp_tool_verdict_acks WHERE server_id = $1 AND NOT (tool_name = ANY($2))',
+      [serverId, keepToolNames],
+    );
+  }
+
+  async listMcpToolVerdictAcks(
+    verifierVersion: string,
+  ): Promise<readonly McpToolVerdictAckRow[]> {
+    const { rows } = await this.pool.query<McpToolVerdictAckDbRow>(
+      'SELECT * FROM mcp_tool_verdict_acks WHERE verifier_version = $1',
+      [verifierVersion],
+    );
+    return rows.map(mapMcpToolVerdictAck);
+  }
+
+  async getMcpToolVerdictAck(
+    serverId: string,
+    toolName: string,
+    verifierVersion: string,
+  ): Promise<McpToolVerdictAckRow | undefined> {
+    const { rows } = await this.pool.query<McpToolVerdictAckDbRow>(
+      `SELECT * FROM mcp_tool_verdict_acks
+       WHERE server_id = $1 AND tool_name = $2 AND verifier_version = $3`,
+      [serverId, toolName, verifierVersion],
+    );
+    const row = rows[0];
+    return row ? mapMcpToolVerdictAck(row) : undefined;
+  }
+
+  /** Record an operator ack for a high-risk tool. Stores the content hash the
+   *  ack was given for; the grant gate compares it against the current
+   *  verdict's hash, so a content change on re-discover invalidates the ack. */
+  async upsertMcpToolVerdictAck(
+    serverId: string,
+    toolName: string,
+    verifierVersion: string,
+    contentHash: string,
+    ackedBy: string,
+  ): Promise<McpToolVerdictAckRow> {
+    const { rows } = await this.pool.query<McpToolVerdictAckDbRow>(
+      `INSERT INTO mcp_tool_verdict_acks (server_id, tool_name, verifier_version, content_hash, acked_by)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (server_id, tool_name, verifier_version) DO UPDATE SET
+         content_hash = EXCLUDED.content_hash,
+         acked_by     = EXCLUDED.acked_by,
+         acked_at     = now()
+       RETURNING *`,
+      [serverId, toolName, verifierVersion, contentHash, ackedBy],
+    );
+    return mapMcpToolVerdictAck(rows[0]!);
+  }
+
+  // ── Skill → MCP tool bindings (epic #459 W4, issue #456) ────────────────────
+
+  async listAllSkillToolBindings(): Promise<readonly SkillToolBindingRow[]> {
+    const { rows } = await this.pool.query<{
+      skill_id: string;
+      contract: string;
+      mcp_server_id: string;
+      tool_name: string;
+      bound_by: string;
+      bound_at: Date;
+    }>('SELECT * FROM skill_tool_bindings');
+    return rows.map((r) => ({
+      skillId: r.skill_id,
+      contract: r.contract,
+      mcpServerId: r.mcp_server_id,
+      toolName: r.tool_name,
+      boundBy: r.bound_by,
+      boundAt: r.bound_at,
+    }));
+  }
+
+  async upsertSkillToolBinding(input: {
+    readonly skillId: string;
+    readonly contract: string;
+    readonly mcpServerId: string;
+    readonly toolName: string;
+    readonly boundBy: string;
+  }): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO skill_tool_bindings (skill_id, contract, mcp_server_id, tool_name, bound_by)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (skill_id, contract) DO UPDATE SET
+         mcp_server_id = EXCLUDED.mcp_server_id,
+         tool_name     = EXCLUDED.tool_name,
+         bound_by      = EXCLUDED.bound_by,
+         bound_at      = now()`,
+      [input.skillId, input.contract, input.mcpServerId, input.toolName, input.boundBy],
+    );
+  }
+
+  /** Touch every binding on a server (codex fold): bound_at is part of the
+   *  graph signature, so discover/ack/status changes rebuild binding-only
+   *  agents the same way bumpMcpGrantEpoch covers grant-holding agents. */
+  async bumpSkillBindingEpoch(serverId: string): Promise<number> {
+    const { rowCount } = await this.pool.query(
+      'UPDATE skill_tool_bindings SET bound_at = now() WHERE mcp_server_id = $1',
+      [serverId],
+    );
+    return rowCount ?? 0;
+  }
+
+  async deleteSkillToolBinding(skillId: string, contract: string): Promise<void> {
+    await this.pool.query(
+      'DELETE FROM skill_tool_bindings WHERE skill_id = $1 AND contract = $2',
+      [skillId, contract],
+    );
+  }
+
+  // ── MCP OAuth (epic #459 W9) — provider-agnostic authorization state ────────
+
+  async getMcpOAuthClient(
+    issuer: string,
+  ): Promise<{ issuer: string; clientId: string; clientSecretRef: string | null; registeredVia: 'dcr' | 'manual' } | undefined> {
+    const { rows } = await this.pool.query<{
+      issuer: string;
+      client_id: string;
+      client_secret_ref: string | null;
+      registered_via: 'dcr' | 'manual';
+    }>('SELECT * FROM mcp_oauth_clients WHERE issuer = $1', [issuer]);
+    const r = rows[0];
+    return r
+      ? { issuer: r.issuer, clientId: r.client_id, clientSecretRef: r.client_secret_ref, registeredVia: r.registered_via }
+      : undefined;
+  }
+
+  async upsertMcpOAuthClient(input: {
+    issuer: string;
+    clientId: string;
+    clientSecretRef: string | null;
+    registeredVia: 'dcr' | 'manual';
+  }): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO mcp_oauth_clients (issuer, client_id, client_secret_ref, registered_via)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (issuer) DO UPDATE SET
+         client_id = EXCLUDED.client_id,
+         client_secret_ref = EXCLUDED.client_secret_ref,
+         registered_via = EXCLUDED.registered_via`,
+      [input.issuer, input.clientId, input.clientSecretRef, input.registeredVia],
+    );
+  }
+
+  async getMcpOAuthToken(
+    serverId: string,
+    userKey: string,
+  ): Promise<
+    | {
+        serverId: string;
+        userKey: string;
+        accessTokenRef: string;
+        refreshTokenRef: string | null;
+        expiresAt: Date | null;
+        scopes: string | null;
+      }
+    | undefined
+  > {
+    const { rows } = await this.pool.query<{
+      server_id: string;
+      user_key: string;
+      access_token_ref: string;
+      refresh_token_ref: string | null;
+      expires_at: Date | null;
+      scopes: string | null;
+    }>('SELECT * FROM mcp_oauth_tokens WHERE server_id = $1 AND user_key = $2', [serverId, userKey]);
+    const r = rows[0];
+    return r
+      ? {
+          serverId: r.server_id,
+          userKey: r.user_key,
+          accessTokenRef: r.access_token_ref,
+          refreshTokenRef: r.refresh_token_ref,
+          expiresAt: r.expires_at,
+          scopes: r.scopes,
+        }
+      : undefined;
+  }
+
+  async upsertMcpOAuthToken(input: {
+    serverId: string;
+    userKey: string;
+    accessTokenRef: string;
+    refreshTokenRef: string | null;
+    expiresAt: Date | null;
+    scopes: string | null;
+  }): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO mcp_oauth_tokens
+         (server_id, user_key, access_token_ref, refresh_token_ref, expires_at, scopes, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6, now())
+       ON CONFLICT (server_id, user_key) DO UPDATE SET
+         access_token_ref = EXCLUDED.access_token_ref,
+         refresh_token_ref = EXCLUDED.refresh_token_ref,
+         expires_at = EXCLUDED.expires_at,
+         scopes = EXCLUDED.scopes,
+         updated_at = now()`,
+      [input.serverId, input.userKey, input.accessTokenRef, input.refreshTokenRef, input.expiresAt, input.scopes],
+    );
+  }
+
+  async deleteMcpOAuthToken(serverId: string, userKey: string): Promise<void> {
+    await this.pool.query('DELETE FROM mcp_oauth_tokens WHERE server_id = $1 AND user_key = $2', [
+      serverId,
+      userKey,
+    ]);
+  }
+
+  /** True if the given user has any token for the server (for status display). */
+  async listMcpOAuthTokenUserKeys(serverId: string): Promise<readonly string[]> {
+    const { rows } = await this.pool.query<{ user_key: string }>(
+      'SELECT user_key FROM mcp_oauth_tokens WHERE server_id = $1',
+      [serverId],
+    );
+    return rows.map((r) => r.user_key);
+  }
+
+  async createMcpOAuthFlow(input: {
+    state: string;
+    serverId: string;
+    userKey: string;
+    issuer: string;
+    codeVerifier: string;
+    redirectUri: string;
+    scopes: string | null;
+    tokenEndpoint: string;
+    authorizationEndpoint: string;
+  }): Promise<void> {
+    // Opportunistic prune of stale flows (older than 15 min) on each create.
+    await this.pool.query("DELETE FROM mcp_oauth_flows WHERE created_at < now() - interval '15 minutes'");
+    await this.pool.query(
+      `INSERT INTO mcp_oauth_flows
+         (state, server_id, user_key, issuer, code_verifier, redirect_uri, scopes, token_endpoint, authorization_endpoint)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [
+        input.state,
+        input.serverId,
+        input.userKey,
+        input.issuer,
+        input.codeVerifier,
+        input.redirectUri,
+        input.scopes,
+        input.tokenEndpoint,
+        input.authorizationEndpoint,
+      ],
+    );
+  }
+
+  /** Atomically consume a pending flow (one-shot, ≤15 min old): returns it and
+   *  deletes it. The age check is enforced HERE (not only at create) so a
+   *  leaked stale state cannot be redeemed later (codex W9 fold). */
+  async takeMcpOAuthFlow(state: string): Promise<
+    | {
+        state: string;
+        serverId: string;
+        userKey: string;
+        issuer: string;
+        codeVerifier: string;
+        redirectUri: string;
+        scopes: string | null;
+        tokenEndpoint: string | null;
+        authorizationEndpoint: string | null;
+      }
+    | undefined
+  > {
+    const { rows } = await this.pool.query<{
+      state: string;
+      server_id: string;
+      user_key: string;
+      issuer: string;
+      code_verifier: string;
+      redirect_uri: string;
+      scopes: string | null;
+      token_endpoint: string | null;
+      authorization_endpoint: string | null;
+    }>(
+      "DELETE FROM mcp_oauth_flows WHERE state = $1 AND created_at > now() - interval '15 minutes' RETURNING *",
+      [state],
+    );
+    const r = rows[0];
+    return r
+      ? {
+          state: r.state,
+          serverId: r.server_id,
+          userKey: r.user_key,
+          issuer: r.issuer,
+          codeVerifier: r.code_verifier,
+          redirectUri: r.redirect_uri,
+          scopes: r.scopes,
+          tokenEndpoint: r.token_endpoint,
+          authorizationEndpoint: r.authorization_endpoint,
+        }
+      : undefined;
+  }
+
+  // ── Plugin → MCP server grants (epic #459 W5, issue #458) ───────────────────
+
+  async listPluginMcpGrants(): Promise<
+    readonly { pluginId: string; mcpServerId: string; grantedBy: string; grantedAt: Date }[]
+  > {
+    const { rows } = await this.pool.query<{
+      plugin_id: string;
+      mcp_server_id: string;
+      granted_by: string;
+      granted_at: Date;
+    }>('SELECT * FROM plugin_mcp_grants');
+    return rows.map((r) => ({
+      pluginId: r.plugin_id,
+      mcpServerId: r.mcp_server_id,
+      grantedBy: r.granted_by,
+      grantedAt: r.granted_at,
+    }));
+  }
+
+  async listGrantedServerIdsForPlugin(pluginId: string): Promise<readonly string[]> {
+    const { rows } = await this.pool.query<{ mcp_server_id: string }>(
+      'SELECT mcp_server_id FROM plugin_mcp_grants WHERE plugin_id = $1',
+      [pluginId],
+    );
+    return rows.map((r) => r.mcp_server_id);
+  }
+
+  async upsertPluginMcpGrant(
+    pluginId: string,
+    mcpServerId: string,
+    grantedBy: string,
+  ): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO plugin_mcp_grants (plugin_id, mcp_server_id, granted_by)
+       VALUES ($1,$2,$3)
+       ON CONFLICT (plugin_id, mcp_server_id) DO UPDATE SET
+         granted_by = EXCLUDED.granted_by,
+         granted_at = now()`,
+      [pluginId, mcpServerId, grantedBy],
+    );
+  }
+
+  async deletePluginMcpGrant(pluginId: string, mcpServerId: string): Promise<void> {
+    await this.pool.query(
+      'DELETE FROM plugin_mcp_grants WHERE plugin_id = $1 AND mcp_server_id = $2',
+      [pluginId, mcpServerId],
+    );
+  }
+
+  // ── MCP registries (epic #459 W3, issue #455) ──────────────────────────────
+
+  async listMcpRegistries(): Promise<readonly McpRegistryRow[]> {
+    const { rows } = await this.pool.query<McpRegistryDbRow>(
+      'SELECT * FROM mcp_registries ORDER BY created_at',
+    );
+    return rows.map(mapMcpRegistry);
+  }
+
+  async createMcpRegistry(input: {
+    readonly name: string;
+    readonly url: string;
+    readonly authKind?: 'none' | 'bearer';
+    readonly kind?: 'official' | 'smithery' | 'generic';
+  }): Promise<McpRegistryRow> {
+    // The bearer token is NOT written here — the caller persists it to the
+    // vault via McpRegistrySecretService.setToken(row.id, token) after create.
+    const { rows } = await this.pool.query<McpRegistryDbRow>(
+      `INSERT INTO mcp_registries (name, url, auth_kind, kind)
+       VALUES ($1,$2,COALESCE($3,'none'),COALESCE($4,'generic'))
+       RETURNING *`,
+      [input.name, input.url, input.authKind ?? null, input.kind ?? null],
+    );
+    return mapMcpRegistry(rows[0]!);
+  }
+
+  async deleteMcpRegistry(id: string): Promise<void> {
+    // The vault token (if any) is removed by the caller via
+    // McpRegistrySecretService.deleteToken(id) — the store has no vault handle.
+    await this.pool.query('DELETE FROM mcp_registries WHERE id = $1', [id]);
+  }
+
+  // ── Legacy plaintext token backfill (issue #463 item 5) ────────────────────
+  // Source + clear helpers for the one-time boot migration of any pre-0020
+  // plaintext `mcp_registries.token` into the vault. Kept separate from
+  // mapMcpRegistry so the secret never rides on the ordinary row type.
+
+  async listLegacyMcpRegistryTokens(): Promise<readonly { id: string; token: string }[]> {
+    const { rows } = await this.pool.query<{ id: string; token: string }>(
+      `SELECT id, token FROM mcp_registries WHERE token IS NOT NULL`,
+    );
+    return rows;
+  }
+
+  async clearLegacyMcpRegistryToken(id: string): Promise<void> {
+    await this.pool.query('UPDATE mcp_registries SET token = NULL WHERE id = $1', [id]);
+  }
+
+  /** Bump the config epoch of every grant on a server (epic #459, codex
+   *  fold): verdict/ack rows are not part of the registry's graph signature,
+   *  so a bare reload after discover/ack rebuilds nothing. Touching the
+   *  grants' config JSONB changes the signature for exactly the agents whose
+   *  MCP tool surface may have changed, and the next reload rebuilds them. */
+  async bumpMcpGrantEpoch(serverId: string): Promise<number> {
+    const { rowCount } = await this.pool.query(
+      `UPDATE agent_tool_grants
+       SET config = jsonb_set(COALESCE(config, '{}'::jsonb), '{verdictEpoch}', to_jsonb(now()::text))
+       WHERE mcp_server_id = $1`,
+      [serverId],
+    );
+    return rowCount ?? 0;
+  }
+
+  /** Enable/disable an MCP server (epic #459 W2, issue #460). */
+  async setMcpServerStatus(id: string, status: 'enabled' | 'disabled'): Promise<void> {
+    await this.pool.query(
+      `UPDATE mcp_servers SET status = $2, updated_at = now() WHERE id = $1`,
+      [id, status],
+    );
+  }
+
+  /** Epic #459 — toggle Privacy Shield bypass for a server. */
+  async setMcpServerPrivacyBypass(id: string, value: boolean): Promise<void> {
+    await this.pool.query(
+      `UPDATE mcp_servers SET privacy_bypass = $2, updated_at = now() WHERE id = $1`,
+      [id, value],
+    );
+  }
+
+  /** Epic #459 — toggle Knowledge-Graph ingestion for a server. */
+  async setMcpServerKgIngest(id: string, value: boolean): Promise<void> {
+    await this.pool.query(
+      `UPDATE mcp_servers SET kg_ingest = $2, updated_at = now() WHERE id = $1`,
+      [id, value],
+    );
+  }
+
+  /** Epic #459 — set the declared config schema for a server. */
+  async setMcpServerConfigSchema(
+    id: string,
+    schema: readonly McpConfigField[],
+  ): Promise<void> {
+    await this.pool.query(
+      `UPDATE mcp_servers SET config_schema = $2::jsonb, updated_at = now() WHERE id = $1`,
+      [id, JSON.stringify(schema)],
+    );
+  }
+
+  /** Epic #459 — set the NON-SECRET config values for a server (secrets go to
+   *  the Vault, never here). */
+  async setMcpServerConfig(id: string, config: Record<string, unknown>): Promise<void> {
+    await this.pool.query(
+      `UPDATE mcp_servers SET config = $2::jsonb, updated_at = now() WHERE id = $1`,
+      [id, JSON.stringify(config)],
+    );
+  }
+
+  // ── MCP call audit log (epic #459 W2, issue #462) ──────────────────────────
+
+  /** Append one audit row. Fire-and-forget from the manager's observer —
+   *  callers must not await this on the tool-call path. */
+  async insertMcpCallLog(entry: {
+    readonly serverId: string | null;
+    readonly serverName: string;
+    readonly toolName: string;
+    readonly callerKind: McpCallLogRow['callerKind'];
+    readonly callerAgent: string | null;
+    readonly turnId: string | null;
+    readonly ok: boolean;
+    readonly error: string | null;
+    readonly durationMs: number;
+    readonly calledAt: Date;
+  }): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO mcp_call_log
+         (server_id, server_name, tool_name, caller_kind, caller_agent, turn_id, ok, error, duration_ms, called_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [
+        entry.serverId,
+        entry.serverName,
+        entry.toolName,
+        entry.callerKind,
+        entry.callerAgent,
+        entry.turnId,
+        entry.ok,
+        entry.error,
+        entry.durationMs,
+        entry.calledAt,
+      ],
+    );
+  }
+
+  /** Time-ordered audit page, newest first. Server-side pagination only —
+   *  this table is append-only and unbounded. */
+  async listMcpCallLog(opts?: {
+    readonly limit?: number;
+    readonly beforeId?: string;
+    readonly serverId?: string;
+  }): Promise<readonly McpCallLogRow[]> {
+    const limit = Math.min(Math.max(opts?.limit ?? 100, 1), 500);
+    const conds: string[] = [];
+    const params: unknown[] = [];
+    if (opts?.serverId) {
+      params.push(opts.serverId);
+      conds.push(`server_id = $${String(params.length)}`);
+    }
+    if (opts?.beforeId) {
+      params.push(opts.beforeId);
+      conds.push(`id < $${String(params.length)}`);
+    }
+    params.push(limit);
+    const where = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : '';
+    const { rows } = await this.pool.query<McpCallLogDbRow>(
+      `SELECT * FROM mcp_call_log ${where} ORDER BY id DESC LIMIT $${String(params.length)}`,
+      params,
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      serverId: r.server_id,
+      serverName: r.server_name,
+      toolName: r.tool_name,
+      callerKind: r.caller_kind,
+      callerAgent: r.caller_agent,
+      turnId: r.turn_id,
+      ok: r.ok,
+      error: r.error,
+      durationMs: r.duration_ms,
+      calledAt: r.called_at,
+    }));
   }
 
   /** Look up a skill by its unique slug — for import update-vs-create routing. */
@@ -1131,8 +1922,9 @@ export class AgentGraphStore {
   async createMcpServer(input: McpServerInput): Promise<McpServerRow> {
     try {
       const { rows } = await this.pool.query<McpServerDbRow>(
-        `INSERT INTO mcp_servers (name, transport, endpoint, headers, secret_ref, status)
-         VALUES ($1,$2,$3,COALESCE($4::jsonb,'{}'::jsonb),$5,COALESCE($6,'enabled'))
+        `INSERT INTO mcp_servers
+           (name, transport, endpoint, headers, secret_ref, status, source, registry_id, license, author, source_url, config_schema)
+         VALUES ($1,$2,$3,COALESCE($4::jsonb,'{}'::jsonb),$5,COALESCE($6,'enabled'),COALESCE($7,'manual'),$8,$9,$10,$11,COALESCE($12::jsonb,'[]'::jsonb))
          RETURNING *`,
         [
           input.name,
@@ -1141,6 +1933,12 @@ export class AgentGraphStore {
           input.headers ? JSON.stringify(input.headers) : null,
           input.secretRef ?? null,
           input.status ?? null,
+          input.source ?? null,
+          input.registryId ?? null,
+          input.license ?? null,
+          input.author ?? null,
+          input.sourceUrl ?? null,
+          input.configSchema ? JSON.stringify(input.configSchema) : null,
         ],
       );
       return mapMcpServer(rows[0]!);
@@ -1184,21 +1982,37 @@ export class AgentGraphStore {
         'tool grant must target an agent or a sub-agent',
       );
     }
+    const params = [
+      input.agentId ?? null,
+      input.subAgentId ?? null,
+      input.toolKind,
+      input.toolRef,
+      input.mcpServerId ?? null,
+      input.config ? JSON.stringify(input.config) : null,
+    ];
+    // ON CONFLICT DO NOTHING makes a top-level MCP grant idempotent at the DB
+    // level (unique index from migration 0014, codex W8 fold); a duplicate
+    // returns the existing row instead of erroring. Sub-agent/native grants
+    // are not covered by the index, so they insert as before.
     const { rows } = await this.pool.query<ToolGrantDbRow>(
       `INSERT INTO agent_tool_grants
          (agent_id, subagent_id, tool_kind, tool_ref, mcp_server_id, config)
        VALUES ($1,$2,$3,$4,$5,COALESCE($6::jsonb,'{}'::jsonb))
+       ON CONFLICT (agent_id, mcp_server_id, tool_ref)
+         WHERE agent_id IS NOT NULL AND tool_kind = 'mcp'
+         DO NOTHING
        RETURNING *`,
-      [
-        input.agentId ?? null,
-        input.subAgentId ?? null,
-        input.toolKind,
-        input.toolRef,
-        input.mcpServerId ?? null,
-        input.config ? JSON.stringify(input.config) : null,
-      ],
+      params,
     );
-    return mapToolGrant(rows[0]!);
+    if (rows[0]) return mapToolGrant(rows[0]);
+    // Conflict: fetch the pre-existing identical grant.
+    const { rows: existing } = await this.pool.query<ToolGrantDbRow>(
+      `SELECT * FROM agent_tool_grants
+       WHERE agent_id = $1 AND mcp_server_id = $5 AND tool_ref = $4 AND tool_kind = 'mcp'
+       LIMIT 1`,
+      params,
+    );
+    return mapToolGrant(existing[0]!);
   }
 
   async deleteToolGrant(id: string): Promise<void> {

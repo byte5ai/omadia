@@ -24,6 +24,11 @@ import { CaptureDisclosure } from '../_components/chat/CaptureDisclosure';
 import { ConfirmDialog } from '../_components/ConfirmDialog';
 import { DelegatedAnswerCard } from '../_components/chat/DelegatedAnswerCard';
 import { NudgeCard, parseNudgeBlock } from '../_components/chat/NudgeCard';
+import {
+  McpAuthRequiredCard,
+  parseMcpAuthRequired,
+  type ParsedMcpAuthRequired,
+} from '../_components/chat/McpAuthRequiredCard';
 import { PlanProgressCard } from '../_components/chat/PlanProgressCard';
 import { RecalledContextCard } from '../_components/chat/RecalledContextCard';
 import { PrivacyReceiptCard } from '../_components/chat/PrivacyReceiptCard';
@@ -848,11 +853,16 @@ function MessageRow({
   // beyond it (the guarded-mode `▸ omadia note: …` suffix), so the answer
   // never appears twice. Falls back to the full content if it doesn't start
   // with the expected prefix (defensive — never silently drops text).
-  const delegatedNote =
+  const rawNote =
     message.delegatedAnswer &&
     message.content.startsWith(message.delegatedAnswer.text)
       ? message.content.slice(message.delegatedAnswer.text.length).replace(/^\s+/, '')
       : message.content;
+  // A sub-agent's MCP auth-required tool result can bubble the machine
+  // <mcp-auth-required> block into the final answer text — strip it from the
+  // prose (it renders as the Connect card via McpAuthRequiredList instead).
+  const authFromNote = parseMcpAuthRequired(rawNote);
+  const delegatedNote = authFromNote.cleaned;
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -887,6 +897,7 @@ function MessageRow({
             {(message.tools?.length ?? 0) > 0 && (
               <ToolTrace tools={message.tools ?? []} />
             )}
+            <McpAuthRequiredList tools={message.tools ?? []} content={rawNote} />
             {(message.nudges?.length ?? 0) > 0 && (
               <NudgeList nudges={message.nudges ?? []} />
             )}
@@ -909,7 +920,10 @@ function MessageRow({
               <StreamingDots />
             ) : null}
             {message.agentsConsulted && message.agentsConsulted.length > 0 && (
-              <AgentsConsultedFooter agents={message.agentsConsulted} />
+              <AgentsConsultedFooter
+                agents={message.agentsConsulted}
+                tools={message.tools ?? []}
+              />
             )}
             {showLiveness && (
               <LivenessRow
@@ -1210,7 +1224,11 @@ function PersonaBadge({
 
 function ToolOutputWithNudge({ output }: { output: string }): React.ReactElement {
   const t = useTranslations('chat');
-  const { cleaned } = parseNudgeBlock(output);
+  // Strip both the inline <nudge> block and the <mcp-auth-required> block so the
+  // raw <pre> stays clean; the auth block renders as an actionable card at the
+  // message level (McpAuthRequiredList), mirroring how nudges surface.
+  const { cleaned: noNudge } = parseNudgeBlock(output);
+  const { cleaned } = parseMcpAuthRequired(noNudge);
   return (
     <>
       <div className="mt-2 text-[color:var(--fg-muted)]">{t('outputLabel')}</div>
@@ -1254,6 +1272,44 @@ function NudgeList({ nudges }: { nudges: NudgeEvent[] }): React.ReactElement {
             console.warn(`[nudge] suppress requested for ${id}`);
           }}
         />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Epic #459 W9 — collects any `<mcp-auth-required>` blocks emitted by failed
+ * MCP tool calls in this turn and renders a Connect card per distinct server.
+ * Scans the turn's tool outputs client-side (no extra stream event needed);
+ * deduped by serverId so repeated failures don't stack duplicate cards.
+ */
+function McpAuthRequiredList({
+  tools,
+  content,
+}: {
+  tools: ToolEvent[];
+  content: string;
+}): React.ReactElement | null {
+  const seen = new Set<string>();
+  const auths: ParsedMcpAuthRequired[] = [];
+  const scan = (text: string | undefined): void => {
+    if (!text) return;
+    const { auth } = parseMcpAuthRequired(text);
+    if (auth && !seen.has(auth.serverId)) {
+      seen.add(auth.serverId);
+      auths.push(auth);
+    }
+  };
+  // Top-level tool outputs (direct calls) …
+  for (const tool of tools) scan(tool.output);
+  // … and the answer prose, where a sub-agent's auth-required result bubbles up
+  // (the block rides through as text even when the failing call was nested).
+  scan(content);
+  if (auths.length === 0) return null;
+  return (
+    <div className="mt-2 space-y-2">
+      {auths.map((auth) => (
+        <McpAuthRequiredCard key={auth.serverId} auth={auth} />
       ))}
     </div>
   );

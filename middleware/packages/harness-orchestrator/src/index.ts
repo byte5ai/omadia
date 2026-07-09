@@ -101,8 +101,13 @@ export { AgentGraphStore } from './registry/agentGraphStore.js';
 export { computeSkillHash } from './registry/skillHash.js';
 export type {
   CanvasPos,
+  McpCallLogRow,
+  McpConfigField,
+  McpRegistryRow,
   McpServerInput,
   McpServerRow,
+  McpToolVerdictAckRow,
+  McpToolVerdictRow,
   PersonaSkillRow,
   ScheduleInput,
   ScheduleRow,
@@ -110,6 +115,7 @@ export type {
   SkillPatch,
   SkillResourceInput,
   SkillResourceRow,
+  SkillToolBindingRow,
   SkillVerdictRow,
   SkillRow,
   SubAgentInput,
@@ -126,12 +132,19 @@ export {
   mcpToolToNativeSpec,
 } from './mcp/mcpClient.js';
 export type {
+  McpAuthProvider,
+  McpCallerKind,
+  McpCallGuard,
+  McpCallLogEntry,
+  McpCallObserver,
+  McpManagerOptions,
   McpServerConfig,
   McpToolDescriptor,
   McpTransportKind,
 } from './mcp/mcpClient.js';
 export {
   buildSubAgentDomainTools,
+  mcpToolNameFromRef,
   subAgentToolName,
 } from './registry/subAgentTools.js';
 export type {
@@ -280,6 +293,14 @@ export {
   buildDateHeader,
 } from './turnContext.js';
 export type { TurnContextValue } from './turnContext.js';
+export {
+  setMcpPrivacyBypassServers,
+  isMcpServerPrivacyBypassed,
+} from './mcpPrivacyBypass.js';
+export {
+  setMcpKgIngestServers,
+  isMcpServerKgIngest,
+} from './mcpKgIngest.js';
 export type {
   TurnAnnotation,
   TurnHook,

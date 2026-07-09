@@ -106,6 +106,33 @@ export async function listOperatorAgents(): Promise<OperatorAgentsListDto> {
   return callJson<OperatorAgentsListDto>('/v1/operator/agents');
 }
 
+/** Dashboard MCP health summary (epic #459): how many servers are registered,
+ *  how many are enabled, how many discovered tools they expose, and how many
+ *  enabled servers still need a Discover run. Best-effort — a rejection just
+ *  degrades the one card. */
+export interface McpServerSummary {
+  total: number;
+  enabled: number;
+  tools: number;
+  needsDiscovery: number;
+}
+
+export async function getMcpServerSummary(): Promise<McpServerSummary> {
+  const { servers } = await callJson<{
+    servers: Array<{ status?: string; discoveredTools?: unknown[] }>;
+  }>('/v1/operator/mcp-servers');
+  const list = servers ?? [];
+  const toolCount = (s: { discoveredTools?: unknown[] }): number =>
+    Array.isArray(s.discoveredTools) ? s.discoveredTools.length : 0;
+  const enabled = list.filter((s) => s.status === 'enabled');
+  return {
+    total: list.length,
+    enabled: enabled.length,
+    tools: list.reduce((n, s) => n + toolCount(s), 0),
+    needsDiscovery: enabled.filter((s) => toolCount(s) === 0).length,
+  };
+}
+
 export interface CreateAgentInput {
   slug: string;
   name: string;

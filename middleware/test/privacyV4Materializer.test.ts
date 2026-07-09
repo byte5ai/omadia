@@ -62,6 +62,25 @@ describe('Materializer — formats', () => {
     assert.ok(text.includes('- employee: Marvin Vomberg, days: 24'));
   });
 
+  it('renders a nested scalar object as key: value pairs, not "[nested]" (#459)', () => {
+    const { store } = harness();
+    const { datasetId } = store.internToolResult('strava.stats', [
+      {
+        label: 'All-Time Ride Totals',
+        totals: { count: 1284, distance: 45231000, elevation_gain: 512340 },
+      },
+    ]);
+    const { text } = materialize(store, {
+      datasetId,
+      columns: cols('label', 'totals'),
+      format: 'list',
+    });
+    assert.ok(!text.includes('[nested]'), 'nested object must not collapse to [nested]');
+    assert.ok(text.includes('count: 1284'));
+    assert.ok(text.includes('distance: 45231000'));
+    assert.ok(text.includes('elevation_gain: 512340'));
+  });
+
   it('renders a scalar', () => {
     const { store, engine } = harness();
     const { datasetId } = store.internToolResult('hr.leave', HR_LEAVE);

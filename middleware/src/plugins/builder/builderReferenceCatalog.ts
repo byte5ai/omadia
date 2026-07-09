@@ -51,7 +51,9 @@ const BUILDER_REFERENCE_ESSENTIALS: Readonly<
       'Patterns in einer Stelle demonstriert: Multi-Tool, Smart-Cards, ' +
       'BG-Jobs, Routes, ctx.memory, Service.provide, ctx.subAgent.ask ' +
       '(OB-29-1), generic ctx.knowledgeGraph.ingestEntities (OB-29-2), ' +
-      'ctx.llm.complete (OB-29-3), tool-emittiertes _pendingUserChoice ' +
+      'ctx.llm.complete (OB-29-3), ctx.mcp.callTool (#458 — nur wenn der ' +
+      'Nutzer MCP-Server-Zugriff will: setze permissions.mcp, der Operator ' +
+      'grantet danach konkrete Server), tool-emittiertes _pendingUserChoice ' +
       '(OB-29-4). Lies INTEGRATION.md ZUERST — sie ist der kanonische ' +
       'Pattern-Index, jeder Pattern-Block trägt Datei:Zeile-Referenzen. ' +
       'PRIMÄRE Pattern-Quelle für komplexe Specs (≥2 Tools, KG-Ingest, ' +

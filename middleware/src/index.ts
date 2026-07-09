@@ -28,6 +28,12 @@ import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError } fro
 import { bindingKeyForTurn } from './conductor/principalId.js';
 import { createOperatorChannelsRouter } from './routes/operatorChannels.js';
 import { createAgentBuilderRouter } from './routes/agentBuilder.js';
+import {
+  isMcpGrantBlocked,
+  mcpDispatchDenial,
+  refreshMcpGrantPolicy,
+} from './services/mcpGrantPolicy.js';
+import { rescanAllMcpServers } from './services/mcpRescan.js';
 import { createLlmVerifier, type LlmVerifier } from './services/skillVerdictLlmVerifier.js';
 import { ScheduleWorker } from './scheduler/scheduleWorker.js';
 import type {
@@ -229,7 +235,13 @@ import { DeterministicActionRegistry } from './platform/deterministicActionRegis
 import { ServiceRegistry } from './platform/serviceRegistry.js';
 import { TurnHookRegistry } from './platform/turnHookRegistry.js';
 import { NativeToolRegistry } from '@omadia/orchestrator';
-import { McpManager } from '@omadia/orchestrator';
+import { McpManager, type McpCallLogEntry, type McpServerConfig } from '@omadia/orchestrator';
+import { McpOAuthService } from './services/mcpOAuthService.js';
+import { McpConfigService } from './services/mcpConfigService.js';
+import {
+  McpRegistrySecretService,
+  backfillMcpRegistryTokens,
+} from './services/mcpRegistrySecretService.js';
 import { AgentGraphStore } from '@omadia/orchestrator';
 import { registerDbSubAgentTools } from './agents/subAgentToolHydration.js';
 import {
@@ -283,6 +295,16 @@ import type {
 // types stay inside the plugins.
 interface Microsoft365AccessorShim {
   readonly app: unknown;
+}
+
+/** Escape a value for safe inclusion inside a double-quoted XML/HTML attribute
+ *  (used for the <mcp-auth-required> chat block, #459 W9). */
+function xmlAttr(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 async function main(): Promise<void> {
@@ -1404,6 +1426,45 @@ async function main(): Promise<void> {
   const graphPool = serviceRegistry.get<Pool>('graphPool');
   const graphTenantId = process.env['GRAPH_TENANT_ID'] ?? 'default';
 
+  // Generic MCP OAuth service (epic #459 W9) — outer scope so both the
+  // McpManager (auth provider) and the operator router (begin/callback routes)
+  // reference the same instance. userKey='operator' for the operator chat.
+  const mcpOAuthUserKey = 'operator';
+  // Redirect URI the OAuth callback lands on: explicit override, else derived
+  // from the public base. The service activates when either is configured.
+  const mcpOAuthRedirectUri =
+    config.MCP_OAUTH_REDIRECT_URI ??
+    (flowPublicBaseUrl ? `${flowPublicBaseUrl}/api/v1/operator/mcp-oauth/callback` : undefined);
+  const mcpOAuthService =
+    graphPool && mcpOAuthRedirectUri
+      ? new McpOAuthService({
+          graph: new AgentGraphStore(graphPool),
+          vault: secretVault,
+          redirectUri: mcpOAuthRedirectUri,
+          log: (m) => console.log(`[middleware] ${m}`),
+        })
+      : undefined;
+  // Schema-driven MCP config with Vault-backed secrets (epic #459).
+  const mcpConfigService = graphPool
+    ? new McpConfigService({ graph: new AgentGraphStore(graphPool), vault: secretVault })
+    : undefined;
+
+  // MCP registry bearer tokens live in the vault, never on the DB row
+  // (issue #463 item 5). Move any legacy plaintext token (pre-0020) into the
+  // vault on boot — idempotent, a no-op once the column is NULL.
+  const mcpRegistrySecrets = graphPool
+    ? new McpRegistrySecretService({ vault: secretVault })
+    : undefined;
+  if (graphPool && mcpRegistrySecrets) {
+    await backfillMcpRegistryTokens({
+      store: new AgentGraphStore(graphPool),
+      secrets: mcpRegistrySecrets,
+      log: (m) => console.log(m),
+    }).catch((e: unknown) =>
+      console.error('[middleware] mcp registry token backfill failed:', e),
+    );
+  }
+
   // Phase 5B: publish so dynamic-imported channel plugins can late-resolve
   // the tenant id via ctx.services.get('graphTenantId') instead of being
   // threaded through constructor Deps.
@@ -1611,7 +1672,95 @@ async function main(): Promise<void> {
       // materialises each agent's DB-defined sub-agents into DomainTools and
       // registers them on its orchestrator. Called on initial hydrate AND
       // from `onAgentBuilt` so a rebuilt agent re-acquires its sub-agents.
-      const mcpManager = new McpManager();
+      // Audit observer (issue #462): every callTool lands one row in
+      // mcp_call_log, fire-and-forget so the tool-call path never blocks on
+      // the database. Identity comes from turnContext inside the manager.
+      const mcpAuditStore = graphPool ? new AgentGraphStore(graphPool) : undefined;
+      // Generic MCP OAuth (epic #459 W9) wired as the manager's auth provider;
+      // the service instance is created at outer scope (shared with the router).
+      const mcpManager = new McpManager({
+        ...(mcpAuditStore
+          ? {
+              onToolCall: (entry: McpCallLogEntry) => {
+                void mcpAuditStore.insertMcpCallLog(entry).catch((err: unknown) => {
+                  console.warn(`[middleware] mcp call audit write failed: ${String(err)}`);
+                });
+              },
+            }
+          : {}),
+        // Dispatch-time policy gate (issue #454): fail-closed on unscanned or
+        // unacknowledged-risk tools, evaluated on every call.
+        guard: mcpDispatchDenial,
+        ...(mcpOAuthService && mcpAuditStore
+          ? {
+              auth: {
+                getToken: async (cfg: McpServerConfig) => {
+                  const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
+                  if (!server) return null;
+                  // Per-user token (codex W9 fold): the turn's authenticated
+                  // user when the entry point set it, else the operator scope.
+                  const userKey = turnContext.current()?.mcpUserKey ?? mcpOAuthUserKey;
+                  return mcpOAuthService.getValidAccessToken(server, userKey);
+                },
+                onAuthFailure: async (cfg: McpServerConfig) => {
+                  const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
+                  if (!server) return null;
+                  // Only OAuth-protected servers get an auth prompt (cached
+                  // discovery keeps this cheap per call).
+                  const desc = await mcpOAuthService.describeAuth(server);
+                  if (!desc.protected) return null;
+                  const userKey = turnContext.current()?.mcpUserKey ?? mcpOAuthUserKey;
+                  // Machine block the chat parses into an in-line "Connect" card
+                  // + modal (web-ui McpAuthRequiredCard). Mirrors the <nudge>
+                  // block contract: human text stays readable for the model and
+                  // the raw <pre>; the block is stripped from the UI output.
+                  const authBlock = (needsClient: boolean): string =>
+                    `\n<mcp-auth-required serverId="${xmlAttr(server.id)}" server="${xmlAttr(server.name)}"${desc.issuerHost ? ` host="${xmlAttr(desc.issuerHost)}"` : ''} needsClient="${needsClient ? 'true' : 'false'}"></mcp-auth-required>`;
+                  try {
+                    const { authorizeUrl } = await mcpOAuthService.beginAuthorization(server, userKey);
+                    return `🔒 The MCP server "${server.name}" needs authorization before it can be used. Ask the user to click Connect (this opens the provider's login), then retry: ${authorizeUrl}${authBlock(false)}`;
+                  } catch {
+                    // Delegating server with no registered client yet — point
+                    // the user at the one-time setup instead of a raw error.
+                    return `🔒 The MCP server "${server.name}" needs authorization, but it isn't set up yet. Click Connect to register it${desc.issuerHost ? ` — it delegates OAuth to ${desc.issuerHost}, which needs a one-time app registration` : ''}.${authBlock(true)}`;
+                  }
+                },
+                // Vault-resolved config: secret headers (http) + env (stdio).
+                ...(mcpConfigService
+                  ? {
+                      getConfigHeaders: (cfg: McpServerConfig) =>
+                        mcpConfigService.getConfigHeaders(cfg),
+                      getConfigEnv: (cfg: McpServerConfig) =>
+                        mcpConfigService.getConfigEnv(cfg),
+                    }
+                  : {}),
+              },
+            }
+          : {}),
+      });
+      // Host MCP service for plugin ctx.mcp (epic #459 W5, issue #458):
+      // resolved lazily by createPluginContext, exactly like the 'llm'
+      // provider. Grants are read live per call (deny-by-default).
+      serviceRegistry.provide('mcp', {
+        listTools: (cfg: McpServerConfig) => mcpManager.listTools(cfg),
+        callTool: (cfg: McpServerConfig, toolName: string, args: Record<string, unknown>) =>
+          mcpManager.callTool(cfg, toolName, args),
+        listServers: async () => (mcpAuditStore ? mcpAuditStore.listMcpServers() : []),
+        listGrantedServerIds: async (pluginId: string) =>
+          mcpAuditStore ? mcpAuditStore.listGrantedServerIdsForPlugin(pluginId) : [],
+      });
+      // Scan-verdict grant policy (issue #454): load once before the initial
+      // hydration below so blocked (server, tool) pairs never materialize.
+      // The Builder routes refresh it after discover/ack and trigger reloads.
+      if (graphPool) {
+        try {
+          await refreshMcpGrantPolicy(new AgentGraphStore(graphPool));
+        } catch (err) {
+          console.warn(
+            `[middleware] mcp grant policy initial load failed (continuing warn-only): ${String(err)}`,
+          );
+        }
+      }
       const SUBAGENT_DEFAULT_MODEL = 'claude-sonnet-4-6';
       // Read the orchestrator provider from LIVE installed config on each
       // hydrate so a runtime switch to/from the CLI provider is picked up on
@@ -1630,7 +1779,16 @@ async function main(): Promise<void> {
       ): number => {
         const entry = registryForHydrate.get(slug);
         if (!entry) return 0;
-        const mcpServers = registryForHydrate.currentSnapshot()?.mcpServers ?? [];
+        const snapshot = registryForHydrate.currentSnapshot();
+        const mcpServers = snapshot?.mcpServers ?? [];
+        // Persona skills + operator bindings for skill capability contracts
+        // (issue #456) — resolved from the same snapshot the registry built
+        // this agent from, so tool surface and signature stay consistent.
+        const skillsById = new Map((snapshot?.skills ?? []).map((s) => [s.id, s]));
+        const personaSkills = (snapshot?.personaSkillLinks ?? [])
+          .filter((l) => l.agentId === entry.agent.id)
+          .map((l) => skillsById.get(l.skillId))
+          .filter((s): s is NonNullable<typeof s> => s !== undefined);
         const providerId = orchestratorProviderId();
         return registerDbSubAgentTools(
           {
@@ -1644,10 +1802,13 @@ async function main(): Promise<void> {
             nativeToolRegistry,
             mcpManager,
             mcpServers,
+            personaSkills,
+            skillToolBindings: snapshot?.skillToolBindings ?? [],
             defaultModel: SUBAGENT_DEFAULT_MODEL,
             hostIsCliProvider: providerId === 'claude-cli',
             cliModelAlias: (model: string): string =>
               model.replace(/-cli$/, '') || 'sonnet',
+            blockedMcpGrant: isMcpGrantBlocked,
             log: (m: string) => console.log(`[middleware] ${m}`),
           },
         );
@@ -1693,6 +1854,29 @@ async function main(): Promise<void> {
           `[middleware] registry: orchestrator for "${slug}" hydrated with ${String(tools.length)} domain-tool(s) + ${String(subTools)} sub-agent tool(s) (per-Agent plugin-scoped)`,
         );
       });
+
+      // Periodic MCP re-scan (epic #459 W6, #455 Phase 3): re-discovers and
+      // re-scans every enabled server so post-import drift surfaces without
+      // operator action. Default every 6h; MCP_RESCAN_INTERVAL_MS=0 disables.
+      const rescanIntervalMs = Number(
+        process.env['MCP_RESCAN_INTERVAL_MS'] ?? String(6 * 60 * 60 * 1000),
+      );
+      if (graphPool && Number.isFinite(rescanIntervalMs) && rescanIntervalMs > 0) {
+        const rescanStore = new AgentGraphStore(graphPool);
+        const rescanTimer = setInterval(() => {
+          void rescanAllMcpServers(rescanStore, mcpManager, (m) =>
+            console.log(`[middleware] ${m}`),
+          )
+            .then(() => registryForHydrate.reload())
+            .catch((err: unknown) => {
+              console.warn(`[middleware] periodic mcp re-scan failed: ${String(err)}`);
+            });
+        }, rescanIntervalMs);
+        rescanTimer.unref();
+        console.log(
+          `[middleware] periodic mcp re-scan armed (every ${String(Math.round(rescanIntervalMs / 60000))}min)`,
+        );
+      }
 
     }
   }
@@ -2089,6 +2273,33 @@ async function main(): Promise<void> {
       // pick is rejected instead of silently dropped at build).
       getActiveProvider: orchestratorActiveProviderId,
       getLlmVerifier: getSkillVerdictLlmVerifier,
+      // Epic #459 W6 (issue #463): the router's manager gets the same audit
+      // observer + dispatch guard as the runtime pool, so sandbox test-calls
+      // are policy-enforced and audit-logged.
+      ...(graphPool
+        ? {
+            mcpCallObserver: (entry: McpCallLogEntry) => {
+              void new AgentGraphStore(graphPool).insertMcpCallLog(entry).catch((err: unknown) => {
+                console.warn(`[middleware] mcp sandbox audit write failed: ${String(err)}`);
+              });
+            },
+          }
+        : {}),
+      mcpCallGuard: mcpDispatchDenial,
+      // W7 UX (issue #458): MCP-capable plugins + their manifest servers_hint,
+      // for the operator grant surface. Read live from the catalog so a
+      // freshly-installed plugin shows up without a restart.
+      listMcpPluginCandidates: () =>
+        pluginCatalog.list().map((e) => ({
+          id: e.plugin.id,
+          name: e.plugin.name,
+          mcp: e.plugin.permissions_summary.mcp === true,
+          serversHint: e.plugin.permissions_summary.mcp_servers_hint ?? [],
+        })),
+      // Generic MCP OAuth (epic #459 W9) — begin/callback/manual-client routes.
+      ...(mcpOAuthService ? { mcpOAuth: mcpOAuthService, mcpOAuthUserKey } : {}),
+      ...(mcpConfigService ? { mcpConfig: mcpConfigService } : {}),
+      ...(mcpRegistrySecrets ? { mcpRegistrySecrets } : {}),
     }),
   );
   console.log(

@@ -482,6 +482,17 @@ function reproduceManifestCapabilities(
         }
         permsNode.set('llm', doc.createNode(llm));
       }
+      // Epic #459 W7 (issue #458) — declaring permissions.mcp enables ctx.mcp.
+      // The operator still grants specific servers; servers_hint is a
+      // suggestion surfaced in the grant UI.
+      if (perms.mcp) {
+        permsNode.set(
+          'mcp',
+          doc.createNode(
+            perms.mcp.servers_hint.length > 0 ? { servers_hint: perms.mcp.servers_hint } : {},
+          ),
+        );
+      }
     }
   }
 
