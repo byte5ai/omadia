@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react';
 import { useTranslations } from 'next-intl';
 
 import { applyStreamEvent, type ChatStreamEvent } from '../_lib/chatStreamEvents';
+import { humanizeProviderError } from '../_lib/providerErrorMessage';
 import { useChatSessionsCtx } from '../_lib/chatSessionsContext';
 import {
   type ClaimedRequest,
@@ -88,8 +89,19 @@ async function runOneTurn(claim: ClaimedRequest, depsRef: DepsRef): Promise<void
   let cacheTokens = 0;
 
   const applyEvent = (event: ChatStreamEvent): void => {
-    const { sessions: liveSessions } = depsRef.current;
-    applyStreamEvent(liveSessions, sessionId, pendingMessageId, event);
+    const { sessions: liveSessions, t } = depsRef.current;
+    // A provider error arrives as a raw wrapped string (status + JSON blob).
+    // Reduce it to the embedded human sentence before it reaches the bubble;
+    // keep the raw text in the console for debugging.
+    let outgoing = event;
+    if (event.type === 'error') {
+      const clean = humanizeProviderError(event.message, t('errorProviderGeneric'));
+      if (clean !== event.message) {
+        console.warn('[chat] provider error', event.message);
+        outgoing = { ...event, message: clean };
+      }
+    }
+    applyStreamEvent(liveSessions, sessionId, pendingMessageId, outgoing);
 
     // Accumulate per-turn signals BEFORE deriving the patch so the
     // patch has fresh numbers.

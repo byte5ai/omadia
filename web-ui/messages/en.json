@@ -734,6 +734,7 @@
     "errorMiddlewareUnreachable": "Middleware unreachable on localhost:3979. Is `npm run dev` running in the middleware folder?",
     "errorProxyFailure": "Proxy error (HTTP {status}). Check the middleware logs.",
     "errorAborted": "Aborted.",
+    "errorProviderGeneric": "Something went wrong while talking to the AI provider. Please try again.",
     "intro": {
       "kicker": "What is this chat?",
       "body": "This is the operator debug chat — a direct line to your orchestrators for testing prompts and inspecting tool calls, plans, and knowledge-graph walks as they happen. It's not the end-user experience; it's built for debugging."
@@ -1407,6 +1408,7 @@
       "error": {
         "connectionLost": "Connection lost: {message}",
         "unknownTurn": "Unknown error during builder turn",
+        "providerGeneric": "Something went wrong while talking to the AI provider. Please try again.",
         "choiceSaveFailedDetail": "Could not save selection: {message}",
         "choiceSaveFailed": "Could not save selection."
       },
@@ -1464,7 +1466,8 @@
         "streamLive": "Stream live",
         "error": {
           "connectionLost": "Connection lost: {message}",
-          "unknownTurn": "Unknown error during the preview turn"
+          "unknownTurn": "Unknown error during the preview turn",
+          "providerGeneric": "Something went wrong while talking to the AI provider. Please try again."
         },
         "externalReadsHint": "Preview does not run cross-integration lookups (<code>spec.external_reads</code>) — the agent correctly detects the missing service and throws. Publish the agent to the platform store to test the real data path.",
         "agentStuck": {
