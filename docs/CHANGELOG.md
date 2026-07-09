@@ -32,6 +32,21 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   `POST /api/v1/store/plugins/:id/verdict/ack`. Advisory-only in v1: nothing
   blocks. New env vars: `SKILLSPECTOR_URL`, `SKILLSPECTOR_TIMEOUT_MS`.
 
+### Changed — v1.0 readiness pass across the earliest core plugins (#431)
+
+- `harness-plugin-web-search`, `harness-plugin-privacy-guard`, and
+  `harness-plugin-quality-guard` now ship READMEs (purpose, config keys,
+  published capabilities/tools, recorded `ctx.jobs`/`ctx.status`/`ctx.llm`/
+  `ctx.mcp` adopt-or-skip decisions).
+- `agent-seo-analyst`: operator-catalog `identity.description` translated to
+  English; README gains the same PluginContext-surface audit section.
+- `harness-plugin-privacy-guard`: `package.json` version aligned to the
+  manifest (`0.2.0`); the v4 path (`src/service.ts` + `src/v4/`) is declared
+  the single canonical implementation — no legacy branch exists (see README).
+- Recorded decisions: plugins stay independently versioned (no lockstep bump
+  with core); package layout is per-kind (tool plugins `src/`→`dist/`, agent
+  packages flat, per `agent-reference-maximum` + boilerplate templates).
+
 ### Added — pluggable LLM provider (OpenAI as an admin-selectable provider)
 
 - **`@omadia/llm-provider`**: a neutral LLM provider contract with Anthropic and
