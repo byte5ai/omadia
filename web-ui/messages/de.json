@@ -740,6 +740,7 @@
     "errorMiddlewareUnreachable": "Middleware nicht erreichbar auf localhost:3979. Läuft `npm run dev` im middleware-Ordner?",
     "errorProxyFailure": "Proxy-Fehler (HTTP {status}). Prüf die Middleware-Logs.",
     "errorAborted": "Abgebrochen.",
+    "errorProviderGeneric": "Beim Zugriff auf den KI-Anbieter ist etwas schiefgelaufen. Bitte versuch es erneut.",
     "intro": {
       "kicker": "Wofür ist dieser Chat?",
       "body": "Das ist der Debug-Chat für Operatoren — eine direkte Leitung zu deinen Orchestratoren zum Testen von Prompts und zum Beobachten von Tool-Aufrufen, Plänen und Knowledge-Graph-Walks in Echtzeit. Das ist nicht die Endnutzer-Erfahrung, sondern zum Debuggen gedacht."
@@ -1232,6 +1233,7 @@
         "statusBusy": "Arbeitet …",
         "errorLostConnection": "Verbindung verloren: {message}",
         "errorUnknown": "Unbekannter Fehler — bitte erneut versuchen.",
+        "errorProviderGeneric": "Dein Assistent konnte den KI-Dienst gerade nicht erreichen. Bitte versuch es gleich noch einmal.",
         "errorChoiceFailed": "Auswahl konnte nicht gespeichert werden.",
         "errorChoiceFailedMessage": "Auswahl konnte nicht gespeichert werden: {message}"
       }
@@ -1413,6 +1415,7 @@
       "error": {
         "connectionLost": "Verbindung verloren: {message}",
         "unknownTurn": "Unbekannter Fehler beim Builder-Turn",
+        "providerGeneric": "Beim Zugriff auf den KI-Anbieter ist etwas schiefgelaufen. Bitte versuch es erneut.",
         "choiceSaveFailedDetail": "Auswahl konnte nicht gespeichert werden: {message}",
         "choiceSaveFailed": "Auswahl konnte nicht gespeichert werden."
       },
@@ -1470,7 +1473,8 @@
         "streamLive": "Stream live",
         "error": {
           "connectionLost": "Verbindung verloren: {message}",
-          "unknownTurn": "Unbekannter Fehler beim Preview-Turn"
+          "unknownTurn": "Unbekannter Fehler beim Preview-Turn",
+          "providerGeneric": "Beim Zugriff auf den KI-Anbieter ist etwas schiefgelaufen. Bitte versuch es erneut."
         },
         "externalReadsHint": "Preview führt Cross-Integration-Lookups (<code>spec.external_reads</code>) nicht aus — der Agent erkennt den fehlenden Service korrekt und wirft. Stelle den Agent in deiner Instanz bereit, um den echten Datenpfad zu testen.",
         "agentStuck": {

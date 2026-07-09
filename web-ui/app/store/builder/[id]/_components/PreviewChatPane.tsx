@@ -40,6 +40,7 @@ import type {
   TranscriptEntry,
 } from '../../../../_lib/builderTypes';
 import { cn } from '../../../../_lib/cn';
+import { humanizeProviderError } from '../../../../_lib/providerErrorMessage';
 import {
   ChoiceCard,
   type PendingUserChoice,
@@ -259,7 +260,8 @@ export function PreviewChatPane({
         applyEvent(ev);
         if (ev.type === 'turn_done') break;
         if (ev.type === 'error') {
-          setError(`${ev.code}: ${ev.message}`);
+          console.warn(`[builder.preview.chat] provider error (${ev.code})`, ev.message);
+          setError(humanizeProviderError(ev.message, t('error.providerGeneric')));
           break;
         }
       }
